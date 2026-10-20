@@ -51,6 +51,7 @@ fn mechanism_state(
         shutdown: AtomicBool::new(false),
         worker_exited: AtomicBool::new(false),
         startup: Mutex::new(None),
+        outcome: Mutex::new(None),
         wake,
         readiness,
         _namespace: open_directory(path, "retain dispatcher mechanism namespace")?,
@@ -504,11 +505,13 @@ fn main_dispatcher_revisits_exact_job_after_caller_facade_drop()
         capacity: 1,
         state: Some(Arc::clone(&state)),
         worker: None,
+        worker_born: false,
         failed: false,
         cleanup: None,
         phase: WorkerPhase::Running,
         worker_panic: Mutex::new(None),
         startup_history: DispatcherStartupHistory::default(),
+        join_observations: [(None, None); 2],
         path: directory.path().to_owned(),
     };
 
@@ -554,11 +557,13 @@ fn abandoned_populated_node_cannot_starve_empty_peer_retirement()
         capacity: 2,
         state: Some(Arc::clone(&state)),
         worker: None,
+        worker_born: false,
         failed: false,
         cleanup: None,
         phase: WorkerPhase::Running,
         worker_panic: Mutex::new(None),
         startup_history: DispatcherStartupHistory::default(),
+        join_observations: [(None, None); 2],
         path: directory.path().to_owned(),
     };
 
@@ -639,11 +644,13 @@ fn actual_join_panic_history_survives_repeated_reports_without_claiming_main_ret
         capacity: 1,
         state: None,
         worker: None,
+        worker_born: false,
         failed: true,
         cleanup: None,
         phase: WorkerPhase::Joined,
         worker_panic: Mutex::new(Some(payload)),
         startup_history: DispatcherStartupHistory::default(),
+        join_observations: [(None, None); 2],
         path: directory.path().to_owned(),
     };
     let retained_file = dispatcher
@@ -679,6 +686,7 @@ fn actual_join_panic_history_survives_repeated_reports_without_claiming_main_ret
     Ok(())
 }
 
+#[cfg(target_env = "gnu")]
 #[test]
 fn failed_worker_startup_keeps_independent_original_post_after_physical_close()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -715,12 +723,14 @@ fn failed_worker_startup_keeps_independent_original_post_after_physical_close()
         purpose: None,
         capacity: 1,
         state: Some(state),
-        worker: Some(worker),
+        worker: Some(NativeJoinOwner::from_worker(worker)),
+        worker_born: true,
         failed: true,
         cleanup: None,
         phase: WorkerPhase::Reserved,
         worker_panic: Mutex::new(None),
         startup_history: DispatcherStartupHistory::default(),
+        join_observations: [(None, None); 2],
         path: directory.path().to_owned(),
     };
 
@@ -775,7 +785,17 @@ fn failed_worker_startup_keeps_independent_original_post_after_physical_close()
 
     // Historical failure does not prevent closing these actual component
     // resources. No authenticated Main purpose exists or is invented here.
-    dispatcher.worker.take().unwrap().join().unwrap();
+    let mut worker = dispatcher.worker.take().unwrap();
+    let end = std::time::Instant::now() + Duration::from_secs(5);
+    while worker.poll()? == NativeJoinObservation::Pending {
+        assert!(
+            std::time::Instant::now() < end,
+            "component worker did not physically join"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(worker.last_status(), Some(0));
+    drop(worker);
     drop(dispatcher.state.take());
     assert_descriptor_closed(descriptor, &expected);
     assert!(dispatcher.worker.is_none());

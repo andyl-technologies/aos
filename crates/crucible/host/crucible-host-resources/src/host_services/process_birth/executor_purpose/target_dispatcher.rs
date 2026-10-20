@@ -5,6 +5,7 @@
 //! nothing here creates another process allowance or native family bank.
 
 use super::*;
+use crate::host_services::native_join::{NativeJoinObservation, NativeJoinOwner};
 
 const STACK_REQUEST_BYTES: u64 = 2 * 1024 * 1024;
 // One actual shared epoll, wake eventfd and pinned namespace descriptor.
@@ -38,7 +39,7 @@ impl RetainedDispatcherCleanup {
         Ok(Arc::clone(cleanup))
     }
 
-    fn verify(&self, supplied: &Arc<HostOperationGuard>) -> Result<(), ServiceBirthError> {
+    fn verify_identity(&self, supplied: &Arc<HostOperationGuard>) -> Result<(), ServiceBirthError> {
         let entered = self.entered.get().ok_or_else(|| {
             ServiceBirthError::policy("Target dispatcher Cleanup has not been entered")
         })?;
@@ -50,7 +51,12 @@ impl RetainedDispatcherCleanup {
                 "Target dispatcher Cleanup operation is foreign",
             ));
         }
-        saved.verify_operation_class(HostOperationClass::Cleanup)?;
+        Ok(())
+    }
+
+    fn verify(&self, supplied: &Arc<HostOperationGuard>) -> Result<(), ServiceBirthError> {
+        self.verify_identity(supplied)?;
+        supplied.verify_operation_class(HostOperationClass::Cleanup)?;
         Ok(())
     }
 
@@ -319,72 +325,70 @@ impl AuthenticatedTargetDispatcherPurpose {
     /// Starts this purpose's one real worker with its explicit stack request.
     ///
     /// # Errors
-    /// Refuses repeated birth, stale payer authority, or a kernel thread error.
-    pub fn spawn_worker<T, F>(
+    /// Refuses unsupported native join before thread birth, repeated birth,
+    /// stale payer authority, or a kernel thread error.
+    pub fn spawn_worker<F>(
         &mut self,
         name: &str,
         body: F,
-    ) -> Result<std::thread::JoinHandle<T>, ServiceBirthError>
+    ) -> Result<NativeJoinOwner, ServiceBirthError>
     where
-        T: Send + 'static,
-        F: FnOnce() -> T + Send + 'static,
+        F: FnOnce() + Send + 'static,
     {
-        self.check()?;
-        if self.birth_attempted {
-            return Err(ServiceBirthError::policy(
-                "Target dispatcher worker was already born",
-            ));
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        {
+            let _ = (name, body);
+            Err(ServiceBirthError::policy(
+                "nonblocking Target worker join is unsupported on this platform",
+            ))
         }
-        self.birth_attempted = true;
-        let worker = std::thread::Builder::new()
-            .name(name.to_owned())
-            .stack_size(self.stack_request_bytes())
-            .spawn(body)
-            .map_err(|source| ServiceBirthError::Kernel {
-                operation: "start actual Target dispatcher worker",
-                source,
-            })?;
-        self.worker = Some(worker.thread().id());
-        Ok(worker)
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
+            self.check()?;
+            if self.birth_attempted {
+                return Err(ServiceBirthError::policy(
+                    "Target dispatcher worker was already born",
+                ));
+            }
+            self.birth_attempted = true;
+            let worker = std::thread::Builder::new()
+                .name(name.to_owned())
+                .stack_size(self.stack_request_bytes())
+                .spawn(body)
+                .map_err(|source| ServiceBirthError::Kernel {
+                    operation: "start actual Target dispatcher worker",
+                    source,
+                })?;
+            self.worker = Some(worker.thread().id());
+            Ok(NativeJoinOwner::from_worker(worker))
+        }
     }
 
-    /// Joins the same finished worker while retaining its task and window.
+    /// Observes the exact worker's native return without waiting or detaching.
     ///
-    /// The process factory first closes its actual returned controls and queue
-    /// aliases. This method checks the genuine handle and performs real join;
-    /// a caller cannot substitute a numeric thread ID or completion flag.
+    /// Only the saved guard's private identity and real ThreadId are checked
+    /// here. Live policy and descriptor locks are separate observations; they
+    /// cannot prevent recording an actual irreversible task/TLS return.
     ///
     /// # Errors
-    /// Refuses another or unfinished worker or stale authority. A refusal
-    /// returns the same wait authority before any join.
-    pub fn try_join_worker<T>(
+    /// Refuses a different saved guard/worker, a foreign process, or the first
+    /// unexpected native status while retaining the same owner.
+    pub fn observe_worker_return(
         &mut self,
-        worker: std::thread::JoinHandle<T>,
+        worker: &mut NativeJoinOwner,
         cleanup: &Arc<HostOperationGuard>,
-    ) -> Result<std::thread::Result<T>, (std::thread::JoinHandle<T>, ServiceBirthError)> {
-        if self.worker != Some(worker.thread().id()) || !worker.is_finished() {
-            return Err((
-                worker,
-                ServiceBirthError::policy("Target dispatcher worker is foreign or still running"),
+    ) -> Result<NativeJoinObservation, ServiceBirthError> {
+        self.cleanup.verify_identity(cleanup)?;
+        if self.worker != Some(worker.thread_id()) {
+            return Err(ServiceBirthError::policy(
+                "Target dispatcher worker identity changed",
             ));
         }
-        if let Err(source) = self.verify_cleanup(cleanup).and_then(|()| {
-            self.issuer
-                .host_descriptors
-                .lock()
-                .map_err(|_| ServiceBirthError::policy("Target descriptor custody is uncertain"))?
-                .as_ref()
-                .ok_or_else(|| ServiceBirthError::policy("Target descriptor owner is absent"))?
-                .check_target_window(self.epoch)?;
-            self.cleanup.verify(cleanup)
-        }) {
-            return Err((worker, source));
+        let observed = worker.poll().map_err(ServiceBirthError::NativeJoin)?;
+        if observed == NativeJoinObservation::Returned {
+            self.worker = None;
         }
-        let joined = worker.join();
-        self.worker = None;
-        // Actual join is irreversible. The caller retains this owner and can
-        // retry only the remaining window close, never another worker birth.
-        Ok(joined)
+        Ok(observed)
     }
 
     /// Closes the remaining window after the worker and actual queue retire.

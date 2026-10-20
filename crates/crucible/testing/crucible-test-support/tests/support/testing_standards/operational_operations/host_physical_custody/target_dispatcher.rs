@@ -7,35 +7,71 @@ pub(super) const CONTRACT: Contract = Contract {
     target: "src/linux_cgroup/target_dispatcher",
     required: &[
         (
-            r#"fn wait_for_worker_startup(&self) -> Result<(), DispatcherStartupFailure> {
-    loop {
-        let slice = self
+            r#"self.state = Some(Arc::new(DispatcherState {
+            slots: Mutex::new(slots),
+            running: Mutex::new(running),
+            readiness,
+            shutdown: AtomicBool::new(false),
+            worker_exited: AtomicBool::new(false),
+            startup: Mutex::new(None),
+            outcome: Mutex::new(None),
+            wake,
+            _namespace: namespace,
+            path: root.path.clone(),
+        }));
+        let state = Arc::clone(
+            self.state
+                .as_ref()
+                .ok_or_else(|| failure(&root.path, "Target dispatcher state is absent"))?,
+        );
+        let worker = self
             .purpose
-            .as_ref()
-            .ok_or(DispatcherStartupFailure::Custody(
-                "Target dispatcher payer is absent",
-            ))?
-            .startup_wait_slice()
-            .map_err(DispatcherStartupFailure::Original)?;
-        let state = self
-            .state
-            .as_ref()
-            .ok_or(DispatcherStartupFailure::Custody(
-                "Target dispatcher state is absent",
-            ))?;
-        if worker_startup_ready(state)? {
-            return Ok(());
+            .as_mut()
+            .ok_or_else(|| failure(&root.path, "Target dispatcher payer is absent"))?
+            .spawn_worker("crucible-target-dispatcher", move || {
+                let outcome_state = Arc::clone(&state);
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run(state, event_capacity);
+                }));
+                let mut saved = match outcome_state.outcome.lock() {
+                    Ok(saved) => saved,
+                    Err(poison) => poison.into_inner(),
+                };
+                *saved = Some(outcome);
+            })
+            .map_err(|source| failure(&root.path, source))?;
+        self.worker = Some(worker);
+        self.worker_born = true;"#,
+            1,
+        ),
+        (
+            r#"fn wait_for_worker_startup(&self) -> Result<(), DispatcherStartupFailure> {
+        loop {
+            let slice = self
+                .purpose
+                .as_ref()
+                .ok_or(DispatcherStartupFailure::Custody(
+                    "Target dispatcher payer is absent",
+                ))?
+                .startup_wait_slice()
+                .map_err(DispatcherStartupFailure::Original)?;
+            let state = self
+                .state
+                .as_ref()
+                .ok_or(DispatcherStartupFailure::Custody(
+                    "Target dispatcher state is absent",
+                ))?;
+            if worker_startup_ready(state)? {
+                return Ok(());
+            }
+            if state.worker_exited.load(Ordering::Acquire) || self.worker.is_none() {
+                return Err(DispatcherStartupFailure::Custody(
+                    "Target worker exited before startup acknowledgement",
+                ));
+            }
+            thread::sleep(slice.min(WATCHER_WAIT_POLL_INTERVAL));
         }
-        if state.worker_exited.load(Ordering::Acquire)
-            || self.worker.as_ref().is_none_or(JoinHandle::is_finished)
-        {
-            return Err(DispatcherStartupFailure::Custody(
-                "Target worker exited before startup acknowledgement",
-            ));
-        }
-        thread::sleep(slice.min(WATCHER_WAIT_POLL_INTERVAL));
-    }
-}"#,
+    }"#,
             1,
         ),
         (
@@ -53,164 +89,204 @@ pub(super) const CONTRACT: Contract = Contract {
         ),
         (
             r#"fn report_retirement_history(&mut self) -> Result<(), LinuxQemuCgroupError> {
-    let panicked = self.worker_panic().is_some();
-    if self.startup_history.has_failure() {
-        return Err(if panicked {
-            failure(
+        let panicked = self.worker_panic().is_some();
+        if self
+            .join_observations
+            .iter()
+            .any(|(pre, post)| pre.is_some() || post.is_some())
+        {
+            return Err(failure(
                 &self.path,
                 format_args!(
-                    "{}; Target dispatcher physically joined after worker panic",
-                    self.startup_history,
+                    "Target worker return history: {:?}; startup {}; panic {panicked}",
+                    self.join_observations, self.startup_history,
                 ),
-            )
-        } else {
-            failure(&self.path, &self.startup_history)
-        });
-    }
-    if panicked {
-        return Err(failure(
-            &self.path,
-            "Target dispatcher physically joined after worker panic",
-        ));
-    }
-    Ok(())
-}"#,
+            ));
+        }
+        if self.startup_history.has_failure() {
+            return Err(if panicked {
+                failure(
+                    &self.path,
+                    format_args!(
+                        "{}; Target dispatcher physically joined after worker panic",
+                        self.startup_history,
+                    ),
+                )
+            } else {
+                failure(&self.path, &self.startup_history)
+            });
+        }
+        if panicked {
+            return Err(failure(
+                &self.path,
+                "Target dispatcher physically joined after worker panic",
+            ));
+        }
+        Ok(())
+    }"#,
             1,
         ),
         (
             r#"pub(crate) fn finish(&mut self) -> Result<(), LinuxQemuCgroupError> {
-    if self.phase == WorkerPhase::Complete {
-        return self.report_retirement_history();
-    }
-    let path = self.path.clone();
-    self.retry_abandoned_jobs()?;
-    if matches!(self.phase, WorkerPhase::Reserved | WorkerPhase::Running) {
-        if let Some(state) = self.state.as_ref() {
-            let slots = match state.slots.try_lock() {
-                Ok(slots) => slots,
-                Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
-                Err(TryLockError::WouldBlock) => {
-                    return Err(failure(&path, "Target retirement custody is pending"));
-                }
-            };
-            if slots.iter().any(|slot| {
-                slot.phase != JobPhase::Idle
-                    || slot.control.is_some()
-                    || slot.original.is_some()
-            }) {
-                return Err(failure(
-                    &path,
-                    "Target dispatcher still owns an actual job or returned control",
-                ));
-            }
-            let running = match state.running.try_lock() {
-                Ok(running) => running,
-                Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
-                Err(TryLockError::WouldBlock) => {
-                    return Err(failure(&path, "Target worker custody is pending"));
-                }
-            };
-            if running.iter().any(Option::is_some) {
-                return Err(failure(&path, "Target worker still owns actual controls"));
-            }
-            // Only the complete absence of every actual slot/worker owner
-            // permits retiring poison; individual job recovery never does.
-            state.running.clear_poison();
-            state.slots.clear_poison();
-        }
-    }
-    if self.cleanup.is_none() {
-        self.cleanup = Some(
-            self.purpose
-                .as_ref()
-                .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
-                .retained_cleanup()
-                .map_err(|source| failure(&path, source))?,
-        );
-    }
-    let cleanup = self
-        .cleanup
-        .as_ref()
-        .ok_or_else(|| failure(&path, "Target dispatcher Cleanup is absent"))?;
-    self.purpose
-        .as_ref()
-        .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
-        .verify_cleanup(cleanup)
-        .map_err(|source| failure(&path, source))?;
-
-    if matches!(self.phase, WorkerPhase::Reserved | WorkerPhase::Running) {
-        if let Some(state) = self.state.as_ref() {
-            state.shutdown.store(true, Ordering::Release);
-            wake(&state.wake).map_err(|source| failure(&path, source))?;
-        }
-        while self
+        if self
             .worker
             .as_ref()
-            .is_some_and(|worker| !worker.is_finished())
+            .is_some_and(|worker| !worker.belongs_to_current_process())
         {
-            let slice = cleanup
-                .wait_slice()
-                .map_err(|source| failure(&path, source))?;
-            thread::sleep(slice.min(WATCHER_WAIT_POLL_INTERVAL));
+            return Err(failure(
+                &self.path,
+                "Target worker belongs to another process",
+            ));
         }
-        cleanup
-            .wait_slice()
-            .map_err(|source| failure(&path, source))?;
-        if let Some(state) = self.state.as_mut() {
-            Arc::get_mut(state).ok_or_else(|| {
-                failure(&path, "Target dispatcher has surviving queue aliases")
-            })?;
+        if self.phase == WorkerPhase::Complete {
+            return self.report_retirement_history();
         }
-        self.purpose
+        let path = self.path.clone();
+        self.retry_abandoned_jobs()?;
+        if matches!(self.phase, WorkerPhase::Reserved | WorkerPhase::Running) {
+            if let Some(state) = self.state.as_ref() {
+                let slots = match state.slots.try_lock() {
+                    Ok(slots) => slots,
+                    Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
+                    Err(TryLockError::WouldBlock) => {
+                        return Err(failure(&path, "Target retirement custody is pending"));
+                    }
+                };
+                if slots.iter().any(|slot| {
+                    slot.phase != JobPhase::Idle
+                        || slot.control.is_some()
+                        || slot.original.is_some()
+                }) {
+                    return Err(failure(
+                        &path,
+                        "Target dispatcher still owns an actual job or returned control",
+                    ));
+                }
+                let running = match state.running.try_lock() {
+                    Ok(running) => running,
+                    Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
+                    Err(TryLockError::WouldBlock) => {
+                        return Err(failure(&path, "Target worker custody is pending"));
+                    }
+                };
+                if running.iter().any(Option::is_some) {
+                    return Err(failure(&path, "Target worker still owns actual controls"));
+                }
+                // Only the complete absence of every actual slot/worker owner
+                // permits retiring poison; individual job recovery never does.
+                state.running.clear_poison();
+                state.slots.clear_poison();
+            }
+        }
+        if self.cleanup.is_none() {
+            self.cleanup = Some(
+                self.purpose
+                    .as_ref()
+                    .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+                    .retained_cleanup()
+                    .map_err(|source| failure(&path, source))?,
+            );
+        }
+        let cleanup = self
+            .cleanup
             .as_ref()
-            .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
-            .verify_cleanup(cleanup)
-            .map_err(|source| failure(&path, source))?;
-        // This physical close is irreversible. Retry retains the same
-        // finished handle and Cleanup, without reconstructing a queue.
-        drop(self.state.take());
-        self.phase = WorkerPhase::QueueClosed;
-    }
-    if self.phase == WorkerPhase::QueueClosed {
-        if let Some(worker) = self.worker.take() {
-            let joined = self
-                .purpose
-                .as_mut()
-                .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
-                .try_join_worker(worker, cleanup);
-            match joined {
-                Ok(joined) => {
+            .ok_or_else(|| failure(&path, "Target dispatcher Cleanup is absent"))?;
+        if matches!(self.phase, WorkerPhase::Reserved | WorkerPhase::Running) {
+            if let Some(state) = self.state.as_ref() {
+                state.shutdown.store(true, Ordering::Release);
+                wake(&state.wake).map_err(|source| failure(&path, source))?;
+            }
+            loop {
+                let before = cleanup.wait_slice();
+                if self.join_observations[0].0.is_none() {
+                    self.join_observations[0].0 = before.as_ref().err().copied();
+                }
+                let observed = match self.worker.as_mut() {
+                    Some(worker) => self
+                        .purpose
+                        .as_mut()
+                        .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+                        .observe_worker_return(worker, cleanup)
+                        .map_err(|source| failure(&path, source)),
+                    None if self.phase == WorkerPhase::Reserved => {
+                        Ok(NativeJoinObservation::Returned)
+                    }
+                    None => Err(failure(&path, "Target native join owner is absent")),
+                };
+                // The actual native zero is recorded before independent post.
+                if matches!(observed, Ok(NativeJoinObservation::Returned)) {
+                    drop(self.worker.take());
+                    self.phase = WorkerPhase::Joined;
+                }
+                let after = cleanup.wait_slice();
+                if self.join_observations[0].1.is_none() {
+                    self.join_observations[0].1 = after.as_ref().err().copied();
+                }
+                match observed? {
+                    NativeJoinObservation::Returned => break,
+                    NativeJoinObservation::Pending => {
+                        before.map_err(|source| failure(&path, source))?;
+                        after.map_err(|source| failure(&path, source))?;
+                        let wait_before = cleanup.wait_slice();
+                        if self.join_observations[1].0.is_none() {
+                            self.join_observations[1].0 = wait_before.as_ref().err().copied();
+                        }
+                        if let Ok(slice) = wait_before {
+                            thread::sleep(slice.min(WATCHER_WAIT_POLL_INTERVAL));
+                        }
+                        let wait_after = cleanup.wait_slice();
+                        if self.join_observations[1].1.is_none() {
+                            self.join_observations[1].1 = wait_after.as_ref().err().copied();
+                        }
+                        wait_before.map_err(|source| failure(&path, source))?;
+                        wait_after.map_err(|source| failure(&path, source))?;
+                    }
+                }
+            }
+        }
+        if self.phase == WorkerPhase::Joined {
+            if let Some(state) = self.state.as_mut() {
+                let state = Arc::get_mut(state).ok_or_else(|| {
+                    failure(&path, "Target dispatcher has surviving queue aliases")
+                })?;
+                let outcome = match state.outcome.get_mut() {
+                    Ok(outcome) => outcome,
+                    Err(poison) => poison.into_inner(),
+                }
+                .take();
+                let outcome = match outcome {
+                    Some(outcome) => outcome,
+                    None if !self.worker_born => Ok(()),
+                    None => return Err(failure(&path, "Target worker outcome was not delivered")),
+                };
+                if let Err(payload) = outcome {
                     let history = match self.worker_panic.get_mut() {
                         Ok(history) => history,
                         Err(poison) => poison.into_inner(),
                     };
-                    *history = joined.err();
-                }
-                Err((worker, source)) => {
-                    self.worker = Some(worker);
-                    return Err(failure(&path, source));
+                    *history = Some(payload);
                 }
             }
+            drop(self.state.take());
+            self.phase = WorkerPhase::QueueClosed;
         }
-        self.phase = WorkerPhase::Joined;
-    }
-    self.purpose
-        .as_mut()
-        .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
-        .retire_worker_debits(cleanup)
-        .map_err(|source| failure(&path, source))?;
-    cleanup
-        .wait_slice()
-        .map_err(|source| failure(&path, source))?;
-    self.purpose
-        .as_mut()
-        .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
-        .complete_cleanup(cleanup)
-        .map_err(|source| failure(&path, source))?;
-    self.cleanup = None;
-    self.phase = WorkerPhase::Complete;
-    self.report_retirement_history()
-}"#,
+        self.purpose
+            .as_mut()
+            .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+            .retire_worker_debits(cleanup)
+            .map_err(|source| failure(&path, source))?;
+        cleanup
+            .wait_slice()
+            .map_err(|source| failure(&path, source))?;
+        self.purpose
+            .as_mut()
+            .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+            .complete_cleanup(cleanup)
+            .map_err(|source| failure(&path, source))?;
+        self.cleanup = None;
+        self.phase = WorkerPhase::Complete;
+        self.report_retirement_history()
+    }"#,
             1,
         ),
         (
@@ -465,117 +541,220 @@ self.phase = WorkerPhase::Running;"#,
     ],
     companions: &[
         Companion {
+            path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_process.rs",
+            required: &[(
+                r#"self.target_dispatcher = Some(crate::linux_cgroup::TargetDispatcher::reserved(
+                purpose, capacity,
+            ));
+            let started = self
+                .target_dispatcher
+                .as_mut()
+                .ok_or_else(|| invalid_config("Target dispatcher custody is absent"))?
+                .start(&self.root);"#,
+                1,
+            )],
+        },
+        Companion {
+            path: "crates/crucible/host/crucible-host-resources/src/host_services/native_join.rs",
+            required: &[
+                (
+                    r#"fn observe(&mut self, status: i32) -> Result<NativeJoinObservation, NativeJoinError> {
+        match *self {
+            Self::Returned => return Ok(NativeJoinObservation::Returned),
+            Self::Uncertain(status) => return Err(NativeJoinError::Native { status }),
+            Self::Active => {}
+        }
+        match status {
+            0 => {
+                *self = Self::Returned;
+                Ok(NativeJoinObservation::Returned)
+            }
+            libc::EBUSY => Ok(NativeJoinObservation::Pending),
+            status => {
+                *self = Self::Uncertain(status);
+                Err(NativeJoinError::Native { status })
+            }
+        }
+    }"#,
+                    1,
+                ),
+                (
+                    r#"pub fn from_worker(worker: JoinHandle<()>) -> Self {
+        let thread = worker.thread().id();
+        let creator_process = std::process::id();
+        let native = worker.into_pthread_t();
+        Self {
+            native: Some(native),
+            thread,
+            creator_process,
+            disposition: Disposition::Active,
+            last_status: None,
+        }
+    }"#,
+                    1,
+                ),
+                (
+                    r#"pub fn belongs_to_current_process(&self) -> bool {
+        self.creator_process == std::process::id()
+    }"#,
+                    1,
+                ),
+                (
+                    r#"pub fn poll(&mut self) -> Result<NativeJoinObservation, NativeJoinError> {
+        if !self.belongs_to_current_process() {
+            return Err(NativeJoinError::ForeignProcess);
+        }
+        match self.disposition {
+            Disposition::Returned => return Ok(NativeJoinObservation::Returned),
+            Disposition::Uncertain(status) => return Err(NativeJoinError::Native { status }),
+            Disposition::Active => {}
+        }
+        let Some(native) = self.native else {
+            return Err(NativeJoinError::MissingOwner);
+        };
+        let status = unsafe {
+            // SAFETY: into_pthread_t transferred this joinable pthread's unique
+            // ownership. No handle alias, detach or other join exists. Exclusive
+            // mutable access serializes polling, and the creator-process check
+            // prevents inherited child access. GNU libc 2.39 tryjoin returns
+            // EBUSY without consuming the handle or waiting; zero consumes it.
+            // The Rust trampoline returns null; actual Rust results have a
+            // separately owned outcome cell, so no result pointer is needed.
+            libc::pthread_tryjoin_np(native as libc::pthread_t, std::ptr::null_mut())
+        };
+        if status == 0 {
+            self.native = None;
+        }
+        self.last_status = Some(status);
+        self.disposition.observe(status)
+    }"#,
+                    1,
+                ),
+                (r#"libc::pthread_tryjoin_np("#, 1),
+                (r#"as_pthread_t"#, 0),
+                (r#".join("#, 0),
+                (r#".detach("#, 0),
+            ],
+        },
+        Companion {
             path: "crates/crucible/host/crucible-host-resources/src/host_services/process_birth/executor_purpose/target_dispatcher.rs",
             required: &[
                 (
                     r#"pub fn startup_wait_slice(&self) -> Result<std::time::Duration, ServiceBirthError> {
-    self.check()?;
-    self.startup_original
-        .as_ref()
-        .ok_or_else(|| {
-            ServiceBirthError::policy("Target dispatcher startup observation ended")
-        })?
-        .wait_slice()
-        .map_err(ServiceBirthError::from)
-}"#,
+        self.check()?;
+        self.startup_original
+            .as_ref()
+            .ok_or_else(|| {
+                ServiceBirthError::policy("Target dispatcher startup observation ended")
+            })?
+            .wait_slice()
+            .map_err(ServiceBirthError::from)
+    }"#,
                     1,
                 ),
                 (
                     r#"pub fn release_startup_observation(&mut self) {
-    self.startup_original = None;
-}"#,
+        self.startup_original = None;
+    }"#,
                     1,
                 ),
                 (
                     r#"fn enter(
-    &self,
-    origin: &HostOperationGuard,
-) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
-    if self.completed {
-        return Err(ServiceBirthError::policy(
-            "Target dispatcher Cleanup already completed",
-        ));
-    }
-    let entered = self
-        .entered
-        .get_or_init(|| origin.begin_original_cleanup_control().map(Arc::new));
-    let cleanup = entered
-        .as_ref()
-        .map_err(|source| ServiceBirthError::from(*source))?;
-    cleanup.verify_operation_class(HostOperationClass::Cleanup)?;
-    Ok(Arc::clone(cleanup))
-}"#,
+        &self,
+        origin: &HostOperationGuard,
+    ) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
+        if self.completed {
+            return Err(ServiceBirthError::policy(
+                "Target dispatcher Cleanup already completed",
+            ));
+        }
+        let entered = self
+            .entered
+            .get_or_init(|| origin.begin_original_cleanup_control().map(Arc::new));
+        let cleanup = entered
+            .as_ref()
+            .map_err(|source| ServiceBirthError::from(*source))?;
+        cleanup.verify_operation_class(HostOperationClass::Cleanup)?;
+        Ok(Arc::clone(cleanup))
+    }"#,
+                    1,
+                ),
+                (
+                    r#"fn verify_identity(&self, supplied: &Arc<HostOperationGuard>) -> Result<(), ServiceBirthError> {
+        let entered = self.entered.get().ok_or_else(|| {
+            ServiceBirthError::policy("Target dispatcher Cleanup has not been entered")
+        })?;
+        let saved = entered
+            .as_ref()
+            .map_err(|source| ServiceBirthError::from(*source))?;
+        if !Arc::ptr_eq(saved, supplied) {
+            return Err(ServiceBirthError::policy(
+                "Target dispatcher Cleanup operation is foreign",
+            ));
+        }
+        Ok(())
+    }"#,
                     1,
                 ),
                 (
                     r#"fn verify(&self, supplied: &Arc<HostOperationGuard>) -> Result<(), ServiceBirthError> {
-    let entered = self.entered.get().ok_or_else(|| {
-        ServiceBirthError::policy("Target dispatcher Cleanup has not been entered")
-    })?;
-    let saved = entered
-        .as_ref()
-        .map_err(|source| ServiceBirthError::from(*source))?;
-    if !Arc::ptr_eq(saved, supplied) {
-        return Err(ServiceBirthError::policy(
-            "Target dispatcher Cleanup operation is foreign",
-        ));
-    }
-    saved.verify_operation_class(HostOperationClass::Cleanup)?;
-    Ok(())
-}"#,
+        self.verify_identity(supplied)?;
+        supplied.verify_operation_class(HostOperationClass::Cleanup)?;
+        Ok(())
+    }"#,
                     1,
                 ),
                 (
                     r#"pub fn retained_cleanup(&self) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
-    self.cleanup.enter(&self.issuer.original)
-}"#,
+        self.cleanup.enter(&self.issuer.original)
+    }"#,
                     1,
                 ),
                 (
                     r#"pub fn complete_cleanup(
-    &mut self,
-    cleanup: &Arc<HostOperationGuard>,
-) -> Result<(), ServiceBirthError> {
-    if !self.is_physically_retired() {
-        return Err(ServiceBirthError::policy(
-            "Target dispatcher resources remain held",
-        ));
-    }
-    self.verify_cleanup(cleanup)?;
-    self.cleanup.complete(cleanup)
-}"#,
+        &mut self,
+        cleanup: &Arc<HostOperationGuard>,
+    ) -> Result<(), ServiceBirthError> {
+        if !self.is_physically_retired() {
+            return Err(ServiceBirthError::policy(
+                "Target dispatcher resources remain held",
+            ));
+        }
+        self.verify_cleanup(cleanup)?;
+        self.cleanup.complete(cleanup)
+    }"#,
                     1,
                 ),
                 (
                     r#"pub fn retire_worker_debits(
-    &mut self,
-    cleanup: &Arc<HostOperationGuard>,
-) -> Result<(), ServiceBirthError> {
-    self.verify_cleanup(cleanup)?;
-    if self.worker.is_some() {
-        return Err(ServiceBirthError::policy(
-            "Target worker has not physically joined",
-        ));
-    }
-    if self.is_physically_retired() {
-        return Ok(());
-    }
-    self.issuer
-        .host_descriptors
-        .lock()
-        .map_err(|_| ServiceBirthError::policy("Target window closure is uncertain"))?
-        .as_mut()
-        .ok_or_else(|| ServiceBirthError::policy("Target window owner is absent"))?
-        .close_target_window(self.epoch)?;
-    self.descriptors = None;
-    self.task = None;
-    // A joined or failed pthread allocation can remain in Main's cache.
-    // Exactly one birth is permitted; this constant charge remains held.
-    if let Some(metadata) = self.metadata.take() {
-        std::mem::forget(metadata);
-    }
-    Ok(())
-}"#,
+        &mut self,
+        cleanup: &Arc<HostOperationGuard>,
+    ) -> Result<(), ServiceBirthError> {
+        self.verify_cleanup(cleanup)?;
+        if self.worker.is_some() {
+            return Err(ServiceBirthError::policy(
+                "Target worker has not physically joined",
+            ));
+        }
+        if self.is_physically_retired() {
+            return Ok(());
+        }
+        self.issuer
+            .host_descriptors
+            .lock()
+            .map_err(|_| ServiceBirthError::policy("Target window closure is uncertain"))?
+            .as_mut()
+            .ok_or_else(|| ServiceBirthError::policy("Target window owner is absent"))?
+            .close_target_window(self.epoch)?;
+        self.descriptors = None;
+        self.task = None;
+        // A joined or failed pthread allocation can remain in Main's cache.
+        // Exactly one birth is permitted; this constant charge remains held.
+        if let Some(metadata) = self.metadata.take() {
+            std::mem::forget(metadata);
+        }
+        Ok(())
+    }"#,
                     1,
                 ),
                 (
@@ -583,11 +762,62 @@ self.phase = WorkerPhase::Running;"#,
                     1,
                 ),
                 (
-                    r#"if self.worker != Some(worker.thread().id()) || !worker.is_finished()"#,
+                    r#"pub fn observe_worker_return(
+        &mut self,
+        worker: &mut NativeJoinOwner,
+        cleanup: &Arc<HostOperationGuard>,
+    ) -> Result<NativeJoinObservation, ServiceBirthError> {
+        self.cleanup.verify_identity(cleanup)?;
+        if self.worker != Some(worker.thread_id()) {
+            return Err(ServiceBirthError::policy(
+                "Target dispatcher worker identity changed",
+            ));
+        }
+        let observed = worker.poll().map_err(ServiceBirthError::NativeJoin)?;
+        if observed == NativeJoinObservation::Returned {
+            self.worker = None;
+        }
+        Ok(observed)
+    }"#,
                     1,
                 ),
                 (
-                    r#"let joined = worker.join(); self.worker = None; Ok(joined)"#,
+                    r#"pub fn spawn_worker<F>(
+        &mut self,
+        name: &str,
+        body: F,
+    ) -> Result<NativeJoinOwner, ServiceBirthError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        {
+            let _ = (name, body);
+            Err(ServiceBirthError::policy(
+                "nonblocking Target worker join is unsupported on this platform",
+            ))
+        }
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
+            self.check()?;
+            if self.birth_attempted {
+                return Err(ServiceBirthError::policy(
+                    "Target dispatcher worker was already born",
+                ));
+            }
+            self.birth_attempted = true;
+            let worker = std::thread::Builder::new()
+                .name(name.to_owned())
+                .stack_size(self.stack_request_bytes())
+                .spawn(body)
+                .map_err(|source| ServiceBirthError::Kernel {
+                    operation: "start actual Target dispatcher worker",
+                    source,
+                })?;
+            self.worker = Some(worker.thread().id());
+            Ok(NativeJoinOwner::from_worker(worker))
+        }
+    }"#,
                     1,
                 ),
             ],
@@ -596,14 +826,14 @@ self.phase = WorkerPhase::Running;"#,
             path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/target_dispatcher.rs",
             required: &[(
                 r#"pub(crate) fn wait_slice(
-    &mut self,
-    draining: bool,
-) -> Result<(std::time::Duration, bool), OriginalActorAccountError> {
-    if draining {
-        return Ok((self.cleanup.guard()?.wait_slice()?, true));
-    }
-    Ok((self.original.wait_slice()?, true))
-}"#,
+        &mut self,
+        draining: bool,
+    ) -> Result<(std::time::Duration, bool), OriginalActorAccountError> {
+        if draining {
+            return Ok((self.cleanup.guard()?.wait_slice()?, true));
+        }
+        Ok((self.original.wait_slice()?, true))
+    }"#,
                 1,
             )],
         },

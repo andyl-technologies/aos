@@ -16,7 +16,10 @@
 
 //! Unsafe boundary discipline:
 //! - public callers use safe host resource capabilities;
-//! - wrappers retain original task, descriptor, and memory permits.
+//! - wrappers retain original task, descriptor, and memory permits;
+//! - `host_services::native_join` consumes one unique GNU/Linux pthread handle,
+//!   checks its creation process, and records actual nonblocking join before
+//!   independent operation posts; no blocking join or raw-ID constructor exists.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]

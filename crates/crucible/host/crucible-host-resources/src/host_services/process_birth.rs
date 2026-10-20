@@ -227,6 +227,9 @@ pub enum ServiceBirthError {
         #[source]
         source: std::io::Error,
     },
+    /// The exact native worker's nonblocking physical return is uncertain.
+    #[error(transparent)]
+    NativeJoin(crate::host_services::native_join::NativeJoinError),
     /// The same original account refused a resource debit.
     #[error(transparent)]
     Resource(#[from] HostServiceError),

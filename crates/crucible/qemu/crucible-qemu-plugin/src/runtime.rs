@@ -21,10 +21,12 @@ mod control_component;
 mod fingerprint;
 mod registration_groups;
 mod registration_owner;
+mod resource_manifest;
 pub(crate) use checkpoint::reader::{
     CaptureLoan, HeldClaimCleanup, HeldReadContext, HeldReaderIdentity,
 };
 pub(crate) use fingerprint::{FingerprintApi, FingerprintBorrowContext, FingerprintLoan};
+use resource_manifest::{plugin_resource_manifest, plugin_worker_mask};
 
 pub(crate) use checkpoint::{LocalDisposition, NativeMailbox, NativeRoot, RootStage};
 mod device_workspace;
@@ -61,14 +63,20 @@ use hot_fork::{
 };
 
 use worker_quiescence::{
-    LiveWorkerQuiescence, WORKER_FINGERPRINT, WORKER_REQUIRED, WORKER_RUN_CONTROL, WORKER_TEARDOWN,
-    WorkerQuiescenceSnapshot,
+    LiveWorkerQuiescence, WORKER_RUN_CONTROL, WORKER_TEARDOWN, WorkerQuiescenceSnapshot,
 };
+#[cfg(test)]
+use worker_quiescence::{WORKER_FINGERPRINT, WORKER_REQUIRED};
 
 #[cfg(test)]
 use live_callbacks::clear_live_callback_registration_for_test;
 pub use live_callbacks::{FingerprintWorkerFailure, LiveDeviceCallbackError, LiveVcpuTimeCallbackError};
 use live_callbacks::{LiveVcpuTimeCallbackCapabilities, LiveVcpuTimeCallbackRegistrar};
+#[cfg(test)]
+use resource_manifest::{
+    PLUGIN_CALLBACK_REQUIRED, PLUGIN_RESOURCE_FINGERPRINT, PLUGIN_RESOURCE_MANIFEST_VERSION,
+    PLUGIN_RESOURCE_REQUIRED,
+};
 
 #[cfg(unix)]
 use crate::startup_source::SetupControlSocket;
@@ -1917,69 +1925,6 @@ pub(crate) struct LiveInstallCapabilities {
     pub(crate) register_ninep: Option<crate::QemuRegisterNinePCbFn>,
     pub(crate) register_accelerator: Option<crate::QemuRegisterAcceleratorCbFn>,
     pub(crate) fault_commands: crate::fault_command::QemuFaultCommandApis,
-}
-
-const PLUGIN_RESOURCE_MANIFEST_VERSION: u32 = 3;
-const PLUGIN_RESOURCE_REQUIRED: u64 = (1_u64 << 10) - 1;
-const PLUGIN_RESOURCE_COVERAGE: u64 = 1_u64 << 10;
-const PLUGIN_RESOURCE_WHITEBOX: u64 = 1_u64 << 11;
-const PLUGIN_RESOURCE_FINGERPRINT: u64 = 1_u64 << 12;
-const PLUGIN_RESOURCE_APP_RANDOM: u64 = 1_u64 << 14;
-const PLUGIN_CALLBACK_REQUIRED: u64 = ((1_u64 << 12) - 1) & !(1_u64 << 1);
-const PLUGIN_CALLBACK_TB_TRANSLATION: u64 = 1_u64 << 12;
-const PLUGIN_CALLBACK_FLUSH: u64 = 1_u64 << 13;
-fn plugin_worker_mask(args: &PluginArgs) -> u64 {
-    WORKER_REQUIRED | (u64::from(args.fingerprint().is_on()) * WORKER_FINGERPRINT)
-}
-
-fn plugin_resource_manifest(
-    plugin_id: QemuPluginId,
-    args: &PluginArgs,
-    callbacks: &RequiredOwnedCallbacksRegistered,
-) -> Result<crate::QemuPluginResourceManifest, PluginRuntimeInstallError> {
-    let setup = callbacks.setup();
-    let node_count = setup.mapped_region().header_snapshot().node_count;
-    let wake_fd = setup
-        .registered_wake_fd()
-        .ok_or(PluginRuntimeInstallError::ResourceManifestShape)?
-        .as_raw_fd();
-    let struct_size = u32::try_from(std::mem::size_of::<crate::QemuPluginResourceManifest>())
-        .map_err(|_error| PluginRuntimeInstallError::ResourceManifestShape)?;
-
-    let mut resource_mask = PLUGIN_RESOURCE_REQUIRED;
-    let mut callback_mask = PLUGIN_CALLBACK_REQUIRED;
-    let worker_mask = callbacks.state.as_ref().get_ref().workers.worker_mask();
-    if args.coverage().is_on() {
-        resource_mask |= PLUGIN_RESOURCE_COVERAGE;
-        callback_mask |= PLUGIN_CALLBACK_TB_TRANSLATION | PLUGIN_CALLBACK_FLUSH;
-    }
-    if args.whitebox().is_on() {
-        resource_mask |= PLUGIN_RESOURCE_WHITEBOX;
-        callback_mask |= PLUGIN_CALLBACK_TB_TRANSLATION;
-    }
-    if args.fingerprint().is_on() {
-        resource_mask |= PLUGIN_RESOURCE_FINGERPRINT;
-    }
-    if args.app_random().is_some() {
-        resource_mask |= PLUGIN_RESOURCE_APP_RANDOM;
-    }
-
-    Ok(crate::QemuPluginResourceManifest {
-        schema_version: PLUGIN_RESOURCE_MANIFEST_VERSION,
-        struct_size,
-        process_generation: args.process_generation(),
-        plugin_id,
-        resource_mask,
-        callback_mask,
-        worker_mask,
-        shmem_device: setup.shared_memory_device(),
-        shmem_inode: setup.shared_memory_inode(),
-        shmem_length: setup.mapped_region().region_len(),
-        slot_index: args.slot(),
-        node_count,
-        control_fd: args.sim_fd(),
-        wake_fd,
-    })
 }
 
 /// Registers the callback families whose C adapters own live device behavior.

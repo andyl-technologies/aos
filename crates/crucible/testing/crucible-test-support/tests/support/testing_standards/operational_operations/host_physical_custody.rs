@@ -66,8 +66,8 @@ fn host_continuations_reject_foreign_owners_and_premature_return()
                 "slot.phase = JobPhase::Idle;",
             ),
             (
-                ".try_join_worker(worker, cleanup)",
-                ".try_join_worker(other_worker, cleanup)",
+                ".observe_worker_return(worker, cleanup)",
+                ".observe_worker_return(other_worker, cleanup)",
             ),
             ("if self.cleanup.is_none()", "if true"),
         ],
@@ -104,4 +104,78 @@ pub(super) fn altered_expression(expression: &str) -> String {
     } else {
         expression.to_owned()
     }
+}
+
+#[test]
+fn target_native_join_requires_unique_handle_process_and_irreversible_receipt()
+-> Result<(), Box<dyn std::error::Error>> {
+    let contract = &target_dispatcher::CONTRACT;
+    let root = crate::workspace_root();
+    let source = std::fs::read_to_string(
+        crate::workspace::package_path(&root.join("crates"), contract.package)
+            .join(format!("{}.rs", contract.target)),
+    )?;
+    let code = crate::scrub_comments_and_strings(&source);
+    let evidence = super::read_companions(contract)?;
+    assert_ne!(super::mask_contract(contract, &code, &evidence), code);
+    for (needle, replacement) in [
+        (
+            "self.state = Some(Arc::new(DispatcherState",
+            "self.state = None; let _ = Some(Arc::new(DispatcherState",
+        ),
+        ("*saved = Some(outcome);", "drop(outcome);"),
+        ("self.worker = Some(worker);", "drop(worker);"),
+    ] {
+        let changed =
+            super::replace_one_obligation(&code, &super::source_pattern(needle), replacement);
+        assert_ne!(
+            changed, code,
+            "mutation missed actual startup owner cut: {needle}"
+        );
+        assert_eq!(
+            super::mask_contract(contract, &changed, &evidence),
+            changed,
+            "changed startup ownership was concealed: {needle}"
+        );
+    }
+    for (needle, replacement) in [
+        ("worker.into_pthread_t()", "worker.as_pthread_t()"),
+        (
+            "libc::EBUSY => Ok(NativeJoinObservation::Pending)",
+            "libc::EBUSY => Ok(NativeJoinObservation::Returned)",
+        ),
+        ("*self = Self::Uncertain(status);", "*self = Self::Active;"),
+        ("if !self.belongs_to_current_process()", "if false"),
+        ("self.native = None;", "self.native = Some(native);"),
+        (
+            "self.cleanup.verify_identity(cleanup)?;",
+            "let _ = cleanup;",
+        ),
+        ("self.worker != Some(worker.thread_id())", "false"),
+    ] {
+        let mut changed = evidence
+            .iter()
+            .map(|source| crate::scrub_comments_and_strings(source))
+            .collect::<Vec<_>>();
+        let mut matched = false;
+        for companion in &mut changed {
+            let altered = super::replace_one_obligation(
+                companion,
+                &super::source_pattern(needle),
+                replacement,
+            );
+            if altered != *companion {
+                *companion = altered;
+                matched = true;
+                break;
+            }
+        }
+        assert!(matched, "mutation missed actual native join: {needle}");
+        assert_eq!(
+            super::mask_contract(contract, &code, &changed),
+            code,
+            "changed native join was concealed: {needle}"
+        );
+    }
+    Ok(())
 }

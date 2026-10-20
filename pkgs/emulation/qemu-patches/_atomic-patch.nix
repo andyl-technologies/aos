@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "97460c40943302b664af2d5c9c0b270a52265abd4d0afdb2cb40031c491a469e";
-  subject = "crucible: retain RAM metadata return custody";
-  body = "Retain the complete Crucible integration on the sole pinned upstream base.\nBind actual RAM metadata births to the retained Source payer, process,\naccount and partition. Move real receipts into the two existing inventory\nrows and paid intrusive dirty-header ownership before publication. Replace\nall four void retirement losses with canonical status-bearing journals,\nnonreplayable physical effects and retry-only completed-debt settlement.\n\nUse a private flexible inventory with exact small-VM capacity, the existing\n4096 maximum, checked geometry and stable paid merge-sort workspace. Keep\nordered block refusals, MR references and topology checks. Resume only\nactual grace-complete dirty headers through a captured finite horizon;\nretain arbitrary outstanding generations without another cap or requeue.\n\nSeparate consumed projections, returned physical effects and settled debt\nat capture, publication and logical cleanup terminals. Retain cleanup-only\ntickets, protect Main MR callouts from CPU actors, and refuse active-effect\nor cleanup reentry without replaying ACK, Original or end callbacks.\nPreserve valid RR+BQL eligibility, live checks, SDK80, physical ABI, failure\ncontrols, experimental support policy and per-file licenses.\n\nRetain complete literal Native/MR dependencies and genuine QOM finalizers in\nthe component fixture. Refresh all seven fingerprint maps to their actual\ndependency fixed point and match the owning Source Meson inputs. The ten\nadded cleanup controls and invalid-capacity replacement pass under explicit\nmodeled retained inputs. Production syntax and fixture compile/link checks\npass; the full Source fixture still refuses required-role registration.\nSource activation, positive RCU execution, launched capture lifecycle and\nperformance remain unqualified. Preserve their mandatory failures and gates.";
-  commit = "64e15551afefa730e3919aa4c63dd3d1139637e4";
-  tree = "4cd514b03f2551e906a0236cdf82cd6858926ae8";
+  sha256 = "3487ba3d8f7f35e5cd4f955d93c39a9400a101c45ce3d4834b0f967e44ce75a4";
+  subject = "crucible: close settle-prepark component linkage";
+  body = "Retain the complete Crucible integration and RAM metadata return custody\non the sole pinned QEMU upstream base. Preserve canonical Source keepers,\nnonreplayable physical-return journals, retained cleanup tickets, finite\ngrace-complete dirty continuation and the paid flexible inventory.\n\nComplete the settle-prepark literal emitter with the real dispatch hint,\nframe identity and CPU-pin return bodies. Validate every consumed source\nbefore output using the owning extractor's five existing pins and three\nexplicit supplemental pins. Keep all production source, ABI, licenses,\nlimits, deadlines and experimental support policy unchanged.\n\nPlace all 49 component-owned external names in a private namespace before\nheaders so genuine linked event, thread, lock, notifier and QOM providers\ncannot interpose with component models. Keep object_unref genuine and\npreserve every publication, wait, boundary and settle-scan assertion.\n\nThe configured component passes all 112 publication cases, 16 intentional\nwaits and its control-boundary check. The unchanged settle-scan mutation\nfails its actual blocked-count assertion. These component results do not\nqualify selected Source or CPU activation, physical pin retirement,\npositive RCU execution, launched capture lifecycle or performance. Retain\nall mandatory lifecycle failures and gates.";
+  commit = "7754cef75d9333b943b731c4634226d025e1cce6";
+  tree = "f8884e5784a0b1bdbdd4aae6c4497d8f31168926";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/ram-metadata-return-v1";
+  branchRef = "dplecki/settle-prepark-emitter-v1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "5d910f1d0f236547cd22a2d925debaa7c2dae52ddf4833532753af949e2cfe72";
+  bundleSha256 = "8628ffe58632b44a8be6941dd6d0d048441433f5a5ab92855c2afa963bf26aa0";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

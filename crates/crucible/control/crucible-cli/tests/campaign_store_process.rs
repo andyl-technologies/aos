@@ -73,8 +73,7 @@ mod packaged;
 mod service_diagnostics;
 
 use service_diagnostics::{
-    append_process_diagnostics, descendant_process_commands, matching_lines_bounded,
-    recent_matching_lines_bounded,
+    descendant_process_commands, matching_lines_bounded, recent_matching_lines_bounded,
 };
 
 #[test]
@@ -1407,8 +1406,7 @@ root = {objects:?}
                     Ok(None) => format!("running(pid={})", child.child.id()),
                     Err(status_error) => format!("status-error({status_error})"),
                 };
-                let mut diagnostics = format!("service={service_process}");
-                append_process_diagnostics(&mut diagnostics);
+                let diagnostics = format!("service={service_process}");
 
                 let _ = child.child.kill();
                 let _ = wait_for_exit(&mut child.child, Duration::from_secs(5));

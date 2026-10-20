@@ -349,7 +349,8 @@ const DISPATCHER_TEST_LOOPS: &[(&str, usize)] = &[
 fn mask_dispatcher_test_waits(code: &str) -> String {
     let compact = compact_code(code);
     let deadline = source_pattern("let end = std::time::Instant::now() + Duration::from_secs(5);");
-    if expression_offsets(code, &deadline).len() != 2
+    // Two live-job controls and the unique native-join control retain fixed ends.
+    if expression_offsets(code, &deadline).len() != 3
         || !DISPATCHER_TEST_REQUIREMENTS
             .iter()
             .all(|required| compact.contains(&source_pattern(required)))
@@ -605,7 +606,7 @@ fn dispatcher_waits_require_each_fixed_deadline_and_whole_loop()
         .match_indices(deadline)
         .map(|(offset, _)| offset)
         .collect::<Vec<_>>();
-    assert_eq!(deadlines.len(), 2);
+    assert_eq!(deadlines.len(), 3);
     for offset in deadlines {
         let mut changed = source.clone();
         changed.replace_range(offset..offset + deadline.len(), "removed_deadline();");

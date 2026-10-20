@@ -270,7 +270,10 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-cpu-instance.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
-`crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated
+`crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The Rust
+runtime resource-manifest projection in
+`crates/crucible/qemu/crucible-qemu-plugin/src/runtime/resource_manifest.rs`
+retains that GPL-2.0-only scope and carries its own explicit SPDX notice. The generated
 `crucible_shmem_abi.h` process-protocol header is `MIT OR Apache-2.0`; AOS
 packages distribute and record it under the MIT option alongside QEMU.
 

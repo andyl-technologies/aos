@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::linux_attempt_host::TargetWatcherOriginal;
+use crucible_host_resources::host_services::native_join::{NativeJoinObservation, NativeJoinOwner};
 use crucible_host_resources::host_services::process_birth::{
     AuthenticatedTargetDispatcherPurpose, ServiceBirthError,
 };
@@ -56,6 +57,7 @@ struct DispatcherState {
     // The actual worker publishes its fallible local buffer allocation before
     // start can accept jobs. The same state retains the initiating failure.
     startup: Mutex<Option<Result<(), std::collections::TryReserveError>>>,
+    outcome: Mutex<Option<std::thread::Result<()>>>,
     wake: OwnedFd,
     _namespace: OwnedFd,
     path: PathBuf,
@@ -66,12 +68,17 @@ pub(crate) struct TargetDispatcher {
     purpose: Option<AuthenticatedTargetDispatcherPurpose>,
     capacity: usize,
     state: Option<Arc<DispatcherState>>,
-    worker: Option<JoinHandle<()>>,
+    worker: Option<NativeJoinOwner>,
+    worker_born: bool,
     failed: bool,
     cleanup: Option<Arc<HostOperationGuard>>,
     phase: WorkerPhase,
     worker_panic: Mutex<Option<Box<dyn std::any::Any + Send>>>,
     startup_history: DispatcherStartupHistory,
+    join_observations: [(
+        Option<crucible_host_resources::host_supervision::HostSupervisionError>,
+        Option<crucible_host_resources::host_supervision::HostSupervisionError>,
+    ); 2],
     path: PathBuf,
 }
 
@@ -213,11 +220,13 @@ impl TargetDispatcher {
             capacity,
             state: None,
             worker: None,
+            worker_born: false,
             failed: false,
             cleanup: None,
             phase: WorkerPhase::Reserved,
             worker_panic: Mutex::new(None),
             startup_history: DispatcherStartupHistory::default(),
+            join_observations: [(None, None); 2],
             path: PathBuf::from("/"),
         }
     }
@@ -346,6 +355,7 @@ impl TargetDispatcher {
             shutdown: AtomicBool::new(false),
             worker_exited: AtomicBool::new(false),
             startup: Mutex::new(None),
+            outcome: Mutex::new(None),
             wake,
             _namespace: namespace,
             path: root.path.clone(),
@@ -360,10 +370,19 @@ impl TargetDispatcher {
             .as_mut()
             .ok_or_else(|| failure(&root.path, "Target dispatcher payer is absent"))?
             .spawn_worker("crucible-target-dispatcher", move || {
-                run(state, event_capacity)
+                let outcome_state = Arc::clone(&state);
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run(state, event_capacity);
+                }));
+                let mut saved = match outcome_state.outcome.lock() {
+                    Ok(saved) => saved,
+                    Err(poison) => poison.into_inner(),
+                };
+                *saved = Some(outcome);
             })
             .map_err(|source| failure(&root.path, source))?;
         self.worker = Some(worker);
+        self.worker_born = true;
         // EventData is intentionally thread-local. Only its paid scalar
         // geometry crosses spawn; startup waits for the actual allocation.
         let started = self.wait_for_worker_startup();
@@ -407,9 +426,7 @@ impl TargetDispatcher {
             if worker_startup_ready(state)? {
                 return Ok(());
             }
-            if state.worker_exited.load(Ordering::Acquire)
-                || self.worker.as_ref().is_none_or(JoinHandle::is_finished)
-            {
+            if state.worker_exited.load(Ordering::Acquire) || self.worker.is_none() {
                 return Err(DispatcherStartupFailure::Custody(
                     "Target worker exited before startup acknowledgement",
                 ));
@@ -423,6 +440,16 @@ impl TargetDispatcher {
     /// # Errors
     /// Retains live jobs, aliases, expired Cleanup, failed join or window close.
     pub(crate) fn finish(&mut self) -> Result<(), LinuxQemuCgroupError> {
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| !worker.belongs_to_current_process())
+        {
+            return Err(failure(
+                &self.path,
+                "Target worker belongs to another process",
+            ));
+        }
         if self.phase == WorkerPhase::Complete {
             return self.report_retirement_history();
         }
@@ -476,67 +503,84 @@ impl TargetDispatcher {
             .cleanup
             .as_ref()
             .ok_or_else(|| failure(&path, "Target dispatcher Cleanup is absent"))?;
-        self.purpose
-            .as_ref()
-            .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
-            .verify_cleanup(cleanup)
-            .map_err(|source| failure(&path, source))?;
-
         if matches!(self.phase, WorkerPhase::Reserved | WorkerPhase::Running) {
             if let Some(state) = self.state.as_ref() {
                 state.shutdown.store(true, Ordering::Release);
                 wake(&state.wake).map_err(|source| failure(&path, source))?;
             }
-            while self
-                .worker
-                .as_ref()
-                .is_some_and(|worker| !worker.is_finished())
-            {
-                let slice = cleanup
-                    .wait_slice()
-                    .map_err(|source| failure(&path, source))?;
-                thread::sleep(slice.min(WATCHER_WAIT_POLL_INTERVAL));
-            }
-            cleanup
-                .wait_slice()
-                .map_err(|source| failure(&path, source))?;
-            if let Some(state) = self.state.as_mut() {
-                Arc::get_mut(state).ok_or_else(|| {
-                    failure(&path, "Target dispatcher has surviving queue aliases")
-                })?;
-            }
-            self.purpose
-                .as_ref()
-                .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
-                .verify_cleanup(cleanup)
-                .map_err(|source| failure(&path, source))?;
-            // This physical close is irreversible. Retry retains the same
-            // finished handle and Cleanup, without reconstructing a queue.
-            drop(self.state.take());
-            self.phase = WorkerPhase::QueueClosed;
-        }
-        if self.phase == WorkerPhase::QueueClosed {
-            if let Some(worker) = self.worker.take() {
-                let joined = self
-                    .purpose
-                    .as_mut()
-                    .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
-                    .try_join_worker(worker, cleanup);
-                match joined {
-                    Ok(joined) => {
-                        let history = match self.worker_panic.get_mut() {
-                            Ok(history) => history,
-                            Err(poison) => poison.into_inner(),
-                        };
-                        *history = joined.err();
+            loop {
+                let before = cleanup.wait_slice();
+                if self.join_observations[0].0.is_none() {
+                    self.join_observations[0].0 = before.as_ref().err().copied();
+                }
+                let observed = match self.worker.as_mut() {
+                    Some(worker) => self
+                        .purpose
+                        .as_mut()
+                        .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+                        .observe_worker_return(worker, cleanup)
+                        .map_err(|source| failure(&path, source)),
+                    None if self.phase == WorkerPhase::Reserved => {
+                        Ok(NativeJoinObservation::Returned)
                     }
-                    Err((worker, source)) => {
-                        self.worker = Some(worker);
-                        return Err(failure(&path, source));
+                    None => Err(failure(&path, "Target native join owner is absent")),
+                };
+                // The actual native zero is recorded before independent post.
+                if matches!(observed, Ok(NativeJoinObservation::Returned)) {
+                    drop(self.worker.take());
+                    self.phase = WorkerPhase::Joined;
+                }
+                let after = cleanup.wait_slice();
+                if self.join_observations[0].1.is_none() {
+                    self.join_observations[0].1 = after.as_ref().err().copied();
+                }
+                match observed? {
+                    NativeJoinObservation::Returned => break,
+                    NativeJoinObservation::Pending => {
+                        before.map_err(|source| failure(&path, source))?;
+                        after.map_err(|source| failure(&path, source))?;
+                        let wait_before = cleanup.wait_slice();
+                        if self.join_observations[1].0.is_none() {
+                            self.join_observations[1].0 = wait_before.as_ref().err().copied();
+                        }
+                        if let Ok(slice) = wait_before {
+                            thread::sleep(slice.min(WATCHER_WAIT_POLL_INTERVAL));
+                        }
+                        let wait_after = cleanup.wait_slice();
+                        if self.join_observations[1].1.is_none() {
+                            self.join_observations[1].1 = wait_after.as_ref().err().copied();
+                        }
+                        wait_before.map_err(|source| failure(&path, source))?;
+                        wait_after.map_err(|source| failure(&path, source))?;
                     }
                 }
             }
-            self.phase = WorkerPhase::Joined;
+        }
+        if self.phase == WorkerPhase::Joined {
+            if let Some(state) = self.state.as_mut() {
+                let state = Arc::get_mut(state).ok_or_else(|| {
+                    failure(&path, "Target dispatcher has surviving queue aliases")
+                })?;
+                let outcome = match state.outcome.get_mut() {
+                    Ok(outcome) => outcome,
+                    Err(poison) => poison.into_inner(),
+                }
+                .take();
+                let outcome = match outcome {
+                    Some(outcome) => outcome,
+                    None if !self.worker_born => Ok(()),
+                    None => return Err(failure(&path, "Target worker outcome was not delivered")),
+                };
+                if let Err(payload) = outcome {
+                    let history = match self.worker_panic.get_mut() {
+                        Ok(history) => history,
+                        Err(poison) => poison.into_inner(),
+                    };
+                    *history = Some(payload);
+                }
+            }
+            drop(self.state.take());
+            self.phase = WorkerPhase::QueueClosed;
         }
         self.purpose
             .as_mut()
@@ -579,6 +623,19 @@ impl TargetDispatcher {
 
     fn report_retirement_history(&mut self) -> Result<(), LinuxQemuCgroupError> {
         let panicked = self.worker_panic().is_some();
+        if self
+            .join_observations
+            .iter()
+            .any(|(pre, post)| pre.is_some() || post.is_some())
+        {
+            return Err(failure(
+                &self.path,
+                format_args!(
+                    "Target worker return history: {:?}; startup {}; panic {panicked}",
+                    self.join_observations, self.startup_history,
+                ),
+            ));
+        }
         if self.startup_history.has_failure() {
             return Err(if panicked {
                 failure(
@@ -639,7 +696,8 @@ impl TargetDispatcher {
         };
         if self.failed
             || state.shutdown.load(Ordering::Acquire)
-            || self.worker.as_ref().is_none_or(JoinHandle::is_finished)
+            || self.worker.is_none()
+            || state.worker_exited.load(Ordering::Acquire)
         {
             let source = failure(&control.path, "Target dispatcher is retired or failed");
             return Err(TargetJobSubmitError::Unsubmitted { control, source });

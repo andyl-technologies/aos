@@ -1905,11 +1905,22 @@ in
                   "legacy-ram-load",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
-                      completed = subprocess.run([
+                      fixture_command = [
                           sys.executable,
                           str(source_root / f"tests/unit/test-crucible-{name}.py"),
                           "--output-dir", str(source_root / f"{name}-proof"),
-                      ], cwd=entry["directory"], env=environment,
+                      ]
+                      if name == "settle-prepark":
+                          fixture_command = [
+                              sys.executable,
+                              "${../../tests/crucible/settle-prepark-native.py}",
+                              "--source-root", str(source_root),
+                              "--build-root", entry["directory"],
+                              "--output-dir", str(source_root / f"{name}-proof"),
+                              "--nm", "${buildBinutils}/bin/nm",
+                          ]
+                      completed = subprocess.run(fixture_command,
+                         cwd=entry["directory"], env=environment,
                          stdout=result, check=False)
                   print(f"native fixture {name}: exit {completed.returncode}", flush=True)
                   if completed.returncode:

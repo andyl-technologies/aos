@@ -81,12 +81,13 @@ trade a faster family for a slower one, raise caps, or disguise failed attempts
 as completed throughput. gem5/KVM profiles require their own comparable
 operating-mode baseline; they cannot replace the current QEMU regression gate.
 
-The predecessor native integration `d55cfbd8f71a` compiles and links all 3,863
-build actions. All six selected native unit binaries pass, including seven bounded-thread and
-two CPU-instance subtests. The standalone fixture run remains failing: 16 of 25
-fixtures pass, eight have incomplete emitted callback dependency closure, and the
-mandatory launched capture lifecycle still fails. These results do not qualify
-prepared Source providers, actual CPU pin return, RAM rearm or VM activation.
+Native integration `7754cef75d9333b943b731c4634226d025e1cce6`
+passes signed source reconstruction and all 3,863 C compile/link actions. All six
+selected native unit binaries pass, including seven bounded-thread and two
+CPU-instance subtests. The standalone fixture run remains failing: 18 of 26
+fixtures pass, seven have incomplete emitted callback dependency closure, and
+the mandatory launched capture lifecycle still fails. These results do not
+qualify prepared Source providers, actual CPU pin return, RAM rearm or VM activation.
 Callback dependency repairs must use actual production functions and genuine
 providers; an ordinary monitor reference-count model cannot stand in for CPU
 custody. Preserve the lifecycle failure until the launched path is implemented
@@ -98,7 +99,8 @@ generated fixture. Ten new cleanup controls and the replacement capacity control
 pass. Four independently rebuilt mutations each fail at their exact intended
 semantic assertion while their named baselines pass. Across all 182 Source
 scenarios, 166 pass and 16 fail; each failure reproduces the identical assertion
-and signal in the predecessor binary. A complete native build rerun is pending.
+and signal in the predecessor binary. The complete native build result above
+covers the same production cleanup source; the successor changes one test file.
 
 The existing required-role fixture still refuses.
 That fixture lacks real RUN/teardown rows and a matched worker module; its
@@ -109,7 +111,8 @@ continuations, preserving consumed projections, physical return and settlement
 debt independently. The new controls use disclosed modeled retained inputs;
 genuine Source activation, positive RCU grace and launched cleanup remain required.
 
-Normal Cargo compiles all 520 workspace test targets. The 510 non-daemon targets
+Normal Cargo compiles all 520 current workspace test targets. All workspace
+doctests complete: 41 pass and 26 existing cases are ignored. The 510 non-daemon targets
 complete with 12,085 passes, 88 failures and 75 ignored tests. Twenty-six
 tool/configuration failures and ten watcher failures pass targeted reruns with
 the actual native tools, isolated Git fixtures and controlled test concurrency;
@@ -118,10 +121,29 @@ source-policy and behavioral failures are unresolved.
 
 The separate normal Cargo daemon run covers all targets/features: 1,890 tests
 pass with 47 existing ignored tests, and six doctests pass. Engineering hygiene
-and all 27 boundary checks pass. Source-policy controls have 60 passes and one
+and all 27 boundary checks pass. Source-policy controls have 64 passes and one
 failing broad integration gate for the same 15 unclassified paths. These local
 results cover the metadata-admission and resume-error retention changes; they
 do not establish native activation, reduced residency or performance parity.
+
+The worker cutover passes all 43 host-resource, QEMU-host and plugin test targets:
+2,716 passes with five existing ignored tests. The three new native-join controls
+include a real held TLS destructor. Campaign tests have 448 passes after stale
+schema-owner assertions are corrected to the existing registry. All twelve
+owned-process diagnostic controls pass in the standalone and composed CLI targets.
+The new source controls require exact bounded waits and reject substituted workers,
+missing physical receipts, changed deadlines, fabricated wait status and unrelated
+retries; they preserve the same fifteen unresolved daemon findings.
+
+Native source `7754cef75d9333b943b731c4634226d025e1cce6` changes only the settlement
+fixture. Its configured runner passes all 112 publication cases, sixteen intentional
+waits and the control boundary. All fifty component externals are `main` or private
+component symbols; real QOM/event/thread/lock/notifier providers remain separate.
+The exact guard-deletion binary aborts at `publication_matrix`, observing one blocked
+park against the required zero. Optimized unselected Source code removes the CPU
+unref edge; a separate unoptimized object audit retains the genuine `object_unref`
+relocation. Neither result qualifies selected CPU-pin return. The complete native
+build and owning runner produce the eighteen passing fixtures recorded above.
 
 Current status: QEMU-SIM implementation qualification and final performance
 parity are in progress. All gem5/KVM live evidence above is unavailable; these

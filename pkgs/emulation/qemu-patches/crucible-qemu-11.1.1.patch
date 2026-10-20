@@ -1,36 +1,30 @@
-From 64e15551afefa730e3919aa4c63dd3d1139637e4 Mon Sep 17 00:00:00 2001
+From 7754cef75d9333b943b731c4634226d025e1cce6 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: retain RAM metadata return custody
+Subject: [PATCH] crucible: close settle-prepark component linkage
 
-Retain the complete Crucible integration on the sole pinned upstream base.
-Bind actual RAM metadata births to the retained Source payer, process,
-account and partition. Move real receipts into the two existing inventory
-rows and paid intrusive dirty-header ownership before publication. Replace
-all four void retirement losses with canonical status-bearing journals,
-nonreplayable physical effects and retry-only completed-debt settlement.
+Retain the complete Crucible integration and RAM metadata return custody
+on the sole pinned QEMU upstream base. Preserve canonical Source keepers,
+nonreplayable physical-return journals, retained cleanup tickets, finite
+grace-complete dirty continuation and the paid flexible inventory.
 
-Use a private flexible inventory with exact small-VM capacity, the existing
-4096 maximum, checked geometry and stable paid merge-sort workspace. Keep
-ordered block refusals, MR references and topology checks. Resume only
-actual grace-complete dirty headers through a captured finite horizon;
-retain arbitrary outstanding generations without another cap or requeue.
+Complete the settle-prepark literal emitter with the real dispatch hint,
+frame identity and CPU-pin return bodies. Validate every consumed source
+before output using the owning extractor's five existing pins and three
+explicit supplemental pins. Keep all production source, ABI, licenses,
+limits, deadlines and experimental support policy unchanged.
 
-Separate consumed projections, returned physical effects and settled debt
-at capture, publication and logical cleanup terminals. Retain cleanup-only
-tickets, protect Main MR callouts from CPU actors, and refuse active-effect
-or cleanup reentry without replaying ACK, Original or end callbacks.
-Preserve valid RR+BQL eligibility, live checks, SDK80, physical ABI, failure
-controls, experimental support policy and per-file licenses.
+Place all 49 component-owned external names in a private namespace before
+headers so genuine linked event, thread, lock, notifier and QOM providers
+cannot interpose with component models. Keep object_unref genuine and
+preserve every publication, wait, boundary and settle-scan assertion.
 
-Retain complete literal Native/MR dependencies and genuine QOM finalizers in
-the component fixture. Refresh all seven fingerprint maps to their actual
-dependency fixed point and match the owning Source Meson inputs. The ten
-added cleanup controls and invalid-capacity replacement pass under explicit
-modeled retained inputs. Production syntax and fixture compile/link checks
-pass; the full Source fixture still refuses required-role registration.
-Source activation, positive RCU execution, launched capture lifecycle and
-performance remain unqualified. Preserve their mandatory failures and gates.
+The configured component passes all 112 publication cases, 16 intentional
+waits and its control-boundary check. The unchanged settle-scan mutation
+fails its actual blocked-count assertion. These component results do not
+qualify selected Source or CPU activation, physical pin retirement,
+positive RCU execution, launched capture lifecycle or performance. Retain
+all mandatory lifecycle failures and gates.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -284775,10 +284769,10 @@ index 0000000000000000000000000000000000000000..2959d327c93b23a69e0ce12dbe31dd19
 +}
 diff --git a/tests/unit/test-crucible-settle-prepark.py b/tests/unit/test-crucible-settle-prepark.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ddf3d47405be41ef8d087d6d643f937d23761d95
+index 0000000000000000000000000000000000000000..1778d7aa43f2ff395b53edef0420e5a86e1475a9
 --- /dev/null
 +++ b/tests/unit/test-crucible-settle-prepark.py
-@@ -0,0 +1,567 @@
+@@ -0,0 +1,725 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production RR prepark, completion, settlement and futex event bodies.
 +
@@ -284789,6 +284783,7 @@ index 0000000000000000000000000000000000000000..ddf3d47405be41ef8d087d6d643f937d
 +"""
 +
 +import argparse
++import hashlib
 +import json
 +import os
 +from pathlib import Path
@@ -284800,6 +284795,49 @@ index 0000000000000000000000000000000000000000..ddf3d47405be41ef8d087d6d643f937d
 +ROOT = Path(__file__).resolve().parents[2]
 +EXTRACT = runpy.run_path(str(Path(__file__).with_name(
 +    "extract-crucible-startup-source-controls.py")))
++
++SOURCE_INPUTS = (
++    "accel/tcg/tcg-accel-ops-rr.c",
++    "plugins/api-system.c",
++    "plugins/crucible-native-invocation.c",
++    "plugins/crucible-startup-source.c",
++    "plugins/crucible-callback-publication.inc.h",
++    "util/event.c",
++    "util/qemu-thread-posix.c",
++    "util/qsp.c",
++)
++
++# These literal inputs are absent from the owning extractor's inventory. Their
++# pins bind the same reviewed source cohort and cannot replace existing pins.
++SUPPLEMENTAL_SOURCE_HASHES = {
++    "accel/tcg/tcg-accel-ops-rr.c":
++        "9138eaed9c3924f7a3508bd3457b2884a0601231184f3b17d7cde1f3d01eab50",
++    "util/event.c":
++        "bc9693b7bf9efef552377aa484ed5b8892cfc6f866964d87895923e914591033",
++    "util/qsp.c":
++        "0ae990c42b035709ec7e321a76458823cbddfc6771894790cf796a03d76483cd",
++}
++
++
++def validated_sources(root):
++    # Reuse the owning extractor's pins without running its unrelated emitters
++    # or reading its whole inventory. Every consumed literal input needs a pin.
++    authoritative = EXTRACT["SOURCE_HASHES"]
++    supplemental = set(SUPPLEMENTAL_SOURCE_HASHES)
++    inputs = set(SOURCE_INPUTS)
++    if (len(inputs) != len(SOURCE_INPUTS) or
++            supplemental != inputs - authoritative.keys()):
++        raise ValueError("settle-prepark source pin inventory changed")
++
++    sources = {}
++    for name in SOURCE_INPUTS:
++        expected = (authoritative[name] if name in authoritative else
++                    SUPPLEMENTAL_SOURCE_HASHES[name])
++        data = (root / name).read_bytes()
++        if hashlib.sha256(data).hexdigest() != expected:
++            raise ValueError(f"source changed: {name}")
++        sources[name] = data.decode()
++    return sources
 +
 +
 +def definition(source, signature):
@@ -284816,11 +284854,11 @@ index 0000000000000000000000000000000000000000..ddf3d47405be41ef8d087d6d643f937d
 +    raise ValueError(f"function definition missing: {name}")
 +
 +
-+def ordinary_native_dependencies(root, api):
-+    native = (root / "plugins/crucible-native-invocation.c").read_text()
-+    source = (root / "plugins/crucible-startup-source.c").read_text()
-+    publication = (root / "plugins/crucible-callback-publication.inc.h").read_text()
-+    thread = (root / "util/qemu-thread-posix.c").read_text()
++def ordinary_native_dependencies(sources, api):
++    native = sources["plugins/crucible-native-invocation.c"]
++    source = sources["plugins/crucible-startup-source.c"]
++    publication = sources["plugins/crucible-callback-publication.inc.h"]
++    thread = sources["util/qemu-thread-posix.c"]
 +    declarations = EXTRACT["body_cut"](
 +        api, "static struct {\n    QemuCrucibleNativeRegistration *control;",
 +        "static qemu_plugin_time_advance_cb_t")
@@ -284830,18 +284868,21 @@ index 0000000000000000000000000000000000000000..ddf3d47405be41ef8d087d6d643f937d
 +    declarations += "\nstruct qemu_plugin_state plugin;\n"
 +    names = (
 +        "qemu_plugin_crucible_native_group_member_count_v1",
-+        "native_selection", "registry_process_current",
++        "native_selection", "native_dispatch_hint", "registry_process_current",
 +        "registry_identity_locked", "registry_current_locked", "group_index",
 +        "group_source_object_identity", "group_identity_locked", "top_locked",
 +        "frame_member_locked", "registration_locked", "frame_reclaim_locked",
++        "frame_identity_locked", "frame_cpu_pin_return",
 +        "qemu_plugin_crucible_native_enter_v1",
 +        "qemu_plugin_crucible_native_mask_v1",
 +        "qemu_plugin_crucible_native_exit_v1",
 +        "qemu_plugin_crucible_native_group_use_begin_v1",
 +        "qemu_plugin_crucible_native_group_use_end_v1",
 +    )
-+    bodies = [selected(publication,
-+                       "qemu_crucible_startup_source_native_selection_v1")]
++    bodies = [selected(publication, name) for name in (
++        "qemu_crucible_startup_source_native_selection_v1",
++        "qemu_crucible_startup_source_native_dispatch_hint_v1",
++    )]
 +    bodies += [selected(thread, name) for name in
 +               ("qemu_thread_get_self", "qemu_thread_is_self")]
 +    # Canonical unselected state never enters these registry locks.
@@ -284849,7 +284890,7 @@ index 0000000000000000000000000000000000000000..ddf3d47405be41ef8d087d6d643f937d
 +                 "qemu_rec_mutex_lock_impl", "qemu_rec_mutex_unlock_impl"):
 +        signature = selected(thread, name).split("{", 1)[0]
 +        bodies.append(signature + "{\n    g_assert_not_reached();\n}\n")
-+    qsp = (root / "util/qsp.c").read_text()
++    qsp = sources["util/qsp.c"]
 +    for declaration in (
 +        "QemuMutexLockFunc qemu_mutex_lock_func = qemu_mutex_lock_impl;",
 +        "QemuRecMutexLockFunc qemu_rec_mutex_lock_func = qemu_rec_mutex_lock_impl;",
@@ -284860,6 +284901,114 @@ index 0000000000000000000000000000000000000000..ddf3d47405be41ef8d087d6d643f937d
 +    bodies += [selected(api,
 +                        "qemu_plugin_crucible_native_time_advance_descriptor_observe_v1")]
 +    return declarations + "\n\n".join(bodies)
++
++# Keep every component-owned external separate from genuinely linked support.
++# This block precedes headers so prototypes, inline calls and QSP pointers all
++# use the same private names; no genuine provider translation unit sees it.
++COMPONENT_NAMESPACE = r"""
++#define bql_lock_impl \
++    settle_prepark_component_bql_lock_impl
++#define bql_locked \
++    settle_prepark_component_bql_locked
++#define bql_unlock \
++    settle_prepark_component_bql_unlock
++#define notifier_list_notify \
++    settle_prepark_component_notifier_list_notify
++
++#define qemu_mutex_lock_func \
++    settle_prepark_component_qemu_mutex_lock_func
++#define qemu_mutex_lock_impl \
++    settle_prepark_component_qemu_mutex_lock_impl
++#define qemu_mutex_unlock_impl \
++    settle_prepark_component_qemu_mutex_unlock_impl
++#define qemu_rec_mutex_lock_func \
++    settle_prepark_component_qemu_rec_mutex_lock_func
++#define qemu_rec_mutex_lock_impl \
++    settle_prepark_component_qemu_rec_mutex_lock_impl
++#define qemu_rec_mutex_unlock_impl \
++    settle_prepark_component_qemu_rec_mutex_unlock_impl
++#define qemu_thread_get_self \
++    settle_prepark_component_qemu_thread_get_self
++#define qemu_thread_is_self \
++    settle_prepark_component_qemu_thread_is_self
++
++#define qemu_event_init \
++    settle_prepark_component_qemu_event_init
++#define qemu_event_set \
++    settle_prepark_component_qemu_event_set
++#define qemu_event_reset \
++    settle_prepark_component_qemu_event_reset
++#define qemu_event_wait \
++    settle_prepark_component_qemu_event_wait
++
++#define cpus_queue \
++    settle_prepark_component_cpus_queue
++#define current_cpu \
++    settle_prepark_component_current_cpu
++#define plugin \
++    settle_prepark_component_plugin
++#define qemu_cpu_is_self \
++    settle_prepark_component_qemu_cpu_is_self
++#define qemu_cpu_kick \
++    settle_prepark_component_qemu_cpu_kick
++#define qemu_plugin_crucible_rr_control_boundary_pending \
++    settle_prepark_component_qemu_plugin_crucible_rr_control_boundary_pending
++#define qemu_force_shutdown_requested \
++    settle_prepark_component_qemu_force_shutdown_requested
++#define runstate_is_running \
++    settle_prepark_component_runstate_is_running
++#define qemu_plugin_crucible_vmstop_pending \
++    settle_prepark_component_qemu_plugin_crucible_vmstop_pending
++#define qemu_plugin_crucible_exact_boundary_enter \
++    settle_prepark_component_qemu_plugin_crucible_exact_boundary_enter
++#define qemu_plugin_crucible_exact_boundary_leave \
++    settle_prepark_component_qemu_plugin_crucible_exact_boundary_leave
++#define rr_crucible_sim_trace_idle_stage \
++    settle_prepark_component_rr_crucible_sim_trace_idle_stage
++#define rr_crucible_sim_publish_time_advance_wake \
++    settle_prepark_component_rr_crucible_sim_publish_time_advance_wake
++#define rr_crucible_sim_trace_idle_advance \
++    settle_prepark_component_rr_crucible_sim_trace_idle_advance
++#define rr_crucible_sim_signal_time_advance_wake \
++    settle_prepark_component_rr_crucible_sim_signal_time_advance_wake
++#define qemu_plugin_crucible_rr_control_boundary_acknowledge \
++    settle_prepark_component_qemu_plugin_crucible_rr_control_boundary_acknowledge
++#define qemu_plugin_crucible_rr_control_boundary_defer \
++    settle_prepark_component_qemu_plugin_crucible_rr_control_boundary_defer
++#define qemu_plugin_crucible_rr_control_boundary_cancel \
++    settle_prepark_component_qemu_plugin_crucible_rr_control_boundary_cancel
++#define qemu_cond_wait_bql \
++    settle_prepark_component_qemu_cond_wait_bql
++
++#define qemu_crucible_startup_source_native_selection_v1 \
++    settle_prepark_component_qemu_crucible_startup_source_native_selection_v1
++#define qemu_crucible_startup_source_native_dispatch_hint_v1 \
++    settle_prepark_component_qemu_crucible_startup_source_native_dispatch_hint_v1
++#define qemu_plugin_crucible_native_group_member_count_v1 \
++    settle_prepark_component_qemu_plugin_crucible_native_group_member_count_v1
++#define qemu_plugin_crucible_native_enter_v1 \
++    settle_prepark_component_qemu_plugin_crucible_native_enter_v1
++#define qemu_plugin_crucible_native_mask_v1 \
++    settle_prepark_component_qemu_plugin_crucible_native_mask_v1
++#define qemu_plugin_crucible_native_exit_v1 \
++    settle_prepark_component_qemu_plugin_crucible_native_exit_v1
++#define qemu_plugin_crucible_native_group_use_begin_v1 \
++    settle_prepark_component_qemu_plugin_crucible_native_group_use_begin_v1
++#define qemu_plugin_crucible_native_group_use_end_v1 \
++    settle_prepark_component_qemu_plugin_crucible_native_group_use_end_v1
++#define qemu_plugin_crucible_native_time_advance_descriptor_observe_v1 \
++    settle_prepark_component_qemu_plugin_crucible_native_time_advance_descriptor_observe_v1
++#define qemu_plugin_time_advance_is_pending \
++    settle_prepark_component_qemu_plugin_time_advance_is_pending
++#define qemu_plugin_time_advance_settle_at_rr_idle \
++    settle_prepark_component_qemu_plugin_time_advance_settle_at_rr_idle
++#define qemu_plugin_time_advance_settle_is_pending \
++    settle_prepark_component_qemu_plugin_time_advance_settle_is_pending
++#define rr_crucible_sim_notify_dispatch_ceiling \
++    settle_prepark_component_rr_crucible_sim_notify_dispatch_ceiling
++#define rr_kick_vcpu_thread \
++    settle_prepark_component_rr_kick_vcpu_thread
++"""
 +
 +PRELUDE = r"""
 +#include "qemu/osdep.h"
@@ -285280,14 +285429,15 @@ index 0000000000000000000000000000000000000000..ddf3d47405be41ef8d087d6d643f937d
 +    parser.add_argument("--source-root", type=Path, default=ROOT)
 +    parser.add_argument("--negative-control", choices=["settle-scan"])
 +    arguments = parser.parse_args()
++    sources = validated_sources(arguments.source_root)
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
-+    rr = (arguments.source_root / "accel/tcg/tcg-accel-ops-rr.c").read_text()
-+    api = (arguments.source_root / "plugins/api-system.c").read_text()
-+    event = (arguments.source_root / "util/event.c").read_text()
++    rr = sources["accel/tcg/tcg-accel-ops-rr.c"]
++    api = sources["plugins/api-system.c"]
++    event = sources["util/event.c"]
 +    prelude = PRELUDE.replace(
 +        "@SOURCE_HEADER@",
 +        str(arguments.source_root / "plugins/crucible-startup-source.h"))
-+    dependencies = ordinary_native_dependencies(arguments.source_root, api)
++    dependencies = ordinary_native_dependencies(sources, api)
 +    event_bodies = "\n\n".join(definition(event, signature) for signature in [
 +        "void qemu_event_init(", "void qemu_event_set(",
 +        "void qemu_event_reset(", "void qemu_event_wait("])
@@ -285331,8 +285481,10 @@ index 0000000000000000000000000000000000000000..ddf3d47405be41ef8d087d6d643f937d
 +    # wrapper exits when the production predicate becomes false.
 +    outer = "static void outer_idle_iteration(void)\n{\n    while (true) {\n" + block + "\n        break;\n    }\n}"
 +    generated = arguments.output_dir / "settle-prepark.c"
-+    generated.write_text("\n\n".join([prelude, dependencies, event_bodies, settle, api_bodies,
-+                                          rr_bodies, outer, CHECKS]))
++    generated.write_text("\n\n".join([
++        COMPONENT_NAMESPACE, prelude, dependencies, event_bodies, settle,
++        api_bodies, rr_bodies, outer, CHECKS,
++    ]))
 +    binary = arguments.output_dir / "settle-prepark"
 +    command = [os.environ.get("CC", "cc"),
 +               *shlex.split(os.environ.get("CFLAGS", "")),

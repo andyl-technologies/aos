@@ -112,12 +112,14 @@ pub(super) const DISPATCHER_FAILED_STARTUP: &str = r#"fn failed_worker_startup_k
         purpose: None,
         capacity: 1,
         state: Some(state),
-        worker: Some(worker),
+        worker: Some(NativeJoinOwner::from_worker(worker)),
+        worker_born: true,
         failed: true,
         cleanup: None,
         phase: WorkerPhase::Reserved,
         worker_panic: Mutex::new(None),
         startup_history: DispatcherStartupHistory::default(),
+        join_observations: [(None, None); 2],
         path: directory.path().to_owned(),
     };
 
@@ -172,7 +174,17 @@ pub(super) const DISPATCHER_FAILED_STARTUP: &str = r#"fn failed_worker_startup_k
 
     // Historical failure does not prevent closing these actual component
     // resources. No authenticated Main purpose exists or is invented here.
-    dispatcher.worker.take().unwrap().join().unwrap();
+    let mut worker = dispatcher.worker.take().unwrap();
+    let end = std::time::Instant::now() + Duration::from_secs(5);
+    while worker.poll()? == NativeJoinObservation::Pending {
+        assert!(
+            std::time::Instant::now() < end,
+            "component worker did not physically join"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(worker.last_status(), Some(0));
+    drop(worker);
     drop(dispatcher.state.take());
     assert_descriptor_closed(descriptor, &expected);
     assert!(dispatcher.worker.is_none());
@@ -1005,7 +1017,37 @@ fn dispatcher_startup_wait_requires_the_same_original_worker_and_independent_his
             r#"None"#,
         ),
         (
-            r#"dispatcher.worker.take().unwrap().join().unwrap(); drop(dispatcher.state.take());"#,
+            r#"let mut worker = dispatcher.worker.take().unwrap();"#,
+            r#"drop(dispatcher.worker.take());"#,
+        ),
+        (
+            r#"NativeJoinOwner::from_worker(worker)"#,
+            r#"NativeJoinOwner::from_worker(thread::spawn(|| ()))"#,
+        ),
+        (r#"worker_born: true,"#, r#"worker_born: false,"#),
+        (
+            r#"join_observations: [(None, None); 2],"#,
+            r#"join_observations: [(None, None); 1],"#,
+        ),
+        (
+            r#"while worker.poll()? == NativeJoinObservation::Pending"#,
+            r#"while worker.poll()? == NativeJoinObservation::Returned"#,
+        ),
+        (r#"std::time::Instant::now() < end"#, r#"true"#),
+        (
+            r#"thread::yield_now();"#,
+            r#"worker = NativeJoinOwner::from_worker(thread::spawn(|| ()));"#,
+        ),
+        (
+            r#"assert_eq!(worker.last_status(), Some(0));"#,
+            r#"assert_eq!(worker.last_status(), Some(libc::EBUSY));"#,
+        ),
+        (
+            r#"drop(worker); drop(dispatcher.state.take());"#,
+            r#"drop(dispatcher.state.take()); drop(worker);"#,
+        ),
+        (
+            r#"drop(worker); drop(dispatcher.state.take());"#,
             r#"drop(dispatcher.state.take());"#,
         ),
         (
