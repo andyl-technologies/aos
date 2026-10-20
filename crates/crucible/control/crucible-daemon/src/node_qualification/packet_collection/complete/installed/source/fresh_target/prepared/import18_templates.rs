@@ -5,7 +5,9 @@
 //! template construction issue an archive, native model or startup permission.
 
 use super::*;
+use crate::node_control::deployment::InstalledDeployment;
 use crate::node_qualification::packet_collection::complete::retained::Counter;
+use crucible_engine::node_adapters::cnp::OriginalNativeSourceTemplate18MechanismQuote;
 use crucible_engine::node_adapters::cnp::{
     NativeImport18BirthConstructionQuote, OriginalImport18CaptureBankConstructionData,
     OriginalNativeSourceTemplate18Attempt, OriginalNativeSourceTemplate18ConstructionData,
@@ -29,6 +31,7 @@ enum Stage {
     Banks,
     BirthWorker,
     Complete,
+    FundedTemplate,
 }
 
 struct Member {
@@ -36,6 +39,7 @@ struct Member {
     registration_row: Option<registration_plan::Quote>,
     registration: registration_plan::Attempt,
     template_row: Option<OriginalNativeSourceTemplate18ConstructionData>,
+    mechanism_row: Option<OriginalNativeSourceTemplate18MechanismQuote>,
     declaration_row: Option<(usize, usize)>,
     bank_row: Option<OriginalImport18CaptureBankConstructionData>,
     birth_row: Option<NativeImport18BirthConstructionQuote>,
@@ -49,6 +53,7 @@ impl Member {
             registration_row: None,
             registration: registration_plan::Attempt::empty(),
             template_row: None,
+            mechanism_row: None,
             declaration_row: None,
             bank_row: None,
             birth_row: None,
@@ -58,9 +63,11 @@ impl Member {
 }
 
 pub(super) struct Templates {
+    pub(super) deployment: Option<Rc<InstalledDeployment>>,
+    pub(super) funded_complete: bool,
     started: bool,
-    complete: bool,
-    failed: bool,
+    pub(super) complete: bool,
+    pub(super) failed: bool,
     members: [Member; 3],
 }
 
@@ -70,6 +77,7 @@ struct MemberObservation<'a> {
     registration_row: &'a Option<registration_plan::Quote>,
     registration: &'a registration_plan::Attempt,
     template_row: &'a Option<OriginalNativeSourceTemplate18ConstructionData>,
+    mechanism_row: &'a Option<OriginalNativeSourceTemplate18MechanismQuote>,
     declaration_row: &'a Option<(usize, usize)>,
     bank_row: &'a Option<OriginalImport18CaptureBankConstructionData>,
     birth_row: &'a Option<NativeImport18BirthConstructionQuote>,
@@ -83,6 +91,7 @@ impl<'a> MemberObservation<'a> {
             registration_row,
             registration,
             template_row,
+            mechanism_row,
             declaration_row,
             bank_row,
             birth_row,
@@ -93,6 +102,7 @@ impl<'a> MemberObservation<'a> {
             registration_row,
             registration,
             template_row,
+            mechanism_row,
             declaration_row,
             bank_row,
             birth_row,
@@ -105,6 +115,8 @@ impl<'a> MemberObservation<'a> {
 ///
 /// This ordinary shared view is not a selected mutable-state split API.
 pub(super) struct TemplatesObservation<'a> {
+    deployment: &'a Option<Rc<InstalledDeployment>>,
+    funded_complete: &'a bool,
     started: &'a bool,
     complete: &'a bool,
     failed: &'a bool,
@@ -112,21 +124,38 @@ pub(super) struct TemplatesObservation<'a> {
 }
 
 impl MemberObservation<'_> {
-    fn charge_retained_data(&self, counter: &mut Counter) -> Result<(), RuntimeError> {
+    fn charge_retained_data(
+        &self,
+        counter: &mut Counter,
+        deployment: Option<&InstalledDeployment>,
+    ) -> Result<(), RuntimeError> {
         let Self {
             stage: _,
             registration_row: _,
             registration,
             template_row: _,
+            mechanism_row: _,
             declaration_row: _,
             bank_row: _,
             birth_row: _,
             output,
         } = *self;
         registration.charge_retained_data(counter)?;
-        counter
-            .add(output.retained_requested_storage_data(counter.remaining())?)
-            .map_err(|_| RuntimeError::ResourceLimit)?;
+        if let (Some(deployment), Some(source)) = (deployment, output.partial_data()) {
+            let context = deployment.context()?;
+            let read = source.original_isolated_template_deployment_storage_data(
+                &context,
+                counter.remaining(),
+            )?;
+            read.authenticate_original(&context)?;
+            counter
+                .add(read.known_requested_bytes_data())
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        } else {
+            counter
+                .add(output.retained_requested_storage_data(counter.remaining())?)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        }
         Ok(())
     }
 }
@@ -134,6 +163,8 @@ impl MemberObservation<'_> {
 impl TemplatesObservation<'_> {
     pub(super) fn charge_retained_data(&self, counter: &mut Counter) -> Result<(), RuntimeError> {
         let Self {
+            deployment,
+            funded_complete: _,
             started: _,
             complete: _,
             failed: _,
@@ -141,9 +172,24 @@ impl TemplatesObservation<'_> {
         } = self;
         // The owner is exactly this fixed three-slot array, not a policy limit.
         let [first, second, third] = members;
-        first.charge_retained_data(counter)?;
-        second.charge_retained_data(counter)?;
-        third.charge_retained_data(counter)
+        let deployment = deployment.as_deref();
+        if let Some(owner) = deployment {
+            owner.authenticate()?;
+            if counter
+                .rc(self
+                    .deployment
+                    .as_ref()
+                    .ok_or(RuntimeError::ForeignAuthority)?)
+                .map_err(|_| RuntimeError::ResourceLimit)?
+            {
+                counter
+                    .add(owner.known_direct_backing_data()?)
+                    .map_err(|_| RuntimeError::ResourceLimit)?;
+            }
+        }
+        first.charge_retained_data(counter, deployment)?;
+        second.charge_retained_data(counter, deployment)?;
+        third.charge_retained_data(counter, deployment)
     }
 }
 
@@ -154,6 +200,7 @@ const fn member_field_references_data() -> usize {
         + size_of::<&Option<registration_plan::Quote>>()
         + size_of::<&registration_plan::Attempt>()
         + size_of::<&Option<OriginalNativeSourceTemplate18ConstructionData>>()
+        + size_of::<&Option<OriginalNativeSourceTemplate18MechanismQuote>>()
         + size_of::<&Option<(usize, usize)>>()
         + size_of::<&Option<OriginalImport18CaptureBankConstructionData>>()
         + size_of::<&Option<NativeImport18BirthConstructionQuote>>()
@@ -166,7 +213,10 @@ const MEMBER_PROJECTION_CONTROLS: usize = size_of::<&Member>() // from_member_da
     + size_of::<MemberObservation<'static>>() // literal initializer
     + size_of::<MemberObservation<'static>>(); // helper return
 
-const TEMPLATE_PROJECTION_CONTROLS: usize = size_of::<&Templates>() // observation_data receiver
+const TEMPLATE_PROJECTION_CONTROLS: usize = size_of::<&Option<Rc<InstalledDeployment>>>() * 2
+    + size_of::<&bool>() * 2 // funded-complete reference binding and field operand
+    + size_of::<Rc<InstalledDeployment>>() * 2 // selected wrapper and local holder
+    + size_of::<&Templates>() // observation_data receiver
     + size_of::<&bool>() * 3 // actual flag bindings
     + size_of::<&[Member; 3]>() // members field binding
     + size_of::<&Member>() * 3 // fixed-three destructure bindings
@@ -197,7 +247,13 @@ const MEMBER_CHARGE_CONTROLS: usize = size_of::<&MemberObservation<'static>>() /
 
 impl Templates {
     pub(super) fn empty() -> Self {
+        Self::with_deployment(None)
+    }
+
+    pub(super) fn with_deployment(deployment: Option<Rc<InstalledDeployment>>) -> Self {
         Self {
+            deployment,
+            funded_complete: false,
             started: false,
             complete: false,
             failed: false,
@@ -208,6 +264,8 @@ impl Templates {
     /// Projects every actual flag/member for the ordinary shared census.
     pub(super) fn observation_data(&self) -> TemplatesObservation<'_> {
         let Self {
+            deployment,
+            funded_complete,
             started,
             complete,
             failed,
@@ -215,6 +273,8 @@ impl Templates {
         } = self;
         let [first, second, third] = members;
         TemplatesObservation {
+            deployment,
+            funded_complete,
             started,
             complete,
             failed,
@@ -266,7 +326,9 @@ impl Templates {
 
 impl PreparedCompleteRestoration {
     /// Checks only genuine installed code custody before each fresh operation.
-    fn authenticate_import18_template_scope_data(&self) -> Result<Import18Selection, RuntimeError> {
+    pub(super) fn authenticate_import18_template_scope_data(
+        &self,
+    ) -> Result<Import18Selection, RuntimeError> {
         let selection = self
             .import18_selection
             .ok_or(RuntimeError::UnsupportedFacet)?;
@@ -293,6 +355,9 @@ impl PreparedCompleteRestoration {
 
     /// Observes all actual old and new owners before the next stage effects.
     fn observe_import18_templates_data(&self, demand: [usize; 3]) -> Result<(), RuntimeError> {
+        if self.import18_templates.deployment.is_some() {
+            return self.observe_funded_templates_data(demand);
+        }
         self.authenticate_import18_template_scope_data()?;
         let maximum = usize::try_from(self.selected.resources.memory_bytes.get())
             .map_err(|_| RuntimeError::ResourceLimit)?;
@@ -327,7 +392,11 @@ impl PreparedCompleteRestoration {
             self.prepare_import18_member_data(selected, maximum)?;
         }
         self.observe_import18_templates_data([0; 3])?;
-        self.import18_templates.complete = true;
+        if self.import18_templates.deployment.is_some() {
+            self.import18_templates.funded_complete = true;
+        } else {
+            self.import18_templates.complete = true;
+        }
         self.import18_templates.failed = false;
         Ok(())
     }
@@ -366,23 +435,55 @@ impl PreparedCompleteRestoration {
         // No clone or Rc follows an arbitrary source argument. The input comes
         // directly from this same admitted code authority's fixed roster slot.
         self.observe_import18_templates_data([0; 3])?;
-        let row = self
-            .code_authority
-            .roster()
-            .sources
-            .get(selected)
-            .ok_or(RuntimeError::ForeignAuthority)?
-            .native_source_template18_construction_data(maximum)?;
-        self.import18_templates.members[selected].template_row = Some(row);
-        self.import18_templates.members[selected].stage = Stage::Template;
-        let (retained, transient, scratch) = row.requested_storage_data();
-        self.observe_import18_templates_data([retained, transient, scratch])?;
-        let result = self.code_authority.roster().sources[selected].native_source_template18_into(
-            &row,
-            &mut self.import18_templates.members[selected].output,
-        );
-        let observed = self.observe_import18_templates_data([0; 3]);
-        result.and(observed)?;
+        // Prepared retains its original code_authority Rc throughout this
+        // private synchronous quote/constructor interval and later censuses.
+        // The raw code address inside ConstructionData is never an epoch.
+        if let Some(deployment) = self.import18_templates.deployment.clone() {
+            let row = self
+                .code_authority
+                .roster()
+                .sources
+                .get(selected)
+                .ok_or(RuntimeError::ForeignAuthority)?
+                .native_source_template18_with_derivation_construction_data(
+                    deployment.mechanism()?,
+                    maximum,
+                )?;
+            let (retained, transient, scratch) = row.requested_storage_data();
+            self.import18_templates.members[selected].mechanism_row = Some(row);
+            self.import18_templates.members[selected].stage = Stage::Template;
+            self.observe_import18_templates_data([retained, transient, scratch])?;
+            let member = &mut self.import18_templates.members[selected];
+            let result = self.code_authority.roster().sources[selected]
+                .native_source_template18_with_derivation_into(
+                    member
+                        .mechanism_row
+                        .as_ref()
+                        .ok_or(RuntimeError::OwnerUnavailable)?,
+                    &mut member.output,
+                );
+            let observed = self.observe_import18_templates_data([0; 3]);
+            result.and(observed)?;
+        } else {
+            let row = self
+                .code_authority
+                .roster()
+                .sources
+                .get(selected)
+                .ok_or(RuntimeError::ForeignAuthority)?
+                .native_source_template18_construction_data(maximum)?;
+            self.import18_templates.members[selected].template_row = Some(row);
+            self.import18_templates.members[selected].stage = Stage::Template;
+            let (retained, transient, scratch) = row.requested_storage_data();
+            self.observe_import18_templates_data([retained, transient, scratch])?;
+            let result = self.code_authority.roster().sources[selected]
+                .native_source_template18_into(
+                    &row,
+                    &mut self.import18_templates.members[selected].output,
+                );
+            let observed = self.observe_import18_templates_data([0; 3]);
+            result.and(observed)?;
+        }
 
         self.observe_import18_templates_data([0; 3])?;
         let declaration =
@@ -398,6 +499,13 @@ impl PreparedCompleteRestoration {
             .bind_native_import18_declaration_data(selection, &self.launches[selected]);
         let observed = self.observe_import18_templates_data([0; 3]);
         result.and(observed)?;
+
+        if self.import18_templates.deployment.is_some() {
+            // Pure selected templates have no old native policy/bank/worker
+            // capability. Their later isolated job is a separate actual owner.
+            self.import18_templates.members[selected].stage = Stage::FundedTemplate;
+            return Ok(());
+        }
 
         self.import18_templates.members[selected].stage = Stage::Policy;
         self.observe_import18_templates_data([0, 0,
@@ -476,7 +584,7 @@ impl PreparedCompleteRestoration {
             + size_of::<Result<(), RuntimeError>>()
     }
 
-    fn import18_template_counter_scratch_data() -> Result<usize, RuntimeError> {
+    pub(super) fn import18_template_counter_scratch_data() -> Result<usize, RuntimeError> {
         let terms = [
             HostSource17SetupBorrow::counter_scratch_data()?,
             Self::import18_birth_handoff_counter_scratch_data(),

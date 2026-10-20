@@ -26,6 +26,9 @@ pub(super) enum CompleteSceneCommand {
         /// Read the operator's independently authenticated manifest ContentRef.
         #[arg(long)]
         expected: PathBuf,
+        /// Apply explicit whole-daemon operational policy before runtime startup.
+        #[arg(long)]
+        operational_policy: Option<PathBuf>,
     },
     /// Prepare the installed scene once without Arm, activation or class acceptance.
     CompleteScenePrepare {
@@ -41,7 +44,11 @@ pub(super) fn run(command: &CompleteSceneCommand) -> Result<(), CliError> {
             policy,
             installation,
             expected,
+            operational_policy,
         } => {
+            if let Some(path) = operational_policy {
+                return serve_with_operational_policy(policy, installation, expected, path);
+            }
             let value = canonical::parse_json(&bounded_file(expected, 65_536)?, 65_536)
                 .map_err(node_error)?;
             let expected: ContentRef = serde_json::from_value(value).map_err(node_error)?;
@@ -70,6 +77,35 @@ pub(super) fn run(command: &CompleteSceneCommand) -> Result<(), CliError> {
     }
 }
 
+fn serve_with_operational_policy(
+    policy: &std::path::Path,
+    installation: &std::path::Path,
+    expected: &std::path::Path,
+    operational_policy: &std::path::Path,
+) -> Result<(), CliError> {
+    use crucible_daemon::node_control::{
+        NodeOperationalDeployment, NodeOperationalDeploymentPolicy,
+    };
+    // This explicit local operator choice is resolved before expected manifest,
+    // runtime, signals or actors. Remote requests cannot supply this policy.
+    let deployment_policy =
+        NodeOperationalDeploymentPolicy::from_json(&bounded_file(operational_policy, 64 * 1024)?)
+            .map_err(node_error)?;
+    let mut original = None;
+    NodeOperationalDeployment::install_before_actors_into(&mut original, deployment_policy)
+        .map_err(node_error)?;
+    let value =
+        canonical::parse_json(&bounded_file(expected, 65_536)?, 65_536).map_err(node_error)?;
+    let expected: ContentRef = serde_json::from_value(value).map_err(node_error)?;
+    let manifest = InstalledCompleteSceneManifest::new(installation.to_owned(), expected)
+        .map_err(node_error)?;
+    super::serve_installed_with_operational_deployment(
+        policy,
+        manifest,
+        original.ok_or_else(|| node_error("original operational deployment absent"))?,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use crate::Cli;
@@ -89,6 +125,13 @@ mod tests {
             "/tmp/expected",
         ];
         assert!(Cli::try_parse_from(args).is_ok());
+        let mut explicit = args.to_vec();
+        explicit.extend(["--operational-policy", "/tmp/operational-policy.json"]);
+        assert!(Cli::try_parse_from(explicit).is_ok());
+        let mut internal_stage = args.to_vec();
+        internal_stage.extend(["--bank-stage", "ready"]);
+        assert!(Cli::try_parse_from(internal_stage).is_err());
+
         assert!(Cli::try_parse_from(&args[..8]).is_err());
         let mut forged = args.to_vec();
         forged.push("--accepted");

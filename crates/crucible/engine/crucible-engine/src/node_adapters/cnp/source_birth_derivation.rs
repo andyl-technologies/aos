@@ -21,3 +21,6 @@ pub mod request_wire;
 
 /// Verifies the compiled installation under original process containment.
 pub mod installation;
+
+/// Describes known Source storage and its original external deployment read.
+pub mod deployment;

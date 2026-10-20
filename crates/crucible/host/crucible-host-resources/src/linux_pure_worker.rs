@@ -84,7 +84,12 @@ pub struct LinuxPureWorkerLimits {
 }
 
 impl LinuxPureWorkerLimits {
-    fn validate(&self) -> Result<(), LinuxPureWorkerError> {
+    /// Checks the closed operational limits without reserving or launching work.
+    ///
+    /// # Errors
+    /// Refuses zero, inconsistent or unrepresentable process/storage bounds.
+    /// Validation is DATA-only and creates no admission or resource owner.
+    pub fn validate(&self) -> Result<(), LinuxPureWorkerError> {
         if self.memory_bytes == 0
             || self.address_space_bytes == 0
             || self.cpu_seconds == 0

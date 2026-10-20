@@ -248,6 +248,23 @@ fn serve_installed(
     transcript_archive: Option<&std::path::Path>,
     complete_scene: Option<crucible_daemon::node_qualification::InstalledCompleteSceneManifest>,
 ) -> Result<(), CliError> {
+    serve_installed_with_operational_owner(policy, transcript_archive, complete_scene, None)
+}
+
+fn serve_installed_with_operational_deployment(
+    policy: &std::path::Path,
+    complete_scene: crucible_daemon::node_qualification::InstalledCompleteSceneManifest,
+    deployment: crucible_daemon::node_control::NodeOperationalDeployment,
+) -> Result<(), CliError> {
+    serve_installed_with_operational_owner(policy, None, Some(complete_scene), Some(deployment))
+}
+
+fn serve_installed_with_operational_owner(
+    policy: &std::path::Path,
+    transcript_archive: Option<&std::path::Path>,
+    complete_scene: Option<crucible_daemon::node_qualification::InstalledCompleteSceneManifest>,
+    deployment: Option<crucible_daemon::node_control::NodeOperationalDeployment>,
+) -> Result<(), CliError> {
     let policy =
         NodeDaemonPolicy::from_json(&bounded_file(policy, 64 * 1024)?).map_err(node_error)?;
     let stopping = Arc::new(AtomicBool::new(false));
@@ -272,13 +289,12 @@ fn serve_installed(
                 "collecting installation and transcript archive are distinct modes",
             ));
         }
-        NodeControlDaemon::start_with_vendor_installation(
-            policy,
-            Box::new(
-                crucible_daemon::node_observed_executor::CompleteSceneServiceFactory::new(manifest),
-            ),
-        )
-        .map_err(node_error)?
+        let installation = match deployment {
+            Some(original) => crucible_daemon::node_observed_executor::CompleteSceneServiceFactory::with_operational_deployment(manifest, original),
+            None => crucible_daemon::node_observed_executor::CompleteSceneServiceFactory::new(manifest),
+        };
+        NodeControlDaemon::start_with_vendor_installation(policy, Box::new(installation))
+            .map_err(node_error)?
     } else if let Some(path) = transcript_archive {
         NodeControlDaemon::start_with_conditional_directory(policy, path.to_owned())
             .map_err(node_error)?

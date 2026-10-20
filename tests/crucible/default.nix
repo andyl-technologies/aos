@@ -886,6 +886,7 @@ in rec {
     projectQuotaVm = import ./phase4-project-quota-vm.nix {inherit pkgs lib;};
     qemuHostOwnerVm = import ./phase4-qemu-host-owner-vm.nix {inherit pkgs lib;};
     pureWorkerOwnerVm = import ./phase4-pure-worker-owner-vm.nix {inherit pkgs lib;};
+    deploymentReservation = import ./phase4-deployment-reservation.nix {inherit pkgs lib;};
     packagedCampaignVm = import ./phase4-packaged-campaign-vm.nix {inherit pkgs lib;};
     singleGuestBootVm = import ./phase4-single-guest-boot-vm.nix {inherit pkgs lib;};
     singleGuestMaterializationVm = import ./phase4-single-guest-materialization-vm.nix {inherit pkgs lib;};

@@ -30,8 +30,8 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod linux_directory_cleanup;
-mod linux_pure_worker;
 mod linux_process_supervisor;
+mod linux_pure_worker;
 mod linux_read_lease;
 
 pub use linux_directory_cleanup::{
@@ -50,5 +50,7 @@ pub use linux_pure_worker::{
 };
 
 pub use linux_process_supervisor::{
-    LinuxProcessCeilingsData, LinuxProcessLimits, LinuxProcessSupervisor, LinuxProcessSupervisorError,
+    DeploymentResourceLease, DeploymentResourceReadContext, LinuxProcessCeilingsData,
+    LinuxProcessLimits, LinuxProcessSupervisor, LinuxProcessSupervisorError,
+    OriginalDeploymentResourceReservation,
 };

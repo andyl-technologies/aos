@@ -111,6 +111,9 @@ pub use packet_collection::{
     PreparedPacketConnectedPeer, StoredPacketConnectedResultPublisher,
 };
 
+// The owning actor retains this private preparation capsule across failure.
+pub(crate) use packet_collection::PreparedCompleteRestoration;
+
 /// Structural complete-source declarations retain no capture qualification.
 pub use packet_collection::{
     InstalledCompleteScene, InstalledCompleteSceneManifest,

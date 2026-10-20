@@ -14,6 +14,8 @@
 //! Compilation and dispatch belong to the actual daemon's installed catalog.
 
 mod complete_scene;
+pub(crate) mod deployment;
+pub use deployment::{NodeOperationalDeployment, NodeOperationalDeploymentPolicy};
 mod debug;
 mod debug_preserving;
 pub use debug::decode_debug_record;

@@ -570,6 +570,7 @@ pub struct InstalledNodeCatalog {
     mixed_vendor_worlds: BTreeMap<Vec<u8>, Rc<mixed_vendor_selection::InstalledMixedVendorWorld>>,
     original_lineage: transcript::original_lineage::selection::Installation,
     complete_scene: Option<crate::node_qualification::InstalledCompleteScene>,
+    funded_templates: Option<Box<complete_scene::FundedTemplateCapsule>>,
 }
 
 impl InstalledNodeCatalog {
@@ -674,6 +675,7 @@ impl InstalledNodeCatalog {
             mixed_vendor_worlds: BTreeMap::new(),
             original_lineage: transcript::original_lineage::selection::Installation::new(),
             complete_scene: None,
+            funded_templates: None,
         })
     }
 
@@ -1687,6 +1689,7 @@ impl crate::node_qualification::RetainedMetadataOwned for InstalledNodeCatalog {
             mixed_vendor_worlds,
             original_lineage,
             complete_scene,
+            funded_templates,
         } = self;
         // Fresh Clock catalogues do not install another erased provider family.
         // Preserve those actual owners and refuse instead of counting them zero.
@@ -1697,6 +1700,7 @@ impl crate::node_qualification::RetainedMetadataOwned for InstalledNodeCatalog {
             || original_lineage.authority.is_some()
             || !original_lineage.preparations.is_empty()
             || complete_scene.is_some()
+            || funded_templates.is_some()
         {
             return Err(QualificationError::Refused(
                 "unsupported non-Clock catalog owner",

@@ -213,6 +213,49 @@ impl LinuxProcessSupervisor {
         {
             return Err(LinuxProcessSupervisorError::ForeignAuthority);
         }
+        self.authenticate_enforcement_after_origin()
+    }
+
+    // The actual installed target includes stricter inherited ceilings. This
+    // getter cannot turn an uninstalled preparation into a reserved envelope.
+    pub(super) fn installed_target_data(
+        &self,
+    ) -> Result<LinuxProcessLimits, LinuxProcessSupervisorError> {
+        if !self.complete {
+            return Err(LinuxProcessSupervisorError::OutstandingObligations);
+        }
+        Ok(LinuxProcessLimits {
+            cpu_seconds: self
+                .target
+                .cpu
+                .current
+                .ok_or(LinuxProcessSupervisorError::ResourceLimit)?,
+            address_space_bytes: self
+                .target
+                .address_space
+                .current
+                .ok_or(LinuxProcessSupervisorError::ResourceLimit)?,
+            descriptors: self
+                .target
+                .descriptors
+                .current
+                .ok_or(LinuxProcessSupervisorError::ResourceLimit)?,
+        })
+    }
+
+    // Only the completed, before-actors reservation issues a process-scoped
+    // handoff. The public legacy entry above retains its creator-thread gate.
+    pub(super) fn authenticate_process_current(&self) -> Result<(), LinuxProcessSupervisorError> {
+        if self.process != std::process::id()
+            || !self.complete
+            || LinuxProcessCeilingsData::current() != self.target
+        {
+            return Err(LinuxProcessSupervisorError::ForeignAuthority);
+        }
+        self.authenticate_enforcement_after_origin()
+    }
+
+    fn authenticate_enforcement_after_origin(&self) -> Result<(), LinuxProcessSupervisorError> {
         current::authenticate(self.target)?;
         if LinuxProcessCeilingsData::current() != self.target {
             return Err(LinuxProcessSupervisorError::ForeignAuthority);

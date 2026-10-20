@@ -36,6 +36,10 @@ pub(super) const BRIDGE_CONTROLS: usize = GATE_CONTROLS
 /// allocation and this quote creates no job, process or native permission.
 /// It does not implement Clone and exposes no copied-row adoption constructor.
 ///
+/// The caller must independently retain the original code Source through the
+/// entire quotation-to-construction interval. This quote retains the mechanism;
+/// its code address does not establish a standalone stale-address epoch.
+///
 /// ```compile_fail
 /// use crucible_engine::node_adapters::cnp::OriginalNativeSourceTemplate18MechanismQuote;
 /// fn cannot_clone_original_quote(row: OriginalNativeSourceTemplate18MechanismQuote) {
@@ -60,7 +64,10 @@ impl PacketCompleteSemanticSource {
     ///
     /// The original owner authenticates process enforcement and opened program
     /// guards before any declaration clone. Its copied hashes cannot select this
-    /// route. The caller separately admits the quote before construction; no
+    /// route. The caller must keep this original code Source strongly retained
+    /// until construction finishes; process/thread identity and a
+    /// copied code address cannot replace that lifetime precondition.
+    /// The caller separately admits the quote before construction; no
     /// Source export, process reservation or execution follows from it.
     ///
     /// # Errors

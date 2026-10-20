@@ -11,10 +11,11 @@ use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::
 use std::rc::Rc;
 
 #[derive(Clone, Copy)]
-enum PrebirthStoragePurpose {
+enum PrebirthStoragePurpose<'a> {
     Code,
     ReportStartup,
     TemplateConstruction,
+    IsolatedTemplate(&'a crucible_host_resources::DeploymentResourceReadContext<'a>),
 }
 
 /// Reports actual retained Source component layouts and unresolved read owners.
@@ -115,17 +116,32 @@ impl PacketCompleteSemanticSource {
         E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
     >(
         &self,
-        purpose: PrebirthStoragePurpose,
+        purpose: PrebirthStoragePurpose<'_>,
     ) -> Result<(), E> {
         // Creator checks precede all interior loans. A dropped reservation
         // cannot erase its spent launch flag and reopen the pre-Child phase.
         self.storage_origin_with_error::<E>()?;
-        // The shared deployment's opaque L2 custody has no complete Source
-        // observer yet. Preserve that gap instead of counting it as absent.
-        if self.native_import18_derivation_mechanism.is_some() {
-            return Err(E::refused(
-                "isolated Source deployment census is not joined",
-            ));
+        // Opaque deployment custody remains an external original reservation.
+        // Only the typed whole-holder path can match that read; old scalar
+        // purposes keep refusing instead of counting the runtime as absent.
+        if let Some(mechanism) = &self.native_import18_derivation_mechanism {
+            match purpose {
+                PrebirthStoragePurpose::IsolatedTemplate(context) => mechanism
+                    .deployment_lease()
+                    .and_then(|lease| {
+                        lease
+                            .authenticate_in(context)
+                            .map_err(|_| RuntimeError::ForeignAuthority)
+                    })
+                    .map_err(E::runtime)?,
+                _ => {
+                    return Err(E::refused(
+                        "isolated Source deployment census is not joined",
+                    ));
+                }
+            }
+        } else if matches!(purpose, PrebirthStoragePurpose::IsolatedTemplate(_)) {
+            return Err(E::refused("isolated Source deployment original is absent"));
         }
         if self.complete_bytes_launch_reserved.get()
             || self.registry_retention_attempted.get()
@@ -174,7 +190,8 @@ impl PacketCompleteSemanticSource {
                     ));
                 }
             }
-            PrebirthStoragePurpose::TemplateConstruction => {
+            PrebirthStoragePurpose::TemplateConstruction
+            | PrebirthStoragePurpose::IsolatedTemplate(_) => {
                 // A template output remains owned by its once attempt during
                 // declaration/bank binding and worker initialization. A spent
                 // flag alone cannot stand in for its actual retained worker.
@@ -215,7 +232,7 @@ impl PacketCompleteSemanticSource {
 
     fn original_prebirth_storage_data(
         self: &Rc<Self>,
-        purpose: PrebirthStoragePurpose,
+        purpose: PrebirthStoragePurpose<'_>,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
         self.original_prebirth_storage_data_with_error::<OperationFailure>(purpose, maximum)
@@ -225,7 +242,7 @@ impl PacketCompleteSemanticSource {
         E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
     >(
         self: &Rc<Self>,
-        purpose: PrebirthStoragePurpose,
+        purpose: PrebirthStoragePurpose<'_>,
         maximum: usize,
     ) -> Result<usize, E> {
         self.authenticate_prebirth_storage_phase_with_error::<E>(purpose)?;
@@ -272,6 +289,53 @@ impl PacketCompleteSemanticSource {
         )?;
         self.authenticate_prebirth_storage_phase_with_error::<E>(purpose)?;
         Ok(total)
+    }
+
+    /// Observes an isolated template's actual known components and external read.
+    ///
+    /// The original whole-holder reservation must be retained throughout this
+    /// walk. Opaque process runtime remains a distinct reservation obligation;
+    /// this numeric component never becomes a complete Source byte total.
+    ///
+    /// # Errors
+    /// Refuses another deployment/creator, native or private-Birth custody,
+    /// unsupported actual components, arithmetic or the supplied restriction.
+    pub fn original_isolated_template_deployment_storage_data<'a>(
+        self: &'a Rc<Self>,
+        context: &crucible_host_resources::DeploymentResourceReadContext<'_>,
+        maximum: usize,
+    ) -> Result<
+        crate::node_adapters::cnp::source_birth_derivation::deployment::SourceDeploymentStorageRead<
+            'a,
+        >,
+        RuntimeError,
+    > {
+        let known = self.original_prebirth_storage_data_with_error::<RuntimeError>(
+            PrebirthStoragePurpose::IsolatedTemplate(context),
+            maximum,
+        )?;
+        let lease = self
+            .native_import18_derivation_mechanism
+            .as_ref()
+            .ok_or(RuntimeError::ForeignAuthority)?
+            .deployment_lease()?;
+        Ok(crate::node_adapters::cnp::source_birth_derivation::deployment::SourceDeploymentStorageRead::from_original(known, lease))
+    }
+
+    /// Names known component observers and the new borrowed report headers.
+    ///
+    /// Deployment authentication/runtime remains owned by the separate original
+    /// process reservation, not certified by these Source wrapper headers.
+    pub fn isolated_template_deployment_counter_scratch_data() -> usize {
+        use crate::node_adapters::cnp::source_birth_derivation::deployment::SourceDeploymentStorageRead;
+        Self::retained_requested_storage_precredit_scratch_data()
+            .saturating_add(std::mem::size_of::<SourceDeploymentStorageRead<'static>>() * 2)
+            .saturating_add(std::mem::size_of::<
+                Result<SourceDeploymentStorageRead<'static>, RuntimeError>,
+            >())
+            .saturating_add(std::mem::size_of::<
+                &crucible_host_resources::DeploymentResourceReadContext<'static>,
+            >())
     }
 
     /// Observes all supported original Source component storage in one bound.
@@ -336,8 +400,9 @@ impl PacketCompleteSemanticSource {
         maximum: usize,
     ) -> Result<PacketCompleteSourceRetainedStorage, E> {
         self.storage_origin_with_error::<E>()?;
-        // The shared deployment's opaque L2 custody has no complete Source
-        // observer yet. Preserve that gap instead of counting it as absent.
+        // Opaque deployment custody remains an external original reservation.
+        // Only the typed whole-holder path can match that read; old scalar
+        // purposes keep refusing instead of counting the runtime as absent.
         if self.native_import18_derivation_mechanism.is_some() {
             return Err(E::refused(
                 "isolated Source deployment census is not joined",
@@ -516,7 +581,7 @@ impl PacketCompleteSemanticSource {
         let controls = [
             // Outer observer and shared prebirth walk receivers/arguments.
             size_of::<&Rc<Self>>() * 2,
-            size_of::<PrebirthStoragePurpose>() * 2,
+            size_of::<PrebirthStoragePurpose<'static>>() * 2,
             size_of::<usize>() * 10, // two maximum arguments, seven component sums and total
             size_of::<[usize; 7]>(),
             size_of::<std::array::IntoIter<usize, 7>>(),
@@ -524,7 +589,7 @@ impl PacketCompleteSemanticSource {
             // Authentication re-runs after the component walk. These are peak
             // controls for one invocation, not a cumulative invocation count.
             size_of::<&Self>(),
-            size_of::<PrebirthStoragePurpose>(),
+            size_of::<PrebirthStoragePurpose<'static>>(),
             size_of::<bool>(),
             cell_controls::<ack_peer::OriginalAckPeerBirth>(),
             cell_controls::<ack_peer::OriginalAckPeerAssociation>(),

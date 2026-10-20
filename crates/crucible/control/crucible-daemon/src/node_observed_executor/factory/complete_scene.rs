@@ -7,6 +7,10 @@
 use super::*;
 use crate::node_qualification::{InstalledCompleteScene, InstalledCompleteSceneManifest};
 
+#[path = "complete_scene/deployment.rs"]
+mod deployment;
+pub(super) use deployment::FundedTemplateCapsule;
+
 impl InstalledNodeCatalog {
     /// Installs one concrete collecting source package before endpoint admission.
     ///
@@ -17,7 +21,7 @@ impl InstalledNodeCatalog {
         &mut self,
         manifest: InstalledCompleteSceneManifest,
     ) -> Result<(), NodeObservedError> {
-        if self.complete_scene.is_some() {
+        if self.complete_scene.is_some() || self.funded_templates.is_some() {
             return Err(refused("complete scene already installed"));
         }
         let original =
@@ -28,6 +32,12 @@ impl InstalledNodeCatalog {
     }
 
     pub(crate) fn prepare_complete_scene(&mut self) -> Result<(), NodeObservedError> {
+        if let Some(original) = self.funded_templates.as_mut() {
+            original.prepare()?;
+            return Err(refused(
+                "funded templates remain unavailable for complete-scene preparation",
+            ));
+        }
         let original = self
             .complete_scene
             .as_mut()
@@ -39,12 +49,21 @@ impl InstalledNodeCatalog {
         self.complete_scene
             .as_ref()
             .map_or(0, |original| usize::from(!original.is_reclaimed()))
+            + self
+                .funded_templates
+                .as_ref()
+                .map_or(0, |original| usize::from(!original.is_reclaimed()))
     }
 
     pub(crate) fn poll_complete_scene_reclamation(
         &mut self,
         stopping: bool,
     ) -> Result<(), NodeObservedError> {
+        if let Some(original) = self.funded_templates.as_mut() {
+            if stopping {
+                original.retire()?;
+            }
+        }
         if let Some(original) = self.complete_scene.as_mut() {
             if stopping {
                 original.retire().map_err(native)?;

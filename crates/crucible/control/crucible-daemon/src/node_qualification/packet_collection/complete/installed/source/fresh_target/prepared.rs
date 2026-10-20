@@ -9,6 +9,8 @@
 #[path = "prepared/host_setup17.rs"]
 mod host_setup17;
 
+#[path = "prepared/deployment.rs"]
+mod deployment;
 #[path = "prepared/import18_templates.rs"]
 mod import18_templates;
 
@@ -94,7 +96,7 @@ impl PreparedCompleteRestoration {
         }
 
         let selected = super::super::super::manifest::load(&manifest)?;
-        Self::prepare_selected_into(selected, None, directory, limits, output)
+        Self::prepare_selected_into(selected, None, None, directory, limits, output)
     }
 
     /// Prepares explicit import18 code and its distinct retained fresh Sources.
@@ -119,12 +121,13 @@ impl PreparedCompleteRestoration {
             return Err(refused());
         }
         let (selected, selection) = super::super::super::manifest::load_import18(&manifest)?;
-        Self::prepare_selected_into(selected, Some(selection), directory, limits, output)
+        Self::prepare_selected_into(selected, Some(selection), None, directory, limits, output)
     }
 
     fn prepare_selected_into(
         mut selected: Manifest,
         import18_selection: Option<import18_templates::Import18Selection>,
+        deployment: Option<Rc<crate::node_control::deployment::InstalledDeployment>>,
         directory: PathBuf,
         limits: NativeArchiveLimits,
         output: &mut Option<Self>,
@@ -188,7 +191,18 @@ impl PreparedCompleteRestoration {
             )?
         };
 
-        let mut namespace = Namespace::create(directory)?;
+        let mut namespace = if let Some(owner) = &deployment {
+            // The real parent/root namespace obligation is retained before
+            // peer directories, socket binding or any fresh Source effects.
+            let (path, identity) = owner.create_namespace(directory)?;
+            Namespace {
+                path,
+                identity,
+                retained: true,
+            }
+        } else {
+            Namespace::create(directory)?
+        };
         let directories = namespace.peer_directories()?;
         let paths: [PathBuf; 3] =
             std::array::from_fn(|member| namespace.path.join(format!("effect-{member}.sock")));
@@ -228,7 +242,7 @@ impl PreparedCompleteRestoration {
         *output = Some(Self {
             selected,
             import18_selection,
-            import18_templates: import18_templates::Templates::empty(),
+            import18_templates: import18_templates::Templates::with_deployment(deployment),
             measurements,
             content,
             launches,
@@ -734,6 +748,7 @@ mod tests {
         assert!(owner.prebirth.is_none());
         super::host_setup17::assert_actual_setup_census_data(owner);
         super::import18_templates::assert_actual_code_custody_data(owner);
+        super::deployment::tests::assert_ordinary_original_stays_unfunded(owner);
         // The unchanged legacy loader cannot enter the distinct installation/8
         // API, and refusal creates no target namespace or retained output.
         let mut wrong_edition = None;

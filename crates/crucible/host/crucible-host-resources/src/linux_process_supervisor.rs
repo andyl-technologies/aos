@@ -13,6 +13,12 @@ mod bootstrap;
 mod current;
 pub use bootstrap::LinuxProcessSupervisor;
 
+#[path = "linux_process_supervisor/reservation.rs"]
+mod reservation;
+pub use reservation::{
+    DeploymentResourceLease, DeploymentResourceReadContext, OriginalDeploymentResourceReservation,
+};
+
 /// Restricts the whole process with explicit hard Linux resource ceilings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinuxProcessLimits {

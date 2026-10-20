@@ -198,6 +198,22 @@ pub struct SourceBirthInstallationBindings {
     pub result_codec: [u8; 32],
 }
 
+enum ProcessEnforcement {
+    CreatorThread(Rc<LinuxProcessSupervisor>),
+    Deployment(crucible_host_resources::DeploymentResourceLease),
+}
+
+impl ProcessEnforcement {
+    fn authenticate_current(
+        &self,
+    ) -> Result<(), crucible_host_resources::LinuxProcessSupervisorError> {
+        match self {
+            Self::CreatorThread(original) => original.authenticate_current(),
+            Self::Deployment(original) => original.authenticate_current(),
+        }
+    }
+}
+
 /// Retains the independently selected installed derivation mechanism.
 ///
 /// Only the exact source-built package compiled into the parent can construct
@@ -210,7 +226,7 @@ pub struct SourceBirthInstallationBindings {
 /// physical L2 completion and the same result-bank join remain independent.
 #[must_use = "retain the original installed mechanism through every supervised job"]
 pub struct VerifiedSourceBirthMechanism {
-    supervisor: Rc<LinuxProcessSupervisor>,
+    supervisor: ProcessEnforcement,
     factory: LinuxPureWorkerFactory,
     program: LinuxPureWorkerProgram,
     bindings: SourceBirthInstallationBindings,
@@ -235,7 +251,52 @@ impl VerifiedSourceBirthMechanism {
         limits: LinuxPureWorkerLimits,
         slots: usize,
     ) -> Result<Self, RuntimeError> {
-        open(supervisor, configuration, limits, slots)
+        open(
+            ProcessEnforcement::CreatorThread(supervisor),
+            configuration,
+            limits,
+            slots,
+        )
+    }
+
+    /// Opens the compiled mechanism under the same funded process reservation.
+    ///
+    /// The trusted before-actors controller retains the nonClone original. Only
+    /// its completed process-scoped lease crosses into the owning actor; this
+    /// actor constructs its local Rc and opens/measures the original files.
+    ///
+    /// # Errors
+    /// Preserves installation/currentness refusals and refuses incomplete,
+    /// revoked or foreign deployment ownership. It issues no Source stage row.
+    pub fn open_with_deployment(
+        reservation: &crucible_host_resources::OriginalDeploymentResourceReservation,
+        configuration: LinuxPureWorkerConfiguration,
+        limits: LinuxPureWorkerLimits,
+        slots: usize,
+    ) -> Result<Self, RuntimeError> {
+        let lease = reservation
+            .lease()
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        open(
+            ProcessEnforcement::Deployment(lease),
+            configuration,
+            limits,
+            slots,
+        )
+    }
+
+    pub(in crate::node_adapters::cnp) fn deployment_lease(
+        &self,
+    ) -> Result<&crucible_host_resources::DeploymentResourceLease, RuntimeError> {
+        match &self.supervisor {
+            ProcessEnforcement::Deployment(lease) => {
+                lease
+                    .authenticate_current()
+                    .map_err(|_| RuntimeError::ResourceLimit)?;
+                Ok(lease)
+            }
+            ProcessEnforcement::CreatorThread(_) => Err(RuntimeError::UnsupportedFacet),
+        }
     }
 
     /// Authenticates the same process enforcement and opened program guards.
@@ -299,7 +360,7 @@ impl VerifiedSourceBirthMechanism {
 }
 
 fn open(
-    supervisor: Rc<LinuxProcessSupervisor>,
+    supervisor: ProcessEnforcement,
     configuration: LinuxPureWorkerConfiguration,
     limits: LinuxPureWorkerLimits,
     slots: usize,
