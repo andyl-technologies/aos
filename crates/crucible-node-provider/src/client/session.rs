@@ -2019,5 +2019,5 @@ mod settled_association;
 mod settled_history;
 pub(in crate::client) use settled_history::SessionSettledHistoryData;
 
-#[path="session/native_import18.rs"]
+#[path = "session/native_import18.rs"]
 mod native_import18;

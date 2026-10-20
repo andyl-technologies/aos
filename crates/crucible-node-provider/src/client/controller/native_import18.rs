@@ -17,7 +17,6 @@
 //! phases never become unused, and resume never renews their operation cut.
 
 use super::*;
-use crucible_node_contract::SchemaRef;
 use crate::operational_time::OperationalDeadline;
 use crate::protocol_snapshot::{OriginalProtocolStorageFacts, ProtocolCaptureOwner};
 use crate::reference_packet::service::complete_restore::{
@@ -31,6 +30,7 @@ use crate::reference_packet::service::complete_restore::{
 use crate::retained_metadata::{
     MetadataObserver, NativeImport18JsonMetadataProfileData, RetainedProtocolMetadataFacts,
 };
+use crucible_node_contract::SchemaRef;
 use serde::{Deserialize, Serialize};
 use std::rc::Rc;
 
@@ -620,17 +620,13 @@ fn credit() -> ProviderError {
 }
 
 pub use history::partials::{
-    OriginalNativeImport18PartialHistoryData,
-    OriginalNativeImport18PreparePartialData,
-    OriginalNativeImport18EnvelopePartialData,
-    OriginalNativeImport18RawPartialData,
+    OriginalNativeImport18EnvelopePartialData, OriginalNativeImport18PartialHistoryData,
+    OriginalNativeImport18PreparePartialData, OriginalNativeImport18RawPartialData,
     OriginalNativeImport18ReceivedPartialData,
 };
 pub use input_upload::{
-    OriginalNativeImport18UploadBankPartialData,
-    OriginalNativeImport18UploadOwnerPartialData,
-    OriginalNativeImport18UploadFramePartialData,
-    OriginalNativeImport18FrontierPartialData,
+    OriginalNativeImport18FrontierPartialData, OriginalNativeImport18UploadBankPartialData,
+    OriginalNativeImport18UploadFramePartialData, OriginalNativeImport18UploadOwnerPartialData,
 };
 
 pub use storage::OriginalNativeImport18AssignmentRowHistoryData;

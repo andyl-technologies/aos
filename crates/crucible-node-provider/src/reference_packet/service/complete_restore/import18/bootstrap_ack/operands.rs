@@ -6,8 +6,8 @@
 //! No normalized value or matching digest creates an ACK occurrence or grant.
 
 use super::*;
-use crucible_node_contract::IdSet;
 use crate::handshake::{ConnectionAuthority, Limits};
+use crucible_node_contract::IdSet;
 use std::collections::BTreeSet;
 use std::mem::size_of;
 

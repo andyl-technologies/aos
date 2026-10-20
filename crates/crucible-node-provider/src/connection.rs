@@ -1171,7 +1171,7 @@ pub(crate) use capture17_receive::native_capture17_receive_counter_scratch_data;
 
 pub(crate) use exchange::original_native17_publication_literal_counter_scratch_data;
 
-#[path="connection/native_import18.rs"]
+#[path = "connection/native_import18.rs"]
 pub(crate) mod native_import18;
 #[path = "connection/native_import18_provider.rs"]
 mod native_import18_provider;

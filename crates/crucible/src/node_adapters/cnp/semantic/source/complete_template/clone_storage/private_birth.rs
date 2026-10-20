@@ -91,14 +91,17 @@ mod tests {
     #[test]
     fn real_leaf_clone_outputs_preserve_operands_and_ignore_original_spare_capacity() {
         let (host, private_launch) = operands();
-        let quoted = private_birth_clone_construction_data(&host, &private_launch, usize::MAX)
-            .unwrap();
+        let quoted =
+            private_birth_clone_construction_data(&host, &private_launch, usize::MAX).unwrap();
         let host_clone = host.clone();
         let id_clone = private_launch.clone();
 
         assert_eq!(host_clone, host);
         assert_eq!(id_clone, private_launch);
-        assert_ne!(host_clone.hash.algorithm.as_ptr(), host.hash.algorithm.as_ptr());
+        assert_ne!(
+            host_clone.hash.algorithm.as_ptr(),
+            host.hash.algorithm.as_ptr()
+        );
         assert_ne!(id_clone.as_str().as_ptr(), private_launch.as_str().as_ptr());
         assert_eq!(
             private_birth_clone_construction_data(&host_clone, &id_clone, usize::MAX).unwrap(),
@@ -124,7 +127,9 @@ mod tests {
         ] {
             let (returned, scratch) =
                 NodeRuntime::capture_installation_sequence_clone_storage_data::<u8>(
-                    text.len(), true, usize::MAX,
+                    text.len(),
+                    true,
+                    usize::MAX,
                 )
                 .unwrap();
             returns += returned;

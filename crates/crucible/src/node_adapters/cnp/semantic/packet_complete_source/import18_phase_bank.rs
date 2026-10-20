@@ -7,8 +7,12 @@
 //! retained bank, a typed receipt or a flag never proves native completion.
 
 use super::PacketCompleteSemanticSource;
+use super::retained_values::edition18_tokens::{
+    LiteralValue18Data, LiteralValue18TokenAttempt, LiteralValue18TokenAttemptPartialData,
+};
 use crate::node_contract::RuntimeError;
 use crucible_node_contract::{Id, U64};
+use crucible_node_provider::reference_packet::service::native_startup::PacketNativeStartupAllocationRow;
 use crucible_node_provider::{
     bodies::BeginRequest,
     client::{
@@ -16,21 +20,17 @@ use crucible_node_provider::{
         OriginalNativeImport18Bootstrap, OriginalNativeImport18BootstrapConstructionData,
     },
     reference_packet::service::complete_restore::{
-        transfer::{PacketCompleteRestoreCommitRequest, PacketCompleteRestorePrepareRequest},
         import18::{
             PacketNativeImport18Binding, PacketNativeImport18InitialFundingData,
-            PacketNativeImport18PrebirthRecipeData, PacketNativeImport18InitialFundingHistoryData,
+            PacketNativeImport18InitialFundingHistoryData, PacketNativeImport18PrebirthRecipeData,
             bootstrap_ack::{
-                PacketNativeImport18BootstrapRequest, PacketNativeImport18BootstrapResult,
                 PacketNativeImport18BootstrapAckContext, PacketNativeImport18BootstrapAckProof,
-                PacketNativeImport18BootstrapAckReceipt,
+                PacketNativeImport18BootstrapAckReceipt, PacketNativeImport18BootstrapRequest,
+                PacketNativeImport18BootstrapResult,
             },
         },
+        transfer::{PacketCompleteRestoreCommitRequest, PacketCompleteRestorePrepareRequest},
     },
-};
-use crucible_node_provider::reference_packet::service::native_startup::PacketNativeStartupAllocationRow;
-use super::retained_values::edition18_tokens::{
-    LiteralValue18Data, LiteralValue18TokenAttempt, LiteralValue18TokenAttemptPartialData,
 };
 use std::{
     cell::{BorrowError, Ref},
@@ -48,11 +48,11 @@ mod storage;
 
 pub use construction::OriginalNativeImport18SourcePhaseBankConstructionData;
 pub(super) use history::{
-    NativeImport18SourceBankHistoryData, NativeImport18BankHistoryData,
-    NativeImport18SourceOwnerHistoryData, NativeImport18SourceOwnerHistoryIter,
-    NativeImport18BootstrapHistoryData, NativeImport18LiteralHistoryData,
+    NativeImport18BankHistoryData, NativeImport18BootstrapHistoryData,
     NativeImport18BootstrapSdkHistoryData, NativeImport18BootstrapSdkRowHistoryData,
-    NativeImport18PhaseHistoryData, NativeImport18SdkHistoryData, NativeImport18SdkRowHistoryData,
+    NativeImport18LiteralHistoryData, NativeImport18PhaseHistoryData, NativeImport18SdkHistoryData,
+    NativeImport18SdkRowHistoryData, NativeImport18SourceBankHistoryData,
+    NativeImport18SourceOwnerHistoryData, NativeImport18SourceOwnerHistoryIter,
 };
 
 /// Retains one construction occurrence even if the owner-vector reserve fails.

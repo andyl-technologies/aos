@@ -134,7 +134,9 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
     ) -> Result<&'static str, OperationFailure> {
         self.authenticate_startup_member()?;
         if self.original.native_import18.is_some() {
-            return Err(refused("import18 requires its distinct private boot writer"));
+            return Err(refused(
+                "import18 requires its distinct private boot writer",
+            ));
         }
         if let Some(state) = &self.original.native_startup {
             if state

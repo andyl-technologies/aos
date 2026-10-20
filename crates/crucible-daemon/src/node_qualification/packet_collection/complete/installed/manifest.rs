@@ -12,9 +12,9 @@
 //! lifetime policy. The original and fresh Source rosters bind that exact policy;
 //! older editions omit the field entirely.
 
-mod mechanism;
 #[path = "manifest/import18.rs"]
 mod import18;
+mod mechanism;
 pub(super) use import18::load_import18;
 mod retained_setup17;
 pub(super) use mechanism::CompleteMechanism;

@@ -690,10 +690,8 @@ mod history;
 
 pub(super) use history::counter_scratch_data as history_counter_scratch_data;
 
-pub use history::partials::{
-    OriginalNativeImport18UploadBankPartialData,
-    OriginalNativeImport18UploadOwnerPartialData,
-    OriginalNativeImport18UploadFramePartialData,
-    OriginalNativeImport18FrontierPartialData,
-};
 pub(super) use history::partials::counter_scratch_data as partial_history_counter_scratch_data;
+pub use history::partials::{
+    OriginalNativeImport18FrontierPartialData, OriginalNativeImport18UploadBankPartialData,
+    OriginalNativeImport18UploadFramePartialData, OriginalNativeImport18UploadOwnerPartialData,
+};

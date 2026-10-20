@@ -4,8 +4,8 @@
 //! independent backing is added below. SDK and bootstrap fields are measured by
 //! their defining public visitors; Provider observer internals stay private.
 
-use super::*;
 use super::super::storage_error::StorageError;
+use super::*;
 use crucible_node_provider::{
     ProviderError,
     client::CnpController,

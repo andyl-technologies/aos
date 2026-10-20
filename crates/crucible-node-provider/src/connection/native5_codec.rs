@@ -823,7 +823,10 @@ impl BodySchemaVerifier for Native5CodecOwner {
             Self::ControllerPacket(policy) => {
                 policy.validate_current_negotiation(authority)?;
                 if super::native_import18::verify_selected_wire_data(
-                    &policy.selection, authority, envelope, body,
+                    &policy.selection,
+                    authority,
+                    envelope,
+                    body,
                 )? {
                     return authority.ensure_live();
                 }
@@ -1458,5 +1461,5 @@ pub(crate) fn original_host_initial_codec_layout_data() -> Result<usize, Provide
 mod settled_history;
 pub(crate) use settled_history::Native5CodecHistoricalData;
 
-#[path="native5_codec/native_import18.rs"]
+#[path = "native5_codec/native_import18.rs"]
 mod native_import18;

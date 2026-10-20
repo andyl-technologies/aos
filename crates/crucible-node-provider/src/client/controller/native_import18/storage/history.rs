@@ -196,10 +196,12 @@ mod tests {
         assert_eq!(row.identity.as_bytes(), &before);
         assert_eq!(row.retained, 11);
 
-        let observed_work = row.with_row_history_data(None, |data| {
-            assert!(std::ptr::eq(data._json_profile, &row.json_profile));
-            data._json_profile.maximum_work_data()
-        }).unwrap();
+        let observed_work = row
+            .with_row_history_data(None, |data| {
+                assert!(std::ptr::eq(data._json_profile, &row.json_profile));
+                data._json_profile.maximum_work_data()
+            })
+            .unwrap();
         assert_eq!(observed_work, json_profile.maximum_work_data().unwrap());
     }
 }

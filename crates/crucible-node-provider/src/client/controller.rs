@@ -2092,32 +2092,23 @@ pub(crate) fn original_suffix_response_references_counter_scratch_data() -> usiz
 pub use installed_observation::OriginalObservationReceiveStorageData;
 pub use restored_suffix_host::OriginalRestoredObservation17AssignmentStorageData;
 
-#[path="controller/native_import18.rs"]
+#[path = "controller/native_import18.rs"]
 mod native_import18;
 pub use native_import18::{
-    OriginalNativeImport18Bootstrap,
-    OriginalNativeImport18BootstrapConstructionData,
-    OriginalNativeImport18BootstrapHistoryData,
-    OriginalNativeImport18BootstrapRowHistoryData,
-    OriginalNativeImport18Assignment,
-    OriginalNativeImport18AssignmentStorageData,
-    OriginalNativeImport18AssignmentHistoryView,
-    OriginalNativeImport18HostRegistrationView,
+    OriginalNativeImport18Assignment, OriginalNativeImport18AssignmentHistoryView,
+    OriginalNativeImport18AssignmentStorageData, OriginalNativeImport18Bootstrap,
+    OriginalNativeImport18BootstrapConstructionData, OriginalNativeImport18BootstrapHistoryData,
+    OriginalNativeImport18BootstrapRowHistoryData, OriginalNativeImport18HostRegistrationView,
     OriginalNativeImport18InputUploadProspectiveStorageData,
-    OriginalNativeImport18InputUploadStorageData,
-    OriginalNativeImport18ReceiveConstructionData,
+    OriginalNativeImport18InputUploadStorageData, OriginalNativeImport18ReceiveConstructionData,
 };
 
 pub use native_import18::{
-    OriginalNativeImport18PartialHistoryData,
-    OriginalNativeImport18PreparePartialData,
-    OriginalNativeImport18EnvelopePartialData,
-    OriginalNativeImport18RawPartialData,
-    OriginalNativeImport18ReceivedPartialData,
-    OriginalNativeImport18UploadBankPartialData,
+    OriginalNativeImport18EnvelopePartialData, OriginalNativeImport18FrontierPartialData,
+    OriginalNativeImport18PartialHistoryData, OriginalNativeImport18PreparePartialData,
+    OriginalNativeImport18RawPartialData, OriginalNativeImport18ReceivedPartialData,
+    OriginalNativeImport18UploadBankPartialData, OriginalNativeImport18UploadFramePartialData,
     OriginalNativeImport18UploadOwnerPartialData,
-    OriginalNativeImport18UploadFramePartialData,
-    OriginalNativeImport18FrontierPartialData,
 };
 
 pub use native_import18::OriginalNativeImport18AssignmentRowHistoryData;

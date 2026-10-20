@@ -30,10 +30,10 @@ mod binding;
 mod context;
 mod contract;
 mod crypto;
+mod prebirth_contract;
 mod receipt;
 /// Defines finite original stage labels and key domains without native authorization.
 pub mod stage;
-mod prebirth_contract;
 pub use prebirth_contract::{
     NATIVE_IMPORT17_PRIVATE_PREFIX_DOMAIN, NATIVE_IMPORT17_PRIVATE_PREFIX_MAGIC,
     NATIVE_IMPORT17_STARTUP_WRAPPER_VERSION,

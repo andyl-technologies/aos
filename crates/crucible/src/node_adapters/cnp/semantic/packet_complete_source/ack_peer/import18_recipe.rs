@@ -160,5 +160,4 @@ impl PacketCompleteSemanticSource {
             + size_of::<std::thread::ThreadId>()
             + size_of::<u32>()
     }
-
 }

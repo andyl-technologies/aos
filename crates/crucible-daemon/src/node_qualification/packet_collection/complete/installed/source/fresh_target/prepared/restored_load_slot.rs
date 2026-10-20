@@ -161,9 +161,7 @@ const fn runtime_call_scratch_const() -> Option<usize> {
         size_of::<Result<&mut ConstructionData, QualificationError>>(),
         size_of::<std::array::IntoIter<usize, 3>>(), // admitted iterator
         size_of::<std::array::IntoIter<usize, 3>>(), // requested iterator
-        size_of::<
-            std::iter::Zip<std::array::IntoIter<usize, 3>, std::array::IntoIter<usize, 3>>,
-        >(),
+        size_of::<std::iter::Zip<std::array::IntoIter<usize, 3>, std::array::IntoIter<usize, 3>>>(),
         size_of::<Option<(usize, usize)>>(),
         size_of::<(usize, usize)>(),
         size_of::<&mut Owner>(), // retained destination output

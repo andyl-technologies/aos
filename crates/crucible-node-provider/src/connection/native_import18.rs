@@ -4,7 +4,6 @@
 //! Existing Transfer12 assignment and projection methods remain unchanged.
 
 use super::*;
-use crucible_node_contract::SchemaRef;
 use crate::reference_packet::control::PacketControlSelection;
 use crate::reference_packet::service::complete_restore::{
     import17::{
@@ -15,6 +14,7 @@ use crate::reference_packet::service::complete_restore::{
     transfer::*,
 };
 use crate::transport::original_frames::FrameDirection;
+use crucible_node_contract::SchemaRef;
 use serde::Deserialize;
 
 #[path = "native_import18/wire.rs"]
