@@ -1,8 +1,8 @@
 //! Root-authenticated input and decision order for physical QEMU replay.
 
 use crucible::{
-    BackendInput, Configuration, EventLogSegmentReader, NodeId, ScheduledEventPayload,
-    SchedulerEventLogClass, SchedulerEventLogPayload, SimInstant, SingleSchedulerCheckpoint, World,
+    BackendInput, Configuration, EventLogSegmentReader, Icount, NodeId, ScheduledEventPayload,
+    SchedulerEventLogClass, SchedulerEventLogPayload, SingleSchedulerCheckpoint, World,
 };
 use crucible_qemu::QemuVmRealizationError;
 
@@ -13,7 +13,8 @@ pub(super) enum ReplayStep {
     },
     Input {
         input: BackendInput,
-        delivery: SimInstant,
+        /// Physical QEMU counter at which the live VM received the frame.
+        delivery_icount: Icount,
     },
 }
 
@@ -115,14 +116,24 @@ pub(super) fn authenticated_replay_steps(
                         "resolved input has no declared producer link",
                     ));
                 }
-                if entry.at() != event.key.virtual_time()
-                    || entry.time().stamp.node.as_ref() != Some(node)
-                {
-                    return Err(invalid_input(
-                        "resolved input lacks its exact node-local delivery stamp",
-                    ));
-                }
-                let delivery = entry.time().stamp.tick;
+                // The scheduler fixed this input's physical counter at RESOLVE.
+                // Scheduler time differs from that counter whenever the VM's
+                // time mapping is not the identity (a ready point after counter
+                // zero, a resume rebase), so only the recorded counter names the
+                // instant the live guest received the frame.
+                let delivery_icount = match entry.time().stamp.retired {
+                    Some(delivery_icount)
+                        if entry.at() == event.key.virtual_time()
+                            && entry.time().stamp.node.as_ref() == Some(node) =>
+                    {
+                        delivery_icount
+                    }
+                    _ => {
+                        return Err(invalid_input(
+                            "resolved input lacks its exact node-local delivery stamp",
+                        ));
+                    }
+                };
                 inbound = inbound
                     .checked_add(1)
                     .ok_or_else(|| invalid_input("replay inbound sequence overflowed"))?;
@@ -131,7 +142,7 @@ pub(super) fn authenticated_replay_steps(
                     .map_err(|_| invalid_input("replay operation allocation failed"))?;
                 steps.push(ReplayStep::Input {
                     input: input.clone(),
-                    delivery,
+                    delivery_icount,
                 });
             }
             _ => {}

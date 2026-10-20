@@ -67,6 +67,45 @@ fn input_event(
     }
 }
 
+fn resolved_input_entries(
+    scheduler: &SingleScheduler,
+) -> Result<Vec<crucible::SchedulerEventLogEntry>, Box<dyn std::error::Error>> {
+    let segments = scheduler.event_log_segment_store();
+    let entries = scheduler
+        .checkpoint()?
+        .event_log_entries(segments.as_ref())
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(entries
+        .into_iter()
+        .filter(|entry| {
+            matches!(
+                entry.payload(),
+                SchedulerEventLogPayload::ResolvedHappening(ScheduledEvent {
+                    payload: ScheduledEventPayload::BackendInput(_),
+                    ..
+                })
+            )
+        })
+        .collect())
+}
+
+fn drive_until_resolved_inputs(
+    scheduler: &mut SingleScheduler,
+    expected: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for _ in 0..16 {
+        scheduler.drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })?;
+        if resolved_input_entries(scheduler)?.len() == expected {
+            return Ok(());
+        }
+    }
+    Err(format!("scheduler did not resolve {expected} inputs").into())
+}
+
 #[test]
 fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation_or_count()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -104,32 +143,8 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
     })
     .with_world(&world);
     let mut scheduler = SingleScheduler::new(scenario)?;
+    drive_until_resolved_inputs(&mut scheduler, 2)?;
 
-    for _ in 0..16 {
-        scheduler.drive_quantum(QuantumRequest {
-            configuration: scheduler.configuration().clone(),
-            control: Vec::new(),
-        })?;
-        let segments = scheduler.event_log_segment_store();
-        let input_count = scheduler
-            .checkpoint()?
-            .event_log_entries(segments.as_ref())
-            .collect::<Result<Vec<_>, _>>()?
-            .iter()
-            .filter(|entry| {
-                matches!(
-                    entry.payload(),
-                    SchedulerEventLogPayload::ResolvedHappening(ScheduledEvent {
-                        payload: ScheduledEventPayload::BackendInput(_),
-                        ..
-                    })
-                )
-            })
-            .count();
-        if input_count == 2 {
-            break;
-        }
-    }
     let checkpoint = scheduler.checkpoint()?;
     let segments = scheduler.event_log_segment_store();
     let segments = segments.as_ref();
@@ -145,10 +160,14 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
     )?;
 
     assert_eq!(steps.len(), 5);
-    assert!(matches!(steps[0], ReplayStep::Input { delivery, .. } if delivery.ticks == 1));
+    assert!(
+        matches!(steps[0], ReplayStep::Input { delivery_icount, .. } if delivery_icount.retired == 1)
+    );
     assert!(matches!(steps[1], ReplayStep::Decision { index: 0 }));
     assert!(matches!(steps[2], ReplayStep::Decision { index: 1 }));
-    assert!(matches!(steps[3], ReplayStep::Input { delivery, .. } if delivery.ticks == 2));
+    assert!(
+        matches!(steps[3], ReplayStep::Input { delivery_icount, .. } if delivery_icount.retired == 2)
+    );
     assert!(matches!(steps[4], ReplayStep::Decision { index: 2 }));
     assert!(matches!(
         configuration.schedule.decision_history()[1],
@@ -201,5 +220,102 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
         )
         .is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn replay_plan_delivers_inputs_at_the_recorded_physical_counter_of_a_rebased_vm()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A ready point after counter zero anchors scheduler time zero at this
+    // physical counter, so every live delivery lands this far past its
+    // scheduler time. Thin replay must use the counter, not scheduler time.
+    const READY_COUNTER: u64 = 1_000;
+
+    let sender = NodeId {
+        name: String::from("sender"),
+    };
+    let receiver = NodeId {
+        name: String::from("receiver"),
+    };
+    let world = World::from_nodes_and_links(
+        vec![world_node("sender"), world_node("receiver")],
+        vec![LinkDef::new(sender.clone(), receiver.clone())?],
+    )?;
+    let link = world.links()[0].scheduler_node_id();
+    let mut rebased_receiver = scheduler_node(&receiver, SchedulerNodeActivity::Runnable);
+    rebased_receiver.counter = NodeCounter {
+        ticks: READY_COUNTER,
+    };
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "replay-input-rebased-counter",
+        16,
+        SimInstant { ticks: 16 },
+        vec![
+            rebased_receiver,
+            scheduler_node(&sender, SchedulerNodeActivity::Done),
+        ],
+        vec![
+            input_event(&receiver, &link, 1, 0),
+            input_event(&receiver, &link, 2, 1),
+        ],
+    )
+    .with_ready_point_counter(
+        SchedulerNodeId {
+            node: receiver.clone(),
+            kind: SchedulingNodeKind::Vm,
+        },
+        NodeCounter {
+            ticks: READY_COUNTER,
+        },
+    )
+    .with_world(&world);
+    let mut scheduler = SingleScheduler::new(scenario)?;
+    drive_until_resolved_inputs(&mut scheduler, 2)?;
+
+    // The live log keeps scheduler time and the physical counter apart.
+    let recorded = resolved_input_entries(&scheduler)?
+        .iter()
+        .map(|entry| (entry.time().stamp.tick.ticks, entry.time().stamp.retired))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recorded,
+        vec![
+            (
+                1,
+                Some(Icount {
+                    retired: READY_COUNTER + 1
+                })
+            ),
+            (
+                2,
+                Some(Icount {
+                    retired: READY_COUNTER + 2
+                })
+            ),
+        ]
+    );
+
+    let checkpoint = scheduler.checkpoint()?;
+    let segments = scheduler.event_log_segment_store();
+    let steps = authenticated_replay_steps(
+        &world,
+        scheduler.configuration(),
+        &checkpoint,
+        segments.as_ref(),
+        1,
+        &receiver,
+        2,
+    )?;
+    let deliveries = steps
+        .iter()
+        .filter_map(|step| match step {
+            ReplayStep::Input {
+                delivery_icount, ..
+            } => Some(delivery_icount.retired),
+            ReplayStep::Decision { .. } => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(deliveries, vec![READY_COUNTER + 1, READY_COUNTER + 2]);
     Ok(())
 }

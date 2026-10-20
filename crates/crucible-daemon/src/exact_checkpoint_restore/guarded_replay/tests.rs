@@ -25,7 +25,7 @@ struct ScriptedPhysicalReplay {
     pending: Option<SelectablePlanPendingRequest>,
     replies: Vec<SelectionReply>,
     advances: Vec<Icount>,
-    inputs: Vec<(crucible::SimInstant, Vec<u8>)>,
+    inputs: Vec<(Icount, Vec<u8>)>,
 }
 
 impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
@@ -95,14 +95,14 @@ impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
         &mut self,
         state: Self::Observation,
         input: BackendInput,
-        delivery: crucible::SimInstant,
+        delivery_icount: Icount,
     ) -> Result<Self::Observation, QemuVmRealizationError> {
-        if input.node != self.node || delivery.ticks < state.retired {
+        if input.node != self.node || delivery_icount < state {
             return Err(invalid_replay_selection(
                 "scripted input crossed physical count",
             ));
         }
-        self.inputs.push((delivery, input.payload));
+        self.inputs.push((delivery_icount, input.payload));
         Ok(state)
     }
 }
@@ -160,9 +160,9 @@ impl GuardedReplayPhysicalNode for TickCalibratedReplay {
         &mut self,
         state: Self::Observation,
         input: BackendInput,
-        delivery: crucible::SimInstant,
+        delivery_icount: Icount,
     ) -> Result<Self::Observation, QemuVmRealizationError> {
-        self.physical.enqueue_input(state, input, delivery)
+        self.physical.enqueue_input(state, input, delivery_icount)
     }
 }
 
@@ -340,8 +340,8 @@ fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
             retired: first_delivery_ps,
         },
         first,
-        crucible::SimInstant {
-            ticks: first_delivery_ps,
+        Icount {
+            retired: first_delivery_ps,
         },
     )?;
     let state = replay_one_nonselection_decision_boundary(
@@ -361,8 +361,8 @@ fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
     let state = replay.enqueue_input(
         state,
         second,
-        crucible::SimInstant {
-            ticks: second_delivery_ps,
+        Icount {
+            retired: second_delivery_ps,
         },
     )?;
 
@@ -377,14 +377,14 @@ fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
         replay.inputs,
         vec![
             (
-                crucible::SimInstant {
-                    ticks: first_delivery_ps,
+                Icount {
+                    retired: first_delivery_ps,
                 },
                 b"first".to_vec()
             ),
             (
-                crucible::SimInstant {
-                    ticks: second_delivery_ps,
+                Icount {
+                    retired: second_delivery_ps,
                 },
                 b"second".to_vec()
             )

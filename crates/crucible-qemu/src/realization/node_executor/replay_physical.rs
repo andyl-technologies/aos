@@ -124,10 +124,10 @@ impl QemuReplayValidationExecutor {
         &mut self,
         thin: QemuReplayOracleThinObservation,
         input: BackendInput,
-        delivery: crucible::SimInstant,
+        delivery_icount: Icount,
     ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
         self.measure_replay(ReplayPhase::Input, |executor| {
-            executor.enqueue_materialized_replay_input_untimed(thin, input, delivery)
+            executor.enqueue_materialized_replay_input_untimed(thin, input, delivery_icount)
         })
     }
 
@@ -135,7 +135,7 @@ impl QemuReplayValidationExecutor {
         &mut self,
         thin: QemuReplayOracleThinObservation,
         input: BackendInput,
-        delivery: crucible::SimInstant,
+        delivery_icount: Icount,
     ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
         self.validate_observation(
             &thin.authority,
@@ -145,7 +145,7 @@ impl QemuReplayValidationExecutor {
         )?;
         self.validate_active_replay_runtime(&thin.runtime)?;
         let current = replay_node_icount(&thin.runtime, &self.node)?;
-        if input.node != self.node || delivery.ticks < current.retired {
+        if input.node != self.node || delivery_icount < current {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "guarded replay backend input",
                 message: String::from("input node or delivery count differs from the live replay"),
@@ -163,7 +163,7 @@ impl QemuReplayValidationExecutor {
             node,
             &BackendEffect::DeliverInput(input),
             VirtualTime {
-                ticks: delivery.ticks,
+                ticks: delivery_icount.retired,
             },
         )
         .map_err(|source| node_backend_error("enqueue guarded replay backend input", source))?;

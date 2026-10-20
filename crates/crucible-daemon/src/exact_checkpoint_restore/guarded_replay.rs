@@ -174,9 +174,12 @@ where
         let mut current = genesis;
         for step in steps {
             let decision_index = match step {
-                ReplayStep::Input { input, delivery } => {
+                ReplayStep::Input {
+                    input,
+                    delivery_icount,
+                } => {
                     reject_unrecorded_local_request(self)?;
-                    thin = self.enqueue_input(thin, input, delivery)?;
+                    thin = self.enqueue_input(thin, input, delivery_icount)?;
                     continue;
                 }
                 ReplayStep::Decision { index } => index,
@@ -336,11 +339,12 @@ trait GuardedReplayPhysicalNode {
         reply: &SelectionReply,
     ) -> Result<(), QemuVmRealizationError>;
 
+    /// Queues `input` for delivery at the live VM's recorded physical counter.
     fn enqueue_input(
         &mut self,
         state: Self::Observation,
         input: crucible::BackendInput,
-        delivery: crucible::SimInstant,
+        delivery_icount: Icount,
     ) -> Result<Self::Observation, QemuVmRealizationError>;
 }
 
@@ -412,12 +416,12 @@ impl<G: QemuAttemptProcessResourceGuard> GuardedReplayPhysicalNode
         &mut self,
         state: Self::Observation,
         input: crucible::BackendInput,
-        delivery: crucible::SimInstant,
+        delivery_icount: Icount,
     ) -> Result<Self::Observation, QemuVmRealizationError> {
         self.guard.check_operational_boundary()?;
         let result = self
             .executor
-            .enqueue_materialized_replay_input(state, input, delivery);
+            .enqueue_materialized_replay_input(state, input, delivery_icount);
         self.observe_realization(result)
     }
 }
