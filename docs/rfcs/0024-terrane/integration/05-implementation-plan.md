@@ -8736,12 +8736,29 @@ policy-held concurrent reads, real grace and same-bytes rewrite refusal
 independently checked. Its migrated publisher check subsequently finds a stale
 `terrane_fs` guest launcher; `e5e09630a9` fixes it to the actual
 `terrane_linux` Cargo artifact, retaining all three native socket controls.
-That publisher requalification is running. Surface source `7f7e886dd5` passes
-its crate graph and exact reviewed unsafe audit; remaining qualification is
-running. Shared-directory source `744aa55567` restores its preserved SDK
-adapter in the new layout. `4408bbc7c4` additionally connects genuine sealed
-consumer leases to residence fallback, with actual native isolation,
-allocation, held-policy and revocation controls under qualification.
+That publisher requalification passes, including the three actual native
+socket cases and the publication/cache VM prerequisites. Its application and
+complete filesystem checks continue. Surface source `7f7e886dd5` passes eight
+focused regressions, all seven strict profiles and the formatter pair, as well
+as its crate graph and exact reviewed unsafe audit; owning-gate qualification
+continues. The module aggregate records three 120-second outer process
+limits in genuine copied/permanent GC recovery cases. Its 88 module assertions
+remain green, but no aggregate or task acceptance is credited.
+
+Shared-directory source `744aa55567` restores its preserved SDK adapter in the
+new layout. Its all-target compilation passes, while local Nextest explicitly
+fails with zero selected cases: the shared target's dependency record contains
+only the old stub, omitting the five actual child modules. The failed result is
+retained. Source `6df6fcd73a` incorporates the reviewed host prerequisites and
+forces a fresh test build by refreshing only this checkout's source mtimes;
+source bytes remain unchanged and no shared cache entries are removed.
+`4408bbc7c4` additionally connects genuine sealed consumer leases to residence
+fallback. After the confinement ABI and exact source audit, `0e3c3b1528` passes
+all three strict Clippy profiles and private documentation. Its native quota
+prerequisite reproduces the old zero-Merkle-block fixture failure on 1 KiB
+ext4. `ff9f9f2ef7` and `856aedb03a` restore the preserved 4096-byte fixture and
+guest artifact checksum checks in the relocated paths. Actual native isolation,
+allocation, held-policy and revocation controls remain under qualification.
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
 re-extraction, complete recovery/readiness and the stopped
 HOST-3/HOST-25/DOM-18 zero-wipe conflict remain outstanding; T3 and branch
