@@ -4476,16 +4476,16 @@
     {
       "name": "0055-original-fdtable-retirement.patch",
       "patch": {
-        "sha256": "99bc9091746c41913fd364ef040c362a103ed8ed8b14bb9dd6940ea74078887f",
-        "bytes": 85422
+        "sha256": "ca7dbbfaffdda142cfb9e1e908b31dadcf5a3c26caa900137af1e6ca0cbec117",
+        "bytes": 85494
       },
       "changes": [
         {
           "path": "fs/crucible_fdtable.inc.c",
           "before": null,
           "after": {
-            "sha256": "9ac4555cc30e4f29a92c6ab9ecae43dec3b015cd62c85b05803b93df39892736",
-            "bytes": 33132
+            "sha256": "2988cfaaa6850344528e263b50b7c710f2f123bc70691a431c5c0a807b87da0c",
+            "bytes": 33186
           }
         },
         {
@@ -4514,8 +4514,8 @@
           "path": "include/linux/crucible_fdtable.h",
           "before": null,
           "after": {
-            "sha256": "c645adcb7f53d0b070618ad97198c8fb292a8026610fa8307223b39d863a7aeb",
-            "bytes": 3703
+            "sha256": "aa0219eaa9324b1fe5a25c02267b00458918d3fedbca19f4c824fed246e888fe",
+            "bytes": 3712
           }
         },
         {
@@ -4566,8 +4566,8 @@
             "bytes": 46156
           },
           "after": {
-            "sha256": "80eec538da722945885b039a86fd002d955af451af97435dad27267da0ed96be",
-            "bytes": 55685
+            "sha256": "6af0dcac493eb9a776d043db9ed40ca6ef2071a6605c1aafcf4a1832fba181de",
+            "bytes": 55694
           }
         }
       ]

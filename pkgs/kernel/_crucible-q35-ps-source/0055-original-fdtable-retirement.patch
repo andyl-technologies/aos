@@ -351,12 +351,12 @@
 +	u32 index;
 +	bool admitted = false;
 +
-+	if (!scope || !scope->owner || !scope->ops || !scope->ops->current ||
++	if (!scope || !scope->owner || !scope->ops || !scope->ops->owner_is_current ||
 +	    !scope->ops->admit_growth || !scope->ops->observe || !scope->ops->observe_files ||
 +	    !scope->ops->observe_slot ||
 +	    scope->entered ||
 +	    scope->task != current || scope->mm != current->mm ||
-+	    scope->files != current->files || !scope->ops->current(scope->owner))
++	    scope->files != current->files || !scope->ops->owner_is_current(scope->owner))
 +		return false;
 +	raw_spin_lock_irqsave(&crucible_fdtables.lock, flags);
 +	for (index = 0; index < CRUCIBLE_FDTABLE_SCOPES; index++)
@@ -452,7 +452,7 @@
 +	if (!scope || scope->task != current || scope->mm != current->mm)
 +		goto unlock;
 +	if (scope->uncertain || scope->records_used == CRUCIBLE_FDTABLE_RECORDS ||
-+	    crucible_fdtables.generation == U64_MAX || !scope->ops->current(scope->owner)) {
++	    crucible_fdtables.generation == U64_MAX || !scope->ops->owner_is_current(scope->owner)) {
 +		if (!scope->quote_refused) {
 +			scope->first_refused_quote = quote;
 +			scope->quote_refused = true;
@@ -521,7 +521,7 @@
 +		record->native_result = IS_ERR(result) ? PTR_ERR(result) : 0;
 +		record->allocation_returned = true;
 +		record->sequence++;
-+		if (!scope->ops->current(scope->owner))
++		if (!scope->ops->owner_is_current(scope->owner))
 +			WRITE_ONCE(scope->uncertain, true);
 +		if (!IS_ERR(result))
 +			result->crucible_origin = *token;
@@ -661,7 +661,7 @@
 +		goto unlock;
 +	}
 +	if (scope->uncertain || scope->records_used == CRUCIBLE_FDTABLE_RECORDS ||
-+	    crucible_fdtables.generation == U64_MAX || !scope->ops->current(scope->owner)) {
++	    crucible_fdtables.generation == U64_MAX || !scope->ops->owner_is_current(scope->owner)) {
 +		WRITE_ONCE(scope->uncertain, true);
 +		admitted = false;
 +		goto unlock;
@@ -733,7 +733,7 @@
 +		scope->next_fd_after = files->next_fd;
 +		scope->slot_returned = true;
 +		scope->sequence++;
-+		if (!scope->ops->current(scope->owner))
++		if (!scope->ops->owner_is_current(scope->owner))
 +			WRITE_ONCE(scope->uncertain, true);
 +	}
 +	raw_spin_unlock_irqrestore(&crucible_fdtables.lock, flags);
@@ -1529,7 +1529,7 @@
 + * must remain retained after scope leave until every recorded callback ends.
 + */
 +struct crucible_fdtable_ops {
-+	bool (*current)(void *owner);
++	bool (*owner_is_current)(void *owner);
 +	bool (*admit_growth)(void *owner, const struct crucible_fdtable_quote *quote);
 +	void (*observe)(void *owner, const struct crucible_fdtable_record *record);
 +	void (*observe_files)(void *owner, const struct crucible_fdtable_files_output *output);
@@ -2422,7 +2422,7 @@
 +}
 +
 +static const struct crucible_fdtable_ops crucible_resource_fdtable_ops = {
-+	.current = crucible_resource_allocator_current,
++	.owner_is_current = crucible_resource_allocator_current,
 +	.admit_growth = crucible_resource_fdtable_growth,
 +	.observe = crucible_resource_fdtable_retirement,
 +	.observe_files = crucible_resource_fdtable_files_retirement,

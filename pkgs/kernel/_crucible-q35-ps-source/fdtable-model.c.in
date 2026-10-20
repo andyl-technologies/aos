@@ -301,7 +301,7 @@ static struct files_struct source_files[2];
 static struct kvm_crucible_kernel_resource_context contexts[2];
 
 static const struct crucible_fdtable_ops fd_ops = {
-	.current = crucible_resource_allocator_current,
+	.owner_is_current = crucible_resource_allocator_current,
 	.admit_growth = crucible_resource_fdtable_growth,
 	.observe = crucible_resource_fdtable_retirement,
 	.observe_files = crucible_resource_fdtable_files_retirement,
