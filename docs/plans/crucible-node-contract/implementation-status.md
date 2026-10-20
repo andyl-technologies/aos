@@ -12,6 +12,27 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Latest checkpoint
 
+For the frozen native10 inputs, whose native changes are committed in
+`9b572d78e4`, the registered packaged QEMU native-prefix check passes
+all three selected cases with zero failures or ignores: budget exhaustion at
+350 ps returns PartialPrefix; the exclusive 151 ps interval completes; and a
+query of the genuine initial stopped source reports raw count zero and the
+next CPU frontier at 50 ps before that same session completes its interval.
+Each case checks its original command/ACK association and reaps its child.
+The source observation runs on the native RR thread and crosses the process
+boundary as a versioned scalar record. These results do not qualify common
+Ready, operation turnover or capture.
+
+The matching QEMU package completes all 3,794 build steps and selected package
+checks; its plugin passes all 803 tests with no skips. Registered atomic patch
+regeneration verifies exact patch equality, the signed bundled commit and the
+installed package identity. Independent review verifies the captured source and
+runtime identities. Ten-crate all-feature/all-target checking also passes for
+these captured inputs. The included Source/ArmRoot changes and later result-wire
+codec, process worker and containment changes receive no runtime qualification
+from these runs; aggregate
+architecture, ABI/license and release qualification remain pending.
+
 The refactor at `b86bcd18eb` shares secret-free launch, Hello and registration
 operands with their original consumers, and adds bounded literal-Value streams
 with iterative success/failure ownership and closed diagnostics. Engine and
