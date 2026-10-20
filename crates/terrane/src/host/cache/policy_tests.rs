@@ -24,14 +24,17 @@ fn host_cache_pin_preflight_checks_full_snapshot_bytes_before_reserving() {
     };
     let reserved_bytes = reserved.encoded_len(generous).unwrap();
     let mut pinned = reserved.clone();
+    // Keep the full record valid under TOML's signed-integer range so the
+    // bounded refusal below measures snapshot bytes rather than serialization.
+    let expires = u64::try_from(i64::MAX).unwrap();
     pinned.leases.push(LeaseRecord {
         owner: "metadata:fixture".into(),
-        expires: u64::MAX,
+        expires,
     });
     pinned.pins.push(PinRecord {
         owner: "metadata:fixture".into(),
         hash: "b".repeat(64),
-        expires: u64::MAX,
+        expires,
     });
     let exact = StateLimits {
         bytes: reserved_bytes,
