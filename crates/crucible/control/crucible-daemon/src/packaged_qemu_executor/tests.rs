@@ -1613,19 +1613,16 @@ fn packaged_attempt_failure_diagnostic_preserves_classification_and_bounded_sour
 #[test]
 fn packaged_attempt_failure_diagnostic_retains_prior_failure_after_cleanup_error() {
     let execution = ExecutionId::from_bytes([0x98; 16]).expect("execution");
-    let resume_failure = crate::QemuProductionExactResumeExecutionRunnerError::<
-        std::io::Error,
-        std::io::Error,
-    >::CleanupAfterRunner {
-        failure: Box::new(
-            crate::QemuProductionExactResumeExecutionRunnerError::Lifecycle(std::io::Error::other(
-                "original resume failure",
+    let resume_failure =
+        crate::QemuProductionExactResumeExecutionRunnerError::<std::io::Error, std::io::Error> {
+            first: Some(crate::qemu_campaign_resume::ResumeFailure::Lifecycle(
+                std::io::Error::other("original resume failure"),
             )),
-        ),
-        cleanup: SchedulerError::BoundaryViolation {
-            message: String::from("resume cleanup failure"),
-        },
-    };
+            shutdown: Some(SchedulerError::BoundaryViolation {
+                message: String::from("resume cleanup failure"),
+            }),
+            retirement: None,
+        };
     let diagnostic = packaged_attempt_failure_diagnostic(
         execution,
         &AttemptWorkerFailure::Terminal(resume_failure),

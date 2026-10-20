@@ -316,128 +316,13 @@ impl<F, D> QemuProductionExactResumeExecutionRunner<F, D> {
     }
 }
 
-/// Failure from one exact production-resume phase.
-#[derive(Debug)]
-pub(crate) enum QemuProductionExactResumeExecutionRunnerError<F, D> {
-    /// The resume-only runner received an execution without a durable root.
-    MissingCheckpoint,
-    /// Exact closure installation or guarded lifecycle construction failed.
-    Lifecycle(F),
-    /// The checkpoint retained only an event-log suffix.
-    IncompleteEventLog(u64),
-    /// A selected continuation reached resume without an independent cold proof.
-    MissingSelectedOriginProof,
-    /// An ordinary attempt reached resume without an independent start-prefix proof.
-    MissingAttemptStartProof,
-    /// The restored physical source differs from the independently replayed boundary.
-    SelectedOriginMismatch,
-    /// The restored event log does not begin with the independently replayed start prefix.
-    AttemptStartMismatch,
-    /// Restored cumulative event evidence exceeded a campaign bound.
-    EventLogLimit {
-        /// Stable name of the exceeded bound.
-        limit: &'static str,
-    },
-    /// Modeled driving or result construction failed.
-    Driver(D),
-    /// A checkpoint was returned without a sticky checkpoint request.
-    UnsolicitedCheckpoint,
-    /// Capturing a later exact checkpoint failed.
-    CheckpointCapture(SchedulerError),
-    /// Exact terminal execution fingerprint capture failed before teardown.
-    TerminalFingerprintCapture(SchedulerError),
-    /// Durable root-before-write handoff for a later checkpoint failed.
-    CheckpointHandoff(CheckpointHandoffFailure),
-    /// Final drain or lifecycle cleanup failed.
-    Cleanup(SchedulerError),
-    /// Cleanup failed after another runner-owned phase failed.
-    CleanupAfterRunner {
-        /// Original failure retained for diagnosis.
-        failure: Box<QemuProductionExactResumeExecutionRunnerError<F, D>>,
-        /// Higher-priority cleanup failure.
-        cleanup: SchedulerError,
-    },
-}
+mod error;
+
+pub(crate) use error::{QemuProductionExactResumeExecutionRunnerError, ResumeFailure};
+use error::{finish_resume_outcomes, wrap_resume_failure};
 
 type ExactResumeWorkerFailure<F, D> =
     AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>>;
-
-impl<F, D> std::fmt::Display for QemuProductionExactResumeExecutionRunnerError<F, D> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingCheckpoint => {
-                formatter.write_str("production exact-resume runner received no checkpoint root")
-            }
-            Self::Lifecycle(_) => formatter.write_str("restore production campaign lifecycle"),
-            Self::IncompleteEventLog(prior) => write!(
-                formatter,
-                "production checkpoint event log begins after {prior} prior events"
-            ),
-            Self::MissingSelectedOriginProof => formatter
-                .write_str("selected continuation resume received no independent origin proof"),
-            Self::MissingAttemptStartProof => formatter
-                .write_str("ordinary attempt resume received no independent start-prefix proof"),
-            Self::SelectedOriginMismatch => formatter
-                .write_str("selected continuation physical source differs from cold replay"),
-            Self::AttemptStartMismatch => formatter
-                .write_str("ordinary attempt checkpoint differs from cold start-prefix replay"),
-            Self::EventLogLimit { limit } => {
-                write!(
-                    formatter,
-                    "production checkpoint event log exceeded `{limit}`"
-                )
-            }
-            Self::Driver(_) => formatter.write_str("resumed production campaign driver failed"),
-            Self::UnsolicitedCheckpoint => formatter
-                .write_str("resumed production campaign driver returned an unsolicited checkpoint"),
-            Self::CheckpointCapture(error) => {
-                write!(formatter, "capture resumed production checkpoint: {error}")
-            }
-            Self::TerminalFingerprintCapture(error) => {
-                write!(formatter, "capture resumed terminal fingerprints: {error}")
-            }
-            Self::CheckpointHandoff(error) => {
-                write!(formatter, "handoff resumed production checkpoint: {error}")
-            }
-            Self::Cleanup(error) => {
-                write!(
-                    formatter,
-                    "clean up resumed production campaign lifecycle: {error}"
-                )
-            }
-            Self::CleanupAfterRunner { cleanup, .. } => write!(
-                formatter,
-                "resumed production cleanup failed after a prior runner failure: {cleanup}"
-            ),
-        }
-    }
-}
-
-impl<F, D> std::error::Error for QemuProductionExactResumeExecutionRunnerError<F, D>
-where
-    F: std::error::Error + 'static,
-    D: std::error::Error + 'static,
-{
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Lifecycle(error) => Some(error),
-            Self::Driver(error) => Some(error),
-            Self::CheckpointCapture(error)
-            | Self::TerminalFingerprintCapture(error)
-            | Self::Cleanup(error) => Some(error),
-            Self::CheckpointHandoff(error) => Some(error),
-            Self::CleanupAfterRunner { failure, .. } => Some(failure.as_ref()),
-            Self::MissingCheckpoint
-            | Self::IncompleteEventLog(_)
-            | Self::MissingSelectedOriginProof
-            | Self::MissingAttemptStartProof
-            | Self::SelectedOriginMismatch
-            | Self::AttemptStartMismatch
-            | Self::EventLogLimit { .. }
-            | Self::UnsolicitedCheckpoint => None,
-        }
-    }
-}
 
 enum ResumeRunnerResult<P> {
     Observation(P),
@@ -462,7 +347,7 @@ where
     ) -> Result<(), Self::Error> {
         self.lifecycles
             .try_retire_original(original)
-            .map_err(QemuProductionExactResumeExecutionRunnerError::Lifecycle)
+            .map_err(|first| ResumeFailure::Lifecycle(first).into())
     }
 
     fn execute(
@@ -472,7 +357,7 @@ where
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
         if context.resume_checkpoint().is_none() {
             return Err(AttemptWorkerFailure::Terminal(
-                QemuProductionExactResumeExecutionRunnerError::MissingCheckpoint,
+                ResumeFailure::MissingCheckpoint.into(),
             ));
         }
         if matches!(
@@ -480,7 +365,7 @@ where
             crate::CrucibleResolvedAttemptStart::AfterAttempt { .. }
         ) {
             return Err(AttemptWorkerFailure::Terminal(
-                QemuProductionExactResumeExecutionRunnerError::MissingSelectedOriginProof,
+                ResumeFailure::MissingSelectedOriginProof.into(),
             ));
         }
         if matches!(
@@ -488,7 +373,7 @@ where
             crucible_campaign::StopCondition::EventCount(_)
         ) {
             return Err(AttemptWorkerFailure::Terminal(
-                QemuProductionExactResumeExecutionRunnerError::MissingAttemptStartProof,
+                ResumeFailure::MissingAttemptStartProof.into(),
             ));
         }
 
@@ -510,9 +395,7 @@ where
         AttemptWorkerFailure<Self::Error>,
     > {
         let checkpoint = context.resume_checkpoint().ok_or_else(|| {
-            AttemptWorkerFailure::Terminal(
-                QemuProductionExactResumeExecutionRunnerError::MissingCheckpoint,
-            )
+            AttemptWorkerFailure::Terminal(ResumeFailure::MissingCheckpoint.into())
         })?;
         let scenario = input.scenario().scenario_def();
         let (initial, post_selection) = attempt_resume_configurations(input);
@@ -524,6 +407,7 @@ where
                 context,
             )
             .map_err(map_resume_lifecycle_failure)
+            .map_err(wrap_resume_failure)
     }
 
     fn execute_verified_selected_origin(
@@ -567,9 +451,7 @@ where
         replay_proof: QemuResumeReplayProof,
     ) -> Result<CrucibleExecutionOutcome, ExactResumeWorkerFailure<F::Error, D::Error>> {
         let checkpoint = context.resume_checkpoint().ok_or_else(|| {
-            AttemptWorkerFailure::Terminal(
-                QemuProductionExactResumeExecutionRunnerError::MissingCheckpoint,
-            )
+            AttemptWorkerFailure::Terminal(ResumeFailure::MissingCheckpoint.into())
         })?;
         let proof_matches_start = matches!(
             (input.start(), &replay_proof),
@@ -585,14 +467,14 @@ where
         if !proof_matches_start {
             let error = match input.start() {
                 crate::CrucibleResolvedAttemptStart::AfterAttempt { .. } => {
-                    QemuProductionExactResumeExecutionRunnerError::MissingSelectedOriginProof
+                    ResumeFailure::MissingSelectedOriginProof
                 }
                 crate::CrucibleResolvedAttemptStart::Discover { .. }
                 | crate::CrucibleResolvedAttemptStart::Branch { .. } => {
-                    QemuProductionExactResumeExecutionRunnerError::MissingAttemptStartProof
+                    ResumeFailure::MissingAttemptStartProof
                 }
             };
-            return Err(AttemptWorkerFailure::Terminal(error));
+            return Err(AttemptWorkerFailure::Terminal(error.into()));
         }
         let scenario = input.scenario().scenario_def();
         let (initial, post_selection) = attempt_resume_configurations(input);
@@ -604,7 +486,8 @@ where
                 QemuExactResumeBasis::new(&scenario, input.scenario(), initial, post_selection),
                 context,
             )
-            .map_err(map_resume_lifecycle_failure)?;
+            .map_err(map_resume_lifecycle_failure)
+            .map_err(wrap_resume_failure)?;
         let driven =
             resume_start_materialization(&lifecycle, input.start().configuration(), replay_proof)
                 .and_then(|materialization| {
@@ -619,8 +502,7 @@ where
                         }
                         QemuFreshDriveOutcome::CheckpointRequested(choices) => {
                             if !context.checkpoint_request().is_requested() {
-                                let error = QemuProductionExactResumeExecutionRunnerError::
-                                    UnsolicitedCheckpoint;
+                                let error = ResumeFailure::UnsolicitedCheckpoint;
                                 return Err(AttemptWorkerFailure::Terminal(error));
                             }
                             let capture = lifecycle
@@ -644,38 +526,13 @@ where
         });
         let cleanup = lifecycle.shutdown();
         let retirement = self.lifecycles.retire_lifecycle(lifecycle);
-        let (pending, final_events) = match (driven, cleanup) {
-            (Ok(pending), Ok(events)) => (pending, events),
-            (Err(failure), Ok(_)) => return Err(failure),
-            (Ok(_), Err(cleanup)) => {
-                return Err(AttemptWorkerFailure::Terminal(
-                    QemuProductionExactResumeExecutionRunnerError::Cleanup(cleanup),
-                ));
-            }
-            (Err(failure), Err(cleanup)) => {
-                let failure = match failure {
-                    AttemptWorkerFailure::Retryable(error)
-                    | AttemptWorkerFailure::Canceled(error)
-                    | AttemptWorkerFailure::Terminal(error) => error,
-                };
-                return Err(AttemptWorkerFailure::Terminal(
-                    QemuProductionExactResumeExecutionRunnerError::CleanupAfterRunner {
-                        failure: Box::new(failure),
-                        cleanup,
-                    },
-                ));
-            }
-        };
-        retirement.map_err(|error| {
-            AttemptWorkerFailure::Terminal(
-                QemuProductionExactResumeExecutionRunnerError::Lifecycle(error),
-            )
-        })?;
+        let (pending, final_events) = finish_resume_outcomes(driven, cleanup, retirement)?;
         let product = match pending {
             ResumeRunnerResult::Observation(pending) => self
                 .driver
                 .seal(pending, final_events)
-                .map_err(map_resume_driver_failure)?,
+                .map_err(map_resume_driver_failure)
+                .map_err(wrap_resume_failure)?,
             ResumeRunnerResult::Checkpoint(checkpoint) => {
                 AttemptExecutionProduct::exact_checkpoint(checkpoint)
             }
@@ -691,17 +548,14 @@ fn resume_start_materialization<F, D>(
     lifecycle: &impl QemuProductionExactResumeLifecycleOwner,
     attempt_start: &Configuration,
     proof: QemuResumeReplayProof,
-) -> Result<
-    QemuFreshStartMaterialization,
-    AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>>,
-> {
+) -> Result<QemuFreshStartMaterialization, AttemptWorkerFailure<ResumeFailure<F, D>>> {
     let (configuration, events, base, completed_quanta, frontier, quiescence, terminal) = lifecycle
         .resume_state()
         .map_err(map_resume_checkpoint_capture_failure)?
         .into_parts();
     if base != 0 {
         return Err(AttemptWorkerFailure::Terminal(
-            QemuProductionExactResumeExecutionRunnerError::IncompleteEventLog(base),
+            ResumeFailure::IncompleteEventLog(base),
         ));
     }
     if events.len() > MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES {
@@ -718,11 +572,11 @@ fn resume_start_materialization<F, D>(
         return Err(resume_event_log_limit("campaign-event-log-bytes"));
     }
     let attempt_event_count = match proof {
-        QemuResumeReplayProof::AttemptStart(Some(proof)) => proof
-            .attempt_event_count(attempt_start, &events)
-            .ok_or(AttemptWorkerFailure::Terminal(
-                QemuProductionExactResumeExecutionRunnerError::AttemptStartMismatch,
-            ))?,
+        QemuResumeReplayProof::AttemptStart(Some(proof)) => {
+            proof.attempt_event_count(attempt_start, &events).ok_or(
+                AttemptWorkerFailure::Terminal(ResumeFailure::AttemptStartMismatch),
+            )?
+        }
         QemuResumeReplayProof::AttemptStart(None) => 0,
         QemuResumeReplayProof::SelectedOrigin(proof) => {
             if !proof
@@ -732,14 +586,14 @@ fn resume_start_materialization<F, D>(
                 })?
             {
                 return Err(AttemptWorkerFailure::Terminal(
-                    QemuProductionExactResumeExecutionRunnerError::SelectedOriginMismatch,
+                    ResumeFailure::SelectedOriginMismatch,
                 ));
             }
             proof
                 .attempt_event_count()
                 .and_then(|count| usize::try_from(count).ok())
                 .ok_or(AttemptWorkerFailure::Terminal(
-                    QemuProductionExactResumeExecutionRunnerError::SelectedOriginMismatch,
+                    ResumeFailure::SelectedOriginMismatch,
                 ))?
         }
     };
@@ -769,51 +623,47 @@ fn attempt_resume_configurations(
     }
 }
 
-fn resume_event_log_limit<F, D>(
-    limit: &'static str,
-) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
-    AttemptWorkerFailure::Terminal(
-        QemuProductionExactResumeExecutionRunnerError::EventLogLimit { limit },
-    )
+fn resume_event_log_limit<F, D>(limit: &'static str) -> AttemptWorkerFailure<ResumeFailure<F, D>> {
+    AttemptWorkerFailure::Terminal(ResumeFailure::EventLogLimit { limit })
 }
 
 fn map_resume_lifecycle_failure<F, D>(
     failure: AttemptWorkerFailure<F>,
-) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
+) -> AttemptWorkerFailure<ResumeFailure<F, D>> {
     match failure {
-        AttemptWorkerFailure::Retryable(error) => AttemptWorkerFailure::Retryable(
-            QemuProductionExactResumeExecutionRunnerError::Lifecycle(error),
-        ),
-        AttemptWorkerFailure::Canceled(error) => AttemptWorkerFailure::Canceled(
-            QemuProductionExactResumeExecutionRunnerError::Lifecycle(error),
-        ),
-        AttemptWorkerFailure::Terminal(error) => AttemptWorkerFailure::Terminal(
-            QemuProductionExactResumeExecutionRunnerError::Lifecycle(error),
-        ),
+        AttemptWorkerFailure::Retryable(error) => {
+            AttemptWorkerFailure::Retryable(ResumeFailure::Lifecycle(error))
+        }
+        AttemptWorkerFailure::Canceled(error) => {
+            AttemptWorkerFailure::Canceled(ResumeFailure::Lifecycle(error))
+        }
+        AttemptWorkerFailure::Terminal(error) => {
+            AttemptWorkerFailure::Terminal(ResumeFailure::Lifecycle(error))
+        }
     }
 }
 
 fn map_resume_driver_failure<F, D>(
     failure: AttemptWorkerFailure<D>,
-) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
+) -> AttemptWorkerFailure<ResumeFailure<F, D>> {
     match failure {
-        AttemptWorkerFailure::Retryable(error) => AttemptWorkerFailure::Retryable(
-            QemuProductionExactResumeExecutionRunnerError::Driver(error),
-        ),
-        AttemptWorkerFailure::Canceled(error) => AttemptWorkerFailure::Canceled(
-            QemuProductionExactResumeExecutionRunnerError::Driver(error),
-        ),
-        AttemptWorkerFailure::Terminal(error) => AttemptWorkerFailure::Terminal(
-            QemuProductionExactResumeExecutionRunnerError::Driver(error),
-        ),
+        AttemptWorkerFailure::Retryable(error) => {
+            AttemptWorkerFailure::Retryable(ResumeFailure::Driver(error))
+        }
+        AttemptWorkerFailure::Canceled(error) => {
+            AttemptWorkerFailure::Canceled(ResumeFailure::Driver(error))
+        }
+        AttemptWorkerFailure::Terminal(error) => {
+            AttemptWorkerFailure::Terminal(ResumeFailure::Driver(error))
+        }
     }
 }
 
 fn map_resume_checkpoint_capture_failure<F, D>(
     error: SchedulerError,
-) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
+) -> AttemptWorkerFailure<ResumeFailure<F, D>> {
     let class = error.operational_failure_class();
-    let error = QemuProductionExactResumeExecutionRunnerError::CheckpointCapture(error);
+    let error = ResumeFailure::CheckpointCapture(error);
     match class {
         Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
         Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
@@ -825,9 +675,9 @@ fn map_resume_checkpoint_capture_failure<F, D>(
 
 fn map_resume_terminal_fingerprint_capture_failure<F, D>(
     error: SchedulerError,
-) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
+) -> AttemptWorkerFailure<ResumeFailure<F, D>> {
     let class = error.operational_failure_class();
-    let error = QemuProductionExactResumeExecutionRunnerError::TerminalFingerprintCapture(error);
+    let error = ResumeFailure::TerminalFingerprintCapture(error);
     match class {
         Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
         Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
@@ -839,16 +689,16 @@ fn map_resume_terminal_fingerprint_capture_failure<F, D>(
 
 fn map_resume_checkpoint_handoff_failure<F, D>(
     failure: AttemptWorkerFailure<CheckpointHandoffFailure>,
-) -> AttemptWorkerFailure<QemuProductionExactResumeExecutionRunnerError<F, D>> {
+) -> AttemptWorkerFailure<ResumeFailure<F, D>> {
     match failure {
-        AttemptWorkerFailure::Retryable(error) => AttemptWorkerFailure::Retryable(
-            QemuProductionExactResumeExecutionRunnerError::CheckpointHandoff(error),
-        ),
-        AttemptWorkerFailure::Canceled(error) => AttemptWorkerFailure::Canceled(
-            QemuProductionExactResumeExecutionRunnerError::CheckpointHandoff(error),
-        ),
-        AttemptWorkerFailure::Terminal(error) => AttemptWorkerFailure::Terminal(
-            QemuProductionExactResumeExecutionRunnerError::CheckpointHandoff(error),
-        ),
+        AttemptWorkerFailure::Retryable(error) => {
+            AttemptWorkerFailure::Retryable(ResumeFailure::CheckpointHandoff(error))
+        }
+        AttemptWorkerFailure::Canceled(error) => {
+            AttemptWorkerFailure::Canceled(ResumeFailure::CheckpointHandoff(error))
+        }
+        AttemptWorkerFailure::Terminal(error) => {
+            AttemptWorkerFailure::Terminal(ResumeFailure::CheckpointHandoff(error))
+        }
     }
 }

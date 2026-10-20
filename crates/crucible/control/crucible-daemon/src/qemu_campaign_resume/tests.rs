@@ -56,6 +56,8 @@ struct FakeResumeLifecycle {
     calls: Arc<ResumeCalls>,
     state: ProductionVmLifecycleResumeState,
     final_events: Vec<SchedulerEventLogEntry>,
+    shutdown_failure: Option<SchedulerError>,
+    boundary_order: Option<Arc<Mutex<Vec<&'static str>>>>,
 }
 
 impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
@@ -168,6 +170,12 @@ impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.calls.shutdowns.fetch_add(1, Ordering::SeqCst);
+        if let Some(order) = &self.boundary_order {
+            order.lock().expect("boundary order").push("shutdown");
+        }
+        if let Some(first) = self.shutdown_failure.take() {
+            return Err(first);
+        }
         Ok(self.final_events.clone())
     }
 }
@@ -218,6 +226,8 @@ impl QemuProductionExactResumeLifecycleFactory for FakeResumeFactory {
             calls: Arc::clone(&self.calls),
             state,
             final_events: self.final_events.clone(),
+            shutdown_failure: None,
+            boundary_order: None,
         })
     }
 }
@@ -283,6 +293,9 @@ impl QemuFreshAttemptDriver for FakeResumeDriver {
 #[path = "tests/admission.rs"]
 mod admission;
 
+#[path = "tests/retirement.rs"]
+mod retirement;
+
 #[test]
 fn event_count_resume_rejects_a_missing_start_proof_before_factory_invocation() {
     let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
@@ -313,9 +326,11 @@ fn event_count_resume_rejects_a_missing_start_proof_before_factory_invocation() 
 
     assert!(matches!(
         error,
-        AttemptWorkerFailure::Terminal(
-            QemuProductionExactResumeExecutionRunnerError::MissingAttemptStartProof
-        )
+        AttemptWorkerFailure::Terminal(QemuProductionExactResumeExecutionRunnerError {
+            first: Some(ResumeFailure::MissingAttemptStartProof),
+            shutdown: None,
+            retirement: None
+        })
     ));
     assert_eq!(calls.starts.load(Ordering::SeqCst), 0);
 }
@@ -650,9 +665,11 @@ fn event_count_resume_rejects_foreign_or_short_inherited_prefixes() {
             .expect_err("foreign or short attempt-start evidence must fail closed");
         assert!(matches!(
             error,
-            AttemptWorkerFailure::Terminal(
-                QemuProductionExactResumeExecutionRunnerError::AttemptStartMismatch
-            )
+            AttemptWorkerFailure::Terminal(QemuProductionExactResumeExecutionRunnerError {
+                first: Some(ResumeFailure::AttemptStartMismatch),
+                shutdown: None,
+                retirement: None
+            })
         ));
         assert_eq!(calls.starts.load(Ordering::SeqCst), 1);
         assert_eq!(calls.drives.load(Ordering::SeqCst), 0);
@@ -690,6 +707,8 @@ fn selected_resume_materialization_carries_cold_derived_attempt_event_progress()
             None,
         ),
         final_events: Vec::new(),
+        shutdown_failure: None,
+        boundary_order: None,
     };
 
     let materialization = resume_start_materialization::<&'static str, &'static str>(
@@ -730,9 +749,11 @@ fn resume_runner_rejects_suffix_only_evidence_and_still_cleans_up() {
 
     assert!(matches!(
         error,
-        AttemptWorkerFailure::Terminal(
-            QemuProductionExactResumeExecutionRunnerError::IncompleteEventLog(7)
-        )
+        AttemptWorkerFailure::Terminal(QemuProductionExactResumeExecutionRunnerError {
+            first: Some(ResumeFailure::IncompleteEventLog(7)),
+            shutdown: None,
+            retirement: None
+        })
     ));
     assert_eq!(calls.starts.load(Ordering::SeqCst), 1);
     assert_eq!(calls.drives.load(Ordering::SeqCst), 0);
