@@ -8,6 +8,12 @@
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
   cratesRoot = "${repoRootString}/crates";
+  # A migrated worktree can retain local state beneath the retired flat crate.
+  # Neither that directory nor the current daemon's run state is package source.
+  daemonLocalStatePaths = [
+    "${cratesRoot}/crucible-daemon"
+    "${cratesRoot}/crucible/control/crucible-daemon/run-state"
+  ];
   selectedCrateInput = pathString:
     pathString
     == cratesRoot
@@ -39,7 +45,6 @@ in
     filter = path: type: let
       pathString = toString path;
       base = baseNameOf path;
-      daemonRunState = "${cratesRoot}/crucible/control/crucible-daemon/run-state";
       generatedDir =
         type
         == "directory"
@@ -105,7 +110,6 @@ in
       # Local Python bytecode depends on host tooling, not package source.
       && !lib.hasSuffix ".pyc" base
       && !lib.hasSuffix ".pyo" base
-      && pathString != daemonRunState
-      && !lib.hasPrefix "${daemonRunState}/" pathString
+      && !builtins.any (localState: pathString == localState || lib.hasPrefix "${localState}/" pathString) daemonLocalStatePaths
       && (workspaceInput || (includeIntegrationInputs && integrationInput));
   }

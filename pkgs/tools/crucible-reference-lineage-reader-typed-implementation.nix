@@ -4,8 +4,7 @@
   stdenv,
   buildPackages,
   mkCargoPackage,
-  mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   mkDerivation,
   rust,
   coreutils,
@@ -58,16 +57,7 @@
       }
     ];
   };
-  cargoDeps = fetchCargoVendor {
-    src = mkCargoDummySource {
-      srcRoot = ../../crates;
-      name = "crucible-public-lineage-reference-dummy-source";
-      cargoRoot = "crates";
-    };
-    name = "crucible-public-lineage-reference-vendor";
-    sourceRoot = "source/crates";
-    hash = import ./crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = aosWorkspaceVendor;
   binaries = mkCargoPackage {
     inherit src cargoDeps platformSupport;
     pname = "crucible-reference-lineage-reader-typed-binaries";
