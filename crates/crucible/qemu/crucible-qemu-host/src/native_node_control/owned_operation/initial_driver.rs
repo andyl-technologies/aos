@@ -136,6 +136,10 @@ impl<T: OriginalOperationEndpoint> OriginalPreparationDriver<T> {
         Ok(())
     }
 
+    pub(super) fn store(&self) -> &InitialEvidenceStore {
+        &self.store
+    }
+
     pub(super) fn endpoint(&self) -> &T {
         &self.endpoint
     }
@@ -149,6 +153,7 @@ impl<T: OriginalOperationEndpoint> OriginalPreparationDriver<T> {
                 facts: self.facts,
                 offered: self.offered,
                 consumed: self.consumed,
+                stopped: None,
             },
         )
     }
@@ -230,9 +235,22 @@ pub struct OriginalInitialEvidence {
     facts: Option<NativePrefixPreparationFacts>,
     offered: Option<NativePrefixPreparationAcknowledgement>,
     consumed: Option<NativePrefixPreparationAcknowledgement>,
+    stopped: Option<crucible_qemu_protocol::node_control::NativeStoppedCut>,
 }
 
 impl OriginalInitialEvidence {
+    pub(super) fn retain_stopped_cut(
+        &mut self,
+        stopped: Option<crucible_qemu_protocol::node_control::NativeStoppedCut>,
+    ) {
+        self.stopped = stopped;
+    }
+
+    /// Borrows the same Session's original initial stopped-cut observation.
+    pub fn stopped_cut(&self) -> Option<&crucible_qemu_protocol::node_control::NativeStoppedCut> {
+        self.stopped.as_ref()
+    }
+
     /// Borrows the unchanged durable initial evidence file and complete companions.
     pub fn store(&self) -> &InitialEvidenceStore {
         &self.store

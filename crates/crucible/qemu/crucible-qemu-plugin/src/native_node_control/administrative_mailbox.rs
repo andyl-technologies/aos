@@ -47,6 +47,8 @@ pub(crate) enum NativeAdministrativeClass {
     Invalid = 4,
     /// Retains original launch material pending installed source-pin verification.
     Preparation = 5,
+    /// Retains a backed request for a fresh nonsemantic RR census.
+    ObserveCurrent = 6,
 }
 
 /// Reports a bounded nonsemantic receive step.
@@ -659,6 +661,9 @@ fn reply_matches(original: &NativeFrame, reply: &NativeFrame, scope: [u8; 32]) -
             NativeFrame::AcknowledgePrefixPreparation(original),
             NativeFrame::PrefixPreparationAcknowledged(reply),
         ) => original.scope == scope && original == reply,
+        (NativeFrame::QueryStoppedCut(original), NativeFrame::StoppedCut(reply)) => {
+            original.scope == scope && reply.query() == original
+        }
         (NativeFrame::AcknowledgePrefix(original), NativeFrame::PrefixAcknowledged(reply)) => {
             original.scope == scope && original == reply
         }
@@ -785,6 +790,9 @@ fn classify(
             scope: original_scope,
             ..
         } if original_scope == scope => NativeAdministrativeClass::ReadOriginal,
+        NativeFrame::QueryStoppedCut(query) if query.scope == scope => {
+            NativeAdministrativeClass::ObserveCurrent
+        }
         NativeFrame::AcknowledgePrefixPreparation(ack) if ack.scope == scope => {
             NativeAdministrativeClass::AcknowledgeOriginal
         }

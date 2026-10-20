@@ -307,6 +307,8 @@ impl NativeNodeControl {
                 | NativeFrame::PrefixPreparationFacts(_)
                 | NativeFrame::AcknowledgePrefixPreparation(_)
                 | NativeFrame::PrefixPreparationAcknowledged(_)
+                | NativeFrame::QueryStoppedCut(_)
+                | NativeFrame::StoppedCut(_)
                 | NativeFrame::PrepareEffect(_)
                 | NativeFrame::EffectCompute(_)
                 | NativeFrame::EffectProgress(_)

@@ -31,6 +31,10 @@ pub struct NativeAdministrationTransport {
 }
 
 impl NativeAdministrationTransport {
+    pub(crate) fn stopped_observation_selected(&self) -> bool {
+        self.channel.edition() == NativeControlEdition::PrefixObservation
+    }
+
     /// Checks retained process correlation without asserting present native liveness.
     pub(crate) fn original_process_matches(&self, process_id: u32) -> bool {
         !self.failed
@@ -257,6 +261,7 @@ impl NativeAdministrationTransport {
                 NativeControlEdition::Construction
                     | NativeControlEdition::FixedMicrovm
                     | NativeControlEdition::FiniteEffect
+                    | NativeControlEdition::PrefixObservation
                     | NativeControlEdition::PrefixEffect
             )
         {
@@ -277,6 +282,7 @@ impl NativeAdministrationTransport {
                 NativeControlEdition::Construction
                     | NativeControlEdition::FixedMicrovm
                     | NativeControlEdition::FiniteEffect
+                    | NativeControlEdition::PrefixObservation
                     | NativeControlEdition::PrefixEffect
             )
         {

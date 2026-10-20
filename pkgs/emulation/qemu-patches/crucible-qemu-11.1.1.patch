@@ -1,6 +1,6 @@
-From 576c687380c02cf64499af730c7ab8cf7762c65e Mon Sep 17 00:00:00 2001
+From 138d9d82bb053bc5690291c2e3f5484e2d440466 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Mon, 19 Oct 2026 23:58:00 +0000
+Date: Tue, 20 Oct 2026 07:46:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -819,6 +819,22 @@ controls, preserve the original entry declaration license, and retain all
 existing source seals and guest-effect refusals. This is insertion-lineage
 source progress; full payload/callback ownership, Ready, execution and exact
 capture/fresh restore remain unqualified.
+
+Expose the original initial stopped-cut observation on separately pinned
+native edition ten. Capture the existing before/after root, held-input,
+CPU/timer and consumed-preparation-ACK census on its actual parked RR
+owner before Compute. Retain one immutable bounded scalar record for
+original reader recovery; no reader resampling or new cut on repetition.
+
+Keep all QEMU pointers, callback data and private interrupt bit layouts
+inside the native process. Preserve edition-nine ancestor bodies, existing
+control/shared-memory protocols and source licenses. Initial observation
+supplies no Ready, operation turnover, settlement or archival permission.
+
+The source delta has independent finite review. New native compilation,
+ABI/license gates and the registered three-case installed-pair regression
+remain pending. Earlier edition-nine execution evidence retains its own
+source scope and is not qualification of this new contract.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -16497,13 +16513,15 @@ index 0000000000000000000000000000000000000000..d08a1b6b9875006e24c214ccceb98ba0
 +}
 diff --git a/accel/tcg/crucible-prefix-preparation-rr.inc.c b/accel/tcg/crucible-prefix-preparation-rr.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..353057217d7263c4cc95f0c1be829c6121f631db
+index 0000000000000000000000000000000000000000..c630985378dbd14cc8512b0bd24e36a8efa03dec
 --- /dev/null
 +++ b/accel/tcg/crucible-prefix-preparation-rr.inc.c
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,344 @@
 +/* SPDX-License-Identifier: MIT */
 +/* A retained initial observation is formed by the real parked issuer. Reader
 + * recovery copies it without constructing authority from a later stop. */
++
++static int rr_prefix_stopped_request(void);
 +
 +G_STATIC_ASSERT(sizeof(CruciblePrefixPreparationFacts) == 640);
 +G_STATIC_ASSERT(sizeof(CruciblePrefixPreparationFrontier) == 48);
@@ -17170,10 +17188,10 @@ index 0000000000000000000000000000000000000000..eba1fd62dd11c4f590ab50091bd6f0bf
 +}
 diff --git a/accel/tcg/crucible-prefix-root-rr.inc.c b/accel/tcg/crucible-prefix-root-rr.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..67935f62dab1a2a4a9f308a78fb9d6282456b297
+index 0000000000000000000000000000000000000000..daf0fb1d4e6beb96dd652afd8295c92083022969
 --- /dev/null
 +++ b/accel/tcg/crucible-prefix-root-rr.inc.c
-@@ -0,0 +1,812 @@
+@@ -0,0 +1,816 @@
 +/* SPDX-License-Identifier: MIT */
 +/* Included after the original controller-eight RR leaf. Its private callback
 + * capture and native fresh factory observation are reused as observations;
@@ -17960,6 +17978,10 @@ index 0000000000000000000000000000000000000000..67935f62dab1a2a4a9f308a78fb9d628
 +        !qatomic_load_acquire(&rr_prefix_preparation_acknowledged)) {
 +        result = rr_prefix_preparation_request();
 +    }
++    if (!result && rr_prefix_stopped_contract &&
++        !qatomic_load_acquire(&rr_prefix_stopped_record_retained)) {
++        result = rr_prefix_stopped_request();
++    }
 +    if (!result) {
 +        result = rr_prefix_original_command();
 +    }
@@ -18185,10 +18207,10 @@ index 0000000000000000000000000000000000000000..29ba6c2998387d58a4fdf662581cff5e
 +}
 diff --git a/accel/tcg/crucible-prefix-stopped-rr.inc.c b/accel/tcg/crucible-prefix-stopped-rr.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..7f9381be92321dd24f34dbae95e66ab1595cf324
+index 0000000000000000000000000000000000000000..e299444b1273ac5a0e0c2b5722a468e50aa3b26e
 --- /dev/null
 +++ b/accel/tcg/crucible-prefix-stopped-rr.inc.c
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,376 @@
 +/* SPDX-License-Identifier: MIT */
 +/* Included by the original controller-nine RR issuer. This read observes the
 + * existing held root and invokes its original held-input validator. It never
@@ -18201,6 +18223,7 @@ index 0000000000000000000000000000000000000000..7f9381be92321dd24f34dbae95e66ab1
 +G_STATIC_ASSERT(sizeof(CruciblePrefixTimerRow) == 80);
 +G_STATIC_ASSERT(sizeof(CruciblePrefixPreparationAcknowledgement) == 160);
 +G_STATIC_ASSERT(sizeof(CruciblePrefixStoppedFacts) == 392);
++G_STATIC_ASSERT(sizeof(CruciblePrefixStoppedQuery) == 80);
 +
 +static int rr_prefix_stopped_sample(CruciblePrefixStoppedFacts *facts)
 +{
@@ -18395,6 +18418,174 @@ index 0000000000000000000000000000000000000000..7f9381be92321dd24f34dbae95e66ab1
 +    }
 +    rr_prefix_stopped_query = false;
 +    return result;
++}
++
++/* The observational contract is independently registered before source epoch
++ * acquisition. Edition nine never installs it or accepts request kind four. */
++static bool rr_prefix_stopped_contract;
++static bool rr_prefix_stopped_record_retained;
++static CruciblePrefixStoppedQuery rr_prefix_stopped_original_query;
++static uint8_t rr_prefix_stopped_record[CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES];
++
++int qemu_plugin_register_crucible_prefix_stopped_contract(
++    uint32_t version, const CrucibleNodePrefixPolicy *policy)
++{
++    const CrucibleNodePrefixPolicy *original = crucible_node_prefix_policy();
++
++    if (version != 1 || !policy || !original || !rr_prefix_preparation_contract ||
++        rr_prefix_root.incarnation || rr_prefix_stopped_contract ||
++        memcmp(policy, original, sizeof(*policy))) {
++        return -ESTALE;
++    }
++    rr_prefix_stopped_contract = true;
++    return 0;
++}
++
++static void stopped_position(uint8_t **cursor, QemuTimerFinitePosition position)
++{
++    preparation_u64(cursor, position.time_ps);
++    preparation_u64(cursor, position.microstep);
++    preparation_u32(cursor, position.phase);
++    preparation_u32(cursor, position.reserved);
++}
++
++static void stopped_record_encode(const CruciblePrefixStoppedFacts *facts,
++                                  uint64_t process, uint64_t thread,
++                                  uint8_t bytes[CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES])
++{
++    const CruciblePrefixTimerRow *timer = &facts->next_timer;
++    const CruciblePrefixPreparationAcknowledgement *ack =
++        &facts->consumed_preparation;
++    uint8_t *cursor = bytes;
++
++    preparation_u32(&cursor, 1);
++    preparation_u32(&cursor, CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES);
++    preparation_u64(&cursor, process);
++    preparation_u64(&cursor, thread);
++    stopped_position(&cursor, facts->position);
++    preparation_u64(&cursor, facts->actual_raw_counter);
++    preparation_u64(&cursor, facts->epoch_incarnation);
++    preparation_u64(&cursor, facts->original_cpu_incarnation);
++    preparation_u64(&cursor, facts->original_writer_generation);
++    stopped_position(&cursor, facts->next_cpu);
++    preparation_u64(&cursor, timer->timer_id);
++    preparation_u64(&cursor, timer->timer_list_id);
++    preparation_u64(&cursor, timer->arm_generation);
++    preparation_u64(&cursor, timer->expiry_ps);
++    stopped_position(&cursor, timer->evaluation);
++    preparation_u32(&cursor, timer->parent_kind);
++    preparation_u32(&cursor, timer->reserved);
++    preparation_u64(&cursor, timer->parent_id);
++    preparation_u64(&cursor, timer->parent_generation);
++    preparation_u32(&cursor, ack->version);
++    preparation_u32(&cursor, ack->size);
++    preparation_hash(&cursor, ack->prepared_scope);
++    preparation_hash(&cursor, ack->prefix_preparation_commitment);
++    preparation_hash(&cursor, ack->preparation_facts_digest);
++    preparation_hash(&cursor, ack->original_initialization_cut_digest);
++    preparation_u64(&cursor, ack->original_initialization_sequence);
++    preparation_u64(&cursor, ack->epoch_incarnation);
++    preparation_u64(&cursor, ack->acknowledgement_sequence);
++    preparation_u64(&cursor, facts->original_command_sequence);
++    preparation_u64(&cursor, facts->completed_prefixes);
++    preparation_u64(&cursor, facts->acknowledged_prefixes);
++    preparation_u64(&cursor, facts->remaining_cpu_services);
++    preparation_u64(&cursor, facts->remaining_timer_callbacks);
++    preparation_u32(&cursor, facts->timer_present);
++    preparation_u32(&cursor, facts->next_evaluation_kind);
++    assert(facts->supported_subset == CRUCIBLE_PREFIX_PREPARATION_OUTPUT_DISABLED);
++    preparation_u32(&cursor, 1);
++    /* The QEMU-private CPU_INTERRUPT bit layout stays GPL-local. */
++    preparation_u32(&cursor, facts->cpu_interrupt_request != 0);
++    preparation_u32(&cursor, facts->original_startup_exit_pending);
++    preparation_u32(&cursor, facts->reserved);
++    assert(cursor == bytes + CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES);
++}
++
++static int rr_prefix_stopped_request(void)
++{
++    CruciblePrefixRequest request;
++    CruciblePrefixStoppedFacts facts;
++    const CruciblePrefixStoppedQuery *query = &request.original.stopped_query;
++    static const uint8_t inactive[sizeof(request.original) -
++        sizeof(CruciblePrefixStoppedQuery)];
++    uint64_t process = getpid(), thread = qemu_get_thread_id();
++    int result;
++
++    if (!rr_prefix_stopped_contract || !rr_prefix_parked_owner() ||
++        rr_prefix_cut_count || rr_prefix_root.current_cursor.time_ps ||
++        rr_prefix_root.current_cursor.microstep || rr_prefix_root.current_cursor.phase) {
++        return -ESTALE;
++    }
++    result = crucible_node_prefix_request_read(rr_prefix_root.owned_epoch, &request);
++    if (result) {
++        return result;
++    }
++    if (request.kind == CRUCIBLE_PREFIX_REQUEST_PREPARATION_ACKNOWLEDGE) {
++        result = rr_prefix_apply_preparation_request(&request);
++        return result ? result : -EAGAIN;
++    }
++    if (request.version != 1 || request.size != sizeof(request) || request.reserved ||
++        request.kind != CRUCIBLE_PREFIX_REQUEST_STOPPED_OBSERVE ||
++        memcmp((const uint8_t *)&request.original + sizeof(*query), inactive,
++               sizeof(inactive)) || query->version != 1 ||
++        query->size != sizeof(*query) || query->sequence != 1 ||
++        memcmp(query->prepared_scope,
++            rr_prefix_root.original_policy.original_effect.prepared_scope_hash, 32) ||
++        memcmp(query->prefix_preparation_commitment,
++            rr_prefix_root.original_policy.prefix_preparation_commitment, 32)) {
++        return -ESTALE;
++    }
++    if (qatomic_load_acquire(&rr_prefix_stopped_record_retained)) {
++        return memcmp(query, &rr_prefix_stopped_original_query, sizeof(*query)) ?
++            -ESTALE : 0;
++    }
++    /* This is the existing real before/after source/epoch/roots/input census.
++     * It executes on RR, never on the administrative reader. */
++    result = rr_prefix_query_stopped(&rr_prefix_root, rr_prefix_root.owned_epoch, &facts);
++    if (result) {
++        return result;
++    }
++    if (process != getpid() || thread != qemu_get_thread_id() ||
++        !rr_prefix_parked_owner() || facts.actual_raw_counter ||
++        facts.position.time_ps || facts.position.microstep || facts.position.phase ||
++        facts.original_command_sequence || facts.completed_prefixes ||
++        facts.acknowledged_prefixes || facts.remaining_cpu_services ||
++        facts.remaining_timer_callbacks) {
++        return -ESTALE;
++    }
++    stopped_record_encode(&facts, process, thread, rr_prefix_stopped_record);
++    rr_prefix_stopped_original_query = *query;
++    qatomic_store_release(&rr_prefix_stopped_record_retained, true);
++    return 0;
++}
++
++int qemu_plugin_crucible_node_query_original_prefix_stopped(
++    const CrucibleNodePrefixRootSeal *root, void *owned_epoch,
++    const CruciblePrefixStoppedQuery *query, uint8_t *bytes, uint32_t length)
++{
++    int result;
++
++    if (!bytes || length != CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES) {
++        return -EINVAL;
++    }
++    memset(bytes, 0, length);
++    if (!query || !rr_prefix_stopped_contract) {
++        return -ESTALE;
++    }
++    /* Historical readback never resamples a convenient later native cut. */
++    result = rr_prefix_preparation_reader(root, owned_epoch);
++    if (result) {
++        return result;
++    }
++    if (!qatomic_load_acquire(&rr_prefix_stopped_record_retained)) {
++        return -EAGAIN;
++    }
++    if (memcmp(query, &rr_prefix_stopped_original_query, sizeof(*query))) {
++        return -ESTALE;
++    }
++    memcpy(bytes, rr_prefix_stopped_record, length);
++    return 0;
 +}
 diff --git a/accel/tcg/crucible-prefix-timer-rr.inc.c b/accel/tcg/crucible-prefix-timer-rr.inc.c
 new file mode 100644
@@ -96410,7 +96601,7 @@ index 9edfacf827caeecb4427f5dae5b8fbd037632ee2..d907377393e9faf1f63254ce7e56a0c4
      int link_down;
      QTAILQ_ENTRY(NetClientState) next;
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b76f2edb2 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..ab4c065504b52e960910aba7d7d24c28188af2ac 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -96740,7 +96931,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -827,544 +1147,4091 @@ QEMU_PLUGIN_API
+@@ -827,544 +1147,4103 @@ QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
  /**
@@ -99227,86 +99418,73 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 + * Returns the mandatory private event-envelope version. Version one carries
 + * the canonical originating node request and raw occurrence evidence so a
 + * fresh plugin process can validate events from restored VM state.
-  */
- QEMU_PLUGIN_API
--uint64_t qemu_plugin_start_code(void);
++ */
++QEMU_PLUGIN_API
 +int qemu_plugin_crucible_fault_event_envelope_version(void);
- 
- /**
-- * qemu_plugin_end_code() - returns end of text segment
++
++/**
 + * qemu_plugin_crucible_fault_event_poll() - copy one occurrence
 + * @event: fixed event destination
 + * @payload: evidence destination
 + * @payload_capacity: bytes available at @payload
 + * @payload_length: required/copied evidence byte count
-  *
-- * Returns the nominal end address of the main text segment in
-- * user-mode. Currently returns 0 for system emulation.
++ *
 + * Returns one when consumed, zero when empty, -ENOSPC without consumption, or
 + * -EINVAL for an invalid pointer contract.
   */
  QEMU_PLUGIN_API
--uint64_t qemu_plugin_end_code(void);
+-uint64_t qemu_plugin_start_code(void);
 +int qemu_plugin_crucible_fault_event_poll(
 +    struct qemu_plugin_crucible_fault_event *event, uint8_t *payload,
 +    size_t payload_capacity, size_t *payload_length);
  
  /**
-- * qemu_plugin_entry_code() - returns start address for module
+- * qemu_plugin_end_code() - returns end of text segment
 + * qemu_plugin_crucible_fault_dispatch_node_boundary() - commit due node faults
 + * @raw_icount: exact raw retired-instruction coordinate
   *
-- * Returns the nominal entry address of the main text segment in
+- * Returns the nominal end address of the main text segment in
 - * user-mode. Currently returns 0 for system emulation.
 + * Commits every due node-boundary fault while the caller owns the BQL-held
 + * Crucible control-boundary scope. Returns zero on success and a negative errno
 + * when the scope or coordinate is invalid.
   */
  QEMU_PLUGIN_API
--uint64_t qemu_plugin_entry_code(void);
+-uint64_t qemu_plugin_end_code(void);
 +int qemu_plugin_crucible_fault_dispatch_node_boundary(uint64_t raw_icount);
+ 
+ /**
+- * qemu_plugin_entry_code() - returns start address for module
++ * qemu_plugin_register_crucible_fault_completion_cb() - register completion
++ * @cb: callback invoked after each boundary-dispatched result, or NULL to clear
++ * @userdata: opaque pointer supplied to @cb
+  *
+- * Returns the nominal entry address of the main text segment in
+- * user-mode. Currently returns 0 for system emulation.
++ * Registering a callback lets a GPL-side controller complete a prepare/commit
++ * transaction without allowing the guest to retire another instruction.  A
++ * callback may poll and submit, but must not recursively dispatch boundaries.
+  */
+ QEMU_PLUGIN_API
+-uint64_t qemu_plugin_entry_code(void);
++void qemu_plugin_register_crucible_fault_completion_cb(
++    qemu_plugin_crucible_fault_completion_cb_t cb, void *userdata);
  
 -/** struct qemu_plugin_register - Opaque handle for register access */
 -struct qemu_plugin_register;
 +/**
-+ * qemu_plugin_register_crucible_fault_completion_cb() - register completion
-+ * @cb: callback invoked after each boundary-dispatched result, or NULL to clear
-+ * @userdata: opaque pointer supplied to @cb
-+ *
-+ * Registering a callback lets a GPL-side controller complete a prepare/commit
-+ * transaction without allowing the guest to retire another instruction.  A
-+ * callback may poll and submit, but must not recursively dispatch boundaries.
-+ */
-+QEMU_PLUGIN_API
-+void qemu_plugin_register_crucible_fault_completion_cb(
-+    qemu_plugin_crucible_fault_completion_cb_t cb, void *userdata);
- 
- /**
-- * typedef qemu_plugin_reg_descriptor - register descriptions
 + * qemu_plugin_scoreboard_new() - alloc a new scoreboard
-  *
-- * @handle: opaque handle for retrieving value with qemu_plugin_read_register or
-- *          writing value with qemu_plugin_write_register
-- * @name: register name
-- * @feature: optional feature descriptor, can be NULL
-- * @is_readonly: true if the register cannot be written via
-- *               qemu_plugin_write_register
++ *
 + * @element_size: size (in bytes) for one entry
 + *
 + * Returns a pointer to a new scoreboard. It must be freed using
 + * qemu_plugin_scoreboard_free.
-  */
--typedef struct {
--    struct qemu_plugin_register *handle;
--    const char *name;
--    const char *feature;
--    bool is_readonly;
--} qemu_plugin_reg_descriptor;
++ */
 +QEMU_PLUGIN_API
 +struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size);
  
  /**
-- * qemu_plugin_get_registers() - return register list for current vCPU
+- * typedef qemu_plugin_reg_descriptor - register descriptions
 + * qemu_plugin_scoreboard_free() - free a scoreboard
 + * @score: scoreboard to free
 + */
@@ -99318,11 +99496,21 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 + * @score: scoreboard to query
 + * @vcpu_index: entry index
   *
-- * Returns a potentially empty GArray of qemu_plugin_reg_descriptor.
-- * Caller frees the array (but not the const strings).
+- * @handle: opaque handle for retrieving value with qemu_plugin_read_register or
+- *          writing value with qemu_plugin_write_register
+- * @name: register name
+- * @feature: optional feature descriptor, can be NULL
+- * @is_readonly: true if the register cannot be written via
+- *               qemu_plugin_write_register
 + * Returns address of entry of a scoreboard matching a given vcpu_index. This
 + * address can be modified later if scoreboard is resized.
-+ */
+  */
+-typedef struct {
+-    struct qemu_plugin_register *handle;
+-    const char *name;
+-    const char *feature;
+-    bool is_readonly;
+-} qemu_plugin_reg_descriptor;
 +QEMU_PLUGIN_API
 +void *qemu_plugin_scoreboard_find(struct qemu_plugin_scoreboard *score,
 +                                  unsigned int vcpu_index);
@@ -99332,8 +99520,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 +    (qemu_plugin_u64) {score, 0}
 +#define qemu_plugin_scoreboard_u64_in_struct(score, type, member) \
 +    (qemu_plugin_u64) {score, offsetof(type, member)}
-+
-+/**
+ 
+ /**
+- * qemu_plugin_get_registers() - return register list for current vCPU
 + * qemu_plugin_u64_add() - add a value to a qemu_plugin_u64 for a given vcpu
 + * @entry: entry to query
 + * @vcpu_index: entry index
@@ -99466,8 +99655,8 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 + * @rows: receives original native IDs, per-CPU source order and scalar payloads
 + * @capacity: at most QEMU_PLUGIN_CRUCIBLE_NODE_INGRESS_MAX
   *
-- * Should be used from a qemu_plugin_register_vcpu_init_cb() callback
-- * after the vCPU is initialised, i.e. in the vCPU context.
+- * Returns a potentially empty GArray of qemu_plugin_reg_descriptor.
+- * Caller frees the array (but not the const strings).
 + * The query requires the actual BQL-held RR getter/stopped seam and an already
 + * retained writer HOLD. Rows remain Unknown-birth scalar observations; no
 + * callback/data pointers leave native custody. A source command digest authenticates only the actual
@@ -99476,22 +99665,20 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 + * Summary flags are UnknownBirth1 and UnknownOtherProducers2; no full closure,
 + * readiness, capture, input staging or foreign-source containment is advertised.
 + * Returns zero, or a negative errno with a zero summary.
-  */
- QEMU_PLUGIN_API
--GArray *qemu_plugin_get_registers(void);
++ */
++QEMU_PLUGIN_API
 +int qemu_plugin_crucible_node_query_cpu_ingress(
 +    const uint8_t prepared_scope_hash[32], uint64_t expected_generation,
 +    QemuPluginCrucibleNodeIngressSummary *summary,
 +    QemuPluginCrucibleNodeIngressRow *rows, uint32_t capacity);
- 
- /**
-- * qemu_plugin_read_register() - read register for current vCPU
++
++/**
 + * qemu_plugin_crucible_node_query_source_fault() - read an immutable native source fault
 + * @prepared_scope_hash: exact scope authenticated by the original sealed V4 manifest
 + * @fault: receives the original fault; zero on refusal
   *
-- * @handle: a @qemu_plugin_reg_handle handle
-- * @buf: A GByteArray for the data owned by the plugin
+- * Should be used from a qemu_plugin_register_vcpu_init_cb() callback
+- * after the vCPU is initialised, i.e. in the vCPU context.
 + * This observational query requires no BQL and is available to the independent
 + * GPL controller after the native source proof has been invalidated. The first original
 + * record is immutable. A fault is never a stopped/no-effects receipt, physical
@@ -99499,8 +99686,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 + * exact retained original grant_hash; zero ancestry means no accepted command.
 + * Returns zero, -EAGAIN before a fault, -ESTALE for another scope, or -EPERM
 + * before the native scoped ingress gate exists.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-GArray *qemu_plugin_get_registers(void);
 +int qemu_plugin_crucible_node_query_source_fault(
 +    const uint8_t prepared_scope_hash[32],
 +    QemuPluginCrucibleNodeSourceFault *fault);
@@ -99521,11 +99709,20 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 +    uint8_t prepared_scope_hash[32];
 +    uint8_t roster_hash[32];
 +} QemuPluginCrucibleNodeCpuParkFacts;
-+
-+/**
+ 
+ /**
+- * qemu_plugin_read_register() - read register for current vCPU
 + * qemu_plugin_crucible_node_query_cpu_park() - observe a prepared native CPU park
 + * @prepared_scope_hash: exact original scope bound to the sealed V4 manifest
 + * @facts: receives the actual CPU-only park observation
+  *
+- * @handle: a @qemu_plugin_reg_handle handle
+- * @buf: A GByteArray for the data owned by the plugin
++ * The query requires a finalized machine with a fully realized fixed CPU roster,
++ * and the BQL-held native RR command/stop callback seam outside guest execution.
++ * Every realized CPU must share that parked RR thread. An active original run
++ * command cannot produce these facts. The retained V4 socket identity and scope
++ * are checked again before publishing them.
   *
 - * This function is only available in a context that register read access is
 - * explicitly requested via the QEMU_PLUGIN_CB_R_REGS flag, if called inside a
@@ -99534,14 +99731,6 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 - * argument, such as in a callback registered with
 - * qemu_plugin_register_vcpu_init_cb(), except for callbacks registered with
 - * qemu_plugin_register_atexit_cb() and qemu_plugin_register_flush_cb().
-+ * The query requires a finalized machine with a fully realized fixed CPU roster,
-+ * and the BQL-held native RR command/stop callback seam outside guest execution.
-+ * Every realized CPU must share that parked RR thread. An active original run
-+ * command cannot produce these facts. The retained V4 socket identity and scope
-+ * are checked again before publishing them.
-  *
-- * Returns true on success, false on failure. The content of @buf is in target
-- * byte order.
 + * The observation reports CPU_PARK coverage only. It grants no lasting resource
 + * freeze, complete input epoch, queue closure, or readiness qualification.
 + * The roster hash is SHA-256 over the ASCII bytes
@@ -99553,10 +99742,8 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 + * and pending_service_credit_ps is zero; this does not close the service source.
 + * It returns zero, or a negative errno-style status for invalid arguments,
 + * incomplete preparation, unsupported topology, context or original scope.
-  */
- QEMU_PLUGIN_API
--bool qemu_plugin_read_register(struct qemu_plugin_register *handle,
--                               GByteArray *buf);
++ */
++QEMU_PLUGIN_API
 +int qemu_plugin_crucible_node_query_cpu_park(
 +    const uint8_t prepared_scope_hash[32],
 +    QemuPluginCrucibleNodeCpuParkFacts *facts);
@@ -99656,7 +99843,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 + * @bh_capacity: at most 4096 rows
 + * @handlers: receives actual allocated POSIX handler identities
 + * @handler_capacity: at most 4096 rows
-+ *
+  *
+- * Returns true on success, false on failure. The content of @buf is in target
+- * byte order.
 + * Only the scope-authenticated, finalized BQL-held native RR park may acquire
 + * the existing asynchronous-worker HOLD. The same original RR owner retains
 + * it, including after query failure; this API offers no release operation.
@@ -99683,8 +99872,10 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 + * active writers, unsupported registry or capacity. Failure leaves a zero
 + * summary and no output array is semantically valid. It never releases a
 + * previously acquired HOLD or its original unresolved native custody.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-bool qemu_plugin_read_register(struct qemu_plugin_register *handle,
+-                               GByteArray *buf);
 +int qemu_plugin_crucible_node_query_writer_cut(
 +    const uint8_t prepared_scope_hash[32], uint64_t expected_generation,
 +    QemuPluginCrucibleNodeWriterCut *cut,
@@ -100133,6 +100324,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 +typedef struct CrucibleNodeEffectCommand CrucibleNodeEffectCommand;
 +typedef struct CruciblePrefixRequest CruciblePrefixRequest;
 +typedef struct CruciblePrefixStoppedFacts CruciblePrefixStoppedFacts;
++typedef struct CruciblePrefixStoppedQuery CruciblePrefixStoppedQuery;
 +typedef struct CruciblePrefixPreparationFacts CruciblePrefixPreparationFacts;
 +typedef struct CruciblePrefixPreparationAcknowledgement CruciblePrefixPreparationAcknowledgement;
 +
@@ -100162,6 +100354,17 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85981a331a4281d9f1aea0540608c79b
 +int qemu_plugin_crucible_node_query_original_prefix_preparation(
 +    const CrucibleNodePrefixRootSeal *root, void *epoch,
 +    CruciblePrefixPreparationFacts *facts);
++
++/* Independently selected initial stopped-cut observation. RR captures the
++ * coherent cut only after the original preparation ACK and before Compute.
++ * Readback copies one immutable record; it never resamples on reader threads. */
++QEMU_PLUGIN_API
++int qemu_plugin_register_crucible_prefix_stopped_contract(
++    uint32_t version, const CrucibleNodePrefixPolicy *policy);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_node_query_original_prefix_stopped(
++    const CrucibleNodePrefixRootSeal *root, void *epoch,
++    const CruciblePrefixStoppedQuery *query, uint8_t *bytes, uint32_t length);
 +
 +/* Native-only stopped-current observation of the same held controller-nine
 + * root/epoch. Refusal clears facts. No wire, Ready, capture or dispatch grant. */
@@ -104134,10 +104337,10 @@ index 0000000000000000000000000000000000000000..1ebbd95ca3df9f32d3b540c1c00a8166
 +#endif
 diff --git a/include/qemu/crucible-prefix-request.h b/include/qemu/crucible-prefix-request.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a7428b2fbd9335821db3f1a9a64b400d36ce1ac2
+index 0000000000000000000000000000000000000000..f06838ee17e4321b008bdb1cd125fec9cc5b4927
 --- /dev/null
 +++ b/include/qemu/crucible-prefix-request.h
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,47 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#ifndef QEMU_CRUCIBLE_PREFIX_REQUEST_H
 +#define QEMU_CRUCIBLE_PREFIX_REQUEST_H
@@ -104146,11 +104349,13 @@ index 0000000000000000000000000000000000000000..a7428b2fbd9335821db3f1a9a64b400d
 +
 +#include "qemu/crucible-effect-prefix.h"
 +#include "qemu/crucible-prefix-preparation.h"
++#include "qemu/crucible-prefix-stopped.h"
 +
 +typedef enum CruciblePrefixRequestKind {
 +    CRUCIBLE_PREFIX_REQUEST_ACKNOWLEDGE = 1,
 +    CRUCIBLE_PREFIX_REQUEST_CONTINUE = 2,
 +    CRUCIBLE_PREFIX_REQUEST_PREPARATION_ACKNOWLEDGE = 3,
++    CRUCIBLE_PREFIX_REQUEST_STOPPED_OBSERVE = 4,
 +} CruciblePrefixRequestKind;
 +
 +/* A native copied original request. Reserved and inactive union bytes are
@@ -104165,6 +104370,7 @@ index 0000000000000000000000000000000000000000..a7428b2fbd9335821db3f1a9a64b400d
 +        CrucibleEffectPrefixAcknowledgement acknowledgement;
 +        CrucibleEffectPrefixContinuation continuation;
 +        CruciblePrefixPreparationAcknowledgement preparation_acknowledgement;
++        CruciblePrefixStoppedQuery stopped_query;
 +    } original;
 +} CruciblePrefixRequest;
 +
@@ -104249,10 +104455,10 @@ index 0000000000000000000000000000000000000000..dfd3e7fcee525164a2ffb35b4f50bb05
 +#endif
 diff --git a/include/qemu/crucible-prefix-stopped.h b/include/qemu/crucible-prefix-stopped.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..51098ee6b66743acb257fb5f2b8fe70e4b319a61
+index 0000000000000000000000000000000000000000..47bc25a25542e88f1a6d78a596c25463aff3875a
 --- /dev/null
 +++ b/include/qemu/crucible-prefix-stopped.h
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,49 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef QEMU_CRUCIBLE_PREFIX_STOPPED_H
 +#define QEMU_CRUCIBLE_PREFIX_STOPPED_H
@@ -104265,6 +104471,18 @@ index 0000000000000000000000000000000000000000..51098ee6b66743acb257fb5f2b8fe70e
 + * and epoch. Copying these facts cannot reconstruct either original object.
 + * Only the closed single-CPU, no-public-port PrefixEffect subset is observed;
 + * pending device IO, general machine closure and capture remain unsupported. */
++/* Version-one observational request. It cannot name a native pointer/cut.
++ * This initial-session contract permits exactly sequence one before Compute. */
++typedef struct CruciblePrefixStoppedQuery {
++    uint32_t version;
++    uint32_t size;
++    uint8_t prepared_scope[32];
++    uint8_t prefix_preparation_commitment[32];
++    uint64_t sequence;
++} CruciblePrefixStoppedQuery;
++
++#define CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES 408
++
 +typedef struct CruciblePrefixStoppedFacts {
 +    uint32_t version;
 +    uint32_t size;

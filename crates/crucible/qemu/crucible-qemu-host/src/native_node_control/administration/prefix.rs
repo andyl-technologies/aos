@@ -39,8 +39,49 @@ impl NativeAdministrationTransport {
         parameters: super::super::super::root::NativeFixedMicrovmParameters,
         prefix_parameters: NativePrefixParameters,
     ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
+        Self::prepare_prefix_edition(
+            phase,
+            reader_policy_digest,
+            descriptor_slot,
+            parameters,
+            prefix_parameters,
+            NativeControlEdition::PrefixEffect,
+        )
+    }
+
+    /// Pins the distinct initial current stopped-cut observational endpoint.
+    ///
+    /// The native prefix/effect ancestors remain byte-unchanged controller nine.
+    /// This selection creates no Ready, effects or post-operation observation.
+    ///
+    /// # Errors
+    /// Rejects malformed ancestors, finite bounds or supervised endpoint failure.
+    pub fn prepare_prefix_observation(
+        phase: NativePhasePreparation,
+        reader_policy_digest: [u8; 32],
+        descriptor_slot: i32,
+        parameters: super::super::super::root::NativeFixedMicrovmParameters,
+        prefix_parameters: NativePrefixParameters,
+    ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
+        Self::prepare_prefix_edition(
+            phase,
+            reader_policy_digest,
+            descriptor_slot,
+            parameters,
+            prefix_parameters,
+            NativeControlEdition::PrefixObservation,
+        )
+    }
+
+    fn prepare_prefix_edition(
+        phase: NativePhasePreparation,
+        reader_policy_digest: [u8; 32],
+        descriptor_slot: i32,
+        parameters: super::super::super::root::NativeFixedMicrovmParameters,
+        prefix_parameters: NativePrefixParameters,
+        edition: NativeControlEdition,
+    ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
         phase.validate()?;
-        let edition = NativeControlEdition::PrefixEffect;
         let (channel, provider) = NativeChannel::supervised_pair_for_edition(edition)?;
         let descriptor = provider
             .prepared_descriptor()

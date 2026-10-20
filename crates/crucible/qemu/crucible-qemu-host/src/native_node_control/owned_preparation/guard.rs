@@ -236,6 +236,43 @@ impl QemuInitialPreparation {
         }
     }
 
+    /// Begins initial current-cut observation in this same supervised Session.
+    ///
+    /// # Errors
+    /// Retains the complete capsule on missing/foreign Session or endpoint refusal.
+    pub fn begin_stopped_cut(&mut self) -> Result<(), OperationFailure> {
+        let mut custody = self.0.custody.borrow_mut();
+        let Resources::Session(session) = &mut custody.resources else {
+            return Err(super::refusal("QEMU original Session is absent"));
+        };
+        session
+            .begin_stopped_cut()
+            .map_err(|error| super::uncertain(error.to_string()))
+    }
+
+    /// Polls current-cut data without promoting the capsule to common Ready.
+    ///
+    /// # Errors
+    /// Retains complete native custody on source/process/correlation failure.
+    pub fn poll_stopped_cut(&mut self) -> Result<bool, OperationFailure> {
+        let mut custody = self.0.custody.borrow_mut();
+        let Resources::Session(session) = &mut custody.resources else {
+            return Err(super::refusal("QEMU original Session is absent"));
+        };
+        session
+            .poll_stopped_cut()
+            .map_err(|error| super::uncertain(error.to_string()))
+    }
+
+    /// Copies fixed ordinary data from the same Session's original observation.
+    pub fn stopped_cut(&self) -> Option<crucible_qemu_protocol::node_control::NativeStoppedCut> {
+        let custody = self.0.custody.borrow();
+        match &custody.resources {
+            Resources::Session(session) => session.stopped_cut().cloned(),
+            _ => None,
+        }
+    }
+
     /// Advances the original initial protocol while retaining common supervision.
     ///
     /// # Errors

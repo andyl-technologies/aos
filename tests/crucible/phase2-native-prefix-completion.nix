@@ -62,7 +62,8 @@ in
           sha256sum "$binary" > "$out/evidence/host-test-elf.sha256"
           for selected in \
             actual_native_session_consumes_original_initial_custody_into_quiet_operation \
-            actual_native_session_completes_quiet_interval_at_exclusive_limit; do
+            actual_native_session_completes_quiet_interval_at_exclusive_limit \
+            actual_native_session_observes_initial_cut_before_quiet_completion; do
             test "$(grep -Fxc "$selected: test" "$TMPDIR/native-tests.txt")" -eq 1
             timeout --signal=TERM --kill-after=30s 15m \
               "$binary" --ignored --exact "$selected" --nocapture \
@@ -73,12 +74,14 @@ in
             "$out/evidence/actual_native_session_consumes_original_initial_custody_into_quiet_operation.log"
           grep -Fxq 'native_prefix_completion=exclusive151,raw3,evaluated100,completed,acknowledged,reaped' \
             "$out/evidence/actual_native_session_completes_quiet_interval_at_exclusive_limit.log"
+          grep -Fxq 'native_stopped_cut=initial0,raw0,nextCPU50,sourceRR,retainedThroughCompute,reaped' \
+            "$out/evidence/actual_native_session_observes_initial_cut_before_quiet_completion.log"
           sha256sum "$CRUCIBLE_NATIVE_PROBE_QEMU" "$CRUCIBLE_NATIVE_PROBE_PLUGIN" \
             > "$out/evidence/native-artifacts.sha256"
           {
             echo PASS
             echo check=checks.crucible.phase2.nativePrefixCompletion
-            echo native_tests=2
+            echo native_tests=3
             echo scope=source-prefix-completion-and-partial-control
             echo common_ready=unqualified
             echo native_capture=unqualified

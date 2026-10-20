@@ -105,6 +105,10 @@ impl NativePreparation {
 /// Selects a closed frame of the independently negotiated native channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeFrame {
+    /// Requests initial current stopped-cut capture on its explicit edition.
+    QueryStoppedCut(super::NativeStoppedCutQuery),
+    /// Returns the immutable source-captured cut, never a new readiness grant.
+    StoppedCut(Box<super::NativeStoppedCut>),
     /// Queries historical initial facts under an explicitly installed contract.
     QueryPrefixPreparation {
         /// Names the complete original scope.

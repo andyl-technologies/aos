@@ -371,7 +371,8 @@ impl NativeNodeControl {
             return Ok(false);
         };
         match frame {
-            NativeFrame::QueryPrefixPreparation { .. }
+            NativeFrame::QueryStoppedCut(_)
+            | NativeFrame::QueryPrefixPreparation { .. }
             | NativeFrame::AcknowledgePrefixPreparation(_) => self
                 .prefix
                 .as_ref()

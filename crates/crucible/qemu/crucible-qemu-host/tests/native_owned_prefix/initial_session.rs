@@ -27,6 +27,7 @@ pub(super) fn prepare_and_consume(
     initialization: NativeInitializationReceipt,
     command: NativeEffectCompute,
     quiet_limit: Option<crucible_node_format::Position>,
+    observe_stopped: bool,
 ) -> Result<NativeOwnedPrefixOperation, Box<dyn Error>> {
     let original_pid = child.id();
     let prefix = endpoint
@@ -53,6 +54,7 @@ pub(super) fn prepare_and_consume(
     assert_eq!(session.archive_state(), TurnoverState::Vacant);
     assert!(session.facts().is_none());
 
+    assert!(session.begin_stopped_cut().is_err());
     await_initial(&mut session, OriginalPreparationProgress::FactsRetained)?;
     let facts = session
         .facts()
@@ -77,6 +79,34 @@ pub(super) fn prepare_and_consume(
     assert_eq!(session.archive_state(), TurnoverState::Vacant);
     assert!(!session.reaped());
     let initial_bytes = std::fs::read(path)?;
+    let stopped = if observe_stopped {
+        session.begin_stopped_cut()?;
+        assert!(session.poll().is_err());
+        let deadline = OriginalDeadline::after(Duration::from_secs(5));
+        loop {
+            deadline.check()?;
+            if session.poll_stopped_cut()? {
+                break;
+            }
+            deadline.wait_pending()?;
+        }
+        let observed = session
+            .stopped_cut()
+            .ok_or("missing source stopped cut")?
+            .clone();
+        assert_eq!(observed.process_id()?, u64::from(original_pid));
+        assert!(observed.thread_id()? > 0);
+        assert_eq!(observed.position()?, position(0));
+        assert_eq!(observed.raw_count()?, 0);
+        assert_eq!(observed.next_cpu()?.time_ps.get(), 50);
+        session.begin_stopped_cut()?;
+        assert!(session.poll_stopped_cut()?);
+        assert_eq!(session.stopped_cut(), Some(&observed));
+        Some(observed)
+    } else {
+        assert!(session.begin_stopped_cut().is_err());
+        None
+    };
 
     let operation = match session.into_operation(command) {
         Ok(operation) => operation,
@@ -99,6 +129,7 @@ pub(super) fn prepare_and_consume(
     assert!(evidence.consumed_acknowledgement().is_some());
     assert_eq!(evidence.store().initialization(), &initialization);
     assert!(evidence.store().complete());
+    assert_eq!(evidence.stopped_cut(), stopped.as_ref());
     assert_eq!(std::fs::read(path)?, initial_bytes);
     Ok(operation)
 }

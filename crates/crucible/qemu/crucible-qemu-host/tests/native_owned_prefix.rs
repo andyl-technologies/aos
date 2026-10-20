@@ -196,21 +196,28 @@ use crucible_qemu_host::native_node_control::owned_operation::{
 #[ignore = "requires exact native quiet prefix source and GPL runtime"]
 fn actual_native_library_owner_preserves_original_child_and_quiet_custody()
 -> Result<(), Box<dyn Error>> {
-    run_original_native_owner_scenario(false, false)
+    run_original_native_owner_scenario(false, false, false)
 }
 
 #[test]
 #[ignore = "requires exact native initial contract and GPL runtime"]
 fn actual_native_session_consumes_original_initial_custody_into_quiet_operation()
 -> Result<(), Box<dyn Error>> {
-    run_original_native_owner_scenario(true, false)
+    run_original_native_owner_scenario(true, false, false)
 }
 
 #[test]
 #[ignore = "requires exact native initial contract and GPL runtime"]
 fn actual_native_session_completes_quiet_interval_at_exclusive_limit() -> Result<(), Box<dyn Error>>
 {
-    run_original_native_owner_scenario(true, true)
+    run_original_native_owner_scenario(true, true, false)
+}
+
+#[test]
+#[ignore = "requires exact native initial current-cut contract and GPL runtime"]
+fn actual_native_session_observes_initial_cut_before_quiet_completion() -> Result<(), Box<dyn Error>>
+{
+    run_original_native_owner_scenario(true, true, true)
 }
 
 #[path = "native_owned_prefix/initial_session.rs"]
@@ -219,6 +226,7 @@ mod initial_session;
 fn run_original_native_owner_scenario(
     initial_contract: bool,
     complete_interval: bool,
+    observe_stopped: bool,
 ) -> Result<(), Box<dyn Error>> {
     let qemu = artifact("CRUCIBLE_NATIVE_PROBE_QEMU")?;
     let plugin = artifact("CRUCIBLE_NATIVE_PROBE_PLUGIN")?;
@@ -266,7 +274,12 @@ fn run_original_native_owner_scenario(
             maximum_callbacks: 64,
         };
         {
-            NativeAdministrationTransport::prepare_prefix(
+            let prepare = if observe_stopped {
+                NativeAdministrationTransport::prepare_prefix_observation
+            } else {
+                NativeAdministrationTransport::prepare_prefix
+            };
+            prepare(
                 phase_preparation.as_ref().ok_or("phase absent")?.clone(),
                 [14; 32],
                 9,
@@ -720,6 +733,7 @@ fn run_original_native_owner_scenario(
             (*receipt).clone(),
             compute.clone(),
             complete_interval.then(|| position(151)),
+            observe_stopped,
         )?
     } else {
         NativeOwnedPrefixOperation::retain(child.take_child()?, native, archive, compute.clone())
@@ -823,6 +837,17 @@ fn run_original_native_owner_scenario(
         initial_bytes
     );
     drop(child);
+    if observe_stopped {
+        assert!(
+            driver
+                .initial_evidence()
+                .and_then(|evidence| evidence.stopped_cut())
+                .is_some()
+        );
+        eprintln!(
+            "native_stopped_cut=initial0,raw0,nextCPU50,sourceRR,retainedThroughCompute,reaped"
+        );
+    }
     if complete_interval {
         eprintln!(
             "native_prefix_completion=exclusive151,raw3,evaluated100,completed,acknowledged,reaped"

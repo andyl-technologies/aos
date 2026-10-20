@@ -134,3 +134,7 @@ pub use prefix_preparation_acknowledgement::NativePrefixPreparationAcknowledgeme
 
 mod prefix_preparation_facts;
 pub use prefix_preparation_facts::NativePrefixPreparationFacts;
+
+mod stopped_cut;
+pub use stopped_cut::{NATIVE_STOPPED_CUT_BYTES, NativeStoppedCut, NativeStoppedCutQuery};
+mod stopped_cut_frames;

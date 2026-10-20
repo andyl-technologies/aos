@@ -206,6 +206,7 @@ mod tests {
                 NativeControlEdition::Construction => NativeControlEdition::Administration,
                 NativeControlEdition::FixedMicrovm => NativeControlEdition::Construction,
                 NativeControlEdition::FiniteEffect => NativeControlEdition::FixedMicrovm,
+                NativeControlEdition::PrefixObservation => NativeControlEdition::PrefixEffect,
                 NativeControlEdition::PrefixEffect => NativeControlEdition::FiniteEffect,
             };
             let frame = NativeFrame::QueryCpuPark([7; 32]);

@@ -75,6 +75,71 @@ impl SourceApi {
     }
 }
 
+/// Resolves only the explicitly selected source stopped-cut extension.
+pub(super) struct StoppedApi {
+    pub(super) register_contract: extern "C" fn(u32, *const PrefixPolicy) -> c_int,
+    query: extern "C" fn(
+        *const SourcePrefixRootSeal,
+        *mut c_void,
+        *const NativeStoppedQuery,
+        *mut u8,
+        u32,
+    ) -> c_int,
+}
+
+#[repr(C)]
+struct NativeStoppedQuery {
+    version: u32,
+    size: u32,
+    scope: [u8; 32],
+    preparation: [u8; 32],
+    sequence: u64,
+}
+
+impl StoppedApi {
+    pub(super) fn resolve() -> Option<Self> {
+        // SAFETY: Each optional symbol has the exact source declaration. The
+        // record storage is raw bytes, and all pointers stay in the GPL process.
+        let registration = unsafe {
+            libc::dlsym(
+                libc::RTLD_DEFAULT,
+                c"qemu_plugin_register_crucible_prefix_stopped_contract".as_ptr(),
+            )
+        };
+        // SAFETY: The static source export name is NUL terminated.
+        let query = unsafe {
+            libc::dlsym(
+                libc::RTLD_DEFAULT,
+                c"qemu_plugin_crucible_node_query_original_prefix_stopped".as_ptr(),
+            )
+        };
+        if registration.is_null() || query.is_null() {
+            return None;
+        }
+        Some(Self {
+            // SAFETY: The source API accepts the exact policy and version tuple.
+            register_contract: unsafe {
+                std::mem::transmute::<*mut c_void, extern "C" fn(u32, *const PrefixPolicy) -> c_int>(
+                    registration,
+                )
+            },
+            // SAFETY: NativeStoppedQuery80 and byte output408 match the source.
+            query: unsafe {
+                std::mem::transmute::<
+                    *mut c_void,
+                    extern "C" fn(
+                        *const SourcePrefixRootSeal,
+                        *mut c_void,
+                        *const NativeStoppedQuery,
+                        *mut u8,
+                        u32,
+                    ) -> c_int,
+                >(query)
+            },
+        })
+    }
+}
+
 struct PhysicalReply {
     cursor: u64,
     credit: Option<NativeAdministrativeReplyCredit>,
@@ -177,6 +242,7 @@ impl Original {
 pub(super) struct Journal {
     query: Option<Original>,
     acknowledgement: Option<Original>,
+    stopped: Option<Original>,
 }
 
 impl Journal {
@@ -191,16 +257,20 @@ impl Journal {
     }
 
     pub(super) fn pending(&self) -> bool {
-        [self.query.as_ref(), self.acknowledgement.as_ref()]
-            .into_iter()
-            .flatten()
-            .any(|original| {
-                !original.published
-                    || original
-                        .repeated
-                        .as_ref()
-                        .is_some_and(|repeated| !repeated.published)
-            })
+        [
+            self.query.as_ref(),
+            self.acknowledgement.as_ref(),
+            self.stopped.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|original| {
+            !original.published
+                || original
+                    .repeated
+                    .as_ref()
+                    .is_some_and(|repeated| !repeated.published)
+        })
     }
 }
 
@@ -246,6 +316,16 @@ impl SemanticPrefixOwner {
                 && *prefix_preparation == self.policy.prefix_preparation_commitment =>
             {
                 &mut state.preparation.query
+            }
+            NativeFrame::QueryStoppedCut(query)
+                if self.stopped_api.is_some()
+                    && state.command.is_none()
+                    && state.preparation.acknowledged()
+                    && query.scope == self.policy.original_effect.digests[0]
+                    && query.prefix_preparation == self.policy.prefix_preparation_commitment =>
+            {
+                query.encode()?;
+                &mut state.preparation.stopped
             }
             NativeFrame::AcknowledgePrefixPreparation(offered) => {
                 let facts = match state
@@ -363,6 +443,59 @@ impl SemanticPrefixOwner {
             }
             original.publish(actor)?;
         }
+        let consumed = match state
+            .preparation
+            .acknowledgement
+            .as_ref()
+            .and_then(|original| original.reply.as_ref())
+        {
+            Some(NativeFrame::PrefixPreparationAcknowledged(ack)) => Some(ack.clone()),
+            _ => None,
+        };
+        if let Some(original) = &mut state.preparation.stopped {
+            let api = self
+                .stopped_api
+                .as_ref()
+                .ok_or(NativeCommandError::Conflict)?;
+            let NativeFrame::QueryStoppedCut(query) = &original.frame else {
+                return Err(NativeCommandError::Conflict);
+            };
+            if original.reply.is_none() {
+                let native_query = NativeStoppedQuery {
+                    version: 1,
+                    size: 80,
+                    scope: query.scope,
+                    preparation: query.prefix_preparation,
+                    sequence: query.sequence.get(),
+                };
+                let mut bytes = [0; crucible_qemu_protocol::node_control::NATIVE_STOPPED_CUT_BYTES];
+                let status = (api.query)(
+                    root,
+                    epoch,
+                    &native_query,
+                    bytes.as_mut_ptr(),
+                    bytes.len() as u32,
+                );
+                if status == -libc::EAGAIN {
+                    return Ok(());
+                }
+                if status != 0 {
+                    return Err(NativeCommandError::Conflict);
+                }
+                let observation =
+                    crucible_qemu_protocol::node_control::NativeStoppedCut::from_source_record(
+                        query.clone(),
+                        &bytes,
+                    )?;
+                if observation.process_id()? != u64::from(self.process_id)
+                    || Some(observation.consumed_preparation()?) != consumed
+                {
+                    return Err(NativeCommandError::Conflict);
+                }
+                original.reply = Some(NativeFrame::StoppedCut(Box::new(observation)));
+            }
+            original.publish(actor)?;
+        }
         Ok(())
     }
 
@@ -371,6 +504,20 @@ impl SemanticPrefixOwner {
         state: &State,
         _epoch: *mut c_void,
     ) -> Result<Option<super::request::NativeRequest>, c_int> {
+        if let Some(original) = &state.preparation.stopped
+            && original.reply.is_none()
+        {
+            self.original_actor()?
+                .validate_unpublished_credit(original.credit.as_ref().ok_or(-libc::ESTALE)?)
+                .map_err(|error| match error {
+                    NativeAdministrativeInboxError::Busy => -libc::EAGAIN,
+                    _ => -libc::ESTALE,
+                })?;
+            let NativeFrame::QueryStoppedCut(query) = &original.frame else {
+                return Err(-libc::ESTALE);
+            };
+            return Ok(Some(super::request::NativeRequest::stopped(query)));
+        }
         let Some(original) = &state.preparation.acknowledgement else {
             return Ok(None);
         };

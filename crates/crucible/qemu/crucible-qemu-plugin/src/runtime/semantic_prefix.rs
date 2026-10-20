@@ -247,6 +247,7 @@ pub(crate) struct SemanticPrefixOwner {
     policy: PrefixPolicy,
     api: SourceApi,
     preparation_api: Option<preparation::SourceApi>,
+    stopped_api: Option<preparation::StoppedApi>,
     runtime: AtomicUsize,
     endpoint: OnceLock<Arc<InstalledEndpointCustody>>,
     state: Mutex<State>,
@@ -269,6 +270,7 @@ impl SemanticPrefixOwner {
     pub(crate) fn new(
         preparation: NativePrefixPreparation,
         initial_contract: bool,
+        stopped_contract: bool,
     ) -> Result<Arc<Self>, NativeCommandError> {
         preparation.validate()?;
         let initialization = &preparation
@@ -336,6 +338,18 @@ impl SemanticPrefixOwner {
             } else {
                 None
             },
+            stopped_api: if stopped_contract {
+                if !initial_contract {
+                    return Err(NativeCommandError::Conflict);
+                }
+                Some(
+                    preparation::StoppedApi::resolve().ok_or(NativeCommandError::Invalid(
+                        "native stopped-cut contract unavailable",
+                    ))?,
+                )
+            } else {
+                None
+            },
             runtime: AtomicUsize::new(0),
             endpoint: OnceLock::new(),
             state: Mutex::new(State {
@@ -367,6 +381,11 @@ impl SemanticPrefixOwner {
             return Err(NativeCommandError::Conflict);
         }
         if let Some(api) = &self.preparation_api
+            && (api.register_contract)(1, &self.policy) != 0
+        {
+            return Err(NativeCommandError::Conflict);
+        }
+        if let Some(api) = &self.stopped_api
             && (api.register_contract)(1, &self.policy) != 0
         {
             return Err(NativeCommandError::Conflict);
@@ -807,11 +826,16 @@ impl crate::native_node_control::NativeNodeControl {
         mut self,
         preparation: NativePrefixPreparation,
         initial_contract: bool,
+        stopped_contract: bool,
     ) -> Result<Self, NativeCommandError> {
         if self.effect.is_some() || self.prefix.is_some() {
             return Err(NativeCommandError::Conflict);
         }
-        self.prefix = Some(SemanticPrefixOwner::new(preparation, initial_contract)?);
+        self.prefix = Some(SemanticPrefixOwner::new(
+            preparation,
+            initial_contract,
+            stopped_contract,
+        )?);
         Ok(self)
     }
 }

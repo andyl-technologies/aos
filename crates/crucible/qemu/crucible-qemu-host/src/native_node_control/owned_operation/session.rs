@@ -30,10 +30,11 @@ use super::{
 /// consumed ACK, both durably retained. Current native roles and effect cuts
 /// remain independently authenticated inside QEMU.
 pub struct NativeOwnedPrefixSession {
-    child: QemuNodeChild,
-    preparation: OriginalPreparationDriver<NativeAdministrationTransport>,
-    archive: Archive,
+    pub(super) child: QemuNodeChild,
+    pub(super) preparation: OriginalPreparationDriver<NativeAdministrationTransport>,
+    pub(super) archive: Archive,
     refusal: Option<NativeOwnedPrefixRefusal>,
+    pub(super) stopped: Option<super::stopped_cut::StoppedAttempt>,
 }
 
 /// Retains every original owner when consuming a session fails.
@@ -109,6 +110,7 @@ impl NativeOwnedPrefixSession {
             preparation: OriginalPreparationDriver::retain(endpoint, initial),
             archive,
             refusal: (!matches).then_some(NativeOwnedPrefixRefusal::ProcessBinding),
+            stopped: None,
         }
     }
 
@@ -156,6 +158,9 @@ impl NativeOwnedPrefixSession {
     /// Busy leaves the original request and credits pending; no Compute is sent.
     pub fn poll(&mut self) -> Result<OriginalPreparationProgress, ArchiveError> {
         self.check_child()?;
+        if self.stopped.is_some() {
+            return Err(ArchiveError::Conflict);
+        }
         if self.archive.state() != TurnoverState::Vacant {
             return Err(ArchiveError::Conflict);
         }
@@ -192,6 +197,14 @@ impl NativeOwnedPrefixSession {
                 .preparation
                 .endpoint()
                 .original_process_matches(session.child.process_id())
+            || (session
+                .preparation
+                .endpoint()
+                .stopped_observation_selected()
+                && !session
+                    .stopped
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.complete()))
             || session.archive.state() != TurnoverState::Vacant
         {
             return Err(failure);
@@ -208,7 +221,11 @@ impl NativeOwnedPrefixSession {
         let Some(session) = failure.session.take() else {
             return Err(failure);
         };
-        let (endpoint, evidence) = session.preparation.into_parts();
+        let stopped = session
+            .stopped
+            .and_then(|attempt| attempt.into_observation());
+        let (endpoint, mut evidence) = session.preparation.into_parts();
+        evidence.retain_stopped_cut(stopped);
         let driver =
             OriginalOperationDriver::retain(endpoint, session.archive, failure.original.clone());
         let operation = NativeOwnedPrefixOperation::from_session(session.child, driver, evidence);
@@ -248,7 +265,7 @@ impl NativeOwnedPrefixSession {
         self.child.poll_force_kill_and_reap_failed_helper()
     }
 
-    fn check_child(&mut self) -> Result<(), ArchiveError> {
+    pub(super) fn check_child(&mut self) -> Result<(), ArchiveError> {
         if self.refusal.is_some() {
             return Err(ArchiveError::Failed);
         }

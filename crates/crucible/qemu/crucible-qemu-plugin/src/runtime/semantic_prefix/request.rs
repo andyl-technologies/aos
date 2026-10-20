@@ -79,6 +79,28 @@ impl OriginalRequest {
 }
 
 impl NativeRequest {
+    pub(super) fn stopped(
+        query: &crucible_qemu_protocol::node_control::NativeStoppedCutQuery,
+    ) -> Self {
+        let mut sequence = [0; 32];
+        sequence[..8].copy_from_slice(&query.sequence.get().to_ne_bytes());
+        Self {
+            version: 1,
+            size: 232,
+            kind: 4,
+            reserved: 0,
+            acknowledgement: NativeAcknowledgement {
+                version: 1,
+                size: 80,
+                scope: query.scope,
+                preparation: query.prefix_preparation,
+                grant: sequence,
+                ..Default::default()
+            },
+            cursor: NativeEffectPosition::default(),
+        }
+    }
+
     pub(super) fn preparation(
         ack: &crucible_qemu_protocol::node_control::NativePrefixPreparationAcknowledgement,
     ) -> Self {
@@ -493,6 +515,28 @@ pub(super) unsafe extern "C" fn get_request(
 mod tests {
     use super::*;
     use std::mem::{offset_of, size_of};
+
+    #[test]
+    fn stopped_query_has_exact_request_extent_and_zero_inactive_union() {
+        let request = NativeRequest::stopped(
+            &crucible_qemu_protocol::node_control::NativeStoppedCutQuery {
+                scope: [1; 32],
+                prefix_preparation: [2; 32],
+                sequence: U64::new(1),
+            },
+        );
+        assert_eq!(std::mem::size_of::<NativeRequest>(), 232);
+        assert_eq!(request.kind, 4);
+        assert_eq!(request.acknowledgement.size, 80);
+        assert_eq!(&request.acknowledgement.grant[..8], &1u64.to_ne_bytes());
+        assert_eq!(&request.acknowledgement.grant[8..], &[0; 24]);
+        assert_eq!(request.acknowledgement.command, [0; 32]);
+        assert_eq!(request.acknowledgement.result, [0; 32]);
+        assert_eq!(request.acknowledgement.sequence, 0);
+        assert_eq!(request.acknowledgement.cut_id, 0);
+        assert_eq!(request.acknowledgement.acknowledgement_sequence, 0);
+        assert_eq!(request.cursor, NativeEffectPosition::default());
+    }
 
     #[test]
     fn native_request_preserves_inactive_ack_bytes_and_closed_offsets() {

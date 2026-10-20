@@ -192,6 +192,24 @@ mod tests {
                 .prefix_preparation_contract(),
             Some(1)
         );
+        let observed = explicit.replace("node_control_version=9", "node_control_version=10");
+        assert_eq!(
+            PluginArgs::parse(&observed)
+                .unwrap()
+                .native_node_control()
+                .unwrap()
+                .edition()
+                .version(),
+            10
+        );
+        assert!(
+            PluginArgs::parse(
+                &complete
+                    .join(",")
+                    .replace("node_control_version=9", "node_control_version=10")
+            )
+            .is_err()
+        );
         for version in ["0", "2", "01", "", "future"] {
             assert!(
                 PluginArgs::parse(&format!(

@@ -22,6 +22,7 @@ mod initial_store;
 mod operation;
 mod session;
 mod session_creation;
+mod stopped_cut;
 mod store;
 mod transport;
 

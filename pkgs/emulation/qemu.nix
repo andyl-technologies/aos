@@ -2577,7 +2577,67 @@ in
                   timer.index("bool qemu_clock_run_timers")
               ]
 
+              prefix_root = Path(
+                  "accel/tcg/crucible-prefix-root-rr.inc.c"
+              ).read_text()
+              prefix_stopped = Path(
+                  "accel/tcg/crucible-prefix-stopped-rr.inc.c"
+              ).read_text()
+              stopped_header = Path(
+                  "include/qemu/crucible-prefix-stopped.h"
+              ).read_text()
+              stopped_request = prefix_stopped[
+                  prefix_stopped.index("static int rr_prefix_stopped_request(void)"):
+                  prefix_stopped.index(
+                      "int qemu_plugin_crucible_node_query_original_prefix_stopped("
+                  )
+              ]
+              stopped_reader = prefix_stopped[
+                  prefix_stopped.index(
+                      "int qemu_plugin_crucible_node_query_original_prefix_stopped("
+                  ):
+              ]
+              stopped_reader_code = re.sub(
+                  r"/\*.*?\*/", "", stopped_reader, flags=re.DOTALL
+              )
+
               checks = [
+                  # Source predicates bind the observational seam; actual
+                  # Session/native execution remains a separate registered gate.
+                  ("initial stopped observation precedes command dispatch", prefix_root,
+                   r"!qatomic_load_acquire\(&rr_prefix_preparation_acknowledged\).*?"
+                   r"rr_prefix_preparation_request\(\).*?"
+                   r"rr_prefix_stopped_request\(\).*?"
+                   r"rr_prefix_original_command\(\)", 1),
+                  ("stopped census retains original before-after validation", prefix_stopped,
+                   r"rr_prefix_stopped_sample\(&before\).*?"
+                   r"ops->validate_held\(root, owned_epoch, input->userdata\).*?"
+                   r"rr_crucible_prefix_source_matches\(root, owned_epoch\).*?"
+                   r"rr_prefix_stopped_sample\(&after\).*?"
+                   r"memcmp\(&before, &after, sizeof\(before\)\).*?"
+                   r"\*facts = after;", 1),
+                  ("stopped request refuses noninitial sequence", stopped_request,
+                   r"CRUCIBLE_PREFIX_REQUEST_STOPPED_OBSERVE.*?"
+                   r"query->size != sizeof\(\*query\).*?query->sequence != 1.*?"
+                   r"query->prepared_scope.*?query->prefix_preparation_commitment", 1),
+                  ("stopped publication follows real census and origin recheck", stopped_request,
+                   r"rr_prefix_query_stopped\(&rr_prefix_root,.*?&facts\).*?"
+                   r"process != getpid\(\).*?thread != qemu_get_thread_id\(\).*?"
+                   r"facts.actual_raw_counter.*?facts.original_command_sequence.*?"
+                   r"stopped_record_encode\(.*?"
+                   r"qatomic_store_release\(&rr_prefix_stopped_record_retained, true\)", 1),
+                  ("stopped historical reader requires original retained query", stopped_reader_code,
+                   r"rr_prefix_preparation_reader\(root, owned_epoch\).*?"
+                   r"qatomic_load_acquire\(&rr_prefix_stopped_record_retained\).*?"
+                   r"memcmp\(query, &rr_prefix_stopped_original_query, sizeof\(\*query\)\).*?"
+                   r"memcpy\(bytes, rr_prefix_stopped_record, length\)", 1),
+                  ("stopped reader never samples current state or dispatches", stopped_reader_code,
+                   r"rr_prefix_(?:query_stopped|stopped_sample|run_cpu|original_command)\(|"
+                   r"qemu_timer_crucible_prefix_frontier\(", 0),
+                  ("stopped wire extent and private interrupt normalization",
+                   stopped_header + prefix_stopped,
+                   r"#define CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES 408.*?"
+                   r"preparation_u32\(&cursor, facts->cpu_interrupt_request != 0\)", 1),
                   ("clamp declaration", shmem_header,
                    r"clamp_cpu_budget\([^;]+max_advance_icount\);", 1),
                   ("clamp implementation", shmem,

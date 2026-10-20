@@ -58,6 +58,7 @@ pub(crate) fn install(
         | crucible_qemu_protocol::node_control::NativeControlEdition::Construction
         | crucible_qemu_protocol::node_control::NativeControlEdition::FixedMicrovm
         | crucible_qemu_protocol::node_control::NativeControlEdition::FiniteEffect
+        | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation
         | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixEffect => Some(
             super::writer_abi::resolve_query_writers()
                 .ok_or(NativeControlInstallError::MissingCapability)?,
@@ -244,6 +245,7 @@ pub(crate) fn install(
             | crucible_qemu_protocol::node_control::NativeControlEdition::Construction
             | crucible_qemu_protocol::node_control::NativeControlEdition::FixedMicrovm
             | crucible_qemu_protocol::node_control::NativeControlEdition::FiniteEffect
+            | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation
             | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixEffect
     ) {
         control.with_preparation_successor()?
@@ -255,6 +257,7 @@ pub(crate) fn install(
         crucible_qemu_protocol::node_control::NativeControlEdition::Construction
             | crucible_qemu_protocol::node_control::NativeControlEdition::FixedMicrovm
             | crucible_qemu_protocol::node_control::NativeControlEdition::FiniteEffect
+            | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation
             | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixEffect
     ) {
         control.with_construction_reducer()?
@@ -273,6 +276,8 @@ pub(crate) fn install(
         Some(preparation) => control.with_prefix_preparation(
             preparation,
             config.prefix_preparation_contract() == Some(1),
+            config.edition()
+                == crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation,
         )?,
         None => control,
     };
