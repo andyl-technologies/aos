@@ -1,9 +1,10 @@
-//! Finishes expired pending chunks under funded physical recovery custody.
+//! Finishes expired pending chunks and pack units under physical recovery custody.
 //!
 //! This phase handles only an otherwise empty shared namespace and no cold
 //! pins, leases or residences. Old allocation holds survive unchanged.
 //! Publisher inventory distinguishes sealed inline claims from encoded chunk
-//! names and bounded frames. Encoded custody supplies no plaintext verification.
+//! names, bounded frames and pack retirement units. Encoded custody supplies no
+//! plaintext verification or evidence that an absent pack member exists.
 //! InspectPending retains the original inode and reconstructs any lost deadline.
 //! The publisher alone checks that durable deadline before final removal. Any
 //! refusal keeps the bootstrap and faulted owner; uncertain exchanges invalidate
@@ -72,7 +73,7 @@ impl PublisherRecoveryRetirementTurn<'_> {
 /// Reconciles supported pending candidates without changing any other recovery case.
 ///
 /// # Errors
-/// Refuses incomplete scans, manifest/pack custody, nonempty shared
+/// Refuses incomplete scans, manifest or canonical-pack custody, nonempty shared
 /// namespaces, cold pins/leases/residences, active or unknown intervals and uncertain
 /// native effects. A successful removal still requires fresh exhaustive recovery.
 pub(super) fn run(
@@ -99,7 +100,8 @@ pub(super) fn run(
     }
     // Validate the complete candidate set before the first namespace mutation.
     // Encoded chunks require an actual canonical NotFound, not a failed read
-    // reinterpreted as absence. Packs need their separate retirement-unit protocol.
+    // reinterpreted as absence. Packs require the actual reconciled unit token,
+    // rather than inferring a pack's presence from a surviving detached index.
     for candidate in inventory.candidates() {
         let key = candidate.key();
         let supported = match BodyKind::try_from(key.kind) {
@@ -109,6 +111,20 @@ pub(super) fn run(
             }
             Ok(BodyKind::Chunk) => {
                 key.codec <= 2 && candidate.pending_chunk_observation().is_some()
+            }
+            Ok(BodyKind::Pack) => {
+                if key.codec != 0
+                    || !key.descriptor.is_empty()
+                    || key.pack_id.len() != 16
+                    || candidate.pending_observation().is_none()
+                    || candidate.verified().is_some()
+                    || !matches!(candidate.issues(), [RecoveryIssue::PendingOnly])
+                {
+                    return Err(unresolved("unsupported pending pack retirement unit"));
+                }
+                // This is retained namespace custody, never proof that a
+                // missing member exists or that the encoded pack is readable.
+                continue;
             }
             _ => false,
         };

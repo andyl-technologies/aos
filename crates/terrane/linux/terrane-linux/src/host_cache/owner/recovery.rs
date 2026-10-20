@@ -284,7 +284,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
     session
         .check_recovery_context(&context)
         .map_err(io::Error::other)?;
-    if requires_cold_backing && inspector.inspect()?.candidates().is_empty() {
+    if requires_cold_backing && !inspector.has_backing_candidates()? {
         return Err(unresolved(
             "cold policy has no native backing candidates to reconcile",
         ));
@@ -307,8 +307,8 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         (bootstrap.id, owner.generation, write)
     };
     super::snapshot::persist(executor, bootstrap_write).await?;
-    let repaired_generation = recovery_indexes::run(executor, &inspector, &id, &context).await?;
-    if let Some(repaired) = repaired_generation {
+    let work = recovery_indexes::run(executor, &inspector, &id, &context).await?;
+    if let Some(repaired) = work.generation {
         let owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
@@ -317,8 +317,13 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             return Err(unresolved("startup index repair generation changed"));
         }
         generation = repaired;
-        // The repaired canonical index is part of a new exhaustive namespace;
-        // the pre-write observation cannot supply final source-closure proof.
+    }
+    if work.generation.is_some() || work.pending_reconciled {
+        let owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+        // Repair and pending-pair reconciliation both change actual names. The
+        // previous observation cannot supply final source-closure proof.
         shared = SharedNamespaceObservation::inspect(&owner.preparation)?;
     }
     // Publisher inventory may need the repaired metadata index to describe a

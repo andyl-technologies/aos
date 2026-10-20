@@ -43,7 +43,14 @@ struct Member {
 
 pub(super) struct EncodedUnit {
     members: Vec<Member>,
-    orphan_pack: Option<[u8; 16]>,
+    missing: Option<MissingMember>,
+}
+
+/// Retains absence to recheck before removing the surviving retirement member.
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct MissingMember {
+    pack_id: [u8; 16],
+    kind: IdentityKind,
 }
 
 pub(super) struct LeaseInput {
@@ -122,6 +129,11 @@ impl BodyIo {
         {
             return Err(invalid("unsafe encoded-body inode custody"));
         }
+        let expected = crate::host_quota::NativeProject::inspect(&self.chunks)?;
+        let actual = crate::host_quota::NativeProject::inspect(file)?;
+        if actual.project_id != expected.project_id {
+            return Err(invalid("encoded-body inode has a foreign charge owner"));
+        }
         Ok(())
     }
 
@@ -173,7 +185,7 @@ impl BodyIo {
         // The descriptor's plaintext size/hash is deliberately not accepted as
         // verified here. Dictionary resolution belongs to the cache verifier.
         Ok(EncodedUnit {
-            orphan_pack: None,
+            missing: None,
             members: vec![Member {
                 file,
                 parent,
@@ -202,7 +214,7 @@ impl BodyIo {
         parent.sync_all()?;
         self.pending.sync_all()?;
         let mut members = Vec::new();
-        let mut missing_pack = false;
+        let mut missing = None;
         for (extension, kind, lease_class) in [
             ("pack", IdentityKind::Pack, 0),
             ("idx", IdentityKind::Index, 1),
@@ -224,8 +236,11 @@ impl BodyIo {
                     (file, digest, Location::Canonical)
                 }
                 (None, Some((file, name))) => (file, name, Location::Pending),
-                (None, None) if pending && kind == IdentityKind::Pack => {
-                    missing_pack = true;
+                (None, None) if pending => {
+                    missing = Some(MissingMember {
+                        pack_id: *pack_id,
+                        kind,
+                    });
                     continue;
                 }
                 (None, None) => {
@@ -244,10 +259,7 @@ impl BodyIo {
                 lease_class,
             });
         }
-        let mut unit = EncodedUnit {
-            members,
-            orphan_pack: missing_pack.then_some(*pack_id),
-        };
+        let mut unit = EncodedUnit { members, missing };
         if pending {
             if !unit.any_pending() {
                 return Err(io::Error::new(
@@ -268,29 +280,34 @@ impl BodyIo {
         Ok(unit)
     }
 
-    fn require_pack_absent(&self, pack_id: &[u8; 16]) -> io::Result<()> {
-        let id = hex(pack_id);
+    fn require_member_absent(&self, missing: MissingMember) -> io::Result<()> {
+        let id = hex(&missing.pack_id);
+        let extension = match missing.kind {
+            IdentityKind::Pack => "pack",
+            IdentityKind::Index => "idx",
+            _ => return Err(invalid("invalid missing pack-member kind")),
+        };
         let packs = readonly(&self.objects, "pack", true)?;
         self.check(&packs, true)?;
         let parent = readonly(&packs, &id[..2], true)?;
         self.check(&parent, true)?;
         parent.sync_all()?;
         self.pending.sync_all()?;
-        match readonly(&parent, &format!("{id}.pack"), false) {
+        match readonly(&parent, &format!("{id}.{extension}"), false) {
             Ok(_) => {
                 return Err(invalid(
-                    "orphan index now has a canonical pack; inspect the pair again",
+                    "missing pack member became canonical; inspect the pair again",
                 ));
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
         if self
-            .find_pending_pack(pack_id, IdentityKind::Pack)?
+            .find_pending_pack(&missing.pack_id, missing.kind)?
             .is_some()
         {
             return Err(invalid(
-                "orphan index now has a pending pack; inspect the pair again",
+                "missing pack member became pending; inspect the pair again",
             ));
         }
         Ok(())
@@ -355,10 +372,13 @@ impl EncodedUnit {
     }
 
     pub(super) fn same_inode(&self, other: &Self) -> io::Result<bool> {
-        if self.members.len() != other.members.len() {
+        if self.members.len() != other.members.len() || self.missing != other.missing {
             return Ok(false);
         }
         for (left, right) in self.members.iter().zip(&other.members) {
+            if left.lease_class != right.lease_class {
+                return Ok(false);
+            }
             let left = left.file.metadata()?;
             let right = right.file.metadata()?;
             if left.dev() != right.dev() || left.ino() != right.ino() {
@@ -442,10 +462,10 @@ impl EncodedUnit {
     }
 
     pub(super) fn restore(&mut self, io: &BodyIo) -> io::Result<()> {
-        if self.orphan_pack.is_some() {
+        if self.missing.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                "orphan index cannot restore or establish missing pack bytes",
+                "incomplete pack unit cannot restore or establish a missing member",
             ));
         }
         for member in &mut self.members {
@@ -475,10 +495,10 @@ impl EncodedUnit {
     }
 
     pub(super) fn finish(&mut self, io: &BodyIo) -> io::Result<()> {
-        if let Some(pack_id) = self.orphan_pack {
-            // The lifecycle token grants no missing-pack validity. Recheck both
-            // namespaces immediately before removing this orphan index.
-            io.require_pack_absent(&pack_id)?;
+        if let Some(missing) = self.missing {
+            // A surviving member grants no missing-peer validity. Recheck both
+            // namespaces immediately before removing the original survivor.
+            io.require_member_absent(missing)?;
         }
         if self
             .members

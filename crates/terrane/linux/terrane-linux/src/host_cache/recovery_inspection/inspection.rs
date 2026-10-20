@@ -11,7 +11,7 @@ use crate::publisher_local::{
     client::{BodyIncarnationObservation, RecoveryBody},
     wire::{BodyKey, BodyKind, ResultCode},
 };
-use std::io;
+use std::{collections::BTreeSet, io};
 use terrane_sdk::{host::cache::HostDomainLocation, pack::PackId};
 
 /// Identifies unresolved work without claiming rollback, adoption or completion.
@@ -185,6 +185,40 @@ impl NativeRecoveryInspection {
 }
 
 impl NativeRecoveryInspector {
+    /// Enumerates bounded shared pack names without inspecting pending custody.
+    ///
+    /// These names grant no content, index or retirement authority. The physical
+    /// owner must fund any subsequent publisher inspection before submission.
+    ///
+    /// # Errors
+    /// Refuses malformed shared names, stale roots and exhausted name budgets.
+    pub(in crate::host_cache) fn shared_pack_ids(&self) -> io::Result<Vec<PackId>> {
+        self.check_current()?;
+        let mut collected = Candidates::new(self.max_candidates);
+        collected.shared_packs(self)?;
+        collected.keys().map(pack_id).collect()
+    }
+
+    /// Observes candidate presence without acquiring or reconciling pending inodes.
+    ///
+    /// Shared names suffice only for this pre-bootstrap existence question.
+    /// Every actual candidate remains subject to later complete verification.
+    ///
+    /// # Errors
+    /// Refuses failed or incomplete enumeration and stale native custody.
+    pub(in crate::host_cache) fn has_backing_candidates(&self) -> io::Result<bool> {
+        if !self.shared_pack_ids()?.is_empty() {
+            return Ok(true);
+        }
+        let mut collected = Candidates::new(self.max_candidates);
+        collected.publisher(self)?;
+        if let Some(error) = collected.inventory_failure.take() {
+            return Err(io::Error::other(error));
+        }
+        self.check_current()?;
+        Ok(collected.keys().next().is_some())
+    }
+
     /// Derives bounded missing-index work without asking publisher inventory.
     ///
     /// A sealed manifest's descriptor may itself require its cached index.
@@ -197,17 +231,18 @@ impl NativeRecoveryInspector {
     /// stale native custody and aggregate retained-index allocation overflow.
     pub(in crate::host_cache) fn inspect_index_repairs(
         &self,
+        pending: &BTreeSet<[u8; 16]>,
     ) -> io::Result<Vec<DerivedIndexRepair>> {
         self.check_current()?;
-        let mut collected = Candidates::new(self.max_candidates);
-        collected.shared_packs(self)?;
-        let packs = collected
-            .keys()
-            .map(pack_id)
-            .collect::<io::Result<Vec<_>>>()?;
+        let packs = self.shared_pack_ids()?;
         let mut repairs = Vec::new();
         let mut retained = 0_usize;
         for id in &packs {
+            // A successful publisher observation may have moved the other
+            // retirement member out of this namespace. It is not repair input.
+            if pending.contains(id.as_bytes()) {
+                continue;
+            }
             let VerifiedEncodedBody::Pack(plan) = verification::pack(self, *id, None, &packs)?
             else {
                 return Err(invalid(
@@ -331,6 +366,13 @@ impl NativeRecoveryInspector {
         }
         if key.kind == BodyKind::Sealed as i32 {
             candidate.issues.push(RecoveryIssue::SealedWitnessRequired);
+            return candidate;
+        }
+        if key.kind == BodyKind::Pack as i32 && candidate.pending.is_some() {
+            // Canonical pack inspection rejects a pending pair and invalidates
+            // Drain as an uncertain response. Retain the genuine pending unit
+            // for lifecycle recovery instead; no readable source was verified.
+            candidate.issues.push(RecoveryIssue::PendingOnly);
             return candidate;
         }
         let body = if publisher_available {
