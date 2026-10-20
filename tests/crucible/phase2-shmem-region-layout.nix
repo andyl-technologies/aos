@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase2.shmemRegionLayout",
   taskIds ? ["T-SHM-1" "T-SHM-2" "T-SHM-4" "T-SHM-5" "T-SHM-12"],
 }: let
-  root = ../..;
-  cratesDir = root + "/crates";
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
@@ -25,7 +24,7 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
 
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
+  inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
 
   rustSources = dir: displayPrefix: let
     entries =
@@ -53,14 +52,10 @@
         else []
     ) (lib.sort builtins.lessThan (builtins.attrNames entries));
 
-  crateEntries = builtins.readDir cratesDir;
-  packages =
-    lib.filter (package: crateEntries.${package} == "directory")
-    (builtins.attrNames crateEntries);
   nonShmemSources =
     lib.concatMap (
       package:
-        if package == "crucible-shmem"
+        if package == "crucible-qemu-shmem"
         then []
         else
           map (
@@ -69,15 +64,34 @@
               // {
                 inherit package;
               }
-          ) (rustSources (cratesDir + "/${package}") "")
+          ) (rustSources (packageDir package) "")
     )
-    packages;
+    packageNames;
+
+  # Fence the exact Rust identifier across every other manifest-owned crate.
+  # Longer identifiers, such as the independent QMP source-graph bound, differ.
+  hasMaxNodesIdentifier = content:
+    builtins.elem "MAX_NODES"
+    (builtins.filter builtins.isString (builtins.split "[^A-Za-z0-9_]+" content));
+
+  maxNodesScannerRegressionFailures =
+    lib.optionals (!(builtins.all hasMaxNodesIdentifier [
+      "MAX_NODES"
+      "const LIMIT: usize = MAX_NODES;"
+      "let count = layout::MAX_NODES;"
+      "use layout::MAX_NODES;"
+    ])) ["MAX_NODES scanner must reject bare and qualified identifier escapes"]
+    ++ lib.optionals (builtins.any hasMaxNodesIdentifier [
+      "QMP_HOT_FORK_SOURCE_GRAPH_MAX_NODES"
+      "MAX_NODES_SUFFIX"
+      "PREFIX_MAX_NODES"
+    ]) ["MAX_NODES scanner must distinguish separate Rust identifiers"];
 
   maxNodesEscapeFailures =
     lib.concatMap (
       source:
-        lib.optionals (hasInfix "MAX_NODES" (builtins.readFile source.path)) [
-          "crates/${source.package}/${source.display}: MAX_NODES escaped crucible-shmem"
+        lib.optionals (hasMaxNodesIdentifier (builtins.readFile source.path)) [
+          "${toString source.path}: MAX_NODES escaped crucible-qemu-shmem"
         ]
     )
     nonShmemSources;
@@ -169,8 +183,8 @@
         needle = "pub const NODE_SLOT_SIZE";
       }
       {
-        label = "node slot pad offset";
-        needle = "NODE_SLOT_PAD0_OFFSET == 39";
+        label = "node slot advance-stop condition offset";
+        needle = "NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET == 39";
       }
       {
         label = "node slot logical-time raw offset";
@@ -347,7 +361,8 @@
         needle = "shmemRegionLayout = import ./phase2-shmem-region-layout.nix";
       }
     ]
-    ++ maxNodesEscapeFailures;
+    ++ maxNodesEscapeFailures
+    ++ maxNodesScannerRegressionFailures;
 in
   if failures != []
   then throw "crucible phase2 shmem region layout check failed:\n${builtins.concatStringsSep "\n" failures}"

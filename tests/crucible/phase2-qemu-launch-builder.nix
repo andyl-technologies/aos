@@ -34,7 +34,7 @@
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
       {
         label = "T-QEMU-1 completion note names launch-command builder";
-        needle = "typed `crucible-qemu` launch-command builder";
+        needle = "typed `crucible-qemu-host` launch-command builder";
       }
       {
         label = "T-QEMU-1 completion note preserves fd-passing follow-up";

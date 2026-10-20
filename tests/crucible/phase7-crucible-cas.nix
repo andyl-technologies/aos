@@ -34,7 +34,7 @@
       }
       {
         label = "crucible-cas evidence";
-        needle = "`crucible-cas`";
+        needle = "`crucible-store`";
       }
     ]
     ++ failuresFor "crates/Cargo.toml" (builtins.readFile ../../crates/Cargo.toml) [
