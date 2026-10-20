@@ -3,6 +3,8 @@
 use super::*;
 
 mod storage;
+#[cfg(test)]
+mod tests;
 
 use storage::GenerationNodeState;
 pub use storage::QemuAttemptGenerationStorage;
@@ -675,11 +677,11 @@ impl QemuAttemptGenerationLease {
     ///
     /// # Errors
     ///
-    /// Returns [`LifecycleApiError::LoopFactory`] when the registry is poisoned,
+    /// Returns [`LifecycleApiError::LoopFactory`] when the registry is unavailable,
     /// this is no longer the exact active/latest generation, or the lease was
-    /// already finished. Failure leaves the lease fail-closed so its `Drop`
-    /// path poisons aggregate release.
-    pub(crate) fn abort_without_process(mut self) -> Result<(), LifecycleApiError> {
+    /// already finished. Refusal leaves this same lease owned by its caller;
+    /// neither contention nor a mismatched observation consumes its custody.
+    pub(crate) fn abort_without_process(&mut self) -> Result<(), LifecycleApiError> {
         if self.finished {
             return Err(generation_error(
                 "cannot abort an already-finished QEMU generation lease",
@@ -687,8 +689,8 @@ impl QemuAttemptGenerationLease {
         }
         let mut state = self
             .generations
-            .lock()
-            .map_err(|_| generation_error("QEMU attempt generation registry is poisoned"))?;
+            .try_lock()
+            .map_err(|_| generation_error("QEMU attempt generation registry is unavailable"))?;
         let index = state
             .nodes
             .binary_search_by(|row| row.node.cmp(self.identity.node()))
@@ -704,7 +706,6 @@ impl QemuAttemptGenerationLease {
                 .flatten()
         });
         let (Some(index), Some(active)) = (index, active) else {
-            state.abandoned = true;
             return Err(generation_error(format!(
                 "QEMU node `{}` generation {} is not the exact pending generation",
                 self.identity.node().name,

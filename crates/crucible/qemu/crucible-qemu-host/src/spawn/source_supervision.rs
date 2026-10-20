@@ -22,6 +22,7 @@ use rustix::fs::{MemfdFlags, OFlags, SealFlags};
 use crate::linux_attempt_host::{InstalledSourceAdmission, InstalledSourceSubject};
 
 mod action;
+pub(crate) use action::ActionSourceProducer;
 mod parent_park_return;
 
 pub(crate) const SOURCE_PUBLICATION_BYTES: usize = 1504;

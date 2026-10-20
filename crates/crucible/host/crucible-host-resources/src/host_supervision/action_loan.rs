@@ -2,7 +2,8 @@
 //!
 //! Operation and outer subscriptions are charged intrusive lists. They retain
 //! the actual publisher, cancellation and supervisor after the producing guard
-//! drops. Only a matched physical return removes them; ACKs have no role here.
+//! drops. A matched physical return or the actual producer's sealed unpublished
+//! action removes them; ACKs have no role here.
 //! Lock order is operation state, then outer, then callback publication. A
 //! publisher receives values only and must never query a supervisor.
 
@@ -58,6 +59,16 @@ pub trait HostActionPublisher: std::fmt::Debug + Send + Sync {
     /// Refuses absent, mismatched or uncertain physical-return observations.
     fn action_return(&self, binding: ActionBinding) -> Result<ActionReturn, HostSupervisionError>;
 
+    /// Checks the actual producer's irreversible local unpublished closure.
+    ///
+    /// The publisher must retain that producer's nominal privilege and seal it
+    /// before any request or capture publication is attempted. Observing an odd
+    /// ACK, absent peer, failed wake or equal binding cannot establish this cut.
+    ///
+    /// # Errors
+    /// Refuses any attempted publication, foreign action or uncertain custody.
+    fn unpublished_return(&self, binding: ActionBinding) -> Result<(), HostSupervisionError>;
+
     /// Observes this actual row after its publisher corroborates Park closure.
     ///
     /// The publisher must authenticate the same request's checked transport
@@ -87,7 +98,7 @@ pub(super) struct OperationSubscriber {
     publisher: Arc<dyn HostActionPublisher>,
     next: Option<Box<OperationSubscriber>>,
     // The physical node and strong publisher precede their actual credit.
-    _credit: SourceHostControlLease,
+    _credit: Option<SourceHostControlLease>,
 }
 
 #[derive(Debug)]
@@ -124,6 +135,19 @@ pub struct HostActionReturnReceipt {
     publisher: Arc<dyn HostActionPublisher>,
 }
 
+/// Binds actual membership to its producer's sealed unpublished return.
+///
+/// Only a retained loan can construct this selector through its registered
+/// publisher. It is distinct from a native physical journal or an ACK.
+#[derive(Debug)]
+pub struct HostActionUnpublishedReturnReceipt {
+    shared: Arc<Shared>,
+    binding: ActionBinding,
+    operation: u64,
+    row: u32,
+    publisher: Arc<dyn HostActionPublisher>,
+}
+
 /// Authenticates one Host membership after the same request physically closed.
 ///
 /// Only the actual loan can construct this private selector by consulting its
@@ -152,6 +176,8 @@ impl HostActionLoan {
             + std::mem::size_of::<[Option<MutexGuard<'static, Option<HostActionLoan>>>; 4]>()
             + 2 * std::mem::size_of::<[ActionParent; 4]>()
             + std::mem::size_of::<HostActionReturnReceipt>()
+            + std::mem::size_of::<HostActionUnpublishedReturnReceipt>()
+            + std::mem::size_of::<Option<SourceHostControlLease>>()
             + std::mem::size_of::<HostParentParkReturnReceipt>()
             + std::mem::size_of::<ActionReturn>()
             + std::mem::size_of::<ParentParkReturn>()
@@ -191,6 +217,43 @@ impl HostActionLoan {
         Ok(HostActionReturnReceipt {
             shared: Arc::clone(&self.supervisor.shared),
             journal,
+            operation: self.operation,
+            row: self.row,
+            publisher,
+        })
+    }
+
+    /// Observes local closure through this loan's actual registered producer.
+    ///
+    /// This identity-only path also handles born but unprojected subscribers.
+    /// It never emits a native journal, completes work or renews an Original.
+    ///
+    /// # Errors
+    /// Refuses missing/returned membership or an unsealed publication privilege.
+    pub fn observe_unpublished_return(
+        &self,
+    ) -> Result<HostActionUnpublishedReturnReceipt, HostSupervisionError> {
+        if self.returned || self.binding.park_request.is_some() {
+            return Err(HostSupervisionError::Unavailable);
+        }
+        let publisher = {
+            let state = self.supervisor.lock()?;
+            let mut cursor = state
+                .operations
+                .get(&self.operation)
+                .and_then(|operation| operation.action_subscribers.as_deref());
+            loop {
+                let subscriber = cursor.ok_or(HostSupervisionError::Unavailable)?;
+                if subscriber.binding == self.binding && subscriber.row == self.row {
+                    break Arc::clone(&subscriber.publisher);
+                }
+                cursor = subscriber.next.as_deref();
+            }
+        };
+        publisher.unpublished_return(self.binding)?;
+        Ok(HostActionUnpublishedReturnReceipt {
+            shared: Arc::clone(&self.supervisor.shared),
+            binding: self.binding,
             operation: self.operation,
             row: self.row,
             publisher,
@@ -449,6 +512,28 @@ impl HostActionLoan {
         )
     }
 
+    /// Unlinks only this actual membership after sealed unpublished closure.
+    ///
+    /// Semantic cancellation cannot prevent this identity-only cleanup. The
+    /// publisher's local closure must be irreversible before the receipt exists.
+    ///
+    /// # Errors
+    /// Refuses foreign, duplicate, absent or uncertain subscription custody.
+    pub fn return_unpublished(
+        &mut self,
+        receipt: &HostActionUnpublishedReturnReceipt,
+    ) -> Result<(), HostSupervisionError> {
+        if receipt.binding != self.binding || self.binding.park_request.is_some() {
+            return Err(HostSupervisionError::Unavailable);
+        }
+        self.return_registered_membership(
+            &receipt.shared,
+            receipt.operation,
+            receipt.row,
+            &receipt.publisher,
+        )
+    }
+
     /// Returns this Host subscriber after its actual publisher verifies closure.
     ///
     /// This identity-only cleanup neither retires the standing Source nor
@@ -513,7 +598,7 @@ impl HostActionLoan {
             return Err(HostSupervisionError::Unavailable);
         }
 
-        let removed_operation =
+        let mut removed_operation =
             remove_operation(&mut operation.action_subscribers, self.binding, self.row)?;
         let removed_outer = remove_outer(&mut outer.action_subscribers, self.binding, self.row)?;
         let remove_entry = !operation.guard_live && operation.action_subscribers.is_none();
@@ -522,15 +607,23 @@ impl HostActionLoan {
         } else {
             None
         };
+        // Detach the same paid credit before any owner destructor can unwind.
+        // The Box remains owned until its complete physical destruction below.
+        let credit = std::mem::ManuallyDrop::new(removed_operation._credit.take());
         self.returned = true;
         drop(outer);
         drop(state);
         // Cancellation, publisher and credit destructors never run under lender locks.
-        drop(retired);
-        drop(removed_outer);
-        drop(removed_operation);
+        drop_body_before_credit((retired, removed_outer, removed_operation), credit);
         Ok(())
     }
+}
+
+fn drop_body_before_credit<T, C>(body: T, credit: std::mem::ManuallyDrop<C>) {
+    // If any body destructor unwinds, its actual credit remains retained. This
+    // is sticky custody, not resumable cleanup or whole-pool completion.
+    drop(body);
+    drop(std::mem::ManuallyDrop::into_inner(credit));
 }
 
 impl HostOperationGuard {
@@ -567,7 +660,7 @@ impl HostOperationGuard {
             role,
             publisher: Arc::clone(&publisher),
             next: None,
-            _credit: credit,
+            _credit: Some(credit),
         });
         let mut outer_node = Box::new(OuterSubscriber {
             binding,

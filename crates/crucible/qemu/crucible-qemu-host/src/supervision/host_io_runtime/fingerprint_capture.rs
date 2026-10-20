@@ -59,6 +59,22 @@ impl QemuLiveHostIoRuntime {
         deadline.remaining(operation)?.ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(operation, "capture operation has expired")
         })?;
+        if let Some(source) = &mut self.source_supervision {
+            // The sampler generation is externally visible before its paired
+            // token. Even CAS refusal keeps this attempted publication sealed.
+            source
+                .begin_capture_publication(
+                    self.region.as_ref().ok_or_else(region_missing)?,
+                    self.vm_slot,
+                    fingerprint_request,
+                )
+                .map_err(|source| {
+                    QemuAsyncDriverRuntimeError::operational_supervision(
+                        "begin fingerprint request publication",
+                        source,
+                    )
+                })?;
+        }
         // Admission owns the proposed successor before it becomes visible.
         // The exact compare-and-exchange also rejects a completed intervening
         // capture rather than publishing an unowned replacement generation.

@@ -44,7 +44,8 @@ const CONTRACTS: &[ExportContract] = &[
     ExportContract {
         path: "crucible/host/crucible-host-resources/src/host_supervision.rs",
         source: r#"pub use action_loan::{
-    HostActionLoan, HostActionPublisher, HostActionReturnReceipt, HostParentParkReturnReceipt,
+    HostActionLoan, HostActionPublisher, HostActionReturnReceipt, HostActionUnpublishedReturnReceipt,
+    HostParentParkReturnReceipt,
 };"#,
     },
     ExportContract {

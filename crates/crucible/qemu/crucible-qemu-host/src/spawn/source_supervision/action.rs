@@ -12,6 +12,10 @@ use crucible_qemu_protocol::boundary_action::{
     ActionBinding, ActionObservation, ActionParent, ActionReturn,
 };
 
+mod publication;
+pub(crate) use publication::ActionSourceProducer;
+use publication::PublicationPhase;
+
 enum RequestIdentity {
     Control {
         token: u32,
@@ -32,9 +36,26 @@ pub(super) struct PendingAction {
     pub(super) verified_return: Option<ActionReturn>,
     pub(super) verified_park_return: Option<parent_park_return::VerifiedParkReturn>,
     pub(super) park_members_returned_mask: u32,
+    publication: PublicationPhase,
+    frontier_held: bool,
 }
 
 impl PendingAction {
+    #[cfg(test)]
+    pub(super) fn from_observation_for_test(observation: ActionObservation) -> Self {
+        Self {
+            observation,
+            returning: false,
+            clearing: false,
+            refused: false,
+            verified_return: None,
+            verified_park_return: None,
+            park_members_returned_mask: 0,
+            publication: PublicationPhase::Unpublished,
+            frontier_held: false,
+        }
+    }
+
     // This comparison consumes a fresh full collector result. It never turns
     // an independently updated dirty row into an accepted cohort.
     fn matches_current_cohort(
@@ -55,11 +76,11 @@ impl PendingAction {
 impl OriginalSourceSupervision {
     /// Binds the actual hosted setup mapping before any action publication.
     pub(crate) fn bind_action_mapping(
-        &self,
+        self,
         mapping: &crucible_qemu_shmem::MappedSetupRegion,
         slot: u32,
         wake: Arc<std::fs::File>,
-    ) -> Result<(), HostSupervisionError> {
+    ) -> Result<ActionSourceProducer, HostSupervisionError> {
         self.publisher
             ._admission
             .check()
@@ -93,7 +114,9 @@ impl OriginalSourceSupervision {
         }
         *action_wake = Some(wake);
         *held = Some((identity, slot));
-        Ok(())
+        drop(action_wake);
+        drop(held);
+        Ok(ActionSourceProducer { source: self })
     }
 
     /// Reads return only from the assigned live mapping and actual peer slot.
@@ -251,13 +274,15 @@ impl OriginalSourceSupervision {
             .lock()
             .map_or(true, |state| state.action.is_some())
     }
+}
 
-    /// Retains a genuine single or paired producer before publishing its request.
+impl ActionSourceProducer {
+    /// Retains genuine producer loans before any request publication.
     ///
     /// No guard is cloned or reclassified. Born-negative memberships remain in
     /// the inline paid slots, independently of the caller's stack lifetime.
     pub(crate) fn begin_action(
-        &self,
+        &mut self,
         mapping: &crucible_qemu_shmem::MappedSetupRegion,
         slot: u32,
         token: u32,
@@ -280,7 +305,7 @@ impl OriginalSourceSupervision {
     /// Source then owns both real lender memberships through Park disposition.
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     pub(crate) fn begin_parent_park_action(
-        &self,
+        &mut self,
         mapping: &crucible_qemu_shmem::MappedSetupRegion,
         slot: u32,
         correlation: u64,
@@ -304,7 +329,9 @@ impl OriginalSourceSupervision {
             [Some(actor), Some(family)],
         )
     }
+}
 
+impl OriginalSourceSupervision {
     /// Refreshes only this still-owned typed pair before another Park action.
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     pub(crate) fn check_parent_park_action(
@@ -344,9 +371,11 @@ impl OriginalSourceSupervision {
         }
         Ok(())
     }
+}
 
+impl ActionSourceProducer {
     fn begin_request(
-        &self,
+        &mut self,
         mapping: &crucible_qemu_shmem::MappedSetupRegion,
         slot: u32,
         frontier: u64,
@@ -447,11 +476,37 @@ impl OriginalSourceSupervision {
                 verified_return: None,
                 verified_park_return: None,
                 park_members_returned_mask: 0,
+                publication: if park_request.is_some() {
+                    PublicationPhase::Published
+                } else {
+                    PublicationPhase::Unpublished
+                },
+                frontier_held: false,
             });
             binding
         };
-        if node.retain_action_frontier(binding.loan_sequence).is_err() {
-            let _ = self.clear_unborn_action(mapping, slot, binding, false);
+        let retained = {
+            let mut state = self
+                .publisher
+                .state
+                .lock()
+                .map_err(|_| HostSupervisionError::Unavailable)?;
+            let action = state
+                .action
+                .as_mut()
+                .ok_or(HostSupervisionError::Unavailable)?;
+            let retained = node.retain_action_frontier(binding.loan_sequence);
+            if retained.is_ok() {
+                // The same held state receives the factual result before any
+                // later lock, projection or post can refuse.
+                action.frontier_held = true;
+            }
+            retained
+        };
+        if retained.is_err() {
+            if park_request.is_some() {
+                let _ = self.clear_unborn_park_action(mapping, slot, binding, false);
+            }
             return Err(HostSupervisionError::BorrowedOperation);
         }
         // The producer ordinal is checked after exclusion. No later command
@@ -461,7 +516,9 @@ impl OriginalSourceSupervision {
             .map_err(|_| HostSupervisionError::Unavailable)?
             != frontier
         {
-            let _ = self.clear_unborn_action(mapping, slot, binding, true);
+            if park_request.is_some() {
+                let _ = self.clear_unborn_park_action(mapping, slot, binding, true);
+            }
             return Err(HostSupervisionError::Unavailable);
         }
         let callback: Arc<dyn HostActionPublisher> = self.publisher.clone();
@@ -483,7 +540,9 @@ impl OriginalSourceSupervision {
             // The actual loan field is already populated when a post refuses.
             drop(output);
             if let Err(error) = result {
-                let _ = self.clear_unborn_action(mapping, slot, binding, true);
+                if park_request.is_some() {
+                    let _ = self.clear_unborn_park_action(mapping, slot, binding, true);
+                }
                 return Err(error);
             }
         }
@@ -491,19 +550,22 @@ impl OriginalSourceSupervision {
         Ok(binding)
     }
 
-    /// Closes only the local no-reader cut before any actual loan birth.
+    /// Closes only Park's existing no-reader cut before any actual loan birth.
     ///
     /// The canonical publisher emits no action tail while the born mask is
     /// zero, and this caller has not published a control request or wake. Every
     /// actual output slot must also be empty; an unprojectable born owner is
     /// retained rather than mistaken for an unpublished operation.
-    fn clear_unborn_action(
+    fn clear_unborn_park_action(
         &self,
         mapping: &crucible_qemu_shmem::MappedSetupRegion,
         slot: u32,
         binding: ActionBinding,
         frontier_held: bool,
     ) -> Result<(), HostSupervisionError> {
+        if binding.park_request.is_none() {
+            return Err(HostSupervisionError::Unavailable);
+        }
         let mut outputs = std::array::from_fn::<_, 4, _>(|_| None);
         for (index, output) in outputs.iter_mut().enumerate() {
             *output = Some(
@@ -537,7 +599,9 @@ impl OriginalSourceSupervision {
         state.action = None;
         Ok(())
     }
+}
 
+impl OriginalSourceSupervision {
     /// Revalidates every actual lender outside publication guards.
     pub(crate) fn refresh_action(&self) -> Result<(), HostSupervisionError> {
         let count = {
@@ -590,6 +654,10 @@ impl OriginalSourceSupervision {
             if journal.binding != action.observation.binding
                 || journal.row_count != action.observation.row_count
                 || journal.borrowed_mask != action.observation.borrowed_mask
+                || !matches!(
+                    action.publication,
+                    PublicationPhase::Publishing | PublicationPhase::Published
+                )
             {
                 return Err(HostSupervisionError::Unavailable);
             }
@@ -628,6 +696,25 @@ impl OriginalSourceSupervision {
 }
 
 impl HostActionPublisher for SourcePublisher {
+    fn unpublished_return(&self, binding: ActionBinding) -> Result<(), HostSupervisionError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let action = state
+            .action
+            .as_ref()
+            .ok_or(HostSupervisionError::Unavailable)?;
+        if action.observation.binding == binding
+            && binding.park_request.is_none()
+            && action.publication == PublicationPhase::LocallyClosed
+        {
+            Ok(())
+        } else {
+            Err(HostSupervisionError::Unavailable)
+        }
+    }
+
     fn retain_parent(&self, binding: ActionBinding, row: u32) -> Result<(), HostSupervisionError> {
         let mut state = self
             .state

@@ -9,7 +9,9 @@
 use super::action_scope::ControlActionScope;
 use super::control::PendingControlBoundary;
 use super::*;
-use crucible_host_resources::host_supervision::{HostOperationGuard, HostOperationSupervisor};
+use crucible_host_resources::host_supervision::{
+    HostOperationGuard, HostOperationState, HostOperationSupervisor, HostSupervisionError,
+};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -205,12 +207,29 @@ impl ControlActionScope for ComponentAction<'_, '_> {
         Ok(true)
     }
 
+    fn lend_probe(
+        &mut self,
+        runtime: &mut QemuLiveHostIoRuntime,
+        budget: &OperationPollBudget<'_>,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        self.lend(runtime, budget, None)
+    }
+
     fn lend_pause(
         &mut self,
         runtime: &mut QemuLiveHostIoRuntime,
         budget: &OperationPollBudget<'_>,
     ) -> Result<bool, QemuAsyncDriverRuntimeError> {
         self.lend(runtime, budget, None)
+    }
+
+    fn begin_pause_publication(
+        &mut self,
+        runtime: &mut QemuLiveHostIoRuntime,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        // Component construction rejects a real Source. This invokes the same
+        // Source-absent transport seam without manufacturing a Source selector.
+        runtime.begin_pause_action_publication(None)
     }
 
     fn validate(&self, request: PendingControlBoundary) -> Result<(), QemuAsyncDriverRuntimeError> {
@@ -460,4 +479,202 @@ impl QemuHostIoRuntime for ComponentHostIoRuntime {
 
 fn model_error(reason: impl ToString) -> QemuAsyncDriverRuntimeError {
     QemuAsyncDriverRuntimeError::new("component control action", reason.to_string())
+}
+
+fn probe_runtime() -> Result<
+    (
+        QemuLiveHostIoRuntime,
+        crucible_qemu_shmem::MappedSetupRegion,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 4),
+    )?;
+    let layout = allocation.layout();
+    let mut shmem = File::from(crate::spawn::memfd_region(layout.region_size)?);
+    shmem.write_all(&allocation.setup_region_bytes()?)?;
+    let observer = crucible_qemu_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let wake = tempfile::tempfile()?;
+    let runtime =
+        QemuLiveHostIoRuntime::from_shmem_fd(shmem.as_fd(), wake.as_fd(), layout.region_size, 0)?;
+    Ok((runtime, observer))
+}
+
+fn probe_supervisor() -> HostOperationSupervisor {
+    HostOperationSupervisor::new(
+        crucible_host_resources::host_supervision::HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn source_absent_probe_keeps_fixture_transport_without_claiming_a_loan()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut runtime, observer) = probe_runtime()?;
+    let budget = OperationPollBudget::begin(
+        None,
+        HostOperationClass::Quiescence,
+        Duration::from_secs(2),
+        "fixture probe",
+    )?;
+    let before = observer.node_slot(0)?.snapshot();
+    let mut action = super::action_scope::SourceControlAction::default();
+
+    assert!(!action.lend_probe(&mut runtime, &budget)?);
+    assert_eq!(observer.node_slot(0)?.snapshot(), before);
+    assert!(budget.action_producers()?.is_none());
+    let request = runtime.signal_wake(None)?;
+    action.validate(request)?;
+    assert_eq!(
+        observer.node_slot(0)?.control_boundary_token(),
+        request.generation,
+    );
+    assert_eq!(
+        observer.node_slot(0)?.acknowledge_control_boundary(),
+        request.generation.wrapping_add(1),
+    );
+    assert!(action.finish(&runtime)?);
+    budget.complete("fixture probe")?;
+    Ok(())
+}
+
+#[test]
+fn fixture_cannot_supply_the_required_probe_original() -> Result<(), Box<dyn std::error::Error>> {
+    let (_runtime, observer) = probe_runtime()?;
+    let budget = OperationPollBudget::begin(
+        None,
+        HostOperationClass::Quiescence,
+        Duration::from_secs(2),
+        "fixture producer refusal",
+    )?;
+    let before = observer.node_slot(0)?.snapshot();
+
+    let error = super::action::check_probe_original(&budget).unwrap_err();
+
+    assert_eq!(
+        error.operational_supervision_source(),
+        Some(HostSupervisionError::Unavailable),
+    );
+    assert_eq!(observer.node_slot(0)?.snapshot(), before);
+    assert!(budget.action_producers()?.is_none());
+    Ok(())
+}
+
+#[test]
+fn supervised_and_borrowed_probe_use_one_actual_original() -> Result<(), Box<dyn std::error::Error>>
+{
+    let supervisor = probe_supervisor();
+    let budget = OperationPollBudget::begin(
+        Some(&supervisor),
+        HostOperationClass::Quiescence,
+        Duration::ZERO,
+        "same probe Original",
+    )?;
+    let OperationPollBudget::Supervised(original) = &budget else {
+        panic!("a real supervisor must retain its actual Original");
+    };
+    let borrowed = OperationPollBudget::borrow_original(original, "borrow same probe Original")?;
+
+    for budget in [&budget, &borrowed] {
+        super::action::check_probe_original(budget)?;
+        let producers = budget.action_producers()?.unwrap();
+        assert!(std::ptr::eq(producers[0].unwrap(), original));
+        assert!(producers[1].is_none());
+    }
+    borrowed.complete("retain borrowed probe Original")?;
+    let statuses = supervisor.operation_statuses()?;
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].state, HostOperationState::Running);
+    assert_eq!(statuses[0].completed_work_units, 0);
+    Ok(())
+}
+
+#[test]
+fn canceled_probe_original_refuses_without_replacement() -> Result<(), Box<dyn std::error::Error>> {
+    let supervisor = probe_supervisor();
+    let original = supervisor.begin(HostOperationClass::Quiescence)?;
+    let budget = OperationPollBudget::borrow_original(&original, "borrow canceled probe")?;
+    supervisor.cancel()?;
+
+    let error = super::action::check_probe_original(&budget).unwrap_err();
+
+    assert_eq!(
+        error.operational_supervision_source(),
+        Some(HostSupervisionError::Terminal {
+            state: HostOperationState::Canceled,
+        }),
+    );
+    assert_eq!(supervisor.operation_statuses()?.len(), 1);
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[test]
+fn source_absent_pair_probe_keeps_the_actual_pair_refusal_before_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_actor_owner, actor, actor_supervisor, _actor_event, _actor_account) =
+        crate::node::checkpoint_original_loan_fixture();
+    let (_family_owner, family, family_supervisor, _family_event, _family_account) =
+        crate::node::checkpoint_original_loan_fixture();
+    let budget = OperationPollBudget::borrow_quiescence_pair(
+        actor.guard(),
+        family.guard(),
+        "same pair probe",
+    )?;
+    let (mut runtime, observer) = probe_runtime()?;
+    let before = observer.node_slot(0)?.snapshot();
+    let mut action = super::action_scope::SourceControlAction::default();
+
+    assert!(action.lend_probe(&mut runtime, &budget).is_err());
+    assert_eq!(observer.node_slot(0)?.snapshot(), before);
+    budget.complete("pair remains owned")?;
+    for supervisor in [&actor_supervisor, &family_supervisor] {
+        let statuses = supervisor.operation_statuses()?;
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].state, HostOperationState::Running);
+        assert_eq!(statuses[0].completed_work_units, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn component_probe_keeps_same_budget_and_ack_separate_from_return()
+-> Result<(), Box<dyn std::error::Error>> {
+    let supervisor = probe_supervisor();
+    let original = supervisor.begin(HostOperationClass::Quiescence)?;
+    let budget = OperationPollBudget::borrow_original(&original, "component probe")?;
+    let other_budget = OperationPollBudget::borrow_original(&original, "different budget object")?;
+    let (mut runtime, observer) = probe_runtime()?;
+    let returns = Arc::new(Mutex::new(ModelReturns::default()));
+    let peer = ComponentPhysicalReturn {
+        returns: Arc::clone(&returns),
+    };
+    let mut action = ComponentAction::new(&budget, &returns);
+    let before = observer.node_slot(0)?.snapshot();
+
+    assert!(action.lend_probe(&mut runtime, &other_budget).is_err());
+    assert!(returns.lock().unwrap().pending.is_none());
+    assert_eq!(observer.node_slot(0)?.snapshot(), before);
+    assert!(action.lend_probe(&mut runtime, &budget)?);
+    let request = runtime.signal_wake(None)?;
+    action.validate(request)?;
+    assert_eq!(
+        observer.node_slot(0)?.acknowledge_control_boundary(),
+        request.generation.wrapping_add(1),
+    );
+    assert!(!action.finish(&runtime)?);
+    let ticket = peer.wait_until_awaited(Duration::from_secs(2))?;
+    peer.return_action(ticket)?;
+    assert!(action.finish(&runtime)?);
+    budget.complete("borrowed probe does not complete its owner")?;
+    let statuses = supervisor.operation_statuses()?;
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].state, HostOperationState::Running);
+    assert_eq!(statuses[0].completed_work_units, 0);
+    Ok(())
 }

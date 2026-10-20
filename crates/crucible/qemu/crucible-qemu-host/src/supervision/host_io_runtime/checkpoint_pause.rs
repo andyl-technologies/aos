@@ -41,7 +41,7 @@ impl QemuLiveHostIoRuntime {
         actions: &mut impl ControlActionScope,
     ) -> Result<bool, QemuAsyncDriverRuntimeError> {
         check_borrowed_quiescence(deadline)?;
-        let action = actions.lend_pause(self, deadline)?;
+        let action = actions.lend_probe(self, deadline)?;
         check_borrowed_quiescence(deadline)?;
         let request = self.signal_wake(None)?;
         actions.validate(request)?;
@@ -180,6 +180,9 @@ impl QemuLiveHostIoRuntime {
         // Enrollment can publish terminal observations without granting more
         // execution. Recheck both originals before exposing the Pause request.
         check_borrowed_quiescence(deadline)?;
+        // Pause is visible before either its scheduler ceiling or token. A
+        // later write/wake refusal cannot restore local unpublished return.
+        actions.begin_pause_publication(self)?;
         let slot = self
             .region
             .as_ref()

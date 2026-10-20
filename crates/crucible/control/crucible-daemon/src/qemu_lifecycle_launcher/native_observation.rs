@@ -28,7 +28,7 @@ where
         router: &str,
         crash_detector: &str,
     ) -> Result<(), crate::QemuAttemptProductionVmLifecycleError> {
-        if self.retained_node.is_some() {
+        if self.retained_launch.is_some() {
             return Err(crate::QemuAttemptProductionVmLifecycleError::Lifecycle(
                 launcher_message("same Source already retains a node or Park phase"),
             ));
@@ -122,7 +122,9 @@ where
             fresh.contract,
             &mut directories,
         );
-        self.retained_node = Some(RetainedNodeLaunch::observed(node, lease, directory));
+        self.retained_launch = Some(RetainedLaunch::Node(RetainedNodeLaunch::observed(
+            node, lease, directory,
+        )));
         Ok(())
     }
 
@@ -132,7 +134,7 @@ where
         context: &'a crate::AttemptExecutionContext,
     ) -> Result<ObservedNativeNode<'a>, LifecycleApiError> {
         let retained = self
-            .retained_node
+            .retained_launch
             .as_mut()
             .ok_or_else(|| launcher_message("same Source has no retained observation node"))?;
         let node = retained.node_mut()?;

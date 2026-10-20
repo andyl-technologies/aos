@@ -77,7 +77,7 @@ pub struct QemuLiveHostIoRuntime {
     host_operation_supervisor:
         Option<crucible_host_resources::host_supervision::HostOperationSupervisor>,
     region: Option<MappedSetupRegion>,
-    source_supervision: Option<crate::spawn::source_supervision::OriginalSourceSupervision>,
+    source_supervision: Option<crate::spawn::source_supervision::ActionSourceProducer>,
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     parent_park_action: Option<crucible_qemu_protocol::boundary_action::ActionBinding>,
     wake: Arc<File>,
@@ -235,7 +235,7 @@ impl QemuLiveHostIoRuntime {
         mut self,
         source: crate::spawn::source_supervision::OriginalSourceSupervision,
     ) -> Result<Self, QemuAsyncDriverRuntimeError> {
-        source
+        let source = source
             .bind_action_mapping(
                 self.region.as_ref().ok_or_else(region_missing)?,
                 self.vm_slot,
@@ -675,6 +675,11 @@ impl QemuLiveHostIoRuntime {
 
 impl Drop for QemuLiveHostIoRuntime {
     fn drop(&mut self) {
+        if let (Some(source), Some(region)) = (&mut self.source_supervision, &self.region) {
+            // Only the still-owned producer can attempt its unpublished cut.
+            // Failure or attempted publication keeps the original mapping debt.
+            let _ = source.return_unpublished_action(region, self.vm_slot);
+        }
         if let Some(source) = &self.source_supervision {
             if source.action_is_pending() {
                 if let Some(region) = self.region.take() {
@@ -1189,6 +1194,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
     }
 
     fn clear_checkpoint_pause_while_stopped(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.require_unbound_control_path("authorize stopped checkpoint Pause clear")?;
         // QMP has already confirmed RUN_STATE_PAUSED. Clearing the protocol
         // flag is sufficient for the later `cont`; waking either the shared
         // futex or QEMU's doorbell here can re-enter the vCPU-idle callback

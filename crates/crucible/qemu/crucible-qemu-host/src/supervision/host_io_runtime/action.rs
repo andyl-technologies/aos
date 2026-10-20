@@ -3,6 +3,36 @@
 use super::*;
 
 impl QemuLiveHostIoRuntime {
+    /// Lends an existing ordinary probe Original or the unchanged Pause pair.
+    ///
+    /// # Errors
+    /// Refuses missing/terminal producers, retained prior debt, or actual Source
+    /// admission. Source-absent ordinary probes remain byte-only.
+    pub(super) fn lend_probe_action(
+        &mut self,
+        deadline: &OperationPollBudget<'_>,
+    ) -> Result<
+        Option<crucible_qemu_protocol::boundary_action::ActionBinding>,
+        QemuAsyncDriverRuntimeError,
+    > {
+        if deadline.is_paired_quiescence() {
+            return self.lend_paired_pause_action(deadline);
+        }
+        if self.source_supervision.is_none() {
+            return Ok(None);
+        }
+        check_probe_original(deadline)?;
+        self.settle_previous_action()?;
+        self.lend_control_action(deadline, None)?
+            .map(Some)
+            .ok_or_else(|| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "lend probe action",
+                    crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
+                )
+            })
+    }
+
     /// Publishes the actual two-lender Park cohort before descriptor transport.
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     pub(super) fn retain_parent_park_request(
@@ -19,7 +49,7 @@ impl QemuLiveHostIoRuntime {
             ));
         }
         self.settle_previous_action()?;
-        let source = self.source_supervision.as_ref().ok_or_else(|| {
+        let source = self.source_supervision.as_mut().ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(
                 "retain parent Park action",
                 "actual standing Source publisher is unavailable",
@@ -138,9 +168,20 @@ impl QemuLiveHostIoRuntime {
                 "the typed Park owner still retains this request lifetime",
             ));
         }
-        let Some(source) = self.source_supervision.as_ref() else {
+        let Some(source) = self.source_supervision.as_mut() else {
             return Ok(());
         };
+        source
+            .return_unpublished_action(
+                self.region.as_ref().ok_or_else(region_missing)?,
+                self.vm_slot,
+            )
+            .map_err(|error| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "return unpublished action",
+                    error,
+                )
+            })?;
         if source.action_is_pending() {
             let journal = source
                 .settle_action_from_mapping(
@@ -197,7 +238,7 @@ impl QemuLiveHostIoRuntime {
         let Some(primary) = deadline.action_producers()? else {
             return Ok(None);
         };
-        let source = self.source_supervision.as_ref().ok_or_else(|| {
+        let source = self.source_supervision.as_mut().ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(
                 "lend control action",
                 "real standing Source owner is unavailable",
@@ -269,6 +310,28 @@ impl QemuLiveHostIoRuntime {
         }
         Ok(true)
     }
+}
+
+/// Checks the existing probe owner without issuing or completing an Original.
+///
+/// # Errors
+/// Refuses a fixture without producers or the same actual Original's refusal.
+pub(super) fn check_probe_original(
+    deadline: &OperationPollBudget<'_>,
+) -> Result<(), QemuAsyncDriverRuntimeError> {
+    if deadline.action_producers()?.is_none() {
+        return Err(QemuAsyncDriverRuntimeError::operational_supervision(
+            "lend probe action",
+            crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
+        ));
+    }
+    deadline.remaining("lend probe action")?.ok_or_else(|| {
+        QemuAsyncDriverRuntimeError::operational_supervision(
+            "lend probe action",
+            crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
+        )
+    })?;
+    Ok(())
 }
 
 /// Corroborates the actual published request against the retained action tuple.

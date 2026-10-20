@@ -1088,8 +1088,14 @@ pub enum QemuSpawnError {
     GuardedImageTool {
         /// Stable preparation operation.
         operation: &'static str,
-        /// Rendered process exit status.
-        status: String,
+        /// Actual process exit status, retained without formatting allocation.
+        status: std::process::ExitStatus,
+    },
+    /// The owned helper had already been reaped before a natural-wait poll.
+    #[error("{operation} failed: helper child was already reaped")]
+    HelperAlreadyReaped {
+        /// Operation being attempted.
+        operation: &'static str,
     },
     /// A guarded image-tool helper exceeded its absolute execution deadline.
     #[error("guarded qemu-img operation `{operation}` exceeded its execution deadline")]
@@ -1353,6 +1359,22 @@ pub enum QemuSpawnError {
         bytes: u64,
     },
 }
+
+impl QemuSpawnError {
+    /// Moves the actual helper wait cause without formatting or rebuilding I/O.
+    pub(crate) fn from_helper_wait(
+        operation: &'static str,
+        failure: crate::node::ChildNaturalWaitFailure,
+    ) -> Self {
+        match failure {
+            crate::node::ChildNaturalWaitFailure::AlreadyReaped => {
+                Self::HelperAlreadyReaped { operation }
+            }
+            crate::node::ChildNaturalWaitFailure::Io(source) => Self::Io { operation, source },
+        }
+    }
+}
+
 /// Spawns QEMU from an already-provisioned run directory under `contract`.
 ///
 /// This fixed-FD operation never invokes `qemu-img` or creates the exact-VMState
@@ -2138,13 +2160,13 @@ fn run_guarded_qemu_setup_probe_inner(
             }
 
             if status.is_none() {
-                match child.try_wait_natural_exit() {
+                match child.try_wait_natural_exit_raw() {
                     Ok(observed) => status = observed,
                     Err(error) => {
-                        return Err(QemuSpawnError::Io {
-                            operation: "poll guarded QEMU setup probe",
-                            source: io::Error::other(error.to_string()),
-                        });
+                        return Err(QemuSpawnError::from_helper_wait(
+                            "poll guarded QEMU setup probe",
+                            error,
+                        ));
                     }
                 }
             }
@@ -2332,13 +2354,10 @@ fn run_guarded_image_tool_for_purpose(
     process_contract.with_spawned_helper(command, operation, |child| {
         let deadline = HostSupervisionDeadline::start(GUARDED_IMAGE_TOOL_TIMEOUT);
         loop {
-            match child.try_wait_natural_exit() {
+            match child.try_wait_natural_exit_raw() {
                 Ok(Some(status)) if status.success() => return Ok(()),
                 Ok(Some(status)) => {
-                    return Err(QemuSpawnError::GuardedImageTool {
-                        operation,
-                        status: status.to_string(),
-                    });
+                    return Err(QemuSpawnError::GuardedImageTool { operation, status });
                 }
                 Ok(None) if deadline.has_time_remaining() => {
                     thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL)
@@ -2347,10 +2366,7 @@ fn run_guarded_image_tool_for_purpose(
                     return Err(QemuSpawnError::GuardedImageToolTimeout { operation });
                 }
                 Err(error) => {
-                    return Err(QemuSpawnError::Io {
-                        operation,
-                        source: io::Error::other(error.to_string()),
-                    });
+                    return Err(QemuSpawnError::from_helper_wait(operation, error));
                 }
             }
         }

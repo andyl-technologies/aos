@@ -2,6 +2,17 @@
 
 use super::*;
 
+/// Separates a producer's prepublication refusal from mapped transport failure.
+#[derive(Debug, thiserror::Error)]
+pub enum ControlBoundaryPublicationError<E> {
+    /// Retains the producer's own cause before any request mutation.
+    #[error("control producer refused request publication: {0}")]
+    Producer(E),
+    /// Retains an actual request validation or wake failure.
+    #[error("control request transport failed: {0}")]
+    Slot(NodeSlotError),
+}
+
 impl NodeSlot {
     /// Builds a zeroed node slot with `max_advance_icount` held at the boot barrier.
     #[must_use]
@@ -538,12 +549,43 @@ impl NodeSlot {
         fault_command_frontier: u64,
         capture_request: Option<u32>,
     ) -> Result<u32, NodeSlotError> {
+        match self.request_control_boundary_with_publication(
+            fault_command_frontier,
+            capture_request,
+            |_| Ok::<(), std::convert::Infallible>(()),
+        ) {
+            Ok(token) => Ok(token),
+            Err(ControlBoundaryPublicationError::Slot(error)) => Err(error),
+            Err(ControlBoundaryPublicationError::Producer(never)) => match never {},
+        }
+    }
+
+    /// Runs a producer's once-only cut before the first mapped request mutation.
+    ///
+    /// The hook runs after tuple validation and before frontier/capture stores,
+    /// token publication or futex wake. A matching existing request also runs
+    /// the hook before its wake. The single producer must retain any attempted
+    /// publication after hook success, including unwind or later wake failure.
+    /// This byte operation issues no action, Original or return authority.
+    ///
+    /// # Errors
+    /// Returns the untouched producer error before effects, or the original
+    /// slot validation/wake error. A slot wake error can follow token publication.
+    pub fn request_control_boundary_with_publication<E>(
+        &self,
+        fault_command_frontier: u64,
+        capture_request: Option<u32>,
+        before_mutation: impl FnOnce(u32) -> Result<(), E>,
+    ) -> Result<u32, ControlBoundaryPublicationError<E>> {
         let capture_request = capture_request.unwrap_or(0);
         if capture_request != 0 && capture_request & 1 == 0 {
-            return Err(NodeSlotError::InvalidControlBoundaryCaptureRequest {
-                request: capture_request,
-            });
+            return Err(ControlBoundaryPublicationError::Slot(
+                NodeSlotError::InvalidControlBoundaryCaptureRequest {
+                    request: capture_request,
+                },
+            ));
         }
+        let mut before_mutation = Some(before_mutation);
         let request = loop {
             let observed = self.control_boundary_ack.load(Ordering::Acquire);
             if observed & 1 == 0 {
@@ -556,16 +598,24 @@ impl NodeSlot {
                 if observed_frontier != fault_command_frontier
                     || observed_capture != capture_request
                 {
-                    return Err(NodeSlotError::ControlBoundaryRequestChanged {
-                        expected_frontier: observed_frontier,
-                        observed_frontier: fault_command_frontier,
-                        expected_capture_request: observed_capture,
-                        observed_capture_request: capture_request,
-                    });
+                    return Err(ControlBoundaryPublicationError::Slot(
+                        NodeSlotError::ControlBoundaryRequestChanged {
+                            expected_frontier: observed_frontier,
+                            observed_frontier: fault_command_frontier,
+                            expected_capture_request: observed_capture,
+                            observed_capture_request: capture_request,
+                        },
+                    ));
+                }
+                if let Some(before_mutation) = before_mutation.take() {
+                    before_mutation(observed).map_err(ControlBoundaryPublicationError::Producer)?;
                 }
                 break observed;
             }
             let request = observed.wrapping_add(1);
+            if let Some(before_mutation) = before_mutation.take() {
+                before_mutation(request).map_err(ControlBoundaryPublicationError::Producer)?;
+            }
             self.control_boundary_fault_command_frontier
                 .store(fault_command_frontier, Ordering::Relaxed);
             self.control_boundary_capture_request
@@ -580,8 +630,9 @@ impl NodeSlot {
                 Err(_) => continue,
             }
         };
-        self.wake_after_signal_increment()
-            .map_err(|source| NodeSlotError::FutexWake { source })?;
+        self.wake_after_signal_increment().map_err(|source| {
+            ControlBoundaryPublicationError::Slot(NodeSlotError::FutexWake { source })
+        })?;
         Ok(request)
     }
 

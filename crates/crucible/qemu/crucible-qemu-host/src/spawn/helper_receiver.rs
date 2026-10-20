@@ -6,6 +6,21 @@
 use super::*;
 
 impl QemuChildProcessContract {
+    /// Projects an inert weak identity for this contract's genuine helper owner.
+    ///
+    /// The actual first-bound Source lender validates its active incarnation
+    /// before this projection. The weak reference grants no helper effect,
+    /// Cleanup, return loan or funding; cleanup still uses that owner's saved
+    /// lender and Original. Missing or unavailable custody returns `None`.
+    #[must_use]
+    pub fn issued_helper_receiver(
+        &self,
+    ) -> Option<std::sync::Weak<crate::OriginalNativeFreshLaunchError>> {
+        let lender = self.attempt_binding.helper_receiver.get()?;
+        let controller = lender.controller().ok()?;
+        Some(std::sync::Arc::downgrade(&controller))
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn bind_helper_receiver(
         &self,

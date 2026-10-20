@@ -52,6 +52,12 @@ where
         )>,
         lease: QemuAttemptGenerationLease,
     ) -> Result<PreparedFreshGeneration, LifecycleApiError> {
+        if self.retained_launch.is_some() {
+            return Err(abort_unspawned_generation(
+                lease,
+                LifecycleApiError::CleanupRetained,
+            ));
+        }
         if profile.qemu_executable() != qemu_executable || profile.root_image() != root_image {
             return Err(abort_unspawned_generation(
                 lease,
@@ -63,123 +69,165 @@ where
         if let Err(error) = self.owner.check_operational_boundary() {
             return Err(abort_unspawned_generation(lease, error));
         }
-        let mut run_directory = match self
+        // Refuse missing custody before creating directory-owned descriptors.
+        let receiver = {
+            let process_contract = match self.owner.child_process_contract_for_node(node_id) {
+                Ok(contract) => contract,
+                Err(error) => return Err(abort_unspawned_generation(lease, error)),
+            };
+            let receiver = process_contract.issued_helper_receiver();
+            match receiver {
+                Some(receiver) => receiver,
+                None => {
+                    return Err(abort_unspawned_generation(
+                        lease,
+                        launcher_message("fresh preparation has no current issued helper receiver"),
+                    ));
+                }
+            }
+        };
+        let run_directory = match self
             .owner
             .prepare_generation_run_directory_for_node(node_id, profile.resource_requirements())
         {
             Ok(run_directory) => run_directory,
             Err(error) => return Err(abort_unspawned_generation(lease, error)),
         };
+        self.retained_launch = Some(RetainedLaunch::Preparation(RetainedFreshPreparation::new(
+            lease,
+            run_directory,
+            receiver,
+        )));
+
+        // Borrow disjoint fields: the Main-contained slot owns both resources
+        // before the helper can publish a child, refuse a post or unwind.
         let preparation = {
-            let process_contract = match self.owner.child_process_contract_for_node(node_id) {
-                Ok(contract) => contract,
-                Err(error) => return Err(abort_unspawned_generation(lease, error)),
+            let process_contract = self.owner.child_process_contract_for_node(node_id)?;
+            let Some(RetainedLaunch::Preparation(preparation)) = self.retained_launch.as_mut()
+            else {
+                return Err(LifecycleApiError::CleanupRetained);
             };
-            run_directory.prepare_fresh_artifacts_guarded(
-                qemu_executable,
-                root_image,
-                process_contract,
-            )
+            preparation
+                .directory_mut()?
+                .prepare_fresh_artifacts_guarded(qemu_executable, root_image, process_contract)
         };
         if let Err(error) = preparation {
             if let Some(source) = error.retained_receiver() {
-                self.owner.quarantine_original_launch();
-                drop(lease);
                 return Err(LifecycleApiError::BackendConstruction {
                     source: crucible_control_api::LifecycleBackendConstructionError::from_shared(
                         source,
                     ),
                 });
             }
-            return Err(abort_unspawned_generation(
-                lease,
-                launcher_message(format!(
-                    "prepare fresh QEMU node `{}` failed before issued helper birth: {error}",
-                    node_id.name,
-                )),
-            ));
+            return Err(launcher_message(format!(
+                "prepare fresh QEMU node `{}` failed before issued helper birth: {error}",
+                node_id.name,
+            )));
         }
-        if let Err(error) = self.owner.check_operational_boundary() {
-            return Err(abort_unspawned_generation(lease, error));
-        }
+        self.owner.check_operational_boundary()?;
 
-        let launch = profile.clone().with_run_directory(run_directory.path());
+        let Some(RetainedLaunch::Preparation(preparation)) = self.retained_launch.as_ref() else {
+            return Err(LifecycleApiError::CleanupRetained);
+        };
+        let launch = profile
+            .clone()
+            .with_run_directory(preparation.directory()?.path());
         let launch = match observation {
             Some((registration, original)) => launch
                 .with_ram_control_registration(registration)
                 .with_host_operation_supervisor(original),
             None => launch,
         };
-        let (launched, retained_contract) = {
-            let process_contract = match self.owner.child_process_contract_for_node(node_id) {
-                Ok(contract) => contract,
-                Err(error) => return Err(abort_unspawned_generation(lease, error)),
+        let launched = {
+            let process_contract = self.owner.child_process_contract_for_node(node_id)?;
+            let retained_contract = process_contract
+                .try_clone_for_attempt_generation()
+                .map_err(|error| {
+                    launcher_message(format!("retain fresh generation contract: {error}"))
+                })?;
+            let Some(RetainedLaunch::Preparation(preparation)) = self.retained_launch.as_mut()
+            else {
+                return Err(LifecycleApiError::CleanupRetained);
             };
-            let retained_contract = match process_contract.try_clone_for_attempt_generation() {
-                Ok(contract) => contract,
-                Err(error) => {
-                    return Err(abort_unspawned_generation(
-                        lease,
-                        launcher_message(format!("retain fresh generation contract: {error}")),
-                    ));
-                }
-            };
-            let launched = QemuProductionFreshLaunchAdmission::admit(
+            preparation.retain_contract(retained_contract)?;
+            let (directory, native, node_slot) = preparation.native_inputs()?;
+            match QemuProductionFreshLaunchAdmission::admit(
                 &launch,
-                &run_directory,
+                directory,
                 process_contract,
                 identity,
-            )
-            .and_then(|admission| {
-                self.owner
-                    .launch_fresh_node_for_node(node_id, &launch, admission)
-            });
-            (launched, retained_contract)
-        };
-        let node = match launched {
-            Ok(node) => node,
-            Err(mut error) => {
-                #[cfg(feature = "private-measurement-domain")]
-                if let crucible_qemu_host::QemuLiveNodeStepGateError::OriginalNativeLaunch {
-                    source,
-                } = error
-                {
-                    // The original slot already owns this exact prepaid Arc,
-                    // including any node created before the independent postcut.
-                    // No ordinary error formatting or second shared allocation
-                    // may replace that first cause or release its native credit.
-                    self.owner.quarantine_original_launch();
-                    drop(lease);
-                    return Err(LifecycleApiError::BackendConstruction {
-                        source:
-                            crucible_control_api::LifecycleBackendConstructionError::from_shared(
-                                source,
-                            ),
-                    });
+            ) {
+                Ok(admission) => {
+                    // The same Main phase owns every input before native entry;
+                    // unwind must not rewind the local generation fence.
+                    *native = retained_node::NativeLaunchProgress::Entered;
+                    let launched = self
+                        .owner
+                        .launch_fresh_node_for_node(node_id, &launch, admission);
+                    // This records the actual call's return before inspecting
+                    // either body or typed failure. Entry alone proves neither.
+                    *native = retained_node::NativeLaunchProgress::Returned;
+                    match launched {
+                        Ok(node) => {
+                            // Save the actual body before interpreting success.
+                            *node_slot = retained_node::FreshPreparationBody::Node(node);
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
-                let message = launch_error_chain(&error);
-                if error.has_retained_owner() {
-                    // Non-issued paths must have refused before birth. Keep an
-                    // unexpected owning failure inside its actual typed error.
-                    return Err(LifecycleApiError::BackendConstruction {
-                        source: crucible_control_api::LifecycleBackendConstructionError::new(error),
-                    });
-                }
-                return Err(abort_unspawned_generation(
-                    lease,
-                    launcher_message(format!(
-                        "launch guarded fresh QEMU node `{}` failed after synchronous cleanup: {message}",
-                        node_id.name,
-                    )),
-                ));
+                Err(error) => Err(error),
             }
         };
+        if let Err(mut error) = launched {
+            let Some(RetainedLaunch::Preparation(preparation)) = self.retained_launch.as_mut()
+            else {
+                return Err(LifecycleApiError::BackendConstruction {
+                    source: crucible_control_api::LifecycleBackendConstructionError::new(error),
+                });
+            };
+            #[cfg(target_os = "linux")]
+            if let crucible_qemu_host::QemuLiveNodeStepGateError::OriginalNativeLaunch { source } =
+                error
+            {
+                // Only the same issued controller can close this phase. A
+                // foreign report retains its own body and closes no local debt.
+                preparation.record_native_failure(&source);
+                self.owner.quarantine_original_launch();
+                return Err(LifecycleApiError::BackendConstruction {
+                    source: crucible_control_api::LifecycleBackendConstructionError::from_shared(
+                        source,
+                    ),
+                });
+            }
+            let has_retained_owner = error.has_retained_owner();
+            preparation.retain_unexpected_owner(&mut error);
+            if has_retained_owner {
+                return Err(LifecycleApiError::BackendConstruction {
+                    source: crucible_control_api::LifecycleBackendConstructionError::new(error),
+                });
+            }
+            let message = launch_error_chain(&error);
+            return Err(launcher_message(format!(
+                "launch guarded fresh QEMU node `{}` refused: {message}",
+                node_id.name,
+            )));
+        }
 
-        Ok(PreparedFreshGeneration {
-            lease,
-            directory: run_directory,
-            node,
-            contract: retained_contract,
-        })
+        // Native success and its independent post are complete. The validated
+        // final cut only moves the same owners; it runs no user code or IO.
+        match self.retained_launch.take() {
+            Some(RetainedLaunch::Preparation(preparation)) => match preparation.into_prepared() {
+                Ok(prepared) => Ok(prepared),
+                Err(preparation) => {
+                    self.retained_launch = Some(RetainedLaunch::Preparation(preparation));
+                    Err(LifecycleApiError::CleanupRetained)
+                }
+            },
+            other => {
+                self.retained_launch = other;
+                Err(LifecycleApiError::CleanupRetained)
+            }
+        }
     }
 }

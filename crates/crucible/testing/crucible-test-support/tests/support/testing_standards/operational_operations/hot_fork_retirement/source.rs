@@ -2,6 +2,25 @@
 
 use super::{Companion, Contract};
 
+#[path = "preparation.rs"]
+mod preparation;
+
+pub(super) const PRE_VM_CUSTODY: Companion = preparation::CUSTODY;
+pub(super) const PRE_VM_BIRTH: Companion = preparation::BIRTH;
+pub(super) const PRE_VM_ABORT: Companion = preparation::ABORT;
+pub(super) const PRE_VM_ALLOCATION: Companion = preparation::ALLOCATION;
+pub(super) const PRE_VM_RECEIVER: Companion = preparation::RECEIVER;
+pub(super) const PRE_VM_HELPER_RETURN: Companion = preparation::HELPER_RETURN;
+pub(super) const PRE_VM_LENDER: Companion = preparation::LENDER;
+pub(super) const PRE_VM_NATIVE_RETURN: Companion = preparation::NATIVE_RETURN;
+pub(super) const PRE_VM_NATIVE_OWNER: Companion = preparation::NATIVE_OWNER;
+pub(super) const PRE_VM_ISSUED_RETURN: Companion = preparation::ISSUED_RETURN;
+pub(super) const PRE_VM_NATIVE_ISSUER: Companion = preparation::NATIVE_ISSUER;
+pub(super) const PRE_VM_NATIVE_NODE: Companion = preparation::NATIVE_NODE;
+pub(super) const PRE_VM_NATIVE_CONTAIN: Companion = preparation::NATIVE_CONTAIN;
+pub(super) const PRE_VM_NATIVE_CONTROLS: Companion = preparation::NATIVE_CONTROLS;
+pub(super) const PRE_VM_MONOTONE_FINISH: Companion = preparation::MONOTONE_FINISH;
+
 pub(super) const REQUIRED: &[(&str, usize)] = &[
     (
         r#"pub fn retry(&mut self) -> Result<crucible_control_api::ProductionVmCleanupStage, LifecycleApiError> {
@@ -463,10 +482,10 @@ pub(super) const CONTRACT: Contract = Contract {
     if self.parent_park_phase.is_some() {
         return Err((LifecycleApiError::ParentParkHeld).into());
     }
-    if let Some(failed) = self.retained_node.as_mut() {
+    if let Some(failed) = self.retained_launch.as_mut() {
         failed.finish()?;
     }
-    self.retained_node = None;
+    self.retained_launch = None;
     // The exact observation registrar/configuration aliases remain until
     // its real node and generation lease have physically closed.
     #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
@@ -483,6 +502,18 @@ pub(super) const CONTRACT: Contract = Contract {
 }"#,
                     1,
                 ),
+                preparation::LAYOUT.required[0],
+                preparation::LAYOUT.required[1],
+                preparation::LAYOUT.required[2],
+                preparation::LAYOUT.required[3],
+                preparation::LAYOUT.required[4],
+                preparation::LAYOUT.required[5],
+                preparation::LAYOUT.required[6],
+                preparation::LAYOUT.required[7],
+                preparation::LAYOUT.required[8],
+                preparation::LAYOUT.required[9],
+                preparation::LAYOUT.required[10],
+                preparation::LAYOUT.required[11],
             ],
         },
         Companion {
@@ -549,5 +580,36 @@ pub(super) const CONTRACT: Contract = Contract {
                 ),
             ],
         },
+        preparation::CUSTODY,
+        preparation::BIRTH,
+        preparation::ABORT,
+        preparation::ALLOCATION,
+        preparation::RECEIVER,
+        preparation::HELPER_RETURN,
+        preparation::CONTROLS,
+        preparation::LENDER,
+        super::super::host_physical_custody::SOURCE_CLEANUP,
+        super::super::host_physical_custody::SOURCE_ORIGINAL,
+        preparation::NATIVE_RETURN,
+        preparation::NATIVE_OWNER,
+        preparation::ISSUED_RETURN,
+        preparation::NATIVE_ISSUER,
+        preparation::NATIVE_NODE,
+        preparation::NATIVE_CONTAIN,
+        preparation::NATIVE_CONTROLS,
+        preparation::MONOTONE_FINISH,
+        super::pre_vm::CHILD_OWNER,
+        super::pre_vm::CHILD_ORIGINAL,
+        super::pre_vm::CHILD_LADDER,
+        super::pre_vm::CHILD_WAIT,
+        super::pre_vm::ACTUAL_CHILD,
+        super::pre_vm::SHUTDOWN_TARGET,
+        super::pre_vm::PROCESS_CONTROL,
+        super::pre_vm::OWNED_WAIT,
+        super::pre_vm::RAM_BODY,
+        super::pre_vm::RAM_STOP,
+        super::pre_vm::RAM_HISTORY,
+        super::pre_vm::RAM_ORIGINAL,
+        super::pre_vm::RAM_JOIN,
     ],
 };

@@ -101,6 +101,10 @@ impl HostActionPublisher for UnissuedPublisher {
         Err(HostSupervisionError::Unavailable)
     }
 
+    fn unpublished_return(&self, _: ActionBinding) -> Result<(), HostSupervisionError> {
+        Err(HostSupervisionError::Unavailable)
+    }
+
     fn invalidate_action(&self, _: ActionBinding) {}
 }
 
@@ -168,11 +172,51 @@ fn syntax_without_an_actual_membership_cannot_be_returned_or_reused() {
     let mut receipt = unissued_receipt(&guard);
     assert!(unissued.return_physical(&receipt).is_err());
     assert!(unissued.observe_physical_return().is_err());
+    assert!(unissued.observe_unpublished_return().is_err());
     assert!(!unissued.returned);
 
     receipt.journal.binding.loan_sequence = 4;
     assert!(unissued.return_physical(&receipt).is_err());
     assert_eq!(guard.status().unwrap().state, HostOperationState::Running);
+}
+
+#[test]
+fn unpublished_receipt_cannot_replace_missing_or_foreign_membership() {
+    let first = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let second = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let first_guard = first.begin(HostOperationClass::Quiescence).unwrap();
+    let second_guard = second.begin(HostOperationClass::Quiescence).unwrap();
+    let publisher: Arc<dyn HostActionPublisher> = Arc::new(UnissuedPublisher);
+    let mut selector = HostActionLoan {
+        supervisor: first.clone(),
+        operation: first_guard.id,
+        binding: binding(),
+        row: 0,
+        returned: false,
+    };
+    let mut receipt = HostActionUnpublishedReturnReceipt {
+        shared: Arc::clone(&second.shared),
+        binding: binding(),
+        operation: second_guard.id,
+        row: 0,
+        publisher,
+    };
+
+    assert_eq!(first_guard.id, second_guard.id);
+    assert!(selector.return_unpublished(&receipt).is_err());
+    receipt.shared = Arc::clone(&first.shared);
+    assert!(selector.return_unpublished(&receipt).is_err());
+    assert!(selector.observe_unpublished_return().is_err());
+    assert!(!selector.returned);
+    assert_eq!(
+        first_guard.status().unwrap().state,
+        HostOperationState::Running
+    );
+    assert_eq!(
+        second_guard.status().unwrap().state,
+        HostOperationState::Running
+    );
+    assert!(UnissuedPublisher.unpublished_return(binding()).is_err());
 }
 
 #[test]
@@ -303,4 +347,60 @@ fn unsupported_publisher_and_control_selectors_never_return_park_memberships() {
     assert!(unissued.observe_parent_park_return().is_err());
     assert!(unissued.return_parent_park_physical(&receipt).is_err());
     assert!(!unissued.returned);
+}
+
+struct DropProbe<'a> {
+    events: &'a std::cell::RefCell<Vec<&'static str>>,
+    name: &'static str,
+    panic: bool,
+}
+
+impl Drop for DropProbe<'_> {
+    fn drop(&mut self) {
+        self.events.borrow_mut().push(self.name);
+        if self.panic {
+            panic!("actual body destructor refused completion");
+        }
+    }
+}
+
+#[test]
+fn complete_box_destruction_precedes_the_same_credit_return() {
+    let events = std::cell::RefCell::new(Vec::new());
+    let body = Box::new(DropProbe {
+        events: &events,
+        name: "body",
+        panic: false,
+    });
+    let credit = std::mem::ManuallyDrop::new(DropProbe {
+        events: &events,
+        name: "credit",
+        panic: false,
+    });
+
+    drop_body_before_credit(body, credit);
+
+    assert_eq!(*events.borrow(), ["body", "credit"]);
+}
+
+#[test]
+fn actual_box_drop_unwind_keeps_credit_sticky() {
+    let events = std::cell::RefCell::new(Vec::new());
+    let body = Box::new(DropProbe {
+        events: &events,
+        name: "body",
+        panic: true,
+    });
+    let credit = std::mem::ManuallyDrop::new(DropProbe {
+        events: &events,
+        name: "credit",
+        panic: false,
+    });
+
+    let returned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop_body_before_credit(body, credit);
+    }));
+
+    assert!(returned.is_err());
+    assert_eq!(*events.borrow(), ["body"]);
 }

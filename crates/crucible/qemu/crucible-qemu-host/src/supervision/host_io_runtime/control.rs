@@ -12,6 +12,56 @@ pub(super) struct PendingControlBoundary {
 }
 
 impl QemuLiveHostIoRuntime {
+    /// Seals the just-lent Pause action before any mapped Pause effect.
+    ///
+    /// # Errors
+    /// Refuses an absent or changed Source action or a terminal actual lender.
+    pub(super) fn begin_pause_action_publication(
+        &mut self,
+        binding: Option<crucible_qemu_protocol::boundary_action::ActionBinding>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let Some(source) = &mut self.source_supervision else {
+            return Ok(());
+        };
+        let binding = binding.ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::operational_supervision(
+                "begin checkpoint Pause publication",
+                crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
+            )
+        })?;
+        source
+            .begin_pause_publication(
+                self.region.as_ref().ok_or_else(region_missing)?,
+                self.vm_slot,
+                binding,
+            )
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "begin checkpoint Pause publication",
+                    source,
+                )
+            })
+    }
+
+    /// Keeps byte-only paths from becoming unowned Source action effects.
+    ///
+    /// # Errors
+    /// Refuses a bound Source because this path carries no actual action owner.
+    pub(super) fn require_unbound_control_path(
+        &self,
+        operation: &'static str,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if self.source_supervision.is_some() {
+            // Neither a paused QMP state nor a retained unrelated action lends
+            // this operation. A future Source path must carry its real owner.
+            return Err(QemuAsyncDriverRuntimeError::operational_supervision(
+                operation,
+                crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
+            ));
+        }
+        Ok(())
+    }
+
     /// Attaches an output-only QEMU console reader and its boundary spool.
     ///
     /// The stream is drained during every in-flight advance poll so guest
@@ -61,26 +111,60 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         fingerprint_capture_request: Option<u32>,
     ) -> Result<PendingControlBoundary, QemuAsyncDriverRuntimeError> {
-        let fault_command_frontier = self
-            .region
-            .as_ref()
-            .ok_or_else(region_missing)?
-            .fault_command_write_index(self.vm_slot)
+        let request = self.publish_control_request(fingerprint_capture_request)?;
+        self.write_wake_doorbell()?;
+        Ok(request)
+    }
+
+    fn publish_control_request(
+        &mut self,
+        fingerprint_capture_request: Option<u32>,
+    ) -> Result<PendingControlBoundary, QemuAsyncDriverRuntimeError> {
+        use crucible_qemu_shmem::ControlBoundaryPublicationError;
+
+        let mapping = self.region.as_ref().ok_or_else(region_missing)?;
+        let vm_slot = self.vm_slot;
+        let fault_command_frontier = mapping
+            .fault_command_write_index(vm_slot)
             .map_err(map_slot_error)?;
-        let generation = self
-            .region
-            .as_ref()
-            .ok_or_else(region_missing)?
-            .node_slot(self.vm_slot)
+        let source = &mut self.source_supervision;
+        let generation = mapping
+            .node_slot(vm_slot)
             .map_err(map_slot_error)?
-            .request_control_boundary(fault_command_frontier, fingerprint_capture_request)
-            .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new(
+            .request_control_boundary_with_publication(
+                fault_command_frontier,
+                fingerprint_capture_request,
+                |token| match source.as_mut() {
+                    Some(source) => source.begin_control_publication(
+                        mapping,
+                        vm_slot,
+                        token,
+                        fault_command_frontier,
+                        fingerprint_capture_request,
+                    ),
+                    None => Ok(()),
+                },
+            )
+            .map_err(|source| match source {
+                ControlBoundaryPublicationError::Producer(source) => {
+                    QemuAsyncDriverRuntimeError::operational_supervision(
+                        "begin control request publication",
+                        source,
+                    )
+                }
+                ControlBoundaryPublicationError::Slot(source) => QemuAsyncDriverRuntimeError::new(
                     "request plugin control boundary",
                     source.to_string(),
+                ),
+            })?;
+        if let Some(source) = &mut self.source_supervision {
+            source.control_publication_returned().map_err(|source| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "record control request publication",
+                    source,
                 )
             })?;
-        self.write_wake_doorbell()?;
+        }
         Ok(PendingControlBoundary {
             generation,
             fault_command_frontier,
@@ -96,30 +180,7 @@ impl QemuLiveHostIoRuntime {
         fingerprint_capture_request: u32,
     ) -> Result<PendingControlBoundary, QemuAsyncDriverRuntimeError> {
         deadline.remaining("publish paired fingerprint control")?;
-        let fault_command_frontier = self
-            .region
-            .as_ref()
-            .ok_or_else(region_missing)?
-            .fault_command_write_index(self.vm_slot)
-            .map_err(map_slot_error)?;
-        let generation = self
-            .region
-            .as_ref()
-            .ok_or_else(region_missing)?
-            .node_slot(self.vm_slot)
-            .map_err(map_slot_error)?
-            .request_control_boundary(fault_command_frontier, Some(fingerprint_capture_request))
-            .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new(
-                    "request plugin control boundary",
-                    source.to_string(),
-                )
-            })?;
-        Ok(PendingControlBoundary {
-            generation,
-            fault_command_frontier,
-            fingerprint_capture_request: Some(fingerprint_capture_request),
-        })
+        self.publish_control_request(Some(fingerprint_capture_request))
     }
 
     /// Rings a paired capture only after rechecking its already-published cut.
@@ -141,6 +202,9 @@ impl QemuLiveHostIoRuntime {
     pub(super) fn abort_checkpoint_pause_with_wake(
         &mut self,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        // Clearing Pause is itself a publication, before either wake. Do not
+        // invent cleanup permission from the failed operation's disposition.
+        self.require_unbound_control_path("authorize checkpoint Pause rollback")?;
         self.region
             .as_ref()
             .ok_or_else(region_missing)?
@@ -252,6 +316,10 @@ impl QemuLiveHostIoRuntime {
                 .map_err(|source| {
                     QemuAsyncDriverRuntimeError::new("clamp completed quantum", source.to_string())
                 })?;
+        // The borrowed guard above has no retained action projection here.
+        // Refuse before scheduler mutation instead of borrowing an unrelated
+        // action or waiting until the subsequent token publication.
+        self.require_unbound_control_path("authorize completed-quantum clamp")?;
         self.region
             .as_ref()
             .ok_or_else(region_missing)?

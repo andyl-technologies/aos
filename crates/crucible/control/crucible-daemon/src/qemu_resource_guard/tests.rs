@@ -1328,7 +1328,7 @@ fn no_process_abort_preserves_the_exact_generation_for_retry() {
         .expect("composed resource guard");
     let mut owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
 
-    let pending = owner
+    let mut pending = owner
         .register_generation(generation("vm-a", 1))
         .expect("pending generation");
     pending
@@ -1359,9 +1359,10 @@ fn aborting_a_replacement_restores_the_previous_generation_fence() {
     let mut first = owner
         .register_generation(generation("vm-a", 1))
         .expect("first generation");
-    owner
+    let mut pending = owner
         .register_generation(generation("vm-a", 2))
-        .expect("pending replacement")
+        .expect("pending replacement");
+    pending
         .abort_without_process()
         .expect("abort pending replacement");
 

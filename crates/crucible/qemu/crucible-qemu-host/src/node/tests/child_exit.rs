@@ -19,6 +19,19 @@ fn child_poll_preserves_clean_exit_status_and_disarms_drop_cleanup() -> Result<(
 
     assert!(status.success());
     assert!(child.reaped());
+    assert!(matches!(
+        child.try_wait_natural_exit_raw(),
+        Err(ChildNaturalWaitFailure::AlreadyReaped)
+    ));
+    let refusal = child
+        .try_wait_natural_exit()
+        .expect_err("the public poll still refuses an already reaped child");
+    assert_eq!(refusal.operation, "poll natural QEMU exit");
+    assert_eq!(refusal.message, "child was already reaped");
+    assert_eq!(
+        refusal.to_string(),
+        "poll natural QEMU exit failed: child was already reaped"
+    );
     drop(child);
     Ok(())
 }
@@ -61,6 +74,54 @@ fn failed_helper_cleanup_reaps_original_child_and_is_idempotent() -> Result<(), 
     assert!(child.reaped());
     child.force_kill_and_reap_failed_helper(Duration::ZERO)?;
     assert!(child.try_wait_natural_exit().is_err());
+    Ok(())
+}
+
+#[test]
+fn helper_poll_retains_the_actual_wait_error_without_boxing() -> Result<(), Box<dyn Error>> {
+    struct ReapedOnDrop<'a>(&'a mut QemuNodeChild);
+
+    impl Drop for ReapedOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.mark_reaped();
+        }
+    }
+
+    let child = Command::new("true").spawn()?;
+    let mut child = QemuNodeChild::new(child);
+    wait_for_test_child_exit_pending(&child)?;
+    let pid = match &child.child {
+        OwnedNodeChild::Ordinary(child) => Pid::from_child(child),
+        #[cfg(target_os = "linux")]
+        OwnedNodeChild::Source(_) => return Err("fixture requires an ordinary child".into()),
+    };
+    let (waited, _) = rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty())?
+        .ok_or("blocking waitpid returned no child")?;
+    // Retain this test's actual wait receipt through every assertion/unwind;
+    // the wrapper must remain unmarked only while testing the real ECHILD cut.
+    let reaped = ReapedOnDrop(&mut child);
+    assert_eq!(waited, pid);
+
+    let result = reaped.0.try_wait_natural_exit_raw();
+    let public_result = reaped.0.try_wait_natural_exit();
+
+    let failure = result.expect_err("the kernel child was already reaped externally");
+    let crate::QemuSpawnError::Io { operation, source } =
+        crate::QemuSpawnError::from_helper_wait("poll helper fixture", failure)
+    else {
+        panic!("actual ECHILD must retain the original I/O error");
+    };
+    assert_eq!(operation, "poll helper fixture");
+    assert_eq!(source.raw_os_error(), Some(libc::ECHILD));
+    assert!(
+        source.get_ref().is_none(),
+        "the OS error was not boxed text"
+    );
+    let public = public_result.expect_err("the ordinary public poll still formats ECHILD");
+    assert_eq!(public.operation, "poll natural QEMU exit");
+    assert_eq!(public.message, source.to_string());
+    drop(reaped);
+    assert!(child.reaped());
     Ok(())
 }
 

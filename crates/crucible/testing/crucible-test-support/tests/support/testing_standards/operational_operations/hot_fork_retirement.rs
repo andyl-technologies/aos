@@ -14,6 +14,10 @@ mod park;
 mod shared;
 #[path = "hot_fork_retirement/source.rs"]
 mod source;
+#[path = "hot_fork_retirement/pre_vm.rs"]
+mod pre_vm;
+
+pub(super) const PRE_VM_CONTRACTS: &[Contract] = pre_vm::CONTRACTS;
 
 /// Reuses the unchanged actual complete-body shutdown ordering.
 pub(super) const CONSTRUCTOR_BODY: Companion = Companion {
@@ -45,8 +49,11 @@ pub(super) const CONTRACTS: &[Contract] = &[
 /// Changes only a reviewed expression's actual owner or argument in mutants.
 #[cfg(test)]
 pub(super) fn altered_expression(expression: &str) -> String {
-    if !CONTRACTS.iter().any(|contract| {
-        contract.expressions.iter().any(|(actual, _)| *actual == expression)
+    if !CONTRACTS.iter().chain(PRE_VM_CONTRACTS).any(|contract| {
+        contract
+            .expressions
+            .iter()
+            .any(|(actual, _)| *actual == expression)
     }) {
         return expression.to_owned();
     }
@@ -58,6 +65,14 @@ pub(super) fn altered_expression(expression: &str) -> String {
         .replace("retry_retirement(source)", "retry_retirement(foreign_source)")
         .replace("self.handoff", "foreign.handoff")
         .replace("(&mut self)", "(&mut foreign)")
+        .replace(
+            "receiver.retry_retained_helper()",
+            "foreign_receiver.retry_retained_helper()",
+        )
+        .replace(
+            "retry.abort_without_process()",
+            "foreign_lease.abort_without_process()",
+        )
 }
 
 #[cfg(test)]

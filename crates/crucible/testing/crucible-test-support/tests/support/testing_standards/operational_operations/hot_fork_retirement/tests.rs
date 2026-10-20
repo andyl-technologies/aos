@@ -111,3 +111,235 @@ fn source_retirement_rejects_replay_alias_bypass_and_invented_return()
     park.reject_companion("node/parent_park_drain.rs", ".verify_node(native_binding)", ".verify_node(foreign_binding)");
     Ok(())
 }
+
+#[test]
+fn pre_vm_retirement_keeps_the_same_preborn_body_and_borrowed_abort()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = Fixture::load(3)?;
+
+    for (before, after) in [
+        (
+            "Self::Preparation(preparation) => preparation.finish()",
+            "Self::Preparation(_) => Ok(())",
+        ),
+        ("if !receiver.retry_retained_helper()", "if false"),
+        (
+            "self.directory_closing = true; drop(self.contract.take()); drop(self.directory.take());",
+            "drop(self.contract.take()); drop(self.directory.take()); self.directory_closing = true;",
+        ),
+        ("if self.directory_closing", "if false"),
+        ("lease.abort_without_process()?", "drop(lease)"),
+        (
+            "retained => Err(retained)",
+            "retained => Ok(foreign_prepared)",
+        ),
+        (
+            "self.lease = None; Err(CleanupError::Retained(\"fresh physical owners and local generation returned; diagnostic funding remains retained\",))",
+            "self.lease = None; Ok(())",
+        ),
+        (
+            "drop(self.node.take()); self.channels_closed = true;",
+            "self.channels_closed = true; drop(self.node.take());",
+        ),
+    ] {
+        source.reject_companion("qemu_lifecycle_launcher/retained_node.rs", before, after);
+    }
+
+    for (before, after) in [
+        ("if self.retained_launch.is_some()", "if false"),
+        (
+            "self.retained_launch = Some(RetainedLaunch::Preparation(RetainedFreshPreparation::new(lease, run_directory, receiver,)));",
+            "drop((lease, run_directory, receiver));",
+        ),
+        (
+            "self.retained_launch = Some(RetainedLaunch::Preparation(preparation));",
+            "drop(preparation);",
+        ),
+        ("self.retained_launch = other;", "drop(other);"),
+        (
+            ".prepare_fresh_artifacts_guarded(qemu_executable, root_image, process_contract)",
+            ".prepare_fresh_artifacts_guarded(qemu_executable, root_image, foreign_contract)",
+        ),
+    ] {
+        source.reject_companion("qemu_lifecycle_launcher/fresh_generation.rs", before, after);
+    }
+
+    for (before, after) in [
+        (
+            "abort_without_process(&mut self)",
+            "abort_without_process(mut self)",
+        ),
+        (
+            "let mut state = self.generations.try_lock()",
+            "let mut state = self.generations.lock()",
+        ),
+        ("row.latest == Some(self.identity.generation())", "true"),
+        (
+            "state.nodes[index].latest = self.previous_generation;",
+            "state.nodes[index].latest = None;",
+        ),
+    ] {
+        source.reject_companion("qemu_resource_guard/generation_resource.rs", before, after);
+    }
+
+    let birth = source
+        .contract
+        .companions
+        .iter()
+        .find(|binding| {
+            binding
+                .path
+                .ends_with("qemu_lifecycle_launcher/fresh_generation.rs")
+        })
+        .expect("the actual pre-helper construction is bound")
+        .required[0]
+        .0;
+    let receiver = birth
+        .find("let receiver = {")
+        .expect("actual issued receiver block");
+    let directory = birth
+        .find("let run_directory = match")
+        .expect("actual directory creation block");
+    let installation = birth
+        .find("self.retained_launch = Some")
+        .expect("actual containing slot");
+    assert!(receiver < directory && directory < installation);
+    let receiver_block = &birth[receiver..directory];
+    let directory_block = &birth[directory..installation];
+    source.reject_companion(
+        "qemu_lifecycle_launcher/fresh_generation.rs",
+        &format!("{receiver_block}{directory_block}"),
+        &format!("{directory_block}{receiver_block}"),
+    );
+
+    source.reject_companion(
+        "qemu_lifecycle_launcher.rs",
+        "failed.finish()?;",
+        "discard(failed);",
+    );
+    source.reject_companion(
+        "qemu_lifecycle_launcher.rs",
+        "std::mem::size_of::<Self>()",
+        "std::mem::size_of::<usize>()",
+    );
+    source.reject_companion(
+        "qemu_lifecycle_launcher.rs",
+        "let retained_source = Self::retained_control_bytes()?",
+        "let retained_source = 0u64",
+    );
+    source.reject_companion(
+        "qemu_lifecycle_launcher.rs",
+        ".is_some_and(RetainedLaunch::is_preparation)",
+        ".is_some_and(|_| false)",
+    );
+    source.reject_companion(
+        "pending_construction/prepared.rs",
+        "source.world().vm_nodes().iter().map(|node| &node.id), workers,",
+        "foreign_nodes, workers,",
+    );
+    source.reject_companion(
+        "spawn/helper_receiver.rs",
+        "let controller = lender.controller().ok()?;",
+        "let controller = foreign_lender.controller().ok()?;",
+    );
+    source.reject_companion(
+        "original_node/helper_receiver.rs",
+        "self.settle_helper(&mut slot, &receiver);",
+        "pretend_settled();",
+    );
+    source.reject_companion(
+        "generation_resource/tests.rs",
+        "assert!(!pending.finished);",
+        "assert!(pending.finished);",
+    );
+    source.reject_companion(
+        "generation_resource/tests.rs",
+        "assert!(!first.finished);",
+        "assert!(first.finished);",
+    );
+
+    for (before, after) in [
+        (
+            ".filter(|slot| slot.active == Some(self.generation))",
+            ".filter(|_| true)",
+        ),
+        (
+            ".filter(|purpose| purpose.ready && purpose.sound)",
+            ".filter(|_| true)",
+        ),
+        (
+            "allocation.process_generation != expected || allocation.physical_retired",
+            "false",
+        ),
+        (
+            "let original = attempt.cleanup_entry()?;",
+            "let original = fresh_cleanup()?;",
+        ),
+        (
+            "let current = self.controller()?;",
+            "let current = Arc::clone(&controller);",
+        ),
+        (
+            "!Arc::ptr_eq(&controller, &current) || !controller.cleanup_matches(&original)",
+            "!controller.cleanup_matches(&original)",
+        ),
+        (
+            "!Arc::ptr_eq(&controller, &current) || !controller.cleanup_matches(&original)",
+            "!Arc::ptr_eq(&controller, &current)",
+        ),
+        (
+            "Arc::ptr_eq(&controller, &current) && controller.cleanup_matches(&self.original)",
+            "Arc::ptr_eq(&controller, &current)",
+        ),
+    ] {
+        source.reject_companion("process_purpose/source_cleanup.rs", before, after);
+    }
+    source.reject_companion(
+        "linux_attempt_host/original_node.rs",
+        "self.cleanup.get_or_init(",
+        "self.cleanup.get_or_try_init(",
+    );
+    source.reject_companion(
+        "linux_attempt_host/original_roster.rs",
+        "let original = controller.retained_cleanup()?;",
+        "let original = fresh_cleanup()?;",
+    );
+
+    let launcher = source
+        .contract
+        .companions
+        .iter()
+        .find(|binding| binding.path.ends_with("qemu_lifecycle_launcher.rs"))
+        .expect("the actual launcher companion remains bound once");
+    for (index, method) in [
+        (5, "fn take_target_construction_storage("),
+        (6, "fn prepare_fork_target_for_node("),
+        (7, "fn prepare_fork_target("),
+        (8, "fn prepare_fork_target_run_directory("),
+        (9, "fn parent_park_drain("),
+        (10, "fn begin_execution_quantum("),
+        (11, "fn check_operational_boundary("),
+        (12, "fn prepare_terminal_exact_checkpoint("),
+    ] {
+        let clause = launcher.required[index].0;
+        assert!(
+            source_pattern(clause).starts_with(&source_pattern(method)),
+            "wrong guard companion: {method}"
+        );
+        let guard = if index == 9 {
+            r#"self.require_preparation_return().map_err(|_| {
+                crate::ProductionVmParentParkDrainRefusal::Unavailable(
+                    "pre-VM preparation retains its original cleanup",
+                )
+            })?;"#
+        } else {
+            "self.require_preparation_return()?;"
+        };
+        let original = crate::scrub_comments_and_strings(clause);
+        let changed = replace_one_obligation(&original, &source_pattern(guard), "");
+        assert_ne!(changed, original, "missing operational guard: {method}");
+        source.reject_companion("qemu_lifecycle_launcher.rs", clause, &changed);
+    }
+
+    Ok(())
+}

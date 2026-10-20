@@ -182,7 +182,9 @@ fn three_source_world(
         } else {
             QemuTestHotForkOutcome::Forked
         };
-        let source = scripted_hot_fork_source_for_test(outcome).expect("scripted source");
+        let source = scripted_hot_fork_source_for_test(outcome).unwrap_or_else(|error| {
+            panic!("scripted source at index {index}, failure index {failure_index}: {error:?}")
+        });
         source_processes.push(source.process_id());
         sources.push(source);
     }
@@ -243,7 +245,11 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
             .retained_child_processes
             .lock()
             .expect("retained child registry");
-        assert_eq!(retained_children.len(), 2);
+        assert_eq!(
+            retained_children.len(),
+            2,
+            "clean rejection at index {failure_index}: {message}"
+        );
         for process in retained_children.iter().copied() {
             assert_process_absent(process);
         }

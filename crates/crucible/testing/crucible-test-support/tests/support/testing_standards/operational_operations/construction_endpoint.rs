@@ -12,6 +12,8 @@ mod controls;
 #[path = "construction_endpoint/whole_shutdown.rs"]
 mod whole_shutdown;
 
+pub(super) const NODE_COMPLETION: Companion = whole_shutdown::NODE_COMPLETION;
+
 /// Shares the actual unavailable reservation body without copying its proof.
 pub(super) const UNAVAILABLE_RESERVATION: &str = facts::NEGATIVE_TOKENS.required[0].0;
 /// Shares the independent handoff helper for scoped mutation controls.

@@ -31,6 +31,7 @@ mod action_return;
 mod layout;
 #[path = "frame_node/runtime.rs"]
 mod runtime;
+pub use runtime::ControlBoundaryPublicationError;
 #[path = "frame_node/snapshot.rs"]
 mod snapshot;
 
@@ -89,6 +90,117 @@ mod control_boundary_tests {
             Err(NodeSlotError::ControlBoundaryRequestChanged { .. })
         ));
         assert_eq!(slot.snapshot().control_boundary_ack, request);
+    }
+
+    #[test]
+    fn producer_refusal_precedes_every_request_field_and_wake_mutation() {
+        let slot = NodeSlot::new(KIND_VM);
+        let before = slot.wake_signal.load(Ordering::Acquire);
+        let mut invoked = 0;
+
+        let result = slot.request_control_boundary_with_publication(7, Some(3), |token| {
+            invoked += 1;
+            assert_eq!(token, 2);
+            assert_eq!(slot.control_boundary_token(), 1);
+            assert_eq!(slot.control_boundary_fault_command_frontier(), 0);
+            assert_eq!(slot.control_boundary_capture_request(), None);
+            Err("actual producer refusal")
+        });
+
+        assert!(matches!(
+            result,
+            Err(ControlBoundaryPublicationError::Producer(
+                "actual producer refusal"
+            ))
+        ));
+        assert_eq!(invoked, 1);
+        assert_eq!(slot.control_boundary_token(), 1);
+        assert_eq!(slot.control_boundary_fault_command_frontier(), 0);
+        assert_eq!(slot.control_boundary_capture_request(), None);
+        assert_eq!(slot.wake_signal.load(Ordering::Acquire), before);
+    }
+
+    #[test]
+    fn producer_unwind_leaves_request_fields_untouched() {
+        let slot = NodeSlot::new(KIND_VM);
+        let attempted = std::cell::Cell::new(false);
+        let before = slot.wake_signal.load(Ordering::Acquire);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ =
+                slot.request_control_boundary_with_publication(7, Some(3), |_| -> Result<(), ()> {
+                    attempted.set(true);
+                    panic!("after irreversible producer cut");
+                });
+        }));
+
+        assert!(result.is_err());
+        assert!(attempted.get());
+        assert_eq!(slot.control_boundary_token(), 1);
+        assert_eq!(slot.control_boundary_fault_command_frontier(), 0);
+        assert_eq!(slot.control_boundary_capture_request(), None);
+        assert_eq!(slot.wake_signal.load(Ordering::Acquire), before);
+    }
+
+    #[test]
+    fn actual_publication_and_repeated_wake_each_cross_one_producer_cut() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut cuts = 0;
+
+        let token = slot
+            .request_control_boundary_with_publication(7, Some(3), |token| {
+                cuts += 1;
+                assert_eq!(token, 2);
+                assert_eq!(slot.control_boundary_token(), 1);
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        let repeated = slot
+            .request_control_boundary_with_publication(7, Some(3), |token| {
+                cuts += 1;
+                assert_eq!(token, 2);
+                assert_eq!(slot.control_boundary_token(), 2);
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+
+        assert_eq!(token, repeated);
+        assert_eq!(cuts, 2);
+        assert_eq!(slot.control_boundary_fault_command_frontier(), 7);
+        assert_eq!(slot.control_boundary_capture_request(), Some(3));
+        assert_eq!(slot.wake_signal.load(Ordering::Acquire), 2);
+        assert_eq!(slot.acknowledge_control_boundary(), 3);
+    }
+
+    #[test]
+    fn malformed_or_changed_request_never_enters_producer_cut() {
+        let slot = NodeSlot::new(KIND_VM);
+        let cuts = std::cell::Cell::new(0);
+        let malformed = slot.request_control_boundary_with_publication(7, Some(2), |_| {
+            cuts.set(cuts.get() + 1);
+            Ok::<(), ()>(())
+        });
+        assert!(matches!(
+            malformed,
+            Err(ControlBoundaryPublicationError::Slot(
+                NodeSlotError::InvalidControlBoundaryCaptureRequest { .. }
+            ))
+        ));
+        let token = slot.request_control_boundary(7, Some(3)).unwrap();
+        let changed = slot.request_control_boundary_with_publication(8, Some(3), |_| {
+            cuts.set(cuts.get() + 1);
+            Ok::<(), ()>(())
+        });
+
+        assert!(matches!(
+            changed,
+            Err(ControlBoundaryPublicationError::Slot(
+                NodeSlotError::ControlBoundaryRequestChanged { .. }
+            ))
+        ));
+        assert_eq!(cuts.get(), 0);
+        assert_eq!(slot.control_boundary_token(), token);
+        assert_eq!(slot.control_boundary_fault_command_frontier(), 7);
     }
 }
 

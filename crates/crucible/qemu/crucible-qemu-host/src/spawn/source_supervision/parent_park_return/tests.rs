@@ -10,33 +10,27 @@ use crucible_qemu_protocol::boundary_action::{ActionObservation, ActionParent};
 use crucible_qemu_protocol::parent_park_return::PARENT_PARK_PHYSICAL_RESOLUTION_ALL;
 
 fn pending() -> action::PendingAction {
-    action::PendingAction {
-        observation: ActionObservation {
-            binding: ActionBinding {
-                cap: [1; 32],
-                reservation: [2; 32],
-                account_generation: 3,
-                process_generation: 4,
-                loan_sequence: 6,
-                token: 0,
-                capture: None,
-                park_request: Some(7),
-                frontier: 8,
-            },
-            primary_count: 2,
-            row_count: 2,
-            borrowed_mask: 3,
-            projected_mask: 3,
-            cohort_current: false,
-            parents: [ActionParent::default(); 4],
+    let mut pending = action::PendingAction::from_observation_for_test(ActionObservation {
+        binding: ActionBinding {
+            cap: [1; 32],
+            reservation: [2; 32],
+            account_generation: 3,
+            process_generation: 4,
+            loan_sequence: 6,
+            token: 0,
+            capture: None,
+            park_request: Some(7),
+            frontier: 8,
         },
-        returning: false,
-        clearing: false,
-        refused: true,
-        verified_return: None,
-        verified_park_return: None,
-        park_members_returned_mask: 0,
-    }
+        primary_count: 2,
+        row_count: 2,
+        borrowed_mask: 3,
+        projected_mask: 3,
+        cohort_current: false,
+        parents: [ActionParent::default(); 4],
+    });
+    pending.refused = true;
+    pending
 }
 
 fn evidence() -> VerifiedParkReturn {

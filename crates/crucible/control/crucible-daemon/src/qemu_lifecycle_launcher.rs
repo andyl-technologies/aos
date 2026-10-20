@@ -4,7 +4,7 @@
 //! generations. It admits and pins fresh generation directories, runs image
 //! tools under the attempt contract, streams repository checkpoints, and lends
 //! the sealed process contract only after preparation. Any unreaped QEMU or
-//! helper child is transferred into the aggregate guard before an error returns.
+//! helper child retains its issued cleanup receiver before an error returns.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -42,7 +42,7 @@ pub(crate) use target_construction::TargetMemberAdmission;
 pub use target_construction::TargetPreparationFailure;
 mod fresh_generation;
 mod retained_node;
-use retained_node::RetainedNodeLaunch;
+use retained_node::{RetainedFreshPreparation, RetainedLaunch, RetainedNodeLaunch};
 #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
 mod native_observation;
 #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
@@ -77,7 +77,7 @@ where
     prepared_source_selector: Option<crate::PreparedSourceSelector>,
     cleanup_complete: bool,
     construction_custody: Option<Box<crate::ProductionVmConstructionCustody>>,
-    retained_node: Option<RetainedNodeLaunch>,
+    retained_launch: Option<RetainedLaunch>,
     #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
     pub(crate) native_observation_config: Option<crate::ProductionVmLifecycleConfig>,
     target_storage: Option<TargetConstructionStorage>,
@@ -124,7 +124,7 @@ where
             prepared_source_selector: None,
             cleanup_complete: false,
             construction_custody: None,
-            retained_node: None,
+            retained_launch: None,
             #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
             native_observation_config: None,
             target_storage: None,
@@ -437,6 +437,19 @@ where
         self.owner.with_guard_mut(apply)
     }
 
+    /// Refuses new work while a failed preparation retains its actual owners.
+    fn require_preparation_return(&self) -> Result<(), LifecycleApiError> {
+        if self
+            .retained_launch
+            .as_ref()
+            .is_some_and(RetainedLaunch::is_preparation)
+        {
+            Err(LifecycleApiError::CleanupRetained)
+        } else {
+            Ok(())
+        }
+    }
+
     fn record_launched_generation(
         &mut self,
         request: ProductionVmNodeLaunchRequest<'_>,
@@ -460,7 +473,7 @@ where
             Err((first, launch)) => {
                 // Both launch methods exclude an earlier failed pairing before
                 // any effects, so this pre-existing slot cannot be overwritten.
-                self.retained_node = Some(RetainedNodeLaunch::new(launch));
+                self.retained_launch = Some(RetainedLaunch::Node(RetainedNodeLaunch::new(launch)));
                 Err(first)
             }
         }
@@ -630,6 +643,7 @@ where
     fn take_target_construction_storage(
         &mut self,
     ) -> Result<TargetConstructionStorage, LifecycleApiError> {
+        self.require_preparation_return()?;
         self.target_storage.take().ok_or_else(|| {
             launcher_message("Source Target construction storage is already borrowed or absent")
         })
@@ -683,6 +697,7 @@ where
         crucible_qemu_host::QemuForkTargetPreparation,
         crate::qemu_lifecycle_launcher::TargetPreparationFailure,
     > {
+        self.require_preparation_return()?;
         self.owner.prepare_fork_target_for_node(node)
     }
 
@@ -693,6 +708,7 @@ where
         crucible_qemu_host::QemuForkTargetPreparation,
         crate::qemu_lifecycle_launcher::TargetPreparationFailure,
     > {
+        self.require_preparation_return()?;
         self.owner.prepare_fork_target()
     }
 
@@ -702,6 +718,7 @@ where
         target_contract: &QemuChildProcessContract,
         requirements: crucible_qemu_host::QemuLaunchResourceRequirements,
     ) -> Result<QemuPreparedRunDirectory, LifecycleApiError> {
+        self.require_preparation_return()?;
         self.owner
             .prepare_fork_target_run_directory(target_contract, requirements)
     }
@@ -724,6 +741,11 @@ where
         request: crate::ProductionVmParentParkDrainRequest<'_>,
     ) -> Result<crucible_qemu_host::QmpParentParkResult, crate::ProductionVmParentParkDrainRefusal>
     {
+        self.require_preparation_return().map_err(|_| {
+            crate::ProductionVmParentParkDrainRefusal::Unavailable(
+                "pre-VM preparation retains its original cleanup",
+            )
+        })?;
         self.invoke_parent_park_drain(source, request)
     }
 
@@ -745,6 +767,7 @@ where
     }
 
     fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        self.require_preparation_return()?;
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         if self.parent_park_phase.is_some() {
             return Err(LifecycleApiError::ParentParkHeld);
@@ -753,6 +776,7 @@ where
     }
 
     fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        self.require_preparation_return()?;
         self.owner.check_operational_boundary()
     }
 
@@ -760,6 +784,7 @@ where
         &mut self,
         closure: ProductionExactCheckpointClosure,
     ) -> Result<DecodedProductionExactCheckpoint, LifecycleApiError> {
+        self.require_preparation_return()?;
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         if self.parent_park_phase.is_some() {
             return Err(LifecycleApiError::ParentParkHeld);
@@ -800,7 +825,7 @@ where
         qemu_executable: &std::path::Path,
         root_image: &std::path::Path,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-        if self.retained_node.is_some() {
+        if self.retained_launch.is_some() {
             return Err(launcher_message(
                 "a refused QEMU pairing retains generation cleanup",
             ));
@@ -843,7 +868,7 @@ where
         request: ProductionVmNodeLaunchRequest<'_>,
         admission: ProductionVmExactNodeRestoreAdmission,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-        if self.retained_node.is_some() {
+        if self.retained_launch.is_some() {
             return Err(launcher_message(
                 "a refused QEMU pairing retains generation cleanup",
             ));
@@ -900,10 +925,10 @@ where
         if self.parent_park_phase.is_some() {
             return Err((LifecycleApiError::ParentParkHeld).into());
         }
-        if let Some(failed) = self.retained_node.as_mut() {
+        if let Some(failed) = self.retained_launch.as_mut() {
             failed.finish()?;
         }
-        self.retained_node = None;
+        self.retained_launch = None;
         // The exact observation registrar/configuration aliases remain until
         // its real node and generation lease have physically closed.
         #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
@@ -1164,7 +1189,7 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
 }
 
 fn abort_unspawned_generation(
-    lease: QemuAttemptGenerationLease,
+    mut lease: QemuAttemptGenerationLease,
     primary: LifecycleApiError,
 ) -> LifecycleApiError {
     match lease.abort_without_process() {

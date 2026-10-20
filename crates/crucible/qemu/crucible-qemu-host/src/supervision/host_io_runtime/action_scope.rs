@@ -20,6 +20,16 @@ pub(super) trait ControlActionScope {
         capture: Option<u32>,
     ) -> Result<bool, QemuAsyncDriverRuntimeError>;
 
+    /// Lends the existing probe Original without weakening paired Pause admission.
+    ///
+    /// # Errors
+    /// Refuses missing/terminal real Source producers or retained prior debt.
+    fn lend_probe(
+        &mut self,
+        runtime: &mut QemuLiveHostIoRuntime,
+        budget: &OperationPollBudget<'_>,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError>;
+
     /// Lends the appropriate Pause action before the mapped Pause effect.
     ///
     /// # Errors
@@ -29,6 +39,15 @@ pub(super) trait ControlActionScope {
         runtime: &mut QemuLiveHostIoRuntime,
         budget: &OperationPollBudget<'_>,
     ) -> Result<bool, QemuAsyncDriverRuntimeError>;
+
+    /// Seals this Pause owner before its header flag or scheduler ceiling changes.
+    ///
+    /// # Errors
+    /// Refuses a missing, changed or terminal actual Source action.
+    fn begin_pause_publication(
+        &mut self,
+        runtime: &mut QemuLiveHostIoRuntime,
+    ) -> Result<(), QemuAsyncDriverRuntimeError>;
 
     /// Compares the published request with this owner's retained selector.
     ///
@@ -69,6 +88,15 @@ impl ControlActionScope for SourceControlAction {
         Ok(self.binding.is_some())
     }
 
+    fn lend_probe(
+        &mut self,
+        runtime: &mut QemuLiveHostIoRuntime,
+        budget: &OperationPollBudget<'_>,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        self.binding = runtime.lend_probe_action(budget)?;
+        Ok(self.binding.is_some())
+    }
+
     fn lend_pause(
         &mut self,
         runtime: &mut QemuLiveHostIoRuntime,
@@ -76,6 +104,13 @@ impl ControlActionScope for SourceControlAction {
     ) -> Result<bool, QemuAsyncDriverRuntimeError> {
         self.binding = runtime.lend_paired_pause_action(budget)?;
         Ok(self.binding.is_some())
+    }
+
+    fn begin_pause_publication(
+        &mut self,
+        runtime: &mut QemuLiveHostIoRuntime,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        runtime.begin_pause_action_publication(self.binding)
     }
 
     fn validate(&self, request: PendingControlBoundary) -> Result<(), QemuAsyncDriverRuntimeError> {
