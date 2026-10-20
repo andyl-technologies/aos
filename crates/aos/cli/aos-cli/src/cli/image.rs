@@ -1,0 +1,79 @@
+//! Command-line arguments for discovering and downloading AOS system images.
+
+use std::path::PathBuf;
+
+use clap::{Args, Subcommand};
+
+#[derive(Subcommand)]
+pub enum ImageCommand {
+    /// List signed system images.
+    List(ImageListArgs),
+    /// Resolve and inspect one signed system image.
+    Show(ImageShowArgs),
+    /// Download disk-image bytes and verify their SHA-256.
+    Download(ImageDownloadArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ImageSelectionArgs {
+    /// Use a Hub origin instead of a configured Git/HTTP registry.
+    #[arg(long, env = "AOS_HUB")]
+    pub hub: Option<String>,
+    /// Bearer token for private Hub registries (or AOS_TOKEN in Hub mode).
+    #[arg(long, requires = "hub")]
+    pub token: Option<String>,
+    /// Configured APM registry name, or registry slug with --hub.
+    #[arg(long)]
+    pub registry: String,
+    /// Select a sysroot package when a registry publishes more than one.
+    #[arg(long)]
+    pub package: Option<String>,
+    /// Select an immutable release.
+    #[arg(long, conflicts_with = "channel")]
+    pub release: Option<String>,
+    /// Resolve a signed release channel.
+    #[arg(long, conflicts_with = "release")]
+    pub channel: Option<String>,
+    /// Select an architecture.
+    #[arg(long)]
+    pub architecture: Option<String>,
+    /// Select a disk format.
+    #[arg(long)]
+    pub format: Option<String>,
+    /// Select an end-user target such as `qemu-kvm` or `bare-metal`.
+    #[arg(long)]
+    pub target: Option<String>,
+}
+
+#[derive(Args)]
+pub struct ImageListArgs {
+    /// Image filters.
+    #[command(flatten)]
+    pub selection: ImageSelectionArgs,
+}
+
+#[derive(Args)]
+pub struct ImageShowArgs {
+    /// Exact image selection.
+    #[command(flatten)]
+    pub selection: ImageSelectionArgs,
+}
+
+#[derive(Args)]
+pub struct ImageDownloadArgs {
+    /// Exact image selection.
+    #[command(flatten)]
+    pub selection: ImageSelectionArgs,
+    /// Destination file; defaults to the signed useful filename.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+    /// Download the authenticated image-info companion instead of disk bytes.
+    #[arg(long)]
+    pub metadata_only: bool,
+    /// Restart rather than resume an existing partial file.
+    #[arg(long)]
+    pub no_resume: bool,
+    /// Retry transient transfer failures before preserving the partial download.
+    #[arg(long, default_value_t = 3)]
+    pub retries: u32,
+}

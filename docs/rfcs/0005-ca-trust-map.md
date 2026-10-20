@@ -4,7 +4,7 @@
   published by `apr` and enforced over complete closures by `apm`.
 - **Date:** 2026-06-12
 - **PR:** [#98](https://github.com/andyl-technologies/aos/pull/98)
-- **Audience:** anyone working on `crates/aos-package/` (the `apr`
+- **Audience:** anyone working on `crates/aos/packages/aos-package-manager/` (the `apr`
   publish pipeline and the `apm` download/verify pipeline) or the
   registry docs under `docs/registry/`.
 
@@ -28,7 +28,7 @@ of the dependency graph but not its **content**:
 - Every **non-root closure member** is not. The installer plans the
   closure from `closures/<root>`, then learns each member's NAR hash
   from a **cache-served narinfo** (`fetch_narinfos`,
-  `crates/aos-package/src/download.rs`). Narinfos are not part of the
+  `crates/aos/packages/aos-package-manager/src/download.rs`). Narinfos are not part of the
   signed tree - they come from whatever `[[caches]]` endpoint answered.
   A compromised cache (or CDN, or bucket) can serve a tampered NAR with
   a matching tampered narinfo for any dependency, and the registry

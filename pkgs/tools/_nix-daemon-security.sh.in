@@ -1,0 +1,117 @@
+# Runs inside the isolated multi-user VM after its concurrent-build checks.
+set -E
+export PATH="@coreutils@/bin:$PATH"
+trap 'status=$?; cat /tmp/denied-client.log /tmp/*-policy.log /tmp/*-cache.log /tmp/daemon.log >&2 2>/dev/null || true; exit "$status"' ERR
+nix_bin=@nix@/bin
+setpriv=@util-linux@/bin/setpriv
+sed=@sed@/bin/sed
+grep=@grep@/bin/grep
+cp /etc/aos/packages/nix-daemon/nix.conf /tmp/security-baseline.conf
+
+client() {
+  "$setpriv" --reuid=1000 --regid=100 --clear-groups "$@"
+}
+
+stop_daemon() {
+  kill "$daemon_pid"
+  wait "$daemon_pid" || true
+}
+
+# Allowed accounts are checked on the actual canonical socket, independently
+# of filesystem socket mode. Keep the first client authorized for readiness.
+printf 'allowed-users = client\n' >> /etc/aos/packages/nix-daemon/nix.conf
+start_daemon
+if "$setpriv" --reuid=1001 --regid=100 --clear-groups \
+    "$nix_bin/nix-store" --store daemon --query --hash @bash@ \
+    >/tmp/denied-client.out 2>/tmp/denied-client.log; then
+  echo 'unauthorized account unexpectedly connected' >&2
+  exit 1
+fi
+"$grep" -F "user 'second-client' is not allowed to connect" /tmp/daemon.log
+
+cat > /tmp/security-build.nix <<'EXPRESSION'
+{ name, visible ? false }: let
+  bash = builtins.storePath "@bash@";
+  coreutils = builtins.storePath "@coreutils@";
+  visibility = if visible then "-e" else "! -e";
+in builtins.derivation {
+  inherit name;
+  system = builtins.currentSystem;
+  builder = "${bash}/bin/bash";
+  args = [ "-c" ''
+    set -euo pipefail
+    test ${visibility} /tmp/host-only-sentinel
+    ${coreutils}/bin/mkdir "$out"
+    printf signed-cache-fixture > "$out/payload"
+  '' ];
+}
+EXPRESSION
+chmod 0644 /tmp/security-build.nix
+
+# The same privileged request is ignored for an untrusted client and honored
+# for root. Builder visibility checks fail the derivation if policy is wrong.
+client "$nix_bin/nix-build" --store daemon --no-out-link \
+  --option sandbox false /tmp/security-build.nix --argstr name untrusted-sandbox-policy \
+  >/tmp/untrusted-policy.out 2>/tmp/untrusted-policy.log
+"$grep" -E 'ignoring.*sandbox.*restricted' /tmp/untrusted-policy.log
+"$nix_bin/nix-build" --store daemon --no-out-link \
+  --option sandbox false /tmp/security-build.nix --argstr name trusted-sandbox-policy --arg visible true \
+  >/tmp/trusted-policy.out 2>/tmp/trusted-policy.log
+test -f "$(cat /tmp/untrusted-policy.out)/payload"
+test -f "$(cat /tmp/trusted-policy.out)/payload"
+stop_daemon
+
+# Produce ordinary derivation outputs in this guest, sign them locally, and
+# publish only into a private file cache. These are not content-addressed paths
+# (which Nix can trust without a signature). No external cache is contacted.
+cp /tmp/security-baseline.conf /etc/aos/packages/nix-daemon/nix.conf
+start_daemon
+for variant in trusted unknown invalid; do
+  "$nix_bin/nix-build" --store daemon --no-out-link /tmp/security-build.nix \
+    --argstr name "cache-$variant-fixture" > "/tmp/cache-$variant.out"
+done
+trusted=$(cat /tmp/cache-trusted.out)
+unknown=$(cat /tmp/cache-unknown.out)
+invalid=$(cat /tmp/cache-invalid.out)
+stop_daemon
+
+umask 077
+"$nix_bin/nix-store" --generate-binary-cache-key fixture-trusted /tmp/cache-trusted.sec /tmp/cache-trusted.pub
+"$nix_bin/nix-store" --generate-binary-cache-key fixture-other /tmp/cache-other.sec /tmp/cache-other.pub
+"$nix_bin/nix" store sign --store local --key-file /tmp/cache-trusted.sec "$trusted"
+"$nix_bin/nix" store sign --store local --key-file /tmp/cache-other.sec "$unknown" "$invalid"
+"$nix_bin/nix" copy --from local --to file:///tmp/fixture-cache "$trusted" "$unknown" "$invalid"
+base=${invalid##*/}
+"$sed" -i 's/^Sig: fixture-other:/Sig: fixture-trusted:/' "/tmp/fixture-cache/${base%%-*}.narinfo"
+for output in "$trusted" "$unknown" "$invalid"; do
+  base=${output##*/}
+  if "$grep" -q '^CA:' "/tmp/fixture-cache/${base%%-*}.narinfo"; then
+    echo 'fixture unexpectedly bypasses signature policy through content addressing' >&2
+    exit 1
+  fi
+done
+# Delete only the three disposable outputs created above in this guest's store.
+# With max-jobs=0 on requests, failure cannot fall back to rebuilding them.
+"$nix_bin/nix-store" --store local --delete "$trusted" "$unknown" "$invalid"
+printf 'substituters = file:///tmp/fixture-cache\ntrusted-public-keys = %s\n' \
+  "$(cat /tmp/cache-trusted.pub)" >> /etc/aos/packages/nix-daemon/nix.conf
+start_daemon
+client "$nix_bin/nix-store" --store daemon --realise "$trusted" --option max-jobs 0 \
+  >/tmp/trusted-cache.out 2>/tmp/trusted-cache.log
+test -f "$trusted/payload"
+"$grep" -F "$(basename "$trusted")" /tmp/trusted-cache.out
+
+for variant in unknown invalid; do
+  output=$(cat "/tmp/cache-$variant.out")
+  if client "$nix_bin/nix-store" --store daemon --realise "$output" \
+      --option max-jobs 0 --option require-sigs false \
+      > "/tmp/$variant-cache.out" 2> "/tmp/$variant-cache.log"; then
+    echo "$variant cache signature unexpectedly accepted" >&2
+    exit 1
+  fi
+  "$grep" -F "not signed by any of the keys" "/tmp/$variant-cache.log"
+  "$grep" -E 'ignoring.*require-sigs.*restricted' "/tmp/$variant-cache.log"
+  test ! -e "$output"
+done
+stop_daemon
+echo 'Nix daemon account authorization, trusted settings, signed cache substitution and signature rejection PASS'

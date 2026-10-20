@@ -1,13 +1,13 @@
 ##! Complete, sharded build validation for the advertised Darwin package set.
 ##!
 ##! Every publication root and every named output is realized through a
-##! publication-wave check. The checks inspect Darwin artifacts from Linux;
+##! deterministic shard. The checks inspect Darwin artifacts from Linux;
 ##! they never execute a target binary.
 {pkgs}: let
   lib = pkgs.lib;
-  support = import ../../pkgs/_platform-support.nix;
   buildSystem = pkgs.stdenv.buildPlatform.system;
-  waves = [1 2 3 4 5];
+  shardCount = 5;
+  shards = builtins.genList (index: index) shardCount;
 
   targetSystems = {
     x86_64-darwin = {
@@ -101,6 +101,63 @@
     nativeToolPackages
   );
 
+  pathScanner = pkgs.mkDerivation {
+    pname = "darwin-ephemeral-path-scanner";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.gawk];
+    phases = [
+      {
+        name = "check";
+        script = ''
+          assert_classification() {
+            expected="$1"
+            file="$2"
+            text="$3"
+            if printf '%s\n' "$text" \
+              | gawk -v file="$file" -f ${./fixtures/darwin-ephemeral-paths.awk}; then
+              actual=leak
+            else
+              actual=clean
+            fi
+            if test "$actual" != "$expected"; then
+              printf 'Expected %s, got %s in %s: %s\n' "$expected" "$actual" "$file" "$text" >&2
+              exit 1
+            fi
+          }
+
+          cmake=/nix/store/fixture-cmake-4/bin/cmake
+          buildx=/nix/store/fixture-docker-buildx-1/bin/docker-buildx
+          ordinary=/nix/store/fixture-other-1/bin/tool
+
+          for method in commands targets; do
+            assert_classification clean "$cmake" "/build/$method"
+            assert_classification clean "$cmake" "/build/$method/"
+            assert_classification leak "$cmake" "/build/$method/source.c"
+            assert_classification leak "$cmake" "/build/$method /build/source.c"
+            assert_classification leak "$ordinary" "/build/$method"
+          done
+
+          prune='/build/prune/containers//checkpoints'
+          cancel='prefix /build/cancel/checkpoints//attestations'
+          assert_classification clean "$buildx" "$prune"
+          assert_classification clean "$buildx" "$cancel"
+          assert_classification leak "$ordinary" "$prune"
+          assert_classification leak "$ordinary" "$cancel"
+          assert_classification leak "$buildx" '/build/prune/source.c'
+          assert_classification leak "$buildx" '/build/cancel/source.c'
+          assert_classification leak "$buildx" "$prune /build/source.c"
+          assert_classification leak "$buildx" "$cancel /build/source.c"
+          assert_classification leak "$ordinary" 'rpath=/build/lib'
+          assert_classification clean "$ordinary" 'example.com/project/build/tool'
+
+          mkdir -p "$out"
+          printf 'PASS: 20 path classifications\n' > "$out/result"
+        '';
+      }
+    ];
+  };
+
   mkAggregate = name: checks:
     pkgs.mkDerivation {
       pname = "darwin-package-matrix-${name}";
@@ -129,12 +186,21 @@
     targetPackages = cross.pkgs.targetPackagesFor targetSystem;
     targetNames = cross.pkgs.targetPackageNamesFor targetSystem;
     compilerSdkPath = toString cross.pkgs.stdenv.cc.passthru.sdk;
-    namesForWave = wave:
-      builtins.filter (
-        name: (support.packageSupport name).wave == wave
-      )
-      targetNames;
-    partitionedNames = lib.concatMap namesForWave waves;
+    indexedTargetNames = builtins.genList (index: {
+      inherit index;
+      name = builtins.elemAt targetNames index;
+    }) (builtins.length targetNames);
+    namesForShard = shard:
+      builtins.map (entry: entry.name) (
+        builtins.filter (
+          entry:
+            entry.index
+            - (builtins.div entry.index shardCount * shardCount)
+            == shard
+        )
+        indexedTargetNames
+      );
+    partitionedNames = lib.concatMap namesForShard shards;
     partitionCounts =
       builtins.foldl' (
         counts: name:
@@ -160,21 +226,21 @@
       )
       nativeToolOutputPaths;
 
-    mkWave = wave: let
-      waveNames = namesForWave wave;
-      wavePackages = builtins.listToAttrs (
+    mkShard = shard: let
+      shardNames = namesForShard shard;
+      shardPackages = builtins.listToAttrs (
         builtins.map (name: {
           inherit name;
           value = targetPackages.${name};
         })
-        waveNames
+        shardNames
       );
-      waveOutputs =
+      shardOutputs =
         lib.concatMap (
-          name: packageOutputs name wavePackages.${name}
+          name: packageOutputs name shardPackages.${name}
         )
-        waveNames;
-      rootPaths = builtins.map (entry: entry.path) waveOutputs;
+        shardNames;
+      rootPaths = builtins.map (entry: entry.path) shardOutputs;
       auditCalls =
         lib.concatMapStringsSep "\n" (entry: ''
           audit_output \
@@ -187,7 +253,7 @@
           )} \
             ${lib.escapeShellArg (toString entry.path)}
         '')
-        waveOutputs;
+        shardOutputs;
       prohibitedChecks =
         lib.concatMapStringsSep "\n" (path: ''
           if grep -F -x -q ${lib.escapeShellArg path} audited-closure-paths; then
@@ -197,7 +263,7 @@
         prohibitedNativePaths;
     in
       pkgs.mkDerivation {
-        pname = "darwin-package-matrix-${targetSystem}-wave-${toString wave}";
+        pname = "darwin-package-matrix-${targetSystem}-shard-${toString shard}";
         version = "0";
         src = null;
 
@@ -239,7 +305,7 @@
                 # treating every `/build/` component as ephemeral rejects
                 # canonical language package names rather than build roots.
                 if ${pkgs.llvm}/bin/llvm-strings -a "$file" \
-                  | grep -E '(^|[[:space:]"=:(;,])/build/' >/dev/null; then
+                  | gawk -v file="$file" -f ${./fixtures/darwin-ephemeral-paths.awk}; then
                   echo "ephemeral /build path in Darwin output: $file" >&2
                   exit 1
                 fi
@@ -479,13 +545,13 @@
                 exit 1
               fi
 
-              package_count=${toString (builtins.length waveNames)}
-              output_count=${toString (builtins.length waveOutputs)}
+              package_count=${toString (builtins.length shardNames)}
+              output_count=${toString (builtins.length shardOutputs)}
               closure_count=$(${pkgs.jq}/bin/jq '.matrix | length' "$NIX_ATTRS_JSON_FILE")
               {
                 printf 'schema=aos.darwin-package-matrix/v1\n'
                 printf 'platform=%s\n' "$expected_platform"
-                printf 'wave=%s\n' ${lib.escapeShellArg (toString wave)}
+                printf 'shard=%s\n' ${lib.escapeShellArg (toString shard)}
                 printf 'packages=%s\n' "$package_count"
                 printf 'outputs=%s\n' "$output_count"
                 printf 'closure-paths=%s\n' "$closure_count"
@@ -496,32 +562,34 @@
         ];
 
         passthru = {
-          inherit targetSystem wave waveNames;
-          packageCount = builtins.length waveNames;
-          outputCount = builtins.length waveOutputs;
+          inherit targetSystem shard shardNames;
+          packageCount = builtins.length shardNames;
+          outputCount = builtins.length shardOutputs;
         };
       };
 
-    waveChecks = builtins.listToAttrs (
-      builtins.map (wave: {
-        name = "wave${toString wave}";
-        value = mkWave wave;
+    shardChecks = builtins.listToAttrs (
+      builtins.map (shard: {
+        name = "shard${toString shard}";
+        value = mkShard shard;
       })
-      waves
+      shards
     );
   in
     assert partitionIsExact;
-      waveChecks
+      shardChecks
       // {
-        all = mkAggregate targetSystem (builtins.attrValues waveChecks);
+        all = mkAggregate targetSystem (builtins.attrValues shardChecks);
       };
 
   matrices = builtins.mapAttrs mkTargetChecks targetSystems;
 in
   matrices
   // {
+    path-scanner = pathScanner;
     all = mkAggregate "all" (
-      builtins.map (targetSystem: matrices.${targetSystem}.all) (
+      [pathScanner]
+      ++ builtins.map (targetSystem: matrices.${targetSystem}.all) (
         builtins.attrNames targetSystems
       )
     );

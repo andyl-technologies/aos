@@ -24,8 +24,8 @@ mod negative;
 mod support;
 
 use support::{Family, Value, encode, reference};
-use terrane_core::gc::publication::evidence::*;
-use terrane_core::refs::Commit;
+use terrane_format::gc::publication::evidence::*;
+use terrane_format::refs::Commit;
 
 #[test]
 fn reference_control_pin_models_preserve_all_kinds_and_owners() {
@@ -342,7 +342,7 @@ fn reference_lineage_field_negatives_require_structural_rejection() {
         if case.name.ends_with("huge-count") || case.name == "bad-lineage-root-path-too-long" {
             assert_eq!(
                 rejected,
-                Err(EvidenceError::Cbor(terrane_core::cbor::Error::Limit)),
+                Err(EvidenceError::Cbor(terrane_format::cbor::Error::Limit)),
                 "{}",
                 case.name
             );

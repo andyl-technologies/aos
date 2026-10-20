@@ -2,7 +2,7 @@
 
 use super::models::{Case, cases};
 use super::support::{Value, encode, hex, leak, published};
-use terrane_core::{
+use terrane_format::{
     identity::{Descriptor, Digest, IdentityKind, TERRANE_V1},
     indexing::{
         IndexBinding, IndexEvaluationRecipe, IndexKey, IndexRoots,
@@ -276,7 +276,7 @@ pub(crate) fn bindings_and_recipes() {
                 assert!(IndexEvaluationRecipe::decode(&bytes).is_err());
                 let commit = commit_model(Some(bytes.clone()));
                 let decoded =
-                    terrane_core::refs::Commit::decode(&commit.encode().unwrap()).unwrap();
+                    terrane_format::refs::Commit::decode(&commit.encode().unwrap()).unwrap();
                 assert_eq!(decoded, commit);
                 assert_eq!(decoded.profile_pair.recipe.as_ref(), Some(&bytes));
             } else {
@@ -363,7 +363,7 @@ pub(crate) fn historical() {
                 case.name
             );
         } else if let Some(props) = node(case).props {
-            use terrane_core::properties::semantics::RecordedContext;
+            use terrane_format::properties::semantics::RecordedContext;
             RecordedContext::new(1, 3, &["index-roots", "index-gaps"])
                 .unwrap()
                 .validate_map(&props)
@@ -380,12 +380,12 @@ pub(crate) fn historical() {
     let recipe = encode(case.model.field(6).field(3));
     let model = commit_model(Some(recipe));
     assert_eq!(model.encode().unwrap(), bytes);
-    assert_eq!(terrane_core::refs::Commit::decode(&bytes).unwrap(), model);
+    assert_eq!(terrane_format::refs::Commit::decode(&bytes).unwrap(), model);
     immutable(case, &bytes, IdentityKind::Commit);
 }
 
-fn commit_model(recipe: Option<Vec<u8>>) -> terrane_core::refs::Commit {
-    use terrane_core::refs::{Commit, CommitSource, PrincipalKind, ProfilePair, Provenance};
+fn commit_model(recipe: Option<Vec<u8>>) -> terrane_format::refs::Commit {
+    use terrane_format::refs::{Commit, CommitSource, PrincipalKind, ProfilePair, Provenance};
     Commit {
         tree: [1; 32],
         parents: vec![],
@@ -457,8 +457,8 @@ pub(crate) fn carriers() {
     immutable(chunk, &bytes, IdentityKind::Chunk);
     let mut envelope = vec![0];
     envelope.extend(&bytes);
-    let parsed = terrane_core::codec::parse_envelope(&envelope).unwrap();
-    assert_eq!(parsed.codec, terrane_core::codec::Codec::Raw);
+    let parsed = terrane_format::codec::parse_envelope(&envelope).unwrap();
+    assert_eq!(parsed.codec, terrane_format::codec::Codec::Raw);
     assert_eq!(parsed.body, bytes);
 }
 
@@ -485,7 +485,7 @@ pub(crate) fn negatives() {
                 panic!("graft override")
             };
             assert!(
-                terrane_core::properties::validate_graft_overrides(props, &[]).is_err(),
+                terrane_format::properties::validate_graft_overrides(props, &[]).is_err(),
                 "{} actual placement refusal",
                 case.name
             );

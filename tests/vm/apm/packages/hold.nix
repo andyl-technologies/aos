@@ -86,7 +86,7 @@
       publish_hold_tool() {
         version="$1"
         store="$2"
-        $APR publish "$store" \
+        publish_vm_package "$store" \
           --name hold-tool \
           --version "$version" \
           --description "Executable hold workflow fixture" \
@@ -101,7 +101,7 @@
       assert_store_valid "$HOLD_V2_STORE" "hold-tool-v2"
 
       echo "==> Maintainer: publish hold-tool 1.0.0 and static cache"
-      $APR create hold-reg
+      create_publish_registry hold-reg
       REG_DIR="$REG_STORAGE/hold-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_hold_tool 1.0.0 "$HOLD_V1_STORE"

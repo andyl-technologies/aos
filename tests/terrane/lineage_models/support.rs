@@ -204,7 +204,7 @@ pub(super) fn reference() -> BTreeMap<String, ReferenceRow> {
     const HEADING: &str = "## Consumed-lineage record field witnesses";
     let document = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/terrane/lineage-reference.md"
+        "/../../../../tests/terrane/lineage-reference.md"
     ));
     assert_eq!(document.lines().filter(|line| *line == HEADING).count(), 1);
     let section = document

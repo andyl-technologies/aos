@@ -1,4 +1,4 @@
-# 0087 - Deterministic RCU quiescence
+# Capability task 0087 — Deterministic RCU quiescence
 
 ## Purpose
 
@@ -9,7 +9,7 @@ different guest instruction. If an architectural interrupt is pending, the
 new translation-block boundary can change the instruction at which QEMU makes
 that interrupt visible.
 
-Patch `0087` makes forced RCU progress deterministic under `-accel sim`.
+Capability task `0087` makes forced RCU progress deterministic under `-accel sim`.
 Ordinary accelerators keep the upstream kick. Sim mode instead relies on its
 already bounded round-robin execution budget to leave the RCU read-side
 critical section at the next deterministic scheduler boundary.
@@ -40,13 +40,13 @@ guest state and deterministic RR progress, never because a host RCU worker
 happened to request a grace period. Serialized RR owner, cursor position, and
 quantum accounting are unchanged.
 
-The patch does not suppress guest interrupts, postpone a deterministic
+The capability does not suppress guest interrupts, postpone a deterministic
 preemption command, or modify the QEMU main-loop wake protocol. It removes only
 the host-originated forced exit from sim execution.
 
 ## Files and license scope
 
-The patch modifies `accel/tcg/tcg-accel-ops-rr.c`, preserving that file's MIT
+The atomic patch modifies `accel/tcg/tcg-accel-ops-rr.c`, preserving that file's MIT
 license. It creates no QEMU source file, so `LICENSES.md` does not gain a row.
 The change remains wholly inside the GPL-side QEMU process and adds no process
 boundary field or callback.
@@ -62,9 +62,8 @@ boundary field or callback.
    retire instructions.
 5. Prove stock QEMU retains its ordinary forced-RCU kick and that the added
    branch is gated by Crucible sim mode.
-6. Rebuild every QEMU patch prefix, regenerate the deterministic patch stack,
-   and pass ABI, license-boundary, source-retention, and non-sim inertness
-   gates.
+6. Rebuild the atomic QEMU patch and pass regeneration, ABI,
+   license-boundary, source-retention, and non-sim inertness gates.
 
 - **[QFP-RCU-1]** Host-originated RCU progress MUST NOT choose a guest
   instruction boundary in sim mode.

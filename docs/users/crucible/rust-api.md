@@ -9,10 +9,14 @@ This guide maps those surfaces and their support boundaries.
 
 | Crate | Owns | Use it when |
 |---|---|---|
-| `crucible` | Model types, canonical forms, scheduler contracts, stores, checkpoints, properties, traces | Building and validating scenarios or consuming typed execution data. |
-| `crucible-api` | Versioned lifecycle/control API, in-process and RPC clients, streaming, daemon server, production VM lifecycle facade | Embedding sessions or writing a control-plane client. |
-| `crucible-qemu` | Production patched-QEMU lifecycle implementation | Normally reached through `crucible-api`; examples/gates may use it directly. |
-| `crucible-protocol` / `crucible-shmem` | Versioned process-boundary protocols | Infrastructure integration, not ordinary scenario authoring. |
+| `crucible-engine` | Model types, canonical forms, scheduler contracts, checkpoints, properties, traces | Building and validating scenarios or consuming typed execution data. |
+| `crucible-control-api` | Versioned lifecycle/control values, RPC encoding, shared streaming contracts | Sharing typed requests and responses across control transports. |
+| `crucible-control-client` | Control-client interface and RPC implementation | Writing a control-plane client. |
+| `crucible-control-server` | In-process clients, actor dispatch, streaming, HTTP/2 serving | Embedding sessions or implementing a control-plane service. |
+| `crucible-daemon` | Production VM lifecycle and daemon composition | Integrating production execution and restore. |
+| `crucible-qemu-host` | Apache host-side patched-QEMU lifecycle adapter | Normally reached through the daemon; examples/gates may use it directly. |
+| `crucible-store` | Shared content-addressed DAG-store implementations | Sharing immutable execution artifacts and checkpoint material. |
+| `crucible-qemu-protocol` / `crucible-qemu-shmem` | Versioned process-boundary protocols | Infrastructure integration, not ordinary scenario authoring. |
 
 Do not link QEMU implementation details into Apache-side model code. The Unix
 socket and shared-memory protocols are the only Crucible/QEMU integration
@@ -23,7 +27,7 @@ surfaces.
 Generate canonical TOML rather than hand-maintaining derived hashes:
 
 ```rust,no_run
-use crucible::model::{Plan, Properties, ScenarioDefForm, Seed, World};
+use crucible_engine::model::{Plan, Properties, ScenarioDefForm, Seed, World};
 
 # fn build_world() -> Result<World, Box<dyn std::error::Error>> { todo!() }
 # fn build_plan(world: &World) -> Result<Plan, Box<dyn std::error::Error>> { todo!() }
@@ -60,9 +64,11 @@ accepts world and signal artifact stores. Direct integrations use it for inputs
 that ordinary `run`/`verify` do not obtain from `--store`, including normalized
 recordings and spatial/sampler objects.
 
-`build_production_vm_lifecycle_loop` constructs a fresh live session.
-`build_production_vm_lifecycle_loop_from_checkpoint` realizes an exact retained
-session after validating dependencies and backend identity.
+`build_production_vm_lifecycle_loop_with_launcher` constructs a fresh live
+session through a caller-supplied production node launcher.
+`build_production_vm_exact_resume_lifecycle` consumes an authenticated exact
+checkpoint admission and realizes its retained session after validating
+dependencies and backend identity.
 `collect_signal_artifact_objects` resolves the authenticated transitive signal
 closure. `production_vm_search_frontier` exposes the production search frontier
 used by bounded exploration.
@@ -147,14 +153,6 @@ Guest introspection messages also use the shared control protocol version and
 typed failure codes/output streams. Availability depends on guest agent and
 backend capability. See [Debugging](debugging.md) before exposing a gateway.
 
-## Checkpoint realization
-
-`realize_model_checkpoint_vm_resume_from_savepoint` validates a model
-checkpoint and returns a realization proof for production VM resume. It does
-not weaken the build/protocol/scenario checks performed by ordinary `resume`.
-Production plugin install types are re-exported under backend-neutral names so
-control-plane clients do not depend directly on the implementation crate.
-
 ## Import APIs
 
 Recorded CSV, JSONL, PCAP, and PCAPNG import is currently a Rust API. Importers
@@ -165,7 +163,7 @@ source and provide the same store to the production lifecycle. See
 
 ## Integration checklist
 
-1. Keep scenario construction in `crucible` model types and serialize through
+1. Keep scenario construction in `crucible-engine` model types and serialize through
    canonical forms.
 2. Resolve fault plans against the exact admitted World.
 3. Supply complete world/signal object closures through lifecycle config.

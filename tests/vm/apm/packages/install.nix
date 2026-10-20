@@ -84,10 +84,10 @@
       assert_store_valid "$BASIC_STORE" "install-basic-tool"
 
       echo "==> Maintainer: publish install-basic-tool and static cache"
-      $APR create install-basic-reg
+      create_publish_registry install-basic-reg
       REG_DIR="$REG_STORAGE/install-basic-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      $APR publish "$BASIC_STORE" \
+      publish_vm_package "$BASIC_STORE" \
         --name install-basic-tool \
         --version 1.0.0 \
         --description "Executable basic install fixture" \
@@ -284,10 +284,10 @@
         "install-with-deps has a real Nix reference to install-libfoo"
 
       echo "==> Maintainer: publish dependency, wrapper, second root, and static cache"
-      $APR create install-deps-reg
+      create_publish_registry install-deps-reg
       REG_DIR="$REG_STORAGE/install-deps-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      $APR publish "$BASIC_STORE" \
+      publish_vm_package "$BASIC_STORE" \
         --name install-basic-tool \
         --version 1.0.0 \
         --description "Second explicit install root fixture" \
@@ -297,7 +297,7 @@
         --no-commit
       assert_file_contains "$REG_DIR/packages/i/install-basic-tool.toml" \
         "$BASIC_HASH" "published second-root metadata records store hash"
-      $APR publish "$DEP_STORE" \
+      publish_vm_package "$DEP_STORE" \
         --name install-libfoo \
         --version 1.0.0 \
         --description "Runtime dependency install fixture" \
@@ -307,7 +307,7 @@
         --no-commit
       assert_file_contains "$REG_DIR/packages/i/install-libfoo.toml" \
         "$DEP_HASH" "published dependency metadata records store hash"
-      $APR publish "$WRAPPER_STORE" \
+      publish_vm_package "$WRAPPER_STORE" \
         --name install-with-deps \
         --version 2.0.0 \
         --description "Executable install dependency fixture" \
@@ -478,6 +478,44 @@
       else
         fail "multi-root install with deps should create gen-1"
       fi
+
+      echo "==> System package names preserve the existing package set"
+      mkdir -p /usr/lib/aos/toplevel
+      printf 'ID=aos\nAOS_MODULE_ABI=1\n' > /usr/lib/aos/toplevel/os-release
+      $APM registry --system add --no-verify file:///tmp/install-deps-origin.git \
+        --name install-deps-reg --branch "$DEFAULT_BRANCH"
+      $APM install --system install-basic-tool --yes
+      $APM install --system install-with-deps --yes
+
+      SYSTEM_PROFILE=/var/lib/profiles/system-packages
+      assert_file_contains "$SYSTEM_PROFILE/meta/$BASIC_HASH.json" '"explicit": true' \
+        "system name install preserves the earlier package"
+      assert_file_contains "$SYSTEM_PROFILE/meta/$WRAPPER_HASH.json" '"explicit": true' \
+        "system name install adds the requested package"
+      assert_file_contains "$SYSTEM_PROFILE/meta/$DEP_HASH.json" '"explicit": false' \
+        "system name install adds automatic dependencies"
+      "$SYSTEM_PROFILE/current/bin/install-basic-tool" > /tmp/system-basic-run.out
+      assert_file_contains /tmp/system-basic-run.out "^install-basic-tool 1.0.0$" \
+        "system package executable runs from runtime profile"
+      if [ -e /var/lib/profiles/image/state.json ] || [ -e /var/lib/profiles/system/state.json ]; then
+        fail "ordinary package installation must not create image or configuration generations"
+      else
+        pass "ordinary package installation needs no image authority"
+      fi
+
+      echo "==> Desired-set reconciliation removes omitted packages and orphan dependencies"
+      printf 'packages = ["install-basic-tool"]\n' > /tmp/system-desired.toml
+      $APM apply --system --from /tmp/system-desired.toml --yes
+      assert_file_exists "$SYSTEM_PROFILE/meta/$BASIC_HASH.json" \
+        "reconcile retains the desired package"
+      if [ -e "$SYSTEM_PROFILE/meta/$WRAPPER_HASH.json" ] || \
+         [ -e "$SYSTEM_PROFILE/meta/$DEP_HASH.json" ]; then
+        fail "reconcile removes omitted root and orphan dependency"
+      else
+        pass "reconcile removes omitted root and orphan dependency"
+      fi
+      assert_file_exists "$PROFILE/meta/$WRAPPER_HASH.json" \
+        "system reconciliation preserves the personal profile"
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "static cache HTTP server stopped"

@@ -1,8 +1,10 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -179,6 +181,67 @@ connect_unix_socket(const char *path, int timeout_ms)
 }
 
 static bool
+qmp_read_frame(int fd, char *frame, size_t capacity, time_t deadline)
+{
+  size_t used = 0;
+
+  while (used + 1 < capacity) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0 || now.tv_sec >= deadline) {
+      return false;
+    }
+    struct pollfd descriptor = {.fd = fd, .events = POLLIN};
+    int ready = poll(&descriptor, 1, (int)(deadline - now.tv_sec) * 1000);
+    if (ready < 0 && errno == EINTR) {
+      continue;
+    }
+    if (ready <= 0 || read(fd, &frame[used], 1) != 1) {
+      return false;
+    }
+    if (frame[used++] == '\n') {
+      frame[used] = '\0';
+      return true;
+    }
+  }
+
+  return false;
+}
+
+static bool
+qmp_execute(int fd, const char *request, const char *identifier, time_t deadline)
+{
+  size_t sent = 0;
+  size_t length = strlen(request);
+  while (sent < length) {
+    ssize_t written = send(fd, request + sent, length - sent, MSG_NOSIGNAL);
+    if (written < 0 && errno == EINTR) {
+      continue;
+    }
+    if (written <= 0) {
+      return false;
+    }
+    sent += (size_t)written;
+  }
+
+  char frame[8192];
+  while (qmp_read_frame(fd, frame, sizeof(frame), deadline)) {
+    const char *id = strstr(frame, "\"id\"");
+    if (id == NULL || (id = strchr(id + 4, ':')) == NULL) {
+      continue;
+    }
+    do {
+      ++id;
+    } while (isspace((unsigned char)*id));
+    if (strncmp(id, identifier, strlen(identifier)) != 0) {
+      continue;
+    }
+    return strstr(frame, "\"return\"") != NULL &&
+           strstr(frame, "\"error\"") == NULL;
+  }
+  return false;
+}
+
+static bool
 qmp_quit(const char *socket_path)
 {
   int fd = connect_unix_socket(socket_path, 5000);
@@ -186,19 +249,23 @@ qmp_quit(const char *socket_path)
     return false;
   }
 
-  const char *capabilities = "{\"execute\":\"qmp_capabilities\"}\r\n";
-  ssize_t written = write(fd, capabilities, strlen(capabilities));
-  if (written != (ssize_t)strlen(capabilities)) {
-    close(fd);
-    return false;
-  }
+  struct timespec now;
+  char greeting[8192];
+  bool ok = clock_gettime(CLOCK_MONOTONIC, &now) == 0;
+  time_t deadline = ok ? now.tv_sec + 5 : 0;
 
-  sleep_ms(100);
+  // Wait for matching replies before closing; queued quit requests can be
+  // discarded when the client disconnects before QEMU dispatches them.
+  ok = ok && qmp_read_frame(fd, greeting, sizeof(greeting), deadline) &&
+       strstr(greeting, "\"QMP\"") != NULL &&
+       qmp_execute(fd,
+                   "{\"execute\":\"qmp_capabilities\",\"id\":\"capabilities\"}\r\n",
+                   "\"capabilities\"", deadline) &&
+       qmp_execute(fd, "{\"execute\":\"quit\",\"id\":\"quit\"}\r\n",
+                   "\"quit\"", deadline);
 
-  const char *quit = "{\"execute\":\"quit\"}\r\n";
-  written = write(fd, quit, strlen(quit));
   close(fd);
-  return written == (ssize_t)strlen(quit);
+  return ok;
 }
 
 static bool

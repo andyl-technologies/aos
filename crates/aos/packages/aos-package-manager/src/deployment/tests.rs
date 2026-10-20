@@ -1,0 +1,1250 @@
+//! Recovery at the package-generation boundary, independently of host consumers.
+
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Result, bail};
+use aos_activation::adapter::CancellationToken;
+use aos_activation::journal::JournalLimits;
+use aos_module_format::graph::Effect;
+use serde_json::json;
+
+use aos_deployment::evaluation::{PackageResolver, resolve_packages};
+use aos_deployment::handler::HandlerArtifacts;
+use aos_deployment::transaction::{DeploymentStore, Transactions};
+use aos_deployment_format::model::{Deployment, Envelope, ModuleDependency};
+
+struct NoDependencies;
+
+impl PackageResolver for NoDependencies {
+    fn resolve(&mut self, _: &ModuleDependency) -> Result<Envelope> {
+        bail!("unexpected module resolution")
+    }
+}
+
+#[derive(Default)]
+struct StoreState {
+    retained: BTreeSet<String>,
+    admit_handlers: bool,
+    retains: usize,
+    fail_retain_at: Option<usize>,
+    fail_preflight: bool,
+    fail_release: bool,
+}
+
+#[derive(Clone, Default)]
+struct Store(Arc<Mutex<StoreState>>);
+
+impl HandlerArtifacts for Store {
+    fn retain(&mut self, _: &Effect) -> Result<()> {
+        if self.0.lock().unwrap().admit_handlers {
+            Ok(())
+        } else {
+            bail!("empty deployment should not dispatch effects")
+        }
+    }
+
+    fn release(&mut self, _: &Effect) -> Result<()> {
+        bail!("empty deployment should not release effects")
+    }
+
+    fn retain_batch(&mut self, effects: &[&Effect]) -> Result<()> {
+        if std::mem::take(&mut self.0.lock().unwrap().fail_preflight) {
+            bail!("simulated interruption before activation")
+        }
+        for effect in effects {
+            self.retain(effect)?;
+        }
+        Ok(())
+    }
+}
+
+impl DeploymentStore for Store {
+    fn retain_generation(&mut self, generation: &str, _: &Deployment) -> Result<()> {
+        let mut state = self.0.lock().unwrap();
+        state.retains += 1;
+        if state.fail_retain_at == Some(state.retains) {
+            bail!("simulated store interruption")
+        }
+        state.retained.insert(generation.into());
+        Ok(())
+    }
+
+    fn release_generation(&mut self, generation: &str, _: &Deployment) -> Result<()> {
+        let mut state = self.0.lock().unwrap();
+        state.retained.remove(generation);
+        if std::mem::take(&mut state.fail_release) {
+            bail!("simulated interruption after release")
+        }
+        Ok(())
+    }
+}
+
+fn empty_deployment(scope: &str) -> Deployment {
+    let resolved = resolve_packages("x86_64-linux", vec![], &mut NoDependencies).unwrap();
+    Deployment::decode(
+        &serde_json::to_vec(&json!({
+            "schema": "aos.package.transaction",
+            "retire": [],
+            "scope": ["profile", scope],
+            "system": resolved.system,
+            "inputs": [],
+            "artifacts": [],
+            "packages": [],
+            "graph": {"schema": "aos.activation.graph", "nodes": {}, "order": []}
+        }))
+        .unwrap(),
+        &resolved,
+    )
+    .unwrap()
+}
+
+/// Models repeated service schemas and descriptions in a multi-package graph.
+fn service_sized_deployment() -> Deployment {
+    let root = "/nix/store/00000000000000000000000000000000-handler";
+    let envelope = Envelope::decode(
+        &serde_json::to_vec(&json!({
+            "schema":"aos.package.deployment", "system":"x86_64-linux",
+            "package":{"name":"handler","version":"1","path":root,
+                "outputs":{"out":root},"mainProgram":"run"},
+            "module":null, "runtimeDependencies":{}, "moduleDependencies":[]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let resolved = resolve_packages("x86_64-linux", vec![envelope], &mut NoDependencies).unwrap();
+    let fields: serde_json::Map<String, serde_json::Value> = (0..128)
+        .map(|index| (format!("setting{index}"), json!({"kind":"string"})))
+        .collect();
+    let descriptions: serde_json::Map<String, serde_json::Value> = fields
+        .iter()
+        .map(|(name, schema)| {
+            (
+                name.clone(),
+                json!({
+                    "description":"Service configuration and lifecycle policy. ".repeat(8),
+                    "type":schema
+                }),
+            )
+        })
+        .collect();
+    let values: serde_json::Map<String, serde_json::Value> = fields
+        .keys()
+        .map(|name| (name.clone(), json!("configured")))
+        .collect();
+    let mut nodes = serde_json::Map::new();
+    let mut order = Vec::new();
+
+    for index in 0..32 {
+        let identity = vec!["profile".into(), "main".into(), format!("service{index}")];
+        let key = aos_module_format::graph::identity_key(&identity).unwrap();
+        let mut node = json!({
+            "identity":identity,"owner":"@environment","input":values,
+            "input_type":{"kind":"submodule","fields":fields},
+            "after":[],"results":{},"lifetime":"instance","timeout_ms":1000,
+            "handler":{"kind":"process","artifact":root,
+                "executable":format!("{root}/bin/run")}
+        });
+        node["revision"] =
+            json!(aos_core::Sha256Digest::of_bytes(serde_json::to_vec(&node).unwrap()).hex());
+        node["dependencies"] = json!([]);
+        node["inputs"] = json!(descriptions);
+        order.push(key.clone());
+        nodes.insert(key, node);
+    }
+
+    Deployment::decode(
+        &serde_json::to_vec(&json!({
+            "schema":"aos.package.transaction","retire":[],"scope":["profile","main"],
+            "system":resolved.system,"artifacts":resolved.artifacts,"packages":resolved.modules,
+            "inputs":[],"graph":{"schema":"aos.activation.graph","nodes":nodes,"order":order}
+        }))
+        .unwrap(),
+        &resolved,
+    )
+    .unwrap()
+}
+
+#[test]
+fn native_journals_reopen_service_sized_generation_and_activation_records() {
+    use aos_deployment::transaction::{inspect, journal_limits};
+
+    let deployment = service_sized_deployment();
+    let bytes = deployment.canonical_bytes().unwrap();
+    assert!(bytes.len() > JournalLimits::default().max_body_bytes);
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    store.0.lock().unwrap().admit_handlers = true;
+    let cancellation = CancellationToken::default();
+    cancellation.cancel();
+
+    // Generic event limits cannot retain this valid deployment. The native
+    // policy must admit both Prepared and Begin, without executing a handler.
+    let mut writer =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    let error = writer.apply(&deployment, &cancellation).unwrap_err();
+    assert!(error.to_string().contains("journal limit exceeded"));
+    assert!(writer.pending().is_none());
+    drop(writer);
+
+    let mut writer = Transactions::open(directory.path(), store.clone(), journal_limits()).unwrap();
+    let error = writer.apply(&deployment, &cancellation).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("activation cancelled before dispatch"),
+        "{error:#}"
+    );
+    assert_eq!(
+        writer.pending().unwrap().id().unwrap(),
+        deployment.id().unwrap()
+    );
+    drop(writer);
+
+    let writer = Transactions::open(directory.path(), store, journal_limits()).unwrap();
+    assert_eq!(writer.pending().unwrap().canonical_bytes().unwrap(), bytes);
+    drop(writer);
+
+    assert!(inspect(directory.path(), JournalLimits::default()).is_err());
+    let snapshot = inspect(directory.path(), journal_limits()).unwrap();
+    assert!(snapshot.has_pending_work());
+    assert!(snapshot.activation().transaction.is_some());
+    assert_eq!(
+        snapshot.pending().unwrap().canonical_bytes().unwrap(),
+        bytes
+    );
+}
+
+#[test]
+fn native_journal_policy_keeps_capacity_limits_enforced() {
+    let mut record_limits = aos_deployment::transaction::journal_limits();
+    record_limits.max_records = 1;
+    let mut byte_limits = aos_deployment::transaction::journal_limits();
+    byte_limits.max_file_bytes = byte_limits.max_body_bytes as u64;
+
+    for (limits, message) in [
+        (record_limits, "record journal limit"),
+        (byte_limits, "byte journal limit"),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = Transactions::open(directory.path(), Store::default(), limits).unwrap();
+
+        let error = writer
+            .apply(&empty_deployment("main"), &CancellationToken::default())
+            .unwrap_err();
+        assert!(error.to_string().contains(message));
+        assert!(writer.pending().is_none());
+    }
+}
+
+#[test]
+fn recovers_prepared_generation_and_interrupted_pruning() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    store.0.lock().unwrap().fail_preflight = true;
+    let cancellation = CancellationToken::default();
+    let deployment = empty_deployment("main");
+    let open =
+        || Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+
+    let mut transactions = open();
+    assert_eq!(transactions.next_sequence().unwrap(), 1);
+    assert!(transactions.apply(&deployment, &cancellation).is_err());
+    assert!(transactions.current().is_none());
+    assert!(transactions.next_sequence().is_err());
+    assert_eq!(store.0.lock().unwrap().retains, 1);
+    drop(transactions);
+
+    // Recovery must re-admit the original inputs, even though the first
+    // process retained them before durably recording Prepared.
+    store.0.lock().unwrap().fail_retain_at = Some(2);
+    let mut transactions = open();
+    assert!(transactions.resume(&cancellation).is_err());
+    assert!(transactions.current().is_none());
+    assert_eq!(transactions.pending_sequence(), Some(1));
+    let recovered = transactions.resume(&cancellation).unwrap().unwrap();
+    assert_eq!(recovered.sequence, 1);
+    assert_eq!(transactions.next_sequence().unwrap(), 2);
+    let next = transactions.apply(&deployment, &cancellation).unwrap();
+    assert_eq!(next.sequence, 2);
+    store.0.lock().unwrap().fail_release = true;
+    assert!(transactions.prune(1).is_err());
+    assert!(transactions.next_sequence().is_err());
+    drop(transactions);
+
+    let mut transactions = open();
+    assert!(transactions.resume(&cancellation).unwrap().is_none());
+    assert_eq!(transactions.next_sequence().unwrap(), 3);
+    assert_eq!(
+        transactions
+            .generations()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+    assert_eq!(store.0.lock().unwrap().retained.len(), 1);
+    assert!(transactions.prune(2).is_err());
+}
+
+#[test]
+fn convergence_preserves_generation_and_recovers_only_the_original_attempt() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    let deployment = empty_deployment("main");
+    let cancellation = CancellationToken::default();
+    let open =
+        || Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+
+    let mut transactions = open();
+    let first = transactions.converge(&deployment, &cancellation).unwrap();
+    let unchanged = transactions.converge(&deployment, &cancellation).unwrap();
+    assert_eq!(unchanged.sequence, first.sequence);
+    assert_eq!(transactions.generations().len(), 1);
+
+    let mut state = store.0.lock().unwrap();
+    state.fail_retain_at = Some(state.retains + 1);
+    drop(state);
+    assert!(transactions.converge(&deployment, &cancellation).is_err());
+    assert!(transactions.pending().is_some());
+    drop(transactions);
+
+    let mut transactions = open();
+    let recovered = transactions.converge(&deployment, &cancellation).unwrap();
+    assert_eq!(recovered.sequence, first.sequence);
+    assert!(transactions.pending().is_none());
+    drop(transactions);
+
+    let snapshot =
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    let content = deployment.id().unwrap();
+    let identities: Vec<_> = snapshot
+        .activation()
+        .records
+        .iter()
+        .filter(|record| record.event == "begin")
+        .map(|record| record.transaction.clone().unwrap())
+        .collect();
+    assert_eq!(
+        identities,
+        [
+            format!("package-1-{content}"),
+            format!("reconcile-1-1-{content}"),
+            format!("reconcile-1-2-{content}"),
+        ]
+    );
+    drop(snapshot);
+
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&deployment.canonical_bytes().unwrap()).unwrap();
+    document["inputs"] = json!(["/nix/store/00000000000000000000000000000000-changed"]);
+    let changed = Deployment::decode(
+        &serde_json::to_vec(&document).unwrap(),
+        &deployment.resolved(),
+    )
+    .unwrap();
+    let mut transactions = open();
+    let published = transactions.converge(&changed, &cancellation).unwrap();
+    assert_eq!(published.sequence, 2);
+    assert_eq!(published.content, changed.id().unwrap());
+}
+
+#[test]
+fn convergence_resumes_pending_publication_without_starting_another_transaction() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    store.0.lock().unwrap().fail_preflight = true;
+    let deployment = empty_deployment("main");
+    let cancellation = CancellationToken::default();
+    let open =
+        || Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+
+    let mut transactions = open();
+    assert!(transactions.converge(&deployment, &cancellation).is_err());
+    assert_eq!(transactions.pending_sequence(), Some(1));
+    drop(transactions);
+
+    let mut transactions = open();
+    let recovered = transactions.converge(&deployment, &cancellation).unwrap();
+    assert_eq!(recovered.sequence, 1);
+    assert!(transactions.pending().is_none());
+    assert_eq!(transactions.generations().len(), 1);
+    drop(transactions);
+
+    let snapshot =
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert_eq!(
+        snapshot
+            .activation()
+            .records
+            .iter()
+            .filter(|record| record.event == "begin")
+            .count(),
+        1
+    );
+    assert_eq!(
+        snapshot
+            .activation()
+            .completed
+            .as_ref()
+            .unwrap()
+            .transaction,
+        format!("package-1-{}", deployment.id().unwrap())
+    );
+}
+
+#[test]
+fn restores_only_unpruned_and_pending_generation_roots_without_changing_journals() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    let deployment = empty_deployment("main");
+    let cancellation = CancellationToken::default();
+    let open =
+        || Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+
+    let mut transactions = open();
+    transactions.apply(&deployment, &cancellation).unwrap();
+    let committed = transactions.apply(&deployment, &cancellation).unwrap();
+    transactions.prune(1).unwrap();
+    store.0.lock().unwrap().fail_preflight = true;
+    assert!(transactions.apply(&deployment, &cancellation).is_err());
+    assert_eq!(transactions.pending_sequence(), Some(3));
+    drop(transactions);
+
+    let before: Vec<_> = ["generations.journal", "effects.journal"]
+        .map(|name| std::fs::read(directory.path().join(name)).unwrap())
+        .into();
+    let mut state = store.0.lock().unwrap();
+    state.retained.clear();
+    state.fail_retain_at = Some(state.retains + 1);
+    drop(state);
+
+    let mut transactions = open();
+    assert!(transactions.restore_retention().is_err());
+    assert!(store.0.lock().unwrap().retained.is_empty());
+    transactions.restore_retention().unwrap();
+
+    let content = deployment.id().unwrap();
+    assert_eq!(
+        store.0.lock().unwrap().retained,
+        BTreeSet::from([
+            format!("package-2-{content}"),
+            format!("package-3-{content}"),
+        ])
+    );
+    assert_eq!(transactions.current().unwrap().sequence, committed.sequence);
+    assert_eq!(transactions.pending_sequence(), Some(3));
+    for (name, bytes) in ["generations.journal", "effects.journal"]
+        .into_iter()
+        .zip(before)
+    {
+        assert_eq!(std::fs::read(directory.path().join(name)).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn reconciliation_without_a_committed_generation_does_not_prepare_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    let cancellation = CancellationToken::default();
+
+    let error = transactions.reconcile_current(&cancellation).unwrap_err();
+
+    assert!(error.to_string().contains("no committed generation"));
+    assert!(transactions.current().is_none());
+    assert!(transactions.pending().is_none());
+    assert_eq!(transactions.next_sequence().unwrap(), 1);
+    assert!(store.0.lock().unwrap().retained.is_empty());
+    drop(transactions);
+
+    let snapshot =
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert!(!snapshot.has_pending_work());
+    assert!(snapshot.activation().records.is_empty());
+}
+
+#[test]
+fn repeated_reconciliation_preserves_generation_and_roots_but_uses_fresh_attempts() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    let cancellation = CancellationToken::default();
+    let deployment = empty_deployment("main");
+    let content = deployment.id().unwrap();
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    let original = transactions.apply(&deployment, &cancellation).unwrap();
+    let roots = store.0.lock().unwrap().retained.clone();
+
+    for _ in 0..2 {
+        let reconciled = transactions.reconcile_current(&cancellation).unwrap();
+
+        assert_eq!(reconciled.sequence, original.sequence);
+        assert_eq!(reconciled.content, original.content);
+        assert_eq!(reconciled.outputs, original.outputs);
+        assert_eq!(
+            reconciled.deployment.canonical_bytes().unwrap(),
+            deployment.canonical_bytes().unwrap()
+        );
+        assert_eq!(transactions.generations().len(), 1);
+        assert_eq!(transactions.next_sequence().unwrap(), 2);
+        assert!(transactions.pending().is_none());
+        assert_eq!(store.0.lock().unwrap().retained, roots);
+    }
+    drop(transactions);
+
+    let snapshot =
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    let identities: Vec<_> = snapshot
+        .activation()
+        .records
+        .iter()
+        .filter(|record| record.event == "begin")
+        .map(|record| record.transaction.clone().unwrap())
+        .collect();
+    assert_eq!(
+        identities,
+        vec![
+            format!("package-1-{content}"),
+            format!("reconcile-1-1-{content}"),
+            format!("reconcile-1-2-{content}"),
+        ]
+    );
+    assert_eq!(
+        snapshot
+            .activation()
+            .records
+            .iter()
+            .filter(|record| record.event == "commit")
+            .count(),
+        3
+    );
+    assert_eq!(
+        snapshot
+            .activation()
+            .completed
+            .as_ref()
+            .unwrap()
+            .transaction,
+        identities[2]
+    );
+    assert!(!snapshot.has_pending_work());
+    drop(snapshot);
+
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    let next = transactions.apply(&deployment, &cancellation).unwrap();
+    assert_eq!(next.sequence, 2);
+    transactions.prune(1).unwrap();
+    assert_eq!(
+        transactions
+            .generations()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+    assert_eq!(
+        store.0.lock().unwrap().retained,
+        BTreeSet::from([format!("package-2-{content}")])
+    );
+    drop(transactions);
+
+    let snapshot =
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert_eq!(snapshot.current().unwrap().sequence, 2);
+    assert_eq!(
+        snapshot
+            .activation()
+            .completed
+            .as_ref()
+            .unwrap()
+            .transaction,
+        format!("package-2-{content}")
+    );
+    assert!(!snapshot.has_pending_work());
+}
+
+#[test]
+fn prepared_reconciliation_reopens_and_resumes_the_same_attempt() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    let cancellation = CancellationToken::default();
+    let deployment = empty_deployment("main");
+    let content = deployment.id().unwrap();
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    transactions.apply(&deployment, &cancellation).unwrap();
+    let roots = store.0.lock().unwrap().retained.clone();
+    {
+        let mut state = store.0.lock().unwrap();
+        state.fail_retain_at = Some(state.retains + 1);
+    }
+
+    assert!(transactions.reconcile_current(&cancellation).is_err());
+    assert_eq!(transactions.current().unwrap().sequence, 1);
+    assert_eq!(transactions.pending_sequence(), Some(1));
+    assert_eq!(transactions.pending().unwrap().id().unwrap(), content);
+    assert!(transactions.next_sequence().is_err());
+    drop(transactions);
+
+    let snapshot =
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert!(snapshot.has_pending_work());
+    assert_eq!(snapshot.pending_sequence(), Some(1));
+    assert_eq!(
+        snapshot
+            .activation()
+            .records
+            .iter()
+            .filter(|record| record.event == "begin")
+            .count(),
+        1
+    );
+    drop(snapshot);
+
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    let resumed = transactions.resume(&cancellation).unwrap().unwrap();
+    assert_eq!(resumed.sequence, 1);
+    assert_eq!(resumed.content, content);
+    assert_eq!(transactions.next_sequence().unwrap(), 2);
+    assert_eq!(store.0.lock().unwrap().retained, roots);
+    drop(transactions);
+
+    let snapshot =
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert_eq!(
+        snapshot
+            .activation()
+            .completed
+            .as_ref()
+            .unwrap()
+            .transaction,
+        format!("reconcile-1-1-{content}")
+    );
+    assert_eq!(
+        snapshot
+            .activation()
+            .records
+            .iter()
+            .filter(|record| record.event == "begin")
+            .count(),
+        2
+    );
+    assert!(!snapshot.has_pending_work());
+}
+
+#[test]
+fn reconciliation_completion_gap_reuses_the_completed_activation() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    let cancellation = CancellationToken::default();
+    let deployment = empty_deployment("main");
+    let content = deployment.id().unwrap();
+    let generations = directory.path().join("generations.journal");
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    transactions.apply(&deployment, &cancellation).unwrap();
+    let before_reconciliation = std::fs::metadata(&generations).unwrap().len();
+    {
+        let mut state = store.0.lock().unwrap();
+        state.fail_retain_at = Some(state.retains + 1);
+    }
+    assert!(transactions.reconcile_current(&cancellation).is_err());
+    let prepared_prefix = std::fs::metadata(&generations).unwrap().len();
+    transactions.resume(&cancellation).unwrap().unwrap();
+    drop(transactions);
+    let completed_bytes = std::fs::read(&generations).unwrap();
+
+    // Keep real activation completion but restore the previously captured,
+    // verified generation prefix to model loss before Reconciled was durable.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&generations)
+        .unwrap()
+        .set_len(prepared_prefix)
+        .unwrap();
+    let snapshot =
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert!(snapshot.has_pending_work());
+    assert_eq!(snapshot.pending_sequence(), Some(1));
+    assert_eq!(
+        snapshot
+            .activation()
+            .completed
+            .as_ref()
+            .unwrap()
+            .transaction,
+        format!("reconcile-1-1-{content}")
+    );
+    let activation_records = snapshot.activation().records.len();
+    drop(snapshot);
+
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    let resumed = transactions.reconcile_current(&cancellation).unwrap();
+    assert_eq!(resumed.sequence, 1);
+    assert_eq!(transactions.next_sequence().unwrap(), 2);
+    drop(transactions);
+
+    let snapshot =
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert!(!snapshot.has_pending_work());
+    assert_eq!(snapshot.activation().records.len(), activation_records);
+    assert_eq!(snapshot.current().unwrap().content, content);
+    drop(snapshot);
+
+    // A completed activation without its generation-side intent is not a
+    // paired history, even when both remaining journal prefixes verify.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&generations)
+        .unwrap()
+        .set_len(before_reconciliation)
+        .unwrap();
+    assert!(
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).is_err()
+    );
+    std::fs::write(&generations, completed_bytes).unwrap();
+    assert!(
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).is_ok()
+    );
+}
+
+#[test]
+fn rejects_scope_change_and_invalid_retirement_without_preparing() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut transactions =
+        Transactions::open(directory.path(), Store::default(), JournalLimits::default()).unwrap();
+    let cancellation = CancellationToken::default();
+    let deployment = empty_deployment("main");
+    transactions.apply(&deployment, &cancellation).unwrap();
+
+    assert!(
+        transactions
+            .apply(&empty_deployment("other"), &cancellation)
+            .is_err()
+    );
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&deployment.canonical_bytes().unwrap()).unwrap();
+    document["retire"] = json!(["unknown"]);
+    let retirement = Deployment::decode(
+        &serde_json::to_vec(&document).unwrap(),
+        &deployment.resolved(),
+    )
+    .unwrap();
+    assert!(transactions.apply(&retirement, &cancellation).is_err());
+    assert!(transactions.resume(&cancellation).unwrap().is_none());
+    assert_eq!(transactions.current().unwrap().sequence, 1);
+}
+
+#[test]
+fn named_payload_selection_does_not_install_available_module_dependencies() {
+    let root = |name: &str| format!("/nix/store/00000000000000000000000000000000-{name}");
+    let make = |name: &str, output: &str| {
+        Envelope::decode(&serde_json::to_vec(&json!({
+            "schema":"aos.package.deployment", "system":"x86_64-linux",
+            "package":{"name":name,"version":"1","path":root(output),
+                "outputs":{"out":root(name),"tools":root(output),"unused":root("unused")},
+                "mainProgram":null},
+            "module":{"name":name,"version":"1","source":root(&format!("{name}-module")),"entrypoint":"module.nix"},
+            "runtimeDependencies":{}, "moduleDependencies":[]
+        })).unwrap()).unwrap()
+    };
+    let dependency = make("interface", "interface-tools");
+    let mut owner = make("owner", "owner-tools");
+    owner.module_dependencies = vec![dependency.module.clone().unwrap().into()];
+    owner
+        .runtime_dependencies
+        .insert("runtime".into(), make("runtime", "runtime-tools").package);
+    struct Catalog(Envelope);
+    impl PackageResolver for Catalog {
+        fn resolve(&mut self, _: &ModuleDependency) -> Result<Envelope> {
+            Ok(self.0.clone())
+        }
+    }
+
+    let resolved = resolve_packages("x86_64-linux", vec![owner], &mut Catalog(dependency)).unwrap();
+
+    assert_eq!(resolved.artifacts.len(), 1);
+    assert_eq!(resolved.artifacts[0].path, root("owner-tools"));
+    assert_eq!(resolved.modules.len(), 2);
+    let owner = resolved
+        .modules
+        .iter()
+        .find(|module| module.name == "owner")
+        .unwrap();
+    assert_eq!(owner.artifacts.package.path, root("owner"));
+    assert_eq!(owner.artifacts.package.outputs.len(), 3);
+    assert!(owner.artifacts.dependencies.contains_key("runtime"));
+}
+
+#[test]
+fn inspection_retains_shared_lock_and_leaves_both_torn_tails_untouched() {
+    use aos_deployment::transaction::inspect;
+    use std::io::Write as _;
+
+    let directory = tempfile::tempdir().unwrap();
+    let limits = JournalLimits::default();
+    let mut writer = Transactions::open(directory.path(), Store::default(), limits).unwrap();
+    writer
+        .apply(&empty_deployment("main"), &CancellationToken::default())
+        .unwrap();
+    assert!(inspect(directory.path(), limits).is_err());
+    drop(writer);
+
+    let paths = ["generations.journal", "effects.journal"].map(|name| directory.path().join(name));
+    for path in &paths {
+        let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        file.write_all(b"torn").unwrap();
+    }
+    let before = paths.each_ref().map(|path| std::fs::read(path).unwrap());
+    let snapshot = inspect(directory.path(), limits).unwrap();
+    assert_eq!(snapshot.current().unwrap().sequence, 1);
+    assert!(!snapshot.has_pending_work());
+    assert_eq!(snapshot.incomplete_tail_bytes(), 4);
+    assert_eq!(snapshot.activation().incomplete_tail_bytes, 4);
+    assert!(Transactions::open(directory.path(), Store::default(), limits).is_err());
+    assert_eq!(
+        before,
+        paths.each_ref().map(|path| std::fs::read(path).unwrap())
+    );
+    drop(snapshot);
+    assert!(Transactions::open(directory.path(), Store::default(), limits).is_ok());
+}
+
+#[test]
+fn inspection_never_creates_journals_and_distinguishes_pending_generation() {
+    use aos_deployment::transaction::inspect;
+
+    let directory = tempfile::tempdir().unwrap();
+    let limits = JournalLimits::default();
+    assert!(inspect(directory.path(), limits).is_err());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+
+    let store = Store::default();
+    let mut writer = Transactions::open(directory.path(), store.clone(), limits).unwrap();
+    let deployment = empty_deployment("main");
+    writer
+        .apply(&deployment, &CancellationToken::default())
+        .unwrap();
+    store.0.lock().unwrap().fail_preflight = true;
+    assert!(
+        writer
+            .apply(&deployment, &CancellationToken::default())
+            .is_err()
+    );
+    drop(writer);
+
+    let snapshot = inspect(directory.path(), limits).unwrap();
+    assert_eq!(snapshot.current().unwrap().sequence, 1);
+    assert_eq!(snapshot.pending_sequence(), Some(2));
+    assert!(snapshot.has_pending_work());
+}
+
+#[test]
+fn runtime_bindings_preserve_distinct_roles_for_the_same_package_name() {
+    let root = |name: &str| format!("/nix/store/00000000000000000000000000000000-{name}");
+    let artifact = |role: &str| {
+        json!({
+            "name":"system-image", "version":"1", "path":root(&format!("image-{role}")),
+            "outputs":{"out":root(&format!("image-{role}"))}, "mainProgram":null
+        })
+    };
+    let envelope = json!({
+        "schema":"aos.package.deployment", "system":"x86_64-linux",
+        "package":{"name":"image-backend","version":"1","path":root("backend"),
+            "outputs":{"out":root("backend")},"mainProgram":null},
+        "module":{"name":"image-backend","version":"1","source":root("backend-module"),"entrypoint":"module.nix"},
+        "runtimeDependencies":{"predecessor":artifact("1"),"candidate image":artifact("2")},
+        "moduleDependencies":[]
+    });
+    let decoded = Envelope::decode(&serde_json::to_vec(&envelope).unwrap()).unwrap();
+    assert_eq!(
+        decoded.runtime_dependencies["predecessor"].name,
+        "system-image"
+    );
+    assert_eq!(
+        decoded.runtime_dependencies["candidate image"].name,
+        "system-image"
+    );
+    let resolved = resolve_packages("x86_64-linux", vec![decoded], &mut NoDependencies).unwrap();
+    let mut document = json!({
+        "schema":"aos.package.transaction", "retire":[], "scope":["profile","system"],
+        "system":resolved.system,"artifacts":resolved.artifacts,"packages":resolved.modules,
+        "inputs":[],"graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}
+    });
+    Deployment::decode(&serde_json::to_vec(&document).unwrap(), &resolved).unwrap();
+
+    document["packages"][0]["artifacts"]["dependencies"]["candidate image"] = artifact("1");
+    assert!(Deployment::decode(&serde_json::to_vec(&document).unwrap(), &resolved).is_err());
+
+    let mut empty_binding = envelope;
+    let dependency = empty_binding["runtimeDependencies"]
+        .as_object_mut()
+        .unwrap()
+        .remove("predecessor")
+        .unwrap();
+    empty_binding["runtimeDependencies"][""] = dependency;
+    assert!(Envelope::decode(&serde_json::to_vec(&empty_binding).unwrap()).is_err());
+}
+
+fn lifecycle_deployment(value: &str) -> (Deployment, String, String) {
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&service_sized_deployment().canonical_bytes().unwrap()).unwrap();
+    let root = "/nix/store/00000000000000000000000000000000-handler";
+    let mut nodes = serde_json::Map::new();
+    let mut order = Vec::new();
+    for (name, phase) in [("files", "installation"), ("service", "startup")] {
+        let identity = vec!["profile".to_owned(), "main".to_owned(), name.to_owned()];
+        let id = aos_module_format::graph::identity_key(&identity).unwrap();
+        let mut node = json!({
+            "identity":identity, "owner":"@environment", "phase":phase,
+            "input":{"value":value},
+            "input_type":{"kind":"submodule","open":false,"fields":{"value":{"kind":"string"}}},
+            "after":[], "results":{"value":{"kind":"string"}},
+            "lifetime":"instance", "timeout_ms":1000,
+            "handler":{"kind":"process","artifact":root,"executable":format!("{root}/bin/run")}
+        });
+        let dependencies = if name == "service" {
+            node["input"]["value"] = json!({"_type":"aos-effect-output", "identity":["profile","main","files"], "output":"value", "schema":{"kind":"string"}});
+            order.clone()
+        } else {
+            Vec::new()
+        };
+        node["revision"] =
+            json!(aos_core::Sha256Digest::of_bytes(serde_json::to_vec(&node).unwrap()).hex());
+        node["dependencies"] = json!(dependencies);
+        node["inputs"] = json!({});
+        nodes.insert(id.clone(), node);
+        order.push(id);
+    }
+    document["graph"] = json!({"schema":"aos.activation.graph", "nodes":nodes, "order":order});
+    let resolved = service_sized_deployment().resolved();
+    let desired = Deployment::decode(&serde_json::to_vec(&document).unwrap(), &resolved).unwrap();
+    (desired, order[0].clone(), order[1].clone())
+}
+
+struct RecordedOutcomes(Store);
+
+impl aos_activation::activation::ActivationAdapter for RecordedOutcomes {
+    fn retain(&mut self, effect: &Effect) -> Result<()> {
+        self.0.retain(effect)
+    }
+
+    fn release(&mut self, _: &Effect) -> Result<()> {
+        Ok(())
+    }
+
+    fn observe(
+        &mut self,
+        _: &aos_activation::activation::Invocation,
+        _: &CancellationToken,
+    ) -> Result<aos_activation::activation::Observation> {
+        Ok(aos_activation::activation::Observation::RetrySafe)
+    }
+
+    fn invoke(
+        &mut self,
+        invocation: &aos_activation::activation::Invocation,
+        _: &CancellationToken,
+    ) -> Result<serde_json::Value> {
+        Ok(match invocation.action {
+            aos_activation::activation::Action::Apply => invocation.input.clone(),
+            aos_activation::activation::Action::Remove => json!({}),
+        })
+    }
+}
+
+fn complete_native_effects(
+    directory: &std::path::Path,
+    store: &Store,
+    deployment: &Deployment,
+    identity: &str,
+    policy: aos_activation::activation::ExecutionPolicy,
+) {
+    // Exercise the supported durable effect/publication handoff without
+    // requiring a process fixture to be installed into the immutable store.
+    let mut activation = aos_activation::activation::Activation::open(
+        directory.join("effects.journal"),
+        JournalLimits::default(),
+    )
+    .unwrap();
+    activation
+        .activate_once_with_policy(
+            identity,
+            deployment.graph(),
+            deployment.retire(),
+            policy,
+            &mut RecordedOutcomes(store.clone()),
+            &CancellationToken::default(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn consecutive_installations_publish_partial_receipts_and_start_only_latest_generation() {
+    use aos_activation::activation::ExecutionPolicy;
+
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    store.0.lock().unwrap().admit_handlers = true;
+    let cancellation = CancellationToken::default();
+    let interrupted = CancellationToken::default();
+    interrupted.cancel();
+    let (first, files, service) = lifecycle_deployment("first");
+    let (second, _, _) = lifecycle_deployment("second");
+
+    for (sequence, desired, value) in [(1, &first, "first"), (2, &second, "second")] {
+        let mut transactions =
+            Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+        assert!(
+            transactions
+                .apply_with_policy(desired, ExecutionPolicy::Installation, &interrupted)
+                .is_err()
+        );
+        assert_eq!(transactions.pending_sequence(), Some(sequence));
+        drop(transactions);
+
+        complete_native_effects(
+            directory.path(),
+            &store,
+            desired,
+            &format!("package-{sequence}-{}", desired.id().unwrap()),
+            ExecutionPolicy::Installation,
+        );
+        let mut transactions =
+            Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+        let generation = transactions.resume(&cancellation).unwrap().unwrap();
+        assert_eq!(generation.sequence, sequence);
+        assert_eq!(generation.outputs[&files], json!({"value":value}));
+        assert!(!generation.outputs.contains_key(&service));
+        assert_eq!(generation.deferred, BTreeSet::from([service.clone()]));
+        assert_eq!(transactions.next_sequence().unwrap(), sequence + 1);
+        drop(transactions);
+    }
+
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    transactions.prune(1).unwrap();
+    store.0.lock().unwrap().retained.clear();
+    transactions.restore_retention().unwrap();
+    assert_eq!(
+        store.0.lock().unwrap().retained,
+        BTreeSet::from([format!("package-2-{}", second.id().unwrap())])
+    );
+    assert!(
+        transactions
+            .reconcile_current_with_policy(ExecutionPolicy::Complete, &interrupted)
+            .is_err()
+    );
+    assert_eq!(transactions.current().unwrap().sequence, 2);
+    drop(transactions);
+
+    complete_native_effects(
+        directory.path(),
+        &store,
+        &second,
+        &format!("reconcile-2-1-{}", second.id().unwrap()),
+        ExecutionPolicy::Complete,
+    );
+    let mut transactions =
+        Transactions::open(directory.path(), store, JournalLimits::default()).unwrap();
+    let complete = transactions.resume(&cancellation).unwrap().unwrap();
+    assert_eq!(complete.sequence, 2);
+    assert!(complete.deferred.is_empty());
+    assert_eq!(complete.outputs[&service], json!({"value":"second"}));
+    assert_eq!(transactions.generations().len(), 1);
+    drop(transactions);
+
+    let snapshot =
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert!(!snapshot.has_pending_work());
+    assert_eq!(snapshot.current().unwrap().outputs.len(), 2);
+    assert!(
+        snapshot
+            .activation()
+            .completed
+            .as_ref()
+            .unwrap()
+            .deferred
+            .is_empty()
+    );
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+struct UncheckedNativeEvent(serde_json::Value);
+
+impl aos_activation::journal::JournalPayload for UncheckedNativeEvent {
+    fn validate_for_journal(
+        &self,
+        _: JournalLimits,
+    ) -> Result<(), aos_activation::journal::JournalError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn native_replay_rejects_fabricated_and_incomplete_partial_results() {
+    use aos_activation::activation::ExecutionPolicy;
+    use aos_activation::journal::FileJournal;
+
+    let (desired, files, service) = lifecycle_deployment("ready");
+    let cases = [
+        (json!({}), vec![service.clone()]),
+        (
+            json!({files.clone():{"value":"ready"},service.clone():{"value":"invented"}}),
+            vec![service.clone()],
+        ),
+        (json!({files.clone():{"value":"ready"}}), Vec::new()),
+        (json!({files.clone():{"value":true}}), vec![service]),
+    ];
+    for (outputs, deferred) in cases {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::default();
+        store.0.lock().unwrap().admit_handlers = true;
+        let interrupted = CancellationToken::default();
+        interrupted.cancel();
+        let mut transactions =
+            Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+        assert!(
+            transactions
+                .apply_with_policy(&desired, ExecutionPolicy::Installation, &interrupted)
+                .is_err()
+        );
+        drop(transactions);
+
+        let path = directory.path().join("generations.journal");
+        let opened =
+            FileJournal::<UncheckedNativeEvent>::open(&path, JournalLimits::default()).unwrap();
+        let mut journal = opened.journal;
+        journal
+            .append(&UncheckedNativeEvent(
+                json!({"event":"committed", "sequence":1, "outputs":outputs, "deferred":deferred}),
+            ))
+            .unwrap();
+        drop(journal);
+        let before = std::fs::read(&path).unwrap();
+
+        assert!(Transactions::open(directory.path(), store, JournalLimits::default()).is_err());
+        assert!(
+            aos_deployment::transaction::inspect(directory.path(), JournalLimits::default())
+                .is_err()
+        );
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+}
+
+#[test]
+fn paired_journals_reject_schema_valid_fabricated_installation_results() {
+    use aos_activation::activation::ExecutionPolicy;
+    use aos_activation::journal::FileJournal;
+
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    store.0.lock().unwrap().admit_handlers = true;
+    let (desired, files, service) = lifecycle_deployment("actual");
+    let interrupted = CancellationToken::default();
+    interrupted.cancel();
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    assert!(
+        transactions
+            .apply_with_policy(&desired, ExecutionPolicy::Installation, &interrupted)
+            .is_err()
+    );
+    drop(transactions);
+    complete_native_effects(
+        directory.path(),
+        &store,
+        &desired,
+        &format!("package-1-{}", desired.id().unwrap()),
+        ExecutionPolicy::Installation,
+    );
+
+    // This result satisfies the graph's type and subset rules, but no actual
+    // operation produced it. Only the paired effects journal exposes the forgery.
+    let path = directory.path().join("generations.journal");
+    let opened =
+        FileJournal::<UncheckedNativeEvent>::open(&path, JournalLimits::default()).unwrap();
+    let mut journal = opened.journal;
+    journal
+        .append(&UncheckedNativeEvent(json!({
+            "event":"committed", "sequence":1,
+            "outputs":{files:{"value":"fabricated"}}, "deferred":[service],
+        })))
+        .unwrap();
+    drop(journal);
+    let before = std::fs::read(&path).unwrap();
+
+    let error = match Transactions::open(directory.path(), store, JournalLimits::default()) {
+        Ok(_) => panic!("fabricated package results accepted"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("durable activation receipt"),
+        "{error:#}"
+    );
+    assert!(
+        aos_deployment::transaction::inspect(directory.path(), JournalLimits::default()).is_err()
+    );
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn paired_journals_bind_active_graph_and_policy_to_native_preparation() {
+    use aos_activation::activation::{Activation, ExecutionPolicy};
+
+    let (desired, _, _) = lifecycle_deployment("actual");
+    let (changed, _, _) = lifecycle_deployment("changed");
+    for (graph, policy) in [
+        (&changed, ExecutionPolicy::Installation),
+        (&desired, ExecutionPolicy::Complete),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::default();
+        {
+            let mut state = store.0.lock().unwrap();
+            state.admit_handlers = true;
+            state.fail_preflight = true;
+        }
+        let interrupted = CancellationToken::default();
+        interrupted.cancel();
+        let mut transactions =
+            Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+        assert!(
+            transactions
+                .apply_with_policy(&desired, ExecutionPolicy::Installation, &interrupted)
+                .is_err()
+        );
+        drop(transactions);
+
+        let mut activation = Activation::open(
+            directory.path().join("effects.journal"),
+            JournalLimits::default(),
+        )
+        .unwrap();
+        assert!(
+            activation
+                .activate_once_with_policy(
+                    &format!("package-1-{}", desired.id().unwrap()),
+                    graph.graph(),
+                    graph.retire(),
+                    policy,
+                    &mut RecordedOutcomes(store.clone()),
+                    &interrupted,
+                )
+                .is_err()
+        );
+        drop(activation);
+
+        assert!(Transactions::open(directory.path(), store, JournalLimits::default()).is_err());
+        assert!(
+            aos_deployment::transaction::inspect(directory.path(), JournalLimits::default())
+                .is_err()
+        );
+    }
+}

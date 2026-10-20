@@ -70,7 +70,7 @@ instead of relying on signed commits for release authority.
 
 A signing key is a single line, `registry:algorithm:base64key`, parsed by
 `parse_signing_key` in
-[`crates/aos-package/src/security.rs:575`](../../crates/aos-package/src/security.rs).
+[`crates/aos/registry/aos-registry-client/src/security.rs:575`](../../crates/aos/registry/aos-registry-client/src/security.rs).
 The parser is strict:
 
 - splits on `:` into exactly three fields;
@@ -88,7 +88,7 @@ decoded key bytes (`key_fingerprint`, `security.rs:603`).
 
 Maintainers generate keys with **`apr keys generate <id>`** rather than calling
 `ssh-keygen`: it builds an Ed25519 keypair in-process via the hermetic `sshkey`
-module ([`crates/aos-package/src/sshkey.rs`](../../crates/aos-package/src/sshkey.rs),
+module ([`crates/aos/registry/aos-registry-authoring/src/sshkey.rs`](../../crates/aos/registry/aos-registry-authoring/src/sshkey.rs),
 `Ed25519Keypair::generate`), writes the OpenSSH private key to
 `$XDG_CONFIG_HOME/apm/keys/<registry>-<id>.key` (mode `0600`, dir `0700`, refusing
 to overwrite), records the path in `[registry.signing_keys]` so `--key-id <id>`
@@ -101,8 +101,9 @@ the PKI design and [`publishing.md`](publishing.md).
 Git is configured for SSH signing (`gpg.format = ssh`). Signature production now
 uses **signed annotated tag objects** (`git tag -s <name>`, with an optional
 freeform `-m <message>`), not signed commits. `apr tag <name> --key <key>` creates
-a signed release tag; `apr sign <tag> --key <key>` re-signs an existing release
-tag object. Both commands also accept `--key-id <id>`, which resolves `<id>`
+a signed release tag. Existing semver refs are immutable, including unsigned
+or lightweight refs: they cannot be repaired by replacing the tag object.
+`apr sign <tag> --key <key>` signs only nonrelease maintenance tags. Both commands also accept `--key-id <id>`, which resolves `<id>`
 through the committed active `keys.toml` roster and the producer's local
 `registries.d/<name>.toml` `[registry.signing_keys]` private-key map. Channel
 partition signing uses the same `--key` / `--key-id` rules for
@@ -131,8 +132,8 @@ Verification takes a **non-empty set of trusted keys**, not a single key — thi
 what lets any of several overlapping maintainer keys (the `keys.toml` roster, §2.5)
 satisfy the chain. Both
 `verify_commit_signature`
-([`security.rs:455`](../../crates/aos-package/src/security.rs)) and
-`verify_tag_signature` ([`security.rs:490`](../../crates/aos-package/src/security.rs))
+([`security.rs:455`](../../crates/aos/registry/aos-registry-client/src/security.rs)) and
+`verify_tag_signature` ([`security.rs:490`](../../crates/aos/registry/aos-registry-client/src/security.rs))
 take `trusted_keys: &[String]` (each in `registry:Ed25519:<base64>` form). They:
 
 1. write a temporary allowed-signers file with **one line per trusted key**
@@ -154,11 +155,11 @@ allowed-signers file.
 
 Trusted keys live on disk as `<registry>.pub` files inside a **search path** of
 directories, managed by `KeyStore`
-([`security.rs:74`](../../crates/aos-package/src/security.rs)). The **first**
+([`security.rs:74`](../../crates/aos/registry/aos-registry-client/src/security.rs)). The **first**
 directory in the path is the **writable** store (where roster pins and `apr trust`
 land); the rest are **read-only**, including the image-baked anchor (§2.6). The
 path depends on the profile scope (`ProfileScope::trusted_keys_dirs`,
-[`types.rs:665`](../../crates/aos-package/src/types.rs)):
+[`types.rs:665`](../../crates/aos/packages/aos-package-manager/src/types.rs)):
 
 - **User scope:** `$XDG_CONFIG_HOME/apm/trusted-keys.d` (writable), then
   `/etc/apm/trusted-keys.d` (read-only anchor).
@@ -170,7 +171,7 @@ can be redirected for development on non-AOS hosts.
 
 `KeyStore` reads keys with:
 
-- `lookup_all` ([`security.rs:103`](../../crates/aos-package/src/security.rs)) —
+- `lookup_all` ([`security.rs:103`](../../crates/aos/registry/aos-registry-client/src/security.rs)) —
   returns **every** key for a registry across **all** directories (the multi-line
   rotation-overlap format), applying the `# revoked:` exclusions described below.
 - `lookup` (`security.rs:88`) — the first key only.
@@ -199,7 +200,7 @@ Files with no such comment are parsed exactly as before, so the format is
 backward-compatible.
 
 **No silent Trust-On-First-Use during sync.** A `tofu_check`
-([`security.rs:382`](../../crates/aos-package/src/security.rs)) primitive still
+([`security.rs:382`](../../crates/aos/registry/aos-registry-client/src/security.rs)) primitive still
 exists (and is exercised by tests), but the registry **sync path no longer accepts
 a key on first use**: if signing is enforced and the assembled trusted set is empty,
 `sync_git` **aborts** with an instruction to pin a key or configure an anchor
@@ -249,9 +250,12 @@ key it already trusts.
 key to `[[revoked]]` in a commit **signed by one of the *other* overlapping active
 keys** — a key cannot credibly revoke itself, so retirement always rides on a second
 still-trusted active key. Because signatures by a revoked key are invalid (§2.3),
-`retire` also **re-signs** the channel partition tags and the release tags they
-reference whose only valid signer was the retired key, using the vouching key
-(§2.6); `--no-resign` skips this and prints the affected tag list instead. The
+`retire` fails before changing the roster if a published release would lose its
+last active signer. Published semver tag objects remain immutable. Prepare
+replacement releases with a higher version before retiring the key, or use
+`--no-resign` for an intentional revocation that leaves the affected releases
+and channels untrusted. Partition tags may be re-signed only when their release
+tags already verify with surviving keys; no revoked signature is grandfathered. The
 revocation propagates to clients on their **next sync**, not a package upgrade.
 
 **Compromise.** Revocation is the same `apr keys retire` operation with `--reason`.
@@ -288,7 +292,7 @@ This is **decided** — see [`../plans/registry/design-brief.md`](../plans/regis
 
 ### 2.6 Roster consumption during sync — continuity enforcement + the baked anchor
 
-`sync_git` ([`registry/git.rs:85`](../../crates/aos-package/src/registry/git.rs))
+`sync_git` ([`registry/git.rs:85`](../../crates/aos/registry/aos-registry-client/src/registry/git.rs))
 consumes the roster on every sync. Signing is **enforced by default**: an absent
 `[registry.signing]` section verifies (`signing_enforced`, `git.rs:299`); only
 `required = false` opts out. The steps, in order:
@@ -310,7 +314,7 @@ consumes the roster on every sync. Signing is **enforced by default**: an absent
    matches. A missing/empty roster under enforcement is a misconfigured registry, not
    a pass.
 7. **Pin the roster** (`pin_rotated_keys`,
-   [`registry/keys.rs:134`](../../crates/aos-package/src/registry/keys.rs)): write all
+   [`registry/keys.rs:134`](../../crates/aos/registry/aos-registry-client/src/registry/keys.rs)): write all
    active keys into the **writable** `trusted-keys.d`, drop pins absent from the new
    active set, and mask any now-revoked key still present in a **read-only** anchor via
    a `# revoked:` line (§2.4).
@@ -348,7 +352,7 @@ so an unsigned/dev registry syncs without an anchor.
 The system config root defaults to `/etc/apm` but honors the
 `APM_SYSTEM_CONFIG_DIR` environment variable when it is set to a **non-empty
 absolute path** (`resolve_system_config_dir`,
-[`types.rs:31`](../../crates/aos-package/src/types.rs); resolved once per process and
+[`types.rs:31`](../../crates/aos/packages/aos-package-manager/src/types.rs); resolved once per process and
 cached, `apm_system_config_dir`, `types.rs:52`). Relative or empty values are
 ignored so a stray `APM_SYSTEM_CONFIG_DIR=` cannot redirect trust to an unexpected
 place. It affects **every** derived system path — `registries.d`, `trusted-keys.d`,
@@ -515,7 +519,7 @@ This makes a downgrade attack inert: serving a stale (but validly signed) partit
 tag pointing at an older release is rejected by the floor.
 
 > The current code already models the *git-ancestry* analogue of this idea:
-> `check_downgrade` ([`security.rs:256`](../../crates/aos-package/src/security.rs))
+> `check_downgrade` ([`security.rs:256`](../../crates/aos/registry/aos-registry-client/src/security.rs))
 > classifies a transition as `FastForward`, `SameCommit`, `Downgrade`, or `Diverged`
 > via `git merge-base --is-ancestor`, and a `Downgrade` (`security.rs:291`) is the
 > reject case. **TARGET:** the consumer's floor is expressed in **semver** precedence
@@ -622,9 +626,9 @@ ways:
 | Any-active-key verification | `verify_commit_signature`/`verify_tag_signature` take `trusted_keys: &[String]`; empty set is an error. CLI tests call this production verifier directly, while the focused security, Hub, and change-request interoperability tests generate stock-Git signatures to preserve the independent parser check. Nix checks route every stock-Git/OpenSSH signing fixture command through test helpers that supply the otherwise passwd-less builder identity from a repository-owned build-only preload fixture; production artifacts retain no OpenSSH or identity-shim runtime path. |
 | Roster consumption (client) | `sync_git` assembles `T`, verifies the head commit, fast-forwards, validates + pins the roster, masks revoked anchor keys, re-verifies the chain post-pin (`registry/git.rs:85`,`:314`,`:329`,`:358`; `pin_rotated_keys` `registry/keys.rs:134`) |
 | Strict-by-default signing | absent `[registry.signing]` enforces verification; `required = false` (or `apm registry add --no-verify`) is the only opt-out (`signing_enforced` `git.rs:299`) |
-| Key rotation / revocation | `apr keys add/retire` with survivor + vouching checks; retirement re-signs affected channel/release tags via the vouching key (`--no-resign` to skip) (`registry_ops.rs:2551`,`2742`,`2815`) |
+| Key rotation / revocation | `apr keys add/retire` with survivor + vouching checks; retirement preserves immutable release tags and fails closed on lost release trust (`--no-resign` explicitly accepts that revocation) (`registry_ops.rs:2551`,`2742`,`2815`) |
 | Signed roster commits | `apr keys add/retire` require `--key`/`--key-id` and produce signed `keys.toml` commits (`resolve_roster_commit_key` `registry_ops.rs:3059`) |
-| Signature *production* | `apr tag` / `apr sign <tag>` create signed release tag objects; `apr channel init/advance` writes signed partition tag files; all accept `--key` or roster-backed `--key-id` |
+| Signature *production* | `apr tag` creates signed release tag objects; `apr sign <tag>` is restricted to nonrelease maintenance tags; `apr channel init/advance` writes signed partition tag files; all accept `--key` or roster-backed `--key-id` |
 | What is signed | **`tag → tag → commit`** chain (partition + release tags), plus signed `keys.toml` commits |
 | Name-binding | embedded tag-name == expected path name (channel / semver) |
 | Anti-rollback | semver monotonic floor + fix-forward |

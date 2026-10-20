@@ -8,11 +8,11 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
-  engineDecision = builtins.readFile ../../crates/crucible/src/decision.rs;
-  channelDeterminismTest = builtins.readFile ../../crates/crucible/tests/guest_host_channel_determinism.rs;
-  guestLib = builtins.readFile ../../crates/crucible-guest/src/lib.rs;
-  guestMain = builtins.readFile ../../crates/crucible-guest/src/main.rs;
-  guestAbiGate = builtins.readFile ../../crates/crucible-guest/tests/gate_abi_conformance.rs;
+  engineDecision = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/decision.rs;
+  channelDeterminismTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/guest_host_channel_determinism.rs;
+  guestLib = builtins.readFile ../../crates/crucible/guest/crucible-guest/src/lib.rs;
+  guestMain = builtins.readFile ../../crates/crucible/guest/crucible-guest/src/main.rs;
+  guestAbiGate = builtins.readFile ../../crates/crucible/guest/crucible-guest/tests/gate_abi_conformance.rs;
   phase2AppRandomGate = builtins.readFile ./phase2-plugin-app-random-doorbell.nix;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -40,7 +40,7 @@
         needle = "`crucible-guest get-random <width> [tag]`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" engineModel [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel [
       {
         label = "default cap constant";
         needle = "pub const DEFAULT_APP_RANDOM_DRAW_CAP: u64 = u64::MAX;";
@@ -56,10 +56,6 @@
       {
         label = "cap-aware canonical constructor";
         needle = "from_canonical_material_with_seed_and_app_random_draw_cap";
-      }
-      {
-        label = "cap-aware world helper";
-        needle = "scenario_def_with_seed_and_app_random_draw_cap";
       }
       {
         label = "cap-aware scenario form constructor";
@@ -98,7 +94,7 @@
         needle = "fn validate_app_random_draw_cap";
       }
     ]
-    ++ failuresFor "crates/crucible/src/decision.rs" engineDecision [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/decision.rs" engineDecision [
       {
         label = "app-random draw counter";
         needle = "app_random_draws: u64";
@@ -106,10 +102,6 @@
       {
         label = "existing schedule count";
         needle = "count_app_random_draws(configuration.schedule.decisions())";
-      }
-      {
-        label = "cap reservation helper";
-        needle = "fn reserve_app_random_draw";
       }
       {
         label = "typed cap error";
@@ -120,16 +112,8 @@
         needle = "app-random draw {attempted} exceeds scenario cap {cap}";
       }
       {
-        label = "request cap test";
-        needle = "decision_recorder_enforces_app_random_draw_cap";
-      }
-      {
-        label = "resume cap test";
-        needle = "decision_recorder_counts_existing_app_random_decisions_against_cap";
-      }
-      {
-        label = "override cap test";
-        needle = "decision_recorder_app_random_override_obeys_draw_cap";
+        label = "typed request and resume cap test";
+        needle = "typed_app_random_selection_counts_against_cap_after_resume";
       }
       {
         label = "cap scenario hash test";
@@ -139,12 +123,8 @@
         label = "cap scenario form serialization test";
         needle = "app_random_draw_cap_round_trips_through_scenario_form_serialization";
       }
-      {
-        label = "checked step and reduce cap test";
-        needle = "app_random_draw_cap_fails_loud_in_checked_step_and_reduce";
-      }
     ]
-    ++ failuresFor "crates/crucible/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
       {
         label = "zero request test";
         needle = "app_random_compiled_in_zero_requests_is_fingerprint_identical";
@@ -166,7 +146,7 @@
         needle = "disabled.determinism_material()";
       }
     ]
-    ++ failuresFor "crates/crucible-guest/src/lib.rs" guestLib [
+    ++ failuresFor "crates/crucible/guest/crucible-guest/src/lib.rs" guestLib [
       {
         label = "usage exposes get-random";
         needle = "get-random <width> [tag]";
@@ -196,7 +176,7 @@
         needle = "GuestCommandOutcome::Random";
       }
     ]
-    ++ failuresFor "crates/crucible-guest/src/main.rs" guestMain [
+    ++ failuresFor "crates/crucible/guest/crucible-guest/src/main.rs" guestMain [
       {
         label = "main prints random reply";
         needle = "GuestCommandOutcome::Random";
@@ -206,7 +186,7 @@
         needle = "println!(\"{}\", hex_lower(&reply));";
       }
     ]
-    ++ failuresFor "crates/crucible-guest/tests/gate_abi_conformance.rs" guestAbiGate [
+    ++ failuresFor "crates/crucible/guest/crucible-guest/tests/gate_abi_conformance.rs" guestAbiGate [
       {
         label = "guest CLI shared payload test includes get-random";
         needle = "guest_cli_verbs_encode_shared_marker_payloads";
@@ -268,7 +248,9 @@ in
       pname = "crucible-phase4-guest-host-app-random-cap";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+      runtimeDeps = [pkgs.sqlite];
+
+      buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.rust pkgs.sed];
       phases = [
         {
           name = "unpack";
@@ -316,7 +298,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               -- --list > "$TMPDIR/crucible-lib-tests"
             require_listed \
@@ -342,7 +324,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test guest_host_channel_determinism \
               -- --list > "$TMPDIR/channel-tests"
@@ -371,7 +353,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --lib decision::tests::decision_recorder_enforces_app_random_draw_cap \
               -- --exact --test-threads=1
             cargo test \
@@ -379,7 +361,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --lib decision::tests::decision_recorder_counts_existing_app_random_decisions_against_cap \
               -- --exact --test-threads=1
             cargo test \
@@ -387,7 +369,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --lib decision::tests::decision_recorder_app_random_override_obeys_draw_cap \
               -- --exact --test-threads=1
             cargo test \
@@ -395,7 +377,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --lib decision::tests::app_random_draw_cap_is_scenario_hash_material \
               -- --exact --test-threads=1
             cargo test \
@@ -403,7 +385,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --lib decision::tests::app_random_draw_cap_round_trips_through_scenario_form_serialization \
               -- --exact --test-threads=1
             cargo test \
@@ -411,7 +393,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --lib decision::tests::app_random_draw_cap_fails_loud_in_checked_step_and_reduce \
               -- --exact --test-threads=1
             cargo test \
@@ -419,7 +401,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test guest_host_channel_determinism \
               app_random_compiled_in_zero_requests_is_fingerprint_identical \

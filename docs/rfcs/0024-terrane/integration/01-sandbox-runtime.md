@@ -8,6 +8,10 @@ unchanged, what it changes, and what RFC-0021 keeps owning. The RFC-0021
 text referenced here is the version on branch
 `dplecki/sandbox-filesystem-views-rfc` (PR #232).
 
+Crate names and paths use the current ownership mapping in
+[`unmerged-crates.md`](../../../architecture/unmerged-crates.md). The RFC-0021
+sources remain on that workline; these paths do not claim they are merged here.
+
 Requirement IDs in this file use the prefix `SBX`. Gates are AOS checks named
 in [`03-packaging.md`](03-packaging.md) §checks.
 
@@ -25,8 +29,9 @@ mount broker. Its crate plan (`14-implementation-plan.md` §Rust ownership)
 names a future `aos-sandbox-view` crate for "portable-tree compiler, isolated
 publisher, FUSE worker, view/cache client". None of those exist as code.
 
-In the RFC-0021 worktree, `crates/aos-filesystem-view-core` carries two
-dormant traits that were written for exactly this integration:
+RFC-0021's former `aos-filesystem-view-core` maps to
+`crates/sandbox/filesystem/aos-sandbox-filesystem-format`. It carries two
+dormant traits written for this integration:
 
 - `ObjectSource` (`src/source.rs`): open one portable object as a bounded,
   non-buffering byte stream by exact descriptor; the caller verifies length
@@ -56,7 +61,7 @@ Terrane fills every one of these slots with one program and its SDK.
   `checks.terrane.integration.viewd-role`.
 - **[SBX-2]** The `aos-view-publisher` identity MUST be provided by
   `terrane publish`. The RFC-0021 publisher binary in
-  `crates/aos-sandbox-broker-session-security/src/bin/aos-view-publisher.rs`
+  `crates/sandbox/security/aos-sandbox-broker-session-security/src/bin/aos-view-publisher.rs`
   MAY remain as a thin adapter that execs the Terrane role, and MUST NOT own a
   second sealed root. *Gate:* `checks.terrane.integration.publisher-role`.
 - **[SBX-3]** Terrane roles MUST NOT gain mount-namespace authority.
@@ -144,7 +149,7 @@ and `private:<id>`.
 RFC-0021 `09-portable-format-profile.md` identifies portable objects by a
 four-element descriptor with SHA-256 over the preimage
 `"aos-sandbox-object-v1\0" || u16be(len(media-type)) || media-type ||
-u64be(len) || bytes` (`crates/aos-sandbox-core/src/format/mod.rs`). Terrane
+u64be(len) || bytes` (`crates/sandbox/model/aos-sandbox-model/src/format/mod.rs`). Terrane
 identifies content by BLAKE3 over `terrane-*-v1` domain prefixes (spec OBJ-1
 to OBJ-4) and says a second digest algorithm is a new profile that coexists
 (OBJ-8, OBJ-9).

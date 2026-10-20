@@ -137,8 +137,102 @@ in
       dontPatchELF = true;
     }
     // {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64"];
+            os = ["darwin"];
+          }
+        ];
+        target = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64"];
+            os = ["darwin"];
+          }
+        ];
+        role = "public-package";
+      };
       pname = "openjdk-8";
-      version = icedteaVersion;
+      qualification.packageProbe = lib.qualification.commandProbe {
+        "primary" = {
+          "artifacts" = [];
+          "expected" = "The packaged toolchain produces runnable bytecode that prints 42.";
+          "files" = {
+            "Answer.java" = "public final class Answer {\n    public static void main(String[] arguments) {\n        System.out.println(19 + 23);\n    }\n}\n";
+          };
+          "input" = "A Java class that prints the sum of 19 and 23.";
+          "operation" = "Compile the class with javac and execute it with java.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/javac"
+                "Answer.java"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+            {
+              "argv" = [
+                "@out@/bin/java"
+                "-cp"
+                "."
+                "Answer"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "42\n";
+              };
+            }
+          ];
+        };
+        "badInput" = {
+          "artifacts" = [];
+          "expected" = "javac rejects the source with its compilation-failure status.";
+          "files" = {
+            "Invalid.java" = "public final class Invalid {\n    public static int answer() { return; }\n}\n";
+          };
+          "input" = "A Java class whose return statement has no expression.";
+          "operation" = "Compile the malformed class with javac.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/javac"
+                "Invalid.java"
+              ];
+              "exit_code" = 1;
+              "observes_rejection" = true;
+            }
+          ];
+        };
+      };
+
+      version = "=${icedteaVersion}";
 
       src = icedteaSrc;
 
@@ -378,7 +472,7 @@ in
                 esac
               done
 
-              exec ${buildTools.cc}/bin/c++ "''${native_args[@]}"
+              exec ${buildTools.cc}/bin/c++ "''${native_args[@]}" -std=gnu++98
               NATIVECXXEOF
                 chmod +x $TOOLS/native-cxx
                 export PATH="$TOOLS:$PATH"
@@ -416,7 +510,7 @@ in
           script = ''
             export PATH="$(pwd)/tools-bin:${buildTools.pkg-config}/bin:$PATH"
             # Set CFLAGS/CXXFLAGS for modern GCC compatibility
-            export CFLAGS="-std=gnu17 -fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"}"
+            export CFLAGS="${lib.optionalString (!isDarwinCross) "-std=gnu17 "}-fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"}"
             export CXXFLAGS="-fcommon -Wno-error${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"}"
 
             # Set X11 extension include path
@@ -499,7 +593,7 @@ in
             find . \( -name 'configure' -o -name 'Makefile.in' \) 2>/dev/null | while read f; do
               touch -t 200001010200.00 "$f" 2>/dev/null || true
             done
-            export CFLAGS="-std=gnu17 -fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"} -I${xorg-stubs}/include"
+            export CFLAGS="${lib.optionalString (!isDarwinCross) "-std=gnu17 "}-fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"} -I${xorg-stubs}/include"
             export CXXFLAGS="-fcommon -Wno-error${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"} -I${xorg-stubs}/include"
             export LDFLAGS="-L${xorg-stubs}/lib"
 
@@ -989,6 +1083,13 @@ in
                                        openjdk/hotspot/agent/src/os/bsd \
                                        | wc -l)" -eq 91
 
+                                     # HotSpot 8 compiles C++98 sources with the shared CFLAGS
+                                     # variable. Keep the C language selector out of Darwin's
+                                     # common flags and select C++ only in this VM recipe.
+                                     vmMake=openjdk/hotspot/make/bsd/makefiles/vm.make
+                                     test -f "$vmMake"
+                                     printf '\n%s\n' 'CFLAGS += -std=gnu++98' >> "$vmMake"
+
                                      for adlcMake in \
                                        openjdk-boot/hotspot/make/linux/makefiles/adlc.make \
                                        openjdk/hotspot/make/linux/makefiles/adlc.make \
@@ -1268,10 +1369,11 @@ in
                 -delete_rpath ${java-native-foundation}/lib \
                 -add_rpath @loader_path/../../../server \
                 "$bundledJnf"
-              ${buildTools.llvm}/bin/llvm-otool -l "$bundledJnf" \
-                | grep -q '@loader_path/../../../server'
-              ! ${buildTools.llvm}/bin/llvm-otool -l "$bundledJnf" \
-                | grep -Fq '${java-native-foundation}/lib'
+              # Early grep exits can abort LLVM and make the absence check pass.
+              ${buildTools.llvm}/bin/llvm-otool -l "$bundledJnf" > jnf-load-commands.txt
+
+              grep -Fq '@loader_path/../../../server' jnf-load-commands.txt
+              ! grep -Fq '${java-native-foundation}/lib' jnf-load-commands.txt
 
               # dsymutil records the pre-install libjvm location in the dSYM's
               # relocation manifest. Preserve the complete symbols while making

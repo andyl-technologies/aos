@@ -6,7 +6,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --test attribute_vectors ${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --test attribute_vectors ${name} -- --exact \
       > "$TMPDIR/attribute-model-test.log" 2>&1; then
       cat "$TMPDIR/attribute-model-test.log"
       exit 1
@@ -20,7 +20,7 @@ in
       printf 'Attribute reference models remain pending implementation.\n' >&2
       exit 1
     fi
-    cargo build --frozen --offline -p terrane-core --example reference_blake3
+    cargo build --frozen --offline -p terrane-format --example reference_blake3
     reference_binary="$CARGO_TARGET_DIR/debug/examples/reference_blake3"
     python3 ../tests/terrane/attribute_vectors.py --self-check \
       --blake3-bin "$reference_binary" > "$out/reference-result"
@@ -29,9 +29,9 @@ in
       --blake3-bin "$reference_binary" >> "$out/reference-result"
     cp ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md ../tests/terrane/attribute-reference.md
     cp ../tests/terrane/attribute-reference.md "$out/reference.md"
-    cp ../tests/terrane/attribute-models.rs terrane-core/tests/attribute_vectors.rs
+    cp ../tests/terrane/attribute-models.rs terrane/sdk/terrane-format/tests/attribute_vectors.rs
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    cargo clippy --frozen --offline -p terrane-core --test attribute_vectors -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --test attribute_vectors -- -D warnings
     printf 'PASS: independent attribute models and three exact owning-codec groups\n' > "$out/result"
   ''

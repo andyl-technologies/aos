@@ -1,0 +1,1295 @@
+//! Publishes profile links from the native deployment generation journal.
+//!
+//! A durable publication record associates each transaction sequence with an
+//! already staged package generation. Effects commit before the `current` link
+//! moves; recovery repairs that link from the committed journal. Authentication
+//! and immutable artifact admission belong to the caller's deployment store.
+
+use std::collections::BTreeSet;
+use std::fs;
+
+use anyhow::{Context, Result, ensure};
+use aos_activation::activation::ExecutionPolicy;
+use aos_activation::adapter::CancellationToken;
+use aos_activation::journal::JournalLimits;
+use serde::{Deserialize, Serialize};
+
+use super::{Generation, Profile, atomic_write};
+use aos_deployment::transaction::{DeploymentStore, Transactions, journal_limits};
+use aos_deployment_format::model::Deployment;
+
+/// Reads one explicitly selected checked result from a committed profile generation.
+///
+/// The native journal remains authoritative: publication records must match its
+/// sequence and content, and pending activation prevents a result handoff.
+/// No operation-name discovery or handler execution occurs at this boundary.
+///
+/// # Errors
+/// Returns an error for missing or inconsistent journals/publication records,
+/// pending activation, an uncommitted profile generation, or an unknown effect.
+pub fn committed_result(
+    profile: &std::path::Path,
+    generation: u32,
+    effect: &str,
+) -> Result<serde_json::Value> {
+    let committed = committed_generation(profile, generation)?;
+    ensure!(
+        !committed.deferred.contains(effect),
+        "selected effect is pending startup activation"
+    );
+    committed
+        .outputs
+        .get(effect)
+        .cloned()
+        .context("selected effect has no committed result")
+}
+
+/// Reads the checked native deployment published as a particular profile generation.
+///
+/// # Errors
+/// Returns an error for missing or inconsistent authoritative journals, pending
+/// activation, or a generation that has no committed native publication.
+pub fn committed_generation(
+    profile: &std::path::Path,
+    generation: u32,
+) -> Result<aos_deployment::transaction::Generation> {
+    read_committed_generation(profile, generation, false)
+}
+
+/// Reads an already committed generation while later activation is pending.
+///
+/// This recovery-only inspection never exposes a pending desired generation or
+/// executes effects. Mutating consumers must still recover before changing state.
+///
+/// # Errors
+/// Returns an error for absent or inconsistent committed publication records,
+/// malformed journals, or a requested generation that has not committed.
+pub fn committed_generation_during_recovery(
+    profile: &std::path::Path,
+    generation: u32,
+) -> Result<aos_deployment::transaction::Generation> {
+    read_committed_generation(profile, generation, true)
+}
+
+/// Resolves the latest committed profile publication without following `current`.
+///
+/// Later pending work is permitted for boot recovery. An absent committed journal
+/// identity returns `None`, including a prepared first activation; prepared state
+/// never becomes a committed generation merely because a marker exists.
+///
+/// # Errors
+/// Returns an error for invalid journals or inconsistent committed publication.
+pub fn current_committed_generation(profile: &std::path::Path) -> Result<Option<u32>> {
+    let directory = profile.join("deployment");
+    if !directory.join("generations.journal").exists() {
+        ensure!(
+            !directory.join("effects.journal").exists(),
+            "profile deployment journal is partially initialized"
+        );
+        return Ok(None);
+    }
+    ensure!(
+        directory.join("effects.journal").is_file(),
+        "profile effect journal is absent"
+    );
+    let transactions = aos_deployment::transaction::inspect(&directory, journal_limits())?;
+    let Some(committed) = transactions.current() else {
+        return Ok(None);
+    };
+    let publication = checked_publication(profile, committed)?;
+    Ok(Some(publication.profile_generation))
+}
+
+/// Reports prepared native work without resuming or exposing it as committed.
+///
+/// # Errors
+/// Returns an error for invalid journals, partial initialization, or lock contention.
+pub fn has_pending_deployment(profile: &std::path::Path) -> Result<bool> {
+    let directory = profile.join("deployment");
+    if !directory.join("generations.journal").exists() {
+        ensure!(
+            !directory.join("effects.journal").exists(),
+            "profile deployment journal is partially initialized"
+        );
+        return Ok(false);
+    }
+    ensure!(
+        directory.join("effects.journal").is_file(),
+        "profile effect journal is absent"
+    );
+    let snapshot = aos_deployment::transaction::inspect(&directory, journal_limits())?;
+    Ok(requires_recovery(&snapshot))
+}
+
+fn read_committed_generation(
+    profile: &std::path::Path,
+    generation: u32,
+    allow_later_pending: bool,
+) -> Result<aos_deployment::transaction::Generation> {
+    let directory = profile.join("deployment");
+    ensure!(
+        directory.join("generations.journal").is_file()
+            && directory.join("effects.journal").is_file(),
+        "committed profile deployment journals are absent or incomplete"
+    );
+    let transactions = aos_deployment::transaction::inspect(&directory, journal_limits())?;
+    ensure!(
+        allow_later_pending || !requires_recovery(&transactions),
+        "profile activation is still pending"
+    );
+    for committed in transactions.generations().values() {
+        let publication = checked_publication(profile, committed)?;
+        if publication.profile_generation == generation {
+            return Ok(committed.clone());
+        }
+    }
+    anyhow::bail!("profile generation has no committed native deployment")
+}
+
+fn requires_recovery(snapshot: &aos_deployment::transaction::Snapshot) -> bool {
+    snapshot.has_pending_work()
+        || snapshot.incomplete_tail_bytes() != 0
+        || snapshot.activation().incomplete_tail_bytes != 0
+}
+
+// Both records are read while the authoritative generation journal remains
+// shared-locked, so publication and marker checks cannot race another commit.
+fn checked_publication(
+    profile: &std::path::Path,
+    committed: &aos_deployment::transaction::Generation,
+) -> Result<Publication> {
+    let path = profile
+        .join("deployment/publications")
+        .join(format!("{}.json", committed.sequence));
+    let publication: Publication =
+        serde_json::from_slice(&crate::native_deployment::read_regular_document(&path)?)?;
+    ensure!(
+        publication.sequence == committed.sequence && publication.content == committed.content,
+        "profile publication differs from committed deployment"
+    );
+    let marker = profile.join(format!(
+        "gen-{}/native-deployment.json",
+        publication.profile_generation
+    ));
+    let marker: Publication =
+        serde_json::from_slice(&crate::native_deployment::read_regular_document(&marker)?)?;
+    ensure!(
+        marker.sequence == publication.sequence
+            && marker.content == publication.content
+            && marker.profile_generation == publication.profile_generation,
+        "generation marker differs from committed publication"
+    );
+    Ok(publication)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Publication {
+    sequence: u64,
+    content: String,
+    profile_generation: u32,
+}
+
+/// Coordinates effect completion and publication of an installed profile tree.
+pub struct ProfileDeployment<'a, S> {
+    profile: &'a Profile,
+    transactions: Transactions<S>,
+}
+
+impl<'a, S: DeploymentStore> ProfileDeployment<'a, S> {
+    /// Opens the profile's native journals with caller-authenticated retention.
+    ///
+    /// # Errors
+    /// Returns an error for invalid journal state, lock contention, or directory
+    /// creation failure. The store must admit retained as well as new inputs.
+    pub fn open(profile: &'a Profile, store: S, limits: JournalLimits) -> Result<Self> {
+        let directory = profile.path.join("deployment");
+        fs::create_dir_all(directory.join("publications"))?;
+        let transactions = Transactions::open(&directory, store, limits)?;
+        Ok(Self {
+            profile,
+            transactions,
+        })
+    }
+
+    /// Resumes pending effects and repairs the profile's committed pointer.
+    ///
+    /// # Errors
+    /// Returns an error for failed admission or effect recovery, absent staged
+    /// trees, inconsistent publication records, or failed link publication.
+    pub fn recover(&mut self, cancellation: &CancellationToken) -> Result<()> {
+        self.transactions.resume(cancellation)?;
+        self.publish_current()
+    }
+
+    /// Reconciles the committed desired state without publishing a new generation.
+    ///
+    /// Pending reconciliation resumes its original execution identity.
+    /// The existing publication and generation marker retain their identities.
+    ///
+    /// # Errors
+    /// Returns an error for absent committed state, failed admission, observation
+    /// or dispatch, inconsistent publication records, or failed link publication.
+    pub fn reconcile_current(&mut self, cancellation: &CancellationToken) -> Result<()> {
+        self.reconcile_current_with_policy(ExecutionPolicy::Complete, cancellation)
+    }
+
+    /// Reconciles installed state without treating deferred startup as executed.
+    ///
+    /// # Errors
+    /// Returns an error for admission, execution, journal or publication failure.
+    pub fn reconcile_current_with_policy(
+        &mut self,
+        policy: ExecutionPolicy,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.transactions
+            .reconcile_current_with_policy(policy, cancellation)?;
+        self.publish_current()
+    }
+
+    /// Borrows the authoritative committed desired deployment after recovery.
+    pub fn current(&self) -> Option<&aos_deployment::transaction::Generation> {
+        self.transactions.current()
+    }
+
+    pub(crate) fn pending_live_package(
+        &self,
+    ) -> Result<Option<aos_deployment::transaction::LiveRecovery>> {
+        self.transactions.pending_live_package()
+    }
+
+    pub(crate) fn pending_reconciliation(&self) -> bool {
+        self.transactions.pending_reconciliation()
+    }
+
+    pub(crate) fn pending_policy(&self) -> Option<ExecutionPolicy> {
+        self.transactions.pending_policy()
+    }
+
+    pub(crate) fn set_observer(
+        &mut self,
+        observer: Option<Box<dyn aos_activation::activation::BoundaryObserver>>,
+    ) {
+        self.transactions.set_observer(observer);
+    }
+
+    pub(crate) fn replace_store(&mut self, store: S) {
+        self.transactions.replace_store(store);
+    }
+
+    pub(crate) fn recovery_evaluation(&self) -> Result<Option<(std::path::PathBuf, Deployment)>> {
+        let Some(sequence) = self.transactions.pending_sequence() else {
+            return Ok(None);
+        };
+        let desired = self
+            .transactions
+            .pending()
+            .context("pending sequence has no desired deployment")?;
+        let publication: Publication =
+            serde_json::from_slice(&fs::read(self.publication_path(sequence))?)?;
+        ensure!(
+            publication.sequence == sequence && publication.content == desired.id()?,
+            "pending observer publication differs from its native journal"
+        );
+        let directory = self
+            .profile
+            .path
+            .join(format!("gen-{}", publication.profile_generation));
+        let marker: Publication =
+            serde_json::from_slice(&fs::read(directory.join("native-deployment.json"))?)?;
+        ensure!(
+            marker.sequence == publication.sequence
+                && marker.content == publication.content
+                && marker.profile_generation == publication.profile_generation,
+            "pending observer descriptor has an inconsistent profile marker"
+        );
+        Ok(Some((directory.join("evaluation.json"), desired.clone())))
+    }
+
+    /// Releases an old profile generation through its authoritative native journal.
+    ///
+    /// The profile tree and publication remain available until the caller removes
+    /// them. Repeated calls after a completed release can finish interrupted tree
+    /// deletion without attempting to release the same store roots twice.
+    ///
+    /// # Errors
+    /// Returns an error for pending work, a current or inconsistent publication,
+    /// or journal and artifact release failures.
+    pub fn prune(&mut self, generation: &Generation) -> Result<()> {
+        ensure!(
+            self.transactions.pending().is_none(),
+            "cannot prune during pending activation"
+        );
+        let marker: Publication =
+            serde_json::from_slice(&fs::read(generation.path.join("native-deployment.json"))?)?;
+        let publication: Publication =
+            serde_json::from_slice(&fs::read(self.publication_path(marker.sequence))?)?;
+        ensure!(
+            marker.sequence == publication.sequence
+                && marker.content == publication.content
+                && marker.profile_generation == generation.number
+                && publication.profile_generation == generation.number,
+            "pruning publication differs from profile generation"
+        );
+        let current = self
+            .transactions
+            .current()
+            .context("cannot prune without a current native generation")?;
+        ensure!(
+            marker.sequence < current.sequence,
+            "cannot prune the current native generation"
+        );
+        if let Some(committed) = self.transactions.generations().get(&marker.sequence) {
+            ensure!(
+                committed.content == marker.content,
+                "pruning publication differs from native journal"
+            );
+            self.transactions.prune(marker.sequence)?;
+        }
+        Ok(())
+    }
+
+    /// Activates a desired deployment and publishes its completed profile tree.
+    ///
+    /// The generation must contain its final payload roots, metadata snapshot,
+    /// and merged FHS tree before calling this method. Callers must evaluate and
+    /// authenticate the exact desired package set before staging it.
+    ///
+    /// # Errors
+    /// Returns an error when recovery fails, the generation belongs to another
+    /// profile, payload roots differ, durable preparation fails, or activation
+    /// or publication cannot finish. A failed activation leaves `current` intact.
+    pub fn apply(
+        &mut self,
+        deployment: &Deployment,
+        generation: &Generation,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.apply_with_policy(
+            deployment,
+            generation,
+            ExecutionPolicy::Complete,
+            cancellation,
+        )
+    }
+
+    /// Publishes package files with an explicit receipt for deferred startup work.
+    ///
+    /// # Errors
+    /// Returns an error for mismatched roots, interrupted recovery, failed effects,
+    /// or durable generation publication failure.
+    pub fn apply_with_policy(
+        &mut self,
+        deployment: &Deployment,
+        generation: &Generation,
+        policy: ExecutionPolicy,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.recover(cancellation)?;
+        ensure!(
+            generation.path == self.profile.path.join(format!("gen-{}", generation.number)),
+            "staged generation belongs to another profile"
+        );
+        let selected: BTreeSet<_> = deployment
+            .artifacts()
+            .iter()
+            .map(|artifact| artifact.path.as_str())
+            .collect();
+        let roots = generation.roots()?;
+        let staged: BTreeSet<_> = roots
+            .iter()
+            .map(|(_, path)| path.to_str().context("profile root is not UTF-8"))
+            .collect::<Result<_>>()?;
+        ensure!(
+            staged == selected,
+            "profile payload roots differ from deployment"
+        );
+        sync_tree(&generation.path)?;
+        fs::File::open(&self.profile.path)?.sync_all()?;
+
+        let sequence = self.transactions.next_sequence()?;
+        let publication = Publication {
+            sequence,
+            content: deployment.id()?,
+            profile_generation: generation.number,
+        };
+        let marker = generation.path.join("native-deployment.json");
+        atomic_write(&marker, &serde_json::to_vec(&publication)?)?;
+        fs::File::open(&marker)?.sync_all()?;
+        fs::File::open(&generation.path)?.sync_all()?;
+        let path = self.publication_path(sequence);
+        atomic_write(&path, &serde_json::to_vec(&publication)?)?;
+        fs::File::open(&path)?.sync_all()?;
+        fs::File::open(path.parent().context("publication directory is absent")?)?.sync_all()?;
+
+        self.transactions
+            .apply_with_policy(deployment, policy, cancellation)?;
+        self.publish_current()
+    }
+
+    fn publication_path(&self, sequence: u64) -> std::path::PathBuf {
+        self.profile
+            .path
+            .join("deployment/publications")
+            .join(format!("{sequence}.json"))
+    }
+
+    fn publish_current(&self) -> Result<()> {
+        let Some(committed) = self.transactions.current() else {
+            return Ok(());
+        };
+        let publication: Publication = serde_json::from_slice(
+            &fs::read(self.publication_path(committed.sequence))
+                .context("reading committed profile publication")?,
+        )?;
+        ensure!(
+            publication.sequence == committed.sequence && publication.content == committed.content,
+            "profile publication differs from committed deployment"
+        );
+        let generation = Generation {
+            number: publication.profile_generation,
+            path: self
+                .profile
+                .path
+                .join(format!("gen-{}", publication.profile_generation)),
+        };
+        ensure!(generation.path.is_dir(), "committed profile tree is absent");
+        self.profile.switch_to(&generation)?;
+        crate::profile::meta::rebuild_meta(
+            self.profile,
+            &generation,
+            &aos_registry_client::registry::RegistrySet::new(Vec::new()),
+        )?;
+        fs::File::open(self.profile.path.join("state.json"))?.sync_all()?;
+        fs::File::open(&self.profile.path)?.sync_all()?;
+        Ok(())
+    }
+}
+
+/// Flushes staged profile entries without following their store-root symlinks.
+fn sync_tree(path: &std::path::Path) -> Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            sync_tree(&entry.path())?;
+        } else if file_type.is_file() {
+            fs::File::open(entry.path())?.sync_all()?;
+        } else {
+            ensure!(
+                file_type.is_symlink(),
+                "staged profile contains a special file"
+            );
+        }
+    }
+    fs::File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::bail;
+    use aos_module_format::graph::Effect;
+    use serde_json::json;
+
+    use super::*;
+    use aos_deployment::handler::HandlerArtifacts;
+    use aos_deployment_format::model::ResolvedPackages;
+    use aos_registry_client::types::ProfileScope;
+
+    #[derive(Default)]
+    struct Store {
+        reject: bool,
+        fail_preflight: bool,
+    }
+
+    impl HandlerArtifacts for Store {
+        fn retain(&mut self, _: &Effect) -> Result<()> {
+            bail!("empty profile must not dispatch a handler")
+        }
+
+        fn release(&mut self, _: &Effect) -> Result<()> {
+            bail!("empty profile must not release a handler")
+        }
+
+        fn retain_batch(&mut self, effects: &[&Effect]) -> Result<()> {
+            if std::mem::take(&mut self.fail_preflight) {
+                bail!("simulated interruption before activation")
+            }
+            for effect in effects {
+                self.retain(effect)?;
+            }
+            Ok(())
+        }
+    }
+
+    impl DeploymentStore for Store {
+        fn retain_generation(&mut self, _: &str, _: &Deployment) -> Result<()> {
+            ensure!(!self.reject, "artifact admission rejected");
+            Ok(())
+        }
+
+        fn release_generation(&mut self, _: &str, _: &Deployment) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn deployment() -> Deployment {
+        let resolved = ResolvedPackages {
+            system: "x86_64-linux".into(),
+            artifacts: Vec::new(),
+            modules: Vec::new(),
+        };
+        Deployment::decode(
+            &serde_json::to_vec(&json!({
+                "schema": "aos.package.transaction",
+                "scope": ["profile", "test"],
+                "system": resolved.system,
+                "artifacts": [],
+                "retire": [],
+                "inputs": [],
+                "packages": [],
+                "graph": {"schema": "aos.activation.graph", "nodes": {}, "order": []}
+            }))
+            .unwrap(),
+            &resolved,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn reconciliation_preserves_publication_and_replays_after_reopening() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile =
+            Profile::open_at(directory.path().join("profile"), ProfileScope::System).unwrap();
+        let generation = profile.new_generation().unwrap();
+        let cancellation = CancellationToken::default();
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        consumer
+            .apply(&deployment(), &generation, &cancellation)
+            .unwrap();
+        let committed_sequence = consumer.current().unwrap().sequence;
+        let marker = fs::read(generation.path.join("native-deployment.json")).unwrap();
+        let publication = fs::read(consumer.publication_path(committed_sequence)).unwrap();
+        let effects_path = profile.path.join("deployment/effects.journal");
+        let before_effects = fs::read(&effects_path).unwrap();
+
+        consumer.reconcile_current(&cancellation).unwrap();
+        assert_eq!(consumer.current().unwrap().sequence, committed_sequence);
+        assert_eq!(
+            fs::read(generation.path.join("native-deployment.json")).unwrap(),
+            marker
+        );
+        assert_eq!(
+            fs::read(consumer.publication_path(committed_sequence)).unwrap(),
+            publication
+        );
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            generation.number
+        );
+        assert!(!profile.path.join("gen-2").exists());
+        assert_ne!(fs::read(&effects_path).unwrap(), before_effects);
+        drop(consumer);
+
+        let mut reopened =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        reopened.recover(&cancellation).unwrap();
+        reopened.reconcile_current(&cancellation).unwrap();
+        assert_eq!(reopened.current().unwrap().sequence, committed_sequence);
+        drop(reopened);
+        assert_eq!(
+            current_committed_generation(&profile.path).unwrap(),
+            Some(generation.number)
+        );
+        assert_eq!(
+            fs::read(generation.path.join("native-deployment.json")).unwrap(),
+            marker
+        );
+    }
+
+    #[test]
+    fn recovery_repairs_link_from_committed_transaction() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let first = profile.new_generation().unwrap();
+        profile.switch_to(&first).unwrap();
+        let second = profile.new_generation().unwrap();
+        let cancellation = CancellationToken::default();
+
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        consumer
+            .apply(&deployment(), &second, &cancellation)
+            .unwrap();
+        drop(consumer);
+        // Represents interruption before the frontend publishes the new link.
+        profile.switch_to(&first).unwrap();
+
+        let mut reopened =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        reopened.recover(&cancellation).unwrap();
+
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            second.number
+        );
+        assert_eq!(reopened.transactions.current().unwrap().sequence, 1);
+    }
+
+    #[test]
+    fn recovery_selects_exact_sequence_when_desired_content_repeats() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let first = profile.new_generation().unwrap();
+        let second = profile.new_generation().unwrap();
+        let cancellation = CancellationToken::default();
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        consumer
+            .apply(&deployment(), &first, &cancellation)
+            .unwrap();
+        drop(consumer);
+
+        let mut consumer = ProfileDeployment::open(
+            &profile,
+            Store {
+                fail_preflight: true,
+                ..Store::default()
+            },
+            JournalLimits::default(),
+        )
+        .unwrap();
+        assert!(
+            consumer
+                .apply(&deployment(), &second, &cancellation)
+                .is_err()
+        );
+        let (descriptor, desired) = consumer.recovery_evaluation().unwrap().unwrap();
+        assert_eq!(descriptor, second.path.join("evaluation.json"));
+        assert_eq!(desired.id().unwrap(), deployment().id().unwrap());
+        assert_eq!(consumer.transactions.pending_sequence(), Some(2));
+        drop(consumer);
+        fs::remove_file(profile.current_path()).unwrap();
+
+        assert_eq!(
+            current_committed_generation(&profile.path).unwrap(),
+            Some(first.number)
+        );
+        assert!(has_pending_deployment(&profile.path).unwrap());
+        assert!(committed_generation(&profile.path, first.number).is_err());
+        committed_generation_during_recovery(&profile.path, first.number).unwrap();
+
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        consumer.recover(&cancellation).unwrap();
+        drop(consumer);
+        assert_eq!(
+            current_committed_generation(&profile.path).unwrap(),
+            Some(second.number)
+        );
+    }
+
+    #[test]
+    fn rejected_artifacts_preserve_current_profile() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let first = profile.new_generation().unwrap();
+        profile.switch_to(&first).unwrap();
+        let second = profile.new_generation().unwrap();
+        let mut consumer = ProfileDeployment::open(
+            &profile,
+            Store {
+                reject: true,
+                ..Store::default()
+            },
+            JournalLimits::default(),
+        )
+        .unwrap();
+
+        assert!(
+            consumer
+                .apply(&deployment(), &second, &CancellationToken::default())
+                .is_err()
+        );
+
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            first.number
+        );
+        assert!(consumer.transactions.current().is_none());
+    }
+
+    #[test]
+    fn recovery_publishes_staged_tree_after_pending_admission_failure() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let previous = profile.new_generation().unwrap();
+        profile.switch_to(&previous).unwrap();
+        let staged = profile.new_generation().unwrap();
+        let mut consumer = ProfileDeployment::open(
+            &profile,
+            Store {
+                fail_preflight: true,
+                ..Store::default()
+            },
+            JournalLimits::default(),
+        )
+        .unwrap();
+
+        assert!(
+            consumer
+                .apply(&deployment(), &staged, &CancellationToken::default())
+                .is_err()
+        );
+        assert!(consumer.transactions.pending().is_some());
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            previous.number
+        );
+        drop(consumer);
+
+        // Prepared is durable, but recovery must still authenticate its
+        // original inputs before publishing the staged profile tree.
+        let mut rejected = ProfileDeployment::open(
+            &profile,
+            Store {
+                reject: true,
+                ..Store::default()
+            },
+            JournalLimits::default(),
+        )
+        .unwrap();
+        assert!(rejected.recover(&CancellationToken::default()).is_err());
+        assert_eq!(rejected.transactions.pending_sequence(), Some(1));
+        assert_eq!(
+            rejected
+                .transactions
+                .pending()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            deployment().canonical_bytes().unwrap()
+        );
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            previous.number
+        );
+        drop(rejected);
+
+        let mut recovered =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        recovered.recover(&CancellationToken::default()).unwrap();
+
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            staged.number
+        );
+        assert!(recovered.transactions.pending().is_none());
+    }
+
+    #[test]
+    fn refreshed_admission_preserves_locked_pending_generation_until_recovery() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let staged = profile.new_generation().unwrap();
+        let mut consumer = ProfileDeployment::open(
+            &profile,
+            Store {
+                fail_preflight: true,
+                ..Store::default()
+            },
+            JournalLimits::default(),
+        )
+        .unwrap();
+        let cancellation = CancellationToken::default();
+        assert!(
+            consumer
+                .apply(&deployment(), &staged, &cancellation)
+                .is_err()
+        );
+        let sequence = consumer.transactions.pending_sequence();
+        let original = consumer
+            .transactions
+            .pending()
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+
+        consumer.replace_store(Store {
+            reject: true,
+            ..Store::default()
+        });
+
+        assert!(
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).is_err()
+        );
+        assert!(consumer.recover(&cancellation).is_err());
+        assert_eq!(consumer.transactions.pending_sequence(), sequence);
+        assert_eq!(
+            consumer
+                .transactions
+                .pending()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            original
+        );
+        assert!(profile.current_generation().unwrap().is_none());
+
+        consumer.replace_store(Store::default());
+        consumer.recover(&cancellation).unwrap();
+
+        assert!(consumer.transactions.pending().is_none());
+        assert_eq!(consumer.current().unwrap().sequence, sequence.unwrap());
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            staged.number
+        );
+    }
+
+    #[test]
+    fn mismatched_publication_fails_before_moving_profile_link() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let generation = profile.new_generation().unwrap();
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        consumer
+            .apply(&deployment(), &generation, &CancellationToken::default())
+            .unwrap();
+        fs::write(
+            consumer.publication_path(1),
+            serde_json::to_vec(&Publication {
+                sequence: 1,
+                content: "different".into(),
+                profile_generation: generation.number,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(consumer.recover(&CancellationToken::default()).is_err());
+    }
+    #[test]
+    fn inspection_rejects_tampered_generation_marker() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let generation = profile.new_generation().unwrap();
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        consumer
+            .apply(&deployment(), &generation, &CancellationToken::default())
+            .unwrap();
+        drop(consumer);
+        assert_eq!(
+            committed_generation(&profile.path, generation.number)
+                .unwrap()
+                .sequence,
+            1
+        );
+
+        let marker = generation.path.join("native-deployment.json");
+        let mut publication: Publication =
+            serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
+        publication.content = "changed".into();
+        fs::write(marker, serde_json::to_vec(&publication).unwrap()).unwrap();
+
+        assert!(committed_generation(&profile.path, generation.number).is_err());
+    }
+
+    #[test]
+    fn pruning_releases_old_journal_generation_before_profile_tree() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let first = profile.new_generation().unwrap();
+        let second = profile.new_generation().unwrap();
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        let cancellation = CancellationToken::default();
+        consumer
+            .apply(&deployment(), &first, &cancellation)
+            .unwrap();
+        consumer
+            .apply(&deployment(), &second, &cancellation)
+            .unwrap();
+
+        assert!(consumer.prune(&second).is_err());
+        consumer.prune(&first).unwrap();
+        consumer.prune(&first).unwrap();
+
+        assert!(!consumer.transactions.generations().contains_key(&1));
+        assert!(first.path.is_dir());
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            second.number
+        );
+    }
+
+    #[test]
+    fn recovery_inspection_preserves_torn_journal_tail_and_never_exposes_pending_state() {
+        use std::io::Write;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let generation = profile.new_generation().unwrap();
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        consumer
+            .apply(&deployment(), &generation, &CancellationToken::default())
+            .unwrap();
+        drop(consumer);
+        let path = profile.path.join("deployment/generations.journal");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&[0, 1, 2])
+            .unwrap();
+        let bytes = fs::read(&path).unwrap();
+
+        assert!(committed_generation(&profile.path, generation.number).is_err());
+        assert!(has_pending_deployment(&profile.path).unwrap());
+        assert_eq!(
+            committed_generation_during_recovery(&profile.path, generation.number)
+                .unwrap()
+                .sequence,
+            1
+        );
+        assert_eq!(
+            current_committed_generation(&profile.path).unwrap(),
+            Some(generation.number)
+        );
+
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn inspection_never_creates_journals_for_an_uninitialized_profile() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+
+        assert_eq!(current_committed_generation(&profile.path).unwrap(), None);
+        assert!(!has_pending_deployment(&profile.path).unwrap());
+        assert!(!profile.path.join("deployment").exists());
+    }
+
+    #[test]
+    fn retained_export_preserves_exact_committed_scope_without_effect_dispatch() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let generation = profile.new_generation().unwrap();
+        let desired = deployment();
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), journal_limits()).unwrap();
+        consumer
+            .apply(&desired, &generation, &CancellationToken::default())
+            .unwrap();
+        drop(consumer);
+        let journals = [
+            profile.path.join("deployment/generations.journal"),
+            profile.path.join("deployment/effects.journal"),
+        ];
+        let before: Vec<_> = journals
+            .iter()
+            .map(|path| fs::read(path).unwrap())
+            .collect();
+
+        let bytes = crate::deployment::retained::export(&profile.path).unwrap();
+
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            json!({
+                "schema":"aos.package.retained-effects", "scope":desired.scope(), "effects":[]
+            })
+        );
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            generation.number
+        );
+        assert_eq!(
+            journals
+                .iter()
+                .map(|path| fs::read(path).unwrap())
+                .collect::<Vec<_>>(),
+            before
+        );
+    }
+
+    #[test]
+    fn retained_export_uses_committed_publication_without_repairing_current_link() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let first = profile.new_generation().unwrap();
+        let committed = profile.new_generation().unwrap();
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), journal_limits()).unwrap();
+        consumer
+            .apply(&deployment(), &committed, &CancellationToken::default())
+            .unwrap();
+        drop(consumer);
+        profile.switch_to(&first).unwrap();
+        let current = profile.path.join("current");
+        let stale = fs::read_link(&current).unwrap();
+
+        let with_stale_link = crate::deployment::retained::export(&profile.path).unwrap();
+        assert_eq!(fs::read_link(&current).unwrap(), stale);
+        fs::remove_file(&current).unwrap();
+        let with_missing_link = crate::deployment::retained::export(&profile.path).unwrap();
+
+        assert_eq!(with_stale_link, with_missing_link);
+        assert!(!current.exists());
+        assert_eq!(
+            current_committed_generation(&profile.path).unwrap(),
+            Some(committed.number)
+        );
+    }
+
+    #[test]
+    fn retained_export_rejects_missing_or_corrupt_publications_without_repair() {
+        for record in [
+            "deployment/publications/1.json",
+            "gen-1/native-deployment.json",
+        ] {
+            for missing in [true, false] {
+                let temporary = tempfile::tempdir().unwrap();
+                let profile =
+                    Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+                let generation = profile.new_generation().unwrap();
+                let mut consumer =
+                    ProfileDeployment::open(&profile, Store::default(), journal_limits()).unwrap();
+                consumer
+                    .apply(&deployment(), &generation, &CancellationToken::default())
+                    .unwrap();
+                drop(consumer);
+                let path = profile.path.join(record);
+                if missing {
+                    fs::remove_file(&path).unwrap();
+                } else {
+                    fs::write(&path, b"corrupt publication").unwrap();
+                }
+                let journals = [
+                    profile.path.join("deployment/generations.journal"),
+                    profile.path.join("deployment/effects.journal"),
+                ];
+                let before: Vec<_> = journals
+                    .iter()
+                    .map(|path| fs::read(path).unwrap())
+                    .collect();
+                let current = fs::read_link(profile.path.join("current")).unwrap();
+
+                assert!(
+                    crate::deployment::retained::export(&profile.path).is_err(),
+                    "{record}, missing={missing}"
+                );
+
+                assert_eq!(
+                    journals
+                        .iter()
+                        .map(|path| fs::read(path).unwrap())
+                        .collect::<Vec<_>>(),
+                    before
+                );
+                assert_eq!(
+                    fs::read_link(profile.path.join("current")).unwrap(),
+                    current
+                );
+                if missing {
+                    assert!(!path.exists());
+                } else {
+                    assert_eq!(fs::read(path).unwrap(), b"corrupt publication");
+                }
+                assert!(!profile.path.join("deployment/registry-admissions").exists());
+            }
+        }
+    }
+
+    struct LifecycleStore;
+
+    impl HandlerArtifacts for LifecycleStore {
+        fn retain(&mut self, _: &Effect) -> Result<()> {
+            Ok(())
+        }
+
+        fn release(&mut self, _: &Effect) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    impl DeploymentStore for LifecycleStore {
+        fn retain_generation(&mut self, _: &str, _: &Deployment) -> Result<()> {
+            Ok(())
+        }
+
+        fn release_generation(&mut self, _: &str, _: &Deployment) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn startup_deployment(value: &str) -> (Deployment, String, String) {
+        let root = "/nix/store/00000000000000000000000000000000-handler";
+        let artifact = json!({"name":"handler", "version":"1", "path":root,
+            "outputs":{"out":root}, "mainProgram":"run"});
+        let resolved: ResolvedPackages = serde_json::from_value(json!({
+            "system":"x86_64-linux", "artifacts":[artifact], "modules":[]
+        }))
+        .unwrap();
+        let identity = vec![
+            "profile".to_owned(),
+            "test".to_owned(),
+            "startup".to_owned(),
+        ];
+        let id = aos_module_format::graph::identity_key(&identity).unwrap();
+        let mut effect = json!({
+            "identity":identity, "owner":"@environment", "phase":"startup",
+            "input":{"value":value},
+            "input_type":{"kind":"submodule","open":false,"fields":{"value":{"kind":"string"}}},
+            "after":[], "results":{"value":{"kind":"string"}},
+            "lifetime":"instance", "timeout_ms":1000,
+            "handler":{"kind":"process", "artifact":root,"executable":format!("{root}/bin/run")}
+        });
+        effect["revision"] =
+            json!(aos_core::Sha256Digest::of_bytes(serde_json::to_vec(&effect).unwrap()).hex());
+        effect["dependencies"] = json!([]);
+        effect["inputs"] = json!({});
+        let desired = Deployment::decode(&serde_json::to_vec(&json!({
+            "schema":"aos.package.transaction", "scope":["profile","test"],
+            "system":resolved.system, "artifacts":resolved.artifacts, "packages":[],
+            "retire":[], "inputs":[],
+            "graph":{"schema":"aos.activation.graph", "nodes":{id.clone():effect}, "order":[id.clone()]}
+        })).unwrap(), &resolved).unwrap();
+        (desired, id, root.into())
+    }
+
+    struct StartupOutcomes;
+
+    impl aos_activation::activation::ActivationAdapter for StartupOutcomes {
+        fn retain(&mut self, _: &Effect) -> Result<()> {
+            Ok(())
+        }
+
+        fn release(&mut self, _: &Effect) -> Result<()> {
+            Ok(())
+        }
+
+        fn observe(
+            &mut self,
+            _: &aos_activation::activation::Invocation,
+            _: &CancellationToken,
+        ) -> Result<aos_activation::activation::Observation> {
+            Ok(aos_activation::activation::Observation::RetrySafe)
+        }
+
+        fn invoke(
+            &mut self,
+            invocation: &aos_activation::activation::Invocation,
+            _: &CancellationToken,
+        ) -> Result<serde_json::Value> {
+            Ok(invocation.input.clone())
+        }
+    }
+
+    #[test]
+    fn consecutive_installations_publish_files_while_startup_results_remain_pending() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile =
+            Profile::open_at(directory.path().join("profile"), ProfileScope::User).unwrap();
+        let cancellation = CancellationToken::default();
+        let (first, service, root) = startup_deployment("first");
+        let (second, _, _) = startup_deployment("second");
+        let mut staged = Vec::new();
+
+        for (sequence, desired, value) in [(1, &first, "first"), (2, &second, "second")] {
+            let generation = profile.new_generation().unwrap();
+            fs::create_dir(generation.path.join("usr")).unwrap();
+            std::os::unix::fs::symlink(
+                &root,
+                generation.path.join("usr/00000000000000000000000000000000"),
+            )
+            .unwrap();
+            fs::write(generation.path.join("configuration"), value).unwrap();
+            let mut consumer =
+                ProfileDeployment::open(&profile, LifecycleStore, JournalLimits::default())
+                    .unwrap();
+            consumer
+                .apply_with_policy(
+                    desired,
+                    &generation,
+                    ExecutionPolicy::Installation,
+                    &cancellation,
+                )
+                .unwrap();
+            assert_eq!(consumer.current().unwrap().sequence, sequence);
+            assert_eq!(
+                consumer.current().unwrap().deferred,
+                BTreeSet::from([service.clone()])
+            );
+            assert!(consumer.current().unwrap().outputs.is_empty());
+            drop(consumer);
+
+            assert_eq!(
+                fs::read_to_string(profile.path.join("current/configuration")).unwrap(),
+                value
+            );
+            assert_eq!(
+                profile.current_generation().unwrap().unwrap().number,
+                generation.number
+            );
+            let error = committed_result(&profile.path, generation.number, &service).unwrap_err();
+            assert!(
+                error.to_string().contains("pending startup activation"),
+                "{error:#}"
+            );
+            staged.push(generation);
+        }
+
+        let mut consumer =
+            ProfileDeployment::open(&profile, LifecycleStore, JournalLimits::default()).unwrap();
+        consumer.prune(&staged[0]).unwrap();
+        let interrupted = CancellationToken::default();
+        interrupted.cancel();
+        assert!(
+            consumer
+                .reconcile_current_with_policy(ExecutionPolicy::Complete, &interrupted)
+                .is_err()
+        );
+        drop(consumer);
+
+        // Complete the durable effect receipt through the adapter boundary,
+        // then recover publication without requiring an immutable process fixture.
+        let mut activation = aos_activation::activation::Activation::open(
+            profile.path.join("deployment/effects.journal"),
+            JournalLimits::default(),
+        )
+        .unwrap();
+        activation
+            .activate_once_with_policy(
+                &format!("reconcile-2-1-{}", second.id().unwrap()),
+                second.graph(),
+                second.retire(),
+                ExecutionPolicy::Complete,
+                &mut StartupOutcomes,
+                &cancellation,
+            )
+            .unwrap();
+        drop(activation);
+        let mut consumer =
+            ProfileDeployment::open(&profile, LifecycleStore, JournalLimits::default()).unwrap();
+        consumer.recover(&cancellation).unwrap();
+        assert_eq!(consumer.current().unwrap().sequence, 2);
+        assert!(consumer.current().unwrap().deferred.is_empty());
+        drop(consumer);
+
+        assert_eq!(
+            committed_result(&profile.path, staged[1].number, &service).unwrap(),
+            json!({"value":"second"})
+        );
+        assert_eq!(
+            fs::read_to_string(profile.path.join("current/configuration")).unwrap(),
+            "second"
+        );
+        assert!(!has_pending_deployment(&profile.path).unwrap());
+    }
+}

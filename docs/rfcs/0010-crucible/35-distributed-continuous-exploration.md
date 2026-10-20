@@ -279,7 +279,7 @@ manifest is a tiny ref that points at:
     coverage_map_root  : ContentHash   // root of the accumulated coverage map (§35.3.2)
     findings_root      : ContentHash   // root of the findings ledger (artifacts §35.3.3)
     genesis_pin        : ContentHash   // the baked genesis checkpoint pin (07 §3, PERF-11)
-    provenance         : ProvenanceTriple  // (crucible_ver, qemu_build+series, abi_vers) §35.5/§35.6
+    provenance         : ProvenanceTriple  // (crucible_ver, qemu_build+atomic_patch, abi_vers) §35.5/§35.6
   advanced by COMPARE-AND-SWAP on the head (§35.5); a lost CAS loses only
   bookkeeping — the nodes it would have named are independently re-discoverable.
 ```
@@ -651,7 +651,7 @@ off the hot path (advanced at run boundaries, not per node).
 ### 35.6.1 A campaign is keyed to the provenance triple
 
 A campaign is keyed to the **provenance triple** of [PKG-36]/[PKG-38]: the
-Crucible software version, the QEMU build identity + applied series hash, and the
+Crucible software version, the QEMU build identity + applied atomic-patch hash, and the
 three ABI versions (shmem, guest↔host channel, RPC). This triple is recorded in
 the manifest (§35.3.1) and in every reproduction artifact ([PKG-38], [HARN-28]).
 
@@ -676,7 +676,7 @@ provenance per entry).
 ```
 
 - **[DCE-26]** A campaign MUST be keyed to the **provenance triple** of [PKG-36]
-  (Crucible version, QEMU build identity + series hash, the three ABI versions),
+  (Crucible version, QEMU build identity + atomic-patch hash, the three ABI versions),
   recorded in the manifest (§35.3.1) and in every artifact ([PKG-38]). Seeding
   ([DCE-11]) MUST **refuse cross-provenance corpus reuse**: a corpus entry produced
   under one provenance triple MUST NOT be seeded into a campaign with a different
@@ -696,24 +696,24 @@ provenance per entry).
 
 The fleet-visible content-addressed store is the **same seam** at which a future
 RFC-0007 (`ratchet`) shared substrate would slot in. Per [PKG-33]/[PKG-34], the
-store Crucible needs now is the self-contained `crucible-cas` crate — a
+store Crucible needs now is the self-contained `crucible-store` crate — a
 content-addressed store plus a dependency-gated invalidation primitive — behind a
 **narrow interface** (`put`/`get`/`has` by content hash). The fleet's shared
 backend (§35.2.1) and the campaign's persistent store (§35.3.1) are *both* that
-same `crucible-cas` interface, now backed by a remote/durable implementation
+same `crucible-store` interface, now backed by a remote/durable implementation
 (07 [TEMP-22]). A future RFC-0007 shared content-addressed store would replace
-`crucible-cas`'s internals behind that unchanged interface ([PKG-35]), gated by
+`crucible-store`'s internals behind that unchanged interface ([PKG-35]), gated by
 re-running `gate:content-address` and `gate:replay-oracle` with no behavioral
 change.
 
 Crucible ships **standalone** ([NG-7]): the seam is **documented text, not a
 dependency**. The fleet and campaign require no RFC-0007 code; they require only
-the `crucible-cas` interface, which a remote backend satisfies today. RFC-0007
+the `crucible-store` interface, which a remote backend satisfies today. RFC-0007
 (`ratchet`) MAY be named here as an AOS sibling; nothing in this file depends on
 it landing.
 
 - **[DCE-28]** The fleet's shared store (§35.2.1) and the campaign's persistent
-  store (§35.3.1) MUST both be the **same narrow `crucible-cas` interface**
+  store (§35.3.1) MUST both be the **same narrow `crucible-store` interface**
   ([PKG-33], [PKG-34]) — `put`/`get`/`exists`/`has` by content hash — backed by a
   remote/durable implementation behind the backend-agnostic trait (07 [TEMP-22]).
   This interface MUST be the documented seam at which a future RFC-0007 (`ratchet`)
@@ -807,7 +807,7 @@ states the shape and forward-references the numbers:
 
 - **The ratchet-substrate gate.** *Risk:* the fleet/campaign accidentally takes a
   hard dependency on RFC-0007 (`ratchet`) before it lands. *Mitigation:* the seam
-  is the unchanged `crucible-cas` interface (§35.6.2); Crucible ships standalone
+  is the unchanged `crucible-store` interface (§35.6.2); Crucible ships standalone
   with no RFC-0007 code ([DCE-29], [NG-7], [PKG-32]); the merge is gated by
   re-running `gate:content-address` and `gate:replay-oracle` unchanged ([PKG-35]).
   *Gate:* `gate:e2e-determinism`, `gate:content-address`.
@@ -957,11 +957,11 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
 
 - [x] **T-DCE-1** Implement the shared content-addressed `DagStore` backend (a
   remote/durable implementation of the unchanged 07 §7 `put`/`get`/`exists`
-  interface behind `crucible-cas`), proving location-independent identity (same
+  interface behind `crucible-store`), proving location-independent identity (same
   node/finding is the same object on any host) and idempotent, convergent
   concurrent `put`. — satisfies [DCE-2], [DCE-3], [DCE-4], [DCE-22], [DCE-28]; spec §35.2.1,
   §35.5.1; cross-ref 07 §7, [TEMP-22].
-  - Completed by `checks.crucible.phase7.crucibleSharedDagStore`: `crucible-cas`
+  - Completed by `checks.crucible.phase7.crucibleSharedDagStore`: `crucible-store`
     exports `SharedDagStore` behind the unchanged `DagStore::put`/`DagStore::get`/
     `DagStore::has` interface, using content-derived BLAKE3 keys, the shared
     two-level object layout, exclusive temporary files, atomic hard-link publish,
@@ -977,7 +977,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
   re-expands to a byte-identical deduped node), with soft hash-affinity as a
   cache-warmth hint only. — satisfies [DCE-5], [DCE-6], [DCE-7]; spec §35.2.2,
   §35.2.3; cross-ref 22 §22.5, 07 §9.
-  - Completed by `checks.crucible.phase7.crucibleFrontierLeases`: `crucible-cas`
+  - Completed by `checks.crucible.phase7.crucibleFrontierLeases`: `crucible-store`
     now exposes `SharedFrontier`, `FrontierClaimRequest`, `FrontierLease`, and
     `SoftHashAffinity`. Frontier membership and claim paths are keyed only by the
     frontier node content address; host id and expiry live only inside TTL claim
@@ -992,7 +992,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
   coverage-map compare-and-merge admission, symmetry/partial-order reduction over
   shared fingerprints, claim-set anti-redundancy). — satisfies [DCE-8]; spec
   §35.2.4; cross-ref 07 §7/§9, 22 §22.6.
-  - Completed by `checks.crucible.phase7.crucibleFourLayerDedup`: `crucible-cas`
+  - Completed by `checks.crucible.phase7.crucibleFourLayerDedup`: `crucible-store`
     now exposes `SharedDedupIndex`, `ExpansionDedupDecision`, `CoverageAdmission`,
     and `ReductionAdmission`. The packaged `crucible-fleet-store probe` proves
     exists-gated expansion skips a child already in `SharedDagStore`, shared
@@ -1007,7 +1007,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
   corpus/coverage/findings roots, genesis pin, and provenance, with read-merge-retry
   CAS and lost-update-loses-only-bookkeeping. — satisfies [DCE-9], [DCE-10],
   [DCE-23]; spec §35.3.1, §35.5.2.
-  - Completed by `checks.crucible.phase7.crucibleCampaignManifest`: `crucible-cas`
+  - Completed by `checks.crucible.phase7.crucibleCampaignManifest`: `crucible-store`
     now exposes `SharedCampaignStore`, `CampaignManifest`, `CampaignProvenance`,
     `CampaignHead`, and `CampaignCasOutcome`. Campaign manifests are persisted as
     immutable `SharedDagStore` objects, while `campaign-head` is the single durable
@@ -1026,7 +1026,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
   coverage map (union CRDT) driving the monotone continuous coverage ratchet, plus
   the cross-run findings ledger. — satisfies [DCE-11], [DCE-12], [DCE-13], [DCE-24];
   spec §35.3.2, §35.3.3, §35.5.3; cross-ref 22 §22.7.2.
-  - Completed by `checks.crucible.phase7.crucibleCampaignSeeding`: `crucible-cas`
+  - Completed by `checks.crucible.phase7.crucibleCampaignSeeding`: `crucible-store`
     now exposes self-contained `CampaignReplayArtifact` objects, `CampaignCorpusSeed`
     loading for run N+1, typed accumulated coverage-map roots with grow-only union
     merge, and grow-only content-deduplicated findings ledgers. The packaged
@@ -1042,7 +1042,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
   retention under a cap (bit-reproducible across hosts and reruns). — satisfies
   [DCE-14], [DCE-15]; spec §35.3.4; cross-ref 07 §8, 22 §22.7.2.
   - Completed by `checks.crucible.phase7.crucibleCampaignStorageBounding`:
-    `crucible-cas` now exposes manifest-root campaign GC planning and candidate
+    `crucible-store` now exposes manifest-root campaign GC planning and candidate
     sweeping, a typed source/cap/seed corpus-retention root accepted only through
     an explicit retention-policy CAS path, and a cache-only fat→thin eviction
     proof surface. Raw CAS still rejects corpus shrink, zero-cap retention, policy
@@ -1077,7 +1077,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
 - [x] **T-DCE-8** Implement `gate:fleet-equivalence` (single-host exhaustive search
   vs fleet work-stealing search over the same (family, seed, budget) discover the
   same content-addressed finding-set with byte-identical artifacts; order may
-  differ), running against the SimDouble fleet under adversarial host conditions and
+  differ), running the work-stealing fleet under adversarial host conditions and
   a real-QEMU slice, with divergence-bisection localization. — satisfies [DCE-20],
   [DCE-21], [DCE-25], [DCE-33]; spec §35.4.4, §35.5.4; cross-ref 24 §3/§7.
   - Completed by `checks.crucible.phase7.gates.fleetEquivalence`: the Crucible
@@ -1088,9 +1088,9 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     seed, and budget, requires both runs to exhaust the same content-addressed
     graph, then compares order-insensitive content-addressed finding sets and
     byte-identical reproduction artifacts while preserving discovery order only as
-    diagnostics. The test also drives one `SimDouble` lane per logical fleet host
-    under the shared `canonical_host_adversary_matrix` fixture and requires
-    profile-independent host-schedule witnesses. Negative controls drop a fleet
+    diagnostics. The test also runs complete work-stealing searches as independent
+    logical tasks under the shared `canonical_host_adversary_matrix` fixture and
+    requires profile-independent fleet results. Negative controls drop a fleet
     finding and cap the budget before exhaustion, verifying divergence-bisection
     handoff through `SearchReplayOracleBisectionRequest`. The root TCG-only fleet
     wrapper consumes this gate result before advertising distributed continuous
@@ -1103,7 +1103,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
   seeding keyed to the provenance triple. — satisfies [DCE-26], [DCE-27]; spec
   §35.6.1; cross-ref 26 §26.10.
   - Completed by `checks.crucible.phase7.gates.campaignContinuity`:
-    `crucible-cas` now exposes provenance-keyed seeding through
+    `crucible-store` now exposes provenance-keyed seeding through
     `SharedCampaignStore::seed_next_run_for_provenance`,
     `CampaignContinuitySeedDecision`, `CampaignFreshLineageRoots`, and
     `CampaignFreshLineageBaselineEvent`. The gate seeds run N+1 from the prior
@@ -1125,7 +1125,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     carries the §35.10 `gate:fleet-equivalence` and `gate:campaign-continuity`
     rows with their explicit DCE requirements and one-line criteria; the harness
     phase plan and gate-target mapping expose both implemented gates after the
-    replay/search/fuzzing ladder; the `crucible-cas` ratchet seam remains documented
+    replay/search/fuzzing ladder; the `crucible-store` ratchet seam remains documented
     text with no RFC-0007 dependency; and `pkgs.crucible-fleet-store` is wired into
     `checks.fleet.crucible-distributed-continuous-exploration` as a from-source,
     TCG-only AOS fleet surface.

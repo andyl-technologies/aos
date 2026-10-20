@@ -1,0 +1,18 @@
+--- a/lib/openat-die.c
++++ b/lib/openat-die.c
+@@ -34,5 +34,5 @@ openat_save_fail (int errnum)
+ {
+ #ifndef GNULIB_LIBPOSIX
+-  error (exit_failure, errnum,
+-         _("unable to record current working directory"));
++  error (exit_failure, errnum, "%s",
++         _("unable to record current working directory"));
+ #endif
+@@ -53,5 +53,5 @@ openat_restore_fail (int errnum)
+ {
+ #ifndef GNULIB_LIBPOSIX
+-  error (exit_failure, errnum,
+-         _("failed to return to initial working directory"));
++  error (exit_failure, errnum, "%s",
++         _("failed to return to initial working directory"));
+ #endif

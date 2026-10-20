@@ -2,27 +2,23 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
-  harnessPackage = "crucible-harness";
+  harnessPackage = "crucible-test-support";
 
   runtimeSpecs = [
     {
-      package = "crucible-sim";
+      package = "crucible-determinism";
       layer = 0;
       inVm = false;
     }
     {
-      package = "crucible-assert";
-      layer = 0;
-      inVm = false;
-    }
-    {
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       layer = 1;
       inVm = false;
     }
     {
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       layer = 1;
       inVm = false;
     }
@@ -32,7 +28,7 @@
       inVm = false;
     }
     {
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       layer = 2;
       inVm = false;
     }
@@ -42,7 +38,7 @@
       inVm = true;
     }
     {
-      package = "crucible-debug-gateway";
+      package = "crucible-qemu-debug-gateway";
       layer = 2;
       inVm = false;
     }
@@ -52,12 +48,17 @@
       inVm = true;
     }
     {
-      package = "crucible";
+      package = "crucible-engine";
       layer = 3;
       inVm = false;
     }
     {
-      package = "crucible-cas";
+      package = "crucible-store";
+      layer = 3;
+      inVm = false;
+    }
+    {
+      package = "crucible-campaign";
       layer = 3;
       inVm = false;
     }
@@ -67,7 +68,17 @@
       inVm = false;
     }
     {
-      package = "crucible-api";
+      package = "crucible-control-client";
+      layer = 4;
+      inVm = false;
+    }
+    {
+      package = "crucible-control-server";
+      layer = 4;
+      inVm = false;
+    }
+    {
+      package = "crucible-control-api";
       layer = 4;
       inVm = false;
     }
@@ -81,17 +92,16 @@
       layer = 4;
       inVm = false;
     }
+    {
+      package = "crucible-store-s3";
+      layer = 4;
+      inVm = false;
+    }
   ];
 
   runtimePackages = map (spec: spec.package) runtimeSpecs;
   expectedPackages = lib.sort builtins.lessThan (runtimePackages ++ [harnessPackage]);
-  foundPackages = lib.sort builtins.lessThan (
-    builtins.filter (
-      name:
-        lib.hasPrefix "crucible" name
-        && builtins.pathExists (cratesDir + "/${name}/Cargo.toml")
-    ) (builtins.attrNames (builtins.readDir cratesDir))
-  );
+  foundPackages = lib.sort builtins.lessThan cruciblePackages;
 
   specByPackage = builtins.listToAttrs (
     map (spec: {
@@ -109,8 +119,8 @@
   );
   hostAdapterUpwardEdgeExceptions = [
     {
-      from = "crucible-qemu";
-      to = "crucible";
+      from = "crucible-qemu-host";
+      to = "crucible-engine";
     }
   ];
   isHostAdapterUpwardEdgeException = edge:
@@ -122,7 +132,7 @@
     else name;
 
   manifestCrucibleDeps = package: let
-    manifest = builtins.fromTOML (builtins.readFile (cratesDir + "/${package}/Cargo.toml"));
+    manifest = builtins.fromTOML (builtins.readFile (packageDir package + "/Cargo.toml"));
     dependencies =
       if manifest ? dependencies
       then manifest.dependencies
@@ -214,24 +224,24 @@
   regressionFailures = let
     findings = analyzeEdges [
       {
-        from = "crucible-sim";
-        to = "crucible";
+        from = "crucible-determinism";
+        to = "crucible-engine";
       }
       {
         from = "crucible-qemu-plugin";
-        to = "crucible-sim";
+        to = "crucible-determinism";
       }
       {
-        from = "crucible-api";
+        from = "crucible-control-api";
         to = harnessPackage;
       }
       {
-        from = "crucible-protocol";
+        from = "crucible-qemu-protocol";
         to = "crucible-device";
       }
       {
         from = "crucible-device";
-        to = "crucible-protocol";
+        to = "crucible-qemu-protocol";
       }
     ];
     hasFinding = needle:
@@ -270,7 +280,7 @@ in
             check=checks.crucible.phase1.crateLayerGraph
             gate=gate:harness-lint
             tasks=T-ARCH-2,T-CRATE-3
-            runtime_crates=14
+            runtime_crates=18
             test_only_crates=1
             upward_edges=0
             host_adapter_upward_edge_exceptions=1

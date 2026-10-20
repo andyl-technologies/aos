@@ -14,7 +14,7 @@ use super::{
     content::item_fields,
     support::{REFERENCE, changed, decimal, section, table, unquote},
 };
-use terrane_core::boundary::{self, BoundaryDecision};
+use terrane_format::boundary::{self, BoundaryDecision};
 
 fn base(size: u64) -> u64 {
     if size < 4096 {

@@ -7,7 +7,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane --lib derivation::tests::${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-sdk --lib derivation::tests::${name} -- --exact \
       > "$TMPDIR/memo-replay-test.log" 2>&1; then
       cat "$TMPDIR/memo-replay-test.log"
       exit 1

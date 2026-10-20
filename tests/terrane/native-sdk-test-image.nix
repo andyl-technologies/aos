@@ -4,7 +4,7 @@
 # (CRATE-22 through CRATE-27, ALG-32).
 sourceGate "native-sdk-test-image" ''
   cd crates
-  cargo test --frozen --offline -p terrane --no-default-features \
+  cargo test --frozen --offline -p terrane-sdk --no-default-features \
     --features tokio,surface-sdk --lib --no-run --message-format=json \
     > "$TMPDIR/native-sdk-build.jsonl"
   cargo metadata --frozen --offline --no-deps --format-version=1 \

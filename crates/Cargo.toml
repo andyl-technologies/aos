@@ -1,56 +1,88 @@
 [workspace]
 resolver = "2"
 members = [
-    "terrane-core",
-    "terrane",
-    "terrane-fs",
-    "terrane-cli",
-    "aos-terrane",
-    "aos",
-    "aos-oci",
-    "aos-oci-types",
-    "aos-contract",
-    "aos-maintain",
-    "aos-core",
-    "aos-boot-identity",
-    "aos-recovery",
-    "aos-net",
-    "aos-proto",
-    "aos-proto-types",
-    "aos-server",
-    "aos-cache",
-    "aos-remote",
-    "aos-doc",
-    "aos-doc-model",
-    "aos-package",
-    "aos-hub-console-contract",
-    "aos-hub-core",
-    "aos-hub",
-    "aos-registry-surface",
-    "aos-release",
-    "aos-release-signer",
-    "aos-image-finalizer",
-    "aos-registry-spa",
-    "aos-hub-worker",
-    "aos-hub-console",
-    "aos-profile",
-    "aos-systemd",
-    "crucible-cas",
-    "crucible-sim",
-    "crucible-assert",
-    "crucible-shmem",
-    "crucible-protocol",
-    "crucible-device",
-    "crucible-debug-gateway",
-    "crucible-qemu",
-    "crucible-qemu-plugin",
-    "crucible-guest",
-    "crucible",
-    "crucible-session",
-    "crucible-api",
-    "crucible-daemon",
-    "crucible-cli",
-    "crucible-harness",
+    "terrane/sdk/terrane-format",
+    "terrane/sdk/terrane-sdk",
+    "terrane/linux/terrane-linux",
+    "terrane/cli/terrane-cli",
+    "terrane/integration/aos-terrane-integration",
+    "aos/cli/aos-cli",
+    "shared/aos-oci",
+    "shared/aos-oci-types",
+    "aos/modules/aos-module-format",
+    "aos/activation/aos-activation",
+    "aos/activation/aos-activation-crucible",
+    "aos/release/aos-package-maintenance",
+    "shared/aos-core",
+    "aos/boot/aos-boot-identity",
+    "aos/boot/aos-recovery",
+    "shared/aos-transfer",
+    "aos/packages/aos-build-api",
+    "hub/aos-hub-api",
+    "aos/packages/aos-build-server",
+    "aos/packages/aos-nix-cache",
+    "aos/packages/aos-build-client",
+    "aos/cli/aos-nix-docs",
+    "aos/modules/aos-module-docs",
+    "aos/packages/aos-package-manager",
+    "aos/boot/aos-platform-metadata",
+    "hub/aos-hub-ui",
+    "hub/aos-hub-service",
+    "hub/aos-hub-native",
+    "aos/registry/aos-registry-format",
+    "aos/release/aos-release-format",
+    "aos/release/aos-release-signer",
+    "aos/release/aos-image-finalizer",
+    "aos/registry/aos-registry-web",
+    "hub/aos-hub-worker",
+    "hub/aos-hub-console",
+    "aos/cli/aos-closure-analysis",
+    "shared/aos-systemd-client",
+    "aos/boot/aos-configuration-image",
+    "aos/activation/aos-activation-config-files",
+    "aos/activation/aos-activation-filesystem",
+    "aos/activation/aos-activation-kubernetes",
+    "aos/activation/aos-activation-sysctl",
+    "aos/activation/aos-activation-nftables",
+    "aos/activation/aos-activation-bpf-lsm",
+    "aos/activation/aos-activation-bpf-network",
+    "aos/activation/aos-activation-nix-store",
+    "aos/activation/aos-activation-systemd",
+    "aos/activation/aos-activation-storage",
+    "aos/boot/aos-storage-layout",
+    "crucible/storage/crucible-store",
+    "shared/aos-linux-project-quota",
+    "crucible/storage/crucible-store-s3",
+    "crucible/engine/crucible-campaign",
+    "crucible/engine/crucible-determinism",
+    "crucible/protocol/crucible-qemu-shmem",
+    "crucible/protocol/crucible-qemu-protocol",
+    "crucible/engine/crucible-device",
+    "crucible/qemu/crucible-qemu-debug-gateway",
+    "crucible/qemu/crucible-qemu-host",
+    "crucible/qemu/crucible-qemu-plugin",
+    "crucible/guest/crucible-guest",
+    "crucible/engine/crucible-engine",
+    "crucible/control/crucible-session",
+    "crucible/control/crucible-control-api",
+    "crucible/control/crucible-daemon",
+    "crucible/control/crucible-cli",
+    "crucible/testing/crucible-test-support",
+    "shared/aos-artifact-evidence",
+    "shared/aos-nar",
+    "shared/aos-nix",
+    "aos/cli/aos-cli-ui",
+    "aos/boot/aos-boot-runtime",
+    "aos/release/aos-release-coordinator",
+    "aos/packages/aos-deployment-format",
+    "aos/packages/aos-deployment",
+    "aos/registry/aos-registry-client",
+    "aos/registry/aos-registry-authoring",
+    "hub/aos-hub-model",
+    "hub/aos-hub-db",
+    "hub/aos-hub-client",
+    "crucible/control/crucible-control-client",
+    "crucible/control/crucible-control-server",
 ]
 
 [workspace.package]
@@ -63,6 +95,10 @@ thiserror = "2"
 miette = { version = "7", features = ["fancy"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+schemars = "1"
+num-bigint = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"
 # `application/x-www-form-urlencoded` (de)serialization — the same decoder
 # axum 0.8's `Form` extractor uses, so hand-routing a form body to a shared
 # handler reproduces axum's parsing exactly.
@@ -81,7 +117,7 @@ rnix = "0.10"
 glob = "0.3"
 ignore = "0.4"
 hex = "0.4"
-rustix = { version = "1.1.4", features = ["fs"] }
+rustix = { version = "1.1.4", features = ["event", "fs"] }
 indicatif = "0.17"
 console = "0.15"
 humantime = "2"
@@ -106,14 +142,13 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 # Server
 axum = { version = "0.8", features = ["macros"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
-# Async SQL toolkit driving the registry-hub `Backend` over concrete pools
-# (RFC-0004 phase 5, step 3b). The per-engine driver features (sqlite/postgres/
-# mysql) are selected by `aos-hub`'s own cargo features; the bundled
-# sqlite driver is pure-Rust and needs no system library. `runtime-tokio` reuses
-# the existing tokio runtime rather than spawning a second reactor.
+# Async SQL toolkit implementing aos-hub-db's native Backend over concrete pools.
+# SQLite is enabled by aos-hub-db; aos-hub-native selects optional PostgreSQL
+# and MySQL drivers through the database crate's features. runtime-tokio reuses
+# the native application's existing Tokio runtime.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
-# Still used by aos-package, aos-server, and aos-hub-worker; the registry
-# hub moved off it to sqlx (RFC-0004 Phase 5 step 3b).
+# Used by aos-build-server and crucible-store, and by Hub database/native
+# migration fixtures. Production Hub database operations use SQLx.
 rusqlite = "0.32"
 jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -144,6 +179,8 @@ ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 # rustls 0.21 compatibility connector; clients use BehaviorVersion::latest().
 aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
 aws-config = "1"
+aws-credential-types = "1"
+aws-types = "1"
 suppaftp = { version = "6", features = ["async-rustls"] }
 
 # TUI
@@ -207,36 +244,63 @@ tokio-rustls = "0.26"
 rcgen = "0.14"
 
 # Internal crates
-terrane-core = { path = "terrane-core" }
-terrane = { path = "terrane", default-features = false }
-terrane-fs = { path = "terrane-fs" }
-terrane-cli = { path = "terrane-cli" }
-aos-terrane = { path = "aos-terrane" }
-aos-contract = { path = "aos-contract" }
-aos-maintain = { path = "aos-maintain" }
-crucible-cas = { path = "crucible-cas" }
-aos-core = { path = "aos-core" }
-aos-oci-types = { path = "aos-oci-types" }
-aos-oci = { path = "aos-oci" }
-aos-boot-identity = { path = "aos-boot-identity" }
-aos-net = { path = "aos-net" }
-aos-proto = { path = "aos-proto" }
-aos-proto-types = { path = "aos-proto-types" }
-aos-server = { path = "aos-server" }
-aos-cache = { path = "aos-cache" }
-aos-remote = { path = "aos-remote" }
-aos-doc = { path = "aos-doc" }
-aos-doc-model = { path = "aos-doc-model" }
-aos-package = { path = "aos-package" }
-aos-hub-console-contract = { path = "aos-hub-console-contract" }
-aos-hub-core = { path = "aos-hub-core" }
-aos-hub = { path = "aos-hub" }
-aos-registry-surface = { path = "aos-registry-surface" }
-aos-release = { path = "aos-release" }
-aos-release-signer = { path = "aos-release-signer" }
-aos-image-finalizer = { path = "aos-image-finalizer" }
-aos-profile = { path = "aos-profile" }
-aos-systemd = { path = "aos-systemd" }
+terrane-format = { path = "terrane/sdk/terrane-format" }
+terrane-sdk = { path = "terrane/sdk/terrane-sdk", default-features = false }
+terrane-linux = { path = "terrane/linux/terrane-linux" }
+terrane-cli = { path = "terrane/cli/terrane-cli" }
+aos-terrane-integration = { path = "terrane/integration/aos-terrane-integration" }
+aos-module-format = { path = "aos/modules/aos-module-format" }
+aos-activation = { path = "aos/activation/aos-activation" }
+aos-activation-crucible = { path = "aos/activation/aos-activation-crucible" }
+aos-package-maintenance = { path = "aos/release/aos-package-maintenance" }
+crucible-store = { path = "crucible/storage/crucible-store" }
+aos-linux-project-quota = { path = "shared/aos-linux-project-quota" }
+crucible-store-s3 = { path = "crucible/storage/crucible-store-s3" }
+crucible-campaign = { path = "crucible/engine/crucible-campaign" }
+aos-core = { path = "shared/aos-core" }
+aos-oci-types = { path = "shared/aos-oci-types" }
+aos-oci = { path = "shared/aos-oci" }
+aos-boot-identity = { path = "aos/boot/aos-boot-identity" }
+aos-transfer = { path = "shared/aos-transfer", default-features = false }
+aos-build-api = { path = "aos/packages/aos-build-api" }
+aos-hub-api = { path = "hub/aos-hub-api" }
+aos-build-server = { path = "aos/packages/aos-build-server" }
+aos-nix-cache = { path = "aos/packages/aos-nix-cache" }
+aos-build-client = { path = "aos/packages/aos-build-client" }
+aos-nix-docs = { path = "aos/cli/aos-nix-docs" }
+aos-module-docs = { path = "aos/modules/aos-module-docs" }
+aos-package-manager = { path = "aos/packages/aos-package-manager" }
+aos-platform-metadata = { path = "aos/boot/aos-platform-metadata" }
+aos-storage-layout = { path = "aos/boot/aos-storage-layout" }
+aos-configuration-image = { path = "aos/boot/aos-configuration-image" }
+aos-activation-filesystem = { path = "aos/activation/aos-activation-filesystem" }
+aos-activation-nix-store = { path = "aos/activation/aos-activation-nix-store" }
+aos-hub-ui = { path = "hub/aos-hub-ui" }
+aos-hub-service = { path = "hub/aos-hub-service" }
+aos-hub-native = { path = "hub/aos-hub-native" }
+aos-registry-format = { path = "aos/registry/aos-registry-format" }
+aos-release-format = { path = "aos/release/aos-release-format" }
+aos-release-signer = { path = "aos/release/aos-release-signer" }
+aos-image-finalizer = { path = "aos/release/aos-image-finalizer" }
+aos-closure-analysis = { path = "aos/cli/aos-closure-analysis" }
+aos-systemd-client = { path = "shared/aos-systemd-client" }
+aos-activation-kubernetes = { path = "aos/activation/aos-activation-kubernetes" }
+
+aos-artifact-evidence = { path = "shared/aos-artifact-evidence" }
+aos-nar = { path = "shared/aos-nar" }
+aos-nix = { path = "shared/aos-nix" }
+aos-cli-ui = { path = "aos/cli/aos-cli-ui" }
+aos-boot-runtime = { path = "aos/boot/aos-boot-runtime" }
+aos-release-coordinator = { path = "aos/release/aos-release-coordinator" }
+aos-deployment-format = { path = "aos/packages/aos-deployment-format" }
+aos-deployment = { path = "aos/packages/aos-deployment" }
+aos-registry-client = { path = "aos/registry/aos-registry-client" }
+aos-registry-authoring = { path = "aos/registry/aos-registry-authoring" }
+aos-hub-model = { path = "hub/aos-hub-model" }
+aos-hub-db = { path = "hub/aos-hub-db" }
+aos-hub-client = { path = "hub/aos-hub-client" }
+crucible-control-client = { path = "crucible/control/crucible-control-client" }
+crucible-control-server = { path = "crucible/control/crucible-control-server" }
 
 [workspace.lints.clippy]
 all = "deny"

@@ -6,7 +6,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --test memo_vectors ${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --test memo_vectors ${name} -- --exact \
       > "$TMPDIR/memo-vector-test.log" 2>&1; then
       cat "$TMPDIR/memo-vector-test.log"
       exit 1
@@ -16,11 +16,11 @@
 in
   sourceGate "memo-format-vectors" ''
     cd crates
-    if ! test -f ../tests/terrane/memo_vectors.py || ! test -f terrane-core/tests/memo_vectors.rs; then
+    if ! test -f ../tests/terrane/memo_vectors.py || ! test -f terrane/sdk/terrane-format/tests/memo_vectors.rs; then
       printf 'Published common Memo decoder witnesses remain pending.\n' >&2
       exit 1
     fi
-    cargo build --frozen --offline -p terrane-core --example reference_blake3
+    cargo build --frozen --offline -p terrane-format --example reference_blake3
     reference_binary="$CARGO_TARGET_DIR/debug/examples/reference_blake3"
     python3 ../tests/terrane/memo_vectors.py --self-check \
       --blake3-bin "$reference_binary" > "$out/reference-result"
@@ -29,6 +29,6 @@ in
       --blake3-bin "$reference_binary" >> "$out/reference-result"
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    cargo clippy --frozen --offline -p terrane-core --test memo_vectors -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --test memo_vectors -- -D warnings
     printf 'PASS: independent common Memo fields, identities and owning decoder witnesses\n' > "$out/result"
   ''

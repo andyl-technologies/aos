@@ -14,7 +14,7 @@ use refs_models::{
     commits, fields, negative, records,
     support::{Value, encode, field, hex, reference, remove},
 };
-use terrane_core::refs::{Commit, RefLogRecord, RefRecord};
+use terrane_format::refs::{Commit, RefLogRecord, RefRecord};
 
 #[test]
 fn reference_modern_commit_models_preserve_optional_fields_and_preimage() {
@@ -39,7 +39,7 @@ fn reference_modern_commit_models_preserve_optional_fields_and_preimage() {
                 .recipe
                 .as_deref()
                 .unwrap_or_else(|| panic!("missing graft recipe"));
-            let decoded_recipe = terrane_core::algebra::Recipe::decode(recipe)
+            let decoded_recipe = terrane_format::algebra::Recipe::decode(recipe)
                 .unwrap_or_else(|error| panic!("graft schema: {error}"));
             let entry = encode(&refs_models::support::m(vec![
                 (1, Value::UInt(4)),
@@ -47,7 +47,7 @@ fn reference_modern_commit_models_preserve_optional_fields_and_preimage() {
             ]));
             assert_eq!(
                 decoded_recipe.as_recipe(),
-                terrane_core::algebra::Recipe::Graft {
+                terrane_format::algebra::Recipe::Graft {
                     parent: [1; 32],
                     target: [2; 32],
                     at: b"target",

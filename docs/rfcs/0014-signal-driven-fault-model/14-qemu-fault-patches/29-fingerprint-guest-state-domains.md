@@ -1,8 +1,8 @@
-# Patch 0078: guest-state fingerprint domains
+# Capability task 0078: guest-state fingerprint domains
 
 ## Responsibility
 
-`0078-crucible-fingerprint-guest-state-domains.patch` makes the black-box
+The atomic patch `crucible-qemu-11.1.1.patch` makes the black-box
 fingerprint describe the guest continuation that must survive an exact restore,
 not process-local control machinery used to perform that restore. It serializes
 only QEMU VMState sections classified as volatile guest state or device state.
@@ -55,7 +55,7 @@ requires exact equality of:
 It then runs an independently launched replay suffix to the same horizon. A
 negative control changes only the captured RR position, recomputes the canonical
 black-box fingerprint, and requires production fault-runtime admission to reject
-the altered value. Patch microtests also require the guest-state domain call,
+the altered value. Focused capability tests also require the guest-state domain call,
 generic transient mask, target-specific declaration, and x86 poll mask to remain
 present.
 
@@ -64,5 +64,5 @@ present.
 VMState classification, CPU-class masks, and QEMU serialization live entirely
 inside the applicable GPL scope. The Apache host sees only fixed-width digests,
 byte counts, vCPU records, and RR cursor values through the versioned shared
-memory protocol. The signed patch commit and its exact source tree are retained
+memory protocol. The DCO-signed atomic commit and its exact source tree are retained
 in the corresponding-source bundle.

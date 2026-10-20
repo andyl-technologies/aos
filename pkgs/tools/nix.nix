@@ -1,7 +1,7 @@
 ##! Nix — The purely functional package manager
 {
-  mkDerivation,
   lib,
+  mkDerivation,
   fetchurl,
   gnumake,
   cmake,
@@ -27,6 +27,7 @@
   libseccomp,
   bzip2,
   zlib,
+  gcc-libs,
   stdenv,
   buildPackages,
 }: let
@@ -47,6 +48,7 @@
     bzip2
     zlib
     libseccomp
+    gcc-libs
   ];
   buildMeson =
     if stdenv.isCross
@@ -75,8 +77,89 @@
     else "";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
+    };
     pname = "nix";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The evaluator prints the integer value 42.";
+        "files" = {};
+        "input" = "A pure Nix arithmetic expression adding 19 and 23.";
+        "operation" = "Evaluate the expression through nix-instantiate.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/nix-instantiate"
+              "--eval"
+              "--expr"
+              "19 + 23"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The evaluator exits with its syntax-error status.";
+        "files" = {};
+        "input" = "A Nix let expression with no value after the equals sign.";
+        "operation" = "Parse and evaluate the malformed expression.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/nix-instantiate"
+              "--eval"
+              "--expr"
+              "let answer = ; in answer"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
+    # Minor releases can change CLI JSON; keep this interface release fixed.
+    # https://nix.dev/manual/nix/2.34/release-notes/rl-2.32
+    version = "=${version}";
 
     # `out` ships the CLI + shared libraries (the runtime image uses the nix
     # CLI only); `dev` holds the headers and pkg-config files. Keeping the
@@ -126,7 +209,7 @@ in
       # its native sandbox profile instead.
       ++ (
         if stdenv.hostPlatform.isLinux
-        then [libseccomp]
+        then [libseccomp gcc-libs]
         else []
       );
     propagatedDeps = [];
@@ -180,6 +263,11 @@ in
           # CMake dependency backend does not derive prefix roots from the
           # compiler include path, so expose the AOS package explicitly.
           export CMAKE_PREFIX_PATH=${toml11}''${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}
+          ${lib.optionalString stdenv.hostPlatform.isLinux ''
+            # glibc's pthread cancellation dlopens the unwinder without using
+            # the caller's RUNPATH. Retain it at startup for daemon workers.
+            export LDFLAGS="''${LDFLAGS:-} -Wl,--push-state,--no-as-needed,-l:libgcc_s.so.1,--pop-state"
+          ''}
 
           mkdir -p build && cd build
           meson setup .. \

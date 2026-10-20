@@ -7,7 +7,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane --lib repository::validator::node_tests::${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-sdk --lib repository::validator::node_tests::${name} -- --exact \
       > "$TMPDIR/node-metadata-test.log" 2>&1; then
       cat "$TMPDIR/node-metadata-test.log"
       exit 1

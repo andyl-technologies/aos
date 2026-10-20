@@ -1,6 +1,6 @@
-# Selector control-plane fixture isolation
+# Capability task 0105 — Selector control-plane fixture isolation
 
-Patch `0105-crucible-selector-control-plane-fixtures.patch` keeps the live
+The atomic patch `crucible-qemu-11.1.1.patch` keeps the live
 instruction-fault selector admission tests independent of data-plane delivery.
 
 The overlap and exclusivity modes first install a persistent selector, then
@@ -14,14 +14,14 @@ the same unreachable occurrence. Their instruction interval, vCPU scope, and
 mutation still overlap exactly as the production admission check requires, but
 neither rule can fire while the fixture is preparing the second request.
 
-This patch changes only the live QEMU test plugin. It does not change production
+This capability changes only the live QEMU test plugin. It does not change production
 selector admission, matching, mutation, event ordering, or any wire format.
 
 ## Gate coverage
 
 - `checks.crucible.phase2.qemuInstructionFaults` runs the overlap and
   exclusivity cases against live x86 and AArch64 QEMU.
-- `checks.crucible.phase2.qemuPatchRegeneration` proves the patch and tracked
-  QEMU branch commit are identical.
+- `checks.crucible.phase2.qemuPatchRegeneration` proves the atomic patch and retained
+  DCO-signed atomic QEMU commit are identical.
 - `checks.crucible.phase2.gates.patchMicrotests.rawGate` includes both gates in
-  the aggregate patch-series contract.
+  the aggregate atomic-integration contract.

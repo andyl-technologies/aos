@@ -11,8 +11,11 @@
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  timeTravelTest = builtins.readFile ../../crates/crucible/tests/gate_debug_time_travel.rs;
+  engineLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  };
+  timeTravelTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_debug_time_travel.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -49,7 +52,7 @@
         needle = "`T-DBG-5` is green through `checks.crucible.phase6.debugScopedTimeTravel`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "per-node API";
         needle = "pub fn debug_per_node_time_travel";
@@ -107,8 +110,8 @@
         needle = "pub fn debug_apply_checkpoint_cadence";
       }
       {
-        label = "explicit thin-only cache policy";
-        needle = "pub fn thin_only() -> Self";
+        label = "explicit thin-only cadence request";
+        needle = "pub fn thin_only(current: Configuration, stride: DebugCheckpointStride) -> Self";
       }
       {
         label = "ordinary materialization integration";
@@ -119,7 +122,7 @@
         needle = "is_performance_only_cache_decision";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib [
       {
         label = "per-node request export";
         needle = "DebugPerNodeTimeTravelRequest";
@@ -149,7 +152,7 @@
         needle = "DebugCheckpointCadenceReport";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_debug_time_travel.rs" timeTravelTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_debug_time_travel.rs" timeTravelTest [
       {
         label = "scoped time-travel test";
         needle = "debug_per_node_and_whole_world_time_travel_land_coherently";
@@ -187,8 +190,8 @@
         needle = "assert_eq!(exact_runtime.id, replay_runtime.id)";
       }
       {
-        label = "thin default evicts fat assertion";
-        needle = "cached_snapshots_after, 0";
+        label = "thin cadence keeps the snapshot cache empty";
+        needle = "thin_graph.cached_snapshot_count(), 0";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -209,7 +212,7 @@
         needle = "phase6.debugTimeTravel";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_debug_time_travel.rs" timeTravelTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_debug_time_travel.rs" timeTravelTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -228,7 +231,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -276,7 +282,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-debug-scoped-time-travel-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_debug_time_travel \
               -- --test-threads=1
           '';

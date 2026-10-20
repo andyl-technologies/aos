@@ -26,7 +26,7 @@
       echo "==> Test: publish a package to registry"
 
       REG_DIR="$REG_STORAGE/test-reg"
-      $APR --json create test-reg > /tmp/create-test-reg.json 2>&1 || {
+      create_publish_registry test-reg --json > /tmp/create-test-reg.json 2>&1 || {
         cat /tmp/create-test-reg.json
         fail "apr --json create initializes registry"
       }
@@ -35,7 +35,7 @@
           and .registry == "test-reg"
           and .path == $reg
           and .remote == null
-          and .trust_key_id == null
+          and .trust_key_id == "vm"
           and .current == "stable"
           and (.head | length == 64)
           and (.branches | any(.name == "stable" and .current == true))' \
@@ -45,7 +45,7 @@
       }
       pass "apr --json create reports initialized registry"
 
-      $APR --json publish ${aosPkg} \
+      publish_vm_package --json ${aosPkg} \
         --name testpkg \
         --version 1.0.0 \
         --description "Published by the APR VM workflow" \
@@ -62,7 +62,7 @@
           and .version == "1.0.0"
           and .platform == "x86_64-linux"
           and .store_path == $store
-          and (.nar_hash | startswith("sha256:"))
+          and (.nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
           and (.nar_size > 0)
           and (.closure_size > 0)
           and .sysroot == false
@@ -104,7 +104,7 @@
         "git log shows publish commit"
       cd /tmp
 
-      $APR publish ${pkgs.curl} \
+      publish_vm_package ${pkgs.curl} \
         --name testpkg \
         --version 2.0.0 \
         --description "Published by the APR VM workflow" \
@@ -218,11 +218,11 @@
 
       echo "==> Test: apr publish honors alternate Nix state DB"
 
-      $APR create alt-state-reg
+      create_publish_registry alt-state-reg
       REG_DIR="$REG_STORAGE/alt-state-reg"
       echo "local maintainer note" > "$REG_DIR/maintainer-notes.txt"
 
-      $APR publish ${aosPkg} \
+      publish_vm_package ${aosPkg} \
         --name alt-state-pkg \
         --version 1.0.0 \
         --description "Published from alternate Nix state" \
@@ -291,10 +291,10 @@
       echo "==> Test: publish sysroot package with images"
 
       # Create registry
-      $APR create test-reg
+      create_publish_registry test-reg
       REG_DIR="$REG_STORAGE/test-reg"
 
-      $APR publish ${aosPkg} \
+      publish_vm_package ${aosPkg} \
         --name server \
         --version 2026.03 \
         --description "Published sysroot by the APR VM workflow" \

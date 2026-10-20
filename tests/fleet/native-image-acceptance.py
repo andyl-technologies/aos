@@ -1,0 +1,434 @@
+"""Exercises authenticated physical image transitions through native user APIs.
+
+The Nix fixture supplies immutable candidate artifacts and explicit site hooks.
+This harness never edits image indices, native receipts, or activation journals.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import re
+import shlex
+import textwrap
+import time
+from typing import Any
+
+
+IMAGE_STATE = "/var/lib/profiles/image/state.json"
+IMAGE_RECEIPT = "/var/lib/profiles/image/active-native-rollout.json"
+SITE_WORKTREE = "/var/lib/aos-test/native-image-site"
+BOOT_GUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
+
+
+def read_json(path: str) -> dict[str, Any]:
+    """Reads a bounded guest document through the retained inspection toolkit."""
+    document = runtime.succeed(f"{COREUTILS}/head --bytes=1048577 {shlex.quote(path)}")
+    if len(document.encode()) > 1048576:
+        raise RuntimeError("image acceptance document exceeds its boundary")
+    value = json.loads(document)
+    if not isinstance(value, dict):
+        raise RuntimeError("image acceptance expected a document object")
+    return value
+
+
+def image_state() -> dict[str, Any]:
+    """Requires the native image index, never a synthesized physical state."""
+    state = read_json(IMAGE_STATE)
+    if state.get("schema") != "aos.image-generation-state/v1":
+        raise RuntimeError("unexpected native image index")
+    return state
+
+
+def generation(state: dict[str, Any], number: int) -> dict[str, Any]:
+    """Selects one exact retained image generation."""
+    matches = [record for record in state["generations"] if record["number"] == number]
+    if len(matches) != 1:
+        raise RuntimeError("image generation is absent or repeated")
+    return matches[0]
+
+
+def assert_identity(record: dict[str, Any]) -> None:
+    """Checks live boot selection against immutable retained image metadata."""
+    actual = runtime.succeed(f"{COREUTILS}/readlink /run/current-system").strip()
+    if actual != record["toplevel"]:
+        raise RuntimeError("live boot differs from the retained native image")
+    for name, expected in (
+        ("native-executor-ref", record["native_executor_ref"]),
+        ("boot-artifact-contract", record["boot_artifact_contract"]),
+        ("state-version", record["state_version"]),
+        ("evaluation-descriptor", record["evaluation_descriptor"]),
+    ):
+        actual = runtime.succeed(f"{COREUTILS}/cat {shlex.quote(record['toplevel'] + '/meta/' + name)}").strip()
+        if actual != expected:
+            raise RuntimeError(f"immutable native image differs at {name}")
+    library = read_json(record["toplevel"] + "/meta/module-library.json")
+    if library != record["module_library"]:
+        raise RuntimeError("image native library identity differs")
+    evidence = record["boot_provider_state"]["evidence"]
+    cmdline = runtime.succeed(f"{COREUTILS}/cat /proc/cmdline")
+    if f"systemd.verity_root_data=/dev/disk/by-partlabel/root-{evidence['slot'].lower()}" not in cmdline.split():
+        raise RuntimeError("actual boot is outside the retained physical slot")
+
+
+def initrd_journal_snapshot() -> dict[str, Any]:
+    """Captures retained authority without decoding or repairing private frames."""
+    state = runtime.succeed(
+        f"{COREUTILS}/head --bytes=4097 /run/current-system/meta/initrd-state-directory"
+    )
+    if (
+        len(state.encode()) > 4096
+        or not state.startswith("/")
+        or any(part in ("", ".", "..") for part in state.split("/")[1:])
+        or any(character in state for character in "\x00\n\r")
+    ):
+        raise RuntimeError("invalid selected initrd state directory")
+
+    quoted_state = shlex.quote(state)
+    runtime.succeed(f"test -d {quoted_state} && test ! -L {quoted_state}")
+
+    journals = {}
+    for name in ("generations.journal", "effects.journal"):
+        path = state + "/" + name
+        quoted = shlex.quote(path)
+        runtime.succeed(f"test -f {quoted} && test ! -L {quoted}")
+        size = int(runtime.succeed(f"{COREUTILS}/stat -c %s {quoted}").strip())
+        if not 0 < size <= 134217728:
+            raise RuntimeError("initrd journal exceeds its acceptance boundary")
+        digest = runtime.succeed(f"{COREUTILS}/sha256sum {quoted}").split()[0]
+        journals[name] = {"size": size, "sha256": digest}
+
+    def entries(directory: str, pattern: str) -> list[str]:
+        quoted_directory = shlex.quote(state + "/" + directory)
+        runtime.succeed(f"test -d {quoted_directory} && test ! -L {quoted_directory}")
+        listing = runtime.succeed(
+            f"for path in {shlex.quote(state + '/' + directory)}/*; do "
+            f"test -e \"$path\" || test -L \"$path\" || continue; "
+            f"printf '%s\\n' \"${{path##*/}}\"; done | {COREUTILS}/head --bytes=1048577"
+        )
+        names = listing.splitlines()
+        if len(listing.encode()) > 1048576 or len(names) > 4096:
+            raise RuntimeError("initrd retained authority inventory exceeds its boundary")
+        if not names or any(re.fullmatch(pattern, name) is None for name in names):
+            raise RuntimeError("unexpected initrd retained authority entry")
+        return sorted(names)
+
+    admissions = {}
+    for name in entries("admissions", r"[0-9a-f]{64}\.json"):
+        path = state + "/admissions/" + name
+        runtime.succeed(f"test -f {shlex.quote(path)} && test ! -L {shlex.quote(path)}")
+        size = int(runtime.succeed(f"{COREUTILS}/stat -c %s {shlex.quote(path)}").strip())
+        if not 0 < size <= 4096:
+            raise RuntimeError("initrd admission metadata exceeds its acceptance boundary")
+        receipt = read_json(path)
+        if set(receipt) != {"path", "digest"}:
+            raise RuntimeError("unexpected retained initrd admission metadata")
+        digest = runtime.succeed(f"{COREUTILS}/sha256sum {shlex.quote(path)}").split()[0]
+        admissions[name] = {"receipt": receipt, "sha256": digest}
+
+    names = entries("roots", r"[0-9a-f]{64}")
+    chunks = []
+    total_bytes = 0
+    for offset in range(0, len(names), 64):
+        commands = []
+        for name in names[offset:offset + 64]:
+            path = shlex.quote(state + "/roots/" + name)
+            commands.append(f"test -L {path} && printf '%s\\t' {name} && {COREUTILS}/readlink {path}")
+        chunk = runtime.succeed(
+            "set -eu; { " + "; ".join(commands) + f"; }} | {COREUTILS}/head --bytes=65537"
+        )
+        chunk_bytes = len(chunk.encode())
+        total_bytes += chunk_bytes
+        if chunk_bytes > 65536 or total_bytes > 1048576:
+            raise RuntimeError("initrd retention targets exceed their boundary")
+        chunks.append(chunk)
+    listing = "".join(chunks)
+    roots = {}
+    for line in listing.splitlines():
+        name, root = line.split("\t", 1)
+        if name not in names or name in roots:
+            raise RuntimeError("initrd retention link inventory changed")
+        if re.fullmatch(r"/nix/store/[0-9a-z]{32}-[^/\x00\n]+", root) is None:
+            raise RuntimeError("initrd retention root is not an exact store member")
+        roots[name] = root
+    if set(roots) != set(names):
+        raise RuntimeError("initrd retention link inventory is incomplete")
+    targets = sorted(set(roots.values()))
+    for offset in range(0, len(targets), 64):
+        arguments = " ".join(shlex.quote(root) for root in targets[offset:offset + 64])
+        runtime.succeed(f"NIX_REMOTE= {NIX_BIN}/nix-store --check-validity {arguments}")
+    return {"state": state, "journals": journals, "admissions": admissions, "roots": roots}
+
+
+def assert_initrd_journal_continuity(original: dict[str, Any]) -> None:
+    """Requires original generation history, admission metadata and custody roots."""
+    current = initrd_journal_snapshot()
+    if current["state"] != original["state"]:
+        raise RuntimeError("selected initrd journal namespace changed")
+    # Exact frame prefixes preserve original generation IDs without a second
+    # parser for the runtime-owned journal format. New records may append.
+    for name, before in original["journals"].items():
+        if current["journals"][name]["size"] < before["size"]:
+            raise RuntimeError("retained initrd journal was truncated")
+        path = shlex.quote(current["state"] + "/" + name)
+        digest = runtime.succeed(
+            f"{COREUTILS}/head --bytes={before['size']} {path} | {COREUTILS}/sha256sum"
+        ).split()[0]
+        if digest != before["sha256"]:
+            raise RuntimeError("retained initrd journal prefix changed")
+    for kind in ("admissions", "roots"):
+        for name, value in original[kind].items():
+            if current[kind].get(name) != value:
+                raise RuntimeError(f"original initrd {kind} identity disappeared or changed")
+
+
+def secure_boot() -> None:
+    """Enrolls explicit fixture keys and proves firmware enforcement after boot."""
+    def variable(name: str) -> int:
+        path = f"/sys/firmware/efi/efivars/{name}-{BOOT_GUID}"
+        return int(runtime.succeed(f"{OD} -An -tu1 -j4 -N1 {shlex.quote(path)}").strip())
+
+    if variable("SetupMode") == 1:
+        for name in ("db", "KEK", "PK"):
+            runtime.succeed(f"PATH={UTIL_LINUX}:$PATH {EFI_UPDATEVAR} -f {shlex.quote(SECURE_BOOT_KEYS + '/' + name + '.auth')} {name}")
+        runtime.reboot(timeout=600)
+        # The initrd fallback agent answers before persistent host state is mounted.
+        runtime.wait_until_succeeds(
+            f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service",
+            timeout=600,
+        )
+    if variable("SecureBoot") != 1:
+        raise RuntimeError("physical fixture did not enable Secure Boot")
+
+
+def publish_candidate() -> None:
+    """Publishes the exact measured candidate through a signed release registry."""
+    runtime.succeed(textwrap.dedent(f"""
+        set -eu
+        export HOME=/tmp/native-image-release
+        export GIT_AUTHOR_NAME=Fixture GIT_AUTHOR_EMAIL=fixture@example.test
+        export GIT_COMMITTER_NAME=Fixture GIT_COMMITTER_EMAIL=fixture@example.test
+        export NIX_REMOTE=""
+        export NIX_CONF_DIR=/tmp/native-image-nix-conf
+        export PATH={GIT_BIN}:{NIX_BIN}:$PATH
+        mkdir -p "$HOME" "$NIX_CONF_DIR"
+        printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' > "$NIX_CONF_DIR/nix.conf"
+        if keygen=$({APR} --json keys generate release --registry native-image); then
+            :
+        else
+            status=$?
+            printf '%s\\n' "$keygen" >&2
+            exit "$status"
+        fi
+        public=$(printf '%s\\n' "$keygen" | {JQ} -er '.public_key')
+        key=$(printf '%s\\n' "$keygen" | {JQ} -er '.private_key')
+        test -n "$public"
+        test -s "$key"
+        {APR} create native-image --trust-key "$public" --trust-key-id release --key "$key"
+        registry="$HOME/.local/share/apm/registries/native-image"
+        mkdir -p "$HOME/.config/apm/registries.d"
+        printf '[registry]\\nname = "native-image"\\nurl = "file://%s"\\n\\n[registry.signing_keys]\\nrelease = "%s"\\n' "$registry" "$key" > "$HOME/.config/apm/registries.d/native-image.toml"
+        # Publish the same source derivation that the fixture transfers.
+        {APR} --json publish {shlex.quote(CANDIDATE_TOP)} --name aos \\
+          --version 9999.0.0-image-rollback --description 'Native physical image acceptance' \\
+          --license Apache-2.0 --maintainer fixture --sysroot --source-drv {shlex.quote(CANDIDATE_SOURCE_DRV)} \\
+          --image-payload {shlex.quote(CANDIDATE_IMAGE)} --image-disk {shlex.quote(CANDIDATE_IMAGE_DISK)} \\
+          --image-info {shlex.quote(CANDIDATE_IMAGE_INFO)} --image-format raw \\
+          --image-contract-schema aos.image.metadata/v1 \\
+          --no-ca --registry native-image --key-id release > /tmp/native-image-publication.json
+        # Admission requires published NAR metadata even for pre-imported bytes.
+        {APR} cache generate --registry native-image --output /var/lib/aos-test/native-image-cache \\
+          --cache-url file:///var/lib/aos-test/native-image-cache --registry-key-id release --jobs 2
+        {APR} release 1.0.0 --registry native-image --key-id release
+        {APM} registry --system add "file://$registry" --name native-image --tag 1.0.0 --trust-key "$public" --no-clone
+        {APM} update --system --registry native-image
+    """), timeout=1800)
+    publication = read_json("/tmp/native-image-publication.json")
+    images = publication["images"]
+    if len(images) != 1:
+        raise RuntimeError("signed publication lacks one exact physical image")
+    contract = images[0]["delivery"]["artifact_contract"]
+    if contract["schema"] != "aos.image.metadata/v1" or contract["document"]["store_path"] != CANDIDATE_IMAGE_INFO:
+        raise RuntimeError("signed publication names another provider contract")
+    document = contract["document"]
+    actual_digest = runtime.succeed(f"{SHA256SUM} {shlex.quote(CANDIDATE_IMAGE_INFO)}").split()[0]
+    actual_size = int(runtime.succeed(f"{COREUTILS}/stat -c %s {shlex.quote(CANDIDATE_IMAGE_INFO)}").strip())
+    if actual_digest != document["sha256"] or actual_size != document["byte_size"]:
+        raise RuntimeError("published provider document differs from its exact authenticated bytes")
+    metadata = read_json(CANDIDATE_IMAGE_INFO)
+    if metadata["schema_version"] != contract["schema"]:
+        raise RuntimeError("physical metadata differs from its declared contract")
+    for slot in ("a", "b"):
+        normal = metadata["efi"]["normal_" + slot]
+        if not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", normal["expected_ready_pcr11"]):
+            raise RuntimeError("signed provider contract lacks both measured physical slots")
+
+
+def wait_for_transition(predicate: str, unit: str, timeout: float = 1800) -> None:
+    """Waits for a physical transition and rejects a failed submission promptly."""
+    unit_name = shlex.quote(unit + ".service")
+    journalctl = shlex.quote(SYSTEMCTL.rsplit("/", 1)[0] + "/journalctl")
+    # CLD_EXITED is 1; shutdown signals can precede a legitimate physical reboot.
+    command = textwrap.dedent(f"""
+        if {predicate}; then
+            exit 0
+        fi
+        result=$({SYSTEMCTL} show {unit_name} --property=Result --value)
+        code=$({SYSTEMCTL} show {unit_name} --property=ExecMainCode --value)
+        status=$({SYSTEMCTL} show {unit_name} --property=ExecMainStatus --value)
+        if test "$result" = exit-code && test "$code" = 1 && test "$status" -gt 0; then
+            {{
+                {SYSTEMCTL} show {unit_name} --property=ActiveState,SubState,Result,ExecMainStatus
+                {journalctl} --unit={unit_name} --no-pager --lines=40
+            }} 2>&1 | {COREUTILS}/head --bytes=65536
+            exit 125
+        fi
+        exit 1
+    """)
+    deadline = time.monotonic() + timeout
+    last_error = "transition predicate has not succeeded"
+
+    while time.monotonic() < deadline:
+        try:
+            code, stdout, stderr = runtime.execute(command)
+        except Exception as error:
+            # The control channel can disappear during an expected reboot.
+            last_error = str(error)
+        else:
+            if code == 125:
+                diagnostic = (stdout + stderr).decode("utf-8", errors="replace")
+                raise RuntimeError(f"image transition unit {unit} failed: {diagnostic}")
+            if code == 0:
+                return
+            last_error = stderr.decode("utf-8", errors="replace")
+
+        time.sleep(0.5)
+
+    raise RuntimeError(f"image transition timed out after {timeout}s: {predicate}: {last_error}")
+
+
+def invoke_reboot(arguments: str, label: str) -> None:
+    """Runs the ordinary native CLI and requires a real subsequent boot."""
+    before = runtime.succeed(f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id").strip()
+    runtime.succeed(f"{SYSTEMD_RUN} --quiet --unit={shlex.quote(label)} --property=Type=exec {APM} {arguments}")
+    wait_for_transition(
+        f"test \"$({COREUTILS}/cat /proc/sys/kernel/random/boot_id)\" != {shlex.quote(before)}",
+        label,
+    )
+    runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=900)
+    runtime.wait_until_succeeds(f"{JQ} -e '.pending == null and .active_rollout == null' {IMAGE_STATE}", timeout=900)
+
+
+def counted_boot_fallback(original: dict[str, Any], initrd_before: dict[str, Any]) -> None:
+    """Exhausts three real candidate boots before native activation or health."""
+    runtime.succeed(f"printf '%s\\n' {shlex.quote(CANDIDATE_TOP)} > /var/lib/aos-test/blocked-image-toplevel")
+    runtime.succeed(f"{SYSTEMD_RUN} --quiet --unit=native-image-counted-failure --property=Type=exec {APM} image upgrade --yes --drain --reboot")
+    boot_ids = set()
+    for left, done in ((2, 1), (1, 2), (0, 3)):
+        candidate_selected = f"test \"$({COREUTILS}/readlink /run/current-system)\" = {shlex.quote(CANDIDATE_TOP)}"
+        if done == 1:
+            wait_for_transition(candidate_selected, "native-image-counted-failure")
+        else:
+            runtime.wait_until_succeeds(candidate_selected, timeout=1800)
+        runtime.wait_until_succeeds(f"{SYSTEMCTL} is-failed --quiet aos-activate.service", timeout=900)
+        assert_initrd_journal_continuity(initrd_before)
+        state = image_state()
+        candidate = generation(state, state["pending"])
+        stem = candidate["boot_provider_state"]["evidence"]["installed-entry"].rsplit("/", 1)[1].split("+", 1)[0]
+        actual_entry = f"/boot/EFI/Linux/{stem}+{left}-{done}.efi"
+        runtime.succeed(f"test -f {shlex.quote(actual_entry)}")
+        boot_id = runtime.succeed(f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id").strip()
+        if boot_id in boot_ids:
+            raise RuntimeError("counted failure did not perform a new physical boot")
+        boot_ids.add(boot_id)
+        if runtime.execute(f"test -f /var/lib/aos-test/health-observations && {COREUTILS}/cat /var/lib/aos-test/health-observations")[0] == 0:
+            observations = runtime.succeed(f"{COREUTILS}/cat /var/lib/aos-test/health-observations")
+            if CANDIDATE_TOP in observations:
+                raise RuntimeError("blocked candidate unexpectedly ran site health")
+        runtime.reboot(timeout=600)
+    runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=900)
+    runtime.wait_until_succeeds(f"{JQ} -e '.running == {original['number']} and .pending == null and .active_rollout == null and .last_rollout.status == \"boot_failed\"' {IMAGE_STATE}", timeout=900)
+    assert_identity(original)
+    assert_initrd_journal_continuity(initrd_before)
+    runtime.succeed(f"{COREUTILS}/rm /var/lib/aos-test/blocked-image-toplevel")
+
+
+def assert_candidate(record: dict[str, Any]) -> None:
+    """Requires exact authenticated candidate identity and installed payload bytes."""
+    if record["toplevel"] != CANDIDATE_TOP or record["native_executor_ref"] != CANDIDATE_EXECUTOR or record["boot_artifact_contract"] != CANDIDATE_BOOT_CONTRACT:
+        raise RuntimeError("physical candidate differs from its signed immutable fixture")
+    evidence = record["boot_provider_state"]["evidence"]
+    relative = evidence["uki-source-path"]
+    if re.fullmatch(r"candidates/[1-9][0-9]*/candidate\.efi", relative):
+        source = "/var/lib/profiles/image/" + relative
+    elif re.fullmatch(r"EFI/Linux/[^/\x00]+\.efi", relative):
+        source = "/boot/" + relative
+    else:
+        raise RuntimeError("candidate payload source is outside its canonical namespace")
+    actual = runtime.succeed(f"{SHA256SUM} {shlex.quote(source)}").split()[0]
+    if actual != evidence["uki-sha256"].removeprefix("sha256:"):
+        raise RuntimeError("installed UKI payload differs from its authenticated receipt")
+    metadata = read_json(CANDIDATE_IMAGE_INFO)
+    expected = metadata["efi"]["normal_" + evidence["slot"].lower()]["artifact"]
+    if actual != expected["sha256"].removeprefix("sha256:"):
+        raise RuntimeError("installed UKI differs from the independently published slot bytes")
+    actual_size = int(runtime.succeed(f"{COREUTILS}/stat -c %s {shlex.quote(source)}").strip())
+    if actual_size != expected["size_bytes"]:
+        raise RuntimeError("installed UKI length differs from the published slot bytes")
+
+
+def retire(request: dict[str, Any]) -> None:
+    """Submits explicit expired lease retirement through ordinary operator source."""
+    deadline = request["retention-expires-at-millis"] // 1000 + 1
+    runtime.succeed(f"{DATE} -s @{deadline}")
+    source_path = "/var/lib/aos-test/native-image-retirement.nix"
+    source = "{ ... }: { aos.imageRollout.retiredRequests = [ (builtins.fromJSON " + json.dumps(json.dumps(request)) + ") ]; }"
+    encoded = base64.b64encode(source.encode()).decode()
+    runtime.succeed(f"printf %s {shlex.quote(encoded)} | {COREUTILS}/base64 -d > {source_path}")
+    runtime.succeed(f"{APM} config add {source_path} --name native-image-retirement.nix --worktree {SITE_WORKTREE}")
+    runtime.succeed(f"{APM} config apply --worktree {SITE_WORKTREE} --eval-root /var/lib/aos-test/native-image-retirement-eval", timeout=1800)
+
+
+def run() -> None:
+    """Checks transitions after the fixture enrolls firmware and stages its inputs."""
+    runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=600)
+    # Fault inputs must be created after enrollment seals the persistent volume.
+    runtime.succeed(f"{COREUTILS}/mkdir -p /var/lib/aos-test")
+    # Retain site sources before image selections append transient intent modules.
+    runtime.succeed(f"{APM} config discard --worktree {SITE_WORKTREE}", timeout=1800)
+    original = generation(image_state(), image_state()["running"])
+    assert_identity(original)
+    publish_candidate()
+    initrd_before = initrd_journal_snapshot()
+    counted_boot_fallback(original, initrd_before)
+
+    invoke_reboot("image upgrade --yes --drain --reboot", "native-image-upgrade")
+    selected = image_state()
+    candidate = generation(selected, selected["running"])
+    assert_candidate(candidate)
+    assert_identity(candidate)
+    if candidate["native_executor_ref"] == original["native_executor_ref"]:
+        raise RuntimeError("qualified transition did not exercise executor ownership handoff")
+    before = image_state()
+    runtime.succeed(f"{SYSTEMCTL} restart aos-image-boot-commit.service", timeout=300)
+    if image_state() != before:
+        raise RuntimeError("native boot-commit replay changed settled image authority")
+
+    invoke_reboot(f"image rollback --generation {original['number']} --drain --reboot", "native-image-rollback")
+    assert_identity(generation(image_state(), image_state()["running"]))
+    if image_state()["running"] != original["number"]:
+        raise RuntimeError("native rollback did not restore the retained predecessor")
+
+    runtime.succeed(f"printf '%s\\n' {shlex.quote(candidate['toplevel'])} > /var/lib/aos-test/unhealthy-image-toplevel; {COREUTILS}/touch /var/lib/aos-test/rollout-health-fail")
+    invoke_reboot("image upgrade --yes --drain --reboot", "native-image-health-failure")
+    runtime.wait_until_succeeds(f"{JQ} -e '.running == {original['number']} and .pending == null and .active_rollout == null' {IMAGE_STATE}", timeout=1800)
+    assert_identity(original)
+    receipt = read_json(IMAGE_RECEIPT)
+    retire(receipt["input"]["rollout"])
+    retired = generation(image_state(), candidate["number"])
+    if retired["boot_provider_state"]["evidence"].get("retired") is not True:
+        raise RuntimeError("admitted expired retirement did not release the inactive slot")
+    if image_state()["running"] != original["number"]:
+        raise RuntimeError("retirement changed the live image")
+    if retired["module_library"] != candidate["module_library"] or retired["native_executor_ref"] != candidate["native_executor_ref"]:
+        raise RuntimeError("physical retirement discarded historical native identity")

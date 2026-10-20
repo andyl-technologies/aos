@@ -9,8 +9,8 @@ from the system variant used to build the image:
 
 AOS applies the `aos.provisioning.storage` projection during first boot, then
 evaluates and activates the complete module during stage 2. Storage intent is
-committed once; the stage-2 result is a replaceable, numbered configuration
-generation.
+committed once; stage 2 commits packages and configured effects in one numbered
+native system-profile generation.
 
 ## Start with the supported form
 
@@ -22,9 +22,13 @@ Use a self-contained literal Nix module:
 }
 ```
 
-The file is not JSON, YAML, TOML, or cloud-config. AOS imports the exact bytes
-as a Nix module. Keep it self-contained: a relative import from a deployment
-checkout will not exist in the initrd or on the target host.
+The literal file is Nix, not JSON, YAML, TOML, or cloud-config. AOS imports its
+exact authorized bytes as a module. Keep a standalone file self-contained:
+files from a deployment checkout are not implicitly available on the host.
+Images supporting `aos.config-bundle/v1` also accept an authorized source bundle
+whose Nix entrypoint can import included relative source and data files. The
+complete bundle is authorized and retained together; imports cannot reach
+unrelated workstation files.
 
 The function form is also a valid module, but the argument set is image-owned
 and should not be used as an escape hatch to the build package graph. For
@@ -39,36 +43,35 @@ metadata transport
   -> detect platform or config drive
   -> fetch exact user-data and facts
   -> authorize host.nix
-  -> restricted initrd evaluation of aos.provisioning
+  -> image-frozen initrd sources and closed storage-data projection
   -> validate and commit the first-boot storage plan
   -> switch_root
-  -> pure stage-2 evaluation and provider fixpoint
-  -> authenticated package closure fetch and config render
-  -> resolve opaque secretRef handles
-  -> build a durable EROFS /etc lower
-  -> atomically activate the configuration generation
+  -> typed desired-package selection
+  -> authenticated acquisition through configured package registries
+  -> complete native graph evaluation
+  -> journaled effects, including the EROFS /etc lower and service resources
+  -> commit one native system-profile generation
 ```
 
-The initrd evaluation can see only the closed provisioning schema shipped in
-the image. It cannot fetch registry modules or select arbitrary build packages.
-This is the path that runs before disk mutation.
+The initrd uses image-frozen package module sources and projects only the closed
+`aos.provisioning.storage` data. Its provisioning namespace remains strict:
+unknown fields and mistyped arrays or partitions fail before disk mutation.
+Definitions owned by unavailable host packages are deferred until host
+admission; this projection cannot execute their effects or fetch new modules.
 
-The stage-2 evaluator is a pure function of the image's ABI-pinned module
-library, authenticated package `config` outputs, the exact accepted `host.nix`,
-and normalized instance facts. It runs with a cleared environment, restricted
-filesystem access, no import-from-derivation, and bounded systemd resources.
-The resolver fetches only signed providers compatible with the running module
-ABI. It records its provider trace and emits `/run/aos/manifest.json` only after
-the fixpoint converges.
+Stage 2 reads declared package roots from `aos.apm.desiredPackages`, acquires
+missing packages and native companions through the normal signed-registry
+path, then evaluates the complete graph with accepted host sources and facts.
+Package acquisition follows explicit typed selection, not searches triggered
+by undefined-option errors. Complete evaluation checks package-owned options,
+release requirements, handlers, and dependencies before effects run.
 
-The systemd graph then fetches pinned package closures, validates and stages
-each package's signed configuration projection, and drops a failed soft package
-from the projected manifest. Activation resolves credential handles before
-consumers restart, materializes `gen-N/config-lower/etc.erofs`, atomically
-switches the configuration pointer and `/etc`, and publishes an activation
-record. A failed evaluation or pre-swap activation retains the previous live
-generation; a post-swap service failure is recorded as degraded and remains
-retriable.
+The native coordinator stages one system-profile generation and executes its
+checked effects in dependency order. The configuration-lower effect retains
+and mounts the EROFS `/etc` lower before its dependent consumers. Generation
+and effect journals track completion and recovery; the profile's `current`
+pointer is published after effects commit. Failed activation does not publish
+a new current generation, and pending work is recovered before another change.
 
 ## Choose a delivery channel
 
@@ -83,7 +86,7 @@ Offline media is checked before DMI-based cloud detection.
 | AWS | Native user-data as literal Nix or a pointer document | Pointer `sig_url` only |
 | GCP, Azure, DigitalOcean, OpenStack | Native user-data as literal Nix | Not available through native metadata |
 
-The native network metadata agents support AWS IMDSv2, GCP, Azure,
+The native network metadata providers support AWS IMDSv2, GCP, Azure,
 DigitalOcean, and OpenStack. Other providers are treated as bare metal unless
 an offline metadata or config drive is attached; AOS does not guess at an
 unrecorded provider API.
@@ -184,6 +187,10 @@ Two partitions exist in the default intent:
 | --- | --- |
 | `swap` | Fixed 2 GiB, swap type and format |
 | `var` | 4 GiB minimum, grows into remaining space |
+
+Partitions are the only layer most hosts need. Hosts with more than one disk
+can additionally bind partitions into MD arrays and, on a measured-boot image,
+seal any ext4 volume to the TPM; those layers are described below.
 
 `device = null` selects the disk containing `root-a`. Every explicit device
 must use a stable `/dev/disk/by-id/...` path.
@@ -298,6 +305,239 @@ boots.
 Use a unique GPT partition UUID for each partition. Omit `uuid` to let AOS
 derive and record a stable value for the committed plan.
 
+### Prepare an additional disk
+
+AOS seeds each disk's partition UUIDs from that disk's GPT identifier, so a
+disk named by the plan must already carry a GUID partition table when the host
+first boots. A blank table is enough:
+
+```sh
+sudo sgdisk --clear /dev/disk/by-id/REPLACE_WITH_DISK
+```
+
+Provisioning stops before any mutation when a referenced disk has no partition
+table.
+
+### Mirror the system state
+
+`/var` can live on a Linux MD RAID1 array instead of a single partition. The
+root disk always contributes the `var` member; every other member is a
+partition on another disk. Members keep `format = null`, because the array
+carries the ext4 filesystem, and MD sizes the mirror from its smallest member:
+
+```nix
+{
+  aos.provisioning.storage = {
+    partitions = {
+      var = {
+        sizeMin = "64G";
+        sizeMax = "64G";
+        grow = false;
+      };
+
+      var-mirror = {
+        device = "/dev/disk/by-id/nvme-REPLACE_ME_2";
+        sizeMin = "64G";
+        sizeMax = "64G";
+      };
+    };
+
+    arrays.var = {
+      level = "raid1";
+      members = [ "var" "var-mirror" ];
+    };
+  };
+}
+```
+
+The array is exposed as `/dev/md/var` and its filesystem carries the label
+`var`; the initrd prefers the array over the member partition that still
+answers to the `var` partlabel. On a measured-boot image the array is
+LUKS2-sealed exactly as a plain `/var` partition would be. The recovery console
+does not yet open a mirrored `/var`; see [recovery](recovery.md#hosts-with-a-mirrored-var). The immutable image slots and the
+EFI System Partition stay on the boot disk; a mirror protects state, not the
+ability to boot from a second disk.
+
+### Create a data mirror
+
+Any array other than `var` is a data volume. Declare its members, the level,
+and where to mount it:
+
+```nix
+{
+  aos.provisioning.storage = {
+    partitions = {
+      data-a = {
+        device = "/dev/disk/by-id/nvme-REPLACE_ME_3";
+        sizeMin = "1T";
+        grow = true;
+      };
+
+      data-b = {
+        device = "/dev/disk/by-id/nvme-REPLACE_ME_4";
+        sizeMin = "1T";
+        grow = true;
+      };
+    };
+
+    arrays.data = {
+      level = "raid1";
+      members = [ "data-a" "data-b" ];
+    };
+  };
+
+  aos.filesystems.volumes.data.mountPoint = "/srv/data";
+}
+```
+
+| Level | Minimum members |
+| --- | --- |
+| `raid0` | 2 |
+| `raid1` | 2 |
+| `raid10` | 3 |
+| `raid5` | 3 |
+| `raid6` | 4 |
+
+Arrays use MD metadata 1.2 with homehost `aos`; a disk from another machine
+still assembles but never claims a declared array name. An array name is the
+array's filesystem label and must not equal any partition label. Set
+`format = null` on an array to leave it raw for an operator-managed consumer.
+
+### Choose a filesystem
+
+| Filesystem | Where | Label limit | Notes |
+| --- | --- | --- | --- |
+| `ext4` | `/var` and data volumes; the default | 16 bytes | Stable tier. General purpose; the only filesystem for `/var`, which the initrd, sealing, and recovery paths format and repair as ext4 |
+| `xfs` | Data volumes | 12 bytes | Supported tier. Many parallel writers, very large files, `reflink`; cannot shrink |
+| `vfat` | Plain partitions | 11 bytes | Exchange partitions readable by firmware and other systems |
+
+ZFS is not a `format` value; it is selected by the image through
+`aos.profiles.bareMetalZfs` and sits at a lower
+[support tier](support-status.md#filesystem-support-tiers).
+
+Both ext4 and xfs are created with their tools' defaults, which detect the
+stripe geometry of an MD array. Set `format = "xfs"` on a partition or array:
+
+```nix
+{
+  aos.provisioning.storage.arrays.data = {
+    level = "raid1";
+    members = [ "data-a" "data-b" ];
+    format = "xfs";
+  };
+}
+```
+
+### Encrypt a data volume
+
+On a measured-boot image, a partition or array with an ext4 or xfs filesystem
+can be sealed to the TPM the same way `/var` is:
+
+```nix
+{
+  aos.provisioning.storage.arrays.data = {
+    level = "raid1";
+    members = [ "data-a" "data-b" ];
+    encryption = "tpm2";
+  };
+}
+```
+
+`encryption = "tpm2"` is rejected on an image without measured boot, and
+`encryption = "none"` is rejected for `/var` on an image with it. A sealed
+volume is created raw in the first-boot transaction and formatted inside its
+LUKS2 container by the first boot with Secure Boot enforcing; until then its
+mount unit is inactive and the host boots without it. The recovery key for each
+sealed data volume is written to `/run/aos-volume-recovery/<name>.key` on that
+boot and must be escrowed off the machine, exactly like the `/var` key.
+
+### Mount a data volume
+
+`aos.filesystems.volumes.<name>` names a partition or array from the storage
+plan and creates a stage-2 mount unit for it:
+
+```nix
+{
+  aos.filesystems.volumes.data = {
+    mountPoint = "/srv/data";
+    mountOptions = [ "nosuid" "nodev" "noatime" ];
+  };
+}
+```
+
+The volume is mounted by filesystem label (`/dev/disk/by-label/<label>`), so
+the same declaration works for a plain partition, an array, or a sealed
+container. The unit is wanted by `local-fs.target` rather than required, so a
+volume that is absent, degraded beyond assembly, or not yet sealed leaves the
+mount inactive without blocking boot. `var` is mounted by the initrd and cannot
+be listed here.
+
+Mount points must lie under `/srv` or `/var`. The image root is read-only and
+is built without `host.nix`, so it cannot carry per-host directories; `/srv`
+is a bind mount of the persistent `/var/srv` that every host provides, and the
+mount unit creates the final directory beneath it.
+
+## Enable persistent home directories
+
+The image root is read-only, so no home directory can live on it. AOS binds
+`/root` from `/var/roothome` on every host, so root's shell history, tool
+configuration, and `apm` authoring state survive reboots and image upgrades.
+Other accounts get persistent homes only when you enable them:
+
+```nix
+{pkgs, ...}: {
+  aos.homes.enable = true;
+
+  aos.users.groups.alice = {
+    gid = 1000;
+    members = [];
+  };
+
+  aos.users.users.alice = {
+    uid = 1000;
+    group = "alice";
+    shell = "${pkgs.bash}/bin/bash";
+    description = "Workstation user";
+  };
+
+  environment.etc."ssh/authorized_keys/alice" = {
+    text = "ssh-ed25519 AAAA_REPLACE_ME alice@example.com\n";
+    mode = "0600";
+  };
+}
+```
+
+With `aos.homes.enable` set, `/home` is bound from `aos.homes.directory`
+(`/var/home` by default) and every account with a UID of 1000 or above
+defaults to `/var/home/<name>`. Those homes are created with the account's
+ownership and `aos.homes.mode` (`0700`) at boot and again on every
+configuration activation, so an account added to `host.nix` has its home
+before its first login. Files declared under `aos.homes.skel` are rendered to
+`/etc/skel` and copied into a home once; later edits by the user are kept.
+
+Leave homes disabled on single-purpose servers: `/home` then stays an empty
+read-only directory and accounts keep the placeholder home `/`. Enable them on
+workstations and shared servers. To put homes on their own volume or dataset,
+mount that volume at `aos.homes.directory`; the bind mount follows it. On a
+measured-boot image that volume can be sealed to the TPM like `/var`:
+
+```nix
+{
+  aos.homes.enable = true;
+  aos.provisioning.storage.partitions.home = {
+    sizeMin = "64G";
+    sizeMax = "64G";
+    encryption = "tpm2";
+  };
+  aos.filesystems.volumes.home.mountPoint = "/var/home";
+}
+```
+
+The sealed volume protects homes at rest against removal of the disk; it does
+not separate one user's data from root or from other users on the running
+host. A factory reset or reimage that recreates `/var` removes every home
+directory, so back them up like any other host state.
+
 ## Know when the plan becomes immutable
 
 On a fresh disk, AOS creates a provenance marker only after it has authorized,
@@ -311,7 +551,9 @@ On later boots:
   or an error;
 - `unavailable` means no valid current plan was available;
 - missing current metadata does not erase the committed operator plan;
-- a detected interrupted `pending` marker is not replayed automatically.
+- a detected interrupted `pending` marker is not replayed automatically;
+- a declared array that is not running after assembly is reported as
+  `divergent`; arrays declared after the commit are never created.
 
 A changed input can remain coherent if it describes the same final partition
 table. AOS reports on the resulting disk plan, not whether the source text
@@ -324,18 +566,14 @@ audit protocol.
 
 ## Inspect the accepted input and result
 
-The transient boot state is under `/run/aos-metadata`:
+The selected storage provider keeps its private transient artifacts under
+`/run/aos/storage-provisioning`:
 
 ```sh
-cat /run/aos-metadata/platform.env
-cat /run/aos-metadata/provisioning-plan.json
-find /run/aos-metadata/repart.d -maxdepth 3 -type f -print
-
-if test -r /run/aos-metadata/storage-coherence; then
-  cat /run/aos-metadata/storage-coherence
-else
-  echo "storage coherence was not evaluated this boot"
-fi
+systemctl status aos-ability-initrd-controller.service
+journalctl -b -u aos-ability-initrd-controller.service
+cat /run/aos/storage-provisioning/provisioning-plan.json
+find /run/aos/storage-provisioning/repart.d -maxdepth 3 -type f -print
 ```
 
 The durable record is under `/var/lib/aos-provisioning`:
@@ -343,69 +581,61 @@ The durable record is under `/var/lib/aos-provisioning`:
 ```sh
 cat /var/lib/aos-provisioning/audit.json
 cat /var/lib/aos-provisioning/initial-plan.json
-cmp \
-  /var/lib/aos-provisioning/current/host.nix \
-  /run/aos-metadata/host.nix
 ```
 
-The stage-2 source result and activation evidence are:
+Inspect the host controller and committed native inputs with:
 
 ```sh
-test -s /run/aos/manifest.json
-cat /run/aos/activation.json
+apm config status
 readlink /var/lib/profiles/system/current
-cat /var/lib/profiles/system/state.json
-systemctl status aos-eval.service
-journalctl -b \
-  -u aos-eval.service \
-  -u aos-graph-compile.service \
-  -u aos-activate.service
+cat /var/lib/profiles/system/current/evaluation.json
+cat /var/lib/profiles/system/current/native-deployment.json
+systemctl status aos-ability-host-controller.service
+journalctl -b -u aos-ability-host-controller.service
 ```
 
-Treat the files in `/run` as diagnostics for the current transaction. The
-accepted input under `/var/lib/aos-provisioning` and each numbered generation's
-manifest, EROFS lower, input GC roots, and activation record survive reboot.
+The system profile retains each generation's evaluation inputs and publication
+marker. Its authoritative generation and effect journals are under
+`/var/lib/profiles/system/deployment`; configuration lowers are retained under
+`/var/lib/aos/configuration-lowers`. Inspect controller failures and workload
+health as well as the current pointer.
 
 ## Diagnose the boot stages
 
-The relevant initrd units, in order, are:
+The initrd executes one checked ability stage:
 
 ```text
-aos-provisioning-state
-aos-metadata-detect
-aos-metadata-network       cloud transports only
-aos-metadata-fetch
-aos-metadata-authorize
-aos-provisioning-eval
-aos-repart
+aos-ability-initrd-controller
+  -> detect platform
+  -> acquire and authorize metadata
+  -> evaluate and observe the storage plan
+  -> commit storage effects
+  -> complete the initrd substrate and switch root
 ```
+
+The indented steps are typed package-provider operations from the resolved
+stage, not independently managed systemd units. Their exact interfaces,
+requirements, and outputs come from the selected packages' ability contracts.
 
 Stage 2 then runs:
 
 ```text
-aos-provisioning-persist
-aos-host-config-restore
-aos-eval
-  -> aos-host-config-cache
-  -> aos-graph-compile
-     -> aos-fetch.target
-     -> aos-config-render.target
-     -> aos-activate
-     -> aos-config.target
+aos-ability-host-receiver
+  -> verify the committed initrd handoff
+aos-ability-host-controller
+  -> adopt authorized sources on first activation
+  -> select and authenticate desired packages
+  -> evaluate and execute the complete native graph
+  -> commit the system profile before multi-user readiness
 ```
 
 Inspect the current boot with:
 
 ```sh
 journalctl -b \
-  -u aos-metadata-detect.service \
-  -u aos-metadata-fetch.service \
-  -u aos-metadata-authorize.service \
-  -u aos-provisioning-eval.service \
-  -u aos-repart.service \
-  -u aos-eval.service \
-  -u aos-graph-compile.service \
-  -u aos-activate.service
+  -u aos-ability-initrd-controller.service \
+  -u aos-ability-host-receiver.service \
+  -u aos-ability-host-controller.service
 ```
 
 First-boot authorization, evaluation, or storage validation failures stop disk
@@ -415,39 +645,47 @@ last fully evaluated host input.
 
 ## Understand the runtime boundary
 
-The full module evaluator and activation pipeline can apply a file such as:
+Host policy can select a package and configure its native service in the same
+generation. Include this in boot-delivered `host.nix`, or create `tailscale.nix`
+as a runtime operator module:
 
 ```nix
 {
-  aos.networking.hostName = "web-01";
-  aos.services.ssh.port = 2222;
-  aos.apm.desiredPackages = ["nginx"];
+  aos.apm.desiredPackages = ["tailscale"];
+  aos.services.tailscale.enable = true;
 }
 ```
 
-The change becomes live only after `aos-config.target` completes. The evaluator
-manifest alone is intermediate evidence; confirm the active generation and
-activation record as shown above.
+The runtime first evaluates typed package selection, acquires authenticated
+package modules and their required artifacts, then evaluates the complete
+native configuration. The selected package need not already be installed.
+Package-specific options are checked only after its module is admitted;
+configuration and package selection commit together in the same generation.
+Dependency modules supply configuration interfaces; they do not globally
+install every available payload or sibling output.
 
-Desired packages are part of that same transaction. AOS pins each selected
-payload and rendered unit artifact to authenticated registry NAR identities,
-places the unit links and package-target preset in the candidate `/etc`, and
-enables the package target only after the atomic swap. Removing a package from
-`aos.apm.desiredPackages` removes that enablement edge and stops its target;
-image-bundled package units remain present but inert when they are not selected.
+Evaluation alone does not activate the change. Confirm the committed native
+generation and controller result as shown above, then inspect service health.
 
-For an interactive change, preview and apply the same file with:
+For an interactive change, add the module to the operator worktree, preview
+the required acquisitions or effect changes, then apply it:
 
 ```sh
-apm switch --from ./host.nix --dry-run
-apm switch --from ./host.nix
+apm config add ./tailscale.nix --name tailscale
+apm config apply --dry-run
+apm config apply
 ```
 
-That selects a transaction input; it does not rewrite the metadata source or
-the durable last-known-good metadata cache. Update the authoritative delivery
-channel before reboot. On an image using signed trust, a standalone file also
-needs its sibling `.sig`, `--require-signed-host-nix`, and the applicable
-`--trusted-config-keys-dir`.
+If the package is missing, dry-run reports its acquisition requirement without
+fetching it or evaluating the complete graph. Apply acquires it and performs
+full evaluation before effects execute.
+
+Use `apm config replace tailscale ./tailscale.nix` for subsequent changes.
+`apm switch` also applies the complete operator worktree. These commands retain
+immutable runtime module inputs; they do not rewrite the metadata delivery
+source. [Machine-wide APM installation](packages.md#manage-machine-wide-packages)
+also supports separately managed desired-package files. Review the complete
+package selection and enabled effects before applying either workflow.
 
 Cloud-supplied public SSH keys are normalized into the typed
 `host.facts.ssh_authorized_keys` input. They are data, not implicit

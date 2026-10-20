@@ -11,7 +11,7 @@ use super::{
     bindings, guard, original, publication, retirement,
     wire::{self, Value, a, b, bytes, m, s, u},
 };
-use terrane_core::gc::publication::{evidence::*, *};
+use terrane_format::gc::publication::{evidence::*, *};
 
 /// Checks each independently reconstructed negative against its owning decoder.
 ///

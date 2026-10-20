@@ -41,7 +41,7 @@
         store="$1"
         name="$2"
         version="$3"
-        $APR publish "$store" \
+        publish_vm_package "$store" \
           --name "$name" \
           --version "$version" \
           --description "Real closure fixture $name" \
@@ -63,7 +63,7 @@
       assert_file_contains /tmp/closure-root-refs.out "$LEAF_STORE" \
         "closure-root has a real Nix reference to closure-leaf"
 
-      $APR create test-reg
+      create_publish_registry test-reg
       REG_DIR="$REG_STORAGE/test-reg"
 
       publish_closure_package "$LEAF_STORE" closure-leaf 1.0.0
@@ -212,7 +212,7 @@
         store="$1"
         name="$2"
         version="$3"
-        $APR publish "$store" \
+        publish_vm_package "$store" \
           --name "$name" \
           --version "$version" \
           --description "Real closure verify fixture $name" \
@@ -265,7 +265,7 @@
       }
 
       mount -o remount,rw / || true
-      $APR create test-reg
+      create_publish_registry test-reg
       REG_DIR="$REG_STORAGE/test-reg"
       publish_closure_package "$LEAF_STORE" closure-leaf 1.0.0
       publish_closure_package "$ROOT_STORE" closure-root 1.0.0

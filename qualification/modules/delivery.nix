@@ -6,7 +6,6 @@
       invalidated_by = ["subject" "policy" "executor" "environment"];
       method = "automated";
       phase = "build";
-      production_only = false;
       regressions = ["checks.build.critical-pkgs" "checks.build.package-platform-support"];
       scope = "release";
     };
@@ -15,7 +14,6 @@
       invalidated_by = ["subject" "policy" "executor" "environment"];
       method = "automated";
       phase = "staging";
-      production_only = false;
       regressions = ["checks.fleet.native-hub-release-pipeline"];
       scope = "release";
     };
@@ -24,7 +22,6 @@
       invalidated_by = ["subject" "policy" "executor" "environment"];
       method = "automated";
       phase = "rollout";
-      production_only = false;
       regressions = [];
       scope = "release";
     };
@@ -33,7 +30,6 @@
       invalidated_by = ["subject" "policy" "executor" "environment"];
       method = "automated";
       phase = "complete";
-      production_only = false;
       regressions = [];
       scope = "release";
     };

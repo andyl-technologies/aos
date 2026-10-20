@@ -44,8 +44,9 @@ and uphold the invariants stated here. Requirement IDs defined here (`G-*`,
 - **[G-7] Hermetic, from-source build inside AOS.** Crucible and its patched QEMU,
   guest kernel, and root images MUST build hermetically within AOS's build system
   with no upstream binary dependencies, consistent with AOS build principles. The
-  QEMU patch series MUST be well-tested and MUST be inert unless simulation mode is
-  active, so AOS's production QEMU is unaffected.
+  atomic QEMU patch MUST be well-tested. Its simulation-control mechanisms MUST
+  be inert unless sim mode is active; ordinary-TCG picosecond timer state is
+  versioned and gated separately. Generic unpatched AOS QEMU is unaffected.
 
 - **[G-8] Stable, tested, versioned interfaces.** The three boundary ABIs — the
   shared-memory layout, the guest↔host channel, and the control-plane RPC — MUST
@@ -149,11 +150,13 @@ system. They are the load-bearing truths the design and its tests defend.
   content; equal content has equal identity, enabling sharing and deduplication
   across the temporal graph. *Gate:* `gate:content-address`.
 
-- **[INV-7] Patch inertness.** The QEMU patch series MUST have no observable
-  effect on QEMU behavior unless simulation mode is explicitly activated
-  (plugin loaded + sim flags). AOS's production QEMU built from the same source
-  MUST be behaviorally identical to upstream when sim mode is off. *Gate:*
-  `gate:qemu-inert`.
+- **[INV-7] Patch inertness.** Simulation-control mechanisms MUST have no
+  observable effect unless sim mode is explicitly activated (plugin loaded +
+  sim flags). Ordinary TCG MUST retain versioned picosecond timer state; its
+  migration and restore MUST preserve exact phase. With sim mode off, the pinned
+  Q35 corpus MUST match upstream guest-visible output, management behavior,
+  and legacy migration bytes except for the authenticated PIT phase subsection.
+  *Gate:* `gate:qemu-inert`.
 
 - **[INV-8] Single authoritative scheduler.** All advancement of virtual time and
   all resolution of cross-node ordering decisions flow through one scheduler;
@@ -187,8 +190,9 @@ Crucible reaches the target state of this RFC when:
    green, ending with `gate:e2e-determinism` (a representative multi-VM,
    fault-injected scenario runs bit-identically across adversarial host conditions
    and reproduces from its artifact), and
-3. The QEMU patch series is upstreamable-quality, inert-by-default, and each patch
-   has a passing micro-test (`gate:qemu-inert`, per-patch gates in 11).
+3. The atomic QEMU patch is upstreamable-quality and inert by default, and each
+   capability has focused evidence plus the aggregate `gate:qemu-inert` proof
+   (see topic 11).
 
 ## Implementation checklist
 

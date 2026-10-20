@@ -15,7 +15,7 @@
   # This owning suite proves the additive D-84 corpus. Complete conformance
   # additionally requires every other suite in the golden-vectors gate.
   runTest = name: ''
-    cargo test --frozen --offline -p terrane-core --lib ${name} -- --exact > "$TMPDIR/vector-test.log"
+    cargo test --frozen --offline -p terrane-format --lib ${name} -- --exact > "$TMPDIR/vector-test.log"
     python3 - "$TMPDIR/vector-test.log" <<'PYTEST'
     import pathlib
     import sys
@@ -29,7 +29,7 @@
 in
   sourceGate "publication-format-vectors" ''
     cd crates
-    cargo build --frozen --offline -p terrane-core --example reference_blake3
+    cargo build --frozen --offline -p terrane-format --example reference_blake3
     python3 ../tests/terrane/publication_vectors.py --check \
       ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md \
       --blake3-bin "$CARGO_TARGET_DIR/debug/examples/reference_blake3" > "$out/reference-result"

@@ -14,13 +14,13 @@
       extraBuildDeps = [pkgs.binutils];
     } "quota-confinement-proof-image" ''
       cd crates
-      cargo build --frozen --offline -p terrane-fs --features tokio \
+      cargo build --frozen --offline -p terrane-linux --features tokio \
         --example quota_confinement_fixture --message-format=json \
         > "$TMPDIR/confinement-artifacts.jsonl"
       cargo metadata --frozen --offline --no-deps --format-version=1 \
         > "$TMPDIR/confinement-packages.json"
       rustc --print target-libdir > "$TMPDIR/confinement-target-libdir"
-      python3 ${../../crates/terrane-fs/src/quota_confinement/proof_image.py} ${./.}
+      python3 ${../../crates/terrane/linux/terrane-linux/src/quota_confinement/proof_image.py} ${./.}
     '';
   native = testing.mkVMTest {
     name = "terrane-quota-confinement-ext4";

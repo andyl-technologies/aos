@@ -1,9 +1,9 @@
-# andyl/testing release retention policy
+# andyl/experimental release retention policy
 
-Policy id: `andyl-testing-retention-v1`
+Policy id: `andyl-experimental-retention-v1`
 
 This is the public retention policy for releases published to the
-`andyl/testing` registry. It is versioned: a change to this text is a new
+`andyl/experimental` registry. It is versioned: a change to this text is a new
 policy id, never an edit in place.
 
 ## Corresponding source
@@ -37,6 +37,6 @@ release that named it remains retained.
 
 ## Experimental status
 
-`andyl/testing` is an experimental registry. It may be rebuilt from scratch,
+`andyl/experimental` is an experimental registry. It may be rebuilt from scratch,
 and a trust-root epoch reset withdraws its published releases. A reset does not
 shorten the retention of evidence for releases that were published before it.

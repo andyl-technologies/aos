@@ -3,7 +3,7 @@
 # Consumers discover and execute their own cases in fresh protected storage.
 sourceGate "surface-test-image" ''
   cd crates
-  cargo test --frozen --offline -p terrane --no-default-features \
+  cargo test --frozen --offline -p terrane-sdk --no-default-features \
     --features tokio,surface-sdk --test local_sdk --test surface_contract \
     --test surface_runtime --test surface_lifecycle_contract \
     --test configured_local_repository \

@@ -18,17 +18,42 @@
         aos.packages.aos-test-agent = {
           package = pkgs.aos-test-agent;
           bundle = true;
-          preset = false;
         };
         # This production-profile image deliberately carries the fleet control
         # agent as test infrastructure. Keep the runtime-closure audit strict
         # for every other artifact while admitting that explicit fixture.
         aos.image.allowTestArtifacts = true;
+        # Admit role modules without enabling their services in the golden image.
+        aos.packages.chrony = {
+          package = pkgs.chrony;
+          enable = true;
+        };
+        aos.packages.openssh = {
+          package = pkgs.openssh;
+          enable = true;
+        };
+        aos.packages.audit = {
+          package = pkgs.audit;
+          enable = true;
+        };
+        aos.packages.aos-network-ruleset-provider = {
+          package = pkgs.aos-network-ruleset-provider;
+          enable = true;
+        };
+        aos.packages.nftables = {
+          package = pkgs.nftables;
+          enable = true;
+        };
+        aos.image.hostConfigClosures = [pkgs.chrony pkgs.openssh pkgs.audit pkgs.nftables pkgs.aos-network-ruleset-provider];
         # Host-selectable OpenSSH/chrony closures plus the control agent make
         # this acceptance image larger than the production golden-image gate.
         # The measured fixture root occupies 666 MiB; retain the separate
         # production publication contract.
-        aos.image.budgets.maxRootMiB = 704;
+        aos.image.budgets = {
+          maxRootMiB = 704;
+          maxRuntimeClosureMiB = 3072;
+          maxDevelopmentPayloadMiB = 80;
+        };
         aos.image.erofsCompressionLevel = 1;
       }
     ];
@@ -36,8 +61,8 @@
 in
   assert !roleImage.config.aos.roles.server.enable;
   assert !roleImage.config.aos.roles.edge.enable;
-  assert !builtins.elem (builtins.toString pkgs.openssh) roleImage.config.system.build.configManifest.storePaths;
-  assert !builtins.elem (builtins.toString pkgs.chrony) roleImage.config.system.build.configManifest.storePaths;
+  assert !roleImage.config.aos.services.ssh.enable;
+  assert !roleImage.config.aos.services.chrony.enable;
   assert builtins.elem pkgs.openssh roleImage.config.aos.image.hostConfigClosures;
   assert builtins.elem pkgs.chrony roleImage.config.aos.image.hostConfigClosures; {
     name = "runtime-config-role";
@@ -64,9 +89,6 @@ in
 
 
         runtime.wait_until_succeeds(
-            "systemctl is-active --quiet aos-graph-compile.service", timeout=300
-        )
-        runtime.wait_until_succeeds(
             "systemctl is-active --quiet aos-activate.service", timeout=300
         )
         runtime.wait_until_succeeds(
@@ -80,23 +102,24 @@ in
         runtime.succeed("test -d /var/log/chrony")
         runtime.succeed("test -d /run/chrony")
 
-        manifest = json.loads(runtime.succeed("cat /run/aos/manifest.json"))
-        expected = {
-            "${pkgs.openssh}": "sshd.service",
-            "${pkgs.chrony}": "chronyd.service",
-        }
+        RUNTIME = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime"
+        profile = "/var/lib/profiles/system"
+        generation = json.loads(runtime.succeed(
+            f"{RUNTIME} deployment-current --profile {profile} --committed-during-recovery"
+        ))["generation"]
+        descriptor = json.loads(runtime.succeed(f"cat {profile}/gen-{generation}/evaluation.json"))
+        marker = json.loads(runtime.succeed(f"cat {profile}/gen-{generation}/native-deployment.json"))
+        assert descriptor["scope"] == ["profile", "system"], descriptor
+        assert descriptor["runtimeConfiguration"], descriptor
+        roots = {artifact["path"] for artifact in descriptor["packages"]["artifacts"]}
+        for module in descriptor["packages"]["modules"]:
+            roots.add(module["artifacts"]["package"]["path"])
+            roots.update(artifact["path"] for artifact in module["artifacts"]["dependencies"].values())
+        expected = {"${pkgs.openssh}": "sshd.service", "${pkgs.chrony}": "chronyd.service"}
         for store_path, unit in expected.items():
-            assert store_path in manifest["storePaths"], (store_path, manifest["storePaths"])
-            # The operator selects the role, while the authenticated base
-            # module supplies these fixed package references. The closure is
-            # therefore base-owned rather than reclassified as host content.
-            assert manifest["ownership"]["storePaths"][store_path] == "@base", (
-                store_path,
-                manifest["ownership"]["storePaths"],
-            )
+            assert store_path in roots, (store_path, roots)
             runtime.succeed(f"test -d {store_path}")
-            unit_text = runtime.succeed(f"systemctl cat {unit}")
-            assert store_path in unit_text, (unit, unit_text)
+            assert store_path in runtime.succeed(f"systemctl cat {unit}"), unit
 
         # Role policy is live but did not mutate the golden-image storage
         # boundary or conscript feature payloads onto the login PATH.
@@ -105,35 +128,58 @@ in
         runtime.fail("command -v chronyd")
         runtime.fail("command -v sshd")
 
-        # A malformed newly selected tmpfiles rule is a post-commit degraded
-        # transaction, but must fail closed before any newly selected daemon
-        # can start against incomplete ownership or modes.
+        # A malformed tmpfiles rule fails its native prerequisite before the
+        # new daemon starts. The previous committed role remains authoritative.
+        runtime.succeed("mkdir -p /run/aos-tmpfiles-fault")
         runtime.succeed(r"""
-            printf '%s\n' '{
-              aos.provisioning.storage.partitions.var.sizeMin = "2G";
+            cat > /run/aos-tmpfiles-fault/host.nix <<'MODULE'
+            { config, ... }: {
               aos.roles.edge.enable = true;
-              environment.etc."tmpfiles.d/aos-test-invalid.conf".text =
-                "d /run/aos-invalid-mode not-a-mode root root -\n";
-              systemd.services."aos-tmpfiles-fault-canary" = {
-                wantedBy = [ "multi-user.target" ];
-                serviceConfig = {
-                  Type = "oneshot";
-                  ExecStart = "${pkgs.coreutils}/bin/touch /run/aos-tmpfiles-fault-canary";
+              aos.abilities.configuration.operations.file.effects.tmpfiles-fault.input = {
+                path = "/etc/tmpfiles.d/aos-test-invalid.conf";
+                content = "d /run/aos-invalid-mode not-a-mode root root -\n";
+                mode = "0644";
+              };
+              aos.services.aos-tmpfiles-fault-canary = {
+                enable = true;
+                activationAfter = [ config.aos.abilities.configuration.operations.file.effects.tmpfiles-fault.outputs.resource ];
+                lifecycle = {
+                  description = "Reject invalid ownership before starting a new daemon";
+                  execution_model = "oneshot";
+                  environment_files = [];
+                  condition = [];
+                  pre_start = [{
+                    executable = {
+                      path = "${pkgs.systemd}/bin/systemd-tmpfiles";
+                      arguments = [ "--create" "/etc/tmpfiles.d/aos-test-invalid.conf" ];
+                    };
+                    ignore_failure = false;
+                  }];
+                  start = [{ executable = { path = "${pkgs.coreutils}/bin/touch"; arguments = [ "/run/aos-tmpfiles-fault-canary" ]; }; ignore_failure = false; }];
+                  post_start = [];
+                  stop = [];
+                  post_stop = [];
+                  restart = "never";
+                  restart_delay_millis = 0;
+                  configuration_change_action = "restart";
+                  remain_after_exit = true;
+                  start_timeout_millis = 30000;
+                  stop_timeout_millis = 30000;
                 };
               };
-            }' > /run/aos-tmpfiles-fault.nix
+            }
+            MODULE
         """)
         status, stdout, stderr = runtime.execute(
-            "${pkgs.aos.apm}/bin/apm switch --from /run/aos-tmpfiles-fault.nix",
+            "${pkgs.aos.apm}/bin/apm switch --worktree /run/aos-tmpfiles-fault",
             timeout=600,
         )
-        # The ordering service accepts a committed degraded transaction so the
-        # graph target can settle. The activation proof preserves the degraded
-        # outcome for operators and subsequent reconciliation.
-        assert status == 0, (status, stdout, stderr)
-        activation = json.loads(runtime.succeed("cat /run/aos/activation.json"))
-        assert activation["status"] == "degraded", activation
-        assert activation["activation_exit"] == 6, activation
+        assert status != 0, (status, stdout, stderr)
+        current = json.loads(runtime.succeed(
+            f"{RUNTIME} deployment-current --profile {profile} --committed-during-recovery"
+        ))["generation"]
+        assert current == generation, (current, generation)
+        assert json.loads(runtime.succeed(f"cat {profile}/gen-{current}/native-deployment.json")) == marker
         runtime.fail("test -e /run/aos-tmpfiles-fault-canary")
         runtime.fail("systemctl is-active --quiet aos-tmpfiles-fault-canary.service")
         runtime.succeed("systemctl is-active --quiet sshd.service")

@@ -22,7 +22,7 @@
 
   prepare = consumer: ''
     template="$PWD/../tests/terrane/recorded_context_models/${consumer.template}"
-    source="terrane-core/src/${consumer.source}"
+    source="terrane/sdk/terrane-format/src/${consumer.source}"
     if ! test -f "$template" || ! test -f "$source"; then
       printf 'Independent recorded-context field models or pure codec prerequisites remain pending.\n' >&2
       exit 1
@@ -31,7 +31,7 @@
   '';
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --lib ${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --lib ${name} -- --exact \
       > "$TMPDIR/recorded-context-model-test.log" 2>&1; then
       cat "$TMPDIR/recorded-context-model-test.log"
       exit 1
@@ -46,7 +46,7 @@ in
       exit 1
     fi
     ${builtins.concatStringsSep "\n" (map prepare consumers)}
-    cargo build --frozen --offline -p terrane-core --example reference_blake3
+    cargo build --frozen --offline -p terrane-format --example reference_blake3
     reference_binary="$CARGO_TARGET_DIR/debug/examples/reference_blake3"
     python3 ../tests/terrane/recorded_context_vectors.py --self-check \
       --blake3-bin "$reference_binary" > "$out/reference-result"
@@ -56,6 +56,6 @@ in
     cp ../tests/terrane/recorded-context-reference.md "$out/reference.md"
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    cargo clippy --frozen --offline -p terrane-core --lib --tests -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --lib --tests -- -D warnings
     printf 'PASS: ordinary recorded-context fields and three exact owning-codec groups\n' > "$out/result"
   ''

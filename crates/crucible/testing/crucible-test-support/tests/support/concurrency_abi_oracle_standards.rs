@@ -1,0 +1,325 @@
+//! Shared concurrency/ABI/oracle support.
+
+use crate::workspace;
+
+use super::*;
+
+pub(super) fn advanced_standard_failures(
+    targets: &[GateTargetSpec],
+    source_overrides: &GateSourceOverrides,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+
+    for standard in ADVANCED_TEST_STANDARDS {
+        let Some(target) = targets.iter().find(|target| {
+            target.package == standard.package && target.test_target == standard.test_target
+        }) else {
+            failures.push(format!(
+                "{} missing advanced test target {}:{} for {}",
+                standard.id, standard.package, standard.test_target, standard.gate
+            ));
+            continue;
+        };
+
+        failures.extend(target_standard_failures(standard, target));
+
+        match source_overrides.get(&(target.package, target.test_target)) {
+            Some(content) => {
+                failures.extend(body_marker_failures(standard, target, content.as_str()));
+            }
+            None => failures.push(format!(
+                "{}:{} implemented advanced test target source is missing",
+                target.package, target.test_target
+            )),
+        }
+    }
+
+    failures.extend(boundary_abi_owner_failures(targets));
+    failures
+}
+
+pub(super) fn target_standard_failures(
+    standard: &AdvancedTestStandard,
+    target: &GateTargetSpec,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+
+    if target.gate != standard.gate {
+        failures.push(format!(
+            "{}:{} must cover {}, not {}",
+            target.package, target.test_target, standard.gate, target.gate
+        ));
+    }
+
+    if target.required_features != standard.required_features {
+        failures.push(format!(
+            "{}:{} must run with features {:?}",
+            target.package, target.test_target, standard.required_features
+        ));
+    }
+
+    failures
+}
+
+pub(super) fn body_marker_failures(
+    standard: &AdvancedTestStandard,
+    target: &GateTargetSpec,
+    content: &str,
+) -> Vec<String> {
+    let code = scrub_comments_and_strings(content);
+
+    standard
+        .required_markers
+        .iter()
+        .filter(|marker| !code.contains(**marker))
+        .map(|marker| {
+            format!(
+                "{}:{} must check {} for {}",
+                target.package, target.test_target, marker, standard.id
+            )
+        })
+        .collect()
+}
+
+pub(super) fn boundary_abi_owner_failures(targets: &[GateTargetSpec]) -> Vec<String> {
+    let actual: BTreeSet<&str> = targets
+        .iter()
+        .filter(|target| target.gate == "gate:abi-conformance")
+        .map(|target| target.package)
+        .collect();
+    let expected = BTreeSet::from([
+        "crucible-test-support",
+        "crucible-qemu-shmem",
+        "crucible-qemu-protocol",
+        "crucible-control-api",
+        "crucible-qemu-plugin",
+        "crucible-guest",
+        "crucible-engine",
+    ]);
+
+    if actual == expected {
+        Vec::new()
+    } else {
+        vec![format!(
+            "gate:abi-conformance owner package mismatch: expected {:?}, found {:?}",
+            expected, actual
+        )]
+    }
+}
+
+pub(super) fn advanced_standard_regression_failures() -> Vec<String> {
+    let mut failures = Vec::new();
+    let broken_targets = [
+        GateTargetSpec {
+            gate: "gate:layer1-injection",
+            package: "crucible-qemu-shmem",
+            test_target: "gate_layer1_injection",
+            required_features: &[],
+        },
+        GateTargetSpec {
+            gate: "gate:abi-conformance",
+            package: "crucible-qemu-protocol",
+            test_target: "gate_abi_conformance",
+            required_features: &[],
+        },
+        GateTargetSpec {
+            gate: "gate:replay-oracle",
+            package: "crucible-engine",
+            test_target: "gate_replay_oracle",
+            required_features: &[],
+        },
+    ];
+    let source_overrides = BTreeMap::from([(
+        ("crucible-qemu-shmem", "gate_layer1_injection"),
+        r#"
+            /* assert_spsc_ring_exhaustive_ordering_model(NoLostFrame); */
+            #[test]
+            fn bad() {
+                let _ = "assert_spsc_ring_exhaustive_trace_properties(FifoOrder)";
+            }
+        "#
+        .to_string(),
+    )]);
+    let findings = advanced_standard_failures(&broken_targets, &source_overrides);
+
+    if !findings
+        .iter()
+        .any(|finding| finding.contains("missing advanced test target"))
+    {
+        failures.push("advanced-test regression failed to reject a missing target".to_string());
+    }
+    if !findings
+        .iter()
+        .any(|finding| finding.contains("must check assert_spsc_ring_exhaustive_ordering_model("))
+    {
+        failures.push(
+            "advanced-test regression failed to reject markers hidden in comments/strings"
+                .to_string(),
+        );
+    }
+    if !findings
+        .iter()
+        .any(|finding| finding.contains("features [\"test-double\"]"))
+    {
+        failures.push(
+            "advanced-test regression failed to reject missing replay-oracle feature".to_string(),
+        );
+    }
+    if !findings
+        .iter()
+        .any(|finding| finding.contains("gate:abi-conformance owner package mismatch"))
+    {
+        failures.push("advanced-test regression failed to reject ABI owner drift".to_string());
+    }
+    failures
+}
+
+pub(super) fn gate_target_source_overrides(
+    root: &Path,
+) -> Result<GateSourceOverrides, Box<dyn Error>> {
+    let mut sources = BTreeMap::new();
+    let crates_dir = workspace_crates_dir(root);
+
+    for target in gate_targets() {
+        let path = workspace::package_directory(&crates_dir, target.package)?
+            .join("tests")
+            .join(format!("{}.rs", target.test_target));
+        if path.is_file() {
+            let mut content = fs::read_to_string(&path)?;
+            let module_dir = path.with_extension("");
+            if module_dir.is_dir() {
+                let mut module_sources = Vec::new();
+                collect_rust_sources(&module_dir, &mut module_sources)?;
+                module_sources.sort();
+                for module_source in module_sources {
+                    content.push('\n');
+                    content.push_str(&fs::read_to_string(module_source)?);
+                }
+            }
+            sources.insert((target.package, target.test_target), content);
+        }
+    }
+
+    Ok(sources)
+}
+
+pub(super) fn workspace_root() -> PathBuf {
+    workspace::repository_root()
+}
+
+fn workspace_crates_dir(root: &Path) -> PathBuf {
+    let nested = root.join("crates");
+    if nested.is_dir() {
+        nested
+    } else {
+        root.to_path_buf()
+    }
+}
+
+pub(super) fn collect_rust_sources(
+    dir: &Path,
+    sources: &mut Vec<PathBuf>,
+) -> Result<(), Box<dyn Error>> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rust_sources(&path, sources)?;
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            sources.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) fn scrub_comments_and_strings(content: &str) -> String {
+    let chars: Vec<char> = content.chars().collect();
+    let mut out = String::with_capacity(content.len());
+    let mut index = 0;
+    let mut state = ScannerState::Code;
+
+    while index < chars.len() {
+        let ch = chars[index];
+        let next = chars.get(index + 1).copied();
+        match state {
+            ScannerState::Code => {
+                if ch == '/' && next == Some('/') {
+                    out.push(' ');
+                    out.push(' ');
+                    index += 2;
+                    state = ScannerState::LineComment;
+                } else if ch == '/' && next == Some('*') {
+                    out.push(' ');
+                    out.push(' ');
+                    index += 2;
+                    state = ScannerState::BlockComment(1);
+                } else if ch == '"' {
+                    out.push(' ');
+                    index += 1;
+                    state = ScannerState::String;
+                } else {
+                    out.push(ch);
+                    index += 1;
+                }
+            }
+            ScannerState::LineComment => {
+                if ch == '\n' {
+                    out.push('\n');
+                    state = ScannerState::Code;
+                } else {
+                    out.push(' ');
+                }
+                index += 1;
+            }
+            ScannerState::BlockComment(depth) => {
+                if ch == '/' && next == Some('*') {
+                    out.push(' ');
+                    out.push(' ');
+                    index += 2;
+                    state = ScannerState::BlockComment(depth + 1);
+                } else if ch == '*' && next == Some('/') {
+                    out.push(' ');
+                    out.push(' ');
+                    index += 2;
+                    if depth == 1 {
+                        state = ScannerState::Code;
+                    } else {
+                        state = ScannerState::BlockComment(depth - 1);
+                    }
+                } else {
+                    out.push(if ch == '\n' { '\n' } else { ' ' });
+                    index += 1;
+                }
+            }
+            ScannerState::String => {
+                if ch == '\\' && next.is_some() {
+                    out.push(' ');
+                    out.push(if next == Some('\n') { '\n' } else { ' ' });
+                    index += 2;
+                } else if ch == '"' {
+                    out.push(' ');
+                    index += 1;
+                    state = ScannerState::Code;
+                } else {
+                    out.push(if ch == '\n' { '\n' } else { ' ' });
+                    index += 1;
+                }
+            }
+        }
+    }
+
+    out
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ScannerState {
+    Code,
+    LineComment,
+    BlockComment(usize),
+    String,
+}

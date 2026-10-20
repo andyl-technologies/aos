@@ -5,18 +5,31 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   patchelf,
   glibc,
+  sqliteStatic,
+  buildPackages,
 }: let
   version = "0.1.0";
+
+  # patchelf only inspects the installed guest, so it runs on the build
+  # machine. Static SQLite is the opposite role: an archive linked into the
+  # guest for its own platform. Cross package sets reject target-platform
+  # buildDeps, so the archive enters through runtimeDeps there, which exposes
+  # its headers and libraries to the cross linker. Native builds keep the
+  # original buildDeps placement; the roles coincide and derivation
+  # identities stay unchanged.
+  buildPatchelf =
+    if stdenv.isCross
+    then buildPackages.patchelf
+    else patchelf;
+  guestBuildDeps = [buildPatchelf] ++ lib.optional (!stdenv.isCross) sqliteStatic;
+  guestLinkDeps = lib.optional stdenv.isCross sqliteStatic;
+
   src = import ./crucible/_source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "crucible-guest-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = import ./crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = aosWorkspaceVendor;
+  cargoWorkspaceMembers = import ./crucible/_workspace.nix {inherit lib;};
   targetTriple =
     {
       "x86_64-linux" = "x86_64-unknown-linux-gnu";
@@ -25,6 +38,14 @@
     .${
       stdenv.hostPlatform.system
     };
+  cargoEnv = {
+    # Guest tests transitively use CAS. Force its SQLite dependency to link
+    # the AOS-built archive even when Cargo enables bundled bindings.
+    SQLITE3_LIB_DIR = "${sqliteStatic}/lib";
+    SQLITE3_INCLUDE_DIR = "${sqliteStatic}/include";
+    SQLITE3_STATIC = "1";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+  };
   staticBuildSetup = ''
     target_triple="${
       if stdenv.isCross
@@ -49,12 +70,12 @@
     family = "crucible-static-guest-release-and-test";
     target = targetTriple;
     rustflags = "-C target-feature=+crt-static -C relocation-model=static";
-    nativeInputs = map toString [patchelf];
-    licenseScope = "MIT";
+    nativeInputs = map toString [buildPatchelf sqliteStatic];
+    licenseScope = "Apache-2.0";
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "crucible-static-guest-artifacts";
-    inherit version cargoDeps cargoArtifactContract;
+    inherit version cargoDeps cargoWorkspaceMembers cargoArtifactContract cargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
       name = "crucible-static-guest-dummy-source";
@@ -66,22 +87,90 @@
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-guest"
     ];
     preBuild = staticBuildSetup;
-    buildDeps = [patchelf];
+    buildDeps = guestBuildDeps;
+    runtimeDeps = guestLinkDeps;
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "crucible-guest";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The command returns success and documents verbs:.";
+        "files" = {};
+        "input" = "The packaged crucible-guest command-line interface.";
+        "operation" = "Request its offline help text.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/crucible-guest\",\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"verbs:\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"crucible-guest operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "crucible-guest operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The command rejects the unsupported option before performing its main operation.";
+        "files" = {};
+        "input" = "A crucible-guest invocation containing an unsupported command-line option.";
+        "operation" = "Parse the unknown option without starting a service or contacting a remote endpoint.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/crucible-guest\",\"aos-invalid-verb\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"crucible-guest rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "crucible-guest rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
-    inherit cargoDeps cargoArtifacts cargoArtifactContract;
+    inherit cargoDeps cargoWorkspaceMembers cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
     cargoFlags = "-p crucible-guest --bin crucible-guest";
     cargoTestFlags = "-p crucible-guest";
     doCheck = true;
-    buildDeps = [patchelf];
-    runtimeDeps = [];
+    buildDeps = guestBuildDeps;
+    runtimeDeps = guestLinkDeps;
 
     preBuild = ''
       ${staticBuildSetup}
@@ -98,13 +187,6 @@ in
       # cannot produce dylibs, while the guest binary itself links statically.
     '';
 
-    preInstall = ''
-      # With CARGO_BUILD_TARGET set, final artifacts live under
-      # target/<triple>/release; the generic install phase scans
-      # target/release, so surface the guest binary there.
-      cp "target/$CARGO_BUILD_TARGET/release/crucible-guest" target/release/
-    '';
-
     postInstall = ''
       test -x "$out/bin/crucible-guest"
       if patchelf --print-interpreter "$out/bin/crucible-guest" > "$TMPDIR/crucible-guest.interpreter" 2>/dev/null; then
@@ -115,7 +197,7 @@ in
 
       doorbell_instruction_abi_version=$(sed -n \
         's/^pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = \([0-9][0-9]*\);$/\1/p' \
-        crucible-protocol/src/doorbell_abi.rs)
+        crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs)
       test -n "$doorbell_instruction_abi_version"
 
       mkdir -p "$out/nix-support"
@@ -137,9 +219,9 @@ in
     '';
 
     meta = {
-      description = "Static Crucible guest white-box marker emitter";
+      description = "Static Crucible guest marker and typed-selectable client";
       homepage = "https://github.com/andyl/andyl-os";
-      license = "MIT";
+      license = "Apache-2.0";
       mainProgram = "crucible-guest";
     };
   }

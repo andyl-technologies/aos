@@ -1,6 +1,6 @@
 {sourceGate, ...}: let
   runTest = name: ''
-    cargo test --frozen --offline -p terrane-core --lib ${name} -- --exact > "$TMPDIR/test.log"
+    cargo test --frozen --offline -p terrane-format --lib ${name} -- --exact > "$TMPDIR/test.log"
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output)' "$TMPDIR/test.log"
   '';
 in {

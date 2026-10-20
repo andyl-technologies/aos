@@ -1,58 +1,149 @@
 ##! perl-io-tty — Pseudo-terminal support for Perl
 {
+  lib,
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
   perl,
+  stdenv,
 }: let
   version = "1.20";
+  xsCross = import ../build-support/_perl-xs-cross-config.nix {
+    inherit buildPackages lib perl stdenv;
+  };
   runtimeClosureManifest = builtins.toString perl;
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "perl-io-tty";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "IO::Pty returns a master and a slave with a nonempty terminal path.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use IO::Pty;\nmy $master = IO::Pty->new;\nmy $slave = $master->slave;\ndie \"pseudo-terminal unavailable\" unless $master && $slave && $slave->ttyname;\n$slave->close; $master->close;\n";
+        };
+        "input" = "A request for a fresh pseudo-terminal pair.";
+        "operation" = "Allocate the pair with IO::Pty and inspect the slave terminal name.";
+        "steps" = [
+          {
+            "argv" = [
+              "@perl@"
+              "probe.pl"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "IO::Tty declines the invalid descriptor.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use IO::Tty;\nmy $tty = eval { IO::Tty->new_from_fd(-1, \"r\") };\ndie \"invalid descriptor accepted\" if defined $tty;\n";
+        };
+        "input" = "A pseudo-terminal request using invalid file descriptor -1.";
+        "operation" = "Construct IO::Tty from the invalid descriptor.";
+        "steps" = [
+          {
+            "argv" = [
+              "@perl@"
+              "probe.pl"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     src = fetchurl {
       urls = ["https://cpan.metacpan.org/authors/id/T/TO/TODDR/IO-Tty-${version}.tar.gz"];
       hash = "sha256-sVMJ/IViOJMonLmyuI36ntHmkVa3XymThVOkW+bXMK8=";
     };
-    buildDeps = [gnumake perl];
+    buildDeps = [gnumake xsCross.buildPerl];
     runtimeDeps = [perl];
     propagatedDeps = [];
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf "$src"
-          cd IO-Tty-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''${perl}/bin/perl Makefile.PL INSTALL_BASE="$out" CC="$CC" LD="$CC"'';
-      }
-      {
-        name = "build";
-        script = ''make -j"$NIX_BUILD_CORES"'';
-      }
-      {
-        name = "check";
-        script = ''make test'';
-      }
-      {
-        name = "install";
-        script = ''
-          make install
-          cp -a "$out"/lib/perl5/*-thread-multi/. "$out/lib/perl5/"
-          rm -f "$out"/lib/perl5/*/*/perllocal.pod "$out"/lib/perl5/*/*/.packlist
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf "$src"
+            cd IO-Tty-${version}
+          '';
+        }
+        {
+          name = "configure";
+          script = ''
+            ${xsCross.setup}
+            ${xsCross.buildPerl}/bin/perl Makefile.PL INSTALL_BASE="$out" \
+              CC="$CC" LD="$CC" CCFLAGS="" LDFLAGS=""
+          '';
+        }
+        {
+          name = "build";
+          script = ''make -j"$NIX_BUILD_CORES"'';
+        }
+      ]
+      ++ lib.optionals (!stdenv.isCross) [
+        {
+          name = "check";
+          script = ''make test'';
+        }
+      ]
+      ++ [
+        {
+          name = "install";
+          script = ''
+            make install
+            cp -a "$out"/lib/perl5/*-thread-multi*/. "$out/lib/perl5/"
+            rm -f "$out"/lib/perl5/*/*/perllocal.pod "$out"/lib/perl5/*/*/.packlist
 
-          # The XS module does not retain the interpreter used to load it.
-          mkdir -p "$out/nix-support"
-          echo '${runtimeClosureManifest}' > "$out/nix-support/runtime-closure"
+            # The XS module does not retain the interpreter used to load it.
+            mkdir -p "$out/nix-support"
+            echo '${runtimeClosureManifest}' > "$out/nix-support/runtime-closure"
 
-          PERL5LIB="$out/lib/perl5" ${perl}/bin/perl -MIO::Tty -e 1
-        '';
-      }
-    ];
+            ${lib.optionalString (!stdenv.isCross) ''
+              PERL5LIB="$out/lib/perl5" ${xsCross.buildPerl}/bin/perl -MIO::Tty -e 1
+            ''}
+          '';
+        }
+      ];
     meta = {
       description = "Low-level pseudo-terminal allocation and terminal constants for Perl";
       homepage = "https://metacpan.org/dist/IO-Tty";

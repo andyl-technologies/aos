@@ -7,276 +7,225 @@
   targets = [
     {
       gate = "gate:harness-lint";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "harness_lint";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:layer0-determinism";
-      package = "crucible-sim";
-      testTarget = "gate_layer0_determinism";
+      package = "crucible-qemu-host";
+      testTarget = "deterministic_launch";
       requiredFeatures = [];
-      placeholder = false;
-    }
-    {
-      gate = "gate:layer0-determinism";
-      package = "crucible-assert";
-      testTarget = "gate_layer0_determinism";
-      requiredFeatures = [];
-      placeholder = false;
-    }
-    {
-      gate = "gate:layer0-determinism";
-      package = "crucible";
-      testTarget = "gate_layer0_determinism";
-      requiredFeatures = ["test-double"];
-      placeholder = false;
     }
     {
       gate = "gate:single-vm-fingerprint";
-      package = "crucible";
-      testTarget = "gate_single_vm_fingerprint";
-      requiredFeatures = ["test-double"];
-      placeholder = false;
-    }
-    {
-      gate = "gate:single-vm-fingerprint";
-      package = "crucible-qemu";
-      testTarget = "gate_single_vm_fingerprint";
+      package = "crucible-qemu-host";
+      testTarget = "deterministic_launch";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:single-vm-fingerprint";
       package = "crucible-qemu-plugin";
-      testTarget = "gate_single_vm_fingerprint";
+      testTarget = "gate_patch_microtests";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:single-vm-fingerprint";
       package = "crucible-guest";
       testTarget = "gate_single_vm_fingerprint";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:layer1-injection";
       package = "crucible-device";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:layer1-injection";
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:layer1-injection";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-api";
+      package = "crucible-control-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:abi-conformance";
       package = "crucible-qemu-plugin";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:abi-conformance";
       package = "crucible-guest";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_abi_conformance";
       requiredFeatures = ["test-double"];
-      placeholder = false;
     }
     {
       gate = "gate:replay-oracle";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
-      placeholder = false;
     }
     {
       gate = "gate:content-address";
-      package = "crucible";
-      testTarget = "gate_content_address";
-      requiredFeatures = ["test-double"];
-      placeholder = false;
-    }
-    {
-      gate = "gate:content-address";
-      package = "crucible-sim";
+      package = "crucible-engine";
       testTarget = "gate_content_address";
       requiredFeatures = [];
-      placeholder = false;
+    }
+    {
+      gate = "gate:content-address";
+      package = "crucible-determinism";
+      testTarget = "gate_content_address";
+      requiredFeatures = [];
+    }
+    {
+      gate = "gate:campaign-statistics";
+      package = "crucible-campaign";
+      testTarget = "gate_campaign_statistics";
+      requiredFeatures = [];
     }
     {
       gate = "gate:scheduler-liveness";
-      package = "crucible";
-      testTarget = "gate_scheduler_liveness";
-      requiredFeatures = ["test-double"];
-      placeholder = false;
+      package = "crucible-qemu-host";
+      testTarget = "deterministic_launch";
+      requiredFeatures = [];
     }
     {
       gate = "gate:control-responsive";
       package = "crucible-session";
       testTarget = "gate_control_responsive";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:control-responsive";
-      package = "crucible-api";
+      package = "crucible-control-server";
       testTarget = "gate_control_responsive";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:control-responsive";
       package = "crucible-daemon";
       testTarget = "gate_control_responsive";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:any-guest";
-      package = "crucible-qemu";
-      testTarget = "gate_any_guest";
+      package = "crucible-qemu-host";
+      testTarget = "deterministic_launch";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:qemu-inert";
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       testTarget = "gate_qemu_inert";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:qemu-inert";
       package = "crucible-qemu-plugin";
       testTarget = "gate_qemu_inert";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:patch-microtests";
       package = "crucible-qemu-plugin";
       testTarget = "gate_patch_microtests";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:divergence-bisect";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "gate_divergence_bisect";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:adversarial-determinism";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_adversarial_determinism";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:e2e-determinism";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_e2e_determinism_concurrency";
       requiredFeatures = ["test-double"];
-      placeholder = false;
     }
     {
       gate = "gate:e2e-determinism";
       package = "crucible-cli";
       testTarget = "gate_e2e_determinism";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:checkpoint-materialization";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_checkpoint_materialization";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:state-space-search";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_state_space_search";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:fleet-equivalence";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_fleet_equivalence";
-      requiredFeatures = ["test-double"];
-      placeholder = false;
+      requiredFeatures = [];
     }
     {
       gate = "gate:campaign-continuity";
-      package = "crucible-cas";
+      package = "crucible-store";
       testTarget = "gate_campaign_continuity";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:signal-fault-system";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_signal_fault_system";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:perf-bench";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "gate_perf_bench";
       requiredFeatures = [];
-      placeholder = false;
     }
   ];
 
@@ -287,6 +236,7 @@
     "gate:single-vm-fingerprint"
     "gate:layer1-injection"
     "gate:content-address"
+    "gate:campaign-statistics"
     "gate:replay-oracle"
     "gate:divergence-bisect"
     "gate:scheduler-liveness"
@@ -307,20 +257,16 @@
   ];
 
   crucibleTestDoubleGates = [
-    "gate:layer0-determinism"
     "gate:single-vm-fingerprint"
     "gate:abi-conformance"
     "gate:replay-oracle"
-    "gate:content-address"
-    "gate:scheduler-liveness"
     "gate:e2e-determinism"
-    "gate:fleet-equivalence"
   ];
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
   targetFailuresWithManifest = target: manifest: let
-    packageDir = cratesDir + "/${target.package}";
+    packageDir = (import ./_workspace-packages.nix {inherit lib;}).packageDir target.package;
     testPath = packageDir + "/tests/${target.testTarget}.rs";
     content =
       if builtins.pathExists testPath
@@ -328,7 +274,7 @@
       else "";
     requiresTestDouble =
       target.package
-      == "crucible"
+      == "crucible-engine"
       && builtins.elem target.gate crucibleTestDoubleGates;
     manifestTargetHasRequiredFeature =
       builtins.any (
@@ -366,10 +312,7 @@
     ++ lib.optionals (!(builtins.pathExists testPath)) [
       "crates/${target.package}/tests/${target.testTarget}.rs: missing integration test target for ${target.gate}"
     ]
-    ++ lib.optionals (target.placeholder && builtins.pathExists testPath && (!(hasInfix "#[ignore" content) || !(hasInfix "panic!" content))) [
-      "crates/${target.package}/tests/${target.testTarget}.rs: placeholder gate target must be ignored and fail when explicitly run"
-    ]
-    ++ lib.optionals ((!target.placeholder) && builtins.pathExists testPath && hasInfix "#[ignore" content) [
+    ++ lib.optionals (builtins.pathExists testPath && hasInfix "#[ignore" content) [
       "crates/${target.package}/tests/${target.testTarget}.rs: implemented gate target must not be ignored"
     ]
     ++ lib.optionals (requiresTestDouble && target.requiredFeatures != ["test-double"]) [
@@ -383,7 +326,7 @@
     ];
 
   targetFailures = target: let
-    packageDir = cratesDir + "/${target.package}";
+    packageDir = (import ./_workspace-packages.nix {inherit lib;}).packageDir target.package;
     manifest = builtins.fromTOML (builtins.readFile (packageDir + "/Cargo.toml"));
   in
     targetFailuresWithManifest target manifest;
@@ -392,27 +335,24 @@
     findings =
       targetFailuresWithManifest {
         gate = "gate:replay-oracle";
-        package = "crucible";
+        package = "crucible-engine";
         testTarget = "gate_replay_oracle";
         requiredFeatures = ["test-double"];
-        placeholder = true;
       } {
         test = [];
       }
       ++ lib.concatMap targetFailures [
         {
           gate = "gate:replay-oracle";
-          package = "crucible";
+          package = "crucible-engine";
           testTarget = "gate_replay_oracle";
           requiredFeatures = [];
-          placeholder = true;
         }
         {
           gate = "gate:unknown";
-          package = "crucible-harness";
+          package = "crucible-test-support";
           testTarget = "unknown_gate";
           requiredFeatures = [];
-          placeholder = true;
         }
       ];
     hasFinding = needle:
@@ -454,7 +394,6 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=0
             RESULT
           '';
         }

@@ -1,4 +1,4 @@
-# Patch 0064 — `crucible-terminal-lifecycle-completion`
+# Capability task 0064 — `crucible-terminal-lifecycle-completion`
 
 ## Purpose
 
@@ -9,14 +9,14 @@ QEMU exit.
 ## Capability and dependencies
 
 - Extends `qemu.node.lifecycle.v1` evidence to `CRUCLIF1` version 4.
-- Depends on patch 0056 lifecycle execution and patch 0063's exact paused-state
+- Depends on capability task 0056 lifecycle execution and capability task 0063's exact paused-state
   handoff.
 - Changes only QEMU/plugin GPL-side run-state and QMP behavior. The public
   evidence bytes and versioned QAPI command remain the process boundary.
 
 ## Two-phase terminal protocol
 
-1. Patch 0056 applies the requested state policies at the safe boundary and
+1. Capability task 0056 applies the requested state policies at the safe boundary and
    publishes one `CRUCLIF1` version 4 event. Requested and effective transitions,
    terminal cause, fingerprint validity, and exit requirement are explicit.
 2. QEMU records exactly one pending terminal decision but remains paused and
@@ -24,7 +24,7 @@ QEMU exit.
    still validating the event batch or coupled host adapters.
 3. The host validates the entire batch, commits the enclosing fault boundary,
    and retains the typed terminal decision.
-4. The host sends the dedicated terminal-completion command specified by patch
+4. The host sends the dedicated terminal-completion command specified by capability task
    0065, binding the action, evidence, and process generation. The command never
    resumes guest execution.
 5. The host independently reaps the exact owned child and compares its process

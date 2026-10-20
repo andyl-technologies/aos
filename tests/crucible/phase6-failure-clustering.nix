@@ -42,8 +42,11 @@
   triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   modelSource = import ./_crucible-model-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  signatureTest = builtins.readFile ../../crates/crucible/tests/gate_failure_signature.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  };
+  signatureTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs;
   defaultChecks = builtins.readFile ./default.nix;
   taskList = builtins.concatStringsSep "," taskIds;
 
@@ -68,7 +71,7 @@
         needle = "checks.crucible.phase6.failureClustering";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" modelSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" modelSource [
       {
         label = "cluster finding input";
         needle = "pub struct FailureClusterFinding";
@@ -138,7 +141,7 @@
         needle = "cluster.member.reproduction_artifact";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "cluster finding export";
         needle = "FailureClusterFinding";
@@ -156,7 +159,7 @@
         needle = "FailureClusteringResult";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
         label = "clustering regression";
         needle = "failure_clustering_partitions_and_orders_by_signature_key";
@@ -232,7 +235,7 @@
         needle = "phase6.signaturePolicy";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
         label = "ignored test";
         needle = "#[ignore]";
@@ -246,7 +249,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model.rs" modelSource [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/src/model.rs" modelSource [
       {
         label = "unordered cluster map";
         needle = "HashMap<";
@@ -268,7 +271,9 @@ in
       pname = "crucible-phase6-failure-clustering";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+      runtimeDeps = [pkgs.sqlite];
+
+      buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.rust pkgs.sed];
       DEPENDENCIES = builtins.concatStringsSep ":" dependencies;
       phases = [
         {
@@ -310,7 +315,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-failure-clustering-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_failure_signature \
               -- --test-threads=1
           '';

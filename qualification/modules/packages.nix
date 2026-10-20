@@ -9,7 +9,7 @@
   types = import ./_types.nix {inherit lib;};
 in {
   options.qualification = {
-    packageExecutionImageVariant = (types.text "Canonical published image used by recovery and K3s package scenarios.") // {default = "aos-testing";};
+    packageExecutionImageVariant = (types.text "Canonical published image used by recovery and K3s package scenarios.") // {default = "aos-experimental";};
     packageRules = lib.mkOption {
       type = lib.types.attrsOf types.packageRule;
       default = {};
@@ -33,7 +33,6 @@ in {
         invalidated_by = ["subject" "policy" "executor" "environment"];
         method = "automated";
         phase = "staging";
-        production_only = false;
         regressions = [
           "checks.fleet.apm-e2e"
           "checks.fleet.k3s-combined-worker"

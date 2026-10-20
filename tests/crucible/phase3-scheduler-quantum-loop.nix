@@ -8,8 +8,11 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  quantumTest = builtins.readFile ../../crates/crucible/tests/scheduler_quantum_loop.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  };
+  quantumTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_quantum_loop.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -73,7 +76,7 @@
         needle = "pure function of `(ScenarioDef, Seed, Schedule)`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "quantum loop trait";
         needle = "pub trait QuantumLoop";
@@ -112,7 +115,7 @@
       }
       {
         label = "RESOLVE due events";
-        needle = "resolve_due_scheduled_events(\n            &mut self.pending_events";
+        needle = "resolve_due_scheduled_events(&mut self.pending_events, &selected_node, after_time)?;";
       }
       {
         label = "EMIT helper";
@@ -127,15 +130,19 @@
         needle = "fn step_quantum";
       }
       {
+        label = "STEP derives the scheduler frontier from exact node ticks";
+        needle = "let frontier = frontier_for(&self.nodes, Some(self.frontier))?;";
+      }
+      {
         label = "STEP updates scheduler frontier";
-        needle = "self.frontier = frontier_for(&self.nodes, self.timeline.shift())?";
+        needle = "self.frontier = frontier_for(&self.nodes, Some(self.frontier))?;";
       }
       {
         label = "STEP counts one quantum";
         needle = "self.quanta = self.quanta.saturating_add(1)";
       }
     ]
-    ++ orderedNeedlesFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ orderedNeedlesFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "control boundary";
         needle = "self.admit_control_at_boundary(request.control)";
@@ -161,7 +168,7 @@
         needle = "// STEP phase";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "quantum loop export";
         needle = "QuantumLoop";
@@ -175,7 +182,7 @@
         needle = "QuantumOutcome";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_quantum_loop.rs" quantumTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_quantum_loop.rs" quantumTest [
       {
         label = "atomic quantum boundary test";
         needle = "quantum_loop_pick_run_resolve_and_step_are_one_atomic_boundary";
@@ -211,7 +218,7 @@
         needle = "schedulerQuantumLoop = import ./phase3-scheduler-quantum-loop.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_quantum_loop.rs" quantumTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_quantum_loop.rs" quantumTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -230,7 +237,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -274,14 +284,14 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-quantum-loop-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_quantum_loop \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-quantum-loop-target" \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test gate_scheduler_liveness \
               -- --test-threads=1

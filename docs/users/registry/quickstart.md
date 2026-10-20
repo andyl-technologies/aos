@@ -140,4 +140,4 @@ apr status --registry acme
 ```
 
 Continue with [Host a registry](hosting.md) to put the same static tree behind
-HTTPS, or [Stage and schedule updates](rollouts.md) to introduce a channel.
+HTTPS, or [Promote and schedule channel updates](rollouts.md) to introduce a channel.

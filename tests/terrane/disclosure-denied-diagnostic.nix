@@ -4,13 +4,13 @@
 in
   sourceGate "disclosure-denied-diagnostic" ''
     cd crates
-    cargo test --frozen --offline -p terrane --lib --no-default-features --features std,send,tokio \
+    cargo test --frozen --offline -p terrane-sdk --lib --no-default-features --features std,send,tokio \
       ${selector} -- --exact --list > "$TMPDIR/inventory.log"
     python3 ../tests/terrane/check_native_gate.py inventory "$TMPDIR/inventory.log" '${required}'
 
     # Only this local diagnostic enables failure-site reporting. Its output
     # preserves a selected denial without changing the ordinary conformance gates.
-    if TERRANE_TEST_DENIAL_CALLSITE=1 cargo test --frozen --offline -p terrane --lib \
+    if TERRANE_TEST_DENIAL_CALLSITE=1 cargo test --frozen --offline -p terrane-sdk --lib \
       --no-default-features --features std,send,tokio ${selector} \
       -- --exact --nocapture --test-threads=1 > "$TMPDIR/native.log" 2>&1; then
       cat "$TMPDIR/native.log"

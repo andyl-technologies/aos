@@ -1,8 +1,8 @@
 ##! ruby — Ruby programming language
 {
+  lib,
   mkDerivation,
   fetchurl,
-  lib,
   stdenv,
   buildPackages,
   gnumake,
@@ -20,8 +20,14 @@
 }: let
   version = "4.0.6";
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isSupportedCross = isLinuxCross || isDarwinCross;
+  darwinArchitecture =
+    if stdenv.hostPlatform.isAarch64
+    then "arm64"
+    else "x86_64";
   rustForBuild =
-    if isLinuxCross
+    if isSupportedCross
     then rust.passthru.buildTool
     else rust;
   crossTestFlags = lib.optionalString isLinuxCross (
@@ -30,8 +36,90 @@
   );
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
+    };
     pname = "ruby";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Ruby prints the exact integer result 42.";
+        "files" = {
+          "answer.rb" = "puts [19, 23].map { |value| value }.sum\n";
+        };
+        "input" = "A Ruby program that maps and sums two integers.";
+        "operation" = "Execute the program with the packaged Ruby interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ruby"
+              "answer.rb"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Ruby rejects the program with its syntax-error status.";
+        "files" = {
+          "invalid.rb" = "def answer(\n  42\nend\n";
+        };
+        "input" = "A Ruby method definition with an unclosed parameter list.";
+        "operation" = "Ask Ruby to check the malformed program's syntax.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ruby"
+              "-c"
+              "invalid.rb"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
+    # Ruby permits API changes in minor releases; patch releases preserve API.
+    # https://www.ruby-lang.org/en/news/2013/12/21/ruby-version-policy-changes-with-2-1-0/
+    version = "~${version}";
 
     src = fetchurl {
       urls = ["https://cache.ruby-lang.org/pub/ruby/4.0/ruby-${version}.tar.xz"];
@@ -39,8 +127,9 @@ in
     };
 
     buildDeps =
-      [gnumake pkg-config rust buildPackages.glibc-locales]
-      ++ lib.optionals isLinuxCross [buildPackages.ruby rustForBuild];
+      [gnumake pkg-config rustForBuild buildPackages.glibc-locales]
+      ++ lib.optionals isSupportedCross [buildPackages.ruby]
+      ++ lib.optionals isDarwinCross [buildPackages.gawk buildPackages.darwinCctoolsLinker];
     runtimeDeps = [
       openssl
       zlib
@@ -65,7 +154,7 @@ in
       {
         name = "configure";
         script =
-          lib.optionalString isLinuxCross ''
+          lib.optionalString isSupportedCross ''
             # Ruby executes its source generators on the build machine. YJIT
             # still needs Rust to emit the target architecture's static library.
             export BASERUBY=${buildPackages.ruby}/bin/ruby
@@ -76,6 +165,26 @@ in
             EOF
             chmod +x .aos-build-tools/rustc-for-target
             export RUSTC="$PWD/.aos-build-tools/rustc-for-target"
+          ''
+          + lib.optionalString isDarwinCross ''
+            # The archive filter executes on Linux. YJIT also needs Mach-O
+            # relocatable linking, which ld64.lld does not implement.
+            sed -i '1c\#!${buildPackages.bash}/bin/bash' tool/darwin-ar
+            grep -Fq '$(CC) -nodefaultlibs -r -o $@' defs/jit.mk
+            sed -i \
+              's|$(CC) -nodefaultlibs -r -o $@|${buildPackages.darwinCctoolsLinker}/bin/aarch64-apple-darwin-ld -arch ${darwinArchitecture} -r -o $@|' \
+              defs/jit.mk
+
+            # Runtime and propagated dependencies share runpaths. Ruby's
+            # configure treats linker diagnostics as a failed probe, so emit
+            # each runpath once while retaining every distinct dependency.
+            NIX_LDFLAGS=$(printf '%s\n' "$NIX_LDFLAGS" | ${buildPackages.gawk}/bin/awk '{
+              for (i = 1; i <= NF; i++) {
+                if ($i ~ /^-Wl,-rpath,/ && seen[$i]++) continue
+                printf "%s ", $i
+              }
+            }')
+            export NIX_LDFLAGS
           ''
           + ''
             ./configure $configureFlags \
@@ -95,7 +204,9 @@ in
       }
       {
         name = "check";
-        script = ''
+        # Darwin execution qualification is deferred; a Linux builder cannot
+        # run its interpreter or extension suite. Retain Linux runtime checks.
+        script = lib.optionalString (!isDarwinCross) ''
           export LOCPATH=${buildPackages.glibc-locales}/lib/locale
           export LC_ALL=C.UTF-8
           check_cores=$NIX_BUILD_CORES
@@ -116,13 +227,24 @@ in
         script =
           ''
             make install
+          ''
+          + lib.optionalString (!isDarwinCross) ''
             "$out/bin/ruby" -ropenssl -rzlib -rpsych -e \
               'abort unless RUBY_VERSION == "${version}"'
           ''
-          + lib.optionalString isLinuxCross ''
-            # Bundled gems retain object files and mkmf probe logs with
-            # paths to the build compiler, which is not a runtime dependency.
-            find "$out/lib/ruby/gems" -type f \( -name '*.o' -o -name 'mkmf.log' \) -delete
+          + ''
+            # Bundled gems leave build logs and objects that retain compiler
+            # paths even though Ruby never needs them at runtime.
+            find "$out/lib/ruby/gems" -type f \
+              \( -name '*.o' -o -name 'mkmf.log' \) -delete
+
+            # RbConfig describes the compiler for future gem builds. Resolve it
+            # from the caller's PATH instead of pinning this build's toolchain.
+            compiler_bin_dir=''${CC%/*}
+            if [ "$compiler_bin_dir" != "$CC" ]; then
+              find "$out/lib/ruby" -type f -name rbconfig.rb \
+                -exec sed -i "s|$compiler_bin_dir/||g" {} +
+            fi
           '';
       }
     ];

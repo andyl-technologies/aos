@@ -1,0 +1,50 @@
+# Samba Waf cross-answers for aarch64-linux (glibc, Linux kernel).
+#
+# Waf asks these questions when a configure probe would run a target program.
+# Answers were recorded by running the aarch64 probes under user-mode
+# emulation for the narrow samba-smbd configuration, then reviewed: every
+# answer matches the native x86_64 configure result except the target machine
+# name, and the 64-bit, signal, iconv, and fcntl answers are the glibc
+# AArch64 Linux values. AOS build sandboxes have no getconf, so its LFS probe
+# keeps the native command-not-found result. There is no target kernel at
+# build time, so the uname release and version are fixed placeholders; Samba
+# uses them only in diagnostics compiled out on Linux.
+#
+# Configure fails when Waf asks a question missing here and appends it as
+# UNKNOWN to the build's working copy. Add reviewed answers for those
+# questions when enabling more features or updating Samba.
+Checking uname sysname type: "Linux"
+Checking uname machine type: "aarch64"
+Checking uname release type: "unknown"
+Checking uname version type: "unknown"
+rpath library support: OK
+-Wl,--version-script support: OK
+Checking getconf LFS_CFLAGS: (127, "")
+Checking for large file support without additional flags: OK
+Checking correct behavior of strtoll: NO
+Checking for working strptime: OK
+Checking for C99 vsnprintf: "1"
+Checking for HAVE_SHARED_MMAP: OK
+Checking for HAVE_MREMAP: OK
+Checking for HAVE_INCOHERENT_MMAP: NO
+Checking for HAVE_SECURE_MKSTEMP: OK
+Checking for gnutls fips mode support: NO
+Checking value of NSIG: "65"
+Checking value of _NSIG: "65"
+Checking value of SIGRTMAX: "64"
+Checking value of SIGRTMIN: "34"
+Checking for a 64-bit host to support lmdb: OK
+Checking errno of iconv for illegal multibyte sequence: OK
+Checking whether POSIX capabilities are available: OK
+Checking if can we convert from CP850 to UCS-2LE: OK
+Checking if can we convert from UTF-8 to UCS-2LE: OK
+vfs_fileid checking for statfs() and struct statfs.f_fsid: OK
+Checking whether we can use Linux thread-specific credentials: OK
+Checking whether fcntl locking is available: OK
+Checking whether fcntl lock supports open file description locks: OK
+Checking whether fcntl supports flags to send direct I/O availability signals: OK
+Checking for the maximum value of the 'time_t' type: OK
+Checking whether the realpath function allows a NULL argument: OK
+Checking for ftruncate extend: OK
+Checking for readlink breakage: NO
+getcwd takes a NULL argument: OK

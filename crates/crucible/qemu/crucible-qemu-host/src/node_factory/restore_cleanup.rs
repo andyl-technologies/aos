@@ -1,0 +1,31 @@
+//! Fail-closed cleanup for rejected restored QEMU realizations.
+
+use super::{QemuNode, QemuNodeChild, QemuNodeFactoryError};
+
+pub(super) fn reap_failed_restore_child(
+    mut child: QemuNodeChild,
+    primary: QemuNodeFactoryError,
+) -> QemuNodeFactoryError {
+    match child.force_kill_and_reap_failed_realization() {
+        Ok(()) => primary,
+        Err(cleanup) => QemuNodeFactoryError::FailedRestoreCleanup {
+            primary: Box::new(primary),
+            cleanup,
+            unreaped_child: Some(Box::new(child)),
+        },
+    }
+}
+
+pub(super) fn reap_failed_restored_node(
+    mut node: QemuNode,
+    primary: QemuNodeFactoryError,
+) -> QemuNodeFactoryError {
+    match node.reap_failed_realization() {
+        Ok(()) => primary,
+        Err(cleanup) => QemuNodeFactoryError::FailedRestoreCleanup {
+            primary: Box::new(primary),
+            cleanup,
+            unreaped_child: node.into_direct_child_for_quarantine().map(Box::new),
+        },
+    }
+}

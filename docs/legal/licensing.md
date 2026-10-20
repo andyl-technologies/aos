@@ -9,13 +9,13 @@ over the defaults below. Third-party files retain their existing licenses.
 | Scope | License |
 | --- | --- |
 | Original AOS code without a more specific notice | Apache-2.0 |
-| `crucible-protocol` and `crucible-shmem` | MIT OR Apache-2.0 |
+| `crucible-qemu-protocol` and `crucible-qemu-shmem` | MIT OR Apache-2.0 |
 | `crucible-qemu-plugin` | GPL-2.0-only |
-| `crucible-debug-gateway` | GPL-2.0-only |
+| `crucible-qemu-debug-gateway` | GPL-2.0-only |
 | `crucible-qemu-trace-plugin` | GPL-2.0-only |
 | QEMU emulator as a combined work | GPL-2.0-only |
-| Individual QEMU source files | The file's notice; unmarked files default to GPL-2.0-or-later under QEMU 11.1's `LICENSE` |
-| AOS QEMU patch series | Modified files retain their upstream license; every created file and its license is listed in the [patch inventory](../../pkgs/emulation/qemu-patches/LICENSES.md) |
+| Individual QEMU source files | The file's notice; unmarked files default to GPL-2.0-or-later under QEMU 11.1.1's `LICENSE` |
+| AOS atomic QEMU patch | Modified files retain their upstream license; every created file and its license is listed in the [patch inventory](../../pkgs/emulation/qemu-patches/LICENSES.md) |
 
 The complete license texts are in [`LICENSES/`](../../LICENSES/). The root
 [`LICENSE`](../../LICENSE) remains the Apache License 2.0 default for original
@@ -31,7 +31,7 @@ communicate through a public, versioned protocol: a Unix-domain socket is the
 setup and control plane, and shared memory is the high-throughput data plane.
 The protocol is an interoperability contract, not a shared implementation.
 
-`crucible-protocol` and `crucible-shmem` contain protocol and transport
+`crucible-qemu-protocol` and `crucible-qemu-shmem` contain protocol and transport
 definitions used on both sides of that process boundary. Their permissive
 `MIT OR Apache-2.0` license lets independently licensed peers implement the same
 contract. This does not change the license of either peer.
@@ -44,14 +44,14 @@ compiled into, linked into, or
 dynamically loaded by QEMU must remain within the applicable QEMU/GPL license
 scope. Apache-only host crates must not link to QEMU or include QEMU headers.
 QEMU's combined-work license and its per-file licenses are separate metadata:
-the current patch series creates GPL-2.0-or-later QEMU source files, while the
+the current atomic patch creates GPL-2.0-or-later QEMU source files, while the
 Rust and C Crucible QEMU plugins remain explicitly GPL-2.0-only. Packages and
 corresponding-source artifacts must preserve and inventory both GPL scopes.
 
-`crucible-debug-gateway` is a GPL-2.0-only standalone process. It owns the
+`crucible-qemu-debug-gateway` is a GPL-2.0-only standalone process. It owns the
 persistent debugger session and connects to QEMU's private RSP socket. The
 Apache controller communicates with it only through versioned Unix-socket
-frames defined by the dual-licensed `crucible-protocol` crate; neither process
+frames defined by the dual-licensed `crucible-qemu-protocol` crate; neither process
 links or dynamically loads the other.
 
 Shared memory must remain protocol-shaped. It may contain fixed-width fields,
@@ -74,7 +74,7 @@ Anyone distributing a modified QEMU binary must satisfy the applicable GPL and
 upstream obligations. An AOS release or public binary cache that offers the
 Crucible QEMU binary must offer the complete corresponding source from an
 equally accessible location. That source artifact must include the exact QEMU
-source, the complete applied patch series, new QEMU/plugin integration source,
+source, the complete applied atomic patch, new QEMU/plugin integration source,
 generated interface files required to build it, build/configuration scripts,
 license notices, and enough identity metadata to match it to the binary. Release
 automation must fail closed if the artifact or license inventory is missing.
@@ -95,7 +95,7 @@ Contributions follow the license applicable to the files changed. External AOS
 contributors require the external contributor license agreement. Current Andyl,
 Inc. employees contributing within the scope of their employment are covered by
 Andyl's standard CIAA and internal contribution authorization instead. Commits
-to QEMU, its patch series, or in-QEMU code additionally require a Developer
+to QEMU, its atomic patch, or in-QEMU code additionally require a Developer
 Certificate of Origin `Signed-off-by` line for both contribution paths. See
 [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and the
 [`External Contributor License Agreement`](external-contributor-license-agreement.md).

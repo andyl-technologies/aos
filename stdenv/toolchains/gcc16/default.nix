@@ -240,6 +240,24 @@
       '';
   };
   compilerGawk = baseScope.mkAutotoolsTool (baseScope.manifest.gawk // gawkOverrides);
+
+  # The static toolchain build emits Gawk's extensions only as static
+  # archives, and these tool builds skip the generic strip phase that would
+  # normalize them. Rewrite their ar headers without build-time mtimes and
+  # owners so release repeat builds reproduce the public tool. The compiler's
+  # private Gawk keeps its identity, so GCC itself is not rebuilt.
+  publicGawkOverrides =
+    gawkOverrides
+    // {
+      postInstall =
+        gawkOverrides.postInstall
+        + ''
+          for archive in "$out"/lib/gawk/*.a; do
+            [ -f "$archive" ] || continue
+            "''${AR%/ar}/objcopy" --enable-deterministic-archives "$archive"
+          done
+        '';
+    };
 in
   import ../lib/finalize-native.nix {
     privateTools = scope // {inherit gccStage2;};
@@ -250,7 +268,7 @@ in
     compiler = gccStage2;
     compilerSource = ./gcc-stage2.nix;
     compilerToolOverrides.gawk = compilerGawk;
-    manifestToolOverrides.gawk = gawkOverrides;
+    manifestToolOverrides.gawk = publicGawkOverrides;
     staticNoPie = true;
     publicScriptFilter =
       if hostPlatform.constraints.cpu != "x86_64"

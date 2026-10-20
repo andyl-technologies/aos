@@ -1,6 +1,6 @@
 # Registry key management
 
-`andyl/testing` does not use an HSM. Its trust root and signing keys are
+`andyl/experimental` does not use an HSM. Its trust root and signing keys are
 independent of `andyl/main`.
 
 ## Intended management for andyl/main
@@ -27,12 +27,22 @@ key, upload grants, and environment receipt signers are separate authorities.
 | Edge, candidate, and stable channels | A distinct signer for each named channel; cannot authorize release content |
 | Nix cache | Dedicated non-exportable Ed25519 key for approved narinfo fingerprints |
 | Release evidence and qualification | Separate hardware-backed authorities bound to exact release and qualification evidence |
+| Static surface receipts (`surface-receipt`) | Dedicated restricted online signer used only by static surfaces; signs their publication and channel receipts and cannot authorize release content. Hub surfaces sign receipts with their own deployment keys and never use this role |
 | Secure Boot PK, KEK, db, module and PCR policy | Distinct hardware-backed authorities, with offline custody or operator approval appropriate to each role |
 
-Both registries accept edge, candidate, stable, and emergency release classes.
-Main requires strict pipeline provenance for every class, including edge;
-testing exercises new build and release mechanisms with lighter assurance.
-Do not import testing keys into main's trust policy. A threshold is
+Release-evidence keys sign more than the bundle manifest and journal: they also
+sign qualification reviews, completion approvals, bootstrap intents, fitness
+attestations, and profile overrides. Custody and threshold decisions for this
+role therefore govern environment fitness and emergency relaxation as well as
+release content.
+
+`andyl/main` publishes edge, candidate, and stable releases, and handles an
+emergency as a signed profile override of `production/stable` rather than a
+separate class. `andyl/experimental` publishes edge releases only. Main requires
+strict pipeline provenance and the custody above for every release, including
+`edge`; the experimental registry exercises new build and release mechanisms with lighter
+assurance and file-backed keys.
+Do not import experimental keys into main's trust policy. A threshold is
 meaningful only when its custodians and administrative access are independent;
 several keys accessible through one online credential do not provide that
 separation.

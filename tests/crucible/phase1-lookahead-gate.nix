@@ -1,21 +1,25 @@
 {
   pkgs,
   lib,
+  campaignComposition ? null,
+  testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  phase0S4 = import ./phase0-s4.nix {inherit pkgs;};
+  phase0S4 = import ./phase0-s4.nix {
+    inherit pkgs lib campaignComposition testing;
+  };
 
   shmemSource = builtins.concatStringsSep "\n" [
     (import ./_crucible-shmem-source.nix {inherit lib;})
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/delivery_errors.rs)
+    (builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/delivery_errors.rs)
   ];
-  lookaheadTest = builtins.readFile ../../crates/crucible-shmem/tests/lookahead_gate.rs;
+  lookaheadTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/lookahead_gate.rs;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/lib.rs + shmem/delivery_errors.rs" shmemSource [
+    failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs + shmem/delivery_errors.rs" shmemSource [
       {
         label = "opaque advance ceiling type";
         needle = "pub struct AdvanceCeiling";
@@ -53,7 +57,7 @@
         needle = "frame.delivery_icount < consumer_current_icount";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/lookahead_gate.rs" lookaheadTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/lookahead_gate.rs" lookaheadTest [
       {
         label = "authorized ceiling test";
         needle = "lookahead_gate_authorizes_ceiling_before_possible_delivery";
@@ -83,13 +87,13 @@
         needle = "lookahead_gate_allows_future_frame_to_deliver_at_exact_icount";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/lookahead_gate.rs" lookaheadTest [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/tests/lookahead_gate.rs" lookaheadTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/src/lib.rs + shmem/delivery_errors.rs" shmemSource [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs + shmem/delivery_errors.rs" shmemSource [
       {
         label = "public current icount field bypass";
         needle = "pub struct AdvanceCeiling {\n    pub current_icount: u64";
@@ -107,48 +111,69 @@
         needle = "lookaheadGate = import ./phase1-lookahead-gate.nix";
       }
     ];
+  phase0ResultName =
+    if campaignComposition == null
+    then "result"
+    else "raw-result";
+  runtimeInputs = [pkgs.coreutils pkgs.grep];
+  runtimeScript = ''
+    set -eu
+    s4_result="${phase0S4}/${phase0ResultName}"
+    ${lib.optionalString (campaignComposition != null) ''
+      grep -Fxq 'campaign_mode=${campaignComposition.mode}' "$s4_result"
+      grep -Fxq \
+        'campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}' \
+        "$s4_result"
+      grep -Fxq \
+        'campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}' \
+        "$s4_result"
+    ''}
+
+    grep -q '^PASS$' "$s4_result"
+    grep -q '^consumer_ceiling=delivery_icount_minus_1_until_group_present$' "$s4_result"
+    grep -q '^producer_skew_ceiling_wait_observed=true$' "$s4_result"
+    grep -q '^consumer_skew_early_peek_observed=true$' "$s4_result"
+    grep -q '^late_enqueue_negative_control_failed=true$' "$s4_result"
+    grep -q '^late_delivery_failures=0$' "$s4_result"
+    grep -q '^early_delivery_failures=0$' "$s4_result"
+
+    mkdir -p "$out"
+    cat > "$out/result" <<'RESULT'
+    PASS
+    check=checks.crucible.phase1.lookaheadGate
+    tasks=T-DET-12
+    crate=crucible-shmem
+    lookahead_helper=authorize_advance_ceiling
+    late_delivery_helper=validate_frame_delivery_is_future
+    ceiling_rule=max_advance_icount_lt_earliest_possible_delivery_icount
+    late_delivery_policy=fail_loudly
+    phase0_evidence=checks.crucible.phase0.s4ShmemVisibility
+    RESULT
+  '';
+  authoritativeGate = pkgs.mkDerivation {
+    pname = "crucible-phase1-lookahead-gate";
+    version = "0";
+    src = null;
+    buildDeps = runtimeInputs;
+    phases = [
+      {
+        name = "record-lookahead-gate";
+        script = runtimeScript;
+      }
+    ];
+  };
 in
   if failures != []
   then throw "crucible phase1 lookahead gate check failed:\n${builtins.concatStringsSep "\n" failures}"
-  else
-    pkgs.mkDerivation {
-      pname = "crucible-phase1-lookahead-gate";
-      version = "0";
-      src = null;
-
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.grep
-      ];
-
-      phases = [
-        {
-          name = "record-lookahead-gate";
-          script = ''
-            set -eu
-            s4_result="${phase0S4}/result"
-
-            grep -q '^PASS$' "$s4_result"
-            grep -q '^consumer_ceiling=delivery_icount_minus_1_until_group_present$' "$s4_result"
-            grep -q '^producer_skew_ceiling_wait_observed=true$' "$s4_result"
-            grep -q '^consumer_skew_early_peek_observed=true$' "$s4_result"
-            grep -q '^late_enqueue_negative_control_failed=true$' "$s4_result"
-            grep -q '^late_delivery_failures=0$' "$s4_result"
-            grep -q '^early_delivery_failures=0$' "$s4_result"
-
-            mkdir -p "$out"
-            cat > "$out/result" <<'RESULT'
-            PASS
-            check=checks.crucible.phase1.lookaheadGate
-            tasks=T-DET-12
-            crate=crucible-shmem
-            lookahead_helper=authorize_advance_ceiling
-            late_delivery_helper=validate_frame_delivery_is_future
-            ceiling_rule=max_advance_icount_lt_earliest_possible_delivery_icount
-            late_delivery_policy=fail_loudly
-            phase0_evidence=checks.crucible.phase0.s4ShmemVisibility
-            RESULT
-          '';
-        }
-      ];
+  else if campaignComposition != null
+  then
+    import ./phase9-campaign-mode-system-gate.nix {
+      inherit pkgs lib testing runtimeInputs runtimeScript;
+      inherit (campaignComposition) mode system;
+      gateName = "gate:lookahead";
+      authoritativeAttr = "checks.crucible.phase1.lookaheadGate";
+      executionFamily = "qemu-runtime";
+      name = "lookahead";
+      runtimeClosures = [phase0S4];
     }
+  else authoritativeGate

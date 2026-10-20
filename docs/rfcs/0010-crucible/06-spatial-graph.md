@@ -217,9 +217,6 @@ pub struct VmDef {
     /// Fixed vCPU count. `N >= 1`; multi-vCPU nodes use single-threaded RR-TCG
     /// with a content-addressed RR switch quantum (10/[QEMU-5], 10/[QEMU-43]).
     pub smp_vcpus: u16,
-    /// The fixed `-icount shift=N` for this node (09, 10); never `auto`.
-    /// Hashed so a shift change is a different scenario ([TIME] cross-ref).
-    pub icount_shift: u8,
     /// Optional white-box agent opt-in: enables the guest↔host channel (16)
     /// for agent-signal ready points and in-guest markers. Default off ([G-3]).
     pub white_box: WhiteBoxPolicy,
@@ -243,8 +240,9 @@ pub enum ReadyPoint {
 
 The fields are exactly the launch-time inputs to QEMU plus the determinism knobs:
 architecture, kernel/root/initrd blobs, command line, memory, the fixed vCPU
-count, the fixed icount
-shift, the ready-point policy, and the white-box opt-in. Note what is *absent*:
+count, the ready-point policy, and the white-box opt-in. The global fixed
+1000-tick-per-nanosecond scale enters scenario identity; no per-node shift
+exists. Note what is *absent*:
 no host paths, no "snapshot path" (genesis snapshots are derived by `bake`, not
 authored — 05 §6), no participant count, no shmem geometry, no per-run scratch
 directories. The `NodeDef` is portable because it contains only content and
@@ -257,7 +255,7 @@ content-addressed references.
 
 - **[SPAT-7]** A VM node's configuration MUST carry only launch-time inputs:
   architecture, content-addressed kernel/root/initrd references, kernel command
-  line, memory size, the fixed vCPU count, the fixed icount shift, the ready-point
+  line, memory size, the fixed vCPU count, the ready-point
   policy, and the white-box opt-in. It MUST NOT carry host-varying absolute
   paths, an authored genesis-snapshot path (genesis snapshots are produced by
   `bake`, 05 §6), or any content that Crucible places inside the guest for core
@@ -266,9 +264,9 @@ content-addressed references.
 - **[SPAT-8]** Each VM node MUST request a fixed vCPU count `N >= 1`; `N` MUST be
   part of the hashed configuration, so a vCPU-count change is a different
   scenario. A multi-vCPU node (`N > 1`) MUST use the single-threaded RR-TCG
-  launch contract from 10/[QEMU-5] and 10/[QEMU-43], never MTTCG. The
-  `icount_shift` MUST be a fixed value (never `auto`) and MUST also be part of
-  the hashed configuration, so a shift change is a different scenario. *Gate:*
+  launch contract from 10/[QEMU-5] and 10/[QEMU-43], never MTTCG. The fixed
+  1000-tick-per-nanosecond scale MUST remain part of scenario identity.
+  Authored scenarios MUST NOT expose a shift field. *Gate:*
   `gate:content-address`. *Spec:* §3.1; cross-ref 09, 10.
 
 - **[SPAT-9]** Each node MUST declare a `ReadyPoint` policy ([EXEC-20]); the
@@ -581,7 +579,6 @@ let scenario = ScenarioBuilder::new()
         .root_image(root_blob)
         .cmdline("console=ttyS0 quiet")
         .memory_mib(512)
-        .icount_shift(7)
         .ready_point(ReadyPoint::ConsoleMarker { marker: "crucible-ready".into() }))
     .node("db-1", VmDef::x86_64().like("db-0"))   // reuse a node template
     .node("db-2", VmDef::x86_64().like("db-0"))
@@ -632,7 +629,6 @@ kernel = "blake3:9f86d0..."        # content-addressed blob ref (§8)
 root_image = "blake3:2c26b4..."
 cmdline = "console=ttyS0 quiet"
 memory_mib = 512
-icount_shift = 7
 ready_point = { kind = "console_marker", marker = "crucible-ready" }
 
 # ... db-1, db-2 emitted in canonical (sorted) order ...
@@ -853,7 +849,7 @@ The required checks:
 | Property refs | every predicate's node reference is declared | [SPAT-21] |
 | Ready point | white-box ready point requires the node's white-box opt-in | [SPAT-9] |
 | vCPU count | a fixed count `N >= 1`; `N > 1` uses single-threaded RR-TCG | [SPAT-8] |
-| Icount shift | a fixed, in-range shift (never `auto`) | [SPAT-8] |
+| Clock scale | fixed 1000 logical ticks per nanosecond, with no authored shift | [SPAT-8] |
 
 ```rust,illustrative
 /// Build-time validation failures. Every variant is a well-formedness error
@@ -868,7 +864,6 @@ pub enum BuildError {
     FaultSignalPlan { detail: String },
     InvalidPlanCoordinate { event: ScenarioEventId, detail: String },
     WhiteBoxReadyPointWithoutOptIn { node: NodeId },
-    InvalidIcountShift { node: NodeId, shift_was_auto: bool },
     // ... one variant per row of the validation table ...
 }
 ```
@@ -969,7 +964,7 @@ authority for its shape. The contract those files may rely on:
   immutable pure value with no live handles, host paths, or wall-clock; property-test
   immutability and that equal content ⇒ equal `id`. — satisfies [SPAT-1], [SPAT-4];
   spec §1, §2.
-  - Completed by `crates/crucible/src/model.rs`: `ScenarioDefForm` is the
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `ScenarioDefForm` is the
     materialized pure `(World, Plan, Properties, Seed)` tuple, clones validated
     components at construction, exposes only immutable component accessors, and
     reconstructs the executable `ScenarioDef` handle from the tuple's component
@@ -986,10 +981,10 @@ authority for its shape. The contract those files may rely on:
   `World`, faults in `Plan`, assertions in `Properties`, entropy in `Seed`); add a
   lint/test that no layer is folded into another. — satisfies [SPAT-2], [SPAT-33];
   spec §1, §10.
-  - Completed by `crates/crucible/src/model.rs`: `ScenarioBuilder` stores world
-    nodes/links, plan entries, property assertions, and seed in separate fields,
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `ScenarioBuilder` stores world
+    nodes/links, complete plans, property assertions, and seed in separate fields,
     exposes distinct entry points for each layer, and composes through
-    `World::from_nodes_and_links`, `Plan::from_entries_for_world`,
+    `World::from_nodes_and_links`, world-validated event-graph plans,
     `Properties::from_assertions_for_world`, and
     `World::scenario_def_with_plan_properties_and_seed`. The canonical scenario
     material records only component refs plus seed material, so topology, faults,
@@ -1002,10 +997,10 @@ authority for its shape. The contract those files may rely on:
   `Plan`, and `Properties`, and cross-reuse tests (one `World` across many defs; one
   `Plan`/`Properties` across many worlds). — satisfies [SPAT-3], [SPAT-5]; spec §2,
   §8.
-  - Completed by `crates/crucible/src/model.rs`: `World`, `Plan`, and
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `World`, `Plan`, and
     `Properties` each expose independent canonical bytes and BLAKE3 content
-    addresses in separate domains (`crucible.model.world.v1`,
-    `crucible.model.plan.v1`, and `crucible.model.properties.v1`). Scenario
+    addresses in separate domains (`crucible.model.world.v6`,
+    `crucible.model.plan.v6`, and `crucible.model.properties.v2`). Scenario
     identity composes those component refs plus seed material instead of folding
     component material together. The focused
     `spatial_components_have_independent_content_addresses_and_cross_reuse` test
@@ -1016,22 +1011,23 @@ authority for its shape. The contract those files may rely on:
 - [x] **T-SPAT-4** Implement `World = (nodes[], links[])` with unique `NodeId`s and
   canonical ordering; reject duplicate ids at build time. — satisfies [SPAT-6];
   spec §3.
-  - Completed by `crates/crucible/src/model.rs`: `World` now carries canonical
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `World` now carries canonical
     `nodes` and `links`, `World::from_nodes_and_links` sorts both collections
     before hashing, and build-time validation rejects duplicate `NodeId`s.
-    `crates/crucible/src/lib.rs` covers authoring-order-insensitive topology
+    `crates/crucible/engine/crucible-engine/src/lib.rs` covers authoring-order-insensitive topology
     hashes and link material changing scenario/bake identity;
     `checks.crucible.phase1.spatialWorldTopology` gates the task.
 - [x] **T-SPAT-5** Implement `NodeDef`/`VmDef` carrying only launch-time inputs
   (arch, content-addressed kernel/root/initrd, cmdline, memory, fixed vCPU count,
-  fixed icount shift, ready point, white-box opt-in); test no host-path leakage.
+  ready point, white-box opt-in); bind the global 1000-tick-per-nanosecond scale
+  into scenario identity and test no host-path leakage.
   — satisfies [SPAT-7], [SPAT-8]; spec §3.1.
-  - Completed by `crates/crucible/src/model.rs`: `WorldNode` and
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `WorldNode` and
     `NodeTemplate` are the concrete NodeDef/VmDef-bearing model for this phase
     and carry only launch-time inputs: `VmArchitecture`, content-addressed
     kernel/root/initrd references, command line, memory size, fixed vCPU count,
-    fixed icount shift, ready point, and white-box opt-in. TOML, compact binary,
-    and canonical material include those fields, and parsing rejects host-path
+    ready point, and white-box opt-in. TOML, compact binary, and canonical
+    material include those fields and the fixed clock scale; parsing rejects host-path
     image references. The focused
     `world_node_launch_inputs_are_portable_and_identity_bearing` test and
     `checks.crucible.phase1.spatialNodeLaunchInputs` gate cover field retention,
@@ -1040,19 +1036,19 @@ authority for its shape. The contract those files may rely on:
 - [x] **T-SPAT-6** Implement the `ReadyPoint` policy set (fixed-icount /
   network-idle / console-marker / agent-signal) and gate white-box ready points
   behind the white-box opt-in. — satisfies [SPAT-9]; spec §3.1.
-  - Completed by `crates/crucible/src/model.rs`: `WorldNode` carries the
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `WorldNode` carries the
     canonical `ReadyPoint` and `WhiteBoxPolicy`, the `ReadyPoint` enum includes
     `FixedIcount`, `NetworkIdle`, `ConsoleMarker`, and `AgentSignal`, and
     `World::validate_ready_point_policies` rejects `AgentSignal` unless
     `WhiteBoxPolicy::Enabled` is set. Model `bake` and QEMU bake validation call
     the shared validator before producing a genesis snapshot, and ready-point
-    material is part of the canonical world/bake hash input. `crates/crucible/src/lib.rs`
+    material is part of the canonical world/bake hash input. `crates/crucible/engine/crucible-engine/src/lib.rs`
     covers canonical hashing, material sensitivity, all four policies, and
     white-box opt-in rejection; `checks.crucible.phase1.executionReadyPoint`
     gates the task.
 - [x] **T-SPAT-7** Implement `LinkDef` with canonically-ordered endpoints
   validated against declared nodes. — satisfies [SPAT-10]; spec §3.2.
-  - Completed by `crates/crucible/src/model.rs`: `LinkDef::new` canonicalizes
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `LinkDef::new` canonicalizes
     endpoint order and rejects self-loops, `World::validate_topology` rejects
     links to undeclared nodes and duplicate canonical links, and the canonical
     world material includes the sorted link endpoint pairs. The
@@ -1061,13 +1057,13 @@ authority for its shape. The contract those files may rely on:
 - [x] **T-SPAT-8** Implement the `MIN_LINK_LATENCY` floor and reject zero/negative
   latency, sub-floor `latency - jitter`, and out-of-range loss at build time. —
   satisfies [SPAT-11], [SPAT-12], [SPAT-13]; spec §3.2, §9.
-  - Completed by `crates/crucible/src/model.rs`: `MIN_LINK_LATENCY` is exported as
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `MIN_LINK_LATENCY` is exported as
     the one-nanosecond floor, `LinkDef::with_transport` rejects sub-floor base
     latency and `latency - jitter` combinations, and unsigned `SimDuration`
     keeps negative latency unrepresentable at the model boundary.
     `LinkLossProbability` stores loss as fixed-point millionths and rejects
     values above `1_000_000`; canonical world material includes link latency,
-    jitter, loss, and bandwidth. `crates/crucible/src/lib.rs` covers identity
+    jitter, loss, and bandwidth. `crates/crucible/engine/crucible-engine/src/lib.rs` covers identity
     sensitivity and rejection cases, and
     `checks.crucible.phase1.spatialLinkTransport` gates the task.
 - [x] **T-SPAT-9** Guarantee the `World` encodes only logical topology with no
@@ -1092,7 +1088,7 @@ authority for its shape. The contract those files may rely on:
   mutation) and verify the participant set, RNG-stream set, lookahead graph, and
   bake set are functions of `World` alone. — satisfies [SPAT-16], [SPAT-18]; spec
   §4.
-  - Completed in `crates/crucible/src/model.rs`: `World` now stores nodes and
+  - Completed in `crates/crucible/engine/crucible-engine/src/model.rs`: `World` now stores nodes and
     links behind immutable accessors, exposes `World::static_topology()`, and
     derives the participant set, per-entity RNG-stream set, directed lookahead
     graph, and bake-node set from logical world topology alone. The focused
@@ -1103,7 +1099,7 @@ authority for its shape. The contract those files may rely on:
   isolate/rejoin) as `Plan` faults over the static topology; verify a not-yet-joined
   participant is a declared node held inactive. — satisfies [SPAT-17]; spec §4.
   - Completed by the sole signal-driven model in
-    `crates/crucible/src/model/fault_signal/`: `node.lifecycle` and
+    `crates/crucible/engine/crucible-engine/src/model/fault_signal/`: `node.lifecycle` and
     `network.delivery` bindings target declared world objects, while persistent
     contributions are installed, replaced, and removed by binding identity.
     Static-topology validation rejects undeclared node/link targets before
@@ -1112,18 +1108,18 @@ authority for its shape. The contract those files may rely on:
 - [x] **T-SPAT-12** Carry `Plan` as an orthogonal content-addressed component
   (defined in 17) with build-time validation of node/link references and
   virtual-time scheduling. — satisfies [SPAT-19], [SPAT-20]; spec §5.1.
-  - Completed in `crates/crucible/src/model/plan_properties.rs` and
-    `crates/crucible/src/model/fault_signal/plan.rs`: `Plan` carries one event
+  - Completed in `crates/crucible/engine/crucible-engine/src/model/plan_properties.rs` and
+    `crates/crucible/engine/crucible-engine/src/model/fault_signal/plan.rs`: `Plan` carries one event
     graph plus one canonical `FaultSignalPlan`, and
-    `World::scenario_def_with_plan` composes the independent world and plan
-    hashes without folding plan state into topology. Canonical program and
-    binding ordering makes authoring order irrelevant while preserving scenario
-    identity sensitivity to every semantic plan change. The terminal
+    `World::scenario_def_with_plan_properties_and_seed` composes the
+    independent world and plan hashes without folding plan state into topology.
+    Canonical program and binding ordering makes authoring order irrelevant while
+    preserving scenario identity sensitivity to every semantic plan change. The terminal
     `checks.crucible.phase7.gates.signalFaultSystem` gate covers this contract.
 - [x] **T-SPAT-13** Carry `Properties` as an orthogonal content-addressed component
   (defined in 18) with build-time predicate node-reference validation. — satisfies
   [SPAT-21]; spec §5.2.
-  - Completed in `crates/crucible/src/model.rs`: `Properties` now carries an
+  - Completed in `crates/crucible/engine/crucible-engine/src/model.rs`: `Properties` now carries an
     independent content hash over canonical `AssertionDef` material, covers the
     five property quantifier shapes from file 18, and validates every declared
     predicate node reference against `World` before scenario composition.
@@ -1138,7 +1134,7 @@ authority for its shape. The contract those files may rely on:
 - [x] **T-SPAT-14** Carry `Seed` as the root entropy (04), part of identity, with
   name-hashed per-entity stream forking so unrelated `World` edits don't perturb
   other streams. — satisfies [SPAT-22]; spec §5.3.
-  - Completed in `crates/crucible/src/model.rs`: `Seed` now carries the 256-bit
+  - Completed in `crates/crucible/engine/crucible-engine/src/model.rs`: `Seed` now carries the 256-bit
     root entropy component, participates directly in `ScenarioDef` identity via
     `World::scenario_def_with_plan_properties_and_seed`, and derives per-entity
     decision-RNG streams from the seed plus stable `RngStreamId` domain/name
@@ -1152,10 +1148,10 @@ authority for its shape. The contract those files may rely on:
 - [x] **T-SPAT-15** Implement the code-first `ScenarioBuilder` with structurally
   orthogonal entry points and node/world templating; no boot-event folding. —
   satisfies [SPAT-23]; spec §6, §10.
-  - Completed in `crates/crucible/src/model.rs`: `ScenarioBuilder` now exposes
-    distinct world-layer entry points (`world`, `node`, `node_like`, `link`,
-    `link_with_transport`, `link_def`), plan-layer entry points (`plan`,
-    `plan_entry`), properties-layer entry points (`properties`, `property`), and
+  - Completed in `crates/crucible/engine/crucible-engine/src/model.rs`: `ScenarioBuilder` now exposes
+    distinct world-layer entry points (`world`, `node`, `node_like`, `link`),
+    plan-layer entry points (`plan`, `plan_entry`), properties-layer entry points
+    (`properties`, `property`), and
     `seed`, all flowing through the existing validated component composition path.
     `NodeTemplate` supports reusable node settings and builder-level `node_like`
     templating, with no boot-event topology/assertion folding API. The focused
@@ -1167,7 +1163,7 @@ authority for its shape. The contract those files may rely on:
   TOML + compact binary, same canonical bytes) with round-trip equality and
   content-addressed-reference-only images. — satisfies [SPAT-24], [SPAT-25]; spec
   §6.1, §8.
-  - Completed in `crates/crucible/src/model.rs`: `ScenarioDefForm` now carries the
+  - Completed in `crates/crucible/engine/crucible-engine/src/model.rs`: `ScenarioDefForm` now carries the
     materialized `World`, `Plan`, `Properties`, and `Seed` components for
     storage/exchange, reconstructs the canonical `ScenarioDef`, and exposes
     deterministic TOML plus compact binary round-trip APIs. The component types
@@ -1183,11 +1179,11 @@ authority for its shape. The contract those files may rely on:
 - [x] **T-SPAT-17** Implement `ScenarioFamily` parametric over seed/fault-density/
   topology-size(+shape) producing concrete validated `ScenarioDef`s, with a run
   pinning exactly one instance. — satisfies [SPAT-26], [SPAT-27]; spec §7.
-  - Completed in `crates/crucible/src/model.rs`: `ScenarioFamily` now owns a
-    deterministic finite `FamilySpace` over `SeedSpace`, exact fixed-point
-    `FaultDensity`, `TopologySizeRange`, and `TopologyShape`, with bounded
+  - Completed in `crates/crucible/engine/crucible-engine/src/model.rs`: `ScenarioFamily` now owns a
+    deterministic finite `FamilySpace` over `SeedSpace`, `TopologySizeRange`,
+    and `TopologyShape`, with bounded
     cardinality and non-wrapping sample enumeration. Instantiating a `FamilyParams`
-    point builds a concrete `World`, density-scaled `Plan`, and `Properties`,
+    point builds a concrete `World`, an empty `Plan`, and `Properties`,
     validates them through the same component constructors as the code-first
     builder, and returns a `PinnedScenario` carrying only the concrete
     `ScenarioDefForm` plus its parameter point. `PinnedScenario::genesis_configuration`
@@ -1196,12 +1192,12 @@ authority for its shape. The contract those files may rely on:
     executing a family handle. The focused
     `scenario_family_pins_concrete_validated_instances` test and
     `checks.crucible.phase1.spatialScenarioFamily` gate cover deterministic
-    sampling, seed/density/topology identity sensitivity, out-of-space rejection,
+    sampling, seed/topology identity sensitivity, out-of-space rejection,
     and pinned-instance execution.
 - [x] **T-SPAT-18** Implement the self-contained `(seed, scenario, schedule)`
   reproduction artifact, content-addressed and offline-replayable, verified by the
   replay oracle. — satisfies [SPAT-28], [SPAT-29]; spec §7.1.
-  - Completed in `crates/crucible/src/model.rs`: `ReproductionArtifact` now
+  - Completed in `crates/crucible/engine/crucible-engine/src/model.rs`: `ReproductionArtifact` now
     captures the complete validated `ScenarioDefForm`, derives the seed from that
     scenario form, embeds the recorded `Schedule`, and content-addresses exactly
     that tuple with BLAKE3 over compact canonical bytes. `Schedule` and
@@ -1218,7 +1214,7 @@ authority for its shape. The contract those files may rely on:
   endpoint ordering, fixed field/integer/duration encoding, exact probability
   encoding, content-addressed refs) and prove meaning-not-spelling hashing across
   hosts. — satisfies [SPAT-30]; spec §8.
-  - Completed in `crates/crucible/src/model.rs`: the spatial component
+  - Completed in `crates/crucible/engine/crucible-engine/src/model.rs`: the spatial component
     constructors canonicalize world nodes/links, symmetric link and partition
     endpoints, plan entries, property assertions, and compound predicate sets
     before hashing or serializing. Canonical material uses fixed field order,
@@ -1233,19 +1229,21 @@ authority for its shape. The contract those files may rely on:
     signal, or content-addressed artifact material does change identity.
 - [x] **T-SPAT-20** Implement build-time validation for fault params, heal tags,
   and Plan times with precise localized errors. — satisfies [SPAT-31]; spec §9.
-  - Completed in `crates/crucible/src/model/fault_signal/plan.rs`,
+  - Completed in `crates/crucible/engine/crucible-engine/src/model/fault_signal/plan.rs`,
     `binding.rs`, `effect_registry.rs`, and the typed effect modules. Admission
     rejects missing programs, duplicate identities, invalid selectors,
     undeclared targets, incompatible mapping types, malformed effect
     parameters, and exceeded resource ceilings before hashing or execution.
     Typed signal coordinates prevent negative time from entering the runtime,
-    and TOML decoding rejects unknown or unsupported fields. The terminal
+    and TOML decoding rejects unknown or unsupported fields. The focused
+    `checks.crucible.phase1.spatialPlanValidation` gate runs signal-plan admission
+    and codec regressions. The terminal
     `checks.crucible.phase7.gates.signalFaultSystem` gate locks down canonical
     admission and production adapter execution.
 - [x] **T-SPAT-21** Implement the full parse/build-time validation pass (the §9
   table) rejecting ill-formed scenarios before hashing/running; assert no
   well-formedness check is deferred to runtime. — satisfies [SPAT-32]; spec §9.
-  - Completed by `crates/crucible/src/model.rs` and `crates/crucible-qemu`: the
+  - Completed by `crates/crucible/engine/crucible-engine/src/model.rs` and `crates/crucible/qemu/crucible-qemu-host`: the
     scenario-form constructors, TOML parser, and compact-binary parser validate
     `World`, `Plan`, and `Properties` before returning a runnable
     `ScenarioDefForm`; the parse paths also validate component content before
@@ -1253,10 +1251,10 @@ authority for its shape. The contract those files may rely on:
     link endpoints, invalid latency/jitter/loss, bad plan refs,
     unsupported/unknown plan fault params, dangling heal tags, negative plan
     times, undeclared property refs, empty compound predicates, white-box ready
-    points without opt-in, zero fixed vCPU counts, and out-of-range fixed icount
-    shifts. `WorldNode` now carries fixed `smp_vcpus` and `icount_shift`, and
-    both fields participate in world/scenario identity; `crucible-qemu`
-    launch-profile validation mirrors those rows before spawn and continues to
+    points without opt-in and zero fixed vCPU counts. `WorldNode` carries fixed
+    `smp_vcpus`, and the global 1000-tick-per-nanosecond scale participates in
+    world/scenario identity; `crucible-qemu-host` launch-profile validation mirrors
+    those rows before spawn and continues to
     reject MTTCG/non-pinned launch material. The focused
     `scenario_def_form_rejects_well_formedness_matrix_before_hashing` test and
     `checks.crucible.phase1.spatialValidationPass` gate lock the §9 validation

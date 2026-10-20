@@ -394,6 +394,20 @@ abandonment records leaked bytes and permits tombstone lifecycle completion,
 but never reports them as reclaimed. Database state must not claim storage was
 freed until the backend confirms it.
 
+The OCI provider inventory that supplies the strong ETags for registry
+placement deletion enumerates only the `oci/blobs/sha256/` namespace of a
+registry placement. The placement also
+holds the binary cache and git objects, which a blob inventory must never
+page through, so the surface listing port takes a key prefix that every
+backend applies natively (an object-store list prefix or a filesystem walk
+rooted at the prefix). Each listing page holds one object, and a page is
+checkpointed only once that object is hashed, so a dispatch that stops in the
+middle of a large blob resumes it without rehashing or skipping siblings. A
+durable checkpoint cursor is meaningful only for the prefix that produced it:
+it is stored with a scope tag, and a collecting generation whose cursor
+predates blob-scoped listing fails closed and restarts once as a fresh
+generation rather than resuming an unscoped cursor against a scoped walk.
+
 The deletion capability is stricter than ordinary write capability. A backend
 must atomically condition `DELETE` on the strong ETag captured by complete
 inventory. A plan fails closed before creating candidates when any targeted
@@ -401,11 +415,77 @@ placement cannot provide that contract or has no strong ETag. AWS S3 general
 buckets provide `DeleteObject` with `If-Match`; AOS does not substitute
 size-only conditions. The Cloudflare Workers R2 binding exposes conditional
 `get` and `put`, but its `delete` has no condition, and R2's S3 compatibility
-does not advertise conditional `DeleteObject`. Direct R2, `local_fs`, and an
-R2-compatible binding therefore remain an explicit blocked GC capability until
-they gain a proven conditional-delete or cooperative fencing protocol. A
-read-then-delete sequence is not sufficient because it can delete a replacement
-written between those calls.
+does not advertise conditional `DeleteObject`. External R2 bindings reached
+through S3 credentials therefore remain a blocked GC capability until they
+gain a proven conditional delete. A read-then-delete sequence is not
+sufficient on a shared bucket because it can delete a replacement written
+between those calls.
+
+The deployment bucket (`deployment_r2`) and `local_fs` use a cooperative
+fencing protocol instead, and the capability probe exercises it like any other
+backend. The Hub is the only writer of those stores; keys are content
+addressed; a candidate's catalog row is tombstoned before any physical action;
+and a push refuses to re-adopt a digest whose blob row is not active while the
+run holds the registry lock. Nothing can therefore replace a candidate key
+between the identity check and the delete, so a head-then-delete that compares
+the strong ETag and size observed by inventory is equivalent to a provider
+conditional delete for those backends.
+
+Registry deletion requires an empty catalog, but signed releases and tags are
+permanent roots of ordinary collection. A reviewed *retiring* run drops the
+catalog-owned roots (signed releases, tags, retained tag history) and collects
+without grace. It fails closed while any enabled route serves the registry's
+OCI surface, including an enabled registry OCI namespace or an enabled instance
+OCI route that names the registry as its default, at planning and inside the
+apply transaction, and once it is applying the indexer refuses to re-project
+container-release roots for that registry. Every physical deletion of a retiring run uses the same inventory,
+capability, and finalization fences as an ordinary run.
+
+An OCI GC run is `planned` after review, `applying` once apply tombstones its
+candidates and takes the registry GC lock, and `complete` after finalization;
+a plan that fails closed while planning is recorded as `failed`. An unapplied
+plan holds no lock, delete credential, or tombstone, and no worker can claim
+its frozen placement actions, so it ends in the terminal `aborted` state in one
+of two equivalent ways: its fifteen-minute review expires and the maintenance
+sweep records `review expired before apply`, or a registry configurator
+cancels it with `ContainerService.CancelContainerGcRun`, which records
+`cancelled by operator before apply`. Cancellation binds the run's resource
+version, fails closed for an `applying` run, whose recovery belongs to action
+requeue and finalization, and returns an already terminal run unchanged.
+
+Only applied GC work blocks registry teardown: an `applying` run and the
+unfinished placement actions of a run that was applied. Apply rejects an
+expired plan, so an expired or aborted run, and the never-claimable actions
+frozen by any run that was not applied, never block. Reviewed purge-fence
+admission additionally counts an unexpired `planned` run, because it could
+still be applied behind the fence.
+
+The final identity deletion is a `delete_registry` topology operation. It
+removes no provider objects itself. Its blockers fall into two classes:
+
+- Operator blockers refuse the reviewed apply with `failed_precondition` and an
+  exact per-class count. These are repositories, catalog objects, active OCI
+  sessions or leases, active publications or uploads, retained binary-cache
+  roots, staged container objects, applying GC runs, unfinished actions of
+  applied GC runs, active untracked repairs, snapshot references, offline
+  placements or placements without a current write revision, and provider
+  objects listed by a current inventory.
+- Automatic steps are performed by the operation. It abandons every `planned`
+  GC run, expired or not, recording `abandoned by registry deletion
+  OPERATION_ID` and the run ids in the operation detail. This is the same
+  `planned` to `aborted` transition as cancellation, so the reviewed deletion
+  never waits for the expiry sweep or a separate cancel. It acquires an
+  operation-owned purge fence. It requests a scan of any placement that was
+  never observed `ready/complete`. It collects a fresh complete inventory of
+  every placement under that fence.
+
+Missing or stale inventories are therefore never a reason to refuse deletion:
+the operation proves emptiness itself, including for a registry that never
+published and so never entered the scheduled inventory sweep. The deletion
+transaction re-asserts every predicate. If one changed after the last readiness
+evaluation, the transaction reports the changed blocker breakdown instead of an
+affected-row mismatch. An operation that fails or is cancelled releases the
+fence it acquired.
 
 Physical delete capability is also independent of logical write authority.
 The current authority controls where new bytes may be published; it does not

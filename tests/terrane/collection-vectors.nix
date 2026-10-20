@@ -9,7 +9,7 @@
   ];
 
   runTest = name: ''
-    cargo test --frozen --offline -p terrane-core --test collection_vectors ${name} -- --exact \
+    cargo test --frozen --offline -p terrane-format --test collection_vectors ${name} -- --exact \
       > "$TMPDIR/collection-vector-test.log"
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed; 0 ignored" not in output)' "$TMPDIR/collection-vector-test.log"
   '';

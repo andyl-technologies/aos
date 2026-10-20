@@ -9,6 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  planTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_graph_serialization.rs;
+  propertiesTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/property_fingerprint_neutrality.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -29,7 +31,7 @@
         needle = "`checks.crucible.phase1.spatialScenarioDefValue`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "executable scenario handle";
         needle = "pub struct ScenarioDef";
@@ -127,7 +129,7 @@
         needle = "ScenarioImageReferenceNotContentAddressed";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" model [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "public scenario id field";
         needle = "pub id: ContentHash,\n    /// The root entropy carried by this scenario definition.";
@@ -153,50 +155,42 @@
         needle = "UNIX_EPOCH";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_graph_serialization.rs" planTest [
       {
-        label = "focused scenario value test";
-        needle = "fn scenario_def_form_is_immutable_pure_four_tuple_value()";
+        label = "focused scenario component value test";
+        needle = "fn graph_plan_is_the_scenario_plan_component()";
       }
       {
-        label = "test asserts world component accessor";
-        needle = "assert_eq!(form.world(), &world);";
-      }
-      {
-        label = "test asserts plan component accessor";
+        label = "plan component accessor";
         needle = "assert_eq!(form.plan(), &plan);";
       }
       {
         label = "test asserts properties component accessor";
-        needle = "assert_eq!(form.properties(), &properties);";
+        needle = "changed_properties_form.properties().content_hash(),";
       }
       {
-        label = "test asserts seed component accessor";
-        needle = "assert_eq!(form.seed(), seed);";
-      }
-      {
-        label = "test proves equal content equal id";
-        needle = "assert_eq!(left.id(), right.id());";
+        label = "test proves round-trip value equality";
+        needle = "assert_eq!(parsed_binary, form);";
       }
       {
         label = "test proves world identity sensitivity";
-        needle = "changed-world form should be valid";
+        needle = "assert_ne!(changed_world_form.id(), changed_properties_form.id())";
       }
-      {
-        label = "test proves plan identity sensitivity";
-        needle = "changed-plan form should be valid";
-      }
+    ]
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/property_fingerprint_neutrality.rs" propertiesTest [
       {
         label = "test proves properties identity sensitivity";
-        needle = "changed-properties form should be valid";
+        needle = "property amendment must move the scenario hash";
       }
       {
-        label = "test proves seed identity sensitivity";
-        needle = "changed-seed form should be valid";
+        label = "test exercises world plan and seed accessors";
+        needle = "assert_same_run_components(&removed, &declared);";
       }
+    ]
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "test rejects host image path";
-        needle = "ContentAddressedBlobRef::parse(\"kernel\", \"/nix/store/not-a-content-ref\")";
+        needle = "ContentAddressedBlobRef::parse(\"kernel\", \"/nix/store/kernel\")";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -214,7 +208,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -258,9 +255,19 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-spatial-scenario-def-value-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
-              --lib \
-              scenario_def_form_is_immutable_pure_four_tuple_value \
+              -p crucible-engine \
+              --test event_graph_serialization \
+              graph_plan_is_the_scenario_plan_component \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-scenario-def-value-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-engine \
+              --features test-double \
+              --test property_fingerprint_neutrality \
+              property_changes_move_scenario_identity_without_moving_run_material \
               -- --test-threads=1
           '';
         }

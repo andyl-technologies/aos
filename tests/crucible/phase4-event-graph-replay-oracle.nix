@@ -10,10 +10,10 @@
 
   replayTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/event_graph_replay_oracle.rs;
   };
-  replayGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
-  assertionProximityTest = builtins.readFile ../../crates/crucible/tests/assertion_proximity_gradient.rs;
+  replayGate = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs;
+  assertionProximityTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/assertion_proximity_gradient.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   assertionsDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -39,7 +39,7 @@
         needle = "`checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_graph_replay_oracle.rs" replayTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_graph_replay_oracle.rs" replayTest [
       {
         label = "identical replay/e2e test";
         needle = "event_graph_replay_oracle_rederives_identical_firings_actions_and_verdict";
@@ -145,7 +145,7 @@
         needle = "struct NoGuestLeaves";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_replay_oracle.rs" replayGate [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs" replayGate [
       {
         label = "assertion replay-oracle coverage test";
         needle = "gate_replay_oracle_covers_assertion_regrade_and_violation_reproduction";
@@ -175,7 +175,7 @@
         needle = "assertion replay log must be derived from the artifact schedule, not a cloned fixture";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_proximity_gradient.rs" assertionProximityTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/assertion_proximity_gradient.rs" assertionProximityTest [
       {
         label = "assertion proximity online/offline equality";
         needle = "assert_eq!(offline, online)";
@@ -205,16 +205,16 @@
     ]
     ++ failuresFor "tests/crucible/phase4-e2e-determinism.nix" e2eGate [
       {
-        label = "real scheduler-backed e2e target";
-        needle = "gate_e2e_determinism_concurrency";
+        label = "native QEMU e2e target";
+        needle = "component=gate:e2e-determinism/native-qemu-acceptance";
       }
       {
-        label = "e2e target runs with test-double";
-        needle = "--features test-double";
+        label = "e2e target runs packaged QEMU";
+        needle = "native_qemu_execution=true";
       }
       {
         label = "e2e target scenario metadata";
-        needle = "scenario=serial-vs-concurrent-authoritative-drive";
+        needle = "scenario=representative-three-vm-fault-injected";
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
@@ -229,7 +229,7 @@
         needle = "reason = \"full replay oracle gate is intentionally pending\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_graph_replay_oracle.rs" replayTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/event_graph_replay_oracle.rs" replayTest [
       {
         label = "trigger action decision variant";
         needle = "Decision::Trigger";
@@ -262,15 +262,19 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase4-event-graph-replay-oracle";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
       src = crucibleSrc;
 
       buildDeps =
         [
           pkgs.coreutils
+          pkgs.pkg-config
           pkgs.rust
           pkgs.sed
+          pkgs.sqlite
         ]
         ++ dependencies;
+      runtimeDeps = [pkgs.sqlite];
 
       phases = [
         {
@@ -310,7 +314,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-graph-replay-oracle-target" \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test assertion_proximity_gradient \
               --test event_graph_replay_oracle \

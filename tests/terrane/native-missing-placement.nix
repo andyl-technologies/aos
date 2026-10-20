@@ -13,13 +13,13 @@ in
   # Creator records and Raw acknowledgment must come from actual native execution.
   sourceGate "native-missing-placement" ''
     cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
+    cargo test --frozen --offline -p terrane-sdk --no-default-features \
       --features tokio,surface-sdk --lib -- --list > "$TMPDIR/missing-placement-tests.txt"
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$TMPDIR/missing-placement-tests.txt" '${builtins.toJSON selectors}'
 
     for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
+      if ! cargo test --frozen --offline -p terrane-sdk --no-default-features \
         --features tokio,surface-sdk --lib "$test_name" -- --exact \
         > "$TMPDIR/missing-placement-test.log" 2>&1; then
         cat "$TMPDIR/missing-placement-test.log"

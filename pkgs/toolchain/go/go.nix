@@ -1,5 +1,6 @@
 ##! Go — the Go programming language, built from source
 {
+  lib,
   mkDerivation,
   mkUpstream,
   gnumake,
@@ -83,6 +84,39 @@ in
   then
     import ./_go-darwin.nix {
       inherit mkDerivation version src update stdenv;
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
+        target = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
+        role = "public-package";
+      };
       pname = "go";
       nativeGo = buildPackages.go;
       description = "Go programming language";
@@ -91,13 +125,132 @@ in
   then
     import ./_go-linux-cross.nix {
       inherit mkDerivation version src stdenv;
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
+        target = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
+        role = "public-package";
+      };
       pname = "go";
       nativeGo = buildPackages.go;
       description = "Go programming language";
     }
   else
     mkDerivation {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
+        target = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
+        role = "public-package";
+      };
       pname = "go";
+      qualification.packageProbe = lib.qualification.commandProbe {
+        "primary" = {
+          "artifacts" = [];
+          "expected" = "The program prints the strings in lexical order.";
+          "files" = {
+            "main.go" = "package main\n\nimport (\n    \"fmt\"\n    \"sort\"\n)\n\nfunc main() {\n    values := []string{\"gamma\", \"alpha\", \"beta\"}\n    sort.Strings(values)\n    fmt.Println(values)\n}\n";
+          };
+          "input" = "A Go program that sorts three strings.";
+          "operation" = "Compile and run the program with the packaged Go toolchain.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/go"
+                "run"
+                "@work@/primary/main.go"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "[alpha beta gamma]\n";
+              };
+              "timeout_seconds" = 120;
+            }
+          ];
+        };
+        "badInput" = {
+          "artifacts" = [];
+          "expected" = "The Go parser rejects the source with status 1.";
+          "files" = {
+            "invalid.go" = "package main\nfunc main() { value := ; _ = value }\n";
+          };
+          "input" = "A Go program with a missing expression in a declaration.";
+          "operation" = "Compile the malformed program with the packaged Go toolchain.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/go"
+                "run"
+                "@work@/bad-input/invalid.go"
+              ];
+              "exit_code" = 1;
+              "observes_rejection" = true;
+              "stdout" = {
+                "exact" = "";
+              };
+              "timeout_seconds" = 120;
+            }
+          ];
+        };
+      };
+
       inherit version;
       inherit update;
 
@@ -636,6 +789,8 @@ in
             self
             pkgs.llvm
             pkgs.zlib
+            pkgs.stdenv.gcc
+            pkgs.glibc.dev
           ];
           memory = 768;
           testScript = ''
@@ -651,25 +806,27 @@ in
             export LD_LIBRARY_PATH="${pkgs.zlib}/lib:$LD_LIBRARY_PATH"
             mkdir -p "$GOPATH" "$GOCACHE" /tmp/cgo-integration
 
-            BT="${builtins.toString pkgs.bootstrapTools}"
-            DL=$(ls "$BT"/lib/ld-linux-*.so.* | head -1)
-            GCC_VER=$(ls "$BT"/lib/gcc/x86_64-unknown-linux-gnu)
-
-            # --sysroot=/ points at the Firecracker guest rootfs assembled for
-            # this VM test, not at the host filesystem or Nix build sandbox root.
-            cat > /tmp/clang-cgo << EOF
+            # Clang needs the raw GCC installation and split glibc outputs;
+            # bootstrapTools is the stdenv compiler wrapper, not that tree.
+            cat > /tmp/clang-cgo << 'EOF'
             #!/bin/sh
-            exec ${pkgs.llvm}/bin/clang \\
-              --sysroot=/ \\
-              -isystem "$BT/include-glibc" \\
-              -B"$BT/lib" \\
-              -B"$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER" \\
-              -L"$BT/lib" \\
-              -L"$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER" \\
-              -Wl,-dynamic-linker="$DL" \\
-              -Wl,-rpath,"$BT/lib" \\
-              -Wl,-rpath,"$BT/lib/gcc/x86_64-unknown-linux-gnu/$GCC_VER" \\
-              "\$@"
+            linking=true
+            for argument in "$@"; do
+              case "$argument" in
+                -c|-S|-E|-fsyntax-only) linking=false ;;
+              esac
+            done
+
+            set -- -isystem ${pkgs.glibc.dev}/include "$@"
+            if "$linking"; then
+              # CGO also compiles with -Werror. Linker-only flags must stay
+              # out of those invocations so Clang does not reject unused input.
+              set -- --gcc-toolchain=${pkgs.stdenv.gcc} \
+                -B${pkgs.glibc}/lib -L${pkgs.glibc}/lib \
+                -Wl,-dynamic-linker=${pkgs.glibc}/lib/${stdenv.hostPlatform.dynamicLinker} \
+                -Wl,-rpath,${pkgs.glibc}/lib "$@"
+            fi
+            exec ${pkgs.llvm}/bin/clang "$@"
             EOF
             chmod +x /tmp/clang-cgo
 

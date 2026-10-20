@@ -1,0 +1,35 @@
+[package]
+name = "terrane-linux"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+blake3.workspace = true
+prost.workspace = true
+terrane-sdk = { workspace = true, features = ["std", "send"] }
+terrane-format.workspace = true
+async-trait.workspace = true
+libc.workspace = true
+rustix = { workspace = true, features = ["net", "process"] }
+tokio = { workspace = true, optional = true }
+
+[features]
+tokio = ["dep:tokio", "terrane-sdk/tokio"]
+# Native proof executables run in isolated guests, outside deployed role builds.
+native-test-fixtures = ["tokio"]
+
+[[example]]
+name = "publication_fixture"
+required-features = ["native-test-fixtures"]
+
+[[example]]
+name = "configured_sdk_fixture"
+required-features = ["tokio"]
+
+[[example]]
+name = "host_cache_fixture"
+required-features = ["native-test-fixtures"]
+
+[lints]
+workspace = true

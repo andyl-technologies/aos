@@ -11,7 +11,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliCargo = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  cliCargo = builtins.readFile ../../crates/crucible/control/crucible-cli/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
   cruciblePkg = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
   pluginPkg = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
@@ -33,7 +33,7 @@
         needle = "`T-CLI-5` is green through `checks.crucible.phase5.cliHermeticDiscovery`";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "QEMU env constant";
         needle = "const CRUCIBLE_QEMU_ENV: &str = \"CRUCIBLE_QEMU\";";
@@ -56,7 +56,7 @@
       }
       {
         label = "plugin ABI derives from shmem";
-        needle = "crucible::SHMEM_ABI_VERSION";
+        needle = "crucible_engine::SHMEM_ABI_VERSION";
       }
       {
         label = "required plugin ABI helper";
@@ -120,7 +120,7 @@
       }
       {
         label = "patched QEMU marker check";
-        needle = "qemu_crucible_patches_applied";
+        needle = "qemu_crucible_atomic_patch_applied";
       }
       {
         label = "plugin support marker check";
@@ -143,12 +143,12 @@
         needle = "qemu_build_id: String";
       }
       {
-        label = "resolved backend carries QEMU patch series";
-        needle = "qemu_patch_series_hash: String";
+        label = "resolved backend carries QEMU atomic patch";
+        needle = "qemu_atomic_patch_hash: String";
       }
       {
-        label = "QEMU marker carries patch series";
-        needle = "required_metadata_field(&fields, \"qemu_patch_series_hash\", &marker)";
+        label = "QEMU marker carries atomic patch";
+        needle = "required_metadata_field(&fields, \"qemu_atomic_patch_hash\", &marker)";
       }
       {
         label = "resolved backend carries plugin ABI";
@@ -183,10 +183,10 @@
         needle = "cli_hermetic_qemu_discovery_rejects_text_artifact_impersonation";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliCargo [
+    ++ failuresFor "crates/crucible/control/crucible-cli/Cargo.toml" cliCargo [
       {
         label = "CLI depends on the API-owned guest-host protocol surface";
-        needle = "crucible-api = { path = \"../crucible-api\" }";
+        needle = "crucible-control-api = { path = \"../crucible-control-api\" }";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePkg [
@@ -208,13 +208,13 @@
       }
       {
         label = "separate suite runtime closure";
-        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
+        needle = "[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [
       {
         label = "plugin build-info reads shmem source";
-        needle = "done < crucible-shmem/src/lib.rs";
+        needle = "done < crucible/protocol/crucible-qemu-shmem/src/lib.rs";
       }
       {
         label = "plugin build-info ABI prefix";
@@ -231,7 +231,7 @@
         needle = "cliHermeticDiscovery = import ./phase5-cli-hermetic-discovery.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "host PATH QEMU discovery";
         needle = "std::env::var(\"PATH\")";
@@ -255,12 +255,17 @@ in
   pkgs.mkDerivation {
     pname = "crucible-phase5-cli-hermetic-discovery";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = crucibleSrc;
+    runtimeDeps = [pkgs.sqlite];
 
     buildDeps = [
       pkgs.coreutils
       pkgs.rust
       pkgs.sed
+
+      pkgs.pkg-config
+      pkgs.sqlite
     ];
 
     CRUCIBLE_T_CLI_5_FAILURES = failureText;
@@ -331,11 +336,11 @@ in
             -o "$plugin_fixture/lib/libcrucible_qemu_plugin.so"
           {
             printf 'qemu_plugins_enabled=true\n'
-            printf 'qemu_crucible_patches_applied=true\n'
+            printf 'qemu_crucible_atomic_patch_applied=true\n'
             printf 'qemu_sim_capability=qemu-crucible\n'
-            printf 'qemu_patch_series_hash=sha256-test-qemu-patch-series\n'
-            printf 'qemu_shmem_abi_version=17\n'
-            printf 'qemu_shmem_abi=crucible-shmem-abi-v17\n'
+            printf 'qemu_atomic_patch_hash=sha256-test-qemu-atomic-patch\n'
+            printf 'qemu_shmem_abi_version=30\n'
+            printf 'qemu_shmem_abi=crucible-shmem-abi-v30\n'
             printf 'qemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\n'
             printf 'qemu_shmem_header_hash=sha256-test-shmem-header\n'
             printf 'qemu_build_id=gate-aos-qemu-build\n'
@@ -344,10 +349,10 @@ in
             printf 'package=crucible-qemu-plugin\n'
             printf 'qemu_package=qemu-crucible\n'
             printf 'qemu_build_id=gate-aos-qemu-build\n'
-            printf 'shmem_abi_version=17\n'
-            printf 'shmem_abi=crucible-shmem-abi-v17\n'
+            printf 'shmem_abi_version=30\n'
+            printf 'shmem_abi=crucible-shmem-abi-v30\n'
             printf 'shmem_generated_header_hash=sha256-test-shmem-header\n'
-            printf 'plugin_abi=crucible-shmem-abi-v17\n'
+            printf 'plugin_abi=crucible-shmem-abi-v30\n'
           } > "$plugin_fixture/nix-support/crucible-qemu-plugin-build-info"
           export CRUCIBLE_AOS_QEMU="$qemu_fixture/bin/qemu-system-x86_64"
           export CRUCIBLE_AOS_PLUGIN="$plugin_fixture/lib/libcrucible_qemu_plugin.so"

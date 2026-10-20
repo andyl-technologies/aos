@@ -368,7 +368,7 @@ Faults are not imperative session commands. The admitted signal-driven fault
 plan is part of scenario identity, and its typed bindings apply and remove
 effects at deterministic adapter opportunities. Changing that plan creates a
 new scenario or fork; there is no `InjectFault`, `HealFault`, `FaultSpec`, or
-`FaultTag` compatibility path in the session command set.
+`FaultTag` command in the session command set.
 
 ### 4.1 Command → model/graph/scheduler mapping
 
@@ -667,8 +667,8 @@ the one temporal graph (07). This section states the session-level contract;
   the fat form is a cache.
 
 - **resume** is `instantiate` of the configuration the savepoint records (05 §5):
-  `loadvm` of its fat snapshot, or replay-from-nearest-fat-ancestor if it is thin
-  (07 §4). A session created from a savepoint is *not* a special "restored"
+  version-nine descriptor-backed exact restore, or explicit replay from the
+  nearest retained ancestor (07 §4). A session created from a savepoint is *not* a special "restored"
   object — it is a fresh session at the checkpoint's recorded configuration and
   runtime frontier. The configuration may still be genesis when deterministic
   execution advanced without appending a causal schedule decision.
@@ -681,8 +681,9 @@ the one temporal graph (07). This section states the session-level contract;
 The headline (05 §5): **a session is created at genesis OR resumed from any
 checkpoint identically** — both are `instantiate` of a configuration,
 distinguished only by the recorded checkpoint boundary. There is no `boot()`
-distinct from `loadvm()` distinct from `fork()` at the session level any more
-than there is at the model level.
+distinct from `resume()` distinct from `fork()` at the session level any more
+than there is at the model level; realization still selects a bounded backend
+mechanism under that single operation.
 
 - **[SESS-18]** `create_savepoint`, `resume` (instantiate-from-checkpoint), and
   `fork` MUST be implemented purely as operations on the execution model (05) and
@@ -867,7 +868,7 @@ The session drives VMs through a **pluggable backend trait**, never against a
 QEMU-specific type. This is what lets the *same* session, scheduler, and command
 set run against three backends interchangeably:
 
-- the **real QEMU backend** (`crucible-qemu`, 10) for fidelity;
+- the **real QEMU backend** (`crucible-qemu-host`, 10) for fidelity;
 - the **in-process test double** (`SimDouble`, 24 §3) for fast, deterministic
   testing of all host orchestration (scheduling, transport, save/restore, fork,
   the whole control plane) without booting a guest;
@@ -915,8 +916,8 @@ pub trait SimulationBackend {
     /// Returns an error if a node's state cannot be captured.
     fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError>;
 
-    /// Restore the backend to a prior snapshot (the `loadvm` branch of
-    /// `instantiate`, 05 §5).
+    /// Restore the backend to a prior version-nine descriptor-backed snapshot
+    /// (the exact branch of `instantiate`, 05 §5).
     ///
     /// # Errors
     /// Returns an error if the snapshot cannot be restored.
@@ -1047,7 +1048,7 @@ pub enum SessionError {
   inter-quantum mailbox polls and a quanta-measured acknowledgement bound; wire
   `gate:control-responsive`. — satisfies [SESS-2], [SESS-3], [SESS-9];
   spec §3.
-  - Completed by `crates/crucible-session/src/lib.rs`: `SessionActor::run`
+  - Completed by `crates/crucible/control/crucible-session/src/lib.rs`: `SessionActor::run`
     delegates to a bounded `run_once` loop that polls
     `mpsc::Receiver::try_recv` before each running quantum, applies at most one
     mailbox command or calls `Engine::step_quantum` once, publishes the
@@ -1116,8 +1117,8 @@ pub enum SessionError {
   - Completed by `checks.crucible.phase5.sessionBoundaryControl`:
     `crucible-session` now records accepted running boundary commands in an
     engine-owned `SessionControlLogEntry` sequence keyed by virtual-time frontier
-    and completed quantum count, including scheduler control payloads for legacy
-    injection and injected/healed faults, plus local boundary effects for
+    and completed quantum count, including scheduler control payloads for
+    injected and healed faults, plus local boundary effects for
     breakpoint mutation, savepoint creation, fork, pause, and stop.
     Focused tests prove the actor applies these commands at nonzero deterministic
     boundary coordinates, applies scheduler-backed controls synchronously so a
@@ -1227,9 +1228,9 @@ pub enum SessionError {
   - Completed by `checks.crucible.phase5.sessionSimDoubleSuite`: the aggregate
     runs the full `crucible-session` suite, the API and daemon
     `gate_control_responsive` targets, and `gate:scheduler-liveness` under the
-    `test-double` feature with an initialized and stepped `crucible::SimDouble`
+    `test-double` feature with an initialized and stepped `crucible_engine::SimDouble`
     smoke path before the pure scheduler-liveness reduction. Source checks assert
-    the session/API/daemon control-responsive paths drive `crucible::SimDouble`
+    the session/API/daemon control-responsive paths drive `crucible_engine::SimDouble`
     through quantum-loop adapters, avoid QEMU backend construction or process
     launch, and reserve real QEMU for Contract A, guest non-mutation, and patch
     inertness fidelity properties only.
@@ -1257,11 +1258,11 @@ pub enum SessionError {
   node crash — instead of entering `Stopped` with a fixed verdict, and forbid any
   surface from synthesizing a terminal status the engine did not produce.
   — satisfies [ASRT-23], [SESS-6]; spec §4, §9 of 18.
-  - Defect (audit 2026-07-28): `crucible-session/src/session/engine.rs` has one
+  - Defect (audit 2026-07-28): `crucible/control/crucible-session/src/session/engine.rs` has one
     production site that supplies a terminal outcome other than `Stopped`, and it
     is hardcoded `Outcome::Passed`; `Outcome::Failed`, `Outcome::Timeout`, and
     `Outcome::Crashed` are unreachable outside tests. The CLI compensates in
-    `crucible-cli/src/cli/control.rs` by reporting `Failed` when the observed
+    `crucible/control/crucible-cli/src/cli/control.rs` by reporting `Failed` when the observed
     outcome is `Passed` under `--until property-violation`, and by deriving
     `Timeout` from a CLI-side budget comparison. A harness whose purpose is
     finding failures therefore cannot report one from its engine.

@@ -14,12 +14,12 @@
 in
   sourceGate "native-cold-fork-legacy" ''
     cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
+    cargo test --frozen --offline -p terrane-sdk --no-default-features \
       --features tokio,surface-sdk --lib -- --list > "$TMPDIR/cold-legacy-native-tests.txt"
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$TMPDIR/cold-legacy-native-tests.txt" '${builtins.toJSON nativeSelectors}'
     for test_name in ${builtins.concatStringsSep " " nativeSelectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
+      if ! cargo test --frozen --offline -p terrane-sdk --no-default-features \
         --features tokio,surface-sdk --lib "$test_name" -- --exact \
         > "$TMPDIR/cold-legacy-test.log" 2>&1; then
         cat "$TMPDIR/cold-legacy-test.log"
@@ -28,11 +28,11 @@ in
       python3 ../tests/terrane/check_native_gate.py execution \
         "$TMPDIR/cold-legacy-test.log" "[\"$test_name\"]"
     done
-    cargo test --frozen --offline -p terrane --no-default-features \
+    cargo test --frozen --offline -p terrane-sdk --no-default-features \
       --features tokio,surface-sdk,send --lib -- --list > "$TMPDIR/cold-legacy-send-tests.txt"
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$TMPDIR/cold-legacy-send-tests.txt" '["${sendSelector}"]'
-    if ! cargo test --frozen --offline -p terrane --no-default-features \
+    if ! cargo test --frozen --offline -p terrane-sdk --no-default-features \
       --features tokio,surface-sdk,send --lib '${sendSelector}' -- --exact \
       > "$TMPDIR/cold-legacy-test.log" 2>&1; then
       cat "$TMPDIR/cold-legacy-test.log"

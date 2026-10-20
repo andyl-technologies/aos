@@ -44,10 +44,10 @@
         fi
       }
 
-      cargo_json "$TMPDIR/configured-sdk-unit.jsonl" test --frozen --offline -p terrane-fs \
-        --features tokio,terrane/surface-sdk --lib --no-run --message-format=json
-      cargo_json "$TMPDIR/configured-sdk-example.jsonl" build --frozen --offline -p terrane-fs \
-        --features tokio,terrane/surface-sdk --example configured_sdk_fixture \
+      cargo_json "$TMPDIR/configured-sdk-unit.jsonl" test --frozen --offline -p terrane-linux \
+        --features tokio,terrane-sdk/surface-sdk --lib --no-run --message-format=json
+      cargo_json "$TMPDIR/configured-sdk-example.jsonl" build --frozen --offline -p terrane-linux \
+        --features tokio,terrane-sdk/surface-sdk --example configured_sdk_fixture \
         --message-format=json
       cargo_json "$TMPDIR/configured-sdk-cli.jsonl" build --frozen --offline -p terrane-cli --bin terrane \
         --message-format=json

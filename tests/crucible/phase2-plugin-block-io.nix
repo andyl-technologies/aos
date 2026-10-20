@@ -3,23 +3,24 @@
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginBlockIo",
   taskIds ? [],
-  openTaskIds ? [],
+  openTaskIds ? ["T-PLUG-12"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   pluginBlockIo = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io_tests.rs)
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs;
+    })
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io_tests.rs;
+    })
   ];
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemSources = builtins.concatStringsSep "\n" (map builtins.readFile [
-    ../../crates/crucible-shmem/src/lib.rs
-    ../../crates/crucible-shmem/src/shmem/frame_node.rs
-    ../../crates/crucible-shmem/src/shmem/region.rs
-    ../../crates/crucible-shmem/src/shmem/ring_coverage.rs
-  ]);
+  shmemSources = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -49,17 +50,13 @@
     lib.concatMap (
       api:
         lib.optionals (hasInfix api pluginBlockIo) [
-          "crates/crucible-qemu-plugin/src/block_io.rs: forbidden host-time, entropy, or lock API in block callback path: `${api}`"
+          "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs: forbidden host-time, entropy, or lock API in block callback path: `${api}`"
         ]
     )
     forbiddenCallbackApis;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-12 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLiveBlockIo`";
-      }
       {
         label = "block callback wording";
         needle = "Implement the block submit/poll callbacks against the";
@@ -69,7 +66,7 @@
         needle = "validating the response's";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "block I/O module exported";
         needle = "pub mod block_io;";
@@ -107,7 +104,7 @@
         needle = "handle_block_poll_callback";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
       {
         label = "block state";
         needle = "pub struct PluginBlockIo";
@@ -218,7 +215,7 @@
       }
       {
         label = "request id match";
-        needle = "response.request_id() != token.request_id";
+        needle = "response.identity() != token.identity";
       }
       {
         label = "response source match";
@@ -305,7 +302,7 @@
         needle = "block_response_decode_rejects_nonzero_reserved_and_trailing_payload";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/{lib.rs,shmem/*.rs}" shmemSources [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/{lib.rs,shmem/*.rs}" shmemSources [
       {
         label = "block slot constant";
         needle = "pub const SLOT_BLK_IO";
@@ -347,7 +344,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];
@@ -405,7 +405,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=complete
+            status=partial
             block_rings=vm-slot-to-block-io-and-return
             submit_icount=stamped-in-request-frame
             device_io_freeze=begin-submit-before-enqueue

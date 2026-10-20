@@ -32,11 +32,15 @@ CASES = [
     "failure_display_debug_and_entire_source_chain_redact_private_data",
 ]
 PREFIX = "configured_sdk::tests::"
-FLAGS = ["--frozen", "--offline", "-p", "terrane-fs",
-         "--features", "tokio,terrane/surface-sdk"]
+FLAGS = ["--frozen", "--offline", "-p", "terrane-linux",
+         "--features", "tokio,terrane-sdk/surface-sdk"]
 FS_FEATURES = ["tokio"]
 REPOSITORY_FEATURES = ["send", "std", "surface-sdk", "tokio"]
 KINDS = ["unit", "example", "cli"]
+PACKAGE_PATHS = {
+    "terrane-cli": "terrane/cli/terrane-cli",
+    "terrane-linux": "terrane/linux/terrane-linux",
+}
 TARGET_PLATFORM = "x86_64-linux"
 PLATFORM_MARKER = "nix-support/aos-target-platform"
 
@@ -68,21 +72,21 @@ def records(path):
 
 def select_artifact(events, packages, workspace, target, kind):
     """Checks the actual FS/CLI target and its compiled SDK dependency."""
-    package_name = "terrane-cli" if kind == "cli" else "terrane-fs"
+    package_name = "terrane-cli" if kind == "cli" else "terrane-linux"
     package = [item for item in packages
-               if pathlib.Path(item["manifest_path"]) == workspace / package_name / "Cargo.toml"]
+               if pathlib.Path(item["manifest_path"]) == workspace / PACKAGE_PATHS[package_name] / "Cargo.toml"]
     repository = [item for item in packages
-                  if pathlib.Path(item["manifest_path"]) == workspace / "terrane/Cargo.toml"]
+                  if pathlib.Path(item["manifest_path"]) == workspace / "terrane/sdk/terrane-sdk/Cargo.toml"]
     require(len(package) == len(repository) == 1, "ambiguous source packages")
-    name = {"unit": "terrane_fs", "example": "configured_sdk_fixture", "cli": "terrane"}[kind]
+    name = {"unit": "terrane_linux", "example": "configured_sdk_fixture", "cli": "terrane"}[kind]
     candidates = [event for event in events if event.get("reason") == "compiler-artifact"
                   and event.get("target", {}).get("name") == name
                   and event.get("executable")]
     require(len(candidates) == 1, "ambiguous configured SDK artifact")
     artifact = candidates[0]
-    source = {"unit": "terrane-fs/src/lib.rs",
-              "example": "terrane-fs/examples/configured_sdk_fixture.rs",
-              "cli": "terrane-cli/src/main.rs"}[kind]
+    source = {"unit": "terrane/linux/terrane-linux/src/lib.rs",
+              "example": "terrane/linux/terrane-linux/examples/configured_sdk_fixture.rs",
+              "cli": "terrane/cli/terrane-cli/src/main.rs"}[kind]
     profile = artifact["profile"]
     executable = pathlib.Path(artifact["executable"])
     test = kind == "unit"
@@ -147,7 +151,7 @@ def discover(artifact, executable, kind, workspace, target, temporary, target_li
         subprocess.run(command, env=environment, stdout=log, stderr=subprocess.STDOUT, check=True)
     require(digest(executable) == before, "Cargo discovery changed the selected executable")
     launch = json.loads(capture_path.read_text())
-    expected_cwd = workspace / "terrane-fs" if kind == "unit" else workspace
+    expected_cwd = workspace / "terrane/linux/terrane-linux" if kind == "unit" else workspace
     require(launch["cwd"] == str(expected_cwd), "unexpected Cargo launch working directory")
     library_path = launch["environment"].get("LD_LIBRARY_PATH", "")
     require(library_path and all(library_path.split(":")), "missing Cargo loader environment")
@@ -237,7 +241,7 @@ def _verify_payload(image, source):
     require(identity["schema_version"] == 1 and identity["source"] == str(source)
             and identity["target_platform"] == TARGET_PLATFORM
             and identity["cases"] == [PREFIX + case for case in CASES]
-            and identity["requested_features"] == ["tokio", "terrane/surface-sdk"],
+            and identity["requested_features"] == ["tokio", "terrane-sdk/surface-sdk"],
             "configured SDK image source/feature/inventory mismatch")
     for name, expected in identity["input_sha256"].items():
         require(digest(source / "crates" / name) == expected,
@@ -280,7 +284,7 @@ def install(helper_path):
     identity = {"schema_version": 1, "source": str(source), "input_sha256": hashes,
                 "target_platform": TARGET_PLATFORM,
                 "cases": [PREFIX + case for case in CASES],
-                "requested_features": ["tokio", "terrane/surface-sdk"], "artifacts": {}}
+                "requested_features": ["tokio", "terrane-sdk/surface-sdk"], "artifacts": {}}
     for kind in KINDS:
         event_path = temporary / f"configured-sdk-{kind}.jsonl"
         artifact, executable, dependencies = select_artifact(
@@ -325,7 +329,7 @@ def install(helper_path):
             shutil.copy2(path, output / "share" / path.name)
         if kind == "unit":
             environment = dict(os.environ, LD_LIBRARY_PATH=library_path)
-            listing = inventory(destination, environment, workspace / "terrane-fs")
+            listing = inventory(destination, environment, workspace / "terrane/linux/terrane-linux")
             (output / "share/unit-inventory.txt").write_text(listing)
     require(hashes == native.source_hashes(workspace, source), "discovery changed crate inputs")
     shutil.copy2(temporary / "configured-sdk-packages.json", output / "share/packages.json")

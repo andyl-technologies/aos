@@ -1,6 +1,6 @@
 {sourceGate, ...}: let
   runUnit = path: ''
-    cargo test --frozen --offline -p terrane-core --lib ${path} -- --exact \
+    cargo test --frozen --offline -p terrane-format --lib ${path} -- --exact \
       > "$TMPDIR/format-unit.log"
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed; 0 ignored" not in output)' "$TMPDIR/format-unit.log"
   '';
@@ -9,12 +9,12 @@ in {
   # Its pure, deterministic corpus covers format properties without store I/O.
   core-fuzz = sourceGate "core-fuzz" ''
     cd crates
-    cargo test --frozen --offline -p terrane-core --test format_properties -- --list \
+    cargo test --frozen --offline -p terrane-format --test format_properties -- --list \
       > "$TMPDIR/format-properties-inventory.log"
     python3 ../tests/terrane/format_property_inventory.py \
       ../tests/terrane/format-properties.expected \
       --inventory "$TMPDIR/format-properties-inventory.log"
-    cargo test --frozen --offline -p terrane-core --test format_properties \
+    cargo test --frozen --offline -p terrane-format --test format_properties \
       > "$TMPDIR/format-properties.log"
     python3 ../tests/terrane/format_property_inventory.py \
       ../tests/terrane/format-properties.expected \

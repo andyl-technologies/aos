@@ -125,7 +125,7 @@ older `systemd-pcrphase`), `systemd-cryptsetup` with the TPM2 token, and
 
 ### 4. Sign a PCR policy into the UKI
 
-Extend `pkgs/boot/aos-uki.nix` (already gaining SB-signing args in
+Extend `pkgs/system/_systemd-abilities/platform/_uki-builder.nix` (already gaining SB-signing args in
 [`boot-chain.md`](boot-chain.md)) with optional `pcrPublicKey`/`pcrPrivateKey`
 → `ukify build --pcr-public-key --pcr-private-key`. ukify also emits the
 predicted PCR-11 measurement, which `apr publish` records
