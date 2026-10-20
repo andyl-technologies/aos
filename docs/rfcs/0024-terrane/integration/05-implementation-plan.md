@@ -8737,8 +8737,16 @@ independently checked. Its migrated publisher check subsequently finds a stale
 `terrane_fs` guest launcher; `e5e09630a9` fixes it to the actual
 `terrane_linux` Cargo artifact, retaining all three native socket controls.
 That publisher requalification passes, including the three actual native
-socket cases and the publication/cache VM prerequisites. Its application and
-complete filesystem checks continue. Surface source `7f7e886dd5` passes eight
+socket cases and the publication/cache VM prerequisites. Its required
+application compilation also passes: all 183 artifacts from 59 application
+packages match the exact Cargo target inventory. This host branch includes
+the host helper and quota configuration test in addition to the upstream
+181-target baseline; the stale review-helper count is corrected, with exact
+set equality and the original failed review retained. Its complete native
+filesystem run passes all 126 nonignored cases across 11 binaries. Independent
+review verifies all 5,082 source inputs and the original six privileged cases
+remain separate native-VM obligations; no full task or aggregate is accepted.
+Surface source `7f7e886dd5` passes eight
 focused regressions, all seven strict profiles and the formatter pair, as well
 as its crate graph and exact reviewed unsafe audit; owning-gate qualification
 continues. The module aggregate records three 120-second outer process
@@ -8775,7 +8783,14 @@ control. This component result grants no tier readiness or task acceptance.
 Its following owning-gate client is deliberately stopped with an intact source
 guard before applying the known test-lint correction. Successor `9dfae564f0`
 changes only those same three test files and restarts qualification; the
-cancelled owning gate is not credited as passing.
+cancelled owning gate is not credited as passing. Its SDK and Linux strict
+profiles, formatter pair, crate graph, exact unsafe audit and native quota VM
+pass. The next residence witness at `ffe88bf85e` exercises three genuine grants
+over the shared repeated chunk and two nonzero tails of two actual sealed
+manifests. It checks policy-held reads and independent release revocation;
+the supervisor additionally requires the original backing hashes, three real
+grace promises and separate future holds. Original cases, selectors and
+runtime bounds remain unchanged; this new witness is under qualification.
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
 re-extraction, complete recovery/readiness and the stopped
 HOST-3/HOST-25/DOM-18 zero-wipe conflict remain outstanding; T3 and branch
