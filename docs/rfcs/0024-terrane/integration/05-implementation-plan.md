@@ -9693,6 +9693,11 @@ Resumed qualification:
   and SDK all-target profiles. The owning publisher gate passes in 523.646
   seconds; required application compilation and the complete filesystem suite
   remain pending.
+  The ten-stage local qualification also finishes successfully on unchanged
+  source: both direct builds, all 36 selected cases, all three strict filesystem
+  profiles, all three strict Core profiles and the formatter pair pass.
+  Independent review checks every receipt, command, retained log and the current
+  clean source against all 6,542 tracked input hashes.
   The older hermetic policy check finishes with 12 passes and one fixture
   failure: an expiry of `u64::MAX` exceeds TOML's signed-integer encoding range,
   so the generous-bound positive control cannot reach its byte-size assertion.
@@ -9701,6 +9706,20 @@ Resumed qualification:
   expiry while preserving exact-size success, full-snapshot refusal and the
   generous positive control. All 13 policy cases pass on this corrected source;
   independent review matches the complete declared case inventory.
+  Its native and SDK all-target strict Clippy profiles and formatter pair also
+  finish successfully on unchanged source, with independent receipt review.
+  Encoded-admission candidate `29a093589d` retains original completed chunk and
+  metadata-pair jobs while synchronizing producer-funding release, finite release
+  grace and actual one-hop dictionary dependencies. Queue refusal returns the
+  original admission; accepted commands keep physical custody after waiter
+  cancellation. The new native control observes unchanged original inodes,
+  dictionary-backed reconstruction after actual grace, genuine pending-source
+  retirement and exact funding release. Its independent supervisor is included
+  in the immutable image input and helper inventories. A provisional fixture
+  build finds missing public receipt re-exports; those are corrected before
+  committing this candidate. Native and ten-stage local qualification are now
+  running against the frozen source. This prerequisite supplies no encoded
+  eviction or shared-chunk extraction qualification.
   Shared-chunk extraction, standalone and pack cache ownership, admission
   integration, complete recovery and NativeReady remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
