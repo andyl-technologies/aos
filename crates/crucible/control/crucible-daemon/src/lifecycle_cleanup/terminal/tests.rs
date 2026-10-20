@@ -220,3 +220,66 @@ fn poisoned_metadata_retains_the_same_body_without_reopening_disposal() {
     assert_eq!(std::ptr::from_ref(retained_owner), address);
     assert_eq!(slot.completed_epoch.load(Ordering::Acquire), 0);
 }
+
+#[test]
+fn outward_report_pin_preserves_same_file_and_history_after_previous_pin_returns() {
+    // This is the existing unissued metadata/file fixture, not a Main or Source.
+    let slot = slot(61);
+    let (retained, dropped, outside) = fields(&slot);
+    let address = std::ptr::from_ref(owner(&retained));
+    let descriptor = owner(&retained).file.as_raw_fd();
+    let mut body = ProductionVmConstructionPostBody::history_only();
+    assert!(return_terminal_fields(&slot, 61, &mut body, retained).is_ok());
+
+    // The outward error pins its exact epoch before the previous report drops.
+    assert!(report_refs::register(&slot, 61));
+    assert_eq!(slot.report_references.load(Ordering::Acquire), 2);
+    assert!(!report_refs::register(&slot, 62));
+    assert_eq!(slot.report_references.load(Ordering::Acquire), 2);
+    report_refs::release(&slot, 61, false);
+    assert_eq!(slot.report_references.load(Ordering::Acquire), 1);
+    assert!(slot.is(CleanupPhase::TerminalReady));
+    assert_eq!(slot.completed_epoch.load(Ordering::Acquire), 0);
+    assert!(!dropped.load(Ordering::Acquire));
+    {
+        let prepared = slot.prepared.lock().unwrap();
+        let actual = prepared
+            .owner
+            .as_ref()
+            .unwrap()
+            .downcast_ref::<FileOwner>()
+            .unwrap();
+        assert_eq!(std::ptr::from_ref(actual), address);
+        assert_eq!(actual.file.as_raw_fd(), descriptor);
+        assert!(matches!(
+            slot.cell.lock().unwrap().first_failure.as_ref(),
+            Some(crate::ProductionVmConstructionCleanupError::Retained(
+                "first"
+            ))
+        ));
+    }
+
+    // Dropping the outward report still does not destroy the canonical payload.
+    report_refs::release(&slot, 61, false);
+    assert_eq!(slot.report_references.load(Ordering::Acquire), 0);
+    assert!(!dropped.load(Ordering::Acquire));
+    assert!(!slot.is(CleanupPhase::Free));
+    assert!(report_refs::register(&slot, 61));
+    assert!(slot.claim(CleanupPhase::TerminalReady, CleanupPhase::TerminalOwned));
+    let retained = {
+        let mut prepared = slot.prepared.lock().unwrap();
+        let mut service = slot.service.lock().unwrap();
+        let mut cell = slot.cell.lock().unwrap();
+        body = service.return_body.take().unwrap();
+        TerminalFields::take(&mut prepared, &mut service, &mut cell)
+    };
+    assert_eq!(std::ptr::from_ref(owner(&retained)), address);
+    drop(retained);
+    drop(body);
+    assert!(dropped.load(Ordering::Acquire));
+    assert!(outside.load(Ordering::Acquire));
+    report_refs::release(&slot, 61, true);
+    assert!(slot.is(CleanupPhase::Free));
+    assert_eq!(slot.completed_epoch.load(Ordering::Acquire), 61);
+    assert_eq!(slot.worlds_returned_epoch.load(Ordering::Acquire), 0);
+}

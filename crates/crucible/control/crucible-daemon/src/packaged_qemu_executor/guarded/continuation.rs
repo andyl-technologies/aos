@@ -51,8 +51,12 @@ pub(crate) enum GuardedContinuationError {
         first: ContinuationRootSelectionError,
         custody: crate::PreparedSourceFailure,
     },
-    #[error("guarded continuation cleanup remains retained: {0}")]
-    Retirement(#[source] crate::PreparedSourceRefusal),
+    #[error("guarded continuation cleanup remains retained: {first}; retained custody: {custody}")]
+    Retirement {
+        #[source]
+        first: crate::PreparedSourceRefusal,
+        custody: crate::PreparedSourceFailure,
+    },
     /// Retains the initiating capture cause beside its original Main custody.
     #[error("guarded continuation genesis capture failed: {first}; retained custody: {custody}")]
     GenesisCapture {
@@ -407,14 +411,23 @@ impl GuardedCampaignOwner {
         let mut retirement = prepared.into_retirement();
         if !retirement
             .retry()
-            .map_err(GuardedContinuationError::Retirement)?
+            .map_err(|first| GuardedContinuationError::Retirement {
+                first,
+                custody: source.failure("retry genesis retirement"),
+            })?
         {
-            return Err(GuardedContinuationError::Retirement(
-                crate::PreparedSourceRefusal::Pending,
-            ));
+            return Err(GuardedContinuationError::Retirement {
+                first: crate::PreparedSourceRefusal::Pending,
+                custody: source.failure("retain pending genesis retirement"),
+            });
         }
         let terminal = retirement.finish().map_err(|_retained| {
-            GuardedContinuationError::Retirement(crate::PreparedSourceRefusal::Pending)
+            // Register the outward same-role report before this returned
+            // retirement pin is dropped. Main keeps its actual raw history.
+            GuardedContinuationError::Retirement {
+                first: crate::PreparedSourceRefusal::Pending,
+                custody: source.failure("retain genesis terminal extraction"),
+            }
         })?;
         check_genesis_retirement(terminal)?;
         Ok(baked)

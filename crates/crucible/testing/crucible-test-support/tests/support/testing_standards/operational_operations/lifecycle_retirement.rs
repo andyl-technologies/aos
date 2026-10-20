@@ -28,6 +28,11 @@ use owners::{
     MAIN_ATTACHMENT, PACKAGED_BODY, TARGET,
 };
 
+// Reuse the existing physical/Original clauses in guarded Service consumers.
+pub(super) const SERVICE_DRIVER: &Contract = &queue::DRIVER;
+pub(super) const SERVICE_POST_BODY: &Contract = &queue::POST_BODY;
+pub(super) const SERVICE_RECEIPT: &Contract = &receipts::RETIREMENT;
+
 pub(super) const CONTRACTS: &[Contract] = &[
     queue::DRIVER,
     queue::QUEUED,

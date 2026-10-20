@@ -10,6 +10,8 @@ mod main_custody;
 #[path = "production_publication/source_installation.rs"]
 mod source_installation;
 
+pub(super) const ROLE_REPORTS: Companion = main_custody::REPORT_PINS;
+
 pub(super) const CONTRACTS: &[Contract] = &[Contract {
     package: "crucible-daemon",
     target: "src/vm_lifecycle/construction/publication",

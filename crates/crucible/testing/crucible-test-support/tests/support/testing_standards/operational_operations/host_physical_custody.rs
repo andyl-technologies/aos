@@ -17,6 +17,7 @@ mod target_dispatcher;
 
 // Reuse the exact lower World facts for same-owner daemon forwarders.
 pub(super) const NORMAL_WORLD: &Contract = &normal_world::CONTRACT;
+pub(super) const TARGET_WORLD: &Contract = &fork_target::CONTRACT;
 
 pub(super) const CONTRACTS: &[Contract] = &[
     normal_world::CONTRACT,

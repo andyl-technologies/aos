@@ -14,6 +14,8 @@ use super::{
 mod cache;
 #[path = "operational_operations/cleanup_delegation.rs"]
 mod cleanup_delegation;
+#[path = "operational_operations/constructor_continuations.rs"]
+mod constructor_continuations;
 #[path = "operational_operations/generic_mutations.rs"]
 mod generic_mutations;
 #[path = "operational_operations/hot_fork_retirement.rs"]
@@ -30,6 +32,8 @@ mod production_publication;
 mod refused_publication;
 #[path = "operational_operations/retained_continuations.rs"]
 mod retained_continuations;
+#[path = "operational_operations/service_continuations.rs"]
+mod service_continuations;
 #[path = "operational_operations/worker_custody.rs"]
 mod worker_custody;
 
@@ -701,6 +705,8 @@ fn contracts() -> impl Iterator<Item = &'static Contract> {
         .chain(hot_fork_retirement::CONTRACTS)
         .chain(native_registration::CONTRACTS)
         .chain(retained_continuations::CONTRACTS)
+        .chain(constructor_continuations::CONTRACTS)
+        .chain(service_continuations::CONTRACTS)
 }
 
 pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
