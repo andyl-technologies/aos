@@ -1,7 +1,5 @@
 //! Collects the independently defined closed materializer constructor rows.
 
-use super::*;
-
 #[path = "constructors/map_insert.rs"]
 mod map_insert;
 #[path = "constructors/sequences.rs"]

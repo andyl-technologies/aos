@@ -13,7 +13,7 @@ use crate::{
             historical_auth::HistoricalRestorationStages17,
         },
     },
-    retained_metadata::{MetadataObserver, ObserveMetadata},
+    retained_metadata::MetadataObserver,
 };
 pub(crate) use fields::*;
 

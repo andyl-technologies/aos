@@ -8,7 +8,7 @@
 use super::*;
 use crate::protocol_snapshot::owned11::typed::Native17Build;
 use crate::reference_packet::connected::continuation::settled_reader::retained::ReactiveModel17ReadAttempt;
-use crate::retained_metadata::{MetadataObserver, ObserveMetadata};
+use crate::retained_metadata::MetadataObserver;
 
 /// Retains the concrete program child and its completed transparent wrapper.
 #[derive(Default)]

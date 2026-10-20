@@ -11,7 +11,7 @@ use crate::reference_packet::Native5Policy;
 use crate::retained_metadata::{MetadataObserver, aliases::MetadataSharedKind};
 use crate::transport::original_frames::OriginalFrameReservation;
 use serde::{
-    Serialize, Serializer,
+    Serialize,
     ser::{SerializeSeq, SerializeStruct},
 };
 use std::cell::{Ref, RefCell};

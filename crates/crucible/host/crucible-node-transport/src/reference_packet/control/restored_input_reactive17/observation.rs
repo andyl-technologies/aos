@@ -18,7 +18,7 @@ use crate::reference_packet::service::restored_input_reactive17::observation_geo
 };
 use crate::retained_metadata::requested_storage::tree_storage_data;
 use crate::retained_metadata::{
-    MetadataObserver, ObserveMetadata, requested_metadata_backing_storage_data,
+    MetadataObserver, requested_metadata_backing_storage_data,
     serialization_storage::OriginalSerializationStorageProjection,
 };
 use std::{

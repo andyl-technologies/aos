@@ -18,7 +18,6 @@ use crate::reference_packet::service::complete_restore::{
 };
 use crate::retained_metadata::serialization_storage::{
     OriginalJsonValueStorageExtentData, original_json_value_storage_extent_counter_scratch_data,
-    original_json_value_storage_extent_data,
 };
 use crucible_node_format::SchemaRef;
 use std::mem::size_of;

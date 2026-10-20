@@ -4,16 +4,11 @@ use super::super::super::current_capture17_borrowed::{
     BorrowedCaptureRegistration17, BorrowedCurrentCapture17,
 };
 use super::*;
-use crate::bodies::{BeginRequest, CaptureArguments, ObserveRequest};
+use crate::bodies::{BeginRequest, CaptureArguments};
 use crate::reference_packet::service::{
-    complete_restore::{
-        activation::{upload::*, *},
-        restoration_observe::*,
-    },
     restored_settled_capture::{upload::*, *},
     restored_settled_confirmation::*,
 };
-use crucible_node_format::ActivationManifest;
 use serde_json::Map;
 
 pub(crate) struct BootLineage17Fields {

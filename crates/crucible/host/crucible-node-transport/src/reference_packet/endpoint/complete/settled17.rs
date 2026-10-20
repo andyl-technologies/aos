@@ -10,9 +10,7 @@
 
 use super::*;
 use crate::native_hello::HistoricalNativeHello17;
-use crate::protocol_snapshot::owned11::typed::{
-    Fields, HistoricalType, Ledger, invalid, plain_string,
-};
+use crate::protocol_snapshot::owned11::typed::{Fields, Ledger, invalid, plain_string};
 use crate::protocol_snapshot::settled_reservation17::HistoricalReservation17;
 use crate::reference_packet::service::{
     PacketNative5ProtocolMetadataBirthFacts, PacketNative5ProtocolMetadataLimits,

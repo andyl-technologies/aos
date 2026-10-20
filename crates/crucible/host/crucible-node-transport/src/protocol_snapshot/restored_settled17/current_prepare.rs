@@ -9,9 +9,7 @@ use crate::connection::{
     OriginalCompleteRestoreInputCustody, settled17::HistoricalReversedByteBank17,
 };
 use crate::envelope::Envelope;
-use crate::protocol_snapshot::owned11::typed::{
-    Fields, HistoricalType, Ledger, invalid, plain_string,
-};
+use crate::protocol_snapshot::owned11::typed::{Fields, Ledger, invalid, plain_string};
 use crate::reference_packet::service::ack_emitter::NativeAckBoot;
 use crate::reference_packet::service::complete_restore::transfer::*;
 use crate::retained_metadata::aliases::MetadataSharedKind;

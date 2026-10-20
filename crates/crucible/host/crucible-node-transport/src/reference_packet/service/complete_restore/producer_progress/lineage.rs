@@ -1,10 +1,9 @@
 //! Preserves immutable ancestry while permitting a separately verified cursor.
 
 use super::*;
-use crate::bodies::{ResponseBody, decode_request, decode_response};
+use crate::bodies::{decode_request, decode_response};
 use crate::envelope::{Envelope, MessageKind, Method};
 use crate::reference_packet::control::PacketNative5Record;
-use crucible_node_format::Validate;
 
 pub(super) fn lineage(
     held: &PacketNativeRestoredCommitHold,

@@ -15,7 +15,6 @@ use crate::reference_packet::service::{
     },
     native_snapshot::PacketNativeRestoredSettled17SnapshotPlan,
 };
-use crucible_node_format::Validate;
 
 /// Borrows the four actual SDK-transferred native objects without a Source Journal.
 ///

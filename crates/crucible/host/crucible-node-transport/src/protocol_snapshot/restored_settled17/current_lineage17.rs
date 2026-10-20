@@ -9,9 +9,7 @@ use super::{
     current_boot::CurrentStartup17,
     current_contracts::*,
     current_quotes::{CurrentControlQuote17, CurrentServiceQuote17},
-    current_reserve::CurrentReserve17,
     current_shared::{read_reference17, shared_row17},
-    current_stages::CurrentStages17,
 };
 use crate::{
     ProviderError,

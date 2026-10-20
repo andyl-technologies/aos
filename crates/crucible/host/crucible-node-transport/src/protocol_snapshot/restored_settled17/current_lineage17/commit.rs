@@ -1,9 +1,6 @@
 //! Borrows signed Commit lineage without owning the old installation capsule.
 
-use super::super::{
-    current_commit::CurrentPrepared17, current_launch::CurrentLaunch17,
-    current_pending::CurrentPendingControl17,
-};
+use super::super::{current_commit::CurrentPrepared17, current_pending::CurrentPendingControl17};
 use super::*;
 use crate::connection::settled17::{HistoricalReversedByteBank17, read_byte_bank_parts17};
 

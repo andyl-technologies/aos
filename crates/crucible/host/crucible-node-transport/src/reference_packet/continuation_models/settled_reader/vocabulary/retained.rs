@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::protocol_snapshot::owned11::typed::Native17Build;
-use crate::retained_metadata::{MetadataObserver, ObserveMetadata};
+use crate::retained_metadata::MetadataObserver;
 
 use crate::reference_packet::continuation_models::settled_reader::retained::atomic_model_leaf;
 atomic_model_leaf!(EventStage);

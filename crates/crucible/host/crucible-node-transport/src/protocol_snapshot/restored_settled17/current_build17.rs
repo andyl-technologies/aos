@@ -2,9 +2,7 @@
 
 use super::current_contracts::*;
 use crate::ProviderError;
-use crate::protocol_snapshot::owned11::typed::{
-    Fields, HistoricalType, Ledger, Native17Build, invalid,
-};
+use crate::protocol_snapshot::owned11::typed::{Fields, Ledger, Native17Build, invalid};
 use crate::retained_metadata::{MetadataObserver, ObserveMetadata, records::MetadataRecordKind};
 use std::mem::{align_of, size_of};
 

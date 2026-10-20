@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::protocol_snapshot::owned11::typed::Native17Build;
-use crate::retained_metadata::{MetadataObserver, ObserveMetadata};
+use crate::retained_metadata::MetadataObserver;
 /// Owns the completed model and each unfinished defining child.
 #[derive(Default)]
 pub(crate) struct ReactiveModel17ReadAttempt {

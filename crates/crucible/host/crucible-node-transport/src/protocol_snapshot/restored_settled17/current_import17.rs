@@ -6,9 +6,7 @@
 //! for a populated current reconstructed owner.
 
 use crate::ProviderError;
-use crate::protocol_snapshot::owned11::typed::{
-    Fields, HistoricalType, Ledger, invalid, plain_string,
-};
+use crate::protocol_snapshot::owned11::typed::{Fields, Ledger, invalid, plain_string};
 use crate::retained_metadata::{
     MetadataObserver, aliases::MetadataSharedKind, records::MetadataRecordKind,
 };
