@@ -1353,3 +1353,5 @@ async fn authenticated_delivery_discovery_keeps_exact_locator_echo_and_canonical
 }
 
 mod resume;
+
+mod control_retry;

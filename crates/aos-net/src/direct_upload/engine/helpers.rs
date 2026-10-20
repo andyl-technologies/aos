@@ -35,29 +35,42 @@ pub(super) async fn control<C: DirectUploadControl>(
     request.validate().map_err(|_| DirectClientError::Invalid)?;
     // Lost control replies replay the same exact retained operations. A retry
     // cannot renew a capability or start a new provider-control effect.
-    let mut response = Err(DirectClientError::ControlUnavailable);
-    for _ in 0..3 {
-        response = control.execute(request).await;
-        if response != Err(DirectClientError::ControlUnavailable) {
-            break;
+    let mut retries = 0;
+    loop {
+        let response = match control.execute(request).await {
+            Err(DirectClientError::ControlUnavailable) if retries < 2 => {
+                retries += 1;
+                continue;
+            }
+            result => result?,
+        };
+        response
+            .validate()
+            .map_err(|_| DirectClientError::Invalid)?;
+        if response.operation_id != request_operation(request) {
+            return Err(DirectClientError::Invalid);
         }
+        if let Some(error) = response.errors.first() {
+            // Successful HTTP can carry retryable item failures. Refuse a
+            // mixed batch containing any denied, invalid or unknown outcome.
+            if retries < 2
+                && response
+                    .errors
+                    .iter()
+                    .all(|error| error.code == DirectItemErrorCode::Unavailable)
+            {
+                retries += 1;
+                continue;
+            }
+            return Err(match error.code {
+                DirectItemErrorCode::Denied => DirectClientError::Denied,
+                DirectItemErrorCode::BlockedUnknown => DirectClientError::Blocked,
+                DirectItemErrorCode::Unavailable => DirectClientError::ControlUnavailable,
+                _ => DirectClientError::Invalid,
+            });
+        }
+        return Ok(response);
     }
-    let response = response?;
-    response
-        .validate()
-        .map_err(|_| DirectClientError::Invalid)?;
-    if response.operation_id != request_operation(request) {
-        return Err(DirectClientError::Invalid);
-    }
-    if let Some(error) = response.errors.first() {
-        return Err(match error.code {
-            DirectItemErrorCode::Denied => DirectClientError::Denied,
-            DirectItemErrorCode::BlockedUnknown => DirectClientError::Blocked,
-            DirectItemErrorCode::Unavailable => DirectClientError::ControlUnavailable,
-            _ => DirectClientError::Invalid,
-        });
-    }
-    Ok(response)
 }
 
 pub(super) fn active_or_verified(state: DirectSessionState) -> Result<(), DirectClientError> {
