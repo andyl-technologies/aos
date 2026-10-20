@@ -308,6 +308,7 @@ impl ManifestInput {
                 continue;
             }
             let actual = TransferSource::select_chunk(executor, owner, &identity, chunk.length)?;
+            actual.check_retirement(executor, owner)?;
             super::io::refuse_other_standalone(owner, &chunk.digest, actual.key().codec)?;
             let source = NativeChunkSource::open_bounded(
                 owner.preparation.layout(),

@@ -228,16 +228,22 @@ impl TransferSource {
     /// Selects the exact completed admission from the actual physical registry.
     ///
     /// # Errors
-    /// Refuses foreign, absent, incomplete, altered or unpinned canonical input.
+    /// Refuses foreign, absent, incomplete, altered or unpinned canonical input,
+    /// or a dictionary that another actual admitted body still needs.
     pub(in crate::host_cache::owner) fn select(
         executor: &NativeOwnerExecutor,
         owner: &Custody,
         descriptor: &Descriptor,
     ) -> io::Result<Self> {
-        Self::select_matching(executor, owner, |actual| actual == descriptor)
+        let source = Self::select_matching(executor, owner, |actual| actual == descriptor)?;
+        source.check_retirement(executor, owner)?;
+        Ok(source)
     }
 
     /// Selects a manifest chunk only from this worker's completed actual inputs.
+    ///
+    /// Dictionary borrowing preserves this source; actual retirement choices
+    /// must separately pass [`Self::check_retirement`].
     ///
     /// # Errors
     /// Refuses another identity profile or kind, absent admission, changed
@@ -284,23 +290,6 @@ impl TransferSource {
             }
             state::check_registration(owner, &job)?;
             native::check_current(owner, &job.files[0], encoded)?;
-            for dependent in executor.admission_jobs() {
-                if Arc::ptr_eq(dependent, candidate) {
-                    continue;
-                }
-                let dependent = super::backing::lock(dependent)?;
-                if dependent.complete
-                    && dependent
-                        .dependencies
-                        .iter()
-                        .any(|dictionary| Arc::ptr_eq(dictionary, candidate))
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        "standalone dictionary remains required by an actual admitted body",
-                    ));
-                }
-            }
             let file = job.files[0]
                 .readonly
                 .as_ref()
@@ -323,6 +312,41 @@ impl TransferSource {
         Err(invalid(
             "standalone body lacks actual completed admission custody",
         ))
+    }
+
+    /// Requires that retiring this original inode preserves every admitted body.
+    ///
+    /// Source selection also borrows dictionaries for decoding; only actual
+    /// retirement choices require this additional dependency exclusion.
+    ///
+    /// # Errors
+    /// Refuses another physical worker, changed canonical custody, or an actual
+    /// completed admission that still depends on this original dictionary job.
+    pub(in crate::host_cache::owner) fn check_retirement(
+        &self,
+        executor: &NativeOwnerExecutor,
+        owner: &Custody,
+    ) -> io::Result<()> {
+        executor.check_physical_worker()?;
+        self.check_current(owner)?;
+        for dependent in executor.admission_jobs() {
+            if Arc::ptr_eq(dependent, &self.job) {
+                continue;
+            }
+            let dependent = super::backing::lock(dependent)?;
+            if dependent.complete
+                && dependent
+                    .dependencies
+                    .iter()
+                    .any(|dictionary| Arc::ptr_eq(dictionary, &self.job))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "standalone dictionary remains required by an actual admitted body",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Borrows the registered key derived from this actual source's encoding.
