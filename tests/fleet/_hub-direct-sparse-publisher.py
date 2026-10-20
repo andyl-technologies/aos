@@ -17,7 +17,7 @@ import textwrap
 
 
 SPARSE_GUEST_LIBRARY = r'''
-import hashlib, json, os, re, sqlite3, stat
+import contextlib, hashlib, json, os, re, signal, sqlite3, stat, time
 from pathlib import Path
 MAX_SESSION_ROWS = 50_000
 MAX_SELECTED_ROWS = 32_768
@@ -399,12 +399,15 @@ def _read_checkpoint(connection, sources):
     return {"namespace": namespace, "runId": run_id, "sessions": sessions, "publication": metadata}
 
 
-def _snapshot(path, sources, retain_file=None):
-    """Read one SQLite snapshot under a shared lock and retain exact raw bytes."""
+@contextlib.contextmanager
+def _checkpoint_snapshot(path, sources, retain_file=None):
+    """Keep the committed journal snapshot locked until the caller finishes."""
     metadata = _private_path(path)
     connection = sqlite3.connect(Path(path).as_uri() + "?mode=ro", uri=True, timeout=0.2)
     try:
         connection.execute("PRAGMA query_only=ON")
+        if connection.execute("PRAGMA journal_mode").fetchone()[0].lower() != 'delete':
+            raise ValueError('sparse interruption requires the current DELETE-mode journal')
         connection.execute("BEGIN")
         document = _read_checkpoint(connection, sources)
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -432,9 +435,16 @@ def _snapshot(path, sources, retain_file=None):
             raise ValueError("checkpoint changed while its read lock was held")
         document.update(journalSha256=digest.hexdigest(), journalBytes=before.st_size,
             journalFile=str(path), retainedFile=retain_file)
-        return document
+        yield document
     finally:
         connection.close()
+
+
+def _snapshot(path, sources, retain_file=None):
+    """Read and retain a committed journal without extending its read lock."""
+    with _checkpoint_snapshot(path, sources, retain_file) as document:
+        return document
+
 
 
 '''
@@ -514,59 +524,70 @@ def observe_direct_sparse_publisher(client, tools, process, signed, corpus):
 
 
 def interrupt_direct_sparse_publisher(client, tools, process, signed, corpus, observation):
-    """Signal only the pinned guest CLI after re-observing a real sparse boundary."""
+    """Interrupt a pinned sparse publisher, or retry a boundary that already closed."""
     if not observation.get("sparse") or observation.get("state") != "live":
         raise ValueError("no actual sparse publisher rendezvous was observed")
     selected = {**_selection(process, signed, corpus), "observed": observation}
     program = _guest_definitions() + textwrap.dedent("""
-        import signal, time
+        def interrupt_if_sparse():
+            process, observed = selected['process'], selected['observed']
+            root = Path(process['directory'])
+            if (root / 'result.json').exists():
+                return None
+            inputs = _inputs(root, selected['signed'], process)
+            arguments = _publisher_process_arguments(inputs['arguments'])
+            _pin(process['supervisorPid'], process['supervisorArguments'], process['supervisorExecutable'],
+                process['supervisorUid'], process['supervisorStartTicks'])
+            publisher = observed['publisher']
+            descriptor = os.pidfd_open(publisher['pid'], 0)
+            try:
+                current = _pin(publisher['pid'], arguments, os.path.realpath(arguments[0]),
+                    publisher['uid'], publisher['startTicks'])
+                _same_pin(current, publisher)
+                snapshot_id = str(time.time_ns())
+                saved = root / ('sparse-before-' + snapshot_id + '.sqlite')
+                admission_file = root / ('sparse-before-' + snapshot_id + '.admission.sqlite')
+                # DELETE-mode read locks keep a real committed gap open until
+                # the pinned kill. No receipt is removed or manufactured.
+                with _checkpoint_snapshot(
+                    Path(selected['signed']['publisherHome']) / 'direct-upload.sqlite',
+                    selected['sources'], str(saved),
+                ) as checkpoint, _checkpoint_snapshot(
+                    Path(selected['signed']['publisherHome']) / 'direct-upload.sqlite.admission',
+                    selected['sources'], str(admission_file),
+                ) as admission:
+                    previous = observed['checkpoint']
+                    _preserve_originals(previous, checkpoint)
+                    if admission['publication'].get('headerSha256') != observed['admission']['publication'].get('headerSha256'):
+                        raise ValueError('publisher original manifest/root changed before signal')
+                    if not any(item['sparseGaps'] and item['completeSha256'] is None for item in checkpoint['sessions']):
+                        return None
+                    environment = _retain_environment(root, publisher, inputs['arguments'])
+                    started = time.time_ns()
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                deadline = time.monotonic() + 10
+                while not (root / 'result.json').exists():
+                    if time.monotonic() >= deadline:
+                        raise ValueError('owned supervisor has not retained interrupted outcome')
+                    time.sleep(0.05)
+                result = _closed_json((root / 'result.json').read_bytes())
+                if result['exitCode'] != -signal.SIGKILL or result['timedOut']:
+                    raise ValueError('publisher exit differs from exact owned interruption')
+                if Path('/proc', str(publisher['pid'])).exists():
+                    raise ValueError('interrupted child has not been reaped; no restart admitted')
+                return {'version': 1, 'publisher': publisher, 'checkpoint': checkpoint, 'admission': admission,
+                    'environment': environment,
+                    'result': result, 'signal': 'SIGKILL', 'observedSignalUnixNs': str(started),
+                    'journalsEdited': False, 'providerSettlementInferred': False,
+                    'scope': 'same recorded guest client only; supervisor logs and unknown originals preserved'}
+            finally:
+                os.close(descriptor)
 
-        process, observed = selected['process'], selected['observed']
-        root = Path(process['directory'])
-        if (root / 'result.json').exists():
-            raise ValueError('publisher reached terminal result before sparse interruption')
-        inputs = _inputs(root, selected['signed'], process)
-        arguments = _publisher_process_arguments(inputs['arguments'])
-        _pin(process['supervisorPid'], process['supervisorArguments'], process['supervisorExecutable'],
-            process['supervisorUid'], process['supervisorStartTicks'])
-        publisher = observed['publisher']
-        descriptor = os.pidfd_open(publisher['pid'], 0)
-        try:
-            current = _pin(publisher['pid'], arguments, os.path.realpath(arguments[0]),
-                publisher['uid'], publisher['startTicks'])
-            _same_pin(current, publisher)
-            saved = root / 'sparse-before.sqlite'
-            checkpoint = _snapshot(Path(selected['signed']['publisherHome']) / 'direct-upload.sqlite', selected['sources'], str(saved))
-            admission = _snapshot(Path(selected['signed']['publisherHome']) / 'direct-upload.sqlite.admission',
-                selected['sources'], str(root / 'sparse-before.admission.sqlite'))
-            previous = observed['checkpoint']
-            _preserve_originals(previous, checkpoint)
-            if admission['publication'].get('headerSha256') != observed['admission']['publication'].get('headerSha256'):
-                raise ValueError('publisher original manifest/root changed before signal')
-            if not any(item['sparseGaps'] and item['completeSha256'] is None for item in checkpoint['sessions']):
-                raise ValueError('actual sparse gap closed before interruption; no synthetic replacement')
-            environment = _retain_environment(root, publisher, inputs['arguments'])
-            started = time.time_ns()
-            signal.pidfd_send_signal(descriptor, signal.SIGKILL)
-            deadline = time.monotonic() + 10
-            while not (root / 'result.json').exists():
-                if time.monotonic() >= deadline:
-                    raise ValueError('owned supervisor has not retained interrupted outcome')
-                time.sleep(0.05)
-            result = _closed_json((root / 'result.json').read_bytes())
-            if result['exitCode'] != -signal.SIGKILL or result['timedOut']:
-                raise ValueError('publisher exit differs from exact owned interruption')
-            if Path('/proc', str(publisher['pid'])).exists():
-                raise ValueError('interrupted child has not been reaped; no restart admitted')
-            print(json.dumps({'version': 1, 'publisher': publisher, 'checkpoint': checkpoint, 'admission': admission,
-                'environment': environment,
-                'result': result, 'signal': 'SIGKILL', 'observedSignalUnixNs': str(started),
-                'journalsEdited': False, 'providerSettlementInferred': False,
-                'scope': 'same recorded guest client only; supervisor logs and unknown originals preserved'}))
-        finally:
-            os.close(descriptor)
+        print(json.dumps(interrupt_if_sparse()))
     """)
     outcome = json.loads(direct_guest_python(client, tools["python"], program, selected, timeout=30))
+    if outcome is None:
+        return None
     prefix = "publisher-" + process["label"] + "-sparse"
     artifacts = {}
     for name, maximum in (("stdout", 8 * 1024 * 1024), ("stderr", 1024 * 1024)):

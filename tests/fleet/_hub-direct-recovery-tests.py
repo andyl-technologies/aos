@@ -28,7 +28,7 @@ evidence.retain_direct_flow = lambda *args: None
 
 
 class SparsePublicationOrchestration(unittest.TestCase):
-    def run_scenario(self, observe_gap=True):
+    def run_scenario(self, observe_gap=True, closed_boundary_first=False):
         calls = []
         sources = {label: {"surfaceRoot": "/controlled/" + label} for label in ("a", "b")}
         registries = {label: {"registry": {"slug": "controlled/" + label}} for label in sources}
@@ -50,18 +50,32 @@ class SparsePublicationOrchestration(unittest.TestCase):
         def changed(*args):
             calls.append(("changed", args[-1]))
             return {"journalsUnchanged": True}
+        interruptions = []
+
+        def interrupt(*args):
+            interruptions.append(True)
+            if closed_boundary_first and len(interruptions) == 1:
+                return None
+            return copy.deepcopy(interrupted)
+
+        def poll(*args):
+            if closed_boundary_first and len(interruptions) == 1:
+                return None
+            return {"exitCode": 0, "timedOut": False}
+
         bindings = {
             "login_direct_publisher": lambda *args: None,
             "direct_root_browser_token": lambda *args, **kwargs: "fresh-controlled-token",
             "private_guest_command": lambda *args, **kwargs: None,
             "start_direct_publication": start,
             "observe_direct_sparse_publisher": lambda *args: {"sparse": observe_gap, "state": "live"},
-            "interrupt_direct_sparse_publisher": lambda *args: copy.deepcopy(interrupted),
+            "interrupt_direct_sparse_publisher": interrupt,
             "probe_direct_changed_source": changed,
             "observe_direct_sparse_completion": lambda *args: {},
             "assert_direct_sparse_resume": lambda *args: {"preservedPositiveParts": 1},
             "direct_visibility_rendezvous": lambda *args: {"event": "controlled"},
-            "poll_direct_publication": lambda *args: {"exitCode": 0, "timedOut": False},
+            "poll_direct_publication": poll,
+            "direct_page_samples": lambda *args: {"probes": [], "samples": ""},
             "read_direct_guest_file": read,
             "retain_direct_flow": lambda *args: None,
         }
@@ -88,6 +102,13 @@ class SparsePublicationOrchestration(unittest.TestCase):
     def test_missing_real_gap_refuses_instead_of_claiming_sparse_resume(self):
         with self.assertRaisesRegex(RuntimeError, "without an observed sparse gap"):
             self.run_scenario(observe_gap=False)
+
+    def test_closed_boundary_retries_without_claiming_an_interruption(self):
+        (publications, observations), calls = self.run_scenario(closed_boundary_first=True)
+        self.assertEqual(set(publications), {'a', 'b'})
+        self.assertEqual(sum(row[0] == 'changed' for row in calls), 1)
+        self.assertEqual(observations['sparseRecovery']['terminalCountersUnavailable'],
+            [{'label': 'a', 'attempt': 1}])
 
 
 class RecoveryEvidenceCoverage(unittest.TestCase):

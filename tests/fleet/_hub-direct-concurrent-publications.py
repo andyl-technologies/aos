@@ -309,25 +309,26 @@ def run_direct_concurrent_publications(client, worker, tools, sources, registrie
                     raise ValueError("actual sparse interruption has no remaining retained resume attempt")
                 interrupted = interrupt_direct_sparse_publisher(
                     client, tools, process, sources["a"], corpus_a, observation)
-                publication_id = interrupted["admission"]["publication"]["admission"]["publicationId"]
-                if "a" in originals and originals["a"] != publication_id:
-                    raise ValueError("sparse interruption changed the actual admitted publication")
-                originals["a"] = publication_id
-                # SIGKILL has no terminal JSON or counter report. Do not parse
-                # its partial stdout or reconstruct its unavailable metrics.
-                partial_stderr = read_direct_guest_file(client, tools["python"],
-                    process["directory"] + "/stderr", 1048576)
-                invocations.append({"label": "a", "result": interrupted["result"],
-                    "stderr": partial_stderr.decode(), "terminalCountersAvailable": False,
-                    "metricsScope": "actual killed original; terminal counters unavailable"})
-                sparse["terminalCountersUnavailable"].append({"label": "a", "attempt": process["attempt"]})
-                sparse["interruption"] = interrupted
-                source = next(item for item in corpus_a["large_objects"]
-                    if any(session["path"] == item["path"] and session["sparseGaps"]
-                        for session in interrupted["checkpoint"]["sessions"]))
-                sparse["changedSource"] = probe_direct_changed_source(
-                    client, tools, process, sources["a"], source, None)
-                start("a", process["attempt"] + 1)
+                if interrupted is not None:
+                    publication_id = interrupted["admission"]["publication"]["admission"]["publicationId"]
+                    if "a" in originals and originals["a"] != publication_id:
+                        raise ValueError("sparse interruption changed the actual admitted publication")
+                    originals["a"] = publication_id
+                    # SIGKILL has no terminal JSON or counter report. Do not parse
+                    # its partial stdout or reconstruct its unavailable metrics.
+                    partial_stderr = read_direct_guest_file(client, tools["python"],
+                        process["directory"] + "/stderr", 1048576)
+                    invocations.append({"label": "a", "result": interrupted["result"],
+                        "stderr": partial_stderr.decode(), "terminalCountersAvailable": False,
+                        "metricsScope": "actual killed original; terminal counters unavailable"})
+                    sparse["terminalCountersUnavailable"].append({"label": "a", "attempt": process["attempt"]})
+                    sparse["interruption"] = interrupted
+                    source = next(item for item in corpus_a["large_objects"]
+                        if any(session["path"] == item["path"] and session["sparseGaps"]
+                            for session in interrupted["checkpoint"]["sessions"]))
+                    sparse["changedSource"] = probe_direct_changed_source(
+                        client, tools, process, sources["a"], source, None)
+                    start("a", process["attempt"] + 1)
         if "b" not in processes:
             rendezvous = direct_visibility_rendezvous(worker, tools, cursor, expected_source)
             if rendezvous is not None:

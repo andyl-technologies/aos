@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -162,6 +163,89 @@ class ContinuityFences(unittest.TestCase):
         current = sparse._pin(os.getpid(), arguments, executable, os.getuid())
         with self.assertRaises(ValueError):
             sparse._pin(os.getpid(), arguments, executable, os.getuid(), str(int(current["startTicks"]) + 1))
+
+    def test_snapshot_holds_the_real_receipt_write_lock_until_its_caller_finishes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'checkpoint.sqlite'
+            writer = sqlite3.connect(path, timeout=0.01)
+            self.addCleanup(writer.close)
+            writer.execute('CREATE TABLE receipts(part INTEGER)')
+            writer.commit()
+
+            def read_checkpoint(connection, _sources):
+                return {'parts': [row[0] for row in connection.execute('SELECT part FROM receipts')]}
+
+            # This isolates transaction lifetime using a real SQLite file; it
+            # makes no claim about a guest's independent path custody checks.
+            with patch.object(sparse, '_private_path', lambda selected: selected.stat()), \
+                 patch.object(sparse, '_read_checkpoint', read_checkpoint):
+                with sparse._checkpoint_snapshot(path, []) as before:
+                    self.assertEqual(before['parts'], [])
+                    writer.execute('INSERT INTO receipts VALUES(1)')
+                    with self.assertRaisesRegex(sqlite3.OperationalError, 'locked'):
+                        writer.commit()
+
+                writer.commit()
+                self.assertEqual(sparse._snapshot(path, [])['parts'], [1])
+
+                writer.execute('PRAGMA journal_mode=WAL')
+                with self.assertRaisesRegex(ValueError, 'DELETE-mode'):
+                    sparse._snapshot(path, [])
+
+    def test_closed_sparse_boundary_returns_without_signalling_a_publisher(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            process = {'label': 'a', 'attempt': 1, 'directory': str(root)}
+
+            # A completed invocation is a benign observation race. Its normal
+            # result still has to be checked by the publication controller.
+            (root / 'result.json').write_bytes(b'{}')
+
+            def execute(_client, _python, program, selected, **_options):
+                namespace = {'selected': selected, 'Path': Path, 'json': json}
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    exec(compile(program, '<controlled-completed-publisher>', 'exec'), namespace)
+                return output.getvalue()
+
+            with patch.object(sparse, '_guest_definitions', return_value=''), \
+                 patch.object(sparse, 'direct_guest_python', execute, create=True):
+                outcome = sparse.interrupt_direct_sparse_publisher(None,
+                    {'python': 'controlled-python'}, process, {}, {'large_objects': []},
+                    {'sparse': True, 'state': 'live'})
+
+            self.assertIsNone(outcome)
+
+            (root / 'result.json').unlink()
+            process.update(supervisorPid=123, supervisorArguments=[],
+                supervisorExecutable='controlled', supervisorUid=os.getuid(), supervisorStartTicks='456')
+            publisher = {'pid': 124, 'uid': os.getuid(), 'startTicks': '789'}
+            header = {'publication': {'headerSha256': 'a' * 64}}
+
+            @contextlib.contextmanager
+            def closed_checkpoint(*args):
+                yield {**header, 'sessions': [{'sparseGaps': [], 'completeSha256': None}]}
+
+            def execute_closed(_client, _python, program, selected, **_options):
+                namespace = {'selected': selected, 'Path': Path, 'json': json, 'os': os,
+                    'time': time, '_inputs': lambda *args: {'arguments': [sys.executable]},
+                    '_publisher_process_arguments': lambda args: args,
+                    '_pin': lambda *args: publisher, '_same_pin': lambda *args: None,
+                    '_checkpoint_snapshot': closed_checkpoint, '_preserve_originals': lambda *args: None}
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    exec(compile(program, '<controlled-closed-gap>', 'exec'), namespace)
+                return output.getvalue()
+
+            with patch.object(sparse, '_guest_definitions', return_value=''), \
+                 patch.object(sparse, 'direct_guest_python', execute_closed, create=True), \
+                 patch.object(os, 'pidfd_open', lambda *args: os.open(os.devnull, os.O_RDONLY)):
+                outcome = sparse.interrupt_direct_sparse_publisher(None,
+                    {'python': 'controlled-python'}, process, {'publisherHome': str(root)},
+                    {'large_objects': []}, {'sparse': True, 'state': 'live', 'publisher': publisher,
+                        'checkpoint': {}, 'admission': header})
+
+            self.assertIsNone(outcome)
 
     def test_child_discovery_pins_a_real_process_without_proc_children(self):
         arguments = [sys.executable, '-c', 'import sys; sys.stdin.read()']
