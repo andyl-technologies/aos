@@ -11,6 +11,15 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Latest checkpoint
 
+An independently reviewed immutable-member lookup supplier now describes the
+allocation-free `Map<String, Value>::contains_key(&String)` path, including its
+actual iterator, pointer, comparison and terminal-control operands. Its guarded
+backing model excludes the alternative ordered-map representation. All five
+new controls and the complete node-format population pass: 53 tests with
+ordinary JSON and 53 with raw values, with the existing benchmark still
+ignored. The ordinary parser and canonical writer remain unchanged. This
+DATA-only component grants no retained-parser, Source18 or native permission.
+
 The concrete counting-writer failure component now prices the original IO
 error constructor, its Serde conversion and their release operands before the
 Source quote proceeds. It preserves the writer message, error mapping,

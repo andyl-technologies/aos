@@ -329,3 +329,7 @@ pub(super) use controls::TRANSITION_COUNTER_SCRATCH_BYTES;
 #[cfg(test)]
 #[path = "strict_parser/tests.rs"]
 mod tests;
+
+#[path = "strict_parser/lookup.rs"]
+mod lookup;
+pub use lookup::STRICT_JSON_KEY_LOOKUP_STORAGE_DATA;

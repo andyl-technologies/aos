@@ -64,6 +64,7 @@ pub fn decode<T: DeserializeOwned + Validate>(
 #[path = "canonical/strict_parser.rs"]
 mod strict_parser;
 use strict_parser::Parser;
+pub use strict_parser::STRICT_JSON_KEY_LOOKUP_STORAGE_DATA;
 
 /// Encodes RFC 8785 JSON without changing Unicode string values.
 ///
