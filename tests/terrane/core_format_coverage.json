@@ -1,12 +1,12 @@
 {
   "format": 1,
-  "target": "terrane-core::format_properties",
+  "target": "terrane-format::format_properties",
   "requirements": [
     "TEST-3",
     "CRATE-4",
     "CRATE-33"
   ],
-  "scope": "Reviewed inventory of public terrane-core pure format APIs exercised by the exact test catalog, with known implemented-but-uncovered and deferred formats listed separately. These tests perform no I/O, workflow, signing, issuance, verification or private-authority construction.",
+  "scope": "Reviewed inventory of public terrane-format pure format APIs exercised by the exact test catalog, with known implemented-but-uncovered and deferred formats listed separately. These tests perform no I/O, workflow, signing, issuance, verification or private-authority construction.",
   "shared_properties": {
     "cbor": "Model roundtrip and identical canonical bytes; every truncated prefix; every nested widened nonminimal header, including boolean/null simple values; indefinite string/container rejection; duplicate/reordered keys for every adjacent pair in each nested map; u64::MAX nested length/count claims; sampled bit flips and 32 deterministic byte-range replacements. Accepted mutations must reencode exactly because they may represent another valid model.",
     "binary": "Model roundtrip, every truncated prefix and canonical reencoding after bit/range mutations; explicit count/extent/reserved/tag failures.",
@@ -2187,7 +2187,7 @@
     {
       "format": "standalone ruleset/policy object",
       "status": "unimplemented public core byte codec",
-      "detail": "Common derivation Memo now has a public codec and explicit model properties above. Ruleset/policy object identity domain and generic metadata kind9 exist; no public standalone ruleset/policy object codec exists in terrane-core.",
+      "detail": "Common derivation Memo now has a public codec and explicit model properties above. Ruleset/policy object identity domain and generic metadata kind9 exist; no public standalone ruleset/policy object codec exists in terrane-format.",
       "milestone_owner": "B-derive / T-RULE-1; required future format, currently unimplemented"
     },
     {
