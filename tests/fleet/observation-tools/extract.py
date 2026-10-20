@@ -117,7 +117,7 @@ def extract(runtime, output, provenance, contract):
               'templateSha256': sha(template), 'sourceExpressionSha256': sha(expression)}
     (output / 'browser/template-source.json').write_text(json.dumps(record, indent=2) + '\n')
     imports = ('//! Exact source-extracted production manifest-page serializer.\n\n'
-               'use aos_hub_service::service::RpcError;\nuse aos_proto_types as pb;\n'
+               'use aos_hub_service::service::RpcError;\nuse aos_hub_api as pb;\n'
                'use sha2::{Digest as _, Sha256};\n\n')
     forwarding = ('\n\npub(super) fn digest(objects: &[pb::RegistryPublicationObjectInput]) '
                   '-> Result<String, RpcError> {\n    registry_publication_manifest_chunk_digest(objects)\n}\n')
