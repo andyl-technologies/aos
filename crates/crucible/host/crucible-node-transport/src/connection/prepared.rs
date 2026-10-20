@@ -116,6 +116,14 @@ impl<S: ProviderStream> Drop for PreparedSend<'_, S> {
     }
 }
 
+/// Names the original private writer's unchanged credit-refusal diagnostic.
+pub(crate) const SERIALIZED_CREDIT_FAILURE_MESSAGE: &str =
+    "prepared frame exceeds complete byte credit";
+
+#[cfg(test)]
+#[path = "prepared/credit_failure_tests.rs"]
+mod credit_failure_tests;
+
 pub(crate) fn serialized_credit(
     value: &impl Serialize,
     maximum: usize,
@@ -126,7 +134,8 @@ pub(crate) fn serialized_credit(
     Ok(counter.used)
 }
 
-struct SerializedCreditCounter {
+/// Counts original formatter chunks against one private byte-credit bound.
+pub(crate) struct SerializedCreditCounter {
     used: usize,
     maximum: usize,
 }
@@ -137,7 +146,7 @@ impl Write for SerializedCreditCounter {
             .used
             .checked_add(bytes.len())
             .filter(|next| *next <= self.maximum)
-            .ok_or_else(|| io::Error::other("prepared frame exceeds complete byte credit"))?;
+            .ok_or_else(|| io::Error::other(SERIALIZED_CREDIT_FAILURE_MESSAGE))?;
         self.used = next;
         Ok(bytes.len())
     }

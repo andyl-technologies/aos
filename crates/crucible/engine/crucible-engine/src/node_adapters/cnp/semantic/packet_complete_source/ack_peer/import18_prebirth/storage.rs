@@ -411,6 +411,8 @@ pub(super) fn counter_scratch_data() -> usize {
         + 128 * NodeRuntime::capture_serialization_counter_scratch_data()
         + NativeImport18PrivateBirthAttempt::counter_scratch_data()
         + PacketNative5SourceLaunch::validation_construction_counter_scratch_data()
+        + PacketNative5SourceLaunch::original_import18_serialized_credit_failure_counter_scratch_data()
+        + CREDIT_FAILURE_QUOTE_ADAPTER_CONTROLS
         + PacketCompleteSemanticSource::native_import18_declaration_counter_scratch_data()
         + PacketNative5CoordinatorInstallation::decode_construction_counter_scratch_data()
         + PacketCompleteSemanticSource::retained_metadata_conversion_counter_scratch_data()
@@ -433,3 +435,44 @@ pub(super) fn counter_scratch_data() -> usize {
             >,
         >()
 }
+
+// Owns only the new credit-component call's actual Source-side adapter.
+// Producer envelopes, bindings, constructor operands and FnOnce/Try arguments
+// are distinct roles. All terms are const and admitted before either quote.
+type CreditPair = (usize, usize);
+type CreditResidual = Result<std::convert::Infallible, RuntimeError>;
+type CreditFlow = std::ops::ControlFlow<CreditResidual, CreditPair>;
+
+const CREDIT_FAILURE_QUOTE_ADAPTER_CONTROLS: usize = size_of::<usize>() * 2 // new coexisting locals
+    + size_of::<CreditPair>() // caller ? Continue output binding
+    + size_of::<[usize; 2]>() // actual new transient sum
+    + size_of::<[usize; 3]>() // actual enlarged scratch sum
+    + size_of::<Result<CreditPair, crucible_node_transport::ProviderError>>() // map_err self
+    + size_of::<CreditPair>() * 2 // map_err Ok binding / Ok owned input
+    + size_of::<crucible_node_transport::ProviderError>() // map_err Err binding
+    + size_of::<crucible_node_transport::ProviderError>() // callback argument -> FnOnce tuple field input
+    + size_of::<(crucible_node_transport::ProviderError,)>() // callback tuple initializer
+    + size_of::<(crucible_node_transport::ProviderError,)>() // actual FnOnce args
+    + size_of::<crucible_node_transport::ProviderError>() // closure's owned argument binding
+    + size_of::<()>() // capture-free closure initializer
+    + size_of::<()>() // map_err op owned operand
+    + size_of::<()>() // FnOnce owned callable receiver
+    + size_of::<RuntimeError>() // actual ResourceLimit initializer
+    + size_of::<RuntimeError>() // mapper return
+    + size_of::<RuntimeError>() // mapped Err owned input
+    + size_of::<Result<CreditPair, RuntimeError>>() * 2 // mapper Result initializer / return
+    + size_of::<Result<CreditPair, RuntimeError>>() // actual Try::branch self
+    + size_of::<CreditPair>() * 2 // Try Ok binding / Continue owned input
+    + size_of::<CreditFlow>() * 2 // branch initializer / return
+    + size_of::<RuntimeError>() // Try Err binding
+    + size_of::<RuntimeError>() // residual Err owned input
+    + size_of::<CreditResidual>() // residual initializer
+    + size_of::<CreditResidual>() // Break owned input
+    + size_of::<CreditResidual>() // caller ? Break residual binding
+    + size_of::<CreditResidual>() // FromResidual owned input
+    + size_of::<RuntimeError>() // FromResidual Err binding
+    + size_of::<RuntimeError>() // actual identity From owned input
+    + size_of::<RuntimeError>() // identity From return (no Into edge)
+    + size_of::<RuntimeError>() // enclosing Err owned input
+    + size_of::<Result<NativeImport18BirthConstructionQuote, RuntimeError>>() // Err initializer
+    + size_of::<Result<NativeImport18BirthConstructionQuote, RuntimeError>>(); // FromResidual return

@@ -109,6 +109,7 @@ mod packet_schema;
 mod prepared;
 pub(crate) use prepared::original_serialized_credit_counter_scratch_data;
 pub(crate) use prepared::serialized_credit;
+pub(crate) use prepared::{SERIALIZED_CREDIT_FAILURE_MESSAGE, SerializedCreditCounter};
 
 pub(crate) use exchange::OriginalPacketCompletedRecordEncodingData;
 pub use exchange::{ExchangeFailure, ExchangeRecord, OriginalSentFrameView, PreparedExchange};

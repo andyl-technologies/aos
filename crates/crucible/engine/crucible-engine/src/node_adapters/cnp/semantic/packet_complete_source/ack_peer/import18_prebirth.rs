@@ -307,12 +307,14 @@ impl PacketCompleteSemanticSource {
         let (transient, scratch) = launch
             .validation_construction_storage_data(maximum)
             .map_err(|_| RuntimeError::ResourceLimit)?;
+        let (credit_failure, credit_controls) = PacketNative5SourceLaunch::original_import18_serialized_credit_failure_construction_data(maximum)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
         owner.quote(
             Stage::Validating,
             [
                 0,
-                transient,
-                storage::sum(&[scratch, storage::counter_scratch_data()])?,
+                storage::sum(&[transient, credit_failure])?,
+                storage::sum(&[scratch, credit_controls, storage::counter_scratch_data()])?,
             ],
             [0; 2],
             maximum,

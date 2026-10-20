@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use super::{super::control::PacketControlSelection, PacketConnectedSourceProgram};
 use crate::{ProviderError, handshake::Limits, reference_service::InstalledContent};
 
+#[path = "native5/credit_failure.rs"]
+mod credit_failure;
 mod profile;
 pub use profile::PacketNative5CaptureProfile;
 

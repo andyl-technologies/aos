@@ -11,6 +11,14 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Latest checkpoint
 
+The concrete counting-writer failure component now prices the original IO
+error constructor, its Serde conversion and their release operands before the
+Source quote proceeds. It preserves the writer message, error mapping,
+failed-prefix custody and admission order. All six focused controls pass, as
+does eleven-crate all-feature/all-target checking in 1 minute 37 seconds.
+This component does not connect the remaining Source18 funding, serializer,
+validation or native-startup paths; broader regressions remain pending.
+
 The workspace integrates `origin/master` at `68851a3bf1` using the reorganized
 80-package layout. The node schema and transport are now `crucible-node-format`
 and `crucible-node-transport`; native read-lease custody lives in
