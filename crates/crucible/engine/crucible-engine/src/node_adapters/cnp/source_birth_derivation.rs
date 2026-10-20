@@ -24,3 +24,6 @@ pub mod installation;
 
 /// Describes known Source storage and its original external deployment read.
 pub mod deployment;
+
+/// Retains one original supervised occurrence through same-Source acceptance.
+pub mod job;

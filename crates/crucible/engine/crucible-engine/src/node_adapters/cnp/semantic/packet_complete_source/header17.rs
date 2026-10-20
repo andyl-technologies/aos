@@ -163,6 +163,7 @@ impl Serialize for SourceHeader17<'_> {
         }
         if self.source.native_import18_derivation_mechanism.is_some()
             || self.source.native_import18_birth_construction.is_some()
+            || self.source.native_import18_derivation.is_some()
             || self.source.native_import18_phase_bank_attempted.get()
             || self.source.native_import18_declaration.is_some()
             || self.source.original_coordinator_policy18.is_some()
@@ -183,6 +184,7 @@ impl Serialize for SourceHeader17<'_> {
             ack_peer_birth: _,
             ack_birth_attempted,
             native_import18_birth_construction: _,
+            native_import18_derivation: _,
             native_import18_derivation_mechanism: _,
             ack_peer_association: _,
             restored_suffix_attempted: _,

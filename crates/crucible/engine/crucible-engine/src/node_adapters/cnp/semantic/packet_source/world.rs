@@ -385,3 +385,22 @@ impl PacketWorldSourceScope {
         })
     }
 }
+
+// The guarded Source exporter borrows this independent original; candidate
+// bytes are never decoded or copied into an expected-world substitute.
+impl PacketSemanticSource {
+    pub(in crate::node_adapters::cnp::semantic) fn isolated_expected_coordinator_data(
+        &self,
+    ) -> crate::node_adapters::cnp::source_birth_derivation::derive::ExpectedCoordinator<'_> {
+        use crate::node_adapters::cnp::source_birth_derivation::derive::{
+            ExpectedCoordinator, WorldRefusal,
+        };
+        match self.world_scope.as_ref() {
+            Some(scope) => match &scope.coordinator {
+                InstalledCoordinator::Complete(original) => ExpectedCoordinator::Producer(original),
+                _ => ExpectedCoordinator::Deferred(WorldRefusal::ProducerCoordinatorChanged),
+            },
+            None => ExpectedCoordinator::Deferred(WorldRefusal::ProducerWorldAbsent),
+        }
+    }
+}

@@ -116,6 +116,7 @@ pub struct PacketCompleteSemanticSource {
     ack_peer_birth: std::cell::RefCell<Option<ack_peer::OriginalAckPeerBirth>>,
     ack_birth_attempted: bool,
     native_import18_birth_construction: Option<Box<ack_peer::NativeImport18BirthConstruction>>,
+    native_import18_derivation: Option<ack_peer::NativeImport18DerivationState>,
     // Selected templates retain the actual deployment owner, not copied hashes.
     // No job or accepted-bank authority is supplied by this shared handle.
     native_import18_derivation_mechanism: Option<

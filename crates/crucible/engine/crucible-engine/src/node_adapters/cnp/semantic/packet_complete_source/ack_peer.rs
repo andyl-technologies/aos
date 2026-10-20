@@ -30,8 +30,10 @@ mod association;
 mod birth;
 #[path = "ack_peer/import18_prebirth.rs"]
 mod import18_prebirth;
-pub(super) use import18_prebirth::NativeImport18BirthConstruction;
 pub use import18_prebirth::NativeImport18BirthConstructionQuote;
+pub(super) use import18_prebirth::{
+    NativeImport18BirthConstruction, NativeImport18DerivationState,
+};
 #[path = "ack_peer/frame.rs"]
 mod frame;
 pub(super) use association::OriginalAckPeerAssociation;

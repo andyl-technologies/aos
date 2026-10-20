@@ -220,6 +220,44 @@ impl Attempt {
         result
     }
 
+    /// Exports the same original planned inputs through the selected Source once.
+    ///
+    /// The real workspace and input are reserved before this synchronous loan;
+    /// all remaining names stay here or in that Source's failed association.
+    pub(super) fn retain_source_derivation_into<'a>(
+        &mut self,
+        source: &'a mut PacketCompleteSemanticSource,
+        launch: &'a PacketNative5SourceLaunch,
+        job: &mut crucible_engine::node_adapters::cnp::source_birth_derivation::job::SourceBirthDerivationJob,
+        workspace: crucible_engine::node_adapters::cnp::source_birth_derivation::request_wire::ExportWorkspace<'a>,
+    ) -> Result<(), RuntimeError> {
+        if self.source_transfer_started {
+            return Err(RuntimeError::DuplicateOperation);
+        }
+        self.source_transfer_started = true;
+        let ready = self.started
+            && !self.failed
+            && self.complete
+            && self.private_launch.is_some()
+            && self.registration.is_some();
+        self.failed = true;
+        if !ready {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        let result = source.export_native_import18_derivation_into(
+            launch,
+            &mut self.private_launch,
+            &mut self.registration,
+            job,
+            workspace,
+        );
+        if result.is_ok() {
+            self.source_transfer_complete = true;
+            self.failed = false;
+        }
+        result
+    }
+
     /// Moves the same vector/string/Id backing into the final planned object.
     fn finish_names_data(&mut self) -> Result<(), RuntimeError> {
         if self.registration.is_some() {

@@ -26,6 +26,10 @@ mod storage;
 #[path = "import18_prebirth/views.rs"]
 mod views;
 
+#[path = "import18_prebirth/derivation.rs"]
+mod derivation;
+pub(in crate::node_adapters::cnp::semantic::packet_complete_source) use derivation::NativeImport18DerivationState;
+
 use birth::import18_construction::NativeImport18PrivateBirthAttempt;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -141,6 +145,9 @@ impl PacketCompleteSemanticSource {
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_template18_worker_storage_custody_data(
         &self,
     ) -> Result<(), RuntimeError> {
+        if self.native_import18_derivation.is_some() {
+            return self.authenticate_isolated_derivation_storage_custody();
+        }
         match (
             self.ack_birth_attempted,
             self.native_import18_birth_construction.as_ref(),
@@ -198,6 +205,9 @@ impl PacketCompleteSemanticSource {
         launch: &PacketNative5SourceLaunch,
         maximum: usize,
     ) -> Result<NativeImport18BirthConstructionQuote, RuntimeError> {
+        if self.native_import18_derivation_mechanism.is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
         self.authenticate_import18_birth_source_data(launch)?;
         if self.ack_birth_attempted
             || self.native_import18_birth_construction.is_some()

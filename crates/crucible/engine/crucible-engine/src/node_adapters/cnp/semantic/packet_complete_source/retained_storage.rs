@@ -329,6 +329,7 @@ impl PacketCompleteSemanticSource {
     pub fn isolated_template_deployment_counter_scratch_data() -> usize {
         use crate::node_adapters::cnp::source_birth_derivation::deployment::SourceDeploymentStorageRead;
         Self::retained_requested_storage_precredit_scratch_data()
+            .saturating_add(Self::isolated_derivation_counter_scratch_data())
             .saturating_add(std::mem::size_of::<SourceDeploymentStorageRead<'static>>() * 2)
             .saturating_add(std::mem::size_of::<
                 Result<SourceDeploymentStorageRead<'static>, RuntimeError>,

@@ -76,6 +76,8 @@ impl InstalledNodeCatalog {
         if let Some(original) = self.funded_templates.as_mut() {
             if stopping {
                 original.retire()?;
+            } else {
+                original.poll_derivation()?;
             }
         }
         if let Some(original) = self.complete_scene.as_mut() {

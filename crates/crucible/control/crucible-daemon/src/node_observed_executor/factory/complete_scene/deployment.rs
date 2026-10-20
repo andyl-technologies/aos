@@ -1,7 +1,7 @@
 //! Retains funded input preparation separately from the old collecting lifecycle.
 //!
-//! This capsule creates no worker job or native child. The ordinary complete
-//! scene capability remains absent; its existing control request therefore
+//! Supervised jobs remain with their actual Prepared and original cleanup owners.
+//! The ordinary complete scene capability remains absent; its control request
 //! returns the existing unavailable/refused result, never preparation success.
 
 use super::*;
@@ -95,13 +95,38 @@ impl FundedTemplateCapsule {
         }
     }
 
+    pub(super) fn poll_derivation(&mut self) -> Result<(), NodeObservedError> {
+        if self.retired {
+            return Ok(());
+        }
+        let Some(prepared) = &mut self.prepared else {
+            return Ok(());
+        };
+        if let Err(error) = prepared.poll_funded_derivation_data(false) {
+            if self.failure.is_none() {
+                let _ = error; // the original typed cause remains in Prepared or its Job
+                self.failure = Some(QualificationError::Refused("funded derivation failed"));
+            }
+            return Err(refused("funded derivation remains unavailable"));
+        }
+        Ok(())
+    }
+
     pub(super) fn retire(&mut self) -> Result<(), NodeObservedError> {
         if self.retired {
             return Ok(());
         }
-        // No job/Child can exist. Revocation precedes receiver closure, then
-        // original-descriptor cleanup. Failure keeps this capsule and credit.
+        // Revoke acceptance first. Every original job drains through the same
+        // physical cleanup before receiver closure, namespace cleanup or refund.
         self.deployment.revoke();
+        if let Some(prepared) = &mut self.prepared {
+            if !prepared
+                .poll_funded_derivation_data(true)
+                .map_err(|_| refused("funded worker cleanup remains unresolved"))?
+            {
+                return Err(refused("funded worker cleanup remains unresolved"));
+            }
+        }
         self.prepared.take();
         self.deployment
             .cleanup_namespace()

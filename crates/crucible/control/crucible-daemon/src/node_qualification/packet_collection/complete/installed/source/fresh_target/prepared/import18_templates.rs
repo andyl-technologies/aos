@@ -8,6 +8,7 @@ use super::*;
 use crate::node_control::deployment::InstalledDeployment;
 use crate::node_qualification::packet_collection::complete::retained::Counter;
 use crucible_engine::node_adapters::cnp::OriginalNativeSourceTemplate18MechanismQuote;
+use crucible_engine::node_adapters::cnp::source_birth_derivation::job::SourceBirthDerivationJob;
 use crucible_engine::node_adapters::cnp::{
     NativeImport18BirthConstructionQuote, OriginalImport18CaptureBankConstructionData,
     OriginalNativeSourceTemplate18Attempt, OriginalNativeSourceTemplate18ConstructionData,
@@ -18,6 +19,9 @@ use std::mem::{size_of, size_of_val};
 
 #[path = "import18_templates/registration_plan.rs"]
 mod registration_plan;
+
+#[path = "import18_derivation.rs"]
+mod derivation;
 
 pub(super) type Import18Selection = PacketNativeImport18Selection;
 
@@ -32,6 +36,10 @@ enum Stage {
     BirthWorker,
     Complete,
     FundedTemplate,
+    DerivationExporting,
+    DerivationRunning,
+    DerivedBanks,
+    DerivationFailed,
 }
 
 struct Member {
@@ -44,6 +52,7 @@ struct Member {
     bank_row: Option<OriginalImport18CaptureBankConstructionData>,
     birth_row: Option<NativeImport18BirthConstructionQuote>,
     output: OriginalNativeSourceTemplate18Attempt,
+    job: Option<SourceBirthDerivationJob>,
 }
 
 impl Member {
@@ -58,6 +67,7 @@ impl Member {
             bank_row: None,
             birth_row: None,
             output: OriginalNativeSourceTemplate18Attempt::default(),
+            job: None,
         }
     }
 }
@@ -68,6 +78,7 @@ pub(super) struct Templates {
     started: bool,
     pub(super) complete: bool,
     pub(super) failed: bool,
+    derivation_failure: Option<RuntimeError>,
     members: [Member; 3],
 }
 
@@ -82,6 +93,7 @@ struct MemberObservation<'a> {
     bank_row: &'a Option<OriginalImport18CaptureBankConstructionData>,
     birth_row: &'a Option<NativeImport18BirthConstructionQuote>,
     output: &'a OriginalNativeSourceTemplate18Attempt,
+    job: &'a Option<SourceBirthDerivationJob>,
 }
 
 impl<'a> MemberObservation<'a> {
@@ -96,6 +108,7 @@ impl<'a> MemberObservation<'a> {
             bank_row,
             birth_row,
             output,
+            job,
         } = member;
         Self {
             stage,
@@ -107,6 +120,7 @@ impl<'a> MemberObservation<'a> {
             bank_row,
             birth_row,
             output,
+            job,
         }
     }
 }
@@ -120,6 +134,7 @@ pub(super) struct TemplatesObservation<'a> {
     started: &'a bool,
     complete: &'a bool,
     failed: &'a bool,
+    derivation_failure: &'a Option<RuntimeError>,
     members: [MemberObservation<'a>; 3],
 }
 
@@ -139,8 +154,19 @@ impl MemberObservation<'_> {
             bank_row: _,
             birth_row: _,
             output,
+            job,
         } = *self;
         registration.charge_retained_data(counter)?;
+        if let Some(job) = job {
+            let context = deployment
+                .ok_or(RuntimeError::ForeignAuthority)?
+                .context()?;
+            let read = job.deployment_storage_read(&context, counter.remaining())?;
+            read.authenticate_original(&context)?;
+            counter
+                .add(read.known_requested_bytes_data())
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        }
         if let (Some(deployment), Some(source)) = (deployment, output.partial_data()) {
             let context = deployment.context()?;
             let read = source.original_isolated_template_deployment_storage_data(
@@ -168,6 +194,7 @@ impl TemplatesObservation<'_> {
             started: _,
             complete: _,
             failed: _,
+            derivation_failure,
             members,
         } = self;
         // The owner is exactly this fixed three-slot array, not a policy limit.
@@ -187,6 +214,11 @@ impl TemplatesObservation<'_> {
                     .map_err(|_| RuntimeError::ResourceLimit)?;
             }
         }
+        if let Some(RuntimeError::SchedulerRefused(message)) = derivation_failure {
+            counter
+                .add(message.capacity())
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        }
         first.charge_retained_data(counter, deployment)?;
         second.charge_retained_data(counter, deployment)?;
         third.charge_retained_data(counter, deployment)
@@ -205,6 +237,7 @@ const fn member_field_references_data() -> usize {
         + size_of::<&Option<OriginalImport18CaptureBankConstructionData>>()
         + size_of::<&Option<NativeImport18BirthConstructionQuote>>()
         + size_of::<&OriginalNativeSourceTemplate18Attempt>()
+        + size_of::<&Option<SourceBirthDerivationJob>>()
 }
 
 const MEMBER_PROJECTION_CONTROLS: usize = size_of::<&Member>() // from_member_data input
@@ -213,7 +246,8 @@ const MEMBER_PROJECTION_CONTROLS: usize = size_of::<&Member>() // from_member_da
     + size_of::<MemberObservation<'static>>() // literal initializer
     + size_of::<MemberObservation<'static>>(); // helper return
 
-const TEMPLATE_PROJECTION_CONTROLS: usize = size_of::<&Option<Rc<InstalledDeployment>>>() * 2
+const TEMPLATE_PROJECTION_CONTROLS: usize = size_of::<&Option<RuntimeError>>() * 3
+    + size_of::<&Option<Rc<InstalledDeployment>>>() * 2
     + size_of::<&bool>() * 2 // funded-complete reference binding and field operand
     + size_of::<Rc<InstalledDeployment>>() * 2 // selected wrapper and local holder
     + size_of::<&Templates>() // observation_data receiver
@@ -241,6 +275,7 @@ const MEMBER_CHARGE_CONTROLS: usize = size_of::<&MemberObservation<'static>>() /
     + size_of::<&mut Counter>() // actual helper counter argument
     + size_of::<&registration_plan::Attempt>() // copied actual registration reference
     + size_of::<&OriginalNativeSourceTemplate18Attempt>() // copied actual output reference
+    + size_of::<&Option<SourceBirthDerivationJob>>() // copied actual external job slot
     + size_of::<()>() // member Ok constructor owned unit operand
     + size_of::<Result<(), RuntimeError>>() // member Ok initializer
     + size_of::<Result<(), RuntimeError>>(); // extra member-helper return
@@ -257,6 +292,7 @@ impl Templates {
             started: false,
             complete: false,
             failed: false,
+            derivation_failure: None,
             members: std::array::from_fn(|_| Member::empty()),
         }
     }
@@ -269,6 +305,7 @@ impl Templates {
             started,
             complete,
             failed,
+            derivation_failure,
             members,
         } = self;
         let [first, second, third] = members;
@@ -278,6 +315,7 @@ impl Templates {
             started,
             complete,
             failed,
+            derivation_failure,
             members: [
                 MemberObservation::from_member_data(first),
                 MemberObservation::from_member_data(second),
@@ -298,8 +336,25 @@ impl Templates {
         counter: &mut Counter,
     ) -> Result<(), RuntimeError> {
         // The enclosing Option<Prepared> already prices all inline rows/flags.
+        if let Some(RuntimeError::SchedulerRefused(message)) = &self.derivation_failure {
+            counter
+                .add(message.capacity())
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        }
         for member in &self.members {
             member.registration.charge_retained_data(counter)?;
+            if let Some(job) = &member.job {
+                let context = self
+                    .deployment
+                    .as_ref()
+                    .ok_or(RuntimeError::ForeignAuthority)?
+                    .context()?;
+                let read = job.deployment_storage_read(&context, counter.remaining())?;
+                read.authenticate_original(&context)?;
+                counter
+                    .add(read.known_requested_bytes_data())
+                    .map_err(|_| RuntimeError::ResourceLimit)?;
+            }
             counter
                 .add(
                     member
@@ -315,6 +370,7 @@ impl Templates {
         TEMPLATE_PROJECTION_CONTROLS
             + OriginalNativeSourceTemplate18Attempt::retained_counter_scratch_data()
             + registration_plan::Attempt::counter_scratch_data()
+            + SourceBirthDerivationJob::deployment_storage_counter_scratch_data()
             + size_of::<&Self>()
             + size_of::<&mut Counter>()
             + size_of::<usize>()

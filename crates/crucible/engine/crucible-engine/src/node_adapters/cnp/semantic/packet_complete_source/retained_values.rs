@@ -57,6 +57,14 @@ impl PacketCompleteSemanticSource {
             ],
             maximum,
         )?;
+        bytes = sum_with_error::<E, _>(
+            [
+                bytes,
+                self.isolated_derivation_known_backing_data(maximum)
+                    .map_err(E::runtime)?,
+            ],
+            maximum,
+        )?;
         if let Some((source, registration)) = &self.ack_birth_input_banks {
             bytes = sum_with_error::<E, _>(
                 [bytes, source.capacity(), registration.capacity()],

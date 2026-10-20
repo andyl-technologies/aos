@@ -346,3 +346,23 @@ impl PacketConnectedWorldScope {
         })
     }
 }
+
+// Preserve the original owner guard's position as a deferred child operand.
+impl PacketConnectedSemanticSource {
+    pub(in crate::node_adapters::cnp::semantic) fn isolated_expected_coordinator_data(
+        &self,
+    ) -> crate::node_adapters::cnp::source_birth_derivation::derive::ExpectedCoordinator<'_> {
+        use crate::node_adapters::cnp::source_birth_derivation::derive::{
+            ExpectedCoordinator, WorldRefusal,
+        };
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return ExpectedCoordinator::Deferred(WorldRefusal::ReactiveForeignOwner);
+        }
+        match &self.world.coordinator {
+            InstalledConnectedCoordinator::Five(original) => {
+                ExpectedCoordinator::Reactive(original)
+            }
+            _ => ExpectedCoordinator::Deferred(WorldRefusal::ReactiveCoordinatorChanged),
+        }
+    }
+}
