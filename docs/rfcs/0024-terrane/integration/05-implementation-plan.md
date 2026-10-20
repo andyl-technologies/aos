@@ -8755,7 +8755,11 @@ focused regressions, all seven strict profiles and the formatter pair, as well
 as its crate graph and exact reviewed unsafe audit; owning-gate qualification
 continues. The module aggregate records three 120-second outer process
 limits in genuine copied/permanent GC recovery cases. Its 88 module assertions
-remain green, but no aggregate or task acceptance is credited.
+remain green, but no aggregate or task acceptance is credited. A separate
+current-source SDK test image is building for bounded diagnosis of those three
+cases. Its six-minute outer diagnostic bounds preserve the original test logic,
+operation deadlines and assertions; it cannot substitute for the affected
+aggregate or establish an aggregate pass.
 
 Shared-directory source `744aa55567` restores its preserved SDK adapter in the
 new layout. Its all-target compilation passes, while local Nextest explicitly
@@ -8768,7 +8772,12 @@ fresh runtime executes all 15 original shared-directory cases successfully.
 Strict SDK qualification then rejects test-only unwraps and cloned singleton
 slices. `86fb63e127` permits intentional assertion panics only inside the test
 modules and borrows those singleton slices; fresh std and Tokio all-target
-Clippy and private documentation pass with production lints unchanged.
+Clippy and private documentation pass with production lints unchanged. Its
+owning `shared-dir-read-only` and `dom-host-isolation` gates now pass. Independent
+review verifies all 13 exact nonignored case executions, the retained test
+executable and all 5,087 input hashes against both the immutable build source
+and the frozen checkout. Required application compilation and complete trunk
+qualification continue; the task checkbox remains open.
 
 `4408bbc7c4` additionally connects genuine sealed consumer leases to residence
 fallback. After the confinement ABI and exact source audit, `0e3c3b1528` passes
@@ -8814,12 +8823,16 @@ Multiple temporary links to the same inode preserve surviving aliases; the
 post-cleanup namespace is observed before any content adoption. The physical
 owner retains the same publisher Drain context across these effects. Its
 formatter pair, crate graph, exact unsafe audit, three strict Linux profiles
-and private docs pass. The Cargo example build and real native controls are
-under qualification. Those controls require malformed-name and symlink refusal
-without deleting valid scratch, plus actual removal of both generated modes
-and multiple original inode links while independently retained descriptors
-preserve the original partial bytes. This is a chunk scratch recovery component;
-complete recovery, readiness and host-task acceptance remain open.
+and private docs pass. The required Cargo example build also passes after
+waiting for the shared target lock. The independently compiled native VM passes
+in 449.275 seconds, with all 5,097 source inputs, four original Cargo executables,
+55 selected native unit cases and the original 48 selectors independently
+verified. It proves malformed-name and symlink refusal without deleting valid
+scratch, plus actual removal of both generated modes and multiple original
+inode links while independently retained descriptors preserve the original
+partial bytes. The parallel and original check clients consume the same single
+native derivation result. This is a chunk scratch recovery component; complete
+recovery, readiness and host-task acceptance remain open.
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
 re-extraction, complete recovery/readiness and the stopped
 HOST-3/HOST-25/DOM-18 zero-wipe conflict remain outstanding; T3 and branch
