@@ -1,5 +1,10 @@
 //! Exercises eviction decisions and physical-charge transitions independently.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "Fixture setup and expected success assertions intentionally panic on failure."
+)]
+
 use super::{CacheEntry, CachePolicy, CircuitBreaker, PolicyConfig};
 use std::time::Duration;
 

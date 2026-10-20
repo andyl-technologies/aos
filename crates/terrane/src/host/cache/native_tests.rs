@@ -1,5 +1,10 @@
 //! Checks actual disk-backed encoded reads and durable policy snapshots.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "Native fixture setup and success/refusal assertions intentionally panic on unexpected outcomes."
+)]
+
 use super::{
     CacheState, DomainHostLayout, HostReadOnlyContent, LeaseRecord, PinRecord, StateLimits,
 };
@@ -479,7 +484,10 @@ async fn host_cache_residence_returns_verified_raw_encoding_and_encoded_ranges()
             .unwrap(),
         b"sealed"
     );
-    assert_eq!(reader.has(&[identity.clone()]).await.unwrap(), [true]);
+    assert_eq!(
+        reader.has(std::slice::from_ref(&identity)).await.unwrap(),
+        [true]
+    );
     assert_eq!(
         reader
             .list(&IdentityPrefix {

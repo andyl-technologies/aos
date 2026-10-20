@@ -1,5 +1,10 @@
 //! Exercises verified lower-tier fallback and a genuinely pending request.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "Fixture success and refusal assertions intentionally panic on unexpected outcomes."
+)]
+
 use super::{CircuitBreaker, FetchRequirement, fetch_verified};
 use crate::{
     repository::MetadataValidator,
