@@ -6,7 +6,7 @@
 
 #![cfg(test)]
 
-use std::{collections::BTreeMap, os::unix::net::UnixDatagram};
+use std::{collections::BTreeMap, net::Shutdown, os::unix::net::UnixDatagram};
 
 use crucible_node_format::*;
 use crucible_node_transport::{
@@ -752,6 +752,10 @@ fn native_effect_failure_holds_same_unknown_original_without_reexecution() {
     fixture.commit();
     let zero = position(0, 0, Phase::BoundaryControl);
     let limit = position(6, 0, Phase::BoundaryControl);
+    // A real alias models a socket retained across a concurrent child spawn.
+    // Shutdown changes that endpoint even while another descriptor holds it.
+    let oracle_alias = fixture.oracle.try_clone().unwrap();
+    fixture.oracle.shutdown(Shutdown::Both).unwrap();
     drop(fixture.oracle);
     assert!(
         fixture
@@ -784,4 +788,5 @@ fn native_effect_failure_holds_same_unknown_original_without_reexecution() {
             .original(&id("replacement-forbidden"))
             .is_none()
     );
+    drop(oracle_alias);
 }
