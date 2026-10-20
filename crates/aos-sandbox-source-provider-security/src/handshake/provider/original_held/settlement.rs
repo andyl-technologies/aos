@@ -506,10 +506,10 @@ mod tests {
     #[test]
     fn original_validation_cause_precedes_later_postcheck_debt() {
         let mut child = OriginalProviderSettlementV5::pending();
-        child.retain(aos_sandbox::JournalError::InvalidTransaction.into());
+        child.retain(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::InvalidTransaction.into());
         child.postcheck(0, Err(SourceProviderSecurityError::SessionContinuity.into()));
 
         assert!(matches!(child.failure().and_then(|cause| cause.downcast_ref::<OriginalHeldCauseV5>()),
-            Some(OriginalHeldCauseV5::Journal(aos_sandbox::JournalError::InvalidTransaction))));
+            Some(OriginalHeldCauseV5::Journal(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::InvalidTransaction))));
     }
 }

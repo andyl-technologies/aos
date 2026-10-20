@@ -11,6 +11,8 @@
 //! read-only signer independently replays it; Root must later prove it spent
 //! the challenge under its last-acquired writer. A row alone authorizes nothing.
 
+use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
+
 use crate::journal::{CacheMutationGateV1, PreflightTransactionViewV1};
 use crate::journal::semantic_append::{AppendScope, PreflightScope};
 
@@ -18,159 +20,91 @@ use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    Journal, JournalError, JournalRecord, JournalTransaction, ProtectedJournalNamesV1,
-    RecordNamespace, SourceDomainPolicyHoldV1, source_domain_policy_hold,
+    Journal,
+    JournalError,
+    JournalRecord,
+    JournalTransaction,
+    ProtectedJournalNamesV1,
+    RecordNamespace,
+    source_domain_policy_hold,
 };
 
-const KEY: &[u8] = b"\0aos-source-domain-root-challenge-v1\0";
-const MAGIC: &[u8; 8] = b"AOSSCW01";
-const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.source-domain-root-challenge.v1\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.source-domain-root-challenge-transaction.v1\0";
-const RECORD_BYTES: usize = 200;
+use aos_sandbox_ledger_replay::source_domain_challenge::{
+    KEY, MAGIC, CHECKSUM_DOMAIN, TRANSACTION_DOMAIN, RECORD_BYTES,
+};
 
 /// Retains one Root challenge spent in the held Source writer journal.
+///
+/// The historical fields remain DATA. Actual issuance still requires the
+/// original held writer and its existing native and cross-owner checks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
 pub struct SourceDomainChallengeV1 {
-    issue: u64,
-    nonce: [u8; 16],
-    cut: ObjectDigest,
-    project: ProjectId,
-    hold: ObjectDigest,
-    names: ProtectedJournalNamesV1,
+    data: aos_sandbox_ledger_replay::source_domain_challenge::SourceDomainChallengeDataV1,
 }
 
 impl SourceDomainChallengeV1 {
-    /// Returns this Source journal's monotone challenge issue number.
+    /// Returns the same historical issue comparison DATA.
     #[must_use]
     pub const fn issue(self) -> u64 {
-        self.issue
+        self.data.issue()
     }
 
-    /// Returns the exact Root challenge nonce.
+    /// Returns the same historical nonce comparison DATA.
     #[must_use]
     pub const fn nonce(self) -> [u8; 16] {
-        self.nonce
+        self.data.nonce()
     }
 
-    /// Returns the exact Root cut.
+    /// Returns the same historical cut comparison DATA.
     #[must_use]
     pub const fn cut(self) -> ObjectDigest {
-        self.cut
+        self.data.cut()
     }
 
-    /// Returns the held project whose ancestry the signer must replay.
+    /// Returns the same historical project comparison DATA.
     #[must_use]
     pub const fn project(self) -> ProjectId {
-        self.project
+        self.data.project()
     }
 
-    /// Returns the digest of the current held Source record.
+    /// Returns the same historical hold comparison DATA.
     #[must_use]
     pub const fn hold(self) -> ObjectDigest {
-        self.hold
+        self.data.hold()
     }
 
-    /// Returns the directory, journal, and lock identities named by the writer.
+    /// Returns the same historical names comparison DATA.
     #[must_use]
     pub const fn names(self) -> ProtectedJournalNamesV1 {
-        self.names
+        self.data.names()
     }
 
     /// Returns the digest of the exact canonical challenge record.
     #[must_use]
     pub fn record_digest(self) -> ObjectDigest {
-        ObjectDigest::from_bytes(Sha256::digest(self.encode()).into())
+        self.data.record_digest()
     }
 
-    /// Compares the row to the signer's independently replayed held Source cut.
+    /// Compares historical fields under the caller's independently held cut.
     ///
     /// # Errors
-    ///
-    /// Rejects an invalid held Source record.
+    /// Preserves the original invalid held-record classification.
     pub fn matches_current(
-        self,
-        nonce: [u8; 16],
-        cut: ObjectDigest,
-        project: ProjectId,
-        hold: SourceDomainPolicyHoldV1,
-        names: ProtectedJournalNamesV1,
+        self, nonce: [u8; 16], cut: ObjectDigest, project: ProjectId,
+        hold: SourceDomainPolicyHoldV1, names: ProtectedJournalNamesV1,
     ) -> Result<bool, JournalError> {
-        Ok(self.nonce == nonce
-            && self.cut == cut
-            && self.project == project
-            && self.hold == hold.record_digest()?
-            && self.names == names
-            && hold.is_held())
+        self.data.matches_current(nonce, cut, project, hold, names)
+            .map_err(JournalError::from)
     }
 
     fn encode(self) -> [u8; RECORD_BYTES] {
-        let mut bytes = [0; RECORD_BYTES];
-        bytes[..8].copy_from_slice(MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[16..24].copy_from_slice(&self.issue.to_be_bytes());
-        bytes[24..40].copy_from_slice(&self.nonce);
-        bytes[40..72].copy_from_slice(self.cut.as_bytes());
-        bytes[72..88].copy_from_slice(self.project.as_bytes());
-        bytes[88..120].copy_from_slice(self.hold.as_bytes());
-        bytes[120..168].copy_from_slice(&self.names.to_bytes());
-        let checksum = Sha256::new()
-            .chain_update(CHECKSUM_DOMAIN)
-            .chain_update(&bytes[..168])
-            .finalize();
-        bytes[168..].copy_from_slice(&checksum);
-        bytes
+        self.data.encode()
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        if bytes.len() != RECORD_BYTES
-            || bytes.get(..8) != Some(MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || bytes[10..16] != [0; 6]
-            || bytes[168..]
-                != Sha256::new()
-                    .chain_update(CHECKSUM_DOMAIN)
-                    .chain_update(&bytes[..168])
-                    .finalize()[..]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let row = Self {
-            issue: u64::from_be_bytes(
-                bytes[16..24]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            nonce: bytes[24..40]
-                .try_into()
-                .map_err(|_| JournalError::ProtectedBoundary)?,
-            cut: ObjectDigest::from_bytes(
-                bytes[40..72]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            project: ProjectId::from_bytes(
-                bytes[72..88]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            hold: ObjectDigest::from_bytes(
-                bytes[88..120]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            names: ProtectedJournalNamesV1::from_bytes(&bytes[120..168])
-                .map_err(crate::journal::JournalError::from)?,
-        };
-        if row.issue == 0
-            || row.nonce == [0; 16]
-            || row.cut.as_bytes() == &[0; 32]
-            || row.project.as_bytes() == &[0; 16]
-            || row.hold.as_bytes() == &[0; 32]
-            || row.encode().as_slice() != bytes
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(row)
+        aos_sandbox_ledger_replay::source_domain_challenge::SourceDomainChallengeDataV1::decode(bytes)
+            .map(|data| Self { data }).map_err(JournalError::from)
     }
 }
 
@@ -215,19 +149,21 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         let prior = replay_source_domain_challenge_v1(self)?;
-        if prior.is_some_and(|row| row.nonce == nonce) {
+        if prior.is_some_and(|row| row.nonce() == nonce) {
             return Err(JournalError::ProtectedBoundary);
         }
         let issue = prior
-            .map_or(Some(1), |row| row.issue.checked_add(1))
+            .map_or(Some(1), |row| row.issue().checked_add(1))
             .ok_or(JournalError::ProtectedBoundary)?;
         let row = SourceDomainChallengeV1 {
-            issue,
-            nonce,
-            cut,
-            project,
-            hold: expected_hold.record_digest()?,
-            names,
+            data: aos_sandbox_ledger_replay::source_domain_challenge::SourceDomainChallengeDataV1 {
+                issue,
+                nonce,
+                cut,
+                project,
+                hold: expected_hold.record_digest()?,
+                names,
+            },
         };
         let bytes = row.encode();
         let digest = Sha256::new()

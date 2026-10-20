@@ -14,7 +14,7 @@
 //! ACK: cold9 PUT | Source5 DELETE
 //! ```
 
-use aos_sandbox::journal::JournalError;
+use aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1 as JournalError;
 
 use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
     ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5, OriginalSourceCapacityRecordV5,
@@ -23,7 +23,9 @@ use aos_sandbox_protocol::domain_ledger::capacity_family::validate_capacity_snap
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox::{JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction;
+use aos_sandbox_core::RecordNamespace;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::{
     collect_bounded_records,
@@ -70,7 +72,7 @@ type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 /// original deployment, original floor custody or physical transaction history.
 pub(super) struct AuthenticatedSourceCapacityUnionDataV5 {
     /// Retains canonical comparison DATA with no Ready/writer conversion.
-    pub(super) comparison: aos_sandbox::journal::SourceCapacityUnionComparisonDataV5,
+    pub(super) comparison: aos_sandbox_ledger_replay::replay::source_original::union::SourceCapacityUnionComparisonDataV5,
     configuration_origin: UnresolvedNativeProofV1,
     original_physical_membership: UnresolvedNativeProofV1,
     archive_eligibility: UnresolvedNativeProofV1,
@@ -88,14 +90,14 @@ pub(super) struct AuthenticatedSourceCapacityUnionDataV5 {
 /// Rejects incomplete union/edge DATA, foreign current deployment configuration,
 /// or current/historical owner authentication and retained-signature failures.
 pub(super) fn compare_authenticated_source_capacity_union_data_v5(
-    before: &aos_sandbox::journal::SourceCapacityStateV5,
+    before: &aos_sandbox_ledger_replay::replay::source_original::union::SourceCapacityStateV5,
     transaction: Option<&JournalTransaction>,
-    origins: &[aos_sandbox::journal::SourceOriginalAdmissionDataV5],
+    origins: &[aos_sandbox_ledger_replay::replay::source_original::union::SourceOriginalAdmissionDataV5],
     challenges: &[OriginalSourceChallengeDataV5<'_>],
     configuration: &ProtectedProviderConfigurationV1,
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
 ) -> Result<AuthenticatedSourceCapacityUnionDataV5, ProviderLedgerError> {
-    let comparison = aos_sandbox::journal::compare_source_capacity_union_data_v5(
+    let comparison = aos_sandbox_ledger_replay::replay::source_original::union::compare_source_capacity_union_data_v5(
         before,
         transaction,
         origins,
@@ -253,9 +255,9 @@ fn compare_original_source_floor_union_transaction_v5(
     validate_capacity_snapshot_data_v2(before).map_err(JournalError::from)?;
     validate_capacity_snapshot_data_v2(after).map_err(JournalError::from)?;
 
-    let limits = aos_sandbox::JournalLimits::default();
-    let admission = aos_sandbox::journal::compare_source_original_admission_data_v5(
-        aos_sandbox::journal::SourceOriginalAdmissionInputV5 {
+    let limits = aos_sandbox_protocol::domain_ledger::transaction::JournalLimits::default();
+    let admission = aos_sandbox_ledger_replay::replay::source_original::union::compare_source_original_admission_data_v5(
+        aos_sandbox_ledger_replay::replay::source_original::union::SourceOriginalAdmissionInputV5 {
             original_before: original.original_before,
             original_applying: original.applying_transaction,
         },

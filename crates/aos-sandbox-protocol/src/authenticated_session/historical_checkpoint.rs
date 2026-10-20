@@ -12,6 +12,16 @@ use aos_sandbox_broker_session_protocol::{
     decode_canonical_client_hello_v1, decode_canonical_server_hello_v1,
     verify_broker_session_transcript_v1,
 };
+mod capture;
+mod construction;
+#[doc(hidden)]
+pub use construction::HistoricalSessionCheckpointConstructionCaptureV1;
+#[doc(hidden)]
+pub use capture::{
+    HistoricalSessionCheckpointDecodeCaptureV1, HistoricalSessionCheckpointEncodeCaptureV1,
+    HistoricalSessionCheckpointVerifyCaptureV1,
+};
+
 use crate::PeerCredentials;
 use sha2::{Digest as _, Sha256};
 
@@ -57,22 +67,60 @@ impl HistoricalSessionCheckpointV1 {
         peer: PeerCredentials,
         transcript: &VerifiedBrokerSessionTranscriptV1,
     ) -> Result<Self, HistoricalCheckpointErrorV1> {
-        let checkpoint = Self {
-            context,
-            client_hello: client_hello.to_vec(),
-            broker_hello: broker_hello.to_vec(),
-            peer,
-        };
-        if checkpoint.verify()? != *transcript {
-            return Err(HistoricalCheckpointErrorV1::Invalid);
-        }
-        Ok(checkpoint)
+        let mut capture = HistoricalSessionCheckpointConstructionCaptureV1::ordinary();
+        let _classification = capture.capture_once(context, client_hello, broker_hello, peer, transcript);
+        capture.into_ordinary_result()
+    }
+
+    /// Retains the provisional checkpoint before verifying its actual hellos.
+    ///
+    /// This uses the same constructor and verification engine as [`Self::new`].
+    /// The destination holds reached models and original nested causes on
+    /// refusal; it provides historical DATA only.
+    ///
+    /// # Errors
+    /// Rejects a transcript/context/hello mismatch or repeated destination entry.
+    #[doc(hidden)]
+    pub fn new_retaining(
+        context: ProtectedBrokerSessionVerificationContextV1,
+        client_hello: &[u8],
+        broker_hello: &[u8],
+        peer: PeerCredentials,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        capture: &mut HistoricalSessionCheckpointConstructionCaptureV1,
+    ) -> Result<(), HistoricalCheckpointErrorV1> {
+        capture.capture_once(context, client_hello, broker_hello, peer, transcript)
+    }
+
+    /// Returns the actual retained HELLO byte extent without encoding or IO.
+    ///
+    /// The extent describes existing historical DATA and grants no admission.
+    /// It remains independent of a possibly empty durable traffic journal.
+    #[must_use]
+    pub fn encoded_hello_bytes_v1(&self) -> Option<usize> {
+        self.client_hello.len().checked_add(self.broker_hello.len())
     }
 
     /// Borrows the historical shape-only verification context.
     #[must_use]
     pub fn context(&self) -> &ProtectedBrokerSessionVerificationContextV1 {
         &self.context
+    }
+
+    /// Borrows the exact original signed ClientHello as historical DATA.
+    ///
+    /// This borrow neither re-verifies it nor establishes current peer custody.
+    #[must_use]
+    pub fn client_hello_bytes(&self) -> &[u8] {
+        &self.client_hello
+    }
+
+    /// Borrows the exact original signed BrokerHello as historical DATA.
+    ///
+    /// This borrow neither re-verifies it nor establishes a live Session.
+    #[must_use]
+    pub fn broker_hello_bytes(&self) -> &[u8] {
+        &self.broker_hello
     }
 
     /// Returns the originally recorded nonauthorizing peer coordinates.
@@ -88,12 +136,21 @@ impl HistoricalSessionCheckpointV1 {
     pub fn verify(
         &self,
     ) -> Result<VerifiedBrokerSessionTranscriptV1, HistoricalCheckpointErrorV1> {
-        let client = decode_canonical_client_hello_v1(&self.client_hello)
-            .map_err(|_| HistoricalCheckpointErrorV1::Invalid)?;
-        let broker = decode_canonical_server_hello_v1(&self.broker_hello)
-            .map_err(|_| HistoricalCheckpointErrorV1::Invalid)?;
-        verify_broker_session_transcript_v1(&client, &broker, &self.context)
-            .map_err(|_| HistoricalCheckpointErrorV1::Invalid)
+        let mut capture = HistoricalSessionCheckpointVerifyCaptureV1::ordinary();
+        let _classification = capture.capture_once(self);
+        capture.into_ordinary_result()
+    }
+
+    /// Retains partial hello projections, negotiation and the actual transcript.
+    ///
+    /// # Errors
+    /// Returns the existing historical classification while the destination
+    /// borrows its original nested cause; repeated entry refuses before work.
+    #[doc(hidden)]
+    pub fn verify_retaining(
+        &self, capture: &mut HistoricalSessionCheckpointVerifyCaptureV1,
+    ) -> Result<(), HistoricalCheckpointErrorV1> {
+        capture.capture_once(self)
     }
 
     /// Returns the unchanged purpose-separated canonical checkpoint digest.
@@ -125,15 +182,7 @@ impl HistoricalSessionCheckpointV1 {
         &self,
         maximum_bytes: usize,
     ) -> Result<Vec<u8>, HistoricalCheckpointErrorV1> {
-        let conservative_bytes = HEADER_BYTES
-            .checked_add(1024)
-            .and_then(|size| size.checked_add(self.client_hello.len()))
-            .and_then(|size| size.checked_add(self.broker_hello.len()))
-            .and_then(|size| size.checked_add(DIGEST_BYTES))
-            .ok_or(HistoricalCheckpointErrorV1::Invalid)?;
-        if conservative_bytes > maximum_bytes {
-            return Err(HistoricalCheckpointErrorV1::Invalid);
-        }
+        require_encoding_bound(self, maximum_bytes)?;
         self.encode()
     }
 
@@ -142,46 +191,43 @@ impl HistoricalSessionCheckpointV1 {
     /// # Errors
     /// Rejects invalid peer PID, hello bounds or length overflow.
     pub fn encode(&self) -> Result<Vec<u8>, HistoricalCheckpointErrorV1> {
-        let context = self.context.checkpoint_bytes();
-        let context_len =
-            u32::try_from(context.len()).map_err(|_| HistoricalCheckpointErrorV1::Invalid)?;
-        let client_len = u32::try_from(self.client_hello.len())
-            .map_err(|_| HistoricalCheckpointErrorV1::Invalid)?;
-        let broker_len = u32::try_from(self.broker_hello.len())
-            .map_err(|_| HistoricalCheckpointErrorV1::Invalid)?;
-        if self.client_hello.is_empty()
-            || self.broker_hello.is_empty()
-            || self.client_hello.len() > CLIENT_HELLO_MAXIMUM_BYTES
-            || self.broker_hello.len() > SERVER_HELLO_MAXIMUM_BYTES
-            || self.peer.pid.is_none_or(|pid| pid == 0)
-        {
-            return Err(HistoricalCheckpointErrorV1::Invalid);
-        }
-        let mut bytes = Vec::with_capacity(
-            HEADER_BYTES
-                + context.len()
-                + self.client_hello.len()
-                + self.broker_hello.len()
-                + DIGEST_BYTES,
-        );
-        bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(&1_u16.to_be_bytes());
-        bytes.extend_from_slice(&context_len.to_be_bytes());
-        bytes.extend_from_slice(&client_len.to_be_bytes());
-        bytes.extend_from_slice(&broker_len.to_be_bytes());
-        bytes.extend_from_slice(&self.peer.uid.to_be_bytes());
-        bytes.extend_from_slice(&self.peer.gid.to_be_bytes());
-        bytes.extend_from_slice(&self.peer.pid.unwrap_or_default().to_be_bytes());
-        bytes.extend_from_slice(&context);
-        bytes.extend_from_slice(&self.client_hello);
-        bytes.extend_from_slice(&self.broker_hello);
-        let digest: [u8; 32] = Sha256::new()
-            .chain_update(DOMAIN)
-            .chain_update(&bytes)
-            .finalize()
-            .into();
-        bytes.extend_from_slice(&digest);
-        Ok(bytes)
+        let mut capture = HistoricalSessionCheckpointEncodeCaptureV1::new();
+        let _classification = capture.capture_once(self, None);
+        capture.into_ordinary_result()
+    }
+
+    /// Retains the same canonical context and output buffers before refusal.
+    ///
+    /// # Errors
+    /// Returns the ordinary encoder classification or a repeated-entry refusal.
+    #[doc(hidden)]
+    pub fn encode_retaining(
+        &self, capture: &mut HistoricalSessionCheckpointEncodeCaptureV1,
+    ) -> Result<(), HistoricalCheckpointErrorV1> {
+        capture.capture_once(self, None)
+    }
+
+    /// Retains encoding only after the unchanged conservative size frontier.
+    ///
+    /// # Errors
+    /// Rejects overflow, a caller ceiling mismatch, malformed input or reentry.
+    #[doc(hidden)]
+    pub fn encode_bounded_retaining(
+        &self, maximum_bytes: usize, capture: &mut HistoricalSessionCheckpointEncodeCaptureV1,
+    ) -> Result<(), HistoricalCheckpointErrorV1> {
+        capture.capture_once(self, Some(maximum_bytes))
+    }
+
+    /// Retains reached context, hello projections and canonical mismatch bytes.
+    ///
+    /// # Errors
+    /// Returns the unchanged historical classification and keeps all reached
+    /// nested original causes in the destination; repeated entry refuses.
+    #[doc(hidden)]
+    pub fn decode_retaining(
+        bytes: &[u8], capture: &mut HistoricalSessionCheckpointDecodeCaptureV1,
+    ) -> Result<(), HistoricalCheckpointErrorV1> {
+        capture.capture_once(bytes)
     }
 
     /// Decodes and verifies an exact canonical historical carrier.
@@ -190,59 +236,9 @@ impl HistoricalSessionCheckpointV1 {
     /// Rejects wrong header, aggregate or nested bounds, checked-length overflow,
     /// malformed context, invalid hello signatures and noncanonical digest bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, HistoricalCheckpointErrorV1> {
-        if bytes.len() < HEADER_BYTES + DIGEST_BYTES
-            || bytes.len() > MAXIMUM_BYTES
-            || bytes.get(..8) != Some(MAGIC.as_slice())
-            || read_u16(bytes, 8)? != 1
-        {
-            return Err(HistoricalCheckpointErrorV1::Invalid);
-        }
-        let context_len = usize::try_from(read_u32(bytes, 10)?)
-            .map_err(|_| HistoricalCheckpointErrorV1::Invalid)?;
-        let client_len = usize::try_from(read_u32(bytes, 14)?)
-            .map_err(|_| HistoricalCheckpointErrorV1::Invalid)?;
-        let broker_len = usize::try_from(read_u32(bytes, 18)?)
-            .map_err(|_| HistoricalCheckpointErrorV1::Invalid)?;
-        let peer = PeerCredentials {
-            uid: read_u32(bytes, 22)?,
-            gid: read_u32(bytes, 26)?,
-            pid: Some(read_u32(bytes, 30)?),
-        };
-        let context_end = HEADER_BYTES
-            .checked_add(context_len)
-            .ok_or(HistoricalCheckpointErrorV1::Invalid)?;
-        let client_end = context_end
-            .checked_add(client_len)
-            .ok_or(HistoricalCheckpointErrorV1::Invalid)?;
-        let broker_end = client_end
-            .checked_add(broker_len)
-            .ok_or(HistoricalCheckpointErrorV1::Invalid)?;
-        if broker_end.checked_add(DIGEST_BYTES) != Some(bytes.len()) {
-            return Err(HistoricalCheckpointErrorV1::Invalid);
-        }
-        let context = ProtectedBrokerSessionVerificationContextV1::from_checkpoint_bytes(
-            bytes
-                .get(HEADER_BYTES..context_end)
-                .ok_or(HistoricalCheckpointErrorV1::Invalid)?,
-        )
-        .map_err(|_| HistoricalCheckpointErrorV1::Invalid)?;
-        let checkpoint = Self {
-            context,
-            client_hello: bytes
-                .get(context_end..client_end)
-                .ok_or(HistoricalCheckpointErrorV1::Invalid)?
-                .to_vec(),
-            broker_hello: bytes
-                .get(client_end..broker_end)
-                .ok_or(HistoricalCheckpointErrorV1::Invalid)?
-                .to_vec(),
-            peer,
-        };
-        checkpoint.verify()?;
-        if checkpoint.encode()? != bytes {
-            return Err(HistoricalCheckpointErrorV1::Invalid);
-        }
-        Ok(checkpoint)
+        let mut capture = HistoricalSessionCheckpointDecodeCaptureV1::ordinary();
+        let _classification = capture.capture_once(bytes);
+        capture.into_ordinary_result()
     }
 }
 
@@ -261,4 +257,20 @@ fn read_u16(input: &[u8], offset: usize) -> Result<u16, HistoricalCheckpointErro
 
 fn read_u32(input: &[u8], offset: usize) -> Result<u32, HistoricalCheckpointErrorV1> {
     Ok(u32::from_be_bytes(read_array(input, offset)?))
+}
+
+// Both adapters refuse at the same cheap frontier before context allocation.
+fn require_encoding_bound(
+    checkpoint: &HistoricalSessionCheckpointV1, maximum_bytes: usize,
+) -> Result<(), HistoricalCheckpointErrorV1> {
+    let conservative_bytes = HEADER_BYTES
+        .checked_add(1024)
+        .and_then(|size| size.checked_add(checkpoint.client_hello.len()))
+        .and_then(|size| size.checked_add(checkpoint.broker_hello.len()))
+        .and_then(|size| size.checked_add(DIGEST_BYTES))
+        .ok_or(HistoricalCheckpointErrorV1::Invalid)?;
+    if conservative_bytes > maximum_bytes {
+        return Err(HistoricalCheckpointErrorV1::Invalid);
+    }
+    Ok(())
 }

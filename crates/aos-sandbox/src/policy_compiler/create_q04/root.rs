@@ -5,6 +5,31 @@
 //! loans end before mutation; no decoded Claim, copied head or public callback
 //! supplies an independent owner. Durable policy admission is a subgate only.
 
+use aos_sandbox_policy::controller_project_readback::VerifiedControllerProjectAdmissionV1;
+
+use aos_sandbox_protocol::source_genesis_wire::{
+    RootCreateQ04TransferKindV1,
+    RootSourceGenesisFrameKindV1,
+    ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1,
+    ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1,
+    decode_root_create_q04_transfer_v1,
+    decode_root_source_genesis_frame_v2,
+    encode_root_create_q04_transfer_v1,
+    encode_root_source_genesis_frame_v2,
+};
+
+use crate::policy_compiler::create_q04::project_q04_wire_error_v1;
+
+use crate::hierarchy::genesis_profile::project_source_genesis_wire_error_v1;
+
+use aos_sandbox_protocol::source_genesis_wire as genesis_wire;
+
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentHeadV1, PolicyDeploymentInputsV1, VerifiedSignedProjectPolicySourceV2,
+};
+
+use aos_sandbox_policy::controller_readback::VerifiedControllerHoldReadbackV1;
+
 use std::cell::{Cell, RefCell};
 use std::net::Shutdown;
 use std::os::fd::AsFd as _;
@@ -24,19 +49,14 @@ use super::super::protected_owner::{
     POLICY_STATE_JOURNAL, PROTECTED_POLICY_ROOT, policy_state_journal_limits,
 };
 use super::super::source_genesis_root::{
-    Q04RootGen1CutLoanV1, RootCreateQ04TransferKindV1, RootSourceGenesisAuthorityV1,
-    RootSourceGenesisFrameKindV1, ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1,
-    ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1,
-    decode_root_create_q04_transfer_v1, decode_root_source_genesis_frame_v2, encode_root_create_q04_transfer_v1,
-    encode_root_source_genesis_frame_v2, original_root_kernel_pair_v1,
+    Q04RootGen1CutLoanV1, RootSourceGenesisAuthorityV1, original_root_kernel_pair_v1,
     require_open_receive_queue, wait_original_root_v1,
 };
 use super::super::{
-    PolicyDeploymentHeadV1, PolicyDeploymentInputsV1, PolicyPublicationPrerequisitesV1,
-    VerifiedControllerHoldReadbackV1, VerifiedControllerProjectAdmissionV1,
-    VerifiedSignedProjectPolicySourceV2, PinnedSourceHoldReadbackSignerV1,
-    SourceHierarchyFloorRecordV1, SourceTreeGenesisChallengeV1, SourceTreeGenesisIntentContextV1,
-    SOURCE_TREE_GENESIS_READBACK_BYTES_V1, normalized_policy_input_digest_v1,
+    PinnedSourceHoldReadbackSignerV1, PolicyPublicationPrerequisitesV1,
+    SOURCE_TREE_GENESIS_READBACK_BYTES_V1, SourceHierarchyFloorRecordV1,
+    SourceTreeGenesisChallengeV1, SourceTreeGenesisIntentContextV1,
+    normalized_policy_input_digest_v1,
 };
 use aos_sandbox_policy::{
     AuthenticatedCacheDomainV1, AuthenticatedSandboxProjectRelationV1, CacheDomainBindingV1,
@@ -411,16 +431,19 @@ pub(crate) fn require_root_q04_fixed_writer(journal: &Journal) -> Result<(), cra
     )
 }
 
+mod current_history;
+pub(crate) use current_history::{
+    RootInertHistoryScanV1,
+    require_inert_root_open_history_v1, inert_root_open_history_scan_demand_v1,
+    root_history_chunk_getter_control_bytes_v1,
+};
+
 pub(crate) fn require_root_q04_ordinary_boundary(
     state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     transaction: &JournalTransaction,
 ) -> Result<(), crate::journal::JournalError> {
-    if state.keys().any(|(_, key)| key.starts_with(b"\0aos-q04-root-"))
-        || transaction.records().iter().any(|record| record.key().starts_with(b"\0aos-q04-root-"))
-    {
-        return Err(crate::journal::JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::ordinary_mutation::require_no_root_q04_mutation_v1(state, transaction)
+        .map_err(crate::journal::JournalError::from)
 }
 
 #[derive(Clone, Copy)]
@@ -434,15 +457,40 @@ enum RootQ04RecordKeyV1 {
 }
 
 impl RootQ04RecordKeyV1 {
-    fn encode(self, nonce: [u8; 16]) -> Result<Vec<u8>, CreateQ04ErrorV1> {
-        let prefix: &[u8] = match self {
+    fn prefix(self) -> &'static [u8] {
+        match self {
             Self::Cut => b"\0aos-q04-root-cut-v1\0",
             Self::Phase(_) => b"\0aos-q04-root-phase-v1\0",
             Self::Decision => b"\0aos-q04-root-decision-v1\0",
             Self::Packet(_) => b"\0aos-q04-root-packet-v1\0",
             Self::ClaimIndex => b"\0aos-q04-root-claim-index-v1\0",
             Self::ClaimChunk(_) => b"\0aos-q04-root-claim-v1\0",
-        };
+        }
+    }
+
+    fn decode_key_v1(bytes: &[u8]) -> Result<(Self, [u8; 16]), CreateQ04ErrorV1> {
+        for shape in [Self::Cut, Self::Phase(1), Self::Decision, Self::Packet(1),
+            Self::ClaimIndex, Self::ClaimChunk(0)] {
+            let Some(tail) = bytes.strip_prefix(shape.prefix()) else { continue; };
+            let suffix = match shape { Self::Phase(_) | Self::Packet(_) => 1,
+                Self::ClaimChunk(_) => 2, _ => 0 };
+            if tail.len() != 16 + suffix { return Err(CreateQ04ErrorV1::ChangedCut); }
+            let nonce: [u8; 16] = tail[..16].try_into().map_err(|_| CreateQ04ErrorV1::Bounds)?;
+            if nonce == [0; 16] { return Err(CreateQ04ErrorV1::ChangedCut); }
+            let value = match shape {
+                Self::Phase(_) if (1..=7).contains(&tail[16]) => Self::Phase(tail[16]),
+                Self::Packet(_) if (1..=4).contains(&tail[16]) => Self::Packet(tail[16]),
+                Self::Phase(_) | Self::Packet(_) => return Err(CreateQ04ErrorV1::ChangedCut),
+                Self::ClaimChunk(_) => Self::ClaimChunk(u16::from_be_bytes([tail[16], tail[17]])),
+                _ => shape,
+            };
+            return Ok((value, nonce));
+        }
+        Err(CreateQ04ErrorV1::ChangedCut)
+    }
+
+    fn encode(self, nonce: [u8; 16]) -> Result<Vec<u8>, CreateQ04ErrorV1> {
+        let prefix = self.prefix();
         if nonce == [0; 16]
             || matches!(self, Self::Phase(0 | 8..=u8::MAX) | Self::Packet(0 | 5..=u8::MAX))
         {
@@ -483,8 +531,9 @@ impl RootPreholdAuthoritySuffixV1 {
         }
         let original = request.fields();
         let inputs = preview.fields();
-        let held_controller_shape = [0; super::super::CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1];
-        let held_cache_shape = [0; crate::cache_residency::CLOSED_CACHE_OWNER_READBACK_BYTES_V2];
+        let held_controller_shape =
+            [0; aos_sandbox_policy::controller_readback::CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1];
+        let held_cache_shape = [0; aos_sandbox_protocol::cache_owner_readback::CLOSED_CACHE_OWNER_READBACK_BYTES_V2];
         if let Some(claim) = plan.claim {
             self.claim.try_reserve_exact(claim.bytes().len())?;
             self.claim.extend_from_slice(claim.bytes());
@@ -754,19 +803,7 @@ pub(crate) fn root_consumed_gate_record(
     identity: &Q04CutIdentityV1,
     decision: &super::Q04RootDecisionV1,
 ) -> Result<super::Q04EffectSubgateV1, CreateQ04ErrorV1> {
-    let mut body = [0; super::GATE_BYTES];
-    body[16..48].copy_from_slice(identity.digest().as_bytes());
-    body[48..80].copy_from_slice(identity.binding().as_bytes());
-    body[80..96].copy_from_slice(&identity.publication_id());
-    body[96..128].copy_from_slice(identity.policy_current().as_bytes());
-    body[128..160].copy_from_slice(decision.digest().as_bytes());
-    body[160..176].copy_from_slice(&identity.stage_id());
-    body[176..184].copy_from_slice(&identity.accepted_generation().to_be_bytes());
-    body[184] = 1;
-    body[224..256].copy_from_slice(identity.gen1_floor().as_bytes());
-    let gate = super::Q04EffectSubgateV1::from_body(body)?;
-    gate.require_identity(identity, decision)?;
-    Ok(gate)
+    aos_sandbox_protocol::domain_ledger::create_q04_history::root_consumed_gate_record_v1(identity, decision).map_err(Into::into)
 }
 
 fn root_capacity_acknowledgement(
@@ -809,7 +846,7 @@ fn require_terminal_pairs(
     controller: VerifiedControllerProjectAdmissionV1,
     original_held: VerifiedControllerHoldReadbackV1,
     floor: &SourceHierarchyFloorRecordV1,
-    original_cache: crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+    original_cache: aos_sandbox_protocol::cache_owner_readback::VerifiedClosedCacheOwnerReadbackV2,
     observed_cache: &crate::cache_residency::CacheResidencyRootReadOnlyPolicyHoldV1,
     release: &super::Q04PhaseRecordV1,
     settlement: Option<&super::Q04PhaseRecordV1>,
@@ -845,14 +882,14 @@ fn terminal_hold_pair_recipes(
     controller: VerifiedControllerProjectAdmissionV1,
     original_held: VerifiedControllerHoldReadbackV1,
     floor: &SourceHierarchyFloorRecordV1,
-    original_cache: crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
-) -> Result<(crate::journal::ControllerPolicyHoldV1, crate::journal::SourceDomainPolicyHoldV1,
-    crate::journal::CachePolicyHoldV1, [ObjectDigest; 6]), CreateQ04ErrorV1> {
+    original_cache: aos_sandbox_protocol::cache_owner_readback::VerifiedClosedCacheOwnerReadbackV2,
+) -> Result<(crate::journal::ControllerPolicyHoldV1, aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1,
+    aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1, [ObjectDigest; 6]), CreateQ04ErrorV1> {
     let controller_hold = crate::journal::ControllerPolicyHoldV1::new(
         original_held.operation(), original_held.sandbox(), original_held.source(),
         original_held.binding(), original_held.epoch(),
     )?;
-    let source_hold = crate::journal::SourceDomainPolicyHoldV1::new(
+    let source_hold = aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1::new(
         controller.operation(), controller.sandbox(), controller.source_commitment(),
         floor.tree_head(), identity.binding(), identity.epoch(),
     )?;
@@ -872,7 +909,7 @@ fn require_original_lower_clearance_recipe(
     acknowledgement: &super::Q04AcknowledgementV1<'_>,
     controller: VerifiedControllerProjectAdmissionV1,
     original_held: VerifiedControllerHoldReadbackV1,
-    original_cache: crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+    original_cache: aos_sandbox_protocol::cache_owner_readback::VerifiedClosedCacheOwnerReadbackV2,
 ) -> Result<(), CreateQ04ErrorV1> {
     if acknowledgement.kind() != super::Q04AcknowledgementKindV1::Clearance
         || history.committed != history.binding_prefix_end()?.checked_add(4).ok_or(CreateQ04ErrorV1::Bounds)?
@@ -906,7 +943,7 @@ fn require_original_lower_clearance_recipe(
     // Cache's actual clear membership was independently replayed through the
     // same fixed read-only engine. These hashes use its exact native recipe,
     // not a new serializer or a checksum promoted to authority.
-    let cache_clear = crate::journal::q04_cache_clear_recipe_digest_data_v1(
+    let cache_clear = aos_sandbox_protocol::cache_state::hold_state::q04_recipes::clear_recipe_digest_data_v1(
         identity, cache_names, cache_next, cache_hold, root_five.digest(),
     )?;
     let source_clear = crate::journal::q04_source_clear_recipe_digest_data_v1(
@@ -1248,14 +1285,14 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         let packet = match purpose {
             RootSourceObservationPurposeV1::Preparation => decode_root_source_genesis_frame_v2(
                 &self.controller_frame, RootSourceGenesisFrameKindV1::Prepare, root.nonce(),
-            )?,
+            ).map_err(project_source_genesis_wire_error_v1)?,
             RootSourceObservationPurposeV1::Completion => decode_root_source_genesis_frame_v2(
                 &self.completion_frame, RootSourceGenesisFrameKindV1::Complete, root.nonce(),
-            )?,
+            ).map_err(project_source_genesis_wire_error_v1)?,
             RootSourceObservationPurposeV1::Refresh => decode_root_create_q04_transfer_v1(
                 self.refresh_frames.last().ok_or(CreateQ04ErrorV1::ChangedCut)?,
                 RootCreateQ04TransferKindV1::SourceRefresh, root.nonce(),
-            )?,
+            ).map_err(project_q04_wire_error_v1)?,
         };
         let (project, challenge) = root.accept_historical_controller_readback(packet)?
             .ok_or(CreateQ04ErrorV1::ChangedCut)?;
@@ -1354,7 +1391,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         }
         self.sent = encode_root_source_genesis_frame_v2(
             RootSourceGenesisFrameKindV1::Anchored, root.nonce(), floor.record_bytes(),
-        )?;
+        ).map_err(project_source_genesis_wire_error_v1)?;
         self.write_original(&self.sent)?;
         self.phase = RootQ04PreludePhaseV1::Anchored;
         Ok(())
@@ -1385,14 +1422,14 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         drop(current);
         self.sent = encode_root_source_genesis_frame_v2(
             RootSourceGenesisFrameKindV1::Completed, root.nonce(), digest.as_bytes(),
-        )?;
+        ).map_err(project_source_genesis_wire_error_v1)?;
         self.write_original(&self.sent)?;
         self.sent.clear();
         encode_root_create_q04_transfer_v1(
             &mut self.sent, RootCreateQ04TransferKindV1::SourceObservation,
             self.root.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?.nonce(),
             &self.source_complete,
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         self.write_original(&self.sent)?;
         self.root.as_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?
             .q04_refresh_completed_gen1(&self.controller_complete, &self.source_complete)?.recheck()?;
@@ -1427,7 +1464,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         self.sent.clear();
         encode_root_create_q04_transfer_v1(
             &mut self.sent, RootCreateQ04TransferKindV1::SourceObservation, nonce, &self.source_complete,
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         self.write_original(&self.sent)?;
         self.root.as_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?
             .q04_refresh_completed_gen1(&self.controller_complete, &self.source_complete)?.recheck()?;
@@ -1505,14 +1542,14 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         self.sent.clear();
         encode_root_create_q04_transfer_v1(
             &mut self.sent, RootCreateQ04TransferKindV1::PreviewIndex, nonce, transfer.index_bytes(),
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         self.write_original(&self.sent)?;
         for index in 0..transfer.chunk_count() {
             transfer.encode_chunk(index, &mut self.preview_chunk)?;
             self.sent.clear();
             encode_root_create_q04_transfer_v1(
                 &mut self.sent, RootCreateQ04TransferKindV1::PreviewChunk, nonce, &self.preview_chunk,
-            )?;
+            ).map_err(project_q04_wire_error_v1)?;
             self.write_original(&self.sent)?;
             self.preview_chunk.clear();
         }
@@ -1568,13 +1605,13 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
                 }
                 let nonce = self.root.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?.nonce();
                 let payload_bytes = match slot {
-                    RootControllerFrameSlotV1::Prepare => super::super::source_genesis_root::strict_genesis_payload_bytes_from_header(
+                    RootControllerFrameSlotV1::Prepare => genesis_wire::strict_genesis_payload_bytes_from_header(
                         header, RootSourceGenesisFrameKindV1::Prepare, nonce,
-                    ).map_err(CreateQ04ErrorV1::from),
-                    RootControllerFrameSlotV1::Complete => super::super::source_genesis_root::strict_genesis_payload_bytes_from_header(
+                    ).map_err(project_source_genesis_wire_error_v1).map_err(CreateQ04ErrorV1::from),
+                    RootControllerFrameSlotV1::Complete => genesis_wire::strict_genesis_payload_bytes_from_header(
                         header, RootSourceGenesisFrameKindV1::Complete, nonce,
-                    ).map_err(CreateQ04ErrorV1::from),
-                    RootControllerFrameSlotV1::Refresh => super::super::source_genesis_root::q04_genesis_refresh_payload_bytes_from_header(header, nonce),
+                    ).map_err(project_source_genesis_wire_error_v1).map_err(CreateQ04ErrorV1::from),
+                    RootControllerFrameSlotV1::Refresh => genesis_wire::q04_genesis_refresh_payload_bytes_from_header(header, nonce).map_err(project_q04_wire_error_v1),
                     _ => Err(CreateQ04ErrorV1::ChangedCut),
                 }?;
                 genesis_header = false;
@@ -1641,7 +1678,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         let nonce = self.root.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?.nonce();
         let index = decode_root_create_q04_transfer_v1(
             &self.prehold_frame, RootCreateQ04TransferKindV1::PreholdIndex, nonce,
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         let (total, count) = super::prehold_index_shape(index)?;
         let original_index: [u8; super::PREVIEW_INDEX_BYTES] = index.try_into()
             .map_err(|_| CreateQ04ErrorV1::Bounds)?;
@@ -1657,7 +1694,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
             )?;
             let bytes = decode_root_create_q04_transfer_v1(
                 &self.prehold_frame, RootCreateQ04TransferKindV1::PreholdChunk, nonce,
-            )?;
+            ).map_err(project_q04_wire_error_v1)?;
             super::Q04PreholdChunkV1::decode(bytes, &original_index)?.append_to(&mut self.prehold)?;
             self.recheck_original()?;
             self.prehold_frame.clear();
@@ -1752,7 +1789,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
             &mut self.sent, RootCreateQ04TransferKindV1::PreholdRecipe,
             self.root.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?.nonce(),
             self.prehold_reply.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?.bytes(),
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         self.require_prehold_originals()?;
         self.write_original(&self.sent)?;
         self.require_prehold_originals()?;
@@ -2243,7 +2280,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         self.receive_original_exact(32 + super::CLAIM_INDEX_BYTES, RootControllerFrameSlotV1::Claim)?;
         let bytes = decode_root_create_q04_transfer_v1(
             &self.claim_frame, RootCreateQ04TransferKindV1::ClaimIndex, identity.nonce(),
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         let (total, count) = super::claim_index_shape(bytes, &identity)?;
         if total != claim_length {
             return Err(CreateQ04ErrorV1::ChangedCut);
@@ -2260,7 +2297,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
                 RootControllerFrameSlotV1::Claim)?;
             let bytes = decode_root_create_q04_transfer_v1(
                 &self.claim_frame, RootCreateQ04TransferKindV1::ClaimChunk, identity.nonce(),
-            )?;
+            ).map_err(project_q04_wire_error_v1)?;
             super::Q04ClaimChunkV1::decode(bytes, &index, &identity)?.append_to(&mut self.claim)?;
             self.require_identity_clock(&identity)?;
             self.claim_frame.clear();
@@ -2360,7 +2397,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         // This is the sole old Source record recipe, not an independent Source
         // authority. Its live cut is the same authenticated completed flight;
         // Controller remains responsible for retaining the real Source writer.
-        let source_hold = crate::journal::SourceDomainPolicyHoldV1::new(
+        let source_hold = aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1::new(
             controller.operation(), controller.sandbox(), controller.source_commitment(),
             gen1.floor().tree_head(), identity.binding(), identity.epoch(),
         )?;
@@ -2772,7 +2809,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
             &mut self.sent, RootCreateQ04TransferKindV1::Decision, identity.nonce(),
             self.decision.as_ref().and_then(|result| result.as_ref().ok())
                 .ok_or(CreateQ04ErrorV1::ChangedCut)?.bytes(),
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         self.write_original(&self.sent)?;
         self.require_original_held_input_cut()?;
         self.phase = RootQ04PreludePhaseV1::Decided;
@@ -3006,7 +3043,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         let packet = decode_root_create_q04_transfer_v1(
             self.acknowledgement_frames.get(packet_index).ok_or(CreateQ04ErrorV1::ChangedCut)?,
             request, history.identity().nonce(),
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         let acknowledgement = gen1.acknowledgement(kind, packet, history.identity(), original_names)?;
         history.admit_actual_acknowledgement(&acknowledgement, original_next)?;
         drop(gen1);
@@ -3016,7 +3053,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         let history = self.root_history.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let phase = history.suffix.phases.get(packet_index + 3).ok_or(CreateQ04ErrorV1::ChangedCut)?;
         self.sent.clear();
-        encode_root_create_q04_transfer_v1(&mut self.sent, response, history.identity().nonce(), phase.bytes())?;
+        encode_root_create_q04_transfer_v1(&mut self.sent, response, history.identity().nonce(), phase.bytes()).map_err(project_q04_wire_error_v1)?;
         self.write_original(&self.sent)?;
         self.require_terminal_held_input_cut(kind)?;
         self.phase = next_phase;
@@ -3078,7 +3115,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         let packet = decode_root_create_q04_transfer_v1(
             self.acknowledgement_frames.get(packet_index).ok_or(CreateQ04ErrorV1::ChangedCut)?,
             request, identity.nonce(),
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         let acknowledgement = gen1.acknowledgement(kind, packet, identity, original_names)?;
         if acknowledgement.controller_sequence() != original_next.checked_add(frames).ok_or(CreateQ04ErrorV1::Bounds)?
             || packet[280..312] != *self.consumed_gate.as_ref()
@@ -3848,7 +3885,7 @@ enum RootInputCurrentPurposeV1<'cut, 'packet> {
         held: VerifiedControllerHoldReadbackV1,
         held_packet: &'packet [u8],
         cache_packet: &'packet [u8],
-        cache: crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+        cache: aos_sandbox_protocol::cache_owner_readback::VerifiedClosedCacheOwnerReadbackV2,
         cache_uid: u32,
     },
     TerminalHeld {
@@ -3856,7 +3893,7 @@ enum RootInputCurrentPurposeV1<'cut, 'packet> {
         held: VerifiedControllerHoldReadbackV1,
         held_packet: &'packet [u8],
         cache_packet: &'packet [u8],
-        cache: crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+        cache: aos_sandbox_protocol::cache_owner_readback::VerifiedClosedCacheOwnerReadbackV2,
         cache_uid: u32,
         kind: super::Q04AcknowledgementKindV1,
         acknowledgement: &'packet [u8],
@@ -3868,7 +3905,7 @@ enum RootInputCurrentPurposeV1<'cut, 'packet> {
         held: VerifiedControllerHoldReadbackV1,
         held_packet: &'packet [u8],
         cache_packet: &'packet [u8],
-        cache: crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+        cache: aos_sandbox_protocol::cache_owner_readback::VerifiedClosedCacheOwnerReadbackV2,
         cache_uid: u32,
         kind: super::Q04AcknowledgementKindV1,
         acknowledgement: &'packet [u8],
@@ -3952,7 +3989,7 @@ impl RootCurrentInputVerifierV1<'_, '_, '_, '_> {
                 return Err(CreateQ04ErrorV1::ChangedCut);
             }
         }
-        let revocation = crate::publisher_policy::project_revocation_digest(
+        let revocation = crate::publisher_admin::policy::project_revocation_digest(
             controller.project(), controller.revocation_scope(), controller.revocation_generation(),
         );
         if controller != self.controller
@@ -4001,7 +4038,7 @@ impl RootCurrentInputVerifierV1<'_, '_, '_, '_> {
     // kept around each brand/allocation boundary rather than cached once.
     fn compile_authenticated_input(
         &self,
-        deployment: &super::super::PolicyDeploymentSourcesV1,
+        deployment: &aos_sandbox_policy::signed_inputs::PolicyDeploymentSourcesV1,
     ) -> Result<
         (PolicyCompilerInputV1, PolicyPublicationPrerequisitesV1, ObjectDigest, CompiledPolicyCandidateV1),
         CreateQ04ErrorV1,
@@ -4011,7 +4048,11 @@ impl RootCurrentInputVerifierV1<'_, '_, '_, '_> {
             CacheDomainBindingV1::Project(self.controller.project()), self,
         ).map_err(super::super::CurrentCreateCompilerInputErrorV1::from)?;
         self.recheck()?;
-        let layer = self.project.q04_layer_recipe().materialize_with_authenticated_binding(domain)?;
+        let layer = self
+            .project
+            .q04_layer_recipe()
+            .materialize_with_authenticated_binding(domain)
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
         let relation = AuthenticatedSandboxProjectRelationV1::authenticate(
             self.controller.sandbox(), self.controller.project(), self,
         ).map_err(super::super::CurrentCreateCompilerInputErrorV1::from)?;
@@ -4172,7 +4213,7 @@ mod tests {
 
     // Canonical inert DATA only. No genuine owner, floor, native commit,
     // currentness, capacity reservation or deployment fixture is constructed.
-    fn cut() -> Q04CutIdentityV1 {
+    pub(super) fn cut() -> Q04CutIdentityV1 {
         let mut body = [0; super::super::IDENTITY_BYTES];
         body[16..80].fill(1);
         body[80..84].copy_from_slice(&1000_u32.to_be_bytes());
@@ -4240,10 +4281,18 @@ mod tests {
 
         let cut = cut();
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let credential = crate::policy_compiler::encode_controller_hold_signer_credential_v1(
-            1, &key.verifying_key(),
-        ).unwrap();
-        let pin = crate::policy_compiler::PinnedControllerHoldSignerV1::decode(&credential).unwrap();
+        let credential =
+            aos_sandbox_policy::controller_readback::encode_controller_hold_signer_credential_v1(
+                1,
+                &key.verifying_key(),
+            )
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+            .unwrap();
+        let pin = aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1::decode(
+            &credential,
+        )
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+        .unwrap();
         let kind = Q04AcknowledgementKindV1::Policy;
         let mut packet = Vec::new();
 

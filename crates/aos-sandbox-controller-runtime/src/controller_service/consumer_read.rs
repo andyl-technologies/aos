@@ -7,7 +7,7 @@
 
 use aos_sandbox::attachment_effect_owner::CurrentControllerConsumerResourceV1;
 use aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1;
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::policy_compiler::consumer_read_flight::{
     ConsumerReadFlightErrorV1, ConsumerReadPolicyStateV1, with_consumer_read_policy_state_v1,
 };

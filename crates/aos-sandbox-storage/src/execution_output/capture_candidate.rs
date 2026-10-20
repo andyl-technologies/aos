@@ -45,6 +45,8 @@ pub(crate) enum CaptureCandidateErrorV1 {
     Readback(#[from] CaptureZfsReadbackErrorV1),
     #[error(transparent)]
     Worker(#[from] ZfsWorkerError),
+    #[error(transparent)]
+    Backend(crate::helper::ZfsHelperError),
 }
 
 /// Holds method-41 session identities after a future pinned BSA verifier.
@@ -95,6 +97,99 @@ pub(super) struct ProtectedCaptureCandidateV1 {
     preflight_digest: ObjectDigest,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum CandidateClockErrorV1 {
+    #[error("the original candidate clock is stale")]
+    Stale,
+    #[error(transparent)]
+    Kernel(aos_sandbox_linux::Error),
+}
+
+impl aos_sandbox_broker::kernel_clock::KernelPairedClockErrorV1 for CandidateClockErrorV1 {
+    fn stale() -> Self { Self::Stale }
+    fn kernel(error: aos_sandbox_linux::Error) -> Self { Self::Kernel(error) }
+}
+
+type CandidateClock = aos_sandbox_broker::kernel_clock::RetainedKernelPairedClockAttemptV1<CandidateClockErrorV1>;
+
+/// Retains only the native clock returns of the actual readonly probe.
+/// No constructor enters a worker or supplies a Source/State authorization.
+pub(crate) struct CandidateProbeTimeOriginalV1 {
+    clocks: [CandidateClock; 2],
+    samples: [Option<Result<aos_sandbox_core::RawPairedClockSample, CandidateClockErrorV1>>; 2],
+}
+
+impl CandidateProbeTimeOriginalV1 {
+    pub(crate) fn new() -> Self {
+        Self { clocks: std::array::from_fn(|_| CandidateClock::default()), samples: [None, None] }
+    }
+
+    pub(crate) fn receiving_demand_v1() -> Option<aos_sandbox_core::ResourceVector> {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        let memory = CandidateClock::dominant_requested_bytes_v1()?.checked_mul(2)?
+            .checked_add(std::mem::size_of::<Self>())?;
+        let files = CandidateClock::MAXIMUM_RETAINED_FILES_V1.checked_mul(2)?;
+        Some(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(memory).ok()?)
+            .with(D::OpenFiles, u64::try_from(files).ok()?))
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        (0..2).find_map(|index| self.clocks[index].failure().or_else(||
+            self.samples[index].as_ref()?.as_ref().err().map(|cause| cause as _)))
+    }
+
+    fn sample(&mut self, index: usize) -> Result<aos_sandbox_core::RawPairedClockSample, CaptureCandidateErrorV1> {
+        if self.samples[index].is_none() {
+            self.samples[index] = Some(self.clocks[index].observe_once(None));
+        }
+        match self.samples[index].as_ref() {
+            Some(Ok(sample)) => Ok(*sample),
+            _ => Err(CaptureCandidateErrorV1::NotCurrent),
+        }
+    }
+}
+
+pub(crate) enum CandidateProbeTimeV1<'clock> {
+    Ordinary,
+    Receiving(&'clock mut CandidateProbeTimeOriginalV1),
+}
+
+impl CandidateProbeTimeV1<'_> {
+    fn boot(&mut self) -> Result<[u8; 16], CaptureCandidateErrorV1> {
+        match self {
+            Self::Ordinary => KernelBootId::current().map_err(|_| CaptureCandidateErrorV1::NotCurrent)
+                .map(KernelBootId::into_bytes),
+            Self::Receiving(original) => Ok(original.sample(0)?.host_boot_id()),
+        }
+    }
+
+    fn now(&mut self, index: usize) -> Result<u64, CaptureCandidateErrorV1> {
+        match self {
+            Self::Ordinary => boottime_now_nanoseconds().map_err(Into::into),
+            Self::Receiving(original) => Ok(original.sample(index)?.boottime_nanoseconds()),
+        }
+    }
+}
+
+pub(crate) enum CandidateProbeV1<'probe, 'stage, 'cut, 'original> {
+    Ordinary(&'probe ZfsHelperContract),
+    Receiving {
+        helper: &'probe mut crate::helper::StorageMutationHelper<Box<dyn crate::helper::ZfsProcessBackend + Send>>,
+        stage: &'probe mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'stage, 'cut, 'original>,
+        cutoff: u64,
+    },
+}
+
+impl CandidateProbeV1<'_, '_, '_, '_> {
+    fn observe(&mut self, plan: &CaptureZfsPreflightPlanV1) -> Result<CaptureZfsPreflightV1, CaptureCandidateErrorV1> {
+        match self {
+            Self::Ordinary(zfs) => observe_capture_zfs_preflight_for(zfs, plan).map_err(Into::into),
+            Self::Receiving { helper, stage, cutoff } => helper.observe_capture_candidate_preflight_receiving_v1(plan, *cutoff, stage)
+                .map_err(CaptureCandidateErrorV1::Backend),
+        }
+    }
+}
+
 impl ExecutionOutputLedgerV1 {
     /// Resolves Storage-selected policy and emits only an informational readback.
     ///
@@ -107,6 +202,18 @@ impl ExecutionOutputLedgerV1 {
         resolver_policy: &ProtectedStorageResolverPolicyV1,
         allocation_policy: CaptureAllocationV1,
         zfs: &ZfsHelperContract,
+    ) -> Result<[u8; STORAGE_CAPTURE_CANDIDATE_BYTES_V1], CaptureCandidateErrorV1> {
+        self.observe_authenticated_capture_candidate_with_v1(cut, resolver_policy,
+            allocation_policy, &mut CandidateProbeV1::Ordinary(zfs), &mut CandidateProbeTimeV1::Ordinary)
+    }
+
+    pub(crate) fn observe_authenticated_capture_candidate_with_v1(
+        &self,
+        cut: &AuthenticatedCaptureCandidateCutV1,
+        resolver_policy: &ProtectedStorageResolverPolicyV1,
+        allocation_policy: CaptureAllocationV1,
+        probe: &mut CandidateProbeV1<'_, '_, '_, '_>,
+        time: &mut CandidateProbeTimeV1<'_>,
     ) -> Result<[u8; STORAGE_CAPTURE_CANDIDATE_BYTES_V1], CaptureCandidateErrorV1> {
         let query = cut.query();
         if resolver_policy.assignment() != query.assignment() {
@@ -146,14 +253,15 @@ impl ExecutionOutputLedgerV1 {
             host_boot_id: query.host_boot_id(),
             deadline_boottime_nanoseconds: query.deadline_boottime_nanoseconds(),
         };
-        let candidate = self.observe_capture_candidate(
+        let candidate = self.observe_capture_candidate_with_time_v1(
             &verified,
             &requirement,
             cut.catalog(),
             allocation_policy.metadata_headroom_bytes(),
             allocation_policy.minimum_remaining_bytes(),
             allocation_policy.digest(),
-            zfs,
+            |plan| probe.observe(plan),
+            time,
         )?;
         if candidate.pool_guid != allocation_policy.expected_pool_guid() {
             return Err(CaptureCandidateErrorV1::NotCurrent);
@@ -161,32 +269,7 @@ impl ExecutionOutputLedgerV1 {
         Ok(candidate.canonical_bytes())
     }
 
-    /// Observes one candidate without writing either Storage owner or ZFS.
-    ///
-    /// The catalog snapshot must be a fresh protected readback. This method
-    /// does not establish a cross-owner atomic cut: reserve must repeat the
-    /// AOSEOR03, catalog, and live-ZFS checks before any create attempt.
-    pub(super) fn observe_capture_candidate(
-        &self,
-        query: &VerifiedCaptureCandidateQueryV1,
-        requirement: &CaptureDatasetRequirementV1,
-        catalog: &VerifiedPhysicalCatalogSnapshotV1,
-        metadata_headroom_bytes: u64,
-        minimum_remaining_bytes: u64,
-        allocation_policy_digest: ObjectDigest,
-        zfs: &ZfsHelperContract,
-    ) -> Result<ProtectedCaptureCandidateV1, CaptureCandidateErrorV1> {
-        self.observe_capture_candidate_with(
-            query,
-            requirement,
-            catalog,
-            metadata_headroom_bytes,
-            minimum_remaining_bytes,
-            allocation_policy_digest,
-            |plan| observe_capture_zfs_preflight_for(zfs, plan).map_err(Into::into),
-        )
-    }
-
+    #[cfg(test)]
     fn observe_capture_candidate_with(
         &self,
         query: &VerifiedCaptureCandidateQueryV1,
@@ -199,10 +282,26 @@ impl ExecutionOutputLedgerV1 {
             &CaptureZfsPreflightPlanV1,
         ) -> Result<CaptureZfsPreflightV1, CaptureCandidateErrorV1>,
     ) -> Result<ProtectedCaptureCandidateV1, CaptureCandidateErrorV1> {
-        let boot = KernelBootId::current()
-            .map_err(|_| CaptureCandidateErrorV1::NotCurrent)?
-            .into_bytes();
-        let now = boottime_now_nanoseconds()?;
+        self.observe_capture_candidate_with_time_v1(query, requirement, catalog,
+            metadata_headroom_bytes, minimum_remaining_bytes, allocation_policy_digest,
+            observe, &mut CandidateProbeTimeV1::Ordinary)
+    }
+
+    fn observe_capture_candidate_with_time_v1(
+        &self,
+        query: &VerifiedCaptureCandidateQueryV1,
+        requirement: &CaptureDatasetRequirementV1,
+        catalog: &VerifiedPhysicalCatalogSnapshotV1,
+        metadata_headroom_bytes: u64,
+        minimum_remaining_bytes: u64,
+        allocation_policy_digest: ObjectDigest,
+        observe: impl FnOnce(
+            &CaptureZfsPreflightPlanV1,
+        ) -> Result<CaptureZfsPreflightV1, CaptureCandidateErrorV1>,
+        time: &mut CandidateProbeTimeV1<'_>,
+    ) -> Result<ProtectedCaptureCandidateV1, CaptureCandidateErrorV1> {
+        let boot = time.boot()?;
+        let now = time.now(0)?;
         if query.request_id == [0; 16]
             || query.session_binding == [0; 32]
             || query.host_boot_id != boot
@@ -251,7 +350,7 @@ impl ExecutionOutputLedgerV1 {
             .checked_add(MAXIMUM_CANDIDATE_LIFETIME_NANOSECONDS)
             .ok_or(CaptureCandidateErrorV1::NotCurrent)?
             .min(query.deadline_boottime_nanoseconds);
-        if boottime_now_nanoseconds()? >= expires_boottime_nanoseconds {
+        if time.now(1)? >= expires_boottime_nanoseconds {
             return Err(CaptureCandidateErrorV1::NotCurrent);
         }
         Ok(ProtectedCaptureCandidateV1 {
@@ -357,7 +456,7 @@ impl ProtectedCaptureCandidateV1 {
     }
 }
 
-fn joined_policy_digest(
+pub(super) fn joined_policy_digest(
     allocation_policy_digest: ObjectDigest,
     attempt_policy_digest: ObjectDigest,
 ) -> ObjectDigest {

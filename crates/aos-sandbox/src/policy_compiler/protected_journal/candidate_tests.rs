@@ -219,9 +219,12 @@ pub(super) fn fixture_from_input(input: PolicyCompilerInputV1) -> VerifiedPolicy
     let sandbox = input.sandbox();
     let normalized_input = normalized_policy_input_digest_v1(&input).expect("normalized input");
     let candidate = PolicyCompilerV1::compile(input).expect("real pure compilation");
-    let diagnostics =
-        aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())
-            .expect("real compiler diagnostics");
+    let diagnostics = aos_sandbox_protocol::policy_data::canonical_bytes(
+        DIAGNOSTICS_DOMAIN,
+        candidate.explanation(),
+    )
+    .map_err(aos_sandbox_policy::PolicyModelError::from)
+    .expect("real compiler diagnostics");
     let prerequisites = PolicyPublicationPrerequisitesV1::new(
         ObjectDigest::from_bytes([4; 32]),
         ObjectDigest::from_bytes([5; 32]),
@@ -392,7 +395,7 @@ fn candidate_v3_roundtrip_retains_exact_existing_compiler_preimage_and_outputs()
             portable.advisory_program_bytes()
         ]
     );
-    let original_hash = aos_sandbox_policy::digest(
+    let original_hash = aos_sandbox_protocol::policy_data::digest(
         b"aos.sandbox.compiled-policy-candidate.v2",
         &(
             verified.candidate.authority().commitment(),
@@ -406,6 +409,7 @@ fn candidate_v3_roundtrip_retains_exact_existing_compiler_preimage_and_outputs()
             verified.candidate.explanation().commitment(),
         ),
     )
+    .map_err(aos_sandbox_policy::PolicyModelError::from)
     .expect("unchanged original commitment tuple");
     assert_eq!(header.candidate, original_hash);
 }

@@ -8,12 +8,10 @@ use aos_sandbox_core::{
     NodeId, ObjectDigest, ProjectId, ProtocolVersion, RestoreScopeId, SandboxId,
 };
 
-use crate::local_inventory::capability::{
-    CarrierValidatedCapabilityObservationV1, NodeAdmissionStateV1, NodeCapabilityKindV1,
-    NodeProtocolV1,
-};
+use crate::local_inventory::capability::CarrierValidatedCapabilityObservationV1;
 use crate::local_inventory::evidence::AuthenticatedEvidenceContextV1;
 use crate::local_inventory::evidence_authority::VerifierEvidenceGrantV1;
+use aos_sandbox_core::{NodeAdmissionStateV1, NodeCapabilityKindV1, NodeProtocolV1};
 
 use super::{
     InvalidSnapshotTransfer, SnapshotTransferCompletionV1, SnapshotTransferIdentityV1,

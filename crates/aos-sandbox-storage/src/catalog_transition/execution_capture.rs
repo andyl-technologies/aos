@@ -210,24 +210,28 @@ impl CaptureDatasetRequirementV1 {
         {
             return Err(ExecutionCaptureDatasetErrorV1::NotVerified);
         }
+        Ok(self.bind_catalogued_guid_v3(catalog.binding(), dataset.guid()))
+    }
+
+    fn bind_catalogued_guid_v3(&self, catalog: CatalogBindingV1, guid: u64) -> VerifiedCaptureDatasetV1 {
         let mut digest = Sha256::new();
         digest.update(BINDING_DOMAIN);
         digest.update(self.execution.as_bytes());
         digest.update(self.create_operation.as_bytes());
         digest.update(self.claim_digest.as_bytes());
         digest.update(self.storage_create_operation.as_bytes());
-        digest.update(catalog.binding().generation().to_be_bytes());
-        digest.update(catalog.binding().digest().as_bytes());
-        digest.update(dataset.guid().to_be_bytes());
+        digest.update(catalog.generation().to_be_bytes());
+        digest.update(catalog.digest().as_bytes());
+        digest.update(guid.to_be_bytes());
         digest.update(self.allocation_bytes.to_be_bytes());
         digest.update((self.name.len() as u64).to_be_bytes());
         digest.update(self.name.as_bytes());
-        Ok(VerifiedCaptureDatasetV1 {
+        VerifiedCaptureDatasetV1 {
             requirement: self.clone(),
-            catalog: catalog.binding(),
-            guid: dataset.guid(),
+            catalog,
+            guid: guid,
             binding: ObjectDigest::from_bytes(digest.finalize().into()),
-        })
+        }
     }
 }
 
@@ -252,6 +256,8 @@ impl VerifiedCaptureDatasetV1 {
     pub(crate) const fn guid(&self) -> u64 {
         self.guid
     }
+
+    pub(crate) const fn catalog_v3(&self) -> CatalogBindingV1 { self.catalog }
 
     pub(crate) const fn catalog_generation(&self) -> u64 {
         self.catalog.generation()
@@ -474,5 +480,23 @@ pub(crate) mod tests {
             ),
             Err(ExecutionCaptureDatasetErrorV1::InvalidRequirement)
         ));
+    }
+}
+
+
+impl CaptureDatasetRequirementV1 {
+    pub(crate) fn from_authenticated_worker_catalog_v3(
+        context: &crate::process::capture_worker::AuthenticatedCaptureWorkerContextV3<'_>,
+        catalog: &crate::process::capture_worker::CaptureWorkerCatalogOriginalV3,
+    ) -> Result<VerifiedCaptureDatasetV1, ExecutionCaptureDatasetErrorV1> {
+        let committed = catalog.require_context_v3(context)
+            .ok_or(ExecutionCaptureDatasetErrorV1::NotVerified)?;
+        let verified = context.requirement_v3().bind_catalogued_guid_v3(
+            committed.catalog, committed.guid,
+        );
+        if verified.binding != committed.dataset_binding {
+            return Err(ExecutionCaptureDatasetErrorV1::NotVerified);
+        }
+        Ok(verified)
     }
 }

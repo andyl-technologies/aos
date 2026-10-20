@@ -17,6 +17,10 @@ use crate::guest_root_label::verify_copied_guest_executable_labels_fd_v1;
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_guest_root_tree::guest_root_tree::compare_guest_root_template_v1;
 
+mod read_original;
+
+pub use read_original::GuestRootMarkerReadOriginalV1;
+
 const MARKER_DIRECTORY: &str = "etc/aos/sandbox-guest-root";
 const MARKER_FILE: &str = "publication-v1";
 const NEXT_FILE: &str = "publication-v1.next";
@@ -134,42 +138,12 @@ pub fn read_guest_root_marker_v1(
     workspace: &Path,
     expected: GuestRootPublicationProofV1,
 ) -> Result<(), GuestRootMarkerErrorV1> {
-    let directory = marker_directory(workspace);
-    verify_directory(&directory)?;
-    let marker = directory.join(MARKER_FILE);
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
-        .open(&marker)?;
-    verify_file(&file.metadata()?)?;
-    let mut bytes = Vec::new();
-    file.take(267).read_to_end(&mut bytes)?;
-    let observed = GuestRootPublicationProofV1::decode(&bytes)
-        .map_err(|_| GuestRootMarkerErrorV1::InvalidPublication)?;
-    if observed != expected {
-        return Err(GuestRootMarkerErrorV1::InvalidPublication);
-    }
-    let measured = compare_guest_root_template_v1(template, workspace)
-        .map_err(|_| GuestRootMarkerErrorV1::InvalidPublication)?;
-    if measured != expected.root_tree_digest {
-        return Err(GuestRootMarkerErrorV1::InvalidPublication);
-    }
-    verify_payload_labels(workspace)?;
-    Ok(())
+    let mut original = GuestRootMarkerReadOriginalV1::new();
+    original.read_ordinary_v1(template, workspace, expected)
 }
 
 fn verify_payload_labels(workspace: &Path) -> Result<(), GuestRootMarkerErrorV1> {
-    let root_fd = rustix::fs::open(
-        workspace,
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::DIRECTORY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(|_| GuestRootMarkerErrorV1::InvalidPublication)?;
-    verify_copied_guest_executable_labels_fd_v1(root_fd.as_fd())
-        .map_err(|_| GuestRootMarkerErrorV1::InvalidPublication)
+    GuestRootMarkerReadOriginalV1::verify_labels_ordinary_v1(workspace)
 }
 
 fn marker_directory(workspace: &Path) -> PathBuf {
@@ -190,6 +164,10 @@ fn prepare_directory(workspace: &Path, directory: &Path) -> Result<(), GuestRoot
 
 fn verify_directory(path: &Path) -> Result<(), GuestRootMarkerErrorV1> {
     let metadata = fs::symlink_metadata(path)?;
+    verify_directory_metadata(&metadata)
+}
+
+fn verify_directory_metadata(metadata: &fs::Metadata) -> Result<(), GuestRootMarkerErrorV1> {
     if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
         return Err(GuestRootMarkerErrorV1::InvalidPublication);
     }

@@ -22,7 +22,6 @@ use crate::controller_service::inventory::DormantGitCoverageQueryOwnerV1;
 use crate::{
     BrokerSessionSecurityError, DormantBrokerSessionHandshakeErrorV1,
     DormantMountLifecycleInventoryOwnerV1, DormantStorageLifecycleInventoryOwnerV1,
-    ProtectedBrokerSessionFixedCustodyV1, ProtectedBrokerSessionFixedEndpointV1,
 };
 
 use super::publisher_policy_source::PublisherPolicyBootstrapAttemptV1;
@@ -53,7 +52,6 @@ type CacheCoordinatesV1 = (
 pub(super) struct GitCoverageWorkerV1<'profile> {
     inputs: GitCoverageCredentialCustodyV1,
     account: GitCoverageAccountAttemptV1<'profile>,
-    fixed: [Option<ProtectedBrokerSessionFixedCustodyV1>; 2],
     queries: [Option<DormantGitCoverageQueryOwnerV1>; 2],
     requests: [[Option<Result<Vec<u8>, GitCoverageDataErrorV1>>; 2]; 2],
     cache: [Option<Result<CacheCoordinatesV1, CacheResidentUnavailableV1>>; 2],
@@ -78,7 +76,6 @@ impl<'profile> GitCoverageWorkerV1<'profile> {
         Self {
             inputs: GitCoverageCredentialCustodyV1::controller(),
             account: GitCoverageAccountAttemptV1::new(profile),
-            fixed: [None, None],
             queries: [None, None],
             requests: std::array::from_fn(|_| [None, None]),
             cache: [None, None],
@@ -158,8 +155,11 @@ impl<'profile> GitCoverageWorkerV1<'profile> {
         {
             return Err(CoverageFailureV1::Closed);
         }
-        self.open_mount(cutoff, node)?;
-        self.open_storage(cutoff, node, sessions)?;
+        // Acquisition order is independent of the canonical Mount/Storage
+        // proof order below. Storage's Required cold native phase runs before
+        // a newly held Mount Session, using the same account and cutoff.
+        self.open_storage(cutoff, node, sessions, controller)?;
+        self.open_mount(cutoff, node, sessions, controller)?;
 
         let cache_flight = if self.existing_birth_nonce.is_some() {
             GitCoverageFlightV1::Read
@@ -330,46 +330,29 @@ impl<'profile> GitCoverageWorkerV1<'profile> {
         Ok(())
     }
 
-    fn open_mount(&mut self, cutoff: u64, node: [u8; 16])
+    fn open_mount(&mut self, cutoff: u64, node: [u8; 16], sessions: &mut ControllerBrokerSessions, controller: &mut ProductionController)
         -> Result<(), CoverageFailureV1>
     {
-        self.fixed[0] = Some(ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
-            ProtectedBrokerSessionFixedEndpointV1::ControllerMountClient,
-        )?);
-        let deadline = aos_sandbox_broker_session_security::controller_composition::OriginalBrokerColdDeadlineV1::git_coverage(cutoff)?;
-        let fixed = self.fixed[0].take().ok_or(CoverageFailureV1::Closed)?;
-        let returned = fixed.connect_git_coverage_mount_session_v1(deadline.value());
-        match returned {
-            Ok(session) => {
-                let original = DormantMountLifecycleInventoryOwnerV1::from_protected_session(session);
-                self.queries[0] = Some(DormantGitCoverageQueryOwnerV1::from_original_mount(original, cutoff));
-            }
-            Err(cause) => return Err(cause.into()),
-        }
+        let session = super::initial_broker_sessions::connect_git_coverage_once_v1(
+            sessions, aos_sandbox::ControllerInitialBrokerSessionRoleV1::Mount,
+            node, &mut self.account, controller,
+        ).map_err(|_| CoverageFailureV1::Closed)?;
+        let original = DormantMountLifecycleInventoryOwnerV1::from_protected_session(session);
+        self.queries[0] = Some(DormantGitCoverageQueryOwnerV1::from_original_mount(original, cutoff));
         self.queries[0].as_mut().ok_or(CoverageFailureV1::Closed)?
             .require_original_node(node)?;
         Ok(())
     }
 
-    fn open_storage(&mut self, cutoff: u64, node: [u8; 16], sessions: &mut ControllerBrokerSessions)
+    fn open_storage(&mut self, cutoff: u64, node: [u8; 16], sessions: &mut ControllerBrokerSessions, controller: &mut ProductionController)
         -> Result<(), CoverageFailureV1>
     {
-        self.fixed[1] = Some(ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
-            ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
-        )?);
-        let deadline = aos_sandbox_broker_session_security::controller_composition::OriginalBrokerColdDeadlineV1::git_coverage(cutoff)?;
-        let fixed = self.fixed[1].take().ok_or(CoverageFailureV1::Closed)?;
-        let returned = fixed.retain_launch_image(sessions.launch_image.clone())?
-            .connect_retained_git_coverage_storage_session_v1(
-                deadline, &mut sessions.storage_cold, node,
-            );
-        match returned {
-            Ok(session) => {
-                let original = DormantStorageLifecycleInventoryOwnerV1::from_protected_session(session);
-                self.queries[1] = Some(DormantGitCoverageQueryOwnerV1::from_original_storage(original, cutoff));
-            }
-            Err(cause) => return Err(cause.into()),
-        }
+        let session = super::initial_broker_sessions::connect_git_coverage_once_v1(
+            sessions, aos_sandbox::ControllerInitialBrokerSessionRoleV1::Storage,
+            node, &mut self.account, controller,
+        ).map_err(|_| CoverageFailureV1::Closed)?;
+        let original = DormantStorageLifecycleInventoryOwnerV1::from_protected_session(session);
+        self.queries[1] = Some(DormantGitCoverageQueryOwnerV1::from_original_storage(original, cutoff));
         self.queries[1].as_mut().ok_or(CoverageFailureV1::Closed)?
             .require_original_node(node)?;
         Ok(())

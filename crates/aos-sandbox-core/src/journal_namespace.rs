@@ -164,8 +164,14 @@ pub enum RecordNamespace {
     ControllerConsumerReadAttempt = 75,
     /// Purpose-owned original offline paired Nix provisioning history.
     NixOfflineProvisioning = 76,
+    /// Controller-owned original authenticated Capture60 admission and history.
+    ControllerStorageCaptureAdmission = 77,
+    /// Independent protected-local Root history for execution NoApply settlement.
+    RootExecutionNoApplyFloorV2 = 78,
     /// The Controller's closed native shared resource account and claim ledger.
     ControllerResourceReservation = 80,
+    /// Original-owner Create Storage continuation history, never a live grant.
+    CreateStorageHistory = 81,
 }
 
 impl RecordNamespace {
@@ -252,7 +258,10 @@ impl RecordNamespace {
             74 => Ok(Self::ControllerStorageOutputReserveAttempt),
             75 => Ok(Self::ControllerConsumerReadAttempt),
             76 => Ok(Self::NixOfflineProvisioning),
+            77 => Ok(Self::ControllerStorageCaptureAdmission),
+            78 => Ok(Self::RootExecutionNoApplyFloorV2),
             80 => Ok(Self::ControllerResourceReservation),
+            81 => Ok(Self::CreateStorageHistory),
             _ => Err(UnknownRecordNamespace),
         }
     }
@@ -262,3 +271,18 @@ impl RecordNamespace {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("unknown record namespace")]
 pub struct UnknownRecordNamespace;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_no_apply_floor_has_one_distinct_registered_namespace() {
+        assert_eq!(RecordNamespace::RootExecutionNoApplyFloorV2 as u8, 78);
+        assert_eq!(RecordNamespace::from_byte(78).unwrap(), RecordNamespace::RootExecutionNoApplyFloorV2);
+        assert_eq!(RecordNamespace::from_byte(72).unwrap(), RecordNamespace::ControllerCreateFailurePrepare);
+        assert_eq!(RecordNamespace::from_byte(80).unwrap(), RecordNamespace::ControllerResourceReservation);
+        assert_eq!(RecordNamespace::from_byte(81).unwrap(), RecordNamespace::CreateStorageHistory);
+        assert!(RecordNamespace::from_byte(79).is_err());
+    }
+}

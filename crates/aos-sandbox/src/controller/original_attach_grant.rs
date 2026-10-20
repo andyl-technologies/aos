@@ -354,8 +354,8 @@ where
         .map_err(rejected)?;
         let current = evaluate_current_protected_capability(
             journal,
-            crate::publisher_authority::PublisherAuthorityLimits::default(),
-            crate::publisher_policy::PublisherPolicyLimits::default(),
+            crate::publisher_admin::capabilities::PublisherAuthorityLimits::default(),
+            crate::publisher_admin::policy::PublisherPolicyLimits::default(),
             CapabilityId::from_bytes(decision.coordinates.capability()),
             decision.project,
             decision.caller,

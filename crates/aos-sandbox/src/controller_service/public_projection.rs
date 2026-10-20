@@ -12,7 +12,7 @@ use crate::{Journal, RecordNamespace};
 
 use aos_sandbox_protocol::public_api::projection::{
     PROJECTION_KEY_PREFIX, decode_checked_public_projection_v1 as decode_record,
-    projection_kind_prefix, select_parentless_create_sandbox,
+    select_parentless_create_sandbox,
 };
 use aos_sandbox_protocol::public_api::projection::{
     PublicProjectionError, PublicProjectionKindV1, PublicProjectionRecordV1, projection_key,
@@ -97,6 +97,7 @@ impl<'journal> PublicProjectionStoreV1<'journal> {
         if resource_id == [0; 16] {
             return Err(PublicProjectionError::InvalidIdentity);
         }
+        self.journal.ensure_healthy().map_err(|_| PublicProjectionError::CorruptRecord)?;
         let key = projection_key(kind, resource_id);
         self.journal
             .get(RecordNamespace::DesiredState, &key)
@@ -118,17 +119,37 @@ impl<'journal> PublicProjectionStoreV1<'journal> {
         if project.as_bytes() == &[0; 16] {
             return Err(PublicProjectionError::InvalidIdentity);
         }
-        let kind_prefix = projection_kind_prefix(kind);
         let mut records = Vec::new();
-        for (key, value) in self.journal.records(RecordNamespace::DesiredState) {
-            if key.starts_with(&kind_prefix) {
-                let record = decode_record(key, value)?;
-                if record.project() == project {
-                    records.push(record);
-                }
+        for record in self.iter_kind_v2(kind)? {
+            let record = record?;
+            if record.project() == project {
+                records.push(record);
             }
         }
         Ok(records)
+    }
+
+    // The same complete reserved-prefix decoder serves ordinary listing and
+    // genuine paid internal graph consumers. This iterator grants no read or
+    // native currentness; its caller must already hold that actual interval.
+    pub(crate) fn iter_kind_v2(&self, kind: PublicProjectionKindV1)
+        -> Result<impl Iterator<Item = Result<PublicProjectionRecordV1, PublicProjectionError>> + '_, PublicProjectionError>
+    {
+        self.iter_rows_v2(Some(kind))
+    }
+
+    pub(crate) fn iter_all_v2(&self)
+        -> Result<impl Iterator<Item = Result<PublicProjectionRecordV1, PublicProjectionError>> + '_, PublicProjectionError>
+    {
+        self.iter_rows_v2(None)
+    }
+
+    fn iter_rows_v2(&self, kind: Option<PublicProjectionKindV1>)
+        -> Result<impl Iterator<Item = Result<PublicProjectionRecordV1, PublicProjectionError>> + '_, PublicProjectionError>
+    {
+        self.journal.ensure_healthy().map_err(|_| PublicProjectionError::CorruptRecord)?;
+        Ok(aos_sandbox_protocol::public_api::projection::iter_public_projection_rows_data_v2(
+            self.journal.records(RecordNamespace::DesiredState), kind))
     }
 
     /// Lists every projection atomically linked to one admitted operation.
@@ -145,12 +166,10 @@ impl<'journal> PublicProjectionStoreV1<'journal> {
             return Err(PublicProjectionError::InvalidIdentity);
         }
         let mut records = Vec::new();
-        for (key, value) in self.journal.records(RecordNamespace::DesiredState) {
-            if key.starts_with(PROJECTION_KEY_PREFIX) {
-                let record = decode_record(key, value)?;
-                if record.operation() == operation {
-                    records.push(record);
-                }
+        for record in self.iter_all_v2()? {
+            let record = record?;
+            if record.operation() == operation {
+                records.push(record);
             }
         }
         records.sort_by(|left, right| {
@@ -184,4 +203,53 @@ impl<'journal> PublicProjectionStoreV1<'journal> {
             &records, operation, project,
         ))
     }
+}
+
+// The execution source reads its current Execution projection through this
+// same existing codec. The maximum includes every held projection with this prefix.
+pub(crate) fn execution_source_receiving_bytes_v1(journal: &Journal) -> Option<u64> {
+    projection_model_receiving_bytes_v1(journal,
+        std::mem::size_of::<aos_proto::aos::sandbox::v1::Execution>())
+}
+
+// Root's preterminal comparison uses the same codec with its actual Sandbox
+// model width. These bytes convey neither public success nor native custody.
+pub(crate) fn sandbox_source_receiving_bytes_v1(journal: &Journal) -> Option<u64> {
+    projection_model_receiving_bytes_v1(journal,
+        std::mem::size_of::<aos_proto::aos::sandbox::v1::Sandbox>())
+}
+
+pub(crate) fn metadata_source_receiving_bytes_v2(journal: &Journal) -> Option<u64> {
+    projection_model_receiving_bytes_v1(journal,
+        std::mem::size_of::<aos_proto::aos::sandbox::v1::Snapshot>()
+            .max(std::mem::size_of::<aos_proto::aos::sandbox::v1::FilesystemView>()))?
+        .checked_add(u64::try_from(std::mem::size_of::<PublicProjectionRecordV1>()
+            .checked_mul(3)?).ok()?)?
+        .checked_add(u64::try_from(PROJECTION_KEY_PREFIX.len().checked_add(1 + 16)?
+            .checked_mul(3)?).ok()?)
+}
+
+fn projection_model_receiving_bytes_v1(journal: &Journal, width: usize) -> Option<u64> {
+    let mut maximum = 0usize;
+    for (key, value) in journal.records(RecordNamespace::DesiredState) {
+        if key.starts_with(PROJECTION_KEY_PREFIX) { maximum = maximum.max(value.len()); }
+    }
+    projection_encoded_model_receiving_bytes_v2(maximum, width)
+}
+
+// Historical native COMMIT comparison uses this SAME exact Sandbox decoder
+// recipe with the actual maximum observed historical row, rather than a later
+// possibly smaller current projection. The scalar supplies accounting DATA.
+pub(crate) fn sandbox_projection_decoding_receiving_bytes_v2(encoded_bytes: usize) -> Option<u64> {
+    projection_encoded_model_receiving_bytes_v2(encoded_bytes,
+        std::mem::size_of::<aos_proto::aos::sandbox::v1::Sandbox>())
+}
+
+fn projection_encoded_model_receiving_bytes_v2(encoded_bytes: usize, width: usize) -> Option<u64> {
+    let bytes = aos_sandbox_broker_session_protocol::receiving_geometry::protobuf_carriers_v1(
+        u64::try_from(encoded_bytes).ok()?, u64::try_from(width).ok()?,
+    ).ok()?;
+    // accepted_target and the spec producer each own their projected model;
+    // its canonical round trip and command clone can coexist with that input.
+    bytes.checked_mul(4)
 }

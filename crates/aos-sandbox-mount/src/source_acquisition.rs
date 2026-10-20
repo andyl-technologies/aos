@@ -27,8 +27,8 @@ use aos_proto::aos::sandbox::local::v1::{
     AcquireMountSourceResponse, BrokerMethod, InventoryMountSourceAcquisitionsResponse,
     ReleaseMountSourceAcquisitionResponse,
 };
-use aos_sandbox::journal::{Journal, RecordNamespace};
-use aos_sandbox::MountManagerSourceInventoryError;
+use aos_sandbox_mount_native::{MountJournalV1 as Journal, RecordNamespace};
+use aos_sandbox_mount_native::MountManagerSourceInventoryError;
 use aos_sandbox_protocol::mount_source_acquisition_state::{
     MountSourceAcquisitionStateV2, validate_mount_source_state_graph_v2,
 };
@@ -116,8 +116,8 @@ pub struct SourceAcquisitionTableV2 {
 // token. A genuine physical derivative holder can call lower DELETE directly.
 fn install_and_retire_kind2_table(
     table: &mut SourceAcquisitionTableV2,
-    writer: &mut aos_sandbox::MountBarrierIdleReplacementJournalAuthorityV4<'_>,
-    mut initial: Option<aos_sandbox::Kind2ProtectedReadbackV4>,
+    writer: &mut aos_sandbox_mount_native::MountBarrierIdleReplacementJournalAuthorityV4<'_>,
+    mut initial: Option<aos_sandbox_mount_native::Kind2ProtectedReadbackV4>,
 ) -> Result<()> {
     *table = SourceAcquisitionTableV2::from_state(writer.current_source_state()?);
     loop {
@@ -154,7 +154,7 @@ fn require_kind2_installed_table(
 /// broker's lock. Consumption access is lent only with purpose-limited opaque
 /// authority and cannot outlive the journal borrow.
 pub struct FixedMountSourceAcquisitionOwnerV2<'journal> {
-    protected: aos_sandbox::MountManagerStartupJournalBorrowV1<'journal>,
+    protected: aos_sandbox_mount_native::MountManagerStartupJournalBorrowV1<'journal>,
     runtime: SourceAcquisitionRuntimeV2,
     // Refusal only, captured from the exclusively borrowed original writer.
     // False never replaces the existing admission/currentness checks.
@@ -186,15 +186,15 @@ pub(crate) struct SourceAcquisitionRuntimeV2 {
         Option<([u8; 16], [u8; 16], Option<[u8; 32]>, [u8; 32])>,
     pending_release_preparation: Option<RetainedFreshReleasePreparationV2>,
     pending_manager_custody: Vec<RetainedManagerSourceCustodyV2>,
-    manager_control: Option<aos_sandbox::mount_manager_startup::ManagerSourceControlAuthorityV1>,
+    manager_control: Option<aos_sandbox_mount_native::mount_manager_startup::ManagerSourceControlAuthorityV1>,
     startup_activation_descriptors:
-        Option<aos_sandbox::mount_manager_startup::MountManagerActivationDescriptorsV1>,
+        Option<aos_sandbox_mount_native::mount_manager_startup::MountManagerActivationDescriptorsV1>,
     startup_manager_sources:
-        Vec<aos_sandbox::mount_manager_startup::StartupManagerSourcePresenceV1>,
-    startup_manager_losses: Vec<aos_sandbox::mount_manager_startup::LostMountSourceCustodyV1>,
+        Vec<aos_sandbox_mount_native::mount_manager_startup::StartupManagerSourcePresenceV1>,
+    startup_manager_losses: Vec<aos_sandbox_mount_native::mount_manager_startup::LostMountSourceCustodyV1>,
     startup_lost_release_preparations:
         BTreeMap<[u8; 32], aos_sandbox_source_provider_security::PreparedMountSourceReleaseV2>,
-    startup_manager_absences: Vec<aos_sandbox::mount_manager_startup::TerminalMountSourceAbsenceV1>,
+    startup_manager_absences: Vec<aos_sandbox_mount_native::mount_manager_startup::TerminalMountSourceAbsenceV1>,
     manager_handoffs: Vec<ManagerHandoffStateV1>,
     cold_pending_attempts: Vec<[u8; 32]>,
     retained_source_roots:
@@ -242,9 +242,9 @@ struct PendingManagerReleaseV2 {
 }
 
 enum ManagerReleaseStageV2 {
-    BeforeRemoval(aos_sandbox::mount_manager_startup::FreshManagerSourcePresenceProjectionV1),
+    BeforeRemoval(aos_sandbox_mount_native::mount_manager_startup::FreshManagerSourcePresenceProjectionV1),
     AwaitingRemoval {
-        prior_presence: aos_sandbox::mount_manager_startup::FreshManagerSourcePresenceProjectionV1,
+        prior_presence: aos_sandbox_mount_native::mount_manager_startup::FreshManagerSourcePresenceProjectionV1,
         request: aos_sandbox_protocol::mount_manager_startup::ManagerSourceControlRequestV1,
         removed: Option<
             aos_sandbox_protocol::mount_manager_startup::SignedManagerSourceControlOutcomeV1,
@@ -253,7 +253,7 @@ enum ManagerReleaseStageV2 {
             aos_sandbox_protocol::mount_manager_startup::SignedManagerSourceControlOutcomeV1,
         >,
     },
-    Ready(aos_sandbox::mount_manager_startup::FreshManagerSourceRemovalProjectionV1),
+    Ready(aos_sandbox_mount_native::mount_manager_startup::FreshManagerSourceRemovalProjectionV1),
     Prepared(lifecycle::ReleaseFinishPreparationV2),
 }
 
@@ -297,7 +297,7 @@ enum RetainedManagerSourceCustodyV2 {
         acquisition_id: [u8; 32],
         expected_revision: u64,
         expected_digest: [u8; 32],
-        manager_presence: aos_sandbox::mount_manager_startup::FreshManagerSourcePresenceV1,
+        manager_presence: aos_sandbox_mount_native::mount_manager_startup::FreshManagerSourcePresenceV1,
     },
     Paired {
         acquisition_id: [u8; 32],
@@ -748,7 +748,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     #[doc(hidden)]
     pub fn borrow_existing_fixed_journal(journal: &'journal mut Journal) -> Result<Self> {
         let git_coverage_denied = journal.mount_git_coverage_denies_new_v1();
-        let protected = aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed(journal)
+        let protected = aos_sandbox_mount_native::MountManagerStartupJournalBorrowV1::borrow_fixed(journal)
             .map_err(|error| crate::MountError::State(error.to_string()))?;
         Self::recover_with_journal(protected, git_coverage_denied)
     }
@@ -778,7 +778,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
 
         let git_coverage_denied = journal.mount_git_coverage_denies_new_v1();
         let mut protected =
-            aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_local_recovery_v4(
+            aos_sandbox_mount_native::MountManagerStartupJournalBorrowV1::borrow_fixed_root_local_recovery_v4(
                 journal,
             )
             .map_err(|error| crate::MountError::State(error.to_string()))?;
@@ -833,15 +833,15 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
 
         let git_coverage_denied = journal.mount_git_coverage_denies_new_v1();
         let protected = if has_query {
-            aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_original_inventory_v6(
+            aos_sandbox_mount_native::MountManagerStartupJournalBorrowV1::borrow_fixed_root_original_inventory_v6(
                 journal,
             )
         } else if runtime.pending_original_native.is_some() {
-            aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_original_native_v5(
+            aos_sandbox_mount_native::MountManagerStartupJournalBorrowV1::borrow_fixed_root_original_native_v5(
                 journal,
             )
         } else {
-            aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed(journal)
+            aos_sandbox_mount_native::MountManagerStartupJournalBorrowV1::borrow_fixed(journal)
         };
         let protected = protected.map_err(|error| state_error(error.to_string()))?;
 
@@ -922,7 +922,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     }
 
     fn recover_with_journal(
-        mut protected: aos_sandbox::MountManagerStartupJournalBorrowV1<'journal>,
+        mut protected: aos_sandbox_mount_native::MountManagerStartupJournalBorrowV1<'journal>,
         git_coverage_denied: bool,
     ) -> Result<Self> {
         let table = {
@@ -935,7 +935,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     }
 
     fn recover_with_table(
-        protected: aos_sandbox::MountManagerStartupJournalBorrowV1<'journal>,
+        protected: aos_sandbox_mount_native::MountManagerStartupJournalBorrowV1<'journal>,
         table: SourceAcquisitionTableV2,
         git_coverage_denied: bool,
     ) -> Result<Self> {
@@ -1019,7 +1019,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         operation: impl for<'authority> FnOnce(
             &mut SourceAcquisitionTableV2,
-            &mut aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'authority>,
+            &mut aos_sandbox_mount_native::MountSourceConsumptionJournalAuthorityV1<'authority>,
         ) -> Result<R>,
     ) -> Result<R> {
         self.require_no_original_native_flight()?;
@@ -1046,7 +1046,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         operation: impl for<'authority> FnOnce(
             &mut SourceAcquisitionTableV2,
-            &mut aos_sandbox::MountSourceAcquisitionJournalAuthorityV2<'authority>,
+            &mut aos_sandbox_mount_native::MountSourceAcquisitionJournalAuthorityV2<'authority>,
         ) -> Result<R>,
     ) -> Result<R> {
         self.require_no_original_native_flight()?;
@@ -1065,7 +1065,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     #[doc(hidden)]
     pub fn install_manager_control_authority(
         &mut self,
-        control: aos_sandbox::mount_manager_startup::ManagerSourceControlAuthorityV1,
+        control: aos_sandbox_mount_native::mount_manager_startup::ManagerSourceControlAuthorityV1,
     ) -> Result<()> {
         if self.runtime.manager_control.is_some() {
             return Err(state_error(
@@ -1088,12 +1088,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     #[doc(hidden)]
     pub fn install_manager_startup_authority(
         &mut self,
-        authority: aos_sandbox::mount_manager_startup::MountManagerStartupAuthorityV1,
+        authority: aos_sandbox_mount_native::mount_manager_startup::MountManagerStartupAuthorityV1,
     ) -> std::result::Result<
         (),
         (
             crate::MountError,
-            aos_sandbox::mount_manager_startup::MountManagerStartupAuthorityV1,
+            aos_sandbox_mount_native::mount_manager_startup::MountManagerStartupAuthorityV1,
         ),
     > {
         if self.runtime.manager_control.is_some()
@@ -1546,7 +1546,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             let recovered = session
                 .recover_handoff(request.clone(), Some(accepted))
                 .map_err(|error| state_error(error.to_string()))?;
-            let aos_sandbox::mount_manager_startup::FreshManagerSourceHandoffRecoveryV1::AwaitingPresence(
+            let aos_sandbox_mount_native::mount_manager_startup::FreshManagerSourceHandoffRecoveryV1::AwaitingPresence(
                 _,
             ) = recovered
             else {
@@ -1600,7 +1600,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             let recovered = session
                 .recover_handoff(request, Some(accepted))
                 .map_err(|error| state_error(error.to_string()))?;
-            let aos_sandbox::mount_manager_startup::FreshManagerSourceHandoffRecoveryV1::AwaitingPresence(
+            let aos_sandbox_mount_native::mount_manager_startup::FreshManagerSourceHandoffRecoveryV1::AwaitingPresence(
                 awaiting,
             ) = recovered
             else {
@@ -1835,7 +1835,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             .map_err(|error| state_error(error.to_string()))?;
         if !matches!(
             recovered,
-            aos_sandbox::mount_manager_startup::FreshManagerSourceRemovalRecoveryV1::AwaitingAbsence(_)
+            aos_sandbox_mount_native::mount_manager_startup::FreshManagerSourceRemovalRecoveryV1::AwaitingAbsence(_)
         ) {
             return Err(state_error("manager removal recovery phase differs"));
         }
@@ -1889,7 +1889,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             let recovered = session
                 .recover_removal(prior_presence.clone(), request.clone(), Some(removed))
                 .map_err(|error| state_error(error.to_string()))?;
-            let aos_sandbox::mount_manager_startup::FreshManagerSourceRemovalRecoveryV1::AwaitingAbsence(
+            let aos_sandbox_mount_native::mount_manager_startup::FreshManagerSourceRemovalRecoveryV1::AwaitingAbsence(
                 awaiting,
             ) = recovered
             else {
@@ -2557,7 +2557,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     pub fn prepare_and_send_fresh_acquire(
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
-        catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        catalog_journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         current_catalog: aos_sandbox_source_provider_security::ProtectedCurrentCatalogPublicationV1,
         mount_request: &[u8],
         peer: PeerCredentials,
@@ -2637,7 +2637,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     pub fn replace_and_send_backend_recovery(
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
-        catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        catalog_journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         retry_authority: aos_sandbox_source_provider::ProtectedProviderMountRetryAuthorityV1,
         current_catalog: Option<
             aos_sandbox_source_provider_security::ProtectedCurrentCatalogPublicationV1,
@@ -3289,7 +3289,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
         acquisition_id: [u8; 32],
-        manager_presence: aos_sandbox::mount_manager_startup::FreshManagerSourcePresenceV1,
+        manager_presence: aos_sandbox_mount_native::mount_manager_startup::FreshManagerSourcePresenceV1,
     ) -> Result<()> {
         self.require_no_original_native_flight()?;
         let manager_evidence = manager_presence.custody_evidence();
@@ -3636,7 +3636,7 @@ impl SourceAcquisitionTableV2 {
     /// canonical, bounded, and valid under the retained fixed journal lock.
     #[doc(hidden)]
     pub fn recover_from_consumption_authority(
-        authority: &aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>,
+        authority: &aos_sandbox_mount_native::MountSourceConsumptionJournalAuthorityV1<'_>,
     ) -> Result<Self> {
         let state = validate_mount_source_state_graph_v2(authority.records()?)?;
         Ok(Self::from_state(state))

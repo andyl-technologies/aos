@@ -45,15 +45,21 @@ pub(crate) fn require_mutation(
     allow_capacity_records: bool,
     settling: Option<[u8; 32]>,
 ) -> Result<(), JournalError> {
-    let owns_records = transaction.records().iter().any(|record| {
-        record.namespace() == RecordNamespace::DesiredState
-            && (record.key() == INSTANCE_KEY
-                || record.key() == PINS_KEY
-                || record.key().starts_with(INTENT_PREFIX)
-                || record.key().starts_with(FLOOR_PREFIX))
-    });
+    require_mutation_read_v1(Some(journal), transaction, transition, allow_capacity_records, settling)
+}
+
+pub(crate) fn require_mutation_read_v1(
+    journal: Option<&Journal>,
+    transaction: &JournalTransaction,
+    transition: RootSourceGenesisTransitionV1,
+    allow_capacity_records: bool,
+    settling: Option<[u8; 32]>,
+) -> Result<(), JournalError> {
+    let owns_records = aos_sandbox_ledger_replay::ordinary_mutation::transaction_touches_root_genesis_v1(
+        transaction,
+    );
     if transition == RootSourceGenesisTransitionV1::Initialize {
-        return validate_initialization(journal, transaction);
+        return validate_initialization(journal.ok_or(JournalError::ProtectedBoundary)?, transaction);
     }
     if !owns_records {
         return Ok(());
@@ -61,6 +67,7 @@ pub(crate) fn require_mutation(
     if !allow_capacity_records {
         return Err(JournalError::ProtectedBoundary);
     }
+    let journal = journal.ok_or(JournalError::ProtectedBoundary)?;
     if let Some(identity) = settling {
         let reservation = journal.recover_global_capacity_reservation_v1(identity)?;
         return validate_settlement(journal, transaction, &reservation.request(), identity);

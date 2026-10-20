@@ -18,7 +18,10 @@ aos-sandbox.workspace = true
 aos-sandbox-broker.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
+aos-sandbox-journal.workspace = true
+aos-sandbox-mount-native.workspace = true
 aos-sandbox-protocol.workspace = true
+aos-sandbox-source.workspace = true
 aos-sandbox-source-provider.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 aos-sandbox-source-provider-security.workspace = true
@@ -33,6 +36,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 aos-sandbox = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-mount-native = { workspace = true, features = ["test-fixtures"] }
 ed25519-dalek.workspace = true
 hex.workspace = true
 tempfile.workspace = true

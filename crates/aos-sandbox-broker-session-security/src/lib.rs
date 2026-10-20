@@ -47,35 +47,39 @@
 
 pub mod controller_composition;
 mod dormant_handshake;
+mod host_stop;
+mod host_stop_inventory;
+pub use host_stop_inventory::HostStopInventoryAttestationOriginalV5;
+
+pub use host_stop::HostStopRequestPreparationOriginalV5;
 mod endpoint;
+mod controller_session_receiving;
 mod entropy;
 pub mod nix_floor_provisioning;
 #[cfg(feature = "online-nix")]
 pub mod nix_service;
 mod error;
 mod tpm_nv_custody;
-pub use tpm_nv_custody::{RuntimeDeploymentCanaryRunErrorV2, run_runtime_deployment_canary_once_v2};
+pub use tpm_nv_custody::{RuntimeDeploymentCanaryRunErrorV2, run_runtime_deployment_canary_once_v2, run_runtime_boot_preparation_once_v1};
 mod handoff;
 mod handshake;
+
+pub use handshake::output_registration_continuation::{
+    ExecutionAvailabilitySessionIoOriginalV2, ExecutionAvailabilityClientSessionBorrowV2,
+    HostExecutionNoApplySessionIoOriginalV2, HostExecutionNoApplyClientSessionBorrowV2,
+};
 mod host_consumer_cgroup_transfer;
 mod host_execution_handoff;
 mod host_mount_scope_identity_transfer;
 mod immutable_image;
 pub mod ownership_authority_client;
-pub mod ownership_authority_runtime;
 pub mod ownership_authority_server;
-mod ownership_clock;
-pub mod policy_authority_client;
-pub mod policy_cache_readback_client;
-pub mod policy_root_ack_v8_client;
 mod production_activation;
 mod production_dispatch;
-pub mod production_normal_root;
 mod production_receive;
 mod production_response;
 mod production_root_mount_source_provider;
 mod production_service;
-mod production_source_provider;
 mod production_source_provider_catalog;
 mod production_source_provider_storage;
 mod production_startup;
@@ -90,14 +94,22 @@ mod recovery;
     reason = "sealed handshake boot access stays unreachable until P0-10"
 )]
 mod self_execution;
-pub mod source_genesis_flight;
 mod storage_host_consumer_client;
 mod storage_host_output_readback;
 
 #[cfg(test)]
 mod test_signed_endpoint;
 
+pub use recovery::{HostExecutionSessionReceivingOriginalV1, ExecutionClientPostOriginalV1};
 pub use dormant_handshake::{
+    DormantControllerInitialSessionOpenV1,
+    OperatorRecoverStorageSessionOpenV1,
+    OperatorStopCleanupSessionOpenV1,
+    OperatorStopCleanupSourceSessionOpenV1,
+    OperatorStopCleanupSourceInventoryOriginalV1,
+    OperatorStopCleanupInventoryOriginalV1,
+    ExecutionNoApplySessionOpenV2,
+    DormantControllerInitialSessionCompletedBorrowV1,
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorCommitRecoveryV1,
     DormantBrokerDescriptorCommitResultV1, DormantBrokerDescriptorExecutionFailureV1,
     DormantBrokerDescriptorInFlightReplayV1, DormantBrokerDescriptorOutcomeUnknownV1,
@@ -134,11 +146,11 @@ pub use handoff::{
     DormantBrokerEffectHandoffErrorV1, DormantHostBrokerEffectAdapterV1,
     DormantHostBrokerObservationAdapterV1, DormantMountBrokerEffectAdapterV1,
     DormantMountBrokerInventoryAdapterV1, DormantMountCatalogPreparationAdapterV1,
-    DormantNetworkBrokerEffectAdapterV1, DormantStorageBrokerEffectAdapterV1,
+    DormantStorageBrokerEffectAdapterV1,
     ProtectedBrokerEffectEvidenceV1, ProtectedBrokerEffectHandoffV1,
     ProtectedBrokerEffectObservationOutcomeV1, ProtectedBrokerEffectObservationRetryV1,
     ProtectedBrokerEffectObservationV1, ProtectedHostEffectHandoffV1,
-    ProtectedMountEffectHandoffV1, ProtectedNetworkEffectHandoffV1,
+    ProtectedMountEffectHandoffV1,
     ProtectedStorageEffectHandoffV1,
 };
 pub use host_consumer_cgroup_transfer::{
@@ -156,7 +168,7 @@ pub use production_activation::{
 };
 pub use production_dispatch::{
     ProductionHostBrokerDispatchCommitV1, ProductionHostBrokerDispatchFailureV1,
-    ProductionMountBrokerDispatchErrorV1, ProductionNetworkBrokerDispatchErrorV1,
+    ProductionMountBrokerDispatchErrorV1,
     ProductionStorageBrokerDispatchErrorV1,
 };
 pub use production_receive::{
@@ -177,12 +189,11 @@ pub use production_service::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1, ProductionMountBrokerOwnersV1,
     ProductionOriginalMountCycleV1, ProductionOriginalMountCycleFailureV1,
     ProductionOriginalNixGenerationCycleV1,
+    ProductionOriginalStoragePrepareCycleV1, ProductionStorageSessionContinuationV1, StoragePrepareCycleClosedV1,
+    ProductionOriginalStorageConnectionV1, ProductionOriginalStorageLifecycleSessionV1, StorageSessionContinuationClosedV1,
     production_deadline_after,
 };
-pub use production_source_provider::{
-    ProductionSourceProviderIngressErrorV1, ProductionSourceProviderIngressV1,
-    ProductionSelectedSourceProviderFailureRefV1, ProductionSelectedSourceProviderOriginalV1,
-};
+pub use source_catalog_readback::ProductionSourceProviderIngressErrorV1;
 pub use production_source_provider_catalog::{
     ProductionSourceProviderCatalogInstallErrorV1, install_fixed_source_provider_catalog_credential,
     SelectedSourceProviderCatalogFailureRefV1, SelectedSourceProviderCatalogInstallFailureV1,
@@ -213,3 +224,25 @@ pub use storage_host_consumer_client::{
 pub use storage_host_output_readback::{
     ProtectedHostStorageOutputCurrentV1, ProtectedHostStorageOutputReadbackV1,
 };
+
+/// Shares fixed catalog bytes and retained native failures without role authority.
+#[doc(hidden)]
+pub mod source_catalog_readback;
+
+/// Shares nonauthorizing native activation and deadline observations.
+#[doc(hidden)]
+pub mod activation_envelope;
+
+pub use production_source_provider_catalog::{
+    SelectedFixedEndpointInstallClosedV4, SelectedMountEndpointInstallOriginalV4,
+    SelectedNetworkEndpointInstallOriginalV4,
+};
+
+pub use handshake::output_registration_continuation::{FixedServiceRequestOriginalV4, FixedServiceRequestClosedV4};
+
+pub use handshake::output_registration_continuation::{FixedServiceResponseOriginalV4, FixedServiceResponseClosedV4, FixedServiceResponseProgressV4};
+
+pub use handshake::{FixedServiceSessionOpenOriginalV4, FixedServiceSessionBorrowV4, FixedServiceSessionClosedV4};
+
+#[doc(hidden)]
+pub use handshake::{StartResourceSessionOpenOriginalV4, StartResourceSessionClosedV4, StartResourceSessionBorrowV4};

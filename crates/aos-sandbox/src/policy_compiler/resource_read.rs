@@ -14,15 +14,15 @@
 //! lifetime. Both current content-read grants and a fresh single-use owner
 //! barrier are required for every later disclosure/backing handoff.
 
-use crate::publisher_policy::PublisherPolicyError;
+use crate::publisher_admin::policy::PublisherPolicyError;
 use aos_sandbox_core::model::{AssignmentManifestV1, CacheDomain};
 use aos_sandbox_core::{Operation, OperationSet, ResourceKind, Selector};
 
 use super::protected_journal::compare_recompiled_candidate_derivation_v1;
 use super::{
     HeldResolvedRuntimePolicyV1, PolicyCompilerJournalErrorV1, PolicyPublicationPrerequisitesV1,
-    RetainedPublisherCompilerOriginV3,
 };
+use aos_sandbox_protocol::policy_data::RetainedPublisherCompilerOriginV3;
 use aos_sandbox_policy::{
     CompiledPolicyCandidateV1, PolicyCompilationError, PolicyCompilerInputV1, PolicyCompilerV1,
 };
@@ -71,9 +71,12 @@ impl ComparedResourceReadPolicyV1<'_, '_> {
         if self.state.target() != (origin.project(), origin.original_target()) {
             return Err(ResourceReadPolicyComparisonErrorV1::OriginalTargetMismatch);
         }
-        origin
-            .compare_compiled_derivation(self.input, self.candidate())
-            .map_err(PublisherPolicyError::from)?;
+        aos_sandbox_policy::compare_publisher_compiler_derivation_v3(
+            origin,
+            self.input,
+            self.candidate()
+        )
+        .map_err(PublisherPolicyError::from)?;
         self.recheck()?;
         Ok(())
     }

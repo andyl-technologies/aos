@@ -1212,31 +1212,44 @@ impl CurrentLifecycleEffectV1<'_> {
         action: RuntimeAction,
     ) -> Result<(), LifecyclePhase6ErrorV1> {
         let authenticated = self.authenticated_broker_effect(request)?;
-        let LifecycleCompiledBrokerRequestV1::Runtime(body) = &authenticated.compiled else {
-            return Err(LifecyclePhase6ErrorV1::InvalidInput);
-        };
-        let wire_fence = body
-            .fence
-            .as_option()
-            .ok_or(LifecyclePhase6ErrorV1::InvalidInput)?;
-        let desired = fence.desired();
-        if self.domain() != LifecycleEffectDomainV1::Runtime
-            || fence.sandbox().as_bytes() != &self.target()
-            || body.action.as_known() != Some(action)
-            || action == RuntimeAction::RUNTIME_ACTION_UNSPECIFIED
-            || action == RuntimeAction::RUNTIME_ACTION_LAUNCH
-            || body.launch_plan.as_option().is_some()
-            || body.guardian_arm.as_option().is_some()
-            || wire_fence.sandbox_id.as_slice() != fence.sandbox().as_bytes()
-            || wire_fence.incarnation_id.as_slice() != fence.incarnation().as_bytes()
-            || wire_fence.assignment_epoch != fence.assignment_epoch().get()
-            || wire_fence.desired_generation != desired.expected_generation().get()
-            || wire_fence.assignment_digest.as_slice()
-                != desired.resource_state().digest().as_bytes()
+        authenticated.require_runtime_request_v4(fence, action)
+    }
+
+    /// Validates immutable dispatch DATA through the same body and fence kernel.
+    ///
+    /// This comparison cannot construct an authenticated effect or send a request.
+    pub(super) fn validate_stop_dispatch_data_v1(
+        &self,
+        binding: &aos_sandbox_protocol::domain_ledger::stop_dispatch::LifecycleStopDispatchDataV1,
+        fence: LiveRuntimeFenceV1,
+    ) -> Result<(), LifecyclePhase6ErrorV1> {
+        if binding.operation() != self.operation()
+            || binding.operation_record() != self.operation_record.digest()
         {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
-        Ok(())
+        let packet = aos_sandbox_broker_session_protocol::decode_canonical_request_v1(
+            binding.canonical_packet()).map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
+        let compiled = LifecycleBrokerRequestCompilerV1::compile_body(
+            self.request, BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME, &packet.message().body)?;
+        require_compiled_runtime_request_v5(self.request, &compiled, fence, RuntimeAction::RUNTIME_ACTION_STOP)
+    }
+
+    /// Projects exact authenticated Stop residual DATA without an absence query.
+    ///
+    /// No ordinary inventory generation is invented. The funded Controller
+    /// Stop owner must still retain the actual outcome, currentness and all
+    /// independent native posts before any protected terminal emission.
+    ///
+    /// # Errors
+    /// Refuses another handoff/action/fence, unsuccessful signed outcome, or
+    /// malformed/foreign residual DATA. An ordinary successful Stop returns None.
+    pub fn observe_authenticated_stop_residual_v4(&self,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1, fence: LiveRuntimeFenceV1,
+    ) -> Result<Option<LifecycleEffectObservationV1>, LifecyclePhase6ErrorV1> {
+        let authenticated = self.authenticated_broker_effect(outcome.request())?;
+        authenticated.require_runtime_request_v4(fence, RuntimeAction::RUNTIME_ACTION_STOP)?;
+        authenticated.observe_stop_residual_v4(outcome)
     }
 
     /// Validates the exact signed Storage Create Apply against protected inputs.
@@ -1281,7 +1294,12 @@ impl CurrentLifecycleEffectV1<'_> {
             || body.sandbox_spec != sandbox_spec
             || assignment_manifest.is_empty()
             || sandbox_spec.is_empty()
-            || request.catalog_binding() != Some(*catalog.digest().as_bytes())
+            || request.catalog_binding() != Some(
+                aos_sandbox_protocol::authenticated_session::all_methods::
+                    authenticated_catalog_generation_binding_v1(
+                        catalog.generation(), *catalog.digest().as_bytes(),
+                    ),
+            )
             || request.authorization().is_none()
             || wire_fence.sandbox_id.as_slice() != fence.sandbox().as_bytes()
             || wire_fence.incarnation_id.as_slice() != fence.incarnation().as_bytes()
@@ -1660,6 +1678,44 @@ pub struct LifecycleAuthenticatedBrokerEffectV1 {
 }
 
 impl LifecycleAuthenticatedBrokerEffectV1 {
+    fn require_runtime_request_v4(&self, fence: LiveRuntimeFenceV1, action: RuntimeAction)
+        -> Result<(), LifecyclePhase6ErrorV1> {
+        require_compiled_runtime_request_v5(self.request, &self.compiled, fence, action)
+    }
+
+    fn observe_stop_residual_v4(&self, outcome: &AuthenticatedBrokerMethodOutcomeV1)
+        -> Result<Option<LifecycleEffectObservationV1>, LifecyclePhase6ErrorV1> {
+        if self.domain != LifecycleEffectDomainV1::Runtime
+            || self.broker_method != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+            || outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+            || outcome.method() != self.broker_method
+            || ObjectDigest::from_bytes(outcome.request().signed_request_digest()) != self.signed_request
+            || ObjectDigest::from_bytes(outcome.request().semantic_commitment()) != self.request_semantic
+            || ObjectDigest::from_bytes(outcome.request().session_binding()) != self.session_binding
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        let LifecycleCompiledBrokerRequestV1::Runtime(request) = &self.compiled else {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        };
+        let body = successful_body(outcome)?;
+        let observation = decode_canonical_success_body::<RuntimeObservation>(body)?;
+        let Some(residual) = aos_sandbox_protocol::runtime_stop_residual_for_decoded_apply_v4(
+            &observation, request,
+        ).map_err(|_| LifecyclePhase6ErrorV1::InvalidTransition)? else { return Ok(None); };
+        let evidence = ObjectDigest::from_bytes(Sha256::new()
+            .chain_update(b"aos.sandbox.lifecycle.stop-residual-quiescence.v4\0")
+            .chain_update(outcome.semantic_commitment())
+            .chain_update(residual.canonical_bytes_v4()).finalize().into());
+        Ok(Some(LifecycleEffectObservationV1 {
+            request: self.request,
+            result: ObjectDigest::from_bytes(outcome.semantic_commitment()),
+            inventory: evidence,
+            inventory_coordinates: None,
+            capture_stop_residual_v4: Some(residual),
+        }))
+    }
+
     pub(super) const fn lifecycle_request(&self) -> LifecycleEffectRequestV1 {
         self.request
     }
@@ -1669,6 +1725,19 @@ impl LifecycleAuthenticatedBrokerEffectV1 {
         outcome: &AuthenticatedBrokerMethodOutcomeV1,
         inventory: &AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<(), LifecyclePhase6ErrorV1> {
+        match self.require_broker_readback_data_v4(outcome, inventory)? {
+            None => Ok(()),
+            Some(_) => Err(LifecyclePhase6ErrorV1::InvalidTransition),
+        }
+    }
+
+    fn require_broker_readback_data_v4(
+        &self,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        inventory: &AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<Option<aos_sandbox_protocol::storage_capture_session::stop_cleanup::CaptureQuiescentIncompleteReceiptDataV4>,
+        LifecyclePhase6ErrorV1>
+    {
         let outcome_request = outcome.request();
         let inventory_request = inventory.request();
         let expected_client_sequence = outcome_request
@@ -1766,7 +1835,9 @@ impl LifecycleAuthenticatedBrokerEffectV1 {
         outcome: &AuthenticatedBrokerMethodOutcomeV1,
         inventory: &AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<LifecycleEffectObservationV1, LifecyclePhase6ErrorV1> {
-        self.require_broker_readback_handoff(outcome, inventory)?;
+        if self.require_broker_readback_data_v4(outcome, inventory)?.is_some() {
+            return Err(LifecyclePhase6ErrorV1::InvalidTransition);
+        }
         let result = ObjectDigest::from_bytes(outcome.semantic_commitment());
         let inventory_source =
             ObjectDigest::from_bytes(Sha256::digest(inventory.canonical_packet()).into());
@@ -1970,9 +2041,15 @@ pub struct LifecycleEffectObservationV1 {
     request: LifecycleEffectRequestV1,
     result: ObjectDigest,
     inventory: ObjectDigest,
-    inventory_generation: u64,
-    inventory_source: ObjectDigest,
-    inventory_session: ObjectDigest,
+    inventory_coordinates: Option<LifecycleInventoryCoordinatesV4>,
+    capture_stop_residual_v4: Option<aos_sandbox_protocol::storage_capture_session::stop_cleanup::CaptureQuiescentIncompleteReceiptDataV4>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LifecycleInventoryCoordinatesV4 {
+    generation: u64,
+    source: ObjectDigest,
+    session: ObjectDigest,
 }
 
 impl LifecycleEffectObservationV1 {
@@ -1996,10 +2073,21 @@ impl LifecycleEffectObservationV1 {
             request,
             result,
             inventory,
-            inventory_generation,
-            inventory_source,
-            inventory_session,
+            inventory_coordinates: Some(LifecycleInventoryCoordinatesV4 {
+                generation: inventory_generation, source: inventory_source, session: inventory_session,
+            }),
+            capture_stop_residual_v4: None,
         })
+    }
+
+    /// Returns residual DATA joined by the same authenticated Stop/readback pair.
+    ///
+    /// This is not Capture Complete or permission to delete an incomplete dataset.
+    #[must_use]
+    pub const fn capture_stop_residual_v4(self)
+        -> Option<aos_sandbox_protocol::storage_capture_session::stop_cleanup::CaptureQuiescentIncompleteReceiptDataV4>
+    {
+        self.capture_stop_residual_v4
     }
 
     pub(super) const fn request(self) -> LifecycleEffectRequestV1 {
@@ -2012,22 +2100,31 @@ impl LifecycleEffectObservationV1 {
         self.result
     }
 
-    /// Returns the exact protected post-effect inventory commitment.
+    /// Returns the exact authenticated post-effect evidence commitment.
+    ///
+    /// Residual Stop names its purpose-separated quiescence receipt; it does
+    /// not supply an ordinary complete-inventory generation or empty census.
     #[must_use]
     pub const fn inventory(self) -> ObjectDigest {
         self.inventory
     }
 
+    // Residual Stop has no ordinary inventory coordinates. Sentinel denial
+    // keeps every existing snapshot/boot generation comparison fail-closed.
     pub(super) const fn inventory_generation(self) -> u64 {
-        self.inventory_generation
+        match self.inventory_coordinates { Some(value) => value.generation, None => 0 }
     }
 
     pub(super) const fn inventory_source(self) -> ObjectDigest {
-        self.inventory_source
+        match self.inventory_coordinates {
+            Some(value) => value.source, None => ObjectDigest::from_bytes([0; 32]),
+        }
     }
 
     pub(super) const fn inventory_session(self) -> ObjectDigest {
-        self.inventory_session
+        match self.inventory_coordinates {
+            Some(value) => value.session, None => ObjectDigest::from_bytes([0; 32]),
+        }
     }
 }
 
@@ -2064,6 +2161,12 @@ impl LifecycleBrokerRequestCompilerV1 {
         effect: LifecycleEffectRequestV1,
         request: &AuthenticatedBrokerMethodRequestV1,
     ) -> Result<LifecycleCompiledBrokerRequestV1, LifecyclePhase6ErrorV1> {
+        Self::compile_body(effect, request.method(), request.exact_body())
+    }
+
+    fn compile_body(
+        effect: LifecycleEffectRequestV1, method: BrokerMethod, exact_body: &[u8],
+    ) -> Result<LifecycleCompiledBrokerRequestV1, LifecyclePhase6ErrorV1> {
         // The lifecycle request commits the stable AOSLFX02 body. The broker
         // request is a separately authenticated, method-specific protobuf;
         // equating their digests would make every valid dispatch impossible.
@@ -2073,9 +2176,9 @@ impl LifecycleBrokerRequestCompilerV1 {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
         let target = effect.target();
-        let compiled = match request.method() {
+        let compiled = match method {
             BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => {
-                let body = decode_canonical_broker_body::<ApplyRuntimeRequest>(request)?;
+                let body = decode_canonical_broker_body_bytes::<ApplyRuntimeRequest>(exact_body)?;
                 if body.action.as_known() == Some(RuntimeAction::RUNTIME_ACTION_UNSPECIFIED)
                     || body.action.as_known().is_none()
                     || !body
@@ -2088,7 +2191,7 @@ impl LifecycleBrokerRequestCompilerV1 {
                 LifecycleCompiledBrokerRequestV1::Runtime(body)
             }
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY => {
-                let body = decode_canonical_broker_body::<ApplyMountRequest>(request)?;
+                let body = decode_canonical_broker_body_bytes::<ApplyMountRequest>(exact_body)?;
                 if body.action.as_known() == Some(MountAction::MOUNT_ACTION_UNSPECIFIED)
                     || body.action.as_known().is_none()
                     || body.attachment_id.as_slice() != target.as_slice()
@@ -2098,7 +2201,7 @@ impl LifecycleBrokerRequestCompilerV1 {
                 LifecycleCompiledBrokerRequestV1::Mount(body)
             }
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT => {
-                let body = decode_canonical_broker_body::<ApplyDestinationSlotRequest>(request)?;
+                let body = decode_canonical_broker_body_bytes::<ApplyDestinationSlotRequest>(exact_body)?;
                 if body.action.as_known()
                     == Some(DestinationSlotAction::DESTINATION_SLOT_ACTION_UNSPECIFIED)
                     || body.action.as_known().is_none()
@@ -2109,7 +2212,7 @@ impl LifecycleBrokerRequestCompilerV1 {
                 LifecycleCompiledBrokerRequestV1::DestinationSlot(body)
             }
             BrokerMethod::BROKER_METHOD_STORAGE_APPLY => {
-                let body = decode_canonical_broker_body::<ApplyStorageRequest>(request)?;
+                let body = decode_canonical_broker_body_bytes::<ApplyStorageRequest>(exact_body)?;
                 if body.action.as_known() == Some(StorageAction::STORAGE_ACTION_UNSPECIFIED)
                     || body.action.as_known().is_none()
                     || body.operation_id.as_slice() != effect.operation().as_bytes()
@@ -2123,7 +2226,7 @@ impl LifecycleBrokerRequestCompilerV1 {
                 LifecycleCompiledBrokerRequestV1::Storage(body)
             }
             BrokerMethod::BROKER_METHOD_NETWORK_APPLY => {
-                let body = decode_canonical_broker_body::<ApplyNetworkRequest>(request)?;
+                let body = decode_canonical_broker_body_bytes::<ApplyNetworkRequest>(exact_body)?;
                 if body.action.as_known() == Some(NetworkAction::NETWORK_ACTION_UNSPECIFIED)
                     || body.action.as_known().is_none()
                     || !(body
@@ -2157,15 +2260,53 @@ impl LifecycleBrokerRequestCompilerV1 {
     }
 }
 
+fn require_compiled_runtime_request_v5(
+    effect: LifecycleEffectRequestV1, compiled: &LifecycleCompiledBrokerRequestV1,
+    fence: LiveRuntimeFenceV1, action: RuntimeAction,
+) -> Result<(), LifecyclePhase6ErrorV1> {
+    let LifecycleCompiledBrokerRequestV1::Runtime(body) = compiled else {
+        return Err(LifecyclePhase6ErrorV1::InvalidInput);
+    };
+    let wire_fence = body
+        .fence
+        .as_option()
+        .ok_or(LifecyclePhase6ErrorV1::InvalidInput)?;
+    let desired = fence.desired();
+    if effect.domain() != LifecycleEffectDomainV1::Runtime
+        || fence.sandbox().as_bytes() != &effect.target()
+        || body.action.as_known() != Some(action)
+        || action == RuntimeAction::RUNTIME_ACTION_UNSPECIFIED
+        || action == RuntimeAction::RUNTIME_ACTION_LAUNCH
+        || body.launch_plan.as_option().is_some()
+        || body.guardian_arm.as_option().is_some()
+        || wire_fence.sandbox_id.as_slice() != fence.sandbox().as_bytes()
+        || wire_fence.incarnation_id.as_slice() != fence.incarnation().as_bytes()
+        || wire_fence.assignment_epoch != fence.assignment_epoch().get()
+        || wire_fence.desired_generation != desired.expected_generation().get()
+        || wire_fence.assignment_digest.as_slice()
+            != desired.resource_state().digest().as_bytes()
+    {
+        return Err(LifecyclePhase6ErrorV1::InvalidInput);
+    }
+    Ok(())
+}
+
 fn decode_canonical_broker_body<M>(
     request: &AuthenticatedBrokerMethodRequestV1,
 ) -> Result<M, LifecyclePhase6ErrorV1>
 where
     M: buffa::Message + PartialEq,
 {
-    let body = M::decode_from_slice(request.exact_body())
+    decode_canonical_broker_body_bytes(request.exact_body())
+}
+
+fn decode_canonical_broker_body_bytes<M>(bytes: &[u8]) -> Result<M, LifecyclePhase6ErrorV1>
+where
+    M: buffa::Message + PartialEq,
+{
+    let body = M::decode_from_slice(bytes)
         .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
-    if body.encode_to_vec().as_slice() != request.exact_body() {
+    if body.encode_to_vec().as_slice() != bytes {
         return Err(LifecyclePhase6ErrorV1::InvalidInput);
     }
     Ok(body)
@@ -2175,7 +2316,9 @@ fn require_exact_post_effect_readback(
     effect: &LifecycleAuthenticatedBrokerEffectV1,
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
     inventory: &AuthenticatedBrokerMethodOutcomeV1,
-) -> Result<(), LifecyclePhase6ErrorV1> {
+) -> Result<Option<aos_sandbox_protocol::storage_capture_session::stop_cleanup::CaptureQuiescentIncompleteReceiptDataV4>,
+    LifecyclePhase6ErrorV1>
+{
     let outcome_body = successful_body(outcome)?;
     let inventory_body = successful_body(inventory)?;
     match effect.broker_method {
@@ -2186,6 +2329,13 @@ fn require_exact_post_effect_readback(
             let result = decode_canonical_success_body::<RuntimeObservation>(outcome_body)?;
             let complete =
                 decode_canonical_success_body::<InventoryRuntimeResponse>(inventory_body)?;
+            let historical = aos_sandbox_protocol::host_recovered_namespace::HostRecoveredNamespaceDataV7::from_inventory_v7(&complete)
+                .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
+            if historical.as_ref().is_some_and(|row| row.saved_phase_v7()
+                == aos_sandbox_protocol::host_recovered_namespace::HostRecoveryStopPhaseDataV7::AuthorizedAbsent)
+            {
+                return Err(LifecyclePhase6ErrorV1::InvalidTransition);
+            }
             let target = effect.request.target();
             let targets = |row: &RuntimeObservation| {
                 row.fence
@@ -2204,6 +2354,8 @@ fn require_exact_post_effect_readback(
             };
             let absent = expected_state == RuntimeState::RUNTIME_STATE_ABSENT;
             if !targets(&result)
+                || !complete.present_stop_cleanup_candidates_v1.is_empty()
+                || !complete.cleanup_lineages_v1.is_empty()
                 || (absent
                     && !matches!(
                         result.state.as_known(),
@@ -2225,6 +2377,9 @@ fn require_exact_post_effect_readback(
             {
                 return Err(LifecyclePhase6ErrorV1::InvalidTransition);
             }
+            return aos_sandbox_protocol::runtime_stop_residual_for_decoded_apply_v4(
+                &result, request,
+            ).map_err(|_| LifecyclePhase6ErrorV1::InvalidTransition);
         }
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT => {
             let LifecycleCompiledBrokerRequestV1::DestinationSlot(request) = &effect.compiled
@@ -2364,7 +2519,7 @@ fn require_exact_post_effect_readback(
         }
         _ => return Err(LifecyclePhase6ErrorV1::InvalidInput),
     }
-    Ok(())
+    Ok(None)
 }
 
 fn successful_body(
@@ -2819,4 +2974,78 @@ pub fn lifecycle_phase6_plan_commitment_v1(
     canonical_description: ObjectDigest,
 ) -> super::LifecycleStepPlanDigestV1 {
     super::LifecycleStepPlanDigestV1::commit(canonical_description.as_bytes())
+}
+
+
+// The accepted public anchor retains its original logical request. Its bound
+// body uses the inverse's existing canonical committed-plan representation;
+// ordinary planned-step and historical wire bodies remain byte-for-byte intact.
+pub(crate) fn lifecycle_phase6_bind_controller_anchor_v1(
+    operation: OperationId, anchor: &LifecycleStepV1, effect: LifecyclePhase6EffectPlanV1,
+) -> Result<LifecycleStepV1, LifecyclePhase6ErrorV1> {
+    if anchor.index()!=0 || anchor.class()!=LifecycleStepClassV1::PostCommitForward
+        || anchor.domain()!=LifecycleStepDomainV1::Controller || effect.domain()!=LifecycleEffectDomainV1::Controller {
+        return Err(LifecyclePhase6ErrorV1::InvalidInput);
+    }
+    let planned = lifecycle_phase6_planned_step_v1(operation, anchor.index(), anchor.class(), effect, None)?;
+    let body = lifecycle_phase6_effect_body_commitment_v2(operation, effect.domain(), effect.ordinal(),
+        anchor.index(), LifecycleEffectDirectionV1::Forward, effect.target(), effect.prerequisite(), planned.plan().digest())?;
+    anchor.bind(body, planned.plan(), None, None).map_err(|_|LifecyclePhase6ErrorV1::InvalidInput)
+}
+
+
+#[cfg(test)]
+mod source_anchor_tests {
+    use super::*;
+    use crate::lifecycle::*;
+    use aos_sandbox_core::{PrincipalId,ProjectId};
+
+    fn anchor() -> LifecycleStepV1 {
+        LifecycleStepV1::unbound(0,LifecycleStepClassV1::PostCommitForward,
+            LifecycleStepDomainV1::Controller,LifecycleStepRequestDigestV1::commit(b"actual canonical public Create"),None).unwrap()
+    }
+
+    fn effect(request:u8,root:u8,ordinal:u32) -> LifecyclePhase6EffectPlanV1 {
+        LifecyclePhase6EffectPlanV1::new(LifecycleEffectDomainV1::Controller,ordinal,[4;16],
+            ObjectDigest::from_bytes([request;32]),ObjectDigest::from_bytes([root;32])).unwrap()
+    }
+
+    #[test]
+    fn source_anchor_roundtrip_retains_logical_request_and_canonical_inverse_body() {
+        let operation=OperationId::from_bytes([1;16]);
+        let original=anchor();
+        let selected=effect(5,6,1);
+        let bound=lifecycle_phase6_bind_controller_anchor_v1(operation,&original,selected).unwrap();
+        let record=LifecycleOperationV1::new(operation,PrincipalId::from_bytes([2;16]),ProjectId::from_bytes([3;16]),
+            LifecycleIdempotencyDigestV1::commit(b"idempotency"),LifecycleIntentV1::Create {sandbox:SandboxId::from_bytes([4;16])},
+            LifecycleTimeV1::new(1).unwrap(),Revision::new(1),
+            vec![ResourceExpectationV1::absent(LifecycleResourceV1::Sandbox(SandboxId::from_bytes([4;16]))).unwrap()],
+            vec![bound],LifecyclePhaseV1::Accepted,0,0,None,None,None,None,None,None).unwrap();
+        let encoded=encode_operation_record_v1(&record).unwrap();
+        let decoded=decode_operation_record_v1(&encoded).unwrap();
+        let step=&decoded.steps()[0];
+        assert_eq!(step.request(),original.request());
+        let persisted=lifecycle_phase6_plan_commitment_v1(selected.plan());
+        assert_eq!(step.plan(),persisted);
+        assert_eq!(step.request_body(),lifecycle_phase6_effect_body_commitment_v2(operation,
+            selected.domain(),selected.ordinal(),0,LifecycleEffectDirectionV1::Forward,
+            selected.target(),selected.prerequisite(),persisted.digest()).unwrap());
+        let current=CurrentLifecycleOperationV1::from_protected_current(decoded,
+            LifecycleRecordDigestV1::commit(&encoded),ObjectDigest::from_bytes([9;32]));
+        // A valid bound record remains inert until the existing planner has
+        // actually reserved an attempt. Canonical bytes alone issue no handoff.
+        assert!(current.recover_reserved_effect(selected.domain(),1,selected.target(),selected.prerequisite(),selected.plan()).is_err());
+    }
+
+    #[test]
+    fn source_anchor_canonical_binding_rejects_root_request_and_ordinal_substitution() {
+        let operation=OperationId::from_bytes([1;16]);
+        let anchor=anchor();
+        let baseline=lifecycle_phase6_bind_controller_anchor_v1(operation,&anchor,effect(5,6,1)).unwrap();
+        for changed in [effect(7,6,1),effect(5,8,1),effect(5,6,2)] {
+            let actual=lifecycle_phase6_bind_controller_anchor_v1(operation,&anchor,changed).unwrap();
+            assert_eq!(actual.request(),anchor.request());
+            assert_ne!(actual.request_body(),baseline.request_body());
+        }
+    }
 }

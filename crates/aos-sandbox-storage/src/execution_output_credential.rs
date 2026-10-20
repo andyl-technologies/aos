@@ -13,6 +13,14 @@
 //! journal    = AOSEOC01 | capacity:u64be | key-id[16] | hmac[32]
 //! ```
 
+mod source_open;
+mod currentness;
+mod capture;
+pub(crate) mod logical_receiving;
+pub(crate) use currentness::StorageOutputOwedAfterV1;
+mod startup;
+pub(crate) use startup::StorageExecutionOutputStartupV1;
+
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::ErrorKind;
@@ -71,6 +79,8 @@ pub enum OriginalOutputRegistrationErrorV1 {
 pub struct OriginalExecutionOutputRegistrationV1 {
     pub(crate) request: aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
     pub(crate) started: bool,
+    pub(crate) lifecycle_entry: logical_receiving::LogicalOutputEntryV1,
+    pub(crate) lifecycle_native: Option<Box<logical_receiving::LogicalOutputNativeOriginalV1>>,
     pub(crate) initial_custody: Option<Result<(), StorageServiceError>>,
     pub(crate) initial_clock: Option<Result<aos_sandbox_core::RawPairedClockSample, crate::StorageRuntimeError>>,
     pub(crate) initial_cut: Option<Result<crate::broker::OriginalOutputAdmissionCutV1, OriginalOutputRegistrationErrorV1>>,
@@ -100,6 +110,8 @@ impl OriginalExecutionOutputRegistrationV1 {
         Self {
             request,
             started: false,
+            lifecycle_entry: logical_receiving::LogicalOutputEntryV1::new(),
+            lifecycle_native: None,
             initial_custody: None,
             initial_clock: None,
             initial_cut: None,
@@ -147,16 +159,17 @@ impl OriginalExecutionOutputRegistrationV1 {
     /// Borrows the first actual action cause, without cloning or moving any result.
     #[must_use]
     pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(error) = self.lifecycle_entry.failure() { return Some(error); }
         if let Some(error) = &self.first_cause {
             return Some(error);
         }
-        if let Some(Err(error)) = &self.initial_custody { return Some(error); }
-        if let Some(Err(error)) = &self.initial_clock { return Some(error); }
+        if let Some(Err(error)) = &self.initial_custody { return self.lifecycle_native.as_ref().and_then(|native| native.custody_failure(0)).or(Some(error)); }
+        if let Some(Err(error)) = &self.initial_clock { return self.lifecycle_native.as_ref().and_then(|native| native.clock_failure(0)).or(Some(error)); }
         if let Some(Err(error)) = &self.initial_cut { return Some(error); }
-        if let Some(Err(error)) = &self.crossing_clock { return Some(error); }
+        if let Some(Err(error)) = &self.crossing_clock { return self.lifecycle_native.as_ref().and_then(|native| native.clock_failure(1)).or(Some(error)); }
         if let Some(Err(error)) = &self.crossing_cut { return Some(error); }
         if let Some(Err(error)) = &self.verified { return Some(error); }
-        if let Some(Err(error)) = &self.entry_clock { return Some(error); }
+        if let Some(Err(error)) = &self.entry_clock { return self.lifecycle_native.as_ref().and_then(|native| native.clock_failure(2)).or(Some(error)); }
         if let Some(Err(error)) = &self.entry_clock_check { return Some(error); }
         if let Some(Err(error)) = &self.commit {
             return Some(error);
@@ -172,12 +185,13 @@ impl OriginalExecutionOutputRegistrationV1 {
     #[must_use]
     pub fn postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
         if let Some(error) = &self.postcheck_debt { return Some(error); }
-        if let Some(Err(error)) = &self.final_custody { return Some(error); }
-        if let Some(Err(error)) = &self.final_clock { return Some(error); }
+        if let Some(Err(error)) = &self.final_custody { return self.lifecycle_native.as_ref().and_then(|native| native.custody_failure(1)).or(Some(error)); }
+        if let Some(Err(error)) = &self.final_clock { return self.lifecycle_native.as_ref().and_then(|native| native.clock_failure(3)).or(Some(error)); }
         if let Some(Err(error)) = &self.final_cut { return Some(error); }
-        if let Some(Err(error)) = &self.response_custody { return Some(error); }
-        if let Some(Err(error)) = &self.response_clock { return Some(error); }
+        if let Some(Err(error)) = &self.response_custody { return self.lifecycle_native.as_ref().and_then(|native| native.custody_failure(2)).or(Some(error)); }
+        if let Some(Err(error)) = &self.response_clock { return self.lifecycle_native.as_ref().and_then(|native| native.clock_failure(4)).or(Some(error)); }
         if let Some(Err(error)) = &self.response_cut { return Some(error); }
+        if let Some(error) = self.lifecycle_native.as_ref().and_then(|native| native.post_failure()) { return Some(error); }
         None
     }
 }
@@ -189,6 +203,7 @@ pub struct StorageExecutionOutputCustodyV1 {
     directory_identity: FileIdentity,
     credential: PinnedCredential,
     ledger: ExecutionOutputLedgerV1,
+    receiving_current: Option<currentness::OutputCurrentnessV1>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -441,9 +456,61 @@ impl StorageExecutionOutputCustodyV1 {
             directory_identity,
             credential,
             ledger,
+            receiving_current: None,
         };
         custody.recheck(state_root)?;
         Ok(custody)
+    }
+
+    /// Borrows the actual selected recurring verification failure.
+    #[must_use]
+    pub fn receiving_current_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.receiving_current.as_ref().and_then(currentness::OutputCurrentnessV1::failure)
+    }
+
+    /// Rechecks Output custody through the same paid Session Domain.
+    ///
+    /// The actual Session writer and socket must still belong to the active
+    /// lifecycle interval. The existing Output sampler then observes the
+    /// original source, credential and journal names, including its independent
+    /// service post. This creates no Capture permit or replacement writer.
+    ///
+    /// # Errors
+    /// Refuses a different or unpaid Session Domain, changed Output custody,
+    /// an unfinished predecessor, or any retained native/currentness failure.
+    /// Failed observations stay on this Output owner and the genuine service
+    /// original; a later successful post cannot reopen either one.
+    #[doc(hidden)]
+    pub fn recheck_session_receiving_v1(
+        &mut self,
+        lifecycle: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+        session: &aos_sandbox::Journal,
+        socket: &aos_sandbox_linux::seqpacket::SeqpacketSocket,
+    ) -> Result<(), StorageServiceError> {
+        let receiving = lifecycle.receiving_domain_v1(session, socket)
+            .map_err(|_| invalid("output journal custody changed"))?;
+        self.recheck_receiving_v1(receiving)
+    }
+
+    pub(crate) fn recheck_receiving_v1(
+        &mut self,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<(), StorageServiceError> {
+        if self.receiving_current.as_ref().is_some_and(|previous| !previous.can_replace()) {
+            return Err(invalid("output journal custody changed"));
+        }
+        // The role original retains the SAME existing Journal Arc from paid
+        // Output replay. No independently genuine writer/source can substitute.
+        receiving.arm_output_currentness_observation_post_v1(
+            self.ledger.held_journal_for_receiving_v1(), &self.source.path,
+        ).map_err(|_| invalid("output journal custody changed"))?;
+        // A preceding frame has already performed every fallible native/post
+        // check and disposed its actual files before this data is replaced.
+        self.receiving_current = Some(currentness::OutputCurrentnessV1::new());
+        let frame = self.receiving_current.as_mut()
+            .ok_or_else(|| invalid("output journal custody changed"))?;
+        frame.observe(receiving, &self.source, self.directory_identity,
+            &self.credential, self.ledger.held_journal_for_receiving_v1())
     }
 
     /// Rechecks both credential and writer identity before and after ingress.
@@ -488,45 +555,7 @@ fn read_source(path: &Path) -> Result<PinnedSource, StorageServiceError> {
 }
 
 fn open_protected_parent(path: &Path) -> Result<OwnedFd, StorageServiceError> {
-    if !path.is_absolute() {
-        return Err(invalid("output credential source path is not absolute"));
-    }
-    let mut directory = open(
-        "/",
-        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|_| invalid("output credential source root is unavailable"))?;
-    validate_parent(&directory)?;
-
-    for component in path.components() {
-        match component {
-            Component::RootDir => {}
-            Component::Normal(name) => {
-                directory = openat2(
-                    &directory,
-                    name,
-                    OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-                    Mode::empty(),
-                    ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-                )
-                .map_err(|_| invalid("output credential source ancestor is unsafe"))?;
-                validate_parent(&directory)?;
-            }
-            _ => return Err(invalid("output credential source path is invalid")),
-        }
-    }
-    Ok(directory)
-}
-
-fn validate_parent(directory: &OwnedFd) -> Result<(), StorageServiceError> {
-    let stat = fstat(directory).map_err(|_| invalid("output credential source ancestor failed"))?;
-    if !is_root_controlled_directory(stat.st_mode, stat.st_uid) {
-        return Err(invalid(
-            "output credential source ancestor is not root controlled",
-        ));
-    }
-    Ok(())
+    source_open::open_parent(path)
 }
 
 fn is_root_controlled_directory(mode: u32, uid: u32) -> bool {
@@ -538,41 +567,7 @@ fn read_source_leaf(
     name: &OsStr,
     expected_uid: u32,
 ) -> Result<(SourceIdentity, Zeroizing<Vec<u8>>), StorageServiceError> {
-    let descriptor = openat2(
-        directory,
-        name,
-        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-    )
-    .map_err(|_| invalid("output credential source file is unsafe"))?;
-    let before = fstat(&descriptor).map_err(|_| invalid("output credential source stat failed"))?;
-    if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
-        || before.st_uid != expected_uid
-        || !matches!(before.st_mode & 0o7777, 0o400 | 0o600)
-        || before.st_nlink != 1
-        || before.st_size != CREDENTIAL_BYTES as i64
-    {
-        return Err(invalid("output credential source protection is invalid"));
-    }
-
-    let mut file = File::from(descriptor);
-    let mut bytes = Zeroizing::new(vec![0; CREDENTIAL_BYTES]);
-    file.read_exact(&mut bytes)
-        .map_err(|_| invalid("output credential source read failed"))?;
-    let mut extra = [0; 1];
-    if file
-        .read(&mut extra)
-        .map_err(|_| invalid("output credential source read failed"))?
-        != 0
-    {
-        return Err(invalid("output credential source changed"));
-    }
-    let after = fstat(&file).map_err(|_| invalid("output credential source stat failed"))?;
-    if source_identity(&before) != source_identity(&after) {
-        return Err(invalid("output credential source changed"));
-    }
-    Ok((source_identity(&after), bytes))
+    source_open::read_leaf(directory, name, expected_uid)
 }
 
 fn source_identity(stat: &rustix::fs::Stat) -> SourceIdentity {

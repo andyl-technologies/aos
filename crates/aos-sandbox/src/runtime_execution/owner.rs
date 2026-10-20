@@ -41,6 +41,15 @@
 //! || host_evidence[152] || plan_catalog[216] || manifest_digest[32]
 //! ```
 
+mod opening;
+mod execution_receiving;
+pub(super) mod claim_receiving;
+mod monitor_receiving;
+mod capture_terminal;
+mod before_argument;
+pub use capture_terminal::ProtectedCaptureTerminalMarkerV3;
+pub use opening::DormantRuntimeExecutionOpeningV2;
+
 use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
 use std::path::Path;
@@ -1272,6 +1281,33 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         )
     }
 
+    /// Rechecks an admission against this owner's current accepted output.
+    ///
+    /// The original ledger predecessor is historical after admission commits;
+    /// the same runtime, authority and exact accepted output must remain live.
+    /// This readback supplies no new admission, effect or receiving capacity.
+    ///
+    /// # Errors
+    /// Preserves actual current-owner/readback errors and rejects a foreign
+    /// runtime, accepted Create, authority context or output claim.
+    pub fn revalidate_execution_admission_v2(
+        &self,
+        admission: &AdmittedExecutionV1,
+    ) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
+        let current = self.admission_currentness_for_accepted_output_v2(
+            admission.execution(),
+            OperationId::from_bytes(*admission.idempotency().operation().as_bytes()),
+        )?;
+        let admitted = admission.currentness();
+        // The admission's ledger predecessor is historical after its commit;
+        // replay validates that chain. The assignment and per-execution output
+        // claim must still match the live owner before a guest route is issued.
+        if !same_owner_and_accepted_output_v2(admitted, &current) {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
+        }
+        Ok(())
+    }
+
     /// Replays the accepted Create and parent source against one durable v2 claim.
     ///
     /// The result cannot be synthesized from a legacy reservation or a caller
@@ -1799,6 +1835,15 @@ impl DormantRuntimeExecutionClaimV1<'_> {
     #[must_use]
     pub const fn runtime_profile_commitment(&self) -> ObjectDigest {
         self.protected_plan.runtime_profile()
+    }
+
+    /// Returns the actual protected execution-store binding as comparison DATA.
+    ///
+    /// This does not create currentness or a lease; the real caller retains
+    /// this claim and independently revalidates it around the observation.
+    #[must_use]
+    pub const fn execution_store_binding_data_v2(&self) -> ObjectDigest {
+        self.execution_store_binding
     }
 
     /// Borrows fixed Host lifecycle/deadline verification authority.
@@ -2965,7 +3010,7 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         execution: ExecutionId,
     ) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
         self.validate_current()?;
-        if self.execution.load_host_no_apply_v1(execution)?.is_some() {
+        if self.execution.has_host_no_apply_v2(execution)? {
             return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
         }
         Ok(())
@@ -2986,6 +3031,41 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         self.execution
             .next_effect_sequence(self.currentness.runtime().handle())
             .map_err(Into::into)
+    }
+
+    /// Loads the actual latest effect named by the existing runtime sequence row.
+    ///
+    /// This is historical DATA from the same protected writer. It creates no
+    /// next effect, observation, execution permission or completion authority.
+    /// A caller must fund decoding before entry and independently match the
+    /// returned original execution/source and deterministic monitor lineage.
+    ///
+    /// # Errors
+    /// Returns an error for stale currentness, unavailable/corrupt history or a
+    /// foreign or mismatched sequence predecessor. Pending/Issued/Indeterminate
+    /// remain historical uncertainty; this method cannot resume or reissue them.
+    pub fn latest_effect_data_v3(
+        &self,
+    ) -> Result<Option<DurableExecutionEffectV1>, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        self.execution.latest_effect_data_v3(self.currentness.runtime().handle())
+            .map_err(Into::into)
+    }
+
+    /// Loads an execution's actual settled terminal through the existing marker.
+    ///
+    /// This readonly DATA read preserves the same admission, reservation,
+    /// original C1 and full Capture extension validation. It grants no effect,
+    /// capacity release, new sequence or physical disposal permission.
+    ///
+    /// # Errors
+    /// Rejects stale currentness, another runtime, corrupt/mismatched records,
+    /// or a terminal marker without its actual Complete and reservation proof.
+    pub fn terminal_execution_effect_data_v5(&self, execution: ExecutionId)
+        -> Result<Option<DurableExecutionEffectV1>, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        self.execution.terminal_execution_effect_data_v5(execution,
+            self.currentness.runtime().handle()).map_err(Into::into)
     }
 
     /// Loads durable recovery evidence before any live inventory is supplied.
@@ -3211,17 +3291,7 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         if effect.phase() != EffectPhaseV1::Issued {
             return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
         }
-        let current = self.admission_currentness_for_accepted_output_v2(
-            admission.execution(),
-            OperationId::from_bytes(*admission.idempotency().operation().as_bytes()),
-        )?;
-        let admitted = admission.currentness();
-        // The admission's ledger predecessor is historical after its commit;
-        // replay validates that chain. The assignment and per-execution output
-        // claim must still match the live owner before a guest route is issued.
-        if !same_owner_and_accepted_output_v2(admitted, &current) {
-            return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
-        }
+        self.revalidate_execution_admission_v2(admission)?;
         let specification = decode_execution_spec_v1(
             admission.specification_bytes(),
             DecodeLimits {
@@ -3485,7 +3555,8 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         let peer_fence_bytes = self
             .peer_fence
             .map(HostCurrentnessFenceV1::encode)
-            .transpose()?;
+            .transpose()
+            .map_err(JournalError::from)?;
         if self.peer_authority.snapshot()?.sequence() != self.protected_sequence
             || self.peer_authority.get(PEER_CURRENT_KEY)? != Some(self.peer_record.as_slice())
             || self.peer_authority.get(CURRENTNESS_KEY)? != Some(self.currentness_record.as_slice())

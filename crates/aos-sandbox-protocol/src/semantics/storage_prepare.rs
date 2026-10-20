@@ -38,6 +38,7 @@ use aos_sandbox_core::{
     OperationId, ProtocolId,
 };
 use buffa::Message as _;
+use sha2::{Digest as _, Sha256};
 
 use super::CatalogBindingV1;
 use crate::{
@@ -45,9 +46,41 @@ use crate::{
     ValidatedAssignmentFence, ValidatedHeader, validate_fence, validate_request_header,
 };
 
+mod create_apply;
+pub use create_apply::ProtectedStorageCreateApplyDataV1;
+
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSPRP1";
 const FORMAT_VERSION: u16 = 1;
 const MAXIMUM_CANONICAL_BYTES: usize = 32 * 1024;
+const ENCODER_INITIAL_CAPACITY: usize = 400;
+
+/// Bounds the existing catalog producer's nonauthorizing receipt.
+///
+/// This unchanged producer-format bound is separate from the broader receiving
+/// semantic ceiling and grants no Apply or receiving authority.
+pub const STORAGE_CATALOG_PREPARATION_RECEIPT_MAXIMUM_BYTES_V1: usize = 4 * 1024;
+
+/// Bounds the existing producer's canonical successful Prepare response body.
+///
+/// The five fields are operation16, generation-u64, digest32, expiry-u64 and
+/// the bounded receipt. Protobuf tags take one byte, each integer at most ten,
+/// and the receipt's length prefix at most two at this fixed4096 ceiling.
+/// Unknown fields are not emitted by this canonical producer. A hostile larger
+/// packet still uses the unchanged raw receive profile and actual decode debit.
+#[must_use]
+pub const fn storage_catalog_preparation_response_body_bound_v1() -> usize {
+    (1 + 1 + 16) + (1 + 10) + (1 + 1 + 32) + (1 + 10)
+        + (1 + 2 + STORAGE_CATALOG_PREPARATION_RECEIPT_MAXIMUM_BYTES_V1)
+}
+
+/// Commits the exact non-authorizing Storage prepared-receipt bytes.
+///
+/// This digest is comparison DATA. It neither verifies a response nor grants
+/// catalog Apply, completion, storage mutation or a resource reservation.
+#[must_use]
+pub fn storage_prepared_receipt_digest_v1(receipt: &[u8]) -> [u8; 32] {
+    Sha256::digest(receipt).into()
+}
 
 /// Reports a preparation request that has no single closed portable meaning.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -134,6 +167,31 @@ pub enum StoragePreparationOperationV1 {
 }
 
 impl StoragePreparationOperationV1 {
+    /// Reconstructs exact Destroy preparation semantics from protected DATA.
+    ///
+    /// This delegates the live parser's sole encoder and creates no native
+    /// preparation, signed permission or storage catalog entry.
+    ///
+    /// # Errors
+    /// Refuses another action, zero identities/handles/expiry or encoding failure.
+    pub fn persisted_cleanup_argument_commitment_v2(
+        self, assignment: BrokerAssignment, operation: OperationId,
+        inventory: CatalogBindingV1, expected_head: CatalogBindingV1, expires: u64,
+    ) -> Result<BrokerArgumentCommitment, StoragePreparationSemanticsError> {
+        let Self::Destroy { storage_handle, version_handle } = self else {
+            return Err(StoragePreparationSemanticsError::InvalidActionShape);
+        };
+        if operation.as_bytes() == &[0; 16] || storage_handle == [0; 32]
+            || version_handle == Some([0; 32]) || expires == 0 {
+            return Err(StoragePreparationSemanticsError::InvalidActionShape);
+        }
+        let bytes = encode_canonical(*assignment.sandbox().as_bytes(),
+            *assignment.incarnation().as_bytes(), assignment.epoch().get(),
+            assignment.desired_generation().get(), *assignment.digest().as_bytes(),
+            operation.into_bytes(), self, inventory, expected_head, expires)?;
+        Ok(BrokerArgumentCommitment::for_canonical_bytes(&bytes))
+    }
+
     const fn action_code(self) -> u8 {
         match self {
             Self::CreateWorkspace { .. } => 1,
@@ -239,11 +297,25 @@ impl CanonicalStoragePreparationSemanticsV1 {
         policy: PeerPolicy,
         now_boottime_nanoseconds: u64,
     ) -> Result<Self, StoragePreparationSemanticsError> {
+        Self::decode_engine(bytes, peer, policy, now_boottime_nanoseconds, None)
+    }
+
+    pub(crate) fn decode_engine(
+        bytes: &[u8],
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        now_boottime_nanoseconds: u64,
+        capture: Option<(&mut PrepareStorageCatalogRequest,
+            &mut Option<Result<(), buffa::DecodeError>>, &mut Vec<u8>)>,
+    ) -> Result<Self, StoragePreparationSemanticsError> {
         if bytes.len() > MAXIMUM_REQUEST_BYTES {
             return Err(ProtocolValidationError::RequestTooLarge.into());
         }
-        let request = PrepareStorageCatalogRequest::decode_from_slice(bytes)
-            .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+        let (raw, decode, canonical) = match capture {
+            Some((raw, decode, canonical)) => (Some(raw), Some(decode), Some(canonical)),
+            None => (None, None, None),
+        };
+        let request = crate::capture::decode_message_v1::<PrepareStorageCatalogRequest>(bytes, raw, decode)?;
         if !request.__buffa_unknown_fields.is_empty() {
             return Err(ProtocolValidationError::UnknownFields.into());
         }
@@ -295,7 +367,7 @@ impl CanonicalStoragePreparationSemanticsV1 {
         if request.preparation_expires_boottime_nanoseconds <= now_boottime_nanoseconds {
             return Err(StoragePreparationSemanticsError::Expired);
         }
-        let canonical = encode_canonical(
+        let canonical = encode_canonical_engine(
             *fence.sandbox_id(),
             *fence.incarnation_id(),
             fence.assignment_epoch(),
@@ -305,7 +377,7 @@ impl CanonicalStoragePreparationSemanticsV1 {
             operation,
             inventory,
             expected_head,
-            request.preparation_expires_boottime_nanoseconds,
+            request.preparation_expires_boottime_nanoseconds, canonical,
         )?;
         let commitment = BrokerArgumentCommitment::for_canonical_bytes(&canonical);
         Ok(Self {
@@ -412,6 +484,15 @@ pub struct ProtectedStorageCreatePreparationV1 {
 }
 
 impl ProtectedStorageCreatePreparationV1 {
+    /// Returns the shared encoder's fixed backing for the Create-only recipe.
+    ///
+    /// The nineteen fixed TLV fields fit its initial allocation. This passive
+    /// geometry does not allocate, construct a preparation or admit resources.
+    #[must_use]
+    pub const fn encoding_capacity_bytes_v1() -> usize {
+        ENCODER_INITIAL_CAPACITY
+    }
+
     /// Constructs one exact non-mutating Create preparation commitment.
     ///
     /// # Errors
@@ -500,6 +581,56 @@ impl ProtectedStorageCreatePreparationV1 {
         &self,
         request_id: [u8; 16],
     ) -> Result<Vec<u8>, StoragePreparationSemanticsError> {
+        self.request_body_with_deadline_v1(request_id, 0)
+    }
+
+    /// Derives the stable request ID from the exact signed Create artifacts.
+    ///
+    /// This pure identity does not verify a signature or authorize dispatch.
+    #[must_use]
+    pub fn signed_request_id_v1(
+        &self,
+        plan_digest: ObjectDigest,
+        canonical_signature: &[u8],
+    ) -> [u8; 16] {
+        let digest = Sha256::new()
+            .chain_update(b"aos.sandbox.storage.create-preparation-request-id.v1\0")
+            .chain_update(self.argument_commitment().digest().as_bytes())
+            .chain_update(plan_digest.as_bytes())
+            .chain_update((canonical_signature.len() as u64).to_be_bytes())
+            .chain_update(canonical_signature)
+            .finalize();
+        let mut request_id = [0; 16];
+        request_id.copy_from_slice(&digest[..16]);
+        request_id
+    }
+
+    /// Encodes the signed Create request with its unchanged admitted deadline.
+    ///
+    /// Root and Controller independently supply their verified plan digest and
+    /// exact signature bytes. This encoder grants no signing or send authority.
+    ///
+    /// # Errors
+    /// Rejects a zero deadline or the reserved derived request ID.
+    pub fn signed_request_body_v1(
+        &self,
+        plan_digest: ObjectDigest,
+        canonical_signature: &[u8],
+        cutoff: u64,
+    ) -> Result<Vec<u8>, StoragePreparationSemanticsError> {
+        if cutoff == 0 {
+            return Err(StoragePreparationSemanticsError::InvalidActionShape);
+        }
+        self.request_body_with_deadline_v1(
+            self.signed_request_id_v1(plan_digest, canonical_signature), cutoff,
+        )
+    }
+
+    fn request_body_with_deadline_v1(
+        &self,
+        request_id: [u8; 16],
+        deadline: u64,
+    ) -> Result<Vec<u8>, StoragePreparationSemanticsError> {
         if request_id == [0; 16] {
             return Err(StoragePreparationSemanticsError::InvalidActionShape);
         }
@@ -509,7 +640,7 @@ impl ProtectedStorageCreatePreparationV1 {
                 protocol_minor: 0,
                 request_id: request_id.to_vec(),
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
-                deadline_boottime_nanoseconds: 0,
+                deadline_boottime_nanoseconds: deadline,
                 maximum_response_bytes: 4096,
                 ..Default::default()
             })
@@ -572,7 +703,25 @@ fn encode_canonical(
     expected_head: CatalogBindingV1,
     expires_boottime_nanoseconds: u64,
 ) -> Result<Vec<u8>, StoragePreparationSemanticsError> {
-    let mut encoder = Encoder::new();
+    encode_canonical_engine(sandbox_id, incarnation_id, assignment_epoch, desired_generation,
+        assignment_digest, operation_id, operation, inventory, expected_head,
+        expires_boottime_nanoseconds, None)
+}
+
+fn encode_canonical_engine(
+    sandbox_id: [u8; 16],
+    incarnation_id: [u8; 16],
+    assignment_epoch: u64,
+    desired_generation: u64,
+    assignment_digest: [u8; 32],
+    operation_id: [u8; 16],
+    operation: StoragePreparationOperationV1,
+    inventory: CatalogBindingV1,
+    expected_head: CatalogBindingV1,
+    expires_boottime_nanoseconds: u64,
+    destination: Option<&mut Vec<u8>>,
+) -> Result<Vec<u8>, StoragePreparationSemanticsError> {
+    let mut encoder = Encoder::new(destination);
     encoder.field(1, FORMAT_MAGIC)?;
     encoder.field(2, &FORMAT_VERSION.to_be_bytes())?;
     encoder.field(3, &[operation.action_code()])?;
@@ -723,14 +872,14 @@ fn optional_nonzero<const N: usize>(
     }
 }
 
-struct Encoder {
-    bytes: Vec<u8>,
+struct Encoder<'a> {
+    bytes: aos_sandbox_core::retained::CaptureValueV1<'a, Vec<u8>>,
 }
 
-impl Encoder {
-    fn new() -> Self {
+impl<'a> Encoder<'a> {
+    fn new(destination: Option<&'a mut Vec<u8>>) -> Self {
         Self {
-            bytes: Vec::with_capacity(400),
+            bytes: aos_sandbox_core::retained::CaptureValueV1::new(Vec::with_capacity(ENCODER_INITIAL_CAPACITY), destination),
         }
     }
 
@@ -744,7 +893,8 @@ impl Encoder {
             .and_then(|size| size.checked_add(value.len()))
             .filter(|size| *size <= MAXIMUM_CANONICAL_BYTES)
             .ok_or(StoragePreparationSemanticsError::CanonicalEncodingTooLarge)?;
-        self.bytes.reserve(next - self.bytes.len());
+        let additional = next - self.bytes.len();
+        self.bytes.reserve(additional);
         self.bytes.push(tag);
         self.bytes.extend_from_slice(&length.to_be_bytes());
         self.bytes.extend_from_slice(value);
@@ -760,7 +910,7 @@ impl Encoder {
     }
 
     fn finish(self) -> Vec<u8> {
-        self.bytes
+        self.bytes.take()
     }
 }
 
@@ -894,11 +1044,24 @@ mod tests {
 
         assert!(protected.matches_decoded(&decoded));
         assert_eq!(protected.canonical_bytes(), decoded.canonical_bytes());
+        assert_eq!(protected.canonical_bytes().len(), 306);
+        assert!(protected.canonical_bytes().len()
+            <= ProtectedStorageCreatePreparationV1::encoding_capacity_bytes_v1());
         assert_eq!(
             protected.argument_commitment(),
             decoded.argument_commitment()
         );
         assert_eq!(session_request.encode_to_vec(), request.encode_to_vec());
+
+        let plan_digest = ObjectDigest::from_bytes([21; 32]);
+        let signature = [22; 64];
+        let signed_id = protected.signed_request_id_v1(plan_digest, &signature);
+        let signed = protected.signed_request_body_v1(plan_digest, &signature, 200).unwrap();
+        session_request.header.get_or_insert_default().request_id = signed_id.to_vec();
+        assert_eq!(signed, session_request.encode_to_vec());
+        assert_ne!(signed_id, protected.signed_request_id_v1(plan_digest, &[23; 64]));
+        assert_ne!(signed_id, protected.signed_request_id_v1(ObjectDigest::from_bytes([24; 32]), &signature));
+        assert!(protected.signed_request_body_v1(plan_digest, &signature, 0).is_err());
 
         request.expected_catalog_digest = vec![15; 32];
         assert!(!protected.matches_decoded(&decode(&request).unwrap()));
@@ -1110,5 +1273,72 @@ mod tests {
             .get_or_insert_default()
             .protocol_major = 2;
         assert!(decode(&unknown_version).is_err());
+    }
+
+    #[test]
+    fn retained_prepare_late_decode_refusal_keeps_actual_header() {
+        let original = clone_request();
+        let mut bytes = original.encode_to_vec();
+        bytes.push(0x80);
+        let mut raw = PrepareStorageCatalogRequest::default();
+        let mut decode = None;
+        let mut canonical = Vec::new();
+
+        let retained = CanonicalStoragePreparationSemanticsV1::decode_engine(&bytes,
+            peer(), policy(), 1, Some((&mut raw, &mut decode, &mut canonical))).unwrap_err();
+        let ordinary = CanonicalStoragePreparationSemanticsV1::decode(&bytes,
+            peer(), policy(), 1).unwrap_err();
+
+        assert_eq!(retained, ordinary);
+        assert_eq!(raw.header.as_option().unwrap().request_id,
+            original.header.as_option().unwrap().request_id);
+        assert!(matches!(decode, Some(Err(_))));
+        assert!(canonical.is_empty());
+    }
+
+    #[test]
+    fn retained_prepare_semantic_refusal_keeps_complete_hostile_body() {
+        let mut original = clone_request();
+        original.requested_reservation_bytes = original.requested_quota_bytes + 1;
+        let bytes = original.encode_to_vec();
+        let mut raw = PrepareStorageCatalogRequest::default();
+        let mut decode = None;
+        let mut canonical = Vec::new();
+
+        let retained = CanonicalStoragePreparationSemanticsV1::decode_engine(&bytes,
+            peer(), policy(), 1, Some((&mut raw, &mut decode, &mut canonical))).unwrap_err();
+        let ordinary = CanonicalStoragePreparationSemanticsV1::decode(&bytes,
+            peer(), policy(), 1).unwrap_err();
+
+        assert_eq!(retained, ordinary);
+        assert_eq!(raw.requested_hold_id, original.requested_hold_id);
+        assert_eq!(raw.source_version_handle, original.source_version_handle);
+        assert!(matches!(decode, Some(Ok(()))));
+        assert!(canonical.is_empty());
+    }
+
+}
+
+#[cfg(test)]
+mod response_receiving_bound_tests {
+    use super::*;
+    use aos_proto::aos::sandbox::local::v1::PrepareStorageCatalogResponse;
+
+    #[test]
+    fn canonical_producer_maximum_has_the_exact_shared_body_width() {
+        let response = PrepareStorageCatalogResponse {
+            operation_id: vec![1; 16], catalog_generation: u64::MAX,
+            catalog_digest: vec![2; 32],
+            preparation_expires_boottime_nanoseconds: u64::MAX,
+            non_authorizing_receipt: vec![3; STORAGE_CATALOG_PREPARATION_RECEIPT_MAXIMUM_BYTES_V1],
+            ..Default::default()
+        };
+
+        let encoded = response.encode_to_vec();
+        let decoded = PrepareStorageCatalogResponse::decode_from_slice(&encoded).unwrap();
+
+        assert_eq!(encoded.len(), storage_catalog_preparation_response_body_bound_v1());
+        assert_eq!(decoded.operation_id, response.operation_id);
+        assert_eq!(decoded.non_authorizing_receipt, response.non_authorizing_receipt);
     }
 }

@@ -200,13 +200,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # Auto-discovered module list.
   modules = import ./modules;
 
-  # Assemble the in-image, eval-only base library for every
-  # system. See `lib/build/base-lib.nix`.
-  mkBaseLib = import ./lib/build/base-lib.nix {
-    inherit lib pkgs;
-    system = hostPlatform.system;
-  };
-
   # Build a system from a system definition module (or list of modules).
   #
   # Accepts three calling conventions:
@@ -248,49 +241,101 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       if builtins.isAttrs args && args ? packageModules
       then args.packageModules
       else [];
-    systemModules = builtins.filter builtins.isPath moduleList;
-    # Determine the resolved image ABI from the complete caller module list.
-    # The base library bundles only source-backed system modules, so without
-    # carrying this value explicitly an inline image override would leave the
-    # runtime image and its evaluator library on different ABIs.
-    moduleAbi =
-      (lib.evalModules {
+    # A module extension may replace the kernel, so it must rebuild both the
+    # package fixed point and the image's frozen evaluator census.
+    evaluateSystem = evaluationArgs: let
+      systemPackages = import ./pkgs {
+        inherit
+          lib
+          stdenv
+          firmwarePackages
+          sharedGoCacheDir
+          sharedBazelCacheDir
+          sharedRustTargetDir
+          sharedRustIncremental
+          sharedAccacheDir
+          sharedAccacheStateDir
+          ordinaryToolchainPackages
+          ;
+        buildPackages = if isCrossBuild then buildPackages else systemPackages;
+        kernelPackages = pkgs;
+        systemdKernel =
+          if evaluated.config.aos.sandbox.networkWorker.enable
+            || (evaluated.config.aos.sandbox.runtimeDeploymentPublisher.enable
+              && evaluated.config.aos.sandbox.runtimeDeploymentPublisher.bootPreparation)
+          then evaluated.config.system.build.kernel
+          else null;
+      };
+
+      # Kernel factories retain their original inputs. Letting their build
+      # tools depend on the layout-consuming Systemd could recurse back into
+      # this kernel. Runtime libraries use systemPackages throughout instead.
+      moduleArguments = evaluationArgs // {pkgs = systemPackages;};
+      imageModules = modules ++ evaluationArgs.modules;
+      imageName = evaluationArgs.specialArgs.systemName or "system";
+      systemModules = builtins.filter builtins.isPath evaluationArgs.modules;
+
+      # Resolve the ABI without the base library's self-reference. The package
+      # census below uses the exact same per-image dependency fixed point.
+      moduleAbi =
+        (lib.evalModules (moduleArguments // {
+          modules =
+            imageModules
+            ++ [
+              {
+                aos.config.evalAtBoot = {
+                  baseLib = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
+                  baseLibAbiHash = "sha256:${builtins.concatStringsSep "" (builtins.genList (_: "0") 64)}";
+                };
+              }
+            ];
+        }))
+        .config
+        .aos
+        .system
+        .moduleAbi;
+      baseLib = (import ./lib/build/base-lib.nix {
+        inherit lib;
+        pkgs = systemPackages;
+        system = hostPlatform.system;
+      }) {
+        baseModules = modules;
+        inherit systemModules moduleAbi;
+        systemName = imageName;
+      };
+      evaluated = lib.evalModules (moduleArguments // {
         modules =
-          modules
-          ++ moduleList
+          imageModules
           ++ [
             {
               aos.config.evalAtBoot = {
-                baseLib = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
-                baseLibAbiHash = "sha256:${builtins.concatStringsSep "" (builtins.genList (_: "0") 64)}";
+                inherit baseLib;
+                baseLibAbiHash = baseLib.passthru.abiHash;
               };
             }
           ];
-        inherit pkgs lib operatorModules runtimeModules packageModules;
-        specialArgs = moduleSpecialArgs;
-      })
-      .config
-      .aos
-      .system
-      .moduleAbi;
-    baseLib = mkBaseLib {
-      baseModules = modules;
-      inherit systemModules systemName moduleAbi;
-    };
+      });
+    in
+      evaluated
+      // {
+        pkgs = systemPackages;
+
+        # Retaining evalModules' original pkgs/baseLib here would bind a new
+        # kernel to the old image. Keep all other arguments and provenance.
+        extendModules = extension:
+          if extension ? pkgs
+          then throw "mkSystem.extendModules selects its own canonical per-system package set"
+          else
+            evaluateSystem (
+              evaluationArgs
+              // builtins.removeAttrs extension ["modules"]
+              // {modules = evaluationArgs.modules ++ (extension.modules or []);}
+            );
+      };
   in
-    lib.evalModules {
-      modules =
-        modules
-        ++ moduleList
-        ++ [
-          {
-            aos.config.evalAtBoot = {
-              inherit baseLib;
-              baseLibAbiHash = baseLib.passthru.abiHash;
-            };
-          }
-        ];
-      inherit pkgs lib operatorModules runtimeModules packageModules;
+    evaluateSystem {
+      modules = moduleList;
+      inherit lib operatorModules runtimeModules packageModules;
       specialArgs = moduleSpecialArgs;
     };
 
@@ -321,7 +366,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           # (e.g. the fleet harness, which bakes per-VM identity via
           # `environment.etc`) can overlay a fragment without rebuilding the
           # module list. Inherits this variant's baseLib wiring.
-          inherit (evaluated) extendModules;
+          inherit (evaluated) extendModules pkgs;
           build = {
             toplevel = evaluated.config.system.build.toplevel;
             kernel = evaluated.config.system.build.kernel;

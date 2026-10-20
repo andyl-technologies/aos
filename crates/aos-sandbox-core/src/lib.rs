@@ -1,7 +1,7 @@
 //! Defines the portable model shared by AOS sandbox components.
 //!
 //! This crate owns logical identities, fencing generations, policy math,
-//! lifecycle state machines, and portable object schemas. It deliberately has
+//! lifecycle state machines, monotone receiving accounting, and portable object schemas. It deliberately has
 //! no dependency on Linux system calls, D-Bus, storage commands, or a runtime
 //! backend. Privileged services consume validated values from this crate but
 //! do not parse public requests themselves.
@@ -17,34 +17,46 @@
 //! recovery contracts without selecting or activating an implementation.
 
 pub mod assignment;
+pub mod assignment_intent;
 pub mod bounded_codec;
 pub mod broker_authorization;
 pub mod capability;
+pub mod component_receiving;
 pub mod crypto;
+pub mod drain_intent;
 pub mod format;
 pub mod guardian_binding;
 pub mod identity;
 pub mod journal_namespace;
 pub mod model;
+pub mod node_capability;
+pub mod node_protocol_data;
+pub mod node_session_data;
 pub mod operator_recovery_effect;
 pub mod operator_recovery_effect_v2;
 mod operator_recovery_packet;
 pub mod operator_recovery_probe_attestation;
 pub mod ownership_lease;
+pub mod placement;
 pub mod public_attach_grant;
 pub mod public_attach_route;
 pub mod public_attach_ticket;
 pub mod publisher;
 pub mod registry;
 pub mod resources;
+pub mod retained;
 pub mod runtime_backend;
 pub mod selector;
+pub mod snapshot_progress;
+pub mod snapshot_transfer;
 pub mod source_tree_model;
 pub mod state;
 pub mod version;
 
 pub use assignment::CanonicalAssignmentManifestV1;
-pub use journal_namespace::RecordNamespace;
+pub use assignment_intent::{
+    AssignmentIntentV1, InvalidAssignmentModel, SelectedCapabilityBindingV1,
+};
 pub use broker_authorization::{
     BrokerArgumentCommitment, BrokerAssignment, BrokerAudience, BrokerAuthorizationPlan,
     BrokerGrant, BrokerGrantTarget, BrokerPlanExpectation, BrokerPlanRequest,
@@ -57,9 +69,8 @@ pub use capability::{
     Grant, InvalidGrant,
 };
 pub use crypto::{
-    PreparedStatementKeyLoanV1, PreparedStatementSigningV1,
-    SignatureVerificationError, VerifiedSignature, sign_statement, signature_signing_message,
-    verify_signature,
+    PreparedStatementKeyLoanV1, PreparedStatementSigningV1, SignatureVerificationError,
+    VerifiedSignature, sign_statement, signature_signing_message, verify_signature,
 };
 pub use format::{
     CanonicalCborError, DecodeLimits, ObjectDescriptorVerificationError, ObjectDescriptorVerifier,
@@ -71,6 +82,7 @@ pub use format::{
     execution_spec_digest_v1, hardlink_group_digest, resource_profile_digest_v1,
     sandbox_spec_media_type, validate_canonical_cbor,
 };
+pub use format::{decode_git_upload_capacity_v1, encode_git_upload_capacity_v1};
 pub use guardian_binding::{GuardianPlanBinding, InvalidGuardianPlanBinding};
 pub use identity::{
     AttachmentId, AttachmentSlotId, AuditId, CacheDomainId, CapabilityId, ExecutionId, ExportId,
@@ -78,6 +90,7 @@ pub use identity::{
     ProjectId, PublicationReservationId, PublisherInstanceId, ResourceId, RestoreScopeId,
     RevocationScopeId, SandboxId, SecretId, ServiceId, SnapshotId, TrustScopeId, ViewId,
 };
+pub use journal_namespace::RecordNamespace;
 pub use model::execution::{
     CapturedStreamV1, ExecutionAccessRouteV1, ExecutionArgumentEnvelopeV1,
     ExecutionCapturedOutputV1, ExecutionCapturedStreamKindV1, ExecutionCommandV1,
@@ -98,22 +111,36 @@ pub use model::execution::{
     MAX_EXECUTION_RESOURCE_SETTINGS, MAX_EXECUTION_STRING_BYTES,
     MAX_EXECUTION_SUPPLEMENTARY_GROUPS, PayloadBootId,
 };
-pub use model::{KeyUsage, SignaturePurpose};
 pub use model::git_upload_capacity::{
     GitUploadCapacityV1, InvalidGitUploadCapacityV1, MAXIMUM_GIT_UPLOAD_CAPACITY_BYTES_V1,
 };
-pub use format::{decode_git_upload_capacity_v1, encode_git_upload_capacity_v1};
+pub use model::{KeyUsage, SignaturePurpose};
+pub use node_capability::{
+    HardFeatureFactRequirementV1, InvalidNodeCapability, MAX_NODE_CAPABILITY_FACTS,
+    MAX_NODE_FEATURES, MAX_NODE_PROTOCOL_OFFERS, NodeAdmissionStateV1, NodeBootId,
+    NodeBootLineageV1, NodeCapabilityFactV1, NodeCapabilityKindV1, NodeCapabilitySnapshotV1,
+    NodeProbeEvidenceV1, NodeProtocolOfferV1, NodeProtocolV1, hard_feature_fact_requirements_v1_0,
+};
+pub use node_protocol_data::{
+    CanonicalNodeFrameKindV1, InvalidMultiNodeProtocol, MAX_NODE_REQUEST_BYTES,
+    MAX_NODE_RESPONSE_BYTES, MAX_RESYNC_ASSIGNMENTS, MAX_WATCH_EVENTS, NodeMethodV1,
+    NodeRequestBodyV1, NodeWatchBindingV1, NodeWatchCursorV1, RollingVersionWindowV1,
+    stable_watch_bootstrap_uid, stable_watch_event_uid,
+};
 pub use ownership_lease::{
     BrokerAdmissionIntersection, CLOCK_PAIR_TOLERANCE_NANOSECONDS,
     DurableHistoricalWallClockInstant, HistoricalOwnershipLeaseExpectation, InvalidOwnershipLease,
     LEASE_SAFETY_MARGIN_SECONDS, LeaseAssignment, LeaseFenceOutcome, LocalLeaseRecord,
-    LocalLeaseRecordCodecError, NonAuthorizingHistoricalOwnershipLease, OwnershipLease,
-    OwnershipLeaseExpectation, OwnershipLeaseTrustAnchor, OwnershipLeaseVerificationError,
+    LocalLeaseRecordCodecError, NonAuthorizingHistoricalOwnershipLease,
+    OwnershipClockObservationError, OwnershipLease, OwnershipLeaseExpectation,
+    OwnershipLeaseTrustAnchor, OwnershipLeaseTrustAnchorClosedV1,
+    OwnershipLeaseTrustAnchorConstructionV1, OwnershipLeaseVerificationError,
     PendingLocalLeaseRecord, RawClockProvenance, RawPairedClockSample, VerifiedOwnershipLease,
     authenticate_historical_ownership_lease, decode_local_lease_record, encode_local_lease_record,
     intersect_broker_admission, prepare_local_lease_record, verify_ownership_lease,
     verify_ownership_transaction_receipt_signature,
 };
+pub use placement::{InvalidPlacementInput, MAX_ASSIGNMENT_AFFINITIES};
 pub use publisher::{
     InvalidPublisherAdmissionRequest, InvalidPublisherDomainPlan, PublisherAdmissionClaimV1,
     PublisherAdmissionRequestDraftV1, PublisherAdmissionRequestV1, PublisherAuthorityBindings,
@@ -143,3 +170,18 @@ pub use selector::{
 pub use version::{
     AssignmentEpoch, DesiredGeneration, NamespaceGeneration, ObservationSequence, Revision,
 };
+
+pub use drain_intent::{
+    DrainAssignmentPlanV1, DrainAssignmentProgressV1, DrainAssignmentStrategyV1,
+    DrainBlockReasonV1, DrainDirectiveV1, DrainGuardianStateV1, DrainPhaseV1, InvalidDrainModel,
+    MAX_DRAIN_ASSIGNMENTS, NodeDrainModeV1, drain_directive_digest,
+};
+pub use snapshot_transfer::{
+    InvalidSnapshotTransfer, MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES, MAX_SNAPSHOT_TRANSFER_CHUNKS,
+    MAX_SNAPSHOT_TRANSFER_DEPENDENCIES, MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES,
+    MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES, SnapshotDependencyRangeV1,
+    SnapshotTransferChunkRequestV1, SnapshotTransferChunkV1, SnapshotTransferIdentityV1,
+    SnapshotTransferManifestV1, SnapshotTransferResumeV1, SnapshotTransferVersionV1,
+};
+
+pub use snapshot_transfer::DurableDependencyProjectionV1;

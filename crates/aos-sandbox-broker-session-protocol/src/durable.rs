@@ -31,10 +31,16 @@ use crate::{
     decode_canonical_request_v1, decode_canonical_response_v1,
 };
 
+mod capture;
 pub mod history;
 mod traffic_replay;
 
-pub use traffic_replay::{HistoricalTrafficReplayErrorV1, verify_historical_traffic_records_v1};
+pub use capture::{BrokerSessionDurableRecordDecodeCaptureV1, BrokerSessionDurableRecordEncodeCaptureV1};
+
+pub use traffic_replay::{
+    HistoricalTrafficReplayCaptureV1, HistoricalTrafficReplayErrorV1,
+    verify_historical_traffic_records_retaining_v1, verify_historical_traffic_records_v1,
+};
 
 const MAGIC: &[u8; 8] = b"AOSBSD01";
 const VERSION: u16 = 1;
@@ -412,90 +418,7 @@ impl BrokerSessionDurableRecordV1 {
     /// Returns [`BrokerSessionDurableError`] for every malformed, oversized,
     /// noncanonical, unknown, zero, or internally inconsistent field.
     pub fn decode(bytes: &[u8]) -> Result<Self, BrokerSessionDurableError> {
-        if bytes.len() < HEADER_BYTES + BROKER_SESSION_REQUEST_COMPANION_BYTES
-            || bytes.len() > BROKER_SESSION_DURABLE_RECORD_MAXIMUM_BYTES
-        {
-            return Err(BrokerSessionDurableError::InvalidLength);
-        }
-        if bytes.get(..8) != Some(MAGIC.as_slice()) || read_u16(bytes, 8)? != VERSION {
-            return Err(BrokerSessionDurableError::InvalidFormat);
-        }
-
-        let kind = bytes
-            .get(10)
-            .copied()
-            .ok_or(BrokerSessionDurableError::InvalidLength)?;
-        let protocol = decode_protocol(bytes.get(11).copied())?;
-        let method = decode_method(bytes.get(12).copied())?;
-        let endpoint = decode_endpoint(bytes.get(13).copied())?;
-        let revision = read_u64(bytes, 14)?;
-        let session_binding = read_array(bytes, 22)?;
-        let peer_binding = BrokerSessionPeerBindingV1::new(read_array(bytes, 54)?)?;
-        let protected_bindings = BrokerSessionProtectedBindingsV1::new(
-            read_array(bytes, 86)?,
-            read_array(bytes, 118)?,
-            read_array(bytes, 150)?,
-        )?;
-        let request_id = read_array(bytes, 182)?;
-        let client_sequence = read_u64(bytes, 198)?;
-        let broker_sequence = read_u64(bytes, 206)?;
-        let maximum_response_bytes = read_u32(bytes, 214)?;
-        let predecessor = read_array(bytes, 218)?;
-        let profile_binding = read_array(bytes, 250)?;
-        let request_semantic_binding = read_array(bytes, 282)?;
-        let outcome_semantic_binding = read_array(bytes, 314)?;
-        let request_length = usize::try_from(read_u32(bytes, 346)?)
-            .map_err(|_| BrokerSessionDurableError::InvalidLength)?;
-        let outcome_length = usize::try_from(read_u32(bytes, 350)?)
-            .map_err(|_| BrokerSessionDurableError::InvalidLength)?;
-
-        let mut cursor = HEADER_BYTES;
-        let request_companion_bytes =
-            take(bytes, &mut cursor, BROKER_SESSION_REQUEST_COMPANION_BYTES)?;
-        let request_companion = BrokerSessionRequestCompanionV1::decode(request_companion_bytes)?;
-        let request_packet = take(bytes, &mut cursor, request_length)?.to_vec();
-
-        let (outcome_companion, outcome_packet) = match kind {
-            REQUEST_KIND if outcome_length == 0 && broker_sequence == 0 => (None, None),
-            TERMINAL_KIND if outcome_length != 0 && broker_sequence != 0 => {
-                let companion_bytes =
-                    take(bytes, &mut cursor, BROKER_SESSION_OUTCOME_COMPANION_BYTES)?;
-                let companion = BrokerSessionOutcomeCompanionV1::decode(companion_bytes)?;
-                let packet = take(bytes, &mut cursor, outcome_length)?.to_vec();
-                (Some(companion), Some(packet))
-            }
-            _ => return Err(BrokerSessionDurableError::InvalidClosedValue),
-        };
-        if cursor != bytes.len() || revision == 0 || client_sequence == 0 {
-            return Err(BrokerSessionDurableError::InvalidLength);
-        }
-
-        let record = Self {
-            revision,
-            protocol,
-            endpoint,
-            method,
-            session_binding,
-            peer_binding,
-            protected_bindings,
-            request_id,
-            client_sequence,
-            broker_sequence,
-            maximum_response_bytes,
-            predecessor,
-            profile_binding,
-            request_semantic_binding,
-            outcome_semantic_binding,
-            request_companion,
-            request_packet,
-            outcome_companion,
-            outcome_packet,
-        };
-        record.validate_cross_links()?;
-        if record.encode()?.as_slice() != bytes {
-            return Err(BrokerSessionDurableError::InvalidFormat);
-        }
-        Ok(record)
+        capture::decode_engine(bytes, None)
     }
 
     /// Encodes the sole bounded canonical record.
@@ -505,65 +428,7 @@ impl BrokerSessionDurableRecordV1 {
     /// Returns [`BrokerSessionDurableError`] if retained packet lengths exceed
     /// their fixed allocation ceilings or the record is inconsistent.
     pub fn encode(&self) -> Result<Vec<u8>, BrokerSessionDurableError> {
-        self.validate_cross_links()?;
-        if self.request_packet.len() > REQUEST_PACKET_MAXIMUM_BYTES
-            || self
-                .outcome_packet
-                .as_ref()
-                .is_some_and(|packet| packet.len() > OUTCOME_PACKET_MAXIMUM_BYTES)
-        {
-            return Err(BrokerSessionDurableError::InvalidLength);
-        }
-        let outcome_length = self.outcome_packet.as_ref().map_or(0, Vec::len);
-        let capacity = HEADER_BYTES
-            + BROKER_SESSION_REQUEST_COMPANION_BYTES
-            + self.request_packet.len()
-            + self
-                .outcome_companion
-                .as_ref()
-                .map_or(0, |_| BROKER_SESSION_OUTCOME_COMPANION_BYTES)
-            + outcome_length;
-        if capacity > BROKER_SESSION_DURABLE_RECORD_MAXIMUM_BYTES {
-            return Err(BrokerSessionDurableError::InvalidLength);
-        }
-
-        let request_length = u32::try_from(self.request_packet.len())
-            .map_err(|_| BrokerSessionDurableError::InvalidLength)?;
-        let outcome_length_u32 =
-            u32::try_from(outcome_length).map_err(|_| BrokerSessionDurableError::InvalidLength)?;
-        let mut bytes = Vec::with_capacity(capacity);
-        bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(&VERSION.to_be_bytes());
-        bytes.push(match self.phase() {
-            BrokerSessionDurablePhaseV1::RequestPrepared => REQUEST_KIND,
-            BrokerSessionDurablePhaseV1::Terminal => TERMINAL_KIND,
-        });
-        bytes.push(self.protocol as u8);
-        bytes.push(self.method as u8);
-        bytes.push(self.endpoint as u8);
-        bytes.extend_from_slice(&self.revision.to_be_bytes());
-        bytes.extend_from_slice(&self.session_binding);
-        bytes.extend_from_slice(&self.peer_binding.digest());
-        bytes.extend_from_slice(&self.protected_bindings.protected_context());
-        bytes.extend_from_slice(&self.protected_bindings.endpoint_publication());
-        bytes.extend_from_slice(&self.protected_bindings.current_catalog());
-        bytes.extend_from_slice(&self.request_id);
-        bytes.extend_from_slice(&self.client_sequence.to_be_bytes());
-        bytes.extend_from_slice(&self.broker_sequence.to_be_bytes());
-        bytes.extend_from_slice(&self.maximum_response_bytes.to_be_bytes());
-        bytes.extend_from_slice(&self.predecessor);
-        bytes.extend_from_slice(&self.profile_binding);
-        bytes.extend_from_slice(&self.request_semantic_binding);
-        bytes.extend_from_slice(&self.outcome_semantic_binding);
-        bytes.extend_from_slice(&request_length.to_be_bytes());
-        bytes.extend_from_slice(&outcome_length_u32.to_be_bytes());
-        bytes.extend_from_slice(&self.request_companion.encode());
-        bytes.extend_from_slice(&self.request_packet);
-        if let (Some(companion), Some(packet)) = (&self.outcome_companion, &self.outcome_packet) {
-            bytes.extend_from_slice(&companion.encode());
-            bytes.extend_from_slice(packet);
-        }
-        Ok(bytes)
+        capture::encode_engine(self, None)
     }
 
     /// Returns the domain-separated digest of the complete canonical record.
@@ -705,76 +570,7 @@ impl BrokerSessionDurableRecordV1 {
     }
 
     fn validate_cross_links(&self) -> Result<(), BrokerSessionDurableError> {
-        if self.revision == 0 || self.client_sequence == 0 {
-            return Err(BrokerSessionDurableError::ZeroRequiredField);
-        }
-        let terminal_offset = match self.phase() {
-            BrokerSessionDurablePhaseV1::RequestPrepared => 1,
-            BrokerSessionDurablePhaseV1::Terminal => 0,
-        };
-        let expected_revision = self
-            .client_sequence
-            .checked_mul(2)
-            .and_then(|revision| revision.checked_sub(terminal_offset))
-            .ok_or(BrokerSessionDurableError::SequenceExhausted)?;
-        if self.revision != expected_revision
-            || (self.revision == 1 && self.predecessor.iter().any(|byte| *byte != 0))
-            || (self.revision != 1 && self.predecessor.iter().all(|byte| *byte == 0))
-        {
-            return Err(BrokerSessionDurableError::Continuity);
-        }
-        require_nonzero(&self.session_binding)?;
-        require_nonzero(&self.request_id)?;
-        require_nonzero(&self.request_semantic_binding)?;
-        match self.phase() {
-            BrokerSessionDurablePhaseV1::RequestPrepared
-                if self.outcome_semantic_binding != [0; 32] =>
-            {
-                return Err(BrokerSessionDurableError::Continuity);
-            }
-            BrokerSessionDurablePhaseV1::Terminal => {
-                require_nonzero(&self.outcome_semantic_binding)?;
-            }
-            BrokerSessionDurablePhaseV1::RequestPrepared => {}
-        }
-        if self.profile_binding != profile_binding(self.method)? {
-            return Err(BrokerSessionDurableError::Continuity);
-        }
-        if self.request_companion.protocol() != self.protocol
-            || self.request_companion.method() != self.method
-            || self.request_companion.maximum_response_bytes() != self.maximum_response_bytes
-            || self.request_companion.signed_request().subject().sequence() != self.client_sequence
-        {
-            return Err(BrokerSessionDurableError::Continuity);
-        }
-        validate_request_packet(
-            &self.request_companion,
-            &self.request_packet,
-            self.session_binding,
-            self.request_id,
-        )?;
-        match (&self.outcome_companion, &self.outcome_packet) {
-            (None, None) if self.broker_sequence == 0 => Ok(()),
-            (Some(companion), Some(packet)) if self.broker_sequence != 0 => {
-                validate_outcome_packet(
-                    companion,
-                    packet,
-                    self.session_binding,
-                    self.request_id,
-                    self.client_sequence,
-                    self.maximum_response_bytes,
-                    self.method,
-                    self.protocol,
-                )?;
-                if companion.signed_outcome().subject().sequence() != self.broker_sequence
-                    || self.broker_sequence != self.client_sequence
-                {
-                    return Err(BrokerSessionDurableError::Continuity);
-                }
-                Ok(())
-            }
-            _ => Err(BrokerSessionDurableError::InvalidClosedValue),
-        }
+        capture::validate_cross_links(self, None)
     }
 }
 
@@ -948,22 +744,7 @@ fn validate_request_packet(
     session_binding: [u8; 32],
     request_id: [u8; 16],
 ) -> Result<(), BrokerSessionDurableError> {
-    if packet.is_empty() || packet.len() > REQUEST_PACKET_MAXIMUM_BYTES {
-        return Err(BrokerSessionDurableError::InvalidLength);
-    }
-    let canonical = decode_canonical_request_v1(packet)
-        .map_err(|_| BrokerSessionDurableError::PacketMismatch)?;
-    let signed = canonical.signed_artifact();
-    if canonical.message().method.as_known() != Some(companion.method())
-        || signed != companion.signed_request()
-        || signed.subject().session_binding() != session_binding
-        || signed.subject().request_id() != request_id
-        || authenticated_broker_method_profile_v1(companion.method())
-            .is_none_or(|profile| profile.protocol() != companion.protocol())
-    {
-        return Err(BrokerSessionDurableError::PacketMismatch);
-    }
-    Ok(())
+    capture::validate_request_packet(companion, packet, session_binding, request_id, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -977,28 +758,8 @@ fn validate_outcome_packet(
     method: BrokerMethod,
     protocol: BrokerSessionProtocolV1,
 ) -> Result<(), BrokerSessionDurableError> {
-    if packet.is_empty()
-        || packet.len() > OUTCOME_PACKET_MAXIMUM_BYTES
-        || packet.len() > maximum_response_bytes as usize
-    {
-        return Err(BrokerSessionDurableError::InvalidLength);
-    }
-    let canonical = decode_canonical_response_v1(packet)
-        .map_err(|_| BrokerSessionDurableError::PacketMismatch)?;
-    let signed = canonical.signed_artifact();
-    if companion.protocol() != protocol
-        || companion.method() != method
-        || companion.request_id() != request_id
-        || companion.client_sequence() != client_sequence
-        || companion.maximum_response_bytes() != maximum_response_bytes
-        || canonical.message().method.as_known() != Some(method)
-        || signed != companion.signed_outcome()
-        || signed.subject().session_binding() != session_binding
-        || signed.subject().request_id() != request_id
-    {
-        return Err(BrokerSessionDurableError::PacketMismatch);
-    }
-    Ok(())
+    capture::validate_outcome_packet(companion, packet, session_binding, request_id,
+        client_sequence, maximum_response_bytes, method, protocol, None)
 }
 
 fn decode_protocol(

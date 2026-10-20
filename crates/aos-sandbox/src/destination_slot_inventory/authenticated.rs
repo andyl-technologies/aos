@@ -5,7 +5,7 @@
 
 use super::{
     DurableDestinationSlotInventorySnapshotV1, Journal, METHOD, MountAttemptError, SnapshotHistory,
-    SnapshotRecord, mount_controller_state_digest, persist_snapshot,
+    SnapshotRecord, mount_controller_state_digest,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
@@ -47,6 +47,28 @@ pub(crate) fn complete_observation(
     fence: DestinationSlotInventoryObservationFenceV1,
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
 ) -> Result<DurableDestinationSlotInventorySnapshotV1, MountAttemptError> {
+    complete_observation_with_commit_v2(
+        journal,
+        fence,
+        outcome,
+        &mut crate::mount_inventory_snapshot::MountInventorySnapshotRetainedV2::new(),
+        |journal, transaction, _recipe| journal.commit(transaction).map_err(Into::into),
+    )
+}
+
+pub(crate) fn complete_observation_with_commit_v2(
+    journal: &mut Journal,
+    fence: DestinationSlotInventoryObservationFenceV1,
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    retained: &mut crate::mount_inventory_snapshot::MountInventorySnapshotRetainedV2<
+        super::DestinationSlotInventoryKind,
+    >,
+    commit: impl FnMut(
+        &mut Journal,
+        &crate::JournalTransaction,
+        &crate::mount_inventory_snapshot::MountInventoryCommitRecipeV2<'_>,
+    ) -> Result<crate::CommitResult, MountAttemptError>,
+) -> Result<DurableDestinationSlotInventorySnapshotV1, MountAttemptError> {
     fence.recheck(journal)?;
     if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
         || outcome.method() != METHOD
@@ -68,7 +90,19 @@ pub(crate) fn complete_observation(
         outcome.request().exact_body().to_vec(),
         body.clone(),
     )?;
-    persist_snapshot(journal, history, record, inventory)
+    let (record, inventory, recorded) =
+        crate::mount_inventory_snapshot::persist_snapshot_retaining_with_commit_v2(
+            journal, history, record, inventory, retained, commit,
+        )?;
+    Ok(DurableDestinationSlotInventorySnapshotV1 {
+        record,
+        inventory,
+        outcome: if recorded {
+            super::DestinationSlotInventorySnapshotOutcomeV1::Recorded
+        } else {
+            super::DestinationSlotInventorySnapshotOutcomeV1::Replay
+        },
+    })
 }
 
 #[cfg(test)]

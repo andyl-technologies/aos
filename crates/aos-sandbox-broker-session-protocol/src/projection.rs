@@ -22,6 +22,17 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox_core::{FeatureRef, validate_required_features};
 use buffa::Message as _;
 
+mod retaining;
+
+pub(crate) use retaining::CaptureValueV1;
+
+pub use retaining::{
+    CanonicalBrokerClientHelloDecodeCaptureV1, CanonicalBrokerServerHelloDecodeCaptureV1,
+    CanonicalBrokerRequestDecodeCaptureV1, CanonicalBrokerResponseDecodeCaptureV1,
+    decode_canonical_client_hello_retaining_v1, decode_canonical_server_hello_retaining_v1,
+    decode_canonical_request_retaining_v1, decode_canonical_response_retaining_v1,
+};
+
 use crate::artifact::{
     BrokerSessionArtifactError, SignedBrokerClientHelloV1, SignedBrokerHelloV1,
     SignedBrokerOutcomeV1, SignedBrokerRequestV1, length_prefixed_digest,
@@ -112,7 +123,9 @@ const SERVER_HELLO_FIELDS_DOMAIN: &[u8] = b"aos-sandbox-broker-session-server-he
 const REQUEST_FIELDS_DOMAIN: &[u8] = b"aos-sandbox-broker-session-request-fields-v1\0";
 const RESPONSE_FIELDS_DOMAIN: &[u8] = b"aos-sandbox-broker-session-outcome-fields-v1\0";
 const MAXIMUM_FEATURES: usize = 64;
-const MAXIMUM_METHODS: usize = 23;
+// The canonical method roster bounds allocation. Endpoint role allowlists are
+// checked separately; an old hello's cardinality is not a global method limit.
+const MAXIMUM_METHODS: usize = crate::profile::AUTHENTICATED_BROKER_METHOD_COUNT_V1;
 
 // Buffa 0.3 wrote singular fields before repeated fields. That order is part
 // of the signed v1 transcript, even though newer generators sort by tag.
@@ -649,36 +662,7 @@ pub fn outcome_fields_digest_v1(
 pub fn decode_canonical_client_hello_v1(
     bytes: &[u8],
 ) -> Result<CanonicalBrokerClientHelloV1, BrokerSessionProjectionError> {
-    if bytes.len() > CLIENT_HELLO_MAXIMUM_BYTES {
-        return Err(BrokerSessionProjectionError::TooLarge);
-    }
-    let mut message = BrokerClientHello::decode_from_slice(bytes)
-        .map_err(|error| BrokerSessionProjectionError::Malformed(error.to_string()))?;
-    require_canonical(bytes, &encode_client_hello_v1(&message))?;
-    if !message.__buffa_unknown_fields.is_empty()
-        || message
-            .required_features
-            .iter()
-            .any(|feature| !feature.__buffa_unknown_fields.is_empty())
-    {
-        return Err(BrokerSessionProjectionError::UnknownFields);
-    }
-    validate_feature_set(&message.required_features)?;
-    validate_method_set(&message.required_methods)?;
-    let signed = SignedBrokerClientHelloV1::from_canonical_bytes(&message.signed_session_hello)?;
-    message.signed_session_hello.clear();
-    let cleared = encode_client_hello_v1(&message);
-    require_projection_sizes(
-        bytes.len(),
-        cleared.len(),
-        CLIENT_HELLO_CLEARED_MAXIMUM_BYTES,
-        CLIENT_HELLO_FIELD_CONTRIBUTION,
-    )?;
-    Ok(CanonicalBrokerClientHelloV1 {
-        message,
-        signed,
-        cleared_digest: length_prefixed_digest(CLIENT_HELLO_FIELDS_DOMAIN, &cleared),
-    })
+    retaining::decode_client_hello_engine(bytes, None)
 }
 
 /// Decodes a canonical authenticated BrokerHello at its exact total/cleared ceilings.
@@ -690,37 +674,7 @@ pub fn decode_canonical_client_hello_v1(
 pub fn decode_canonical_server_hello_v1(
     bytes: &[u8],
 ) -> Result<CanonicalBrokerServerHelloV1, BrokerSessionProjectionError> {
-    if bytes.len() > SERVER_HELLO_MAXIMUM_BYTES {
-        return Err(BrokerSessionProjectionError::TooLarge);
-    }
-    let mut message = BrokerServerHello::decode_from_slice(bytes)
-        .map_err(|error| BrokerSessionProjectionError::Malformed(error.to_string()))?;
-    require_canonical(bytes, &encode_server_hello_v1(&message))?;
-    if !message.__buffa_unknown_fields.is_empty()
-        || message
-            .features
-            .iter()
-            .any(|feature| !feature.__buffa_unknown_fields.is_empty())
-        || message.error.as_option().is_some_and(error_has_unknown)
-    {
-        return Err(BrokerSessionProjectionError::UnknownFields);
-    }
-    validate_feature_set(&message.features)?;
-    validate_method_set(&message.methods)?;
-    let signed = SignedBrokerHelloV1::from_canonical_bytes(&message.signed_session_hello)?;
-    message.signed_session_hello.clear();
-    let cleared = encode_server_hello_v1(&message);
-    require_projection_sizes(
-        bytes.len(),
-        cleared.len(),
-        SERVER_HELLO_CLEARED_MAXIMUM_BYTES,
-        SERVER_HELLO_FIELD_CONTRIBUTION,
-    )?;
-    Ok(CanonicalBrokerServerHelloV1 {
-        message,
-        signed,
-        cleared_digest: length_prefixed_digest(SERVER_HELLO_FIELDS_DOMAIN, &cleared),
-    })
+    retaining::decode_server_hello_engine(bytes, None)
 }
 
 /// Decodes a canonical authenticated request and commits all body, descriptor,
@@ -733,40 +687,7 @@ pub fn decode_canonical_server_hello_v1(
 pub fn decode_canonical_request_v1(
     bytes: &[u8],
 ) -> Result<CanonicalBrokerRequestEnvelopeV1, BrokerSessionProjectionError> {
-    if bytes.len() > authenticated_request_predecode_maximum_bytes_v1() {
-        return Err(BrokerSessionProjectionError::TooLarge);
-    }
-    let mut message = BrokerRequestEnvelope::decode_from_slice(bytes)
-        .map_err(|error| BrokerSessionProjectionError::Malformed(error.to_string()))?;
-    let method = message
-        .method
-        .as_known()
-        .ok_or(BrokerSessionProjectionError::InvalidSemantics)?;
-    let profile = authenticated_broker_method_profile_v1(method)
-        .ok_or(BrokerSessionProjectionError::InvalidSemantics)?;
-    if bytes.len() > profile.total_request_maximum_bytes() {
-        return Err(BrokerSessionProjectionError::TooLarge);
-    }
-    require_canonical(bytes, &encode_request_v1(&message))?;
-    validate_request_nested(&message)?;
-    let signed = SignedBrokerRequestV1::from_canonical_bytes(&message.signed_session_request)?;
-    if message.method.as_known() != Some(signed.method()) {
-        return Err(BrokerSessionProjectionError::InvalidSemantics);
-    }
-    message.signed_session_request.clear();
-    let cleared = encode_request_v1(&message);
-    require_projection_sizes(
-        bytes.len(),
-        cleared.len(),
-        profile.cleared_request_maximum_bytes(),
-        REQUEST_FIELD_CONTRIBUTION,
-    )?;
-    Ok(CanonicalBrokerRequestEnvelopeV1 {
-        message,
-        signed,
-        cleared_digest: length_prefixed_digest(REQUEST_FIELDS_DOMAIN, &cleared),
-        encoded_len: bytes.len(),
-    })
+    retaining::decode_request_engine(bytes, None)
 }
 
 /// Decodes a canonical authenticated response and commits its exact body,
@@ -779,32 +700,7 @@ pub fn decode_canonical_request_v1(
 pub fn decode_canonical_response_v1(
     bytes: &[u8],
 ) -> Result<CanonicalBrokerResponseEnvelopeV1, BrokerSessionProjectionError> {
-    if bytes.len() > AUTHENTICATED_RESPONSE_MAXIMUM_BYTES {
-        return Err(BrokerSessionProjectionError::TooLarge);
-    }
-    let mut message = BrokerResponseEnvelope::decode_from_slice(bytes)
-        .map_err(|error| BrokerSessionProjectionError::Malformed(error.to_string()))?;
-    require_canonical(bytes, &encode_response_v1(&message))?;
-    validate_response_nested(&message)?;
-    let signed = SignedBrokerOutcomeV1::from_canonical_bytes(&message.signed_session_outcome)?;
-    if message.method.as_known() != Some(signed.method()) {
-        return Err(BrokerSessionProjectionError::InvalidSemantics);
-    }
-    message.signed_session_outcome.clear();
-    let cleared = encode_response_v1(&message);
-    require_projection_sizes(
-        bytes.len(),
-        cleared.len(),
-        AUTHENTICATED_RESPONSE_CLEARED_MAXIMUM_BYTES,
-        RESPONSE_FIELD_CONTRIBUTION,
-    )?;
-    Ok(CanonicalBrokerResponseEnvelopeV1 {
-        message,
-        signed,
-        cleared_digest: length_prefixed_digest(RESPONSE_FIELDS_DOMAIN, &cleared),
-        encoded_len: bytes.len(),
-        encoded_bytes: bytes.to_vec(),
-    })
+    retaining::decode_response_engine(bytes, None)
 }
 
 /// Validates authenticated negotiated/request response ceilings.
@@ -968,26 +864,6 @@ fn error_has_unknown(error: &aos_proto::aos::sandbox::local::v1::BrokerError) ->
             .is_some_and(|feature| !feature.__buffa_unknown_fields.is_empty())
 }
 
-fn validate_feature_set(
-    features: &[aos_proto::aos::sandbox::local::v1::Feature],
-) -> Result<(), BrokerSessionProjectionError> {
-    if features.len() > MAXIMUM_FEATURES {
-        return Err(BrokerSessionProjectionError::InvalidSemantics);
-    }
-    let values = features
-        .iter()
-        .map(|feature| FeatureRef::new(feature.namespace.clone(), feature.major, feature.minor))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| BrokerSessionProjectionError::InvalidSemantics)?;
-    if values.windows(2).any(|window| window[0] >= window[1])
-        || validate_required_features(&values).is_err()
-    {
-        Err(BrokerSessionProjectionError::InvalidSemantics)
-    } else {
-        Ok(())
-    }
-}
-
 fn validate_method_set(
     methods: &[buffa::EnumValue<BrokerMethod>],
 ) -> Result<(), BrokerSessionProjectionError> {
@@ -1006,5 +882,24 @@ fn validate_method_set(
         Err(BrokerSessionProjectionError::InvalidSemantics)
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod execution_availability_method_projection_tests {
+    use super::*;
+
+    #[test]
+    fn roster_cardinality_and_numbers_above_sixty_three_have_no_bit_alias() {
+        let full: Vec<_> = crate::profile::AUTHENTICATED_BROKER_METHODS_V1.into_iter().map(Into::into).collect();
+        assert!(full.len() > 23);
+        assert!(validate_method_set(&full).is_ok());
+        let methods = [BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2.into(),
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2.into()];
+        assert!(validate_method_set(&methods).is_ok());
+        assert!(validate_method_set(&[methods[1], methods[0]]).is_err());
+        assert!(validate_method_set(&[methods[0], methods[0]]).is_err());
+        assert!(validate_method_set(&[BrokerMethod::BROKER_METHOD_UNSPECIFIED.into()]).is_err());
+        assert!(validate_method_set(&[full.as_slice(), &[methods[1]]].concat()).is_err());
     }
 }

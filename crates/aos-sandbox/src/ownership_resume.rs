@@ -6,7 +6,8 @@
 //! claim. Returned carrier fields remain hostile until the negotiated session
 //! validates their transcript, method, transaction, and outcome.
 
-use aos_sandbox_core::{OperationId, ProtocolVersion, RawPairedClockSample};
+use aos_sandbox_core::{OperationId, OwnershipClockObservationError, ProtocolVersion, RawPairedClockSample};
+use aos_sandbox_ownership_protocol::OwnershipAuthorityVerifier;
 use aos_sandbox_ownership_protocol::protocol::session_client::{
     OwnershipAuthoritySessionClient, OwnershipSessionTransportError,
 };
@@ -21,8 +22,8 @@ use aos_sandbox_ownership_protocol::protocol::{
 use aos_sandbox_protocol::domain_ledger::ownership_gate::OwnershipGateStatusV1;
 
 use crate::{
-    AuthorityPublicationError, AuthorityPublicationStore, OwnershipAuthorityVerifier,
-    OwnershipGateActivationOutcome, OwnershipLeaseAcquisitionError, Reconciler, ReconcilerError,
+    AuthorityPublicationError, AuthorityPublicationStore,
+    OwnershipGateActivationOutcome,  Reconciler, ReconcilerError,
     SingleNodeEffectExecutor,
 };
 
@@ -31,14 +32,6 @@ const REQUIRED_METHODS: [OwnershipMethodV1; 3] = [
     OwnershipMethodV1::CompleteOrResume,
     OwnershipMethodV1::Query,
 ];
-
-/// Reports failure to obtain a local paired-clock observation.
-///
-/// The observation is input to cryptographic liveness checking only. It is not
-/// a sealed protected-clock capability and cannot authorize a broker effect.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("local ownership clock observation is unavailable")]
-pub struct OwnershipClockObservationError;
 
 /// Reports the durable result of one explicit ownership resume attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1095,3 +1088,5 @@ mod tests {
         }
     }
 }
+
+use aos_sandbox_ownership_protocol::{OwnershipAuthority, OwnershipLeaseAcquisitionError};

@@ -39,11 +39,13 @@ pub fn validate_broker_method_domain(
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
         | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+        | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
         | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
         | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => EffectDomain::Mount,
         BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+        | BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => EffectDomain::Network,
         _ => {
@@ -70,6 +72,7 @@ const fn broker_method_from_code(value: i32) -> Option<BrokerMethod> {
         6 => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
         7 => BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
         9 => BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
+        63 => BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2,
         10 => BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY,
         11 => BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
         12 => BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
@@ -85,6 +88,7 @@ const fn broker_method_from_code(value: i32) -> Option<BrokerMethod> {
         22 => BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
         23 => BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
         24 => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS,
+        62 => BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1,
         _ => return None,
     })
 }
@@ -108,6 +112,9 @@ pub fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, EffectHisto
 ///
 /// The subgate's constructors and decoder establish its structural validation;
 /// this function copies its bytes after checking the record's Q04 shape.
+/// Applied history additionally requires the final status-four companion.
+/// The native original still proves Storage, workspace and lifecycle closure;
+/// this pure codec grants no completion or exception to ordinary appends.
 ///
 /// # Errors
 ///
@@ -118,6 +125,7 @@ pub fn encode_q04_effect(
     gate: &crate::domain_ledger::create_q04_history::Q04EffectSubgateV1,
 ) -> Result<Vec<u8>, EffectHistoryDataError> {
     require_q04_effect_shape(record)?;
+    require_q04_terminal_gate(record, gate)?;
     encode_effect_with_q04(record, Some(gate.bytes()))
 }
 
@@ -129,13 +137,55 @@ fn require_q04_effect_shape(record: &EffectLedgerRecord) -> Result<(), EffectHis
         || record.plan.method.is_some()
         || record.plan.authority.is_some()
         || record.dispatch.is_some()
-        || !matches!(record.state, EffectState::Applying { .. })
+        || !matches!(record.state, EffectState::Applying { .. } | EffectState::Applied { .. })
     {
         return Err(EffectHistoryDataError::CorruptLedger(
             "invalid Q04 policy-subgate Effect",
         ));
     }
     Ok(())
+}
+
+
+#[cfg(target_os = "linux")]
+fn require_q04_terminal_gate(
+    record: &EffectLedgerRecord,
+    gate: &crate::domain_ledger::create_q04_history::Q04EffectSubgateV1,
+) -> Result<(), EffectHistoryDataError> {
+    if matches!(record.state, EffectState::Applied { .. }) && gate.status() != 4 {
+        return Err(EffectHistoryDataError::CorruptLedger(
+            "Applied Q04 Effect lacks its final companion",
+        ));
+    }
+    Ok(())
+}
+
+const BROKER_EFFECT_HEADER_BYTES_V1: usize = 22;
+const AUTHORITY_EFFECT_FIXED_BYTES_V1: usize = 375;
+
+/// Bounds every ordinary authority-bound state of this exact broker effect.
+///
+/// The bound uses this encoder's fixed V2 fields, the actual request, and the
+/// existing independent dispatch-body, packet, receipt and diagnostic ceilings.
+/// Public/Controller/Q04 metadata cannot enter this narrow recipe. It performs
+/// no encoding, native work, verification or publication selection.
+///
+/// # Errors
+/// Refuses another Effect grammar or checked representation overflow.
+pub fn authority_effect_record_bound_v1(
+    plan: &EffectPlan,
+) -> Result<usize, EffectHistoryDataError> {
+    if plan.authority.is_none() || plan.method.is_none() || plan.controller_method.is_some()
+        || plan.request.len() > MAXIMUM_REQUEST_BYTES {
+        return Err(EffectHistoryDataError::InvalidPlan("expected a bounded authority broker effect"));
+    }
+    BROKER_EFFECT_HEADER_BYTES_V1.checked_add(AUTHORITY_EFFECT_FIXED_BYTES_V1)
+        .and_then(|bytes| bytes.checked_add(plan.request.len()))
+        .and_then(|bytes| bytes.checked_add(MAXIMUM_REQUEST_BYTES))
+        .and_then(|bytes| bytes.checked_add(MAXIMUM_DISPATCH_PACKET_BYTES))
+        .and_then(|bytes| bytes.checked_add(MAXIMUM_RECEIPT_BYTES))
+        .and_then(|bytes| bytes.checked_add(MAXIMUM_DIAGNOSTIC_BYTES))
+        .ok_or(EffectHistoryDataError::InvalidPlan("effect record length overflow"))
 }
 
 fn encode_effect_with_q04(
@@ -190,7 +240,7 @@ fn encode_effect_with_q04(
         ));
     }
     let authority_length = if record.plan.authority.is_some() {
-        375 + dispatch_body_length + dispatch_packet_length
+        AUTHORITY_EFFECT_FIXED_BYTES_V1 + dispatch_body_length + dispatch_packet_length
     } else {
         0
     };
@@ -222,7 +272,7 @@ fn encode_effect_with_q04(
     } else if version == CONTROLLER_PROJECT_EFFECT_VERSION {
         26
     } else {
-        22
+        BROKER_EFFECT_HEADER_BYTES_V1
     };
     let mut bytes = Vec::with_capacity(
         header_length
@@ -396,6 +446,13 @@ pub fn decode_effect_with_q04(
 fn decode_effect_with_extensions(
     bytes: &[u8],
 ) -> Result<DecodedEffectWithExtensions, EffectHistoryDataError> {
+    if bytes.first() == Some(&super::observe_completion::COMPLETED_OBSERVE_EFFECT_VERSION) {
+        let (record, _) = super::observe_completion::decode_completed_observe_effect_v1(bytes)?;
+        return Ok(DecodedEffectWithExtensions { record,
+            #[cfg(target_os = "linux")]
+            q04: None,
+        });
+    }
     if bytes.len() < 18
         || !matches!(
             bytes[0],
@@ -766,14 +823,13 @@ fn decode_effect_with_extensions(
     #[cfg(target_os = "linux")]
     let q04 = if bytes[0] == CONTROLLER_Q04_EFFECT_VERSION {
         require_q04_effect_shape(&record)?;
-        Some(
-            crate::domain_ledger::create_q04_history::Q04EffectSubgateV1::decode(
-                &bytes[metadata_end..],
-            )
-            .map_err(|_| {
-                EffectHistoryDataError::CorruptLedger("invalid Q04 policy-subgate record")
-            })?,
-        )
+        let gate = crate::domain_ledger::create_q04_history::Q04EffectSubgateV1::decode(
+            &bytes[metadata_end..],
+        ).map_err(|_| {
+            EffectHistoryDataError::CorruptLedger("invalid Q04 policy-subgate record")
+        })?;
+        require_q04_terminal_gate(&record, &gate)?;
+        Some(gate)
     } else {
         None
     };

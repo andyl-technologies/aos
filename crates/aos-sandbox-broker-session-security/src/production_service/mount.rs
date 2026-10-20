@@ -25,7 +25,7 @@ pub struct ProductionMountBrokerOwnersV1<'owners> {
 /// Source's independent initial entry chain, lower unreturned prefixes and
 /// allocation funding remain separate functional bounds.
 pub struct ProductionOriginalMountCycleV1 {
-    startup: Option<aos_sandbox::mount_manager_startup::SelectedMountStartupV2>,
+    startup: Option<aos_sandbox_mount_native::mount_manager_startup::SelectedMountStartupV2>,
     receipt: crate::ProductionOriginalMountReceiptV1,
     root: crate::ProductionSelectedRootMountSourceProviderV1,
     publication: Option<Vec<u8>>,
@@ -60,7 +60,7 @@ impl std::fmt::Debug for ProductionOriginalMountCycleV1 {
 /// Lends an original cycle's genuine first returned cause without recovery.
 pub enum ProductionOriginalMountCycleFailureV1<'owner> {
     /// The same admitted startup owner retains the genuine kernel/image cause.
-    Startup(aos_sandbox::mount_manager_startup::SelectedMountStartupFailureRefV2<'owner>),
+    Startup(aos_sandbox_mount_native::mount_manager_startup::SelectedMountStartupFailureRefV2<'owner>),
     /// The fixed Root opening, Session or delivered catalog failed.
     Root(crate::ProductionSelectedRootMountSourceProviderFailureV1<'owner>),
     /// The original Mount receipt or signed-domain admission failed.
@@ -108,7 +108,7 @@ impl ProductionOriginalMountCycleV1 {
     pub fn with_selected_startup(
         session: DormantAuthenticatedBrokerSessionV1,
         deadline: u64,
-        startup: aos_sandbox::mount_manager_startup::SelectedMountStartupV2,
+        startup: aos_sandbox_mount_native::mount_manager_startup::SelectedMountStartupV2,
     ) -> Self {
         Self {
             startup: Some(startup),
@@ -677,4 +677,3 @@ impl Drop for ProductionOriginalMountCycleV1 {
         self.end();
     }
 }
-

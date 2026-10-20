@@ -64,6 +64,10 @@ pub enum ProductionBrokerServiceErrorV1 {
 mod mount;
 mod nix_generation;
 mod storage_output;
+mod storage_prepare;
+mod storage_session;
+pub use storage_session::{ProductionOriginalStorageConnectionV1, ProductionOriginalStorageLifecycleSessionV1, StorageSessionContinuationClosedV1};
+pub(crate) use storage_session::ProductionStorageExecutionAvailabilityOriginalV2;
 
 pub use mount::{
     ProductionMountBrokerOwnersV1, ProductionOriginalMountCycleFailureV1,
@@ -71,6 +75,10 @@ pub use mount::{
 };
 pub use nix_generation::ProductionOriginalNixGenerationCycleV1;
 pub use storage_output::ProductionOriginalStorageOutputCycleV1;
+pub(crate) use storage_output::StorageOutputLifecycleOriginalV1;
+pub use storage_prepare::{
+    ProductionOriginalStoragePrepareCycleV1, ProductionStorageSessionContinuationV1, StoragePrepareCycleClosedV1,
+};
 
 impl DormantAuthenticatedBrokerSessionV1 {
     /// Receives and completes one Storage request or exact replay.
@@ -87,23 +95,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let (session, event) = self.receive_production_request(deadline_boottime_nanoseconds)?;
         session
             .complete_storage_request_event(event, storage, deadline_boottime_nanoseconds)
-            .map_err(Into::into)
-    }
-
-    /// Receives and completes one Network request or exact replay.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error after consuming the session when any receive,
-    /// admission, Network effect, recovery, commit, or response step fails.
-    pub fn serve_production_network_request(
-        self,
-        network: &mut dyn aos_sandbox_network::DormantNetworkBrokerCallsiteV1,
-        deadline_boottime_nanoseconds: u64,
-    ) -> Result<Self, ProductionBrokerServiceErrorV1> {
-        let (session, event) = self.receive_production_request(deadline_boottime_nanoseconds)?;
-        session
-            .complete_network_request_event(event, network, deadline_boottime_nanoseconds)
             .map_err(Into::into)
     }
 

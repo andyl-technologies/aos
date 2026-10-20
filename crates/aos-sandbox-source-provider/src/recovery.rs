@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox::ProtectedJournalAuthority;
+use aos_sandbox_source::provider_journal::ProtectedJournalAuthority;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     SignedSourceExportLeaseV1, SignedSourceProviderHelloV1, SignedSourceProviderInventoryV1,
@@ -72,7 +72,7 @@ pub enum ProviderRecoveryObservationV1 {
 pub struct RecoveryAcquireNotAppliedV1 {
     pub(crate) acquisition_id: ObjectDigest,
     pub(crate) effect_id: [u8; 16],
-    pub(crate) snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    pub(crate) snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
 }
 
 impl core::fmt::Debug for RecoveryAcquireNotAppliedV1 {
@@ -85,7 +85,7 @@ impl core::fmt::Debug for RecoveryAcquireNotAppliedV1 {
 pub struct RecoveryReleaseStillPresentV1 {
     pub(crate) acquisition_id: ObjectDigest,
     pub(crate) effect_id: [u8; 16],
-    pub(crate) snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    pub(crate) snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
 }
 
 impl core::fmt::Debug for RecoveryReleaseStillPresentV1 {

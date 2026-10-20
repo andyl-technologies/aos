@@ -256,7 +256,7 @@ fn require_startup_digest(profile: OnlineFloorProfileV1, path: &Path)
     let parent = path.parent().ok_or(FloorErrorV1::Provisioning)?;
     let name = path.file_name().and_then(|name| name.to_str())
         .ok_or(FloorErrorV1::Provisioning)?;
-    let bytes = aos_sandbox::immutable_image::read_immutable_image_pin_v1(
+    let bytes = aos_sandbox_broker::immutable_image::read_immutable_image_pin_v1(
         parent, name, 1, 1_048_576,
     ).map_err(|_| FloorErrorV1::Unavailable)?;
     if <[u8; 32]>::from(Sha256::digest(&bytes)) != profile.startup_digest() {

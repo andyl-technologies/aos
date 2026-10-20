@@ -14,7 +14,7 @@ use crate::local_inventory::assignment::{NodeAssignmentObservationV1, VerifiedGu
 use crate::local_inventory::journal::{
     JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJournalRecordV1,
 };
-use crate::local_inventory::placement_input::InvalidPlacementInput;
+use aos_sandbox_core::InvalidPlacementInput;
 
 /// Records the controller-observed node for one affinity dependency.
 #[derive(Clone, Debug, Eq, PartialEq)]

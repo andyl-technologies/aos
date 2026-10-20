@@ -47,6 +47,8 @@ use super::{
 #[cfg(test)]
 mod tests;
 
+mod operator_recover;
+
 /// Runs the original consuming worker frame through the sole borrowed loop.
 pub(super) fn controller_worker(
     mut controller: ProductionController,
@@ -69,6 +71,10 @@ pub(super) fn controller_worker(
         ControllerWorkerLoanV1 {
             controller: &mut controller,
             profile: normal_root_profile.as_deref(),
+            profile_original: normal_root_profile.as_ref(),
+            resource_bank: None,
+            shared_runtime: None,
+            foundations: None,
             node: node_id,
             ownership: ownership.as_ref(),
             attach: attach_credentials.as_ref(),
@@ -78,6 +84,7 @@ pub(super) fn controller_worker(
             publisher: publisher_registration.as_mut(),
             cache_bootstrap: None,
             git_coverage_enabled: false,
+            operator_recover_only: false,
             git_read: None,
             capabilities: &capabilities,
             sessions: &sessions,
@@ -109,9 +116,22 @@ fn controller_worker_loop(
     loan: ControllerWorkerLoanV1<'_>,
     custody: Option<&ControllerWorkerCustodyV1>,
 ) {
+    let loan = if loan.operator_recover_only {
+        match operator_recover::run(loan, custody) {
+            Some(loan) => loan,
+            None => return,
+        }
+    } else {
+        loan
+    };
+
     let ControllerWorkerLoanV1 {
         controller,
         profile: normal_root_profile,
+        profile_original,
+        resource_bank,
+        shared_runtime,
+        foundations,
         node: node_id,
         ownership,
         attach: attach_credentials,
@@ -121,12 +141,29 @@ fn controller_worker_loop(
         publisher: mut publisher_registration,
         mut cache_bootstrap,
         git_coverage_enabled,
+        operator_recover_only: _,
         mut git_read,
         capabilities,
         sessions,
         commands,
         events,
     } = loan;
+    if let Some(terminal) = custody {
+        let (Some(bank), Some(profile), Some(runtime), Some(foundations)) =
+            (resource_bank, profile_original, shared_runtime, foundations) else {
+            terminal.terminate(ControllerResidentCauseV1::Closed(
+                "selected initial Sessions require the same original bank/profile",
+            ));
+        };
+        let Ok(mut actual_sessions) = sessions.lock() else {
+            terminal.terminate(ControllerResidentCauseV1::Closed("initial Session lock poisoned"));
+        };
+        if super::initial_broker_sessions::install_original_context_v1(
+            &mut actual_sessions, bank, profile, runtime, foundations, controller,
+        ).is_err() {
+            terminal.terminate(ControllerResidentCauseV1::Closed("initial Session context refused"));
+        }
+    }
     #[cfg(target_os = "linux")]
     let mut coverage = if git_coverage_enabled {
         let (Some(profile), Some(bootstrap), Some(terminal)) =
@@ -208,6 +245,7 @@ fn controller_worker_loop(
                 sessions,
                 !ready,
                 guest_root_pins,
+                ownership,
                 attach_plan_signer,
             ) {
                 Ok(catalog) => {
@@ -294,7 +332,9 @@ fn controller_worker_loop(
             return;
         }
         if let Some(owner) = publisher_registration.as_mut() {
-            if let Err(message) = owner.try_register(controller) {
+            if let Err(message) = owner.try_register_with_custody(
+                controller, resource_bank, profile_original,
+            ) {
                 report_controller_worker_failure(
                     events,
                     custody,
@@ -359,6 +399,7 @@ fn controller_worker_loop(
                     NodeId::from_bytes(node_id),
                     sessions,
                     command,
+                    None,
                 ) {
                     report_controller_worker_failure(
                         events,
@@ -389,13 +430,38 @@ fn run_controller_cycle(
     sessions: &SharedControllerBrokerSessions,
     cold_start: bool,
     guest_root_pins: Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>,
+    ownership: Option<&ControllerOwnershipConfigurationV1>,
     guest_root_signer: Option<&ControllerBrokerPlanSignerV1>,
 ) -> Result<CatalogStatus, CycleFailure> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut actual = sessions.lock()
+            .map_err(|_| CycleFailure::Fatal("broker session lock is poisoned".to_owned()))?;
+        if actual.initial_context.is_some() {
+            ensure_controller_broker_sessions(controller, node_id, &mut actual)?;
+            if cold_start {
+                return super::catalog_maintenance::observe_cold_once_v2(controller, &mut actual);
+            }
+            // Real signed refresh models select the actual no-effect or
+            // required31 continuation under the same M. The existing worker
+            // lends its fixed ownership verifier and plan signer directly.
+            return super::catalog_maintenance::observe_refresh_once_v2(
+                controller, &mut actual, guest_root_pins, ownership, guest_root_signer,
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    if cold_start {
+        controller.coordinate_cold_create_stopped_observer_once_v1()
+            .map_err(|cause| CycleFailure::Fatal(cause.to_string()))?;
+    }
+
     let pending_snapshot = {
         let mut sessions = sessions
             .lock()
             .map_err(|_| CycleFailure::Fatal("broker session lock is poisoned".to_owned()))?;
-        ensure_controller_broker_sessions(node_id, &mut sessions)?;
+        ensure_controller_broker_sessions(controller, node_id, &mut sessions)?;
         if let Some(reservation) = resume_pending_guest_root(&mut sessions)? {
             let storage = authenticated_storage_inventory(controller, node_id, &mut sessions)?;
             if !controller
@@ -453,8 +519,14 @@ fn run_controller_cycle(
         |(controller, _)| {
             controller
                 .reconcile_quantum()
-                .map(|_| ())
-                .map_err(|error| CycleFailure::Fatal(error.to_string()))
+                .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+            // Run outside the Session mutex on the same serial Controller
+            // worker. No queued public read can render an intermediate terminal
+            // projection before the actual purpose18/Source/native tail closes.
+            #[cfg(target_os = "linux")]
+            controller.observe_current_executions_v4()
+                .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+            Ok(())
         },
         |(controller, sessions)| {
             let mut sessions = sessions
@@ -575,6 +647,7 @@ fn pending_first_reconciliation_cycle<State, Pending, Status, Error>(
 }
 
 fn ensure_controller_broker_sessions(
+    controller: &mut ProductionController,
     node_id: [u8; 16],
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<(), CycleFailure> {
@@ -638,18 +711,34 @@ fn ensure_controller_broker_sessions(
     {
         sessions.host = None;
     }
+    // Required Storage depends on its own node/profile/image and cold Source
+    // proof, not a Host or Mount Session. Acquire it before those unrelated
+    // held owners so its failed native prefix cannot coexist with their new
+    // initial Session anchors. The canonical role roster is unchanged.
+    if sessions.initial_context.is_some() && sessions.storage.is_none() {
+        let session = super::initial_broker_sessions::connect_once_v1(
+            sessions, aos_sandbox::ControllerInitialBrokerSessionRoleV1::Storage, node_id, controller,
+        )?;
+        sessions.storage = Some(
+            crate::DormantStorageLifecycleInventoryOwnerV1::from_protected_session(session),
+        );
+    }
     if sessions.host.is_none() {
-        sessions.host = Some(ControllerHostPublication::new(connect_controller_session(
+        sessions.host = Some(ControllerHostPublication::new(connect_worker_controller_session_v1(
             crate::ProtectedBrokerSessionFixedEndpointV1::ControllerHostClient,
             node_id,
+            sessions,
+                    controller,
         )?));
     }
     if sessions.mount.is_none() {
         sessions.mount = Some(
             crate::DormantMountLifecycleInventoryOwnerV1::from_protected_session(
-                connect_controller_session(
+                connect_worker_controller_session_v1(
                     crate::ProtectedBrokerSessionFixedEndpointV1::ControllerMountClient,
                     node_id,
+                    sessions,
+                    controller,
                 )?,
             ),
         );
@@ -692,9 +781,11 @@ fn ensure_controller_broker_sessions(
     if sessions.network.is_none() {
         sessions.network = Some(
             crate::DormantNetworkLifecycleInventoryOwnerV1::from_protected_session(
-                connect_controller_session(
+                connect_worker_controller_session_v1(
                     crate::ProtectedBrokerSessionFixedEndpointV1::ControllerNetworkClient,
                     node_id,
+                    sessions,
+                    controller,
                 )?,
             ),
         );
@@ -746,6 +837,27 @@ fn connect_retained_controller_storage(
 /// # Errors
 ///
 /// Returns the original protected handshake or node-validation classification.
+fn connect_worker_controller_session_v1(
+    endpoint: crate::ProtectedBrokerSessionFixedEndpointV1,
+    node_id: [u8; 16],
+    sessions: &mut ControllerBrokerSessions,
+    controller: &mut ProductionController,
+) -> Result<crate::DormantAuthenticatedBrokerSessionV1, CycleFailure> {
+    if sessions.initial_context.is_some() {
+        use aos_sandbox::ControllerInitialBrokerSessionRoleV1 as Role;
+        use crate::ProtectedBrokerSessionFixedEndpointV1 as Endpoint;
+        let role = match endpoint {
+            Endpoint::ControllerHostClient => Role::Host,
+            Endpoint::ControllerMountClient => Role::Mount,
+            Endpoint::ControllerStorageClient => Role::Storage,
+            Endpoint::ControllerNetworkClient => Role::Network,
+            _ => return Err(CycleFailure::Fatal("unsupported initial Controller endpoint".to_owned())),
+        };
+        return super::initial_broker_sessions::connect_once_v1(sessions, role, node_id, controller);
+    }
+    connect_controller_session(endpoint, node_id)
+}
+
 pub(super) fn connect_controller_session(
     endpoint: crate::ProtectedBrokerSessionFixedEndpointV1,
     node_id: [u8; 16],
@@ -930,10 +1042,12 @@ fn publish_pending(
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<CatalogStatus, CycleFailure> {
     if sessions.host.is_none() {
-        let session = connect_controller_session(
+        let session = connect_worker_controller_session_v1(
             crate::ProtectedBrokerSessionFixedEndpointV1::ControllerHostClient,
             node_id,
-        )?;
+            sessions,
+            controller,
+            )?;
         sessions.host = Some(ControllerHostPublication::new(session));
     }
     let publisher = sessions
@@ -969,10 +1083,12 @@ fn authenticated_mount_inventories(
     CycleFailure,
 > {
     if sessions.mount.is_none() {
-        let session = connect_controller_session(
+        let session = connect_worker_controller_session_v1(
             crate::ProtectedBrokerSessionFixedEndpointV1::ControllerMountClient,
             node_id,
-        )?;
+            sessions,
+            controller,
+            )?;
         sessions.mount =
             Some(crate::DormantMountLifecycleInventoryOwnerV1::from_protected_session(session));
     }
@@ -1008,10 +1124,12 @@ fn authenticated_storage_inventory(
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<aos_sandbox::DurableStorageResourceInventorySnapshotV1, CycleFailure> {
     if sessions.storage.is_none() {
-        let session = connect_controller_session(
+        let session = connect_worker_controller_session_v1(
             crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
             node_id,
-        )?;
+            sessions,
+            controller,
+            )?;
         sessions.storage =
             Some(crate::DormantStorageLifecycleInventoryOwnerV1::from_protected_session(session));
     }
@@ -1036,10 +1154,12 @@ fn authenticated_network_inventory(
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<aos_sandbox::DurableNetworkResourceInventorySnapshotV1, CycleFailure> {
     if sessions.network.is_none() {
-        let session = connect_controller_session(
+        let session = connect_worker_controller_session_v1(
             crate::ProtectedBrokerSessionFixedEndpointV1::ControllerNetworkClient,
             node_id,
-        )?;
+            sessions,
+            controller,
+            )?;
         sessions.network =
             Some(crate::DormantNetworkLifecycleInventoryOwnerV1::from_protected_session(session));
     }
@@ -1097,7 +1217,14 @@ fn classify_protected_handshake_error(
         HandshakeError::EndpointRole
         | HandshakeError::Protected(_)
         | HandshakeError::RemoteInvalid
-        | HandshakeError::KernelEvidence => false,
+        | HandshakeError::KernelEvidence
+        // Selected native flights keep their actual failed/uncertain owners.
+        // A new cycle must not turn those outcomes into another handshake.
+        | HandshakeError::RetainedReceive(_)
+        | HandshakeError::RetainedSend(_)
+        | HandshakeError::RecordBinding(_)
+        | HandshakeError::StoragePreparation(_)
+        | HandshakeError::SelectedSend(_) => false,
     };
     classified_failure(retryable, error)
 }
@@ -1146,7 +1273,8 @@ fn classify_publication_error(error: HostCatalogPublicationError) -> CycleFailur
         | HostCatalogPublicationError::ReceiptMismatch
         | HostCatalogPublicationError::Protocol(_)
         | HostCatalogPublicationError::CatalogFile(_)
-        | HostCatalogPublicationError::Io(_) => false,
+        | HostCatalogPublicationError::Io(_)
+        | HostCatalogPublicationError::Immutable(_) => false,
     };
 
     classified_failure(retryable, error)
@@ -1193,9 +1321,9 @@ fn classified_failure(error_is_retryable: bool, error: impl ToString) -> CycleFa
 }
 
 #[derive(Clone, Copy)]
-struct CatalogStatus {
-    generation: u64,
-    digest: ObjectDigest,
+pub(super) struct CatalogStatus {
+    pub(super) generation: u64,
+    pub(super) digest: ObjectDigest,
 }
 
 /// Classifies the original reconciliation refusal without granting readiness.
@@ -1207,6 +1335,7 @@ pub(super) enum CycleFailure {
 /// Carries the original worker readiness or negative terminal notification.
 pub(super) enum WorkerEvent {
     Ready,
+    RecoveryListening,
     Fatal(String),
     ResidentFailure,
 }

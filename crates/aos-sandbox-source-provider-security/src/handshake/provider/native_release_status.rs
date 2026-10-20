@@ -21,8 +21,8 @@ impl super::CurrentProviderIngressSessionV1 {
     #[doc(hidden)]
     pub fn authorize_original_native_release_status_v1(
         &mut self,
-        writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
-        readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+        writer: &aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+        readback: &aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
         current: &super::CurrentProviderRequestV1,
         destination: &mut Option<Result<super::ProviderOutcomeAuthorizationV1, super::OriginalNativeSigningErrorV5>>,
     ) -> Result<(), SourceProviderSecurityError> {
@@ -47,7 +47,7 @@ impl super::CurrentProviderIngressSessionV1 {
             let mut attempt = None;
             let mut sequence = None;
             for ((namespace, key), value) in readback.rows() {
-                if *namespace != aos_sandbox::RecordNamespace::SourceProviderAuthority {
+                if *namespace != aos_sandbox_core::RecordNamespace::SourceProviderAuthority {
                     continue;
                 }
                 match aos_sandbox_source_provider_ledger::ledger::format::decode_record(key, value)
@@ -86,10 +86,10 @@ impl super::CurrentProviderIngressSessionV1 {
 // full graph before the exact suffix join; no public raw-binding/reservation
 // conversion to a sealed builder exists.
 pub(super) fn exact_reservation(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     records: &[(Vec<u8>, Vec<u8>)],
     authorization: &super::super::ProviderOutcomeAuthorizationV1,
-) -> Result<aos_sandbox::GlobalCapacityReservationV1, SourceProviderSecurityError> {
+) -> Result<aos_sandbox_source::provider_journal::GlobalCapacityReservationV1, SourceProviderSecurityError> {
     aos_sandbox_source_provider_ledger::validate_prospective_records(
         records
             .iter()
@@ -182,9 +182,9 @@ pub(super) fn exact_reservation(
         session,
     )
     .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-    let expected = aos_sandbox::GlobalCapacityReservationRequestV1 {
-        purpose: aos_sandbox::GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
-        owner_namespace: aos_sandbox::RecordNamespace::SourceProviderAuthority,
+    let expected = aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationRequestV1 {
+        purpose: aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
+        owner_namespace: aos_sandbox_core::RecordNamespace::SourceProviderAuthority,
         owner_id: binding.owner_id,
         owner_digest: *binding.owner_digest.as_bytes(),
         operation_id: binding.operation_id,
@@ -199,7 +199,7 @@ pub(super) fn exact_reservation(
     };
     let retained = journal
         .recover_unique_global_capacity_reservation_v1(
-            &aos_sandbox::GlobalCapacityReservationRecoveryBindingV1 {
+            &aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationRecoveryBindingV1 {
                 purpose: expected.purpose,
                 operation_id: expected.operation_id,
                 artifact_digest: expected.artifact_digest,

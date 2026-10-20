@@ -40,9 +40,16 @@ pub struct ValidatedNetworkInventory {
     journal_sequence: u64,
     catalog_generation: u64,
     networks: Vec<ValidatedNetworkNamespace>,
+    native_absence: Option<crate::fixed_service_inventory_absence::FixedServiceInventoryAbsenceDataV2>,
 }
 
 impl ValidatedNetworkInventory {
+    /// Borrows the checked native companion without granting service authority.
+    #[must_use]
+    pub const fn native_absence_v2(&self) -> Option<&crate::fixed_service_inventory_absence::FixedServiceInventoryAbsenceDataV2> {
+        self.native_absence.as_ref()
+    }
+
     /// Returns the current Linux boot identifier.
     #[must_use]
     pub const fn kernel_boot_id(&self) -> &[u8; 16] {
@@ -258,6 +265,17 @@ pub fn decode_network_resource_inventory_response(
     let broker_instance_id =
         exact_nonzero::<16>(&response.broker_instance_id, "broker_instance_id")?;
     let networks = validate_networks(&response.networks, kernel_boot_id)?;
+    let native_absence = if response.native_absence_v2.is_empty() {
+        None
+    } else {
+        let absence = crate::fixed_service_inventory_absence::FixedServiceInventoryAbsenceDataV2::decode_network_v2(
+            &response.native_absence_v2)?;
+        if !networks.is_empty() || absence.boot_v2() != &kernel_boot_id
+            || absence.recipient_invocation_v2() != &broker_instance_id {
+            return Err(ProtocolValidationError::InvalidField("Network native absence binding"));
+        }
+        Some(absence)
+    };
 
     Ok(ValidatedNetworkInventory {
         kernel_boot_id,
@@ -265,6 +283,7 @@ pub fn decode_network_resource_inventory_response(
         journal_sequence: response.journal_sequence,
         catalog_generation: response.catalog_generation,
         networks,
+        native_absence,
     })
 }
 
@@ -406,6 +425,37 @@ mod tests {
     use aos_proto::aos::sandbox::local::v1::{AssignmentFence, Audience};
 
     use super::*;
+
+    #[test]
+    fn native_absence_requires_an_empty_same_boot_same_recipient_snapshot() {
+        use crate::fixed_service_inventory_absence::FixedServiceInventoryAbsenceDataV2 as Absence;
+
+        let mut snapshot = InventoryNetworkResourcesResponse::decode_from_slice(&response(vec![])).unwrap();
+        let no_companion = decode_network_resource_inventory_response(
+            &snapshot.encode_to_vec(), MAXIMUM_RESPONSE_BYTES).unwrap();
+        assert!(no_companion.native_absence_v2().is_none());
+        let boot: [u8; 16] = snapshot.kernel_boot_id.as_slice().try_into().unwrap();
+        let invocation: [u8; 16] = snapshot.broker_instance_id.as_slice().try_into().unwrap();
+        let companion = Absence::from_network_native_data_v2(
+            [1; 16], boot, invocation, 3, 5, (7, 11, 13)).unwrap();
+        snapshot.native_absence_v2 = companion.encode_v2().to_vec();
+
+        let complete = decode_network_resource_inventory_response(
+            &snapshot.encode_to_vec(), MAXIMUM_RESPONSE_BYTES).unwrap();
+
+        assert_eq!(complete.native_absence_v2(), Some(&companion));
+        snapshot.networks.push(network(1, NetworkState::NETWORK_STATE_DEFAULT_DROP));
+        assert!(decode_network_resource_inventory_response(
+            &snapshot.encode_to_vec(), MAXIMUM_RESPONSE_BYTES).is_err());
+        snapshot.networks.clear();
+        snapshot.broker_instance_id[0] ^= 1;
+        assert!(decode_network_resource_inventory_response(
+            &snapshot.encode_to_vec(), MAXIMUM_RESPONSE_BYTES).is_err());
+        snapshot.broker_instance_id[0] ^= 1;
+        snapshot.kernel_boot_id[0] ^= 1;
+        assert!(decode_network_resource_inventory_response(
+            &snapshot.encode_to_vec(), MAXIMUM_RESPONSE_BYTES).is_err());
+    }
 
     fn network(handle: u8, state: NetworkState) -> NetworkNamespaceInventoryRecord {
         let (lease_generation, fail_stop_boottime_nanoseconds) = match state {

@@ -21,10 +21,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use aos_sandbox::{
-    Journal, JournalLimits, JournalRecord, JournalTransaction, ProtectedJournalPreflight,
-    RecordNamespace,
-};
+use aos_sandbox_source::provider_journal::SourceProviderJournalV1 as Journal;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalLimits;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction;
+use aos_sandbox_source::provider_journal::ProtectedJournalPreflight;
+use aos_sandbox_core::RecordNamespace;
 use aos_sandbox_core::ObjectDigest;
 use rustix::rand::GetRandomFlags;
 use sha2::{Digest as _, Sha256};
@@ -165,7 +167,7 @@ impl ProtectedZfsHoldChallengesV1 {
     /// Lends actual uncompacted history only after the existing codec validates it.
     pub(crate) fn original_history_v5(
         &mut self,
-    ) -> Result<aos_sandbox::journal::SourceOriginalChallengeHistoryViewV5<'_>, ProviderLedgerError> {
+    ) -> Result<aos_sandbox_source::provider_journal::SourceOriginalChallengeHistoryViewV5<'_>, ProviderLedgerError> {
         let (_, current) = self.validate_records()?;
         let history = self.journal.source_original_challenge_history_v5()?;
         validate_original_history_v5(&history, &current)?;
@@ -328,7 +330,7 @@ impl ProtectedZfsHoldChallengesV1 {
     pub(crate) fn commit_original_requested_v5(
         &mut self,
         source: &mut Journal,
-        requested: &aos_sandbox::journal::OriginalSourceProtectedReadbackV5,
+        requested: &aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
         signed: &aos_sandbox_source_provider_protocol::SignedStorageNativeAcquireRequestV2,
         staged: &mut StagedZfsHoldChallengeV1,
     ) -> Result<(), ProviderLedgerError> {
@@ -674,7 +676,7 @@ impl ProtectedZfsHoldChallengesV1 {
 }
 
 fn validate_original_history_v5(
-    history: &aos_sandbox::journal::SourceOriginalChallengeHistoryViewV5<'_>,
+    history: &aos_sandbox_source::provider_journal::SourceOriginalChallengeHistoryViewV5<'_>,
     current: &ChallengeAttemptIndexV1,
 ) -> Result<(), ProviderLedgerError> {
     validate_original_checkpoint_rows_v5(
@@ -1292,7 +1294,7 @@ fn digest(bytes: &[u8], start: usize) -> Result<ObjectDigest, ProviderLedgerErro
 }
 
 fn commit(
-    authority: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
+    authority: &mut aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     location: ChallengeJournalLocationV1,
     key: Vec<u8>,
     value: Vec<u8>,
@@ -1324,12 +1326,12 @@ fn challenge_transaction(
             key,
             value,
         )],
-    ).map_err(aos_sandbox::JournalError::from)?)
+    ).map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?)
 }
 
 fn validate_location(
     location: ChallengeJournalLocationV1,
-    authority: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    authority: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
 ) -> Result<(), ProviderLedgerError> {
     match location {
         ChallengeJournalLocationV1::Fixed => {

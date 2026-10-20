@@ -126,6 +126,10 @@ pub(super) fn apply_create_view(
         },
     )
     .map_err(permanent)?;
+    // Only the actual hash-verified canonical View reveals its typed source
+    // owner. Refuse new ownership use before encoding or committing a revision;
+    // the request descriptor and endpoint kind cannot supply that identity.
+    journal.require_view_source_live_v2(context.project(), view.source()).map_err(permanent)?;
     let mutation = FilesystemViewRevisionMutationV1::new(
         FilesystemViewRevisionPresenceV1::Available,
         view_id,

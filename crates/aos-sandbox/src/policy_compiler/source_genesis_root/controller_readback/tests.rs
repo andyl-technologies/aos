@@ -1,11 +1,14 @@
 //! Closed signature kinds; these packet fixtures create no held owner authority.
 
+use aos_sandbox_policy::controller_readback::{
+    PinnedControllerHoldSignerV1, encode_controller_hold_signer_credential_v1,
+};
+
 use aos_sandbox_core::ProjectId;
 
 use super::*;
 use crate::JournalLimits;
 use crate::hierarchy::source_genesis::tests as source_fixture;
-use crate::policy_compiler::encode_controller_hold_signer_credential_v1;
 
 fn signed_packet(kind: u8, key: &SigningKey) -> [u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1] {
     let directory = source_fixture::directory();
@@ -38,8 +41,12 @@ fn resign(packet: &mut [u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], key: &
 #[test]
 fn historical_recovery_and_final_completion_are_distinct_signed_kinds() {
     let key = SigningKey::from_bytes(&[80; 32]);
-    let credential = encode_controller_hold_signer_credential_v1(7, &key.verifying_key()).unwrap();
-    let pin = PinnedControllerHoldSignerV1::decode(&credential).unwrap();
+    let credential = encode_controller_hold_signer_credential_v1(7, &key.verifying_key())
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+        .unwrap();
+    let pin = PinnedControllerHoldSignerV1::decode(&credential)
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+        .unwrap();
 
     let historical = verify(&signed_packet(1, &key), &pin, [9; 16], 811, 812).unwrap();
     assert!(historical.historical);
@@ -57,8 +64,12 @@ fn historical_recovery_and_final_completion_are_distinct_signed_kinds() {
 #[test]
 fn final_kind_rejects_unsigned_promotion_unknown_kind_and_empty_instance() {
     let key = SigningKey::from_bytes(&[80; 32]);
-    let credential = encode_controller_hold_signer_credential_v1(7, &key.verifying_key()).unwrap();
-    let pin = PinnedControllerHoldSignerV1::decode(&credential).unwrap();
+    let credential = encode_controller_hold_signer_credential_v1(7, &key.verifying_key())
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+        .unwrap();
+    let pin = PinnedControllerHoldSignerV1::decode(&credential)
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+        .unwrap();
     let mut promoted = signed_packet(1, &key);
     promoted[10] = 3;
     assert!(verify(&promoted, &pin, [9; 16], 811, 812).is_err());

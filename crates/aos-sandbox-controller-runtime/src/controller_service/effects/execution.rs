@@ -25,6 +25,285 @@ fn reject_unqualified_delete_effect(plan: &EffectPlan) -> Result<(), EffectFailu
 
 impl SingleNodeEffectExecutor for ProductionEffectExecutor {
     #[cfg(target_os = "linux")]
+    fn take_execution_no_apply_completion_v2(&mut self, _operation: OperationId)
+        -> Option<aos_sandbox::controller_execution_operation::ControllerExecutionNoApplyCompletionV2> {
+        // Core independently checks the token's operation, original writer,
+        // complete current C cut and exact terminal rows before accepting it.
+        execution_output_effect::take_no_apply_completion_v2(self)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn admit_original_delete_once_v4(
+        &mut self,
+        peer: &aos_sandbox::public_api_session::PublicApiPeer,
+        capability: aos_sandbox_core::CapabilityId,
+        handle: &[u8],
+        encoded: &[u8],
+        controller: &mut Journal,
+    ) -> Result<aos_sandbox::AcceptOutcome, aos_sandbox::ResourceReservationErrorV1> {
+        self.run_original_delete_once_v4(controller, peer, capability, handle, encoded)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn admit_original_execution_availability_once_v2(
+        &mut self,
+        controller: &mut Journal,
+        maximum_pending_operations: usize,
+    ) -> Result<aos_sandbox::AcceptOutcome, aos_sandbox::ResourceReservationErrorV1> {
+        crate::controller_service::execution_output_effect::
+            admit_public_availability_once_v2(self, controller, maximum_pending_operations)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn take_original_execution_public_custody_once_v2(
+        &mut self,
+        controller: &mut Journal,
+    ) -> Result<Option<aos_sandbox::controller_execution_operation::ControllerExecutionPublicCustodyTransferV2>,
+        aos_sandbox::ResourceReservationErrorV1>
+    {
+        crate::controller_service::execution_output_effect::take_public_custody_once_v2(self, controller)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn retain_original_execution_public_custody_v2(
+        &mut self,
+        custody: aos_sandbox::controller_execution_operation::ControllerExecutionRuntimeCustodyV2,
+    ) {
+        crate::controller_service::execution_output_effect::retain_public_custody_v2(self, custody)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn take_recovered_ordinary_sessions_once_v2(&mut self) -> Option<aos_sandbox_broker::controller_receiving::bank_launch::ControllerRecoveredOrdinarySessionsOriginalV2> {
+        if !matches!(self.recovered_sessions.as_ref(), Some(Ok(context))
+            if context.failure_v2().is_none())
+        {
+            return None;
+        }
+        match self.recovered_sessions.take() {
+            Some(Ok(context)) => Some(context),
+            failed => {
+                self.recovered_sessions = failed;
+                None
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn reconcile_first_local_after_recover_v2(&mut self, controller: &mut Journal,
+        original: &aos_sandbox::OperatorCreateRecoveryOriginalV1,
+    ) -> Result<(), aos_sandbox::OperatorCreateRecoveryClosedV1> {
+        self.reconcile_first_local_after_recover_once_v2(controller, original)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn observe_current_executions_v4(&mut self, controller: &mut Journal)
+        -> Result<(), EffectFailure>
+    {
+        crate::controller_service::execution_output_effect::observe_periodic_v4(self, controller)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn observe_operator_create_recovery_sources_v1(&mut self, controller: &mut Journal,
+        original: &mut aos_sandbox::OperatorCreateRecoveryOriginalV1,
+    ) -> Result<(), aos_sandbox::OperatorCreateRecoveryClosedV1> {
+        self.observe_recover_sources_once_v1(controller, original)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn finish_operator_create_recovery_after_native_v1(&mut self, controller: &Journal,
+        original: &mut aos_sandbox::OperatorCreateRecoveryOriginalV1,
+    ) -> Result<(), aos_sandbox::OperatorCreateRecoveryClosedV1> {
+        self.finish_recover_source_after_native_v1(controller, original)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn complete_operator_cleanup_recovery_v2(&mut self, controller: &mut Journal,
+        original: &mut aos_sandbox::OperatorCreateRecoveryOriginalV1,
+        purpose: aos_sandbox_protocol::domain_ledger::public_operation::PublicRecoveryKindV1,
+    ) -> Result<aos_sandbox::OperatorCleanupRecoveryCompletionV2, aos_sandbox::OperatorCreateRecoveryClosedV1> {
+        self.complete_recover_cleanup_after_native_v2(controller, original, purpose)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn begin_catalog_maintenance_once_v2(&mut self, controller: &mut Journal,
+        original: &mut aos_sandbox::CatalogMaintenanceOriginalV2,
+        bank: &Arc<Mutex<aos_sandbox::ControllerResourceBankOpeningV1>>,
+        profile: &Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>,
+        runtime: &Arc<tokio::runtime::Runtime>, shape: aos_sandbox::CatalogMaintenanceSdkShapeDataV2,
+    ) -> Result<(), aos_sandbox::CatalogMaintenanceClosedV2> {
+        if !self.resource_bank.as_ref().is_some_and(|actual| Arc::ptr_eq(actual, bank))
+            || !self.execution_profile.as_ref().is_some_and(|actual| Arc::ptr_eq(actual, profile)) {
+            return Err(aos_sandbox::CatalogMaintenanceClosedV2);
+        }
+        original.begin_cold_with_sdk_shape_once_v2(bank, profile, runtime, controller, &mut self.source_domains, shape)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn begin_catalog_refresh_once_v2(&mut self, controller: &mut Journal,
+        original: &mut aos_sandbox::CatalogMaintenanceOriginalV2,
+        bank: &Arc<Mutex<aos_sandbox::ControllerResourceBankOpeningV1>>,
+        profile: &Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>,
+        runtime: &Arc<tokio::runtime::Runtime>, shape: aos_sandbox::CatalogMaintenanceSdkShapeDataV2,
+    ) -> Result<(), aos_sandbox::CatalogMaintenanceClosedV2> {
+        if !self.resource_bank.as_ref().is_some_and(|actual| Arc::ptr_eq(actual, bank))
+            || !self.execution_profile.as_ref().is_some_and(|actual| Arc::ptr_eq(actual, profile)) {
+            return Err(aos_sandbox::CatalogMaintenanceClosedV2);
+        }
+        original.begin_refresh_with_sdk_shape_once_v2(bank, profile, runtime, controller, &mut self.source_domains, shape)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn borrow_catalog_maintenance_source_v2<'source>(&'source mut self,
+        controller: &Journal, original: &mut aos_sandbox::CatalogMaintenanceOriginalV2,
+    ) -> Result<aos_sandbox::CatalogMaintenanceSourceBorrowV2<'source>, aos_sandbox::ResourceReservationErrorV1> {
+        self.source_domains.borrow_catalog_maintenance_source_v2(original, controller)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn finish_catalog_maintenance_once_v2(&mut self, controller: &mut Journal,
+        original: &mut aos_sandbox::CatalogMaintenanceOriginalV2,
+    ) {
+        original.finish_native_once_v2(controller, &mut self.source_domains)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn coordinate_cold_create_stopped_observer_once_v1(&mut self, journal: &mut Journal)
+        -> Result<(), aos_sandbox::journal::CreateStoppedColdObserverClosedV1> {
+        if matches!(self.cold_create_observer_result, Some(Err(_))) {
+            return Err(aos_sandbox::journal::CreateStoppedColdObserverClosedV1);
+        }
+        // This is the SAME actual Source retained during executor assembly.
+        // The native observer caches only no-Create startup and rechecks C
+        // health on discovery retries; it cannot adopt durable success.
+        self.cold_create_observer_result = Some(self.cold_create_observer.observe_once_v1(
+            journal, &mut self.source_domains,
+        ));
+        self.cold_create_observer_result.as_ref()
+            .map_or(Err(aos_sandbox::journal::CreateStoppedColdObserverClosedV1), |result| *result)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_original_start_entry_v1(&mut self,peer:&aos_sandbox::public_api_session::PublicApiPeer,
+        encoded:&[u8],controller:&mut Journal,
+    )->Result<Option<aos_sandbox::AcceptedStartEntryOriginalV1>,aos_sandbox::ResourceReservationErrorV1> {
+        self.prepare_start_entry_v1(peer,encoded,controller)
+    }
+
+    fn finish_original_start_entry_v1(&mut self,entry:&mut aos_sandbox::AcceptedStartEntryOriginalV1,
+        controller:&mut Journal,
+    ) {
+        let _=entry.finish_after_authorization_once_v1(controller,&mut self.source_domains);
+    }
+
+    fn admit_original_start_source_origin_v1(&mut self,entry:&mut aos_sandbox::AcceptedStartEntryOriginalV1,
+        controller:&mut Journal,
+    ) {
+        let _=entry.admit_start_source_origin_once_v1(controller,&mut self.source_domains);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn progress_original_lifecycle_stop_once_v4(&mut self, operation: OperationId,
+        controller: &mut Journal,
+    ) -> Option<Result<(), aos_sandbox::ResourceReservationErrorV1>> {
+        Some(self.progress_lifecycle_stop_once_v4(operation, controller))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn progress_original_start_once_v1(&mut self,operation:OperationId,controller:&mut Journal)
+        ->Option<Result<(),aos_sandbox::ResourceReservationErrorV1>> {
+        let entry=self.start_entry.as_mut()?;
+        if !entry.belongs_to_start_operation_v1(operation) {return None;}
+        if entry.failure().is_some() {return Some(Err(aos_sandbox::ResourceReservationErrorV1::Conflict));}
+        let returned=(|| {
+            let selected=self.q04.as_mut().ok_or(aos_sandbox::ResourceReservationErrorV1::Conflict)?;
+            let (intake,driver,_)=selected.provisioning_parts_v1()
+                .ok_or(aos_sandbox::ResourceReservationErrorV1::Conflict)?;
+            if entry.start_ownership_completed_v1() {
+                if let Ok(completed) = self.start_resources.completed_host_v2() {
+                    return entry.progress_completed_start_terminal_once_v2(
+                        completed, controller, &mut self.source_domains);
+                }
+                let signer=self.broker_plan_signer.as_ref()
+                    .ok_or(aos_sandbox::ResourceReservationErrorV1::Conflict)?;
+                return self.start_resources.progress_once_v2(
+                    entry,intake,driver,&self.create_provisioning,signer,
+                    controller,&self.source_domains,&self.sessions,
+                );
+            }
+            let parent = entry.historical_create_operation_data_v2()?;
+            let preparation = driver.completed_preparation_data_v1(intake, parent)
+                .map_err(|_| aos_sandbox::ResourceReservationErrorV1::Conflict)?;
+            let ready = driver.completed_ready_bytes_v1(intake, parent)
+                .map_err(|_| aos_sandbox::ResourceReservationErrorV1::Conflict)?;
+            entry.progress_start_ownership_once_v1(intake, controller, &mut self.source_domains,
+                ready, preparation.outcome()).map(|_| ())
+        })();
+        Some(returned)
+    }
+
+    fn retain_original_start_entry_v1(&mut self,entry:aos_sandbox::AcceptedStartEntryOriginalV1) {
+        if self.start_entry.is_some() {std::process::abort();}
+        self.start_entry=Some(entry);
+    }
+
+    fn prepare_original_publication_turn_v1(&mut self, operation: OperationId,
+        plan: &EffectPlan, journal: &mut Journal,
+    ) -> Result<Option<(aos_sandbox::OriginalPublicationActionV1,
+        aos_sandbox::CreateProvisioningOriginalsV1,
+        aos_sandbox::normal_root::RootStorageApplyClientOriginalV1)>, EffectFailure> {
+        self.prepare_original_provisioning_turn_v1(operation, plan, journal)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn retain_original_publication_turn_v1(&mut self,
+        action: aos_sandbox::OriginalPublicationActionV1,
+        original: aos_sandbox::CreateProvisioningOriginalsV1,
+        root: aos_sandbox::normal_root::RootStorageApplyClientOriginalV1,
+        returned: Result<(), aos_sandbox::OriginalPublicationActionClosedV1>,
+    ) {
+        self.create_provisioning.retain_core_v1(action, original, root, returned);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn observe_original_provisioning_authority_v1(&mut self, operation: OperationId,
+        step: u32, prepared: &PreparedAuthorityEffectV1, journal: &mut Journal,
+    ) -> Option<Result<aos_sandbox::reconciler::AuthorityEffectObservationV1, EffectFailure>> {
+        Some(self.create_provisioning.observe_storage_once_v1(operation, step, prepared, journal))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_original_provisioning_authority_v1(&mut self, operation: OperationId,
+        step: u32, prepared: &PreparedAuthorityEffectV1, journal: &mut Journal,
+    ) -> Option<Result<aos_sandbox::reconciler::ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
+        Some(self.apply_original_provisioning_storage_v1(operation, step, prepared, journal))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn original_provisioning_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.start_entry.as_ref().and_then(|entry|self.start_resources.failure_with_entry_v2(entry))
+            .or_else(||self.start_entry.as_ref().and_then(|entry|entry.failure()))
+            .or_else(||self.start_entry_preparation.as_ref().and_then(|value|value.as_ref().err()).map(|cause|cause as _))
+            .or_else(||self.create_provisioning.failure())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn fmt_original_provisioning_failure_v1(&self,
+        formatter: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        if let Some(entry)=self.start_entry.as_ref()
+            .filter(|entry|self.start_resources.failure_with_entry_v2(entry).is_some()) {
+            return self.start_resources.fmt_failure_with_entry_v2(entry,formatter);
+        }
+        if let Some(entry)=self.start_entry.as_ref().filter(|entry|entry.failure().is_some()) {
+            return entry.fmt_failure_v1(formatter);
+        }
+        if let Some(Err(cause))=self.start_entry_preparation.as_ref() {
+            return std::fmt::Display::fmt(cause,formatter);
+        }
+        self.create_provisioning.fmt_failure_v1(formatter)
+    }
+
+    #[cfg(target_os = "linux")]
     fn run_existing_git_coverage_read_metadata_v1(
         &mut self,
         journal: &mut Journal,
@@ -47,8 +326,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         &mut self,
         journal: &mut Journal,
         original_inputs: &mut aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1,
-        original_bootstrap: &aos_sandbox::publisher_policy::GitUploadBootstrapAppendV1,
-        original_source: &aos_sandbox::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_bootstrap: &aos_sandbox::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        original_source: &aos_sandbox::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut aos_sandbox::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut aos_sandbox::policy_compiler::GitCoverageAccountAttemptV1<'_>,
@@ -64,8 +343,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         &mut self,
         journal: &mut Journal,
         original_inputs: &mut aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1,
-        original_bootstrap: &aos_sandbox::publisher_policy::GitUploadBootstrapAppendV1,
-        original_source: &aos_sandbox::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_bootstrap: &aos_sandbox::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        original_source: &aos_sandbox::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut aos_sandbox::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut aos_sandbox::policy_compiler::GitCoverageAccountAttemptV1<'_>,
@@ -94,9 +373,10 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
 
     fn select_original_create_q04_policy_subgate_v1(
         &mut self,
+        controller: &mut aos_sandbox::Journal,
         profile: Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>,
     ) -> Result<(), EffectFailure> {
-        create_q04::select(self, profile)
+        create_q04::select(self, controller, profile)
     }
 
     fn reconcile_original_create_q04_policy_subgate_v1(
@@ -170,7 +450,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         profile: &'profile aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
         credentials: &'credentials mut aos_sandbox::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
     ) -> Result<
-        aos_sandbox::hierarchy::source_successor::SourceSuccessorApprovalDataV2,
+        aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2,
         aos_sandbox::policy_compiler::FailedOriginalSourceSuccessorInvocationV2<'writers, 'profile, 'credentials>,
     > {
         let mut original = aos_sandbox::policy_compiler::OriginalSourceSuccessorInvocationV2::park(
@@ -289,7 +569,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         &'writers mut self, journal: &'writers mut Journal,
         profile: &'profile aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
         credentials: &'credentials mut aos_sandbox::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
-    ) -> Result<aos_sandbox::hierarchy::source_successor::SourceSuccessorApprovalDataV2, aos_sandbox::policy_compiler::FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
+    ) -> Result<aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2, aos_sandbox::policy_compiler::FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
         let mut original = aos_sandbox::policy_compiler::OriginalSourceProjectSuccessorInvocationV3::park(
             journal, &mut self.source_domains, profile, credentials,
         );
@@ -443,8 +723,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         if plan.public_mutation_method()
             == Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateExecution)
         {
-            execution_output_effect::observe(self, operation_id, &context, journal)?;
-            return Ok(EffectObservation::Absent);
+            let completion = execution_output_effect::observe(self, operation_id, &context, journal)?;
+            return Ok(EffectObservation::Applied(completion.receipt));
         }
         if matches!(
             plan.public_mutation_method(),
@@ -479,6 +759,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             let observation =
                 host.query_execution(&intent, authorization.as_ref(), context.project(), journal)?;
             return match observation {
+                execution::ControllerExecutionObservationV1::Pending => Err(
+                    EffectFailure::Retryable("authenticated control read remains pending".to_owned())),
                 execution::ControllerExecutionObservationV1::Absent => {
                     Ok(EffectObservation::Absent)
                 }
@@ -652,10 +934,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         if plan.public_mutation_method()
             == Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateExecution)
         {
-            execution_output_effect::apply(self, operation_id, &context, journal)?;
-            return Err(EffectFailure::Retryable(
-                "execution Create awaits physical Storage backing and Host launch".to_owned(),
-            ));
+            let completion = execution_output_effect::apply(self, operation_id, &context, journal)?;
+            return Ok(completion.receipt);
         }
         if matches!(
             plan.public_mutation_method(),

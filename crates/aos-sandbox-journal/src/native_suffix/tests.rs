@@ -48,7 +48,10 @@ fn exact_borrows_and_signed_prefixes_follow_put_delete_and_empty_put() {
         .unwrap();
     let (stored_key, stored_value) = measurement.states.get_key_value(key.as_slice()).unwrap();
     assert_eq!(stored_key.as_ptr(), key.as_ptr());
-    assert_eq!(stored_value.unwrap().as_ptr(), after.as_ptr());
+    let SuffixValue::Bytes(stored_bytes) = stored_value.unwrap().value else {
+        panic!("an actual after image must retain the original byte borrow");
+    };
+    assert_eq!(stored_bytes.as_ptr(), after.as_ptr());
 
     measurement
         .observe_append(
@@ -144,7 +147,7 @@ fn inconsistent_before_precedes_identity_and_bounds_without_publishing_a_prefix(
     assert_eq!(measurement.prefixes.len(), 1);
     assert_eq!(
         measurement.states.get(b"k".as_slice()),
-        Some(&Some(b"v".as_slice()))
+        Some(&Some(NativeSuffixValueRef::from_bytes(b"v")))
     );
 }
 
@@ -171,7 +174,7 @@ fn transaction_refusal_retains_exact_prior_row_work_but_no_geometry() {
     assert_eq!(measurement.current_records, 1);
     assert_eq!(
         measurement.states.get(b"k".as_slice()),
-        Some(&Some(b"newer".as_slice()))
+        Some(&Some(NativeSuffixValueRef::from_bytes(b"newer")))
     );
     assert_eq!(measurement.geometry, NativeSuffixGeometry::default());
     assert!(measurement.prefixes.is_empty());

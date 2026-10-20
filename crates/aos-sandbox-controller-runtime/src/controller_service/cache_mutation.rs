@@ -9,9 +9,8 @@ use aos_sandbox::filesystem_view_state::{
     DurableFilesystemViewRevisionV1, FilesystemViewRevisionStateError,
     current_filesystem_view_revision_v1,
 };
-use aos_sandbox::production_operation_compiler::{
-    RecheckedCacheConsumerV1, recheck_cache_consumer_projection_v1,
-};
+use aos_sandbox::production_operation_compiler::recheck_cache_consumer_projection_v1;
+use aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1;
 use aos_sandbox::controller::OperationCompilationError;
 use sha2::{Digest as _, Sha256};
 
@@ -41,7 +40,7 @@ enum MutationFailureV1 {
 #[derive(Default)]
 pub(super) struct ControllerCacheMutationV1 {
     operation: Option<OperationId>,
-    consumer: Option<RecheckedCacheConsumerV1>,
+    consumer: Option<CacheConsumerDataV1>,
     request: Option<DormantSandboxRequestKindV1>,
     revision: Option<
         Result<Option<DurableFilesystemViewRevisionV1>, FilesystemViewRevisionStateError>,
@@ -51,7 +50,7 @@ pub(super) struct ControllerCacheMutationV1 {
     unpin: ResidentPublicCacheUnpinV1,
     first_failure: Option<MutationFailureV1>,
     source_postcheck: Option<ProjectSealedViewSourceErrorV1>,
-    consumer_postcheck: Option<Result<RecheckedCacheConsumerV1, OperationCompilationError>>,
+    consumer_postcheck: Option<Result<CacheConsumerDataV1, OperationCompilationError>>,
     physical_postcheck: Option<Result<(), CacheOwnerErrorV1>>,
     complete: bool,
 }
@@ -67,7 +66,7 @@ impl ControllerCacheMutationV1 {
     fn begin(
         &mut self,
         operation: OperationId,
-        consumer: &RecheckedCacheConsumerV1,
+        consumer: &CacheConsumerDataV1,
         request: &DormantSandboxRequestKindV1,
     ) -> Result<(), CacheResidentUnavailableV1> {
         if self.operation.is_some() && !self.complete {
@@ -113,7 +112,7 @@ impl ProductionEffectExecutor {
     pub(super) fn apply_resident_cache_pin(
         &mut self,
         operation: OperationId,
-        consumer: &RecheckedCacheConsumerV1,
+        consumer: &CacheConsumerDataV1,
         journal: &Journal,
         request: &DormantSandboxRequestKindV1,
     ) -> Result<(), EffectFailure> {
@@ -130,7 +129,7 @@ impl ProductionEffectExecutor {
     fn acquire_or_reconcile_resident_pin(
         &mut self,
         operation: OperationId,
-        consumer: &RecheckedCacheConsumerV1,
+        consumer: &CacheConsumerDataV1,
         journal: &Journal,
         request: &DormantSandboxRequestKindV1,
     ) -> Result<(), CacheResidentUnavailableV1> {
@@ -171,7 +170,7 @@ impl ProductionEffectExecutor {
     pub(super) fn apply_resident_cache_unpin(
         &mut self,
         operation: OperationId,
-        consumer: &RecheckedCacheConsumerV1,
+        consumer: &CacheConsumerDataV1,
         journal: &Journal,
         request: &DormantSandboxRequestKindV1,
     ) -> Result<(), EffectFailure> {
@@ -197,7 +196,7 @@ impl ProductionEffectExecutor {
     fn finish_resident_cache_mutation(
         &mut self,
         operation: OperationId,
-        consumer: &RecheckedCacheConsumerV1,
+        consumer: &CacheConsumerDataV1,
         journal: &Journal,
         request: &DormantSandboxRequestKindV1,
         action_succeeded: bool,

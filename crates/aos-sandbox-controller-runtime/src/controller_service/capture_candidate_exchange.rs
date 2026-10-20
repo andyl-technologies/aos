@@ -21,7 +21,7 @@ use aos_sandbox::controller_execution_preissue::{
 };
 use aos_sandbox::environment::EnvironmentProtectedJournalOwnerV1;
 use aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1;
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::Journal;
 use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId, RawPairedClockSample};
@@ -84,6 +84,7 @@ impl ControllerStorageCaptureCandidateObservationV1 {
 
 #[derive(Clone, Copy)]
 enum CandidateFailureSiteV1 {
+    Receiving,
     Binding,
     Coordinates,
     Source(usize),
@@ -147,6 +148,7 @@ pub(crate) struct ControllerStorageCaptureCandidateExchangeV1 {
     started: bool,
     ended: bool,
     complete: bool,
+    receiving: super::argument_exchange::ExecutionSessionReceivingOriginalV1,
 
     binding: Option<Result<ProtectedStorageSessionBindingV1, BrokerSessionSecurityError>>,
     issued: Option<Result<SignedStorageCaptureCandidateQueryV1, EffectFailure>>,
@@ -185,6 +187,7 @@ impl ControllerStorageCaptureCandidateExchangeV1 {
             started: false,
             ended: false,
             complete: false,
+            receiving: Default::default(),
             binding: None,
             issued: None,
             context: None,
@@ -208,6 +211,34 @@ impl ControllerStorageCaptureCandidateExchangeV1 {
         }
     }
 
+    /// Prices the concrete capsule before its first construction.
+    pub(crate) fn fixed_receiving_demand_v1() -> Option<aos_sandbox_core::ResourceVector> {
+        let bytes = std::mem::size_of::<Self>().checked_mul(2)?;
+        Some(aos_sandbox_core::ResourceVector::ZERO.with(
+            aos_sandbox_core::ResourceDimension::MemoryBytes, u64::try_from(bytes).ok()?,
+        ))
+    }
+
+    /// Retires the same positive observation during the actual outer disposal.
+    pub(crate) fn retire_positive_v1(
+        &mut self,
+        disposal: &aos_sandbox::controller_execution_operation::ControllerExecutionPositiveDisposalV1<'_>,
+        execution: ExecutionId,
+        session: &DormantAuthenticatedBrokerSessionV1,
+    ) -> Result<(), EffectFailure> {
+        if self.operation != disposal.operation_v1() || self.execution != execution
+            || !self.complete || self.first_site.is_some()
+            || self.observation().is_none() || self.failure(session).is_some()
+            || self.postcheck_debt(session).is_some()
+        {
+            return Err(closed());
+        }
+        // Only the genuine completed Source/C interval can reach this point.
+        // No failed, cancelled or merely local-send owner becomes droppable.
+        self.started = false;
+        Ok(())
+    }
+
     /// Reports incomplete or closed custody, never permission to replace it.
     pub(crate) const fn has_pending(&self) -> bool {
         !self.complete
@@ -225,6 +256,7 @@ impl ControllerStorageCaptureCandidateExchangeV1 {
         session: &'a DormantAuthenticatedBrokerSessionV1,
     ) -> Option<&'a (dyn std::error::Error + 'static)> {
         match self.first_site? {
+            CandidateFailureSiteV1::Receiving => self.receiving.failure(),
             CandidateFailureSiteV1::Binding => self.binding.as_ref()?.as_ref().err()
                 .map(|error| error as &dyn std::error::Error),
             CandidateFailureSiteV1::Coordinates | CandidateFailureSiteV1::Flight => {
@@ -367,6 +399,9 @@ impl ControllerStorageCaptureCandidateExchangeV1 {
         preissue: &ControllerExecutionPreissueV1,
         signer: &ControllerBrokerPlanSignerV1,
         clock: &mut T,
+        receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
     ) -> Result<(), EffectFailure>
     where
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
@@ -381,7 +416,15 @@ impl ControllerStorageCaptureCandidateExchangeV1 {
             return Err(closed());
         }
         if self.complete { return Ok(()); }
-        if self.started || self.ended { return Err(closed()); }
+        if self.started || self.ended || self.first_site.is_some() { return Err(closed()); }
+        if self.receiving.admit_v1(session,
+            BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE,
+            receiving, bank, controller, profile).is_err()
+        {
+            self.first_site = Some(CandidateFailureSiteV1::Receiving);
+            self.ended = true;
+            return Err(closed());
+        }
         self.started = true;
 
         let boundary = CandidateBoundaryV1 { attempt: self };

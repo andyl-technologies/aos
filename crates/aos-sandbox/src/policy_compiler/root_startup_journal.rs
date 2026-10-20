@@ -8,6 +8,16 @@
 //! This owner establishes no startup origin, parent payment, physical fit,
 //! receiving loan, activation authority, or refund on disposal.
 
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentHeadV1, PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1,
+    decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
+};
+
+mod credential_geometry;
+mod credential_writer;
+
+pub use credential_writer::RootStartupCredentialWriterV1;
+
 use std::{error::Error, fmt, path::Path};
 
 use ed25519_dalek::VerifyingKey;
@@ -15,20 +25,12 @@ use ed25519_dalek::VerifyingKey;
 use crate::journal::{Journal, JournalError, ProtectedWriterOpenOriginalsV1};
 
 use super::binding_v2::read_inert_closed_policy_binding_hold_in_journal_v1;
-use super::cache_readback_pin::admit_cache_readback_pin_in_journal_v1;
-use super::controller_hold_pin::admit_controller_hold_pin_in_journal_v1;
-use super::deployment_head::{
-    admit_deployment_head_in_journal, admit_policy_signer_pins_in_journal_v1,
-};
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
-use super::source_hold_pin::admit_source_hold_pin_in_journal_v1;
 use super::{
     CacheReadbackPinErrorV1, ClosedPolicyRootCasObservationV2, ControllerHoldPinErrorV1,
-    PolicyCompilerJournalErrorV1, PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1,
-    PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1, SourceHoldPinErrorV1,
-    decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
+    PolicyCompilerJournalErrorV1, PolicyDeploymentHeadErrorV1, SourceHoldPinErrorV1,
 };
 
 /// Retains a verified packet and the typed sources decoded from its exact inputs.
@@ -60,8 +62,10 @@ impl<'input> RootPolicyStartupDeploymentV1<'input> {
         if signer_generation == 0 {
             return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
         }
-        let head = verify_policy_deployment_head_v1(packet, inputs, key, now_unix_seconds)?;
-        let sources = decode_policy_deployment_sources_v1(inputs, head)?;
+        let head = verify_policy_deployment_head_v1(packet, inputs, key, now_unix_seconds)
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
+        let sources = decode_policy_deployment_sources_v1(inputs, head)
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
 
         Ok(Self {
             packet,
@@ -94,8 +98,15 @@ impl<'input> RootPolicyStartupDeploymentV1<'input> {
 /// including when credentials or admission fail. Drop releases custody only.
 pub struct RootPolicyStartupJournalV1 {
     opening: ProtectedWriterOpenOriginalsV1,
+    #[cfg(target_os = "linux")]
+    selected: Option<crate::journal::root_construction::RootJournalConstructionOriginalV1>,
+    #[cfg(target_os = "linux")]
+    selected_final_post: Option<aos_sandbox_broker::receiving::RootWriterPostOriginalV1>,
     signer_pins: Option<StartupSignerPinsV1>,
+    receiving_names_before: Option<Result<(), JournalError>>,
+    receiving_names_after: Option<Result<(), JournalError>>,
     names_post: Option<Result<(), JournalError>>,
+    names_original: crate::journal::ProtectedJournalCurrentnessOriginalsV1,
     finished: bool,
 }
 
@@ -108,19 +119,11 @@ struct StartupSignerPinsV1 {
 }
 
 impl RootPolicyStartupJournalV1 {
-    /// Computes representation DATA from the exact native Root opening limits.
-    ///
-    /// The returned value retains its unpriced prerequisites and grants no open.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid limits or an unrepresentable checked extent.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn preopen_replay_extent(
-    ) -> Result<crate::journal::ProtectedJournalPreopenReplayExtentV1, JournalError> {
-        crate::journal::protected_journal_preopen_replay_extent_v1(
-            policy_authority_journal_limits(),
-        )
+    pub(crate) fn credential_writer_v1<'borrow>(
+        &'borrow mut self,
+        original: Option<aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'borrow>>,
+    ) -> RootStartupCredentialWriterV1<'borrow> {
+        RootStartupCredentialWriterV1::new(self, original)
     }
 
     /// Prearms vacant custody without opening storage or issuing authority.
@@ -128,15 +131,22 @@ impl RootPolicyStartupJournalV1 {
     pub const fn new() -> Self {
         Self {
             opening: ProtectedWriterOpenOriginalsV1::new(),
+            #[cfg(target_os = "linux")]
+            selected: None,
+            #[cfg(target_os = "linux")]
+            selected_final_post: None,
             signer_pins: None,
+            receiving_names_before: None,
+            receiving_names_after: None,
             names_post: None,
+            names_original: crate::journal::ProtectedJournalCurrentnessOriginalsV1::new(),
             finished: false,
         }
     }
 
     /// Enters the fixed writable opening once, retaining native/replay failures.
     pub fn open_once(&mut self) {
-        self.opening.open_once(
+        self.opening.open_captured_once(
             Path::new(PROTECTED_POLICY_ROOT),
             POLICY_AUTHORITY_JOURNAL,
             policy_authority_journal_limits(),
@@ -166,20 +176,7 @@ impl RootPolicyStartupJournalV1 {
         project_generation: u64,
         project_key: &VerifyingKey,
     ) -> Result<(), PolicyDeploymentHeadErrorV1> {
-        admit_policy_signer_pins_in_journal_v1(
-            self.journal_mut()?,
-            deployment_generation,
-            deployment_key,
-            project_generation,
-            project_key,
-        )?;
-        self.signer_pins = Some(StartupSignerPinsV1 {
-            deployment_generation,
-            deployment_key: *deployment_key,
-            project_generation,
-            project_key: *project_key,
-        });
-        Ok(())
+        self.credential_writer_v1(None).admit_signer_pins(deployment_generation, deployment_key, project_generation, project_key)
     }
 
     /// Admits the exact already-verified deployment without decoding it again.
@@ -192,21 +189,7 @@ impl RootPolicyStartupJournalV1 {
         &mut self,
         deployment: RootPolicyStartupDeploymentV1<'_>,
     ) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
-        let pins = self.admitted_signer_pins()?;
-        // Credential generations identify verifier keys; they are separate
-        // from the signed deployment head's monotone generation.
-        if deployment.key != &pins.deployment_key
-            || deployment.signer_generation != pins.deployment_generation
-        {
-            return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-        }
-
-        admit_deployment_head_in_journal(
-            self.journal_mut()?,
-            deployment.packet,
-            deployment.head,
-            deployment.key,
-        )
+        self.credential_writer_v1(None).admit_deployment_head(deployment)
     }
 
     /// Admits the optional Cache pin through this same held writer.
@@ -218,15 +201,7 @@ impl RootPolicyStartupJournalV1 {
         &mut self,
         credential: Option<&[u8]>,
     ) -> Result<(), CacheReadbackPinErrorV1> {
-        let pins = self.admitted_signer_pins()?;
-        admit_cache_readback_pin_in_journal_v1(
-            self.journal_mut()?,
-            credential,
-            pins.deployment_generation,
-            &pins.deployment_key,
-            pins.project_generation,
-            &pins.project_key,
-        )
+        self.credential_writer_v1(None).admit_cache_pin(credential)
     }
 
     /// Admits the optional Controller pin through this same held writer.
@@ -238,15 +213,7 @@ impl RootPolicyStartupJournalV1 {
         &mut self,
         credential: Option<&[u8]>,
     ) -> Result<(), ControllerHoldPinErrorV1> {
-        let pins = self.admitted_signer_pins()?;
-        admit_controller_hold_pin_in_journal_v1(
-            self.journal_mut()?,
-            credential,
-            pins.deployment_generation,
-            &pins.deployment_key,
-            pins.project_generation,
-            &pins.project_key,
-        )
+        self.credential_writer_v1(None).admit_controller_pin(credential)
     }
 
     /// Admits the optional Source pin through this same held writer.
@@ -258,15 +225,7 @@ impl RootPolicyStartupJournalV1 {
         &mut self,
         credential: Option<&[u8]>,
     ) -> Result<(), SourceHoldPinErrorV1> {
-        let pins = self.admitted_signer_pins()?;
-        admit_source_hold_pin_in_journal_v1(
-            self.journal_mut()?,
-            credential,
-            pins.deployment_generation,
-            &pins.deployment_key,
-            pins.project_generation,
-            &pins.project_key,
-        )
+        self.credential_writer_v1(None).admit_source_pin(credential)
     }
 
     /// Retains one independent fixed-name post before ending startup borrowing.
@@ -280,10 +239,24 @@ impl RootPolicyStartupJournalV1 {
             return Err(JournalError::ProtectedBoundary);
         }
         self.finished = true;
-        self.names_post = Some(self.opening.check_named_currentness(
+        #[cfg(target_os = "linux")]
+        if let Some(selected) = self.selected.as_mut() {
+            // The final credential post was armed before its first mutation.
+            // Native poison/refusal cannot suppress this independent obligation.
+            self.names_post = Some(match (selected.opened_mut(), self.selected_final_post.as_mut()) {
+                (Some(journal), Some(post)) => journal.finish_root_names_post_once_v1(post),
+                _ => { selected.finish_names_once();
+                    if selected.failure().is_none() { Ok(()) } else { Err(JournalError::ProtectedBoundary) } },
+            });
+            return if matches!(self.names_post, Some(Ok(()))) { Ok(()) }
+                else { Err(JournalError::ProtectedBoundary) };
+        }
+        self.names_post = Some(self.opening.check_named_currentness_retaining(
             Path::new(PROTECTED_POLICY_ROOT),
             POLICY_AUTHORITY_JOURNAL,
             policy_authority_journal_limits(),
+            0,
+            &mut self.names_original,
         ));
         if matches!(self.names_post, Some(Ok(()))) {
             Ok(())
@@ -292,10 +265,76 @@ impl RootPolicyStartupJournalV1 {
         }
     }
 
+    // Only the actual Root receiving cohort selects this staged form. The
+    // fixed production names and limits cannot be supplied by another role.
+    pub(crate) fn fixed_receiving_preparation_demand() -> Result<aos_sandbox_core::ResourceVector, JournalError> {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+
+        let invalid = || JournalError::JournalTooLarge;
+        let header = u64::try_from(std::mem::size_of::<
+            crate::journal::ProtectedJournalCurrentnessOriginalsV1,
+        >()).map_err(|_| invalid())?;
+        // The lower selected constructor cannot price this separate upper
+        // field. Its native backing is entered only by ordinary startup.
+        crate::journal::root_construction::RootJournalConstructionOriginalV1::fixed_demand_v1(
+            crate::journal::root_construction::RootJournalPurposeV1::StartupAuthority,
+        )?.checked_add(ResourceVector::ZERO.with(D::MemoryBytes, header))
+            .map_err(|_| invalid())
+    }
+
+    pub(crate) fn prepare_receiving_once(
+        &mut self,
+        initial: &mut aos_sandbox_broker::receiving::RootInitialReceivingOriginalV1,
+    ) {
+        if self.finished || self.selected.is_some() { initial.latch_root_refusal_v1(); return; }
+        let mut selected = crate::journal::root_construction::RootJournalConstructionOriginalV1::new();
+        selected.prepare_once(initial,
+            crate::journal::root_construction::RootJournalPurposeV1::StartupAuthority);
+        self.selected = Some(selected);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn receiving_extent(&self) -> Option<&crate::journal::ProtectedJournalPreopenReplayExtentV1> {
+        self.selected.as_ref()?.extent()
+    }
+
+    pub(crate) fn receiving_index_demand_v1(&self) -> Result<aos_sandbox_core::ResourceVector, JournalError> {
+        self.selected.as_ref().ok_or(JournalError::ProtectedBoundary)?.index_demand_v1()
+    }
+
+    pub(crate) fn replay_receiving_once(&mut self) {
+        if self.finished { return; }
+        if let Some(selected) = self.selected.as_mut() {
+            selected.replay_once();
+            selected.finish_names_once();
+        }
+    }
+
+    pub(crate) fn finish_receiving_names_after_once(&mut self) {
+        if let Some(selected) = self.selected.as_mut() { selected.finish_names_once(); }
+    }
+
+    pub(crate) fn receiving_replay_ready(&self) -> bool {
+        self.selected.as_ref().is_some_and(|selected| selected.ready())
+    }
+
     /// Borrows the original opening or independent-post cause until release.
     #[must_use]
     pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        #[cfg(target_os = "linux")]
+        if let Some(selected) = &self.selected {
+            return selected.concrete_failure_v1()
+                .or_else(|| self.selected_final_post.as_ref().and_then(|post| post.concrete_failure_v1()))
+                .or_else(|| self.names_post.as_ref().and_then(|result| result.as_ref().err()).map(|cause| cause as _))
+                .or_else(|| selected.failure())
+                .or_else(|| self.selected_final_post.as_ref().and_then(|post| post.failure()));
+        }
         self.opening.failure().or_else(|| {
+            self.receiving_names_before.as_ref().and_then(|result| result.as_ref().err())
+                .map(|cause| cause as &(dyn std::error::Error + 'static))
+                .or_else(|| self.receiving_names_after.as_ref().and_then(|result| result.as_ref().err())
+                    .map(|cause| cause as &(dyn std::error::Error + 'static)))
+        }).or_else(|| self.names_original.failure()).or_else(|| {
             self.names_post
                 .as_ref()
                 .and_then(|result| result.as_ref().err())
@@ -321,6 +360,16 @@ impl RootPolicyStartupJournalV1 {
     fn journal_mut(&mut self) -> Result<&mut Journal, JournalError> {
         if self.finished {
             return Err(JournalError::ProtectedBoundary);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(selected) = self.selected.as_mut() {
+            selected.take_opened_once();
+            let journal = selected.opened_mut().ok_or(JournalError::ProtectedBoundary)?;
+            if self.selected_final_post.is_none() {
+                self.selected_final_post = Some(journal.arm_root_names_post_once_v1()?);
+            }
+            journal.validate_held_root_owned_at(Path::new(PROTECTED_POLICY_ROOT), POLICY_AUTHORITY_JOURNAL)?;
+            return Ok(journal);
         }
         let journal = self
             .opening

@@ -29,6 +29,12 @@ const MAGIC: &[u8; 8] = b"AOSHRQ01";
 const HEADER_BYTES: usize = 8 + 32 * 4 + 4;
 const DIGEST_BYTES: usize = 32;
 
+pub(in crate::runtime_execution) fn encoded_width_v5(frame_bytes: usize) -> Option<usize> {
+    if frame_bytes > MAX_AGENT_FRAME_BYTES { return None; }
+    HEADER_BYTES.checked_add(frame_bytes)?.checked_add(DIGEST_BYTES)
+}
+
+
 pub(super) const ROUTE_KEY_PREFIX: u8 = b'q';
 
 /// Fixes the only peer allowed to own Host request and outcome custody.
@@ -196,7 +202,7 @@ impl ProtectedAgentRouteRecordV1 {
         let length =
             u32::try_from(frame.len()).map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
 
-        let mut bytes = Vec::with_capacity(HEADER_BYTES + frame.len() + DIGEST_BYTES);
+        let mut bytes = Vec::with_capacity(encoded_width_v5(frame.len()).unwrap_or(0));
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(self.effect_request.as_bytes());
         bytes.extend_from_slice(self.peer_authority.as_bytes());

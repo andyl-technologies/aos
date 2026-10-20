@@ -5,15 +5,22 @@
 //! then forgets the seed. The held Q04 ACK exchange reloads this one role
 //! only while Controller retains its protected writer.
 
+use aos_sandbox_policy::controller_readback::{
+    PinnedControllerHoldSignerV1, encode_controller_hold_signer_credential_v1,
+};
+
 use std::io;
 use std::path::Path;
 
-use aos_sandbox::cache_residency::PinnedCacheOwnerReadbackSignerV1;
-use aos_sandbox::policy_compiler::PinnedControllerHoldSignerV1;
+use aos_sandbox_protocol::cache_owner_readback::PinnedCacheOwnerReadbackSignerV1;
+
 use ed25519_dalek::SigningKey;
 use zeroize::Zeroizing;
 
-use aos_sandbox_linux::credential::read_optional_fixed_role_credential_v1;
+use aos_sandbox_linux::credential::{CredentialOwnerPolicyV1, read_optional_fixed_role_credential_v1};
+use super::credential_receiving::{
+    CredentialMetadataV1, CredentialSourceV1, OrdinaryCredentialSourceV1,
+};
 
 const SEED_NAME: &str = "controller-hold-signing-key";
 const PIN_NAME: &str = "controller-hold-public-key";
@@ -28,23 +35,58 @@ pub(crate) struct ControllerHoldCredentialErrorV1;
 pub(crate) fn validate_process_controller_hold_credentials_v1(
     broker_plan_public_key: Option<[u8; 32]>,
 ) -> Result<(), ControllerHoldCredentialErrorV1> {
+    validate_process_controller_hold_credentials_with_source(
+        broker_plan_public_key, &mut OrdinaryCredentialSourceV1,
+    )
+}
+
+pub(super) fn validate_process_controller_hold_credentials_with_source(
+    broker_plan_public_key: Option<[u8; 32]>,
+    source: &mut impl CredentialSourceV1,
+) -> Result<(), ControllerHoldCredentialErrorV1> {
     let Some(directory) = std::env::var_os("CREDENTIALS_DIRECTORY") else {
         return Ok(());
     };
+    source.directory(&directory);
     if !Path::new(&directory).is_absolute() {
         return Err(ControllerHoldCredentialErrorV1);
     }
-    validate_controller_hold_credentials_at(Path::new(&directory), broker_plan_public_key)
+    validate_controller_hold_credentials_at_with_source(Path::new(&directory), broker_plan_public_key, source)
 }
 
+#[cfg(test)]
 fn validate_controller_hold_credentials_at(
     directory: &Path,
     broker_plan_public_key: Option<[u8; 32]>,
 ) -> Result<(), ControllerHoldCredentialErrorV1> {
-    let seed = read_optional_fixed_role_credential_v1(directory, SEED_NAME, 32, true)
-        .map_err(|_| ControllerHoldCredentialErrorV1)?;
-    let pin = read_optional_fixed_role_credential_v1(directory, PIN_NAME, 80, false)
-        .map_err(|_| ControllerHoldCredentialErrorV1)?;
+    validate_controller_hold_credentials_at_with_source(directory, broker_plan_public_key, &mut OrdinaryCredentialSourceV1)
+}
+
+fn validate_controller_hold_credentials_at_with_source(
+    directory: &Path,
+    broker_plan_public_key: Option<[u8; 32]>,
+    source: &mut impl CredentialSourceV1,
+) -> Result<(), ControllerHoldCredentialErrorV1> {
+    let seed = source.read(
+            directory, SEED_NAME, 32, 32,
+            CredentialMetadataV1::Protected {
+                private: true, owner: CredentialOwnerPolicyV1::Any,
+            },
+        ).map(|bytes| bytes.map(Zeroizing::new))
+        .map_err(|cause| {
+            source.retain(cause);
+            ControllerHoldCredentialErrorV1
+        })?;
+    let pin = source.read(
+            directory, PIN_NAME, 80, 80,
+            CredentialMetadataV1::Protected {
+                private: false, owner: CredentialOwnerPolicyV1::Any,
+            },
+        ).map(|bytes| bytes.map(Zeroizing::new))
+        .map_err(|cause| {
+            source.retain(cause);
+            ControllerHoldCredentialErrorV1
+        })?;
     let (seed, pin) = match (seed, pin) {
         (None, None) => return Ok(()),
         (Some(seed), Some(pin)) => (seed, pin),
@@ -53,20 +95,38 @@ fn validate_controller_hold_credentials_at(
     let seed: Zeroizing<[u8; 32]> = Zeroizing::new(
         seed.as_slice()
             .try_into()
-            .map_err(|_| ControllerHoldCredentialErrorV1)?,
+            .map_err(|cause| {
+                source.retain(cause);
+                ControllerHoldCredentialErrorV1
+            })?,
     );
     let key = SigningKey::from_bytes(&seed).verifying_key();
-    let pinned =
-        PinnedControllerHoldSignerV1::decode(&pin).map_err(|_| ControllerHoldCredentialErrorV1)?;
+    let pinned = PinnedControllerHoldSignerV1::decode(&pin)
+        .map_err(aos_sandbox::policy_compiler::ControllerHoldReadbackErrorV1::from)
+        .map_err(|cause| {
+            source.retain(cause);
+            ControllerHoldCredentialErrorV1
+        })?;
     if pinned.verifying_key() != &key || broker_plan_public_key == Some(key.to_bytes()) {
         return Err(ControllerHoldCredentialErrorV1);
     }
     if let Some(cache_pin) =
-        read_optional_fixed_role_credential_v1(directory, CACHE_PIN_NAME, 80, false)
-            .map_err(|_| ControllerHoldCredentialErrorV1)?
+        source.read(
+            directory, CACHE_PIN_NAME, 80, 80,
+            CredentialMetadataV1::Protected {
+                private: false, owner: CredentialOwnerPolicyV1::Any,
+            },
+        ).map(|bytes| bytes.map(Zeroizing::new))
+            .map_err(|cause| {
+                source.retain(cause);
+                ControllerHoldCredentialErrorV1
+            })?
     {
         let cache = PinnedCacheOwnerReadbackSignerV1::decode(&cache_pin)
-            .map_err(|_| ControllerHoldCredentialErrorV1)?;
+            .map_err(|cause| {
+                source.retain(cause);
+                ControllerHoldCredentialErrorV1
+            })?;
         if cache.verifying_key() == &key {
             return Err(ControllerHoldCredentialErrorV1);
         }
@@ -108,7 +168,9 @@ fn with_controller_hold_signer_at<R>(
             .map_err(|_| io::Error::other("invalid Controller hold signer seed"))?,
     );
     let signing_key = SigningKey::from_bytes(&seed);
-    let pinned = PinnedControllerHoldSignerV1::decode(&pin).map_err(io::Error::other)?;
+    let pinned = PinnedControllerHoldSignerV1::decode(&pin)
+        .map_err(aos_sandbox::policy_compiler::ControllerHoldReadbackErrorV1::from)
+        .map_err(io::Error::other)?;
     if pinned.verifying_key() != &signing_key.verifying_key() {
         return Err(io::Error::other("Controller hold signer pin mismatch"));
     }
@@ -120,8 +182,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
 
-    use aos_sandbox::cache_residency::encode_cache_owner_readback_signer_credential_v1;
-    use aos_sandbox::policy_compiler::encode_controller_hold_signer_credential_v1;
+    use aos_sandbox_protocol::cache_owner_readback::encode_cache_owner_readback_signer_credential_v1;
 
     use super::*;
 
@@ -130,7 +191,9 @@ mod tests {
         let directory = tempfile::tempdir().expect("credential fixture");
         let seed = [7; 32];
         let key = SigningKey::from_bytes(&seed).verifying_key();
-        let pin = encode_controller_hold_signer_credential_v1(3, &key).unwrap();
+        let pin = encode_controller_hold_signer_credential_v1(3, &key)
+            .map_err(aos_sandbox::policy_compiler::ControllerHoldReadbackErrorV1::from)
+            .unwrap();
         assert!(validate_controller_hold_credentials_at(directory.path(), None).is_ok());
 
         let seed_path = directory.path().join(SEED_NAME);

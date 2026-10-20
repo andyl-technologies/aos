@@ -47,6 +47,12 @@ struct Binding {
 }
 
 impl DurableFuseWorkerLaunchV1 {
+    pub(super) fn receiving_dynamic_bytes_v3(&self) -> Option<usize> {
+        [&self.authentication, &self.binding.base_fence, &self.binding.phase_fence,
+            &self.binding.effect].into_iter().try_fold(0_usize,
+                |sum, bytes| sum.checked_add(bytes.capacity()))
+    }
+
     pub(super) const fn request_id(&self) -> [u8; 16] {
         self.binding.request_id
     }

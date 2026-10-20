@@ -126,20 +126,17 @@ impl ProtectedBrokerSessionJournalV1 {
         request_id: [u8; 16],
     ) -> Result<Option<AuthenticatedBrokerMethodOutcomeV1>, BrokerSessionSecurityError> {
         let value = {
-            let authority = self
-                .journal_mut()?
-                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let mut authority = self.schema_authority_v3()?;
             authority
                 .get(&archive_key(request_id))
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?
                 .map(<[u8]>::to_vec)
         };
-        let Some(value) = value else {
+        let Some(value) = self.schema_retain_value_v3(value)? else {
             return Ok(None);
         };
         let frame = open_history_archive_frame(request_id, &value, MAGIC, DOMAIN)?;
-        let stored = StoredProtocolHistoryV1::decode(
+        let stored = self.schema_decode_stored_v3(
             &protocol_key(BrokerSessionProtocolV1::Storage),
             frame,
         )?;
@@ -225,8 +222,11 @@ impl ProtectedBrokerSessionJournalV1 {
             MAXIMUM_ARCHIVES,
         )?;
         for id in &ids {
-            self.read_operator_repair_inventory(*id)?
-                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            let scope = self.schema_scope_v3();
+            let result = self.read_operator_repair_inventory(*id)
+                .and_then(|archive| archive.ok_or(BrokerSessionSecurityError::Currentness));
+            self.schema_complete_scope_v3(scope, &result);
+            result?;
         }
         Ok(ids.len())
     }

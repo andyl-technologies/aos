@@ -9,6 +9,15 @@
 //! The closed input precursor combines that observation with signed Root
 //! sources as proposal DATA only; publication still requires its own join.
 
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentHeadV1, PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1,
+    VerifiedSignedProjectPolicySourceV2, decode_policy_deployment_sources_v1,
+    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v2,
+};
+
+use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
+use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -38,13 +47,13 @@ use crate::hierarchy::protected_journal::{
 };
 #[cfg(target_os = "linux")]
 use crate::journal::{
-    CachePolicyHoldV1, ControllerPolicyHoldV1, ControllerPolicyV8ReleaseEvidenceV1,
-    SourceDomainPolicyHoldV1,
+    ControllerPolicyHoldV1,
+    ControllerPolicyV8ReleaseEvidenceV1,
 };
 #[cfg(target_os = "linux")]
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
-use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
+use crate::publisher_admin::policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use crate::reconciler::{
     ReconcilerError, checked_live_create_sandbox_admission_revision_v1,
     live_create_sandbox_admission_revision_v1, recovered_public_operation_admission_v1,
@@ -53,15 +62,14 @@ use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan};
 use crate::{Journal, JournalError};
 
 use super::{
-    AdmittedSignedProjectPolicySourceV2, PolicyDeploymentSourcesV1,
-    PolicyPublicationPrerequisitesV1, RootV8ReleasedProofV1, VerifiedSignedProjectPolicySourceV2,
+    AdmittedSignedProjectPolicySourceV2, PolicyPublicationPrerequisitesV1, RootV8ReleasedProofV1,
     normalized_policy_input_digest_v1,
 };
 use aos_sandbox_policy::{
     CacheDomainInputV1, HardLimitValueV1, PolicyCompilerInputV1, RevocationInputV1,
 };
 #[cfg(target_os = "linux")]
-use super::{PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1};
+use super::PolicyDeploymentHeadErrorV1;
 #[cfg(target_os = "linux")]
 use aos_sandbox_policy::{
     AuthenticatedSandboxProjectRelationV1, HardLimitRequestV1, HardResourceKeyV1,
@@ -114,6 +122,10 @@ impl aos_sandbox_policy::SandboxProjectRelationVerifierV1 for CurrentCreateRelat
 pub(crate) use aos_sandbox_protocol::domain_ledger::project_source::{
     HistoricalCreateProjectSourceHeadsV1, create_project_source_commitment_v1,
 };
+
+mod current_publisher;
+pub(in crate::policy_compiler) use current_publisher::{CurrentPublisherPolicyDataV2,
+    CurrentPublisherPolicyDataErrorV2, current_publisher_policy_data_v2};
 
 const EXPLICIT_DRAFT_DOMAIN: &[u8] = b"aos.sandbox.public-create-policy-draft.v2\0";
 
@@ -624,6 +636,12 @@ pub fn current_parentless_create_project_source_v1(
     operation: OperationId,
     sandbox: SandboxId,
 ) -> Result<CurrentCreateProjectPolicySourceV1, CurrentCreatePolicySourceErrorV1> {
+    current_parentless_create_project_source_with_observed_wall_v1(journal, operation, sandbox, None)
+}
+
+pub(in crate::policy_compiler) fn current_parentless_create_project_source_with_observed_wall_v1(
+    journal: &mut Journal, operation: OperationId, sandbox: SandboxId, observed_wall: Option<i64>,
+) -> Result<CurrentCreateProjectPolicySourceV1, CurrentCreatePolicySourceErrorV1> {
     journal.ensure_protected_authority()?;
     if operation.as_bytes() == &[0; 16] || sandbox.as_bytes() == &[0; 16] {
         return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
@@ -677,40 +695,15 @@ pub fn current_parentless_create_project_source_v1(
     }
     let projection_revision = projection.revision();
 
-    let publisher = PublisherPolicyStore::load(journal, PublisherPolicyLimits::default())?;
-    let revision = publisher
-        .current_policy(project)?
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let revocation = publisher
-        .project_revocation_head(project)?
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let cache_domain = publisher
-        .project_cache_domain_head(project)?
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let descriptor = revision.descriptor();
-    if requested_policy.media_type != descriptor.media_type().as_str()
-        || requested_policy.sha256.as_slice() != descriptor.digest().as_bytes()
-        || requested_policy.encoded_size != descriptor.encoded_size()
-    {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let now =
-        i64::try_from(now.as_secs()).map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    if now < revision.not_before() || now >= revision.expires_at() {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    }
-
-    let policy_generation = revision.generation();
-    let policy_digest = descriptor.digest();
-    let cache_domain_head = cache_domain.digest();
-    let cache_domain = cache_domain.domain();
-    let revocation_scope = revocation.scope();
-    let revocation_generation = revocation.generation();
-    let revocation_head = revocation.digest();
-    let canonical_policy = revision.canonical_policy().to_vec();
+    let current_publisher::CurrentPublisherPolicyDataV2 {
+        policy_generation, policy_digest, cache_domain, cache_domain_head,
+        revocation_scope, revocation_generation, revocation_head, canonical_policy, ..
+    } = current_publisher::current_publisher_policy_data_v2(journal, project,
+        &requested_policy.media_type, &requested_policy.sha256, requested_policy.encoded_size,
+        observed_wall).map_err(|cause| match cause {
+            current_publisher::CurrentPublisherPolicyDataErrorV2::NotCurrent => CurrentCreatePolicySourceErrorV1::NotCurrent,
+            current_publisher::CurrentPublisherPolicyDataErrorV2::Publisher(cause) => CurrentCreatePolicySourceErrorV1::Publisher(cause),
+        })?;
     let commitment = create_project_source_commitment_v1(
         operation,
         operation_revision,
@@ -1482,8 +1475,8 @@ fn settle_released_v8_owner_rows(
         held
     };
     if floor.root_release_marker_digest() != proof.release_marker_digest()
-        || floor.cache_held_digest() != cache_held.record_digest()?
-        || floor.source_held_digest() != source_held.record_digest()?
+        || floor.cache_held_digest() != cache_held.record_digest().map_err(crate::journal::JournalError::from)?
+        || floor.source_held_digest() != source_held.record_digest().map_err(crate::journal::JournalError::from)?
     {
         return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
     }
@@ -1502,7 +1495,7 @@ fn settle_released_v8_owner_rows(
             .controller_policy_v8_settlement_v1()?
             .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
         if current_source.is_held()
-            || settlement.controller_released_digest() != current_controller.record_digest()?
+            || settlement.controller_released_digest() != current_controller.record_digest().map_err(JournalError::from)?
         {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
         }
@@ -1526,7 +1519,7 @@ fn settle_released_v8_owner_rows(
         cache_released,
         source_held,
         released_source,
-    )?;
+    ).map_err(JournalError::from)?;
     HeldCreateSourceCut::require_controller_name(controller, controller_uid)?;
     source_domains.require_fixed_named_writer_v1()?;
     // The Controller journal checks exact typed S readback after its atomic commit.
@@ -1695,8 +1688,8 @@ impl HeldCreateSourceCut {
             .controller_policy_v8_pre_release_floor_v1()?
             .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
         if floor.root_release_marker_digest() != proof.release_marker_digest()
-            || floor.cache_held_digest() != cache_held.record_digest()?
-            || floor.source_held_digest() != source_held.record_digest()?
+            || floor.cache_held_digest() != cache_held.record_digest().map_err(crate::journal::JournalError::from)?
+            || floor.source_held_digest() != source_held.record_digest().map_err(crate::journal::JournalError::from)?
         {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
         }
@@ -1770,9 +1763,7 @@ mod tests {
 
     use super::*;
     use crate::policy_compiler::{
-        ClosedPolicyRootCasBaseV2, PolicyDeploymentInputsV1, decode_policy_deployment_sources_v1,
-        propose_closed_current_create_explicit_policy_binding_v2, verify_policy_deployment_head_v1,
-        verify_signed_project_policy_source_v2,
+        ClosedPolicyRootCasBaseV2, propose_closed_current_create_explicit_policy_binding_v2,
     };
     use aos_sandbox_policy::{
         AuthenticatedCacheDomainV1, AuthenticatedEndpointCatalogV1,
@@ -2136,8 +2127,10 @@ mod tests {
             &deployment_key.verifying_key(),
             20,
         )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .expect("signed deployment");
         let deployment = decode_policy_deployment_sources_v1(&deployment_inputs, deployment_head)
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .expect("typed deployment");
 
         let prerequisites = PolicyPublicationPrerequisitesV1::new(
@@ -2252,6 +2245,7 @@ mod tests {
             &project_key.verifying_key(),
             20,
         )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .expect("explicit signed source");
         let binding = AuthenticatedCacheDomainV1::authenticate(
             source.cache_domain,
@@ -2403,6 +2397,7 @@ mod tests {
             &project_key.verifying_key(),
             20,
         )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .expect("signed project with changed revocation claim");
         assert!(
             checked_parentless_create_verified_policy_draft_v2(

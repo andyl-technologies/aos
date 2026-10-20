@@ -14,7 +14,7 @@ use aos_sandbox::controller_execution_preissue::{
 };
 use aos_sandbox::environment::EnvironmentProtectedJournalOwnerV1;
 use aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1;
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{EffectFailure, Journal};
 use aos_sandbox_core::{ExecutionId, OperationId, RawPairedClockSample};
@@ -38,6 +38,7 @@ pub(crate) struct OriginalControllerOutputRegistrationV1 {
     operation: OperationId,
     execution: ExecutionId,
     started: bool,
+    receiving: super::argument_exchange::ExecutionSessionReceivingOriginalV1,
     ended: bool,
     storage_issuer: OriginalStorageOutputIssuerV1,
     host_issuer: OriginalHostOutputIssuerV1,
@@ -55,6 +56,73 @@ pub(crate) struct OriginalControllerOutputRegistrationV1 {
 }
 
 impl OriginalControllerOutputRegistrationV1 {
+    pub(crate) fn require_no_apply_disposable_v2(&self, operation: OperationId, execution: ExecutionId)
+        -> Result<(), EffectFailure> {
+        if self.operation != operation || self.execution != execution || self.has_postcheck_debt()
+            || (self.started && !matches!(self.flight.committed(),
+                Some(ProtectedBrokerOutcomeCommitResultV1::Committed(_)))) {
+            return Err(closed());
+        }
+        Ok(())
+    }
+
+    fn fixed_receiving_demand_v1() -> Option<aos_sandbox_core::ResourceVector> {
+        let bytes = std::mem::size_of::<Self>().checked_mul(2)?;
+        OutputPreparationCustodyV1::client_receiving_demand_v1()?
+            .checked_add(aos_sandbox_core::ResourceVector::ZERO.with(
+                aos_sandbox_core::ResourceDimension::MemoryBytes, u64::try_from(bytes).ok()?,
+            )).ok()
+    }
+
+    /// Borrows the actual committed terminal after every original post passed.
+    ///
+    /// The returned signed response is historical DATA. In particular, its
+    /// Session currentness is not an independent OUTPUT-ledger head or physical
+    /// capture grant. The future held Storage owner must supply its own head.
+    pub(crate) fn completed_registration_outcome_v1(
+        &self, operation: OperationId, execution: ExecutionId,
+    ) -> Option<(&aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1)>
+    {
+        if self.operation != operation || self.execution != execution
+            || !self.coordinated_terminal || self.has_postcheck_debt()
+            || !matches!(self.terminal_current, Some(Ok(())))
+            || self.terminal_witness_checks != [Some(true); 2]
+        {
+            return None;
+        }
+        let ProtectedBrokerOutcomeCommitResultV1::Committed(committed) = self.flight.committed()? else {
+            return None;
+        };
+        let (outcome, currentness) = committed.output_registration_originals_v1().ok()?;
+        matches!(outcome.result(), AuthenticatedBrokerMethodResultV1::Success { .. })
+            .then_some((outcome, currentness))
+    }
+
+    /// Borrows the original logical46 body only from its actual completed owner.
+    /// The returned bytes select Capture sources; they are not a physical grant.
+    pub(crate) fn completed_original_output_body_for_capture_v2(
+        &self, operation: OperationId, execution: ExecutionId,
+    ) -> Option<&[u8]> {
+        self.completed_registration_outcome_v1(operation, execution)?;
+        self.storage_issuer.body()
+    }
+
+    /// Borrows the actual canonical records after the original terminal posts.
+    pub(crate) fn completed_original_records_for_capture_v3(
+        &self, operation: OperationId, execution: ExecutionId,
+    ) -> Option<&aos_sandbox_protocol::storage_output_reserve::StorageOutputReserveRecordsV1> {
+        self.completed_registration_outcome_v1(operation, execution)?;
+        self.storage_issuer.completed_records_for_capture_v3()
+    }
+
+    pub(super) fn completed_host_readback_source_v3(
+        &self, operation: OperationId, execution: ExecutionId,
+    ) -> Option<&OriginalStorageOutputIssuerV1> {
+        self.completed_registration_outcome_v1(operation, execution)?;
+        Some(&self.storage_issuer)
+    }
+
     pub(crate) fn has_pending(&self) -> bool {
         !self.coordinated_terminal
     }
@@ -64,6 +132,7 @@ impl OriginalControllerOutputRegistrationV1 {
             operation,
             execution,
             started: false,
+            receiving: Default::default(),
             ended: false,
             storage_issuer: OriginalStorageOutputIssuerV1::empty(),
             host_issuer: OriginalHostOutputIssuerV1::empty(),
@@ -208,6 +277,60 @@ pub(super) fn advance<T>(
     preissue: &ControllerExecutionPreissueV1,
     signer: &ControllerBrokerPlanSignerV1,
     clock: &mut T,
+    receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+    bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+    profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+) -> Result<(), EffectFailure>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    advance_inner_v3(sessions, operation, controller, assignment, environment, parent, preissue,
+        signer, clock, receiving, bank, profile, CandidateScheduleV3::Ordinary)
+}
+
+// This closed scheduling choice changes the first query frontier only. It
+// grants no admission, result adoption, renewal or alternative Session owner.
+#[derive(Clone, Copy)]
+enum CandidateScheduleV3 { Ordinary, AfterSpecification }
+
+/// Defers first candidate acquisition until the actual canonical spec exists.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn advance_registration_v3<T>(
+    sessions: &SharedControllerBrokerSessions,
+    operation: OperationId,
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    environment: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    preissue: &ControllerExecutionPreissueV1,
+    signer: &ControllerBrokerPlanSignerV1,
+    clock: &mut T,
+    receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+    bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+    profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+) -> Result<(), EffectFailure>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    advance_inner_v3(sessions, operation, controller, assignment, environment, parent, preissue,
+        signer, clock, receiving, bank, profile, CandidateScheduleV3::AfterSpecification)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_inner_v3<T>(
+    sessions: &SharedControllerBrokerSessions,
+    operation: OperationId,
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    environment: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    preissue: &ControllerExecutionPreissueV1,
+    signer: &ControllerBrokerPlanSignerV1,
+    clock: &mut T,
+    receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+    bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+    profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+    schedule: CandidateScheduleV3,
 ) -> Result<(), EffectFailure>
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
@@ -219,13 +342,14 @@ where
     } else {
         advance_on_original_session(
             &mut sessions, operation, controller, assignment, environment,
-            parent, preissue, signer, clock,
+            parent, preissue, signer, clock, receiving, bank, profile,
         )
     };
     let returned = match registered {
+        Ok(()) if matches!(schedule, CandidateScheduleV3::AfterSpecification) => Ok(()),
         Ok(()) => advance_original_capture_candidate(
             &mut sessions, operation, controller, assignment, environment,
-            parent, preissue, signer, clock,
+            parent, preissue, signer, clock, receiving, bank, profile,
         ),
         Err(error) => Err(error),
     };
@@ -264,23 +388,55 @@ fn advance_original_capture_candidate<T>(
     environment: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
     parent: &ExecutionParentResourceSourceV1, preissue: &ControllerExecutionPreissueV1,
     signer: &ControllerBrokerPlanSignerV1, clock: &mut T,
+    receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+    bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+    profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
 ) -> Result<(), EffectFailure>
 where T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
     let storage = sessions.storage.as_mut().ok_or_else(closed)?;
+    advance_original_capture_candidate_on_storage_v3(storage, operation, controller,
+        assignment, environment, parent, preissue, signer, clock, receiving, bank, profile)
+}
+
+/// Uses the same candidate engine after actual Host59 and spec preparation.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn advance_original_capture_candidate_on_storage_v3<T>(
+    storage: &mut super::inventory::DormantStorageLifecycleInventoryOwnerV1, operation: OperationId,
+    controller: &mut Journal, assignment: &CurrentAssignmentTarget,
+    environment: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1, preissue: &ControllerExecutionPreissueV1,
+    signer: &ControllerBrokerPlanSignerV1, clock: &mut T,
+    receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+    bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+    profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+) -> Result<(), EffectFailure>
+where T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
     // Literal ordinary/Nix profiles do not enter this selected continuation.
     // A genuinely selected Session still passes the fixed-root/method checks
     // in its closed coordinates and pending/terminal loans before any signing.
     if !storage.capture_candidate_profile_selected() { return Ok(()); }
+    let mode = aos_sandbox::controller_execution_preissue::execution_preissue_io_mode_v3(controller, preissue)
+        .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
+    if mode != aos_proto::aos::sandbox::v1::ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE {
+        return Ok(());
+    }
     let (registration, candidate, session) = storage.capture_candidate_loan()?;
     if !registration.coordinated_terminal { return Err(closed()); }
     if candidate.is_none() {
+        let fixed = crate::controller_service::capture_candidate_exchange::ControllerStorageCaptureCandidateExchangeV1::fixed_receiving_demand_v1()
+            .ok_or_else(closed)?;
+        receiving.admit_stage_v1(bank, controller, profile,
+            aos_sandbox_broker::controller_receiving::bank_launch::ControllerOperationIntakeDemandDataV1::from_demand_v1(fixed))
+            .map_err(|_| closed())?;
         *candidate = Some(crate::controller_service::capture_candidate_exchange::ControllerStorageCaptureCandidateExchangeV1::begin(
             registration.operation, registration.execution,
         ));
     }
     let original = candidate.as_mut().ok_or_else(closed)?;
-    original.advance(session, operation, controller, assignment, environment, parent, preissue, signer, clock)?;
+    original.advance(session, operation, controller, assignment, environment, parent, preissue, signer, clock,
+        receiving, bank, profile)?;
     // The observation stays in its original slot. It is informational only;
     // neither this return nor the signed candidate changes Create/Host gates.
     original.observation().ok_or_else(closed).map(|_| ())
@@ -297,6 +453,9 @@ fn advance_on_original_session<T>(
     preissue: &ControllerExecutionPreissueV1,
     signer: &ControllerBrokerPlanSignerV1,
     clock: &mut T,
+    receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+    bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+    profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
 ) -> Result<(), EffectFailure>
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
@@ -311,6 +470,11 @@ where
         *pending = None;
     }
     if pending.is_none() {
+        let fixed = OriginalControllerOutputRegistrationV1::fixed_receiving_demand_v1()
+            .ok_or_else(closed)?;
+        receiving.admit_stage_v1(bank, controller, profile,
+            aos_sandbox_broker::controller_receiving::bank_launch::ControllerOperationIntakeDemandDataV1::from_demand_v1(fixed))
+            .map_err(|_| closed())?;
         *pending = Some(OriginalControllerOutputRegistrationV1::begin(operation, preissue.execution()));
     }
     let attempt = pending.as_mut().ok_or_else(closed)?;
@@ -326,7 +490,7 @@ where
     attempt.started = true;
     let mut boundary = ControllerRegistrationBoundaryV1 { attempt };
     let returned = advance_inner(
-        &mut *boundary.attempt, session, controller, assignment, environment, parent, preissue, signer, clock,
+        &mut *boundary.attempt, session, controller, assignment, environment, parent, preissue, signer, clock, receiving, bank, profile,
     );
     if let Err(error) = returned {
         if boundary.attempt.failure(session).is_none() && boundary.attempt.postcheck_debt(session).is_none() {
@@ -351,10 +515,15 @@ fn advance_inner<T>(
     preissue: &ControllerExecutionPreissueV1,
     signer: &ControllerBrokerPlanSignerV1,
     clock: &mut T,
+    receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+    bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+    profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
 ) -> Result<(), EffectFailure>
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
+    attempt.receiving.admit_v1(session, BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT,
+        receiving, bank, controller, profile)?;
     session.park_output_client_coordinates(
         BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT,
         preissue.deadline_boottime_nanoseconds(), &mut attempt.flight,
@@ -381,33 +550,9 @@ where
     { return Err(closed()); }
     if !attempt.wait(session, 1, false, coordinates.deadline_boottime_nanoseconds()) { return Err(closed()); }
     let request = attempt.flight.request().ok_or_else(closed)?;
-    {
-        let mut transport = session.output_registration_transport(request, &mut attempt.preparation);
-        transport.receive(request, NOMINATION_V1).map_err(|_| closed())?;
-        transport.finish_turn(request).map_err(|_| closed())?;
-    }
-    let nomination = attempt.preparation.record(NOMINATION_V1).ok_or_else(closed)?;
-    attempt.host_issuer.sign(controller, &attempt.storage_issuer, request, nomination, signer, clock);
-    let authorization = attempt.host_issuer.authorization().ok_or_else(closed)?;
-    let controller_head = {
-        let mut transport = session.output_registration_transport(request, &mut attempt.preparation);
-        let head = transport.original_head(request).map_err(|_| closed())?;
-        transport.finish_turn(request).map_err(|_| closed())?;
-        head
-    };
-    let nomination = attempt.preparation.record(NOMINATION_V1).ok_or_else(closed)?;
-    attempt.authorization = Some(StorageOutputRegistrationPreparationV1 {
-        version: 1, stage: AUTHORIZATION_V1,
-        original_storage_request_id: nomination.original_storage_request_id.clone(),
-        original_storage_session_binding: nomination.original_storage_session_binding.clone(),
-        original_signed_request_digest: nomination.original_signed_request_digest.clone(),
-        original_semantic_request_digest: nomination.original_semantic_request_digest.clone(),
-        storage_pending_head: nomination.storage_pending_head.clone(),
-        controller_pending_head: controller_head.to_vec(),
-        canonical_host_readback_request: nomination.canonical_host_readback_request.clone(),
-        host_authorization: Some(authorization.clone()).into(),
-        ..Default::default()
-    });
+    attempt.authorization = Some(prepare_output_authorization_v3(
+        HostOutputPreparationSourceV3::Logical(&attempt.storage_issuer), session, controller,
+        request, &mut attempt.preparation, &mut attempt.host_issuer, signer, clock)?);
     source_bookend(attempt, 1, controller, assignment, environment, parent, preissue, clock)?;
     if !attempt.wait(session, 2, true, coordinates.deadline_boottime_nanoseconds()) { return Err(closed()); }
     {
@@ -484,4 +629,64 @@ where
 
 fn closed() -> EffectFailure {
     EffectFailure::Permanent("original Storage output registration remains resident and closed".to_owned())
+}
+
+/// Builds comparison DATA from the same checked nomination for46 and60.
+pub(super) fn preparation_authorization_v3(
+    nomination: &StorageOutputRegistrationPreparationV1,
+    authorization: &aos_proto::aos::sandbox::local::v1::BrokerAuthorizationArtifactsV1,
+    controller_head: [u8; 32],
+) -> StorageOutputRegistrationPreparationV1 {
+    StorageOutputRegistrationPreparationV1 {
+        version: 1, stage: AUTHORIZATION_V1,
+        original_storage_request_id: nomination.original_storage_request_id.clone(),
+        original_storage_session_binding: nomination.original_storage_session_binding.clone(),
+        original_signed_request_digest: nomination.original_signed_request_digest.clone(),
+        original_semantic_request_digest: nomination.original_semantic_request_digest.clone(),
+        storage_pending_head: nomination.storage_pending_head.clone(),
+        controller_pending_head: controller_head.to_vec(),
+        canonical_host_readback_request: nomination.canonical_host_readback_request.clone(),
+        host_authorization: Some(authorization.clone()).into(),
+        ..Default::default()
+    }
+}
+
+/// Selects only the actual retained issuer or completed registration owner.
+pub(super) enum HostOutputPreparationSourceV3<'owner> {
+    Logical(&'owner OriginalStorageOutputIssuerV1),
+    Capture(&'owner OriginalControllerOutputRegistrationV1),
+}
+
+/// Runs the one nomination, Host signer and local-head preparation engine.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_output_authorization_v3<T>(
+    source: HostOutputPreparationSourceV3<'_>,
+    session: &mut DormantAuthenticatedBrokerSessionV1, controller: &mut Journal,
+    request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    preparation: &mut OutputPreparationCustodyV1,
+    host_issuer: &mut OriginalHostOutputIssuerV1,
+    signer: &ControllerBrokerPlanSignerV1, clock: &mut T,
+) -> Result<StorageOutputRegistrationPreparationV1, EffectFailure>
+where T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError> {
+    {
+        let mut transport = session.output_registration_transport(request, preparation);
+        transport.receive(request, NOMINATION_V1).map_err(|_| closed())?;
+        transport.finish_turn(request).map_err(|_| closed())?;
+    }
+    let nomination = preparation.record(NOMINATION_V1).ok_or_else(closed)?;
+    match source {
+        HostOutputPreparationSourceV3::Logical(storage) =>
+            host_issuer.sign(controller, storage, request, nomination, signer, clock),
+        HostOutputPreparationSourceV3::Capture(registration) =>
+            host_issuer.sign_capture_v3(controller, registration, request, nomination, signer, clock),
+    }
+    let authorization = host_issuer.authorization().ok_or_else(closed)?;
+    let head = {
+        let mut transport = session.output_registration_transport(request, preparation);
+        let head = transport.original_head(request).map_err(|_| closed())?;
+        transport.finish_turn(request).map_err(|_| closed())?;
+        head
+    };
+    let nomination = preparation.record(NOMINATION_V1).ok_or_else(closed)?;
+    Ok(preparation_authorization_v3(nomination, authorization, head))
 }

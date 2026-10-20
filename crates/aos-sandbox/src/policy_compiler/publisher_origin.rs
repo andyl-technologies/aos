@@ -1,7 +1,7 @@
 //! Owns native compiled-revision preparation and Publisher store publication.
 //!
 //! Only the real compiler producer constructs [`CompiledPublisherPolicyRevisionV2`].
-//! The lower Policy owner supplies bounded canonical revision and retained-origin
+//! Protocol supplies bounded canonical revision and retained-origin
 //! DATA. Cold decoding preserves bytes and commitments without reconstructing
 //! authenticated model constructors; comparison requires independently typed
 //! original inputs and their original target.
@@ -12,11 +12,14 @@
 //! independently current inputs, publication authority or an effect handoff.
 
 use crate::CommitResult;
-use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyStore};
+use crate::publisher_admin::policy::{PublisherPolicyError, PublisherPolicyStore};
 use aos_sandbox_core::DecodeLimits;
 use aos_sandbox_policy::{
-    PolicyCompilerInputV1, PolicyCompilerV1, PreparedPublisherPolicyRevisionV1,
-    RetainedPublisherCompilerOriginV3, retain_publisher_compiler_derivation_v3,
+    PolicyCompilerInputV1, PolicyCompilerV1, retain_publisher_compiler_derivation_v3,
+};
+use aos_sandbox_protocol::policy_data::{
+    PreparedPublisherPolicyRevisionV1,
+    RetainedPublisherCompilerOriginV3,
 };
 
 // Existing native whole-revision bound, not extra journal capacity.

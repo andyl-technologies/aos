@@ -23,6 +23,11 @@
 pub mod admission;
 mod authority_record;
 mod controller_bootstrap;
+#[cfg(target_os = "linux")]
+pub(crate) use controller_bootstrap::CONTROLLER_CACHE_ROOT as CONTROLLER_CACHE_READONLY_ROOT_V1;
+#[cfg(target_os = "linux")]
+pub(crate) use controller_bootstrap::CacheSelectedBootstrapImportV1;
+pub(crate) use controller_bootstrap::CacheBootstrapImportGeometryV1;
 pub mod domain;
 #[cfg(target_os = "linux")]
 mod effect_owner;
@@ -33,9 +38,24 @@ mod owner_readback;
 pub mod pin;
 mod protected_journal;
 mod protected_owner;
-pub(crate) use protected_owner::PROTECTED_CACHE_ROOT;
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use protected_owner::{CacheDeleteInventoryOriginalV1, CacheDeleteInventoryQueryV1};
 #[cfg(target_os = "linux")]
 pub(crate) use protected_owner::{
+    cache_terminal_receiving_demand_v1, CacheReleasedOriginalsV1, CacheReleasedShapeV1, CacheReleasedAppendLoanV1, CacheReleasedCurrentnessSiteV1, release_receiving_demand_v1, release_append_bytes_v1,
+    OriginalCreateStorageCacheLoanV1, CacheCurrentAuditOriginalsV1, CacheCurrentAuditShapeV1, CacheHeldAppendLoanV1, CacheHeldPreRootCutV1, CacheHeldReadonlyContextV1,
+    CacheHeldSelectionOriginalV1,
+    CacheHeldNativeSemanticShapeV1, CacheCreateStorageReceivingShapeV1,
+    CacheHeldIdentityDataV1, CacheHeldErrorV1, CacheHeldClosedV1, CacheHeldCurrentnessSiteV1,
+};
+pub(crate) use protected_owner::PROTECTED_CACHE_ROOT;
+#[cfg(target_os = "linux")]
+pub(crate) use protected_owner::InitializerJournal;
+pub(crate) use protected_owner::CacheReplayManifestGeometryV1;
+#[cfg(target_os = "linux")]
+pub(crate) use protected_owner::{
+    OriginalQ04CachePreflightLoanV1, OriginalQ04CacheCaptureShapeV1,
     OriginalQ04CacheClearanceLoanV1, OriginalQ04CacheOwnerCutV1,
     Q04CachePrepareReadbackV1,
     Q04RootCacheTerminalOutcomeV1, Q04RootCacheTerminalRequestV1,
@@ -92,18 +112,9 @@ pub use format::{
     encode_idempotency_floor, encode_record,
 };
 #[cfg(target_os = "linux")]
-pub use owner_readback::{
-    CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CLOSED_CACHE_OWNER_READBACK_BYTES_V2,
-    CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1, PinnedCacheOwnerReadbackSignerV1,
-    VerifiedClosedCacheOwnerReadbackV1, VerifiedClosedCacheOwnerReadbackV2,
-    encode_cache_owner_readback_signer_credential_v1, verify_closed_cache_owner_readback_v1,
-    verify_closed_cache_owner_readback_v2,
-};
+pub use owner_readback::CacheOwnerReadbackErrorV1;
 #[cfg(all(test, target_os = "linux"))]
-pub(crate) use owner_readback::{
-    sign_test_cache_owner_readback_v1, sign_test_cache_owner_readback_v2,
-    sign_test_cache_owner_readback_with_manifest_v1,
-};
+pub(crate) use owner_readback::sign_test_cache_owner_readback_v2;
 pub use pin::{
     CachePinCompactionPhysicalProofV1, CachePinId, CachePinKindV1, CachePinLedgerV1, CachePinV1,
     PinCompactionFloorV1, PinDrainEvidenceV1, PinDrainOutcomeV1, PinError, ReleasedCachePinV1,
@@ -174,3 +185,11 @@ pub use scrub::{
 };
 #[cfg(target_os = "linux")]
 pub use signer_readback::{CacheSignerReadbackErrorV1, sign_fixed_signer_cache_owner_readback_v2};
+
+#[cfg(target_os = "linux")]
+pub use protected_owner::{CreateStorageCacheCurrentExtentsDataV1, create_storage_cache_current_dynamic_receiving_demand_v1};
+#[cfg(target_os = "linux")]
+pub(crate) use protected_owner::current_cache_fixed_receiving_demand_v1;
+
+// Historical-only selection; it cannot construct any Native Cache original.
+pub(crate) use protected_owner::{actionable_rows_data_v2, actionable_rows_receiving_demand_v2};

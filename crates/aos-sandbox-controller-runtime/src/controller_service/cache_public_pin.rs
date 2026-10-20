@@ -17,7 +17,7 @@ use aos_sandbox::cache_residency::{
 };
 use aos_sandbox_protocol::cache_state::{CatalogPresenceV1, PhysicalPartitionId};
 use aos_sandbox::filesystem_view_state::DurableFilesystemViewRevisionV1;
-use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
+use aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1;
 use aos_sandbox_core::{NodeId, OperationId};
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use sha2::{Digest as _, Sha256};
@@ -58,7 +58,7 @@ pub(super) fn execute_resident_public_cache_pin_v1(
     physical: &mut DormantCacheOwnerV1,
     source: &mut ProjectSealedViewObjectSourceV1,
     revision: &DurableFilesystemViewRevisionV1,
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
     source_journal: &Journal,
     request: &DormantSandboxRequestKindV1,
     operation: OperationId,
@@ -138,7 +138,7 @@ fn cache_pin_root_error(
 fn public_pin_partition_payload_matches(
     payload: &aos_sandbox::cache_residency::CacheAtomicObjectPayloadV1,
     partition: PhysicalPartitionId,
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
 ) -> bool {
     payload.plan.partition == partition
         && payload.plan.project == consumer.project()
@@ -149,54 +149,6 @@ fn public_pin_partition_payload_matches(
             .is_some_and(|entry| entry.presence == CatalogPresenceV1::Committed)
 }
 
-fn public_consumer_pin_matches(pin: &CachePinV1, consumer: &RecheckedCacheConsumerV1) -> bool {
-    pin.object() == consumer.object()
-        && pin.project() == consumer.project()
-        && pin.view() == consumer.view()
-        && pin.attachment() == consumer.attachment()
-        && pin.kind() == aos_sandbox::cache_residency::CachePinKindV1::LogicalLease
-}
-
-fn select_resident_consumer_pins(
-    inventories: &[aos_sandbox::cache_residency::CacheRecoveryInventoryV1],
-    consumer: &RecheckedCacheConsumerV1,
-) -> Result<(Vec<CachePinV1>, Vec<CachePinV1>), CacheResidencyProtectedJournalErrorV1> {
-    let mut active = Vec::new();
-    let mut released = Vec::new();
-    for inventory in inventories {
-        let mut partition_pin = None;
-        for payload in &inventory.reconstructed {
-            if &payload.plan.descriptor != consumer.object()
-                || payload.plan.project != consumer.project()
-            {
-                continue;
-            }
-            for pin in &payload.pins {
-                if pin.partition() != payload.plan.partition
-                    || !public_consumer_pin_matches(pin, consumer)
-                {
-                    continue;
-                }
-                if partition_pin.replace(pin.clone()).is_some() {
-                    return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-                }
-            }
-            for tombstone in &payload.released_pins {
-                if tombstone.pin.partition() != payload.plan.partition {
-                    return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-                }
-                if public_consumer_pin_matches(&tombstone.pin, consumer) {
-                    released.push(tombstone.pin.clone());
-                }
-            }
-        }
-        if let Some(pin) = partition_pin {
-            active.push(pin);
-        }
-    }
-    Ok((active, released))
-}
-
 /// Releases all partitions, then checks every retained release tombstone.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_resident_public_cache_unpin_v1(
@@ -204,15 +156,12 @@ pub(super) fn execute_resident_public_cache_unpin_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
     progress: &mut ResidentPublicCacheUnpinV1,
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
     source_journal: &Journal,
     request: &DormantSandboxRequestKindV1,
     operation: OperationId,
 ) -> Result<(), aos_sandbox::cache_residency::CacheResidentUnavailableV1> {
-    progress.selected = Some(select_resident_consumer_pins(
-        original.existing_pin_inventories(protected)?,
-        consumer,
-    ));
+    progress.selected = Some(original.existing_consumer_logical_pins_v1(protected, consumer));
     let Some(Ok((active, _))) = progress.selected.as_ref() else {
         return Err(aos_sandbox::cache_residency::CacheResidentUnavailableV1);
     };
@@ -231,10 +180,7 @@ pub(super) fn execute_resident_public_cache_unpin_v1(
 
     // Recapture all partitions only after the exact own successors settled.
     // This replaces completed selection DATA, not any failed or live owner.
-    progress.selected = Some(select_resident_consumer_pins(
-        original.existing_pin_inventories(protected)?,
-        consumer,
-    ));
+    progress.selected = Some(original.existing_consumer_logical_pins_v1(protected, consumer));
     let Some(Ok((active, released))) = progress.selected.as_ref() else {
         return Err(aos_sandbox::cache_residency::CacheResidentUnavailableV1);
     };
@@ -382,7 +328,7 @@ pub(super) fn execute_public_cache_pin_from_project_revision_v1(
     physical: &mut DormantCacheOwnerV1,
     source: &mut ProjectSealedViewObjectSourceV1,
     revision: &DurableFilesystemViewRevisionV1,
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
     source_journal: &Journal,
     request: &DormantSandboxRequestKindV1,
     operation: OperationId,
@@ -565,7 +511,7 @@ pub(super) fn public_cache_unpin_transaction_id_v1(pin: &CachePinV1) -> [u8; 16]
 pub(super) fn recover_public_cache_pin_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
     operation: OperationId,
 ) -> Result<PublicCachePinRecoveryV1, PublicCachePinRecoveryErrorV1> {
     if consumer.acquisition_fence().is_none() {
@@ -611,7 +557,7 @@ pub(super) fn recover_public_cache_pin_v1(
 pub(super) fn recover_public_cache_unpin_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
     pin: &CachePinV1,
 ) -> Result<PublicCacheUnpinRecoveryV1, PublicCacheUnpinRecoveryErrorV1> {
     if consumer.acquisition_fence().is_some() {
@@ -662,7 +608,7 @@ pub(super) fn recover_public_cache_unpin_v1(
 pub(super) fn observe_public_cache_unpin_completion_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &DormantCacheOwnerV1,
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
 ) -> Result<bool, PublicCacheUnpinObservationErrorV1> {
     let retained = protected.retained_consumer_logical_pins(
         consumer.object(),
@@ -705,7 +651,7 @@ pub(super) fn observe_public_cache_unpin_completion_v1(
 pub(super) fn execute_public_cache_unpin_consumer_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
     source_journal: &Journal,
     request: &DormantSandboxRequestKindV1,
     operation: OperationId,
@@ -764,7 +710,7 @@ pub(super) fn execute_public_cache_unpin_consumer_v1(
 fn commit_public_pin_for_membership<E: std::error::Error + 'static>(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
     membership: &ValidatedViewSourceObject<'_, '_, '_>,
     source_journal: &Journal,
     request: &DormantSandboxRequestKindV1,
@@ -810,7 +756,7 @@ fn commit_public_pin_for_membership<E: std::error::Error + 'static>(
 
 fn select_public_cache_pin_partition_v1<E: std::error::Error + 'static>(
     protected: &mut CacheResidencyProtectedOwnerV1,
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
     membership: &ValidatedViewSourceObject<'_, '_, '_>,
     controller_node: NodeId,
 ) -> Result<PhysicalPartitionId, PublicCachePinExecutionErrorV1<E>> {
@@ -825,8 +771,8 @@ fn select_public_cache_pin_partition_v1<E: std::error::Error + 'static>(
             continue;
         }
 
-        for payload in inventory.reconstructed {
-            if !public_pin_partition_payload_matches(&payload, partition, consumer) {
+        for payload in &inventory.reconstructed {
+            if !public_pin_partition_payload_matches(payload, partition, consumer) {
                 continue;
             }
             if selected.replace(partition).is_some() {
@@ -854,7 +800,7 @@ fn select_public_cache_pin_partition_v1<E: std::error::Error + 'static>(
 pub(super) fn execute_public_cache_unpin_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
     source_journal: &Journal,
     request: &DormantSandboxRequestKindV1,
     operation: OperationId,

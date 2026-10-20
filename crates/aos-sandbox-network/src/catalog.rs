@@ -188,6 +188,15 @@ pub(crate) fn encode_resolution(catalog: &ResolvedNetworkPreparationV1) -> Vec<u
     bytes
 }
 
+// Assignment80 + resolution74 + one fixed endpoint48 per actual endpoint.
+// This belongs beside the canonical encoder so prepayment never serializes
+// a catalog merely to discover its own output extent.
+pub(crate) fn authenticated_resolution_encoded_length_data_v2(
+    catalog: &ResolvedNetworkPreparationV1,
+) -> Option<usize> {
+    154usize.checked_add(catalog.endpoints().len().checked_mul(48)?)
+}
+
 pub(crate) fn encode_authenticated_resolution(
     assignment: BrokerAssignment,
     catalog: &ResolvedNetworkPreparationV1,

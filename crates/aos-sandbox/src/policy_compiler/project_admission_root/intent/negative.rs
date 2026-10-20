@@ -3,13 +3,17 @@
 //! This path is available with independently retained role pins after positive
 //! credentials expire. It admits no policy input and never creates a stage.
 
+use aos_sandbox_policy::journal_keys::{CONTROLLER_HOLD_PIN_KEY, SOURCE_HOLD_PIN_KEY};
+
+use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
+
 use crate::journal::{Journal, RecordNamespace};
 use crate::policy_compiler::controller_project_dispatch_readback::verify_controller_project_dispatch_readback_v1;
-use crate::policy_compiler::{PinnedControllerHoldSignerV1, PinnedSourceHoldReadbackSignerV1};
+use crate::policy_compiler::PinnedSourceHoldReadbackSignerV1;
 
 use super::super::super::binding_v2::ensure_root_binding_unheld;
-use super::super::super::controller_hold_pin::CONTROLLER_HOLD_PIN_KEY;
-use super::super::super::source_hold_pin::SOURCE_HOLD_PIN_KEY;
+
+
 use super::{
     KEY, PolicyDeploymentHeadErrorV1, RootProjectAdmissionIntentV1, STAGE_KEY, SUFFIX_BYTES,
     SUFFIX_RECORDS, commit_intent, current_project_head_digests, open_fixed_root_project_journal,
@@ -41,6 +45,7 @@ fn historical_role_pins(
         return Ok(None);
     };
     let controller = PinnedControllerHoldSignerV1::decode(controller)
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
     let source = PinnedSourceHoldReadbackSignerV1::decode(source)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;

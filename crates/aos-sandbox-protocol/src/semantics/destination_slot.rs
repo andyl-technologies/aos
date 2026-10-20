@@ -154,18 +154,18 @@ fn action_semantics(
     }
 }
 
-struct Encoder {
+pub(crate) struct Encoder {
     bytes: Vec<u8>,
 }
 
 impl Encoder {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             bytes: Vec::with_capacity(384),
         }
     }
 
-    fn field(&mut self, tag: u8, value: &[u8]) -> Result<(), DestinationSlotSemanticError> {
+    pub(crate) fn field(&mut self, tag: u8, value: &[u8]) -> Result<(), DestinationSlotSemanticError> {
         let length = u32::try_from(value.len())
             .map_err(|_| DestinationSlotSemanticError::EncodingTooLarge)?;
         let next = self
@@ -182,7 +182,7 @@ impl Encoder {
         Ok(())
     }
 
-    fn descriptor(
+    pub(crate) fn descriptor(
         &mut self,
         tag: u8,
         descriptor: &aos_sandbox_core::ObjectDescriptor,
@@ -198,7 +198,7 @@ impl Encoder {
         self.field(tag, &value)
     }
 
-    fn finish(self) -> Vec<u8> {
+    pub(crate) fn finish(self) -> Vec<u8> {
         self.bytes
     }
 }

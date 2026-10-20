@@ -550,6 +550,16 @@ pub(super) fn require_transition(
     allow_capacity: bool,
     settling: Option<[u8; 32]>,
 ) -> Result<(), crate::JournalError> {
+    require_transition_read_v1(Some(journal), journal.historical_read_view_v1(), transaction, allow_capacity, settling)
+}
+
+pub(super) fn require_transition_read_v1(
+    journal: Option<&Journal>,
+    history: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerReadViewV1<'_>,
+    transaction: &JournalTransaction,
+    allow_capacity: bool,
+    settling: Option<[u8; 32]>,
+) -> Result<(), crate::JournalError> {
     use crate::JournalError;
     let resources: Vec<_> = transaction
         .records()
@@ -566,30 +576,13 @@ pub(super) fn require_transition(
         // Preserve its diagnostics/order for unrelated malformed transactions.
         return Ok(());
     }
-    let touches_our_capacity = capacities.iter().try_fold(false, |found, record| {
-        let stored;
-        let capacity = if record.value().is_some() {
-            *record
-        } else if let Some(value) =
-            journal.get(RecordNamespace::GlobalCapacityReservation, record.key())
-        {
-            stored = JournalRecord::put(
-                RecordNamespace::GlobalCapacityReservation,
-                record.key().to_vec(),
-                value.to_vec(),
-            );
-            &stored
-        } else {
-            return Ok::<_, JournalError>(found);
-        };
-        // Decode each row before combining matches: a preceding purpose-7
-        // match must not hide a later malformed or unknown capacity family.
-        let matches = aos_sandbox_protocol::domain_ledger::capacity_family::capacity_record_has_legacy_purpose(capacity, PURPOSE).map_err(JournalError::from)?;
-        Ok(found || matches)
-    })?;
+    let touches_our_capacity = aos_sandbox_ledger_replay::ordinary_mutation::consumer_capacity_is_selected_v1(
+        history.materialized_state_v1(), transaction,
+    ).map_err(JournalError::from)?;
     if resources.is_empty() && !touches_our_capacity {
         return Ok(());
     }
+    let journal = journal.ok_or(crate::JournalError::ProtectedBoundary)?;
     let validate = || -> Result<(), ConsumerResourceErrorV1> {
         if !allow_capacity
             || resources.len() != 1

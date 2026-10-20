@@ -13,7 +13,7 @@ use aos_sandbox::controller_execution_output_settlement::{
     settle_authenticated_host_output_v1,
 };
 use aos_sandbox::controller_execution_preissue::ControllerExecutionOutputAttemptV1;
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{EffectFailure, Journal};
 use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId, RawPairedClockSample};
@@ -112,9 +112,59 @@ impl ControllerHostOutputObservationV1 {
 #[derive(Default)]
 pub(crate) struct ControllerHostOutputExchangeV1 {
     exchange: RetainedBrokerExchangeV1<OutputExchangeContextV1>,
+    receiving: super::argument_exchange::ExecutionSessionReceivingOriginalV1,
+    issuance_error: Option<EffectFailure>,
+    preflight_error: Option<BrokerSessionSecurityError>,
+    currentness: Option<crate::ProtectedBrokerOutcomeCurrentnessOwnerV1>,
+    completed: Option<Result<ControllerHostOutputObservationV1, EffectFailure>>,
 }
 
 impl ControllerHostOutputExchangeV1 {
+    pub(crate) fn retire_no_apply_v2(&mut self,
+        completed: &aos_sandbox::controller_execution_operation::ControllerExecutionNoApplyDisposedOriginalV2,
+        disposal: &aos_sandbox::controller_execution_operation::ControllerExecutionPositiveDisposalV1<'_>,
+        execution: ExecutionId,
+    ) -> Result<(), EffectFailure> {
+        completed.require_resource_disposal_for_execution_v2(disposal, execution)
+            .map_err(|_| retryable("Host output NoApply disposal changed its actual source"))?;
+        if self.exchange.has_pending() || self.receiving.failure().is_some() {
+            return Err(retryable("Host output keeps pending native custody during NoApply disposal"));
+        }
+        if self.completed.as_ref().and_then(|value| value.as_ref().ok())
+            .is_some_and(|value| !value.matches(execution, disposal.operation_v1())) {
+            return Err(retryable("Host output NoApply disposal selects another execution"));
+        }
+        drop(std::mem::take(self));
+        Ok(())
+    }
+
+    /// Retires only this operation's positive owners under the real held cut.
+    pub(crate) fn retire_positive_v1(
+        &mut self,
+        disposal: &aos_sandbox::controller_execution_operation::ControllerExecutionPositiveDisposalV1<'_>,
+        execution: ExecutionId,
+    ) -> Result<(), EffectFailure> {
+        let completed = self.completed.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or_else(|| retryable("Host output has no completed original"))?;
+        if !completed.matches(execution, disposal.operation_v1())
+            || self.currentness.is_none() || self.exchange.has_pending()
+            || self.exchange.execution_failure().is_some() || self.receiving.failure().is_some()
+        {
+            return Err(retryable("Host output positive disposal changed its original"));
+        }
+        *self = Self::default();
+        Ok(())
+    }
+
+    /// Borrows the first reached input or exact Session mutation failure.
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.receiving.failure()
+            .or_else(|| self.issuance_error.as_ref().map(|error| error as _))
+            .or_else(|| self.preflight_error.as_ref().map(|error| error as _))
+            .or_else(|| self.exchange.execution_failure())
+            .or_else(|| self.completed.as_ref()?.as_ref().err().map(|error| error as _))
+    }
+
     /// Reports outstanding request or poisoned-session custody.
     pub(crate) const fn has_pending(&self) -> bool {
         self.exchange.has_pending()
@@ -133,6 +183,7 @@ impl ControllerHostOutputExchangeV1 {
         if error != BrokerSessionSecurityError::UnnegotiatedMethod {
             self.exchange.mark_failed();
         }
+        self.preflight_error.get_or_insert(error);
         retryable(message)
     }
 
@@ -145,8 +196,13 @@ impl ControllerHostOutputExchangeV1 {
     pub(crate) fn reserve(
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
+        receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        controller: &mut Journal,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
         issue: impl FnOnce(
             DormantBrokerRequestCoordinatesV1,
+            &mut Journal,
         ) -> Result<SignedExecutionOutputReserveV1, EffectFailure>,
     ) -> Result<ControllerHostOutputObservationV1, EffectFailure> {
         if self.exchange.has_pending() {
@@ -154,6 +210,14 @@ impl ControllerHostOutputExchangeV1 {
                 "another Host output request retains session custody",
             ));
         }
+        self.receiving.admit_v1(
+            session,
+            OutputMethodV1::Reserve.broker_method(),
+            receiving,
+            bank,
+            controller,
+            profile,
+        )?;
         session
             .require_negotiated_client_method(OutputMethodV1::Reserve.broker_method())
             .map_err(|error| {
@@ -164,7 +228,8 @@ impl ControllerHostOutputExchangeV1 {
             .prepare_authenticated_request_checked_fallible(
                 OutputMethodV1::Reserve.broker_method(),
                 |coordinates| {
-                    let signed = issue(coordinates).map_err(|_| {
+                    let signed = issue(coordinates, controller).map_err(|error| {
+                        self.issuance_error.get_or_insert(error);
                         BrokerSessionSecurityError::manifest("protected Host output reserve issuer")
                     })?;
                     let body = ReserveHostExecutionOutputRequestV1 {
@@ -184,7 +249,8 @@ impl ControllerHostOutputExchangeV1 {
                 },
                 |_| true,
             )
-            .map_err(|_| {
+            .map_err(|error| {
+                self.preflight_error.get_or_insert(error);
                 self.exchange.mark_failed();
                 retryable("original Host output attempt needs cold Query36 recovery")
             })?;
@@ -208,9 +274,14 @@ impl ControllerHostOutputExchangeV1 {
     pub(crate) fn query(
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
+        receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        controller: &mut Journal,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
         attempt: &ControllerExecutionOutputAttemptV1,
         issue: impl FnOnce(
             DormantBrokerRequestCoordinatesV1,
+            &mut Journal,
         ) -> Result<SignedExecutionOutputQueryV1, EffectFailure>,
     ) -> Result<ControllerHostOutputObservationV1, EffectFailure> {
         if self.exchange.has_pending() {
@@ -218,6 +289,14 @@ impl ControllerHostOutputExchangeV1 {
                 "another Host output request retains session custody",
             ));
         }
+        self.receiving.admit_v1(
+            session,
+            OutputMethodV1::Query.broker_method(),
+            receiving,
+            bank,
+            controller,
+            profile,
+        )?;
         session
             .require_negotiated_client_method(OutputMethodV1::Query.broker_method())
             .map_err(|error| self.preflight_failure(error, "Host output query preflight failed"))?;
@@ -226,7 +305,8 @@ impl ControllerHostOutputExchangeV1 {
             .prepare_authenticated_request_checked_fallible(
                 OutputMethodV1::Query.broker_method(),
                 |coordinates| {
-                    let signed = issue(coordinates).map_err(|_| {
+                    let signed = issue(coordinates, controller).map_err(|error| {
+                        self.issuance_error.get_or_insert(error);
                         BrokerSessionSecurityError::manifest("protected Host output query issuer")
                     })?;
                     let envelope = BrokerRequestEnvelope {
@@ -240,7 +320,8 @@ impl ControllerHostOutputExchangeV1 {
                 },
                 |_| true,
             )
-            .map_err(|_| {
+            .map_err(|error| {
+                self.preflight_error.get_or_insert(error);
                 self.exchange.mark_failed();
                 retryable("Host output query needs exact session recovery")
             })?;
@@ -265,18 +346,27 @@ impl ControllerHostOutputExchangeV1 {
         if self.exchange.context().is_none() {
             return Ok(None);
         }
-        let (context, outcome) = self.exchange.drive(session, &ERRORS)?;
-        let observation = classify_outcome(&context, &outcome);
-        if matches!(&observation, Err(EffectFailure::Permanent(_))) {
+        let (context, outcome, currentness) = self.exchange.drive_execution_publication(session, &ERRORS)?;
+        self.currentness = Some(currentness);
+        self.completed = Some(classify_outcome(&context, &outcome));
+        if matches!(self.completed, Some(Err(_))) {
             self.exchange.mark_failed();
         }
-        observation.map(Some)
+        match &self.completed {
+            Some(Ok(observation)) => Ok(Some(observation.clone())),
+            Some(Err(_)) => Err(retryable("Host output classification retained its original failure")),
+            None => Err(retryable(ERRORS.absent)),
+        }
     }
 
     /// Advances custody only for the journal-loaded original attempt.
     pub(crate) fn drain_for(
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
+        receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        controller: &mut Journal,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
         expected: &ControllerExecutionOutputAttemptV1,
     ) -> Result<Option<ControllerHostOutputObservationV1>, EffectFailure> {
         if self
@@ -289,6 +379,10 @@ impl ControllerHostOutputExchangeV1 {
             ));
         }
 
+        if self.exchange.context().is_some() {
+            receiving.require_current_v1(bank, controller, profile)
+                .map_err(|_| retryable("retained Host output financial original changed"))?;
+        }
         self.drain(session)
     }
 }
@@ -395,6 +489,29 @@ mod tests {
             BrokerSessionSecurityError::Currentness,
             "Host output reserve preflight failed",
         );
+        assert!(exchange.requires_reconnect());
+    }
+
+    #[test]
+    fn native_transaction_marker_survives_later_preflight_refusal() {
+        let mut exchange = ControllerHostOutputExchangeV1::default();
+        let transaction = [37; 16];
+        exchange.preflight_failure(
+            BrokerSessionSecurityError::CapturedJournalMutation { transaction },
+            "original native append failed",
+        );
+        let first = exchange.failure().unwrap() as *const dyn std::error::Error;
+
+        exchange.preflight_failure(
+            BrokerSessionSecurityError::Currentness,
+            "later closed-session refusal",
+        );
+
+        let retained = exchange.failure().unwrap();
+        assert!(std::ptr::eq(first, retained as *const dyn std::error::Error));
+        assert!(matches!(retained.downcast_ref::<BrokerSessionSecurityError>(),
+            Some(BrokerSessionSecurityError::CapturedJournalMutation { transaction: actual })
+                if *actual == transaction));
         assert!(exchange.requires_reconnect());
     }
 

@@ -18,14 +18,16 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use super::{DIAGNOSTICS_DOMAIN, PolicyCompilerJournalErrorV1};
 use aos_sandbox_policy::{
     AdvisoryActionV1, AdvisoryDegradationV1, AdvisoryKindV1, AdvisoryStatusV1,
-    canonicalize_advisory_actions, ExplanationDecisionV1, ExplanationReasonV1, ExplanationStageV1,
-    InputSourceV1, MAXIMUM_ADVISORY_RULES_PER_LAYER, MAXIMUM_CANONICAL_OBJECT_BYTES,
+    ExplanationDecisionV1, ExplanationReasonV1, ExplanationStageV1,
+    InputSourceV1, LogicalSourceV1,
+    MAXIMUM_ADVISORY_RULES_PER_LAYER,
     MAXIMUM_EXPLANATION_ENTRIES_PER_STAGE, MAXIMUM_NAMESPACE_RULES_PER_LAYER,
-    MAXIMUM_POLICY_ANCESTORS, canonical_bytes, digest, LogicalSourceV1, NamespaceCompositionV1,
+    MAXIMUM_POLICY_ANCESTORS, NamespaceCompositionV1,
     NamespaceExecutionClassV1, NamespaceGraphSchemaV1, NamespacePresentationFeatureV1,
-    NamespaceRuleV1, NamespaceSourceClassV1, ViewExecutionV1,
+    NamespaceRuleV1, NamespaceSourceClassV1, ViewExecutionV1, canonicalize_advisory_actions,
     validate_portable_namespace_rule_order,
 };
+use aos_sandbox_protocol::policy_data::{MAXIMUM_CANONICAL_OBJECT_BYTES, canonical_bytes, digest};
 
 const NAMESPACE_DOMAIN: &[u8] = b"aos.sandbox.portable-namespace-graph.v1";
 const ADVISORY_DOMAIN: &[u8] = b"aos.sandbox.portable-advisory-program.v1";
@@ -65,7 +67,10 @@ fn decode_exact<T: DeserializeOwned + Serialize>(
     }
 
     let claims: T = serde_json::from_slice(&bytes[length_end..]).map_err(|_| invalid())?;
-    if canonical_bytes(domain, &claims)? != bytes {
+    if canonical_bytes(domain, &claims)
+        .map_err(aos_sandbox_policy::PolicyModelError::from)?
+        != bytes
+    {
         return Err(invalid());
     }
     Ok(claims)
@@ -115,7 +120,8 @@ impl LogicalSourceClaims {
                 let classification = canonical_bytes(
                     b"aos.sandbox.executable-source-classification.v1",
                     &(self.handle, &self.selector, self.execution_class),
-                )?;
+                )
+                .map_err(aos_sandbox_policy::PolicyModelError::from)?;
                 let media =
                     MediaType::new(PortableMediaType::Content.as_str()).map_err(|_| invalid())?;
                 if evidence.descriptor != descriptor_for_bytes(media, &classification) {
@@ -327,7 +333,9 @@ pub(super) fn validate_diagnostics(bytes: &[u8]) -> Result<(), PolicyCompilerJou
                         || entry.causes.iter().any(|cause| !valid_input_source(*cause))
                 })
         })
-        || digest(b"aos.sandbox.policy-explanation.v2", &claims.stages)? != claims.commitment
+        || digest(b"aos.sandbox.policy-explanation.v2", &claims.stages)
+            .map_err(aos_sandbox_policy::PolicyModelError::from)?
+            != claims.commitment
     {
         return Err(invalid());
     }

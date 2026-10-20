@@ -103,13 +103,17 @@ fn finish_handshake(
         .unwrap_or_else(|error| panic!("client custody failed: {error}"));
     let broker_custody = load_broker_for_handshake_test(&fixture.broker, 0x31)
         .unwrap_or_else(|error| panic!("broker custody failed: {error}"));
-    let broker = BrokerPublicationFlight::begin(broker_custody, broker_carrier, broker_hello())
+    let broker = BrokerPublicationFlight::begin(
+        BrokerHandshakeCustodyV1::Fresh(broker_custody),
+        broker_carrier,
+        broker_hello(),
+    )
         .unwrap_or_else(|error| panic!("broker begin failed: {error:?}"));
     let broker = match broker.send() {
         Transition::Complete(state) => state,
         other => panic_transition("publication send", other),
     };
-    let client = ClientAwaitPublication::begin(client_custody, client_carrier, client_hello())
+    let client = ClientAwaitPublication::begin(ClientHandshakeCustodyV1::Fresh(client_custody), client_carrier, client_hello())
         .unwrap_or_else(|error| panic!("client begin failed: {error:?}"));
     let client = match client.receive() {
         Transition::Complete(state) => state,
@@ -517,7 +521,7 @@ fn start_client_hello_flight(fixture: &Fixture) -> (ClientHelloFlight, Seqpacket
         .unwrap_or_else(|error| panic!("client carrier failed: {error:?}"));
     let client_custody = load_client_for_handshake_test(&fixture.client, 0x21)
         .unwrap_or_else(|error| panic!("client custody failed: {error}"));
-    let client = ClientAwaitPublication::begin(client_custody, carrier, client_hello())
+    let client = ClientAwaitPublication::begin(ClientHandshakeCustodyV1::Fresh(client_custody), carrier, client_hello())
         .unwrap_or_else(|error| panic!("client begin failed: {error:?}"));
     let client = match client.receive() {
         Transition::Complete(state) => state,
@@ -563,13 +567,17 @@ fn start_broker_hello_flight(fixture: &Fixture) -> (BrokerHelloFlight, ClientAwa
         .unwrap_or_else(|error| panic!("client custody failed: {error}"));
     let broker_custody = load_broker_for_handshake_test(&fixture.broker, 0x31)
         .unwrap_or_else(|error| panic!("broker custody failed: {error}"));
-    let broker = BrokerPublicationFlight::begin(broker_custody, broker_carrier, broker_hello())
+    let broker = BrokerPublicationFlight::begin(
+        BrokerHandshakeCustodyV1::Fresh(broker_custody),
+        broker_carrier,
+        broker_hello(),
+    )
         .unwrap_or_else(|error| panic!("broker begin failed: {error:?}"));
     let broker = match broker.send() {
         Transition::Complete(state) => state,
         other => panic_transition("publication send", other),
     };
-    let client = ClientAwaitPublication::begin(client_custody, client_carrier, client_hello())
+    let client = ClientAwaitPublication::begin(ClientHandshakeCustodyV1::Fresh(client_custody), client_carrier, client_hello())
         .unwrap_or_else(|error| panic!("client begin failed: {error:?}"));
     let client = match client.receive() {
         Transition::Complete(state) => state,
@@ -630,10 +638,14 @@ fn every_receive_state_retries_without_consuming_typestate_on_both_carriers() {
             .unwrap_or_else(|error| panic!("client custody failed: {error}"));
         let broker_custody = load_broker_for_handshake_test(&fixture.broker, 0x31)
             .unwrap_or_else(|error| panic!("broker custody failed: {error}"));
-        let broker = BrokerPublicationFlight::begin(broker_custody, broker_carrier, broker_hello())
+        let broker = BrokerPublicationFlight::begin(
+            BrokerHandshakeCustodyV1::Fresh(broker_custody),
+            broker_carrier,
+            broker_hello(),
+        )
             .unwrap_or_else(|error| panic!("broker begin failed: {error:?}"));
         let mut client =
-            ClientAwaitPublication::begin(client_custody, client_carrier, client_hello())
+            ClientAwaitPublication::begin(ClientHandshakeCustodyV1::Fresh(client_custody), client_carrier, client_hello())
                 .unwrap_or_else(|error| panic!("client begin failed: {error:?}"));
 
         client.carrier.interrupt_next_receive();
@@ -745,7 +757,7 @@ fn wrong_manifest_publication_closes_before_client_hello() {
         .unwrap_or_else(|error| panic!("client carrier failed: {error:?}"));
     let custody = load_client_for_handshake_test(&fixture.client, 0x21)
         .unwrap_or_else(|error| panic!("client custody failed: {error}"));
-    let client = ClientAwaitPublication::begin(custody, carrier, client_hello())
+    let client = ClientAwaitPublication::begin(ClientHandshakeCustodyV1::Fresh(custody), carrier, client_hello())
         .unwrap_or_else(|error| panic!("client begin failed: {error:?}"));
     assert!(matches!(
         client.receive(),
@@ -768,7 +780,7 @@ fn malformed_replayed_and_over_ceiling_flights_fail_closed() {
             .unwrap_or_else(|error| panic!("publication carrier failed: {error:?}"));
         let custody = load_client_for_handshake_test(&publication_fixture.client, 0x21)
             .unwrap_or_else(|error| panic!("publication custody failed: {error}"));
-        let client = ClientAwaitPublication::begin(custody, carrier, client_hello())
+        let client = ClientAwaitPublication::begin(ClientHandshakeCustodyV1::Fresh(custody), carrier, client_hello())
             .unwrap_or_else(|error| panic!("publication begin failed: {error:?}"));
         assert!(matches!(
             client.receive(),
@@ -780,7 +792,11 @@ fn malformed_replayed_and_over_ceiling_flights_fail_closed() {
     let (mut client, broker_carrier) = carrier_pair(false);
     let broker_custody = load_broker_for_handshake_test(&client_hello_fixture.broker, 0x31)
         .unwrap_or_else(|error| panic!("broker custody failed: {error}"));
-    let broker = BrokerPublicationFlight::begin(broker_custody, broker_carrier, broker_hello())
+    let broker = BrokerPublicationFlight::begin(
+        BrokerHandshakeCustodyV1::Fresh(broker_custody),
+        broker_carrier,
+        broker_hello(),
+    )
         .unwrap_or_else(|error| panic!("broker begin failed: {error:?}"));
     let broker = match broker.send() {
         Transition::Complete(state) => state,
@@ -801,7 +817,11 @@ fn malformed_replayed_and_over_ceiling_flights_fail_closed() {
     let (mut client, broker_carrier) = carrier_pair(false);
     let broker_custody = load_broker_for_handshake_test(&replay_fixture.broker, 0x31)
         .unwrap_or_else(|error| panic!("replay broker custody failed: {error}"));
-    let broker = BrokerPublicationFlight::begin(broker_custody, broker_carrier, broker_hello())
+    let broker = BrokerPublicationFlight::begin(
+        BrokerHandshakeCustodyV1::Fresh(broker_custody),
+        broker_carrier,
+        broker_hello(),
+    )
         .unwrap_or_else(|error| panic!("replay broker begin failed: {error:?}"));
     let publication = broker.pending;
     let broker = match broker.send() {
@@ -849,7 +869,11 @@ fn publication_packet_is_retained_exactly_across_retry() {
         .unwrap_or_else(|error| panic!("broker carrier failed: {error:?}"));
     let custody = load_broker_for_handshake_test(&fixture.broker, 0x31)
         .unwrap_or_else(|error| panic!("broker custody failed: {error}"));
-    let state = BrokerPublicationFlight::begin(custody, carrier, broker_hello())
+    let state = BrokerPublicationFlight::begin(
+        BrokerHandshakeCustodyV1::Fresh(custody),
+        carrier,
+        broker_hello(),
+    )
         .unwrap_or_else(|error| panic!("broker begin failed: {error:?}"));
     let exact = state.pending;
     let state = match state.send() {
@@ -950,7 +974,11 @@ fn protected_mutation_before_send_releases_no_publication() {
         .unwrap_or_else(|error| panic!("broker carrier failed: {error:?}"));
     let custody = load_broker_for_handshake_test(&fixture.broker, 0x31)
         .unwrap_or_else(|error| panic!("broker custody failed: {error}"));
-    let state = BrokerPublicationFlight::begin(custody, carrier, broker_hello())
+    let state = BrokerPublicationFlight::begin(
+        BrokerHandshakeCustodyV1::Fresh(custody),
+        carrier,
+        broker_hello(),
+    )
         .unwrap_or_else(|error| panic!("broker begin failed: {error:?}"));
 
     let manifest_path = fixture.broker.join(MANIFEST);
@@ -1336,7 +1364,7 @@ fn prior_process_publication_cannot_bootstrap_a_restarted_broker() {
 
     let client_custody = load_client_for_handshake_test(&fixture.client, 0x21)
         .unwrap_or_else(|error| panic!("client custody failed: {error}"));
-    let client = ClientAwaitPublication::begin(client_custody, client_carrier, client_hello())
+    let client = ClientAwaitPublication::begin(ClientHandshakeCustodyV1::Fresh(client_custody), client_carrier, client_hello())
         .unwrap_or_else(|error| panic!("client begin failed: {error:?}"));
     let client = match client.receive() {
         Transition::Complete(state) => state,
@@ -1350,14 +1378,141 @@ fn prior_process_publication_cannot_bootstrap_a_restarted_broker() {
     let broker_custody = load_broker_for_handshake_test(&fixture.broker, 0x41)
         .unwrap_or_else(|error| panic!("new broker custody failed: {error}"));
     let broker = BrokerAwaitClientHello {
-        custody: broker_custody,
+        custody: BrokerHandshakeCustodyV1::Fresh(broker_custody),
         carrier: broker_carrier,
         publication: old_publication,
-        broker_hello: broker_hello(),
+        broker_hello: BrokerHelloSelectionV5::Provided(broker_hello()),
     };
     assert!(matches!(
         broker.receive(),
         Transition::Failed(HandshakeError::RemoteInvalid)
     ));
     drop(client);
+}
+
+
+#[test]
+fn controller_initial_carrier_keeps_sent_receipt_and_native_send_refusal() {
+    let (mut client, mut broker) = carrier_pair(false);
+    client.receive_profile = HandshakeReceiveProfileV1::ControllerInitial;
+    let packet = [0x39; BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES];
+
+    client.send_broker_original(&packet)
+        .unwrap_or_else(|error| panic!("selected send failed: {error:?}"));
+    assert!(client.selected_send.as_ref().is_some_and(|attempt| attempt.is_sent()));
+    let delivered = broker.receive(packet.len())
+        .unwrap_or_else(|error| panic!("selected packet receive failed: {error:?}"));
+    assert_eq!(delivered.payload.as_slice(), packet);
+
+    drop(broker);
+    let rejected = client.send_broker_original(&packet);
+    let Err(HandshakeError::SelectedSend(original)) = rejected else {
+        panic!("selected peer closure lost its native send attempt");
+    };
+    assert!(!original.attempt.is_sent());
+    assert!(original.attempt.failure().is_some());
+    assert!(std::error::Error::source(&original).is_some());
+    assert!(client.selected_send.as_ref().is_some_and(|attempt| attempt.is_sent()));
+}
+
+#[test]
+fn retained_hello_send_facade_keeps_actual_native_failure_and_fatal_socket() {
+    let (local, peer) = rustix::net::socketpair(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::SEQPACKET,
+        rustix::net::SocketFlags::CLOEXEC,
+        None,
+    ).unwrap();
+    let mut socket = SeqpacketSocket::from_owned(local).unwrap();
+    drop(peer);
+
+    // Real transport custody only: this creates no handshake, receiving loan,
+    // Native original, payment or selected Session admission.
+    let attempt = socket.send_storage_session_retaining_v1(b"closed-peer");
+    assert!(!attempt.is_sent());
+    assert!(!attempt.is_nonconsuming());
+    assert!(attempt.retains_descriptor());
+    let failure = RetainedStorageHandshakeSendFailureV1 { attempt };
+    let native = failure.attempt.failure().unwrap();
+    let facade: &crate::controller_composition::RetainedStorageHandshakeSendFailureV1 = &failure;
+    let cause = std::error::Error::source(facade).unwrap();
+
+    assert!(std::ptr::eq(native, cause));
+    assert!(cause.downcast_ref::<aos_sandbox_linux::Error>().is_some());
+    assert!(failure.attempt.retains_descriptor());
+}
+
+
+#[test]
+fn selected_client_hello_reaches_the_same_provisional_transcript() {
+    let fixture = Fixture::new();
+    let (broker, mut client) = start_broker_hello_flight(&fixture);
+    client.carrier.receive_profile = HandshakeReceiveProfileV1::ControllerInitial;
+    let broker = match broker.send() {
+        Transition::Complete(broker) => broker,
+        other => panic_transition("selected BrokerHello send", other),
+    };
+
+    let client = match client.receive() {
+        Transition::Complete(client) => client,
+        other => panic_transition("selected BrokerHello receive", other),
+    };
+
+    assert_eq!(client._transcript, broker._transcript);
+    assert_eq!(client._transcript.phase(),
+        aos_sandbox_broker_session_protocol::BrokerSessionTranscriptPhaseV1::Provisional);
+}
+
+#[test]
+fn selected_client_hello_keeps_partial_projection_and_actual_raw_flight() {
+    let fixture = Fixture::new();
+    let (mut broker, mut client) = start_broker_hello_flight(&fixture);
+    client.carrier.receive_profile = HandshakeReceiveProfileV1::ControllerInitial;
+    let malformed = [0x82, 0x80];
+    broker.carrier.send(&malformed).unwrap();
+
+    let failure = match client.receive() {
+        Transition::Failed(HandshakeError::SelectedPreparation(failure)) => failure,
+        other => panic_transition("malformed selected BrokerHello", other),
+    };
+
+    assert!(failure.first()
+        .is::<aos_sandbox_broker_session_protocol::projection::BrokerSessionProjectionError>());
+    let SelectedBrokerFailureOwnerV1::ClientBrokerHello { stage, _flight: Some(flight) } =
+        &failure._owner else { panic!("selected original stage or raw flight was lost") };
+    assert_eq!(flight.payload, malformed);
+    let typed = stage.typed.as_ref().unwrap();
+    assert!(typed.client.is_some());
+    assert!(typed.broker.is_none());
+    assert!(typed.failure().is_some());
+}
+
+#[test]
+fn selected_client_hello_keeps_both_models_and_first_transcript_cause() {
+    let fixture = Fixture::new();
+    let (mut broker, mut client) = start_broker_hello_flight(&fixture);
+    client.carrier.receive_profile = HandshakeReceiveProfileV1::ControllerInitial;
+    let canonical = decode_canonical_server_hello_v1(&broker.broker_packet).unwrap();
+    let mut changed = canonical.message().clone();
+    changed.signed_session_hello.clear();
+    changed.maximum_response_bytes = changed.maximum_response_bytes.saturating_sub(1);
+    let changed = aos_sandbox_broker_session_protocol::encode_signed_server_hello_packet_v1(
+        changed, canonical.signed_artifact(),
+    ).unwrap();
+    broker.carrier.send(&changed).unwrap();
+
+    let failure = match client.receive() {
+        Transition::Failed(HandshakeError::SelectedPreparation(failure)) => failure,
+        other => panic_transition("changed selected BrokerHello fields", other),
+    };
+
+    let SelectedBrokerFailureOwnerV1::ClientBrokerHello { stage, _flight: Some(flight) } =
+        &failure._owner else { panic!("selected typed stage was lost") };
+    assert_eq!(flight.payload, changed);
+    let typed = stage.typed.as_ref().unwrap();
+    assert!(typed.client.is_some());
+    assert!(typed.broker.is_some());
+    let original = typed.transcript_capture.failure().unwrap()
+        as &(dyn std::error::Error + 'static);
+    assert!(std::ptr::eq(failure.first(), original));
 }

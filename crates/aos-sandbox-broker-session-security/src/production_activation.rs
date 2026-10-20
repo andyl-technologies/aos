@@ -17,6 +17,16 @@ use std::path::Path;
 
 use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
+
+mod storage_continuation;
+pub(crate) use storage_continuation::StorageRetainedSocketAcceptanceV1;
+
+pub(crate) fn retained_storage_session_carrier_bytes_v1() -> Option<usize> {
+    std::mem::size_of::<crate::production_service::ProductionStorageSessionContinuationV1>()
+        .checked_add(std::mem::size_of::<crate::production_service::ProductionOriginalStorageLifecycleSessionV1>())?
+        .checked_add(3 * std::mem::size_of::<crate::production_service::ProductionOriginalStorageConnectionV1>())
+}
+
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use crate::{
@@ -34,6 +44,18 @@ const NETWORK_FD_NAME: &str = "aos-netd";
 /// Reports rejection while adopting or accepting a fixed broker activation.
 #[derive(Debug, thiserror::Error)]
 pub enum ProductionBrokerSessionActivationErrorV1 {
+    /// The actual Host startup financial/native original refused cold entry.
+    #[error(transparent)]
+    HostCold(#[from] aos_sandbox_host::HostControlColdSessionClosedV1),
+    /// The sealed Host callsite could not lend its actual startup owner.
+    #[error(transparent)]
+    HostColdCallsite(#[from] aos_sandbox_host::DormantHostBrokerCallErrorV1),
+    /// The shared cold engine retains the original native failure and debt.
+    #[error(transparent)]
+    HostColdNative(#[from] crate::FixedServiceSessionClosedV4),
+    /// Checked native/model representation arithmetic failed before growth.
+    #[error(transparent)]
+    HostColdAccounting(#[from] aos_sandbox_core::AccountingError),
     /// systemd did not supply the exact fixed descriptor table.
     #[error("broker-session systemd activation is invalid: {0}")]
     Activation(&'static str),
@@ -52,6 +74,9 @@ pub enum ProductionBrokerSessionActivationErrorV1 {
     /// The original Storage/output cohort failed before selected acceptance.
     #[error(transparent)]
     CoverageStorage(aos_sandbox_storage::DormantStorageBrokerCallErrorV1),
+    /// The same genuine receiving interval rejected its currentness check.
+    #[error(transparent)]
+    StorageReceiving(aos_sandbox::StorageReceivingClosedV1),
     /// The next authenticated session did not arrive before its boot-time deadline.
     #[error("broker-session acceptance deadline expired")]
     Deadline,
@@ -82,10 +107,31 @@ enum ActivationAcceptPurposeV1 {
 pub struct ProductionBrokerSessionActivationV1 {
     // Fence a failed selected cold flight before any activation field drops.
     storage_cold: Option<crate::handshake::RetainedStorageColdOpenV1>,
+    storage_initial_acceptance: Option<StorageRetainedSocketAcceptanceV1>,
+    storage_initial: Option<crate::handshake::StorageInitialSessionHandshakeV1>,
+    // One selected attempt parks its complete upfront Result and first outer
+    // rejection before exposing only a closed status to the daemon.
+    storage_prepare_fixed: Option<Result<(), crate::BrokerSessionSecurityError>>,
+    storage_prepare_failure: Option<ProductionBrokerSessionActivationErrorV1>,
+    // Completed cold Session stays resident before Native cleanup may refuse.
+    storage_prepare_session: Option<DormantAuthenticatedBrokerSessionV1>,
+    storage_prepare_complete: bool,
     // Selected startup fences unwind before its control/image fields release.
     selected_storage_startup: Option<crate::production_startup::StorageResourceRecipientStartupCustodyV1>,
     listeners: Vec<FixedListenerV1>,
     launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
+}
+
+impl Drop for ProductionBrokerSessionActivationV1 {
+    fn drop(&mut self) {
+        if self.storage_prepare_session.is_some() || self.storage_initial.is_some()
+            || self.storage_initial_acceptance.is_some()
+        {
+            // A refused or unwinding cleanup cannot silently discard the
+            // actual returned Session, facade and native refusal custody.
+            std::process::abort();
+        }
+    }
 }
 
 impl core::fmt::Debug for ProductionBrokerSessionActivationV1 {
@@ -98,13 +144,13 @@ impl core::fmt::Debug for ProductionBrokerSessionActivationV1 {
 }
 
 impl ProductionBrokerSessionActivationV1 {
-    /// Reports only resident unfinished/failed Storage cold admission.
+    /// Reports resident unfinished or failed selected Storage admission.
     ///
     /// This is a terminal diagnostic, never drain, readiness or retry evidence.
     pub fn has_failed_storage_cold(&self) -> bool {
-        self.storage_cold
-            .as_ref()
-            .is_some_and(crate::handshake::RetainedStorageColdOpenV1::is_failed)
+        (self.storage_prepare_fixed.is_some() && !self.storage_prepare_complete)
+            || self.storage_cold.as_ref()
+                .is_some_and(crate::handshake::RetainedStorageColdOpenV1::is_failed)
     }
 
     /// Reports the actual fixed launch prerequisite for output inspection.
@@ -129,6 +175,12 @@ impl ProductionBrokerSessionActivationV1 {
     pub(crate) fn prearm_storage_resource_recipient() -> Self {
         Self {
             storage_cold: None,
+            storage_initial_acceptance: None,
+            storage_initial: None,
+            storage_prepare_fixed: None,
+            storage_prepare_failure: None,
+            storage_prepare_session: None,
+            storage_prepare_complete: false,
             selected_storage_startup: None,
             listeners: Vec::with_capacity(1),
             launch_image: None,
@@ -264,7 +316,18 @@ impl ProductionBrokerSessionActivationV1 {
         ] {
             listeners.push(FixedListenerV1 { endpoint, listener });
         }
-        Ok(Self { storage_cold: None, selected_storage_startup: None, listeners, launch_image: None })
+        Ok(Self {
+            storage_cold: None,
+            storage_initial_acceptance: None,
+            storage_initial: None,
+            storage_prepare_fixed: None,
+            storage_prepare_failure: None,
+            storage_prepare_session: None,
+            storage_prepare_complete: false,
+            selected_storage_startup: None,
+            listeners,
+            launch_image: None,
+        })
     }
 
     /// Adopts the admitted original Control owner's same fixed three endpoints.
@@ -296,7 +359,18 @@ impl ProductionBrokerSessionActivationV1 {
                 ] {
                     listeners.push(FixedListenerV1 { endpoint, listener });
                 }
-                Ok(Self { storage_cold: None, selected_storage_startup: None, listeners, launch_image: None })
+                Ok(Self {
+                    storage_cold: None,
+                    storage_initial_acceptance: None,
+                    storage_initial: None,
+                    storage_prepare_fixed: None,
+                    storage_prepare_failure: None,
+                    storage_prepare_session: None,
+                    storage_prepare_complete: false,
+                    selected_storage_startup: None,
+                    listeners,
+                    launch_image: None,
+                })
             }
             _ => std::process::abort(),
         }
@@ -350,6 +424,12 @@ impl ProductionBrokerSessionActivationV1 {
             listeners: fixed,
             launch_image: None,
             storage_cold: None,
+            storage_initial_acceptance: None,
+            storage_initial: None,
+            storage_prepare_fixed: None,
+            storage_prepare_failure: None,
+            storage_prepare_session: None,
+            storage_prepare_complete: false,
             selected_storage_startup: None,
         })
     }
@@ -392,6 +472,12 @@ impl ProductionBrokerSessionActivationV1 {
             listeners: vec![FixedListenerV1 { endpoint, listener }],
             launch_image: None,
             storage_cold: None,
+            storage_initial_acceptance: None,
+            storage_initial: None,
+            storage_prepare_fixed: None,
+            storage_prepare_failure: None,
+            storage_prepare_session: None,
+            storage_prepare_complete: false,
             selected_storage_startup: None,
         })
     }
@@ -475,6 +561,12 @@ impl ProductionBrokerSessionActivationV1 {
             listeners: vec![FixedListenerV1 { endpoint, listener }],
             launch_image: None,
             storage_cold: None,
+            storage_initial_acceptance: None,
+            storage_initial: None,
+            storage_prepare_fixed: None,
+            storage_prepare_failure: None,
+            storage_prepare_session: None,
+            storage_prepare_complete: false,
             selected_storage_startup: None,
         })
     }
@@ -516,6 +608,173 @@ impl ProductionBrokerSessionActivationV1 {
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
         self.accept_authenticated_with_coverage_v1(deadline_boottime_nanoseconds, None)
+    }
+
+    /// Accepts a Storage HELLO through the original Storage receiving owner.
+    ///
+    /// The complete fixed Security/HELLO reservation is retained before polling,
+    /// accepted endpoint custody or HELLO materialization. This selects neither
+    /// a TPM floor nor the Output/Nix profiles. The same original cutoff and
+    /// typed loan reach the protected main-journal continuation. The verified
+    /// signed method subset is selected later by the daemon; this acquisition
+    /// does not authorize a method or its domain effects.
+    ///
+    /// # Errors
+    /// Refuses another listener table, a repeated selected attempt, receiving
+    /// exhaustion/currentness failure, or any ordinary protected handshake error.
+    /// The first actual outer error remains available through the diagnostic
+    /// accessor; a retry cannot replace it or start another reservation.
+    pub fn accept_authenticated_storage_prepare_v1(
+        &mut self,
+        deadline_boottime_nanoseconds: u64,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
+        if self.storage_prepare_fixed.is_some() || self.has_failed_storage_cold() {
+            return Err(Self::storage_prepare_closed_v1());
+        }
+        self.storage_prepare_fixed = Some(
+            crate::recovery::BrokerMainOpenV1::reserve_storage_prepare_fixed_v1(receiving),
+        );
+        if !matches!(self.storage_prepare_fixed, Some(Ok(()))) {
+            return Err(Self::storage_prepare_closed_v1());
+        }
+
+        let result = self.accept_initial_storage_session_v1(deadline_boottime_nanoseconds, receiving);
+        match result {
+            Ok(session) => {
+                // Cold schema/floor/checkpoint/currentness and final same-D
+                // retirement completed before its pure owning handoff here.
+                self.storage_prepare_session = Some(session);
+                let prefix = match self.storage_initial.take() {
+                    Some(prefix) => prefix,
+                    None => {
+                        self.storage_prepare_failure = Some(Self::storage_prepare_closed_v1());
+                        return Err(Self::storage_prepare_closed_v1());
+                    }
+                };
+                let cold = match self.storage_cold.take() {
+                    Some(cold) => cold,
+                    None => {
+                        self.storage_initial = Some(prefix);
+                        self.storage_prepare_failure = Some(Self::storage_prepare_closed_v1());
+                        return Err(Self::storage_prepare_closed_v1());
+                    }
+                };
+                let session = match self.storage_prepare_session.as_mut() {
+                    Some(session) => session,
+                    None => std::process::abort(),
+                };
+                if let Err((cold, prefix)) = session.dispose_initial_storage_hello_v1(cold, receiving, prefix) {
+                    // Keep the whole actual cold/Sent/facade and completed Session
+                    // on refusal. No replacement accept can overwrite them.
+                    self.storage_cold = Some(cold);
+                    self.storage_initial = Some(prefix);
+                    self.storage_prepare_failure = Some(Self::storage_prepare_closed_v1());
+                    return Err(Self::storage_prepare_closed_v1());
+                }
+
+                // The facade was actually disposed under the same original
+                // receiving currentness. Only pure moves follow that cleanup;
+                // this does not renew D or initialize any request/history CAS.
+                self.storage_prepare_complete = true;
+                match self.storage_prepare_session.take() {
+                    Some(session) => Ok(session),
+                    None => std::process::abort(),
+                }
+            }
+            Err(error) => {
+                self.storage_prepare_failure = Some(error);
+                Err(Self::storage_prepare_closed_v1())
+            }
+        }
+    }
+
+    fn accept_initial_storage_session_v1(
+        &mut self,
+        deadline: u64,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
+        if self.storage_initial.is_some() || self.storage_initial_acceptance.is_some()
+            || self.storage_cold.is_some()
+        {
+            return Err(Self::storage_prepare_closed_v1());
+        }
+        loop {
+            // The fixed resident/FD shape was paid before this original poll.
+            // No wire operation is consumed until a real socket is adopted.
+            self.storage_initial_acceptance = Some(StorageRetainedSocketAcceptanceV1::new());
+            let Some(acceptance) = self.storage_initial_acceptance.as_mut() else {
+                std::process::abort()
+            };
+            Self::accept_storage_initial_socket_v1(&mut self.listeners, receiving, deadline, acceptance);
+            if acceptance.failure().is_some() {
+                return Err(Self::storage_prepare_closed_v1());
+            }
+            if acceptance.is_idle() {
+                // Only actual poll0/no acquisition plus every available post
+                // positive reaches disposal. The SAME finite cutoff remains.
+                self.storage_initial_acceptance = None;
+                continue;
+            }
+            let Some(socket) = acceptance.take_socket() else {
+                return Err(Self::storage_prepare_closed_v1());
+            };
+            let Some(acceptance) = self.storage_initial_acceptance.take() else {
+                std::process::abort()
+            };
+            self.storage_initial = Some(crate::handshake::StorageInitialSessionHandshakeV1::new(
+                socket, acceptance, crate::handshake::OriginalBrokerColdDeadlineV1::storage_accept(deadline),
+            ));
+            let Some(initial) = self.storage_initial.as_mut() else {
+                std::process::abort()
+            };
+            initial.drive_once(receiving, self.launch_image.clone(), &mut self.storage_cold);
+            return initial.take_completed().ok_or_else(Self::storage_prepare_closed_v1);
+        }
+    }
+
+    /// Borrows the original fixed-reservation or first outer selected failure.
+    ///
+    /// Native opening, cold-clock and receiving-accounting causes remain on
+    /// their respective original owners and are exposed separately.
+    pub fn storage_prepare_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let returned: &(dyn std::error::Error + 'static) = match self.storage_prepare_fixed.as_ref()? {
+            Err(error) => Some(error as &dyn std::error::Error),
+            Ok(()) => self.storage_initial_acceptance.as_ref().and_then(StorageRetainedSocketAcceptanceV1::failure)
+                .or_else(|| self.storage_initial.as_ref().and_then(crate::handshake::StorageInitialSessionHandshakeV1::failure))
+                .or_else(|| self.storage_prepare_failure.as_ref().map(|error| error as &dyn std::error::Error)),
+        }?;
+        let protected = match returned.downcast_ref::<DormantBrokerSessionHandshakeErrorV1>() {
+            Some(DormantBrokerSessionHandshakeErrorV1::Protected(cause)) => Some(cause),
+            _ => match returned.downcast_ref::<ProductionBrokerSessionActivationErrorV1>() {
+                Some(ProductionBrokerSessionActivationErrorV1::Handshake(
+                    DormantBrokerSessionHandshakeErrorV1::Protected(cause),
+                )) => Some(cause),
+                _ => None,
+            },
+        };
+        protected.and_then(|cause| self.storage_cold.as_ref()
+            .and_then(|cold| cold.retained_revalidation_failure_for(cause)))
+            .or(Some(returned))
+    }
+
+    /// Borrows the actual captured Native journal-opening failure, if retained.
+    pub fn storage_prepare_native_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.storage_prepare_session.as_ref()
+            .and_then(DormantAuthenticatedBrokerSessionV1::storage_prepare_native_failure_v1)
+            .or_else(|| self.storage_cold.as_ref()
+                .and_then(|cold| cold.storage_prepare_native_failure_v1()))
+    }
+
+    /// Borrows the original ordinary cold-cutoff failure, if retained.
+    pub fn storage_prepare_cold_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.storage_cold.as_ref()?.storage_prepare_cold_failure_v1()
+    }
+
+    fn storage_prepare_closed_v1() -> ProductionBrokerSessionActivationErrorV1 {
+        DormantBrokerSessionHandshakeErrorV1::Protected(
+            crate::BrokerSessionSecurityError::Currentness,
+        ).into()
     }
 
     /// Accepts the selected Nix generation profile on the original Storage listener.
@@ -624,7 +883,10 @@ impl ProductionBrokerSessionActivationV1 {
                 "selected Nix generation requires the original fixed Storage launch",
             ));
         }
-        if self.has_failed_storage_cold() {
+        if self.storage_cold.as_ref()
+            .is_some_and(crate::handshake::RetainedStorageColdOpenV1::is_failed)
+            || (self.storage_prepare_fixed.is_some() && !self.storage_prepare_complete)
+        {
             return Err(DormantBrokerSessionHandshakeErrorV1::Protected(
                 crate::BrokerSessionSecurityError::Currentness,
             )
@@ -722,6 +984,12 @@ impl ProductionBrokerSessionActivationV1 {
             listeners,
             launch_image: None,
             storage_cold: None,
+            storage_initial_acceptance: None,
+            storage_initial: None,
+            storage_prepare_fixed: None,
+            storage_prepare_failure: None,
+            storage_prepare_session: None,
+            storage_prepare_complete: false,
             selected_storage_startup: None,
         })
     }
@@ -736,6 +1004,12 @@ impl ProductionBrokerSessionActivationV1 {
             listeners: vec![FixedListenerV1 { endpoint, listener }],
             launch_image: None,
             storage_cold: None,
+            storage_initial_acceptance: None,
+            storage_initial: None,
+            storage_prepare_fixed: None,
+            storage_prepare_failure: None,
+            storage_prepare_session: None,
+            storage_prepare_complete: false,
             selected_storage_startup: None,
         })
     }
@@ -744,24 +1018,43 @@ impl ProductionBrokerSessionActivationV1 {
         &self,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
-        let remaining = remaining_duration(deadline_boottime_nanoseconds)?;
-        let timeout = Timespec {
-            tv_sec: i64::try_from(remaining / 1_000_000_000)
-                .map_err(|_| ProductionBrokerSessionActivationErrorV1::Deadline)?,
-            tv_nsec: i64::try_from(remaining % 1_000_000_000)
-                .map_err(|_| ProductionBrokerSessionActivationErrorV1::Deadline)?,
-        };
-        let mut descriptors = self
-            .listeners
-            .iter()
-            .map(|fixed| PollFd::from_borrowed_fd(fixed.listener.as_fd(), PollFlags::IN))
-            .collect::<Vec<_>>();
+        self.wait_until_ready_inner_v1(deadline_boottime_nanoseconds, None)
+    }
 
-        match poll(&mut descriptors, Some(&timeout)) {
-            Ok(0) => Err(ProductionBrokerSessionActivationErrorV1::Deadline),
-            Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
-            Err(_) => Err(ProductionBrokerSessionActivationErrorV1::Kernel),
-        }
+    fn wait_until_ready_inner_v1(
+        &self,
+        deadline_boottime_nanoseconds: u64,
+        native: Option<&mut Option<Result<usize, rustix::io::Errno>>>,
+    ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
+        wait_fixed_listeners_until_ready_v1(&self.listeners, deadline_boottime_nanoseconds, native)
+    }
+}
+
+fn wait_fixed_listeners_until_ready_v1(
+    listeners: &[FixedListenerV1],
+    deadline_boottime_nanoseconds: u64,
+    native: Option<&mut Option<Result<usize, rustix::io::Errno>>>,
+) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
+    let remaining = remaining_duration(deadline_boottime_nanoseconds)?;
+    let timeout = Timespec {
+        tv_sec: i64::try_from(remaining / 1_000_000_000)
+            .map_err(|_| ProductionBrokerSessionActivationErrorV1::Deadline)?,
+        tv_nsec: i64::try_from(remaining % 1_000_000_000)
+            .map_err(|_| ProductionBrokerSessionActivationErrorV1::Deadline)?,
+    };
+    let mut descriptors = listeners
+        .iter()
+        .map(|fixed| PollFd::from_borrowed_fd(fixed.listener.as_fd(), PollFlags::IN))
+        .collect::<Vec<_>>();
+
+    let observed = poll(&mut descriptors, Some(&timeout));
+    if let Some(native) = native {
+        *native = Some(observed);
+    }
+    match observed {
+        Ok(0) => Err(ProductionBrokerSessionActivationErrorV1::Deadline),
+        Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+        Err(_) => Err(ProductionBrokerSessionActivationErrorV1::Kernel),
     }
 }
 
@@ -774,84 +1067,9 @@ fn require_storage_listener_path(
     Ok(())
 }
 
-pub(crate) fn validate_activation_process(
-    expected_descriptors: usize,
-) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
-    let listen_pid = environment_u32("LISTEN_PID")?;
-    let current_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
-        .map_err(|_| ProductionBrokerSessionActivationErrorV1::Kernel)?;
-    if listen_pid != current_pid {
-        return Err(ProductionBrokerSessionActivationErrorV1::Activation(
-            "LISTEN_PID does not name this process",
-        ));
-    }
-    if usize::try_from(environment_u32("LISTEN_FDS")?)
-        .map_err(|_| ProductionBrokerSessionActivationErrorV1::Kernel)?
-        != expected_descriptors
-    {
-        return Err(ProductionBrokerSessionActivationErrorV1::Activation(
-            "LISTEN_FDS has the wrong fixed count",
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn activation_names(
-    expected_descriptors: usize,
-) -> Result<Vec<String>, ProductionBrokerSessionActivationErrorV1> {
-    let names = std::env::var("LISTEN_FDNAMES").map_err(|_| {
-        ProductionBrokerSessionActivationErrorV1::Activation("LISTEN_FDNAMES is absent")
-    })?;
-    let maximum_bytes = expected_descriptors.checked_mul(256).ok_or(
-        ProductionBrokerSessionActivationErrorV1::Activation("activation name bound overflows"),
-    )?;
-    if names.len() > maximum_bytes
-        || !names.is_ascii()
-        || names.bytes().any(|byte| byte.is_ascii_control())
-    {
-        return Err(ProductionBrokerSessionActivationErrorV1::Activation(
-            "activation names exceed fixed bounds",
-        ));
-    }
-    let names = names.split(':').map(str::to_owned).collect::<Vec<_>>();
-    if names.len() != expected_descriptors || names.iter().any(String::is_empty) {
-        return Err(ProductionBrokerSessionActivationErrorV1::Activation(
-            "LISTEN_FDNAMES has the wrong fixed shape",
-        ));
-    }
-    Ok(names)
-}
-
-fn environment_u32(name: &'static str) -> Result<u32, ProductionBrokerSessionActivationErrorV1> {
-    std::env::var(name)
-        .map_err(|_| {
-            ProductionBrokerSessionActivationErrorV1::Activation("activation variable is absent")
-        })?
-        .parse()
-        .map_err(|_| {
-            ProductionBrokerSessionActivationErrorV1::Activation(
-                "activation variable is not a decimal u32",
-            )
-        })
-}
-
-pub(crate) fn remaining_duration(
-    deadline_boottime_nanoseconds: u64,
-) -> Result<u64, ProductionBrokerSessionActivationErrorV1> {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let seconds =
-        u64::try_from(now.tv_sec).map_err(|_| ProductionBrokerSessionActivationErrorV1::Kernel)?;
-    let nanoseconds =
-        u64::try_from(now.tv_nsec).map_err(|_| ProductionBrokerSessionActivationErrorV1::Kernel)?;
-    let now = seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|value| value.checked_add(nanoseconds))
-        .ok_or(ProductionBrokerSessionActivationErrorV1::Kernel)?;
-    deadline_boottime_nanoseconds
-        .checked_sub(now)
-        .filter(|remaining| *remaining > 0)
-        .ok_or(ProductionBrokerSessionActivationErrorV1::Deadline)
-}
+pub(crate) use crate::activation_envelope::{
+    activation_names, remaining_duration, validate_activation_process,
+};
 
 #[cfg(test)]
 mod tests {

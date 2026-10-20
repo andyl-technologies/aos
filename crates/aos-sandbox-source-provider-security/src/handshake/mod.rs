@@ -78,7 +78,7 @@ pub enum SelectedSourceProviderFailureRefV1<'owner> {
     /// The original typed packet could not be bound to the same endpoint.
     Binding(&'owner RecordBindingError),
     /// The same protected journal loan failed its actual currentness check.
-    Journal(&'owner aos_sandbox::JournalError),
+    Journal(&'owner aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1),
 }
 
 impl core::fmt::Debug for SelectedSourceProviderFailureRefV1<'_> {
@@ -427,7 +427,7 @@ pub struct CommittedProviderOutcomeV1 {
     pub(super) response_sequence: u64,
     pub(super) method: aos_sandbox_source_provider_protocol::SourceProviderMethod,
     pub(super) session_binding: aos_sandbox_core::ObjectDigest,
-    pub(super) committed_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    pub(super) committed_snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
     pub(super) response: Option<Vec<u8>>,
     pub(super) send_attempted: Cell<bool>,
 }
@@ -523,7 +523,7 @@ pub struct ProviderOutcomeAuthorizationV1 {
     pub(super) response_sequence: u64,
     pub(super) request_deadline_seconds: i64,
     pub(super) current_valid_until_seconds: i64,
-    pub(super) journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    pub(super) journal_snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
     pub(super) reservation_commitment: aos_sandbox_core::ObjectDigest,
     pub(super) attempt_key_commitment: aos_sandbox_core::ObjectDigest,
     pub(super) claimed_purposes: Cell<u8>,
@@ -550,18 +550,18 @@ impl core::fmt::Debug for ProviderOutcomeAuthorizationV1 {
 // Both alternatives borrow genuine held owners. The original branch cannot
 // turn a copied graph or a caller-selected namespace into journal authority.
 enum ReservedProviderAuthorityViewV1<'borrow, 'journal, 'challenge> {
-    Legacy(&'borrow aos_sandbox::ProtectedJournalAuthority<'journal>),
+    Legacy(&'borrow aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'journal>),
     Original {
-        writer: &'borrow aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'journal, 'challenge>,
-        readback: &'borrow aos_sandbox::OriginalSourceProtectedReadbackV5,
+        writer: &'borrow aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'journal, 'challenge>,
+        readback: &'borrow aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
     },
 }
 
 impl ReservedProviderAuthorityViewV1<'_, '_, '_> {
     fn validate_source_provider_authority_snapshot(
         &self,
-        snapshot: &aos_sandbox::ProtectedJournalSnapshot,
-    ) -> Result<(), aos_sandbox::JournalError> {
+        snapshot: &aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
+    ) -> Result<(), aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1> {
         match self {
             Self::Legacy(journal) => journal.validate_source_provider_authority_snapshot(snapshot),
             Self::Original { writer, readback } => {
@@ -570,13 +570,13 @@ impl ReservedProviderAuthorityViewV1<'_, '_, '_> {
         }
     }
 
-    fn get(&self, key: &[u8]) -> Result<Option<&[u8]>, aos_sandbox::JournalError> {
+    fn get(&self, key: &[u8]) -> Result<Option<&[u8]>, aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1> {
         match self {
             Self::Legacy(journal) => journal.get(key),
             Self::Original { writer, readback } => {
                 writer.validate_readback(readback)?;
                 Ok(readback.rows().iter().find_map(|((namespace, candidate), value)| {
-                    (*namespace == aos_sandbox::RecordNamespace::SourceProviderAuthority
+                    (*namespace == aos_sandbox_core::RecordNamespace::SourceProviderAuthority
                         && candidate.as_slice() == key).then_some(value.as_slice())
                 }))
             }
@@ -617,8 +617,8 @@ impl CurrentProviderRequestV1 {
     /// authority is stale, the reservation differs, or a sentinel is present.
     pub(super) fn authorize_reserved(
         self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
         attempt_key: &[u8],
         attempt_record: &[u8],
         response_sequence: u64,
@@ -637,7 +637,7 @@ impl CurrentProviderRequestV1 {
     fn authorize_reserved_borrowed(
         &self,
         journal: ReservedProviderAuthorityViewV1<'_, '_, '_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal_snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
         attempt_key: &[u8],
         attempt_record: &[u8],
         response_sequence: u64,

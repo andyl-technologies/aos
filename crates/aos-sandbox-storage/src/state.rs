@@ -9,6 +9,21 @@
 //! exposes ambiguous work only for re-observation; this module contains no API
 //! that returns or reissues mutation argv.
 
+pub(crate) enum StorageCatalogPreparationNativeV1<'call, 'cut, 'owner> {
+    Nix(
+        crate::nix_generation::StorageGenerationNativeLoanV1<'call>,
+        crate::authorization::StoragePreparationNativeAdmissionV1<'call>,
+    ),
+    Receiving(
+        &'call mut aos_sandbox::StoragePrepareReceivingLoanV1<'owner>,
+        crate::authorization::StoragePreparationNativeAdmissionV1<'call>,
+    ),
+    State(
+        &'call mut encoding::StateEncodingLoanV1<'cut, 'owner>,
+        crate::authorization::StoragePreparationNativeAdmissionV1<'call>,
+    ),
+}
+
 use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
 
 #[allow(
@@ -17,6 +32,22 @@ use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
 )]
 mod repair_guard;
 mod workspace_projection;
+mod startup;
+mod startup_mutation;
+pub(crate) mod encoding;
+mod recovery_mutation;
+mod capture_catalog;
+pub(crate) use capture_catalog::CaptureStateCatalogOriginalV3;
+
+mod guest_root_publication;
+pub(crate) use guest_root_publication::GuestRootStateRecordOriginalV2;
+
+mod capture_pending;
+pub(crate) use capture_pending::CaptureStatePendingOriginalV3;
+mod atomic_encoding;
+mod atomic_recovery;
+pub(crate) use atomic_encoding::program_capacity_v1;
+pub(crate) use startup::StorageStateStartupV1;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -36,7 +67,7 @@ use crate::catalog_transition::{
     CatalogReservation, PhysicalWorkspaceProjection, StorageCatalogTransitionProvider,
     VerifiedPhysicalCatalogSnapshotV1,
 };
-use crate::guest_root_attempt::GuestRootPublicationAttemptV1;
+use crate::guest_root_attempt::GuestRootPublicationAttemptV2;
 use crate::resolver::protected_catalog::{
     StorageResolverPolicyBindingV1, StorageResolverPolicyCatalogBindingV1,
 };
@@ -74,6 +105,7 @@ const RESOLVER_POLICY_FLOOR_DOMAIN: &[u8] = b"aos.sandbox.storage.resolver-polic
 const RESOLVER_POLICY_FLOOR_MAGIC: &[u8; 8] = b"AOSRPF01";
 const RESOLVER_POLICY_FLOOR_VERSION: u16 = 1;
 const RESOLVER_POLICY_FLOOR_KEY: &[u8] = b"current";
+const RESOLVER_POLICY_FLOOR_BYTES: usize = 98;
 const PUBLICATION_INTENT_DOMAIN: &[u8] = b"aos.sandbox.storage.publication-intent.v1\0";
 const PUBLICATION_INTENT_MAGIC: &[u8; 8] = b"AOSSPI01";
 const PUBLICATION_INTENT_VERSION: u16 = 1;
@@ -132,6 +164,10 @@ impl StorageCanaryBootstrapMarkerV2 {
 /// Reports durable storage state validation or transition failure.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageStateError {
+    /// The actual paid preparation shape or receiving original is closed.
+    #[error("the original Storage preparation receiving interval is closed")]
+    Receiving,
+
     /// The journal failed validation, locking, or durable publication.
     #[error("storage journal failure: {0}")]
     Journal(#[from] aos_sandbox::JournalError),
@@ -225,7 +261,7 @@ impl StorageStateKey {
     /// Seals an exact guest-root attempt at its effect-operation location.
     pub(crate) fn seal_guest_root_publication_attempt(
         &self,
-        attempt: crate::guest_root_attempt::GuestRootPublicationAttemptV1,
+        attempt: crate::guest_root_attempt::GuestRootPublicationAttemptV2,
     ) -> Result<Vec<u8>, StorageStateError> {
         crate::guest_root_attempt::encode_attempt(attempt, self.key_id, &self.secret)
     }
@@ -235,7 +271,7 @@ impl StorageStateKey {
         &self,
         effect_operation: [u8; 16],
         bytes: &[u8],
-    ) -> Result<crate::guest_root_attempt::GuestRootPublicationAttemptV1, StorageStateError> {
+    ) -> Result<crate::guest_root_attempt::GuestRootPublicationAttemptV2, StorageStateError> {
         crate::guest_root_attempt::decode_attempt(
             bytes,
             effect_operation,
@@ -793,12 +829,17 @@ pub struct StorageTransactionStore {
     catalog_transitions: StorageCatalogTransitionProvider,
     runtime_configuration: Option<ObjectDigest>,
     resolver_policy_floor: Option<StorageResolverPolicyFloorV1>,
+    receiving_prepare_policy_append: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox::journal::JournalAppendReceivingDemandErrorV1>>,
+    receiving_preparation_append: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox::journal::JournalAppendReceivingDemandErrorV1>>,
     publication_intents: BTreeMap<[u8; 16], StorageWorkspacePublicationIntentV1>,
     pin_attempts: BTreeMap<[u8; 16], WorkspacePinAttemptV1>,
     repair_intents: BTreeMap<[u8; 16], StorageWorkspacePinRepairIntentV1>,
-    guest_root_attempts: BTreeMap<[u8; 16], GuestRootPublicationAttemptV1>,
+    guest_root_attempts: BTreeMap<[u8; 16], GuestRootPublicationAttemptV2>,
     atomic_snapshots: BTreeMap<[u8; 16], AtomicDatasetSnapshotRecordV1>,
     repair_guards: BTreeMap<[u8; 16], repair_guard::StorageRepairGuardRecordV1>,
+    startup_native: Option<aos_sandbox::journal::StorageStateNativeCommitAttemptV1>,
+    startup_mutations: Option<startup_mutation::StorageStartupMutationCaptureV1>,
+    recovery_mutations: recovery_mutation::StorageRecoveryMutationCaptureV1,
     commit_failed: bool,
     #[cfg(test)]
     fail_after_next_journal_commit: bool,
@@ -807,6 +848,41 @@ pub struct StorageTransactionStore {
 type CatalogPreparationRecord = ([u8; 16], Vec<u8>);
 
 impl StorageTransactionStore {
+    /// Observes existing owned shapes before any fresh resolver projection.
+    pub(crate) fn receiving_inventory_geometry_v1(&self)
+        -> Result<crate::receiving_demand::StorageInventoryGeometryV1, aos_sandbox_core::AccountingError>
+    {
+        use crate::receiving_demand::{StorageInventoryGeometryV1, add, count};
+        let mut geometry = StorageInventoryGeometryV1::default();
+        geometry.include_journal(&self.journal)?;
+        geometry.lifecycle_rows = self.catalog_transitions.receiving_inventory_rows_v1()?;
+        geometry.worker_rows = self.catalog_transitions.receiving_observer_rows_v1()?;
+        // These are the actual recovered operation/catalog maps, not the
+        // number of Rust fields or copies used by their wire projections.
+        geometry.namespace_entries = self.catalog_transitions.receiving_namespace_entries_v1()?;
+        for entries in [
+            self.records.len(),
+            self.publication_intents.len(),
+            self.pin_attempts.len(),
+            self.repair_intents.len(),
+            self.guest_root_attempts.len(),
+            self.atomic_snapshots.len(),
+            self.repair_guards.len(),
+        ]
+        {
+            geometry.namespace_entries = add(geometry.namespace_entries, count(entries)?)?;
+        }
+        geometry.transition_rows = count(self.records.len())?;
+        geometry.atomic_rows = count(self.atomic_snapshots.len())?;
+        geometry.repair_rows = count(self.pin_attempts.len())?;
+        for record in self.atomic_snapshots.values() {
+            let members = count(record.program.member_count())?;
+            geometry.lifecycle_rows = add(geometry.lifecycle_rows, members)?;
+            geometry.transition_rows = add(geometry.transition_rows, members)?;
+        }
+        Ok(geometry)
+    }
+
     /// Reuses the authenticated resolver reload for the selected empty cohort.
     ///
     /// The caller parks this whole result before comparing its physical
@@ -939,102 +1015,6 @@ impl StorageTransactionStore {
             self.commit_failed = true;
         }
         result.map_err(Into::into)
-    }
-
-    /// Durably consumes one admitted guest-root effect before worker dispatch.
-    ///
-    /// An uncertain commit poisons the transaction store. Reopen can observe
-    /// the exact attempt but never returns this effect as dispatchable again.
-    pub(crate) fn begin_guest_root_publication_attempt(
-        &mut self,
-        attempt: GuestRootPublicationAttemptV1,
-        sealed: &SealedStorageAdmission,
-        current_boottime_nanoseconds: u64,
-    ) -> Result<Vec<u8>, StorageStateError> {
-        self.ensure_authority_readable()?;
-        attempt.validate()?;
-        if current_boottime_nanoseconds == 0
-            || attempt.effect_deadline_boottime_nanoseconds <= current_boottime_nanoseconds
-            || attempt.phase != crate::guest_root_attempt::GuestRootAttemptPhaseV1::Ambiguous
-            || self
-                .guest_root_attempts
-                .contains_key(&attempt.effect_operation)
-            || self.records.contains_key(&attempt.effect_operation)
-            || self.guest_root_attempts.values().any(|existing| {
-                existing.expected_proof.workspace_handle == attempt.expected_proof.workspace_handle
-                    && !existing.permits_fresh_retry(attempt, current_boottime_nanoseconds)
-            })
-            || self
-                .journal
-                .get(RecordNamespace::Effect, &attempt.request_id)
-                .is_some()
-            || self
-                .journal
-                .get(
-                    RecordNamespace::AuthorityPublication,
-                    &attempt.effect_operation,
-                )
-                .is_some()
-            || sealed.current_fence.is_empty()
-            || sealed.effect.is_empty()
-            || sealed.operation_fence.is_empty()
-            || sealed.current_fence.len() > MAXIMUM_RECORD_BYTES
-            || sealed.effect.len() > MAXIMUM_RECORD_BYTES
-            || sealed.operation_fence.len() > MAXIMUM_RECORD_BYTES
-            || Sha256::digest(&sealed.effect).as_slice() != attempt.sealed_effect_digest
-            || Sha256::digest(&sealed.operation_fence).as_slice() != attempt.operation_fence_digest
-        {
-            return Err(StorageStateError::Equivocation);
-        }
-        let proof = attempt.expected_proof;
-        let creation = self
-            .records
-            .get(&proof.creation_operation)
-            .filter(|record| record.phase == DurableStoragePhase::Committed)
-            .and_then(|record| record.result)
-            .ok_or(StorageStateError::MissingAuthorityLink)?;
-        let publication = self
-            .publication_intents
-            .get(&proof.creation_operation)
-            .ok_or(StorageStateError::MissingAuthorityLink)?;
-        if creation.storage_handle() != Some(proof.workspace_handle)
-            || creation.object_guid() != Some(proof.dataset_guid)
-            || publication.assignment_digest().as_bytes() != &proof.assignment_digest
-            || publication.root_image().digest().as_bytes() != &proof.root_image_digest
-        {
-            return Err(StorageStateError::AuthorityLinkMismatch);
-        }
-
-        let sealed_attempt = self.key.seal_guest_root_publication_attempt(attempt)?;
-        let transaction = JournalTransaction::new(
-            guest_root_attempt_transaction_id(attempt.effect_operation),
-            vec![
-                JournalRecord::put(
-                    RecordNamespace::DesiredState,
-                    proof.sandbox.to_vec(),
-                    sealed.current_fence.clone(),
-                ),
-                JournalRecord::put(
-                    RecordNamespace::Effect,
-                    attempt.request_id.to_vec(),
-                    sealed.effect.clone(),
-                ),
-                JournalRecord::put(
-                    RecordNamespace::AuthorityPublication,
-                    attempt.effect_operation.to_vec(),
-                    sealed.operation_fence.clone(),
-                ),
-                JournalRecord::put(
-                    RecordNamespace::StorageGuestRootPublicationAttempt,
-                    attempt.effect_operation.to_vec(),
-                    sealed_attempt.clone(),
-                ),
-            ],
-        )?;
-        self.commit_journal_verified(&transaction)?;
-        self.guest_root_attempts
-            .insert(attempt.effect_operation, attempt);
-        Ok(sealed_attempt)
     }
 
     pub(crate) fn atomic_dataset_snapshot_inventory(
@@ -1267,47 +1247,10 @@ impl StorageTransactionStore {
         observation: ObjectDigest,
         member_guids: &[u64],
     ) -> Result<(), StorageStateError> {
-        self.ensure_authority_readable()?;
-        let current = self
-            .atomic_snapshots
-            .get(&operation)
-            .filter(|record| {
-                record.phase == AtomicDatasetSnapshotPhaseV1::Ambiguous
-                    && record.program.commitment() == program
-                    && record.program.format_version() == 2
-                    && record.observation.is_none()
-            })
-            .cloned()
-            .ok_or(StorageStateError::InvalidTransition)?;
-        let transition = self.catalog_transitions.prepare_atomic_group_transition(
-            &current.program,
-            current.semantic_digest,
-            observation,
-            member_guids,
-            self.key.key_id,
-            &self.key.secret,
-        )?;
-        let post_head = transition.result_binding();
-        let record = AtomicDatasetSnapshotRecordV1 {
-            phase: AtomicDatasetSnapshotPhaseV1::Committed,
-            observation: Some(observation),
-            post_head: Some(post_head),
-            ..current
-        };
-        let mut records = vec![JournalRecord::put(
-            RecordNamespace::Effect,
-            atomic_snapshot_record_key(operation),
-            encode_atomic_snapshot_record(&record, &self.key)?,
-        )];
-        records.extend(transition.records());
-        let journal = JournalTransaction::new(
-            atomic_snapshot_transaction_id(operation, AtomicDatasetSnapshotPhaseV1::Committed),
-            records,
-        )?;
-        self.commit_journal(&journal)?;
-        self.catalog_transitions.install_transition(transition);
-        self.atomic_snapshots.insert(operation, record);
-        Ok(())
+        let mut original = atomic_recovery::AtomicRecoveryOriginalV1::new();
+        original.run(self, operation, program, observation,
+            atomic_recovery::AtomicCommitEvidenceV1::Group(member_guids), None)
+            .map_err(|_| original.take_ordinary_failure())
     }
 
     fn commit_legacy_atomic_dataset_snapshot(
@@ -1316,32 +1259,10 @@ impl StorageTransactionStore {
         program: ObjectDigest,
         observation: ObjectDigest,
     ) -> Result<(), StorageStateError> {
-        self.ensure_authority_readable()?;
-        if observation.as_bytes() == &[0; 32] {
-            return Err(StorageStateError::InvalidValue);
-        }
-        let current = self
-            .atomic_snapshots
-            .get(&operation)
-            .filter(|record| {
-                record.phase == AtomicDatasetSnapshotPhaseV1::Ambiguous
-                    && record.program.commitment() == program
-                    && record.observation.is_none()
-            })
-            .cloned()
-            .ok_or(StorageStateError::InvalidTransition)?;
-        if current.program.format_version() != 1 {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        let record = AtomicDatasetSnapshotRecordV1 {
-            phase: AtomicDatasetSnapshotPhaseV1::Committed,
-            observation: Some(observation),
-            post_head: None,
-            ..current
-        };
-        self.publish_atomic_snapshot(&record)?;
-        self.atomic_snapshots.insert(operation, record);
-        Ok(())
+        let mut original = atomic_recovery::AtomicRecoveryOriginalV1::new();
+        original.run(self, operation, program, observation,
+            atomic_recovery::AtomicCommitEvidenceV1::Legacy, None)
+            .map_err(|_| original.take_ordinary_failure())
     }
 
     fn publish_atomic_snapshot(
@@ -1487,69 +1408,16 @@ impl StorageTransactionStore {
         key: StorageStateKey,
         minimum_generation: u64,
     ) -> Result<Self, StorageStateError> {
-        let records = load_durable_records(&journal, &key)?;
-        let runtime_configuration = load_runtime_configuration(&journal, &key)?;
-        let resolver_policy_floor = load_resolver_policy_floor(&journal, &key)?;
-        let publication_intents = load_publication_intents(&journal, &key)?;
-        let pin_attempts = load_attempts(&journal, key.key_id, &key.secret)?;
-        let repair_intents = load_repair_intents(&journal, key.key_id, &key.secret)?;
-        let guest_root_attempts = load_guest_root_attempts(&journal, &key)?;
-        let atomic_snapshots = load_atomic_snapshot_records(&journal, &key)?;
-        let repair_guards = repair_guard::load(&journal, &key)?;
-        let catalog_transitions =
-            StorageCatalogTransitionProvider::load(&journal, key.key_id, &key.secret)?;
-        let latest_generation = latest_generation(&records).max(
-            catalog_transitions
-                .head_binding()
-                .map_or(0, CatalogBindingV1::generation),
-        );
-        if latest_generation < minimum_generation {
-            return Err(StorageStateError::Rollback);
-        }
-        validate_durable_records(&records, &catalog_transitions, &key)?;
-        if records
-            .keys()
-            .any(|operation| atomic_snapshots.contains_key(operation))
-        {
-            return Err(StorageStateError::CorruptRecord);
-        }
-        validate_atomic_snapshot_catalog_join(&atomic_snapshots, &catalog_transitions)?;
-        catalog_transitions
-            .validate_operation_set(records.keys().chain(atomic_snapshots.keys()).copied())?;
-        validate_publication_intent_set(&records, &publication_intents)?;
-        validate_repair_intent_set(
-            &journal,
-            &records,
-            &publication_intents,
-            &pin_attempts,
-            &repair_intents,
-        )?;
-        validate_guest_root_attempt_set(
-            &journal,
-            &records,
-            &publication_intents,
-            &guest_root_attempts,
-        )?;
-        let store = Self {
-            journal,
-            key,
-            records,
-            catalog_transitions,
-            runtime_configuration,
-            resolver_policy_floor,
-            publication_intents,
-            pin_attempts,
-            repair_intents,
-            guest_root_attempts,
-            atomic_snapshots,
-            repair_guards,
-            commit_failed: false,
-            #[cfg(test)]
-            fail_after_next_journal_commit: false,
-        };
+        let loaded = startup::LoadedStorageStateV1::load(&journal, &key, minimum_generation)?;
+        let store = loaded.into_store(journal, key);
+        store.validate_loaded_state_v1()?;
+        Ok(store)
+    }
+
+    fn validate_loaded_state_v1(&self) -> Result<(), StorageStateError> {
         let mut attempts_per_workspace = BTreeMap::<[u8; 32], [bool; 4]>::new();
-        for attempt in store.pin_attempts.values() {
-            store.validate_pin_attempt_context(attempt)?;
+        for attempt in self.pin_attempts.values() {
+            self.validate_pin_attempt_context(attempt)?;
             let ordinals = attempts_per_workspace
                 .entry(attempt.workspace_handle())
                 .or_default();
@@ -1567,8 +1435,8 @@ impl StorageTransactionStore {
         }) {
             return Err(StorageStateError::CorruptRecord);
         }
-        store.validate_snapshot_metadata_authority_set()?;
-        Ok(store)
+        self.validate_snapshot_metadata_authority_set()?;
+        Ok(())
     }
 
     fn open_or_initialize_runtime(
@@ -2106,6 +1974,46 @@ impl StorageTransactionStore {
         sealed_operation_fence: Vec<u8>,
         authority: FreshWorkspacePinAuthority,
     ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
+        self.begin_workspace_pin_repair_inner_v1(
+            sandbox_id, predecessor, intent, attempt, sealed_current_fence,
+            sealed_pending_effect, sealed_completed_effect, sealed_operation_fence, authority, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_workspace_pin_repair_receiving_v1(
+        &mut self,
+        sandbox_id: [u8; 16],
+        predecessor: &WorkspacePinRepairPredecessorV1,
+        intent: StorageWorkspacePinRepairIntentV1,
+        attempt: WorkspacePinAttemptV1,
+        sealed_current_fence: Vec<u8>,
+        sealed_pending_effect: Vec<u8>,
+        sealed_completed_effect: Vec<u8>,
+        sealed_operation_fence: Vec<u8>,
+        authority: FreshWorkspacePinAuthority,
+        receiving: &mut encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
+        self.begin_workspace_pin_repair_inner_v1(
+            sandbox_id, predecessor, intent, attempt, sealed_current_fence,
+            sealed_pending_effect, sealed_completed_effect, sealed_operation_fence, authority, Some(receiving),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn begin_workspace_pin_repair_inner_v1(
+        &mut self,
+        sandbox_id: [u8; 16],
+        predecessor: &WorkspacePinRepairPredecessorV1,
+        intent: StorageWorkspacePinRepairIntentV1,
+        attempt: WorkspacePinAttemptV1,
+        sealed_current_fence: Vec<u8>,
+        sealed_pending_effect: Vec<u8>,
+        sealed_completed_effect: Vec<u8>,
+        sealed_operation_fence: Vec<u8>,
+        authority: FreshWorkspacePinAuthority,
+        mut receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
         self.ensure_authority_readable()?;
         let predecessor_matches = match predecessor {
             WorkspacePinRepairPredecessorV1::MissingInitial {
@@ -2243,7 +2151,35 @@ impl StorageTransactionStore {
             return Err(StorageStateError::Equivocation);
         }
 
-        let attempt = attempt.with_authority_receipt(authority.into_sealed_receipt())?;
+        let attempt = match receiving.as_deref_mut() {
+            Some(receiving) => {
+                let receipt = authority.into_sealed_receipt();
+                let nodes = aos_sandbox_journal::geometry::conservative_btree_node_bytes_v1
+                    ::<[u8; 16], StorageWorkspacePinRepairIntentV1>(1)
+                    .and_then(|bytes| bytes.checked_add(
+                        aos_sandbox_journal::geometry::conservative_btree_node_bytes_v1
+                            ::<[u8; 16], WorkspacePinAttemptV1>(1)?,
+                    ))
+                    .and_then(|bytes| bytes.checked_add(intent.admitted_effect_record().len()))
+                    .and_then(|bytes| bytes.checked_add(attempt.dataset_name().len()))
+                    .and_then(|bytes| bytes.checked_add(receipt.len()))
+                    .ok_or(StorageStateError::InvalidValue)?;
+                // The two actual semantic namespace maps gain one row each.
+                // Native's three-backing byte envelope covers their real nodes
+                // and the moved/cloned receipt, dataset and effect buffers.
+                receiving.reserve_encoded_capacity_v1(nodes, 2)
+                    .map_err(|_| StorageStateError::Receiving)?;
+                attempt.with_authority_receipt(receipt)?
+            }
+            None => attempt.with_authority_receipt(authority.into_sealed_receipt())?,
+        };
+        let recovery_index = match receiving.as_deref_mut() {
+            Some(receiving) => Some(self.prepare_recovery_record_append_v1(
+                5, 5 * 16, sealed_current_fence.len() + sealed_pending_effect.len()
+                    + sealed_operation_fence.len(), receiving,
+            )?),
+            None => None,
+        };
         let transaction = JournalTransaction::new(
             workspace_pin_repair_transaction_id(intent.repair_operation_id()),
             vec![
@@ -2262,15 +2198,30 @@ impl StorageTransactionStore {
                     intent.repair_operation_id().to_vec(),
                     sealed_operation_fence,
                 ),
-                repair_intent_record(&intent, self.key.key_id, &self.key.secret)?,
-                attempt_record(&attempt, self.key.key_id, &self.key.secret)?,
+                match receiving.as_deref_mut() {
+                    Some(receiving) => crate::workspace_repair::repair_intent_record_receiving_v1(
+                        &intent, self.key.key_id, &self.key.secret, receiving,
+                    )?,
+                    None => repair_intent_record(&intent, self.key.key_id, &self.key.secret)?,
+                },
+                match (recovery_index, receiving.as_deref_mut()) {
+                    (Some(index), Some(receiving)) => self.pin_attempt_record_receiving_v1(
+                        index, &attempt, receiving,
+                    )?,
+                    _ => attempt_record(&attempt, self.key.key_id, &self.key.secret)?,
+                },
             ],
         )?;
         let capacity_completion = attempt.capacity_completion()?;
         let satisfied = JournalTransaction::new(
             pin_attempt_transaction_id(&capacity_completion),
             vec![
-                attempt_record(&capacity_completion, self.key.key_id, &self.key.secret)?,
+                match (recovery_index, receiving.as_deref_mut()) {
+                    (Some(index), Some(receiving)) => self.pin_attempt_record_receiving_v1(
+                        index, &capacity_completion, receiving,
+                    )?,
+                    _ => attempt_record(&capacity_completion, self.key.key_id, &self.key.secret)?,
+                },
                 JournalRecord::put(
                     RecordNamespace::Effect,
                     intent.request_id().to_vec(),
@@ -2278,10 +2229,20 @@ impl StorageTransactionStore {
                 ),
             ],
         )?;
-        self.journal
-            .preflight_transactions(&[transaction.clone(), satisfied])?;
-
-        self.commit_journal_verified(&transaction)?;
+        match (recovery_index, receiving) {
+            (Some(index), Some(receiving)) => {
+                let transactions = [transaction, satisfied];
+                receiving.reserve_preflight_sequence_v1(&self.journal, &transactions)
+                    .map_err(|_| StorageStateError::Receiving)?;
+                self.journal.preflight_transactions(&transactions)?;
+                self.commit_recovery_record_receiving_v1(index, &transactions[0], receiving)?;
+                self.verify_recovery_transaction_v1(index, &transactions[0])?;
+            }
+            _ => {
+                self.journal.preflight_transactions(&[transaction.clone(), satisfied])?;
+                self.commit_journal_verified(&transaction)?;
+            }
+        }
 
         self.repair_intents
             .insert(intent.repair_operation_id(), intent);
@@ -2691,6 +2652,24 @@ impl StorageTransactionStore {
         attempt: WorkspacePinAttemptV1,
         authority: FreshWorkspacePinAuthority,
     ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
+        self.begin_workspace_pin_attempt_inner_v1(attempt, authority, None)
+    }
+
+    pub(crate) fn begin_workspace_pin_attempt_receiving_v1(
+        &mut self,
+        attempt: WorkspacePinAttemptV1,
+        authority: FreshWorkspacePinAuthority,
+        receiving: &mut encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
+        self.begin_workspace_pin_attempt_inner_v1(attempt, authority, Some(receiving))
+    }
+
+    fn begin_workspace_pin_attempt_inner_v1(
+        &mut self,
+        attempt: WorkspacePinAttemptV1,
+        authority: FreshWorkspacePinAuthority,
+        mut receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
         self.ensure_authority_readable()?;
         if attempt.action() != WorkspacePinActionV1::Ensure
             || attempt.phase() != WorkspacePinAttemptPhaseV1::Ambiguous
@@ -2729,12 +2708,23 @@ impl StorageTransactionStore {
 
         let attempt = attempt.with_authority_receipt(authority.into_sealed_receipt())?;
 
-        self.preflight_pin_attempt(&attempt)?;
-        let transaction = JournalTransaction::new(
-            pin_attempt_transaction_id(&attempt),
-            vec![attempt_record(&attempt, self.key.key_id, &self.key.secret)?],
-        )?;
-        self.commit_journal(&transaction)?;
+        self.preflight_pin_attempt_inner_v1(&attempt, receiving.as_deref_mut())?;
+        let selected_index = match receiving.as_deref_mut() {
+            Some(receiving) => Some(self.prepare_recovery_record_append_v1(1, 16, 0, receiving)?),
+            None => None,
+        };
+        let record = match (selected_index, receiving.as_deref_mut()) {
+            (Some(index), Some(receiving)) => self.pin_attempt_record_receiving_v1(index, &attempt, receiving)?,
+            _ => attempt_record(&attempt, self.key.key_id, &self.key.secret)?,
+        };
+        let transaction = JournalTransaction::new(pin_attempt_transaction_id(&attempt), vec![record])?;
+        match (selected_index, receiving) {
+            (Some(index), Some(receiving)) => {
+                self.commit_recovery_record_receiving_v1(index, &transaction, receiving)?;
+                self.verify_recovery_transaction_v1(index, &transaction)?;
+            }
+            _ => self.commit_journal(&transaction)?,
+        }
         self.pin_attempts
             .insert(attempt.attempt_id(), attempt.clone());
         Ok(BeginWorkspacePinAttemptV1::Dispatch(attempt))
@@ -2833,6 +2823,26 @@ impl StorageTransactionStore {
         mutation_digest: ObjectDigest,
         authority: FreshWorkspacePinAuthority,
     ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
+        self.begin_workspace_pin_remove_and_destroy_inner_v1(attempt, mutation_digest, authority, None)
+    }
+
+    pub(crate) fn begin_workspace_pin_remove_and_destroy_receiving_v1(
+        &mut self,
+        attempt: WorkspacePinAttemptV1,
+        mutation_digest: ObjectDigest,
+        authority: FreshWorkspacePinAuthority,
+        receiving: &mut encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
+        self.begin_workspace_pin_remove_and_destroy_inner_v1(attempt, mutation_digest, authority, Some(receiving))
+    }
+
+    fn begin_workspace_pin_remove_and_destroy_inner_v1(
+        &mut self,
+        attempt: WorkspacePinAttemptV1,
+        mutation_digest: ObjectDigest,
+        authority: FreshWorkspacePinAuthority,
+        mut receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
         self.ensure_authority_readable()?;
         if attempt.action() != WorkspacePinActionV1::RemoveAndDestroy
             || attempt.phase() != WorkspacePinAttemptPhaseV1::Ambiguous
@@ -2871,22 +2881,41 @@ impl StorageTransactionStore {
 
         let mut ambiguous = current;
         ambiguous.phase = DurableStoragePhase::Ambiguous;
+        let selected_index = match receiving.as_deref_mut() {
+            Some(receiving) => Some(self.prepare_recovery_record_append_v1(2, 32, 0, receiving)?),
+            None => None,
+        };
+        let pin_record = match (selected_index, receiving.as_deref_mut()) {
+            (Some(index), Some(receiving)) => self.pin_attempt_record_receiving_v1(index, &attempt, receiving)?,
+            _ => attempt_record(&attempt, self.key.key_id, &self.key.secret)?,
+        };
         let transaction = JournalTransaction::new(
             pin_attempt_transaction_id(&attempt),
-            vec![
-                attempt_record(&attempt, self.key.key_id, &self.key.secret)?,
-                JournalRecord::put(
-                    RecordNamespace::Operation,
-                    ambiguous.operation_id.to_vec(),
-                    encode_record(&ambiguous, &self.key)?,
-                ),
-            ],
+            vec![pin_record, JournalRecord::put(
+                RecordNamespace::Operation, ambiguous.operation_id.to_vec(),
+                encode_record_receiving_v1(&ambiguous, &self.key, receiving.as_deref_mut())?,
+            )],
         )?;
-        let completion = self.effect_completion_capacity_transaction(&ambiguous)?;
-        let pin_satisfied = self.pin_satisfied_capacity_transaction(&attempt)?;
-        self.journal
-            .preflight_transactions(&[transaction.clone(), completion, pin_satisfied])?;
-        self.commit_journal(&transaction)?;
+        let completion = self.effect_completion_capacity_transaction_inner_v1(
+            &ambiguous, receiving.as_deref_mut(),
+        )?;
+        let pin_satisfied = self.pin_satisfied_capacity_transaction_inner_v1(
+            &attempt, receiving.as_deref_mut(),
+        )?;
+        match (selected_index, receiving) {
+            (Some(index), Some(receiving)) => {
+                let transactions = [transaction, completion, pin_satisfied];
+                receiving.reserve_preflight_sequence_v1(&self.journal, &transactions)
+                    .map_err(|_| StorageStateError::Receiving)?;
+                self.journal.preflight_transactions(&transactions)?;
+                self.commit_recovery_record_receiving_v1(index, &transactions[0], receiving)?;
+                self.verify_recovery_transaction_v1(index, &transactions[0])?;
+            }
+            _ => {
+                self.journal.preflight_transactions(&[transaction.clone(), completion, pin_satisfied])?;
+                self.commit_journal(&transaction)?;
+            }
+        }
         self.records.insert(ambiguous.operation_id, ambiguous);
         self.pin_attempts
             .insert(attempt.attempt_id(), attempt.clone());
@@ -2898,6 +2927,26 @@ impl StorageTransactionStore {
         attempt_id: [u8; 16],
         dataset: &WorkspaceDatasetObservationV1,
         pin: &WorkspacePinObservationV1,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, StorageStateError> {
+        self.complete_workspace_pin_attempt_inner_v1(attempt_id, dataset, pin, None)
+    }
+
+    pub(crate) fn complete_workspace_pin_attempt_receiving_v1(
+        &mut self,
+        attempt_id: [u8; 16],
+        dataset: &WorkspaceDatasetObservationV1,
+        pin: &WorkspacePinObservationV1,
+        receiving: &mut encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, StorageStateError> {
+        self.complete_workspace_pin_attempt_inner_v1(attempt_id, dataset, pin, Some(receiving))
+    }
+
+    fn complete_workspace_pin_attempt_inner_v1(
+        &mut self,
+        attempt_id: [u8; 16],
+        dataset: &WorkspaceDatasetObservationV1,
+        pin: &WorkspacePinObservationV1,
+        mut receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
     ) -> Result<WorkspacePinRecoveryDispositionV1, StorageStateError> {
         self.ensure_authority_readable()?;
         let current = self
@@ -2927,15 +2976,26 @@ impl StorageTransactionStore {
         }
         let satisfied = current.satisfy(observed_pin)?;
         self.validate_pin_attempt_context(&satisfied)?;
+        let recovery_index = receiving.as_deref_mut().map(|receiving| {
+            self.prepare_recovery_record_append_v1(1, 16, 0, receiving)
+        }).transpose()?;
         let transaction = JournalTransaction::new(
             pin_attempt_transaction_id(&satisfied),
-            vec![attempt_record(
-                &satisfied,
-                self.key.key_id,
-                &self.key.secret,
-            )?],
+            vec![match (recovery_index, receiving.as_deref_mut()) {
+                    (Some(index), Some(receiving)) => self.pin_attempt_record_receiving_v1(
+                        index, &satisfied, receiving,
+                    )?,
+                    (None, None) => attempt_record(&satisfied, self.key.key_id, &self.key.secret)?,
+                    _ => return Err(StorageStateError::Receiving),
+                }],
         )?;
-        self.commit_journal(&transaction)?;
+        match (recovery_index, receiving) {
+            (Some(index), Some(receiving)) => {
+                self.commit_recovery_record_receiving_v1(index, &transaction, receiving)?;
+            }
+            (None, None) => self.commit_journal(&transaction)?,
+            _ => return Err(StorageStateError::Receiving),
+        }
         self.pin_attempts.insert(attempt_id, satisfied);
         Ok(disposition)
     }
@@ -2946,6 +3006,28 @@ impl StorageTransactionStore {
         dataset: &WorkspaceDatasetObservationV1,
         pin: &WorkspacePinObservationV1,
         sealed_completed_effect: Vec<u8>,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, StorageStateError> {
+        self.complete_workspace_pin_repair_attempt_inner_v1(attempt_id, dataset, pin, sealed_completed_effect, None)
+    }
+
+    pub(crate) fn complete_workspace_pin_repair_attempt_receiving_v1(
+        &mut self,
+        attempt_id: [u8; 16],
+        dataset: &WorkspaceDatasetObservationV1,
+        pin: &WorkspacePinObservationV1,
+        sealed_completed_effect: Vec<u8>,
+        receiving: &mut encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, StorageStateError> {
+        self.complete_workspace_pin_repair_attempt_inner_v1(attempt_id, dataset, pin, sealed_completed_effect, Some(receiving))
+    }
+
+    fn complete_workspace_pin_repair_attempt_inner_v1(
+        &mut self,
+        attempt_id: [u8; 16],
+        dataset: &WorkspaceDatasetObservationV1,
+        pin: &WorkspacePinObservationV1,
+        sealed_completed_effect: Vec<u8>,
+        mut receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
     ) -> Result<WorkspacePinRecoveryDispositionV1, StorageStateError> {
         self.ensure_authority_readable()?;
         let current = self
@@ -2994,20 +3076,37 @@ impl StorageTransactionStore {
             return Err(StorageStateError::AuthorityLinkMismatch);
         }
 
+        let request_id = intent.request_id();
         let satisfied = current.satisfy(Some(observed_pin.clone()))?;
         self.validate_pin_attempt_context(&satisfied)?;
+        let recovery_index = receiving.as_deref_mut().map(|receiving| {
+            self.prepare_recovery_record_append_v1(2, 32, sealed_completed_effect.len(), receiving)
+        }).transpose()?;
         let transaction = JournalTransaction::new(
             pin_attempt_transaction_id(&satisfied),
             vec![
-                attempt_record(&satisfied, self.key.key_id, &self.key.secret)?,
+                match (recovery_index, receiving.as_deref_mut()) {
+                    (Some(index), Some(receiving)) => self.pin_attempt_record_receiving_v1(
+                        index, &satisfied, receiving,
+                    )?,
+                    (None, None) => attempt_record(&satisfied, self.key.key_id, &self.key.secret)?,
+                    _ => return Err(StorageStateError::Receiving),
+                },
                 JournalRecord::put(
                     RecordNamespace::Effect,
-                    intent.request_id().to_vec(),
+                    request_id.to_vec(),
                     sealed_completed_effect,
                 ),
             ],
         )?;
-        self.commit_journal_verified(&transaction)?;
+        match (recovery_index, receiving) {
+            (Some(index), Some(receiving)) => {
+                self.commit_recovery_record_receiving_v1(index, &transaction, receiving)?;
+                self.verify_recovery_transaction_v1(index, &transaction)?;
+            }
+            (None, None) => self.commit_journal_verified(&transaction)?,
+            _ => return Err(StorageStateError::Receiving),
+        }
         self.pin_attempts.insert(attempt_id, satisfied);
         Ok(disposition)
     }
@@ -3090,7 +3189,18 @@ impl StorageTransactionStore {
         }
         journal_records.push(bootstrap.record());
         let transaction = JournalTransaction::new(transaction_id, journal_records)?;
-        self.commit_journal(&transaction)?;
+        if self.startup_native.is_some() {
+            self.require_no_held_repair_guard_v1()?;
+        }
+        match self.startup_native.as_mut() {
+            Some(native) => {
+                if native.commit_once_v1(&mut self.journal, &transaction).is_err() {
+                    self.commit_failed = true;
+                    return Err(StorageStateError::Receiving);
+                }
+            }
+            None => self.commit_journal(&transaction)?,
+        }
         self.catalog_transitions.install_bootstrap(bootstrap);
         self.runtime_configuration = configuration_binding.or(self.runtime_configuration);
         Ok(binding)
@@ -3509,9 +3619,42 @@ impl StorageTransactionStore {
         self.resolver_policy_floor
     }
 
+    pub(crate) fn admit_recovery_resolver_policy_v1(
+        &mut self,
+        binding: StorageResolverPolicyCatalogBindingV1,
+        receiving: &mut encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<StorageResolverPolicyAdmissionOutcomeV1, StorageStateError> {
+        self.admit_resolver_policy_catalog_inner_v1(binding, None, Some(receiving))
+    }
+
     pub(crate) fn admit_resolver_policy_catalog(
         &mut self,
         binding: StorageResolverPolicyCatalogBindingV1,
+    ) -> Result<StorageResolverPolicyAdmissionOutcomeV1, StorageStateError> {
+        self.admit_resolver_policy_catalog_for_receiving_v1(binding, None)
+    }
+
+    pub(crate) fn admit_prepare_resolver_policy_receiving_v1(
+        &mut self,
+        binding: StorageResolverPolicyCatalogBindingV1,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<StorageResolverPolicyAdmissionOutcomeV1, StorageStateError> {
+        self.admit_resolver_policy_catalog_for_receiving_v1(binding, Some(receiving))
+    }
+
+    fn admit_resolver_policy_catalog_for_receiving_v1(
+        &mut self,
+        binding: StorageResolverPolicyCatalogBindingV1,
+        receiving: Option<&mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>>,
+    ) -> Result<StorageResolverPolicyAdmissionOutcomeV1, StorageStateError> {
+        self.admit_resolver_policy_catalog_inner_v1(binding, receiving, None)
+    }
+
+    fn admit_resolver_policy_catalog_inner_v1(
+        &mut self,
+        binding: StorageResolverPolicyCatalogBindingV1,
+        mut receiving: Option<&mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>>,
+        mut recovery: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
     ) -> Result<StorageResolverPolicyAdmissionOutcomeV1, StorageStateError> {
         self.ensure_authority_readable()?;
         let durable_floor = self.fresh_resolver_policy_floor()?;
@@ -3528,11 +3671,50 @@ impl StorageTransactionStore {
         }
 
         let floor = StorageResolverPolicyFloorV1::from_binding(binding);
+        if let Some(receiving) = receiving.as_mut() {
+            if self.receiving_prepare_policy_append.is_some() {
+                return Err(StorageStateError::Receiving);
+            }
+            // The existing encoder's canonical record is exactly98 bytes:
+            // magic8/version2/key16/generation8/digest32/HMAC32. No Vec or
+            // JournalRecord is manufactured to forecast its own allocation.
+            self.receiving_prepare_policy_append = Some(self.journal.append_receiving_demand_v1(
+                [aos_sandbox_journal::geometry::RecordShape {
+                    key_bytes: RESOLVER_POLICY_FLOOR_KEY.len(), value_bytes: Some(RESOLVER_POLICY_FLOOR_BYTES),
+                }].into_iter(),
+            ));
+            let Some(Ok(demand)) = self.receiving_prepare_policy_append.as_ref() else {
+                return Err(StorageStateError::Receiving);
+            };
+            receiving.reserve_prepare_policy_append_once_v1(*demand)
+                .map_err(|_| StorageStateError::Receiving)?;
+        }
+        let recovery_index = match recovery.as_deref_mut() {
+            Some(recovery) => Some(self.prepare_recovery_record_append_v1(
+                1, RESOLVER_POLICY_FLOOR_KEY.len(), RESOLVER_POLICY_FLOOR_BYTES, recovery,
+            )?),
+            None => None,
+        };
         let transaction = JournalTransaction::new(
             resolver_policy_floor_transaction_id(floor),
             vec![resolver_policy_floor_record(&self.key, floor)?],
         )?;
-        self.commit_journal(&transaction)?;
+        match receiving {
+            Some(receiving) => {
+                if self.has_held_repair_guard() {
+                    return Err(StorageStateError::InvalidTransition);
+                }
+                if receiving.commit_prepare_resolver_floor_once_v1(&mut self.journal, &transaction).is_err() {
+                    self.commit_failed |= receiving.catalog_requires_reopen_v1();
+                    return Err(StorageStateError::Receiving);
+                }
+            }
+            None => match (recovery_index, recovery) {
+                (Some(index), Some(recovery)) => self.commit_recovery_record_receiving_v1(index, &transaction, recovery)?,
+                (None, None) => self.commit_journal(&transaction)?,
+                _ => return Err(StorageStateError::Receiving),
+            },
+        }
         self.resolver_policy_floor = Some(floor);
         Ok(StorageResolverPolicyAdmissionOutcomeV1::Advanced)
     }
@@ -3602,10 +3784,7 @@ impl StorageTransactionStore {
         sealed_operation_fence: Vec<u8>,
         sealed_preparation: Vec<u8>,
         policy_binding: StorageResolverPolicyBindingV1,
-        generation: Option<(
-            crate::nix_generation::StorageGenerationNativeLoanV1<'_>,
-            crate::authorization::StoragePreparationNativeAdmissionV1<'_>,
-        )>,
+        mut generation: Option<StorageCatalogPreparationNativeV1<'_, '_, '_>>,
     ) -> Result<(), StorageStateError> {
         self.ensure_authority_readable()?;
         if operation_id == [0; 16]
@@ -3642,6 +3821,34 @@ impl StorageTransactionStore {
         {
             return Err(StorageStateError::Equivocation);
         }
+        if let Some(StorageCatalogPreparationNativeV1::Receiving(receiving, _)) = generation.as_mut() {
+            if self.receiving_preparation_append.is_some() {
+                return Err(StorageStateError::Receiving);
+            }
+            self.receiving_preparation_append = Some(self.journal.append_receiving_demand_v1(
+                [sealed_fence.len(), sealed_effect.len(), sealed_operation_fence.len(), sealed_preparation.len()]
+                    .into_iter().map(|value_bytes| aos_sandbox_journal::geometry::RecordShape {
+                        key_bytes: 16, value_bytes: Some(value_bytes),
+                    }),
+            ));
+            let Some(Ok(demand)) = self.receiving_preparation_append.as_ref() else {
+                return Err(StorageStateError::Receiving);
+            };
+            receiving.reserve_catalog_append_once_v1(*demand).map_err(|_| StorageStateError::Receiving)?;
+        }
+        let recovery_index = match generation.as_mut() {
+            Some(StorageCatalogPreparationNativeV1::State(receiving, _)) => {
+                let index = self.prepare_recovery_record_append_v1(4, 4 * 16,
+                    sealed_fence.len() + sealed_effect.len() + sealed_operation_fence.len()
+                        + sealed_preparation.len(), receiving)?;
+                let clock = aos_sandbox::journal::StorageStateNativeCommitAttemptV1
+                    ::preparation_clock_demand_v1()?;
+                receiving.reserve_preparation_clock_v1(&self.journal, clock)
+                    .map_err(|_| StorageStateError::Receiving)?;
+                Some(index)
+            }
+            _ => None,
+        };
         let records = vec![
             JournalRecord::put(
                 RecordNamespace::DesiredState,
@@ -3664,7 +3871,25 @@ impl StorageTransactionStore {
             JournalTransaction::new(catalog_preparation_transaction_id(operation_id), records)?;
         match generation {
             None => self.commit_journal(&transaction)?,
-            Some((original, admission)) => {
+            Some(StorageCatalogPreparationNativeV1::Receiving(original, admission)) => {
+                if self.has_held_repair_guard() {
+                    return Err(StorageStateError::InvalidTransition);
+                }
+                let clock = admission.borrow_clock(&transaction);
+                let result = original.commit_catalog_preparation_once_v1(
+                    &mut self.journal, &transaction, clock,
+                );
+                if result.is_err() {
+                    if original.catalog_requires_reopen_v1() { self.commit_failed = true; }
+                    return Err(StorageStateError::InvalidTransition);
+                }
+            }
+            Some(StorageCatalogPreparationNativeV1::State(receiving, admission)) => {
+                let index = recovery_index.ok_or(StorageStateError::Receiving)?;
+                let clock = admission.borrow_clock(&transaction);
+                self.commit_recovery_preparation_receiving_v1(index, &transaction, receiving, clock)?;
+            }
+            Some(StorageCatalogPreparationNativeV1::Nix(original, admission)) => {
                 if self.has_held_repair_guard() || original.native.is_some()
                     || original.first.is_some() || original.clock.attempted()
                     || self.journal.snapshot_sequence().checked_add(6).is_none()
@@ -3811,6 +4036,7 @@ impl StorageTransactionStore {
             sealed_operation_fence,
             publication_intent,
             None,
+            None,
         )
     }
 
@@ -3839,7 +4065,28 @@ impl StorageTransactionStore {
             sealed_operation_fence,
             publication_intent,
             Some(preparation),
+            None,
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_authorized_receiving_v1(
+        &mut self,
+        operation_id: [u8; 16],
+        request_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+        sandbox_id: [u8; 16],
+        request_id: [u8; 16],
+        sealed_fence: Vec<u8>,
+        sealed_effect: Vec<u8>,
+        sealed_operation_fence: Vec<u8>,
+        publication_intent: Option<StorageWorkspacePublicationIntentV1>,
+        preparation: Option<CatalogPreparationConsumption>,
+        receiving: &mut encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<BeginStorageTransaction, StorageStateError> {
+        self.begin_authorized(operation_id, request_digest, catalog, sandbox_id, request_id,
+            sealed_fence, sealed_effect, sealed_operation_fence, publication_intent,
+            preparation, Some(receiving))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3855,6 +4102,7 @@ impl StorageTransactionStore {
         sealed_operation_fence: Vec<u8>,
         publication_intent: Option<StorageWorkspacePublicationIntentV1>,
         preparation: Option<CatalogPreparationConsumption>,
+        mut receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
     ) -> Result<BeginStorageTransaction, StorageStateError> {
         if sealed_fence.is_empty()
             || sealed_effect.is_empty()
@@ -3930,7 +4178,24 @@ impl StorageTransactionStore {
             }
         };
         let mutation_digest = record.mutation_digest;
-        let reservation = self.reserve_catalog_transition(&record, catalog)?;
+        let mut codec_original = encoding::StateCodecOriginalV1::default();
+        let mut context = receiving.as_deref_mut()
+            .map(|receiving| encoding::StateEncodingContextV1::new(receiving, &mut codec_original));
+        let reservation = match context.as_mut() {
+            Some(context) => self.catalog_transitions.reserve_receiving_v1(
+                record.operation_id, record.request_digest, record.mutation_digest,
+                catalog, self.key.key_id, &self.key.secret, context,
+            ),
+            None => self.reserve_catalog_transition(&record, catalog),
+        }?;
+        if let Some(context) = context.as_mut() {
+            let count = 4 + usize::from(publication_intent.is_some()) + usize::from(preparation.is_some());
+            context.reserve_owned_capacity_v1(count.checked_mul(std::mem::size_of::<JournalRecord>())
+                .and_then(|bytes| count.checked_mul(16).and_then(|keys| bytes.checked_add(keys)))
+                .ok_or(aos_sandbox_core::AccountingError::ArithmeticOverflow {
+                    dimension: aos_sandbox_core::ResourceDimension::MemoryBytes,
+                }), 0)?;
+        }
         let mut linked_records = vec![
             JournalRecord::put(
                 RecordNamespace::DesiredState,
@@ -3943,10 +4208,13 @@ impl StorageTransactionStore {
                 operation_id.to_vec(),
                 sealed_operation_fence,
             ),
-            StorageCatalogTransitionProvider::reservation_record(&reservation),
+            match context.as_mut() {
+                Some(context) => StorageCatalogTransitionProvider::reservation_record_receiving_v1(&reservation, context)?,
+                None => StorageCatalogTransitionProvider::reservation_record(&reservation),
+            },
         ];
         if let Some(intent) = publication_intent.as_ref() {
-            linked_records.push(publication_intent_record(&self.key, intent)?);
+            linked_records.push(publication_intent_record_inner_v1(&self.key, intent, context.as_mut())?);
         }
         if let Some(preparation) = preparation {
             linked_records.push(JournalRecord::put(
@@ -3955,7 +4223,11 @@ impl StorageTransactionStore {
                 preparation.consumed_record,
             ));
         }
-        self.publish_with(record, linked_records)?;
+        drop(context);
+        match receiving {
+            Some(receiving) => self.publish_recovery_record_v1(record, linked_records, receiving),
+            None => self.publish_with(record, linked_records),
+        }?;
         self.catalog_transitions.install_reservation(reservation);
         if let Some(intent) = publication_intent {
             self.publication_intents.insert(operation_id, intent);
@@ -4018,6 +4290,24 @@ impl StorageTransactionStore {
         entry: StorageRecoveryEntry,
         catalog: &ResolvedCatalogCommitmentV1,
     ) -> Result<(), StorageStateError> {
+        self.abort_prepared_exact_inner_v1(entry, catalog, None)
+    }
+
+    pub(crate) fn abort_prepared_exact_receiving_v1(
+        &mut self,
+        entry: StorageRecoveryEntry,
+        catalog: &ResolvedCatalogCommitmentV1,
+        receiving: &mut encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<(), StorageStateError> {
+        self.abort_prepared_exact_inner_v1(entry, catalog, Some(receiving))
+    }
+
+    fn abort_prepared_exact_inner_v1(
+        &mut self,
+        entry: StorageRecoveryEntry,
+        catalog: &ResolvedCatalogCommitmentV1,
+        receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<(), StorageStateError> {
         self.ensure_authority_readable()?;
         let current = self
             .records
@@ -4046,7 +4336,10 @@ impl StorageTransactionStore {
         let mut aborted = current.clone();
         aborted.phase = DurableStoragePhase::Aborted;
 
-        self.publish_with(aborted, vec![reservation_deletion])?;
+        match receiving {
+            Some(receiving) => self.publish_recovery_record_v1(aborted, vec![reservation_deletion], receiving)?,
+            None => self.publish_with(aborted, vec![reservation_deletion])?,
+        }
         self.catalog_transitions.install_abort(operation_id);
         Ok(())
     }
@@ -4067,13 +4360,25 @@ impl StorageTransactionStore {
         operation_id: [u8; 16],
         mutation_digest: ObjectDigest,
     ) -> Result<(), StorageStateError> {
+        self.mark_mutation_ambiguous_inner_v1(operation_id, mutation_digest, None)
+    }
+
+    fn mark_mutation_ambiguous_inner_v1(
+        &mut self,
+        operation_id: [u8; 16],
+        mutation_digest: ObjectDigest,
+        mut receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<(), StorageStateError> {
         let mut record = self.exact_current(operation_id, mutation_digest)?.clone();
         if record.phase != DurableStoragePhase::Prepared {
             return Err(StorageStateError::InvalidTransition);
         }
-        self.preflight_effect_capacity(&record)?;
+        self.preflight_effect_capacity_inner_v1(&record, receiving.as_deref_mut())?;
         record.phase = DurableStoragePhase::Ambiguous;
-        self.publish(record)
+        match receiving {
+            Some(receiving) => self.publish_recovery_record_v1(record, Vec::new(), receiving),
+            None => self.publish(record),
+        }
     }
 
     pub(crate) fn mark_mutation_ambiguous_exact(
@@ -4085,6 +4390,18 @@ impl StorageTransactionStore {
     ) -> Result<(), StorageStateError> {
         self.validate_mutation_exact(operation_id, request_digest, mutation_digest, catalog)?;
         self.mark_mutation_ambiguous(operation_id, mutation_digest)
+    }
+
+    pub(crate) fn mark_mutation_ambiguous_exact_receiving_v1(
+        &mut self,
+        operation_id: [u8; 16],
+        request_digest: ObjectDigest,
+        mutation_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+        receiving: &mut encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<(), StorageStateError> {
+        self.validate_mutation_exact(operation_id, request_digest, mutation_digest, catalog)?;
+        self.mark_mutation_ambiguous_inner_v1(operation_id, mutation_digest, Some(receiving))
     }
 
     pub(crate) fn validate_mutation_exact(
@@ -4142,47 +4459,12 @@ impl StorageTransactionStore {
         zfs_observation_digest: ObjectDigest,
         supplement: CatalogCommitSupplementV1,
     ) -> Result<CommittedStorageResultV1, StorageStateError> {
-        self.ensure_authority_readable()?;
-        let mut record = self.exact_current(operation_id, mutation_digest)?.clone();
-        if record.phase != DurableStoragePhase::Ambiguous
-            || record.catalog != catalog.binding()
-            || record.catalog_bytes != catalog.canonical_bytes()
-        {
-            return Err(StorageStateError::InvalidTransition);
-        }
-
-        let transition = self
-            .catalog_transitions
-            .prepare_transition_with_supplement(
-                operation_id,
-                mutation_digest,
-                catalog,
-                observed_object_guid,
-                zfs_observation_digest,
-                supplement,
-                self.key.key_id,
-                &self.key.secret,
-            )?;
-        if let Some(metadata) = transition.snapshot_metadata() {
-            self.validate_snapshot_metadata_authority(metadata, &record, catalog)?;
-        }
-        let verified = VerifiedStorageResultV1::verify_observation(
-            operation_id,
-            record.request_digest,
-            catalog,
-            observed,
-            observed_object_guid,
-            transition.result_binding(),
-            transition.observation_digest(),
-        )?;
-        self.validate_verified_result(&record, &verified)?;
-
-        let result = self.committed_result(&verified)?;
-        record.phase = DurableStoragePhase::Committed;
-        record.result = Some(result);
-        self.publish_with(record, transition.records())?;
-        self.catalog_transitions.install_transition(transition);
-        Ok(result)
+        let mut attempt = recovery_mutation::StorageRecoveryMutationOriginalV1::new();
+        let result = attempt.run(
+            self, operation_id, mutation_digest, catalog, observed,
+            observed_object_guid, zfs_observation_digest, supplement, None,
+        );
+        result.map_err(|_| attempt.take_ordinary_failure())
     }
 
     fn validate_verified_result(
@@ -4220,6 +4502,14 @@ impl StorageTransactionStore {
     }
 
     fn preflight_effect_capacity(&self, prepared: &DurableRecord) -> Result<(), StorageStateError> {
+        self.preflight_effect_capacity_inner_v1(prepared, None)
+    }
+
+    fn preflight_effect_capacity_inner_v1(
+        &self,
+        prepared: &DurableRecord,
+        mut receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<(), StorageStateError> {
         let mut ambiguous = prepared.clone();
         ambiguous.phase = DurableStoragePhase::Ambiguous;
         let ambiguous_transaction = JournalTransaction::new(
@@ -4227,20 +4517,31 @@ impl StorageTransactionStore {
             vec![JournalRecord::put(
                 RecordNamespace::Operation,
                 prepared.operation_id.to_vec(),
-                encode_record(&ambiguous, &self.key)?,
+                encode_record_receiving_v1(&ambiguous, &self.key, receiving.as_deref_mut())?,
             )],
         )?;
 
-        let completion_transaction = self.effect_completion_capacity_transaction(prepared)?;
-
-        self.journal
-            .preflight_transactions(&[ambiguous_transaction, completion_transaction])?;
+        let completion_transaction = self.effect_completion_capacity_transaction_inner_v1(prepared, receiving.as_deref_mut())?;
+        let sequence = [ambiguous_transaction, completion_transaction];
+        if let Some(receiving) = receiving {
+            receiving.reserve_preflight_sequence_v1(&self.journal, &sequence)
+                .map_err(|_| StorageStateError::Receiving)?;
+        }
+        self.journal.preflight_transactions(&sequence)?;
         Ok(())
     }
 
     fn effect_completion_capacity_transaction(
         &self,
         prepared: &DurableRecord,
+    ) -> Result<JournalTransaction, StorageStateError> {
+        self.effect_completion_capacity_transaction_inner_v1(prepared, None)
+    }
+
+    fn effect_completion_capacity_transaction_inner_v1(
+        &self,
+        prepared: &DurableRecord,
+        mut receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
     ) -> Result<JournalTransaction, StorageStateError> {
         let result_catalog = CatalogBindingV1::from_publisher(
             prepared
@@ -4261,13 +4562,18 @@ impl StorageTransactionStore {
             immutable_version_handle: Some([u8::MAX; 32]),
             object_guid: Some(u64::MAX),
         });
-        let mut completion_records = self
-            .catalog_transitions
-            .effect_capacity_records(prepared.operation_id)?;
+        let mut codec_original = encoding::StateCodecOriginalV1::default();
+        let mut context = receiving.as_deref_mut()
+            .map(|receiving| encoding::StateEncodingContextV1::new(receiving, &mut codec_original));
+        let mut completion_records = match context.as_mut() {
+            Some(receiving) => self.catalog_transitions.effect_capacity_records_receiving_v1(prepared.operation_id, receiving),
+            None => self.catalog_transitions.effect_capacity_records(prepared.operation_id),
+        }?;
+        drop(context);
         completion_records.push(JournalRecord::put(
             RecordNamespace::Operation,
             prepared.operation_id.to_vec(),
-            encode_record(&committed, &self.key)?,
+            encode_record_receiving_v1(&committed, &self.key, receiving)?,
         ));
         JournalTransaction::new(
             transaction_id(prepared.operation_id, DurableStoragePhase::Committed),
@@ -4295,21 +4601,9 @@ impl StorageTransactionStore {
     fn publish_with(
         &mut self,
         record: DurableRecord,
-        mut additional: Vec<JournalRecord>,
+        additional: Vec<JournalRecord>,
     ) -> Result<(), StorageStateError> {
-        let bytes = encode_record(&record, &self.key)?;
-        additional.push(JournalRecord::put(
-            RecordNamespace::Operation,
-            record.operation_id.to_vec(),
-            bytes,
-        ));
-        let transaction = JournalTransaction::new(
-            transaction_id(record.operation_id, record.phase),
-            additional,
-        )?;
-        self.commit_journal(&transaction)?;
-        self.records.insert(record.operation_id, record);
-        Ok(())
+        recovery_mutation::StorageRecoveryMutationOriginalV1::publish_ordinary(self, record, additional)
     }
 
     fn commit_journal(
@@ -4318,10 +4612,25 @@ impl StorageTransactionStore {
     ) -> Result<(), StorageStateError> {
         // The closed Repair guard conservatively freezes every Storage state
         // transition, not only writes that visibly name its workspace.
-        if self.has_held_repair_guard() {
-            return Err(StorageStateError::InvalidTransition);
-        }
+        self.require_no_held_repair_guard_v1()?;
         self.commit_journal_unfenced(transaction)
+    }
+
+    fn require_no_held_repair_guard_v1(&self) -> Result<(), StorageStateError> {
+        if self.has_held_repair_guard() {
+            Err(StorageStateError::InvalidTransition)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn receiving_preparation_append_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        self.receiving_prepare_policy_append.as_ref().and_then(|result| result.as_ref().err())
+            .map(|cause| cause as &dyn std::error::Error)
+            .or_else(|| self.receiving_preparation_append.as_ref()
+                .and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error))
     }
 
     /// Reports a MAC-authenticated, restart-persistent Repair hold.
@@ -4336,6 +4645,13 @@ impl StorageTransactionStore {
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<(), StorageStateError> {
+        if let Some(capture) = self.startup_mutations.as_mut().filter(|capture| capture.requires_capture_v1()) {
+            let result = capture.commit_once_v1(&mut self.journal, transaction);
+            if result.is_err() {
+                self.commit_failed = true;
+            }
+            return result;
+        }
         let result = self.journal.commit(transaction);
         #[cfg(test)]
         let result = result.and_then(|commit| {
@@ -4366,6 +4682,13 @@ impl StorageTransactionStore {
         transaction: &JournalTransaction,
     ) -> Result<(), StorageStateError> {
         self.commit_journal(transaction)?;
+        self.verify_journal_transaction_v1(transaction)
+    }
+
+    fn verify_journal_transaction_v1(
+        &mut self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), StorageStateError> {
         if transaction
             .records()
             .iter()
@@ -4610,32 +4933,74 @@ impl StorageTransactionStore {
         Ok(())
     }
 
-    fn preflight_pin_attempt(
+    fn preflight_pin_attempt_inner_v1(
         &self,
         attempt: &WorkspacePinAttemptV1,
+        mut receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
     ) -> Result<(), StorageStateError> {
+        let record = self.pin_capacity_record_v1(attempt, receiving.as_deref_mut())?;
         let ambiguous = JournalTransaction::new(
-            pin_attempt_transaction_id(attempt),
-            vec![attempt_record(attempt, self.key.key_id, &self.key.secret)?],
+            pin_attempt_transaction_id(attempt), vec![record],
         )?;
-        let satisfied = self.pin_satisfied_capacity_transaction(attempt)?;
-        self.journal
-            .preflight_transactions(&[ambiguous, satisfied])?;
+        let satisfied = self.pin_satisfied_capacity_transaction_inner_v1(
+            attempt, receiving.as_deref_mut(),
+        )?;
+        let transactions = [ambiguous, satisfied];
+        if let Some(receiving) = receiving {
+            receiving.reserve_preflight_sequence_v1(&self.journal, &transactions)
+                .map_err(|_| StorageStateError::Receiving)?;
+        }
+        self.journal.preflight_transactions(&transactions)?;
         Ok(())
+    }
+
+    fn pin_capacity_record_v1(
+        &self,
+        attempt: &WorkspacePinAttemptV1,
+        receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<JournalRecord, StorageStateError> {
+        if let Some(receiving) = receiving {
+            // The authenticated attempt bounds both proof strings and receipts;
+            // this is the actual existing binary codec's reached width.
+            let capacity = crate::workspace_pin::attempt_encoding_bytes_v1(attempt)
+                .map_err(|_| StorageStateError::InvalidValue)?;
+            receiving.reserve_encoded_capacity_v1(capacity, 0)
+                .map_err(|_| StorageStateError::Receiving)?;
+        }
+        attempt_record(attempt, self.key.key_id, &self.key.secret)
     }
 
     fn pin_satisfied_capacity_transaction(
         &self,
         attempt: &WorkspacePinAttemptV1,
     ) -> Result<JournalTransaction, StorageStateError> {
+        self.pin_satisfied_capacity_transaction_inner_v1(attempt, None)
+    }
+
+    fn pin_satisfied_capacity_transaction_inner_v1(
+        &self,
+        attempt: &WorkspacePinAttemptV1,
+        mut receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<JournalTransaction, StorageStateError> {
+        if let Some(receiving) = receiving.as_deref_mut() {
+            // The old capacity proof clones this exact attempt and, for Ensure,
+            // adds one fixed pin path, root, filesystem and dataset string.
+            // Its semantic capacity check remains the same consuming engine.
+            let clone_bytes = crate::workspace_pin::attempt_encoding_bytes_v1(attempt)
+                .and_then(|bytes| bytes.checked_add(attempt.dataset_name().len())
+                    .and_then(|bytes| bytes.checked_add(4096 + 4))
+                    .and_then(|bytes| bytes.checked_add(std::mem::size_of::<WorkspacePinAttemptV1>()))
+                    .ok_or(aos_sandbox_core::AccountingError::ArithmeticOverflow {
+                        dimension: aos_sandbox_core::ResourceDimension::MemoryBytes,
+                    }))
+                .map_err(|_| StorageStateError::InvalidValue)?;
+            receiving.reserve_encoded_capacity_v1(clone_bytes, 0)
+                .map_err(|_| StorageStateError::Receiving)?;
+        }
         let completion = attempt.capacity_completion()?;
         JournalTransaction::new(
             pin_attempt_transaction_id(&completion),
-            vec![attempt_record(
-                &completion,
-                self.key.key_id,
-                &self.key.secret,
-            )?],
+            vec![self.pin_capacity_record_v1(&completion, receiving)?],
         ).map_err(aos_sandbox::JournalError::from)
         .map_err(Into::into)
     }
@@ -4678,7 +5043,7 @@ fn materialized_state_digest<'a>(
 fn load_guest_root_attempts(
     journal: &Journal,
     key: &StorageStateKey,
-) -> Result<BTreeMap<[u8; 16], GuestRootPublicationAttemptV1>, StorageStateError> {
+) -> Result<BTreeMap<[u8; 16], GuestRootPublicationAttemptV2>, StorageStateError> {
     let mut attempts = BTreeMap::new();
     for (record_key, bytes) in journal.records(RecordNamespace::StorageGuestRootPublicationAttempt)
     {
@@ -4710,7 +5075,7 @@ fn validate_guest_root_attempt_set(
     journal: &Journal,
     records: &BTreeMap<[u8; 16], DurableRecord>,
     publications: &BTreeMap<[u8; 16], StorageWorkspacePublicationIntentV1>,
-    attempts: &BTreeMap<[u8; 16], GuestRootPublicationAttemptV1>,
+    attempts: &BTreeMap<[u8; 16], GuestRootPublicationAttemptV2>,
 ) -> Result<(), StorageStateError> {
     for attempt in attempts.values() {
         let proof = attempt.expected_proof;
@@ -4735,6 +5100,8 @@ fn validate_guest_root_attempt_set(
             || creation.storage_handle() != Some(proof.workspace_handle)
             || creation.object_guid() != Some(proof.dataset_guid)
             || publication.assignment_digest().as_bytes() != &proof.assignment_digest
+            || attempt.creation_arguments.assignment_data_v1()
+                .map_err(|_| StorageStateError::AuthorityLinkMismatch)? != publication.portable_metadata().assignment()
             || publication.root_image().digest().as_bytes() != &proof.root_image_digest
             || Sha256::digest(sealed_effect).as_slice() != attempt.sealed_effect_digest
             || Sha256::digest(sealed_fence).as_slice() != attempt.operation_fence_digest
@@ -4831,59 +5198,8 @@ fn encode_atomic_snapshot_record(
     record: &AtomicDatasetSnapshotRecordV1,
     key: &StorageStateKey,
 ) -> Result<Vec<u8>, StorageStateError> {
-    let version = if record.post_head.is_some() {
-        if record.phase != AtomicDatasetSnapshotPhaseV1::Committed
-            || record.observation.is_none()
-            || record.post_head.is_some_and(|head| {
-                record.program.format_version() != 2
-                    || record.program.catalog_generation().checked_add(1) != Some(head.generation())
-                    || record.program.catalog_head() == head.digest()
-            })
-        {
-            return Err(StorageStateError::InvalidValue);
-        }
-        ATOMIC_SNAPSHOT_VERSION_V3
-    } else {
-        ATOMIC_SNAPSHOT_VERSION_V2
-    };
-    let program = record
-        .program
-        .canonical_bytes()
-        .map_err(|_| StorageStateError::InvalidValue)?;
-    let program_length =
-        u32::try_from(program.len()).map_err(|_| StorageStateError::InvalidValue)?;
-    let mut bytes = Vec::with_capacity(104 + program.len());
-    bytes.extend_from_slice(ATOMIC_SNAPSHOT_MAGIC);
-    bytes.extend_from_slice(&version.to_be_bytes());
-    bytes.push(record.phase as u8);
-    bytes.extend_from_slice(&key.key_id);
-    bytes.extend_from_slice(&record.sandbox_id);
-    bytes.extend_from_slice(&record.request_id);
-    bytes.extend_from_slice(record.semantic_digest.as_bytes());
-    bytes.extend_from_slice(record.transport_digest.as_bytes());
-    bytes.extend_from_slice(&program_length.to_be_bytes());
-    bytes.extend_from_slice(&program);
-    bytes.extend_from_slice(
-        record
-            .observation
-            .unwrap_or(ObjectDigest::from_bytes([0; 32]))
-            .as_bytes(),
-    );
-    if let Some(head) = record.post_head {
-        bytes.extend_from_slice(&head.generation().to_be_bytes());
-        bytes.extend_from_slice(head.digest().as_bytes());
-    }
-    let mut mac =
-        HmacSha256::new_from_slice(&key.secret).map_err(|_| StorageStateError::InvalidValue)?;
-    mac.update(if version == ATOMIC_SNAPSHOT_VERSION_V3 {
-        ATOMIC_SNAPSHOT_DOMAIN_V3
-    } else {
-        ATOMIC_SNAPSHOT_DOMAIN_V2
-    });
-    mac.update(&record.program.operation());
-    mac.update(&bytes);
-    bytes.extend_from_slice(&mac.finalize().into_bytes());
-    Ok(bytes)
+    let mut original = atomic_encoding::AtomicEncodingOriginalV1::new();
+    original.encode(record, key, None).map_err(|_| original.take_ordinary_failure())
 }
 
 fn decode_atomic_snapshot_record(
@@ -5284,6 +5600,31 @@ fn publication_intent_record(
     key: &StorageStateKey,
     intent: &StorageWorkspacePublicationIntentV1,
 ) -> Result<JournalRecord, StorageStateError> {
+    publication_intent_record_inner_v1(key, intent, None)
+}
+
+fn publication_intent_record_inner_v1(
+    key: &StorageStateKey,
+    intent: &StorageWorkspacePublicationIntentV1,
+    receiving: Option<&mut encoding::StateEncodingContextV1<'_, '_, '_>>,
+) -> Result<JournalRecord, StorageStateError> {
+    if let Some(receiving) = receiving {
+        // All fixed writes in this unchanged binary codec, including the64-byte
+        // root policy, two length words and MAC. Variable bytes are exact inputs.
+        const FIXED: usize = 8 + 2 + 16 + 16 + 8 + 32 + 32 + 2 + 32 + 8 + 4 + 4
+            + 16 + 32 + 16 + 16 + 8 + 8 + 32 + 16 + 64 + 4 + 4 + MAC_BYTES;
+        let media = intent.root_image().media_type().as_str().len();
+        let metadata = intent.portable_metadata();
+        let bytes = FIXED.checked_add(media)
+            .and_then(|bytes| bytes.checked_add(metadata.manifest_bytes().len()))
+            .and_then(|bytes| bytes.checked_add(metadata.sandbox_spec_bytes().len()))
+            .map(|bytes| bytes.max(512 + media))
+            .and_then(|bytes| bytes.checked_add(16 + std::mem::size_of::<JournalRecord>()))
+            .ok_or(aos_sandbox_core::AccountingError::ArithmeticOverflow {
+                dimension: aos_sandbox_core::ResourceDimension::MemoryBytes,
+            });
+        receiving.reserve_owned_capacity_v1(bytes, 0)?;
+    }
     let record_key = intent.operation_id().to_vec();
     let media_type = intent.root_image().media_type().as_str().as_bytes();
     let media_length =
@@ -5484,7 +5825,7 @@ fn resolver_policy_floor_record(
     if floor.generation == 0 || floor.catalog_digest.as_bytes() == &[0; 32] {
         return Err(StorageStateError::InvalidValue);
     }
-    let mut bytes = Vec::with_capacity(98);
+    let mut bytes = Vec::with_capacity(RESOLVER_POLICY_FLOOR_BYTES);
     bytes.extend_from_slice(RESOLVER_POLICY_FLOOR_MAGIC);
     bytes.extend_from_slice(&RESOLVER_POLICY_FLOOR_VERSION.to_be_bytes());
     bytes.extend_from_slice(&key.key_id);
@@ -5503,7 +5844,7 @@ fn decode_resolver_policy_floor(
     key: &StorageStateKey,
     bytes: &[u8],
 ) -> Result<StorageResolverPolicyFloorV1, StorageStateError> {
-    if bytes.len() != 98
+    if bytes.len() != RESOLVER_POLICY_FLOOR_BYTES
         || &bytes[..8] != RESOLVER_POLICY_FLOOR_MAGIC
         || u16::from_be_bytes(
             bytes[8..10]
@@ -5863,13 +6204,7 @@ fn phase_code(phase: DurableStoragePhase) -> u8 {
     }
 }
 
-fn encode_record(
-    record: &DurableRecord,
-    key: &StorageStateKey,
-) -> Result<Vec<u8>, StorageStateError> {
-    if record.format_version != VERSION {
-        return Err(StorageStateError::CorruptRecord);
-    }
+fn encoded_record_capacity_v1(record: &DurableRecord) -> Result<usize, StorageStateError> {
     let result_len = if record.result.is_some() {
         RESULT_BYTES
     } else {
@@ -5881,6 +6216,29 @@ fn encode_record(
         .ok_or(StorageStateError::CorruptRecord)?;
     if capacity > MAXIMUM_RECORD_BYTES {
         return Err(StorageStateError::CorruptRecord);
+    }
+    Ok(capacity)
+}
+
+fn encode_record(
+    record: &DurableRecord,
+    key: &StorageStateKey,
+) -> Result<Vec<u8>, StorageStateError> {
+    encode_record_receiving_v1(record, key, None)
+}
+
+fn encode_record_receiving_v1(
+    record: &DurableRecord,
+    key: &StorageStateKey,
+    receiving: Option<&mut encoding::StateEncodingLoanV1<'_, '_>>,
+) -> Result<Vec<u8>, StorageStateError> {
+    if record.format_version != VERSION {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let capacity = encoded_record_capacity_v1(record)?;
+    if let Some(receiving) = receiving {
+        receiving.reserve_encoded_capacity_v1(capacity, 1)
+            .map_err(|_| StorageStateError::Receiving)?;
     }
     let mut bytes = Vec::with_capacity(capacity);
     bytes.extend_from_slice(MAGIC);

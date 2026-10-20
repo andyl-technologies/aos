@@ -12,6 +12,9 @@
 //! SCM_RIGHTS roles with a separately versioned remote object-carrier profile;
 //! descriptor integers and local carrier assumptions are never portable.
 
+mod response_capture;
+pub(crate) use response_capture::{ResponseEnvelopeCaptureV1, validate_decoded_response_envelope_engine};
+
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerAuthorizationArtifactsV1, BrokerClientHello, BrokerDescriptorDisposition,
     BrokerDescriptorDispositionEntry, BrokerDescriptorEntry, BrokerDescriptorRole, BrokerError,
@@ -645,10 +648,60 @@ pub(crate) fn validate_decoded_request_envelope(
     protocol: ProtocolId,
     ancillary_descriptor_count: usize,
 ) -> Result<ValidatedBrokerRequestEnvelope, ProtocolValidationError> {
+    validate_decoded_request_envelope_engine(envelope, protocol, ancillary_descriptor_count, None)
+}
+
+pub(crate) fn validate_decoded_request_envelope_engine(
+    envelope: BrokerRequestEnvelope,
+    protocol: ProtocolId,
+    ancillary_descriptor_count: usize,
+    retained: Option<&mut BrokerRequestEnvelope>,
+) -> Result<ValidatedBrokerRequestEnvelope, ProtocolValidationError> {
+    validate_decoded_request_envelope_retaining_authorization_engine(
+        envelope, protocol, ancillary_descriptor_count, retained, None)
+}
+
+pub(crate) fn validate_decoded_request_envelope_retaining_authorization_engine(
+    envelope: BrokerRequestEnvelope,
+    protocol: ProtocolId,
+    ancillary_descriptor_count: usize,
+    retained: Option<&mut BrokerRequestEnvelope>,
+    authorization_capture: Option<&mut AuthorizationArtifactsCaptureV1>,
+) -> Result<ValidatedBrokerRequestEnvelope, ProtocolValidationError> {
+    validate_request_envelope_authorization_engine(envelope, protocol, ancillary_descriptor_count,
+        retained, authorization_capture, RequestEnvelopeVocabularyV1::Legacy)
+}
+
+/// Selects the registered authenticated method vocabulary after canonical BSA
+/// decoding. Legacy public envelope decoders never enter this sibling.
+pub(crate) fn validate_authenticated_request_envelope_retaining_authorization_engine(
+    envelope: BrokerRequestEnvelope,
+    protocol: ProtocolId,
+    ancillary_descriptor_count: usize,
+    retained: Option<&mut BrokerRequestEnvelope>,
+    authorization_capture: Option<&mut AuthorizationArtifactsCaptureV1>,
+) -> Result<ValidatedBrokerRequestEnvelope, ProtocolValidationError> {
+    validate_request_envelope_authorization_engine(envelope, protocol, ancillary_descriptor_count,
+        retained, authorization_capture, RequestEnvelopeVocabularyV1::Authenticated)
+}
+
+#[derive(Clone, Copy)]
+enum RequestEnvelopeVocabularyV1 { Legacy, Authenticated }
+
+fn validate_request_envelope_authorization_engine(
+    envelope: BrokerRequestEnvelope, protocol: ProtocolId, ancillary_descriptor_count: usize,
+    retained: Option<&mut BrokerRequestEnvelope>,
+    authorization_capture: Option<&mut AuthorizationArtifactsCaptureV1>,
+    vocabulary: RequestEnvelopeVocabularyV1,
+) -> Result<ValidatedBrokerRequestEnvelope, ProtocolValidationError> {
+    let envelope = aos_sandbox_core::retained::CaptureValueV1::new(envelope, retained);
     if !envelope.__buffa_unknown_fields.is_empty() || !envelope.signed_session_request.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
-    let method = validate_method(envelope.method.as_known(), protocol)?;
+    let method = match vocabulary {
+        RequestEnvelopeVocabularyV1::Legacy => validate_method(envelope.method.as_known(), protocol),
+        RequestEnvelopeVocabularyV1::Authenticated => validate_authenticated_method(envelope.method.as_known(), protocol),
+    }?;
     if envelope.body.is_empty() {
         return Err(ProtocolValidationError::InvalidField("envelope.body"));
     }
@@ -670,8 +723,12 @@ pub(crate) fn validate_decoded_request_envelope(
     let authorization = envelope
         .authorization
         .as_option()
-        .map(validate_authorization_artifacts)
+        .map(|artifacts| match authorization_capture {
+            Some(capture) => validate_authorization_artifacts_engine(artifacts, Some(capture)),
+            None => validate_authorization_artifacts(artifacts),
+        })
         .transpose()?;
+    let envelope = envelope.take();
     Ok(ValidatedBrokerRequestEnvelope {
         method,
         body: envelope.body,
@@ -717,6 +774,28 @@ pub fn encode_authorized_request_envelope(
     descriptor_roles: &[BrokerDescriptorRole],
     authorization: AuthorizationArtifactBytes<'_>,
 ) -> Result<Vec<u8>, ProtocolValidationError> {
+    encode_authorized_request_envelope_with_bindings_v1(
+        protocol, method, body, descriptor_roles, authorization, None,
+    )
+}
+
+/// Encodes the same signed request with method-specific semantic binding DATA.
+///
+/// This is the ordinary envelope engine with an optional canonical catalog
+/// association. Bindings do not create a signed grant or current catalog: the
+/// authenticated parser and receiving broker independently verify both.
+///
+/// # Errors
+/// Returns the ordinary envelope errors, or rejects an extra or malformed
+/// supplied binding for the chosen method using the sole binding decoder.
+pub fn encode_authorized_request_envelope_with_bindings_v1(
+    protocol: ProtocolId,
+    method: BrokerMethod,
+    body: &[u8],
+    descriptor_roles: &[BrokerDescriptorRole],
+    authorization: AuthorizationArtifactBytes<'_>,
+    semantic_bindings: Option<&aos_proto::aos::sandbox::local::v1::BrokerSemanticBindingsV1>,
+) -> Result<Vec<u8>, ProtocolValidationError> {
     let method = validate_method(Some(method), protocol)?;
     validate_outbound_carriers(method, descriptor_roles)?;
     if !method_requires_authorization(method) {
@@ -737,6 +816,7 @@ pub fn encode_authorized_request_envelope(
         method: method.into(),
         body: body.to_vec(),
         descriptors,
+        semantic_bindings: semantic_bindings.cloned().into(),
         authorization: Some(BrokerAuthorizationArtifactsV1 {
             broker_plan: authorization.broker_plan.to_vec(),
             broker_plan_signature: authorization.broker_plan_signature.to_vec(),
@@ -747,6 +827,11 @@ pub fn encode_authorized_request_envelope(
         .into(),
         ..Default::default()
     };
+    if semantic_bindings.is_some() {
+        crate::authenticated_session::all_methods::authenticated_semantic_bindings_from_envelope_v1(
+            &envelope, method,
+        ).map_err(|_| ProtocolValidationError::InvalidField("envelope.semantic_bindings"))?;
+    }
     let encoded = envelope.encode_to_vec();
     let maximum = if method == BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT {
         MAXIMUM_HOST_QUERY_PACKET_BYTES
@@ -884,6 +969,51 @@ pub fn validate_runtime_effect_receipt_for_apply(
     receipt: &[u8],
     original_apply_body: &[u8],
 ) -> Result<(), ProtocolValidationError> {
+    runtime_stop_residual_for_apply_v4(receipt, original_apply_body).map(|_| ())
+}
+
+/// Projects the sole canonical residual meaning from an exact Stop receipt.
+///
+/// This shares the complete ordinary receipt decoder and fence comparisons.
+/// The returned DATA alone proves neither native containment nor Storage posts;
+/// a consumer still requires its actual authenticated outcome/currentness owner.
+/// An ordinary receipt returns `None` without changing its wire semantics.
+///
+/// # Errors
+/// Refuses malformed receipts, foreign Runtime/Stop binding, any non-Stop use
+/// of the extension, or another residual version/status/domain commitment.
+pub fn runtime_stop_residual_for_apply_v4(
+    receipt: &[u8],
+    original_apply_body: &[u8],
+) -> Result<Option<crate::storage_capture_session::stop_cleanup::CaptureQuiescentIncompleteReceiptDataV4>,
+    ProtocolValidationError>
+{
+    decode_runtime_effect_observation_engine_v2(receipt, original_apply_body)
+        .map(|(_, residual)| residual)
+}
+
+/// Decodes the sole complete Runtime receipt against its exact Apply request.
+///
+/// This comparison DATA lends no live Runtime or native completion authority.
+///
+/// # Errors
+/// Retains the same malformed-wire, action, fence and residual refusals as
+/// ordinary authenticated Apply outcome validation.
+#[doc(hidden)]
+pub fn runtime_effect_observation_for_apply_v2(
+    receipt: &[u8],
+    original_apply_body: &[u8],
+) -> Result<RuntimeObservation, ProtocolValidationError> {
+    decode_runtime_effect_observation_engine_v2(receipt, original_apply_body)
+        .map(|(observation, _)| observation)
+}
+
+fn decode_runtime_effect_observation_engine_v2(
+    receipt: &[u8],
+    original_apply_body: &[u8],
+) -> Result<(RuntimeObservation, Option<crate::storage_capture_session::stop_cleanup::CaptureQuiescentIncompleteReceiptDataV4>),
+    ProtocolValidationError>
+{
     use aos_proto::aos::sandbox::local::v1::ApplyRuntimeRequest;
 
     if original_apply_body.len() > MAXIMUM_REQUEST_BYTES {
@@ -894,27 +1024,85 @@ pub fn validate_runtime_effect_receipt_for_apply(
     if !request.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
+    let observation = RuntimeObservation::decode_from_slice(receipt)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    let residual = runtime_stop_residual_for_decoded_apply_v4(&observation, &request)?;
+    Ok((observation, residual))
+}
+
+/// Shares exact Runtime/Stop residual validation with a decoded owning caller.
+///
+/// Both borrowed messages remain untrusted DATA. The same complete shape,
+/// original action, request identity and assignment comparisons run without
+/// allocating another protobuf model. Native outcome custody remains external.
+///
+/// # Errors
+/// Refuses unknown request fields, malformed assignment/observation fields,
+/// foreign Stop binding, or another residual version/status/domain commitment.
+pub fn runtime_stop_residual_for_decoded_apply_v4(
+    observation: &RuntimeObservation,
+    request: &aos_proto::aos::sandbox::local::v1::ApplyRuntimeRequest,
+) -> Result<Option<crate::storage_capture_session::stop_cleanup::CaptureQuiescentIncompleteReceiptDataV4>,
+    ProtocolValidationError>
+{
+    if !request.__buffa_unknown_fields.is_empty() {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
     let fence = request
         .fence
         .as_option()
         .ok_or(ProtocolValidationError::MissingField("fence"))?;
     let expected_fence = crate::validate_fence(fence)?;
-    validate_runtime_effect_receipt_against_fence(receipt, &expected_fence)
+    let stop = if request.action.as_known() == Some(
+        aos_proto::aos::sandbox::local::v1::RuntimeAction::RUNTIME_ACTION_STOP,
+    ) {
+        request.header.as_option()
+            .and_then(|header| header.request_id.as_slice().try_into().ok())
+    } else {
+        None
+    };
+    runtime_stop_residual_for_observation_v4(observation, &expected_fence, stop)
 }
 
 fn validate_runtime_effect_receipt(
     bytes: &[u8],
     original_request: &crate::ValidatedRuntimeRequest,
 ) -> Result<(), ProtocolValidationError> {
-    validate_runtime_effect_receipt_against_fence(bytes, original_request.fence())
+    let stop = (original_request.action()
+        == aos_proto::aos::sandbox::local::v1::RuntimeAction::RUNTIME_ACTION_STOP)
+        .then_some(*original_request.header().request_id());
+    validate_runtime_effect_receipt_against_fence(bytes, original_request.fence(), stop).map(|_| ())
 }
 
 fn validate_runtime_effect_receipt_against_fence(
     bytes: &[u8],
     expected_fence: &crate::ValidatedAssignmentFence,
-) -> Result<(), ProtocolValidationError> {
+    expected_stop: Option<[u8; 16]>,
+) -> Result<Option<crate::storage_capture_session::stop_cleanup::CaptureQuiescentIncompleteReceiptDataV4>,
+    ProtocolValidationError>
+{
     let observation = RuntimeObservation::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    runtime_stop_residual_for_observation_v4(&observation, expected_fence, expected_stop)
+}
+
+/// Validates one decoded Runtime receipt and projects its optional Stop debt.
+///
+/// This is the same complete shape/fence comparison used by ordinary Apply
+/// receipt validation. It avoids another protobuf decoder when the owning
+/// lifecycle engine already holds that model. All returned values are DATA;
+/// authenticated currentness and native cleanup custody remain mandatory.
+///
+/// # Errors
+/// Refuses ordinary malformed Runtime fields, a foreign fence, or residual
+/// DATA outside the exact original Stop request and genuinely absent shape.
+pub(crate) fn runtime_stop_residual_for_observation_v4(
+    observation: &RuntimeObservation,
+    expected_fence: &crate::ValidatedAssignmentFence,
+    expected_stop: Option<[u8; 16]>,
+) -> Result<Option<crate::storage_capture_session::stop_cleanup::CaptureQuiescentIncompleteReceiptDataV4>,
+    ProtocolValidationError>
+{
     if !observation.__buffa_unknown_fields.is_empty()
         || observation.error.as_option().is_some()
         || observation.observation_sequence == 0
@@ -950,23 +1138,43 @@ fn validate_runtime_effect_receipt_against_fence(
     {
         return Err(ProtocolValidationError::InvalidField("receipt.fence"));
     }
-    Ok(())
+    if observation.capture_stop_residual_v4.is_empty() {
+        return Ok(None);
+    }
+    let residual = crate::storage_capture_session::stop_cleanup::CaptureQuiescentIncompleteReceiptDataV4::decode_v4(
+        &observation.capture_stop_residual_v4,
+    ).map_err(|_| ProtocolValidationError::InvalidField("Stop Capture residual receipt"))?;
+    if Some(residual.stop_request_id_v4()) != expected_stop
+        || residual.runtime_v4().as_bytes() != &expected_handle
+        || observation.state.as_known() != Some(RuntimeState::RUNTIME_STATE_ABSENT)
+        || !observation.leader_handle.is_empty()
+    {
+        return Err(ProtocolValidationError::InvalidField("Stop Capture residual binding"));
+    }
+    Ok(Some(residual))
 }
 
 fn validate_authorization_artifacts(
     artifacts: &BrokerAuthorizationArtifactsV1,
+) -> Result<ValidatedUntrustedAuthorizationArtifacts, ProtocolValidationError> {
+    validate_authorization_artifacts_engine(artifacts, None)
+}
+
+fn validate_authorization_artifacts_engine(
+    artifacts: &BrokerAuthorizationArtifactsV1,
+    capture: Option<&mut AuthorizationArtifactsCaptureV1>,
 ) -> Result<ValidatedUntrustedAuthorizationArtifacts, ProtocolValidationError> {
     if !artifacts.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::InvalidField(
             "envelope.authorization",
         ));
     }
-    validate_authorization_artifact_bytes(AuthorizationArtifactBytes {
+    validate_authorization_artifact_bytes_engine(AuthorizationArtifactBytes {
         broker_plan: &artifacts.broker_plan,
         broker_plan_signature: &artifacts.broker_plan_signature,
         ownership_lease: &artifacts.ownership_lease,
         ownership_lease_signature: &artifacts.ownership_lease_signature,
-    })?;
+    }, capture)?;
 
     Ok(ValidatedUntrustedAuthorizationArtifacts {
         broker_plan: artifacts.broker_plan.clone(),
@@ -978,6 +1186,13 @@ fn validate_authorization_artifacts(
 
 pub(crate) fn validate_authorization_artifact_bytes(
     artifacts: AuthorizationArtifactBytes<'_>,
+) -> Result<(), ProtocolValidationError> {
+    validate_authorization_artifact_bytes_engine(artifacts, None)
+}
+
+pub(crate) fn validate_authorization_artifact_bytes_engine(
+    artifacts: AuthorizationArtifactBytes<'_>,
+    mut capture: Option<&mut AuthorizationArtifactsCaptureV1>,
 ) -> Result<(), ProtocolValidationError> {
     if artifacts.broker_plan.is_empty()
         || artifacts.broker_plan.len() > MAXIMUM_BROKER_PLAN_BYTES
@@ -1003,22 +1218,26 @@ pub(crate) fn validate_authorization_artifact_bytes(
         return Err(ProtocolValidationError::RequestTooLarge);
     }
 
-    validate_broker_plan_artifact_pair(
+    validate_broker_plan_artifact_pair_engine(
         artifacts.broker_plan,
         artifacts.broker_plan_signature,
         "envelope.authorization.plan",
-        "envelope.authorization.plan_signature",
+        "envelope.authorization.plan_signature", capture.as_deref_mut(),
     )?;
-    decode_ownership_lease(
-        artifacts.ownership_lease,
-        authorization_decode_limits(MAXIMUM_OWNERSHIP_LEASE_BYTES),
-    )
-    .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.lease"))?;
-    decode_signature(
-        artifacts.ownership_lease_signature,
-        authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES),
-    )
-    .map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.lease_signature"))?;
+    match capture.as_deref_mut() {
+        Some(capture) => aos_sandbox_core::format::authorization_capture::decode_ownership_lease_retaining_v1(
+            artifacts.ownership_lease, authorization_decode_limits(MAXIMUM_OWNERSHIP_LEASE_BYTES),
+            &mut capture.lease),
+        None => decode_ownership_lease(artifacts.ownership_lease,
+            authorization_decode_limits(MAXIMUM_OWNERSHIP_LEASE_BYTES)).map(|_| ()),
+    }.map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.lease"))?;
+    match capture {
+        Some(capture) => aos_sandbox_core::format::authorization_capture::decode_signature_retaining_v1(
+            artifacts.ownership_lease_signature,
+            authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES), &mut capture.lease_signature),
+        None => decode_signature(artifacts.ownership_lease_signature,
+            authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES)).map(|_| ()),
+    }.map_err(|_| ProtocolValidationError::InvalidField("envelope.authorization.lease_signature"))?;
     Ok(())
 }
 
@@ -1028,6 +1247,16 @@ pub(crate) fn validate_broker_plan_artifact_pair(
     plan_field: &'static str,
     signature_field: &'static str,
 ) -> Result<(), ProtocolValidationError> {
+    validate_broker_plan_artifact_pair_engine(broker_plan, broker_plan_signature, plan_field, signature_field, None)
+}
+
+pub(crate) fn validate_broker_plan_artifact_pair_engine(
+    broker_plan: &[u8],
+    broker_plan_signature: &[u8],
+    plan_field: &'static str,
+    signature_field: &'static str,
+    mut capture: Option<&mut AuthorizationArtifactsCaptureV1>,
+) -> Result<(), ProtocolValidationError> {
     if broker_plan.is_empty()
         || broker_plan.len() > MAXIMUM_BROKER_PLAN_BYTES
         || broker_plan_signature.is_empty()
@@ -1035,16 +1264,19 @@ pub(crate) fn validate_broker_plan_artifact_pair(
     {
         return Err(ProtocolValidationError::InvalidField(plan_field));
     }
-    decode_broker_authorization_plan(
-        broker_plan,
-        authorization_decode_limits(MAXIMUM_BROKER_PLAN_BYTES),
-    )
-    .map_err(|_| ProtocolValidationError::InvalidField(plan_field))?;
-    decode_signature(
-        broker_plan_signature,
-        authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES),
-    )
-    .map_err(|_| ProtocolValidationError::InvalidField(signature_field))?;
+    match capture.as_deref_mut() {
+        Some(capture) => aos_sandbox_core::format::authorization_capture::decode_broker_authorization_plan_retaining_v1(
+            broker_plan, authorization_decode_limits(MAXIMUM_BROKER_PLAN_BYTES), &mut capture.plan),
+        None => decode_broker_authorization_plan(broker_plan,
+            authorization_decode_limits(MAXIMUM_BROKER_PLAN_BYTES)).map(|_| ()),
+    }.map_err(|_| ProtocolValidationError::InvalidField(plan_field))?;
+    match capture {
+        Some(capture) => aos_sandbox_core::format::authorization_capture::decode_signature_retaining_v1(
+            broker_plan_signature, authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES),
+            &mut capture.plan_signature),
+        None => decode_signature(broker_plan_signature,
+            authorization_decode_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES)).map(|_| ()),
+    }.map_err(|_| ProtocolValidationError::InvalidField(signature_field))?;
     Ok(())
 }
 
@@ -1262,6 +1494,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+            | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1
             | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
             | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
@@ -1271,6 +1504,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
             | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
             | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+            | BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2
     )
 }
 
@@ -1329,6 +1563,9 @@ fn validate_outbound_carriers(
     roles: &[BrokerDescriptorRole],
 ) -> Result<(), ProtocolValidationError> {
     let valid = match method {
+        BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2 => {
+            roles == crate::semantics::network::preparation_content::NETWORK_PREPARATION_DESCRIPTOR_ROLES_V2
+        }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT => {
             roles == [BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_ARGUMENT_SOURCE]
         }
@@ -1350,6 +1587,10 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+        | BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2
+        | BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2
+        | BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
@@ -1368,6 +1609,7 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
         | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+        | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
         | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
         | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
@@ -1390,6 +1632,8 @@ fn validate_outbound_carriers(
         }
         BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1
         | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
         | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
         | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
@@ -1411,6 +1655,21 @@ fn is_signed_plan_lease_feature(feature: &FeatureRef) -> bool {
     feature.namespace() == SIGNED_PLAN_LEASE_FEATURE_NAMESPACE
         && feature.major() == 1
         && feature.minor() == 0
+}
+
+#[cfg(test)]
+mod execution_availability_carrier_tests {
+    use super::*;
+
+    #[test]
+    fn availability_inline_framing_accepts_no_descriptor_carrier() {
+        for method in [BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2,
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2]
+        {
+            assert!(validate_outbound_carriers(method, &[]).is_ok());
+            assert!(validate_outbound_carriers(method, &[BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_CATALOG]).is_err());
+        }
+    }
 }
 
 fn is_mount_source_acquisition_feature(feature: &FeatureRef) -> bool {
@@ -1751,79 +2010,10 @@ pub(crate) fn validate_decoded_response_envelope(
     request_descriptors: &[ValidatedDescriptorEntry],
     ancillary_descriptor_count: usize,
 ) -> Result<ValidatedBrokerResponseEnvelope, ProtocolValidationError> {
-    if !envelope.__buffa_unknown_fields.is_empty() || !envelope.signed_session_outcome.is_empty() {
-        return Err(ProtocolValidationError::UnknownFields);
-    }
-    let request_id = exact_nonzero::<16>(&envelope.request_id, "envelope.request_id")?;
-    if &request_id != expected_request_id || envelope.method.as_known() != Some(expected_method) {
-        return Err(ProtocolValidationError::MethodMismatch);
-    }
-    if !valid_response_body_shape(
-        expected_method,
-        envelope.body.is_empty(),
-        envelope.error.as_option().is_some(),
-    ) {
-        return Err(ProtocolValidationError::InvalidField(
-            "response body/error shape",
-        ));
-    }
-    let error = envelope
-        .error
-        .as_option()
-        .map(validate_broker_error)
-        .transpose()?;
-    let descriptors = validate_descriptor_table(&envelope.descriptors, ancillary_descriptor_count)?;
-    if matches!(
-        expected_method,
-        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
-            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
-            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
-            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
-    ) {
-        let expected_roles: &[BrokerDescriptorRole] = if error.is_some() {
-            &[]
-        } else if matches!(
-            expected_method,
-            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
-        ) {
-            &crate::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES
-        } else if expected_method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP {
-            &crate::host_consumer_cgroup::CONSUMER_CGROUP_DESCRIPTOR_ROLES_V1
-        } else {
-            &crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES
-        };
-        if !request_descriptors.is_empty()
-            || descriptors.len() != expected_roles.len()
-            || descriptors
-                .iter()
-                .zip(expected_roles)
-                .any(|(actual, expected)| actual.role != *expected)
-        {
-            return Err(ProtocolValidationError::DescriptorTableMismatch);
-        }
-    } else if is_mount_source_acquisition_method(expected_method) {
-        if !request_descriptors.is_empty() || !descriptors.is_empty() {
-            return Err(ProtocolValidationError::DescriptorTableMismatch);
-        }
-    } else if descriptors
-        .iter()
-        .any(|entry| crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES.contains(&entry.role))
-    {
-        return Err(ProtocolValidationError::DescriptorTableMismatch);
-    }
-    let request_descriptor_dispositions = validate_descriptor_dispositions(
-        &envelope.request_descriptor_dispositions,
-        request_descriptors,
-    )?;
-    Ok(ValidatedBrokerResponseEnvelope {
-        request_id,
-        method: expected_method,
-        body: envelope.body,
-        descriptors,
-        request_descriptor_dispositions,
-        error,
-    })
+    validate_decoded_response_envelope_engine(
+        envelope, expected_request_id, expected_method, request_descriptors,
+        ancillary_descriptor_count, None,
+    )
 }
 
 fn valid_response_body_shape(
@@ -1890,6 +2080,29 @@ fn incompatible_protocol(protocol: ProtocolId, major: u32, minor: u32) -> Regist
     }
 }
 
+// This is the same closed canonical registry used by the signed adapter.
+// Unknown methods and cross-protocol profiles are rejected before body or
+// authorization decoding; no legacy caller selects this vocabulary.
+fn validate_authenticated_method(method: Option<BrokerMethod>, protocol: ProtocolId)
+    -> Result<BrokerMethod, ProtocolValidationError>
+{
+    let method = method.filter(|method| *method != BrokerMethod::BROKER_METHOD_UNSPECIFIED)
+        .ok_or(ProtocolValidationError::UnknownAction)?;
+    validate_registered_method_protocol(method, protocol)?;
+    Ok(method)
+}
+
+fn validate_registered_method_protocol(method: BrokerMethod, protocol: ProtocolId)
+    -> Result<(), ProtocolValidationError>
+{
+    let profile = authenticated_broker_method_profile_v1(method)
+        .ok_or(ProtocolValidationError::MethodMismatch)?;
+    let protocol = BrokerSessionProtocolV1::from_protocol_id(protocol)
+        .map_err(|_| ProtocolValidationError::MethodMismatch)?;
+    if profile.protocol() != protocol { return Err(ProtocolValidationError::MethodMismatch); }
+    Ok(())
+}
+
 fn validate_method(
     method: Option<BrokerMethod>,
     protocol: ProtocolId,
@@ -1911,18 +2124,13 @@ fn validate_method(
             | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
             | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1
+            | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1
     ) {
         return Err(ProtocolValidationError::MethodMismatch);
     }
 
-    let profile = authenticated_broker_method_profile_v1(method)
-        .ok_or(ProtocolValidationError::MethodMismatch)?;
-    let protocol = BrokerSessionProtocolV1::from_protocol_id(protocol)
-        .map_err(|_| ProtocolValidationError::MethodMismatch)?;
-    if profile.protocol() != protocol {
-        return Err(ProtocolValidationError::MethodMismatch);
-    }
-
+    validate_registered_method_protocol(method, protocol)?;
     Ok(method)
 }
 
@@ -2028,104 +2236,14 @@ fn ensure_feature_subset(
 fn validate_broker_error(
     error: &BrokerError,
 ) -> Result<ValidatedBrokerError, ProtocolValidationError> {
-    if !error.__buffa_unknown_fields.is_empty()
-        || error.safe_message.is_empty()
-        || error.safe_message.len() > MAXIMUM_SAFE_ERROR_MESSAGE_BYTES
-        || error.safe_message.chars().any(char::is_control)
-    {
-        return Err(ProtocolValidationError::InvalidBrokerError);
-    }
-    let code = error
-        .code
-        .as_known()
-        .filter(|code| *code != BrokerErrorCode::BROKER_ERROR_CODE_UNSPECIFIED)
-        .ok_or(ProtocolValidationError::InvalidBrokerError)?;
-    let missing_feature = error
-        .missing_feature
-        .as_option()
-        .map(validate_error_feature)
-        .transpose()?;
-    if (code == BrokerErrorCode::BROKER_ERROR_CODE_REQUIRED_FEATURE_UNAVAILABLE)
-        != missing_feature.is_some()
-    {
-        return Err(ProtocolValidationError::InvalidBrokerError);
-    }
-    Ok(ValidatedBrokerError {
-        code,
-        safe_message: error.safe_message.clone(),
-        retryable: error.retryable,
-        missing_feature,
-    })
-}
-
-fn validate_error_feature(
-    feature: &aos_proto::aos::sandbox::local::v1::Feature,
-) -> Result<FeatureRef, ProtocolValidationError> {
-    if !feature.__buffa_unknown_fields.is_empty() {
-        return Err(ProtocolValidationError::InvalidBrokerError);
-    }
-    FeatureRef::new(feature.namespace.clone(), feature.major, feature.minor)
-        .map_err(|_| ProtocolValidationError::InvalidBrokerError)
+    response_capture::validate_broker_error_engine(error, None)
 }
 
 fn validate_descriptor_table(
     source: &[BrokerDescriptorEntry],
     ancillary_descriptor_count: usize,
 ) -> Result<Vec<ValidatedDescriptorEntry>, ProtocolValidationError> {
-    if source.len() > MAXIMUM_PACKET_DESCRIPTORS {
-        return Err(ProtocolValidationError::TooManyEntries {
-            field: "envelope.descriptors",
-            maximum: MAXIMUM_PACKET_DESCRIPTORS,
-        });
-    }
-    if source.len() != ancillary_descriptor_count {
-        return Err(ProtocolValidationError::DescriptorTableMismatch);
-    }
-    let mut roles = Vec::with_capacity(source.len());
-    let mut descriptors = Vec::with_capacity(source.len());
-    for (index, entry) in source.iter().enumerate() {
-        if !entry.__buffa_unknown_fields.is_empty() || usize::try_from(entry.index) != Ok(index) {
-            return Err(ProtocolValidationError::DescriptorTableMismatch);
-        }
-        let role = entry
-            .role
-            .as_known()
-            .filter(|role| *role != BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_UNSPECIFIED)
-            .ok_or(ProtocolValidationError::DescriptorTableMismatch)?;
-        if roles.contains(&role) {
-            return Err(ProtocolValidationError::DescriptorTableMismatch);
-        }
-        roles.push(role);
-        descriptors.push(ValidatedDescriptorEntry { role });
-    }
-    Ok(descriptors)
-}
-
-fn validate_descriptor_dispositions(
-    source: &[BrokerDescriptorDispositionEntry],
-    request_descriptors: &[ValidatedDescriptorEntry],
-) -> Result<Vec<ValidatedDescriptorDisposition>, ProtocolValidationError> {
-    if source.len() != request_descriptors.len() {
-        return Err(ProtocolValidationError::DescriptorTableMismatch);
-    }
-    let mut dispositions = Vec::with_capacity(source.len());
-    for (index, (entry, request)) in source.iter().zip(request_descriptors).enumerate() {
-        let disposition = entry.disposition.as_known().filter(|value| {
-            *value != BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_UNSPECIFIED
-        });
-        if !entry.__buffa_unknown_fields.is_empty()
-            || usize::try_from(entry.request_index) != Ok(index)
-            || entry.role.as_known() != Some(request.role)
-            || disposition.is_none()
-        {
-            return Err(ProtocolValidationError::DescriptorTableMismatch);
-        }
-        dispositions.push(ValidatedDescriptorDisposition {
-            role: request.role,
-            disposition: disposition.ok_or(ProtocolValidationError::DescriptorTableMismatch)?,
-        });
-    }
-    Ok(dispositions)
+    response_capture::validate_descriptor_table_engine(source, ancillary_descriptor_count, None)
 }
 
 fn validate_canonical_feature_refs(features: &[FeatureRef]) -> Result<(), ProtocolValidationError> {
@@ -4960,4 +5078,133 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn retained_four_artifact_chain_keeps_earlier_models_after_final_refusal() {
+        let mut artifacts = authorization_artifacts();
+        artifacts.ownership_lease_signature = vec![0xff];
+        let mut capture = AuthorizationArtifactsCaptureV1::default();
+
+        let retained = validate_authorization_artifacts_engine(&artifacts, Some(&mut capture)).unwrap_err();
+        let ordinary = validate_authorization_artifacts(&artifacts).unwrap_err();
+
+        assert_eq!(retained, ordinary);
+        assert!(capture.plan.model().is_some());
+        assert!(capture.plan_signature.model().is_some());
+        assert!(capture.lease.model().is_some());
+        let cause = capture.lease_signature.failure().unwrap();
+        assert!(std::ptr::eq(cause, capture.cause().unwrap()
+            .downcast_ref::<aos_sandbox_core::format::CanonicalCborError>().unwrap()));
+    }
+
+    #[test]
+    fn retained_envelope_keeps_same_authorization_bytes_and_first_typed_refusal() {
+        let mut artifacts = authorization_artifacts();
+        artifacts.broker_plan_signature = vec![0xff];
+        let request = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG.into(),
+            body: vec![1], authorization: Some(artifacts).into(), ..Default::default()
+        };
+        let mut raw = BrokerRequestEnvelope::default();
+        let mut capture = AuthorizationArtifactsCaptureV1::default();
+
+        let retained = validate_decoded_request_envelope_retaining_authorization_engine(
+            request.clone(), ProtocolId::StorageBroker, 0, Some(&mut raw), Some(&mut capture)).unwrap_err();
+        let ordinary = validate_decoded_request_envelope(request.clone(), ProtocolId::StorageBroker, 0).unwrap_err();
+
+        assert_eq!(retained, ordinary);
+        assert_eq!(raw, request);
+        assert!(capture.plan.model().is_some());
+        assert!(capture.plan_signature.failure().is_some());
+        assert!(capture.lease.model().is_none());
+        assert!(capture.lease_signature.failure().is_none());
+    }
 }
+
+
+/// Retains the same four Core canonical artifact validators and their partials.
+#[derive(Default)]
+pub(crate) struct AuthorizationArtifactsCaptureV1 {
+    plan: aos_sandbox_core::format::authorization_capture::BrokerAuthorizationPlanDecodeCaptureV1,
+    plan_signature: aos_sandbox_core::format::authorization_capture::SignatureDecodeCaptureV1,
+    lease: aos_sandbox_core::format::authorization_capture::OwnershipLeaseDecodeCaptureV1,
+    lease_signature: aos_sandbox_core::format::authorization_capture::SignatureDecodeCaptureV1,
+}
+
+impl AuthorizationArtifactsCaptureV1 {
+    pub(crate) fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.plan.cause().or_else(|| self.plan_signature.cause())
+            .or_else(|| self.lease.cause()).or_else(|| self.lease_signature.cause())
+    }
+
+
+
+}
+
+/// Bounds one existing signed-request field added to a canonical clear envelope.
+///
+/// The durable authority producer supplies the actual complete clear packet
+/// width. Its existing validator rejects a prepopulated signed-session field;
+/// this pure bound supplies no admission, signing or negotiated wire permission.
+#[must_use]
+pub fn authenticated_request_packet_bound_from_clear_v1(clear_bytes: usize) -> Option<usize> {
+    clear_bytes.checked_add(1 + 5 + aos_sandbox_broker_session_protocol::SIGNED_BROKER_REQUEST_BYTES)
+}
+
+#[cfg(test)]
+mod authenticated_request_width_tests {
+    use super::*;
+    use buffa::Message as _;
+
+    #[test]
+    fn existing_clear_envelope_plus_actual_signed_field_fits_checked_bound() {
+        for body_bytes in [0, 127, 128, 16_383, 16_384] {
+            let mut envelope = aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope {
+                method: aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_APPLY.into(),
+                body: vec![1; body_bytes],
+                ..Default::default()
+            };
+            let clear = envelope.encode_to_vec();
+            let bound = authenticated_request_packet_bound_from_clear_v1(clear.len()).unwrap();
+
+            envelope.signed_session_request = vec![1; aos_sandbox_broker_session_protocol::SIGNED_BROKER_REQUEST_BYTES].into();
+            let signed = envelope.encode_to_vec();
+
+            assert!(signed.len() <= bound);
+            assert_eq!(envelope.body.len(), body_bytes);
+        }
+        assert!(authenticated_request_packet_bound_from_clear_v1(usize::MAX).is_none());
+    }
+}
+
+#[cfg(test)]
+mod authenticated_envelope_vocabulary_tests {
+    use super::*;
+    use buffa::Message as _;
+
+    #[test]
+    fn authenticated_new_methods_keep_exact_profile_and_legacy_boundary() {
+        for (method, protocol, wrong) in [
+            (BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2, ProtocolId::HostBroker, ProtocolId::StorageBroker),
+            (BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2, ProtocolId::HostBroker, ProtocolId::StorageBroker),
+            (BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1, ProtocolId::StorageBroker, ProtocolId::HostBroker),
+            (BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1, ProtocolId::StorageBroker, ProtocolId::HostBroker),
+        ] {
+            assert_eq!(validate_authenticated_method(Some(method), protocol), Ok(method));
+            assert_eq!(validate_authenticated_method(Some(method), wrong), Err(ProtocolValidationError::MethodMismatch));
+            assert_eq!(validate_method(Some(method), protocol), Err(ProtocolValidationError::MethodMismatch));
+            let envelope = BrokerRequestEnvelope { method: method.into(), body: vec![1], ..Default::default() };
+            assert_eq!(decode_request_envelope(&envelope.encode_to_vec(), protocol, 0),
+                Err(ProtocolValidationError::MethodMismatch));
+        }
+        assert_eq!(validate_authenticated_method(None, ProtocolId::HostBroker), Err(ProtocolValidationError::UnknownAction));
+        assert_eq!(validate_authenticated_method(Some(BrokerMethod::BROKER_METHOD_UNSPECIFIED), ProtocolId::HostBroker),
+            Err(ProtocolValidationError::UnknownAction));
+        let unknown = BrokerRequestEnvelope { method: 999.into(), body: vec![1], ..Default::default() };
+        assert_eq!(validate_authenticated_request_envelope_retaining_authorization_engine(
+            unknown, ProtocolId::HostBroker, 0, None, None), Err(ProtocolValidationError::UnknownAction));
+    }
+}
+
+#[cfg(test)]
+mod stop_residual_tests;

@@ -2,7 +2,7 @@
 
 use aos_sandbox_core::OperationId;
 
-use crate::cache_residency::pin::valid_logical_renewal;
+use aos_sandbox_protocol::cache_state::pin_data::valid_logical_renewal;
 use crate::cache_residency::{CachePinV1, CacheRecordKindV1, decode_atomic_object_record};
 use aos_sandbox_protocol::domain_ledger::records::decode_reducer_payload_with_validator;
 
@@ -113,7 +113,7 @@ pub(super) fn current_physical_pin_effect(
         .into_iter()
         .find(|inventory| inventory.global.node_quota.partition == partition)
         .and_then(|inventory| {
-            inventory
+            inventory.into_parsed_history_data_v1()
                 .reconstructed
                 .into_iter()
                 .find(|latest| latest.record.subject == payload.record.subject)
@@ -131,6 +131,6 @@ pub(super) fn current_physical_pin_effect(
     Ok(still_retained.then_some(CurrentPhysicalPinEffectV1 {
         action,
         operation: payload.record.operation,
-        pin,
+        pin: CachePinV1::from_parsed_history_data_v1(pin),
     }))
 }

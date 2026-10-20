@@ -4,6 +4,10 @@
   lib,
 }: let
   systemdOptions = {lib, ...}: {
+    options.system.build.kernel = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.linux;
+    };
     options.assertions = lib.mkOption {
       type = lib.types.listOf lib.types.anything;
       default = [];
@@ -62,7 +66,7 @@
   invalidConfiguration = mount.extendModules {
     modules = [{aos.sandbox.mountBroker.sourceProviderSession.enable = true;}];
   };
-  carrier = pkgs.aosMountExecutableCarrierForKernel pkgs.linux;
+  carrier = pkgs.aosMountSourceExecutableCarrierForKernel mount.config.system.build.kernel;
   firstLauncher = pkgs.aosSelinuxStage0With {
     admissionUnit = "";
     mountExecutableCarrier = carrier;
@@ -73,13 +77,21 @@
       {
         aos.sandbox.mountBroker.useExecutableCarrier = true;
         aos.boot.initrd.stage0 = firstLauncher;
-        boot.initrd.systemd.mountExecutableCarrier = carrier;
       }
     ];
   };
   carrierService = carrierConfiguration.config.systemd.services.aos-sandbox-mountd;
   invalidCarrierConfiguration = mount.extendModules {
     modules = [{aos.sandbox.mountBroker.useExecutableCarrier = true;}];
+  };
+  wrongCarrierConfiguration = carrierConfiguration.extendModules {
+    modules = [
+      {
+        boot.initrd.systemd.mountExecutableCarrier = lib.mkForce (
+          pkgs.aosMountExecutableCarrierForKernel mount.config.system.build.kernel
+        );
+      }
+    ];
   };
   wrongDaemonConfiguration = carrierConfiguration.extendModules {
     modules = [{aos.sandbox.mountBroker.package = lib.mkForce pkgs.coreutils;}];
@@ -100,9 +112,14 @@ in
   assert lib.length (lib.filter connectorAssertion activeConfiguration.config.assertions) == 1;
   assert lib.all (check: check.assertion) (lib.filter connectorAssertion activeConfiguration.config.assertions);
   assert lib.any (check: !check.assertion) (lib.filter connectorAssertion invalidConfiguration.config.assertions);
+  assert toString carrierConfiguration.config.system.build.kernel == toString pkgs.linux;
+  assert toString carrier.passthru.kernel == toString carrierConfiguration.config.system.build.kernel;
+  assert carrier.passthru.sourceProviderCarrier;
+  assert toString carrierConfiguration.config.boot.initrd.systemd.mountExecutableCarrier == toString carrier;
   assert lib.all (check: check.assertion) (lib.filter carrierAssertion carrierConfiguration.config.assertions);
   assert lib.any (check: !check.assertion) (lib.filter carrierAssertion invalidCarrierConfiguration.config.assertions);
   assert lib.any (check: !check.assertion) (lib.filter carrierAssertion wrongDaemonConfiguration.config.assertions);
+  assert lib.any (check: !check.assertion) (lib.filter carrierAssertion wrongCarrierConfiguration.config.assertions);
   assert carrierService.serviceConfig.ExecStart == "/run/aos/mount-executable-carrier/daemon ${pkgs.aos-sandbox-mountd}/bin/aos-sandbox-mount-helper --source-provider --selected-mount-source";
   assert lib.elem "/run/aos/mount-executable-carrier/daemon --check-selected-source-provider-authority" carrierService.serviceConfig.ExecStartPre;
   assert lib.elem "aos-source-providerd.socket" active.requires;

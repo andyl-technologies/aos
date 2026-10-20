@@ -5,10 +5,14 @@
 //! the parent owner; every selected mutation uses that same custody.
 
 mod assignment;
+mod request_scope;
+pub use request_scope::{ProtectedDrainRequestScopeV1, ProtectedSnapshotRequestScopeV1};
 mod drain;
 mod exchange;
 mod snapshot;
 mod watch;
+mod watch_request_scope;
+pub use watch_request_scope::ProtectedWatchRequestScopeV1;
 
 pub use assignment::{
     ProtectedAssignmentEffectReadyV1, ProtectedAssignmentRecoveryRequiredV1,
@@ -31,7 +35,9 @@ use drain::durable_drain_observation;
 use watch::{protected_watch_binding_digest, watch_binding_advances};
 
 use exchange::protected_outbound_operation;
+pub use exchange::{ProtectedCoordinatorChannelScopeV1, ProtectedCoordinatorResponseScopeV1};
 
+use aos_sandbox_core::snapshot_progress::staged_prefix_commitment;
 use std::path::Path;
 
 use sha2::{Digest as _, Sha256};
@@ -41,28 +47,23 @@ use aos_sandbox_core::{NodeId, ObjectDigest, OperationId, RestoreScopeId};
 use crate::journal::{Journal, JournalLimits, RecordNamespace, RecoveryReport};
 
 use crate::local_inventory::assignment::{
-    AssignmentIntentV1, AtomicSnapshotPublicationV1, AuthenticatedSnapshotChunkV1,
+    AtomicSnapshotPublicationV1, AuthenticatedSnapshotChunkV1,
     AuthenticatedSnapshotDependencyRangeV1, DurableSnapshotDependencySetV1,
-    DurableSnapshotTransferCheckpointV1, InvalidSnapshotTransfer, SnapshotDependencyRangeV1,
-    SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1, SnapshotTransferChunkRequestV1,
-    SnapshotTransferCompletionV1, SnapshotTransferManifestV1, SnapshotTransferResumeV1,
-    VerifiedAssignmentAuthorityV1, VerifiedRestoreAuthorizationV1, VerifiedSnapshotDependencySetV1,
-    VerifiedStagedSnapshotV1, staged_prefix_commitment,
+    DurableSnapshotTransferCheckpointV1, SnapshotRestoreAdmissionDecisionV1,
+    SnapshotRestoreAdmissionV1, SnapshotTransferCompletionV1, VerifiedAssignmentAuthorityV1,
+    VerifiedRestoreAuthorizationV1, VerifiedSnapshotDependencySetV1, VerifiedStagedSnapshotV1,
 };
 #[cfg(feature = "multi-node")]
 use crate::local_inventory::capability::PlacementCandidateV1;
-#[cfg(feature = "multi-node")]
-use crate::local_inventory::carrier_authority::{
-    DormantAuthenticatedCoordinatorNodeTransportV1, DormantOutboundExchangeV1,
-    DormantOutboundResponseV1, DormantTransportHandshakeV1,
+use aos_sandbox_core::{
+    InvalidSnapshotTransfer, SnapshotDependencyRangeV1, SnapshotTransferChunkRequestV1,
+    SnapshotTransferManifestV1, SnapshotTransferResumeV1,
 };
+
 use crate::local_inventory::carrier_authority::{
     issue_response_from_protected_channel, issue_session_from_protected_channel,
 };
-use crate::local_inventory::draining::{
-    DrainAssignmentPlanV1, DrainAssignmentStrategyV1, DrainDirectiveV1, DrainObservationV1,
-    InvalidDrainModel, NodeDrainModeV1, drain_directive_digest,
-};
+use crate::local_inventory::draining::DrainObservationV1;
 use crate::local_inventory::evidence::AuthenticatedEvidenceContextV1;
 use crate::local_inventory::evidence_authority::ProtectedEvidenceIntegrationV1;
 use crate::local_inventory::journal::{
@@ -76,17 +77,25 @@ use crate::local_inventory::protected_artifact_store::remote::{
 };
 use crate::local_inventory::protocol::{
     AuthenticatedNodeSessionV1, CanonicalNodeFrameV1, CanonicalNodeSemanticCodecV1,
-    InvalidMultiNodeProtocol, MAX_WATCH_EVENTS, NodeRequestBodyV1, NodeRequestEnvelopeV1,
-    NodeResponseBodyV1, NodeResponseEnvelopeV1, NodeWatchBindingV1, NodeWatchBootstrapV1,
-    NodeWatchCursorV1, NodeWatchEventBodyV1, NodeWatchEventV1, ResyncInventoryV1,
-    RollingVersionWindowV1,
+    NodeRequestEnvelopeV1, NodeResponseBodyV1, NodeResponseEnvelopeV1, NodeWatchBootstrapV1,
+    NodeWatchEventBodyV1, NodeWatchEventV1, ResyncInventoryV1,
 };
 use crate::local_inventory::reducer_state::{
     CapabilityJournalStateV1, DrainJournalStateV1, DurableAssignmentObservationV1,
-    DurableDependencyProjectionV1, DurableDrainObservationV1, DurableEvidenceBindingV1,
-    DurablePublicationProjectionV1, DurableStagedChunkV1, DurableWatchEventV1,
-    MultiNodeReducerStateV1, SnapshotTransferJournalStateV1, WatchJournalStateV1,
-    decode_snapshot_manifest_seed,
+    DurableDrainObservationV1, DurableEvidenceBindingV1, DurablePublicationProjectionV1,
+    DurableStagedChunkV1, DurableWatchEventV1, MultiNodeReducerStateV1,
+    SnapshotTransferJournalStateV1, WatchJournalStateV1, decode_snapshot_manifest_seed,
+};
+use aos_sandbox_core::AssignmentIntentV1;
+use aos_sandbox_core::DurableDependencyProjectionV1;
+use aos_sandbox_core::NodeRequestBodyV1;
+use aos_sandbox_core::{
+    DrainAssignmentPlanV1, DrainAssignmentStrategyV1, DrainDirectiveV1, InvalidDrainModel,
+    NodeDrainModeV1, drain_directive_digest,
+};
+use aos_sandbox_core::{
+    InvalidMultiNodeProtocol, MAX_WATCH_EVENTS, NodeWatchBindingV1, NodeWatchCursorV1,
+    RollingVersionWindowV1,
 };
 
 use super::{
@@ -251,7 +260,7 @@ pub enum ProtectedSnapshotDependencyCommitOutcomeV1 {
 /// Confirms that the authenticated source accepted the exact durable resume boundary.
 #[must_use]
 pub struct ProtectedSnapshotResumeReadyV1 {
-    identity: crate::local_inventory::assignment::SnapshotTransferIdentityV1,
+    identity: aos_sandbox_core::SnapshotTransferIdentityV1,
     resume: SnapshotTransferResumeV1,
 }
 
@@ -300,7 +309,7 @@ impl ProtectedSnapshotTransferRolesV1 {
 impl ProtectedSnapshotResumeReadyV1 {
     /// Returns the immutable transfer identity.
     #[must_use]
-    pub const fn identity(&self) -> crate::local_inventory::assignment::SnapshotTransferIdentityV1 {
+    pub const fn identity(&self) -> aos_sandbox_core::SnapshotTransferIdentityV1 {
         self.identity
     }
 

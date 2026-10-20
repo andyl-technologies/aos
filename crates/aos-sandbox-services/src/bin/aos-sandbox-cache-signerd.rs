@@ -1,14 +1,14 @@
-//! Runs the dedicated, nonauthorizing Cache-only readback signer.
+//! Runs both fixed Current-proof purposes under the genuine Cache F original.
 //!
-//! The binary receives a single systemd listening socket on stdin. It has no
-//! Controller, root, or Cache writer privileges; its only Cache visibility is
-//! through the two signer-private read-only idmapped views.
+//! The protected runner captures the installed PID1 activation and its private
+//! views and credentials. Ordinary and Q04 orchestration remains in the
+//! application library under the policy and controller features.
 
 use std::error::Error;
 use std::io;
 use std::process::ExitCode;
 
-use aos_sandbox_cache_signer::cache_signer_exchange::run_cache_signer_service_v2;
+use aos_sandbox_cache_signer::run_selected_current_service_once;
 
 fn main() -> ExitCode {
     match run() {
@@ -36,5 +36,5 @@ fn run() -> Result<(), Box<dyn Error>> {
     if arguments.next().is_some() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "extra signer argument").into());
     }
-    run_cache_signer_service_v2(controller_uid, controller_gid, signer_uid, signer_gid)
+    run_selected_current_service_once(controller_uid, controller_gid, signer_uid, signer_gid)
 }

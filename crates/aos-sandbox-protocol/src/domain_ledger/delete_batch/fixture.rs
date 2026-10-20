@@ -57,6 +57,7 @@ pub fn fixture_batch_v1(key: &[u8], before: &[u8], sequence: u64) -> Vec<u8> {
                 &bytes[write_end..write_end + 17],
             ],
             counts: [1, 0, 0, 0, 1],
+            companions: empty,
         };
         (
             view.graph_digest(),

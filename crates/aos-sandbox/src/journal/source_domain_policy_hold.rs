@@ -19,6 +19,9 @@
 //! death; the V8 pending marker preserves that freeze until Root settlement.
 //! Neither record grants publication or effect authority.
 
+use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
+use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyV8PendingSettlementV1;
+
 use crate::journal::{CacheMutationGateV1, PreflightTransactionViewV1};
 use crate::journal::semantic_append::{AppendScope, PreflightScope};
 
@@ -35,445 +38,41 @@ use crate::policy_compiler::create_q04::{
     SOURCE_PENDING_KEY,
 };
 
-const KEY: &[u8] = b"\0aos-source-domain-policy-hold-v1\0";
-const V8_PENDING_KEY: &[u8] = b"\0aos-source-domain-policy-v8-pending-settlement-v1\0";
-const MAGIC: &[u8; 8] = b"AOSSDH01";
-const V8_PENDING_MAGIC: &[u8; 8] = b"AOSSDP08";
-const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.source-domain-policy-hold.v1\0";
-const V8_PENDING_CHECKSUM_DOMAIN: &[u8] =
-    b"aos.sandbox.source-domain-policy-v8-pending-settlement.v1\0";
+use aos_sandbox_ledger_replay::source_policy_hold::{KEY, V8_PENDING_KEY};
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.source-domain-policy-hold-transaction.v1\0";
 const V8_PENDING_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.source-domain-policy-v8-retirement-transaction.v1\0";
 const V8_CLEAR_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.source-domain-policy-v8-settlement-clear-transaction.v1\0";
-const RECORD_BYTES: usize = 184;
-const V8_PENDING_RECORD_BYTES: usize = 152;
 const JOURNAL_NAME: &str = "source-domains-v1.journal";
 
-/// Identifies one exact, nonauthorizing source-domain policy hold.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SourceDomainPolicyHoldV1 {
-    operation: OperationId,
-    sandbox: SandboxId,
-    controller_source: ObjectDigest,
-    ancestry: ObjectDigest,
-    binding: ObjectDigest,
-    epoch: u64,
-    held: bool,
-}
-
-impl SourceDomainPolicyHoldV1 {
-    /// Constructs custody for the exact ancestry used in a closed proposal.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a zero identity, commitment, or epoch.
-    pub fn new(
-        operation: OperationId,
-        sandbox: SandboxId,
-        controller_source: ObjectDigest,
-        ancestry: ObjectDigest,
-        binding: ObjectDigest,
-        epoch: u64,
-    ) -> Result<Self, JournalError> {
-        let hold = Self {
-            operation,
-            sandbox,
-            controller_source,
-            ancestry,
-            binding,
-            epoch,
-            held: true,
-        };
-        hold.validate()?;
-        Ok(hold)
-    }
-
-    /// Returns the accepted Create operation fixed by this hold.
-    #[must_use]
-    pub const fn operation(self) -> OperationId {
-        self.operation
-    }
-
-    /// Returns the accepted Create sandbox fixed by this hold.
-    #[must_use]
-    pub const fn sandbox(self) -> SandboxId {
-        self.sandbox
-    }
-
-    /// Returns the Controller source commitment observed under its writer.
-    #[must_use]
-    pub const fn controller_source(self) -> ObjectDigest {
-        self.controller_source
-    }
-
-    /// Returns the exact hierarchy ancestry head held for this Create.
-    #[must_use]
-    pub const fn ancestry(self) -> ObjectDigest {
-        self.ancestry
-    }
-
-    /// Returns the root binding digest fixed before Q04 submission.
-    #[must_use]
-    pub const fn binding(self) -> ObjectDigest {
-        self.binding
-    }
-
-    /// Returns the root handoff epoch fixed before Q04 submission.
-    #[must_use]
-    pub const fn epoch(self) -> u64 {
-        self.epoch
-    }
-
-    /// Reports whether source-domain writers remain frozen.
-    #[must_use]
-    pub const fn is_held(self) -> bool {
-        self.held
-    }
-
-    /// Returns the digest of the exact canonical held or released record.
-    ///
-    /// # Errors
-    ///
-    /// Rejects an invalid Source hold.
-    pub fn record_digest(self) -> Result<ObjectDigest, JournalError> {
-        Ok(ObjectDigest::from_bytes(
-            Sha256::digest(self.encode()?).into(),
-        ))
-    }
-
-    // This reuses the sole record encoder for equality DATA. It supplies no
-    // Source writer, observed release, settlement permission or authority.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn q04_released_record_digest(self) -> Result<ObjectDigest, JournalError> {
-        Self { held: false, ..self }.record_digest()
-    }
-
-    fn validate(self) -> Result<(), JournalError> {
-        if self.operation.as_bytes() == &[0; 16]
-            || self.sandbox.as_bytes() == &[0; 16]
-            || self.controller_source.as_bytes() == &[0; 32]
-            || self.ancestry.as_bytes() == &[0; 32]
-            || self.binding.as_bytes() == &[0; 32]
-            || self.epoch == 0
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
-
-    fn encode(self) -> Result<[u8; RECORD_BYTES], JournalError> {
-        self.validate()?;
-        let mut bytes = [0_u8; RECORD_BYTES];
-        bytes[..8].copy_from_slice(MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[10] = if self.held { 1 } else { 2 };
-        bytes[16..32].copy_from_slice(self.operation.as_bytes());
-        bytes[32..48].copy_from_slice(self.sandbox.as_bytes());
-        bytes[48..80].copy_from_slice(self.controller_source.as_bytes());
-        bytes[80..112].copy_from_slice(self.ancestry.as_bytes());
-        bytes[112..144].copy_from_slice(self.binding.as_bytes());
-        bytes[144..152].copy_from_slice(&self.epoch.to_be_bytes());
-        let checksum = Sha256::new()
-            .chain_update(CHECKSUM_DOMAIN)
-            .chain_update(&bytes[..152])
-            .finalize();
-        bytes[152..].copy_from_slice(&checksum);
-        Ok(bytes)
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        if bytes.len() != RECORD_BYTES
-            || bytes.get(..8) != Some(MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || !matches!(bytes[10], 1 | 2)
-            || bytes[11..16] != [0; 5]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let hold = Self {
-            operation: OperationId::from_bytes(
-                bytes[16..32]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            sandbox: SandboxId::from_bytes(
-                bytes[32..48]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            controller_source: ObjectDigest::from_bytes(
-                bytes[48..80]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            ancestry: ObjectDigest::from_bytes(
-                bytes[80..112]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            binding: ObjectDigest::from_bytes(
-                bytes[112..144]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            epoch: u64::from_be_bytes(
-                bytes[144..152]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            held: bytes[10] == 1,
-        };
-        if hold.encode()?.as_slice() != bytes {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(hold)
-    }
-}
-
-/// Retains exact V8 Source release evidence until Root successor settlement.
-///
-/// This owner-local marker is not a Controller or Root release authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SourceDomainPolicyV8PendingSettlementV1 {
-    binding: ObjectDigest,
-    epoch: u64,
-    held_record: ObjectDigest,
-    released_record: ObjectDigest,
-}
-
-impl SourceDomainPolicyV8PendingSettlementV1 {
-    fn new(expected: SourceDomainPolicyHoldV1) -> Result<Self, JournalError> {
-        if !expected.is_held() {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let released = SourceDomainPolicyHoldV1 {
-            held: false,
-            ..expected
-        };
-        Ok(Self {
-            binding: expected.binding(),
-            epoch: expected.epoch(),
-            held_record: expected.record_digest()?,
-            released_record: released.record_digest()?,
-        })
-    }
-
-    /// Returns the binding whose released Source record remains protected.
-    #[must_use]
-    pub const fn binding(self) -> ObjectDigest {
-        self.binding
-    }
-
-    /// Returns the protected binding's handoff epoch.
-    #[must_use]
-    pub const fn epoch(self) -> u64 {
-        self.epoch
-    }
-
-    /// Returns the digest of the canonical prior held Source record.
-    #[must_use]
-    pub const fn held_record_digest(self) -> ObjectDigest {
-        self.held_record
-    }
-
-    /// Returns the digest of the canonical released Source record.
-    #[must_use]
-    pub const fn released_record_digest(self) -> ObjectDigest {
-        self.released_record
-    }
-
-    fn matches_released(self, released: SourceDomainPolicyHoldV1) -> Result<bool, JournalError> {
-        if released.is_held()
-            || self.binding != released.binding()
-            || self.epoch != released.epoch()
-        {
-            return Ok(false);
-        }
-        let held = SourceDomainPolicyHoldV1 {
-            held: true,
-            ..released
-        };
-        Ok(self.held_record == held.record_digest()?
-            && self.released_record == released.record_digest()?)
-    }
-
-    fn encode(self) -> Result<[u8; V8_PENDING_RECORD_BYTES], JournalError> {
-        if self.binding.as_bytes() == &[0; 32]
-            || self.epoch == 0
-            || self.held_record.as_bytes() == &[0; 32]
-            || self.released_record.as_bytes() == &[0; 32]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let mut bytes = [0; V8_PENDING_RECORD_BYTES];
-        bytes[..8].copy_from_slice(V8_PENDING_MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[10] = 1;
-        bytes[16..48].copy_from_slice(self.binding.as_bytes());
-        bytes[48..56].copy_from_slice(&self.epoch.to_be_bytes());
-        bytes[56..88].copy_from_slice(self.held_record.as_bytes());
-        bytes[88..120].copy_from_slice(self.released_record.as_bytes());
-        let checksum = Sha256::new()
-            .chain_update(V8_PENDING_CHECKSUM_DOMAIN)
-            .chain_update(&bytes[..120])
-            .finalize();
-        bytes[120..].copy_from_slice(&checksum);
-        Ok(bytes)
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        if bytes.len() != V8_PENDING_RECORD_BYTES
-            || bytes.get(..8) != Some(V8_PENDING_MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || bytes[10] != 1
-            || bytes[11..16] != [0; 5]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let marker = Self {
-            binding: ObjectDigest::from_bytes(
-                bytes[16..48]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            epoch: u64::from_be_bytes(
-                bytes[48..56]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            held_record: ObjectDigest::from_bytes(
-                bytes[56..88]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            released_record: ObjectDigest::from_bytes(
-                bytes[88..120]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-        };
-        if marker.encode()?.as_slice() != bytes {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(marker)
-    }
-}
+use aos_sandbox_ledger_replay::source_policy_hold::SourceDomainPolicyHoldStateV1;
 
 fn current(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<SourceDomainPolicyHoldV1>, JournalError> {
-    current_state(state).map(|readback| readback.hold)
+    aos_sandbox_ledger_replay::source_policy_hold::current(state).map_err(JournalError::from)
 }
 
 fn current_with_v8_pending(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-) -> Result<
-    (
-        Option<SourceDomainPolicyHoldV1>,
-        Option<SourceDomainPolicyV8PendingSettlementV1>,
-    ),
-    JournalError,
-> {
-    let readback = current_state(state)?;
-    #[cfg(target_os = "linux")]
-    if readback.q04_pending.is_some() {
-        // A Q04 marker is never interpreted as a legacy/V8 release proof.
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok((readback.hold, readback.v8_pending))
-}
-
-struct SourceDomainPolicyHoldStateV1 {
-    hold: Option<SourceDomainPolicyHoldV1>,
-    v8_pending: Option<SourceDomainPolicyV8PendingSettlementV1>,
-    #[cfg(target_os = "linux")]
-    q04_pending: Option<Q04PendingRecordV1>,
+) -> Result<(Option<SourceDomainPolicyHoldV1>, Option<SourceDomainPolicyV8PendingSettlementV1>), JournalError> {
+    aos_sandbox_ledger_replay::source_policy_hold::current_with_v8_pending(state)
+        .map_err(JournalError::from)
 }
 
 fn current_state(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<SourceDomainPolicyHoldStateV1, JournalError> {
-    let mut records = state
-        .range((RecordNamespace::SourceDomainPolicyHold, Vec::new())..)
-        .take_while(|((namespace, _), _)| *namespace == RecordNamespace::SourceDomainPolicyHold);
-    let mut hold = None;
-    let mut pending = None;
-    #[cfg(target_os = "linux")]
-    let mut q04_pending = None;
-    for ((_, key), value) in &mut records {
-        match key.as_slice() {
-            KEY if hold.is_none() => hold = Some(SourceDomainPolicyHoldV1::decode(value)?),
-            V8_PENDING_KEY if pending.is_none() => {
-                pending = Some(SourceDomainPolicyV8PendingSettlementV1::decode(value)?)
-            }
-            #[cfg(target_os = "linux")]
-            SOURCE_PENDING_KEY if q04_pending.is_none() => {
-                q04_pending = Some(Q04PendingRecordV1::decode(Q04PendingOwnerV1::Source, value)?);
-            }
-            _ => return Err(JournalError::ProtectedBoundary),
-        }
-    }
-    if let Some(marker) = pending {
-        match hold {
-            Some(released) if marker.matches_released(released)? => {}
-            _ => return Err(JournalError::ProtectedBoundary),
-        }
-    }
-    #[cfg(target_os = "linux")]
-    if let Some(marker) = &q04_pending {
-        let row = hold.ok_or(JournalError::ProtectedBoundary)?;
-        if pending.is_some() {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        require_q04_marker_row(marker, row)?;
-    }
-    Ok(SourceDomainPolicyHoldStateV1 {
-        hold,
-        v8_pending: pending,
-        #[cfg(target_os = "linux")]
-        q04_pending,
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn require_q04_marker_row(
-    marker: &Q04PendingRecordV1,
-    row: SourceDomainPolicyHoldV1,
-) -> Result<(), JournalError> {
-    let held = SourceDomainPolicyHoldV1 { held: true, ..row };
-    let released = SourceDomainPolicyHoldV1 { held: false, ..row };
-    if marker.is_held() != row.is_held()
-        || marker.bytes()[64..96] != *row.binding().as_bytes()
-        || marker.bytes()[96..104] != row.epoch().to_be_bytes()
-        || marker.bytes()[104..136] != *held.record_digest()?.as_bytes()
-        || marker.bytes()[136..168] != *released.record_digest()?.as_bytes()
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::source_policy_hold::current_state(state).map_err(JournalError::from)
 }
 
 pub(super) fn require_no_mutation(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
-    let readback = current_state(state)?;
-    #[cfg(target_os = "linux")]
-    if readback.q04_pending.is_some() {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    if readback.hold.is_some_and(SourceDomainPolicyHoldV1::is_held)
-        || readback.v8_pending.is_some()
-        || transaction
-            .records()
-            .iter()
-            .any(|record| record.namespace() == RecordNamespace::SourceDomainPolicyHold)
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::ordinary_mutation::require_no_source_policy_mutation_v1(state, transaction)
+        .map_err(crate::journal::JournalError::from)
 }
 
 #[cfg(target_os = "linux")]
@@ -481,24 +80,8 @@ pub(super) fn require_q04_ordinary_boundary(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
-    // Old private hold/V8 flags do not waive this new purpose. Its marker
-    // freezes all Source writes until the exact retained transition clears it.
-    let writes_marker = transaction.records().iter().any(|record| {
-            record.namespace() == RecordNamespace::SourceDomainPolicyHold
-                && record.key() == SOURCE_PENDING_KEY
-        });
-    let has_marker = state.keys().any(|(namespace, key)| {
-        *namespace == RecordNamespace::SourceDomainPolicyHold && key == SOURCE_PENDING_KEY
-    });
-    if !has_marker
-        && !writes_marker
-    {
-        // No new-purpose byte means no additional legacy parse or reordered
-        // ordinary error. The existing validators retain their old positions.
-        return Ok(());
-    }
-    current_state(state)?;
-    Err(JournalError::ProtectedBoundary)
+    aos_sandbox_ledger_replay::ordinary_mutation::require_no_source_q04_mutation_v1(state, transaction)
+        .map_err(crate::journal::JournalError::from)
 }
 
 // These are inert complete transaction recipes, not a Source writer lease or
@@ -532,6 +115,9 @@ impl<'cut> SourceQ04TransactionRecipesV1<'cut> {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
         let before = current_state(source.journal().native.state())?;
+        if before.delete_pending.is_some() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
         if before.hold.is_some_and(SourceDomainPolicyHoldV1::is_held)
             || before.v8_pending.is_some()
             || before.q04_pending.is_some()
@@ -628,11 +214,11 @@ impl<'cut> SourceQ04TransactionRecipesV1<'cut> {
         if self.release_authorization.is_none() {
             return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
         }
-        super::q04_lower_clear_native_digest_v1(
+        aos_sandbox_protocol::domain_ledger::create_q04_history::recipes::lower_clear_recipe_digest_data_v1(
             self.identity, Q04TransactionOwnerV1::Source, self.names,
             self.original_next.checked_add(8).ok_or(JournalError::SequenceExhausted)?,
             &self.transactions[2],
-        )
+        ).map_err(Into::into)
     }
 
     pub(crate) fn require_fixed_journal(&self, journal: &Journal) -> Result<(), JournalError> {
@@ -667,10 +253,13 @@ impl<'cut> SourceQ04TransactionRecipesV1<'cut> {
         committed: usize,
     ) -> Result<(), JournalError> {
         let readback = current_state(state)?;
+        if readback.delete_pending.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
         if readback.v8_pending.is_some() {
             return Err(JournalError::ProtectedBoundary);
         }
-        let released = SourceDomainPolicyHoldV1 { held: false, ..self.held };
+        let released = (self.held).released_data();
         let matches = match committed {
             0 => readback.hold == self.prior && readback.q04_pending.is_none(),
             1 => readback.hold == Some(self.held)
@@ -712,7 +301,7 @@ fn q04_hold_recipe_bodies(
     {
         return Err(CreateQ04ErrorV1::ChangedCut);
     }
-    let released = SourceDomainPolicyHoldV1 { held: false, ..held };
+    let released = (held).released_data();
     let owner_recipe = ObjectDigest::from_bytes(Sha256::new()
         .chain_update(b"aos.sandbox.create-q04.source-before-owner-recipe.v1\0")
         .chain_update(names.to_bytes())
@@ -757,11 +346,11 @@ pub(crate) fn q04_clear_recipe_digest_data(
     release_authorization: ObjectDigest,
 ) -> Result<ObjectDigest, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
     let bodies = q04_hold_recipe_bodies(identity, names, held, release_authorization)?;
-    super::q04_lower_clear_native_digest_v1(
+    aos_sandbox_protocol::domain_ledger::create_q04_history::recipes::lower_clear_recipe_digest_data_v1(
         identity, Q04TransactionOwnerV1::Source, names,
         original_next.checked_add(8).ok_or(JournalError::SequenceExhausted)?,
         &bodies.transactions[2],
-    )
+    ).map_err(Into::into)
 }
 
 #[cfg(target_os = "linux")]
@@ -796,6 +385,9 @@ pub(super) fn require_no_compaction(
     // The typed parser validates the released row and marker together before
     // generic compaction materializes every current record.
     let readback = current_state(state)?;
+    if readback.delete_pending.is_some() {
+        return Err(JournalError::ProtectedBoundary);
+    }
     #[cfg(target_os = "linux")]
     if readback.q04_pending.is_some() {
         return Err(JournalError::ProtectedBoundary);
@@ -831,20 +423,14 @@ pub(super) fn release_transaction(
     if !expected.is_held() {
         return Err(JournalError::ProtectedBoundary);
     }
-    transaction(SourceDomainPolicyHoldV1 {
-        held: false,
-        ..expected
-    })
+    transaction((expected).released_data())
 }
 
 fn v8_retirement_transaction(
     expected: SourceDomainPolicyHoldV1,
 ) -> Result<JournalTransaction, JournalError> {
     let marker = SourceDomainPolicyV8PendingSettlementV1::new(expected)?;
-    let released = SourceDomainPolicyHoldV1 {
-        held: false,
-        ..expected
-    };
+    let released = (expected).released_data();
     let released_bytes = released.encode()?;
     let marker_bytes = marker.encode()?;
     let digest = Sha256::new()
@@ -878,10 +464,7 @@ fn v8_clear_transaction(
     if released.is_held() {
         return Err(JournalError::ProtectedBoundary);
     }
-    let held = SourceDomainPolicyHoldV1 {
-        held: true,
-        ..released
-    };
+    let held = (released).held_data();
     let marker = SourceDomainPolicyV8PendingSettlementV1::new(held)?;
     let digest = Sha256::new()
         .chain_update(V8_CLEAR_TRANSACTION_DOMAIN)
@@ -905,16 +488,13 @@ pub(super) fn v8_retirement_and_clear_transactions(
 ) -> Result<[JournalTransaction; 2], JournalError> {
     Ok([
         v8_retirement_transaction(held)?,
-        v8_clear_transaction(SourceDomainPolicyHoldV1 {
-            held: false,
-            ..held
-        })?,
+        v8_clear_transaction((held).released_data())?,
     ])
 }
 
 pub(super) fn ensure_source_domain(journal: &Journal) -> Result<(), JournalError> {
     journal.ensure_protected_authority()?;
-    if journal.protected.as_ref().map(|location| location.name()) != Some(JOURNAL_NAME) {
+    if journal.native.protected_view().map(|location| location.name()) != Some(JOURNAL_NAME) {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
@@ -936,7 +516,7 @@ impl Journal {
     ) -> Result<(), JournalError> {
         ensure_source_domain(self)?;
         let (current_hold, pending) = current_with_v8_pending(self.native.state())?;
-        if !hold.held
+        if !hold.is_held()
             || current_hold.is_some_and(SourceDomainPolicyHoldV1::is_held)
             || pending.is_some()
         {
@@ -1012,10 +592,7 @@ impl Journal {
         let (Some(released), Some(_)) = current_with_v8_pending(self.native.state())? else {
             return Err(JournalError::ProtectedBoundary);
         };
-        let held = SourceDomainPolicyHoldV1 {
-            held: true,
-            ..released
-        };
+        let held = (released).held_data();
         Ok((held, released))
     }
 
@@ -1024,7 +601,7 @@ impl Journal {
         expected: SourceDomainPolicyHoldV1,
     ) -> Result<(), JournalError> {
         ensure_source_domain(self)?;
-        if !expected.held || current(self.native.state())? != Some(expected) {
+        if !expected.is_held() || current(self.native.state())? != Some(expected) {
             return Err(JournalError::ProtectedBoundary);
         }
         self.commit_released_source_domain_policy_hold(expected)
@@ -1046,13 +623,10 @@ impl Journal {
         expected: SourceDomainPolicyHoldV1,
     ) -> Result<(), JournalError> {
         ensure_source_domain(self)?;
-        if !expected.held {
+        if !expected.is_held() {
             return Err(JournalError::ProtectedBoundary);
         }
-        let released = SourceDomainPolicyHoldV1 {
-            held: false,
-            ..expected
-        };
+        let released = (expected).released_data();
 
         let marker = SourceDomainPolicyV8PendingSettlementV1::new(expected)?;
         match current_with_v8_pending(self.native.state())? {
@@ -1122,10 +696,7 @@ impl Journal {
         &mut self,
         expected: SourceDomainPolicyHoldV1,
     ) -> Result<(), JournalError> {
-        let released = SourceDomainPolicyHoldV1 {
-            held: false,
-            ..expected
-        };
+        let released = (expected).released_data();
         self.commit_in_scope(
             &release_transaction(expected)?,
             AppendScope {
@@ -1206,16 +777,72 @@ mod tests {
     }
 
     #[test]
+    fn delete_pending_survives_reopen_and_cannot_use_a_legacy_release() {
+        use aos_sandbox_ledger_replay::source_policy_hold::DELETE_PENDING_KEY;
+        use aos_sandbox_protocol::domain_ledger::delete_batch::fixture_batch_v1;
+
+        let directory = TestDirectory::new();
+        let batch = fixture_batch_v1(b"projection", b"retained", 1);
+        let pending = JournalTransaction::new([91; 16], vec![JournalRecord::put(
+            RecordNamespace::SourceDomainPolicyHold, DELETE_PENDING_KEY.to_vec(), batch.clone(),
+        )]).unwrap();
+        let mut journal = directory.open();
+        // This test seeds saved DATA through the existing private test recipe;
+        // it creates no C17/Source owner or production Delete admission proof.
+        journal.commit_in_scope(&pending, AppendScope {
+            allow_policy_hold_transition: true,
+            ..AppendScope::default()
+        }, CacheMutationGateV1::Ordinary).unwrap();
+        drop(journal);
+
+        let mut reopened = directory.open();
+        assert_eq!(reopened.get(RecordNamespace::SourceDomainPolicyHold, DELETE_PENDING_KEY),
+            Some(batch.as_slice()));
+        assert!(reopened.source_domain_policy_hold_v1().is_err());
+        assert!(reopened.acquire_source_domain_policy_hold_v1(hold()).is_err());
+        assert!(reopened.release_source_domain_policy_hold_after_root_readback_v1(hold()).is_err());
+        assert!(reopened.retire_source_domain_policy_hold_v8(hold()).is_err());
+        assert!(reopened.clear_source_domain_policy_v8_pending_settlement_v1(hold().released_data()).is_err());
+        for (index, namespace) in [RecordNamespace::DesiredState,
+            RecordNamespace::Operation, RecordNamespace::Effect, RecordNamespace::PublisherPolicy]
+            .into_iter().enumerate()
+        {
+            let transaction = ordinary_transaction(namespace, index as u8 + 100);
+            assert!(reopened.preflight_transactions(&[transaction.clone()]).is_err());
+            assert!(reopened.commit(&transaction).is_err());
+        }
+        assert!(reopened.compact().is_err());
+        assert_eq!(reopened.get(RecordNamespace::SourceDomainPolicyHold, DELETE_PENDING_KEY),
+            Some(batch.as_slice()));
+    }
+
+    #[test]
+    fn delete_pending_rejects_corrupt_batch_and_conflicting_held_policy() {
+        use aos_sandbox_ledger_replay::source_policy_hold::DELETE_PENDING_KEY;
+        use aos_sandbox_protocol::domain_ledger::delete_batch::fixture_batch_v1;
+
+        let batch = fixture_batch_v1(b"projection", b"retained", 1);
+        let mut state = BTreeMap::new();
+        state.insert((RecordNamespace::SourceDomainPolicyHold, DELETE_PENDING_KEY.to_vec()), batch.clone());
+        assert!(current_state(&state).unwrap().delete_pending.is_some());
+        state.insert((RecordNamespace::SourceDomainPolicyHold, KEY.to_vec()), hold().encode().unwrap().to_vec());
+        assert!(current_state(&state).is_err());
+        state.remove(&(RecordNamespace::SourceDomainPolicyHold, KEY.to_vec()));
+        let mut corrupt = batch;
+        corrupt[264] ^= 1;
+        state.insert((RecordNamespace::SourceDomainPolicyHold, DELETE_PENDING_KEY.to_vec()), corrupt);
+        assert!(current_state(&state).is_err());
+        assert!(require_no_compaction(&state).is_err());
+    }
+
+    #[test]
     fn lost_reply_freezes_all_source_domain_writers_after_reopen() {
         let directory = TestDirectory::new();
         let mut source_domains = directory.open();
         let expected = hold();
         assert!(
             source_domains
-                .acquire_source_domain_policy_hold_v1(SourceDomainPolicyHoldV1 {
-                    held: false,
-                    ..expected
-                })
+                .acquire_source_domain_policy_hold_v1((expected).released_data())
                 .is_err()
         );
         source_domains
@@ -1268,9 +895,12 @@ mod tests {
             .unwrap();
 
         let mut reopened = directory.open();
-        let wrong_binding = SourceDomainPolicyHoldV1 {
-            binding: ObjectDigest::from_bytes([6; 32]),
-            ..expected
+        let wrong_binding = {
+            let original = expected;
+            let changed = SourceDomainPolicyHoldV1::new(
+                original.operation(), original.sandbox(), original.controller_source(), original.ancestry(), ObjectDigest::from_bytes([6; 32]), original.epoch(),
+            ).expect("nonzero comparison fields");
+            if original.is_held() { changed } else { changed.released_data() }
         };
         assert!(
             reopened
@@ -1314,10 +944,7 @@ mod tests {
         let mut reopened = ProtectedSourceDomainJournalOwnerV1::from_test_journal(directory.open());
         assert_eq!(
             reopened.closed_policy_source_hold_v1().unwrap(),
-            Some(SourceDomainPolicyHoldV1 {
-                held: false,
-                ..expected
-            })
+            Some((expected).released_data())
         );
         let marker = reopened
             .pending_closed_policy_source_v8_settlement_v1()
@@ -1331,10 +958,7 @@ mod tests {
         );
         assert_eq!(
             marker.released_record_digest(),
-            SourceDomainPolicyHoldV1 {
-                held: false,
-                ..expected
-            }
+            (expected).released_data()
             .record_digest()
             .unwrap()
         );
@@ -1342,10 +966,7 @@ mod tests {
             reopened.closed_policy_source_v8_release_pair_v1().unwrap(),
             (
                 expected,
-                SourceDomainPolicyHoldV1 {
-                    held: false,
-                    ..expected
-                }
+                (expected).released_data()
             )
         );
         reopened
@@ -1380,10 +1001,7 @@ mod tests {
         let reopened = ProtectedSourceDomainJournalOwnerV1::from_test_journal(directory.open());
         assert_eq!(
             reopened.closed_policy_source_hold_v1().unwrap(),
-            Some(SourceDomainPolicyHoldV1 {
-                held: false,
-                ..expected
-            })
+            Some((expected).released_data())
         );
         assert_eq!(
             reopened
@@ -1405,13 +1023,13 @@ mod tests {
     fn v8_settlement_clear_survives_reopen_and_rejects_stale_replay() {
         let directory = TestDirectory::new();
         let expected = hold();
-        let released = SourceDomainPolicyHoldV1 {
-            held: false,
-            ..expected
-        };
-        let wrong = SourceDomainPolicyHoldV1 {
-            ancestry: ObjectDigest::from_bytes([9; 32]),
-            ..released
+        let released = (expected).released_data();
+        let wrong = {
+            let original = released;
+            let changed = SourceDomainPolicyHoldV1::new(
+                original.operation(), original.sandbox(), original.controller_source(), ObjectDigest::from_bytes([9; 32]), original.binding(), original.epoch(),
+            ).expect("nonzero comparison fields");
+            if original.is_held() { changed } else { changed.released_data() }
         };
         let mut source = directory.open();
         source
@@ -1465,11 +1083,12 @@ mod tests {
         recovered
             .clear_source_domain_policy_v8_pending_settlement_v1(released)
             .expect("exact replay survives compaction");
-        let successor = SourceDomainPolicyHoldV1 {
-            binding: ObjectDigest::from_bytes([6; 32]),
-            epoch: expected.epoch() + 1,
-            held: true,
-            ..expected
+        let successor = {
+            let original = expected;
+            let changed = SourceDomainPolicyHoldV1::new(
+                original.operation(), original.sandbox(), original.controller_source(), original.ancestry(), ObjectDigest::from_bytes([6; 32]), expected.epoch() + 1,
+            ).expect("nonzero comparison fields");
+            if true { changed } else { changed.released_data() }
         };
         recovered
             .acquire_source_domain_policy_hold_v1(successor)
@@ -1495,14 +1114,14 @@ mod tests {
             .acquire_source_domain_policy_hold_v1(expected)
             .expect("held Source custody");
 
-        let wrong_binding = SourceDomainPolicyHoldV1 {
-            binding: ObjectDigest::from_bytes([6; 32]),
-            ..expected
+        let wrong_binding = {
+            let original = expected;
+            let changed = SourceDomainPolicyHoldV1::new(
+                original.operation(), original.sandbox(), original.controller_source(), original.ancestry(), ObjectDigest::from_bytes([6; 32]), original.epoch(),
+            ).expect("nonzero comparison fields");
+            if original.is_held() { changed } else { changed.released_data() }
         };
-        let released_argument = SourceDomainPolicyHoldV1 {
-            held: false,
-            ..expected
-        };
+        let released_argument = (expected).released_data();
         assert!(
             source
                 .retire_source_domain_policy_hold_v8(wrong_binding)
@@ -1548,10 +1167,7 @@ mod tests {
     #[test]
     fn v8_pending_marker_rejects_orphan_mismatch_and_noncanonical_bytes() {
         let expected = hold();
-        let released = SourceDomainPolicyHoldV1 {
-            held: false,
-            ..expected
-        };
+        let released = (expected).released_data();
         let marker = SourceDomainPolicyV8PendingSettlementV1::new(expected).unwrap();
         let mut state = BTreeMap::new();
         state.insert(
@@ -1578,9 +1194,12 @@ mod tests {
             (Some(released), Some(marker))
         );
 
-        let changed = SourceDomainPolicyHoldV1 {
-            ancestry: ObjectDigest::from_bytes([9; 32]),
-            ..released
+        let changed = {
+            let original = released;
+            let changed = SourceDomainPolicyHoldV1::new(
+                original.operation(), original.sandbox(), original.controller_source(), ObjectDigest::from_bytes([9; 32]), original.binding(), original.epoch(),
+            ).expect("nonzero comparison fields");
+            if original.is_held() { changed } else { changed.released_data() }
         };
         state.insert(
             (RecordNamespace::SourceDomainPolicyHold, KEY.to_vec()),
@@ -1622,10 +1241,12 @@ mod tests {
                 .is_err()
         );
         assert!(reopened.source_domain_policy_v8_release_pair_v1().is_err());
-        let successor = SourceDomainPolicyHoldV1 {
-            binding: ObjectDigest::from_bytes([6; 32]),
-            epoch: expected.epoch() + 1,
-            ..expected
+        let successor = {
+            let original = expected;
+            let changed = SourceDomainPolicyHoldV1::new(
+                original.operation(), original.sandbox(), original.controller_source(), original.ancestry(), ObjectDigest::from_bytes([6; 32]), expected.epoch() + 1,
+            ).expect("nonzero comparison fields");
+            if original.is_held() { changed } else { changed.released_data() }
         };
         reopened
             .acquire_source_domain_policy_hold_v1(successor)

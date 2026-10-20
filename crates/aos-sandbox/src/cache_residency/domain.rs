@@ -18,129 +18,24 @@ use aos_sandbox_protocol::cache_state::{
 use crate::journal::{JournalError, ProtectedJournalAuthority, ProtectedJournalSnapshot};
 
 const LOOKUP_DOMAIN: &[u8] = b"aos.sandbox.cache.authorized-lookup.v1\0";
-const AUTHORITY_RECORD_DOMAIN: &[u8] = b"aos.sandbox.cache.authority-record.v1\0";
-const AUTHORITY_RECORD_MAGIC: &[u8; 8] = b"AOSCAR01";
-const AUTHORITY_RECORD_BYTES: usize = 208;
 
-/// Selects the closed protected capability purpose.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum CacheAuthorityPurposeV1 {
-    /// Current immutable-source authorization.
-    Source = 1,
-    /// Current lookup/read disclosure authorization.
-    Read = 2,
-    /// Current admission authority.
-    Admission = 3,
-    /// Current eviction authority.
-    Eviction = 4,
-    /// Trusted pin-drain observation.
-    PinDrain = 5,
-    /// Trusted unlink observation.
-    UnlinkObservation = 6,
-    /// Trusted physical reclamation observation.
-    Reclamation = 7,
-    /// Trusted scrub observation.
-    Scrub = 8,
-    /// Fresh retry authority after an old executor is fenced.
-    Retry = 9,
-    /// Current authority permitting historical result disclosure.
-    Replay = 10,
-    /// Current authority permitting one exact pin acquisition.
-    PinAcquire = 11,
-    /// Current authority permitting expired-admission cleanup or recovery.
-    AdmissionCleanup = 12,
-    /// Current authority permitting observed no-effect cancellation.
-    PendingCancellation = 13,
-}
+pub use aos_sandbox_protocol::cache_state::authority_record::{
+    CacheAuthorityPurposeV1, CacheAuthorityScopeV1,
+};
+use aos_sandbox_protocol::cache_state::authority_record::{
+    CACHE_AUTHORITY_RECORD_BYTES_V1 as AUTHORITY_RECORD_BYTES,
+    CacheAuthorityRecordDataErrorV1, decode_cache_authority_record_v1,
+    encode_cache_authority_record_v1, cache_authority_record_digest_v1,
+};
 
-/// Defines the exact semantic scope of one protected capability.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CacheAuthorityScopeV1 {
-    partition: ObjectDigest,
-    subject: ObjectDigest,
-    operation: [u8; 16],
-    plan: ObjectDigest,
-    root_custody: ObjectDigest,
-    generation: u64,
-    valid_until: u64,
-}
-
-impl CacheAuthorityScopeV1 {
-    /// Constructs a complete scope for one protected decision or observation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CacheAuthorityError::InvalidScope`] for sentinel fields.
-    pub(crate) fn new(
-        partition: PhysicalPartitionId,
-        subject: ObjectDigest,
-        operation: Option<OperationId>,
-        plan: ObjectDigest,
-        root_custody: ObjectDigest,
-        generation: u64,
-        valid_until: u64,
-    ) -> Result<Self, CacheAuthorityError> {
-        if subject.as_bytes() == &[0; 32]
-            || plan.as_bytes() == &[0; 32]
-            || root_custody.as_bytes() == &[0; 32]
-            || generation == 0
-            || valid_until == 0
-        {
-            return Err(CacheAuthorityError::InvalidScope);
-        }
-        Ok(Self {
-            partition: partition.digest(),
-            subject,
-            operation: operation.map_or([0; 16], |value| value.into_bytes()),
-            plan,
-            root_custody,
-            generation,
-            valid_until,
-        })
-    }
-
-    /// Returns the physical partition commitment.
-    #[must_use]
-    pub const fn partition(&self) -> ObjectDigest {
-        self.partition
-    }
-
-    /// Returns the exact subject commitment.
-    #[must_use]
-    pub const fn subject(&self) -> ObjectDigest {
-        self.subject
-    }
-
-    /// Returns the operation bytes, or zero for operation-independent authority.
-    #[must_use]
-    pub const fn operation(&self) -> [u8; 16] {
-        self.operation
-    }
-
-    /// Returns the exact plan commitment.
-    #[must_use]
-    pub const fn plan(&self) -> ObjectDigest {
-        self.plan
-    }
-
-    /// Returns the protected root custody commitment.
-    #[must_use]
-    pub const fn root_custody(&self) -> ObjectDigest {
-        self.root_custody
-    }
-
-    /// Returns the current protected generation.
-    #[must_use]
-    pub const fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// Returns the capability deadline.
-    #[must_use]
-    pub const fn valid_until(&self) -> u64 {
-        self.valid_until
-    }
+// Native sites preserve their established error category at this same pure
+// construction boundary. Shared scope DATA cannot mint a native capability.
+pub(crate) fn new_cache_authority_scope_v1(
+    partition: PhysicalPartitionId, subject: ObjectDigest, operation: Option<OperationId>,
+    plan: ObjectDigest, root_custody: ObjectDigest, generation: u64, valid_until: u64,
+) -> Result<CacheAuthorityScopeV1, CacheAuthorityError> {
+    CacheAuthorityScopeV1::new(partition, subject, operation, plan, root_custody,
+        generation, valid_until).map_err(CacheAuthorityError::from)
 }
 
 /// Owns verification against one live protected journal authority.
@@ -211,13 +106,7 @@ impl<'authority, 'journal> CacheAuthorityOwner<'authority, 'journal> {
         if record != expected.as_slice() {
             return Err(CacheAuthorityError::RecordMismatch);
         }
-        let mut hasher = Sha256::new();
-        hasher.update(AUTHORITY_RECORD_DOMAIN);
-        hasher.update((record_key.len() as u16).to_be_bytes());
-        hasher.update(record_key);
-        hasher.update((record.len() as u32).to_be_bytes());
-        hasher.update(record);
-        let record_digest = ObjectDigest::from_bytes(hasher.finalize().into());
+        let record_digest = cache_authority_record_digest_v1(record_key, record);
         Ok(VerifiedCacheCapabilityV1 {
             snapshot: self.authority.snapshot()?,
             owner_scope: self.owner_scope,
@@ -237,34 +126,8 @@ impl<'authority, 'journal> CacheAuthorityOwner<'authority, 'journal> {
             .authority
             .get(record_key)?
             .ok_or(CacheAuthorityError::RecordAbsent)?;
-        if record.len() != AUTHORITY_RECORD_BYTES
-            || &record[..8] != AUTHORITY_RECORD_MAGIC
-            || record[8..10] != 1_u16.to_be_bytes()
-            || record[10] != purpose as u8
-            || record[11..16] != [0; 5]
-            || record[16..48] != *self.owner_scope.as_bytes()
-        {
-            return Err(CacheAuthorityError::InvalidRecord);
-        }
-        let scope = CacheAuthorityScopeV1 {
-            partition: ObjectDigest::from_bytes(read_authority_array(record, 48)?),
-            subject: ObjectDigest::from_bytes(read_authority_array(record, 80)?),
-            operation: read_authority_array(record, 112)?,
-            plan: ObjectDigest::from_bytes(read_authority_array(record, 128)?),
-            root_custody: ObjectDigest::from_bytes(read_authority_array(record, 160)?),
-            generation: u64::from_be_bytes(read_authority_array(record, 192)?),
-            valid_until: u64::from_be_bytes(read_authority_array(record, 200)?),
-        };
-        if scope.partition.as_bytes() == &[0; 32]
-            || scope.subject.as_bytes() == &[0; 32]
-            || scope.plan.as_bytes() == &[0; 32]
-            || scope.root_custody.as_bytes() == &[0; 32]
-            || scope.generation == 0
-            || scope.valid_until == 0
-            || record != self.canonical_record(purpose, scope).as_slice()
-        {
-            return Err(CacheAuthorityError::InvalidRecord);
-        }
+        let scope = decode_cache_authority_record_v1(record, self.owner_scope, purpose)
+            .map_err(CacheAuthorityError::from)?;
         self.verify_current_record(purpose, scope, record_key)
     }
 
@@ -275,19 +138,7 @@ impl<'authority, 'journal> CacheAuthorityOwner<'authority, 'journal> {
         purpose: CacheAuthorityPurposeV1,
         scope: CacheAuthorityScopeV1,
     ) -> [u8; AUTHORITY_RECORD_BYTES] {
-        let mut record = [0_u8; AUTHORITY_RECORD_BYTES];
-        record[0..8].copy_from_slice(AUTHORITY_RECORD_MAGIC);
-        record[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        record[10] = purpose as u8;
-        record[16..48].copy_from_slice(self.owner_scope.as_bytes());
-        record[48..80].copy_from_slice(scope.partition().as_bytes());
-        record[80..112].copy_from_slice(scope.subject().as_bytes());
-        record[112..128].copy_from_slice(&scope.operation());
-        record[128..160].copy_from_slice(scope.plan().as_bytes());
-        record[160..192].copy_from_slice(scope.root_custody().as_bytes());
-        record[192..200].copy_from_slice(&scope.generation().to_be_bytes());
-        record[200..208].copy_from_slice(&scope.valid_until().to_be_bytes());
-        record
+        encode_cache_authority_record_v1(self.owner_scope, purpose, scope)
     }
 
     /// Revalidates capability currentness and exact purpose/scope at effect time.
@@ -330,16 +181,6 @@ impl<'authority, 'journal> CacheAuthorityOwner<'authority, 'journal> {
         }
         self.validate_for_effect(capability, purpose, scope)
     }
-}
-
-fn read_authority_array<const N: usize>(
-    bytes: &[u8],
-    offset: usize,
-) -> Result<[u8; N], CacheAuthorityError> {
-    bytes
-        .get(offset..offset + N)
-        .and_then(|slice| slice.try_into().ok())
-        .ok_or(CacheAuthorityError::InvalidRecord)
 }
 
 impl VerifiedCacheCapabilityV1 {
@@ -421,7 +262,7 @@ impl LookupAuthorityScopeV1 {
             return Err(CacheAuthorityError::InvalidScope);
         }
         let descriptor = object_descriptor_commitment(descriptor);
-        let scope = CacheAuthorityScopeV1::new(
+        let scope = crate::cache_residency::domain::new_cache_authority_scope_v1(
             partition,
             descriptor,
             None,
@@ -467,9 +308,8 @@ impl AuthorizedLookupKey {
     }
 
     pub(crate) fn from_digest(digest: ObjectDigest) -> Result<Self, CacheDomainError> {
-        if digest.as_bytes() == &[0; 32] {
-            return Err(CacheDomainError::InvalidAuthority);
-        }
+        let digest = aos_sandbox_protocol::cache_state::physical_manifest::validate_negative_key_digest_v1(digest)
+            .map_err(|_| CacheDomainError::InvalidAuthority)?;
         Ok(Self(digest))
     }
 
@@ -510,5 +350,15 @@ impl AuthorizedLookupKey {
         hasher.update(descriptor.digest().as_bytes());
         hasher.update(descriptor.encoded_size().to_be_bytes());
         Ok(Self(ObjectDigest::from_bytes(hasher.finalize().into())))
+    }
+}
+
+
+impl From<CacheAuthorityRecordDataErrorV1> for CacheAuthorityError {
+    fn from(error: CacheAuthorityRecordDataErrorV1) -> Self {
+        match error {
+            CacheAuthorityRecordDataErrorV1::InvalidScope => Self::InvalidScope,
+            CacheAuthorityRecordDataErrorV1::InvalidRecord => Self::InvalidRecord,
+        }
     }
 }

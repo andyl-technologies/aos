@@ -21,7 +21,7 @@ fn domains() -> StorageDomainsV1 {
     .unwrap()
 }
 
-fn catalog(generation: u64, name: &str) -> ResolvedCatalogCommitmentV1 {
+pub(super) fn catalog(generation: u64, name: &str) -> ResolvedCatalogCommitmentV1 {
     let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap();
     let ancestor_dataset =
         ResolvedDataset::from_catalog(root.clone(), "tank/aos/project", 15, [1; 32], domains())
@@ -73,6 +73,7 @@ fn authenticated_codec_round_trips_each_v1_record() {
     let key_id = [31; 16];
     let secret = [32; 32];
     let empty = StorageCatalogTransitionProvider {
+        capture_operations: BTreeMap::new(),
         genesis: None,
         head: None,
         reservations: BTreeMap::new(),
@@ -87,6 +88,7 @@ fn authenticated_codec_round_trips_each_v1_record() {
     assert_eq!(decoded_head.genesis_state, Some(state.clone()));
 
     let mut provider = StorageCatalogTransitionProvider {
+        capture_operations: BTreeMap::new(),
         genesis: Some(state.binding),
         head: Some(state.clone()),
         reservations: BTreeMap::new(),
@@ -537,6 +539,7 @@ fn snapshot_capacity_includes_variable_root_metadata_digest() {
     let operation_id = [93; 16];
     let mutation_digest = ObjectDigest::from_bytes([94; 32]);
     let mut provider = StorageCatalogTransitionProvider {
+        capture_operations: BTreeMap::new(),
         genesis: Some(predecessor.binding),
         head: Some(predecessor.clone()),
         reservations: BTreeMap::new(),

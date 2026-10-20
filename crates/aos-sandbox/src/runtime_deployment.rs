@@ -14,6 +14,7 @@ mod collector;
 mod comparison;
 mod invocation;
 mod original_request;
+mod startup_original;
 
 pub use original_request::{
     RuntimeDeploymentAuthenticatedRequestV3, RuntimeDeploymentOriginalWindowV3,
@@ -25,6 +26,10 @@ pub use startup::{
     ProductionRuntimeDeploymentStartupCaptureV1, ProductionRuntimeDeploymentStartupPartsV1,
     ProductionRuntimeDeploymentStartupV1,
 };
+pub use startup::boot_preparation::{
+    RuntimeBootPreparationStartupClosedV1, RuntimeBootPreparationStartupFailureViewV1,
+    RuntimeBootPreparationStartupOriginalV1,
+};
 pub use collector::{
     InstalledCollectorStartupErrorV1, ProductionInstalledCollectorStartupCaptureV1,
     ProductionInstalledCollectorStartupPartsV1, ProductionInstalledCollectorStartupV1,
@@ -34,6 +39,8 @@ pub use comparison::{
     HeldRuntimeDeploymentPairComparisonV1,
     RuntimeDeploymentComparisonErrorV1, RuntimeDeploymentComparisonOriginsV1,
     RuntimeDeploymentCanaryOriginsCaptureV2, RuntimeDeploymentCanaryFailureV2,
+    RuntimeBootPreparationOriginsClosedV1, RuntimeBootPreparationOriginsOriginalV1,
+    RuntimeBootPreparationNativeFailureViewV1, RuntimeBootPreparationNativeOriginalV1,
 };
 pub use crate::journal::RuntimeDeploymentNativeTransactionDataV1;
 pub use invocation::{HostPhysicalInvocationErrorV1, HostPhysicalInvocationLeaseV1};
@@ -55,6 +62,7 @@ pub(crate) use preparation::{
     require_deployment_row_bound_v1,
     require_prospective_deployment_append_v1,
 };
+pub(crate) use preparation::boot_preparation::require_native_binding_v1 as require_native_boot_binding_v1;
 
 #[cfg(test)]
 pub(crate) use preparation::tests::Fixture as DeploymentHistoryFixtureV1;

@@ -19,8 +19,12 @@
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 
+pub mod packet_capture;
+use packet_capture::BrokerOutcomePacketAdmissionCaptureV1;
+
 use crate::artifact::{
-    BrokerSessionArtifactError, SignedBrokerOutcomeV1, SignedBrokerRequestV1,
+    BrokerSessionArtifactError, BrokerSessionArtifactVerifyCaptureV1,
+    SignedBrokerOutcomeV1, SignedBrokerRequestV1,
     complete_signed_outcome_bytes_digest_v1, complete_signed_request_digest_v1,
 };
 use crate::context::ProtectedBrokerSessionVerificationContextV1;
@@ -230,6 +234,148 @@ pub struct BrokerSessionTrafficStateV1 {
     negotiated_maximum_response_bytes: u32,
 }
 
+/// Retains one pure historical request admission without granting authority.
+#[derive(Default)]
+pub struct BrokerRequestAdmissionCaptureV1 {
+    attempted: bool,
+    closed: Option<BrokerSessionSequenceError>,
+    signed_bytes: Option<Vec<u8>>,
+    verification: BrokerSessionArtifactVerifyCaptureV1,
+    result: Option<Result<BrokerRequestAdmissionV1, BrokerSessionSequenceError>>,
+}
+
+impl BrokerRequestAdmissionCaptureV1 {
+    /// Constructs an empty once-only admission owner.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Bounds signed backing, result, once/refusal controls and signature work.
+    #[must_use]
+    pub fn receiving_metadata_cells_v1() -> Option<usize> {
+        4_usize.checked_add(BrokerSessionArtifactVerifyCaptureV1::receiving_metadata_cells_v1()?)
+    }
+
+    /// Borrows the actual sequence refusal.
+    #[must_use]
+    pub fn failure(&self) -> Option<&BrokerSessionSequenceError> {
+        self.result.as_ref()
+            .and_then(|value| value.as_ref().err())
+            .or(self.closed.as_ref())
+    }
+
+    /// Borrows the concrete cryptographic cause before its mapped admission error.
+    #[must_use]
+    pub fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.verification.failure().map(|cause| cause as _)
+            .or_else(|| self.failure().map(|cause| cause as _))
+    }
+
+    /// Borrows reached signed bytes, including bytes retained after refusal.
+    ///
+    /// This diagnostic DATA does not prove admission or currentness.
+    #[must_use]
+    pub fn retained_signed_bytes(&self) -> Option<&[u8]> {
+        self.signed_bytes.as_deref()
+    }
+
+    /// Borrows a completed pure admission before its caller classifies replay.
+    #[must_use]
+    pub fn admission(&self) -> Option<&BrokerRequestAdmissionV1> {
+        if self.closed.is_some() {
+            return None;
+        }
+        self.result.as_ref().and_then(|value| value.as_ref().ok())
+    }
+
+    /// Moves a completed admission out once without clearing a failed owner.
+    ///
+    /// # Errors
+    /// Refuses a failed, incomplete, or already consumed owner.
+    pub fn take_admission_once(
+        &mut self,
+    ) -> Result<BrokerRequestAdmissionV1, BrokerSessionSequenceError> {
+        if self.failure().is_some() {
+            return Err(self.failure().cloned()
+                .unwrap_or(BrokerSessionSequenceError::Continuity));
+        }
+
+        self.result.take().ok_or(BrokerSessionSequenceError::Continuity)?
+    }
+}
+
+/// Retains one pure historical outcome admission without granting authority.
+#[derive(Default)]
+pub struct BrokerOutcomeAdmissionCaptureV1 {
+    attempted: bool,
+    closed: Option<BrokerSessionSequenceError>,
+    signed_bytes: Option<Vec<u8>>,
+    verification: BrokerSessionArtifactVerifyCaptureV1,
+    result: Option<Result<BrokerOutcomeAdmissionV1, BrokerSessionSequenceError>>,
+}
+
+impl BrokerOutcomeAdmissionCaptureV1 {
+    /// Constructs an empty once-only admission owner.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Bounds signed backing, result, once/refusal controls and signature work.
+    #[must_use]
+    pub fn receiving_metadata_cells_v1() -> Option<usize> {
+        4_usize.checked_add(BrokerSessionArtifactVerifyCaptureV1::receiving_metadata_cells_v1()?)
+    }
+
+    /// Borrows the actual sequence refusal.
+    #[must_use]
+    pub fn failure(&self) -> Option<&BrokerSessionSequenceError> {
+        self.result.as_ref()
+            .and_then(|value| value.as_ref().err())
+            .or(self.closed.as_ref())
+    }
+
+    /// Borrows the concrete cryptographic cause before its mapped admission error.
+    #[must_use]
+    pub fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.verification.failure().map(|cause| cause as _)
+            .or_else(|| self.failure().map(|cause| cause as _))
+    }
+
+    /// Borrows reached signed bytes, including bytes retained after refusal.
+    ///
+    /// This diagnostic DATA does not prove admission or currentness.
+    #[must_use]
+    pub fn retained_signed_bytes(&self) -> Option<&[u8]> {
+        self.signed_bytes.as_deref()
+    }
+
+    /// Borrows a completed pure admission before its caller classifies replay.
+    #[must_use]
+    pub fn admission(&self) -> Option<&BrokerOutcomeAdmissionV1> {
+        if self.closed.is_some() {
+            return None;
+        }
+        self.result.as_ref().and_then(|value| value.as_ref().ok())
+    }
+
+    /// Moves a completed admission out once without clearing a failed owner.
+    ///
+    /// # Errors
+    /// Refuses a failed, incomplete, or already consumed owner.
+    pub fn take_admission_once(
+        &mut self,
+    ) -> Result<BrokerOutcomeAdmissionV1, BrokerSessionSequenceError> {
+        if self.failure().is_some() {
+            return Err(self.failure().cloned()
+                .unwrap_or(BrokerSessionSequenceError::Continuity));
+        }
+
+        self.result.take().ok_or(BrokerSessionSequenceError::Continuity)?
+    }
+}
+
 impl BrokerSessionTrafficStateV1 {
     /// Derives initial sequence state from a provisional verified transcript.
     ///
@@ -240,6 +386,14 @@ impl BrokerSessionTrafficStateV1 {
     pub fn from_provisional_transcript(
         transcript: VerifiedBrokerSessionTranscriptV1,
     ) -> Result<Self, BrokerSessionSequenceError> {
+        Self::from_provisional_owner(&mut Some(transcript))
+    }
+
+    pub(crate) fn from_provisional_owner(
+        owner: &mut Option<VerifiedBrokerSessionTranscriptV1>,
+    ) -> Result<Self, BrokerSessionSequenceError> {
+        let transcript = owner.as_ref()
+            .ok_or(BrokerSessionSequenceError::TranscriptPhase)?;
         if transcript.phase() != BrokerSessionTranscriptPhaseV1::Provisional {
             return Err(BrokerSessionSequenceError::TranscriptPhase);
         }
@@ -249,7 +403,7 @@ impl BrokerSessionTrafficStateV1 {
             negotiated_maximum_response_bytes,
         )?;
         Ok(Self {
-            transcript,
+            transcript: owner.take().ok_or(BrokerSessionSequenceError::TranscriptPhase)?,
             next_client_sequence: 1,
             next_broker_sequence: 1,
             outstanding: None,
@@ -295,6 +449,73 @@ impl BrokerSessionTrafficStateV1 {
         verify_current_context(&self.transcript, context)
     }
 
+    /// Authenticates the canonical outer request before method-body decoding.
+    ///
+    /// This checks the actual current transcript/profile, active ClientRecord
+    /// signer, signature and committed outer bytes. It admits no request,
+    /// response budget, body semantics or sequence advancement. Full ordinary
+    /// admission still binds the decoded body header and traffic state later.
+    ///
+    /// # Errors
+    /// Returns the existing sequence error for changed context/profile, invalid
+    /// signature, zero request identity or outer continuity mismatch.
+    pub fn authenticate_request_carrier_v1(
+        &self,
+        request: &CanonicalBrokerRequestEnvelopeV1,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<(), BrokerSessionSequenceError> {
+        self.require_request_carrier_profile_v1(request, context)?;
+        let signed = request.signed_artifact();
+        verify_request_continuity(
+            request, signed, signed.subject().request_id(), &self.transcript,
+        )?;
+        self.require_client_record_signature_v1(signed, context)
+    }
+
+    fn require_request_carrier_profile_v1(
+        &self,
+        request: &CanonicalBrokerRequestEnvelopeV1,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<(), BrokerSessionSequenceError> {
+        verify_current_context(&self.transcript, context)?;
+        if request.encoded_len() > self.transcript.negotiated_maximum_request_bytes()
+            || !self
+                .transcript
+                .negotiated_methods()
+                .contains(&request.signed_artifact().method())
+            || !method_has_required_traffic_features(
+                request.signed_artifact().method(),
+                self.transcript.required_features(),
+            )
+        {
+            return Err(BrokerSessionSequenceError::Continuity);
+        }
+        Ok(())
+    }
+
+    fn require_client_record_signature_v1(
+        &self,
+        signed: &SignedBrokerRequestV1,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<(), BrokerSessionSequenceError> {
+        self.require_client_record_signature_captured(signed, context, None)
+    }
+
+    fn require_client_record_signature_captured(
+        &self,
+        signed: &SignedBrokerRequestV1,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+        verification: Option<&mut BrokerSessionArtifactVerifyCaptureV1>,
+    ) -> Result<(), BrokerSessionSequenceError> {
+        let key = context.key(BrokerSessionKeyUsageV1::ClientRecord);
+        key.matches_active(signed.signer())?;
+        match verification {
+            Some(capture) => signed.verify_with_public_key_retaining_v1(key.public_key(), capture)?,
+            None => signed.verify_with_public_key(key.public_key())?,
+        }
+        Ok(())
+    }
+
     /// Verifies one canonical signed ClientRecord against local context and state.
     ///
     /// `request_id` and `request_maximum_response_bytes` must come from the
@@ -312,30 +533,58 @@ impl BrokerSessionTrafficStateV1 {
         request_maximum_response_bytes: u32,
         context: &ProtectedBrokerSessionVerificationContextV1,
     ) -> Result<BrokerRequestAdmissionV1, BrokerSessionSequenceError> {
-        verify_current_context(&self.transcript, context)?;
-        if request.encoded_len() > self.transcript.negotiated_maximum_request_bytes()
-            || !self
-                .transcript
-                .negotiated_methods()
-                .contains(&request.signed_artifact().method())
-            || !method_has_required_traffic_features(
-                request.signed_artifact().method(),
-                self.transcript.required_features(),
-            )
-        {
+        self.admit_request_captured(
+            request, request_id, request_maximum_response_bytes, context, &mut None, None,
+        )
+    }
+
+    /// Admits historical DATA while retaining signed bytes and a refused result.
+    ///
+    /// # Errors
+    /// Returns the ordinary sequence error, or refuses a repeated capture.
+    pub fn admit_request_retaining(
+        &self,
+        request: &CanonicalBrokerRequestEnvelopeV1,
+        request_id: [u8; 16],
+        request_maximum_response_bytes: u32,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+        capture: &mut BrokerRequestAdmissionCaptureV1,
+    ) -> Result<(), BrokerSessionSequenceError> {
+        if capture.attempted {
+            capture.closed.get_or_insert(BrokerSessionSequenceError::Continuity);
             return Err(BrokerSessionSequenceError::Continuity);
         }
+        capture.attempted = true;
+        let result = self.admit_request_captured(
+            request, request_id, request_maximum_response_bytes, context,
+            &mut capture.signed_bytes, Some(&mut capture.verification),
+        );
+        let returned = result.as_ref().map(|_| ()).map_err(Clone::clone);
+        capture.result = Some(result);
+        returned
+    }
+
+    fn admit_request_captured(
+        &self,
+        request: &CanonicalBrokerRequestEnvelopeV1,
+        request_id: [u8; 16],
+        request_maximum_response_bytes: u32,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+        signed_owner: &mut Option<Vec<u8>>,
+        verification: Option<&mut BrokerSessionArtifactVerifyCaptureV1>,
+    ) -> Result<BrokerRequestAdmissionV1, BrokerSessionSequenceError> {
+        self.require_request_carrier_profile_v1(request, context)?;
         validate_authenticated_response_budget_v1(
             self.negotiated_maximum_response_bytes,
             request_maximum_response_bytes,
         )?;
         let signed = request.signed_artifact();
         verify_request_continuity(request, signed, request_id, &self.transcript)?;
-        let key = context.key(BrokerSessionKeyUsageV1::ClientRecord);
-        key.matches_active(signed.signer())?;
-        signed.verify_with_public_key(key.public_key())?;
+        self.require_client_record_signature_captured(signed, context, verification)?;
 
-        let signed_bytes = signed.to_canonical_bytes();
+        *signed_owner = Some(signed.to_canonical_bytes());
+        let signed_bytes = signed_owner.as_deref()
+            .ok_or(BrokerSessionSequenceError::Continuity)?;
         let signed_digest = complete_signed_request_digest_v1(signed);
         if let Some(completed) = &self.completed_outcome
             && (signed.subject().sequence() == completed.client_sequence
@@ -344,7 +593,7 @@ impl BrokerSessionTrafficStateV1 {
             if signed.subject().sequence() == completed.client_sequence
                 && request_id == completed.request_id
                 && signed.method() == completed.method
-                && signed_bytes == completed.request_signed_bytes
+                && signed_bytes == completed.request_signed_bytes.as_slice()
                 && request_maximum_response_bytes == completed.maximum_response_bytes
             {
                 return Ok(BrokerRequestAdmissionV1::ExactReplay(
@@ -364,7 +613,7 @@ impl BrokerSessionTrafficStateV1 {
                 if signed.subject().sequence() == outstanding.client_sequence
                     && request_id == outstanding.request_id
                     && signed.method() == outstanding.method
-                    && signed_bytes == outstanding.signed_bytes
+                    && signed_bytes == outstanding.signed_bytes.as_slice()
                     && request_maximum_response_bytes == outstanding.maximum_response_bytes
                 {
                     return Ok(BrokerRequestAdmissionV1::ExactReplay(
@@ -390,7 +639,7 @@ impl BrokerSessionTrafficStateV1 {
             method: signed.method(),
             request_id,
             client_sequence: signed.subject().sequence(),
-            signed_bytes,
+            signed_bytes: signed_owner.take().ok_or(BrokerSessionSequenceError::Continuity)?,
             signed_request_digest: signed_digest,
             maximum_response_bytes: request_maximum_response_bytes,
         });
@@ -454,6 +703,39 @@ impl BrokerSessionTrafficStateV1 {
         outcome: &CanonicalBrokerResponseEnvelopeV1,
         context: &ProtectedBrokerSessionVerificationContextV1,
     ) -> Result<BrokerOutcomeAdmissionV1, BrokerSessionSequenceError> {
+        self.admit_outcome_captured(outcome, context, &mut None, None)
+    }
+
+    /// Admits historical DATA while retaining signed bytes and a refused result.
+    ///
+    /// # Errors
+    /// Returns the ordinary sequence error, or refuses a repeated capture.
+    pub fn admit_outcome_retaining(
+        &self,
+        outcome: &CanonicalBrokerResponseEnvelopeV1,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+        capture: &mut BrokerOutcomeAdmissionCaptureV1,
+    ) -> Result<(), BrokerSessionSequenceError> {
+        if capture.attempted {
+            capture.closed.get_or_insert(BrokerSessionSequenceError::Continuity);
+            return Err(BrokerSessionSequenceError::Continuity);
+        }
+        capture.attempted = true;
+        let result = self.admit_outcome_captured(
+            outcome, context, &mut capture.signed_bytes, Some(&mut capture.verification),
+        );
+        let returned = result.as_ref().map(|_| ()).map_err(Clone::clone);
+        capture.result = Some(result);
+        returned
+    }
+
+    fn admit_outcome_captured(
+        &self,
+        outcome: &CanonicalBrokerResponseEnvelopeV1,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+        signed_owner: &mut Option<Vec<u8>>,
+        verification: Option<&mut BrokerSessionArtifactVerifyCaptureV1>,
+    ) -> Result<BrokerOutcomeAdmissionV1, BrokerSessionSequenceError> {
         verify_current_context(&self.transcript, context)?;
         let signed = outcome.signed_artifact();
         let effective_bound = self.response_bound_for(signed)?;
@@ -462,8 +744,10 @@ impl BrokerSessionTrafficStateV1 {
                 BrokerSessionProjectionError::TooLarge,
             ));
         }
-        let signed_bytes = signed.to_canonical_bytes();
-        let signed_digest = digest_signed_outcome(&signed_bytes);
+        *signed_owner = Some(signed.to_canonical_bytes());
+        let signed_bytes = signed_owner.as_deref()
+            .ok_or(BrokerSessionSequenceError::Continuity)?;
+        let signed_digest = digest_signed_outcome(signed_bytes);
         if let Some(completed) = &self.completed_outcome
             && (signed.subject().sequence() == completed.broker_sequence
                 || signed.subject().request_id() == completed.request_id)
@@ -490,7 +774,10 @@ impl BrokerSessionTrafficStateV1 {
         require_advanceable_sequence(self.next_broker_sequence)?;
         let key = context.key(BrokerSessionKeyUsageV1::BrokerOutcome);
         key.matches_active(signed.signer())?;
-        signed.verify_with_public_key(key.public_key())?;
+        match verification {
+            Some(capture) => signed.verify_with_public_key_retaining_v1(key.public_key(), capture)?,
+            None => signed.verify_with_public_key(key.public_key())?,
+        }
 
         let verified = CryptographicallyVerifiedBrokerOutcomeV1 {
             method: signed.method(),
@@ -533,14 +820,55 @@ impl BrokerSessionTrafficStateV1 {
         bytes: &[u8],
         context: &ProtectedBrokerSessionVerificationContextV1,
     ) -> Result<BrokerOutcomeAdmissionV1, BrokerSessionSequenceError> {
+        self.decode_and_admit_outcome_engine(bytes, context, None)
+    }
+
+    /// Decodes and verifies through the same bounded engine into actual owners.
+    ///
+    /// # Errors
+    /// Retains partial canonical protobuf, signed verification, candidate next
+    /// traffic and the original failure. Reentry never replaces that attempt.
+    pub fn decode_and_admit_outcome_retaining_v1(
+        &self,
+        bytes: &[u8],
+        context: &ProtectedBrokerSessionVerificationContextV1,
+        capture: &mut BrokerOutcomePacketAdmissionCaptureV1,
+    ) -> Result<(), BrokerSessionSequenceError> {
+        if capture.attempted {
+            capture.closed.get_or_insert(BrokerSessionSequenceError::Continuity);
+            return Err(BrokerSessionSequenceError::Continuity);
+        }
+        capture.attempted = true;
+        let result = self.decode_and_admit_outcome_engine(bytes, context, Some(capture));
+        let returned = result.as_ref().map(|_| ()).map_err(Clone::clone);
+        capture.result = Some(result);
+        returned
+    }
+
+    fn decode_and_admit_outcome_engine(
+        &self,
+        bytes: &[u8],
+        context: &ProtectedBrokerSessionVerificationContextV1,
+        capture: Option<&mut BrokerOutcomePacketAdmissionCaptureV1>,
+    ) -> Result<BrokerOutcomeAdmissionV1, BrokerSessionSequenceError> {
         verify_current_context(&self.transcript, context)?;
         if bytes.len() > self.maximum_candidate_response_bound()? {
             return Err(BrokerSessionSequenceError::Projection(
                 BrokerSessionProjectionError::TooLarge,
             ));
         }
-        let outcome = crate::projection::decode_canonical_response_v1(bytes)?;
-        self.admit_outcome(&outcome, context)
+        match capture {
+            None => {
+                let outcome = crate::projection::decode_canonical_response_v1(bytes)?;
+                self.admit_outcome(&outcome, context)
+            }
+            Some(capture) => {
+                crate::projection::decode_canonical_response_retaining_v1(bytes, &mut capture.canonical)?;
+                let outcome = capture.canonical.model().ok_or(BrokerSessionSequenceError::Continuity)?;
+                self.admit_outcome_retaining(outcome, context, &mut capture.admitted)?;
+                capture.admitted.take_admission_once()
+            }
+        }
     }
 
     fn maximum_candidate_response_bound(&self) -> Result<usize, BrokerSessionSequenceError> {

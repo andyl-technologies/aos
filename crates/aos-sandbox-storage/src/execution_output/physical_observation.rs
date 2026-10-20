@@ -1,13 +1,13 @@
 //! Protected history of one exact, pinned physical capture readback.
 //!
-//! AOSPOV01 joins the original AOSCOA01 possible-effect fence, retained
+//! AOSPOV01 joins the original AOSCOA03 possible-effect fence, retained
 //! AOSEOR03 claim, catalog GUID/binding, and a checkpoint-free three-probe ZFS
 //! observation. It is historical evidence, not currentness, a create retry,
 //! detached-mount permit, writer permit, signed response, or Host authority.
 //!
 //! ```text
 //! AOSPOV01 | execution[16] | Create[16] | AOSEOR03-digest[32]
-//!          | AOSCOA01-digest[32] | Controller-grant-digest[32]
+//!          | AOSCOA03-digest[32] | Controller-grant-digest[32]
 //!          | Host-receipt-digest[32] | catalog-dataset-binding[32]
 //!          | catalog-GUID:u64be | pinned-ZFS-observation-digest[32]
 //!          | dataset-available:u64be | observed-headroom:u64be

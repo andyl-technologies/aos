@@ -673,6 +673,26 @@ impl WorkspaceCatalogObservationRequestV1 {
     pub(crate) fn digest(&self) -> Result<ObjectDigest, ZfsWorkerError> {
         digest_domain(REQUEST_DIGEST_DOMAIN, &encode_request(self)?)
     }
+
+    pub(crate) fn canonical_construction_bound_v1(&self) -> Option<usize> {
+        let mut bytes = REQUEST_FIXED_BYTES;
+        for root in &self.roots { bytes = bytes.checked_add(10)?.checked_add(root.name.len())?; }
+        for object in &self.allowed_objects { bytes = bytes.checked_add(13)?.checked_add(object.name.len())?; }
+        for target in &self.targets {
+            bytes = bytes.checked_add(61)?.checked_add(target.dataset_name.len())?;
+            if matches!(target.expectation, WorkspaceCatalogObservationExpectationV1::Present { .. }) {
+                bytes = bytes.checked_add(24)?;
+            }
+        }
+        let proof = if self.root_export.is_some() {
+            bytes = bytes.checked_add(GuestRootPublicationProofV1::canonical_bytes_v1())?;
+            GuestRootPublicationProofV1::canonical_bytes_v1().checked_mul(2)?
+                .checked_add(2 * std::mem::size_of::<GuestRootPublicationProofV1>())?
+                .checked_add(digest_construction_bytes_v1()?)?
+        } else { 0 };
+        if self.live_export.is_some() { bytes = bytes.checked_add(32)?; }
+        bytes.checked_mul(3)?.checked_add(proof)
+    }
 }
 
 /// Carries the fixed observer's complete two-pass evidence summary.
@@ -747,7 +767,24 @@ impl WorkspaceCatalogObservationResultV1 {
         &self,
         request: &WorkspaceCatalogObservationRequestV1,
     ) -> Result<bool, ZfsWorkerError> {
-        Ok(self.request_digest == request.digest()?
+        self.matches_request_digest_v1(request, request.digest()?)
+    }
+
+    pub(crate) fn matches_request_retaining_v1(
+        &self,
+        request: &WorkspaceCatalogObservationRequestV1,
+        canonical: &mut Vec<u8>,
+    ) -> Result<bool, ZfsWorkerError> {
+        encode_request_into_v1(request, canonical)?;
+        self.matches_request_digest_v1(request, digest_domain(REQUEST_DIGEST_DOMAIN, canonical)?)
+    }
+
+    fn matches_request_digest_v1(
+        &self,
+        request: &WorkspaceCatalogObservationRequestV1,
+        digest: ObjectDigest,
+    ) -> Result<bool, ZfsWorkerError> {
+        Ok(self.request_digest == digest
             && self.nonce == request.nonce
             && self.deadline_boottime_nanoseconds == request.deadline_boottime_nanoseconds
             && self.custody == request.custody
@@ -768,7 +805,16 @@ impl WorkspaceCatalogObservationResultV1 {
 pub(crate) fn encode_request(
     request: &WorkspaceCatalogObservationRequestV1,
 ) -> Result<Vec<u8>, ZfsWorkerError> {
-    let mut bytes = Vec::with_capacity(REQUEST_FIXED_BYTES);
+    let mut bytes = Vec::new();
+    encode_request_into_v1(request, &mut bytes)?;
+    Ok(bytes)
+}
+
+pub(crate) fn encode_request_into_v1(
+    request: &WorkspaceCatalogObservationRequestV1,
+    bytes: &mut Vec<u8>,
+) -> Result<(), ZfsWorkerError> {
+    *bytes = Vec::with_capacity(REQUEST_FIXED_BYTES);
     bytes.extend_from_slice(REQUEST_MAGIC);
     let version = if request.live_export.is_some() {
         LIVE_EXPORT_WIRE_VERSION
@@ -781,7 +827,7 @@ pub(crate) fn encode_request(
     bytes.extend_from_slice(&0_u16.to_be_bytes());
     bytes.extend_from_slice(&request.nonce);
     bytes.extend_from_slice(&request.deadline_boottime_nanoseconds.to_be_bytes());
-    encode_bindings(&mut bytes, request.bindings);
+    encode_bindings(bytes, request.bindings);
     bytes.extend_from_slice(&encode_custody(request.custody));
     bytes.extend_from_slice(request.physical_plan_digest.as_bytes());
     bytes.extend_from_slice(&count_u32(request.roots.len())?.to_be_bytes());
@@ -789,7 +835,7 @@ pub(crate) fn encode_request(
     bytes.extend_from_slice(&count_u32(request.targets.len())?.to_be_bytes());
 
     encode_physical_plan_rows(
-        &mut bytes,
+        bytes,
         &request.roots,
         &request.allowed_objects,
         &request.targets,
@@ -807,7 +853,7 @@ pub(crate) fn encode_request(
     if bytes.len() > MAXIMUM_CATALOG_OBSERVATION_REQUEST_BYTES {
         return Err(protocol("catalog observation request exceeds its ceiling"));
     }
-    Ok(bytes)
+    Ok(())
 }
 
 pub(crate) fn decode_request(
@@ -978,6 +1024,23 @@ pub(crate) fn decode_result(
         return Err(protocol("catalog observation result is not canonical"));
     }
     Ok(result)
+}
+
+pub(crate) fn digest_construction_bytes_v1() -> Option<usize> {
+    std::mem::size_of::<Sha256>().checked_mul(2)?.checked_add(2 * 32)
+}
+
+/// Reports complete framed wire bytes, including every actual fixed header.
+/// This comparison DATA grants no worker operation or receiving permission.
+pub(crate) fn framed_receiving_bytes_v1(bytes: usize) -> Option<usize> {
+    if bytes == 0 { return Some(0); }
+    let frames = framed_receiving_record_count_v1(bytes)?;
+    bytes.checked_add(frames.checked_mul(FRAME_HEADER_BYTES)?)
+}
+
+pub(crate) fn framed_receiving_record_count_v1(bytes: usize) -> Option<usize> {
+    if bytes == 0 { return Some(0); }
+    Some(bytes.checked_add(MAXIMUM_FRAME_CONTENT_BYTES - 1)? / MAXIMUM_FRAME_CONTENT_BYTES)
 }
 
 /// Streams a catalog request through the separate 10 MiB transfer profile.
@@ -1880,4 +1943,28 @@ mod tests {
         *result_bytes.last_mut().unwrap() = 0;
         assert!(decode_result(&result_bytes).is_err());
     }
+    #[test]
+    fn actual_frame_stream_and_retained_canonical_preimage_match_the_supplied_geometry() {
+        let request = request(WorkspaceCatalogObservationExpectationV1::Absent);
+        let encoded = encode_request(&request).unwrap();
+        let digest = ObjectDigest::from_bytes([26; 32]);
+        let result = WorkspaceCatalogObservationResultV1::matched(&request, digest, digest, digest, digest).unwrap();
+        let mut canonical = Vec::new();
+        assert!(result.matches_request_retaining_v1(&request, &mut canonical).unwrap());
+        assert_eq!(canonical, encoded);
+        assert!(canonical.len() <= request.canonical_construction_bound_v1().unwrap());
+
+        let bytes = vec![17; MAXIMUM_CATALOG_OBSERVATION_REQUEST_BYTES];
+        let mut encoder = WorkspaceCatalogObservationFrameEncoder::new(&bytes).unwrap();
+        let mut actual_bytes = 0usize;
+        let mut actual_frames = 0usize;
+        while let Some(frame) = encoder.next_frame() {
+            actual_frames += 1;
+            actual_bytes += frame.len();
+        }
+        assert_eq!(Some(actual_bytes), framed_receiving_bytes_v1(bytes.len()));
+        assert_eq!(Some(actual_frames), framed_receiving_record_count_v1(bytes.len()));
+        assert_eq!(actual_frames, maximum_frame_count());
+    }
+
 }

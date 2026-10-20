@@ -41,7 +41,7 @@ pub struct SelectedProviderSourceProviderOwnerV1 {
     session: Option<SourceProviderIngressSessionV1>,
     packet: Option<Vec<u8>>,
     first_failure: Option<SourceProviderSecurityError>,
-    journal_failure: Option<aos_sandbox::JournalError>,
+    journal_failure: Option<aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1>,
     attempted: bool,
     handed_off: bool,
     ended: bool,
@@ -321,7 +321,7 @@ impl SelectedProviderSourceProviderOwnerV1 {
     #[doc(hidden)]
     pub fn take_current_for_fixed_ledger(
         &mut self,
-        journal: aos_sandbox::FixedSourceProviderJournalHandoffV1<'_, '_>,
+        journal: aos_sandbox_source::provider_journal::FixedSourceProviderJournalHandoffV1<'_, '_>,
     ) -> Result<CurrentProviderIngressSessionV1, SelectedSourceProviderFailureRefV1<'_>> {
         let current = {
             let mut boundary = SelectedProviderBoundaryV1 { owner: self, completed: false };
@@ -352,7 +352,7 @@ impl SelectedProviderSourceProviderOwnerV1 {
 
     fn validate_fixed_ledger_handoff(
         &mut self,
-        journal: aos_sandbox::FixedSourceProviderJournalHandoffV1<'_, '_>,
+        journal: aos_sandbox_source::provider_journal::FixedSourceProviderJournalHandoffV1<'_, '_>,
     ) -> bool {
         if self.handed_off || self.ended || self.failure().is_some() {
             if self.failure().is_none() {

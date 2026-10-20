@@ -1,7 +1,7 @@
 //! UNRUN custody-parking vectors; genuine complete Source writer fixtures remain missing.
 
 use super::*;
-use aos_sandbox::JournalRecord;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
 
 fn input(id: u8) -> JournalTransaction {
     JournalTransaction::new([id; 16], vec![JournalRecord::put(

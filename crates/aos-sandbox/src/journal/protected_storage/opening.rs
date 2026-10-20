@@ -6,73 +6,26 @@
 //! native first causes remain owned rather than flattened into projections.
 //! No constructor, retry, fallback, authority port, or callback is added.
 
-use std::fs::{File, OpenOptions};
-use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 
-use rustix::fs::{CWD, FileType, FlockOperation, Mode, ResolveFlags, flock, fsync, openat2};
-
-#[cfg(target_os = "linux")]
-use super::super::runtime_deployment_history;
-use super::super::{
-    JournalAuthorityInstance, RecoveryReport, sibling_with_suffix, sync_parent, validate_limits,
-};
+use super::super::RecoveryReport;
 use super::{
-    FileIdentity, Journal, JournalError, JournalLimits, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
-    ProtectedJournalLocation, ReadOnlyJournalNameWitness, ReadOnlyProtectedJournal,
-    open_protected_file, open_read_only_protected_file, protected_directory_flags,
-    protected_open_error, reject_operator_provisioning_history, reject_stale_protected_compaction,
-    remove_stale_protected_compaction, require_empty_operator_provisioning_state,
-    require_opened_directory_identity, resolve_protected_directory_from_root, rustix_io,
-    validate_basename, validate_protected_fd,
+    Journal, JournalError, JournalLimits, ReadOnlyProtectedJournal,
+    reject_operator_provisioning_history, require_empty_operator_provisioning_state,
 };
 
 mod retained;
 
 pub(crate) use retained::{
-    ControllerJournalOpenOriginalsV1, ProtectedWriterOpenOriginalsV1,
+    ProtectedWriterOpenOriginalsV1,
     ReadOnlyJournalOpenOriginalsV1,
 };
-use retained::{OpenedReplayDestinationV1, prepare_opened_replay};
-
-#[derive(Clone, Copy)]
-pub(in crate::journal) enum ProtectedOwnerPolicy {
-    Root,
-    Exact(u32),
-}
-
-#[derive(Clone, Copy)]
-pub(in crate::journal) enum ProtectedJournalOpenMode {
-    Ordinary { allow_create: bool },
-    StorageOperatorEmptyProvisionV4,
-}
-
-impl ProtectedJournalOpenMode {
-    pub(in crate::journal) fn allows_creation(self) -> bool {
-        match self {
-            Self::Ordinary { allow_create } => allow_create,
-            Self::StorageOperatorEmptyProvisionV4 => true,
-        }
-    }
-
-    pub(in crate::journal) fn allows_repair(self) -> bool {
-        matches!(self, Self::Ordinary { allow_create: true })
-    }
-}
+use super::super::ordinary_opening::OrdinaryPathV1;
 
 pub(in crate::journal) const STORAGE_OPERATOR_STATE_DIRECTORY: &str =
     "/var/lib/aos/sandbox-storage";
 pub(in crate::journal) const STORAGE_OPERATOR_JOURNAL_NAME: &str = "operator-recovery.journal";
 
-impl ProtectedOwnerPolicy {
-    pub(in crate::journal) fn expected_uid(self) -> u32 {
-        match self {
-            Self::Root => 0,
-            Self::Exact(uid) => uid,
-        }
-    }
-}
 
 impl Journal {
     /// Replays one protected name without writing or taking the writer lock.
@@ -115,120 +68,27 @@ impl Journal {
         expected_uid: u32,
         expected_directory_identity: Option<(u64, u64)>,
     ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
-        let directory = resolve_protected_directory_from_root::<crate::journal::JournalError>(
-            directory_path,
-            expected_uid,
-        )?;
-        if let Some(expected) = expected_directory_identity {
-            require_opened_directory_identity::<crate::journal::JournalError>(
-                &directory, expected,
-            )?;
-        }
-        let (readback, report) = Self::open_read_only_protected_directory(
-            directory_path,
-            directory,
-            name,
-            limits,
-            expected_uid,
+        let (readback, report) = Self::open_actual_ordinary_readonly_v1(
+            directory_path, name, limits, expected_uid, expected_directory_identity,
+            #[cfg(test)]
+            false,
         )?;
         readback.check_named_currentness()?;
         Ok((readback, report))
     }
 
     #[cfg(test)]
-    /// Opens a protected test fixture read-only without requiring a root UID.
+    /// Opens the actual provided test directory without a root-ancestry grant.
     pub(crate) fn open_read_only_protected_at_uid_for_test(
         directory_path: &Path,
         name: &str,
         limits: JournalLimits,
         expected_uid: u32,
     ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
-        let directory: File = openat2(
-            CWD,
-            directory_path,
-            protected_directory_flags(),
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-        )
-        .map_err(protected_open_error::<crate::journal::JournalError>)?
-        .into();
-        validate_protected_fd::<crate::journal::JournalError>(
-            &directory,
-            expected_uid,
-            FileType::Directory,
-            Mode::RWXU,
-        )?;
-        let (readback, report) = Self::open_read_only_protected_directory(
-            directory_path,
-            directory,
-            name,
-            limits,
-            expected_uid,
+        let (readback, report) = Self::open_actual_ordinary_readonly_v1(
+            directory_path, name, limits, expected_uid, None, true,
         )?;
         readback.check_named_currentness_at_uid_for_test()?;
-        Ok((readback, report))
-    }
-
-    // Production and test openings share the same no-follow journal, lock,
-    // replay, and physical-name witness construction.
-    pub(in crate::journal) fn open_read_only_protected_directory(
-        directory_path: &Path,
-        directory: File,
-        name: &str,
-        limits: JournalLimits,
-        expected_uid: u32,
-    ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
-        validate_limits(limits)?;
-        if name.len() > MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        validate_basename::<crate::journal::JournalError>(name)?;
-        let directory_identity = FileIdentity::of::<crate::journal::JournalError>(&directory)?;
-        let lock = open_read_only_protected_file::<crate::journal::JournalError>(
-            &directory,
-            &format!("{name}.lock"),
-            expected_uid,
-        )?;
-        let lock_identity = FileIdentity::of::<crate::journal::JournalError>(&lock)?;
-        let file = open_read_only_protected_file::<crate::journal::JournalError>(
-            &directory,
-            name,
-            expected_uid,
-        )?;
-        let file_identity = FileIdentity::of::<crate::journal::JournalError>(&file)?;
-        let protected = ProtectedJournalLocation::from_original_parts((
-            directory,
-            name.to_owned(),
-            expected_uid,
-            #[cfg(target_os = "linux")]
-            runtime_deployment_history::OriginalCompactionSelectionV1::capture(
-                directory_path,
-                name,
-            ),
-            #[cfg(not(target_os = "linux"))]
-            (),
-        ));
-        let (journal, report) = Self::recover_opened(
-            PathBuf::from(name),
-            file,
-            lock,
-            limits,
-            Some(protected),
-            false,
-        )?;
-        let readback = ReadOnlyProtectedJournal {
-            journal,
-            witness: ReadOnlyJournalNameWitness {
-                physical: aos_sandbox_journal::protected_storage::ReadOnlyJournalNameWitness::from_original_parts((
-                    directory_path.to_owned(),
-                    name.to_owned(),
-                    expected_uid,
-                    directory_identity,
-                    file_identity,
-                    lock_identity,
-                )),
-            },
-        };
         Ok((readback, report))
     }
 
@@ -247,34 +107,7 @@ impl Journal {
         path: impl AsRef<Path>,
         limits: JournalLimits,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        validate_limits(limits)?;
-        let path = path.as_ref().to_path_buf();
-        let lock_path = sibling_with_suffix(&path, ".lock");
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(lock_path)?;
-        flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|error| {
-            if error == rustix::io::Errno::WOULDBLOCK {
-                JournalError::AlreadyLocked
-            } else {
-                JournalError::Io(io::Error::from_raw_os_error(error.raw_os_error()))
-            }
-        })?;
-
-        let existed = path.exists();
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
-        if !existed {
-            sync_parent(&path)?;
-        }
-        Self::recover_opened(path, file, lock, limits, None, true)
+        Self::open_actual_ordinary_v1(OrdinaryPathV1::Unprotected(path.as_ref()), limits)
     }
 
     /// Opens a root-owned journal beneath one protected directory.
@@ -306,18 +139,14 @@ impl Journal {
         name: &str,
         limits: JournalLimits,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        let directory_path = directory.as_ref();
-        let directory = resolve_protected_directory_from_root::<crate::journal::JournalError>(
-            directory_path,
-            0,
-        )?;
-        Self::open_protected_directory(
-            directory_path,
-            directory,
-            name,
+        Self::open_actual_ordinary_v1(
+            OrdinaryPathV1::Protected {
+                directory: directory.as_ref(),
+                name,
+                uid: 0,
+                allow_create: true,
+            },
             limits,
-            ProtectedOwnerPolicy::Root,
-            true,
         )
     }
 
@@ -336,18 +165,14 @@ impl Journal {
         name: &str,
         limits: JournalLimits,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        let directory_path = directory.as_ref();
-        let directory = resolve_protected_directory_from_root::<crate::journal::JournalError>(
-            directory_path,
-            0,
-        )?;
-        Self::open_protected_directory(
-            directory_path,
-            directory,
-            name,
+        Self::open_actual_ordinary_v1(
+            OrdinaryPathV1::Protected {
+                directory: directory.as_ref(),
+                name,
+                uid: 0,
+                allow_create: false,
+            },
             limits,
-            ProtectedOwnerPolicy::Root,
-            false,
         )
     }
 
@@ -366,16 +191,9 @@ impl Journal {
     pub fn provision_empty_storage_operator_recovery_v4(
         limits: JournalLimits,
     ) -> Result<Self, JournalError> {
-        let path = Path::new(STORAGE_OPERATOR_STATE_DIRECTORY);
-        let directory =
-            resolve_protected_directory_from_root::<crate::journal::JournalError>(path, 0)?;
-        let (journal, _) = Self::open_protected_directory_with_mode(
-            path,
-            directory,
-            STORAGE_OPERATOR_JOURNAL_NAME,
+        let (journal, _) = Self::open_actual_ordinary_v1(
+            super::super::ordinary_opening::OrdinaryPathV1::StorageOperatorEmpty,
             limits,
-            ProtectedOwnerPolicy::Root,
-            ProtectedJournalOpenMode::StorageOperatorEmptyProvisionV4,
         )?;
         journal.validate_empty_storage_operator_recovery_v4()?;
         Ok(journal)
@@ -395,9 +213,9 @@ impl Journal {
             STORAGE_OPERATOR_JOURNAL_NAME,
         )?;
         let journal_identity =
-            FileIdentity::of::<crate::journal::JournalError>(self.native.file())?;
+            self.native.file_identity::<crate::journal::JournalError>()?;
         let lock_identity =
-            FileIdentity::of::<crate::journal::JournalError>(self.native.lock_file())?;
+            self.native.lock_identity::<crate::journal::JournalError>()?;
         reject_operator_provisioning_history::<crate::journal::JournalError>(
             journal_identity.byte_len(),
         )?;
@@ -408,7 +226,7 @@ impl Journal {
             || !self.native.committed_namespaces().is_empty()
             || !self.native.state().is_empty()
             || self.native.materialized_bytes() != 0
-            || !self.idempotency.is_empty();
+            || !self.native.idempotency().is_empty();
         require_empty_operator_provisioning_state(
             self.native.next_sequence(),
             self.native.committed_transactions(),
@@ -418,8 +236,8 @@ impl Journal {
             STORAGE_OPERATOR_STATE_DIRECTORY,
             STORAGE_OPERATOR_JOURNAL_NAME,
         )?;
-        if FileIdentity::of::<crate::journal::JournalError>(self.native.file())? != journal_identity
-            || FileIdentity::of::<crate::journal::JournalError>(self.native.lock_file())?
+        if self.native.file_identity::<crate::journal::JournalError>()? != journal_identity
+            || self.native.lock_identity::<crate::journal::JournalError>()?
                 != lock_identity
         {
             return Err(JournalError::StaleAuthoritySnapshot);
@@ -455,18 +273,14 @@ impl Journal {
         limits: JournalLimits,
         expected_uid: u32,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        let directory_path = directory.as_ref();
-        let directory = resolve_protected_directory_from_root::<crate::journal::JournalError>(
-            directory_path,
-            expected_uid,
-        )?;
-        Self::open_protected_directory(
-            directory_path,
-            directory,
-            name,
+        Self::open_actual_ordinary_v1(
+            OrdinaryPathV1::Protected {
+                directory: directory.as_ref(),
+                name,
+                uid: expected_uid,
+                allow_create: true,
+            },
             limits,
-            ProtectedOwnerPolicy::Exact(expected_uid),
-            true,
         )
     }
 
@@ -486,18 +300,14 @@ impl Journal {
         limits: JournalLimits,
         expected_uid: u32,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        let directory_path = directory.as_ref();
-        let directory = resolve_protected_directory_from_root::<crate::journal::JournalError>(
-            directory_path,
-            expected_uid,
-        )?;
-        Self::open_protected_directory(
-            directory_path,
-            directory,
-            name,
+        Self::open_actual_ordinary_v1(
+            OrdinaryPathV1::Protected {
+                directory: directory.as_ref(),
+                name,
+                uid: expected_uid,
+                allow_create: false,
+            },
             limits,
-            ProtectedOwnerPolicy::Exact(expected_uid),
-            false,
         )
     }
 
@@ -520,22 +330,14 @@ impl Journal {
         limits: JournalLimits,
         expected_uid: u32,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        let directory: File = openat2(
-            CWD,
-            directory_path,
-            protected_directory_flags(),
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-        )
-        .map_err(protected_open_error::<crate::journal::JournalError>)?
-        .into();
-        Self::open_protected_directory(
-            directory_path,
-            directory,
-            name,
+        Self::open_actual_ordinary_v1(
+            OrdinaryPathV1::Fixture {
+                directory: directory_path,
+                name,
+                uid: expected_uid,
+                allow_create: true,
+            },
             limits,
-            ProtectedOwnerPolicy::Exact(expected_uid),
-            true,
         )
     }
 
@@ -552,163 +354,15 @@ impl Journal {
         limits: JournalLimits,
         expected_uid: u32,
     ) -> Result<(Self, RecoveryReport), JournalError> {
-        let directory: File = openat2(
-            CWD,
-            directory_path,
-            protected_directory_flags(),
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-        )
-        .map_err(protected_open_error::<crate::journal::JournalError>)?
-        .into();
-        Self::open_protected_directory(
-            directory_path,
-            directory,
-            name,
-            limits,
-            ProtectedOwnerPolicy::Exact(expected_uid),
-            false,
-        )
-    }
-
-    pub(in crate::journal) fn open_protected_directory(
-        directory_path: &Path,
-        directory: File,
-        name: &str,
-        limits: JournalLimits,
-        owner: ProtectedOwnerPolicy,
-        allow_create: bool,
-    ) -> Result<(Self, RecoveryReport), JournalError> {
-        Self::open_protected_directory_with_mode(
-            directory_path,
-            directory,
-            name,
-            limits,
-            owner,
-            ProtectedJournalOpenMode::Ordinary { allow_create },
-        )
-    }
-
-    pub(in crate::journal) fn open_protected_directory_with_mode(
-        directory_path: &Path,
-        directory: File,
-        name: &str,
-        limits: JournalLimits,
-        owner: ProtectedOwnerPolicy,
-        mode: ProtectedJournalOpenMode,
-    ) -> Result<(Self, RecoveryReport), JournalError> {
-        let allow_create = mode.allows_creation();
-        let expected_uid = owner.expected_uid();
-        validate_limits(limits)?;
-        if name.len() > MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        validate_basename::<crate::journal::JournalError>(name)?;
-        validate_protected_fd::<crate::journal::JournalError>(
-            &directory,
-            expected_uid,
-            FileType::Directory,
-            Mode::RWXU,
-        )?;
-        let lock_name = format!("{name}.lock");
-        let lock = open_protected_file::<crate::journal::JournalError>(
-            &directory,
-            &lock_name,
-            expected_uid,
-            allow_create,
-            false,
-            false,
-        )?;
-        flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|error| {
-            if error == rustix::io::Errno::WOULDBLOCK {
-                JournalError::AlreadyLocked
-            } else {
-                rustix_io::<crate::journal::JournalError>(error)
-            }
-        })?;
-        if matches!(
-            mode,
-            ProtectedJournalOpenMode::StorageOperatorEmptyProvisionV4
-        ) {
-            reject_operator_provisioning_history::<crate::journal::JournalError>(
-                lock.metadata()?.len(),
-            )?;
-        }
-        if mode.allows_repair() {
-            remove_stale_protected_compaction::<crate::journal::JournalError>(&directory, name)?;
-        } else {
-            reject_stale_protected_compaction::<crate::journal::JournalError>(&directory, name)?;
-        }
-        let file = open_protected_file::<crate::journal::JournalError>(
-            &directory,
-            name,
-            expected_uid,
-            allow_create,
-            false,
-            false,
-        )?;
-        if matches!(
-            mode,
-            ProtectedJournalOpenMode::StorageOperatorEmptyProvisionV4
-        ) {
-            reject_operator_provisioning_history::<crate::journal::JournalError>(
-                file.metadata()?.len(),
-            )?;
-        }
-        if allow_create {
-            fsync(&directory).map_err(rustix_io::<crate::journal::JournalError>)?;
-        }
-
-        let protected = ProtectedJournalLocation::from_original_parts((
-            directory,
-            name.to_owned(),
-            expected_uid,
-            #[cfg(target_os = "linux")]
-            runtime_deployment_history::OriginalCompactionSelectionV1::capture(
-                directory_path,
+        Self::open_actual_ordinary_v1(
+            OrdinaryPathV1::Fixture {
+                directory: directory_path,
                 name,
-            ),
-            #[cfg(not(target_os = "linux"))]
-            (),
-        ));
-        Self::recover_opened(
-            PathBuf::from(name),
-            file,
-            lock,
+                uid: expected_uid,
+                allow_create: false,
+            },
             limits,
-            Some(protected),
-            mode.allows_repair(),
         )
     }
 
-    // Both openers finish the same durable replay after their distinct lock,
-    // directory, and file-boundary checks have completed.
-    pub(in crate::journal) fn recover_opened(
-        path: PathBuf,
-        mut file: File,
-        lock: File,
-        limits: JournalLimits,
-        protected: Option<ProtectedJournalLocation>,
-        repair_tail: bool,
-    ) -> Result<(Self, RecoveryReport), JournalError> {
-        let (replay, report) = prepare_opened_replay(
-            &mut file,
-            limits,
-            repair_tail,
-            OpenedReplayDestinationV1::Ordinary,
-        )?;
-        let replay = replay.ok_or(JournalError::ProtectedBoundary)?;
-        Ok((
-            journal_from_original_replay!(
-                path,
-                file,
-                lock,
-                limits,
-                protected,
-                replay,
-                Arc::new(JournalAuthorityInstance)
-            ),
-            report,
-        ))
-    }
 }

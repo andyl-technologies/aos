@@ -18,14 +18,21 @@ use aos_sandbox_linux::credential::FixedRoleCredentialErrorV1;
 use crate::recovery::{FloorErrorV1, MeasuredHelperImageV1};
 
 mod provisioning;
+mod inputs;
+use inputs::HostTpmInputAdmissionOriginalV1;
 mod journal;
 mod store;
 mod coordinator;
-pub use coordinator::{RuntimeDeploymentCanaryRunErrorV2, run_runtime_deployment_canary_once_v2};
+mod native_original;
+pub(in crate::tpm_nv_custody) use native_original::PublisherNativeOriginalRefV3;
+pub use coordinator::{
+    RuntimeDeploymentCanaryRunErrorV2, run_runtime_deployment_canary_once_v2,
+    run_runtime_boot_preparation_once_v1,
+};
 pub(super) mod physical;
 
 pub(super) use journal::HostSidecarCustodyV1;
-pub(in crate::tpm_nv_custody) use journal::{CanaryHostMainDataV2, CanaryHostNativeStepV2};
+pub(in crate::tpm_nv_custody) use journal::{BootHostMainDataV1, CanaryHostMainDataV2, CanaryHostNativeStepV2};
 pub(in crate::tpm_nv_custody) use coordinator::{CanaryAuthenticatedRequestV3, CanaryClockCauseV2};
 
 // These are the existing fixed Core roles, not configurable opener inputs.
@@ -92,6 +99,7 @@ pub(super) struct AdmittedHostTpmInputsV1<'origin, 'startup> {
     provisioning: HostProvisioningPinV1<'origin, 'startup>,
     image: MeasuredHelperImageV1,
     usable: bool,
+    boot_currentness: Option<inputs::HostInputArchiveV1>,
 }
 
 impl<'origin, 'startup> AdmittedHostTpmInputsV1<'origin, 'startup> {
@@ -112,6 +120,7 @@ impl<'origin, 'startup> AdmittedHostTpmInputsV1<'origin, 'startup> {
             provisioning,
             image,
             usable: true,
+            boot_currentness: None,
         };
         admitted.recheck()?;
         Ok(admitted)
@@ -124,6 +133,11 @@ impl<'origin, 'startup> AdmittedHostTpmInputsV1<'origin, 'startup> {
     /// The latch is closed before fallible checks, including during unwinding.
     pub(super) fn recheck(&mut self) -> Result<(), HostTpmAdmissionErrorV1> {
         begin_recheck(&mut self.usable)?;
+        if let Some(archive) = self.boot_currentness.as_mut() {
+            archive.run_once(&self.provisioning, &self.image, inputs::HostInputOperationV1::Recheck)?;
+            self.usable = true;
+            return Ok(());
+        }
         self.recheck_inner()?;
         self.usable = true;
         Ok(())
@@ -140,6 +154,13 @@ impl<'origin, 'startup> AdmittedHostTpmInputsV1<'origin, 'startup> {
     pub(super) fn current_auth(
         &mut self,
     ) -> Result<Zeroizing<[u8; 32]>, HostTpmAdmissionErrorV1> {
+        if let Some(archive) = self.boot_currentness.as_mut() {
+            begin_recheck(&mut self.usable)?;
+            let auth = archive.run_once(&self.provisioning, &self.image, inputs::HostInputOperationV1::Auth)?
+                .ok_or(HostTpmAdmissionErrorV1::Unusable)?;
+            self.usable = true;
+            return Ok(auth);
+        }
         self.recheck()?;
         begin_recheck(&mut self.usable)?;
         let auth = self.provisioning.current_auth()?;
@@ -152,7 +173,71 @@ impl<'origin, 'startup> AdmittedHostTpmInputsV1<'origin, 'startup> {
         self.image.path()
     }
 
+    /// Parks the normal input post before the enclosing physical operation.
+    ///
+    /// # Errors
+    /// Refuses unhealthy input custody, duplicate pending debt or Source
+    /// exhaustion before any physical effect may enter. Canary is unchanged.
+    pub(super) fn prepare_boot_owed_recheck_v1(&mut self) -> Result<(), HostTpmAdmissionErrorV1> {
+        let Some(archive) = self.boot_currentness.as_mut() else {
+            return Ok(());
+        };
+        if !self.usable {
+            return Err(HostTpmAdmissionErrorV1::Unusable);
+        }
+        self.usable = false;
+        if let Err(cause) = archive.prepare_owed_once(&self.provisioning, &self.image) {
+            return Err(cause);
+        }
+        self.usable = true;
+        Ok(())
+    }
+
+    /// Consumes the exact prepared normal native post without a new debit.
+    ///
+    /// Earlier failure does not suppress its independent auth, mode and held
+    /// image observations. Success cannot restore a previously closed owner.
+    ///
+    /// # Errors
+    /// Retains missing debt, prior failure or any original/native post refusal.
+    pub(super) fn observe_boot_owed_recheck_once_v1(&mut self) -> Result<(), HostTpmAdmissionErrorV1> {
+        let Some(archive) = self.boot_currentness.as_mut() else {
+            return Ok(());
+        };
+        let was_usable = self.usable;
+        self.usable = false;
+        archive.observe_owed_once(&self.provisioning, &self.image)?;
+        if !was_usable {
+            return Err(HostTpmAdmissionErrorV1::Unusable);
+        }
+        self.usable = true;
+        Ok(())
+    }
+
+    /// Drains remaining prepaid normal post lanes after the caught body unwind.
+    ///
+    /// The terminal one-shot never restores input health. Already entered
+    /// native originals stay retained; only still-unused owed lanes may enter.
+    ///
+    /// # Errors
+    /// Refuses repeat drain or retains any outstanding original post failure.
+    pub(super) fn drain_boot_owed_recheck_after_unwind_once_v1(
+        &mut self,
+    ) -> Result<(), HostTpmAdmissionErrorV1> {
+        let Some(archive) = self.boot_currentness.as_mut() else {
+            return Ok(());
+        };
+        self.usable = false;
+        archive.drain_after_unwind_once(&self.provisioning, &self.image)
+    }
+
     pub(super) fn require_executed_helper(&mut self, pid: u32) -> Result<(), HostTpmAdmissionErrorV1> {
+        if let Some(archive) = self.boot_currentness.as_mut() {
+            begin_recheck(&mut self.usable)?;
+            archive.run_once(&self.provisioning, &self.image, inputs::HostInputOperationV1::Executed(pid))?;
+            self.usable = true;
+            return Ok(());
+        }
         self.recheck()?;
         begin_recheck(&mut self.usable)?;
         self.image.require_executed(pid)

@@ -15,9 +15,26 @@
 
 use std::path::Path;
 
-use aos_sandbox_core::ObjectDigest;
-use aos_sandbox_core::bounded_codec::BoundedReader;
+mod format;
+#[cfg(target_os = "linux")]
+mod root_provision;
+#[cfg(target_os = "linux")]
+pub(crate) use root_provision::{RootEnvironmentEvidenceOriginalV1, RootEnvironmentEvidenceErrorV1};
+use format::{
+    DecodedEnvironmentEvidenceV1, DIGEST_BYTES, FIXED_PREFIX_BYTES,
+    MAXIMUM_PREDECESSOR_BOOTS, decode_evidence,
+};
+#[cfg(test)]
+use format::{EVIDENCE_DOMAIN, EVIDENCE_MAGIC, EVIDENCE_VERSION};
+#[cfg(test)]
 use sha2::{Digest as _, Sha256};
+
+#[cfg(target_os = "linux")]
+mod receiving;
+#[cfg(target_os = "linux")]
+pub(crate) use receiving::EnvironmentExecutionEvidenceOriginalV1;
+
+use aos_sandbox_core::ObjectDigest;
 
 use crate::journal::{Journal, JournalError, JournalLimits, RecordNamespace, RecoveryReport};
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
@@ -32,12 +49,7 @@ use super::{
 const PROTECTED_ENVIRONMENT_EVIDENCE_ROOT: &str = "/var/lib/aos/sandbox/source-evidence";
 const PROTECTED_ENVIRONMENT_EVIDENCE_JOURNAL: &str = "environment-authority-v1.journal";
 const PROTECTED_ENVIRONMENT_EVIDENCE_KEY: &[u8] = b"environment-claim-v1";
-const EVIDENCE_MAGIC: &[u8; 8] = b"AOSENVA1";
-const EVIDENCE_VERSION: u16 = 1;
-const EVIDENCE_DOMAIN: &[u8] = b"aos.sandbox.environment.fixed-protected-evidence.v1\0";
-const MAXIMUM_PREDECESSOR_BOOTS: usize = 262_144;
-const FIXED_PREFIX_BYTES: usize = 8 + 2 + 6 + 32 + 8 + 8 + 8 + 4;
-const DIGEST_BYTES: usize = 32;
+
 
 /// Reports fixed-root environment evidence or downstream claim failure.
 #[derive(Debug, thiserror::Error)]
@@ -55,10 +67,14 @@ pub enum EnvironmentProtectedEvidenceErrorV1 {
 
 /// Owns the fixed protected environment boot-clock evidence journal.
 pub struct EnvironmentProtectedEvidenceOwnerV1 {
-    journal: Journal,
+    journal: Option<Journal>,
+    #[cfg(target_os = "linux")]
+    root: Option<Box<crate::normal_root::RootEnvironmentClientOriginalV1>>,
     pinned_record: Vec<u8>,
     clock: FixedLiveAuthorityClockV1,
     last_sample: LiveAuthorityClockSampleV1,
+    selected: bool,
+    selected_failure: Option<EnvironmentProtectedEvidenceErrorV1>,
 }
 
 /// Carries one singular fixed-root boot-clock observation into journal claim.
@@ -128,20 +144,17 @@ impl EnvironmentProtectedEvidenceOwnerV1 {
             PROTECTED_ENVIRONMENT_EVIDENCE_JOURNAL,
             environment_evidence_journal_limits(),
         )?;
-        let pinned_record = read_exact_evidence_record(&mut journal)?;
-        let evidence = decode_evidence(&pinned_record)?;
-        let after = clock
-            .sample()
-            .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?;
-        let last_sample = validate_bracketed_samples_v1(before, after)
-            .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?;
-        validate_currentness(&evidence, last_sample)?;
+        let (pinned_record, last_sample, _evidence) = complete_evidence_open_v1(&mut journal, &mut clock, before)?;
         Ok((
             Self {
-                journal,
+                journal: Some(journal),
+                #[cfg(target_os = "linux")]
+                root: None,
                 pinned_record,
                 clock,
                 last_sample,
+                selected: false,
+                selected_failure: None,
             },
             report,
         ))
@@ -182,6 +195,16 @@ impl EnvironmentProtectedEvidenceOwnerV1 {
         &mut self,
     ) -> Result<EnvironmentTrustedTimeV1, EnvironmentProtectedEvidenceErrorV1> {
         let evidence = self.read_pinned_evidence()?;
+        #[cfg(target_os = "linux")]
+        if self.root.is_some() {
+            // The selected remote owner just sampled the retained same-kernel
+            // clock around its actual pinned certificate. Use that real time;
+            // the legacy fixed owner keeps its original conservative horizon.
+            return EnvironmentTrustedTimeV1::from_verified_observation(
+                evidence.current_boot, EnvironmentLeaseTimeV1::new(self.last_sample.boottime_nanoseconds())
+                    .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?)
+                .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
+        }
         let validity_width = evidence
             .valid_until_unix_seconds
             .checked_sub(evidence.authenticated_at_unix_seconds)
@@ -201,6 +224,22 @@ impl EnvironmentProtectedEvidenceOwnerV1 {
     fn read_pinned_evidence(
         &mut self,
     ) -> Result<DecodedEnvironmentEvidenceV1, EnvironmentProtectedEvidenceErrorV1> {
+        if !self.selected { return self.read_pinned_evidence_engine_v1(); }
+        if self.selected_failure.is_some() {
+            return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
+        }
+        match self.read_pinned_evidence_engine_v1() {
+            Ok(evidence) => Ok(evidence),
+            Err(cause) => {
+                self.selected_failure = Some(cause);
+                Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)
+            }
+        }
+    }
+
+    fn read_pinned_evidence_engine_v1(
+        &mut self,
+    ) -> Result<DecodedEnvironmentEvidenceV1, EnvironmentProtectedEvidenceErrorV1> {
         let before = self
             .clock
             .sample()
@@ -210,7 +249,27 @@ impl EnvironmentProtectedEvidenceOwnerV1 {
         {
             return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
         }
-        let current_record = read_exact_evidence_record(&mut self.journal)?;
+        let current_record = match self.journal.as_mut() {
+            Some(journal) => read_exact_evidence_record(journal)?,
+            None => {
+                #[cfg(target_os = "linux")]
+                {
+                    let root = self.root.as_ref().ok_or(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?;
+                    // This is the actual completed Root/native/Source interval,
+                    // not a record-byte or receipt adopter. Its committed
+                    // certificate remains pinned only inside the original C18
+                    // interval and unchanged absolute cutoff.
+                    root.require_completed_current_data_v1(before.boot(), before.boottime_nanoseconds())
+                        .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?;
+                    if root.completed_evidence_v1().map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?
+                        != self.pinned_record.as_slice()
+                    { return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence); }
+                    self.pinned_record.clone()
+                }
+                #[cfg(not(target_os = "linux"))]
+                { return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence); }
+            }
+        };
         if current_record != self.pinned_record {
             return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
         }
@@ -227,14 +286,23 @@ impl EnvironmentProtectedEvidenceOwnerV1 {
     }
 }
 
-struct DecodedEnvironmentEvidenceV1 {
-    current_boot: ObjectDigest,
-    current_time: EnvironmentLeaseTimeV1,
-    authenticated_at_unix_seconds: u64,
-    valid_until_unix_seconds: u64,
-    predecessor_boots: Vec<ObjectDigest>,
-    attestation: ObjectDigest,
+// The ordinary and paid selected opening use the same read, consuming pure
+// decoder, clock bracket and currentness engine. Actual original input remains
+// in the held Journal; dominant bytes cover bounded pure decoder temporaries.
+fn complete_evidence_open_v1(
+    journal: &mut Journal,
+    clock: &mut FixedLiveAuthorityClockV1,
+    before: LiveAuthorityClockSampleV1,
+) -> Result<(Vec<u8>, LiveAuthorityClockSampleV1, DecodedEnvironmentEvidenceV1), EnvironmentProtectedEvidenceErrorV1> {
+    let pinned_record = read_exact_evidence_record(journal)?;
+    let evidence = decode_evidence(&pinned_record)?;
+    let after = clock.sample().map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?;
+    let last_sample = validate_bracketed_samples_v1(before, after)
+        .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?;
+    validate_currentness(&evidence, last_sample)?;
+    Ok((pinned_record, last_sample, evidence))
 }
+
 
 fn read_exact_evidence_record(
     journal: &mut Journal,
@@ -251,67 +319,6 @@ fn read_exact_evidence_record(
     }
 }
 
-fn decode_evidence(
-    encoded: &[u8],
-) -> Result<DecodedEnvironmentEvidenceV1, EnvironmentProtectedEvidenceErrorV1> {
-    if encoded.len() < FIXED_PREFIX_BYTES + DIGEST_BYTES {
-        return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
-    }
-    let (body, stored_digest) = encoded.split_at(encoded.len() - DIGEST_BYTES);
-    let expected_digest = ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(EVIDENCE_DOMAIN)
-            .chain_update(body)
-            .finalize()
-            .into(),
-    );
-    if stored_digest != expected_digest.as_bytes() {
-        return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
-    }
-
-    let mut cursor = BoundedReader::new(body, |_| {
-        EnvironmentProtectedEvidenceErrorV1::InvalidEvidence
-    });
-    if cursor.array::<8>()? != *EVIDENCE_MAGIC
-        || u16::from_be_bytes(cursor.array::<2>()?) != EVIDENCE_VERSION
-        || cursor.array::<6>()? != [0; 6]
-    {
-        return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
-    }
-    let current_boot = ObjectDigest::from_bytes(cursor.array::<32>()?);
-    let current_time = EnvironmentLeaseTimeV1::new(u64::from_be_bytes(cursor.array::<8>()?))
-        .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?;
-    let authenticated_at_unix_seconds = u64::from_be_bytes(cursor.array::<8>()?);
-    let valid_until_unix_seconds = u64::from_be_bytes(cursor.array::<8>()?);
-    let predecessor_count = usize::try_from(u32::from_be_bytes(cursor.array::<4>()?))
-        .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?;
-    if current_boot.as_bytes() == &[0; 32] || predecessor_count > MAXIMUM_PREDECESSOR_BOOTS {
-        return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
-    }
-    let mut predecessor_boots = Vec::new();
-    predecessor_boots
-        .try_reserve_exact(predecessor_count)
-        .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?;
-    for _ in 0..predecessor_count {
-        predecessor_boots.push(ObjectDigest::from_bytes(cursor.array::<32>()?));
-    }
-    if !cursor.is_empty()
-        || predecessor_boots
-            .iter()
-            .any(|boot| boot.as_bytes() == &[0; 32] || boot == &current_boot)
-        || !predecessor_boots.windows(2).all(|pair| pair[0] < pair[1])
-    {
-        return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
-    }
-    Ok(DecodedEnvironmentEvidenceV1 {
-        current_boot,
-        current_time,
-        authenticated_at_unix_seconds,
-        valid_until_unix_seconds,
-        predecessor_boots,
-        attestation: expected_digest,
-    })
-}
 
 fn validate_currentness(
     evidence: &DecodedEnvironmentEvidenceV1,
@@ -417,3 +424,23 @@ mod tests {
         ));
     }
 }
+
+/// Shares the sole evidence decoder as comparison DATA before any owner claim.
+pub(super) struct ProvisionedEvidenceComparisonDataV1 {
+    pub(super) current_boot: ObjectDigest,
+    pub(super) current_time: EnvironmentLeaseTimeV1,
+    pub(super) valid_until_unix_seconds: u64,
+}
+
+pub(super) fn decode_provisioned_evidence_data_v1(bytes: &[u8])
+    -> Result<ProvisionedEvidenceComparisonDataV1, EnvironmentProtectedEvidenceErrorV1>
+{
+    let decoded = decode_evidence(bytes)?;
+    Ok(ProvisionedEvidenceComparisonDataV1 { current_boot: decoded.current_boot,
+        current_time: decoded.current_time, valid_until_unix_seconds: decoded.valid_until_unix_seconds })
+}
+
+pub(super) const fn maximum_evidence_record_bytes_v1() -> usize {
+    FIXED_PREFIX_BYTES + MAXIMUM_PREDECESSOR_BOOTS * 32 + DIGEST_BYTES
+}
+

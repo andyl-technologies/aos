@@ -210,6 +210,17 @@ pub fn run_inherited_workspace_root_initializer(
     authority_directory: &Path,
     replay_directory: &Path,
 ) -> Result<(), ZfsWorkerError> {
+    crate::process::worker_aggregate::with_worker_aggregate_v1(|aggregate| {
+        run_inherited_workspace_root_initializer_inner(configured_zfs, authority_directory, replay_directory, aggregate.is_some())
+    })
+}
+
+fn run_inherited_workspace_root_initializer_inner(
+    configured_zfs: PathBuf,
+    authority_directory: &Path,
+    replay_directory: &Path,
+    selected_aggregate: bool,
+) -> Result<(), ZfsWorkerError> {
     let contract = ZfsHelperContract::new(configured_zfs)
         .map_err(|error| ZfsWorkerError::Executable(error.to_string()))?;
     let executable_pin = PinnedExecutable::open(&contract)?;
@@ -224,7 +235,11 @@ pub fn run_inherited_workspace_root_initializer(
     let deadline = transfer_deadline()?;
     send_packet_before(
         &mut socket,
-        &encode_ready(&current_cgroup()?, WorkspacePinServiceRole::Initializer)?,
+        &if selected_aggregate {
+            crate::pin_worker_runtime::encode_selected_ready_v1(&current_cgroup()?, WorkspacePinServiceRole::Initializer)?
+        } else {
+            encode_ready(&current_cgroup()?, WorkspacePinServiceRole::Initializer)?
+        },
         deadline,
     )?;
     let worker_ready = receive_packet_before(&mut socket, 4096, deadline)?;

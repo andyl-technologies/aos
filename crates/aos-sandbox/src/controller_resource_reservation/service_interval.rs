@@ -28,7 +28,7 @@ use crate::{Journal, JournalError};
 #[must_use]
 pub struct ControllerFirstGlobalPrefixAttemptV1 {
     bank: Arc<Mutex<ControllerResourceBankOpeningV1>>,
-    original: Option<Result<bootstrap::OriginalEnrollment, ResourceReservationErrorV1>>,
+    original: Option<Result<aos_sandbox_broker::receiving::OriginalEnrollment, ResourceReservationErrorV1>>,
     receiver: Option<Result<OriginalReceiver, ResourceReservationErrorV1>>,
     initial_clock: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>,
     shape: Option<Result<(), ResourceReservationErrorV1>>,
@@ -47,6 +47,10 @@ pub struct ControllerFirstGlobalPrefixAttemptV1 {
     attempted: bool,
     first_failure: Option<PrefixFailureSite>,
     observer_lifetime: Option<ObserverLifetime>,
+    observer_origin: Option<Result<
+        aos_sandbox_broker::controller_receiving::bank_launch::ControllerReservedObserverOriginalV1,
+        ResourceReservationErrorV1,
+    >>,
 }
 
 #[derive(Clone, Copy)]
@@ -93,26 +97,67 @@ pub(super) struct OriginalControllerCpuContainment<'original> {
 impl OriginalControllerCpuContainment<'_> {
     pub(super) fn require_intake(
         &self,
-        original: &bootstrap::OriginalEnrollment,
+        original: &aos_sandbox_broker::receiving::OriginalEnrollment,
     ) -> Result<(), ResourceReservationErrorV1> {
         let held = self.prefix.original.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let (quota, period) = self.prefix.cpu.quota_and_period()
+        self.prefix.cpu.quota_and_period()
             .ok_or(ResourceReservationErrorV1::Conflict)?;
-        let provision = (original
-            .policy
-            .bootstrap_provisions()
-            .nix_original_start_intake)
+        original.policy.bootstrap_provisions().nix_original_start_intake
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        let prefix = (original.policy.bootstrap_provisions().first_global_prefix)
+        original.policy.bootstrap_provisions().first_global_prefix
             .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-        if held != original || period != 100_000 || quota > provision.get(D::CpuMicrosPerPeriod)
-            || prefix.get(D::CpuMicrosPerPeriod) > provision.get(D::CpuMicrosPerPeriod)
-        {
+        if held != original {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        Ok(())
+        let transition = self.prefix.append.original.as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        // This is the retained original association, not current CPU evidence
+        // or a reopened P allowance. Fresh I capture remains independently paid.
+        require_controller_head_cpu(&self.prefix.cpu, transition.before, original)
     }
+}
+
+// The genuine bank borrower supplies the original image. A child CPU slice
+// prices logical obligations; it is not the installed whole-cgroup cpu.max.
+// Callers retain actual capture failures and rejoin their original bank/head
+// at the existing later frontier, without inserting another name observation.
+pub(super) fn require_original_controller_cpu(
+    cpu: &aos_sandbox_linux::cgroup::FirstGlobalCpuReadbackV1,
+    original: &aos_sandbox_broker::receiving::OriginalEnrollment,
+) -> Result<(), ResourceReservationErrorV1> {
+    if cpu.failure().is_some() {
+        return Err(ResourceReservationErrorV1::Conflict);
+    }
+    let inclusive = original.policy.controller_envelope();
+    let (quota, period) = cpu.quota_and_period()
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    if period != 100_000 || quota == 0 || quota > inclusive.get(D::CpuMicrosPerPeriod) {
+        return Err(ResourceReservationErrorV1::Conflict);
+    }
+    Ok(())
+}
+
+// Q/J already own the actual proposed Controller head; historical P retention
+// owns its original committed transition. Neither decoded head constructs the
+// genuine CPU/profile/enrollment conjunction supplied by those private callers.
+pub(super) fn require_controller_head_cpu(
+    cpu: &aos_sandbox_linux::cgroup::FirstGlobalCpuReadbackV1,
+    controller: bank::AccountHead,
+    original: &aos_sandbox_broker::receiving::OriginalEnrollment,
+) -> Result<(), ResourceReservationErrorV1> {
+    let fields = controller.native_fields();
+    if fields.kind != bank::AccountKind::Controller
+        || fields.enrollment != original.identity
+        || fields.id != original.identity.account_id(b"controller")
+        || fields.generation == 0 || fields.project != [0; 16]
+        || fields.tree_revision != [0; 32]
+        || controller.finite_ceilings()? != original.policy.controller_envelope()
+    {
+        return Err(ResourceReservationErrorV1::Conflict);
+    }
+    require_original_controller_cpu(cpu, original)
 }
 
 impl OriginalReceiver {
@@ -123,7 +168,7 @@ impl OriginalReceiver {
         source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
     ) -> Result<(), ResourceReservationErrorV1> {
         if self.source_object != std::ptr::from_ref(source) as usize
-            || self.source_sequence != source.journal().snapshot_sequence()
+            || self.source_sequence != source.snapshot_sequence_v1()
             || self.source_names != source.fixed_physical_names_v1()?
         {
             return Err(ResourceReservationErrorV1::Conflict);
@@ -156,21 +201,71 @@ impl OriginalReceiver {
             controller_names: controller.protected_writer_physical_names_v1()?,
             source_names: source.fixed_physical_names_v1()?,
             controller_sequence: controller.snapshot_sequence(),
-            source_sequence: source.journal().snapshot_sequence(),
+            source_sequence: source.snapshot_sequence_v1(),
         })
+    }
+
+    pub(super) fn require_create_storage_association(
+        &self,
+        controller: &Journal,
+        source: &crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
+        profile: &ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        if !self.matches_object_addresses(std::ptr::from_ref(controller) as usize,
+            std::ptr::from_ref(source) as usize, std::ptr::from_ref(profile) as usize) {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_create_storage_names(&self,
+        controller: crate::journal::ProtectedJournalNamesV1,
+        source: crate::journal::ProtectedJournalNamesV1) -> Result<(), ResourceReservationErrorV1>
+    {
+        if self.controller_names != controller || self.source_names != source {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok(())
+    }
+
+    // Sequences intentionally advance during Q04. Only its genuine retained
+    // parent may reuse this identity/name comparison after terminal completion.
+    pub(super) fn require_same_owners_after_q04(
+        &self,
+        controller: &Journal,
+        source: &crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
+        profile: &ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        if !self.matches_object_addresses(
+            std::ptr::from_ref(controller) as usize,
+            std::ptr::from_ref(source) as usize,
+            std::ptr::from_ref(profile) as usize,
+        ) || self.controller_names != controller.protected_writer_physical_names_v1()?
+            || self.source_names != source.fixed_physical_names_v1()?
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok(())
+    }
+
+    fn matches_object_addresses(&self, controller: usize, source: usize, profile: usize) -> bool {
+        self.controller_object == controller
+            && self.source_object == source
+            && self.profile_object == profile
     }
 
     pub(super) fn require_same(
         &self,
         controller: &Journal,
-        source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
+        source: &crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         profile: &ProductionControllerNormalRootProfileV1,
     ) -> Result<(), ResourceReservationErrorV1> {
-        if self.controller_object != std::ptr::from_ref(controller) as usize
-            || self.source_object != std::ptr::from_ref(source) as usize
-            || self.profile_object != std::ptr::from_ref(profile) as usize
-            || self.controller_sequence != controller.snapshot_sequence()
-            || self.source_sequence != source.journal().snapshot_sequence()
+        if !self.matches_object_addresses(
+            std::ptr::from_ref(controller) as usize,
+            std::ptr::from_ref(source) as usize,
+            std::ptr::from_ref(profile) as usize,
+        ) || self.controller_sequence != controller.snapshot_sequence()
+            || self.source_sequence != source.snapshot_sequence_v1()
             || self.controller_names != controller.protected_writer_physical_names_v1()?
             || self.source_names != source.fixed_physical_names_v1()?
         {
@@ -184,7 +279,7 @@ impl OriginalReceiver {
 // genuine enrolled original, can construct this short attachment borrower.
 pub(crate) struct ObserverAdmission<'original> {
     profile: &'original ProductionControllerNormalRootProfileV1,
-    original: &'original bootstrap::OriginalEnrollment,
+    original: &'original aos_sandbox_broker::receiving::OriginalEnrollment,
     capacity: usize,
     lifetime: &'original ObserverLifetime,
     purpose: ObserverPurpose,
@@ -195,30 +290,11 @@ pub(super) enum ObserverPurpose {
     FirstGlobal,
     NixIntake,
     Q04Intake,
+    CreateIntake,
 }
 
-// Only the genuine entered prefix creates this private, shared closure state.
-// It cannot fund an observer or reopen a spent interval by itself.
-#[derive(Clone)]
-pub(crate) struct ObserverLifetime(Arc<std::sync::atomic::AtomicBool>);
-
-impl ObserverLifetime {
-    pub(super) fn begin() -> Self {
-        Self(Arc::new(std::sync::atomic::AtomicBool::new(false)))
-    }
-
-    pub(crate) fn is_open(&self) -> bool {
-        !self.0.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    pub(crate) fn close(&self) {
-        self.0.store(true, std::sync::atomic::Ordering::Release);
-    }
-
-    pub(crate) fn same_original(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
+// Closure DATA remains distinct from every role's paid observer admission.
+pub(crate) use aos_sandbox_broker::receiving::ObservationLifetimeV1 as ObserverLifetime;
 
 impl ObserverAdmission<'_> {
     pub(crate) fn belongs_to_q04_intake(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
@@ -234,11 +310,31 @@ impl ObserverAdmission<'_> {
 
     pub(super) fn for_q04_intake<'original>(
         profile: &'original ProductionControllerNormalRootProfileV1,
-        original: &'original bootstrap::OriginalEnrollment,
+        original: &'original aos_sandbox_broker::receiving::OriginalEnrollment,
         capacity: usize,
         lifetime: &'original ObserverLifetime,
     ) -> ObserverAdmission<'original> {
         ObserverAdmission { profile, original, capacity, lifetime, purpose: ObserverPurpose::Q04Intake }
+    }
+
+    pub(crate) fn belongs_to_create_intake(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
+        self.purpose == ObserverPurpose::CreateIntake
+            && std::ptr::eq(self.profile, profile)
+            && (self
+                .original
+                .policy
+                .bootstrap_provisions()
+                .create_continuation_intake)
+                .is_some()
+    }
+
+    pub(super) fn for_create_intake<'original>(
+        profile: &'original ProductionControllerNormalRootProfileV1,
+        original: &'original aos_sandbox_broker::receiving::OriginalEnrollment,
+        capacity: usize,
+        lifetime: &'original ObserverLifetime,
+    ) -> ObserverAdmission<'original> {
+        ObserverAdmission { profile, original, capacity, lifetime, purpose: ObserverPurpose::CreateIntake }
     }
 
     pub(crate) fn belongs_to(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
@@ -265,7 +361,7 @@ impl ObserverAdmission<'_> {
 
     pub(super) fn for_nix_intake<'original>(
         profile: &'original ProductionControllerNormalRootProfileV1,
-        original: &'original bootstrap::OriginalEnrollment,
+        original: &'original aos_sandbox_broker::receiving::OriginalEnrollment,
         capacity: usize,
         lifetime: &'original ObserverLifetime,
     ) -> ObserverAdmission<'original> {
@@ -354,6 +450,7 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
             attempted: false,
             first_failure: None,
             observer_lifetime: None,
+            observer_origin: None,
         }
     }
 
@@ -504,9 +601,18 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
         let observations = multiply(observer, self.observer_capacity)?;
         let wait_remaining = remaining.checked_sub(observations)?;
         self.wait_capacity = capacity_for(wait_remaining, wait_demand()?)?;
-        self.observer_lifetime = Some(ObserverLifetime(Arc::new(
-            std::sync::atomic::AtomicBool::new(false),
-        )));
+        self.observer_origin = Some(
+            self.bank.lock()
+                .map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)
+                .and_then(|bank| bank.begin_first_global_observers_v1(journal, profile, fixed)),
+        );
+        let observer_origin = self.observer_origin.as_ref()
+            .and_then(|returned| returned.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        if observer_origin.capacity_data_v1() != self.observer_capacity {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        self.observer_lifetime = Some(observer_origin.lifetime_v1());
         let admission = ObserverAdmission {
             profile,
             original,
@@ -515,13 +621,16 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
                 .ok_or(ResourceReservationErrorV1::Conflict)?,
             purpose: ObserverPurpose::FirstGlobal,
         };
-        profile.attach_first_global_observers(&admission)?;
+        let origin = match self.observer_origin.take() {
+            Some(Ok(origin)) => origin,
+            retained => {
+                self.observer_origin = retained;
+                return Err(ResourceReservationErrorV1::Conflict);
+            }
+        };
+        profile.attach_first_global_observers(&admission, origin)?;
         profile.observe_first_global_cpu(&mut self.cpu)?;
-        let (quota, period) = self.cpu.quota_and_period()
-            .ok_or(ResourceReservationErrorV1::Conflict)?;
-        if period != 100_000 || quota > provision.get(D::CpuMicrosPerPeriod) {
-            return Err(ResourceReservationErrorV1::Conflict);
-        }
+        require_original_controller_cpu(&self.cpu, original)?;
         profile.require_resource_producer()?;
         {
             let bank = self.bank.lock()
@@ -603,7 +712,9 @@ impl ControllerFirstGlobalPrefixAttemptV1 {
             PrefixFailureSite::Receiver => self.receiver.as_ref()?.as_ref().err().map(|error| error as _),
             PrefixFailureSite::Cpu => self.cpu.failure().map(|error| error as _),
             PrefixFailureSite::Append => self.append.failure(),
-            PrefixFailureSite::Preparation => self.preparation.as_ref()?.as_ref().err().map(|error| error as _),
+            PrefixFailureSite::Preparation => self.observer_origin.as_ref()
+                .and_then(|returned| returned.as_ref().err()).map(|cause| cause as _)
+                .or_else(|| self.preparation.as_ref()?.as_ref().err().map(|error| error as _)),
             PrefixFailureSite::ControllerPost => self.controller_post.as_ref()?.as_ref().err().map(|error| error as _),
             PrefixFailureSite::SourcePost => self.source_post.as_ref()?.as_ref().err().map(|error| error as _),
             PrefixFailureSite::ProfilePost => self.profile_post.as_ref()?.as_ref().err().map(|error| error as _),
@@ -618,15 +729,7 @@ pub(super) fn capacity_for(
     remaining: ResourceVector,
     per_slot: ResourceVector,
 ) -> Result<usize, ResourceReservationErrorV1> {
-    let mut capacity = None;
-    for dimension in D::ALL {
-        let demand = per_slot.get(dimension);
-        if demand != 0 {
-            let count = remaining.get(dimension) / demand;
-            capacity = Some(capacity.map_or(count, |previous: u64| previous.min(count)));
-        }
-    }
-    usize::try_from(capacity.ok_or(ResourceReservationErrorV1::Conflict)?)
+    aos_sandbox_broker::receiving::FixedPropertyArchiveV1::receiving_capacity_data_v1(remaining, per_slot)
         .map_err(|_| ResourceReservationErrorV1::Conflict)
 }
 
@@ -634,14 +737,8 @@ pub(super) fn multiply(
     vector: ResourceVector,
     count: usize,
 ) -> Result<ResourceVector, ResourceReservationErrorV1> {
-    let count = u64::try_from(count).map_err(|_| ResourceReservationErrorV1::Conflict)?;
-    let mut result = ResourceVector::ZERO;
-    for dimension in D::ALL {
-        let amount = vector.get(dimension).checked_mul(count)
-            .ok_or(ResourceReservationErrorV1::Conflict)?;
-        result = result.with(dimension, amount);
-    }
-    Ok(result)
+    aos_sandbox_broker::receiving::FixedPropertyArchiveV1::multiply_receiving_demand_data_v1(vector, count)
+        .map_err(|_| ResourceReservationErrorV1::Conflict)
 }
 
 fn fixed_demand(
@@ -679,7 +776,10 @@ fn fixed_demand(
     let local_bytes = local_bytes.checked_add(u64::try_from(cell_bytes)
         .map_err(|_| ResourceReservationErrorV1::Conflict)?)
         .ok_or(ResourceReservationErrorV1::Conflict)?;
-    let cells = u64::try_from(cells).map_err(|_| ResourceReservationErrorV1::Conflict)?;
+    let namespace_entries = controller.cells.checked_add(source.cells)
+        .and_then(|entries| entries.checked_mul(2))
+        .and_then(|entries| u64::try_from(entries).ok())
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
     let native = controller.native_bytes.checked_add(source.native_bytes)
         .and_then(|bytes| bytes.checked_add(append))
         .ok_or(ResourceReservationErrorV1::Conflict)?;
@@ -687,14 +787,16 @@ fn fixed_demand(
         // This is the finite aggregate rate, not a per-instruction estimate.
         // The actual same-cgroup cpu.max quota/period is checked before use.
         .with(D::CpuMicrosPerPeriod, provision.get(D::CpuMicrosPerPeriod))
-        .with(D::MemoryBytes, local_bytes.checked_mul(2).ok_or(ResourceReservationErrorV1::Conflict)?)
+        .with(D::MemoryBytes, local_bytes.checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(original_observer_control_bytes()?))
+            .ok_or(ResourceReservationErrorV1::Conflict)?)
         .with(D::Pids, 1)
         // Three CPU OFDs; one Root stream and its pidfd; peer cgroup, fragment
         // and fresh-name originals. Sequential observer runtime/socket costs
         // are charged separately in each retained observer row.
         .with(D::OpenFiles, 3 + 2 + 3)
         .with(D::StorageBytes, native)
-        .with(D::MetadataEntries, cells)
+        .with(D::MetadataEntries, namespace_entries)
         .with(D::PublicationStagingBytes, local_bytes)
         .with(D::NetworkBytes, u64::try_from(global.wire_bytes).map_err(|_| ResourceReservationErrorV1::Conflict)?)
         // The selected route emits only fixed termination labels. Owning
@@ -711,10 +813,26 @@ fn wait_demand() -> Result<ResourceVector, ResourceReservationErrorV1> {
     // kernel causes. It cannot enter policy decoders or journal reducers here.
     // Include their owning payload rather than charging Result's inline size.
     let payload = 64 * 1024 + 4096;
+    let poll = std::mem::size_of::<Option<rustix::io::Result<usize>>>()
+        .checked_add(std::mem::size_of::<Option<rustix::event::PollFlags>>())
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
     let bytes = owner.checked_add(clock).and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|bytes| bytes.checked_add(poll.checked_mul(3)?))
         .and_then(|bytes| bytes.checked_add(payload * 4))
         .ok_or(ResourceReservationErrorV1::Conflict)?;
     let bytes = u64::try_from(bytes).map_err(|_| ResourceReservationErrorV1::Conflict)?;
     Ok(ResourceVector::ZERO.with(D::MemoryBytes, bytes)
-        .with(D::OutputBytes, bytes).with(D::MetadataEntries, 4))
+        .with(D::OutputBytes, bytes))
+}
+
+// The retained origin is part of the compiled prefix Self above. Only its
+// simultaneous native factory/return/upper projection planes are additional.
+pub(super) fn original_observer_control_bytes() -> Option<u64> {
+    use aos_sandbox_broker::controller_receiving::bank_launch::ControllerReservedObserverOriginalV1;
+
+    ControllerReservedObserverOriginalV1::receiving_construction_bytes_v1()?
+        .checked_add(std::mem::size_of::<
+            Result<ControllerReservedObserverOriginalV1, ResourceReservationErrorV1>,
+        >())
+        .and_then(|bytes| u64::try_from(bytes).ok())
 }

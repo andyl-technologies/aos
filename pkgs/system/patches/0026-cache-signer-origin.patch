@@ -1,0 +1,973 @@
+--- a/src/core/aos-component-parent.c
++++ b/src/core/aos-component-parent.c
+@@ -155,6 +155,27 @@
+         return aos_resource_parent_original()->manifest + 1158;
+ }
+ 
++static const uint8_t *cache_vector(void) {
++        return aos_resource_parent_original()->manifest + 1334;
++}
++
++static const uint8_t *cache_sender_vector(void) {
++        return aos_resource_parent_original()->manifest + 1510;
++}
++
++static const uint8_t *fixed_service_vector(AosFixedServiceProfileRole role) {
++        switch (role) {
++        case AOS_FIXED_PROFILE_SOURCE:
++                return source_vector();
++        case AOS_FIXED_PROFILE_OWNERSHIP:
++                return ownership_vector();
++        case AOS_FIXED_PROFILE_CACHE:
++                return cache_vector();
++        default:
++                return NULL;
++        }
++}
++
+ static const char *parent_file_path(unsigned member, unsigned file) {
+         const uint8_t *row = parent_row(member);
+ 
+@@ -176,20 +197,16 @@
+         return parent_file_path(member, file);
+ }
+ 
+-static bool ownership_unit(const Unit *unit) {
+-        return streq_ptr(unit->id, "aos-sandbox-ownershipd.service");
++static AosFixedServiceProfileRole fixed_service_role(const Unit *unit) {
++        return aos_fixed_service_role(unit->id);
+ }
+ 
+ static const char *fixed_service_cgroup(Service *service) {
+-        return ownership_unit(UNIT(service)) ?
+-                "/aoscomponents.slice/aos-sandbox-ownershipd.service" :
+-                "/aoscomponents.slice/aos-sandbox-source-signerd.service";
++        return aos_fixed_service_cgroup(fixed_service_role(UNIT(service)));
+ }
+ 
+ static const char *fixed_service_native_cgroup(Service *service) {
+-        return ownership_unit(UNIT(service)) ?
+-                "/sys/fs/cgroup/aoscomponents.slice/aos-sandbox-ownershipd.service" :
+-                "/sys/fs/cgroup/aoscomponents.slice/aos-sandbox-source-signerd.service";
++        return aos_fixed_service_native_cgroup(fixed_service_role(UNIT(service)));
+ }
+ 
+ static int parent_validate_manifest(void) {
+@@ -198,13 +215,14 @@
+         unsigned count;
+         bool slice = false, journal = false, runtime_prep = false, source_service = false;
+         bool ownership_service = false, ownership_present = false, ownership_sender_present = false;
++        bool cache_service = false, cache_present = false, cache_sender_present = false;
+         bool source_present = false, sender_present = false, controller_sender_present = false;
+ 
+-        if (parent->manifest_bytes < 1366 || memcmp(parent->manifest, "AOSRPE02", 8) != 0)
++        if (parent->manifest_bytes < 1718 || memcmp(parent->manifest, "AOSRPE03", 8) != 0)
+                 return -EBADMSG;
+         count = parent_u16(parent->manifest + 452);
+         if (count == 0 || count > AOS_PARENT_MEMBERS ||
+-            parent->manifest_bytes != 1366U + count * AOS_PARENT_ROW_BYTES)
++            parent->manifest_bytes != 1718U + count * AOS_PARENT_ROW_BYTES)
+                 return -EBADMSG;
+         sha256_direct(parent->manifest, parent->manifest_bytes - sizeof(digest), digest);
+         if (memcmp(digest, parent->manifest + parent->manifest_bytes - sizeof(digest), sizeof(digest)) != 0)
+@@ -219,8 +237,11 @@
+                 controller_sender_present |= policy_u64(controller_sender_vector() + i * 8) != 0;
+                 ownership_present |= policy_u64(ownership_vector() + i * 8) != 0;
+                 ownership_sender_present |= policy_u64(ownership_sender_vector() + i * 8) != 0;
+-        }
+-        if (source_present != sender_present || ownership_present != ownership_sender_present)
++                cache_present |= policy_u64(cache_vector() + i * 8) != 0;
++                cache_sender_present |= policy_u64(cache_sender_vector() + i * 8) != 0;
++        }
++        if (source_present != sender_present || ownership_present != ownership_sender_present ||
++            cache_present != cache_sender_present)
+                 return -EBADMSG;
+ 
+         for (unsigned dimension = 0; dimension < 22; dimension++) {
+@@ -256,13 +277,17 @@
+                 uint64_t source_m = policy_u64(source_sender_vector() + dimension * 8);
+                 uint64_t controller_m = policy_u64(controller_sender_vector() + dimension * 8);
+                 uint64_t ownership_m = policy_u64(ownership_sender_vector() + dimension * 8);
++                uint64_t cache_f = policy_u64(cache_vector() + dimension * 8);
++                uint64_t cache_m = policy_u64(cache_sender_vector() + dimension * 8);
+ 
+                 /* Checked subtraction proves disjoint sums without unsigned
+                  * wrap. These remain subdivisions of the same original M/F. */
+-                if (m > baseline || f > baseline - m || source_f > f || ownership_f > f - source_f ||
+-                    source_m > m || controller_m > m - source_m ||
+-                    ownership_m > m - source_m - controller_m)
++                if (m > baseline || f > baseline - m ||
++                    !aos_fixed_service_subdivisions_fit(m, f, source_f, ownership_f, cache_f,
++                                                       source_m, controller_m, ownership_m, cache_m))
+                         return -ERANGE;
++                if (cache_present && (dimension < 4 || dimension == 21) && cache_f == 0)
++                        return -EBADMSG;
+                 if (ownership_present && (dimension < 4 || dimension == 21) && ownership_f == 0)
+                         return -EBADMSG;
+                 if (source_present && (dimension < 4 || dimension == 21) && policy_u64(source_vector() + dimension * 8) == 0)
+@@ -312,6 +337,19 @@
+             policy_u64(ownership_sender + 21U * 8U) != 1))
+                 return -ERANGE;
+ 
++        const uint8_t *cache = cache_vector();
++        if (cache_present && (policy_u64(cache) < 1000 || policy_u64(cache) % 1000 != 0 ||
++            policy_u64(cache) > UINT64_MAX / 10 || policy_u64(cache + 8) == 0 ||
++            policy_u64(cache + 8) % 4096 != 0 || policy_u64(cache + 8) > INT64_MAX ||
++            policy_u64(cache + 16) == 0 || policy_u64(cache + 16) > INT64_MAX ||
++            source_nofile > policy_u64(cache + 24)))
++                return -ERANGE;
++        const uint8_t *cache_sender = cache_sender_vector();
++        if (cache_sender_present && (policy_u64(cache_sender) == 0 ||
++            policy_u64(cache_sender + 8) == 0 || policy_u64(cache_sender + 24) == 0 ||
++            policy_u64(cache_sender + 21U * 8U) != 1))
++                return -ERANGE;
++
+         const uint8_t *sender = source_sender_vector();
+         uint64_t sender_cpu = policy_u64(sender);
+ 
+@@ -338,6 +376,7 @@
+                 slice |= streq(name, "aoscomponents.slice");
+                 source_service |= streq(name, "aos-sandbox-source-signerd.service");
+                 ownership_service |= streq(name, "aos-sandbox-ownershipd.service");
++                cache_service |= streq(name, "aos-sandbox-cache-signerd.service");
+                 journal |= streq(name, "systemd-journald.service");
+                 runtime_prep |= streq(name, "aos-journald-runtime-prep.service");
+                 for (unsigned file = 1; file <= 4; file++) {
+@@ -361,7 +400,7 @@
+                 }
+         }
+         if (!slice || !journal || !runtime_prep || source_service != source_present ||
+-            ownership_service != ownership_present)
++            ownership_service != ownership_present || cache_service != cache_present)
+                 return -EBADMSG;
+         parent->members = count;
+         return 0;
+@@ -485,21 +524,21 @@
+                                           parent_cgroup_paths[enclosure], parent_native_paths[enclosure]);
+ }
+ 
+-/* Only this actual original slot is the new Source profile's inert drop-in.
+- * Base fragments and every other role retain the existing nonempty contract. */
+-static bool parent_empty_source_dropin(const AosParentFile *original) {
+-        AosResourceParent *parent = aos_resource_parent_original();
+-        int member;
+-
+-        if (memcmp(parent->manifest, "AOSRPE02", 8) != 0)
++/* Only exact committed Source/Cache drop slots may be inert empty files.
++ * Base fragments and Ownership retain the existing nonempty contract. */
++static bool parent_empty_signer_dropin(const AosParentFile *original) {
++        AosResourceParent *parent = aos_resource_parent_original();
++
++        if (memcmp(parent->manifest, "AOSRPE03", 8) != 0)
+                 return false;
+-        member = parent_member_index("aos-sandbox-source-signerd.service");
+-        if (member < 0)
+-                return false;
+-        for (unsigned file = 1; file <= parent_u16(parent_row(member) + 352); file++)
+-                if (original == &parent->files[member][file])
+-                        return true;
+-
++        for (unsigned member = 0; member < parent->members; member++) {
++                AosFixedServiceProfileRole role = aos_fixed_service_role((const char*) parent_row(member));
++                if (!IN_SET(role, AOS_FIXED_PROFILE_SOURCE, AOS_FIXED_PROFILE_CACHE))
++                        continue;
++                for (unsigned file = 1; file <= parent_u16(parent_row(member) + 352); file++)
++                        if (original == &parent->files[member][file])
++                                return true;
++        }
+         return false;
+ }
+ 
+@@ -518,7 +557,7 @@
+                         if (original->stat_result < 0)
+                                 return original->stat_result;
+                         if (original->stat.st_size < 0 || original->stat.st_size > AOS_PARENT_FILE_BYTES ||
+-                            (original->stat.st_size == 0 && !parent_empty_source_dropin(original)))
++                            (original->stat.st_size == 0 && !parent_empty_signer_dropin(original)))
+                                 return -EFBIG;
+                         original->read_length = pread(original->fd, parent->file_bytes, sizeof(parent->file_bytes), 0);
+                         original->read_result = original->read_length < 0 ? -errno :
+@@ -551,7 +590,7 @@
+                 return original->effective_stat_result;
+         if (!S_ISREG(original->effective_stat.st_mode) || original->effective_stat.st_size != original->stat.st_size ||
+             original->effective_stat.st_size < 0 || original->effective_stat.st_size > AOS_PARENT_FILE_BYTES ||
+-            (original->effective_stat.st_size == 0 && !parent_empty_source_dropin(original)))
++            (original->effective_stat.st_size == 0 && !parent_empty_signer_dropin(original)))
+                 return -EOWNERDEAD;
+         original->effective_read_length = pread(fd, parent->file_bytes, sizeof(parent->file_bytes), 0);
+         original->effective_read_result = original->effective_read_length < 0 ? -errno :
+@@ -657,7 +696,7 @@
+         if (parent->config_read_results[0] < 0)
+                 return parent_refuse(parent->config_read_results[0]);
+         if (parent->config_read_lengths[0] != 8 || parent->config_stats[0].st_size != 8 ||
+-            memcmp(parent->selector, "AOSRPE02", 8) != 0)
++            memcmp(parent->selector, "AOSRPE03", 8) != 0)
+                 return parent_refuse(-EBADMSG);
+         parent->config_read_lengths[1] = pread(parent->config_fds[1], parent->manifest, sizeof(parent->manifest), 0);
+         parent->config_read_results[1] = parent->config_read_lengths[1] < 0 ? -errno : 0;
+@@ -743,7 +782,8 @@
+             (!unit_has_name(unit, SPECIAL_ROOT_SLICE) && !streq_ptr(unit->id, SPECIAL_INIT_SCOPE) &&
+              !streq_ptr(unit->id, "aoscomponents.slice") &&
+              !streq_ptr(unit->id, "aos-sandbox-source-signerd.service") &&
+-             !streq_ptr(unit->id, "aos-sandbox-ownershipd.service")))
++             !streq_ptr(unit->id, "aos-sandbox-ownershipd.service") &&
++             !streq_ptr(unit->id, "aos-sandbox-cache-signerd.service")))
+                 return 0;
+         r = aos_resource_parent_error();
+         if (r < 0)
+@@ -759,11 +799,14 @@
+                 enclosure = 2;
+         else if (streq_ptr(unit->id, "aos-sandbox-ownershipd.service"))
+                 enclosure = 3;
++        else if (streq_ptr(unit->id, "aos-sandbox-cache-signerd.service"))
++                enclosure = 4;
+         else
+                 return 0;
+         if (!context || !aos_resource_parent_original()->installed)
+                 return parent_refuse(-EOWNERDEAD);
+-        vector = enclosure == 3 ? ownership_vector() : enclosure == 2 ? source_vector() : parent_vector(enclosure);
++        vector = enclosure == 4 ? cache_vector() : enclosure == 3 ? ownership_vector() :
++                 enclosure == 2 ? source_vector() : parent_vector(enclosure);
+         if (project && enclosure == 0) {
+                 /* init.scope is synthesized AFTER generators. Preserve the
+                  * already installed M rather than applying default infinity. */
+@@ -831,18 +874,22 @@
+         AosResourceParent *parent = aos_resource_parent_original();
+         Unit *unit = UNIT(service);
+ 
+-        bool ownership = ownership_unit(unit);
++        AosFixedServiceProfileRole role = fixed_service_role(unit);
+ 
+         if (!parent->selected || (!unit_has_name(unit, "aos-sandbox-source-signerd.service") &&
+-                                 !unit_has_name(unit, "aos-sandbox-ownershipd.service")))
++                                 !unit_has_name(unit, "aos-sandbox-ownershipd.service") &&
++                                 !unit_has_name(unit, "aos-sandbox-cache-signerd.service")))
+                 return 0;
+         if (parent->first_error < 0)
+                 return parent->first_error;
+-        const AosParentSenderAdmission *sender = ownership ? &parent->ownership_sender : &parent->source_sender;
++        if (role == AOS_FIXED_PROFILE_NONE)
++                return parent_refuse(-EPERM);
++        const AosParentSenderAdmission *sender = role == AOS_FIXED_PROFILE_CACHE ? &parent->cache_sender :
++                role == AOS_FIXED_PROFILE_OWNERSHIP ? &parent->ownership_sender : &parent->source_sender;
+         if (sender->account.first_error < 0)
+                 return parent_refuse(sender->account.first_error);
+         if (!parent->installed || parent->manager != unit->manager ||
+-            !streq_ptr(unit->id, ownership ? "aos-sandbox-ownershipd.service" : "aos-sandbox-source-signerd.service") ||
++            !streq_ptr(unit->id, aos_fixed_service_unit_name(role)) ||
+             !set_isempty(unit->aliases) || unit->transient || !isempty(unit->source_path) ||
+             !command || command != service->exec_command[SERVICE_EXEC_START] || command->command_next ||
+             !FLAGS_SET(flags, EXEC_PASS_FDS) || !FLAGS_SET(flags, EXEC_APPLY_SANDBOXING) ||
+@@ -850,15 +897,13 @@
+             !source_loader_environment(environ) ||
+             !source_loader_environment(service->exec_context.environment) ||
+             !source_loader_environment(service->exec_context.pass_environment) ||
+-            !aos_fixed_service_context_matches(&service->exec_context,
+-                ownership ? AOS_FIXED_PROFILE_OWNERSHIP : AOS_FIXED_PROFILE_SOURCE))
++            !aos_fixed_service_context_matches(&service->exec_context, role))
+                 return parent_refuse(-EPERM);
+         for (ServiceExecCommand slot = 0; slot < _SERVICE_EXEC_COMMAND_MAX; slot++)
+                 if (slot != SERVICE_EXEC_START && service->exec_command[slot])
+                         return parent_refuse(-EPERM);
+ 
+-        int r = ownership ? socket_require_ownership_origin_activation(service) :
+-                            socket_require_source_origin_activation(service);
++        int r = socket_require_fixed_origin_activation(service);
+         return r < 0 ? parent_refuse(r) : 0;
+ }
+ 
+@@ -890,8 +935,7 @@
+             !streq_ptr(unit_slice_name(UNIT(service)), "aoscomponents.slice"))
+                 return parent_refuse(-EPERM);
+         r = aos_resource_parent_verify_fragment(UNIT(service));
+-        if (r >= 0 && (streq_ptr(UNIT(service)->id, "aos-sandbox-source-signerd.service") ||
+-                       ownership_unit(UNIT(service)))) {
++        if (r >= 0 && fixed_service_role(UNIT(service)) != AOS_FIXED_PROFILE_NONE) {
+                 /* Repeat after the original immutable leaf/drop-in join;
+                  * positive early refusal checks alone supplied no currentness. */
+                 r = aos_resource_parent_require_source_profile(service, command, flags);
+@@ -1095,8 +1139,7 @@
+         AosResourceParent *parent = aos_resource_parent_original();
+         int member, r;
+ 
+-        if ((!streq_ptr(UNIT(service)->id, "aos-sandbox-source-signerd.service") &&
+-             !ownership_unit(UNIT(service))) || !parent->installed || parent->manager != UNIT(service)->manager)
++        if (fixed_service_role(UNIT(service)) == AOS_FIXED_PROFILE_NONE || !parent->installed || parent->manager != UNIT(service)->manager)
+                 return parent_refuse(-EOWNERDEAD);
+         r = parent_check_all();
+         if (r < 0)
+@@ -1111,8 +1154,10 @@
+ }
+ 
+ typedef enum ParentSenderPurpose {
++        PARENT_SENDER_NONE = -1,
+         PARENT_SENDER_SOURCE,
+         PARENT_SENDER_OWNERSHIP,
++        PARENT_SENDER_CACHE,
+         PARENT_SENDER_CONTROLLER_SUCCESSOR,
+ } ParentSenderPurpose;
+ 
+@@ -1124,10 +1169,12 @@
+                 return &parent->source_sender;
+         case PARENT_SENDER_OWNERSHIP:
+                 return &parent->ownership_sender;
++        case PARENT_SENDER_CACHE:
++                return &parent->cache_sender;
+         case PARENT_SENDER_CONTROLLER_SUCCESSOR:
+                 return &parent->controller_sender;
+         default:
+-                assert_not_reached();
++                return NULL;
+         }
+ }
+ 
+@@ -1137,6 +1184,8 @@
+                 return "aos-sandbox-source-signerd.service";
+         case PARENT_SENDER_OWNERSHIP:
+                 return "aos-sandbox-ownershipd.service";
++        case PARENT_SENDER_CACHE:
++                return "aos-sandbox-cache-signerd.service";
+         case PARENT_SENDER_CONTROLLER_SUCCESSOR:
+                 return "aos-sandboxd.service";
+         default:
+@@ -1144,12 +1193,27 @@
+         }
+ }
+ 
++static ParentSenderPurpose fixed_service_sender_purpose(Service *service) {
++        switch (fixed_service_role(UNIT(service))) {
++        case AOS_FIXED_PROFILE_CACHE:
++                return PARENT_SENDER_CACHE;
++        case AOS_FIXED_PROFILE_OWNERSHIP:
++                return PARENT_SENDER_OWNERSHIP;
++        case AOS_FIXED_PROFILE_SOURCE:
++                return PARENT_SENDER_SOURCE;
++        default:
++                return PARENT_SENDER_NONE;
++        }
++}
++
+ static int admit_sender(Service *service, ParentSenderPurpose purpose) {
+         AosResourceParent *parent = aos_resource_parent_original();
+         AosParentSenderAdmission *admission = sender_admission(purpose);
+         const uint8_t *vector;
+         int r;
+ 
++        if (!admission)
++                return parent_refuse(-EOWNERDEAD);
+         if (admission->entered)
+                 return parent_refuse(-EALREADY);
+         admission->entered = true;
+@@ -1166,6 +1230,11 @@
+                 vector = ownership_sender_vector();
+                 admission->memory = aos_resource_ownership_origin_memory();
+                 admission->files = aos_resource_ownership_origin_files();
++                break;
++        case PARENT_SENDER_CACHE:
++                vector = cache_sender_vector();
++                admission->memory = aos_resource_cache_origin_memory();
++                admission->files = aos_resource_cache_origin_files();
+                 break;
+         case PARENT_SENDER_CONTROLLER_SUCCESSOR:
+                 vector = controller_sender_vector();
+@@ -1210,6 +1279,8 @@
+         AosParentSenderAdmission *admission = sender_admission(purpose);
+         int r;
+ 
++        if (!admission)
++                return parent_refuse(-EOWNERDEAD);
+         if (parent->first_error < 0)
+                 return parent->first_error;
+         if (admission->result < 0)
+@@ -1235,7 +1306,7 @@
+ }
+ 
+ int aos_resource_parent_begin_source_sender(Service *service, AllocationAccountScope *scope) {
+-        ParentSenderPurpose purpose = ownership_unit(UNIT(service)) ? PARENT_SENDER_OWNERSHIP : PARENT_SENDER_SOURCE;
++        ParentSenderPurpose purpose = fixed_service_sender_purpose(service);
+         int r = admit_sender(service, purpose);
+         if (r < 0)
+                 return r;
+@@ -1248,6 +1319,8 @@
+         AosParentSenderAdmission *admission = sender_admission(purpose);
+         int r;
+ 
++        if (!admission)
++                return parent_refuse(-EOWNERDEAD);
+         if (parent->first_error < 0)
+                 return parent->first_error;
+         if (admission->result < 0)
+@@ -1278,7 +1351,7 @@
+ }
+ 
+ int aos_resource_parent_require_source_sender(Service *service) {
+-        return require_sender_scope(service, ownership_unit(UNIT(service)) ? PARENT_SENDER_OWNERSHIP : PARENT_SENDER_SOURCE);
++        return require_sender_scope(service, fixed_service_sender_purpose(service));
+ }
+ 
+ int aos_resource_parent_require_controller_sender(Service *service) {
+@@ -1286,7 +1359,7 @@
+ }
+ 
+ int aos_resource_parent_source_exec_scope(Service *service, AllocationAccountScope *scope) {
+-        return enter_sender_scope(service, ownership_unit(UNIT(service)) ? PARENT_SENDER_OWNERSHIP : PARENT_SENDER_SOURCE, scope);
++        return enter_sender_scope(service, fixed_service_sender_purpose(service), scope);
+ }
+ 
+ int aos_resource_parent_controller_exec_scope(Service *service, AllocationAccountScope *scope) {
+@@ -1337,9 +1410,11 @@
+         if (claim->attempted)
+                 return claim->result < 0 ? claim->result : parent_refuse(-EALREADY);
+         claim->attempted = true;
+-        bool ownership = ownership_unit(UNIT(service));
+-        bool *entered = ownership ? &parent->ownership_exec_entered : &parent->source_exec_entered;
+-        AosSourceExecClaim **original = ownership ? &parent->ownership_exec_original : &parent->source_exec_original;
++        AosFixedServiceProfileRole role = fixed_service_role(UNIT(service));
++        bool *entered = role == AOS_FIXED_PROFILE_CACHE ? &parent->cache_exec_entered :
++                role == AOS_FIXED_PROFILE_OWNERSHIP ? &parent->ownership_exec_entered : &parent->source_exec_entered;
++        AosSourceExecClaim **original = role == AOS_FIXED_PROFILE_CACHE ? &parent->cache_exec_original :
++                role == AOS_FIXED_PROFILE_OWNERSHIP ? &parent->ownership_exec_original : &parent->source_exec_original;
+         r = aos_resource_parent_require_source_sender(service);
+         if (r >= 0 && *entered)
+                 r = parent_refuse(-EALREADY);
+@@ -1356,8 +1431,7 @@
+                 return claim->result = r;
+         /* The original M sender is already admitted. Only now observe the
+          * same activation listener's live kernel options, before Source clone. */
+-        r = ownership ? socket_require_ownership_origin_activation_current(service) :
+-                            socket_require_source_origin_activation_current(service);
++        r = socket_require_fixed_origin_activation_current(service);
+         if (r < 0)
+                 return claim->result = parent_refuse(r);
+         runtime = unit_get_cgroup_runtime(UNIT(service));
+@@ -1365,7 +1439,7 @@
+             !streq_ptr(runtime->cgroup_path, fixed_service_cgroup(service)))
+                 return claim->result = parent_refuse(-EOWNERDEAD);
+ 
+-        memcpy(claim->vector, ownership ? ownership_vector() : source_vector(), sizeof(claim->vector));
++        memcpy(claim->vector, fixed_service_vector(role), sizeof(claim->vector));
+         sha256_direct(parent->manifest, parent->manifest_bytes, claim->parent_digest);
+         claim->nofile = policy_u64(parent->manifest + 400);
+         r = parent_open_limits_target(&claim->limits, claim->vector,
+@@ -1387,7 +1461,9 @@
+         int r = aos_resource_parent_require_source_sender(service);
+         if (r < 0)
+                 return r;
+-        AosSourceExecClaim *original = ownership_unit(UNIT(service)) ? parent->ownership_exec_original : parent->source_exec_original;
++        AosFixedServiceProfileRole role = fixed_service_role(UNIT(service));
++        AosSourceExecClaim *original = role == AOS_FIXED_PROFILE_CACHE ? parent->cache_exec_original :
++                role == AOS_FIXED_PROFILE_OWNERSHIP ? parent->ownership_exec_original : parent->source_exec_original;
+         if (original != claim || !claim->attempted || claim->result < 0 ||
+             phase >= ELEMENTSOF(claim->posts) || claim->post_attempted[phase])
+                 return parent_refuse(-EOWNERDEAD);
+--- a/src/core/aos-component-parent.h
++++ b/src/core/aos-component-parent.h
+@@ -12,8 +12,8 @@
+ 
+ #define AOS_PARENT_MEMBERS 16U
+ #define AOS_PARENT_ROW_BYTES 1506U
+-#define AOS_PARENT_HEADER_BYTES 1334U
+-#define AOS_PARENT_MAX_BYTES (1366U + AOS_PARENT_MEMBERS * AOS_PARENT_ROW_BYTES)
++#define AOS_PARENT_HEADER_BYTES 1686U
++#define AOS_PARENT_MAX_BYTES (1718U + AOS_PARENT_MEMBERS * AOS_PARENT_ROW_BYTES)
+ #define AOS_PARENT_FILE_BYTES 65536U
+ #define AOS_PARENT_CONTROLLERS (CGROUP_MASK_CPU | CGROUP_MASK_MEMORY | CGROUP_MASK_PIDS)
+ 
+@@ -122,6 +122,9 @@
+         AosParentExecCheck exec_checks[AOS_PARENT_MEMBERS];
+         AosParentSenderAdmission source_sender;
+         AosParentSenderAdmission ownership_sender;
++        AosParentSenderAdmission cache_sender;
++        bool cache_exec_entered;
++        struct AosSourceExecClaim *cache_exec_original;
+         bool ownership_exec_entered;
+         struct AosSourceExecClaim *ownership_exec_original;
+         bool source_exec_entered;
+--- a/src/core/aos-fixed-service-profile.h
++++ b/src/core/aos-fixed-service-profile.h
+@@ -10,15 +10,80 @@
+  * original independently selects the fixed role; this enum grants no scope,
+  * sender, descriptor, account, executable or operation authority. */
+ typedef enum AosFixedServiceProfileRole {
++        AOS_FIXED_PROFILE_NONE = 0,
+         AOS_FIXED_PROFILE_SOURCE = 1,
+         AOS_FIXED_PROFILE_OWNERSHIP = 2,
++        AOS_FIXED_PROFILE_CACHE = 3,
+ } AosFixedServiceProfileRole;
++
++/* These selectors are immutable profile DATA. Only the real Parent/Unit and
++ * authenticated child owners can admit the corresponding financial original. */
++static inline AosFixedServiceProfileRole aos_fixed_service_role(const char *name) {
++        if (streq_ptr(name, "aos-sandbox-source-signerd.service"))
++                return AOS_FIXED_PROFILE_SOURCE;
++        if (streq_ptr(name, "aos-sandbox-ownershipd.service"))
++                return AOS_FIXED_PROFILE_OWNERSHIP;
++        if (streq_ptr(name, "aos-sandbox-cache-signerd.service"))
++                return AOS_FIXED_PROFILE_CACHE;
++        return AOS_FIXED_PROFILE_NONE;
++}
++
++static inline const char *aos_fixed_service_unit_name(AosFixedServiceProfileRole role) {
++        switch (role) {
++        case AOS_FIXED_PROFILE_SOURCE:
++                return "aos-sandbox-source-signerd.service";
++        case AOS_FIXED_PROFILE_OWNERSHIP:
++                return "aos-sandbox-ownershipd.service";
++        case AOS_FIXED_PROFILE_CACHE:
++                return "aos-sandbox-cache-signerd.service";
++        default:
++                return NULL;
++        }
++}
++
++static inline const char *aos_fixed_service_cgroup(AosFixedServiceProfileRole role) {
++        switch (role) {
++        case AOS_FIXED_PROFILE_SOURCE:
++                return "/aoscomponents.slice/aos-sandbox-source-signerd.service";
++        case AOS_FIXED_PROFILE_OWNERSHIP:
++                return "/aoscomponents.slice/aos-sandbox-ownershipd.service";
++        case AOS_FIXED_PROFILE_CACHE:
++                return "/aoscomponents.slice/aos-sandbox-cache-signerd.service";
++        default:
++                return NULL;
++        }
++}
++
++static inline const char *aos_fixed_service_native_cgroup(AosFixedServiceProfileRole role) {
++        switch (role) {
++        case AOS_FIXED_PROFILE_SOURCE:
++                return "/sys/fs/cgroup/aoscomponents.slice/aos-sandbox-source-signerd.service";
++        case AOS_FIXED_PROFILE_OWNERSHIP:
++                return "/sys/fs/cgroup/aoscomponents.slice/aos-sandbox-ownershipd.service";
++        case AOS_FIXED_PROFILE_CACHE:
++                return "/sys/fs/cgroup/aoscomponents.slice/aos-sandbox-cache-signerd.service";
++        default:
++                return NULL;
++        }
++}
++
++/* Checked subtraction proves disjoint all-dimension subdivision sums without
++ * wrapping at UINT64_MAX. No numerical result conveys admission authority. */
++static inline bool aos_fixed_service_subdivisions_fit(
++                uint64_t m, uint64_t f,
++                uint64_t source_f, uint64_t ownership_f, uint64_t cache_f,
++                uint64_t source_m, uint64_t controller_m, uint64_t ownership_m, uint64_t cache_m) {
++        return source_f <= f && ownership_f <= f - source_f && cache_f <= f - source_f - ownership_f &&
++               source_m <= m && controller_m <= m - source_m &&
++               ownership_m <= m - source_m - controller_m &&
++               cache_m <= m - source_m - controller_m - ownership_m;
++}
+ 
+ static inline bool aos_fixed_service_directories_match(
+                 const ExecContext *context,
+                 AosFixedServiceProfileRole role) {
+ 
+-        if (!context || !IN_SET(role, AOS_FIXED_PROFILE_SOURCE, AOS_FIXED_PROFILE_OWNERSHIP))
++        if (!context || !IN_SET(role, AOS_FIXED_PROFILE_SOURCE, AOS_FIXED_PROFILE_OWNERSHIP, AOS_FIXED_PROFILE_CACHE))
+                 return false;
+ 
+         for (ExecDirectoryType type = 0; type < _EXEC_DIRECTORY_TYPE_MAX; type++) {
+@@ -27,7 +92,7 @@
+                                    type == EXEC_DIRECTORY_RUNTIME ? "aos/sandbox-ownership" : NULL;
+                 mode_t mode = type == EXEC_DIRECTORY_STATE ? 0700 : 0711;
+ 
+-                if (role == AOS_FIXED_PROFILE_SOURCE || !path) {
++                if (role != AOS_FIXED_PROFILE_OWNERSHIP || !path) {
+                         if (directory->n_items != 0)
+                                 return false;
+                         continue;
+@@ -61,8 +126,10 @@
+             context->capability_bounding_set != 0 || context->capability_ambient_set != 0)
+                 return false;
+ 
+-        if (role == AOS_FIXED_PROFILE_SOURCE)
+-                return streq_ptr(context->user, "aos-source-signer") && streq_ptr(context->group, "aos-source-signer");
++        if (role != AOS_FIXED_PROFILE_OWNERSHIP) {
++                const char *identity = role == AOS_FIXED_PROFILE_CACHE ? "aos-cache-signer" : "aos-source-signer";
++                return streq_ptr(context->user, identity) && streq_ptr(context->group, identity);
++        }
+ 
+         /* The existing Ownership unit uses the actual system root default.
+          * Explicit root remains the same identity; other names/IDs are refused. */
+--- a/src/core/aos-resource-enrollment.c
++++ b/src/core/aos-resource-enrollment.c
+@@ -10,6 +10,7 @@
+ #include "aos-resource-enrollment.h"
+ #include "aos-launch-record.h"
+ #include "aos-component-parent.h"
++#include "aos-fixed-service-profile.h"
+ #include "aos-source-exec.h"
+ #include "aos-source-exec-claim.h"
+ #include "fdset.h"
+@@ -349,6 +350,7 @@
+         AosResourceDelivery root_delivery;
+         AosSourceOrigin source_origin;
+         AosSourceOrigin ownership_origin;
++        AosSourceOrigin cache_origin;
+         AosControllerRestart controller_restart;
+         AosResourceServiceCPU controller_cpu;
+         AosResourceServiceCPU storage_cpu;
+@@ -443,6 +445,7 @@
+         .root_delivery = AOS_RESOURCE_DELIVERY_EMPTY,
+         .source_origin = AOS_COMPONENT_ORIGIN_EMPTY,
+         .ownership_origin = AOS_COMPONENT_ORIGIN_EMPTY,
++        .cache_origin = AOS_COMPONENT_ORIGIN_EMPTY,
+         .controller_restart = {
+                 .current_transport = { .sockets = { -EBADF, -EBADF }, .recipient = PIDREF_NULL },
+                 .pending_transport = { .sockets = { -EBADF, -EBADF }, .recipient = PIDREF_NULL },
+@@ -1667,28 +1670,20 @@
+ 
+ /* Closed role selection chooses custody only. Parent admission separately
+  * proves the same real Unit, invocation, profile, cgroup and disjoint M/F. */
+-typedef enum AosComponentOriginRole {
+-        AOS_COMPONENT_ORIGIN_NONE,
+-        AOS_COMPONENT_ORIGIN_SOURCE,
+-        AOS_COMPONENT_ORIGIN_OWNERSHIP,
+-} AosComponentOriginRole;
+-
+-static AosComponentOriginRole source_origin_role(Service *service) {
++static AosFixedServiceProfileRole source_origin_role(Service *service) {
+         if (!enrollment.parent.selected)
+-                return AOS_COMPONENT_ORIGIN_NONE;
+-        if (streq_ptr(UNIT(service)->id, "aos-sandbox-source-signerd.service"))
+-                return AOS_COMPONENT_ORIGIN_SOURCE;
+-        if (streq_ptr(UNIT(service)->id, "aos-sandbox-ownershipd.service"))
+-                return AOS_COMPONENT_ORIGIN_OWNERSHIP;
+-        return AOS_COMPONENT_ORIGIN_NONE;
++                return AOS_FIXED_PROFILE_NONE;
++        return aos_fixed_service_role(UNIT(service)->id);
+ }
+ 
+ static AosSourceOrigin *source_origin_original(Service *service) {
+         switch (source_origin_role(service)) {
+-        case AOS_COMPONENT_ORIGIN_SOURCE:
++        case AOS_FIXED_PROFILE_SOURCE:
+                 return &enrollment.source_origin;
+-        case AOS_COMPONENT_ORIGIN_OWNERSHIP:
++        case AOS_FIXED_PROFILE_OWNERSHIP:
+                 return &enrollment.ownership_origin;
++        case AOS_FIXED_PROFILE_CACHE:
++                return &enrollment.cache_origin;
+         default:
+                 return NULL;
+         }
+@@ -1735,6 +1730,14 @@
+ }
+ 
+ unsigned aos_resource_ownership_origin_files(void) {
++        return aos_resource_source_origin_files();
++}
++
++size_t aos_resource_cache_origin_memory(void) {
++        return aos_resource_source_origin_memory();
++}
++
++unsigned aos_resource_cache_origin_files(void) {
+         return aos_resource_source_origin_files();
+ }
+ 
+@@ -2078,9 +2081,7 @@
+                 return original->context_results[phase];
+         if (cgroup_id != original->exec_claim.cgroup_id ||
+             !streq_ptr(original->process_paths[phase],
+-                source_origin_role(service) == AOS_COMPONENT_ORIGIN_SOURCE ?
+-                "/aoscomponents.slice/aos-sandbox-source-signerd.service" :
+-                "/aoscomponents.slice/aos-sandbox-ownershipd.service") ||
++                aos_fixed_service_cgroup(source_origin_role(service))) ||
+             (phase == 1 && original->process_start[1] != original->process_start[0]))
+                 return -EOWNERDEAD;
+         original->exec_clock_results[phase + 1] = clock_gettime(CLOCK_BOOTTIME, &original->exec_clock[phase + 1]) < 0 ? -errno : 0;
+--- a/src/core/aos-resource-enrollment.h
++++ b/src/core/aos-resource-enrollment.h
+@@ -44,6 +44,8 @@
+ unsigned aos_resource_source_origin_files(void);
+ size_t aos_resource_ownership_origin_memory(void);
+ unsigned aos_resource_ownership_origin_files(void);
++size_t aos_resource_cache_origin_memory(void);
++unsigned aos_resource_cache_origin_files(void);
+ 
+ size_t aos_resource_controller_successor_memory(void);
+ unsigned aos_resource_controller_successor_files(void);
+--- a/src/core/aos-source-executor.c
++++ b/src/core/aos-source-executor.c
+@@ -21,7 +21,7 @@
+ #include "string-util.h"
+ #include "unaligned.h"
+ 
+-/* The only producer is PID1's same original fixed Source/Ownership clone. This static
++/* The only producer is PID1's same original fixed Source/Ownership/Cache clone. This static
+  * child custody survives every refusal until this executor process exits;
+  * it cannot be reentered, exchanged for a decoded row or issued to a helper. */
+ static struct {
+@@ -167,7 +167,7 @@
+             memcmp(original.budget.payload, "AOSSFB01", 8) != 0 ||
+             unaligned_read_be64(original.budget.payload + 104) != (uint64_t) getpid() ||
+             unaligned_read_be64(original.budget.payload + 152) != 1 ||
+-            !IN_SET(unaligned_read_be64(original.budget.payload + 184), 1U, 2U))
++            !IN_SET(unaligned_read_be64(original.budget.payload + 184), 1U, 2U, 3U))
+                 return refuse(-EBADMSG);
+         original.role = unaligned_read_be64(original.budget.payload + 184);
+         uint64_t nofile = unaligned_read_be64(original.budget.payload + 144);
+@@ -248,14 +248,12 @@
+         if (original.context_attempted)
+                 return refuse(-EALREADY);
+         original.context_attempted = true;
+-        AosFixedServiceProfileRole profile = original.role == 1 ?
+-                AOS_FIXED_PROFILE_SOURCE : AOS_FIXED_PROFILE_OWNERSHIP;
++        AosFixedServiceProfileRole profile = (AosFixedServiceProfileRole) original.role;
+         original.context_result = aos_fixed_service_context_matches(context, profile) &&
+                 context->rlimit[RLIMIT_NOFILE] &&
+                 context->rlimit[RLIMIT_NOFILE]->rlim_cur == original.limit_after.rlim_cur &&
+                 context->rlimit[RLIMIT_NOFILE]->rlim_max == original.limit_after.rlim_max &&
+-                (original.role == 1 ? streq_ptr(params->unit_id, "aos-sandbox-source-signerd.service") :
+-                 original.role == 2 && streq_ptr(params->unit_id, "aos-sandbox-ownershipd.service")) &&
++                streq_ptr(params->unit_id, aos_fixed_service_unit_name(profile)) &&
+                 memcmp(params->invocation_id.bytes, original.budget.payload + 8, 16) == 0 && params->exec_fd >= 0 ? 0 : -EPERM;
+         if (original.context_result < 0)
+                 return refuse(original.context_result);
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -6420,8 +6420,8 @@
+ 
+         if (r < 0)
+                 return r;
+-        return aos_resource_open_image_resource(selector ? "resource-parent-enclosure-required-v2" :
+-                                                          "resource-parent-enclosure-v2", absent);
++        return aos_resource_open_image_resource(selector ? "resource-parent-enclosure-required-v3" :
++                                                          "resource-parent-enclosure-v3", absent);
+ }
+ 
+ int aos_resource_open_parent_member(const char *name, unsigned file, char **ret_path) {
+--- a/src/core/socket.c
++++ b/src/core/socket.c
+@@ -1,4 +1,5 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
++#include "aos-fixed-service-profile.h"
+ #include "aos-resource-enrollment.h"
+ 
+ #include <fcntl.h>
+@@ -3445,20 +3446,22 @@
+ static int fixed_origin_activation_port(Service *service, SocketPort **ret) {
+         Socket *selected = NULL;
+         Unit *u;
+-        bool source;
++        AosFixedServiceProfileRole role;
+ 
+         if (!service)
+                 return -EPERM;
+ 
+-        source = streq_ptr(UNIT(service)->id, "aos-sandbox-source-signerd.service");
+-        if ((!source && !streq_ptr(UNIT(service)->id, "aos-sandbox-ownershipd.service")) ||
+-            service->socket_fd >= 0 ||
+-            service->exec_context.std_input != (source ? EXEC_INPUT_SOCKET : EXEC_INPUT_NULL))
++        role = aos_fixed_service_role(UNIT(service)->id);
++        bool signer = IN_SET(role, AOS_FIXED_PROFILE_SOURCE, AOS_FIXED_PROFILE_CACHE);
++        if (role == AOS_FIXED_PROFILE_NONE || service->socket_fd >= 0 ||
++            service->exec_context.std_input != (signer ? EXEC_INPUT_SOCKET : EXEC_INPUT_NULL))
+                 return -EPERM;
+ 
+-        const char *socket_unit = source ? "aos-sandbox-source-signerd.socket" : "aos-sandbox-ownershipd.socket";
+-        const char *socket_path = source ? "/run/aos/sandbox-source-signerd.sock" : "/run/aos/sandbox-ownership/control.sock";
+-        const char *fd_name = source ? "aos-sandbox-source-signerd" : "aos-sandbox-ownership";
++        const char *socket_unit = role == AOS_FIXED_PROFILE_CACHE ? "aos-sandbox-cache-signerd.socket" :
++                signer ? "aos-sandbox-source-signerd.socket" : "aos-sandbox-ownershipd.socket";
++        const char *socket_path = role == AOS_FIXED_PROFILE_CACHE ? "/run/aos/sandbox-cache-signerd.sock" :
++                signer ? "/run/aos/sandbox-source-signerd.sock" : "/run/aos/sandbox-ownership/control.sock";
++        const char *fd_name = signer ? NULL : "aos-sandbox-ownership";
+ 
+         UNIT_FOREACH_DEPENDENCY(u, UNIT(service), UNIT_ATOM_TRIGGERED_BY) {
+                 Socket *socket = SOCKET(u);
+@@ -3471,15 +3474,15 @@
+         if (!selected || selected->accept || UNIT_DEREF(selected->service) != UNIT(service) ||
+             !IN_SET(selected->state, SOCKET_LISTENING, SOCKET_RUNNING) ||
+             !selected->pass_subject_before_listen || !selected->pass_cred ||
+-            !selected->pass_pidfd || selected->pass_sec != source ||
+-            (!source && !streq_ptr(socket_fdname(selected), fd_name)))
++            !selected->pass_pidfd || selected->pass_sec != signer ||
++            (!signer && !streq_ptr(socket_fdname(selected), fd_name)))
+                 return -EPERM;
+ 
+         SocketPort *port = selected->ports;
+         if (!port || port->port_next || port->type != SOCKET_SOCKET || port->fd < 0 ||
+             !port->subject_before_listen || port->n_auxiliary_fds != 0 ||
+             socket_address_family(&port->address) != AF_UNIX ||
+-            port->address.type != (source ? SOCK_STREAM : SOCK_SEQPACKET) ||
++            port->address.type != (signer ? SOCK_STREAM : SOCK_SEQPACKET) ||
+             !streq_ptr(socket_address_get_path(&port->address), socket_path))
+                 return -EPERM;
+         *ret = port;
+@@ -3492,17 +3495,28 @@
+         if (r < 0)
+                 return r;
+ 
+-        bool source = streq_ptr(UNIT(service)->id, "aos-sandbox-source-signerd.service");
++        bool signer = aos_fixed_service_role(UNIT(service)->id) != AOS_FIXED_PROFILE_OWNERSHIP;
+         const int options[] = { SO_PASSCRED, SO_PASSPIDFD, SO_PASSSEC, SO_ACCEPTCONN };
+         FOREACH_ELEMENT(option, options) {
+                 int value;
+                 r = getsockopt_int(port->fd, SOL_SOCKET, *option, &value);
+                 if (r < 0)
+                         return r;
+-                if (value != (*option == SO_PASSSEC ? source : 1))
++                if (value != (*option == SO_PASSSEC ? signer : 1))
+                         return -EPERM;
+         }
+         return 0;
++}
++
++/* The shared private selector accepts only the three actual fixed unit names;
++ * its roster/creation mark and live native observations remain indispensable. */
++int socket_require_fixed_origin_activation(Service *service) {
++        SocketPort *port;
++        return fixed_origin_activation_port(service, &port);
++}
++
++int socket_require_fixed_origin_activation_current(Service *service) {
++        return fixed_origin_activation_current(service);
+ }
+ 
+ int socket_require_source_origin_activation(Service *service) {
+--- a/src/core/socket.h
++++ b/src/core/socket.h
+@@ -226,3 +226,6 @@
+ DECLARE_STRING_TABLE_LOOKUP(socket_defer_trigger, SocketDeferTrigger);
+ 
+ DEFINE_CAST(SOCKET, Socket);
++
++int socket_require_fixed_origin_activation(Service *service);
++int socket_require_fixed_origin_activation_current(Service *service);
+--- a/src/test/meson.build
++++ b/src/test/meson.build
+@@ -497,6 +497,10 @@
+ 
+         # Tests that link to libcore, i.e. tests for pid1 code.
+         core_test_template + {
++                'sources' : files('test-aos-fixed-service-profile.c'),
++                'dependencies' : common_test_dependencies,
++        },
++        core_test_template + {
+                 'sources' : files('test-aos-fuse-worker.c'),
+                 'dependencies' : common_test_dependencies,
+         },
+--- a/src/test/test-aos-launch-record.c
++++ b/src/test/test-aos-launch-record.c
+@@ -78,4 +78,31 @@
+         assert_se(sample.descriptor_count == 0);
+ }
+ 
++TEST(cache_role_final_record_uses_the_same_native_custody) {
++        _cleanup_close_pair_ int sockets[2] = EBADF_PAIR;
++        _cleanup_close_ int executable = -EBADF;
++        AosLaunchRecord sample = {};
++        uint8_t bytes[304] = {};
++
++        memcpy(bytes, "AOSRSO01", 8);
++        bytes[8] = 3; /* FINAL, not a complete-executor packet. */
++        bytes[9] = 3; /* Cache purpose; authority checks remain with PID1/receiver. */
++        bytes[303] = 41;
++        assert_se(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) == 0);
++        executable = open("/dev/null", O_PATH | O_CLOEXEC);
++        assert_se(executable >= 0);
++        struct iovec iov = { .iov_base = bytes, .iov_len = sizeof(bytes) };
++        assert_se(send_one_fd_iov(sockets[0], executable, &iov, 1, MSG_NOSIGNAL) == sizeof(bytes));
++
++        assert_se(aos_launch_record_receive_once(&sample, sockets[1],
++                  AOS_LAUNCH_RECORD_SOURCE_COMPLETION_304) == 0);
++        assert_se(sample.length == sizeof(bytes) && sample.payload[8] == 3 && sample.payload[9] == 3);
++        assert_se(sample.payload[303] == 41 && sample.rights_count == 1 && sample.descriptor_count == 1);
++        int retained = sample.descriptors[0];
++        assert_se(aos_launch_record_receive_once(&sample, sockets[1],
++                  AOS_LAUNCH_RECORD_SOURCE_COMPLETION_304) == -EALREADY);
++        assert_se(sample.descriptors[0] == retained && fcntl(retained, F_GETFD) >= 0);
++        safe_close(retained);
++}
++
+ DEFINE_TEST_MAIN(LOG_INFO);
+--- /dev/null
++++ b/src/test/test-aos-fixed-service-profile.c
+@@ -0,0 +1,85 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include "aos-fixed-service-profile.h"
++#include "tests.h"
++
++TEST(fixed_role_names_are_closed_and_distinct) {
++        ASSERT_EQ(aos_fixed_service_role("aos-sandbox-source-signerd.service"), AOS_FIXED_PROFILE_SOURCE);
++        ASSERT_EQ(aos_fixed_service_role("aos-sandbox-ownershipd.service"), AOS_FIXED_PROFILE_OWNERSHIP);
++        ASSERT_EQ(aos_fixed_service_role("aos-sandbox-cache-signerd.service"), AOS_FIXED_PROFILE_CACHE);
++        ASSERT_EQ(aos_fixed_service_role("aos-sandbox-cache-signerd@other.service"), AOS_FIXED_PROFILE_NONE);
++        ASSERT_EQ(aos_fixed_service_role(NULL), AOS_FIXED_PROFILE_NONE);
++        ASSERT_NULL(aos_fixed_service_unit_name(4));
++        ASSERT_NULL(aos_fixed_service_cgroup(0));
++        ASSERT_STREQ(aos_fixed_service_unit_name(AOS_FIXED_PROFILE_CACHE), "aos-sandbox-cache-signerd.service");
++        ASSERT_STREQ(aos_fixed_service_cgroup(AOS_FIXED_PROFILE_CACHE),
++                     "/aoscomponents.slice/aos-sandbox-cache-signerd.service");
++        ASSERT_STREQ(aos_fixed_service_native_cgroup(AOS_FIXED_PROFILE_CACHE),
++                     "/sys/fs/cgroup/aoscomponents.slice/aos-sandbox-cache-signerd.service");
++}
++
++TEST(subdivisions_are_checked_in_each_actual_dimension) {
++        /* These scalars are a single passive dimension, never a payer. The
++         * real Parent applies this exact helper to every one of its 22 dimensions. */
++        ASSERT_TRUE(aos_fixed_service_subdivisions_fit(20, 12, 2, 3, 7, 2, 3, 4, 11));
++        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(20, 12, 2, 3, 8, 2, 3, 4, 11));
++        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(20, 12, 2, 3, 7, 2, 3, 4, 12));
++        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(UINT64_MAX, UINT64_MAX,
++                UINT64_MAX, 1, 0, 0, 0, 0, 0));
++        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(UINT64_MAX, UINT64_MAX,
++                0, 0, 0, UINT64_MAX, 0, 0, 1));
++        ASSERT_TRUE(aos_fixed_service_subdivisions_fit(UINT64_MAX, UINT64_MAX,
++                UINT64_MAX, 0, 0, UINT64_MAX, 0, 0, 0));
++}
++
++static ExecContext finite_context(const char *identity) {
++        return (ExecContext) {
++                .user = (char*) identity,
++                .group = (char*) identity,
++                .private_users = PRIVATE_USERS_NO,
++                .private_pids = PRIVATE_PIDS_NO,
++                .private_bpf = PRIVATE_BPF_NO,
++                .delegate_namespaces = NAMESPACE_FLAGS_INITIAL,
++                .private_tmp = PRIVATE_TMP_CONNECTED,
++                .private_var_tmp = PRIVATE_TMP_CONNECTED,
++        };
++}
++
++TEST(cache_context_cannot_substitute_another_role_or_helper) {
++        ExecContext context = finite_context("aos-cache-signer");
++
++        ASSERT_TRUE(aos_fixed_service_context_matches(&context, AOS_FIXED_PROFILE_CACHE));
++        ASSERT_FALSE(aos_fixed_service_context_matches(&context, AOS_FIXED_PROFILE_SOURCE));
++        ASSERT_FALSE(aos_fixed_service_context_matches(&context, AOS_FIXED_PROFILE_OWNERSHIP));
++        ASSERT_FALSE(aos_fixed_service_context_matches(&context, AOS_FIXED_PROFILE_NONE));
++        context.pam_name = (char*) "unexpected-helper";
++        ASSERT_FALSE(aos_fixed_service_context_matches(&context, AOS_FIXED_PROFILE_CACHE));
++        context.pam_name = NULL;
++        context.dynamic_user = true;
++        ASSERT_FALSE(aos_fixed_service_context_matches(&context, AOS_FIXED_PROFILE_CACHE));
++        context.dynamic_user = false;
++        context.directories[EXEC_DIRECTORY_STATE].n_items = 1;
++        ASSERT_FALSE(aos_fixed_service_context_matches(&context, AOS_FIXED_PROFILE_CACHE));
++}
++
++TEST(existing_source_and_ownership_contexts_remain_distinct) {
++        ExecContext source = finite_context("aos-source-signer");
++        ExecContext ownership = finite_context(NULL);
++        ExecDirectoryItem state = { .path = (char*) "aos/sandbox/multi-node" };
++        ExecDirectoryItem runtime = { .path = (char*) "aos/sandbox-ownership" };
++        ownership.directories[EXEC_DIRECTORY_STATE] = (ExecDirectory) {
++                .items = &state, .n_items = 1, .mode = 0700,
++        };
++        ownership.directories[EXEC_DIRECTORY_RUNTIME] = (ExecDirectory) {
++                .items = &runtime, .n_items = 1, .mode = 0711,
++        };
++
++        ASSERT_TRUE(aos_fixed_service_context_matches(&source, AOS_FIXED_PROFILE_SOURCE));
++        ASSERT_TRUE(aos_fixed_service_context_matches(&ownership, AOS_FIXED_PROFILE_OWNERSHIP));
++        ASSERT_FALSE(aos_fixed_service_context_matches(&source, AOS_FIXED_PROFILE_CACHE));
++        ASSERT_FALSE(aos_fixed_service_context_matches(&ownership, AOS_FIXED_PROFILE_CACHE));
++        ownership.directories[EXEC_DIRECTORY_STATE].mode = 0755;
++        ASSERT_FALSE(aos_fixed_service_context_matches(&ownership, AOS_FIXED_PROFILE_OWNERSHIP));
++}
++
++DEFINE_TEST_MAIN(LOG_INFO);

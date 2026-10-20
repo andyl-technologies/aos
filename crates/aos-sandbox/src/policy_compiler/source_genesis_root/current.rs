@@ -37,10 +37,10 @@ impl<'root> CurrentRootFirstSourceSuccessorFloorV2<'root> {
     }
 
     /// Borrows the logical floor without releasing its physical archive owner.
-    pub fn floor(&self) -> &super::RootFirstSourceSuccessorFloorV2 { &self.archive.floor }
+    pub fn floor(&self) -> &aos_sandbox_ledger_replay::replay::phase_records::RootFirstSourceSuccessorFloorV2 { &self.archive.floor }
 
     /// Borrows the full original immutable intent retained beside that floor.
-    pub fn original_intent(&self) -> &super::RootFirstSourceSuccessorIntentV2 { &self.archive.original }
+    pub fn original_intent(&self) -> &aos_sandbox_ledger_replay::replay::phase_records::RootFirstSourceSuccessorIntentV2 { &self.archive.original }
 
     /// Borrows the joined final floor/Controller Complete/Source ACK DATA.
     pub const fn completion(&self) -> &[u8; 96] { &self.completion }
@@ -95,10 +95,10 @@ impl<'root> CurrentRootProjectSuccessorFloorV3<'root> {
     }
 
     /// Borrows the selected logical floor DATA without releasing its owner.
-    pub fn floor(&self) -> &super::RootFirstSourceSuccessorFloorV2 { &self.archive.floor }
+    pub fn floor(&self) -> &aos_sandbox_ledger_replay::replay::phase_records::RootFirstSourceSuccessorFloorV2 { &self.archive.floor }
 
     /// Borrows the persisted admission DATA without renewing its original D.
-    pub fn original_intent(&self) -> &super::RootFirstSourceSuccessorIntentV2 { &self.archive.original }
+    pub fn original_intent(&self) -> &aos_sandbox_ledger_replay::replay::phase_records::RootFirstSourceSuccessorIntentV2 { &self.archive.original }
 
     /// Borrows the exact final floor, Controller Complete and Source ACK tuple.
     pub const fn completion(&self) -> &[u8; 96] { &self.completion }

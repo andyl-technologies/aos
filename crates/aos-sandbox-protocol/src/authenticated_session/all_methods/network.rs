@@ -13,8 +13,24 @@ pub(super) fn validate_network_apply_response(
     body: &[u8],
     request: &CanonicalNetworkSemanticsV1,
 ) -> Result<(), ProtocolValidationError> {
-    let result = NetworkResult::decode_from_slice(body)
-        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    decode_network_apply_response_data_v4(body, request).map(|_| ())
+}
+
+pub(super) fn decode_network_apply_response_data_v4(
+    body: &[u8], request: &CanonicalNetworkSemanticsV1,
+) -> Result<NetworkResult, ProtocolValidationError> {
+    decode_network_apply_response_engine_v4(body, request, None)
+}
+
+fn decode_network_apply_response_engine_v4(
+    body: &[u8], request: &CanonicalNetworkSemanticsV1,
+    capture: Option<(&mut NetworkResult, &mut Option<Result<(), buffa::DecodeError>>)>,
+) -> Result<NetworkResult, ProtocolValidationError> {
+    let (raw, decode) = match capture {
+        Some((raw, decode)) => (Some(raw), Some(decode)),
+        None => (None, None),
+    };
+    let result = crate::capture::decode_message_v1::<NetworkResult>(body, raw, decode)?;
     validate_network_result_shape(&result)?;
     if result.encode_to_vec() != body {
         return Err(ProtocolValidationError::UnknownFields);
@@ -57,7 +73,39 @@ pub(super) fn validate_network_apply_response(
             "network apply response binding",
         ));
     }
-    Ok(())
+    Ok(result.take())
+}
+
+#[derive(Default)]
+pub(super) struct NetworkApplyResponseCaptureV4 {
+    raw: NetworkResult,
+    decode: Option<Result<(), buffa::DecodeError>>,
+    result: Option<Result<NetworkResult, ProtocolValidationError>>,
+    destroy: bool,
+    entered: bool,
+}
+
+impl NetworkApplyResponseCaptureV4 {
+    pub(super) fn validate_once(&mut self, body: &[u8], request: &CanonicalNetworkSemanticsV1)
+        -> Result<(), ProtocolValidationError> {
+        if self.entered { return Err(ProtocolValidationError::MethodMismatch); }
+        self.entered = true;
+        self.destroy = matches!(request.operation(), NetworkOperation::Destroy { .. });
+        self.result = Some(decode_network_apply_response_engine_v4(body, request,
+            Some((&mut self.raw, &mut self.decode))));
+        self.result.as_ref().ok_or(ProtocolValidationError::MethodMismatch)?
+            .as_ref().map(|_| ()).map_err(Clone::clone)
+    }
+
+    pub(super) fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.decode.as_ref().and_then(|value| value.as_ref().err()).map(|cause| cause as _)
+            .or_else(|| self.result.as_ref()?.as_ref().err().map(|cause| cause as _))
+    }
+
+    pub(super) fn destroy_data_v4(&self) -> Option<&NetworkResult> {
+        if !self.destroy { return None; }
+        self.result.as_ref()?.as_ref().ok()
+    }
 }
 
 pub(super) fn validate_network_inventory(body: &[u8]) -> Result<(), ProtocolValidationError> {

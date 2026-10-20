@@ -48,11 +48,11 @@ impl Q04PreparedInputOriginV1 {
     ) -> Result<Self, CreateQ04ErrorV1> {
         let original =
             aos_sandbox_policy::retain_publisher_compiler_derivation_v3(input, candidate)
-                .map_err(crate::publisher_policy::PublisherPolicyError::from)?;
+                .map_err(crate::publisher_admin::policy::PublisherPolicyError::from)?;
         Ok(Self {
             bytes: original
                 .to_record_bytes()
-                .map_err(crate::publisher_policy::PublisherPolicyError::from)?,
+                .map_err(crate::publisher_admin::policy::PublisherPolicyError::from)?,
         })
     }
 
@@ -71,7 +71,7 @@ impl Q04PreparedInputOriginV1 {
         aos_sandbox_protocol::domain_ledger::resource_bank::require_origin_identity(&self.bytes, identity)
             .map_err(|error| match error {
                 aos_sandbox_protocol::domain_ledger::resource_bank::OriginIdentityDataError::Policy(error) => {
-                    CreateQ04ErrorV1::InputOrigin(crate::publisher_policy::PublisherPolicyError::from(error))
+                    CreateQ04ErrorV1::InputOrigin(crate::publisher_admin::policy::PublisherPolicyError::from(error))
                 }
                 aos_sandbox_protocol::domain_ledger::resource_bank::OriginIdentityDataError::IdentityMismatch => {
                     CreateQ04ErrorV1::ChangedCut
@@ -172,6 +172,37 @@ pub(crate) fn original_input_demand(
         .and_then(|bytes| bytes.checked_add(compiler_memory))
         .and_then(|bytes| bytes.checked_add(cache_materialized))
         .and_then(|bytes| bytes.checked_add(origin_bytes.checked_mul(16)?)).ok_or_else(failed)?;
+    // The lower Cache DATA grouping introduces only a returned Result and
+    // caller-local header before the same final wrapper. Payload/suffix/replay
+    // backing remains in the existing terms above; no second backing fee.
+    #[cfg(target_os = "linux")]
+    let recipe_controls = aos_sandbox_protocol::cache_state::hold_state::q04_recipes::
+        CacheQ04TransactionRecipesDataV1::additional_construction_bytes_v1()
+        .ok_or_else(failed)?;
+    #[cfg(not(target_os = "linux"))]
+    let recipe_controls = 0;
+    let materialized = materialized.checked_add(recipe_controls).ok_or_else(failed)?;
+    // Moving the bounded parser preserves its byte backing. The exact lower
+    // return plus caller-local envelopes below are the new forwarding storage;
+    // existing outer CreateQ04Error/result controls remain in their old owners.
+    use aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::{
+        Q04DataErrorV1 as TransferError, Q04OrderedChunkV1,
+    };
+    let transfer_controls = [
+        std::mem::size_of::<Result<Q04OrderedChunkV1<'_>, TransferError>>(),
+        std::mem::size_of::<Result<[&[u8]; 14], TransferError>>(),
+        std::mem::size_of::<Result<[&[u8]; 6], TransferError>>(),
+        std::mem::size_of::<Result<[u8; 48], TransferError>>(),
+        std::mem::size_of::<Result<(usize, u16), TransferError>>(),
+        std::mem::size_of::<Result<[u8; 32], TransferError>>(),
+        std::mem::size_of::<Result<[u8; 16], TransferError>>(),
+        std::mem::size_of::<Result<u32, TransferError>>(),
+        std::mem::size_of::<Result<u64, TransferError>>(),
+        std::mem::size_of::<Result<(), TransferError>>(),
+        std::mem::size_of::<Result<super::Q04EffectSubgateV1, aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1>>(),
+    ].into_iter().try_fold(0_usize, |sum, bytes| sum.checked_add(bytes))
+        .and_then(|bytes| bytes.checked_mul(2)).ok_or_else(failed)?;
+    let materialized = materialized.checked_add(transfer_controls).ok_or_else(failed)?;
     let memory = u64::try_from(materialized).map_err(|_| failed())?;
     let rows = u64::try_from(rows).map_err(|_| failed())?;
 

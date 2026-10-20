@@ -178,6 +178,11 @@ pub(in crate::controller_service) fn handle_controller_command(
     node: NodeId,
     sessions: &SharedControllerBrokerSessions,
     command: ControllerCommand,
+    recovery_origins: Option<(
+        &std::sync::Arc<std::sync::Mutex<aos_sandbox::ControllerResourceBankOpeningV1>>,
+        &std::sync::Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>,
+        &std::sync::Arc<tokio::runtime::Runtime>,
+    )>,
 ) -> Result<(), String> {
     macro_rules! require_holder_handle {
         ($peer:expr, $id:expr, $handle:expr, $reply:expr) => {
@@ -395,6 +400,25 @@ pub(in crate::controller_service) fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
+            if let Some((bank, profile, runtime)) = recovery_origins {
+                // The real successor receiver is paid BEFORE holder lookup,
+                // request models, protected authorization or floor mutation.
+                // This entrance never falls through to ordinary ownership retry.
+                let completed = controller.observe_public_create_recovery_once_v1(
+                    bank, profile, runtime, &peer, capability_id, &capability_handle,
+                    &canonical_request,
+                );
+                return match completed {
+                    Ok(operation) => { let _ = reply.send(Ok(operation)); Ok(()) }
+                    Err(cause) => {
+                        let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                        Err(match controller.operator_create_recovery_failure_view_v1() {
+                            Some(view) => view.to_string(),
+                            None => cause.to_string(),
+                        })
+                    }
+                };
+            }
             require_holder_handle!(peer, capability_id, capability_handle, reply);
             let repair = operator_repair::is_repair(&canonical_request);
             if matches!(repair, Ok(true)) && !operator_repair::QUALIFIED {
@@ -469,7 +493,18 @@ pub(in crate::controller_service) fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
-            let admission = if controller
+            let original_method = aos_sandbox_protocol::public_api::mutation::PublicMutationEnvelopeDataV1::
+                decode_v1(&canonical_request).ok().map(|envelope| envelope.method_v1());
+            let admission = if original_method == Some(aos_sandbox_protocol::public_api::method::PublicApiAuditMethodV1::StartSandbox) {
+                controller.admit_public_original_start_v1(&peer,capability_id,&capability_handle,&canonical_request)
+            } else if original_method == Some(aos_sandbox_protocol::public_api::method::PublicApiAuditMethodV1::DeleteSandbox) {
+                controller.admit_public_original_delete_once_v4(
+                    &peer, capability_id, &capability_handle, &canonical_request)
+            } else if original_method == Some(aos_sandbox_protocol::public_api::method::PublicApiAuditMethodV1::CreateExecution) {
+                // C18 enters before handle/authentication model or Exec decode.
+                controller.admit_public_original_execution_once_v2(
+                    &peer, capability_id, &capability_handle, &canonical_request)
+            } else if controller
                 .resolve_public_capability_handle(&peer, capability_id, &capability_handle)
                 .is_ok()
             {

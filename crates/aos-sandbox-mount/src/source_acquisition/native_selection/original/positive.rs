@@ -5,7 +5,7 @@
 //! and actual readback. The named response continuation can send stored Root4
 //! once; it cannot settle interest or mint a manager SourceRoot capability.
 
-use aos_sandbox::{JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_mount_native::{JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_source_provider_protocol::native_held_completion::{
     NativeHeldControlKindV1 as Kind, NativeHeldOwnerV1,
     NativeHeldSectionTagV1 as Tag,

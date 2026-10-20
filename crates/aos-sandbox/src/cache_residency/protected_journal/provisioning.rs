@@ -124,6 +124,9 @@ pub(super) fn commit_canonical_record_under_claim_v1(
         &record_key, previous.as_deref(), &record, transaction_domain,
     )?;
     let preflight = match &mut gate {
+        CacheMutationGateV1::SourceProvisioning(_) | CacheMutationGateV1::StopCleanupSource(_) => {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+        }
         CacheMutationGateV1::Ordinary => {
             authority.preflight_transactions(std::slice::from_ref(&transaction))?
         }
@@ -134,6 +137,9 @@ pub(super) fn commit_canonical_record_under_claim_v1(
     };
     authority.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
     match &mut gate {
+        CacheMutationGateV1::SourceProvisioning(_) | CacheMutationGateV1::StopCleanupSource(_) => {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+        }
         CacheMutationGateV1::Ordinary => {
             authority.commit(&transaction)?;
         }

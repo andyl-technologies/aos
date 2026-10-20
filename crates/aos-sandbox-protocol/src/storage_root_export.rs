@@ -12,6 +12,8 @@
 //!            | detached_mount_id:u64be
 //! ```
 
+pub mod launch;
+
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use sha2::{Digest as _, Sha256};
 

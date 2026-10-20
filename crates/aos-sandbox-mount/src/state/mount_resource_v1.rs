@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox::journal::{Journal, JournalRecord, RecordNamespace};
+use aos_sandbox_mount_native::{MountJournalV1 as Journal, JournalRecord, RecordNamespace};
 use aos_sandbox_core::{
     DecodeLimits, DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest, decode_view_source,
     encode_view_source, model::ViewSource, validate_descriptor_role,
@@ -1527,7 +1527,7 @@ fn state_error(message: impl Into<String>) -> MountError {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use aos_sandbox::JournalTransaction;
+    use aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction;
     use aos_sandbox_core::PortableMediaType;
 
     use super::*;

@@ -7,7 +7,7 @@
 
 use std::{cell::Cell, sync::Arc};
 
-use aos_sandbox::{MountOriginalNativeJournalAuthorityV5, OriginalRootProtectedReadbackV5};
+use aos_sandbox_mount_native::{MountOriginalNativeJournalAuthorityV5, OriginalRootProtectedReadbackV5};
 use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::RootNativeCutV1;
 use aos_sandbox_source_provider_protocol::native_held_completion::{
     NativeHeldControlKindV1 as Kind, NativeHeldSectionTagV1 as Tag,
@@ -419,7 +419,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         phase1: &OriginalRootProtectedReadbackV5,
         authorization: &AuthorizedMountProviderOutcomeV2,
         retained: &mut OriginalNativeReceivedOutcomeV5,
-        owners: &aos_sandbox::JournalTransaction,
+        owners: &aos_sandbox_mount_native::JournalTransaction,
     ) -> Result<(), SourceProviderSecurityError> {
         OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
             let retained = &mut **retained;
@@ -444,7 +444,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         phase1: &OriginalRootProtectedReadbackV5,
         authorization: &AuthorizedMountProviderOutcomeV2,
         retained: &mut OriginalNativeReceivedOutcomeV5,
-        owners: &aos_sandbox::JournalTransaction,
+        owners: &aos_sandbox_mount_native::JournalTransaction,
     ) -> Result<(), SourceProviderSecurityError> {
         if retained.pending_cut.is_some() || retained.unsigned8.is_some() {
             return Err(SourceProviderSecurityError::SessionContinuity);

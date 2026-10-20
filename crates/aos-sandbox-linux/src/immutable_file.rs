@@ -21,15 +21,24 @@
 mod backing;
 mod credential;
 mod publication;
+mod sealed_original;
+mod fs_verity_read;
+
+pub use fs_verity_read::{FsVerityReadOriginalV2, FsVerityReadClosedV2};
+
+pub use sealed_original::{SealedMemfdReadOriginalV2, SealedMemfdReadClosedV2};
 
 pub use backing::{BackingFileIdentity, FsVerityBacking};
-pub use credential::SealedReadOnlyCredential;
+pub use credential::{
+    SealedReadOnlyCredential, SealedReadOnlyCredentialCreateClosedV1,
+    SealedReadOnlyCredentialCreateFootprintV1, SealedReadOnlyCredentialCreateOriginalsV1,
+};
 pub use publication::{
     AfterRenameFailure, AmbiguousNamedSealedFile, BeforeRenameFailure, DurablyNamedSealedFile,
     FsVerityPublicationRoot, InvalidPublicationName, MaterializationCallbacks,
     MaterializationError, MaterializationFailure, NoReplacePublicationError,
     ObserveSealedPublicationError, ObservedRetainedPrivateArtifact, ObservedSealedPublicationFile,
-    ObservedSealedPublicationReader, PublicationName, PublicationRootError, RenamedSealedFile,
+    ObservedSealedPublicationReader, PublicationName, PublicationRootError, PublicationRootRecheckOriginalsV1, RenamedSealedFile,
     RetainedPrivateArtifact, RetainedPrivatePhase, SealedPrivateFile,
 };
 
@@ -176,18 +185,8 @@ impl SealedMemfdMapping {
     where
         F: for<'mapping> FnOnce(&'mapping [u8], ImmutableFileIdentity<'mapping>) -> R,
     {
-        uapi::ensure_cloexec(file.as_fd())?;
-        let before = inspect(file.as_fd())?;
-        if before.file_type != libc::S_IFREG {
-            return Err(ImmutableFileError::NotRegular);
-        }
-        if uapi::get_status_flags(file.as_fd())? & libc::O_ACCMODE == libc::O_WRONLY {
-            return Err(ImmutableFileError::WriteOnlyDescriptor);
-        }
-        let seals = uapi::get_seals(file.as_fd())?;
-        if seals & uapi::REQUIRED_IMMUTABLE_SEALS != uapi::REQUIRED_IMMUTABLE_SEALS {
-            return Err(ImmutableFileError::MissingSeals);
-        }
+        let mut inspection = sealed_original::SealedInspectionV2::default();
+        let before = inspect_sealed_memfd(&file, &mut inspection)?;
         run_mapping(
             file,
             before,
@@ -196,6 +195,27 @@ impl SealedMemfdMapping {
             use_bytes,
         )
     }
+}
+
+fn inspect_sealed_memfd(
+    file: &OwnedFd,
+    original: &mut sealed_original::SealedInspectionV2,
+) -> Result<ObservedFile, ImmutableFileError> {
+    uapi::ensure_cloexec(file.as_fd())?;
+    original.before = Some(inspect_captured(file.as_fd(), Some(&mut original.raw_before))?);
+    let before = original.before.ok_or(ImmutableFileError::AdmissionRace)?;
+    if before.file_type != libc::S_IFREG {
+        return Err(ImmutableFileError::NotRegular);
+    }
+    original.flags = Some(uapi::get_status_flags(file.as_fd())?);
+    if original.flags.is_some_and(|flags| flags & libc::O_ACCMODE == libc::O_WRONLY) {
+        return Err(ImmutableFileError::WriteOnlyDescriptor);
+    }
+    original.seals = Some(uapi::get_seals(file.as_fd())?);
+    if original.seals.is_none_or(|seals| seals & uapi::REQUIRED_IMMUTABLE_SEALS != uapi::REQUIRED_IMMUTABLE_SEALS) {
+        return Err(ImmutableFileError::MissingSeals);
+    }
+    Ok(before)
 }
 
 /// Opens scoped mappings of durable fs-verity-protected files.
@@ -220,20 +240,7 @@ impl FsVerityMapping {
         expected_bytes: u64,
     ) -> Result<OwnedFd, ImmutableFileError> {
         let file = root.open_regular(relative)?.into_owned_fd();
-        let before = inspect(file.as_fd())?;
-        if before.file_type != libc::S_IFREG {
-            return Err(ImmutableFileError::NotRegular);
-        }
-        if before.bytes != expected_bytes {
-            return Err(ImmutableFileError::SizeMismatch);
-        }
-        if !measurement_matches(file.as_fd(), expected_verity)? {
-            return Err(ImmutableFileError::VerityMeasurementMismatch);
-        }
-        let after = inspect(file.as_fd())?;
-        if before != after || !measurement_matches(file.as_fd(), expected_verity)? {
-            return Err(ImmutableFileError::AdmissionRace);
-        }
+        fs_verity_read::require_verified_file_v2(file.as_fd(), expected_verity, expected_bytes, None)?;
         Ok(file)
     }
 
@@ -294,14 +301,7 @@ fn measurement_matches(
     fd: BorrowedFd<'_>,
     expected: FsVerityDigest,
 ) -> Result<bool, ImmutableFileError> {
-    if !is_kernel_verity_filesystem(uapi::filesystem_type(fd)?) {
-        return Err(ImmutableFileError::UnsupportedVerityFilesystem);
-    }
-    let measurement = uapi::measure_verity(fd)?;
-    Ok(expected.matches(
-        measurement.algorithm,
-        &measurement.digest[..measurement.length],
-    ))
+    fs_verity_read::measurement_matches_captured_v2(fd, expected, None)
 }
 
 pub(crate) fn is_kernel_verity_filesystem(filesystem_type: libc::c_long) -> bool {
@@ -320,7 +320,17 @@ struct ObservedFile {
 }
 
 fn inspect(fd: BorrowedFd<'_>) -> Result<ObservedFile, ImmutableFileError> {
+    inspect_captured(fd, None)
+}
+
+fn inspect_captured(
+    fd: BorrowedFd<'_>,
+    destination: Option<&mut Option<libc::stat>>,
+) -> Result<ObservedFile, ImmutableFileError> {
     let stat = uapi::fstat(fd)?;
+    if let Some(destination) = destination {
+        *destination = Some(stat);
+    }
     let bytes = u64::try_from(stat.st_size).map_err(|_| ImmutableFileError::SizeMismatch)?;
     Ok(ObservedFile {
         device: stat.st_dev,
@@ -362,19 +372,8 @@ where
     F: for<'mapping> FnOnce(&'mapping [u8], ImmutableFileIdentity<'mapping>) -> R,
     P: FnOnce(BorrowedFd<'_>) -> Result<(), ImmutableFileError>,
 {
-    if expected_bytes == 0 || expected_bytes > maximum_mapped_bytes {
-        return Err(ImmutableFileError::MappingLimitExceeded);
-    }
-    if before.bytes != expected_bytes {
-        return Err(ImmutableFileError::SizeMismatch);
-    }
-    let length =
-        usize::try_from(expected_bytes).map_err(|_| ImmutableFileError::MappingLimitExceeded)?;
-    let mapping = ReadOnlyMapping::new(file.as_fd(), length)?;
-    let after = inspect(file.as_fd())?;
-    if before != after {
-        return Err(ImmutableFileError::AdmissionRace);
-    }
+    let mut original = sealed_original::MappingOriginalV2::default();
+    prepare_mapping(&file, before, expected_bytes, maximum_mapped_bytes, &mut original)?;
     postcheck(file.as_fd())?;
 
     let identity = ImmutableFileIdentity {
@@ -383,7 +382,31 @@ where
         bytes: before.bytes,
         mapping: PhantomData,
     };
+    let mapping = original.mapping.as_ref().ok_or(ImmutableFileError::AdmissionRace)?;
     Ok(use_bytes(mapping.bytes(), identity))
+}
+
+fn prepare_mapping(
+    file: &OwnedFd,
+    before: ObservedFile,
+    expected_bytes: u64,
+    maximum_mapped_bytes: u64,
+    original: &mut sealed_original::MappingOriginalV2,
+) -> Result<(), ImmutableFileError> {
+    if expected_bytes == 0 || expected_bytes > maximum_mapped_bytes {
+        return Err(ImmutableFileError::MappingLimitExceeded);
+    }
+    if before.bytes != expected_bytes {
+        return Err(ImmutableFileError::SizeMismatch);
+    }
+    let length = usize::try_from(expected_bytes)
+        .map_err(|_| ImmutableFileError::MappingLimitExceeded)?;
+    original.mapping = Some(ReadOnlyMapping::new(file.as_fd(), length)?);
+    original.after = Some(inspect_captured(file.as_fd(), Some(&mut original.raw_after))?);
+    if original.after != Some(before) {
+        return Err(ImmutableFileError::AdmissionRace);
+    }
+    Ok(())
 }
 
 struct ReadOnlyMapping {

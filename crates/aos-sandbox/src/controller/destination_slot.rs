@@ -30,7 +30,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::destination_slot_effect::prepare_current(
@@ -55,7 +55,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         prepared.recheck(self.reconciler.journal_mut(), clock)
@@ -76,7 +76,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::destination_slot_effect::bind_signed_plan(
@@ -100,7 +100,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         prepared.recheck(self.reconciler.journal_mut(), clock)
@@ -124,7 +124,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::destination_slot_effect::admit_current(
@@ -153,7 +153,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::destination_slot_effect::prepare_current_resume(
@@ -177,7 +177,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         prepared.recheck(self.reconciler.journal_mut(), clock)
@@ -203,7 +203,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::destination_slot_effect::bind_resume_signed_plan(
@@ -227,7 +227,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         prepared.recheck(self.reconciler.journal_mut(), clock)
@@ -247,7 +247,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::destination_slot_effect::resume_current(
@@ -271,7 +271,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         attempt.recheck(self.reconciler.journal_mut(), clock)
@@ -298,7 +298,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::destination_slot_effect::dispatch_current(

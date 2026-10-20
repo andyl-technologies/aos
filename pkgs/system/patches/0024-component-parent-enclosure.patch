@@ -1,9 +1,7 @@
 diff --git a/src/core/aos-component-parent.c b/src/core/aos-component-parent.c
-new file mode 100644
-index 0000000..7aa0d0f
 --- /dev/null
 +++ b/src/core/aos-component-parent.c
-@@ -0,0 +1,877 @@
+@@ -0,0 +1,896 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <fcntl.h>
@@ -30,7 +28,12 @@ index 0000000..7aa0d0f
 +#define AOS_RESOURCE_COMPONENTS_OFFSET (40U + 3U * AOS_RESOURCE_VECTOR_BYTES)
 +#define AOS_RESOURCE_HOST_POLICY_BYTES 1128U
 +#define AOS_RESOURCE_ROOT_POLICY_BYTES 1832U
++#define AOS_RESOURCE_CREATE_STORAGE_POLICY_BYTES 2184U
++#define AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES 2536U
++#define AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES 2888U
++#define AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES 3064U
 +#define AOS_RESOURCE_ROOT_OFFSET 1624U
++#define AOS_RESOURCE_STORAGE_OFFSET 1976U
 +
 +static uint64_t policy_u64(const uint8_t *bytes) {
 +        uint64_t value = 0;
@@ -187,12 +190,26 @@ index 0000000..7aa0d0f
 +                                        return -ERANGE;
 +                                baseline -= host;
 +                        }
-+                if (parent->policy_bytes == AOS_RESOURCE_ROOT_POLICY_BYTES) {
++                if (parent->policy_bytes == AOS_RESOURCE_ROOT_POLICY_BYTES ||
++                    parent->policy_bytes == AOS_RESOURCE_CREATE_STORAGE_POLICY_BYTES ||
++                    parent->policy_bytes == AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES ||
++                    parent->policy_bytes == AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES ||
++                    parent->policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES) {
 +                        uint64_t root = policy_u64(parent->policy + AOS_RESOURCE_ROOT_OFFSET + dimension * 8);
 +
 +                        if (root > baseline)
 +                                return -ERANGE;
 +                        baseline -= root;
++                }
++                if (parent->policy_bytes == AOS_RESOURCE_CREATE_STORAGE_POLICY_BYTES ||
++                    parent->policy_bytes == AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES ||
++                    parent->policy_bytes == AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES ||
++                    parent->policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES) {
++                        uint64_t storage = policy_u64(parent->policy + AOS_RESOURCE_STORAGE_OFFSET + dimension * 8);
++
++                        if (storage > baseline)
++                                return -ERANGE;
++                        baseline -= storage;
 +                }
 +                if (m > baseline || f > baseline - m)
 +                        return -ERANGE;
@@ -882,8 +899,6 @@ index 0000000..7aa0d0f
 +        return aos_resource_parent_dropins((Unit*) unit, unit->dropin_paths, 0);
 +}
 diff --git a/src/core/aos-component-parent.h b/src/core/aos-component-parent.h
-new file mode 100644
-index 0000000..e1011fa
 --- /dev/null
 +++ b/src/core/aos-component-parent.h
 @@ -0,0 +1,142 @@
@@ -1030,7 +1045,6 @@ index 0000000..e1011fa
 +int aos_resource_parent_dropin_fd(Unit *unit, unsigned file);
 +int aos_resource_parent_verify_fragment(const Unit *unit);
 diff --git a/src/core/aos-resource-enrollment.c b/src/core/aos-resource-enrollment.c
-index f7ffa36..55c8aea 100644
 --- a/src/core/aos-resource-enrollment.c
 +++ b/src/core/aos-resource-enrollment.c
 @@ -8,6 +8,7 @@
@@ -1041,7 +1055,7 @@ index f7ffa36..55c8aea 100644
  #include "alloc-util.h"
  #include "cgroup-util.h"
  #include "cgroup.h"
-@@ -126,6 +127,7 @@ typedef struct AosResourceRootObservation {
+@@ -136,6 +137,7 @@
  
  typedef struct AosResourceEnrollment {
          Manager *manager;
@@ -1049,7 +1063,7 @@ index f7ffa36..55c8aea 100644
          int policy_fd;
          int first_error;
          bool attempted;
-@@ -390,7 +392,7 @@ static int controller_cpu_refuse(int error) {
+@@ -462,7 +464,7 @@
  
  /* These kernels share only native control I/O and exact material comparison.
   * Their callers select policy and retain every descriptor and observation. */
@@ -1058,7 +1072,7 @@ index f7ffa36..55c8aea 100644
                  int fd,
                  const char *expected,
                  uint8_t *readback,
-@@ -407,7 +409,7 @@ static int resource_control_readback(
+@@ -479,7 +481,7 @@
          return *read_result;
  }
  
@@ -1067,22 +1081,22 @@ index f7ffa36..55c8aea 100644
                  int fd,
                  const char *expected,
                  ssize_t *write_length,
-@@ -559,12 +561,12 @@ int aos_resource_enforce_controller_cpu(Service *service, int prepare_result) {
+@@ -652,12 +654,12 @@
          snprintf(expected, sizeof(expected), "%" PRIu64 " 100000\n",
-                  policy_u64(enrollment.policy + AOS_RESOURCE_CONTROLLER_PREFIX_OFFSET));
+                  policy_u64(enrollment.policy + resource_cpu_offset(role)));
          if (first) {
 -                r = resource_control_install(original->control_fd, expected,
 +                r = aos_resource_control_install(original->control_fd, expected,
                                               &original->write_length, &original->write_result);
                  if (r < 0)
-                         return controller_cpu_refuse(r);
+                         return resource_cpu_refuse(original, r);
          }
 -        r = resource_control_readback(original->control_fd, expected, check->readback,
 +        r = aos_resource_control_readback(original->control_fd, expected, check->readback,
                                        sizeof(check->readback), &check->read_length, &check->read_result);
          if (r < 0)
-                 return controller_cpu_refuse(r);
-@@ -891,11 +893,11 @@ int aos_resource_enforce_root_limits(Service *service) {
+                 return resource_cpu_refuse(original, r);
+@@ -988,11 +990,11 @@
                      enrollment.root_control_stats[i].st_dev != enrollment.root_cgroup_stat.st_dev ||
                      enrollment.root_control_stats[i].st_uid != 0 || enrollment.root_control_stats[i].st_gid != 0)
                          return refuse(enrollment.root_limit_error = -EPERM);
@@ -1096,7 +1110,7 @@ index f7ffa36..55c8aea 100644
                                                sizeof(enrollment.root_readback[i]), &enrollment.root_read_lengths[i],
                                                &enrollment.root_read_results[i]);
                  if (r < 0)
-@@ -1163,3 +1165,25 @@ void aos_resource_job_release(bool charged) {
+@@ -1283,3 +1285,25 @@
          /* Only the freed local Job slot is reusable. Neither fixed envelope
           * nor a durable project claim is refunded by object destruction. */
  }
@@ -1123,7 +1137,6 @@ index f7ffa36..55c8aea 100644
 +        return refuse(error);
 +}
 diff --git a/src/core/aos-resource-enrollment.h b/src/core/aos-resource-enrollment.h
-index d64120b..a31eac6 100644
 --- a/src/core/aos-resource-enrollment.h
 +++ b/src/core/aos-resource-enrollment.h
 @@ -2,6 +2,7 @@
@@ -1134,7 +1147,7 @@ index d64120b..a31eac6 100644
  #include "unit.h"
  #include "service.h"
  #include "process-util.h"
-@@ -26,3 +27,10 @@ void aos_resource_root_before_cleanup(Unit *unit);
+@@ -26,3 +27,10 @@
  sd_id128_t aos_resource_unit_producer(Service *service);
  int aos_resource_job_acquire(Unit *unit);
  void aos_resource_job_release(bool charged);
@@ -1146,10 +1159,9 @@ index d64120b..a31eac6 100644
 +int aos_resource_control_readback(int fd, const char *expected, uint8_t *readback, size_t capacity,
 +                                  ssize_t *read_length, int *read_result);
 diff --git a/src/core/cgroup.c b/src/core/cgroup.c
-index a427cba..8cdb2f4 100644
 --- a/src/core/cgroup.c
 +++ b/src/core/cgroup.c
-@@ -2123,6 +2123,13 @@ static int unit_update_cgroup(
+@@ -2123,6 +2123,13 @@
          if (!UNIT_HAS_CGROUP_CONTEXT(u))
                  return 0;
  
@@ -1163,7 +1175,7 @@ index a427cba..8cdb2f4 100644
          r = unit_get_cgroup_path_with_fallback(u, &cgroup);
          if (r < 0)
                  return log_unit_error_errno(u, r, "Failed to get cgroup path: %m");
-@@ -2171,6 +2178,10 @@ static int unit_update_cgroup(
+@@ -2171,6 +2178,10 @@
                  if (r < 0)
                          log_unit_warning_errno(u, r, "Failed to enable/disable controllers on cgroup %s, ignoring: %m", empty_to_root(crt->cgroup_path));
  
@@ -1174,7 +1186,7 @@ index a427cba..8cdb2f4 100644
                  /* Remember what's actually enabled now */
                  crt->cgroup_enabled_mask = result_mask;
          }
-@@ -2180,6 +2191,9 @@ static int unit_update_cgroup(
+@@ -2180,6 +2191,9 @@
  
          /* Set attributes */
          cgroup_context_apply(u, target_mask, state);
@@ -1184,7 +1196,7 @@ index a427cba..8cdb2f4 100644
          cgroup_xattr_apply(u);
  
          /* For most units we expect that pressure monitoring is set up before the unit is started and we
-@@ -3363,13 +3377,19 @@ int manager_setup_cgroup(Manager *m) {
+@@ -3363,13 +3377,19 @@
          const char *scope_path = strjoina(m->cgroup_root, "/" SPECIAL_INIT_SCOPE);
          r = cg_create_and_attach(scope_path, /* pid= */ 0);
          if (r >= 0) {
@@ -1207,10 +1219,9 @@ index a427cba..8cdb2f4 100644
          /* 6. Figure out which controllers are supported */
          r = cg_mask_supported_subtree(m->cgroup_root, &m->cgroup_supported);
 diff --git a/src/core/dbus-unit.c b/src/core/dbus-unit.c
-index 91304f1..e810535 100644
 --- a/src/core/dbus-unit.c
 +++ b/src/core/dbus-unit.c
-@@ -2597,6 +2597,10 @@ int bus_unit_set_properties(
+@@ -2597,6 +2597,10 @@
          assert(u);
          assert(message);
  
@@ -1222,10 +1233,9 @@ index 91304f1..e810535 100644
                  return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
                                           "Original Root does not accept property overrides");
 diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
-index ec312ce..f3cd97b 100644
 --- a/src/core/load-dropin.c
 +++ b/src/core/load-dropin.c
-@@ -39,6 +39,9 @@ static int process_deps(Unit *u, UnitDependency dependency, const char *dir_suff
+@@ -39,6 +39,9 @@
          if (r < 0)
                  return r;
  
@@ -1235,7 +1245,7 @@ index ec312ce..f3cd97b 100644
          if (aos_resource_root_protected_unit(u) && !strv_isempty(paths))
                  return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
                                              "Refusing original Root dependency drop-ins: %m");
-@@ -129,7 +132,7 @@ static int process_deps(Unit *u, UnitDependency dependency, const char *dir_suff
+@@ -129,7 +132,7 @@
          return 0;
  }
  
@@ -1244,7 +1254,7 @@ index ec312ce..f3cd97b 100644
          _cleanup_strv_free_ char **l = NULL;
          int r;
  
-@@ -150,6 +153,9 @@ int unit_load_dropin(Unit *u) {
+@@ -150,6 +153,9 @@
  
          /* Load .conf dropins */
          r = unit_find_dropin_paths(u, /* use_unit_path_cache= */ true, &l);
@@ -1254,7 +1264,7 @@ index ec312ce..f3cd97b 100644
          if (r <= 0)
                  return 0;
  
-@@ -182,13 +188,48 @@ int unit_load_dropin(Unit *u) {
+@@ -182,13 +188,48 @@
          STRV_FOREACH(f, u->dropin_paths) {
                  struct stat st;
  
@@ -1308,7 +1318,6 @@ index ec312ce..f3cd97b 100644
 +        return parent_selected && r < 0 ? aos_resource_parent_fail(r) : r;
 +}
 diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
-index 005f4f2..7e517d3 100644
 --- a/src/core/load-fragment.c
 +++ b/src/core/load-fragment.c
 @@ -18,6 +18,7 @@
@@ -1319,7 +1328,7 @@ index 005f4f2..7e517d3 100644
  #include "bpf-program.h"
  #include "bpf-restrict-fs.h"
  #include "bus-error.h"
-@@ -6207,10 +6208,16 @@ static int aos_network_open_image_path(const char *path, int flags) {
+@@ -6207,10 +6208,16 @@
          return fd < 0 ? -errno : fd;
  }
  
@@ -1337,7 +1346,7 @@ index 005f4f2..7e517d3 100644
                  char **ret_path) {
          static const char store_prefix[] = "/nix/store/";
          _cleanup_free_ char *target = NULL;
-@@ -6236,13 +6243,22 @@ static int aos_network_image_link(
+@@ -6236,11 +6243,20 @@
                  return -EPERM;
  
          suffix = strchr(relative, '/');
@@ -1348,20 +1357,18 @@ index 005f4f2..7e517d3 100644
  
          *ret_path = strjoin("/nix.lower/store/", relative);
          return *ret_path ? 0 : -ENOMEM;
- }
- 
++}
++
 +static int aos_network_image_link(
 +                const char *link_path,
 +                const char *expected_suffix,
 +                dev_t image_device,
 +                char **ret_path) {
 +        return aos_network_image_link_internal(link_path, expected_suffix, image_device, AOS_IMAGE_LINK_EXACT, ret_path);
-+}
-+
+ }
+ 
  static int aos_network_image_fragment(
-                 const char *unit_name,
-                 char **ret_path,
-@@ -6340,7 +6356,7 @@ static int aos_verify_loaded_image_fragment(const Unit *u) {
+@@ -6340,7 +6356,7 @@
                           strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
  }
  
@@ -1370,7 +1377,7 @@ index 005f4f2..7e517d3 100644
          _cleanup_free_ char *top = NULL, *basedir = NULL, *link = NULL, *path = NULL;
          _cleanup_close_ int fd = -EBADF;
          struct stat root_st, st;
-@@ -6364,15 +6380,29 @@ int aos_resource_open_image_policy(void) {
+@@ -6364,19 +6380,100 @@
          r = aos_network_image_link(link, NULL, root_st.st_dev, &basedir);
          if (r < 0)
                  return r;
@@ -1404,10 +1411,11 @@ index 005f4f2..7e517d3 100644
          if (fstat(fd, &st) < 0)
                  return -errno;
          if (!S_ISREG(st.st_mode) || st.st_dev != root_st.st_dev ||
-@@ -6381,6 +6411,73 @@ int aos_resource_open_image_policy(void) {
-         return TAKE_FD(fd);
- }
- 
+             st.st_uid != 0 || st.st_gid != 0 || (st.st_mode & 0222) != 0)
++                return -EPERM;
++        return TAKE_FD(fd);
++}
++
 +int aos_resource_open_image_policy(void) {
 +        return aos_resource_open_image_resource("resource-bootstrap-v1", NULL);
 +}
@@ -1471,14 +1479,10 @@ index 005f4f2..7e517d3 100644
 +                return -errno;
 +        if (!S_ISREG(st.st_mode) || st.st_dev != root_st.st_dev || st.st_uid != 0 || st.st_gid != 0 ||
 +            (st.st_mode & 0222) != 0 || fs.f_type != EROFS_SUPER_MAGIC_V1)
-+                return -EPERM;
-+        return TAKE_FD(fd);
-+}
-+
- int aos_network_verify_loaded_fragment(const Unit *u) {
-         if (!aos_network_protected_unit(u))
-                 return 0;
-@@ -6546,7 +6643,7 @@ int aos_own_launcher_verify_loaded_fragment(const Unit *u) {
+                 return -EPERM;
+         return TAKE_FD(fd);
+ }
+@@ -6548,7 +6645,7 @@
                           strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
  }
  
@@ -1487,7 +1491,7 @@ index 005f4f2..7e517d3 100644
          _cleanup_free_ char *image_fragment = NULL;
          _cleanup_close_ int image_fd = -EBADF;
          int r;
-@@ -6562,6 +6659,8 @@ int unit_load_fragment(Unit *u) {
+@@ -6564,6 +6661,8 @@
                                              "Refusing mutable online Nix unit selection: %m");
  
          if (u->transient) {
@@ -1496,10 +1500,12 @@ index 005f4f2..7e517d3 100644
                  if ((aos_network_image_guard_active() && aos_network_protected_unit(u)) ||
                      aos_fuse_worker_protected_unit(u))
                          return -EPERM;
-@@ -6641,6 +6740,25 @@ int unit_load_fragment(Unit *u) {
+@@ -6641,6 +6740,25 @@
+                         return log_unit_error_errno(u, r, "Cannot pin Network unit to boot-image EROFS: %m");
+                 fragment = image_fragment;
                  names = set_free(names);
-         }
- 
++        }
++
 +        {
 +                const char *alias;
 +                bool parent_name = aos_resource_parent_member_name(u->id);
@@ -1517,12 +1523,10 @@ index 005f4f2..7e517d3 100644
 +                        fragment = image_fragment;
 +                        names = set_free(names);
 +                }
-+        }
-+
+         }
+ 
          if (fragment) {
-                 /* Open the file, check if this is a mask, otherwise read. */
-                 _cleanup_fclose_ FILE *f = NULL;
-@@ -6712,7 +6830,7 @@ int unit_load_fragment(Unit *u) {
+@@ -6714,7 +6832,7 @@
                          if (r == -ENOEXEC)
                                  log_unit_notice_errno(u, r, "Unit configuration has fatal error, unit will not be started.");
                          if (r < 0)
@@ -1531,10 +1535,12 @@ index 005f4f2..7e517d3 100644
                          r = aos_own_launcher_pin_parsed_fragment(u, &st);
                          if (r < 0)
                                  return log_unit_error_errno(u, r, "Refusing unsealed own-launcher fragment: %m");
-@@ -6747,6 +6865,24 @@ int unit_load_fragment(Unit *u) {
-         return merge_by_names(u, names, id);
- }
+@@ -6747,6 +6865,24 @@
+         }
  
+         return merge_by_names(u, names, id);
++}
++
 +int unit_load_fragment(Unit *u) {
 +        bool parent_selected;
 +        int r;
@@ -1551,16 +1557,13 @@ index 005f4f2..7e517d3 100644
 +        }
 +        r = unit_load_fragment_original(u);
 +        return parent_selected && r < 0 ? aos_resource_parent_fail(r) : r;
-+}
-+
+ }
+ 
  void unit_dump_config_items(FILE *f) {
-         static const struct {
-                 const ConfigParserCallback callback;
 diff --git a/src/core/load-fragment.h b/src/core/load-fragment.h
-index c48c057..fa5d9e3 100644
 --- a/src/core/load-fragment.h
 +++ b/src/core/load-fragment.h
-@@ -191,3 +191,6 @@ CONFIG_PARSER_PROTOTYPE(config_parse_cpuset_partition);
+@@ -191,3 +191,6 @@
  /* gperf prototypes */
  const struct ConfigPerfItem* load_fragment_gperf_lookup(const char *key, GPERF_LEN_TYPE length);
  extern const char load_fragment_gperf_nulstr[];
@@ -1568,7 +1571,6 @@ index c48c057..fa5d9e3 100644
 +int aos_resource_open_parent_config(bool selector, bool *absent);
 +int aos_resource_open_parent_member(const char *name, unsigned file, char **ret_path);
 diff --git a/src/core/main.c b/src/core/main.c
-index 87042a3..5a19904 100644
 --- a/src/core/main.c
 +++ b/src/core/main.c
 @@ -24,6 +24,7 @@
@@ -1579,7 +1581,7 @@ index 87042a3..5a19904 100644
  #include "ansi-color.h"
  #include "apparmor-setup.h"
  #include "architecture.h"
-@@ -2277,6 +2278,12 @@ static int do_reexecute(
+@@ -2277,6 +2278,12 @@
          /* The fdset is donated to us, take ownership so it is freed on all exit paths. */
          _cleanup_fdset_free_ FDSet *fds = TAKE_PTR(_fds);
  
@@ -1593,35 +1595,33 @@ index 87042a3..5a19904 100644
           * doesn't get rebooted while we do that. */
          watchdog_close(/* disarm= */ true);
 diff --git a/src/core/manager.c b/src/core/manager.c
-index 2516430..10307d0 100644
 --- a/src/core/manager.c
 +++ b/src/core/manager.c
-@@ -2131,6 +2131,9 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds, Hashmap *named_
-         assert(m);
- 
+@@ -2133,6 +2133,9 @@
          r = aos_resource_enrollment_begin(m, serialization != NULL);
-+        if (r < 0)
-+                return r;
-+        r = aos_resource_parent_begin(m, serialization != NULL);
          if (r < 0)
                  return r;
++        r = aos_resource_parent_begin(m, serialization != NULL);
++        if (r < 0)
++                return r;
  
-@@ -3761,6 +3764,10 @@ int manager_reload(Manager *m) {
+         if (!MANAGER_IS_TEST_RUN(m)) {
+                 r = manager_make_runtime_dir(m);
+@@ -3760,6 +3763,10 @@
+         int r;
  
          assert(m);
- 
++
 +        r = aos_resource_parent_reload(m);
 +        if (r < 0)
 +                return log_error_errno(r, "Original parent enclosure does not permit reload: %m");
-+
+ 
          r = manager_open_serialization(m, &f);
          if (r < 0)
-                 return log_error_errno(r, "Failed to create serialization file: %m");
 diff --git a/src/core/meson.build b/src/core/meson.build
-index 28b627f..7d3ea02 100644
 --- a/src/core/meson.build
 +++ b/src/core/meson.build
-@@ -24,6 +24,7 @@ systemd_executor_sources = files(
+@@ -24,6 +24,7 @@
  
  libcore_sources = files(
          'aos-resource-enrollment.c',
@@ -1630,7 +1630,6 @@ index 28b627f..7d3ea02 100644
          'audit-fd.c',
          'automount.c',
 diff --git a/src/core/scope.c b/src/core/scope.c
-index 6d2e883..143396c 100644
 --- a/src/core/scope.c
 +++ b/src/core/scope.c
 @@ -4,6 +4,7 @@
@@ -1641,7 +1640,7 @@ index 6d2e883..143396c 100644
  #include "cgroup-setup.h"
  #include "dbus-scope.h"
  #include "dbus-unit.h"
-@@ -203,6 +204,10 @@ static int scope_load(Unit *u) {
+@@ -203,6 +204,10 @@
          if (r < 0)
                  return r;
  
@@ -1653,10 +1652,9 @@ index 6d2e883..143396c 100644
  }
  
 diff --git a/src/core/service.c b/src/core/service.c
-index f8e2011..d62bf45 100644
 --- a/src/core/service.c
 +++ b/src/core/service.c
-@@ -2110,6 +2110,10 @@ static int service_spawn_internal(
+@@ -2110,6 +2110,10 @@
          assert(c);
          assert(ret_pid);
  
@@ -1667,7 +1665,7 @@ index f8e2011..d62bf45 100644
          r = aos_resource_require_unit(UNIT(s));
          if (r < 0)
                  return log_unit_error_errno(UNIT(s), r, "Refusing unprepaid component command: %m");
-@@ -2162,7 +2166,11 @@ static int service_spawn_internal(
+@@ -2162,7 +2166,11 @@
  
          log_unit_debug(UNIT(s), "Will spawn child (%s): %s", caller, c->path);
  
@@ -1676,11 +1674,10 @@ index f8e2011..d62bf45 100644
 +                return r;
          r = unit_prepare_exec(UNIT(s)); /* This realizes the cgroup, among other things */
 +        r = aos_resource_parent_enforce_exec(s, r);
-         r = aos_resource_enforce_controller_cpu(s, r);
+         r = aos_resource_enforce_paid_cpu(s, r);
          if (r < 0)
                  return r;
 diff --git a/src/core/slice.c b/src/core/slice.c
-index dfd5b6c..d0df27c 100644
 --- a/src/core/slice.c
 +++ b/src/core/slice.c
 @@ -3,6 +3,7 @@
@@ -1691,7 +1688,7 @@ index dfd5b6c..d0df27c 100644
  #include "dbus-slice.h"
  #include "dbus-unit.h"
  #include "log.h"
-@@ -191,6 +192,10 @@ static int slice_load(Unit *u) {
+@@ -191,6 +192,10 @@
                          u->description = strjoin("Slice ", tmp);
          }
  

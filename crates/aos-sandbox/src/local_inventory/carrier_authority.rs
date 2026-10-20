@@ -13,28 +13,25 @@ use aos_sandbox_core::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::assignment::AssignmentIntentV1;
 #[cfg(feature = "multi-node")]
 use super::assignment::VerifiedAssignmentAuthorityV1;
-use super::capability::NodeBootLineageV1;
 use super::evidence::{AuthenticatedEvidenceContextV1, InvalidEvidenceContext};
 #[cfg(feature = "multi-node")]
 use super::journal::ProtectedJournalRecordV1;
-use super::protocol::{
-    AuthenticatedNodeSessionV1, CanonicalNodeFrameV1, InvalidMultiNodeProtocol,
-    MAX_NODE_REQUEST_BYTES, MAX_NODE_RESPONSE_BYTES,
-};
+use super::protocol::{AuthenticatedNodeSessionV1, CanonicalNodeFrameV1};
+use aos_sandbox_core::AssignmentIntentV1;
+use aos_sandbox_core::NodeBootLineageV1;
+use aos_sandbox_core::{InvalidMultiNodeProtocol, MAX_NODE_REQUEST_BYTES, MAX_NODE_RESPONSE_BYTES};
 
 mod sealed {
     pub trait Sealed {}
 }
 
 #[cfg(feature = "multi-node")]
-mod dormant_transport;
+mod coordinator_channel;
 #[cfg(feature = "multi-node")]
-pub use dormant_transport::{
-    DormantAuthenticatedCoordinatorNodeTransportV1, DormantCoordinatorNodeEncodingV1,
-    DormantOutboundExchangeV1, DormantOutboundResponseV1, DormantTransportHandshakeV1,
+pub use coordinator_channel::{
+    ProtectedCoordinatorChannelOriginalV1, ProtectedCoordinatorRequestOriginalV1,
 };
 
 #[cfg(feature = "multi-node")]
@@ -393,21 +390,22 @@ impl CarrierVerifierSessionV1 {
         maximum_response_bytes: u32,
         replay_fence: ObjectDigest,
     ) -> Result<Self, InvalidMultiNodeProtocol> {
-        if node.as_bytes() == &[0; 16]
-            || binding == [0; 32]
-            || audience_digest.as_bytes() == &[0; 32]
-            || disclosure_domain_digest.as_bytes() == &[0; 32]
-            || authenticated_frame_digest.as_bytes() == &[0; 32]
-            || replay_fence.as_bytes() == &[0; 32]
-            || authenticated_frame_bytes == 0
-            || authenticated_frame_bytes > MAX_NODE_RESPONSE_BYTES
-            || coordinator_epoch == 0
-            || valid_until_unix_seconds <= authenticated_at_unix_seconds
-            || maximum_request_bytes == 0
-            || maximum_request_bytes > MAX_NODE_REQUEST_BYTES
-            || maximum_response_bytes == 0
-            || maximum_response_bytes > MAX_NODE_RESPONSE_BYTES
-        {
+        if !aos_sandbox_core::node_session_data::node_session_data_is_well_formed_v1(
+            node,
+            binding,
+            audience_digest,
+            disclosure_domain_digest,
+            authenticated_frame_digest,
+            authenticated_frame_bytes,
+            coordinator_epoch,
+            authenticated_at_unix_seconds,
+            valid_until_unix_seconds,
+            maximum_request_bytes,
+            maximum_response_bytes,
+            MAX_NODE_REQUEST_BYTES,
+            MAX_NODE_RESPONSE_BYTES,
+            replay_fence,
+        ) {
             return Err(InvalidMultiNodeProtocol::SessionMismatch);
         }
         Ok(Self {
@@ -555,7 +553,7 @@ pub(super) struct CarrierResponseGrantV1 {
 /// validate against a borrowed seal but cannot synthesize one from digests.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AuthenticatedFrameSealV1 {
-    kind: super::protocol::CanonicalNodeFrameKindV1,
+    kind: aos_sandbox_core::CanonicalNodeFrameKindV1,
     body_digest: ObjectDigest,
     frame_digest: ObjectDigest,
     frame_bytes: u32,
@@ -565,7 +563,7 @@ pub(super) struct AuthenticatedFrameSealV1 {
 impl AuthenticatedFrameSealV1 {
     pub(super) fn matches(
         &self,
-        kind: super::protocol::CanonicalNodeFrameKindV1,
+        kind: aos_sandbox_core::CanonicalNodeFrameKindV1,
         body_digest: ObjectDigest,
         context: AuthenticatedEvidenceContextV1,
     ) -> bool {
@@ -724,7 +722,7 @@ fn issue_response_once(
 #[cfg(feature = "multi-node")]
 fn issue_generated_response_once(
     session: AuthenticatedNodeSessionV1,
-    kind: super::protocol::CanonicalNodeFrameKindV1,
+    kind: aos_sandbox_core::CanonicalNodeFrameKindV1,
     body_digest: ObjectDigest,
     carrier_digest: ObjectDigest,
     carrier_bytes: u32,

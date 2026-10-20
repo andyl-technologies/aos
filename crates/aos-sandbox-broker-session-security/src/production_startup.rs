@@ -13,11 +13,9 @@ use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::sync::Arc;
 
-use aos_sandbox::normal_root::{
-    ControllerInitialCaptureFailureRefV1, ProductionControllerInitialCaptureAttemptV1,
-    ProductionControllerNormalRootCaptureV1, ProductionControllerNormalRootProfileV1,
-    ProductionControllerNormalRootStartupPartsV1,
-};
+use aos_sandbox::normal_root::ControllerSharedStartupProfileV1;
+use aos_sandbox_broker::controller_receiving::ControllerLaunchImageDeliveryOriginalV1;
+
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_storage::activation::{
     StorageOriginalWorkerStartupErrorV3, StorageOriginalWorkerStartupV3, take_systemd_startup,
@@ -25,6 +23,9 @@ use aos_sandbox_storage::activation::{
 use aos_sandbox_storage::service::StorageServiceError;
 
 use crate::{ProductionBrokerSessionActivationV1, ProtectedBrokerSessionFixedEndpointV1};
+
+mod floor_profile_currentness;
+pub(crate) use floor_profile_currentness::LaunchProfileCurrentnessOriginalV1;
 
 /// Retains an original launch observation, not a currentness or TPM proof.
 #[derive(Clone)]
@@ -48,7 +49,7 @@ enum LaunchImageFile {
 enum ControllerProfileDeliveryV1 {
     Storage,
     Pending,
-    Admitted(Option<Arc<ProductionControllerNormalRootProfileV1>>),
+    Admitted(ControllerSharedStartupProfileV1),
 }
 
 impl Pid1LaunchImageV1 {
@@ -72,32 +73,28 @@ impl Pid1LaunchImageV1 {
         Ok(())
     }
 
-    // Both dispositions bind only the same genuinely admitted profile.
-    pub(crate) fn bind_controller_profile(
-        mut self,
-        profile: Option<Arc<ProductionControllerNormalRootProfileV1>>,
-    ) -> Result<Self, crate::BrokerSessionSecurityError> {
-        self.bind_controller_profile_in_place(profile)
-            .map_err(|_| crate::BrokerSessionSecurityError::Currentness)?;
-        Ok(self)
-    }
-
-    fn bind_controller_profile_in_place(
+    /// Binds only an opaque successful admission from the actual upper coordinator.
+    ///
+    /// Genuine admitted absence is carried by the same private typed result;
+    /// callers cannot substitute an arbitrary profile or `None` assertion.
+    ///
+    /// # Errors
+    /// Preserves the actual profile recheck or rejects a foreign/repeated role.
+    #[doc(hidden)]
+    pub fn bind_controller_profile_original_v1(
         &mut self,
-        profile: Option<Arc<ProductionControllerNormalRootProfileV1>>,
-    ) -> Result<(), ControllerBindingFailure> {
+        profile: ControllerSharedStartupProfileV1,
+    ) -> Result<(), ControllerLaunchImageBindingErrorV1> {
         if self.endpoint != ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient
             || self.process != std::process::id()
             || !matches!(&self.profile_delivery, ControllerProfileDeliveryV1::Pending)
         {
-            return Err(ControllerBindingFailure::Role(
+            return Err(ControllerLaunchImageBindingErrorV1::Role(
                 crate::BrokerSessionSecurityError::Currentness,
             ));
         }
-        if let Some(profile) = &profile {
-            profile
-                .recheck()
-                .map_err(ControllerBindingFailure::Profile)?;
+        if let Some(admitted) = profile.profile() {
+            admitted.recheck().map_err(ControllerLaunchImageBindingErrorV1::Profile)?;
         }
         self.profile_delivery = ControllerProfileDeliveryV1::Admitted(profile);
         Ok(())
@@ -109,19 +106,27 @@ impl Pid1LaunchImageV1 {
     ) -> Result<Option<&Path>, crate::BrokerSessionSecurityError> {
         self.require_endpoint(endpoint)?;
         match &self.profile_delivery {
-            ControllerProfileDeliveryV1::Admitted(Some(profile)) => {
-                profile
-                    .recheck()
-                    .map_err(|_| crate::BrokerSessionSecurityError::Currentness)?;
-                Ok(Some(profile.profile_path()))
+            ControllerProfileDeliveryV1::Admitted(binding) => {
+                if let Some(profile) = binding.profile() {
+                    profile.recheck().map_err(|_| crate::BrokerSessionSecurityError::Currentness)?;
+                    Ok(Some(profile.profile_path()))
+                } else {
+                    Ok(None)
+                }
             }
-            ControllerProfileDeliveryV1::Storage | ControllerProfileDeliveryV1::Admitted(None) => {
-                Ok(None)
-            }
-            ControllerProfileDeliveryV1::Pending => {
-                Err(crate::BrokerSessionSecurityError::Currentness)
-            }
+            ControllerProfileDeliveryV1::Storage => Ok(None),
+            ControllerProfileDeliveryV1::Pending => Err(crate::BrokerSessionSecurityError::Currentness),
         }
+    }
+
+    /// Joins this genuine Storage launch to its actual receiving aggregate.
+    pub(crate) fn associate_original_storage_receiving_layout_v1(
+        &self,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<aos_sandbox_linux::cgroup::StorageCgroupLayoutV1, crate::BrokerSessionSecurityError> {
+        self.require_endpoint(ProtectedBrokerSessionFixedEndpointV1::StorageBroker)?;
+        receiving.associate_original_launch_image_layout_v1(self.file()?)
+            .map_err(|_| crate::BrokerSessionSecurityError::Currentness)
     }
 
     /// Borrows the same original launch image without another observation.
@@ -141,9 +146,85 @@ impl Pid1LaunchImageV1 {
     }
 }
 
-enum ControllerBindingFailure {
+/// Preserves the actual original image-role or admitted-profile recheck cause.
+#[derive(Debug, thiserror::Error)]
+#[doc(hidden)]
+pub enum ControllerLaunchImageBindingErrorV1 {
+    /// The original image role, process or once-only stage differs.
+    #[error(transparent)]
     Role(crate::BrokerSessionSecurityError),
+    /// The same actual admitted profile failed its existing recheck.
+    #[error(transparent)]
     Profile(aos_sandbox::normal_root::NormalRootStartupErrorV1),
+}
+
+/// Preserves image-mode failure separately from a closed destination.
+#[derive(Debug, thiserror::Error)]
+#[doc(hidden)]
+pub enum ControllerLaunchImageCaptureFailureV1 {
+    /// The actual mode/presence check returned this original failure.
+    #[error(transparent)]
+    Launch(crate::BrokerSessionSecurityError),
+    /// The typed original or destination cannot move again.
+    #[error("original Controller startup closed")]
+    Closed,
+}
+
+/// Receives only the genuine fixed first table's original image or absence.
+///
+/// Its empty shared destination is allocated at the same pre-capture frontier.
+/// This has no FD, pathname, decoded profile or caller-absence constructor.
+#[doc(hidden)]
+pub struct ControllerLaunchImageCaptureV1 {
+    image_destination: Arc<Option<File>>,
+    entered: bool,
+}
+
+impl ControllerLaunchImageCaptureV1 {
+    /// Allocates the empty destination before any startup-table observation.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { image_destination: Arc::new(None), entered: false }
+    }
+
+    /// Moves only the same table's unconsumed original into the image owner.
+    ///
+    /// # Errors
+    /// Preserves the existing required-image presence refusal and rejects a
+    /// shared, repeated or contradictory original destination.
+    pub fn capture_delivery_once(
+        &mut self,
+        delivery: &mut ControllerLaunchImageDeliveryOriginalV1,
+    ) -> Result<Option<Pid1LaunchImageV1>, ControllerLaunchImageCaptureFailureV1> {
+        if self.entered || !delivery.is_unconsumed() {
+            return Err(ControllerLaunchImageCaptureFailureV1::Closed);
+        }
+        self.entered = true;
+        let endpoint = ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient;
+        let image_present = delivery.is_present();
+        let profile_delivery = launch_profile_delivery(endpoint, image_present)
+            .map_err(ControllerLaunchImageCaptureFailureV1::Launch)?;
+        let target = Arc::get_mut(&mut self.image_destination)
+            .ok_or(ControllerLaunchImageCaptureFailureV1::Closed)?;
+        if target.is_some() || !delivery.is_unconsumed() {
+            return Err(ControllerLaunchImageCaptureFailureV1::Closed);
+        }
+        if let Some(original) = delivery.take_file_once()
+            .map_err(|_| ControllerLaunchImageCaptureFailureV1::Closed)?
+        {
+            *target = Some(original);
+        }
+        Ok(if image_present {
+            Some(Pid1LaunchImageV1 {
+                endpoint,
+                process: std::process::id(),
+                file: LaunchImageFile::Retained(Arc::clone(&self.image_destination)),
+                profile_delivery,
+            })
+        } else {
+            None
+        })
+    }
 }
 
 /// Retains all existing Storage listeners and its private launch observation.
@@ -181,7 +262,11 @@ type StorageResourceRecipientWorkerPartsV1 = (
 #[derive(Clone, Copy)]
 enum StorageResourceRecipientStartupStageV1 {
     Capture,
+    ModeDemand,
+    ModePayment,
+    ModeArm,
     Mode,
+    ModeOriginalPost,
     Presence,
     Profile,
     Listener,
@@ -194,6 +279,13 @@ enum StorageResourceRecipientStartupStageV1 {
 /// Startup moves this into its same activation at `into_parts`, without a
 /// recursive owner or disposing the Legacy image. It grants no floor authority.
 pub(crate) struct StorageResourceRecipientStartupCustodyV1 {
+    initial_mode: crate::recovery::InitialModeOriginalV1,
+    mode_comparison: crate::recovery::ModeRevalidationOriginalV1,
+    mode_presence: crate::recovery::ModePresenceOriginalV1,
+    mode_demand: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>>,
+    mode_payment: Option<Result<(), aos_sandbox::StorageReceivingClosedV1>>,
+    mode_arm: Option<Result<(), aos_sandbox::StorageReceivingClosedV1>>,
+    mode_original_post: Option<Result<(), aos_sandbox::StorageReceivingClosedV1>>,
     image_destination: Arc<Option<File>>,
     legacy_image: Option<Pid1LaunchImageV1>,
     mode: Result<crate::recovery::ModePinV1, crate::recovery::FloorErrorV1>,
@@ -214,6 +306,13 @@ impl Drop for StorageResourceRecipientStartupCustodyV1 {
 // Every selected returned original/result has a destination before its next
 // check. An armed attempt aborts before any of these fields can be released.
 struct StorageResourceRecipientStartupAttemptV1 {
+    initial_mode: crate::recovery::InitialModeOriginalV1,
+    mode_comparison: crate::recovery::ModeRevalidationOriginalV1,
+    mode_presence: crate::recovery::ModePresenceOriginalV1,
+    mode_demand: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>>,
+    mode_payment: Option<Result<(), aos_sandbox::StorageReceivingClosedV1>>,
+    mode_arm: Option<Result<(), aos_sandbox::StorageReceivingClosedV1>>,
+    mode_original_post: Option<Result<(), aos_sandbox::StorageReceivingClosedV1>>,
     recipient: Option<aos_sandbox_storage::activation::StorageResourceRecipientCaptureV1>,
     captured: Option<Result<StorageResourceRecipientWorkerPartsV1, StorageOriginalWorkerStartupErrorV3>>,
     image_destination: Option<Arc<Option<File>>>,
@@ -241,6 +340,13 @@ struct StorageResourceRecipientStartupAttemptV1 {
 impl StorageResourceRecipientStartupAttemptV1 {
     fn new(recipient: aos_sandbox_storage::activation::StorageResourceRecipientCaptureV1) -> Self {
         Self {
+            initial_mode: crate::recovery::InitialModeOriginalV1::new(),
+            mode_comparison: crate::recovery::ModeRevalidationOriginalV1::new(),
+            mode_presence: crate::recovery::ModePresenceOriginalV1::new(),
+            mode_demand: None,
+            mode_payment: None,
+            mode_arm: None,
+            mode_original_post: None,
             recipient: Some(recipient),
             captured: None,
             image_destination: Some(Arc::new(None)),
@@ -335,63 +441,116 @@ impl StorageResourceRecipientStartupAttemptV1 {
             return false;
         }
         self.admitted = true;
-        self.mode = Some(crate::recovery::ModePinV1::open_storage_worker_image_mode());
-        let required = match self.mode.as_ref() {
-            Some(Ok(mode)) => mode.is_required(),
-            _ => {
-                self.first = Some(StorageResourceRecipientStartupStageV1::Mode);
+        self.mode_demand = Some(selected_initial_mode_demand_v1());
+        let Some(Ok(demand)) = self.mode_demand.as_ref().copied() else {
+            self.first = Some(StorageResourceRecipientStartupStageV1::ModeDemand);
+            return false;
+        };
+        let Some(worker) = self.worker.as_mut() else {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Closed);
+            return false;
+        };
+        let mut receiving = match worker.borrow_storage_prepare_receiving_v1() {
+            Ok(receiving) => receiving,
+            Err(cause) => {
+                self.mode_payment = Some(Err(cause));
+                self.first = Some(StorageResourceRecipientStartupStageV1::ModePayment);
                 return false;
             }
         };
-        self.admit_image_and_listener(required);
-
-        // A genuine returned pin receives its independent post even when
-        // presence/profile/listener failed. Later debt cannot replace FIRST.
-        if let Some(Ok(mode)) = self.mode.as_ref() {
-            self.post = Some(mode.revalidate());
+        self.mode_payment = Some(receiving.reserve_initial_mode_prefix_once_v1(demand));
+        if !matches!(self.mode_payment, Some(Ok(()))) {
+            self.first = Some(StorageResourceRecipientStartupStageV1::ModePayment);
+            return false;
         }
-        if !matches!(self.post.as_ref(), Some(Ok(()))) {
-            self.first.get_or_insert(StorageResourceRecipientStartupStageV1::Post);
+        self.mode_arm = Some(receiving.arm_initial_mode_observation_post_v1());
+        if !matches!(self.mode_arm, Some(Ok(()))) {
+            self.first = Some(StorageResourceRecipientStartupStageV1::ModeArm);
+            return false;
+        }
+        self.mode = Some(crate::recovery::ModePinV1::open_storage_worker_image_mode_retaining(
+            &mut self.initial_mode,
+        ));
+        if let Some(Ok(mode)) = self.mode.as_ref() {
+            let required = mode.is_required();
+            Self::admit_image_and_listener(
+                &self.mode, required, &mut self.image, &mut self.presence,
+                &mut self.mode_presence,
+                &mut self.profile, &mut self.activation, &mut self.control,
+                &mut self.listener, &mut self.first,
+            );
+        } else {
+            self.first = Some(StorageResourceRecipientStartupStageV1::Mode);
+        }
+
+        // The real returned pin receives its independent native post after
+        // image/listener checks, retaining their original error chronology.
+        if let Some(Ok(mode)) = self.mode.as_ref() {
+            self.post = Some(mode.revalidate_retaining(&mut self.mode_comparison));
+            if !matches!(self.post, Some(Ok(()))) {
+                self.first.get_or_insert(StorageResourceRecipientStartupStageV1::Post);
+            }
+        }
+        // Already paid before Mode IO; ordinary receiving poison must not
+        // suppress this actual same-original observation on any failure.
+        self.mode_original_post = Some(receiving.finish_initial_observation_post_v1());
+        if !matches!(self.mode_original_post, Some(Ok(()))) {
+            self.first.get_or_insert(StorageResourceRecipientStartupStageV1::ModeOriginalPost);
         }
         self.first.is_none()
     }
 
-    fn admit_image_and_listener(&mut self, required: bool) {
-        let Some(Ok(mode)) = self.mode.as_ref() else {
-            self.first.get_or_insert(StorageResourceRecipientStartupStageV1::Closed);
+    #[allow(clippy::too_many_arguments)]
+    fn admit_image_and_listener(
+        mode_result: &Option<Result<crate::recovery::ModePinV1, crate::recovery::FloorErrorV1>>,
+        required: bool,
+        image_slot: &mut Option<Pid1LaunchImageV1>,
+        presence: &mut Option<Result<(), crate::recovery::FloorErrorV1>>,
+        presence_original: &mut crate::recovery::ModePresenceOriginalV1,
+        profile: &mut Option<Result<ControllerProfileDeliveryV1, crate::BrokerSessionSecurityError>>,
+        activation_slot: &mut Option<ProductionBrokerSessionActivationV1>,
+        control: &mut Option<RecordSubjectListener>,
+        listener: &mut Option<Result<(), crate::ProductionBrokerSessionActivationErrorV1>>,
+        first: &mut Option<StorageResourceRecipientStartupStageV1>,
+    ) {
+        let Some(Ok(mode)) = mode_result.as_ref() else {
+            first.get_or_insert(StorageResourceRecipientStartupStageV1::Closed);
             return;
         };
         // Legacy keeps its worker original while the floor receives absence.
-        let supplied = required && self.image.is_some();
-        self.presence = Some(mode.require_storage_worker_launch_image_presence(supplied));
-        if !matches!(self.presence.as_ref(), Some(Ok(()))) {
-            self.first = Some(StorageResourceRecipientStartupStageV1::Presence);
+        let supplied = required && image_slot.is_some();
+        *presence = Some(mode.require_storage_worker_launch_image_presence_retaining(
+            supplied,
+            presence_original,
+        ));
+        if !matches!(presence.as_ref(), Some(Ok(()))) {
+            *first = Some(StorageResourceRecipientStartupStageV1::Presence);
             return;
         }
-        self.profile = Some(profile_delivery_for_endpoint(
+        *profile = Some(profile_delivery_for_endpoint(
             ProtectedBrokerSessionFixedEndpointV1::StorageBroker,
         ));
-        if !matches!(self.profile.as_ref(), Some(Ok(ControllerProfileDeliveryV1::Storage))) {
-            self.first = Some(StorageResourceRecipientStartupStageV1::Profile);
+        if !matches!(profile.as_ref(), Some(Ok(ControllerProfileDeliveryV1::Storage))) {
+            *first = Some(StorageResourceRecipientStartupStageV1::Profile);
             return;
         }
-        let Some(image) = self.image.as_mut() else {
-            self.first = Some(StorageResourceRecipientStartupStageV1::Closed);
+        let Some(image) = image_slot.as_mut() else {
+            *first = Some(StorageResourceRecipientStartupStageV1::Closed);
             return;
         };
         image.profile_delivery = ControllerProfileDeliveryV1::Storage;
 
-        let Some(activation) = self.activation.as_mut() else {
-            self.first = Some(StorageResourceRecipientStartupStageV1::Closed);
+        let Some(activation) = activation_slot.as_mut() else {
+            *first = Some(StorageResourceRecipientStartupStageV1::Closed);
             return;
         };
-        self.listener = Some(activation.admit_retained_storage_listener(&mut self.control));
-        if !matches!(self.listener.as_ref(), Some(Ok(()))) {
-            self.first = Some(StorageResourceRecipientStartupStageV1::Listener);
+        *listener = Some(activation.admit_retained_storage_listener(control));
+        if !matches!(listener.as_ref(), Some(Ok(()))) {
+            *first = Some(StorageResourceRecipientStartupStageV1::Listener);
             return;
         }
         if required {
-            activation.retain_launch_image(self.image.take());
+            activation.retain_launch_image(image_slot.take());
         }
     }
 
@@ -400,21 +559,31 @@ impl StorageResourceRecipientStartupAttemptV1 {
             StorageResourceRecipientStartupStageV1::Capture => self.captured.as_ref()
                 .and_then(|result| result.as_ref().err())
                 .map(|error| error as &dyn std::error::Error),
-            StorageResourceRecipientStartupStageV1::Mode => self.mode.as_ref()
+            StorageResourceRecipientStartupStageV1::ModeDemand => self.mode_demand.as_ref()
+                .and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error),
+            StorageResourceRecipientStartupStageV1::ModePayment
+            | StorageResourceRecipientStartupStageV1::ModeArm
+            | StorageResourceRecipientStartupStageV1::ModeOriginalPost => self.worker.as_ref()
+                .and_then(StorageOriginalWorkerStartupV3::storage_receiving_failure_v1)
+                .or_else(|| self.failed_worker.as_ref().and_then(std::error::Error::source))
+                .or(Some(&aos_sandbox::StorageReceivingClosedV1)),
+            StorageResourceRecipientStartupStageV1::Mode => self.initial_mode.failure()
+                .or_else(|| self.mode.as_ref()
                 .and_then(|result| result.as_ref().err())
-                .map(|error| error as &dyn std::error::Error),
-            StorageResourceRecipientStartupStageV1::Presence => self.presence.as_ref()
-                .and_then(|result| result.as_ref().err())
-                .map(|error| error as &dyn std::error::Error),
+                .map(|error| error as &dyn std::error::Error)),
+            StorageResourceRecipientStartupStageV1::Presence => self.mode_presence.failure()
+                .or_else(|| self.presence.as_ref()
+                    .and_then(|result| result.as_ref().err())
+                    .map(|error| error as &dyn std::error::Error)),
             StorageResourceRecipientStartupStageV1::Profile => self.profile.as_ref()
                 .and_then(|result| result.as_ref().err())
                 .map(|error| error as &dyn std::error::Error),
             StorageResourceRecipientStartupStageV1::Listener => self.listener.as_ref()
                 .and_then(|result| result.as_ref().err())
                 .map(|error| error as &dyn std::error::Error),
-            StorageResourceRecipientStartupStageV1::Post => self.post.as_ref()
-                .and_then(|result| result.as_ref().err())
-                .map(|error| error as &dyn std::error::Error),
+            StorageResourceRecipientStartupStageV1::Post => self.mode_comparison.failure()
+                .or_else(|| self.post.as_ref().and_then(|result| result.as_ref().err())
+                    .map(|error| error as &dyn std::error::Error)),
             StorageResourceRecipientStartupStageV1::Closed => {
                 Some(&crate::BrokerSessionSecurityError::Currentness)
             }
@@ -426,6 +595,9 @@ impl StorageResourceRecipientStartupAttemptV1 {
         ProductionStorageResourceRecipientStartupErrorV1,
     > {
         let complete = self.first.is_none() && self.admitted
+            && matches!(self.mode_payment, Some(Ok(())))
+            && matches!(self.mode_arm, Some(Ok(())))
+            && matches!(self.mode_original_post, Some(Ok(())))
             && self.activation.is_some() && self.export.is_some()
             && self.control.is_none() && self.worker.is_some()
             && self.image_destination.as_ref().is_some_and(|slot| slot.as_ref().is_some())
@@ -455,6 +627,16 @@ impl StorageResourceRecipientStartupAttemptV1 {
         };
         let startup = ProductionStorageStartupV1 {
             selected: Some(StorageResourceRecipientStartupCustodyV1 {
+                initial_mode: std::mem::replace(&mut self.initial_mode, crate::recovery::InitialModeOriginalV1::new()),
+                mode_comparison: std::mem::replace(&mut self.mode_comparison, crate::recovery::ModeRevalidationOriginalV1::new()),
+                mode_presence: std::mem::replace(
+                    &mut self.mode_presence,
+                    crate::recovery::ModePresenceOriginalV1::new(),
+                ),
+                mode_demand: self.mode_demand.take(),
+                mode_payment: self.mode_payment.take(),
+                mode_arm: self.mode_arm.take(),
+                mode_original_post: self.mode_original_post.take(),
                 image_destination,
                 legacy_image: self.image.take(),
                 mode,
@@ -473,6 +655,23 @@ impl StorageResourceRecipientStartupAttemptV1 {
         self.armed = false;
         Ok((startup, Some(worker)))
     }
+}
+
+fn selected_initial_mode_demand_v1()
+    -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>
+{
+    use aos_sandbox_core::{AccountingError, ResourceDimension as D, ResourceVector};
+    let invalid = || AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes };
+    let initial = crate::recovery::mode_initial_receiving_demand_v1().ok_or_else(invalid)?;
+    let comparison = crate::recovery::mode_revalidation_receiving_demand_v1().ok_or_else(invalid)?;
+    let presence = crate::recovery::mode_presence_receiving_demand_v1().ok_or_else(invalid)?;
+    let owners = std::mem::size_of::<StorageResourceRecipientStartupAttemptV1>()
+        .checked_add(std::mem::size_of::<StorageResourceRecipientStartupCustodyV1>())
+        .and_then(|bytes| u64::try_from(bytes).ok()).ok_or_else(invalid)?;
+    // Result and owner representations are byte obligations. Namespace entry
+    // cardinality belongs to the actual fixed Mode readers' own suppliers.
+    initial.checked_add(presence)?.checked_add(comparison)?
+        .checked_add(ResourceVector::ZERO.with(D::MemoryBytes, owners))
 }
 
 impl Drop for StorageResourceRecipientStartupAttemptV1 {
@@ -716,13 +915,6 @@ impl ProductionStorageStartupV1 {
     }
 }
 
-pub(crate) struct CapturedControllerStartupV1 {
-    pub(crate) publisher_descriptor: Option<OwnedFd>,
-    pub(crate) launch_image: Option<Pid1LaunchImageV1>,
-    pub(crate) normal_root_capture: aos_sandbox::normal_root::ProductionControllerNormalRootCaptureV1,
-    pub(crate) nix_capture: Option<aos_sandbox::normal_root::ProductionControllerNixStartupCaptureV1>,
-    pub(crate) git_source_listener: Option<OwnedFd>,
-}
 
 fn admit_launch_observation(
     endpoint: ProtectedBrokerSessionFixedEndpointV1,
@@ -759,577 +951,6 @@ fn profile_delivery_for_endpoint(
     }
 }
 
-/// Borrows a cause from the same nested retained startup owner.
-///
-/// The view is short and by value; Security stores no self-borrow or cloned
-/// Core cause. It grants no launch, selected-profile or floor authority.
-pub(crate) enum ControllerStartupFailureRefV1<'attempt> {
-    Core(ControllerInitialCaptureFailureRefV1<'attempt>),
-    Launch(&'attempt crate::BrokerSessionSecurityError),
-    Closed,
-}
-
-impl std::fmt::Debug for ControllerStartupFailureRefV1<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Core(_) => "original Controller capture refused",
-            Self::Launch(_) => "original Controller launch delivery refused",
-            Self::Closed => "original Controller startup closed",
-        })
-    }
-}
-
-enum StartupCaptureFailure {
-    Core,
-    Launch(crate::BrokerSessionSecurityError),
-    Closed,
-}
-
-/// Keeps actual startup originals resident across launch-presence admission.
-///
-/// The empty image destination is allocated before initial capture, never
-/// after an original has left its slot. Installed Controller startup uses this
-/// same capture; unrelated consuming startup paths remain unchanged.
-/// Failed/abandoned or unwinding attempts abort before field release; OS death
-/// is not drain or Source-flight settlement. Lower unreturned custody remains
-/// a separate functional prerequisite.
-#[must_use]
-pub(crate) struct ControllerStartupCaptureAttemptV1 {
-    image_destination: Arc<Option<File>>,
-    core: ProductionControllerInitialCaptureAttemptV1,
-    parts: Option<ProductionControllerNormalRootStartupPartsV1>,
-    git: Option<OwnedFd>,
-    completed: Option<CapturedControllerStartupV1>,
-    attempted: bool,
-    failure: Option<StartupCaptureFailure>,
-    armed: bool,
-}
-
-impl ControllerStartupCaptureAttemptV1 {
-    pub(crate) fn new(publisher: bool, nix_enabled: bool, git_source_cut: bool) -> Self {
-        // This is the sole retained-only allocation. It precedes any table IO
-        // and contains no File, fabricated image or authorization claim.
-        let image_destination = Arc::new(None);
-        Self {
-            image_destination,
-            core: ProductionControllerNormalRootCaptureV1::begin_retained_capture(
-                publisher, nix_enabled, git_source_cut,
-            ),
-            parts: None,
-            git: None,
-            completed: None,
-            attempted: false,
-            failure: None,
-            armed: true,
-        }
-    }
-
-    /// Captures and checks the same originals once, before any journal opens.
-    ///
-    /// # Errors
-    /// Borrows the actual nested Core or launch cause without releasing partial
-    /// originals. Repeats are closed and perform no observations.
-    pub(crate) fn capture_once(&mut self) -> Result<(), ControllerStartupFailureRefV1<'_>> {
-        if self.attempted {
-            self.failure.get_or_insert(StartupCaptureFailure::Closed);
-        } else {
-            self.attempted = true;
-            let result = {
-                let _unwind = AbortStartupCaptureUnwind;
-                self.capture_body()
-            };
-            match result {
-                Ok(()) => return Ok(()),
-                Err(cause) => {
-                    self.failure.get_or_insert(cause);
-                }
-            }
-        }
-        Err(self.failure_view())
-    }
-
-    pub(crate) fn first_failure(&self) -> Option<ControllerStartupFailureRefV1<'_>> {
-        self.failure.as_ref().map(|_| self.failure_view())
-    }
-
-    // The installed retained path keeps Nix nested with its producer-associated
-    // delivery duplicate until FIRST6 finishes the same capture.
-    fn take_completed_profile_startup(&mut self) -> Option<CapturedControllerStartupV1> {
-        if self.failure.is_some()
-            || self.completed.is_none()
-            || self.parts.is_some()
-            || self.git.is_some()
-        {
-            return None;
-        }
-        let completed = self.completed.take();
-        self.armed = false;
-        completed
-    }
-
-    fn failure_view(&self) -> ControllerStartupFailureRefV1<'_> {
-        match &self.failure {
-            Some(StartupCaptureFailure::Core) => match self.core.first_failure() {
-                Some(cause) => ControllerStartupFailureRefV1::Core(cause),
-                None => ControllerStartupFailureRefV1::Closed,
-            },
-            Some(StartupCaptureFailure::Launch(cause)) => {
-                ControllerStartupFailureRefV1::Launch(cause)
-            }
-            Some(StartupCaptureFailure::Closed) | None => ControllerStartupFailureRefV1::Closed,
-        }
-    }
-
-    fn capture_body(&mut self) -> Result<(), StartupCaptureFailure> {
-        if self.parts.is_some() || self.git.is_some()
-            || self.completed.is_some()
-        {
-            return Err(StartupCaptureFailure::Closed);
-        }
-        if self.core.capture_once().is_err() {
-            return Err(StartupCaptureFailure::Core);
-        }
-        let Some(parts) = self.core.take_completed_parts() else {
-            return Err(StartupCaptureFailure::Closed);
-        };
-        self.parts = Some(parts);
-        let parts = self.parts.as_mut().ok_or(StartupCaptureFailure::Closed)?;
-        self.git = parts.0.take_git_source_listener();
-
-        let endpoint = ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient;
-        let image_present = parts.2.is_some();
-        let profile_delivery = launch_profile_delivery(endpoint, image_present)
-            .map_err(StartupCaptureFailure::Launch)?;
-
-        // Check unique ownership and the empty destination BEFORE taking the
-        // raw original. This borrow cannot allocate or observe another image.
-        let target = Arc::get_mut(&mut self.image_destination)
-            .ok_or(StartupCaptureFailure::Closed)?;
-        if target.is_some() || parts.2.is_some() != image_present {
-            return Err(StartupCaptureFailure::Closed);
-        }
-        if let Some(original) = parts.2.take() {
-            *target = Some(File::from(original));
-        }
-        let launch_image = if image_present {
-            Some(Pid1LaunchImageV1 {
-                endpoint,
-                process: std::process::id(),
-                file: LaunchImageFile::Retained(Arc::clone(&self.image_destination)),
-                profile_delivery,
-            })
-        } else {
-            None
-        };
-
-        // The image is already resident in the shared original destination.
-        // No observation/allocation follows any startup tuple removal.
-        if self.completed.is_some()
-            || self.parts.as_ref().is_none_or(|parts| parts.2.is_some())
-        {
-            return Err(StartupCaptureFailure::Closed);
-        }
-        let originals = self.parts.take();
-        match originals {
-            Some((normal_root_capture, publisher_descriptor, None)) => {
-                self.completed = Some(CapturedControllerStartupV1 {
-                    publisher_descriptor,
-                    launch_image,
-                    normal_root_capture,
-                    nix_capture: None,
-                    git_source_listener: self.git.take(),
-                });
-                Ok(())
-            }
-            parts => {
-                self.parts = parts;
-                // The shared original image never left image_destination.
-                Err(StartupCaptureFailure::Closed)
-            }
-        }
-    }
-}
-
-impl Drop for ControllerStartupCaptureAttemptV1 {
-    fn drop(&mut self) {
-        if self.armed {
-            std::process::abort();
-        }
-    }
-}
-
-struct AbortStartupCaptureUnwind;
-
-impl Drop for AbortStartupCaptureUnwind {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            std::process::abort();
-        }
-    }
-}
-
-// This continuation is local (!Sync through FIRST6). Only successful existing
-// Arc owners are shared with runtime. Publisher/lower/Arc-allocation custody
-// exclusions are deliberate; no whole-role/drain guarantee is implied.
-/// Retains the original Controller capture, admission, and startup failure destinations.
-pub struct ControllerStartupContinuationV1 {
-    capture: ControllerStartupCaptureAttemptV1,
-    returned: Option<CapturedControllerStartupV1>,
-    root: Option<aos_sandbox::normal_root::ProductionControllerSelectedProfileAdmissionV1>,
-    profile: Option<Arc<ProductionControllerNormalRootProfileV1>>,
-    nix: Option<aos_sandbox::normal_root::ProductionControllerNixStartupCaptureV1>,
-    selector_attempt: Option<aos_sandbox::production_operation_compiler::ControllerNixSelectorAdmissionV2>,
-    selector: Option<Arc<aos_sandbox::production_operation_compiler::ControllerNixStartRecipeSelectorV2>>,
-    image: Option<Pid1LaunchImageV1>,
-    publisher: Option<OwnedFd>,
-    git: Option<OwnedFd>,
-    resource_opening: Option<aos_sandbox::ControllerResourceBankOpeningV1>,
-    issue: bool,
-    root_completed: bool,
-    first_failure: Option<ControllerContinuationFailure>,
-    armed: bool,
-}
-
-enum ControllerContinuationFailure {
-    Capture,
-    Root,
-    Selector,
-    Binding(ControllerBindingFailure),
-    Delivery(aos_sandbox::normal_root::SourceSuccessorCredentialErrorV2),
-    RuntimeRefused,
-    Closed,
-}
-
-// Short views resolve markers against the same resident nested owners. No
-// borrow is stored in the continuation and no actual cause is copied.
-enum ControllerContinuationFailureRef<'attempt> {
-    Capture(ControllerStartupFailureRefV1<'attempt>),
-    Root(&'attempt aos_sandbox::normal_root::ControllerProfileAdmissionFailureV1),
-    Selector(aos_sandbox::production_operation_compiler::ControllerNixSelectorFailureRefV2<'attempt>),
-    Binding(&'attempt ControllerBindingFailure),
-    Delivery(&'attempt aos_sandbox::normal_root::SourceSuccessorCredentialErrorV2),
-    RuntimeRefused,
-    Closed,
-}
-
-impl std::fmt::Debug for ControllerContinuationFailureRef<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Capture(_) => "original capture refused",
-            Self::Root(_) => "original Root profile refused",
-            Self::Selector(_) => "original Nix selector refused",
-            Self::Binding(_) => "original launch binding refused",
-            Self::Delivery(_) => "issue-only delivery refused",
-            Self::RuntimeRefused => "resident runtime continuation refused",
-            Self::Closed => "original continuation closed",
-        })
-    }
-}
-
-impl ControllerStartupContinuationV1 {
-    /// Creates only the original empty startup capture destinations.
-    pub fn new(publisher: bool, nix: bool, issue: bool) -> Self {
-        Self {
-            capture: ControllerStartupCaptureAttemptV1::new(publisher, nix, false),
-            returned: None,
-            root: None,
-            profile: None,
-            nix: None,
-            selector_attempt: None,
-            selector: None,
-            image: None,
-            publisher: None,
-            git: None,
-            resource_opening: None,
-            issue,
-            root_completed: false,
-            first_failure: None,
-            armed: true,
-        }
-    }
-
-    /// Captures the original installed Controller startup once.
-    pub fn capture_once(&mut self) -> bool {
-        if self.first_failure.is_some() || self.returned.is_some() || self.root.is_some() {
-            self.first_failure.get_or_insert(ControllerContinuationFailure::Closed);
-            return false;
-        }
-        if self.capture.capture_once().is_err() {
-            self.first_failure = Some(ControllerContinuationFailure::Capture);
-            return false;
-        }
-        let Some(returned) = self.capture.take_completed_profile_startup() else {
-            self.first_failure = Some(ControllerContinuationFailure::Closed);
-            return false;
-        };
-        self.returned = Some(returned);
-        true
-    }
-
-    /// Admits only the original captured Controller root.
-    pub fn admit_root_once(&mut self, uid: u32, gid: u32) -> bool {
-        if self.first_failure.is_some()
-            || self.root_completed
-            || self.root.is_some()
-            || self.profile.is_some()
-            || self.nix.is_some()
-            || self.image.is_some()
-            || self.publisher.is_some()
-            || self.git.is_some()
-            || self.resource_opening.is_some()
-            || self.returned.as_ref().is_none_or(|startup| startup.nix_capture.is_some())
-        {
-            self.first_failure.get_or_insert(ControllerContinuationFailure::Closed);
-            return false;
-        }
-        let Some(returned) = self.returned.take() else {
-            self.first_failure = Some(ControllerContinuationFailure::Closed);
-            return false;
-        };
-        let CapturedControllerStartupV1 {
-            publisher_descriptor,
-            launch_image,
-            mut normal_root_capture,
-            nix_capture: _,
-            git_source_listener,
-        } = returned;
-        self.publisher = publisher_descriptor;
-        self.image = launch_image;
-        self.git = git_source_listener;
-        // The exact upstream closed capture, never caller FDs or a capsule,
-        // transfers its same original pair before selected profile admission.
-        self.resource_opening = normal_root_capture.take_resource_enrollment()
-            .map(aos_sandbox::ControllerResourceBankOpeningV1::begin);
-        self.root = Some(normal_root_capture.begin_retained_selected_admission());
-
-        let Some(root) = self.root.as_mut() else {
-            self.first_failure = Some(ControllerContinuationFailure::Closed);
-            return false;
-        };
-        let selected = match root.admit_selected_once(uid, gid) {
-            Ok(profile) => profile.is_some(),
-            Err(_) => {
-                self.first_failure = Some(ControllerContinuationFailure::Root);
-                return false;
-            }
-        };
-        if self.issue && !selected {
-            // Do not settle issue-only Absent or inherit ordinary None success.
-            self.first_failure = Some(ControllerContinuationFailure::Closed);
-            return false;
-        }
-        let (profile, nix) = match root.take_admitted_roles() {
-            Ok(roles) => roles,
-            Err(_) => {
-                self.first_failure = Some(ControllerContinuationFailure::Root);
-                return false;
-            }
-        };
-        self.nix = nix;
-        // Existing successful Arc sharing is a FUNDING exclusion, not a
-        // recoverable allocation boundary or universal unwind guarantee.
-        self.profile = profile.map(Arc::new);
-        self.root_completed = true;
-        if !self.issue
-            && self.profile.is_none()
-            && self.nix.is_none()
-            && self.image.is_none()
-            && self.publisher.is_none()
-            && self.git.is_none()
-            && self.resource_opening.is_none()
-        {
-            // FIRST6 settled only its real early, empty nonpositive absence.
-            self.armed = false;
-        }
-        true
-    }
-
-    /// Checks the original source-delivery absence without manufacturing it.
-    pub fn require_source_delivery_absent(&mut self) -> bool {
-        if self.first_failure.is_some() || !self.root_completed {
-            self.first_failure.get_or_insert(ControllerContinuationFailure::Closed);
-            return false;
-        }
-        match aos_sandbox::normal_root::require_source_successor_delivery_absent_v2(
-            self.profile.as_deref(),
-        ) {
-            Ok(()) => true,
-            Err(cause) => {
-                self.first_failure.get_or_insert(ControllerContinuationFailure::Delivery(cause));
-                false
-            }
-        }
-    }
-
-    /// Binds the original captured launch image in its existing destination.
-    pub fn bind_launch_in_place(&mut self) -> bool {
-        if self.first_failure.is_some() || !self.root_completed {
-            self.first_failure.get_or_insert(ControllerContinuationFailure::Closed);
-            return false;
-        }
-        if let Some(image) = &mut self.image {
-            if let Err(cause) = image.bind_controller_profile_in_place(self.profile.clone()) {
-                self.first_failure.get_or_insert(ControllerContinuationFailure::Binding(cause));
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Admits the original selected Nix startup without replacing its capture.
-    pub fn admit_nix_once(
-        &mut self,
-        uid: u32,
-        gid: u32,
-        node: aos_sandbox_core::NodeId,
-    ) -> bool {
-        if self.first_failure.is_some() || !self.root_completed
-            || self.selector_attempt.is_some() || self.selector.is_some()
-            || self.nix.is_none()
-        {
-            self.first_failure.get_or_insert(ControllerContinuationFailure::Closed);
-            return false;
-        }
-        let Some(capture) = self.nix.take() else {
-            self.first_failure = Some(ControllerContinuationFailure::Closed);
-            return false;
-        };
-        self.selector_attempt = Some(
-            aos_sandbox::production_operation_compiler::ControllerNixStartRecipeSelectorV2::begin_retained_original(
-                capture,
-                uid,
-                gid,
-                node,
-            ),
-        );
-        let Some(attempt) = self.selector_attempt.as_mut() else {
-            self.first_failure = Some(ControllerContinuationFailure::Closed);
-            return false;
-        };
-        if attempt.admit_once().is_err() {
-            self.first_failure = Some(ControllerContinuationFailure::Selector);
-            return false;
-        }
-        let Some(selector) = attempt.take_admitted_selector() else {
-            self.first_failure = Some(ControllerContinuationFailure::Closed);
-            return false;
-        };
-        self.selector = Some(Arc::new(selector));
-        true
-    }
-
-    /// Borrows the original admitted Controller profile.
-    pub fn profile(&self) -> Option<&ProductionControllerNormalRootProfileV1> {
-        self.profile.as_deref()
-    }
-
-    /// Moves the original admitted resource opening into its existing consumer.
-    pub fn take_resource_opening(
-        &mut self,
-    ) -> Option<aos_sandbox::ControllerResourceBankOpeningV1> {
-        self.resource_opening.take()
-    }
-
-    /// Shares only the original admitted Controller profile.
-    pub fn profile_share(&self) -> Option<Arc<ProductionControllerNormalRootProfileV1>> {
-        self.profile.clone()
-    }
-
-    /// Shares only the original retained Nix selector.
-    pub fn selector_share(&self) -> Option<Arc<aos_sandbox::production_operation_compiler::ControllerNixStartRecipeSelectorV2>> {
-        self.selector.clone()
-    }
-
-    /// Shares only the original captured launch observation.
-    pub fn image_share(&self) -> Option<Pid1LaunchImageV1> {
-        self.image.clone()
-    }
-
-    // The unchanged consuming publisher lower path remains a functional gap.
-    /// Moves the original captured publisher descriptor without admitting a substitute.
-    pub fn take_publisher(&mut self) -> Option<OwnedFd> {
-        self.publisher.take()
-    }
-
-    /// Settles the original local startup lifetime after its worker handoff.
-    pub fn complete_worker_handoff(&mut self) {
-        // Called only after actual successful spawn. Parent Arc shares remain
-        // resident through later startup errors; no drain is inferred.
-        if self.first_failure.is_some() || !self.root_completed || self.nix.is_some() {
-            self.terminate_failed();
-        }
-        self.armed = false;
-    }
-
-    /// Settles the original local startup lifetime after Core's same-flight finish.
-    pub fn complete_issue_finish(&mut self) {
-        // Called only after Core's SAME-flight Finish, without another Root
-        // predicate. This is local lifetime settlement, never physical drain.
-        self.armed = false;
-    }
-
-    /// Observes whether the original startup custody must remain resident.
-    pub fn must_retain_failure(&self) -> bool {
-        self.armed || self.profile.is_some() || self.selector.is_some() || self.image.is_some()
-    }
-
-    /// Refuses runtime continuation without accepting or owning its upper cause.
-    ///
-    /// The application parks its actual typed failure before this call. Earlier
-    /// capture/admission failures keep precedence and all resident custody stays
-    /// armed through the unchanged process exit.
-    pub fn terminate_runtime_refusal(&mut self) -> ! {
-        self.first_failure.get_or_insert(ControllerContinuationFailure::RuntimeRefused);
-        self.terminate_failed()
-    }
-
-    /// Terminates with the original startup failure and resident custody.
-    pub fn terminate_failed(&mut self) -> ! {
-        // Diagnostic unwinding must not release post-handoff parent custody.
-        self.armed = true;
-
-        // Nested causes remain owned in the exact capture/admission attempt.
-        self.first_failure.get_or_insert(ControllerContinuationFailure::Closed);
-        eprintln!("aos-sandboxd: {:?}", self.failure_view());
-        std::process::exit(1)
-    }
-
-    fn failure_view(&self) -> ControllerContinuationFailureRef<'_> {
-        match &self.first_failure {
-            Some(ControllerContinuationFailure::Capture) => self.capture.first_failure()
-                .map(ControllerContinuationFailureRef::Capture)
-                .unwrap_or(ControllerContinuationFailureRef::Closed),
-            Some(ControllerContinuationFailure::Root) => self.root.as_ref()
-                .and_then(|owner| owner.first_failure())
-                .map(ControllerContinuationFailureRef::Root)
-                .unwrap_or(ControllerContinuationFailureRef::Closed),
-            Some(ControllerContinuationFailure::Selector) => self.selector_attempt.as_ref()
-                .and_then(|owner| owner.first_failure())
-                .map(ControllerContinuationFailureRef::Selector)
-                .unwrap_or(ControllerContinuationFailureRef::Closed),
-            Some(ControllerContinuationFailure::Binding(cause)) => {
-                ControllerContinuationFailureRef::Binding(cause)
-            }
-            Some(ControllerContinuationFailure::Delivery(cause)) => {
-                ControllerContinuationFailureRef::Delivery(cause)
-            }
-            Some(ControllerContinuationFailure::RuntimeRefused) => {
-                ControllerContinuationFailureRef::RuntimeRefused
-            }
-            Some(ControllerContinuationFailure::Closed) | None => {
-                ControllerContinuationFailureRef::Closed
-            }
-        }
-    }
-}
-
-impl Drop for ControllerStartupContinuationV1 {
-    fn drop(&mut self) {
-        if self.armed {
-            std::process::abort();
-        }
-    }
-}
 
 fn startup_error(message: impl Into<String>) -> StorageServiceError {
     StorageServiceError::Activation(message.into())
@@ -1338,13 +959,6 @@ fn startup_error(message: impl Into<String>) -> StorageServiceError {
 #[cfg(test)]
 mod retained_destination_tests {
     use super::*;
-
-    #[test]
-    fn runtime_refusal_marker_preserves_the_fixed_diagnostic() {
-        let view = ControllerContinuationFailureRef::RuntimeRefused;
-
-        assert_eq!(format!("{view:?}"), "resident runtime continuation refused");
-    }
 
     #[test]
     fn an_empty_destination_is_unique_before_any_original_exists() {
@@ -1415,3 +1029,5 @@ mod storage_worker_image_route_tests {
         assert!(std::error::Error::source(&failure).is_some());
     }
 }
+
+mod floor_physical_receiving;

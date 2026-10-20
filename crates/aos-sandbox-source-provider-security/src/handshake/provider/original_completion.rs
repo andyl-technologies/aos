@@ -6,9 +6,8 @@
 //! verified request, same protected writer/readback and observed mount owner.
 
 use super::*;
-use aos_sandbox::journal::{
-    OriginalSourceProtectedReadbackV5, SourceOriginalNativeJournalAuthorityV5,
-};
+use aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5;
+use aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5;
 use aos_sandbox_core::{ObjectDigest, RawPairedClockSample};
 use aos_sandbox_source_provider_protocol::{
     PreparedSourceExportLeaseDataV5, PreparedSourceProviderReceiptDataV5,
@@ -22,7 +21,7 @@ enum OriginalCompletionCauseV5 {
     #[error("original completion custody failed")]
     Security(#[from] SourceProviderSecurityError),
     #[error("original completion protected readback failed")]
-    Journal(#[from] aos_sandbox::JournalError),
+    Journal(#[from] aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1),
     #[error("original completion canonical signature preparation failed")]
     Signature(#[from] SourceProviderSignatureError),
     #[error("original completion paired clock failed")]
@@ -174,7 +173,7 @@ impl CurrentProviderIngressSessionV1 {
         let origin = journal.original_completion_signing_basis_v5(readback, request.acquisition_id())?;
         let provenance = origin.initial_floor().original_provenance().claims();
         let key = aos_sandbox_source_provider_ledger::ledger::native_completion::native_completion_key_v2(request.acquisition_id());
-        let bytes = readback.rows().get(&(aos_sandbox::RecordNamespace::SourceProviderAuthority, key.clone()))
+        let bytes = readback.rows().get(&(aos_sandbox_core::RecordNamespace::SourceProviderAuthority, key.clone()))
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         let native = aos_sandbox_source_provider_ledger::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1::from_canonical_bytes(&key, bytes)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
@@ -236,7 +235,7 @@ impl CurrentProviderIngressSessionV1 {
         use aos_sandbox_source_provider_ledger::ledger::model::DecodedRecordV1;
         let mut catalog = None;
         for ((namespace, key), value) in readback.rows() {
-            if *namespace == aos_sandbox::RecordNamespace::SourceProviderAuthority
+            if *namespace == aos_sandbox_core::RecordNamespace::SourceProviderAuthority
                 && let Ok(DecodedRecordV1::Catalog(value)) = aos_sandbox_source_provider_ledger::ledger::format::decode_record(key, value)
                 && catalog.replace(value).is_some()
             {
@@ -261,7 +260,7 @@ impl CurrentProviderIngressSessionV1 {
             return Err(SourceProviderSecurityError::SessionContinuity.into());
         }
         let decode = |key: &[u8]| readback.rows().get(&(
-            aos_sandbox::RecordNamespace::SourceProviderAuthority, key.to_vec(),
+            aos_sandbox_core::RecordNamespace::SourceProviderAuthority, key.to_vec(),
         )).and_then(|bytes| aos_sandbox_source_provider_ledger::ledger::format::decode_record(key, bytes).ok());
         let witness = &provenance.records;
         let Some(DecodedRecordV1::Attempt(attempt)) = decode(witness[0].key()) else {
@@ -460,7 +459,7 @@ impl CurrentProviderIngressSessionV1 {
             let session_key = aos_sandbox_source_provider_ledger::ledger::format::session_key(
                 projection.provider_authority().authority_id(), projection.root_mount_authority().authority_id(),
             );
-            let bytes = readback.rows().get(&(aos_sandbox::RecordNamespace::SourceProviderAuthority, session_key.clone()))
+            let bytes = readback.rows().get(&(aos_sandbox_core::RecordNamespace::SourceProviderAuthority, session_key.clone()))
                 .ok_or(SourceProviderSecurityError::SessionContinuity)?;
             let aos_sandbox_source_provider_ledger::ledger::model::DecodedRecordV1::Session(session) =
                 aos_sandbox_source_provider_ledger::ledger::format::decode_record(&session_key, bytes)

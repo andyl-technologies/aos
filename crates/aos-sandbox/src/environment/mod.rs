@@ -1,16 +1,22 @@
-//! Dormant immutable environment-generation commitments.
+//! Owns canonical immutable Environment generations, activation and leases.
 //!
-//! The portable core `Environment` describes runtime closure semantics. This
-//! module additionally binds the source, lock, selected output, target,
-//! facade, policy, and disclosure inputs needed to identify one realization.
-//! A fixed-owner seam can gate execution admission and a future constrained
-//! Nix build effect; this crate does not activate either effect.
+//! The selected installed route joins a measured deployment artifact to fresh
+//! Root policy/compiler and protected native evidence. Controller purpose18
+//! publishes and reads back generation/activation/lease transitions through the
+//! existing Source semantic engine before borrowing execution admission. The
+//! remaining constrained Nix build interfaces retain their existing fences.
 
 mod activation_format;
 mod authority_clock;
 mod checkpoint_format;
 mod execution;
 mod execution_source;
+#[cfg(target_os = "linux")]
+mod historical_execution;
+#[cfg(target_os = "linux")]
+pub use historical_execution::{HistoricalEnvironmentExecutionOwnerV4, HistoricalEnvironmentExecutionModelsV4};
+#[cfg(target_os = "linux")]
+pub(crate) mod deployment;
 mod format;
 mod journal;
 mod lifecycle;
@@ -18,6 +24,10 @@ mod model;
 mod nix_build_owner;
 mod nix_client;
 mod protected_evidence;
+#[cfg(target_os = "linux")]
+pub(crate) use protected_evidence::{RootEnvironmentEvidenceOriginalV1, RootEnvironmentEvidenceErrorV1};
+#[cfg(target_os = "linux")]
+mod receiving;
 pub mod protected_journal;
 pub(crate) mod protected_owner;
 
@@ -88,3 +98,30 @@ pub use protected_evidence::{
     EnvironmentProtectedEvidenceErrorV1, EnvironmentProtectedEvidenceOwnerV1,
 };
 pub use protected_owner::EnvironmentProtectedJournalOwnerV1;
+
+#[cfg(target_os = "linux")]
+pub(crate) use protected_evidence::EnvironmentExecutionEvidenceOriginalV1;
+
+#[cfg(target_os = "linux")]
+pub(crate) use receiving::execution_source_receiving_demand_v1;
+
+#[cfg(target_os = "linux")]
+pub(crate) fn trusted_provisioned_time_data_v1(record: &[u8], now: aos_sandbox_core::RawPairedClockSample)
+    -> Result<EnvironmentTrustedTimeV1, EnvironmentProtectedEvidenceErrorV1>
+{
+    let evidence = protected_evidence::decode_provisioned_evidence_data_v1(record)?;
+    if evidence.current_boot != authority_clock::linux_kernel_boot_commitment_v1(now.host_boot_id())
+        || now.boottime_nanoseconds() < evidence.current_time.get()
+        || u64::try_from(now.wall_seconds()).ok().is_none_or(|wall| wall >= evidence.valid_until_unix_seconds)
+    { return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence); }
+    EnvironmentTrustedTimeV1::from_verified_observation(evidence.current_boot,
+        EnvironmentLeaseTimeV1::new(now.boottime_nanoseconds())
+            .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?)
+        .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn provisioned_kernel_boot_data_v1(boot: [u8; 16]) -> aos_sandbox_core::ObjectDigest {
+    authority_clock::linux_kernel_boot_commitment_v1(boot)
+}
+

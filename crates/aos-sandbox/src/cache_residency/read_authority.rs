@@ -13,7 +13,7 @@ use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_protocol::cache_state::{
     BackingObjectIdentityV1, CatalogEntryV1, CatalogPresenceV1, ImmutableSealV1,
-    PhysicalPartitionId, hash_descriptor_fields_u16_v1, object_descriptor_commitment,
+    PhysicalPartitionId, object_descriptor_commitment,
     validate_object_descriptor,
 };
 
@@ -22,6 +22,11 @@ use super::domain::{
     AuthorizedLookupKey, CacheAuthorityError, CacheAuthorityOwner, CacheAuthorityPurposeV1,
     CacheAuthorityScopeV1, LookupAuthorityScopeV1, VerifiedCacheCapabilityV1,
 };
+use aos_sandbox_protocol::cache_state::handoff_data::{
+    DescriptorHandoffPlanDataV1, DescriptorHandoffReceiptDataV1,
+    handoff_digest, handoff_receipt_digest,
+};
+
 use super::pin::{CachePinId, CachePinKindV1};
 
 /// Carries a controller-resolved current read decision.
@@ -152,7 +157,7 @@ impl CurrentReadAuthorityV1 {
         capability: &VerifiedCacheCapabilityV1,
         now: u64,
     ) -> Result<(), ReadAuthorityError> {
-        let scope = CacheAuthorityScopeV1::new(
+        let scope = crate::cache_residency::domain::new_cache_authority_scope_v1(
             self.partition,
             object_descriptor_commitment(&self.descriptor),
             None,
@@ -266,7 +271,7 @@ impl ReadBackingObservationV1 {
             size,
             confined_read_only,
         );
-        let authority_scope = CacheAuthorityScopeV1::new(
+        let authority_scope = crate::cache_residency::domain::new_cache_authority_scope_v1(
             entry.partition,
             subject,
             None,
@@ -314,85 +319,109 @@ impl ReadBackingObservationV1 {
     }
 }
 
-/// Authorizes one exact opaque descriptor handoff.
+/// Retains a live-authorized descriptor handoff over its historical DATA.
+///
+/// Historical DATA cannot construct the Native wrapper.
+///
+/// ```compile_fail
+/// fn issue(data: aos_sandbox_protocol::cache_state::handoff_data::DescriptorHandoffPlanDataV1) {
+///     let _ = aos_sandbox::cache_residency::read_authority::DescriptorHandoffPlanV1(data);
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DescriptorHandoffPlanV1 {
-    /// Exact current read-decision digest.
-    authority_digest: ObjectDigest,
-    /// Committed catalog generation.
-    catalog_digest: ObjectDigest,
-    /// Retained kernel-reference or backing-registration pin.
-    pin: CachePinId,
-    /// Complete immutable object descriptor.
-    descriptor: ObjectDescriptor,
-    /// Opaque backing identity.
-    backing: BackingObjectIdentityV1,
-    /// Fresh physical evidence.
-    physical_evidence: ObjectDigest,
-    /// Latest time at which the custodian may begin handoff.
-    valid_until: u64,
-    /// Digest of all handoff semantics.
-    digest: ObjectDigest,
+pub struct DescriptorHandoffPlanV1(DescriptorHandoffPlanDataV1);
+
+impl std::ops::Deref for DescriptorHandoffPlanV1 {
+    type Target = DescriptorHandoffPlanDataV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
-/// Confirms post-handoff physical identity and retained authority bindings.
+/// Retains a currentness-checked descriptor handoff receipt.
+///
+/// Historical DATA cannot construct the Native wrapper.
+///
+/// ```compile_fail
+/// fn issue(data: aos_sandbox_protocol::cache_state::handoff_data::DescriptorHandoffReceiptDataV1) {
+///     let _ = aos_sandbox::cache_residency::read_authority::DescriptorHandoffReceiptV1(data);
+/// }
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DescriptorHandoffReceiptV1 {
-    /// Exact handoff plan.
-    plan_digest: ObjectDigest,
-    /// Post-handoff physical observation.
-    post_handoff_evidence: ObjectDigest,
-    /// Digest of the complete confirmation.
-    digest: ObjectDigest,
+pub struct DescriptorHandoffReceiptV1(DescriptorHandoffReceiptDataV1);
+
+impl std::ops::Deref for DescriptorHandoffReceiptV1 {
+    type Target = DescriptorHandoffReceiptDataV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl DescriptorHandoffPlanV1 {
+    pub(crate) const fn historical_data_v1(&self) -> &DescriptorHandoffPlanDataV1 {
+        &self.0
+    }
+
+    pub(crate) fn into_historical_data_v1(self) -> DescriptorHandoffPlanDataV1 {
+        self.0
+    }
+
     pub(crate) const fn authority_digest(&self) -> ObjectDigest {
-        self.authority_digest
+        self.0.authority_digest
     }
 
     pub(crate) const fn catalog_digest(&self) -> ObjectDigest {
-        self.catalog_digest
+        self.0.catalog_digest
     }
 
     pub(crate) fn descriptor(&self) -> &ObjectDescriptor {
-        &self.descriptor
+        &self.0.descriptor
     }
 
     pub(crate) const fn physical_evidence(&self) -> ObjectDigest {
-        self.physical_evidence
+        self.0.physical_evidence
     }
 
     pub(crate) const fn valid_until(&self) -> u64 {
-        self.valid_until
+        self.0.valid_until
     }
 
     /// Returns the opaque backing identity for the trusted custodian.
     #[must_use]
     pub const fn backing(&self) -> BackingObjectIdentityV1 {
-        self.backing
+        self.0.backing
     }
 
     /// Returns the exact retained pin that must accompany handoff.
     #[must_use]
     pub const fn pin(&self) -> CachePinId {
-        self.pin
+        self.0.pin
     }
 
     /// Returns the canonical handoff-plan commitment.
     #[must_use]
     pub const fn digest(&self) -> ObjectDigest {
-        self.digest
+        self.0.digest
     }
 }
 
 impl DescriptorHandoffReceiptV1 {
+    pub(crate) const fn historical_data_v1(&self) -> &DescriptorHandoffReceiptDataV1 {
+        &self.0
+    }
+
+    pub(crate) fn into_historical_data_v1(self) -> DescriptorHandoffReceiptDataV1 {
+        self.0
+    }
+
     pub(crate) const fn plan_digest(self) -> ObjectDigest {
-        self.plan_digest
+        self.0.plan_digest
     }
 
     pub(crate) const fn digest(self) -> ObjectDigest {
-        self.digest
+        self.0.digest
     }
 }
 
@@ -459,7 +488,7 @@ pub fn prepare_descriptor_handoff(
     {
         return Err(ReadAuthorityError::PinMismatch);
     }
-    let mut plan = DescriptorHandoffPlanV1 {
+    let mut plan = DescriptorHandoffPlanDataV1 {
         authority_digest: authority.decision_digest,
         catalog_digest: entry.digest,
         pin: pin_id,
@@ -470,7 +499,7 @@ pub fn prepare_descriptor_handoff(
         digest: ObjectDigest::from_bytes([0; 32]),
     };
     plan.digest = handoff_digest(&plan);
-    Ok(plan)
+    Ok(DescriptorHandoffPlanV1(plan))
 }
 
 /// Confirms the backing identity again after descriptor handoff.
@@ -534,13 +563,13 @@ pub fn confirm_descriptor_handoff(
     {
         return Err(ReadAuthorityError::PhysicalMismatch);
     }
-    let mut receipt = DescriptorHandoffReceiptV1 {
+    let mut receipt = DescriptorHandoffReceiptDataV1 {
         plan_digest: plan.digest,
         post_handoff_evidence: observation.evidence_digest,
         digest: ObjectDigest::from_bytes([0; 32]),
     };
     receipt.digest = handoff_receipt_digest(&receipt);
-    Ok(receipt)
+    Ok(DescriptorHandoffReceiptV1(receipt))
 }
 
 /// Reports independent read-authority and handoff failures.
@@ -597,27 +626,6 @@ fn read_authority_binding(
     ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
-fn handoff_digest(plan: &DescriptorHandoffPlanV1) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(b"aos.sandbox.cache.descriptor-handoff.v1\0");
-    hasher.update(plan.authority_digest.as_bytes());
-    hasher.update(plan.catalog_digest.as_bytes());
-    hasher.update(plan.pin.as_bytes());
-    hash_descriptor_fields_u16_v1(&mut hasher, &plan.descriptor);
-    hasher.update(plan.backing.as_bytes());
-    hasher.update(plan.physical_evidence.as_bytes());
-    hasher.update(plan.valid_until.to_be_bytes());
-    ObjectDigest::from_bytes(hasher.finalize().into())
-}
-
-fn handoff_receipt_digest(receipt: &DescriptorHandoffReceiptV1) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(b"aos.sandbox.cache.descriptor-handoff-receipt.v1\0");
-    hasher.update(receipt.plan_digest.as_bytes());
-    hasher.update(receipt.post_handoff_evidence.as_bytes());
-    ObjectDigest::from_bytes(hasher.finalize().into())
-}
-
 #[allow(clippy::too_many_arguments)]
 fn read_observation_subject(
     entry: &CatalogEntryV1,
@@ -641,4 +649,17 @@ fn read_observation_subject(
     hasher.update(size.to_be_bytes());
     hasher.update([u8::from(confined_read_only)]);
     ObjectDigest::from_bytes(hasher.finalize().into())
+}
+
+#[cfg(test)]
+mod historical_representation_tests {
+    use super::*;
+
+    #[test]
+    fn native_handoff_wrappers_preserve_inline_representation() {
+        assert_eq!(std::mem::size_of::<DescriptorHandoffPlanV1>(), std::mem::size_of::<DescriptorHandoffPlanDataV1>());
+        assert_eq!(std::mem::align_of::<DescriptorHandoffPlanV1>(), std::mem::align_of::<DescriptorHandoffPlanDataV1>());
+        assert_eq!(std::mem::size_of::<DescriptorHandoffReceiptV1>(), std::mem::size_of::<DescriptorHandoffReceiptDataV1>());
+        assert_eq!(std::mem::align_of::<DescriptorHandoffReceiptV1>(), std::mem::align_of::<DescriptorHandoffReceiptDataV1>());
+    }
 }

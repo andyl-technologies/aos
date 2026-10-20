@@ -35,7 +35,6 @@ use sha2::{Digest as _, Sha256};
 
 use crate::pin_worker::{
     MAXIMUM_PIN_WORKER_REQUEST_BYTES, MAXIMUM_PIN_WORKER_RESULT_BYTES, WorkspacePinWorkerResultV1,
-    decode_result as decode_pin_worker_result, encode_result as encode_pin_worker_result,
 };
 use crate::worker_wire::{DecodeErrors, Decoder};
 use crate::workspace_pin::{
@@ -317,6 +316,29 @@ pub(crate) fn bind_probe(
 pub(crate) fn encode_request(
     request: &WorkspacePinRepairObserverRequestV1,
 ) -> Result<Vec<u8>, ZfsWorkerError> {
+    encode_request_inner_v1(request, None)
+}
+
+pub(crate) fn encode_request_receiving_v1(
+    request: &WorkspacePinRepairObserverRequestV1,
+    receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+) -> Result<Vec<u8>, ZfsWorkerError> {
+    encode_request_inner_v1(request, Some(receiving))
+}
+
+fn encode_request_inner_v1(
+    request: &WorkspacePinRepairObserverRequestV1,
+    receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+) -> Result<Vec<u8>, ZfsWorkerError> {
+    if let Some(receiving) = receiving {
+        let lengths = [request.executable.as_os_str().as_bytes().len(),
+            request.catalog.canonical_bytes().len(), request.repair_intent_record.len(),
+            request.repair_attempt_record.len(), request.publication_intent_record.len()];
+        let bytes = lengths.into_iter().try_fold(64_usize, usize::checked_add)
+            .ok_or(ZfsWorkerError::Protocol("repair observer request length overflow"))?;
+        receiving.reserve_encoded_capacity_v1(bytes, 0)
+            .map_err(|_| ZfsWorkerError::PhysicalAdmission(crate::process::PhysicalWorkerAdmissionFailureV1::from_native_refusal_v1(aos_sandbox::StorageReceivingClosedV1)))?;
+    }
     request.validate()?;
     let executable = request.executable.as_os_str().as_bytes();
     let executable_length = u16::try_from(executable.len())
@@ -397,54 +419,62 @@ pub(crate) fn decode_request(
 pub(crate) fn encode_result(
     result: &WorkspacePinRepairObserverResultV1,
 ) -> Result<Vec<u8>, ZfsWorkerError> {
+    let mut observation = Vec::new();
+    let mut bytes = Vec::new();
+    encode_result_into_v1(result, &mut bytes, &mut observation)?;
+    Ok(bytes)
+}
+
+fn encode_result_into_v1(
+    result: &WorkspacePinRepairObserverResultV1,
+    bytes: &mut Vec<u8>,
+    observation: &mut Vec<u8>,
+) -> Result<(), ZfsWorkerError> {
     if result.probe_digest.as_bytes() == &[0; 32] {
         return Err(ZfsWorkerError::Protocol(
             "repair observer result probe is invalid",
         ));
     }
-    let observation = encode_pin_worker_result(&result.observation)?;
-    let mut bytes = Vec::with_capacity(48 + observation.len());
+    crate::pin_worker::encode_result_into_v1(&result.observation, observation)?;
+    *bytes = Vec::with_capacity(48 + observation.len());
     bytes.extend_from_slice(RESULT_MAGIC);
     bytes.extend_from_slice(&VERSION.to_be_bytes());
     bytes.extend_from_slice(&0_u16.to_be_bytes());
     bytes.extend_from_slice(result.probe_digest.as_bytes());
-    append_record(&mut bytes, &observation)?;
+    append_record(bytes, observation)?;
     if bytes.len() > MAXIMUM_PIN_WORKER_RESULT_BYTES {
         return Err(ZfsWorkerError::Protocol(
             "repair observer result exceeds byte ceiling",
         ));
     }
-    Ok(bytes)
+    Ok(())
 }
 
-pub(crate) fn decode_result(
-    bytes: &[u8],
-) -> Result<WorkspacePinRepairObserverResultV1, ZfsWorkerError> {
-    if bytes.len() > MAXIMUM_PIN_WORKER_RESULT_BYTES {
-        return Err(ZfsWorkerError::Protocol(
-            "repair observer result exceeds byte ceiling",
-        ));
+pub(crate) fn decode_result(bytes: &[u8]) -> Result<WorkspacePinRepairObserverResultV1, ZfsWorkerError> {
+    let mut original = crate::pin_worker::result_envelope::PinResultEnvelopeOriginalV1::<WorkspacePinRepairObserverResultV1>::new();
+    let _classified = original.capture_once(bytes);
+    original.into_ordinary_result_v1()
+}
+
+impl crate::pin_worker::result_envelope::PinResultEnvelopeV1 for WorkspacePinRepairObserverResultV1 {
+    const MAGIC: &'static [u8; 8] = crate::workspace_repair_observer::RESULT_MAGIC;
+    const VERSION: u16 = crate::workspace_repair_observer::VERSION;
+    const ERRORS: &'static DecodeErrors = &DECODE_ERRORS;
+    const CEILING_ERROR: &'static str = "repair observer result exceeds byte ceiling";
+    const HEADER_ERROR: &'static str = "repair observer result header is invalid";
+    const CANONICAL_ERROR: &'static str = "repair observer result is not canonical";
+
+    fn observation_bytes<'a>(decoder: &mut Decoder<'a>) -> Result<&'a [u8], ZfsWorkerError> {
+        record(decoder, MAXIMUM_PIN_WORKER_RESULT_BYTES)
     }
-    let mut decoder = Decoder::new(bytes, &DECODE_ERRORS);
-    if decoder.take(RESULT_MAGIC.len())? != RESULT_MAGIC
-        || decoder.u16()? != VERSION
-        || decoder.u16()? != 0
-    {
-        return Err(ZfsWorkerError::Protocol(
-            "repair observer result header is invalid",
-        ));
+
+    fn from_parts(digest: ObjectDigest, observation: WorkspacePinWorkerResultV1) -> Self {
+        Self::new(digest, observation)
     }
-    let probe_digest = ObjectDigest::from_bytes(decoder.array()?);
-    let observation =
-        decode_pin_worker_result(record(&mut decoder, MAXIMUM_PIN_WORKER_RESULT_BYTES)?)?;
-    decoder.finish()?;
-    let result = WorkspacePinRepairObserverResultV1::new(probe_digest, observation);
-    if encode_result(&result)? != bytes {
-        return Err(ZfsWorkerError::Protocol(
-            "repair observer result is not canonical",
-        ));
+
+    fn encode_into(&self, outer: &mut Vec<u8>, nested: &mut Vec<u8>) -> Result<(), ZfsWorkerError> {
+        encode_result_into_v1(self, outer, nested)
     }
-    Ok(result)
 }
 
 pub(crate) fn random_challenge() -> Result<[u8; 16], ZfsWorkerError> {

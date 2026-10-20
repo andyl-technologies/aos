@@ -138,7 +138,7 @@ impl<'root> RootGitEvidenceCredentialCustodyV1<'root> {
     pub(crate) fn admit(&mut self) -> Result<bool, RootGitEvidenceCredentialErrorV1> {
         self.root.recheck()?;
         self.fragment_bytes = Some(
-            self.root.fragment.read_bounded()
+            self.root.native.fields().fragment.read_bounded()
                 .map_err(|_| NormalRootStartupErrorV1::Service)?,
         );
         self.source = selected_source(
@@ -280,7 +280,7 @@ impl<'root> RootGitEvidenceCredentialCustodyV1<'root> {
         }
         let decoded_unit = service::decode_unit(unit, super::profile::UNIT)?;
         let observation = service::immutable_observation(decoded_unit)?;
-        service::require_same(&self.root.observed, &observation)?;
+        service::require_same(&self.root.native.fields().observed, &observation)?;
         Ok(())
     }
 

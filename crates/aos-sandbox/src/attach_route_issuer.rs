@@ -233,6 +233,18 @@ impl AuthenticatedOpenSshRouteV1 {
     }
 }
 
+/// Returns the original decoder or profile cause of CA-key construction.
+#[derive(Debug, thiserror::Error)]
+#[doc(hidden)]
+pub enum OpenSshAttachAuthorityErrorV1 {
+    /// The same OpenSSH decoder rejected the actual protected input bytes.
+    #[error(transparent)]
+    Decode(ssh_key::Error),
+    /// The decoded key is encrypted or has an unsupported signing algorithm.
+    #[error(transparent)]
+    Profile(AttachRouteIssuanceErrorV1),
+}
+
 /// Owns one protected OpenSSH user CA key used only for public attach issuance.
 pub struct OpenSshAttachRouteIssuerV1 {
     authority: PrivateKey,
@@ -245,10 +257,28 @@ impl OpenSshAttachRouteIssuerV1 {
     ///
     /// Rejects malformed, encrypted, or non-Ed25519 key material.
     pub fn new(authority_key: &[u8]) -> Result<Self, AttachRouteIssuanceErrorV1> {
+        Self::new_with_original_error(authority_key)
+            .map_err(|_| AttachRouteIssuanceErrorV1::InvalidAuthority)
+    }
+
+    /// Parses through the same constructor while returning the original error.
+    ///
+    /// This performs no file access or resource admission. A retained startup
+    /// caller owns the returned native cause before projecting its role error.
+    ///
+    /// # Errors
+    /// Returns the actual OpenSSH decoder cause, or the same encrypted/key-kind
+    /// semantic refusal as the ordinary constructor.
+    #[doc(hidden)]
+    pub fn new_with_original_error(
+        authority_key: &[u8],
+    ) -> Result<Self, OpenSshAttachAuthorityErrorV1> {
         let authority = PrivateKey::from_openssh(authority_key)
-            .map_err(|_| AttachRouteIssuanceErrorV1::InvalidAuthority)?;
+            .map_err(OpenSshAttachAuthorityErrorV1::Decode)?;
         if authority.is_encrypted() || authority.algorithm() != Algorithm::Ed25519 {
-            return Err(AttachRouteIssuanceErrorV1::InvalidAuthority);
+            return Err(OpenSshAttachAuthorityErrorV1::Profile(
+                AttachRouteIssuanceErrorV1::InvalidAuthority,
+            ));
         }
         Ok(Self { authority })
     }

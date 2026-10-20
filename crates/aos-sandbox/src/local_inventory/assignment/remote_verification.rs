@@ -5,6 +5,11 @@
 //! Immutable manifests, resume DATA, completed snapshot receipts and local history
 //! remain available by default outside this selected owner.
 
+use aos_sandbox_core::snapshot_progress::{
+    SnapshotChunkProgressDataV1, compare_snapshot_chunk_progress_data_v1,
+    require_dependency_range_progress_data_v1, require_snapshot_resume_data_v1,
+    staged_prefix_commitment,
+};
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, PortableMediaType};
 use sha2::{Digest as _, Sha256};
 
@@ -49,7 +54,7 @@ impl AuthenticatedSnapshotChunkV1 {
             || context.disclosure_domain_digest() != request.identity().disclosure_domain_digest()
             || !context.is_current_at(verified_at_unix_seconds)
             || !frame_seal.matches(
-                super::protocol::CanonicalNodeFrameKindV1::SnapshotChunkResponse,
+                aos_sandbox_core::CanonicalNodeFrameKindV1::SnapshotChunkResponse,
                 canonical_body_digest,
                 context,
             )
@@ -111,7 +116,7 @@ impl AuthenticatedSnapshotDependencyRangeV1 {
             || context.disclosure_domain_digest() != request.identity().disclosure_domain_digest()
             || !context.is_current_at(verified_at_unix_seconds)
             || !frame_seal.matches(
-                super::protocol::CanonicalNodeFrameKindV1::SnapshotDependencyResponse,
+                aos_sandbox_core::CanonicalNodeFrameKindV1::SnapshotDependencyResponse,
                 canonical_body_digest,
                 context,
             )
@@ -334,16 +339,13 @@ impl SnapshotDependencyReducerV1 {
         coordinator_unix_seconds: u64,
     ) -> Result<(), InvalidSnapshotTransfer> {
         let request = range.request();
-        let end = request
-            .offset()
-            .checked_add(u64::from(request.length()))
-            .ok_or(InvalidSnapshotTransfer::ChunkIntegrityMismatch)?;
-        if request.identity() != self.identity
-            || request.dependency() != &self.descriptor
-            || request.offset() != self.next_offset
-            || end > self.descriptor.encoded_size()
-            || !range.context().is_current_at(coordinator_unix_seconds)
-        {
+        let end = require_dependency_range_progress_data_v1(
+            self.identity,
+            &self.descriptor,
+            self.next_offset,
+            request,
+        )?;
+        if !range.context().is_current_at(coordinator_unix_seconds) {
             return Err(InvalidSnapshotTransfer::ChunkIntegrityMismatch);
         }
         self.hasher.update(range.bytes());
@@ -418,15 +420,16 @@ impl SnapshotTransferReducerV1 {
         coordinator_unix_seconds: u64,
     ) -> Result<Self, InvalidSnapshotTransfer> {
         let checkpoint = durable_checkpoint.resume();
-        if checkpoint.identity() != manifest.identity()
-            || manifest.prefix_commitment(checkpoint.next_chunk())?
-                != checkpoint.verified_prefix_digest()
-            || staged_prefix.len() as u64 != durable_checkpoint.staged_bytes()
-            || staged_prefix_commitment(manifest.identity(), checkpoint, staged_prefix)
-                != durable_checkpoint.staged_prefix_digest()
-            || !durable_checkpoint
-                .evidence_context()
-                .is_current_at(coordinator_unix_seconds)
+        require_snapshot_resume_data_v1(
+            &manifest,
+            checkpoint,
+            durable_checkpoint.staged_bytes(),
+            durable_checkpoint.staged_prefix_digest(),
+            staged_prefix,
+        )?;
+        if !durable_checkpoint
+            .evidence_context()
+            .is_current_at(coordinator_unix_seconds)
             || !durable_checkpoint
                 .journal_record()
                 .context()
@@ -511,11 +514,9 @@ impl SnapshotTransferReducerV1 {
         {
             return Err(InvalidSnapshotTransfer::RestoreAdmissionMismatch);
         }
-        self.manifest.verify_chunk(index, bytes)?;
-        if index > self.next_chunk {
-            return Err(InvalidSnapshotTransfer::InvalidResumeCheckpoint);
-        }
-        if index < self.next_chunk {
+        if compare_snapshot_chunk_progress_data_v1(&self.manifest, self.next_chunk, index, bytes)?
+            == SnapshotChunkProgressDataV1::Replay
+        {
             return Ok(SnapshotTransferApplyOutcomeV1::Replay(self.checkpoint()?));
         }
         self.next_chunk = self
@@ -553,24 +554,4 @@ impl SnapshotTransferReducerV1 {
             final_prefix_digest: self.manifest.prefix_commitment(self.next_chunk)?,
         })
     }
-}
-
-pub(in crate::local_inventory) fn staged_prefix_commitment(
-    identity: SnapshotTransferIdentityV1,
-    checkpoint: SnapshotTransferResumeV1,
-    staged_prefix: &[u8],
-) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(b"aos.snapshot-transfer.staged-prefix.v1\0");
-    hasher.update(identity.operation().as_bytes());
-    hasher.update(identity.manifest_digest().as_bytes());
-    hasher.update(identity.destination_node().as_bytes());
-    hasher.update(identity.storage_domain_digest().as_bytes());
-    hasher.update(identity.audience_digest().as_bytes());
-    hasher.update(identity.disclosure_domain_digest().as_bytes());
-    hasher.update(checkpoint.next_chunk().to_be_bytes());
-    hasher.update(checkpoint.verified_prefix_digest().as_bytes());
-    hasher.update((staged_prefix.len() as u64).to_be_bytes());
-    hasher.update(Sha256::digest(staged_prefix));
-    ObjectDigest::from_bytes(hasher.finalize().into())
 }

@@ -9,7 +9,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use aos_sandbox::{Journal, JournalLimits, RecoveryReport};
+use aos_sandbox_source::provider_journal::SourceProviderJournalV1 as Journal;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalLimits;
+use aos_sandbox_broker::canonical_journal::RecoveryReport;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_ledger::ledger::model::AttemptRecordV1;
@@ -1807,7 +1809,7 @@ impl FixedProviderOwnerV1 {
     pub fn with_catalog_authority<R>(
         &mut self,
         operation: impl for<'journal> FnOnce(
-            &aos_sandbox::ProtectedJournalAuthority<'journal>,
+            &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'journal>,
         ) -> Result<R, ProviderLedgerError>,
     ) -> Result<R, ProviderLedgerError> {
         self.require_ordinary_owner()?;
@@ -1853,7 +1855,7 @@ impl FixedProviderOwnerV1 {
 
 fn claim_fixed_provider_authority(
     journal: Option<&mut Journal>,
-) -> Result<aos_sandbox::ProtectedJournalAuthority<'_>, ProviderLedgerError> {
+) -> Result<aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>, ProviderLedgerError> {
     let authority = journal
         .ok_or(ProviderLedgerError::RuntimePoisoned)?
         .claim_source_provider_native_terminal_authority_v1()?;
@@ -1876,7 +1878,7 @@ fn open_ledger<'journal>(
 }
 
 fn open_claimed_ledger<'journal>(
-    authority: aos_sandbox::ProtectedJournalAuthority<'journal>,
+    authority: aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'journal>,
     session: &mut aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
     canonical_catalog_publication: &[u8],
 ) -> Result<ProviderLedgerV1<'journal>, ProviderLedgerError> {
@@ -1909,7 +1911,7 @@ fn claim_configured_ledger<'journal>(
     canonical_catalog_publication: &[u8],
 ) -> Result<
     (
-        aos_sandbox::ProtectedJournalAuthority<'journal>,
+        aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'journal>,
         ProtectedProviderConfigurationV1,
     ),
     ProviderLedgerError,
@@ -1937,7 +1939,7 @@ fn configured_ledger(
 }
 
 fn prepare_current_catalog_response(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     session: &mut aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
     canonical_catalog_publication: &[u8],
     query: CatalogCurrentnessQueryV1,

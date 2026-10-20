@@ -17,7 +17,7 @@ use crate::policy_compiler::source_genesis_readback::{
 use crate::policy_compiler::source_hold_readback::{
     PinnedSourceHoldReadbackSignerV1, encode_source_hold_readback_signer_credential_v1,
 };
-use crate::policy_compiler::source_signer_readback::sign_genesis_readback_from_view;
+use aos_sandbox_source::signer_comparison::sign_genesis_readback_from_comparison;
 use aos_sandbox_core::ObjectDigest;
 
 struct Fixture {
@@ -71,7 +71,7 @@ impl Fixture {
         challenge: SourceTreeGenesisChallengeV1,
     ) -> [u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1] {
         let mut reader = source_fixture::reader(self.directory.path(), JournalLimits::default());
-        let packet = sign_genesis_readback_from_view(
+        let packet = sign_genesis_readback_from_comparison(
             &mut reader,
             Some(self.floor.project()),
             challenge,

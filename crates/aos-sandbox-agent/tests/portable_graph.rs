@@ -10,6 +10,12 @@ use std::process::Command;
 
 use serde_json::Value;
 
+#[derive(Clone, Copy)]
+enum Boundary {
+    Portable,
+    LocalNative,
+}
+
 #[test]
 fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<dyn Error>> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
@@ -35,12 +41,22 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
         ),
         (
             "aos-sandbox-policy",
-            &["aos-sandbox-policy", "aos-sandbox-core"],
+            &[
+                "aos-sandbox-policy",
+                "aos-sandbox-protocol",
+                "aos-sandbox-ownership-protocol",
+                "aos-sandbox-agent",
+                "aos-sandbox-core",
+                "aos-sandbox-journal",
+                "aos-proto",
+                "aos-sandbox-broker-session-protocol",
+                "aos-sandbox-source-provider-protocol",
+                "aos-sandbox-source-provider-ledger",
+            ],
         ),
         (
-            "aos-sandbox-ownership",
+            "aos-sandbox-ownership-protocol",
             &[
-                "aos-sandbox-ownership",
                 "aos-sandbox-ownership-protocol",
                 "aos-sandbox-core",
             ],
@@ -49,7 +65,6 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
             "aos-sandbox-protocol",
             &[
                 "aos-sandbox-protocol",
-                "aos-sandbox-policy",
                 "aos-sandbox-ownership-protocol",
                 "aos-sandbox-agent",
                 "aos-sandbox-core",
@@ -70,18 +85,43 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
         ),
     ];
     for (root_name, allowed_path_packages) in roots {
-        check_production_graph(root_name, allowed_path_packages, packages, &cargo)?;
+        check_production_graph(root_name, allowed_path_packages, packages, &cargo, Boundary::Portable)?;
     }
+
+    // The local protected lease issuer owns native custody. Its protocol stays
+    // portable, and its implementation must remain below Controller/Coordinator.
+    check_production_graph(
+        "aos-sandbox-ownership",
+        &[
+            "aos-sandbox-ownership",
+            "aos-sandbox-ownership-protocol",
+            "aos-sandbox-core",
+            "aos-sandbox-journal",
+            "aos-sandbox-linux",
+            "aos-sandbox-broker",
+            "aos-systemd",
+            "aos-sandbox-protocol",
+            "aos-sandbox-agent",
+            "aos-proto",
+            "aos-sandbox-broker-session-protocol",
+            "aos-sandbox-source-provider-protocol",
+            "aos-sandbox-source-provider-ledger",
+        ],
+        packages,
+        &cargo,
+        Boundary::LocalNative,
+    )?;
     Ok(())
 }
 
-// Keep each root's boundary independent: Protocol's wider wire closure must
-// not permit an Agent, Core, or pure Policy dependency backedge.
+// Keep each root's boundary independent. Policy consumes Protocol's portable
+// DATA; Protocol must not reach Policy, and Core and Agent stay narrower.
 fn check_production_graph(
     root_name: &str,
     allowed_path_packages: &[&str],
     packages: &[Value],
     cargo: &std::ffi::OsStr,
+    boundary: Boundary,
 ) -> Result<(), Box<dyn Error>> {
     let root = packages
         .iter()
@@ -96,7 +136,7 @@ fn check_production_graph(
             .all(|target| !target["kind"]
                 .as_array()
                 .is_some_and(|kinds| { kinds.iter().any(|kind| kind.as_str() == Some("bin")) })),
-        "portable root {root_name} must not own an executable target",
+        "library root {root_name} must not own an executable target",
     );
 
     // Resolve each real root with its own default features. Workspace metadata
@@ -141,13 +181,15 @@ fn check_production_graph(
         if package["source"].is_null() {
             assert!(
                 allowed_path_packages.contains(&name),
-                "portable root {root_name} reaches implementation crate {name}",
+                "root {root_name} reaches implementation crate {name}",
             );
         }
-        assert!(
-            !["nix", "rustix", "linux-raw-sys"].contains(&name),
-            "portable root {root_name} reaches Linux dependency {name}",
-        );
+        if matches!(boundary, Boundary::Portable) {
+            assert!(
+                !["nix", "rustix", "linux-raw-sys"].contains(&name),
+                "portable root {root_name} reaches Linux dependency {name}",
+            );
+        }
     }
     Ok(())
 }

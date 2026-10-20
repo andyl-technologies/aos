@@ -11,7 +11,7 @@
 //! independently available through the read-only service.
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
-use aos_sandbox::RecordNamespace;
+use aos_sandbox_core::RecordNamespace;
 use aos_sandbox_broker::BrokerEffectClockDispositionV1;
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
@@ -56,6 +56,32 @@ use crate::worker_protocol::{
     prevalidate_prepare_dispatch,
 };
 use crate::worker_runtime::RecoveredNetworkPreparationObservation;
+
+/// Supplies actual receiving frontiers to the shared finite Network engines.
+pub(crate) trait NetworkEffectReceivingV4 {
+    fn current_clock_v4(&mut self) -> Result<RawPairedClockSample, NetworkAdmissionError>;
+    fn before_commit_v4(&mut self, authority: &NetworkAuthorityV1,
+        effect: &aos_sandbox_broker::BrokerEffectIntentV1, journal: &crate::journal::Journal,
+        transaction: &crate::journal::JournalTransaction) -> Result<(), crate::state::NetworkStateError>;
+}
+
+pub(crate) use NetworkEffectReceivingV4 as NetworkPrepareEffectReceivingV4;
+
+struct LegacyPrepareEffectReceivingV4<'held, F>(&'held mut F);
+
+impl<F> NetworkPrepareEffectReceivingV4 for LegacyPrepareEffectReceivingV4<'_, F>
+where F: FnMut() -> Result<RawPairedClockSample, NetworkAdmissionError> {
+    fn current_clock_v4(&mut self) -> Result<RawPairedClockSample, NetworkAdmissionError> { (self.0)() }
+    fn before_commit_v4(&mut self, _: &NetworkAuthorityV1,
+        _: &aos_sandbox_broker::BrokerEffectIntentV1, _: &crate::journal::Journal,
+        _: &crate::journal::JournalTransaction) -> Result<(), crate::state::NetworkStateError> { Ok(()) }
+}
+
+mod lifecycle_admission;
+pub(crate) use lifecycle_admission::NetworkLifecycleAdmissionOriginalV4;
+
+mod creation_admission;
+pub(crate) use creation_admission::NetworkCreationAdmissionOriginalV4;
 
 /// Reports fail-closed network admission failure.
 #[derive(Debug, thiserror::Error)]
@@ -353,75 +379,10 @@ fn admit_apply_intent_with_prior(
     current_clock: &RawPairedClockSample,
     prior_fence: Option<&[u8]>,
 ) -> Result<NetworkAdmissionOutcome, NetworkBrokerError> {
-    let assignment = decode_assignment(request_body).map_err(|_| NetworkBrokerError::Request)?;
-    let catalog = authority
-        .validate_catalog(catalog, assignment)
-        .map_err(|_| NetworkBrokerError::Authority)?;
-    let sandbox_id = *assignment.sandbox().as_bytes();
-    let request_id = decode_request_id(request_body).map_err(|_| NetworkBrokerError::Request)?;
-    let transport_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
-    if let Some(effect_digest) =
-        state.replay_aborted(request_id, sandbox_id, transport_digest, catalog)?
-    {
-        return Ok(NetworkAdmissionOutcome::Aborted { effect_digest });
-    }
-
-    let semantics = CanonicalNetworkSemanticsV1::decode(
-        request_body,
-        peer,
-        policy,
-        current_clock.boottime_nanoseconds(),
-    )
-    .map_err(|_| NetworkBrokerError::Request)?;
-    validate_catalog(&semantics, catalog)?;
-
-    let admission = authority
-        .admit(
-            artifacts,
-            &semantics,
-            request_body,
-            protocol_version,
-            current_clock,
-            prior_fence,
-        )
-        .map_err(|_| NetworkBrokerError::Authority)?;
-    let current_fence = authority
-        .seal_fence(&sandbox_id, &admission)
-        .map_err(|_| NetworkBrokerError::Authority)?;
-    let effect = authority
-        .seal_effect(&request_id, &admission)
-        .map_err(|_| NetworkBrokerError::Authority)?;
-    let operation_fence = authority
-        .seal_operation_fence(&request_id, &admission)
-        .map_err(|_| NetworkBrokerError::Authority)?;
-    let record = prepared_record(PreparedNetworkRecordInput {
-        request_id,
-        sandbox_id,
-        transport_digest,
-        semantic_digest: semantics.argument_commitment().digest(),
-        verb: semantics.broker_verb(),
-        catalog: catalog.clone(),
-        current_fence,
-        operation_fence,
-        effect,
-    });
-
-    Ok(match state.begin_authorized(authority, record)? {
-        NetworkBeginOutcome::Prepared { effect_digest } => {
-            NetworkAdmissionOutcome::Prepared { effect_digest }
-        }
-        NetworkBeginOutcome::ObserveOnly {
-            phase,
-            effect_digest,
-        } => NetworkAdmissionOutcome::ObserveOnly {
-            phase,
-            effect_digest,
-        },
-        NetworkBeginOutcome::Aborted { effect_digest } => {
-            NetworkAdmissionOutcome::Aborted { effect_digest }
-        }
-        NetworkBeginOutcome::Replay(result) => NetworkAdmissionOutcome::Replay(result),
-    })
+    let mut original = NetworkCreationAdmissionOriginalV4::new();
+    original.run_legacy_v4(authority, state, request_body, artifacts, catalog,
+        protocol_version, peer, policy, current_clock, prior_fence);
+    original.take_legacy_result_v4()
 }
 
 /// Serializes signed authority and effects for existing namespace handles.
@@ -432,6 +393,13 @@ pub struct NetworkLifecycleAdmissionCoordinator {
 }
 
 impl NetworkLifecycleAdmissionCoordinator {
+    /// Borrows the real creation writer's still-owed P custody/commit forecast.
+    pub(crate) fn preparation_suffix_receiving_demand_v2(&self)
+        -> Result<aos_sandbox_core::ResourceVector, crate::journal::JournalAppendReceivingDemandErrorV1>
+    {
+        self.creation_state.preparation_suffix_receiving_demand_v2()
+    }
+
     /// Constructs a coordinator from creation authority and separate lifecycle state.
     #[must_use]
     pub const fn new(
@@ -456,6 +424,22 @@ impl NetworkLifecycleAdmissionCoordinator {
     ) -> Result<(AuthenticatedNetworkPreparationV1, NetworkKernelPlanV1), NetworkBrokerError> {
         preparations
             .authenticate_plan_for_assignment(&self.authority, assignment, requested_handle)
+            .map_err(Into::into)
+    }
+
+    /// Reserves only after the same received63's signed sources were verified.
+    pub(crate) fn reserve_preparation_sources_guarded_v4(&self,
+        preparations: &mut NetworkPreparationCatalogV1,
+        reservation: crate::preparation_catalog::NetworkPreparationReservationV1,
+        semantic: &CanonicalNetworkSemanticsV1,
+        admission: &aos_sandbox_broker::VerifiedBrokerAdmission,
+        receiving: &mut dyn NetworkPrepareEffectReceivingV4,
+    ) -> Result<crate::preparation_catalog::NetworkPreparationCatalogOutcomeV1, NetworkBrokerError> {
+        let mut gate = |journal: &crate::journal::Journal, transaction: &crate::journal::JournalTransaction| {
+            receiving.before_commit_v4(&self.authority, &admission.effect, journal, transaction)
+                .map_err(|_| crate::preparation_catalog::NetworkPreparationCatalogError::Receiving)
+        };
+        preparations.reserve_guarded_v4(reservation, &self.authority, semantic, &mut gate)
             .map_err(Into::into)
     }
 
@@ -513,6 +497,57 @@ impl NetworkLifecycleAdmissionCoordinator {
         )
     }
 
+    pub(crate) fn signed_preparation_receiving_demand_v4(&self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts)
+        -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError> {
+        self.authority.0.signed_admission_receiving_demand_v4(artifacts)
+    }
+
+    pub(crate) fn verify_preparation_sources_once_v4(&self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        clock: &RawPairedClockSample, original: &mut NetworkCreationAdmissionOriginalV4)
+        -> Result<(), NetworkBrokerError> {
+        use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerRequestDirectionV1;
+        if request.method() != BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2
+            || request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive {
+            return Err(NetworkBrokerError::Request);
+        }
+        let semantic = request.network_preparation_data_v2().ok_or(NetworkBrokerError::Request)?;
+        let assignment = semantic.fence().broker_assignment().map_err(|_| NetworkBrokerError::Request)?;
+        let sandbox_id = assignment.sandbox();
+        let sandbox = sandbox_id.as_bytes();
+        let creation = self.creation_state.authority_record(RecordNamespace::DesiredState, sandbox)?;
+        original.prior = Some(self.authority.latest_fence(sandbox,
+            [creation, self.lifecycle_state.current_fence(sandbox)]));
+        if !matches!(original.prior, Some(Ok(_))) { return Err(NetworkBrokerError::Authority); }
+        original.verify_selected_once_v4(&self.authority, request, clock)
+    }
+
+    /// Reuses the same creation engine for the actual retained signed63 request.
+    ///
+    /// The caller prepays the complete quartet/model/append plane and lends
+    /// the request's already-retained canonical meaning. The closure is the
+    /// actual selected effect-clock frontier before the existing State write.
+    pub(crate) fn admit_preparation_retaining_v4(&mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        catalog: &AuthenticatedNetworkPreparationV1, clock: &RawPairedClockSample,
+        original: &mut NetworkCreationAdmissionOriginalV4,
+        before_commit: &mut dyn FnMut(&NetworkAuthorityV1, &aos_sandbox_broker::VerifiedBrokerAdmission,
+            &crate::journal::Journal, &crate::journal::JournalTransaction)
+            -> Result<(), crate::state::NetworkStateError>,
+    ) -> Result<NetworkAdmissionOutcome, NetworkBrokerError> {
+        use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerRequestDirectionV1;
+        if request.method() != BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2
+            || request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive {
+            return Err(NetworkBrokerError::Request);
+        }
+        let semantic = request.network_preparation_data_v2().ok_or(NetworkBrokerError::Request)?;
+        let artifacts = request.authorization().ok_or(NetworkBrokerError::Authority)?;
+        original.run_selected_v4(&self.authority, &mut self.creation_state,
+            request.exact_body(), artifacts, catalog, semantic, request.peer(), request.peer_policy(),
+            clock, before_commit)
+    }
+
     /// Fully validates and classifies one Prepared effect before releasing it.
     ///
     /// Request, plan, catalog, fence, effect, dispatch identity, and bounds are
@@ -528,37 +563,71 @@ impl NetworkLifecycleAdmissionCoordinator {
     /// lacks authenticated continuity, or the terminal journal write fails.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn begin_prepare_effect_once<F>(
+        &mut self, request_id: [u8; 16], effect_digest: ObjectDigest,
+        request_body: &[u8], kernel_plan: NetworkKernelPlanV1, trusted_clock: &mut F,
+    ) -> Result<NetworkPrepareExecutionOutcomeV1, NetworkBrokerError>
+    where F: FnMut() -> Result<RawPairedClockSample, NetworkAdmissionError> {
+        self.begin_prepare_effect_engine_v4(request_id, effect_digest, request_body,
+            kernel_plan, &mut LegacyPrepareEffectReceivingV4(trusted_clock), None)
+    }
+
+    /// Retains the same dispatch law with exact receiving before its State commit.
+    pub(crate) fn begin_prepare_effect_guarded_v4(
+        &mut self, request_id: [u8; 16], effect_digest: ObjectDigest,
+        request_body: &[u8], kernel_plan: NetworkKernelPlanV1,
+        receiving: &mut dyn NetworkPrepareEffectReceivingV4,
+        retained_effect: &aos_sandbox_broker::BrokerEffectIntentV1,
+    ) -> Result<NetworkPrepareExecutionOutcomeV1, NetworkBrokerError> {
+        self.begin_prepare_effect_engine_v4(request_id, effect_digest, request_body,
+            kernel_plan, receiving, Some(retained_effect))
+    }
+
+    pub(crate) fn begin_prepare_effect_engine_v4(
         &mut self,
         request_id: [u8; 16],
         effect_digest: ObjectDigest,
         request_body: &[u8],
         kernel_plan: NetworkKernelPlanV1,
-        trusted_clock: &mut F,
+        receiving: &mut dyn NetworkPrepareEffectReceivingV4,
+        retained_effect: Option<&aos_sandbox_broker::BrokerEffectIntentV1>,
     ) -> Result<NetworkPrepareExecutionOutcomeV1, NetworkBrokerError>
-    where
-        F: FnMut() -> Result<RawPairedClockSample, NetworkAdmissionError>,
     {
         let prepared = self.creation_state.prepare_effect_dispatch(
             &self.authority,
             request_id,
             effect_digest,
         )?;
+        if retained_effect.is_some_and(|effect| effect != prepared.effect_intent()) {
+            return Err(NetworkBrokerError::Authority);
+        }
         let prospective =
             prevalidate_prepare_dispatch(&self.authority, &prepared, request_body, kernel_plan)?;
-        let current_clock = trusted_clock().map_err(|_| NetworkBrokerError::Authority)?;
+        let current_clock = receiving.current_clock_v4().map_err(|_| NetworkBrokerError::Authority)?;
         match self
             .authority
             .classify_effect_clock(prepared.effect_intent(), &current_clock)
             .map_err(|_| NetworkBrokerError::Authority)?
         {
             BrokerEffectClockDispositionV1::Expired => {
-                self.creation_state
-                    .abort_prepared_exact(&self.authority, prepared)?;
+                match retained_effect {
+                    Some(effect) => {
+                        let mut gate = |journal: &crate::journal::Journal, transaction: &crate::journal::JournalTransaction|
+                            receiving.before_commit_v4(&self.authority, effect, journal, transaction);
+                        self.creation_state.abort_prepared_exact_guarded_v4(&self.authority, prepared, &mut gate)
+                    }
+                    None => self.creation_state.abort_prepared_exact(&self.authority, prepared),
+                }?;
                 Ok(NetworkPrepareExecutionOutcomeV1::Aborted { effect_digest })
             }
             BrokerEffectClockDispositionV1::Fresh => {
-                self.creation_state
-                    .mark_prevalidated_effect_ambiguous(&self.authority, prepared)?;
+                match retained_effect {
+                    Some(effect) => {
+                        let mut gate = |journal: &crate::journal::Journal, transaction: &crate::journal::JournalTransaction|
+                            receiving.before_commit_v4(&self.authority, effect, journal, transaction);
+                        self.creation_state.mark_prevalidated_effect_ambiguous_guarded_v4(&self.authority, prepared, &mut gate)
+                    }
+                    None => self.creation_state.mark_prevalidated_effect_ambiguous(&self.authority, prepared),
+                }?;
                 Ok(NetworkPrepareExecutionOutcomeV1::Dispatch(
                     prospective.release(),
                 ))
@@ -595,6 +664,34 @@ impl NetworkLifecycleAdmissionCoordinator {
                 kernel_plan_digest,
             )
             .map_err(Into::into)
+    }
+
+    /// Binds the actual READY namespace through the same exact-append gate.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bind_effect_namespace_custody_guarded_v4(
+        &mut self, request_id: [u8; 16], effect_digest: ObjectDigest,
+        network_handle: [u8; 32], kernel_boot_id: [u8; 16],
+        namespace_device: u64, namespace_inode: u64, kernel_plan_digest: ObjectDigest,
+        receiving: &mut dyn NetworkPrepareEffectReceivingV4,
+        effect: &aos_sandbox_broker::BrokerEffectIntentV1,
+    ) -> Result<NetworkNamespaceCustodyV1, NetworkBrokerError> {
+        let mut gate = |journal: &crate::journal::Journal, transaction: &crate::journal::JournalTransaction|
+            receiving.before_commit_v4(&self.authority, effect, journal, transaction);
+        self.creation_state.bind_namespace_custody_guarded_v4(&self.authority,
+            request_id, effect_digest, network_handle, kernel_boot_id,
+            namespace_device, namespace_inode, kernel_plan_digest, &mut gate).map_err(Into::into)
+    }
+
+    /// Commits the actual full observation through the same exact-append gate.
+    pub(crate) fn commit_verified_preparation_guarded_v4(
+        &mut self, request_id: [u8; 16], effect_digest: ObjectDigest,
+        verified: VerifiedNetworkResultV1, receiving: &mut dyn NetworkPrepareEffectReceivingV4,
+        effect: &aos_sandbox_broker::BrokerEffectIntentV1,
+    ) -> Result<CommittedNetworkResultV1, NetworkBrokerError> {
+        let mut gate = |journal: &crate::journal::Journal, transaction: &crate::journal::JournalTransaction|
+            receiving.before_commit_v4(&self.authority, effect, journal, transaction);
+        self.creation_state.commit_verified_guarded_v4(&self.authority,
+            request_id, effect_digest, verified, &mut gate).map_err(Into::into)
     }
 
     /// Commits one verified preparation observation.
@@ -723,118 +820,9 @@ impl NetworkLifecycleAdmissionCoordinator {
         policy: PeerPolicy,
         current_clock: &RawPairedClockSample,
     ) -> Result<NetworkLifecycleAdmissionOutcome, NetworkBrokerError> {
-        let semantics = CanonicalNetworkSemanticsV1::decode(
-            request_body,
-            peer,
-            policy,
-            current_clock.boottime_nanoseconds(),
-        )
-        .map_err(|_| NetworkBrokerError::Request)?;
-        let assignment =
-            decode_assignment(request_body).map_err(|_| NetworkBrokerError::Request)?;
-        let resolution = self
-            .authority
-            .validate_catalog(preparation, assignment)
-            .map_err(|_| NetworkBrokerError::Authority)?;
-        let handle = semantics
-            .operation()
-            .network_handle()
-            .copied()
-            .ok_or(NetworkBrokerError::Request)?;
-        if resolution.reserved_network_handle() != &handle {
-            return Err(NetworkBrokerError::Request);
-        }
-        let sandbox_id = *assignment.sandbox().as_bytes();
-        let request_id = *semantics.header().request_id();
-        let transport_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
-        let semantic_digest = semantics.argument_commitment().digest();
-        let creation_fence = self
-            .creation_state
-            .authority_record(RecordNamespace::DesiredState, &sandbox_id)?;
-        let prior_fence = self
-            .authority
-            .latest_fence(
-                &sandbox_id,
-                [
-                    creation_fence,
-                    self.lifecycle_state.current_fence(&sandbox_id),
-                ],
-            )
-            .map_err(|_| NetworkBrokerError::Authority)?;
-        let admission = self
-            .authority
-            .admit(
-                artifacts,
-                &semantics,
-                request_body,
-                protocol_version,
-                current_clock,
-                prior_fence.as_deref(),
-            )
-            .map_err(|_| NetworkBrokerError::Authority)?;
-        let current_fence = self
-            .authority
-            .seal_fence(&sandbox_id, &admission)
-            .map_err(|_| NetworkBrokerError::Authority)?;
-        let operation_fence = self
-            .authority
-            .seal_operation_fence(&request_id, &admission)
-            .map_err(|_| NetworkBrokerError::Authority)?;
-        let effect = self
-            .authority
-            .seal_effect(&request_id, &admission)
-            .map_err(|_| NetworkBrokerError::Authority)?;
-        if kernel_plan.assignment() != assignment
-            || !kernel_plan_matches_catalog(kernel_plan, resolution)
-            || (kernel_plan.observation_expectation().veth().is_none()
-                && matches!(
-                    semantics.operation(),
-                    NetworkOperation::ArmLease { .. } | NetworkOperation::RenewLease { .. }
-                ))
-        {
-            return Err(NetworkBrokerError::Request);
-        }
-        if let Some(outcome) = self.lifecycle_state.existing_authorized_outcome(
-            request_id,
-            sandbox_id,
-            transport_digest,
-            semantic_digest,
-            semantics.broker_verb(),
-            resolution.binding().generation(),
-            resolution.binding().digest(),
-            handle,
-            kernel_plan.digest(),
-        )? {
-            return Ok(map_lifecycle_outcome(outcome));
-        }
-
-        let namespace_authority =
-            namespaces.authorize_current_lifecycle(handle, assignment, resolution.binding())?;
-        if namespace_authority.kernel_plan_digest != kernel_plan.digest() {
-            return Err(NetworkBrokerError::Request);
-        }
-        let (action, desired_state) =
-            validate_lifecycle_operation(semantics.operation(), namespace_authority)?;
-        let record = prepared_lifecycle_record(PreparedNetworkLifecycleRecordInput {
-            request_id,
-            sandbox_id,
-            transport_digest,
-            semantic_digest,
-            verb: semantics.broker_verb(),
-            action,
-            preparation_generation: resolution.binding().generation(),
-            preparation_digest: resolution.binding().digest(),
-            authority: namespace_authority,
-            desired_state,
-            current_fence,
-            operation_fence,
-            effect,
-        });
-
-        Ok(map_lifecycle_outcome(
-            self.lifecycle_state
-                .begin_authorized(&self.authority, record)?,
-        ))
+        let mut original = NetworkLifecycleAdmissionOriginalV4::new();
+        original.run_inner_v4(self, request_body, artifacts, preparation, kernel_plan,
+            namespaces, protocol_version, peer, policy, current_clock, None, None)
     }
 
     /// Durably crosses the point after which a lifecycle effect may have run.
@@ -916,6 +904,33 @@ impl NetworkLifecycleAdmissionCoordinator {
         .map_err(Into::into)
     }
 
+    /// Issues Destroy9 only after its actual retained admission and paid ambiguity write.
+    pub(crate) fn begin_destroy_effect_guarded_v4(
+        &mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        catalog: AuthenticatedNetworkPreparationV1,
+        plan: NetworkKernelPlanV1,
+        original: &NetworkLifecycleAdmissionOriginalV4,
+        receiving: &mut dyn NetworkEffectReceivingV4,
+    ) -> Result<NetworkLifecycleWorkerDispatchV1, NetworkBrokerError> {
+        original.require_request_v4(request)?;
+        let semantic = request.network_destroy_data_v4().ok_or(NetworkBrokerError::Request)?;
+        let verified = original.verified_v4().ok_or(NetworkBrokerError::Authority)?;
+        let request_id = *semantic.header().request_id();
+        let effect_digest = match original.outcome_v4() {
+            Some(NetworkLifecycleAdmissionOutcome::Prepared { effect_digest }) => effect_digest,
+            _ => return Err(NetworkBrokerError::Request),
+        };
+        let mut gate = |journal: &crate::journal::Journal, transaction: &crate::journal::JournalTransaction| {
+            receiving.before_commit_v4(&self.authority, &verified.effect, journal, transaction)
+                .map_err(|_| NetworkLifecycleStateError::Receiving)
+        };
+        let durable = self.lifecycle_state.mark_effect_ambiguous_guarded_v4(
+            &self.authority, request_id, effect_digest, Some(&mut gate))?;
+        let permit = NetworkLifecycleEffectDispatchPermitV1 { durable };
+        self.issue_lifecycle_worker_dispatch(permit, request.exact_body(), catalog, plan)
+    }
+
     /// Reloads and authenticates the protected fence for one issued dispatch.
     ///
     /// The returned bytes come from the locked lifecycle journal rather than
@@ -970,6 +985,42 @@ impl NetworkLifecycleAdmissionCoordinator {
         self.lifecycle_state
             .commit_verified(&self.authority, request_id, effect_digest, transition)
             .map_err(Into::into)
+    }
+
+    /// Forecasts the actual final lifecycle row on this same held writer.
+    pub(crate) fn destroy_suffix_receiving_demand_v2(&self)
+        -> Result<aos_sandbox_core::ResourceVector, crate::journal::JournalAppendReceivingDemandErrorV1>
+    {
+        self.lifecycle_state.destroy_suffix_receiving_demand_v2()
+    }
+
+    /// Runs the same Destroy reducer with exact append and original-D gates.
+    pub(crate) fn commit_destroy_transition_guarded_v2(
+        &mut self,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+        transition: NetworkNamespaceLifecycleTransitionV1,
+        namespaces: &mut NetworkNamespaceCatalogV1,
+        pin: &mut crate::namespace_catalog::NetworkPinObservationOriginalV4,
+        receiving: &mut dyn NetworkPrepareEffectReceivingV4,
+        effect: &aos_sandbox_broker::BrokerEffectIntentV1,
+    ) -> Result<CommittedNetworkLifecycleResultV1, NetworkBrokerError> {
+        if effect.verb() != aos_sandbox_core::BrokerVerb::NetworkDestroy
+            || effect.request_id() != &request_id
+        {
+            return Err(NetworkBrokerError::Request);
+        }
+        self.lifecycle_state.validate_verified_transition(request_id, effect_digest, transition)?;
+        namespaces.apply_destroy_transition_guarded_v2(transition, pin, &mut |journal, transaction| {
+            receiving.before_commit_v4(&self.authority, effect, journal, transaction)
+                .map_err(|_| crate::namespace_catalog::NetworkNamespaceCatalogError::Receiving)
+        })?;
+        self.lifecycle_state.commit_verified_guarded_v2(
+            &self.authority, request_id, effect_digest, transition,
+            &mut |journal, transaction| receiving.before_commit_v4(
+                &self.authority, effect, journal, transaction,
+            ).map_err(|_| crate::lifecycle_state::NetworkLifecycleStateError::Receiving),
+        ).map_err(Into::into)
     }
 
     /// Returns deterministic authenticated lifecycle recovery history.
@@ -1119,7 +1170,7 @@ fn validate_lifecycle_operation(
     }
 }
 
-fn validate_catalog(
+pub(crate) fn validate_catalog(
     semantics: &CanonicalNetworkSemanticsV1,
     catalog: &ResolvedNetworkPreparationV1,
 ) -> Result<(), NetworkBrokerError> {
@@ -1165,7 +1216,7 @@ pub(crate) mod tests {
         ApplyNetworkRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerRequestEnvelope,
         NetworkAction,
     };
-    use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
+    use crate::journal::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
     use aos_sandbox_broker::BrokerLocalRecordDomain;
     use aos_sandbox_core::format::{
         encode_broker_authorization_plan, encode_ownership_lease, encode_signature,
@@ -1182,6 +1233,9 @@ pub(crate) mod tests {
         RevocationScopeId, TrustScopeId, descriptor_for_bytes, sign_statement,
     };
     use aos_sandbox_protocol::decode_request_envelope;
+    use aos_sandbox_protocol::semantics::network::preparation_content::{
+        NetworkPreparationContentReferenceV2, NetworkPreparationContentV2,
+    };
     use buffa::Message as _;
     use ed25519_dalek::SigningKey;
     use tempfile::TempDir;
@@ -1422,7 +1476,7 @@ pub(crate) mod tests {
                         candidate.grant_target(),
                         candidate.argument_commitment(),
                         bytes.len() as u32,
-                        0,
+                        u16::from(candidate.preparation_content_reference_v2().is_some()),
                     )
                     .unwrap()
                 })
@@ -1606,6 +1660,13 @@ pub(crate) mod tests {
         fence.assignment_digest = vec![assignment_digest; 32];
         request.action = NetworkAction::NETWORK_ACTION_PREPARE.into();
         request.endpoint_ids = endpoints.iter().map(|value| vec![*value; 16]).collect();
+        let content = NetworkPreparationContentV2::new(b"m", b"s")
+            .unwrap()
+            .encode()
+            .unwrap();
+        NetworkPreparationContentReferenceV2::for_content(&content)
+            .unwrap()
+            .bind_request(&mut request);
         request.encode_to_vec()
     }
 
@@ -2300,6 +2361,7 @@ pub(crate) mod tests {
         let mut case = lifecycle_case(&fixture);
         let (request, dispatch) = issue_arm_lifecycle_dispatch(&mut case, &fixture);
         let bytes = dispatch.encode().unwrap();
+        assert_eq!(dispatch.encoded_length_data_v2(), Some(bytes.len()));
         let authority = fixture.authority();
 
         let decoded = NetworkLifecycleWorkerDispatchV1::decode(&bytes).unwrap();
@@ -3974,25 +4036,25 @@ pub(crate) mod tests {
         assert!(matches!(
             case.coordinator.creation_state.recovery_snapshot(),
             Err(NetworkStateError::Journal(
-                aos_sandbox::JournalError::Poisoned
+                crate::journal::JournalError::Poisoned
             ))
         ));
         assert!(matches!(
             case.coordinator.creation_state.recovery_entries(),
             Err(NetworkStateError::Journal(
-                aos_sandbox::JournalError::Poisoned
+                crate::journal::JournalError::Poisoned
             ))
         ));
         assert!(matches!(
             case.coordinator.creation_state.phase([7; 16]),
             Err(NetworkStateError::Journal(
-                aos_sandbox::JournalError::Poisoned
+                crate::journal::JournalError::Poisoned
             ))
         ));
         assert!(matches!(
             case.coordinator.preparation_recovery_snapshot(),
             Err(NetworkBrokerError::State(NetworkStateError::Journal(
-                aos_sandbox::JournalError::Poisoned
+                crate::journal::JournalError::Poisoned
             )))
         ));
         assert!(matches!(
@@ -4004,7 +4066,7 @@ pub(crate) mod tests {
                 &mut || Ok(clock_at(179)),
             ),
             Err(NetworkBrokerError::State(NetworkStateError::Journal(
-                aos_sandbox::JournalError::Poisoned
+                crate::journal::JournalError::Poisoned
             )))
         ));
         drop(case.coordinator);
@@ -4640,6 +4702,7 @@ pub(crate) mod tests {
                 None,
             )
             .unwrap();
+        assert_eq!(admission.effect.maximum_descriptors(), 1);
         assert!(authority.seal_fence(&[99; 16], &admission).is_err());
         assert!(authority.seal_effect(&[98; 16], &admission).is_err());
         let catalog = authenticated_catalog(&authority, catalog(), &request);
@@ -5916,6 +5979,9 @@ pub(crate) mod tests {
         destroy.action = NetworkAction::NETWORK_ACTION_DESTROY.into();
         destroy.endpoint_ids.clear();
         destroy.network_handle = vec![10; 32];
+        destroy.prepare_content_version = 0;
+        destroy.prepare_content_bytes = 0;
+        destroy.prepare_content_digest.clear();
         let destroy_semantics = CanonicalNetworkSemanticsV1::decode(
             &destroy.encode_to_vec(),
             peer(),
@@ -5948,5 +6014,21 @@ pub(crate) mod tests {
             ),
             Err(NetworkBrokerError::Request)
         ));
+    }
+}
+
+impl NetworkLifecycleAdmissionCoordinator {
+    pub(crate) fn inventory_creation_state_v2(&self) -> &NetworkStateStore {
+        &self.creation_state
+    }
+
+    pub(crate) fn inventory_lifecycle_state_v2(&self) -> &NetworkLifecycleStateStore {
+        &self.lifecycle_state
+    }
+
+    pub(crate) fn inventory_creation_history_empty_v2(&self, policy: &crate::NetworkPolicyCatalogV1)
+        -> Result<bool, NetworkStateError>
+    {
+        self.creation_state.inventory_no_resource_history_v2(&self.authority, policy)
     }
 }

@@ -15,6 +15,14 @@ use rustix::fs::OFlags;
 
 use super::super::FloorErrorV1;
 
+mod currentness;
+mod executed;
+pub(crate) use executed::HelperExecutedImageOriginalV1;
+use executed::{helper_executed_recipe_v1, helper_executed_step_v1};
+mod acquisition;
+pub(crate) use acquisition::HelperImageAcquisitionOriginalV1;
+pub(crate) use currentness::HelperImageRevalidationOriginalV1;
+
 const MAXIMUM_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 pub(super) use crate::immutable_image::RetainedImmutableFileV1 as MeasuredFileV1;
 #[cfg(test)]
@@ -96,7 +104,17 @@ impl MeasuredHelperImageV1 {
     }
 
     fn open_purpose(purpose: HelperImagePurposeV1) -> Result<Self, FloorErrorV1> {
+        Self::open_purpose_recipe(purpose, &mut None)
+    }
+
+    fn open_purpose_recipe(
+        purpose: HelperImagePurposeV1,
+        original: &mut Option<&mut HelperImageAcquisitionOriginalV1>,
+    ) -> Result<Self, FloorErrorV1> {
         let path = PathBuf::from(purpose.compiled_path()?);
+        if let Some(original) = original.as_deref_mut() {
+            original.path = Some(path.clone());
+        }
         let (basename, executable_pin_name, loader_pin_name) = purpose.names();
         let relative = path
             .strip_prefix("/nix/store")
@@ -113,25 +131,80 @@ impl MeasuredHelperImageV1 {
             return Err(FloorErrorV1::Provisioning);
         }
         let directory = path.parent().ok_or(FloorErrorV1::Provisioning)?;
-        let executable_pin = read_pin(directory, executable_pin_name, 65, 65)?;
-        let executable_digest = decode_hash(&executable_pin)?;
-        let loader_pin = read_pin(directory, loader_pin_name, 79, 578)?;
+        let executable_pin = acquisition::read_pin_once(
+            directory, executable_pin_name, 65, 65,
+            original.as_deref_mut().map(|original| &mut original.pins[0]),
+        )?;
+        let executable_digest = decode_hash(&executable_pin);
+        if let Some(original) = original.as_deref_mut() {
+            original.executable_digest = Some(executable_digest);
+        }
+        let executable_digest = executable_digest?;
+        let loader_pin = acquisition::read_pin_once(
+            directory, loader_pin_name, 79, 578,
+            original.as_deref_mut().map(|original| &mut original.pins[1]),
+        )?;
         let mut lines = loader_pin.split_inclusive(|byte| *byte == b'\n');
         let loader_path = lines.next().ok_or(FloorErrorV1::Provisioning)?;
-        let loader_digest = decode_hash(lines.next().ok_or(FloorErrorV1::Provisioning)?)?;
+        let loader_digest = decode_hash(lines.next().ok_or(FloorErrorV1::Provisioning)?);
+        if let Some(original) = original.as_deref_mut() {
+            original.loader_digest = Some(loader_digest);
+        }
+        let loader_digest = loader_digest?;
         if lines.next().is_some() || loader_path.last() != Some(&b'\n') || loader_path.len() > 513 {
             return Err(FloorErrorV1::Provisioning);
         }
-        let loader_path = PathBuf::from(
-            std::str::from_utf8(&loader_path[..loader_path.len() - 1])
-                .map_err(|_| FloorErrorV1::Provisioning)?,
-        );
-        let mut image = Self {
-            executable: MeasuredFileV1::open(path, executable_digest)?,
-            loader: MeasuredFileV1::open(loader_path, loader_digest)?,
-        };
-        image.revalidate()?;
-        Ok(image)
+        let loader_path = PathBuf::from(acquisition::loader_text_once(
+            &loader_path[..loader_path.len() - 1], original.as_deref_mut(),
+        )?);
+        match original.as_deref_mut() {
+            Some(original) => {
+                // The actual executable remains resident if the later loader
+                // acquisition fails. No native return lives only in a local.
+                original.loader_path = Some(loader_path.clone());
+                original.measurements[0] = Some(original.files[0].open_and_measure_once(
+                    path, Some(executable_digest), MAXIMUM_IMAGE_BYTES, true,
+                ));
+                if !matches!(original.measurements[0], Some(Ok(()))) {
+                    return Err(FloorErrorV1::Provisioning);
+                }
+                original.executable = original.files[0].take_completed_measurement_once();
+                original.measurements[1] = Some(original.files[1].open_and_measure_once(
+                    loader_path, Some(loader_digest), MAXIMUM_IMAGE_BYTES, true,
+                ));
+                if !matches!(original.measurements[1], Some(Ok(()))) {
+                    return Err(FloorErrorV1::Provisioning);
+                }
+                original.loader = original.files[1].take_completed_measurement_once();
+                match (original.executable.take(), original.loader.take()) {
+                    (Some(executable), Some(loader)) => {
+                        original.image = Some(Self { executable, loader });
+                    }
+                    (executable, loader) => {
+                        original.executable = executable;
+                        original.loader = loader;
+                        return Err(FloorErrorV1::Unavailable);
+                    }
+                }
+                let image = original.image.as_ref().ok_or(FloorErrorV1::Unavailable)?;
+                original.revalidated = Some(image.revalidate_owed_retaining_v1(
+                    &mut original.revalidation,
+                ));
+                match original.revalidated {
+                    Some(Ok(())) => original.image.take().ok_or(FloorErrorV1::Unavailable),
+                    Some(Err(cause)) => Err(cause),
+                    None => Err(FloorErrorV1::Unavailable),
+                }
+            }
+            None => {
+                let mut image = Self {
+                    executable: MeasuredFileV1::open(path, executable_digest)?,
+                    loader: MeasuredFileV1::open(loader_path, loader_digest)?,
+                };
+                image.revalidate()?;
+                Ok(image)
+            }
+        }
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -139,21 +212,20 @@ impl MeasuredHelperImageV1 {
     }
 
     pub(crate) fn require_executed(&self, pid: u32) -> Result<(), FloorErrorV1> {
-        self.executable.require_executed(pid)?;
-        let mut maps = String::new();
-        File::open(format!("/proc/{pid}/maps"))
-            .map_err(|_| FloorErrorV1::Unavailable)?
-            .take(MAXIMUM_MAPS_BYTES + 1)
-            .read_to_string(&mut maps)
-            .map_err(|_| FloorErrorV1::Unavailable)?;
-        if maps.len() as u64 > MAXIMUM_MAPS_BYTES {
-            return Err(FloorErrorV1::Provisioning);
+        helper_executed_recipe_v1!(Ordinary, self, pid, original)
+    }
+
+    pub(crate) fn require_executed_retaining_v1(
+        &self, pid: u32, original: &mut HelperExecutedImageOriginalV1,
+    ) -> Result<(), FloorErrorV1> {
+        if original.returned.is_some() {
+            original.reentry.get_or_insert(FloorErrorV1::Unavailable);
+            return Err(FloorErrorV1::Unavailable);
         }
-        let mapped = self.loader.mapped_in_helper_data_v5(&maps)?;
-        if !mapped {
-            return Err(FloorErrorV1::Provisioning);
-        }
-        Ok(())
+        original.returned = Some((|| {
+            helper_executed_recipe_v1!(Retained, self, pid, original)
+        })());
+        original.returned.as_ref().copied().unwrap_or(Err(FloorErrorV1::Unavailable))
     }
 
     pub(crate) fn revalidate(&mut self) -> Result<(), FloorErrorV1> {
@@ -167,7 +239,7 @@ pub(super) fn open_original_pid1_image(
     launch_image: &crate::production_startup::Pid1LaunchImageV1,
 ) -> Result<MeasuredFileV1, FloorErrorV1> {
     let original = launch_image.file().map_err(|_| FloorErrorV1::Provisioning)?;
-    aos_sandbox::immutable_image::retain_original_backend_pid1_v1(original)
+    aos_sandbox_broker::immutable_image::retain_original_backend_pid1_v1(original)
         .map_err(Into::into)
 }
 
@@ -186,12 +258,12 @@ fn read_pin(
     minimum: usize,
     maximum: usize,
 ) -> Result<Vec<u8>, FloorErrorV1> {
-    aos_sandbox::immutable_image::read_immutable_image_pin_v1(directory, name, minimum, maximum)
+    aos_sandbox_broker::immutable_image::read_immutable_image_pin_v1(directory, name, minimum, maximum)
         .map_err(Into::into)
 }
 
 fn decode_hash(bytes: &[u8]) -> Result<[u8; 32], FloorErrorV1> {
-    aos_sandbox::immutable_image::decode_immutable_sha256_pin_v1(bytes).map_err(Into::into)
+    aos_sandbox_broker::immutable_image::decode_immutable_sha256_pin_v1(bytes).map_err(Into::into)
 }
 
 #[cfg(test)]

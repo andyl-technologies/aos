@@ -10,7 +10,7 @@ pub(in crate::handshake::mount_request) enum ExactMountRecordKindV2 {
 }
 
 pub(in crate::handshake::mount_request) fn transaction_has_exact_record_kinds(
-    transaction: &aos_sandbox::JournalTransaction,
+    transaction: &aos_sandbox_mount_native::JournalTransaction,
     expected: &[ExactMountRecordKindV2],
 ) -> bool {
     use aos_sandbox_protocol::mount_source_acquisition_state::{
@@ -63,7 +63,7 @@ pub(in crate::handshake::mount_request) enum LifecycleStageV2 {
 
 pub(in crate::handshake::mount_request) fn validate_lifecycle_row(
     journal: &impl MountSourceAcquisitionJournalViewV2,
-    snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+    snapshot: &aos_sandbox_mount_native::ProtectedJournalSnapshot,
     acquisition_key: &[u8],
     acquisition_record: &[u8],
     projection: &crate::MountSourceRootCustodyProjectionV2,
@@ -188,7 +188,7 @@ pub(in crate::handshake::mount_request) fn consumption_projection_matches(
     acquisition_key: &[u8],
     acquisition_record: &[u8],
     custody: &crate::MountSourceRootCustodyProjectionV2,
-    companions: &aos_sandbox::MountSourceConsumptionCompanionProjectionV2,
+    companions: &aos_sandbox_mount_native::MountSourceConsumptionCompanionProjectionV2,
 ) -> bool {
     use aos_sandbox_protocol::mount_source_acquisition_state::{
         StoredRecordV2, decode_mount_source_state_record_v2,
@@ -213,7 +213,7 @@ pub(in crate::handshake::mount_request) fn consumption_projection_matches(
     };
     record_digests[0]
         == mount_source_consumption_companion_digest_v2(
-            aos_sandbox::RecordNamespace::MountSourceAcquisition as u16,
+            aos_sandbox_mount_native::RecordNamespace::MountSourceAcquisition as u16,
             acquisition_key,
             Some(acquisition_record),
         )
@@ -262,7 +262,7 @@ pub(in crate::handshake::mount_request) fn consumption_projection_matches(
 }
 
 pub(in crate::handshake::mount_request) fn consumption_transaction_id_is_exact(
-    transaction: &aos_sandbox::JournalTransaction,
+    transaction: &aos_sandbox_mount_native::JournalTransaction,
     acquisition_key: &[u8],
     acquisition_record: &[u8],
 ) -> bool {
@@ -290,9 +290,9 @@ pub(in crate::handshake::mount_request) fn lifecycle_projection_with_mount_id(
 }
 
 pub(in crate::handshake::mount_request) fn commit_or_read_exact_mount_transaction(
-    journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
-    transaction: &aos_sandbox::JournalTransaction,
-) -> Result<aos_sandbox::ProtectedJournalSnapshot, SourceProviderSecurityError> {
+    journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+    transaction: &aos_sandbox_mount_native::JournalTransaction,
+) -> Result<aos_sandbox_mount_native::ProtectedJournalSnapshot, SourceProviderSecurityError> {
     use aos_sandbox_protocol::mount_source_acquisition_state::{
         MAXIMUM_MOUNT_SOURCE_STATE_MATERIALIZED_BYTES, MAXIMUM_SOURCE_ACQUISITIONS,
         MAXIMUM_SOURCE_HOLDER_SEQUENCES, MAXIMUM_SOURCE_PROVIDER_ATTEMPTS,
@@ -335,7 +335,7 @@ pub(in crate::handshake::mount_request) fn commit_or_read_exact_mount_transactio
     if transaction
         .records()
         .iter()
-        .any(|record| record.namespace() != aos_sandbox::RecordNamespace::MountSourceAcquisition)
+        .any(|record| record.namespace() != aos_sandbox_mount_native::RecordNamespace::MountSourceAcquisition)
     {
         return Err(SourceProviderSecurityError::SessionContinuity);
     }
@@ -442,7 +442,7 @@ pub(in crate::handshake::mount_request) fn commit_or_read_exact_mount_transactio
 
 fn validate_applied_lifecycle_transaction_id(
     current: &aos_sandbox_protocol::mount_source_acquisition_state::MountSourceAcquisitionStateV2,
-    transaction: &aos_sandbox::JournalTransaction,
+    transaction: &aos_sandbox_mount_native::JournalTransaction,
 ) -> Result<(), SourceProviderSecurityError> {
     use aos_sandbox_protocol::mount_source_acquisition_state::{
         MutationTagV2, ProviderAttemptStateV2, ProviderQueryOwnerV2, SourceAcquisitionPhaseV2,
@@ -607,7 +607,7 @@ fn validate_applied_lifecycle_transaction_id(
 pub(in crate::handshake::mount_request) fn validate_exact_lifecycle_transition(
     current: &aos_sandbox_protocol::mount_source_acquisition_state::MountSourceAcquisitionStateV2,
     prospective: &aos_sandbox_protocol::mount_source_acquisition_state::MountSourceAcquisitionStateV2,
-    transaction: &aos_sandbox::JournalTransaction,
+    transaction: &aos_sandbox_mount_native::JournalTransaction,
 ) -> Result<(), SourceProviderSecurityError> {
     use aos_sandbox_protocol::mount_source_acquisition_state::{
         MutationTagV2, ProviderAttemptStateV2, ProviderQueryOwnerV2, SourceAcquisitionPhaseV2,
@@ -1057,7 +1057,7 @@ fn head_direction_and_projection_are_exact(
 }
 
 pub(in crate::handshake::mount_request) fn exact_put_record(
-    transaction: &aos_sandbox::JournalTransaction,
+    transaction: &aos_sandbox_mount_native::JournalTransaction,
     predicate: impl Fn(&[u8], &[u8]) -> bool,
 ) -> Option<(Vec<u8>, Vec<u8>)> {
     let mut matches = transaction.records().iter().filter_map(|record| {

@@ -336,6 +336,9 @@ pub enum GuestRootPublicationErrorV1 {
     /// The protected journal or current authority is unavailable.
     #[error("guest-root publication authority is unavailable")]
     Unavailable,
+    /// Fresh physical inventory requires a separately authorized Storage31 effect.
+    #[error("guest-root publication requires an independently authorized Storage31 effect")]
+    PublicationRequired,
 }
 
 /// Reserves the first current workspace lacking a verified guest root.
@@ -355,17 +358,54 @@ pub(crate) fn reserve_first_guest_root_v1(
     node: NodeId,
     pins: GuestRootTemplatePinsV1,
 ) -> Result<Option<GuestRootPublicationReservationV1>, GuestRootPublicationErrorV1> {
+    let Some(selection) = select_first_guest_root_data_v3(journal, snapshot, node, Some(pins), false)? else {
+        return Ok(None);
+    };
+    if let Some(reservation) = selection.existing_reservation_data_v3() {
+        return Ok(Some(reservation));
+    }
+    let assembly = selection.assemble_new_data_v3(OperationId::new(), OperationId::new().into_bytes())?;
+    journal.commit(assembly.transaction_v3())
+        .map_err(|_| GuestRootPublicationErrorV1::Unavailable)?;
+    Ok(Some(assembly.reservation_data_v3()))
+}
+
+/// Checks the current reservation selector without issuing a guest-root effect.
+///
+/// The genuine Maintenance borrower prepays complete C semantic models and
+/// retains its exact signed Storage snapshot. Inspection follows the same
+/// assignment/lease/proof checks, refusing before operation or transaction
+/// construction. An absent physical row cannot settle a retained reservation.
+///
+/// # Errors
+/// Refuses required31, stale inventory, malformed reservations, missing pins,
+/// changed current assignment/lease or an independently mismatched root proof.
+pub(crate) fn require_no_guest_root_publication_v2(
+    journal: &mut Journal,
+    snapshot: &DurableStorageResourceInventorySnapshotV1,
+    node: NodeId,
+    pins: Option<GuestRootTemplatePinsV1>,
+) -> Result<(), GuestRootPublicationErrorV1> {
+    match select_first_guest_root_data_v3(journal, snapshot, node, pins, true)? {
+        None => Ok(()),
+        Some(_) => Err(GuestRootPublicationErrorV1::PublicationRequired),
+    }
+}
+
+fn select_first_guest_root_data_v3<'snapshot>(
+    journal: &mut Journal,
+    snapshot: &'snapshot DurableStorageResourceInventorySnapshotV1,
+    node: NodeId,
+    pins: Option<GuestRootTemplatePinsV1>,
+    require_present: bool,
+) -> Result<Option<GuestRootPublicationSelectionDataV3<'snapshot>>, GuestRootPublicationErrorV1> {
     snapshot
         .recheck(journal)
         .map_err(|_| GuestRootPublicationErrorV1::Unavailable)?;
-    let mut used_operations = BTreeSet::new();
-    for (key, value) in journal.records(RecordNamespace::GuestRootPublication) {
-        let existing = GuestRootPublicationReservationV1::decode(key, value)?;
-        if !used_operations.insert(*existing.operation.as_bytes()) {
-            return Err(GuestRootPublicationErrorV1::Corrupt);
-        }
-    }
+    let used_operations = require_reservation_history_data_v2(
+        journal, snapshot.inventory(), require_present)?;
     for workspace in snapshot.inventory().workspaces() {
+        let pins = pins.ok_or(GuestRootPublicationErrorV1::InvalidPins)?;
         let sandbox = SandboxId::from_bytes(*workspace.fence().sandbox_id());
         let current = AuthorityPublicationStore::new(journal)
             .current(sandbox)
@@ -411,33 +451,237 @@ pub(crate) fn reserve_first_guest_root_v1(
             if pending.pins != pins || !pending.matches_workspace(workspace) {
                 return Err(GuestRootPublicationErrorV1::WorkspaceChanged);
             }
-            return Ok(Some(pending));
+            return Ok(Some(GuestRootPublicationSelectionDataV3 {
+                selected: GuestRootSelectionDataV3::Existing(pending),
+                used_operations,
+            }));
         }
-        let operation = OperationId::new();
-        if used_operations.contains(operation.as_bytes())
+        return Ok(Some(GuestRootPublicationSelectionDataV3 {
+            selected: GuestRootSelectionDataV3::New {
+                workspace,
+                pins,
+                inventory_digest: *snapshot.record_digest().as_bytes(),
+            },
+            used_operations,
+        }));
+    }
+    Ok(None)
+}
+
+/// Holds only the canonical selector's passive reservation/workspace DATA.
+///
+/// This value grants no entropy, append, Root flight or Storage effect. Its
+/// private construction shares every current assignment, lease, pin and
+/// reservation-roster check with the ordinary selector above.
+pub(crate) struct GuestRootPublicationSelectionDataV3<'snapshot> {
+    selected: GuestRootSelectionDataV3<'snapshot>,
+    used_operations: BTreeSet<[u8; 16]>,
+}
+
+enum GuestRootSelectionDataV3<'snapshot> {
+    Existing(GuestRootPublicationReservationV1),
+    New {
+        workspace: &'snapshot ValidatedStorageWorkspace,
+        pins: GuestRootTemplatePinsV1,
+        inventory_digest: [u8; 32],
+    },
+}
+
+impl GuestRootPublicationSelectionDataV3<'_> {
+    pub(crate) fn existing_reservation_data_v3(&self) -> Option<GuestRootPublicationReservationV1> {
+        match self.selected {
+            GuestRootSelectionDataV3::Existing(reservation) => Some(reservation),
+            GuestRootSelectionDataV3::New { .. } => None,
+        }
+    }
+
+    /// Assembles bytes only after the actual owner has paid and sampled entropy.
+    pub(crate) fn assemble_new_data_v3(
+        self,
+        operation: OperationId,
+        transaction_id: [u8; 16],
+    ) -> Result<GuestRootPublicationAssemblyDataV3, GuestRootPublicationErrorV1> {
+        let GuestRootSelectionDataV3::New { workspace, pins, inventory_digest } = self.selected else {
+            return Err(GuestRootPublicationErrorV1::Corrupt);
+        };
+        if operation.as_bytes() == &[0; 16]
+            || transaction_id == [0; 16]
+            || operation.as_bytes() == &transaction_id
+            || self.used_operations.contains(operation.as_bytes())
             || operation.as_bytes() == workspace.creation_operation_id()
         {
             return Err(GuestRootPublicationErrorV1::Unavailable);
         }
-        let pending = GuestRootPublicationReservationV1::from_workspace(
-            operation,
-            workspace,
-            pins,
-            *snapshot.record_digest().as_bytes(),
-        );
+        let reservation = GuestRootPublicationReservationV1::from_workspace(
+            operation, workspace, pins, inventory_digest);
         let record = JournalRecord::put(
             RecordNamespace::GuestRootPublication,
-            key.to_vec(),
-            pending.encode(),
+            workspace.workspace_handle().to_vec(),
+            reservation.encode(),
         );
-        let transaction = JournalTransaction::new(OperationId::new().into_bytes(), vec![record])
+        let transaction = JournalTransaction::new(transaction_id, vec![record])
             .map_err(|_| GuestRootPublicationErrorV1::Unavailable)?;
-        journal
-            .commit(&transaction)
-            .map_err(|_| GuestRootPublicationErrorV1::Unavailable)?;
-        return Ok(Some(pending));
+        Ok(GuestRootPublicationAssemblyDataV3 { reservation, transaction })
     }
-    Ok(None)
+}
+
+/// Owns the exact canonical new-reservation transaction, without a payer.
+pub(crate) struct GuestRootPublicationAssemblyDataV3 {
+    reservation: GuestRootPublicationReservationV1,
+    transaction: JournalTransaction,
+}
+
+impl GuestRootPublicationAssemblyDataV3 {
+    /// Covers the bounded record and co-live canonical construction backing.
+    pub(crate) fn construction_demand_data_v3() -> Result<aos_sandbox_core::ResourceVector, crate::JournalError> {
+        let bytes = std::mem::size_of::<Self>().checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<JournalRecord>()))
+            .and_then(|bytes| bytes.checked_add(VALUE_BYTES.checked_mul(2)?))
+            .and_then(|bytes| bytes.checked_add(32))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(crate::JournalError::JournalTooLarge)?;
+        Ok(aos_sandbox_core::ResourceVector::ZERO
+            .with(aos_sandbox_core::ResourceDimension::MemoryBytes, bytes))
+    }
+
+    pub(crate) fn reservation_data_v3(&self) -> GuestRootPublicationReservationV1 {
+        self.reservation
+    }
+
+    pub(crate) fn transaction_v3(&self) -> &JournalTransaction {
+        &self.transaction
+    }
+
+    /// Refuses another transaction or a reservation written since selection.
+    pub(crate) fn require_transaction_v3(
+        &self,
+        controller: &Journal,
+        transaction: &JournalTransaction,
+    ) -> Result<(), crate::JournalError> {
+        if transaction != &self.transaction
+            || controller.get(RecordNamespace::GuestRootPublication,
+                &self.reservation.workspace_handle).is_some()
+        {
+            return Err(crate::JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+}
+
+/// Selects the actual held Maintenance snapshot without issuing an operation.
+///
+/// Missing physical rows retain reservation debt. A prior operation is reused
+/// unchanged; a new selection can only assemble passive bytes and must still
+/// cross the genuine owner's paid entropy and canonical native append kernel.
+pub(crate) fn select_maintenance_guest_root_data_v3<'snapshot>(
+    journal: &mut Journal,
+    snapshot: &'snapshot DurableStorageResourceInventorySnapshotV1,
+    node: NodeId,
+    pins: Option<GuestRootTemplatePinsV1>,
+) -> Result<Option<GuestRootPublicationSelectionDataV3<'snapshot>>, GuestRootPublicationErrorV1> {
+    select_first_guest_root_data_v3(journal, snapshot, node, pins, true)
+}
+
+fn require_reservation_history_data_v2(
+    journal: &Journal,
+    inventory: &aos_sandbox_protocol::ValidatedStorageInventory,
+    require_present: bool,
+) -> Result<BTreeSet<[u8; 16]>, GuestRootPublicationErrorV1> {
+    let mut used_operations = BTreeSet::new();
+    for (key, value) in journal.records(RecordNamespace::GuestRootPublication) {
+        let existing = GuestRootPublicationReservationV1::decode(key, value)?;
+        if !used_operations.insert(*existing.operation.as_bytes()) {
+            return Err(GuestRootPublicationErrorV1::Corrupt);
+        }
+        if require_present && !inventory.workspaces().iter().any(|workspace| {
+            workspace.workspace_handle() == &existing.workspace_handle
+        }) {
+            // Absence cannot settle retained reservation debt. Any deletion or
+            // cleanup requires its own actual current authorization and owner.
+            return Err(GuestRootPublicationErrorV1::PublicationRequired);
+        }
+    }
+    Ok(used_operations)
+}
+
+/// Borrows an exact current reservation/workspace relation as comparison DATA.
+///
+/// This value has no lease, native currentness, Root permit or financial owner.
+/// Both native endpoints still authenticate the actual current C/Source and
+/// signed Session Inventory while their paid originals remain held.
+pub(crate) struct ReservedGuestRootWorkspaceDataV2<'inventory> {
+    reservation: GuestRootPublicationReservationV1,
+    workspace: &'inventory ValidatedStorageWorkspace,
+    arguments: CanonicalStorageGuestRootArgumentsV1,
+}
+
+impl ReservedGuestRootWorkspaceDataV2<'_> {
+    pub(crate) fn reservation_v2(&self) -> &GuestRootPublicationReservationV1 {
+        &self.reservation
+    }
+
+    pub(crate) fn workspace_v2(&self) -> &ValidatedStorageWorkspace {
+        self.workspace
+    }
+
+    pub(crate) fn arguments_v2(&self) -> &CanonicalStorageGuestRootArgumentsV1 {
+        &self.arguments
+    }
+}
+
+/// Joins the exact protected record to current assignment and signed workspace DATA.
+///
+/// The caller independently owns native current C, enrolled node and verified
+/// current assignment/lease. This recipe shares the sole reservation decoder
+/// and complete reservation roster scan; it performs no IO or mutation.
+pub(crate) fn reserved_guest_root_workspace_data_v2<'inventory>(
+    journal: &Journal,
+    manifest: &aos_sandbox_core::CanonicalAssignmentManifestV1,
+    inventory: &'inventory aos_sandbox_protocol::ValidatedStorageInventory,
+    reservation_bytes: &[u8],
+    enrolled_node: NodeId,
+) -> Result<ReservedGuestRootWorkspaceDataV2<'inventory>, GuestRootPublicationErrorV1> {
+    require_reservation_history_data_v2(journal, inventory, true)?;
+    let reservation = current_guest_root_reservation_data_v2(journal, reservation_bytes)?;
+    let assignment = manifest.broker_assignment()
+        .map_err(|_| GuestRootPublicationErrorV1::Unavailable)?;
+    if manifest.manifest().node() != enrolled_node
+        || assignment.sandbox().as_bytes() != &reservation.sandbox
+        || assignment.incarnation().as_bytes() != &reservation.incarnation
+        || assignment.epoch().get() != reservation.epoch
+        || assignment.desired_generation().get() != reservation.generation
+        || assignment.digest().as_bytes() != &reservation.assignment_digest
+    {
+        return Err(GuestRootPublicationErrorV1::WorkspaceChanged);
+    }
+    let mut workspaces = inventory.workspaces().iter().filter(|workspace| {
+        workspace.fence().sandbox_id() == &reservation.sandbox
+    });
+    let workspace = workspaces.next().ok_or(GuestRootPublicationErrorV1::Unavailable)?;
+    if workspaces.next().is_some() || !reservation.matches_workspace(workspace) {
+        return Err(GuestRootPublicationErrorV1::WorkspaceChanged);
+    }
+    if let Some(proof) = workspace.guest_root_publication_proof() {
+        reservation.verify_response_proof(proof)?;
+    }
+    let arguments = CanonicalStorageGuestRootArgumentsV1::from_protected_assignment(
+        assignment, reservation.operation.into_bytes(), reservation.workspace_handle,
+        reservation.creation_operation,
+    ).map_err(|_| GuestRootPublicationErrorV1::WorkspaceChanged)?;
+    Ok(ReservedGuestRootWorkspaceDataV2 { reservation, workspace, arguments })
+}
+
+pub(crate) fn current_guest_root_reservation_data_v2(
+    journal: &Journal,
+    reservation_bytes: &[u8],
+) -> Result<GuestRootPublicationReservationV1, GuestRootPublicationErrorV1> {
+    let mut records = journal.records(RecordNamespace::GuestRootPublication)
+        .filter(|(_, value)| *value == reservation_bytes);
+    let (key, value) = records.next().ok_or(GuestRootPublicationErrorV1::Unavailable)?;
+    if records.next().is_some() {
+        return Err(GuestRootPublicationErrorV1::Corrupt);
+    }
+    GuestRootPublicationReservationV1::decode(key, value)
 }
 
 /// Derives a new Storage-only grant from the reserved operation and live lease.
@@ -607,6 +851,10 @@ fn verify_proof(
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use aos_proto::aos::sandbox::local::v1::InventoryStorageResourcesResponse;
+    use buffa::Message as _;
     use aos_sandbox_agent::guest_root_publication::{
         CONCRETE_GUEST_FEATURE_MASK_V1, GuestRootPublicationProofV1,
     };
@@ -675,5 +923,107 @@ mod tests {
             reservation.verify_response_proof(proof),
             Err(GuestRootPublicationErrorV1::ProofMismatch)
         ));
+    }
+
+    fn inspection_fixture(
+        retained: Option<GuestRootPublicationReservationV1>,
+    ) -> (tempfile::TempDir, crate::Journal, crate::DurableStorageResourceInventorySnapshotV1) {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = std::fs::metadata(directory.path()).unwrap().uid();
+        let (mut journal, _) = crate::Journal::open_protected_at_uid(
+            directory.path(), "controller.journal", crate::JournalLimits::default(), owner,
+        ).unwrap();
+        if let Some(retained) = retained {
+            let record = crate::JournalRecord::put(
+                crate::RecordNamespace::GuestRootPublication,
+                retained.workspace_handle.to_vec(), retained.encode(),
+            );
+            let transaction = crate::JournalTransaction::new([19; 16], vec![record]).unwrap();
+            journal.commit(&transaction).unwrap();
+        }
+        let response = InventoryStorageResourcesResponse {
+            kernel_boot_id: vec![20; 16],
+            broker_instance_id: vec![21; 16],
+            journal_sequence: 1,
+            catalog_generation: 1,
+            ..Default::default()
+        };
+        let snapshot = crate::resource_inventory::record_storage_snapshot_bytes_for_test(
+            &mut journal, [22; 16], response.encode_to_vec(),
+        ).unwrap();
+        (directory, journal, snapshot)
+    }
+
+    #[test]
+    fn no_effect_inspection_preserves_the_current_snapshot_and_native_file() {
+        let (directory, mut journal, snapshot) = inspection_fixture(None);
+        let before = journal.all_records().map(|(namespace, key, value)| {
+            (namespace, key.to_vec(), value.to_vec())
+        }).collect::<Vec<_>>();
+        let native_bytes = std::fs::metadata(directory.path().join("controller.journal")).unwrap().len();
+
+        super::require_no_guest_root_publication_v2(
+            &mut journal, &snapshot, aos_sandbox_core::NodeId::from_bytes([23; 16]), None,
+        ).unwrap();
+
+        assert_eq!(journal.all_records().map(|(namespace, key, value)| {
+            (namespace, key.to_vec(), value.to_vec())
+        }).collect::<Vec<_>>(), before);
+        assert_eq!(std::fs::metadata(directory.path().join("controller.journal")).unwrap().len(), native_bytes);
+        snapshot.recheck(&mut journal).unwrap();
+    }
+
+    #[test]
+    fn real_empty_inventory_cannot_settle_a_retained_reservation() {
+        let retained = reservation();
+        let (directory, mut journal, snapshot) = inspection_fixture(Some(retained));
+        let native_bytes = std::fs::metadata(directory.path().join("controller.journal")).unwrap().len();
+
+        let result = super::require_no_guest_root_publication_v2(
+            &mut journal, &snapshot, aos_sandbox_core::NodeId::from_bytes([23; 16]), None,
+        );
+
+        assert!(matches!(result, Err(GuestRootPublicationErrorV1::PublicationRequired)));
+        assert_eq!(journal.get(crate::RecordNamespace::GuestRootPublication, &retained.workspace_handle),
+            Some(retained.encode().as_slice()));
+        assert_eq!(std::fs::metadata(directory.path().join("controller.journal")).unwrap().len(), native_bytes);
+    }
+
+    #[test]
+    fn maintenance_selection_uses_real_absence_and_preserves_pending_debt() {
+        let (directory, mut journal, snapshot) = inspection_fixture(None);
+        let native_bytes = std::fs::metadata(directory.path().join("controller.journal")).unwrap().len();
+
+        let selection = super::select_maintenance_guest_root_data_v3(
+            &mut journal, &snapshot, aos_sandbox_core::NodeId::from_bytes([23; 16]), None,
+        ).unwrap();
+
+        assert!(selection.is_none());
+        assert_eq!(std::fs::metadata(directory.path().join("controller.journal")).unwrap().len(), native_bytes);
+        snapshot.recheck(&mut journal).unwrap();
+
+        let retained = reservation();
+        let (_directory, mut journal, snapshot) = inspection_fixture(Some(retained));
+        let selection = super::select_maintenance_guest_root_data_v3(
+            &mut journal, &snapshot, aos_sandbox_core::NodeId::from_bytes([23; 16]), None,
+        );
+
+        assert!(matches!(selection, Err(GuestRootPublicationErrorV1::PublicationRequired)));
+        assert_eq!(journal.get(crate::RecordNamespace::GuestRootPublication, &retained.workspace_handle),
+            Some(retained.encode().as_slice()));
+    }
+
+    #[test]
+    fn resumed_reservation_cannot_be_replaced_by_new_operation_assembly() {
+        let retained = reservation();
+        let selection = super::GuestRootPublicationSelectionDataV3 {
+            selected: super::GuestRootSelectionDataV3::Existing(retained),
+            used_operations: std::collections::BTreeSet::from([retained.operation.into_bytes()]),
+        };
+
+        assert_eq!(selection.existing_reservation_data_v3(), Some(retained));
+        assert!(matches!(selection.assemble_new_data_v3(OperationId::from_bytes([31; 16]), [32; 16]),
+            Err(GuestRootPublicationErrorV1::Corrupt)));
     }
 }

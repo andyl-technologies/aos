@@ -12,12 +12,7 @@ pub(super) fn decode_current(
 ) -> Result<CurrentAuthorityPublicationV1, AuthorityPublicationError> {
     let decoded =
         publication_data::decode_current(bytes).map_err(AuthorityPublicationError::from)?;
-    let (history, lease, templates) = decoded.into_parts();
-    Ok(CurrentAuthorityPublicationV1 {
-        prepared: PreparedAuthorityPublicationV1 { history },
-        lease,
-        templates,
-    })
+    Ok(enclose_decoded_current(decoded))
 }
 
 pub(super) fn decode_prepared(
@@ -43,4 +38,17 @@ pub(super) fn decode_prepared_with_artifacts(
         publication_data::decode_prepared_with_artifacts(bytes, expected_digest)
             .map_err(AuthorityPublicationError::from)?;
     Ok((PreparedAuthorityPublicationV1 { history }, artifacts))
+}
+
+// Enclosure stays private to the same real Native publication owner. Portable
+// decoded histories cannot publicly construct this accepted Native wrapper.
+pub(super) fn enclose_decoded_current(
+    decoded: publication_data::DecodedPublicationCurrentV1,
+) -> CurrentAuthorityPublicationV1 {
+    let (history, lease, templates) = decoded.into_parts();
+    CurrentAuthorityPublicationV1 {
+        prepared: PreparedAuthorityPublicationV1 { history },
+        lease,
+        templates,
+    }
 }

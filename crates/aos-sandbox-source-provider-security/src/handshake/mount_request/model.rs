@@ -27,7 +27,7 @@ pub struct AuthorizedMountAcquireVerificationFloorV2 {
     pub(super) trust_digest: ObjectDigest,
     pub(super) revocation_generation: u64,
     pub(super) revocation_digest: ObjectDigest,
-    pub(super) journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    pub(super) journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
 }
 
 /// Provides one move-only, nonauthorizing current-session planning snapshot.
@@ -36,7 +36,7 @@ pub struct CurrentMountProviderSessionPlanV2 {
     pub(super) current_request_sequence: u64,
     pub(super) current_response_sequence: u64,
     pub(super) freshness_digest: ObjectDigest,
-    pub(super) journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    pub(super) journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
     pub(super) head_key: Vec<u8>,
     pub(super) head_record: Vec<u8>,
     pub(super) predecessor_session_key: Option<Vec<u8>>,
@@ -47,7 +47,7 @@ pub struct CurrentMountProviderSessionPlanV2 {
 /// Proves the exact prepared request is retained by a current protected reservation.
 pub struct ReservedMountProviderRequestV2 {
     pub(super) prepared: PreparedMountProviderRequestV2,
-    pub(super) reservation_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    pub(super) reservation_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
     pub(super) attempt_key: Vec<u8>,
     pub(super) attempt_record: Vec<u8>,
     pub(super) head_key: Vec<u8>,
@@ -357,7 +357,7 @@ pub struct ReopenedMountSourceRootV2 {
 /// successor-session edge already retained by the protected Mount graph. It
 /// is bound to one acquisition record and cannot be reused for another root.
 pub struct RetainedRootRecoveryAuthorizationV2 {
-    pub(super) journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    pub(super) journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
     pub(super) acquisition_key: Vec<u8>,
     pub(super) acquisition_record: Vec<u8>,
     pub(super) acquisition_record_digest: [u8; 32],
@@ -395,7 +395,7 @@ pub(super) struct HistoricalMountAcquisitionLineageV2 {
     pub(super) lease_digest: ObjectDigest,
     pub(super) session_binding: ObjectDigest,
     pub(super) lineage_commitment: ObjectDigest,
-    pub(super) journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    pub(super) journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
     pub(super) acquisition_key: Vec<u8>,
     pub(super) acquisition_record: Vec<u8>,
     pub(super) predecessor_session_key: Vec<u8>,
@@ -565,7 +565,7 @@ impl PreparedMountProviderRequestV2 {
     pub(super) fn validate_protected_reservation(
         &self,
         journal: &impl super::projection::MountSourceAcquisitionJournalViewV2,
-        reservation_snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+        reservation_snapshot: &aos_sandbox_mount_native::ProtectedJournalSnapshot,
         attempt_key: &[u8],
         attempt_record: &[u8],
         head_key: &[u8],
@@ -708,8 +708,8 @@ impl PreparedMountProviderRequestV2 {
     /// exact typed attempt/head records prove the request reservation.
     pub fn confirm_protected_reservation(
         mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        reservation_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        reservation_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         attempt_key: Vec<u8>,
         attempt_record: Vec<u8>,
         head_key: Vec<u8>,
@@ -734,7 +734,7 @@ impl PreparedMountProviderRequestV2 {
 
     pub(super) fn into_reserved(
         mut self,
-        reservation_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        reservation_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         attempt_key: Vec<u8>,
         attempt_record: Vec<u8>,
         head_key: Vec<u8>,
@@ -758,7 +758,7 @@ impl PreparedMountProviderRequestV2 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn bind_reserved(
         mut self,
-        reservation_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        reservation_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         attempt_key: Vec<u8>,
         attempt_record: Vec<u8>,
         head_key: Vec<u8>,
@@ -1399,7 +1399,7 @@ impl HistoricalMountReleaseAuthorizationV2 {
 
     pub(super) fn revalidate(
         &self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         current_session_binding: ObjectDigest,
     ) -> bool {
         self.lineage.revalidate(journal, current_session_binding)
@@ -1435,7 +1435,7 @@ impl HistoricalMountInventoryAuthorizationV2 {
 
     pub(super) fn revalidate(
         &self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         current_session_binding: ObjectDigest,
     ) -> bool {
         self.lineage.revalidate(journal, current_session_binding)

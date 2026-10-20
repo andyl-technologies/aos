@@ -6,6 +6,7 @@ license.workspace = true
 autobins = false
 
 [dependencies]
+aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
 rustix = { workspace = true, features = ["fs", "time"] }
 sha2.workspace = true

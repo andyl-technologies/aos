@@ -9,7 +9,7 @@ use aos_sandbox::Journal;
 use aos_sandbox::attachment_effect_owner::ProtectedAttachmentEffectOwnerV1;
 use aos_sandbox::attachment_slot_state::{AttachmentSlotMutationV1, AttachmentSlotPresenceV1};
 use aos_sandbox::destination_slot_inventory::DestinationSlotReconciliationActionV1;
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::NamespaceTargetOutcome;
 use aos_sandbox_core::{AttachmentSlotId, ObjectDigest, OperationId, Revision, SandboxId};
 use sha2::{Digest as _, Sha256};

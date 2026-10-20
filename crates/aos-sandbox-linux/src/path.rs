@@ -17,6 +17,24 @@ use crate::uapi::{
 };
 use crate::{Error, Result};
 
+mod read_original;
+mod empty_directory;
+pub use empty_directory::{EmptyDirectoryClosedV2, EmptyDirectoryEntriesOriginalV2,
+    RetainedEmptyDirectoryOriginalV2};
+pub use read_original::BeneathRegularFileOpenOriginalV2;
+
+mod root_directory_open;
+pub use root_directory_open::{BeneathDirectoryOpenOriginalV2, BeneathRootOpenOriginalV2};
+
+mod retained_read;
+pub use retained_read::BeneathRegularFileReadOriginalV2;
+
+mod retained_namespace;
+pub use retained_namespace::BeneathNamespaceOpenOriginalV4;
+
+mod retained_stream;
+pub use retained_stream::BeneathStreamReadOriginalV2;
+
 const MAX_RELATIVE_PATH_BYTES: usize = 4096;
 const MAXIMUM_BOUNDED_READ_BYTES: usize = 16 * 1024 * 1024;
 
@@ -219,6 +237,9 @@ macro_rules! resolve_path_recipe {
     }};
 }
 
+mod retained_directory;
+pub use retained_directory::{BeneathRootOwnedOriginalV2, BeneathRootResolveOriginalV2};
+
 /// A pre-opened directory beneath which untrusted relative paths are resolved.
 #[derive(Debug)]
 pub struct BeneathRoot {
@@ -305,7 +326,18 @@ impl BeneathRoot {
         if pending.raw.is_some() || pending.validated.is_some() {
             return Err(Error::invalid("retained resolution", "already attempted"));
         }
-        let options = ResolveOptions::directory();
+        self.resolve_directory_options_retaining(relative, ResolveOptions::directory(), pending)
+    }
+
+    pub(crate) fn resolve_directory_options_retaining(
+        &self,
+        relative: &Path,
+        options: ResolveOptions,
+        pending: &mut PendingResolvedPathV5,
+    ) -> Result<()> {
+        if !options.require_directory || pending.raw.is_some() || pending.validated.is_some() {
+            return Err(Error::invalid("retained resolution", "not a fresh directory recipe"));
+        }
         resolve_path_recipe!(self, relative, options, Retained, pending)
     }
 
@@ -347,12 +379,18 @@ impl BeneathRoot {
     /// Returns an error for an invalid relative path, symlink traversal,
     /// missing pin, wrong namespace type, or kernel inspection failure.
     pub fn open_namespace(&self, relative: &Path, kind: NamespaceKind) -> Result<NamespaceFd> {
+        NamespaceFd::from_owned(self.open_namespace_candidate_v4(relative)?, kind)
+    }
+
+    // Both dispositions use this exact path validation/openat2 operation. Only
+    // the owning type-check disposition differs after the returned descriptor.
+    fn open_namespace_candidate_v4(&self, relative: &Path) -> Result<OwnedFd> {
         let bytes = validate_relative_path(relative)?;
         let path =
             CString::new(bytes).map_err(|_| Error::invalid("relative path", "contains NUL"))?;
         let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW)
             .map_err(|_| Error::invalid("open flags", "platform flag conversion failed"))?;
-        let fd = uapi::openat2(
+        uapi::openat2(
             self.fd.as_fd(),
             &path,
             &OpenHow {
@@ -360,8 +398,7 @@ impl BeneathRoot {
                 mode: 0,
                 resolve: RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
             },
-        )?;
-        NamespaceFd::from_owned(fd, kind)
+        )
     }
 }
 
@@ -432,35 +469,47 @@ impl ResolvedFile {
     /// Returns an error when `maximum` exceeds sixteen MiB, I/O fails, or the
     /// file contains more than the admitted byte count.
     pub fn read_bounded(self, maximum: usize) -> Result<Vec<u8>> {
-        if maximum > MAXIMUM_BOUNDED_READ_BYTES {
-            return Err(Error::invalid(
-                "bounded read",
-                "maximum exceeds sixteen MiB",
-            ));
-        }
-        let limit = maximum
-            .checked_add(1)
-            .ok_or_else(|| Error::invalid("bounded read", "maximum overflow"))?;
-        let mut bytes = Vec::with_capacity(limit);
-        std::fs::File::from(self.fd)
-            .take(
-                u64::try_from(limit).map_err(|_| {
-                    Error::invalid("bounded read", "maximum does not fit read limit")
-                })?,
-            )
-            .read_to_end(&mut bytes)
-            .map_err(|source| Error::Syscall {
-                operation: "read bounded regular file",
-                source,
-            })?;
-        if bytes.len() > maximum {
-            return Err(Error::invalid(
-                "bounded read",
-                "file exceeds admitted maximum",
-            ));
-        }
+        let mut bytes = Vec::new();
+        read_bounded_recipe(std::fs::File::from(self.fd), maximum, &mut bytes)?;
         Ok(bytes)
     }
+}
+
+
+// Owned File preserves the ordinary consuming disposition; &mut File leaves
+// the same actual descriptor in a retained caller. The native read and its
+// original limit/allocation/error ordering have one implementation.
+fn read_bounded_recipe(
+    reader: impl std::io::Read,
+    maximum: usize,
+    bytes: &mut Vec<u8>,
+) -> Result<()> {
+    if maximum > MAXIMUM_BOUNDED_READ_BYTES {
+        return Err(Error::invalid("bounded read", "maximum exceeds sixteen MiB"));
+    }
+    read_admitted_bounded_recipe_v2(reader, maximum, bytes)
+}
+
+// The fixed internal metadata consumer checks its canonical object ceiling and
+// pays the entire reached extent before entry. Ordinary reads retain their
+// original sixteen-MiB check above and share this exact native read body.
+pub(crate) fn read_admitted_bounded_recipe_v2(
+    reader: impl std::io::Read,
+    maximum: usize,
+    bytes: &mut Vec<u8>,
+) -> Result<()> {
+    let limit = maximum.checked_add(1)
+        .ok_or_else(|| Error::invalid("bounded read", "maximum overflow"))?;
+    *bytes = Vec::with_capacity(limit);
+    reader.take(u64::try_from(limit).map_err(|_| {
+        Error::invalid("bounded read", "maximum does not fit read limit")
+    })?).read_to_end(bytes).map_err(|source| Error::Syscall {
+        operation: "read bounded regular file", source,
+    })?;
+    if bytes.len() > maximum {
+        return Err(Error::invalid("bounded read", "file exceeds admitted maximum"));
+    }
+    Ok(())
 }
 
 impl ResolvedPath {

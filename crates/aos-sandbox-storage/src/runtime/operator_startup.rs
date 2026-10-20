@@ -162,13 +162,39 @@ impl StorageBrokerRuntime {
                 .ok_or(StorageRuntimeError::Recovery)?;
             self.resolver_policies = match startup.policy_directory.as_deref() {
                 Some(path) => {
-                    let policy = ProtectedStorageResolverPolicyDirectoryV1::open_root_owned(
-                        path,
-                        startup.authority_binding,
-                    ).map_err(|_| StorageRuntimeError::Recovery)?;
-                    policy.load().and_then(|catalog| catalog.binding())
-                        .map_err(|_| StorageRuntimeError::Recovery)?;
-                    Some(policy)
+                    let selected = self.original_worker_startup.as_ref().is_some_and(
+                        crate::activation::StorageOriginalWorkerStartupV3::has_storage_service_receiving_original_v1,
+                    );
+                    let opened = if selected {
+                        ProtectedStorageResolverPolicyDirectoryV1::open_root_owned_retaining_v1(
+                            path, startup.authority_binding, &mut self.resolver_policy_directory_original,
+                        )
+                    } else {
+                        ProtectedStorageResolverPolicyDirectoryV1::open_root_owned(path, startup.authority_binding)
+                    };
+                    let policy = opened.map_err(|_| {
+                        if selected {
+                            self.startup_reconciliation.operator_policy_error = Some(StorageRuntimeError::Recovery);
+                        }
+                        StorageRuntimeError::Recovery
+                    })?;
+                    // Park the same normal directory before a later read can
+                    // fail. The ordinary branch retains its prior local scope.
+                    if selected {
+                        self.resolver_policies = Some(policy);
+                        let policy = self.resolver_policies.as_ref().ok_or(StorageRuntimeError::Receiving)?;
+                        if policy.load_retaining_v1(&mut self.resolver_policy_read_original)
+                            .and_then(|catalog| catalog.binding()).is_err()
+                        {
+                            self.startup_reconciliation.operator_policy_error = Some(StorageRuntimeError::Recovery);
+                            return Err(StorageRuntimeError::Recovery);
+                        }
+                        self.resolver_policies.take()
+                    } else {
+                        policy.load().and_then(|catalog| catalog.binding())
+                            .map_err(|_| StorageRuntimeError::Recovery)?;
+                        Some(policy)
+                    }
                 }
                 None => None,
             };
@@ -180,7 +206,13 @@ impl StorageBrokerRuntime {
             return Ok(());
         }
 
-        self.resume_operator_startup_v4()
+        if self.original_worker_startup.as_ref().is_some_and(
+            crate::activation::StorageOriginalWorkerStartupV3::has_storage_service_receiving_original_v1,
+        ) {
+            self.resume_initial_operator_receiving_v1()
+        } else {
+            self.resume_operator_startup_v4()
+        }
     }
 
     pub(super) fn operator_startup_lower_cut_v4(
@@ -206,21 +238,10 @@ impl StorageBrokerRuntime {
         let startup = self.operator_startup.take()
             .ok_or(StorageRuntimeError::Recovery)?;
         let result = (|| {
-            let (policies, readiness) = configure_resolver_policy(
-                &mut self.coordinator,
-                startup.policy_directory.as_deref(),
-                startup.authority_binding,
+            let plan = resume_operator_prelude_v1(
+                &mut self.coordinator, &mut self.resolver_policies, &mut self.prepare_readiness,
+                &startup, None, None,
             )?;
-            self.resolver_policies = policies;
-            self.prepare_readiness = readiness;
-
-            authenticate_startup_authority(&self.coordinator)?;
-            self.coordinator.retire_inactive_prepared_at_startup(&mut || {
-                trusted_paired_clock_sample()
-                    .map_err(|_| StorageAdmissionError::VerificationFailed)
-            }).map_err(|_| StorageRuntimeError::Recovery)?;
-            authenticate_startup_authority(&self.coordinator)?;
-            let (plan, _) = self.coordinator.workspace_catalog_activation_plan()?;
             self.workspaces.as_mut()
                 .ok_or(StorageRuntimeError::Recovery)?.revalidate_plan(plan)?;
             self.readiness = self.reconcile_startup()?;
@@ -234,6 +255,46 @@ impl StorageBrokerRuntime {
 
         result
     }
+}
+
+pub(super) fn resume_operator_prelude_v1(
+    coordinator: &mut StorageAdmissionCoordinator,
+    policies: &mut Option<ProtectedStorageResolverPolicyDirectoryV1>,
+    readiness: &mut super::StoragePrepareReadiness,
+    startup: &DeferredOperatorStartupV4,
+    originals: Option<(
+        &mut crate::resolver::protected_catalog::ResolverPolicyDirectoryOriginalV1,
+        &mut crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1,
+    )>,
+    mut receiving: Option<(
+        &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+        &mut Option<crate::helper::ZfsHelperError>,
+    )>,
+) -> Result<crate::workspace_catalog::StorageWorkspaceCatalogPlanV1, StorageRuntimeError> {
+    let (current_policies, current_readiness) = super::configure_resolver_policy_with_originals_v1(
+        coordinator, startup.policy_directory.as_deref(), startup.authority_binding,
+        originals, receiving.as_mut().map(|(receiving, _)| &mut **receiving),
+    )?;
+    *policies = current_policies;
+    *readiness = current_readiness;
+
+    authenticate_startup_authority(coordinator)?;
+    let mut clock = || trusted_paired_clock_sample()
+        .map_err(|_| StorageAdmissionError::VerificationFailed);
+    match receiving {
+        Some((receiving, failure)) => {
+            if let Err(cause) = coordinator.retire_inactive_prepared_receiving_v1(&mut clock, receiving) {
+                *failure = Some(cause);
+                return Err(StorageRuntimeError::Recovery);
+            }
+        }
+        None => {
+            coordinator.retire_inactive_prepared_at_startup(&mut clock)
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+        }
+    }
+    authenticate_startup_authority(coordinator)?;
+    coordinator.workspace_catalog_activation_plan().map(|(plan, _)| plan).map_err(Into::into)
 }
 
 fn require_fixed_operator_state_directory(directory: &Path) -> Result<(), StorageRuntimeError> {

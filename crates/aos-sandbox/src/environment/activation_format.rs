@@ -31,10 +31,10 @@ use super::{
 const MAGIC: &[u8; 8] = b"AOSENVA1";
 const VERSION: u16 = 1;
 const DOMAIN: &[u8] = b"aos.sandbox.environment.activation-record.v1\0";
-const MAXIMUM_ACTIVATION_RECORD_BYTES: usize = 32 * 1024 * 1024;
-const SELECTOR_BYTES: usize = 40;
+pub(super) const MAXIMUM_ACTIVATION_RECORD_BYTES: usize = 32 * 1024 * 1024;
+pub(super) const SELECTOR_BYTES: usize = 40;
 const OPTIONAL_SELECTOR_BYTES: usize = 48;
-const LEASE_BYTES: usize = 145;
+pub(super) const LEASE_BYTES: usize = 145;
 const DIGEST_BYTES: usize = 32;
 
 /// Encodes one validated activation transaction with a checked allocation.
@@ -259,8 +259,18 @@ pub fn environment_activation_digest_v1(
 pub(super) fn activation_encoded_length(
     value: &EnvironmentActivationTransactionV1,
 ) -> Result<usize, EnvironmentModelError> {
-    let roots = value
-        .gc_roots()
+    activation_encoded_length_fields_v1(value.leases().len(), value.gc_roots(),
+        value.retained_old_generations().len())
+}
+
+// The same exact checked wire-size engine also prepays Root's concrete first
+// Prepared record before cloning its selector/root models. Counts are DATA.
+pub(super) fn activation_encoded_length_fields_v1(
+    leases: usize,
+    gc_roots: &[EnvironmentGcRootAcknowledgementV1],
+    retained: usize,
+) -> Result<usize, EnvironmentModelError> {
+    let roots = gc_roots
         .iter()
         .try_fold(0_usize, |total, root| {
             total
@@ -272,16 +282,13 @@ pub(super) fn activation_encoded_length(
         .checked_add(SELECTOR_BYTES)
         .and_then(|value| value.checked_add(OPTIONAL_SELECTOR_BYTES * 2))
         .and_then(|value| value.checked_add(4))
-        .and_then(|total| total.checked_add(value.leases().len().checked_mul(LEASE_BYTES)?))
+        .and_then(|total| total.checked_add(leases.checked_mul(LEASE_BYTES)?))
         .and_then(|value| value.checked_add(4))
         .and_then(|total| total.checked_add(roots))
         .and_then(|value| value.checked_add(4))
         .and_then(|total| {
             total.checked_add(
-                value
-                    .retained_old_generations()
-                    .len()
-                    .checked_mul(SELECTOR_BYTES)?,
+                retained.checked_mul(SELECTOR_BYTES)?,
             )
         })
         .and_then(|value| value.checked_add(DIGEST_BYTES))

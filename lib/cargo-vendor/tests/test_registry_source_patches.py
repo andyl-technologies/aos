@@ -157,6 +157,78 @@ class RegistrySourcePatchTests(unittest.TestCase):
             {"schema": "aos.registry-source-patches/v1", "patches": [self.record]},
         )
 
+    def creation_record(self, path="src/child/new.rs"):
+        self.set_patch(b"--- /dev/null\n+++ b/" + path.encode()
+                       + b"\n@@ -0,0 +1 @@\n+created\n")
+        record = copy.deepcopy(self.record)
+        record["files"] = [{"path": path, "beforeSha256": None,
+                            "afterSha256": sha256(b"created\n")}]
+        return record
+
+    def test_explicit_archive_absent_child_is_delivered_with_complete_checksum(self):
+        record = self.creation_record()
+
+        patches.apply_patches(self.staging, self.vendor, [record], self.patch_tool())
+
+        self.assertEqual((self.crate / "src/child/new.rs").read_bytes(), b"created\n")
+        self.assertEqual((self.crate / "src/child/new.rs").stat().st_mode & 0o777, 0o644)
+        self.assertEqual((self.crate / "src/child").stat().st_mode & 0o777, 0o755)
+        for path, content in self.original.items():
+            self.assertEqual((self.crate / path).read_bytes(), content)
+        checksum = json.loads((self.crate / patches.CHECKSUM).read_text())
+        self.assertEqual(set(checksum["files"]), set(self.original) | {"src/child/new.rs"})
+        self.assertEqual(checksum["files"]["src/child/new.rs"], sha256(b"created\n"))
+        self.assertEqual(checksum["package"], self.archive_sha)
+
+    def test_creation_requires_archive_absence_and_directory_parents(self):
+        for path in ("src/lib.rs", "src", "README/child.rs"):
+            with self.subTest(path=path):
+                record = self.creation_record(path)
+                with self.assertRaises(patches.PatchContractError):
+                    self.prepare(record)
+
+    def test_creation_header_cannot_replace_an_existing_source(self):
+        record = self.creation_record()
+        root, before, _directories = self.prepare(record)
+        data = self.patch.read_bytes().replace(b"--- /dev/null", b"--- a/src/child/new.rs")
+
+        with self.assertRaises(patches.PatchContractError):
+            patches.check_unified_patch(data, root, record, before)
+
+    def test_created_source_requires_its_declared_content_digest(self):
+        record = self.creation_record()
+        record["files"][0]["afterSha256"] = sha256(b"different\n")
+
+        with self.assertRaises(patches.PatchContractError):
+            patches.apply_patches(self.staging, self.vendor, [record], self.patch_tool())
+
+        self.assertFalse((self.vendor / patches.RECEIPT).exists())
+
+    def test_created_source_tree_limit_refuses_before_patch_invocation(self):
+        record = self.creation_record()
+        root, before, directories = self.prepare(record)
+
+        with mock.patch.object(patches, "MAXIMUM_FILES", len(before)):
+            with mock.patch.object(patches.subprocess, "run") as invoke:
+                with self.assertRaises(patches.PatchContractError):
+                    patches.apply_record(root, before, directories, record, Path("/unused/patch"))
+
+        invoke.assert_not_called()
+        self.assertFalse((root / "src/child").exists())
+
+    def test_created_source_delivery_rejects_undeclared_directory_mutation(self):
+        record = self.creation_record()
+        root, before, directories = self.prepare(record)
+        def corrupt(*arguments, **keywords):
+            (root / "src/child").mkdir()
+            (root / "src/child/new.rs").write_bytes(b"created\n")
+            (root / "unselected-directory").mkdir()
+            return subprocess.CompletedProcess(arguments, 0, b"", b"")
+
+        with mock.patch.object(patches.subprocess, "run", side_effect=corrupt):
+            with self.assertRaises(patches.PatchContractError):
+                patches.apply_record(root, before, directories, record, Path("/unused/patch"))
+
     def test_optimized_immutable_inputs_retain_identity_and_real_application(self):
         inputs = (
             self.patch,
@@ -293,6 +365,80 @@ class RegistrySourcePatchTests(unittest.TestCase):
                 record["files"][0]["path"] = path
                 with self.assertRaises(patches.PatchContractError):
                     patches.validate_recipe([record])
+
+    def feature_additions(self):
+        return [{"target": "cfg(unix)", "dependency": "native", "features": ["time"]}]
+
+    def feature_manifest(self):
+        return {
+            "package": {"name": "fixture", "version": "1.0.0"},
+            "target": {"cfg(unix)": {"dependencies": {
+                "native": {"version": "1.2", "features": ["net", "process"],
+                           "default-features": True},
+            }}},
+        }
+
+    def test_declared_features_admit_only_the_selected_original_manifest(self):
+        record = copy.deepcopy(self.record)
+        record["manifestFeatureAdditions"] = self.feature_additions()
+        record["files"][0]["path"] = "Cargo.toml"
+
+        patches.validate_recipe([record])
+
+        for path in ("Cargo.lock", patches.CHECKSUM, "nested/Cargo.toml", "src/lib.rs"):
+            with self.subTest(path=path):
+                altered = copy.deepcopy(record)
+                altered["files"][0]["path"] = path
+                with self.assertRaises(patches.PatchContractError):
+                    patches.validate_recipe([altered])
+        record["files"][0]["beforeSha256"] = None
+        with self.assertRaises(patches.PatchContractError):
+            patches.validate_recipe([record])
+
+    def test_manifest_feature_union_preserves_all_other_fields(self):
+        before = self.feature_manifest()
+        additions = self.feature_additions()
+        expected = patches.manifest_with_feature_additions(before, additions)
+        actual = copy.deepcopy(before)
+        dependency = actual["target"]["cfg(unix)"]["dependencies"]["native"]
+        dependency["features"].insert(0, "time")
+
+        patches.require_manifest_feature_successor(expected, actual, additions)
+
+        self.assertEqual(before, self.feature_manifest())
+        for field, value in (("version", "2"), ("path", "../replacement"),
+                             ("git", "https://example.invalid/native"),
+                             ("default-features", False), ("optional", True),
+                             ("default-features", 1),
+                             ("features", ["net", "process", "time", "extra"]),
+                             ("features", ["net", "time"]),
+                             ("features", ["net", "process", "time", "time"])):
+            with self.subTest(field=field, value=value):
+                changed = copy.deepcopy(actual)
+                changed["target"]["cfg(unix)"]["dependencies"]["native"][field] = value
+                with self.assertRaises(patches.PatchContractError):
+                    patches.require_manifest_feature_successor(expected, changed, additions)
+        for changed in (dict(actual, package={"name": "fixture", "version": "2"}),
+                        dict(actual, features={"default": ["extra"]}),
+                        dict(actual, target={"cfg(windows)": actual["target"]["cfg(unix)"]})):
+            with self.assertRaises(patches.PatchContractError):
+                patches.require_manifest_feature_successor(expected, changed, additions)
+
+    def test_feature_declarations_cannot_create_dependencies_or_repeat_existing_features(self):
+        before = self.feature_manifest()
+        for target, dependency, feature in ((None, "native", "time"),
+                                             ("cfg(windows)", "native", "time"),
+                                             ("cfg(unix)", "missing", "time"),
+                                             ("cfg(unix)", "native", "net")):
+            with self.subTest(target=target, dependency=dependency, feature=feature):
+                additions = [{"target": target, "dependency": dependency, "features": [feature]}]
+                with self.assertRaises(patches.PatchContractError):
+                    patches.manifest_with_feature_additions(before, additions)
+        for additions in ([], self.feature_additions() * 2,
+                          [{"target": "cfg(unix)", "dependency": "native", "features": []}],
+                          [{"target": "cfg(unix)", "dependency": "native", "features": ["time", "time"]}]):
+            with self.assertRaises(patches.PatchContractError):
+                patches.validate_manifest_feature_additions(additions)
 
     def test_symlink_hardlink_and_symlink_parent_are_rejected(self):
         for kind in ("symlink", "hardlink"):

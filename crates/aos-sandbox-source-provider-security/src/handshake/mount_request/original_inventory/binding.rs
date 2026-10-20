@@ -151,7 +151,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             let mut keys = BTreeSet::new();
             for record in owners.records() {
                 if record.namespace()
-                    != aos_sandbox::journal::RecordNamespace::MountSourceAcquisition
+                    != aos_sandbox_mount_native::RecordNamespace::MountSourceAcquisition
                     || !keys.insert(record.key().to_vec())
                 {
                     return Err(invalid());

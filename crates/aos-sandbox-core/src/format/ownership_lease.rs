@@ -4,7 +4,7 @@ use crate::ownership_lease::{LeaseAssignment, OwnershipLease};
 use crate::{AssignmentEpoch, IncarnationId, NodeId, ObjectDigest, SandboxId};
 
 use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
-use super::tree::{exact_bytes, semantics};
+use super::tree::exact_bytes;
 
 /// Encodes an ownership lease in exact portable v1 CBOR.
 #[must_use]
@@ -32,10 +32,18 @@ pub fn decode_ownership_lease(
     bytes: &[u8],
     limits: DecodeLimits,
 ) -> Result<OwnershipLease, CanonicalCborError> {
+    decode_lease_engine(bytes, limits)
+        .map_err(super::decode_attempt::DecodeFailure::into_canonical)
+}
+
+pub(super) fn decode_lease_engine(
+    bytes: &[u8],
+    limits: DecodeLimits,
+) -> super::decode_attempt::DecodeResult<OwnershipLease> {
     let mut decoder = Decoder::new(bytes, limits)?;
     decoder.array(8)?;
     decoder.exact("ownership lease version", 1)?;
-    let assignment = decode_assignment(&mut decoder)?;
+    let assignment = decode_assignment_engine(&mut decoder)?;
     let node = NodeId::from_bytes(exact_bytes::<16>(&mut decoder, 16)?);
     let generation = decoder.unsigned()?;
     let issued = decoder.signed()?;
@@ -53,7 +61,7 @@ pub fn decode_ownership_lease(
         maximum_skew,
         renewal_nonce,
     )
-    .map_err(|error| semantics("ownership lease", error))
+    .map_err(|cause| super::decode_attempt::typed_semantics("ownership lease", cause))
 }
 
 fn encode_assignment(encoder: &mut Encoder, assignment: LeaseAssignment) {
@@ -64,7 +72,10 @@ fn encode_assignment(encoder: &mut Encoder, assignment: LeaseAssignment) {
     encoder.bytes(assignment.digest().as_bytes());
 }
 
-fn decode_assignment(decoder: &mut Decoder<'_>) -> Result<LeaseAssignment, CanonicalCborError> {
+
+fn decode_assignment_engine(
+    decoder: &mut Decoder<'_>,
+) -> super::decode_attempt::DecodeResult<LeaseAssignment> {
     decoder.array(4)?;
     LeaseAssignment::new(
         SandboxId::from_bytes(exact_bytes::<16>(decoder, 16)?),
@@ -72,5 +83,7 @@ fn decode_assignment(decoder: &mut Decoder<'_>) -> Result<LeaseAssignment, Canon
         AssignmentEpoch::new(decoder.unsigned()?),
         ObjectDigest::from_bytes(exact_bytes::<32>(decoder, 32)?),
     )
-    .map_err(|error| semantics("ownership lease assignment", error))
+    .map_err(|cause| {
+        super::decode_attempt::typed_semantics("ownership lease assignment", cause)
+    })
 }

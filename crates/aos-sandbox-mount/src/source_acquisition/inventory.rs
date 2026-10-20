@@ -6,7 +6,7 @@
 //! a verifier-bound floor checkpoint; immutable attempts are never rewritten
 //! or evicted, and the Head still names the latest observation tail.
 
-use aos_sandbox::journal::ProtectedJournalAuthority;
+use aos_sandbox_mount_native::ProtectedJournalAuthority;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::mount_source_acquisition_state::derive_inventory_reservation_head_v2;
 use aos_sandbox_source_provider_protocol::{

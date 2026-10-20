@@ -7,11 +7,12 @@
 
 use std::collections::BTreeSet;
 
-use aos_sandbox::{
-    GlobalCapacityReservationRecoveryBindingV1,
-    GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1, JournalTransaction,
-    ProtectedJournalAuthority, RecordNamespace,
-};
+use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationRecoveryBindingV1;
+use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationRequestV1;
+use aos_sandbox_source::provider_journal::GlobalCapacityReservationV1;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction;
+use aos_sandbox_source::provider_journal::ProtectedJournalAuthority;
+use aos_sandbox_core::RecordNamespace;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::ledger::native_completion::release_fence::{
     NativeReleaseStatusCapacityBindingV1, native_release_status_capacity_binding_v1,
@@ -23,7 +24,7 @@ use crate::model::{ProviderAcquisitionStateV1, ProviderAttemptStateV1, Recovered
 use crate::state::ProviderLedgerV1;
 
 fn request(binding: NativeReleaseStatusCapacityBindingV1) -> GlobalCapacityReservationRequestV1 {
-    aos_sandbox::journal::source_native_release_status_capacity_request_v1(binding)
+    aos_sandbox_ledger_replay::replay::source_original::union::source_native_release_status_capacity_request_v1(binding)
 }
 
 pub(crate) fn binding(
@@ -250,7 +251,7 @@ pub(crate) fn commit_admission(
     let mut rows = prepared.transaction.records().to_vec();
     rows.push(capacity.record().clone());
     let transaction = JournalTransaction::new(*prepared.transaction.id(), rows)
-        .map_err(aos_sandbox::JournalError::from)?;
+        .map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?;
     let preflight = ledger
         .journal
         .preflight_global_capacity_reservation_v1(&capacity, &transaction)?;

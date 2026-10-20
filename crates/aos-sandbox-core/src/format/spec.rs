@@ -50,6 +50,52 @@ pub fn encode_sandbox_spec(spec: &SandboxSpec) -> Vec<u8> {
     encoder.finish()
 }
 
+/// Bounds one canonical specification decode and its comparison encoding.
+///
+/// This passive byte invoice uses the same decoder limits and collection
+/// element layouts as [`decode_sandbox_spec`]. Whole-input validation precedes
+/// every typed vector reservation. Its aggregate item bound therefore covers
+/// the co-live identity, limit, attachment, endpoint and feature vectors,
+/// including a malformed typed element after those reservations. The model
+/// constructors validate sorted slices without constructing another index.
+///
+/// The input is borrowed and excluded. The bound includes the decoder's
+/// recursive validation frames, model move/construction planes, text backing,
+/// canonical encoding growth and diagnostic formatting. It grants no parsing,
+/// currentness or authority. No Rust carrier is a namespace entry.
+///
+/// Returns `None` for an oversized input or checked arithmetic overflow.
+#[must_use]
+pub fn sandbox_spec_decoding_receiving_bytes_v2(
+    input_bytes: usize,
+    limits: DecodeLimits,
+) -> Option<usize> {
+    use std::mem::size_of;
+
+    if input_bytes > limits.maximum_bytes {
+        return None;
+    }
+    let validation = super::cbor::validation_receiving_bytes_v1(input_bytes, limits)?;
+    let slots = input_bytes.min(limits.maximum_total_items);
+    let element = size_of::<crate::FeatureRef>()
+        .max(size_of::<Limit>())
+        .max(size_of::<AttachmentSlotId>())
+        .max(size_of::<NetworkEndpointId>())
+        .max(size_of::<u32>());
+    // The decoder's partial vectors move into nested profiles and then the
+    // complete model. Three planes include those construction temporaries;
+    // their capacities are bounded by the one prevalidated aggregate extent.
+    let vectors = slots.checked_mul(element)?.checked_mul(3)?;
+    let fixed = size_of::<SandboxSpec>().checked_mul(3)?
+        .checked_add(size_of::<Decoder<'_>>())?
+        .checked_add(size_of::<CanonicalCborError>().checked_mul(4)?)?;
+    // Disjoint decoded strings fit in input bytes. Four planes also cover the
+    // comparison encoder's geometric Vec growth and a formatted schema error.
+    validation.checked_add(vectors)?.checked_add(fixed)?
+        .checked_add(input_bytes.checked_mul(4)?)?
+        .checked_add(4 * 4_096)
+}
+
 /// Decodes and validates one exact portable v1 or v2 sandbox specification.
 ///
 /// # Errors
@@ -344,6 +390,21 @@ mod tests {
     use crate::model::InvalidSpecModel;
     use crate::{FeatureRef, MediaType, ObjectDescriptor, ObjectDigest};
 
+    #[test]
+    fn specification_receiving_uses_actual_core_extent() {
+        let limits = DecodeLimits::default();
+        let small = sandbox_spec_decoding_receiving_bytes_v2(16 * 1024, limits).unwrap();
+        let large = sandbox_spec_decoding_receiving_bytes_v2(512 * 1024, limits).unwrap();
+        assert!(large > small);
+        assert!(sandbox_spec_decoding_receiving_bytes_v2(limits.maximum_bytes + 1, limits).is_none());
+        assert!(sandbox_spec_decoding_receiving_bytes_v2(usize::MAX, DecodeLimits {
+            maximum_bytes: usize::MAX,
+            maximum_total_items: usize::MAX,
+            maximum_depth: usize::MAX,
+            ..limits
+        }).is_none());
+    }
+
     fn feature() -> FeatureRef {
         FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 0)
             .unwrap_or_else(|error| panic!("test feature failed: {error}"))
@@ -382,6 +443,22 @@ mod tests {
             Vec::new(),
         )
         .unwrap_or_else(|error| panic!("test spec failed: {error}"))
+    }
+
+    #[test]
+    fn spec_receiving_bound_uses_complete_input_before_schema_reservation() {
+        let limits = DecodeLimits::default();
+        let encoded = encode_sandbox_spec(&spec());
+        assert!(sandbox_spec_decoding_memory_bound_v4(encoded.len(), limits).unwrap()
+            > encoded.len() + std::mem::size_of::<SandboxSpec>());
+
+        // A huge advertised absent array is rejected by the canonical pass,
+        // before decode_ids or decode_vec can reserve its announced population.
+        let truncated = [0x9a, 0xff, 0xff, 0xff, 0xff];
+        assert!(decode_sandbox_spec(&truncated, limits).is_err());
+        let tiny = sandbox_spec_decoding_memory_bound_v4(truncated.len(), limits).unwrap();
+        assert!(tiny < sandbox_spec_decoding_memory_bound_v4(encoded.len(), limits).unwrap());
+        assert!(sandbox_spec_decoding_memory_bound_v4(usize::MAX, limits).is_none());
     }
 
     #[test]
@@ -448,4 +525,26 @@ mod tests {
             Err(InvalidSpecModel::InvalidNetworkEndpoints)
         );
     }
+}
+
+/// Bounds simultaneous specification decode, semantic and canonical-copy memory.
+///
+/// The whole canonical-CBOR pass precedes every schema reservation. Even a
+/// schema-invalid array item therefore consumes an actual input byte. This
+/// bounds all collection prefixes by that aggregate item population, including
+/// the current rejected collection; it never trusts an announced absent tail.
+/// `None` reports checked layout arithmetic overflow. No model is constructed.
+#[must_use]
+pub fn sandbox_spec_decoding_memory_bound_v4(input_bytes: usize, limits: DecodeLimits) -> Option<usize> {
+    use std::mem::size_of;
+    let row = [size_of::<crate::FeatureRef>(), size_of::<Limit>(),
+        size_of::<AttachmentSlotId>(), size_of::<NetworkEndpointId>(),
+        size_of::<u32>(), size_of::<crate::ObjectDescriptor>()].into_iter().max()?;
+    let collections = input_bytes.min(limits.maximum_total_items)
+        .checked_mul(row)?.checked_mul(2)?;
+    // Current text, completed owned text, and the old/new canonical output
+    // allocation coexist. Compiled root constructors are separate from backing.
+    collections.checked_add(input_bytes.checked_mul(4)?)?
+        .checked_add(size_of::<SandboxSpec>().checked_mul(2)?)?
+        .checked_add(super::cbor::validation_receiving_bytes_v1(input_bytes, limits)?)
 }

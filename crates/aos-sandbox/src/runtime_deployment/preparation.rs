@@ -21,6 +21,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+pub(super) mod boot_preparation;
+
 use aos_sandbox_core::bounded_codec::checked_byte_region;
 use aos_sandbox_protocol::runtime_deployment::DeploymentGenesisV1;
 use aos_sandbox_protocol::runtime_deployment::canary::{
@@ -118,25 +120,25 @@ pub(super) fn canary_schema_contract_v3() -> [u8; 32] {
 pub(crate) fn require_deployment_main_v1(
     owner: &VerifiedDeploymentGenesisV1<'_>,
     journal: &Journal,
-) -> Result<(), NvCustodyErrorV1> {
+) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
     owner.recheck()?;
+    journal.admit_boot_named_guard_receiving_v1(owner, true)?;
     journal.require_protected_named_location(Path::new(DIRECTORY), MAIN_NAME, 0, owner.main_limits())
-        .map_err(|_| NvCustodyErrorV1::Provisioning)?;
+        ?;
     let mut rows = 0_usize;
     for (namespace, _, _) in journal.all_records() {
         if namespace != NAMESPACE {
-            return Err(NvCustodyErrorV1::Provisioning);
+            return Err(NvCustodyErrorV1::Provisioning.into());
         }
         rows = rows.checked_add(1).ok_or(NvCustodyErrorV1::Encoding)?;
         require_deployment_row_bound_v1(rows)?;
         if rows > owner.main_limits().maximum_materialized_records {
-            return Err(NvCustodyErrorV1::Encoding);
+            return Err(NvCustodyErrorV1::Encoding.into());
         }
     }
     require_deployment_row_bound_v1(rows)?;
-    journal.require_runtime_deployment_native_history_v1(owner)
-        .map_err(|_| NvCustodyErrorV1::Provisioning)?;
-    owner.recheck()
+    journal.require_runtime_deployment_native_history_v1(owner)?;
+    owner.recheck().map_err(Into::into)
 }
 
 /// Refuses an oversized row set before the shared engine retains a map.
@@ -162,6 +164,11 @@ pub(crate) fn require_current_deployment_rows_v1(
     sequence: u64,
     records: &BTreeMap<&[u8], &[u8]>,
 ) -> Result<(), NvCustodyErrorV1> {
+    if let Some(purpose) = owner.boot_purpose() {
+        owner.recheck()?;
+        boot_preparation::require_rows_v1(sequence, records, owner.exact_bytes(), owner.claims(), owner.scope(), purpose)?;
+        return owner.recheck();
+    }
     if let Some(purpose) = owner.canary_purpose() {
         owner.recheck()?;
         require_canary_rows_v2(
@@ -198,6 +205,12 @@ pub(crate) fn require_prospective_deployment_append_v1<'data>(
     records: &BTreeMap<&'data [u8], &'data [u8]>,
     transaction: &'data JournalTransaction,
 ) -> Result<(), NvCustodyErrorV1> {
+    if let Some(purpose) = owner.boot_purpose() {
+        owner.recheck()?;
+        boot_preparation::validated_append_rows_v1(sequence, records, transaction,
+            owner.exact_bytes(), owner.claims(), owner.scope(), purpose)?;
+        return owner.recheck();
+    }
     if let Some(purpose) = owner.canary_purpose() {
         owner.recheck()?;
         validated_canary_append_rows_v2(
@@ -717,7 +730,10 @@ pub(super) fn compared_prospective_deployment_head_v1<'data>(
     transaction: &'data JournalTransaction,
 ) -> Result<(u64, [u8; 32]), NvCustodyErrorV1> {
     owner.recheck()?;
-    let (next_sequence, after) = if let Some(purpose) = owner.canary_purpose() {
+    let (next_sequence, after) = if let Some(purpose) = owner.boot_purpose() {
+        boot_preparation::validated_append_rows_v1(sequence, records, transaction,
+            owner.exact_bytes(), owner.claims(), owner.scope(), purpose)?
+    } else if let Some(purpose) = owner.canary_purpose() {
         validated_canary_append_rows_v2(
             sequence, records, transaction, owner.exact_bytes(), owner.claims(),
             owner.publisher_verifier(), owner.scope(), purpose,
@@ -785,8 +801,13 @@ pub(super) fn compared_deployment_native_prefix_v1(
     owner: &VerifiedDeploymentGenesisV1<'_>,
     history: &[RuntimeDeploymentNativeTransactionDataV1],
     sequence: u64,
-) -> Result<(u64, [u8; 32]), NvCustodyErrorV1> {
+) -> Result<(u64, [u8; 32]), super::RuntimeDeploymentComparisonErrorV1> {
     owner.recheck()?;
+    if owner.boot_purpose().is_some() {
+        let demand =
+            crate::journal::runtime_deployment_receiving::boot_history_model_demand_v1(history)?;
+        owner.admit_boot_journal_representation_v1(Some(demand))?;
+    }
     let records = deployment_native_prefix_rows_v1(history, sequence)?;
     require_current_deployment_rows_v1(owner, sequence, &records)?;
     let head = canonical_purpose_main_head_v1(
@@ -801,8 +822,13 @@ pub(super) fn compared_retained_deployment_transition_v1(
     owner: &VerifiedDeploymentGenesisV1<'_>,
     history: &[RuntimeDeploymentNativeTransactionDataV1],
     transaction: &JournalTransaction,
-) -> Result<((u64, [u8; 32]), (u64, [u8; 32])), NvCustodyErrorV1> {
+) -> Result<((u64, [u8; 32]), (u64, [u8; 32])), super::RuntimeDeploymentComparisonErrorV1> {
     owner.recheck()?;
+    if owner.boot_purpose().is_some() {
+        let demand =
+            crate::journal::runtime_deployment_receiving::boot_history_model_demand_v1(history)?;
+        owner.admit_boot_journal_representation_v1(Some(demand))?;
+    }
     let native = history.iter()
         .find(|native| native.transaction() == transaction)
         .ok_or(NvCustodyErrorV1::Provisioning)?;
@@ -816,7 +842,7 @@ pub(super) fn compared_retained_deployment_transition_v1(
     drop(records);
     let after = compared_deployment_native_prefix_v1(owner, history, native.next_sequence())?;
     if after != expected {
-        return Err(NvCustodyErrorV1::Provisioning);
+        return Err(NvCustodyErrorV1::Provisioning.into());
     }
     owner.recheck()?;
     Ok((before, after))

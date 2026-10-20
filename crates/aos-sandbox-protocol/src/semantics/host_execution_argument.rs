@@ -16,6 +16,7 @@ use sha2::{Digest as _, Sha256};
 
 const DOMAIN: &[u8] = b"aos.sandbox.host.execution-argument.v1\0";
 const NO_APPLY_DOMAIN: &[u8] = b"aos.sandbox.host.execution-no-apply.v1\0";
+const BEFORE_ARGUMENT_NO_APPLY_DOMAIN_V2: &[u8] = b"aos.sandbox.host.before-argument-no-apply-grant.v2\0";
 const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.controller-argument-attempt.v1\0";
 const SOURCE_BYTES: usize = 336;
 const PREIMAGE_FIELDS_BYTES: usize = 1 + 16 + 16 + 8 + 8 + 32 + 16 + 8 + 32;
@@ -56,6 +57,51 @@ impl CanonicalHostExecutionArgumentSemanticsV1 {
     pub const fn commitment(self) -> BrokerArgumentCommitment {
         self.commitment
     }
+}
+
+/// Compiles the explicit before-argument terminal grant, without H/T fields.
+///
+/// # Errors
+/// Rejects zero request identity or a source that differs from the assignment.
+pub fn host_before_argument_no_apply_grant_v2(
+    assignment: BrokerAssignment, request_id: [u8; 16],
+    source: crate::host_execution_no_apply::BeforeArgumentNoApplySourceDataV2,
+) -> Result<CanonicalHostExecutionArgumentSemanticsV1, HostExecutionArgumentSemanticErrorV1> {
+    compile_before_argument_no_apply_v2(1, BrokerVerb::HostTerminalNoApply, assignment, request_id, source)
+}
+
+/// Compiles the distinct historical before-argument no-Apply query grant.
+///
+/// # Errors
+/// Rejects zero request identity or a source that differs from the assignment.
+pub fn host_before_argument_no_apply_query_grant_v2(
+    assignment: BrokerAssignment, request_id: [u8; 16],
+    source: crate::host_execution_no_apply::BeforeArgumentNoApplySourceDataV2,
+) -> Result<CanonicalHostExecutionArgumentSemanticsV1, HostExecutionArgumentSemanticErrorV1> {
+    compile_before_argument_no_apply_v2(2, BrokerVerb::HostQueryNoApply, assignment, request_id, source)
+}
+
+fn compile_before_argument_no_apply_v2(
+    phase: u8, verb: BrokerVerb, assignment: BrokerAssignment, request_id: [u8; 16],
+    source: crate::host_execution_no_apply::BeforeArgumentNoApplySourceDataV2,
+) -> Result<CanonicalHostExecutionArgumentSemanticsV1, HostExecutionArgumentSemanticErrorV1> {
+    if request_id == [0; 16] { return Err(HostExecutionArgumentSemanticErrorV1::InvalidRequestId); }
+    let fields = source.fields();
+    if fields.sandbox != *assignment.sandbox().as_bytes()
+        || fields.incarnation != *assignment.incarnation().as_bytes()
+        || fields.assignment_epoch != assignment.epoch().get()
+        || fields.desired_generation != assignment.desired_generation().get()
+        || fields.assignment_digest != *assignment.digest().as_bytes()
+    { return Err(HostExecutionArgumentSemanticErrorV1::InvalidSource); }
+
+    let mut bytes = Vec::with_capacity(BEFORE_ARGUMENT_NO_APPLY_DOMAIN_V2.len() + 1 + 16 + 216);
+    bytes.extend_from_slice(BEFORE_ARGUMENT_NO_APPLY_DOMAIN_V2);
+    bytes.push(phase);
+    bytes.extend_from_slice(&request_id);
+    bytes.extend_from_slice(&source.encode_canonical());
+    Ok(CanonicalHostExecutionArgumentSemanticsV1 {
+        verb, commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
+    })
 }
 
 /// Compiles the one-shot fresh Guest observation grant.
@@ -182,6 +228,54 @@ fn compile_no_apply(
     })
 }
 
+/// Compiles the non-consuming versioned preparation grant.
+///
+/// # Errors
+/// Rejects noncanonical sources and mismatched actual Prepare request IDs.
+pub fn host_execution_argument_prepare_grant_v2(
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    proposed_attempt: &[u8],
+) -> Result<CanonicalHostExecutionArgumentSemanticsV1, HostExecutionArgumentSemanticErrorV1> {
+    compile(3, BrokerVerb::HostPrepareExecutionArgumentV2, assignment, request_id, proposed_attempt)
+}
+
+/// Compiles Accept for the exact preparation and distinct final request.
+///
+/// Preparation bytes remain DATA until Host rejoins its completed request,
+/// the same authenticated Session and live Agent under current native owners.
+///
+/// # Errors
+/// Rejects a changed source, preparation, assignment or actual request ID.
+pub fn host_execution_argument_accept_grant_v2(
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    canonical_attempt: &[u8],
+    preparation: &crate::host_execution_argument::preparation::HostArgumentPreparationV2,
+) -> Result<CanonicalHostExecutionArgumentSemanticsV1, HostExecutionArgumentSemanticErrorV1> {
+    let (source, original_request_id) = validated_attempt_v1(canonical_attempt)?;
+    preparation.require_accept_source(source)
+        .map_err(|_| HostExecutionArgumentSemanticErrorV1::InvalidSource)?;
+    if request_id == [0; 16] || original_request_id != request_id {
+        return Err(HostExecutionArgumentSemanticErrorV1::InvalidRequestId);
+    }
+    if source[184..216] != *assignment.digest().as_bytes() {
+        return Err(HostExecutionArgumentSemanticErrorV1::InvalidSource);
+    }
+
+    let binding = argument_commitment(
+        b"aos.sandbox.host.execution-argument-accept.v2\0",
+        4, assignment, request_id, source, None,
+    );
+    let mut bytes = [0; 64];
+    bytes[..32].copy_from_slice(binding.digest().as_bytes());
+    bytes[32..].copy_from_slice(&preparation.digest());
+    Ok(CanonicalHostExecutionArgumentSemanticsV1 {
+        verb: BrokerVerb::HostAcceptExecutionArgumentV2,
+        commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
+    })
+}
+
 fn compile(
     method: u8,
     verb: BrokerVerb,
@@ -194,7 +288,7 @@ fn compile(
         return Err(HostExecutionArgumentSemanticErrorV1::InvalidSource);
     }
     if request_id == [0; 16]
-        || (method == 1 && original_request_id != request_id)
+        || (matches!(method, 1 | 3) && original_request_id != request_id)
         || (method == 2 && original_request_id == request_id)
     {
         return Err(HostExecutionArgumentSemanticErrorV1::InvalidRequestId);

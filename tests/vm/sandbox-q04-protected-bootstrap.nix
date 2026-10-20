@@ -131,7 +131,11 @@ in
       }
       signer_probe 813 cache-signer-readback
       ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe root-cache-verify
-      signer_probe 814 source-signer-reject-unheld
+      # Replay the genuine owner's absent hold separately from the signer
+      # view/credential boundary. Canonical Source comparison fixtures assert
+      # that this unheld state cannot reach signing; no legacy signer opens.
+      controller_probe controller-replay
+      signer_probe 814 source-signer-view-credentials
       root_credentials=/run/credentials/aos-sandbox-policy-authorityd.service
       mv "$root_credentials/cache-owner-readback-public-key" \
         "$root_credentials/cache-owner-readback-public-key.saved"
@@ -168,7 +172,11 @@ in
       mount_views
       signer_probe 813 cache-signer-readback
       ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe root-cache-verify
-      signer_probe 814 source-signer-reject-unheld
+      # Replay the genuine owner's absent hold separately from the signer
+      # view/credential boundary. Canonical Source comparison fixtures assert
+      # that this unheld state cannot reach signing; no legacy signer opens.
+      controller_probe controller-replay
+      signer_probe 814 source-signer-view-credentials
 
       # The production Root daemon must bind the fixed socket and reject a
       # non-Controller peer. No Q04 binding or V8 settlement is provisioned.

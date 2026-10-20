@@ -99,7 +99,7 @@ enum RootFlightFailureV1 {
     #[error(transparent)]
     CacheTarget(#[from] crate::cache_residency::CacheResidencyProtectedJournalErrorV1),
     #[error(transparent)]
-    Account(#[from] crate::publisher_policy::GitUploadBootstrapErrorV1),
+    Account(#[from] crate::publisher_admin::policy::GitUploadBootstrapErrorV1),
     #[error(transparent)]
     Comparison(#[from] EnrollmentComparisonErrorV1),
     #[error("original Git coverage Root flight differs or cannot resume")]
@@ -213,7 +213,7 @@ pub struct GitCoverageAccountAttemptV1<'profile> {
     metadata: Option<Result<Vec<u8>, GitCoverageDataErrorV1>>,
     remote_readbacks: [Option<Result<GitCoverageOutcomeFieldsV1, EnrollmentComparisonErrorV1>>; 2],
     owner_rows: Option<Result<Vec<[u8; 140]>, RootFlightFailureV1>>,
-    account_append: Option<Result<crate::publisher_policy::GitUploadEnrolledAccountAppendV1, crate::publisher_policy::GitUploadBootstrapErrorV1>>,
+    account_append: Option<Result<crate::publisher_admin::policy::GitUploadEnrolledAccountAppendV1, crate::publisher_admin::policy::GitUploadBootstrapErrorV1>>,
     account_readback: Option<Result<GitCoverageNativeCutDataV1, GitCoverageNativeHistoryErrorV1>>,
     first_failure: Option<RootFlightFailureV1>,
     postcheck: Option<RootFlightFailureV1>,
@@ -296,6 +296,33 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
         self.root.begin_once()
     }
 
+    /// Borrows the challenged original Root cutoff for its same-B boot Client.
+    ///
+    /// The actual Native loan joins this account's original profile and fixed
+    /// Mount/Storage role. This is a pure retained-context check; it performs
+    /// no new Root observation, account construction or financial admission.
+    /// The caller keeps this real account borrowed through acquisition and
+    /// preserves the existing Root challenge and later independent bookends.
+    ///
+    /// # Errors
+    /// Refuses another profile/role, nonchallenged Root or failed/entered account.
+    #[doc(hidden)]
+    pub fn controller_initial_session_cutoff_v1(
+        &self,
+        receiving: &crate::ControllerInitialBrokerSessionReceivingLoanV1<'_>,
+    ) -> Result<u64, crate::ControllerInitialBrokerSessionClosedV1> {
+        use crate::ControllerInitialBrokerSessionClosedV1 as Closed;
+        receiving.require_git_coverage_profile_v1(self.root.profile)?;
+        if self.phase != AccountPhaseV1::Fresh || self.root.phase != RootClientPhaseV1::Challenged
+            || self.first_failure.is_some() || self.postcheck.is_some()
+            || self.root.first_failure.is_some() || self.root.postcheck_failure.is_some()
+            || self.root.root_nonce.is_none()
+        {
+            return Err(Closed);
+        }
+        self.root.deadline.map(|deadline| deadline.cutoff()).ok_or(Closed)
+    }
+
     /// Checks and returns the original Root nonce/boot/cut as correlation DATA.
     ///
     /// # Errors
@@ -337,18 +364,18 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
     /// credential, capacity, account predecessor or complete native replay.
     pub fn compare_enrolled_current_v1(
         &self,
-        store: &crate::publisher_policy::PublisherPolicyStore<'_>,
-        bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        store: &crate::publisher_admin::policy::PublisherPolicyStore<'_>,
+        bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         capacity: &aos_sandbox_core::GitUploadCapacityV1,
         credentials: &crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         now: i64,
-    ) -> Result<(), crate::publisher_policy::GitUploadBootstrapErrorV1> {
+    ) -> Result<(), crate::publisher_admin::policy::GitUploadBootstrapErrorV1> {
         if !matches!(self.phase, AccountPhaseV1::Committed | AccountPhaseV1::LocallyCompleted
             | AccountPhaseV1::ExistingLocallyCompleted)
             || self.failure().is_some()
         {
-            return Err(crate::publisher_policy::GitUploadBootstrapErrorV1::Conflict);
+            return Err(crate::publisher_admin::policy::GitUploadBootstrapErrorV1::Conflict);
         }
         if self.disposition == AccountDispositionV1::Existing {
             return store.current_git_upload_stored_enrolled_account_v1(
@@ -356,7 +383,7 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
             );
         }
         let append = self.account_append.as_ref().and_then(|result| result.as_ref().ok())
-            .ok_or(crate::publisher_policy::GitUploadBootstrapErrorV1::Conflict)?;
+            .ok_or(crate::publisher_admin::policy::GitUploadBootstrapErrorV1::Conflict)?;
         store.current_git_upload_enrolled_account(
             append, bootstrap, source, capacity, credentials, now,
         )
@@ -573,8 +600,8 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
         &mut self,
         journal: &mut Journal,
         original_inputs: &crate::public_api_session::GitCoverageCredentialCustodyV1,
-        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         original_bootstrap_credentials: &crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         now: i64,
@@ -601,8 +628,8 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
         &mut self,
         journal: &mut Journal,
         original_inputs: &crate::public_api_session::GitCoverageCredentialCustodyV1,
-        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         original_bootstrap_credentials: &crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         now: i64,
@@ -633,9 +660,9 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
                     .map_err(|cause| RootFlightFailureV1::Native(Box::new(cause)))?,
             );
         }
-        let store = crate::publisher_policy::PublisherPolicyStore::load(
-            journal, crate::publisher_policy::PublisherPolicyLimits::default(),
-        ).map_err(crate::publisher_policy::GitUploadBootstrapErrorV1::from)?;
+        let store = crate::publisher_admin::policy::PublisherPolicyStore::load(
+            journal, crate::publisher_admin::policy::PublisherPolicyLimits::default(),
+        ).map_err(crate::publisher_admin::policy::GitUploadBootstrapErrorV1::from)?;
         if self.disposition == AccountDispositionV1::Existing {
             store.current_git_upload_stored_enrolled_account_v1(
                 original_bootstrap, original_source, original_capacity,
@@ -736,8 +763,8 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
         &mut self,
         journal: &mut Journal,
         original_inputs: &crate::public_api_session::GitCoverageCredentialCustodyV1,
-        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         original_bootstrap_credentials: &crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         now: i64,
@@ -767,8 +794,8 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
         &mut self,
         journal: &mut Journal,
         original_inputs: &crate::public_api_session::GitCoverageCredentialCustodyV1,
-        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         original_bootstrap_credentials: &crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         now: i64,
@@ -799,9 +826,9 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
         self.owner_rows = Some(self.original_owner_rows(&catalog));
         let rows = self.owner_rows.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(RootFlightFailureV1::Refused)?;
-        let mut store = crate::publisher_policy::PublisherPolicyStore::load(
-            journal, crate::publisher_policy::PublisherPolicyLimits::default(),
-        ).map_err(crate::publisher_policy::GitUploadBootstrapErrorV1::from)?;
+        let mut store = crate::publisher_admin::policy::PublisherPolicyStore::load(
+            journal, crate::publisher_admin::policy::PublisherPolicyLimits::default(),
+        ).map_err(crate::publisher_admin::policy::GitUploadBootstrapErrorV1::from)?;
         self.account_append = Some(store.prepare_git_upload_enrolled_account(
             original_bootstrap, original_source, original_capacity,
             original_bootstrap_credentials, &enrollment, rows, now,
@@ -1369,8 +1396,8 @@ fn root_denial_nonce(
             actual_namespace != namespace
                 || !matches!(key, b"z-git-birth-v1" | b"z-git-fence-v1")
                     && !(profile == GitCoverageJournalProfileV1::RootAuthority
-                        && (key == super::deployment_head::HEAD_KEY
-                            || key == super::deployment_head::SIGNER_PINS_KEY))
+                        && (key == aos_sandbox_policy::journal_keys::HEAD_KEY
+                            || key == aos_sandbox_policy::journal_keys::SIGNER_PINS_KEY))
         })
     {
         return Err(RootFlightFailureV1::Refused);
@@ -1511,7 +1538,7 @@ impl RootCoverageWritersV1 {
     fn compare_current_deployment(
         &self,
         packet: &[u8],
-        inputs: &super::PolicyDeploymentInputsV1<'_>,
+        inputs: &aos_sandbox_policy::signed_inputs::PolicyDeploymentInputsV1<'_>,
         enrollment: &GitCoverageEnrollmentV1<'_>,
         catalog: &GitCoverageCatalogV1<'_>,
         deployment_generation: u64,
@@ -1519,17 +1546,18 @@ impl RootCoverageWritersV1 {
         project_generation: u64,
         project_key: &VerifyingKey,
         now_unix_seconds: i64,
-    ) -> Result<super::PolicyDeploymentHeadV1, RootFlightFailureV1> {
+    ) -> Result<aos_sandbox_policy::signed_inputs::PolicyDeploymentHeadV1, RootFlightFailureV1>
+    {
         let authority = Self::original(&self.authority)?;
         authority.validate_held_protected_names()?;
         let namespace = RecordNamespace::DesiredState;
         let protected_pins = super::deployment_head::decode_policy_signer_pins_v1(
-            authority.get(namespace, super::deployment_head::SIGNER_PINS_KEY)
+            authority.get(namespace, aos_sandbox_policy::journal_keys::SIGNER_PINS_KEY)
                 .ok_or(RootFlightFailureV1::Refused)?,
         )?;
         if protected_pins != (
             deployment_generation, *deployment_key, project_generation, *project_key,
-        ) || authority.get(namespace, super::deployment_head::HEAD_KEY) != Some(packet) {
+        ) || authority.get(namespace, aos_sandbox_policy::journal_keys::HEAD_KEY) != Some(packet) {
             return Err(RootFlightFailureV1::Refused);
         }
 
@@ -1549,10 +1577,15 @@ impl RootCoverageWritersV1 {
             Self::original(&self.state)?, GitCoverageJournalProfileV1::RootPolicyState,
             enrollment, catalog,
         )?;
-        let head = super::verify_policy_deployment_head_v1(
-            packet, inputs, deployment_key, now_unix_seconds,
-        )?;
-        super::decode_policy_deployment_sources_v1(inputs, head)?;
+        let head = aos_sandbox_policy::signed_inputs::verify_policy_deployment_head_v1(
+            packet,
+            inputs,
+            deployment_key,
+            now_unix_seconds,
+        )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
+        aos_sandbox_policy::signed_inputs::decode_policy_deployment_sources_v1(inputs, head)
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
         authority.validate_held_protected_names()?;
         Ok(head)
     }
@@ -1871,7 +1904,7 @@ impl<'startup> RootGitCoverageEnrollmentOwnerV1<'startup> {
     pub fn serve_once(
         &mut self,
         packet: &[u8],
-        inputs: &super::PolicyDeploymentInputsV1<'_>,
+        inputs: &aos_sandbox_policy::signed_inputs::PolicyDeploymentInputsV1<'_>,
         deployment_generation: u64,
         deployment_key: &VerifyingKey,
         project_generation: u64,
@@ -1896,7 +1929,7 @@ impl<'startup> RootGitCoverageEnrollmentOwnerV1<'startup> {
     fn serve(
         &mut self,
         packet: &[u8],
-        inputs: &super::PolicyDeploymentInputsV1<'_>,
+        inputs: &aos_sandbox_policy::signed_inputs::PolicyDeploymentInputsV1<'_>,
         deployment_generation: u64,
         deployment_key: &VerifyingKey,
         project_generation: u64,
@@ -2124,7 +2157,7 @@ impl<'startup> RootGitCoverageEnrollmentOwnerV1<'startup> {
     fn check_current(
         &self,
         packet: &[u8],
-        inputs: &super::PolicyDeploymentInputsV1<'_>,
+        inputs: &aos_sandbox_policy::signed_inputs::PolicyDeploymentInputsV1<'_>,
         deployment_generation: u64,
         deployment_key: &VerifyingKey,
         project_generation: u64,

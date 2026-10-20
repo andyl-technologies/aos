@@ -39,6 +39,24 @@ use crate::entropy::{EntropySource, KernelEntropy, nonzero_random};
 use crate::protected_files::{EndpointRole, ProtectedEndpointFiles};
 use crate::self_execution::{CurrentSelfExecutionGuard, RetainedSelfExecutionGuard};
 
+mod opening;
+pub(crate) use opening::{
+    ProtectedBrokerSessionBrokerOpeningV1, ProtectedBrokerSessionControllerClientOpeningV1,
+    ProtectedBrokerSessionStorageHostClientOpeningV1,
+};
+
+#[cfg(target_os = "linux")]
+mod revalidation;
+pub(crate) use revalidation::RetainedEndpointRevalidationOriginalV1;
+#[cfg(target_os = "linux")]
+pub(crate) use revalidation::{
+    EndpointRevalidationFootprintV1, controller_initial_endpoint_revalidation_shape_v1,
+    endpoint_revalidation_footprint_v1,
+};
+#[cfg(target_os = "linux")]
+use revalidation::EndpointRevalidationReceivingV1;
+
+
 // This reservoir is installed in the original request owner before preparation.
 // Prepared DATA never carries the endpoint's signing or currentness authority.
 pub(crate) struct RetainedBrokerOutcomePreparationV1 {
@@ -259,6 +277,8 @@ impl FreshNonce {
 
 enum EndpointExecution {
     Retained(RetainedSelfExecutionGuard),
+    ControllerInitial(aos_sandbox_broker::endpoint_native_files::ControllerEndpointExecutionOriginalV1),
+    ControllerNative(std::sync::Arc<aos_sandbox_broker::endpoint_native_files::ControllerEndpointNativeCustodyV1>),
     #[cfg(test)]
     Scripted(Box<dyn CurrentSelfExecutionGuard>),
 }
@@ -267,6 +287,8 @@ impl EndpointExecution {
     fn boot_id(&self) -> [u8; 16] {
         match self {
             Self::Retained(guard) => guard.boot_id(),
+            Self::ControllerInitial(guard) => guard.boot_id(),
+            Self::ControllerNative(custody) => custody.boot_id(),
             #[cfg(test)]
             Self::Scripted(_) => [0x77; 16],
         }
@@ -277,6 +299,10 @@ impl CurrentSelfExecutionGuard for EndpointExecution {
     fn validate_current(&self) -> Result<(), BrokerSessionSecurityError> {
         match self {
             Self::Retained(guard) => guard.validate_current(),
+            Self::ControllerInitial(guard) => guard.validate_current()
+                .map_err(|_| BrokerSessionSecurityError::ExecutionChanged),
+            Self::ControllerNative(custody) => custody.validate_current()
+                .map_err(|_| BrokerSessionSecurityError::ExecutionChanged),
             #[cfg(test)]
             Self::Scripted(guard) => guard.validate_current(),
         }
@@ -290,33 +316,27 @@ struct ProtectedEndpointV1 {
     process_execution_id: [u8; 16],
     next_nonce_counter: Option<u64>,
     poisoned: bool,
+    #[cfg(target_os = "linux")]
+    receiving: EndpointRevalidationReceivingV1,
 }
 
 impl ProtectedEndpointV1 {
     fn load(path: &Path, role: EndpointRole) -> Result<Self, BrokerSessionSecurityError> {
-        let execution = EndpointExecution::Retained(RetainedSelfExecutionGuard::capture()?);
-        Self::load_with_execution(path, role, &mut KernelEntropy, execution)
+        let mut opening = opening::EndpointOpeningV1::ordinary();
+        opening.load_native_once(path, role, &mut KernelEntropy);
+        opening.into_result()
     }
 
+    #[cfg(test)]
     fn load_with_execution<Entropy: EntropySource>(
         path: &Path,
         role: EndpointRole,
         entropy: &mut Entropy,
         execution: EndpointExecution,
     ) -> Result<Self, BrokerSessionSecurityError> {
-        let files = ProtectedEndpointFiles::load(path, role)?;
-        let process_execution_id = nonzero_random(entropy)?;
-        files.revalidate()?;
-        execution.validate_current()?;
-
-        Ok(Self {
-            launch_image: None,
-            files,
-            execution,
-            process_execution_id,
-            next_nonce_counter: Some(1),
-            poisoned: false,
-        })
+        let mut opening = opening::EndpointOpeningV1::with_execution(execution);
+        opening.finish_once(path, role, entropy);
+        opening.into_result()
     }
 
     #[cfg(test)]
@@ -421,11 +441,18 @@ impl ProtectedEndpointV1 {
         Ok(())
     }
 
-    fn check_current(&self) -> Result<(), BrokerSessionSecurityError> {
-        self.execution.validate_current()?;
-        self.files.revalidate()?;
-        self.execution.validate_current()?;
-        Ok(())
+    fn check_current(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        #[cfg(target_os = "linux")]
+        {
+            self.receiving.observe_once(&self.execution, &self.files)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.execution.validate_current()?;
+            self.files.revalidate()?;
+            self.execution.validate_current()?;
+            Ok(())
+        }
     }
 
     fn context(
@@ -433,11 +460,28 @@ impl ProtectedEndpointV1 {
         client_process: [u8; 16],
         broker_process: [u8; 16],
     ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
-        self.files.manifest().verification_context(
-            self.execution.boot_id(),
-            client_process,
-            broker_process,
-        )
+        self.context_with_originals(client_process, broker_process, None)
+    }
+
+    fn context_with_originals(
+        &self,
+        client_process: [u8; 16],
+        broker_process: [u8; 16],
+        originals: Option<&mut aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestContextOriginalsV1>,
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
+        match originals {
+            None => self.files.manifest().verification_context(
+                self.execution.boot_id(),
+                client_process,
+                broker_process,
+            ),
+            Some(originals) => self.files.manifest().verification_context_retaining_v1(
+                self.execution.boot_id(),
+                client_process,
+                broker_process,
+                originals,
+            ),
+        }
         .map_err(BrokerSessionSecurityError::from)
     }
 
@@ -465,6 +509,94 @@ impl core::fmt::Debug for ProtectedBrokerSessionClientV1 {
 }
 
 impl ProtectedBrokerSessionClientV1 {
+    /// Arms the initial Controller Client's same original B observation owner.
+    ///
+    /// # Errors
+    /// Refuses an unpaid or changed original, repeated arming or a poisoned endpoint.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn arm_original_controller_initial_revalidation_once(
+        &mut self,
+        receiving: &mut aos_sandbox::ControllerInitialBrokerSessionReceivingLoanV1<'_>,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if self.inner.poisoned {
+            return Err(BrokerSessionSecurityError::Poisoned);
+        }
+        let result = self.inner.receiving.arm_controller_initial_client_once(receiving);
+        if result.is_err() {
+            self.inner.poisoned = true;
+        }
+        result
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn arm_original_storage_host_revalidation_once_v1(
+        &mut self,
+        lifecycle: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+        session: &aos_sandbox::Journal,
+        socket: &aos_sandbox_linux::seqpacket::SeqpacketSocket,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if self.inner.poisoned { return Err(BrokerSessionSecurityError::Poisoned); }
+        let result = self.inner.receiving.arm_storage_host_once(lifecycle, session, socket);
+        if result.is_err() { self.inner.poisoned = true; }
+        result
+    }
+
+    pub(crate) fn arm_start_resource_revalidation_once_v2(&mut self,
+        receiving: &mut aos_sandbox::StartResourceSessionOpeningLoanV2<'_>,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if self.inner.poisoned { return Err(BrokerSessionSecurityError::Poisoned); }
+        let result = self.inner.receiving.arm_start_network_once_v2(receiving);
+        if result.is_err() { self.inner.poisoned = true; }
+        result
+    }
+
+    /// Arms the original Client's fixed observation owner after genuine J admission.
+    ///
+    /// # Errors
+    /// Refuses an unpaid or changed original, repeated arming or a poisoned endpoint.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn arm_original_storage_revalidation_once(
+        &mut self,
+        receiving: &mut aos_sandbox::OriginalCreateStorageClientSessionV1<'_, '_, '_>,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if self.inner.poisoned { return Err(BrokerSessionSecurityError::Poisoned); }
+        if receiving.requires_existing_currentness_archives_v1() {
+            // The original transition already owns this archive. Reuse only
+            // its genuinely healthy, positively disposed native peak; never
+            // replace admissions, failed rows or native descriptors.
+            self.inner.receiving.require_healthy()?;
+            let footprint = endpoint_revalidation_footprint_v1()
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            return receiving.require_fixed_endpoint_preparation_v1(footprint)
+                .map_err(|_| BrokerSessionSecurityError::Currentness);
+        }
+        let result = self.inner.receiving.arm_client_once(receiving);
+        if result.is_err() { self.inner.poisoned = true; }
+        result
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retained_revalidation_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.receiving.failure()
+    }
+
+    /// Resolves only an error returned by the matching retained observation.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retained_revalidation_failure_for(
+        &self, error: &BrokerSessionSecurityError,
+    ) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.receiving.failure_for(error)
+    }
+
+    /// Requires a healthy existing archive without admitting any later purpose.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn require_original_storage_revalidation_healthy(
+        &self,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if self.inner.poisoned { return Err(BrokerSessionSecurityError::Poisoned); }
+        self.inner.receiving.require_healthy()
+    }
+
     pub(crate) fn launch_image(&self) -> Option<crate::production_startup::Pid1LaunchImageV1> {
         self.inner.launch_image.clone()
     }
@@ -497,13 +629,37 @@ impl ProtectedBrokerSessionClientV1 {
         message: &[u8; 32],
     ) -> Result<[u8; 64], BrokerSessionSecurityError> {
         self.inner.revalidate_before()?;
-        let signature = SigningKey::from_bytes(self.inner.files.client_record_seed()?)
-            .sign(message)
-            .to_bytes();
+        let signature = self.sign_lifecycle_attestation_data_v5(message)?;
         if let Err(error) = self.inner.revalidate_after() {
             return self.inner.poison(error);
         }
         Ok(signature)
+    }
+
+    // This is the sole signing expression for both custody dispositions.
+    fn sign_lifecycle_attestation_data_v5(&self, message: &[u8; 32])
+        -> Result<[u8; 64], BrokerSessionSecurityError> {
+        Ok(SigningKey::from_bytes(self.inner.files.client_record_seed()?)
+            .sign(message).to_bytes())
+    }
+
+    pub(crate) fn sign_stop_inventory_retaining_v5(&mut self, message: &[u8; 32],
+        original: &mut crate::host_stop_inventory::StopAttestationSignatureV5,
+    ) -> Result<[u8; 64], BrokerSessionSecurityError> {
+        if original.before.is_some() || original.closed.is_some() {
+            original.closed.get_or_insert(BrokerSessionSecurityError::Currentness);
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        original.before = Some(original.before_native.observe_endpoint_once_v1(&mut self.inner));
+        if matches!(original.before, Some(Ok(()))) {
+            original.signed = Some(self.sign_lifecycle_attestation_data_v5(message));
+        }
+        // Even a reached primary native refusal owes this separate destination.
+        original.after = Some(original.after_native.observe_endpoint_once_v1(&mut self.inner));
+        match (&original.before, &original.signed, &original.after) {
+            (Some(Ok(())), Some(Ok(signature)), Some(Ok(()))) => Ok(*signature),
+            _ => Err(BrokerSessionSecurityError::Currentness),
+        }
     }
 
     pub(crate) fn fresh_method_request_id(
@@ -616,6 +772,12 @@ impl ProtectedBrokerSessionClientV1 {
             .map(FreshClientHelloNonceV1)
     }
 
+    pub(crate) fn revalidate_handshake_custody_into_v1(&mut self,
+        original: &mut RetainedEndpointRevalidationOriginalV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        original.observe_endpoint_once_v1(&mut self.inner)
+    }
+
     pub(crate) fn revalidate_handshake_custody(
         &mut self,
     ) -> Result<(), BrokerSessionSecurityError> {
@@ -641,6 +803,18 @@ impl ProtectedBrokerSessionClientV1 {
     }
 
     /// Reconstructs an old context from the still-pinned manifest for history only.
+    pub(crate) fn context_for_handshake_retaining_v1(
+        &self,
+        broker_process: [u8; 16],
+        originals: &mut aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestContextOriginalsV1,
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
+        self.inner.context_with_originals(
+            self.inner.process_execution_id,
+            broker_process,
+            Some(originals),
+        )
+    }
+
     pub(crate) fn context_for_history(
         &mut self,
         historical: &ProtectedBrokerSessionVerificationContextV1,
@@ -753,6 +927,102 @@ impl ProtectedBrokerSessionClientV1 {
     }
 }
 
+// Only named opening methods below construct this purpose. It selects fixed
+// native recipes, never an account, endpoint adoption or effect permission.
+#[derive(Clone, Copy)]
+enum FixedServiceBrokerRoleV4 { Mount, Network, Host }
+
+/// Borrows one of the actual closed financial owners of the shared loader.
+pub(crate) enum FixedServiceOpeningLoanV5<'loan, 'original> {
+    Fixed(&'loan mut aos_sandbox_broker::receiving::MountServiceSessionOpeningLoanV4<'original>),
+    Host(&'loan mut aos_sandbox_host::HostControlColdSessionLoanV1<'original>),
+}
+
+impl FixedServiceOpeningLoanV5<'_, '_> {
+    pub(crate) fn require_fixed_representation_v5(&mut self, demand: aos_sandbox_core::ResourceVector)
+        -> Result<(), aos_sandbox_broker::receiving::FixedServiceOperationClosedV4> {
+        match self {
+            Self::Fixed(loan) => loan.require_additional_representation_v4(demand),
+            // The Host caller prepaid this same envelope before constructing
+            // the cold owner. Raise its absolute bound without charging twice.
+            Self::Host(loan) => loan.raise_complete_v1(demand).map_err(|_| Default::default()),
+        }
+    }
+
+    pub(crate) fn observe_before_once_v4(&mut self) -> Result<(), aos_sandbox_broker::receiving::FixedServiceOperationClosedV4> {
+        match self {
+            Self::Fixed(loan) => loan.observe_before_once_v4(),
+            Self::Host(loan) => loan.require_before_entered_v1().map_err(|_| Default::default()),
+        }
+    }
+
+    pub(crate) fn actual_before_clock_v4(&mut self) -> Result<aos_sandbox_core::RawPairedClockSample, aos_sandbox_broker::receiving::FixedServiceOperationClosedV4> {
+        match self {
+            Self::Fixed(loan) => loan.actual_before_clock_v4(),
+            Self::Host(loan) => loan.actual_before_clock_v1().map_err(|_| Default::default()),
+        }
+    }
+
+    pub(crate) fn fresh_before_effect_clock_v4(&mut self) -> Result<aos_sandbox_core::RawPairedClockSample, aos_sandbox_broker::receiving::FixedServiceOperationClosedV4> {
+        match self {
+            Self::Fixed(loan) => loan.fresh_before_effect_clock_v4(),
+            Self::Host(loan) => loan.fresh_before_effect_clock_v1().map_err(|_| Default::default()),
+        }
+    }
+
+    pub(crate) fn narrow_deadline_data_v4(&mut self, cutoff: u64, wall: Option<i64>)
+        -> Result<(), aos_sandbox_broker::receiving::FixedServiceOperationClosedV4> {
+        match self {
+            Self::Fixed(loan) => loan.narrow_deadline_data_v4(cutoff, wall),
+            Self::Host(loan) => loan.narrow_deadline_data_v1(cutoff, wall).map_err(|_| Default::default()),
+        }
+    }
+
+    pub(crate) fn require_additional_representation_v4(&mut self, demand: aos_sandbox_core::ResourceVector)
+        -> Result<(), aos_sandbox_broker::receiving::FixedServiceOperationClosedV4> {
+        match self {
+            Self::Fixed(loan) => loan.require_additional_representation_v4(demand),
+            Self::Host(loan) => loan.require_additional_representation_v1(demand).map_err(|_| Default::default()),
+        }
+    }
+}
+
+impl FixedServiceBrokerRoleV4 {
+    fn require_current(self,
+        loan: &mut FixedServiceOpeningLoanV5<'_, '_>,
+    ) -> Result<(), aos_sandbox_broker::receiving::FixedServiceOperationClosedV4> {
+        match self {
+            Self::Mount => match loan {
+                FixedServiceOpeningLoanV5::Fixed(loan) => loan.require_mount_session_opening_current_v4(),
+                _ => Err(Default::default()),
+            },
+            Self::Network => match loan {
+                FixedServiceOpeningLoanV5::Fixed(loan) => loan.require_network_session_opening_current_v4(),
+                _ => Err(Default::default()),
+            },
+            Self::Host => match loan {
+                FixedServiceOpeningLoanV5::Host(loan)
+                    if loan.purpose_v1() == aos_sandbox_host::HostControlColdSessionPurposeV1::Bootstrap =>
+                    loan.require_current_v1().map_err(|_| Default::default()),
+                _ => Err(Default::default()),
+            },
+        }
+    }
+
+    const fn custody(self) -> &'static str {
+        match self {
+            Self::Mount => "/var/lib/aos/sandbox-mount/broker-session/custody",
+            Self::Network => "/var/lib/aos/sandbox-network/broker-session/custody",
+            Self::Host => "/var/lib/aos/sandbox-host/broker-session/custody",
+        }
+    }
+
+    const fn protocol(self) -> aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1 {
+        use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1 as Protocol;
+        match self { Self::Mount => Protocol::Mount, Self::Network => Protocol::Network, Self::Host => Protocol::Host }
+    }
+}
+
 /// Retains a broker endpoint's protected manifest and two broker signing seeds.
 ///
 /// The type is intentionally non-cloneable and non-authorizing. It exposes no
@@ -768,6 +1038,54 @@ impl core::fmt::Debug for ProtectedBrokerSessionBrokerV1 {
 }
 
 impl ProtectedBrokerSessionBrokerV1 {
+    fn arm_fixed_service_revalidation_once_v4(
+        &mut self,
+        role: FixedServiceBrokerRoleV4,
+        loan: &mut FixedServiceOpeningLoanV5<'_, '_>,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if self.inner.poisoned { return Err(BrokerSessionSecurityError::Poisoned); }
+        let result = self.inner.receiving.arm_fixed_service_once_v4(role, loan);
+        if result.is_err() { self.inner.poisoned = true; }
+        result
+    }
+
+    /// Arms the actual Broker's already paid fixed Session receiving original.
+    ///
+    /// # Errors
+    /// Refuses missing fixed payment, currentness debt, repeated arming or poison.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn arm_original_storage_revalidation_once(
+        &mut self,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if self.inner.poisoned { return Err(BrokerSessionSecurityError::Poisoned); }
+        let result = self.inner.receiving.arm_broker_once(receiving);
+        if result.is_err() { self.inner.poisoned = true; }
+        result
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retained_revalidation_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.receiving.failure()
+    }
+
+    /// Resolves only an error returned by the matching retained observation.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retained_revalidation_failure_for(
+        &self, error: &BrokerSessionSecurityError,
+    ) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.receiving.failure_for(error)
+    }
+
+    /// Requires a healthy existing archive without admitting any later purpose.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn require_original_storage_revalidation_healthy(
+        &self,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if self.inner.poisoned { return Err(BrokerSessionSecurityError::Poisoned); }
+        self.inner.receiving.require_healthy()
+    }
+
     pub(crate) fn launch_image(&self) -> Option<crate::production_startup::Pid1LaunchImageV1> {
         self.inner.launch_image.clone()
     }
@@ -1017,6 +1335,12 @@ impl ProtectedBrokerSessionBrokerV1 {
             .map(FreshBrokerHelloNonceV1)
     }
 
+    pub(crate) fn revalidate_handshake_custody_into_v1(&mut self,
+        original: &mut RetainedEndpointRevalidationOriginalV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        original.observe_endpoint_once_v1(&mut self.inner)
+    }
+
     pub(crate) fn revalidate_handshake_custody(
         &mut self,
     ) -> Result<(), BrokerSessionSecurityError> {
@@ -1042,6 +1366,18 @@ impl ProtectedBrokerSessionBrokerV1 {
     }
 
     /// Reconstructs an old context from the still-pinned manifest for history only.
+    pub(crate) fn context_for_handshake_retaining_v1(
+        &self,
+        client_process: [u8; 16],
+        originals: &mut aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestContextOriginalsV1,
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
+        self.inner.context_with_originals(
+            client_process,
+            self.inner.process_execution_id,
+            Some(originals),
+        )
+    }
+
     pub(crate) fn context_for_history(
         &mut self,
         historical: &ProtectedBrokerSessionVerificationContextV1,
@@ -2145,6 +2481,144 @@ mod tests {
             assert!(!rendered.contains("09090909"));
             assert!(!rendered.contains("0a0a0a0a"));
             assert!(!rendered.contains("08080808"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn completed_selected_file_checks_dispose_real_probes_before_peak_reuse() {
+        let fixture = Fixture::new(EndpointRole::Client);
+        let endpoint = load_deterministic(&fixture, EndpointRole::Client);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let execution = EndpointExecution::Scripted(Box::new(CountingCurrentExecution {
+            validations: Arc::clone(&calls),
+        }));
+        let mut archive = revalidation::EndpointRevalidationArchiveV1::new();
+
+        // Native file/observation mechanics only: this private test archive
+        // fabricates neither paid J admission nor a production endpoint grant.
+        for _ in 0..5 {
+            archive.observe_once(&execution, &endpoint.files).unwrap();
+            assert_eq!(archive.retained_file_count(), 0);
+            assert!(archive.has_completed());
+        }
+
+        assert_eq!(calls.load(Ordering::Relaxed), 10);
+        assert!(archive.failure().is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_execution_post_keeps_files_and_first_cause_through_owed_after() {
+        struct FailAfter {
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl CurrentSelfExecutionGuard for FailAfter {
+            fn validate_current(&self) -> Result<(), BrokerSessionSecurityError> {
+                if self.calls.fetch_add(1, Ordering::Relaxed) % 2 == 0 { Ok(()) }
+                else { Err(BrokerSessionSecurityError::ExecutionChanged) }
+            }
+        }
+
+        let fixture = Fixture::new(EndpointRole::Client);
+        let endpoint = load_deterministic(&fixture, EndpointRole::Client);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let execution = EndpointExecution::Scripted(Box::new(FailAfter { calls: Arc::clone(&calls) }));
+        let mut archive = revalidation::EndpointRevalidationArchiveV1::new();
+
+        // Each real file check reaches all four fresh descriptors. The actual
+        // execution-after refusal must retain them, without creating authority.
+        let first_error = archive.observe_once(&execution, &endpoint.files).unwrap_err();
+        assert_eq!(first_error, BrokerSessionSecurityError::EndpointRevalidation { observation: 0 });
+        let first = archive.failure_for(&first_error).unwrap().downcast_ref::<BrokerSessionSecurityError>().unwrap()
+            as *const BrokerSessionSecurityError;
+        assert_eq!(archive.retained_file_count(), 4);
+        // An unrelated earlier semantic failure cannot resolve to a later
+        // independent endpoint post's raw cause.
+        assert!(archive.failure_for(&BrokerSessionSecurityError::manifest("canonical row")).is_none());
+        let second_error = archive.observe_once(&execution, &endpoint.files).unwrap_err();
+        assert_eq!(second_error, BrokerSessionSecurityError::EndpointRevalidation { observation: 1 });
+        assert!(archive.failure_for(&second_error).is_some());
+        assert_eq!(archive.retained_file_count(), 8);
+        assert_eq!(calls.load(Ordering::Relaxed), 4);
+
+        assert_eq!(archive.observe_once(&execution, &endpoint.files), Err(BrokerSessionSecurityError::Currentness));
+        assert_eq!(calls.load(Ordering::Relaxed), 4);
+        assert_eq!(archive.retained_file_count(), 8);
+        assert!(std::ptr::eq(archive.failure_for(&first_error).unwrap()
+            .downcast_ref::<BrokerSessionSecurityError>().unwrap(), first));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stop_inventory_retained_signer_matches_existing_signature_and_retires_probes() {
+        let fixture = Fixture::new(EndpointRole::Client);
+        let mut ordinary = ProtectedBrokerSessionClientV1 {
+            inner: load_deterministic(&fixture, EndpointRole::Client),
+        };
+        let expected = ordinary.sign_lifecycle_bootstrap_attestation(&[42; 32]).unwrap();
+        // Each endpoint holds an exclusive manifest lock. Compare sequential
+        // uses of the same protected keys rather than overlapping owners.
+        drop(ordinary);
+        let mut selected = ProtectedBrokerSessionClientV1 {
+            inner: load_deterministic(&fixture, EndpointRole::Client),
+        };
+        let mut original = crate::host_stop_inventory::StopAttestationSignatureV5::default();
+        let actual = selected.sign_stop_inventory_retaining_v5(&[42; 32], &mut original).unwrap();
+
+        assert_eq!(actual, expected);
+        assert_eq!(original.before_native.retained_file_count_v1(), 0);
+        assert_eq!(original.after_native.retained_file_count_v1(), 0);
+        assert!(matches!(original.before, Some(Ok(()))));
+        assert!(matches!(original.after, Some(Ok(()))));
+        assert!(selected.sign_stop_inventory_retaining_v5(&[42; 32], &mut original).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stop_inventory_signer_retains_primary_and_real_independent_native_after() {
+        struct FailEachExecutionAfter { calls: Arc<AtomicUsize> }
+        impl CurrentSelfExecutionGuard for FailEachExecutionAfter {
+            fn validate_current(&self) -> Result<(), BrokerSessionSecurityError> {
+                if self.calls.fetch_add(1, Ordering::Relaxed) % 2 == 0 { Ok(()) }
+                else { Err(BrokerSessionSecurityError::ExecutionChanged) }
+            }
+        }
+        let fixture = Fixture::new(EndpointRole::Client);
+        let mut selected = ProtectedBrokerSessionClientV1 {
+            inner: load_deterministic(&fixture, EndpointRole::Client),
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        selected.inner.execution = EndpointExecution::Scripted(Box::new(FailEachExecutionAfter {
+            calls: Arc::clone(&calls),
+        }));
+        let mut original = crate::host_stop_inventory::StopAttestationSignatureV5::default();
+
+        assert!(selected.sign_stop_inventory_retaining_v5(&[42; 32], &mut original).is_err());
+
+        assert_eq!(calls.load(Ordering::Relaxed), 4);
+        assert_eq!(original.before_native.retained_file_count_v1(), 4);
+        assert_eq!(original.after_native.retained_file_count_v1(), 4);
+        assert!(original.before_native.failure().is_some());
+        assert!(original.after_native.failure().is_some());
+        assert!(original.signed.is_none());
+        assert!(matches!(original.before, Some(Err(_))));
+        assert!(matches!(original.after, Some(Err(_))));
+        assert!(selected.inner.poisoned);
+    }
+
+}
+
+impl ProtectedBrokerSessionClientV1 {
+    pub(crate) fn completed_initial_native_custody_v1(&self)
+        -> Result<&std::sync::Arc<aos_sandbox_broker::endpoint_native_files::ControllerEndpointNativeCustodyV1>, BrokerSessionSecurityError>
+    {
+        if self.inner.poisoned { return Err(BrokerSessionSecurityError::Poisoned); }
+        self.inner.receiving.require_healthy()?;
+        match &self.inner.execution {
+            EndpointExecution::ControllerNative(custody) => Ok(custody),
+            _ => Err(BrokerSessionSecurityError::Currentness),
         }
     }
 }

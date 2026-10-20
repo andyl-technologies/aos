@@ -16,7 +16,7 @@ pub(crate) mod physical;
     reason = "Host input admission has no physical coordinator or activation"
 )]
 mod host;
-pub use host::{RuntimeDeploymentCanaryRunErrorV2, run_runtime_deployment_canary_once_v2};
+pub use host::{RuntimeDeploymentCanaryRunErrorV2, run_runtime_deployment_canary_once_v2, run_runtime_boot_preparation_once_v1};
 
 mod floor;
 
@@ -26,7 +26,9 @@ use floor::{
 };
 
 pub(crate) use floor::{
-    BrokerSidecarStoreV1, CHECKPOINT_KEY, FinalSuffixPreflightV1, INTENT_KEY,
+    FloorHeadCutOriginalV3, FloorHeadTransactionOriginalV3,
+    StorageFinalSuffixPreflightV2,
+    BrokerFloorReadOriginalV1, BrokerSidecarStoreV1, CHECKPOINT_KEY, FinalSuffixPreflightV1, INTENT_KEY,
     StoredBrokerFloorV1, StoredFloorDataV1, StoredFloorDataViewV1, TRANSACTION_KEY, sidecar_limits,
 };
 

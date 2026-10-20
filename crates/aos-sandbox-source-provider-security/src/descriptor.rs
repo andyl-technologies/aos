@@ -3,7 +3,7 @@
 use std::num::NonZeroU64;
 use std::os::fd::{AsFd as _, OwnedFd};
 
-use aos_sandbox::mount_manager_startup::{
+use aos_sandbox_mount_native::mount_manager_startup::{
     FreshManagerSourcePresenceProjectionV1, FreshManagerSourcePresenceV1,
     FreshManagerSourceRemovalReceiptV1, LostMountSourceCustodyV1, MountManagerExecutionDeathKindV1,
     StartupManagerSourcePresenceProjectionV1, StartupManagerSourcePresenceV1,
@@ -126,7 +126,7 @@ pub(crate) enum ReleaseCustodyV2 {
 impl ReleaseCustodyV2 {
     pub(crate) fn validate_before_commit(
         &self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
     ) -> Result<(), SourceProviderSecurityError> {
         match self {
@@ -164,7 +164,7 @@ impl ReleaseCustodyV2 {
 impl ManagerPresenceAuthorityV2 {
     pub(crate) fn validate_current(
         &self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
     ) -> Result<(), SourceProviderSecurityError> {
         match self {
             Self::Fresh(presence) => presence
@@ -358,30 +358,30 @@ pub struct SourceRootPostcommitRecoveryV2 {
 
 pub(crate) enum SourceRootPostcommitRecoveryPayloadV2 {
     Received {
-        transaction: aos_sandbox::JournalTransaction,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         outcome: crate::VerifiedMountProviderOutcomeV2,
         source_root: ObservedSourceRootV1,
     },
     Reopened {
-        transaction: aos_sandbox::JournalTransaction,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         outcome: crate::VerifiedMountProviderOutcomeV2,
         source_root: crate::ReopenedMountSourceRootV2,
     },
     Lifecycle {
-        transaction: aos_sandbox::JournalTransaction,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         observed: RetainedMountSourceRootV2,
         projection: MountSourceRootCustodyProjectionV2,
         manager_presence: Option<ManagerPresenceAuthorityV2>,
         expected_phase: SourceRootPostcommitPhaseV2,
     },
     Release {
-        transaction: aos_sandbox::JournalTransaction,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         custody: ReleaseCustodyV2,
         projection: MountSourceRootCustodyProjectionV2,
         request: crate::PreparedMountProviderRequestV2,
     },
     Consumption {
-        transaction: aos_sandbox::JournalTransaction,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         predecessor_record: Option<Vec<u8>>,
         observed: RetainedMountSourceRootV2,
         projection: MountSourceRootCustodyProjectionV2,
@@ -415,7 +415,7 @@ pub enum NegativeCustodyPostcommitOutcomeV2 {
 /// Retains one manager-negative proof and exact expected Released state.
 pub struct NegativeCustodyPostcommitRecoveryV2 {
     pub(crate) error: SourceProviderSecurityError,
-    pub(crate) transaction: aos_sandbox::JournalTransaction,
+    pub(crate) transaction: aos_sandbox_mount_native::JournalTransaction,
     pub(crate) prepared: PreparedReleasedMountSourceRootV2,
 }
 
@@ -1023,7 +1023,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// complete terminal Acquire/session evidence.
     pub fn prepare_startup_mount_source_custody_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         presence: StartupManagerSourcePresenceV1,
     ) -> Result<PreparedMountSourceRootCustodyV2, SourceProviderSecurityError> {
         self.revalidate()?;
@@ -1141,7 +1141,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// terminal Acquire lineage, or any physical identity mismatch.
     pub fn prepare_startup_mount_source_adoption_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         presence: StartupManagerSourcePresenceV1,
     ) -> Result<PreparedStartupMountSourceAdoptionV2, SourceProviderSecurityError> {
         use aos_sandbox_protocol::mount_source_acquisition_state::SourceAcquisitionPhaseV2;
@@ -1337,7 +1337,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// subject, or its terminal Acquire/session lineage is incomplete.
     pub fn prepare_lost_mount_source_release_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         loss: LostMountSourceCustodyV1,
     ) -> Result<PreparedMountSourceReleaseV2, SourceProviderSecurityError> {
         self.revalidate()?;
@@ -1720,7 +1720,7 @@ impl MountSourceReleaseAuthorityV2 {
     /// longer current.
     pub fn prepare_lost_negative_custody(
         self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         outcome: crate::VerifiedMountProviderOutcomeV2,
     ) -> Result<PreparedReleasedMountSourceRootV2, SourceProviderSecurityError> {
@@ -1793,7 +1793,7 @@ impl PendingReleasedMountSourceRootV2 {
     /// or if the physical descriptor changed before close.
     pub fn prepare_negative_custody(
         self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
     ) -> Result<
         PreparedReleasedMountSourceRootV2,
@@ -2004,7 +2004,7 @@ fn fresh_manager_custody_evidence(
         || owner_attempt.session_record_digest != owner_session.record_digest
         || owner_attempt.scope != row.scope
         || manager.origin
-            != aos_sandbox::mount_manager_startup::ManagerSourcePresenceOriginV1::FreshControlReadback
+            != aos_sandbox_mount_native::mount_manager_startup::ManagerSourcePresenceOriginV1::FreshControlReadback
         || manager.acquisition_id != row.acquisition_id
         || manager.acquisition_revision != row.revision
         || manager.acquisition_record_digest != row.record_digest
@@ -2084,7 +2084,7 @@ fn startup_manager_custody_evidence(
     let manager = &startup.evidence;
     let expected = &startup.expected;
     if manager.origin
-        != aos_sandbox::mount_manager_startup::ManagerSourcePresenceOriginV1::StartupCapture
+        != aos_sandbox_mount_native::mount_manager_startup::ManagerSourcePresenceOriginV1::StartupCapture
         || manager.acquisition_id != row.acquisition_id
         || manager.acquisition_revision != row.revision
         || manager.acquisition_record_digest != row.record_digest
@@ -2151,7 +2151,7 @@ fn startup_manager_custody_evidence(
 }
 
 fn manager_custody_loss_evidence(
-    projection: &aos_sandbox::mount_manager_startup::LostMountSourceCustodyProjectionV1,
+    projection: &aos_sandbox_mount_native::mount_manager_startup::LostMountSourceCustodyProjectionV1,
 ) -> ManagerCustodyLossEvidenceV2 {
     let kind = match projection.death_kind {
         None => ManagerCustodyLossKindV2::NoPriorCustody,

@@ -29,6 +29,12 @@ use crate::tpm_nv_custody::{
 
 const HELPER_SUBJECT: &str = "system_u:system_r:aos_runtime_deployment_helper_t";
 
+mod helper_after;
+use helper_after::{
+    BootHelperAfterFailureV1, BootHelperAfterOriginalV1, BootHelperCaptureFailureV1,
+    BootHelperPrimaryArchiveV1,
+};
+
 /// Shares only a retained diagnostic, never a physical owner or retry right.
 #[derive(Clone, Debug)]
 pub(in crate::tpm_nv_custody) struct HostPhysicalReadErrorV1 {
@@ -68,6 +74,16 @@ pub(in crate::tpm_nv_custody) enum PhysicalTpmFailureV1 {
     Invocation(#[from] HostPhysicalInvocationErrorV1),
     #[error("original process observation failed")]
     Linux(#[source] aos_sandbox_linux::Error),
+    #[error("original pidfd admission failed with retained descriptor custody")]
+    PidfdAdmission(#[source] aos_sandbox_linux::pidfd::PidFdOwnedAdmissionFailureV3),
+    #[error("original helper capture failed with retained native custody")]
+    BootHelperCapture(#[source] BootHelperCaptureFailureV1),
+    #[error("original primary helper observation failed with retained native custody")]
+    BootHelperObservation(#[source] BootHelperCaptureFailureV1),
+    #[error("original Source-paid helper archive allocation failed")]
+    BootHelperArchiveAllocation(#[source] std::collections::TryReserveError),
+    #[error("original independently owed helper post failed")]
+    BootHelperAfter(#[source] BootHelperAfterFailureV1),
     #[error("original private carrier failed")]
     Carrier(#[source] NvCustodyErrorV1),
     #[error("original private send failed")]
@@ -182,7 +198,19 @@ struct CanaryPhysicalSlotsV2 {
     command: Option<std::process::Command>,
     latest: Option<HelperObservationV1>,
     first: Arc<Option<PhysicalTpmFailureV1>>,
-    posts: [Option<PhysicalTpmFailureV1>; 8],
+    posts: [Option<PhysicalTpmFailureV1>; 10],
+    boot_transport: Option<BootHostTransportOriginalV1>,
+    boot_after: [Option<Box<BootHelperAfterOriginalV1>>; 32],
+    boot_after_next: usize,
+    boot_after_pending: Option<usize>,
+    boot_capture: [Option<Box<aos_sandbox_linux::pidfd::PidFdProcOriginalsV1>>; 2],
+    boot_primary: BootHelperPrimaryArchiveV1,
+}
+
+/// Keeps the actual inherited stack and pair acquisition, including failure.
+struct BootHostTransportOriginalV1 {
+    stack: Option<rustix::process::Rlimit>,
+    pair: aos_sandbox_linux::seqpacket::RecordSubjectSeqpacketPairOriginalV2,
 }
 
 #[derive(Clone, Debug)]
@@ -235,6 +263,10 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
             requests: [None; 3], replies: std::array::from_fn(|_| None),
             current: None, attempted: [false; 3], helper: None, command: None, latest: None,
             first: Arc::new(None), posts: std::array::from_fn(|_| None),
+            boot_transport: None,
+            boot_after: std::array::from_fn(|_| None), boot_after_next: 0, boot_after_pending: None,
+            boot_capture: std::array::from_fn(|_| None),
+            boot_primary: BootHelperPrimaryArchiveV1::new(),
         });
         self.journal.prepare_canary_destinations_v2()?;
         Ok(())
@@ -242,6 +274,100 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
 
     pub(in crate::tpm_nv_custody) fn is_canary_v2(&self) -> bool {
         self.canary.is_some()
+    }
+
+    pub(in crate::tpm_nv_custody) fn prepare_boot_transport_once_v1(
+        &mut self,
+        original: &super::PublisherNativeOriginalRefV3<'_, '_, '_>,
+    ) -> Result<(), PhysicalTpmFailureV1> {
+        self.journal.require_native_original_v3(original)?;
+        let super::PublisherNativeOriginalRefV3::Boot(boot) = original else { return Ok(()); };
+        let selected = self.canary.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        if selected.boot_transport.is_some() { return Err(PhysicalTpmFailureV1::State); }
+        // The resident option is in the already Source-paid physical carrier.
+        // Pay the scalar observation before getrlimit; no native source is
+        // entered while computing the later borrowed passive quote.
+        boot.origins_v1().admit_boot_publisher_representation_v1(Some(
+            aos_sandbox_core::ResourceVector::ZERO.with(
+                aos_sandbox_core::ResourceDimension::MemoryBytes,
+                (std::mem::size_of::<rustix::process::Rlimit>() as u64).checked_mul(2)
+                    .ok_or(FloorErrorV1::Encoding)?,
+            ),
+        )).map_err(HostOwnedJournalErrorV1::from)?;
+        selected.boot_transport = Some(BootHostTransportOriginalV1 {
+            stack: None,
+            pair: aos_sandbox_linux::seqpacket::RecordSubjectSeqpacketPairOriginalV2::zero_rights_parent_v1(),
+        });
+        let transport = selected.boot_transport.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        transport.stack = Some(rustix::process::getrlimit(rustix::process::Resource::Stack));
+        let stack = transport.stack.ok_or(PhysicalTpmFailureV1::State)?;
+        let demand = crate::tpm_nv_custody::physical::native_receiving::boot_transport_demand_v1(
+            stack, self.journal.helper_path(),
+        );
+        boot.origins_v1().admit_boot_publisher_representation_v1(demand)
+            .map_err(HostOwnedJournalErrorV1::from)?;
+        Ok(())
+    }
+
+    pub(in crate::tpm_nv_custody) fn boot_pair_v1(
+        &mut self,
+    ) -> Result<&mut aos_sandbox_linux::seqpacket::RecordSubjectSeqpacketPairOriginalV2, PhysicalTpmFailureV1> {
+        self.canary.as_mut().and_then(|selected| selected.boot_transport.as_mut())
+            .map(|transport| &mut transport.pair).ok_or(PhysicalTpmFailureV1::State)
+    }
+
+    pub(in crate::tpm_nv_custody) fn has_boot_transport_v1(&self) -> bool {
+        self.canary.as_ref().is_some_and(|selected| selected.boot_transport.is_some())
+    }
+
+    pub(in crate::tpm_nv_custody) fn prepare_boot_helper_after_once_v1(
+        &mut self, original: &super::PublisherNativeOriginalRefV3<'_, '_, '_>,
+    ) -> Result<(), PhysicalTpmFailureV1> {
+        self.journal.require_native_original_v3(original)?;
+        let super::PublisherNativeOriginalRefV3::Boot(boot) = original else { return Ok(()); };
+        let selected = self.canary.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        let index = selected.boot_after_next;
+        if selected.boot_after_pending.is_some() || index >= selected.boot_after.len() {
+            return Err(PhysicalTpmFailureV1::State);
+        }
+        boot.origins_v1().admit_boot_publisher_representation_v1(
+            BootHelperAfterOriginalV1::receiving_demand_v1(),
+        ).map_err(HostOwnedJournalErrorV1::from)?;
+        selected.boot_after[index] = Some(Box::new(BootHelperAfterOriginalV1::new()));
+        selected.boot_after_next += 1;
+        selected.boot_after_pending = Some(index);
+        self.arm_pending_boot_helper_after_v1();
+        Ok(())
+    }
+
+    fn arm_pending_boot_helper_after_v1(&mut self) {
+        if let Some(selected) = self.canary.as_mut() {
+            if let (Some(index), Some(helper)) = (selected.boot_after_pending, selected.helper.as_ref()) {
+                if let Some(after) = selected.boot_after[index].as_mut() {
+                    after.prepare(helper);
+                }
+            }
+        }
+    }
+
+    pub(in crate::tpm_nv_custody) fn finish_boot_helper_after_once_v1(
+        &mut self, pidfd: Option<&PidFd>,
+    ) -> Result<(), PhysicalTpmFailureV1> {
+        self.arm_pending_boot_helper_after_v1();
+        let selected = self.canary.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        let Some(index) = selected.boot_after_pending else { return Ok(()); };
+        let after = selected.boot_after[index].as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        // Admission can fail before a pidfd or any proc original exists. There
+        // is no reached proc observer to replay in that prefix.
+        if let (Some(pidfd), Some(_)) = (pidfd, selected.helper.as_ref()) {
+            after.observe(pidfd);
+        }
+        let failed = after.failed();
+        selected.boot_after_pending = None;
+        if failed {
+            let original = selected.boot_after[index].take().ok_or(PhysicalTpmFailureV1::State)?;
+            Err(PhysicalTpmFailureV1::BootHelperAfter(BootHelperAfterFailureV1::new(original)))
+        } else { Ok(()) }
     }
 
     pub(in crate::tpm_nv_custody) fn begin_canary_v2(
@@ -254,6 +380,14 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
             return Err(PhysicalTpmFailureV1::State);
         }
         begin_phase(&mut self.phase, expected)
+    }
+
+    pub(in crate::tpm_nv_custody) fn prepare_boot_input_after_v1(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        Ok(self.journal.prepare_boot_input_after_v1()?)
+    }
+
+    pub(in crate::tpm_nv_custody) fn drain_boot_input_after_unwind_once_v1(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        Ok(self.journal.drain_boot_input_after_unwind_once_v1()?)
     }
 
     pub(in crate::tpm_nv_custody) fn complete_canary_v2(&mut self) -> Result<(), PhysicalTpmFailureV1> {
@@ -289,7 +423,7 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
     pub(in crate::tpm_nv_custody) fn commit_canary_v2(
         &mut self, step: super::journal::CanaryHostNativeStepV2,
         transaction: &aos_sandbox::JournalTransaction,
-        original: &super::CanaryAuthenticatedRequestV3,
+        original: &super::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Result<(), PhysicalTpmFailureV1> {
         self.journal.commit_canary_step_v2(step, transaction, original)?;
         Ok(())
@@ -382,6 +516,14 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
     pub(in crate::tpm_nv_custody) fn observe_canary_helper_identity_v2(
         &mut self, original: &PidFd,
     ) -> Result<aos_sandbox_linux::pidfd::PidFdProcessIdentity, PhysicalTpmFailureV1> {
+        if self.has_boot_transport_v1() {
+            self.journal.admit_boot_representation_v1(
+                BootHelperPrimaryArchiveV1::identity_receiving_demand_v1(),
+            )?;
+            let selected = self.canary.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+            let helper = selected.helper.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+            return selected.boot_primary.observe_identity(helper, original);
+        }
         self.canary.as_mut().and_then(|selected| selected.helper.as_mut())
             .ok_or(PhysicalTpmFailureV1::State)?
             .observe_identity(original).map_err(PhysicalTpmFailureV1::Linux)
@@ -395,11 +537,42 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
             return Err(PhysicalTpmFailureV1::State);
         }
         selected.helper = Some(original.prepare_proc_observations_v1());
-        let helper = selected.helper.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
-        let identity = helper.capture_stat(original).map_err(PhysicalTpmFailureV1::Linux)?;
-        let context = helper.capture_context(original).map_err(PhysicalTpmFailureV1::Linux)?;
-        require_canary_helper_context_v2(context)?;
-        Ok(identity)
+        if selected.boot_transport.is_none() {
+            let helper = selected.helper.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+            let identity = helper.capture_stat(original).map_err(PhysicalTpmFailureV1::Linux)?;
+            let context = helper.capture_context(original).map_err(PhysicalTpmFailureV1::Linux)?;
+            require_canary_helper_context_v2(context)?;
+            return Ok(identity);
+        }
+        // Their actual common receiving quote was Source-paid before spawn.
+        selected.boot_capture = std::array::from_fn(|_| Some(Box::new(
+            aos_sandbox_linux::pidfd::PidFdProcOriginalsV1::new(),
+        )));
+        let result = (|| {
+            let helper = selected.helper.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+            let stat = selected.boot_capture[0].as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+            let identity = match helper.capture_stat_retaining_v1(original, stat) {
+                Ok(identity) => identity,
+                Err(_) => return Err(PhysicalTpmFailureV1::BootHelperCapture(
+                    BootHelperCaptureFailureV1::new(selected.boot_capture[0].take()
+                        .ok_or(PhysicalTpmFailureV1::State)?),
+                )),
+            };
+            let context = selected.boot_capture[1].as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+            let bytes = match helper.capture_context_retaining_v1(original, context) {
+                Ok(bytes) => bytes,
+                Err(_) => return Err(PhysicalTpmFailureV1::BootHelperCapture(
+                    BootHelperCaptureFailureV1::new(selected.boot_capture[1].take()
+                        .ok_or(PhysicalTpmFailureV1::State)?),
+                )),
+            };
+            require_canary_helper_context_v2(bytes)?;
+            Ok(identity)
+        })();
+        // Also arm already-reached failed native prefixes before returning the
+        // primary cause. These duplicates consume the earlier parked reserve.
+        self.arm_pending_boot_helper_after_v1();
+        result
     }
 
     pub(in crate::tpm_nv_custody) fn stage_canary_command_v2(
@@ -414,17 +587,36 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
     }
 
     pub(in crate::tpm_nv_custody) fn spawn_canary_helper_v2(
-        &mut self, original: &super::CanaryAuthenticatedRequestV3,
+        &mut self, original: &super::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Result<std::process::Child, PhysicalTpmFailureV1> {
+        self.journal.require_native_original_v3(original)?;
+        if let super::PublisherNativeOriginalRefV3::Boot(boot) = original {
+            boot.origins_v1().prepare_boot_helper_birth_once_v1()
+                .map_err(HostOwnedJournalErrorV1::from)?;
+        }
         let command = self.canary.as_mut().and_then(|selected| selected.command.as_mut())
             .ok_or(PhysicalTpmFailureV1::State)?;
         original.require_clock()?;
         command.spawn().map_err(PhysicalTpmFailureV1::Child)
     }
 
+    pub(in crate::tpm_nv_custody) fn boot_main_data_v1(
+        &mut self,
+    ) -> Result<super::journal::BootHostMainDataV1, PhysicalTpmFailureV1> {
+        Ok(self.journal.boot_main_data_v1()?)
+    }
+
     pub(in crate::tpm_nv_custody) fn observe_canary_helper_context_v2(
         &mut self, original: &PidFd,
     ) -> Result<(), PhysicalTpmFailureV1> {
+        if self.has_boot_transport_v1() {
+            self.journal.admit_boot_representation_v1(
+                BootHelperPrimaryArchiveV1::context_receiving_demand_v1(),
+            )?;
+            let selected = self.canary.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+            let helper = selected.helper.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+            return selected.boot_primary.observe_context(helper, original);
+        }
         let helper = self.canary.as_mut().and_then(|selected| selected.helper.as_mut())
             .ok_or(PhysicalTpmFailureV1::State)?;
         let context = helper.observe_context(original).map_err(PhysicalTpmFailureV1::Linux)?;
@@ -581,7 +773,10 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
         &mut self,
         pidfd: &PidFd,
     ) -> Result<(), PhysicalTpmFailureV1> {
-        if let Some(selected) = &mut self.canary {
+        if self.has_boot_transport_v1() {
+            self.observe_canary_helper_identity_v2(pidfd)?;
+            self.observe_canary_helper_context_v2(pidfd)?;
+        } else if let Some(selected) = &mut self.canary {
             let helper = selected.helper.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
             helper.observe_identity(pidfd).map_err(PhysicalTpmFailureV1::Linux)?;
             let context = helper.observe_context(pidfd).map_err(PhysicalTpmFailureV1::Linux)?;
@@ -806,20 +1001,20 @@ impl<'owner, 'origin, 'startup> HostCanaryPhysicalConsumerV2<'owner, 'origin, 's
     pub(super) fn admit(
         &mut self, original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<FloorRecoveryV1, CanaryPhysicalErrorV2> {
-        self.physical.admit_canary_host_v2(original)
+        self.physical.admit_canary_host_v2(&super::PublisherNativeOriginalRefV3::Canary(original))
     }
 
     pub(super) fn main_data(
         &mut self, original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<super::journal::CanaryHostMainDataV2, CanaryPhysicalErrorV2> {
-        self.physical.canary_main_data_v2(original)
+        self.physical.canary_main_data_v2(&super::PublisherNativeOriginalRefV3::Canary(original))
     }
 
     pub(super) fn fund(
         &mut self, transaction: &aos_sandbox::JournalTransaction,
         original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<crate::tpm_nv_custody::HostFloorIntentDataV1, CanaryPhysicalErrorV2> {
-        self.physical.fund_canary_host_v2(transaction, original)
+        self.physical.fund_canary_host_v2(transaction, &super::PublisherNativeOriginalRefV3::Canary(original))
     }
 
     pub(super) fn commit(
@@ -827,20 +1022,20 @@ impl<'owner, 'origin, 'startup> HostCanaryPhysicalConsumerV2<'owner, 'origin, 's
         transaction: &aos_sandbox::JournalTransaction,
         original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<(), CanaryPhysicalErrorV2> {
-        self.physical.commit_canary_host_v2(step, transaction, original)
+        self.physical.commit_canary_host_v2(step, transaction, &super::PublisherNativeOriginalRefV3::Canary(original))
     }
 
     pub(super) fn extend(
         &mut self, transaction: &aos_sandbox::JournalTransaction,
         original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<(), CanaryPhysicalErrorV2> {
-        self.physical.extend_canary_host_v2(transaction, original)
+        self.physical.extend_canary_host_v2(transaction, &super::PublisherNativeOriginalRefV3::Canary(original))
     }
 
     pub(super) fn classify(
         &mut self, original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<FloorRecoveryV1, CanaryPhysicalErrorV2> {
-        self.physical.classify_canary_host_v2(original)
+        self.physical.classify_canary_host_v2(&super::PublisherNativeOriginalRefV3::Canary(original))
     }
 
     pub(super) fn final_nv(&self) -> Result<[u8; 32], PhysicalTpmFailureV1> {
@@ -850,7 +1045,96 @@ impl<'owner, 'origin, 'startup> HostCanaryPhysicalConsumerV2<'owner, 'origin, 's
     pub(super) fn terminal_observations(
         &mut self, original: &super::CanaryAuthenticatedRequestV3,
     ) -> Result<(), CanaryPhysicalErrorV2> {
-        self.physical.observe_canary_terminal_v2(original)
+        self.physical.observe_canary_terminal_v2(&super::PublisherNativeOriginalRefV3::Canary(original))
+    }
+}
+
+/// Borrows the same finite physical engine under the actual normal Source.
+///
+/// Its constructor accepts only the original journal owner and the retained
+/// same-Origin normal native original. No native transport, scope, amount,
+/// deadline, key, callback or declared current floor can enter this adapter.
+pub(super) struct HostBootPhysicalConsumerV1<'owner, 'origin, 'startup> {
+    physical: RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup>,
+}
+
+impl<'owner, 'origin, 'startup> HostBootPhysicalConsumerV1<'owner, 'origin, 'startup> {
+    pub(super) fn drain_pending_input_after_unwind_once_v1(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        self.physical.drain_boot_input_after_unwind_once_v1()
+    }
+
+    pub(super) fn drain_pending_helper_after_unwind_once_v1(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        self.physical.drain_boot_helper_after_unwind_once_v1()
+    }
+    pub(super) fn retain(
+        owner: &'owner mut HostOwnedJournalInputsV1<'origin, 'startup>,
+        original: &aos_sandbox::RuntimeBootPreparationNativeOriginalV1<'_, '_>,
+    ) -> Result<Self, HostOwnedJournalErrorV1> {
+        owner.require_boot_native_original_v1(original)?;
+        Ok(Self {
+            physical: RetainedPhysicalTpmOwnerV1::retain_host(RetainedHostPhysicalBindingV1::park(owner)),
+        })
+    }
+
+    pub(super) fn prepare_once(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        self.physical.prepare_canary_host_v2()
+    }
+
+    pub(super) fn admit(
+        &mut self,
+        original: &aos_sandbox::RuntimeBootPreparationNativeOriginalV1<'_, '_>,
+    ) -> Result<FloorRecoveryV1, CanaryPhysicalErrorV2> {
+        self.physical.admit_canary_host_v2(&super::PublisherNativeOriginalRefV3::Boot(original))
+    }
+
+    pub(super) fn main_data(
+        &mut self,
+        original: &aos_sandbox::RuntimeBootPreparationNativeOriginalV1<'_, '_>,
+    ) -> Result<super::BootHostMainDataV1, CanaryPhysicalErrorV2> {
+        self.physical.boot_main_data_v1(&super::PublisherNativeOriginalRefV3::Boot(original))
+    }
+
+    pub(super) fn fund(
+        &mut self,
+        transaction: &aos_sandbox::JournalTransaction,
+        original: &aos_sandbox::RuntimeBootPreparationNativeOriginalV1<'_, '_>,
+    ) -> Result<crate::tpm_nv_custody::HostFloorIntentDataV1, CanaryPhysicalErrorV2> {
+        self.physical.fund_canary_host_v2(transaction, &super::PublisherNativeOriginalRefV3::Boot(original))
+    }
+
+    pub(super) fn commit(
+        &mut self,
+        step: super::journal::CanaryHostNativeStepV2,
+        transaction: &aos_sandbox::JournalTransaction,
+        original: &aos_sandbox::RuntimeBootPreparationNativeOriginalV1<'_, '_>,
+    ) -> Result<(), CanaryPhysicalErrorV2> {
+        self.physical.commit_canary_host_v2(step, transaction, &super::PublisherNativeOriginalRefV3::Boot(original))
+    }
+
+    pub(super) fn extend(
+        &mut self,
+        transaction: &aos_sandbox::JournalTransaction,
+        original: &aos_sandbox::RuntimeBootPreparationNativeOriginalV1<'_, '_>,
+    ) -> Result<(), CanaryPhysicalErrorV2> {
+        self.physical.extend_canary_host_v2(transaction, &super::PublisherNativeOriginalRefV3::Boot(original))
+    }
+
+    pub(super) fn classify(
+        &mut self,
+        original: &aos_sandbox::RuntimeBootPreparationNativeOriginalV1<'_, '_>,
+    ) -> Result<FloorRecoveryV1, CanaryPhysicalErrorV2> {
+        self.physical.classify_canary_host_v2(&super::PublisherNativeOriginalRefV3::Boot(original))
+    }
+
+    pub(super) fn final_nv(&self) -> Result<[u8; 32], PhysicalTpmFailureV1> {
+        self.physical.canary_final_nv_v2()
+    }
+
+    pub(super) fn terminal_observations(
+        &mut self,
+        original: &aos_sandbox::RuntimeBootPreparationNativeOriginalV1<'_, '_>,
+    ) -> Result<(), CanaryPhysicalErrorV2> {
+        self.physical.observe_canary_terminal_v2(&super::PublisherNativeOriginalRefV3::Boot(original))
     }
 }
 

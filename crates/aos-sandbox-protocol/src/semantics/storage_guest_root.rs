@@ -27,6 +27,9 @@ use crate::{
     validate_fence, validate_request_header,
 };
 
+mod current_publication;
+pub use current_publication::{StorageGuestRootCurrentPublicationDataV2, STORAGE_GUEST_ROOT_CURRENT_PUBLICATION_BYTES_V2};
+
 const MAGIC: &[u8; 8] = b"AOSSGR01";
 const STORAGE_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const CANONICAL_BYTES: usize = 8 + 16 + 16 + 8 + 8 + 32 + 16 + 32 + 16;
@@ -94,6 +97,87 @@ impl CanonicalStorageGuestRootArgumentsV1 {
         Ok(Self { canonical_bytes })
     }
 
+    /// Decodes the same fixed argument as nonauthorizing comparison DATA.
+    ///
+    /// # Errors
+    /// Refuses another purpose, width, sentinel or noncanonical field.
+    pub fn decode_data_v1(bytes: &[u8]) -> Result<Self, ProtocolValidationError> {
+        Self::from_fields(GuestRootArgumentFieldsV1::decode_data_v1(bytes)?)
+    }
+
+    /// Returns the exact current assignment as passive DATA.
+    ///
+    /// # Errors
+    /// Refuses fields that cannot represent the canonical broker assignment.
+    pub fn assignment_data_v1(&self) -> Result<BrokerAssignment, ProtocolValidationError> {
+        GuestRootArgumentFieldsV1::decode_data_v1(&self.canonical_bytes)?.assignment_data_v1()
+    }
+
+    /// Bounds the actual fixed request model and canonical encoded backing.
+    ///
+    /// The protobuf fields are fixed-width identities plus widest u64 fences;
+    /// no untrusted collection count or caller-selected name enters this bound.
+    /// Returns `None` if the compiled layouts cannot be represented.
+    #[must_use]
+    pub fn deadline_free_request_receiving_bytes_v2() -> Option<usize> {
+        use aos_proto::aos::sandbox::local::v1::{AssignmentFence, RequestHeader};
+
+        // A bytes field with at most 152 payload bytes has one tag and at most
+        // two length bytes. Integer fields have one tag plus ten varint bytes.
+        let field = |bytes: usize| bytes.checked_add(3);
+        let header = field(16)?.checked_add(2)?.checked_add(2)?.checked_add(6)?;
+        let fence = field(16)?.checked_mul(2)?
+            .checked_add(22)?.checked_add(field(32)?)?;
+        let encoded = field(header)?.checked_add(field(fence)?)?
+            .checked_add(field(16)?.checked_mul(2)?)?
+            .checked_add(field(32)?)?;
+        let fields = 16_usize.checked_mul(5)?.checked_add(32_usize.checked_mul(2)?)?;
+        let models = std::mem::size_of::<PopulateStorageGuestRootRequestV1>()
+            .checked_add(std::mem::size_of::<RequestHeader>())?
+            .checked_add(std::mem::size_of::<AssignmentFence>())?
+            .checked_add(std::mem::size_of::<Self>())?;
+        models.checked_add(fields)?.checked_add(encoded)?.checked_mul(3)
+    }
+
+    /// Encodes the canonical deadline-free publication request as comparison DATA.
+    ///
+    /// The current assignment and immutable creation selectors come from this
+    /// same argument owner. A genuine Start loan separately chooses the fresh
+    /// request identity and prepays the protobuf model and encoded backing.
+    /// This method creates neither a validated peer nor dispatch authority.
+    ///
+    /// # Errors
+    /// Refuses a zero request identity or malformed canonical argument fields.
+    pub fn deadline_free_request_body_v2(
+        &self,
+        request_id: [u8; 16],
+    ) -> Result<Vec<u8>, ProtocolValidationError> {
+        use aos_proto::aos::sandbox::local::v1::Audience;
+
+        if request_id == [0; 16] {
+            return Err(ProtocolValidationError::InvalidField("request_id"));
+        }
+        let fields = GuestRootArgumentFieldsV1::decode_data_v1(&self.canonical_bytes)?;
+        let mut request = PopulateStorageGuestRootRequestV1::default();
+        let header = request.header.get_or_insert_default();
+        header.protocol_major = u32::from(STORAGE_VERSION.major());
+        header.protocol_minor = u32::from(STORAGE_VERSION.minor());
+        header.request_id = request_id.to_vec();
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.maximum_response_bytes = crate::MINIMUM_RESPONSE_BYTES;
+
+        let fence = request.fence.get_or_insert_default();
+        fence.sandbox_id = fields.sandbox.to_vec();
+        fence.incarnation_id = fields.incarnation.to_vec();
+        fence.assignment_epoch = fields.epoch;
+        fence.desired_generation = fields.desired_generation;
+        fence.assignment_digest = fields.assignment_digest.to_vec();
+        request.operation_id = fields.operation_id.to_vec();
+        request.workspace_handle = fields.workspace_handle.to_vec();
+        request.creation_operation_id = fields.creation_operation_id.to_vec();
+        Ok(request.encode_to_vec())
+    }
+
     /// Returns the exact 152-byte AOSSGR01 argument.
     #[must_use]
     pub const fn canonical_bytes(&self) -> &[u8; CANONICAL_BYTES] {
@@ -117,6 +201,34 @@ struct GuestRootArgumentFieldsV1 {
     operation_id: [u8; 16],
     workspace_handle: [u8; 32],
     creation_operation_id: [u8; 16],
+}
+
+impl GuestRootArgumentFieldsV1 {
+    fn decode_data_v1(bytes: &[u8]) -> Result<Self, ProtocolValidationError> {
+        if bytes.len() != CANONICAL_BYTES || bytes.get(..8) != Some(MAGIC.as_slice()) {
+            return Err(ProtocolValidationError::InvalidField("guest root arguments"));
+        }
+        Ok(Self {
+            sandbox: bytes[8..24].try_into().map_err(|_| ProtocolValidationError::InvalidField("guest root sandbox"))?,
+            incarnation: bytes[24..40].try_into().map_err(|_| ProtocolValidationError::InvalidField("guest root incarnation"))?,
+            epoch: u64::from_be_bytes(bytes[40..48].try_into().map_err(|_| ProtocolValidationError::InvalidField("guest root epoch"))?),
+            desired_generation: u64::from_be_bytes(bytes[48..56].try_into().map_err(|_| ProtocolValidationError::InvalidField("guest root generation"))?),
+            assignment_digest: bytes[56..88].try_into().map_err(|_| ProtocolValidationError::InvalidField("guest root assignment"))?,
+            operation_id: bytes[88..104].try_into().map_err(|_| ProtocolValidationError::InvalidField("guest root operation"))?,
+            workspace_handle: bytes[104..136].try_into().map_err(|_| ProtocolValidationError::InvalidField("guest root workspace"))?,
+            creation_operation_id: bytes[136..152].try_into().map_err(|_| ProtocolValidationError::InvalidField("guest root creation"))?,
+        })
+    }
+
+    fn assignment_data_v1(self) -> Result<BrokerAssignment, ProtocolValidationError> {
+        ValidatedAssignmentFence {
+            sandbox_id: self.sandbox,
+            incarnation_id: self.incarnation,
+            assignment_epoch: self.epoch,
+            desired_generation: self.desired_generation,
+            assignment_digest: self.assignment_digest,
+        }.broker_assignment().map_err(|_| ProtocolValidationError::InvalidField("guest root assignment"))
+    }
 }
 
 /// Carries one nonauthorizing, exact guest-root publication request meaning.
@@ -251,16 +363,34 @@ impl CanonicalStorageGuestRootSemanticsV1 {
     }
 }
 
-/// Decodes the sole successful physical publication response.
+/// Retains the immutable physical proof and authenticated current publication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StorageGuestRootResponseDataV2 {
+    proof: GuestRootPublicationProofV1,
+    current: StorageGuestRootCurrentPublicationDataV2,
+}
+
+impl StorageGuestRootResponseDataV2 {
+    /// Returns the unchanged immutable physical creation proof.
+    #[must_use]
+    pub const fn proof_v1(&self) -> GuestRootPublicationProofV1 { self.proof }
+
+    /// Returns the entire signed current-publication comparison record.
+    #[must_use]
+    pub const fn current_publication_v2(&self) -> &StorageGuestRootCurrentPublicationDataV2 {
+        &self.current
+    }
+}
+
+/// Decodes only a complete current successful publication response.
 ///
 /// # Errors
-///
-/// Returns [`ProtocolValidationError`] for malformed wire, unknown fields,
-/// invalid proof bytes, or a response beyond its caller's admitted bound.
-pub fn decode_storage_guest_root_response_v1(
+/// Refuses malformed/unknown wire, missing current binding, substituted
+/// physical selectors, or a response beyond the admitted bound.
+pub fn decode_storage_guest_root_response_v2(
     bytes: &[u8],
     maximum_response_bytes: u32,
-) -> Result<GuestRootPublicationProofV1, ProtocolValidationError> {
+) -> Result<StorageGuestRootResponseDataV2, ProtocolValidationError> {
     if maximum_response_bytes > MAXIMUM_RESPONSE_BYTES
         || bytes.len() > maximum_response_bytes as usize
     {
@@ -271,8 +401,11 @@ pub fn decode_storage_guest_root_response_v1(
     if !response.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
-    GuestRootPublicationProofV1::decode(&response.publication_proof)
-        .map_err(|_| ProtocolValidationError::InvalidField("guest root publication proof"))
+    let proof = GuestRootPublicationProofV1::decode(&response.publication_proof)
+        .map_err(|_| ProtocolValidationError::InvalidField("guest root publication proof"))?;
+    let current = StorageGuestRootCurrentPublicationDataV2::decode_v2(&response.current_publication_v2)?;
+    current.require_request_data_v2(proof, current.arguments_v2(), current.request_id_v2())?;
+    Ok(StorageGuestRootResponseDataV2 { proof, current })
 }
 
 #[cfg(test)]

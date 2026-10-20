@@ -8,6 +8,8 @@
   protobuf,
   stdenv,
   buildPackages,
+  linux,
+  kernelCloneLayout ? linux.dev,
 }: let
   version = "0.1.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -19,11 +21,12 @@
   inherit (workspaceCargo) src cargoDeps;
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
+    AOS_KERNEL_CLONE_LAYOUT_DIR = "${kernelCloneLayout}/share/aos-kernel-clone-layout-v1";
   };
   cargoArtifactContract = {
     family = "aos-sandbox-hostd-native";
     checkType = "debug";
-    nativeInputs = map toString [buildProtobuf];
+    nativeInputs = map toString [buildProtobuf kernelCloneLayout];
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-sandbox-hostd-artifacts";
@@ -36,11 +39,11 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/host -p aos-sandbox-services --bin aos-sandbox-hostd --bin aos-sandbox-host-phase0-probe"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/host,aos-sandbox-services/selected-kernel-clone-layout -p aos-sandbox-services --bin aos-sandbox-hostd --bin aos-sandbox-host-phase0-probe"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --lib --test api_surface"
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/host -p aos-sandbox-services"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/host,aos-sandbox-services/selected-kernel-clone-layout -p aos-sandbox-services"
     ];
-    buildDeps = [buildProtobuf];
+    buildDeps = [buildProtobuf (toString kernelCloneLayout)];
     runtimeDeps = [];
   };
 in
@@ -48,12 +51,12 @@ in
     pname = "aos-sandbox-hostd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "--no-default-features --features aos-sandbox-services/host -p aos-sandbox-services --bin aos-sandbox-hostd --bin aos-sandbox-host-phase0-probe";
+    cargoFlags = "--no-default-features --features aos-sandbox-services/host,aos-sandbox-services/selected-kernel-clone-layout -p aos-sandbox-services --bin aos-sandbox-hostd --bin aos-sandbox-host-phase0-probe";
     checkType = "debug";
-    cargoTestFlags = "--no-default-features --features aos-sandbox-services/host -p aos-sandbox-services -p aos-sandbox-broker-session-security";
+    cargoTestFlags = "--no-default-features --features aos-sandbox-services/host,aos-sandbox-services/selected-kernel-clone-layout -p aos-sandbox-services -p aos-sandbox-broker-session-security";
     cargoNextest = true;
     doCheck = true;
-    buildDeps = [buildProtobuf];
+    buildDeps = [buildProtobuf (toString kernelCloneLayout)];
     runtimeDeps = [];
 
     postInstall = ''

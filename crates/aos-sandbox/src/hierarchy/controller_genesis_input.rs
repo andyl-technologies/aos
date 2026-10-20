@@ -12,22 +12,32 @@
 //! before entering the existing held admission producer. Delivery alone never
 //! admits or abandons a durable pending genesis as a ready Controller.
 
+mod startup;
+#[doc(hidden)]
+pub use startup::ControllerSourceGenesisInputStartupV1;
+
+use aos_sandbox_protocol::publisher_project_authorization::{
+    PinnedPublisherProjectAuthorizationIssuerV2,
+    verify_signed_project_authorization_claims_v2,
+};
+
 use aos_sandbox_core::ProjectId;
 
 use super::controller_genesis::{
     HeldControllerSourceGenesisV1, hold_controller_source_genesis_v1, require_controller,
 };
 use super::genesis_profile::SourceGenesisErrorV1;
-use super::source_seed::{
+use aos_sandbox_protocol::controller_source_seed::{
     CONTROLLER_SOURCE_TREE_SEED_BYTES_V1, ControllerSourceTreeSeedErrorV1,
     PinnedControllerSourceTreeSeedIssuerV1, verify_signed_controller_source_tree_seed_v1,
 };
 use crate::Journal;
 use crate::public_api_session::PinnedSystemdCredential;
-use crate::publisher_policy::{
+use crate::publisher_admin::policy::{
     CurrentSourceTreeSeedPreflightErrorV1,
-    PinnedPublisherProjectAuthorizationIssuerV2, ProjectAuthorizationSourceErrorV2,
-    PublisherPolicyLimits, PublisherPolicyStore, verify_signed_project_authorization_claims_v2,
+    ProjectAuthorizationSourceErrorV2,
+    PublisherPolicyLimits,
+    PublisherPolicyStore,
 };
 #[cfg(test)]
 use aos_sandbox_protocol::source_project_authorization::PROJECT_AUTHORIZATION_SOURCE_BYTES_V2;
@@ -204,7 +214,9 @@ impl ProvisionedControllerSourceGenesisInputV1 {
                     }
                     CurrentSourceTreeSeedPreflightErrorV1::Authorization(error) => error.into(),
                     CurrentSourceTreeSeedPreflightErrorV1::Seed(error) => error.into(),
-                    CurrentSourceTreeSeedPreflightErrorV1::Acceptance(error) => error.into(),
+                    CurrentSourceTreeSeedPreflightErrorV1::Acceptance(error) => {
+                        SourceGenesisErrorV1::from(error).into()
+                    }
                 })?;
         }
         self.recheck()?;
@@ -263,13 +275,15 @@ fn validate_pair(
 ) -> Result<ProjectId, ControllerSourceGenesisInputErrorV1> {
     let seed_pin = PinnedControllerSourceTreeSeedIssuerV1::decode(seed_issuer)?;
     let authorization_pin =
-        PinnedPublisherProjectAuthorizationIssuerV2::decode(authorization_issuer)?;
+        PinnedPublisherProjectAuthorizationIssuerV2::decode(authorization_issuer)
+            .map_err(crate::publisher_admin::policy::ProjectAuthorizationSourceErrorV2::from)?;
     if seed_pin.verifying_key() == authorization_pin.verifying_key() {
         return Err(ControllerSourceGenesisInputErrorV1::Pair);
     }
     let seed = verify_signed_controller_source_tree_seed_v1(seed, &seed_pin)?.seed();
     let authorization =
-        verify_signed_project_authorization_claims_v2(authorization, &authorization_pin)?;
+        verify_signed_project_authorization_claims_v2(authorization, &authorization_pin)
+            .map_err(crate::publisher_admin::policy::ProjectAuthorizationSourceErrorV2::from)?;
     if seed.project() != authorization.project()
         || seed.request_id() != authorization.request_id()
         || seed.epoch() != authorization.epoch()

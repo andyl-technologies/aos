@@ -12,9 +12,9 @@
 
 use std::time::Duration;
 
-use aos_sandbox::journal::{CommitResult, Journal, JournalError, JournalRecord, JournalTransaction,
+use aos_sandbox_mount_native::{CommitResult, MountJournalV1 as Journal, MountJournalErrorV1 as JournalError, JournalRecord, JournalTransaction,
     RecordNamespace, GitCoverageNativeHistoryErrorV1};
-use aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1;
+use aos_sandbox_broker::systemd_credentials::GitCoverageCredentialCustodyV1;
 use aos_sandbox_core::RawPairedClockSample;
 use aos_sandbox_core::format::git_upload_enrollment::{
     GitCoverageBirthV1, GitCoverageBrokerRoleV1,

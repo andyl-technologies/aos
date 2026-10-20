@@ -565,14 +565,15 @@ const fn descriptor_role_code(role: BrokerDescriptorRole) -> Result<u16, MountSe
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_CATALOG => 10,
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_EXECUTION_SPEC => 11,
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_ARGUMENT_SOURCE => 12,
-        // Worker roles have distinct method-49/purpose-56 semantics; extending
-        // the shared enum does not extend the legacy Mount authority preimage.
+        // Worker and Network roles have distinct methods and purposes; adding
+        // them does not extend the legacy Mount authority preimage.
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PLAN_V1
         | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CONNECTION_V1
         | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_RECORDS_V1
         | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CANCELLATION_V1
         | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PIDFD_V1
-        | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CGROUP_V1 => {
+        | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CGROUP_V1
+        | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_NETWORK_PREPARATION_V2 => {
             return Err(MountSemanticError::InvalidDescriptorRoles);
         }
     };

@@ -679,15 +679,6 @@ impl ExecutionService for CapabilityService {
         request: ServiceRequest<'_, CreateExecutionRequest>,
     ) -> ServiceResult<impl Encodable<CreateExecutionResponse> + Send + use<'a>> {
         require_execution_create_admission_ready()?;
-        aos_sandbox_protocol::public_api::create_holder_proof::verify_create_holder_proof_v1(
-            &request.to_owned_message(),
-        )
-        .map_err(|_| {
-            ConnectError::new(
-                ErrorCode::InvalidArgument,
-                "execution creation holder proof is invalid",
-            )
-        })?;
         let admitted = self
             .admit_public_command(
                 &context,

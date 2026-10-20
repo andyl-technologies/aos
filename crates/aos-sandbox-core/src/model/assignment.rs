@@ -88,6 +88,62 @@ impl AssignmentManifestV1 {
         reservations: ResourceVector,
         required_features: Vec<FeatureRef>,
     ) -> Result<Self, InvalidAssignmentManifest> {
+        Self::validate_fields_v1(
+            sandbox,
+            project,
+            &ancestry,
+            incarnation,
+            node,
+            epoch,
+            desired_generation,
+            namespace_generation,
+            &sandbox_spec,
+            &policy,
+            &environment,
+            &root_view,
+            &source_commitments,
+            resource_commitment,
+            &required_features,
+        )?;
+
+        Ok(Self {
+            sandbox,
+            project,
+            ancestry,
+            incarnation,
+            node,
+            epoch,
+            desired_generation,
+            namespace_generation,
+            sandbox_spec,
+            policy,
+            environment,
+            root_view,
+            source_commitments,
+            resource_commitment,
+            reservations,
+            required_features,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_fields_v1(
+        sandbox: SandboxId,
+        project: ProjectId,
+        ancestry: &SandboxAncestry,
+        incarnation: IncarnationId,
+        node: NodeId,
+        epoch: AssignmentEpoch,
+        desired_generation: DesiredGeneration,
+        namespace_generation: NamespaceGeneration,
+        sandbox_spec: &ObjectDescriptor,
+        policy: &ObjectDescriptor,
+        environment: &ObjectDescriptor,
+        root_view: &ObjectDescriptor,
+        source_commitments: &[ObjectDescriptor],
+        resource_commitment: ObjectDigest,
+        required_features: &[FeatureRef],
+    ) -> Result<(), InvalidAssignmentManifest> {
         if sandbox.as_bytes() == &[0; 16]
             || project.as_bytes() == &[0; 16]
             || incarnation.as_bytes() == &[0; 16]
@@ -110,43 +166,26 @@ impl AssignmentManifestV1 {
             return Err(InvalidAssignmentManifest::Unspecified);
         }
         if source_commitments.len() > MAX_ASSIGNMENT_SOURCE_COMMITMENTS
-            || !strictly_increasing(&source_commitments)
+            || !strictly_increasing(source_commitments)
         {
             return Err(InvalidAssignmentManifest::SourceCommitmentsNotCanonical);
         }
         if required_features.len() > MAX_ASSIGNMENT_REQUIRED_FEATURES
-            || !strictly_increasing(&required_features)
+            || !strictly_increasing(required_features)
         {
             return Err(InvalidAssignmentManifest::RequiredFeaturesNotCanonical);
         }
-        crate::validate_required_features(&required_features)?;
+        crate::validate_required_features(required_features)?;
 
-        validate_descriptor(crate::DescriptorRole::SnapshotSpec, &sandbox_spec)?;
-        validate_descriptor(crate::DescriptorRole::SnapshotPolicy, &policy)?;
-        validate_descriptor(crate::DescriptorRole::SandboxEnvironment, &environment)?;
-        validate_descriptor(crate::DescriptorRole::SandboxRootView, &root_view)?;
-        for source in &source_commitments {
+        validate_descriptor(crate::DescriptorRole::SnapshotSpec, sandbox_spec)?;
+        validate_descriptor(crate::DescriptorRole::SnapshotPolicy, policy)?;
+        validate_descriptor(crate::DescriptorRole::SandboxEnvironment, environment)?;
+        validate_descriptor(crate::DescriptorRole::SandboxRootView, root_view)?;
+        for source in source_commitments {
             validate_descriptor(crate::DescriptorRole::ContentRetention, source)?;
         }
 
-        Ok(Self {
-            sandbox,
-            project,
-            ancestry,
-            incarnation,
-            node,
-            epoch,
-            desired_generation,
-            namespace_generation,
-            sandbox_spec,
-            policy,
-            environment,
-            root_view,
-            source_commitments,
-            resource_commitment,
-            reservations,
-            required_features,
-        })
+        Ok(())
     }
 
     /// Returns the durable sandbox identity.
@@ -255,4 +294,32 @@ fn validate_descriptor(
     }
     crate::validate_descriptor_role(role, descriptor)?;
     Ok(())
+}
+
+/// Derives the canonical feature union bound by one complete assignment.
+///
+/// The union contains policy, specification, identity and network requirements,
+/// plus the actual runtime profile, in the manifest's existing canonical order.
+/// This derives semantic DATA and grants no assignment or feature authority.
+///
+/// # Errors
+/// Refuses an input set larger than the assignment feature ceiling. The final
+/// manifest constructor separately checks the complete union's own ceiling.
+pub fn assignment_required_features_v1(
+    policy: &super::Policy, specification: &super::SandboxSpec,
+) -> Result<Vec<FeatureRef>, InvalidAssignmentManifest> {
+    let sets = [policy.required_features(), specification.required_features(),
+        specification.identity_profile().required_features(),
+        specification.network_profile().required_features()];
+    // Each original set is already strictly unique. A set larger than the
+    // manifest's limit cannot produce a valid union, even with other overlaps.
+    if sets.iter().any(|set| set.len() > MAX_ASSIGNMENT_REQUIRED_FEATURES) {
+        return Err(InvalidAssignmentManifest::RequiredFeaturesNotCanonical);
+    }
+    let mut features = Vec::new();
+    for set in sets { features.extend_from_slice(set); }
+    features.push(specification.runtime_profile().clone());
+    features.sort();
+    features.dedup();
+    Ok(features)
 }

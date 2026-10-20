@@ -33,6 +33,8 @@ use aos_sandbox_protocol::storage_root_export::{
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
+mod public_native;
+
 use super::repair_worker_drain::RepairWorkerDispatchGate;
 use crate::native_issuance::{StorageNativeIssuanceErrorV1, StorageNativeIssuanceLedgerV1};
 use crate::peer::HostRootExportPeerVerifier;
@@ -283,6 +285,13 @@ const CANARY_CREDENTIAL_CONTEXT_V2: &[u8] =
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum CanaryPublicInputCauseV2 {
+    #[error("canary public credential retained native observation failed")]
+    NativeCut {
+        #[source]
+        cause: Box<CanaryPublicInputCauseV2>,
+        original: Box<public_native::CanaryPublicNativeCutV3>,
+    },
+
     #[error("canary public credential native observation failed")]
     Descriptor(#[from] rustix::io::Errno),
     #[error("canary public credential metadata failed")]
@@ -589,93 +598,20 @@ impl CanaryPublicInputsV2 {
 }
 
 fn public_file_identity_v2(file: &File) -> Result<PublicFileIdentityV2, CanaryPublicInputCauseV2> {
-    let metadata = file.metadata()?;
-    Ok((
-        metadata.dev(),
-        metadata.ino(),
-        metadata.mode(),
-        metadata.uid(),
-        metadata.gid(),
-        metadata.nlink(),
-        metadata.len(),
-        metadata.mtime(),
-        metadata.mtime_nsec(),
-        metadata.ctime(),
-        metadata.ctime_nsec()
-    ))
+    public_native::identity_v3(file, false)
 }
 
 /// Parks each original before checking the same fixed protected ancestry.
-fn open_canary_public_ancestry_v2(
-    slots: &mut [Option<File>; 7],
-) -> Result<(), CanaryPublicInputCauseV2> {
-    if slots.iter().any(Option::is_some) {
-        return Err(CanaryPublicInputCauseV2::Changed);
-    }
-    let flags = rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY
-        | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
-    slots[0] = Some(File::from(rustix::fs::open("/", flags, rustix::fs::Mode::empty())?));
-    let names = ["run", "credentials", "aos-storaged.service"];
-    for index in 0..4 {
-        let file = slots[index].as_ref().ok_or(CanaryPublicInputCauseV2::Changed)?;
-        let stat = rustix::fs::fstat(file)?;
-        if stat.st_uid != 0 || stat.st_gid != 0 || stat.st_mode & 0o022 != 0 {
-            return Err(CanaryPublicInputCauseV2::Changed);
-        }
-        if index < names.len() {
-            slots[index + 1] = Some(File::from(rustix::fs::openat(
-                file, names[index], flags, rustix::fs::Mode::empty(),
-            )?));
-        }
-    }
-    Ok(())
+fn open_canary_public_ancestry_v2(slots: &mut [Option<File>; 7])
+    -> Result<(), CanaryPublicInputCauseV2>
+{
+    public_native::ancestry_v3(slots, false)
 }
 
-fn require_canary_public_protection_v2(
-    file: &File,
-    leaf_bytes: Option<usize>,
-) -> Result<(), CanaryPublicInputCauseV2> {
-    let stat = rustix::fs::fstat(file)?;
-    let expected = if leaf_bytes.is_some() {
-        0o400
-    } else {
-        0o500
-    };
-    let kind = if leaf_bytes.is_some() {
-        rustix::fs::FileType::RegularFile
-    } else {
-        rustix::fs::FileType::Directory
-    };
-    if stat.st_uid != 0 || stat.st_gid != 0 || stat.st_mode & 0o7777 != expected
-        || rustix::fs::FileType::from_raw_mode(stat.st_mode) != kind
-        || leaf_bytes.is_some_and(|width| stat.st_size != width as i64 || stat.st_nlink != 1)
-        || !rustix::fs::fstatvfs(file)?.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY)
-    {
-        return Err(CanaryPublicInputCauseV2::Changed);
-    }
-    if leaf_bytes.is_some() {
-        let flags = rustix::fs::fcntl_getfl(file)?;
-        if flags.contains(rustix::fs::OFlags::PATH)
-            || flags & rustix::fs::OFlags::ACCMODE != rustix::fs::OFlags::RDONLY
-        {
-            return Err(CanaryPublicInputCauseV2::Changed);
-        }
-    }
-    let mut context = [0; 256];
-    let count = rustix::fs::fgetxattr(file, "security.selinux", &mut context)?;
-    let actual = context[..count].strip_suffix(&[0]).unwrap_or(&context[..count]);
-    if actual != CANARY_CREDENTIAL_CONTEXT_V2 {
-        return Err(CanaryPublicInputCauseV2::Changed);
-    }
-    let mut acl = [0; 4096];
-    for name in ["system.posix_acl_access", "system.posix_acl_default"] {
-        match rustix::fs::fgetxattr(file, name, &mut acl) {
-            Err(rustix::io::Errno::NODATA) => {}
-            Err(error) => return Err(error.into()),
-            Ok(_) => return Err(CanaryPublicInputCauseV2::Changed),
-        }
-    }
-    Ok(())
+fn require_canary_public_protection_v2(file: &File, leaf_bytes: Option<usize>)
+    -> Result<(), CanaryPublicInputCauseV2>
+{
+    public_native::protection_v3(file, leaf_bytes, false)
 }
 
 pub(super) struct CanaryExportHeldV1 {

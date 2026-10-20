@@ -1258,6 +1258,21 @@
         message = "nullable parent enclosure preserves absence and typed selected audit bounds";
       }
       {
+        ok = (import ./controller-recovery-installation.nix {
+          inherit pkgs lib;
+          mkSystem = aos.mkSystem;
+        }).incompleteAssertions;
+        message = "recovery-only Controller uses real module types and rejects absent bank/profile installation";
+      }
+      {
+        ok = import ./root-ownership-trust.nix {inherit lib;};
+        message = "selected Root installs its own existing public Ownership trust pair and refuses partial configuration";
+      }
+      {
+        ok = import ./root-delete-broker-trust.nix {inherit lib;};
+        message = "Root Delete installs independent fixed public broker manifests and rejects partial, foreign and unconfined configurations";
+      }
+      {
         ok = pathInStoreAccepts && pathInStoreRejectsHost && pathInStoreRejectsRelative && pathInStoreRejectsNumber;
         message = "pathInStore validation";
       }

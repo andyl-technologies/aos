@@ -40,6 +40,41 @@ pub const MAXIMUM_DESTINATION_SLOT_INVENTORY_RECORDS: usize = 16_384;
 /// Maximum current attachment anchors accepted in one complete inventory.
 pub const MAXIMUM_ATTACHMENT_ANCHOR_INVENTORY_RECORDS: usize = 16_384;
 
+/// Bounds each closed destination/namespace resource's protobuf representation.
+///
+/// The no-slot canonical resource codec checks this bound directly. Slot rows
+/// have the same finite assignment, descriptor and three fixed correlations;
+/// the inventory decoder checks their reached size before model expansion.
+pub const MAXIMUM_DESTINATION_RESOURCE_RECORD_BYTES_V4: usize = 4096;
+
+/// Prices the finite complete inventory's wire bound from actual row counts.
+///
+/// This is passive DATA. It neither scans a store nor supplies inventory proof.
+///
+/// # Errors
+/// Refuses an over-limit complete population or checked length overflow.
+pub fn destination_slot_inventory_encoded_bound_v4(
+    slots: usize, namespaces: usize, anchors: usize,
+) -> Result<usize, ProtocolValidationError> {
+    let resources = slots.checked_add(namespaces)
+        .filter(|count| *count <= MAXIMUM_DESTINATION_SLOT_INVENTORY_RECORDS)
+        .ok_or(ProtocolValidationError::InvalidField("inventory.resource population"))?;
+    if anchors > resources || anchors > MAXIMUM_ATTACHMENT_ANCHOR_INVENTORY_RECORDS {
+        return Err(ProtocolValidationError::InvalidField("inventory.anchor population"));
+    }
+    // Both resource messages use a one-byte field tag and at most two bytes
+    // for their bounded length. Physical anchors have handle32, two IDs16,
+    // boot16 and four maximum-width u64 fields, with their protobuf tags.
+    let resource = MAXIMUM_DESTINATION_RESOURCE_RECORD_BYTES_V4.checked_add(3);
+    let anchor = (2 + 32) + 2 * (2 + 16) + (2 + 16) + 4 * (1 + 10);
+    let anchor = anchor + 3;
+    resources.checked_mul(resource.ok_or(ProtocolValidationError::InvalidField("inventory.length"))?)
+        .and_then(|bytes| anchors.checked_mul(anchor).and_then(|other| bytes.checked_add(other)))
+        // Current boot16, broker instance16 and journal sequence u64.
+        .and_then(|bytes| bytes.checked_add(2 * (2 + 16) + 1 + 10))
+        .ok_or(ProtocolValidationError::InvalidField("inventory.length"))
+}
+
 const ATTACHMENT_ANCHOR_HANDLE_DOMAIN: &[u8] = b"aos.sandbox.mount.attachment-anchor-handle.v1\0";
 /// Carries one destination-slot effect after complete portable validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -300,14 +335,24 @@ impl ValidatedDestinationSlotInventoryRecord {
 /// Carries one validated authoritative destination-slot inventory snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedDestinationSlotInventory {
+    native_absence: Option<crate::fixed_service_inventory_absence::FixedServiceInventoryAbsenceDataV2>,
     kernel_boot_id: [u8; 16],
     journal_sequence: u64,
     slots: Vec<ValidatedDestinationSlotInventoryRecord>,
     attachment_anchors: Vec<ValidatedAttachmentAnchorInventoryRecord>,
+    namespace_anchors: Vec<crate::mount_attachment_anchor::ValidatedAttachmentAnchorResourceV1>,
     broker_instance_id: [u8; 16],
 }
 
 impl ValidatedDestinationSlotInventory {
+    /// Borrows the separately validated selected16 native absence companion.
+    ///
+    /// These are historical DATA until authenticated native Session custody
+    /// rejoins the same request, recipient, boot and original horizon.
+    pub const fn native_absence_v2(&self) -> Option<&crate::fixed_service_inventory_absence::FixedServiceInventoryAbsenceDataV2> {
+        self.native_absence.as_ref()
+    }
+
     /// Returns the broker's current Linux boot identifier.
     #[must_use]
     pub const fn kernel_boot_id(&self) -> &[u8; 16] {
@@ -330,6 +375,15 @@ impl ValidatedDestinationSlotInventory {
     #[must_use]
     pub fn attachment_anchors(&self) -> &[ValidatedAttachmentAnchorInventoryRecord] {
         &self.attachment_anchors
+    }
+
+    /// Borrows complete independent namespace resources in exact logical order.
+    ///
+    /// These are historical DATA until the matching Ready row is joined with
+    /// the current native anchor and the receiver's exact assignment and Spec.
+    #[must_use]
+    pub fn namespace_anchors_v1(&self) -> &[crate::mount_attachment_anchor::ValidatedAttachmentAnchorResourceV1] {
+        &self.namespace_anchors
     }
 
     /// Returns the identity of the broker process that emitted the snapshot.
@@ -492,38 +546,14 @@ pub fn decode_destination_slot_request(
     }
     let destination_slot_id =
         exact_nonzero::<16>(&request.destination_slot_id, "destination_slot_id")?;
-    let sandbox_spec = validate_descriptor(
-        request
-            .sandbox_spec
-            .as_option()
-            .ok_or(ProtocolValidationError::MissingField("sandbox_spec"))?,
-        DescriptorRole::SnapshotSpec,
+    let (sandbox_spec, sandbox_specification) = validate_destination_specification_v1(
+        request.sandbox_spec.as_option().ok_or(ProtocolValidationError::MissingField("sandbox_spec"))?,
+        &request.sandbox_spec_bytes,
     )?;
-    if request.sandbox_spec_bytes.is_empty()
-        || request.sandbox_spec_bytes.len() > MAXIMUM_DESTINATION_SLOT_SPEC_BYTES
+    if sandbox_specification.attachment_slots()
+        .binary_search(&aos_sandbox_core::AttachmentSlotId::from_bytes(destination_slot_id)).is_err()
     {
-        return Err(ProtocolValidationError::InvalidField("sandbox_spec_bytes"));
-    }
-    let sandbox_specification =
-        decode_sandbox_spec(&request.sandbox_spec_bytes, sandbox_spec_decode_limits())
-            .map_err(|error| ProtocolValidationError::InvalidDescriptor(error.to_string()))?;
-    if encode_sandbox_spec(&sandbox_specification) != request.sandbox_spec_bytes
-        || sandbox_spec.media_type().as_str()
-            != sandbox_spec_media_type(&sandbox_specification).as_str()
-        || descriptor_for_bytes(
-            sandbox_spec.media_type().clone(),
-            &request.sandbox_spec_bytes,
-        ) != sandbox_spec
-        || sandbox_specification
-            .attachment_slots()
-            .binary_search(&aos_sandbox_core::AttachmentSlotId::from_bytes(
-                destination_slot_id,
-            ))
-            .is_err()
-    {
-        return Err(ProtocolValidationError::InvalidField(
-            "sandbox_spec declaration",
-        ));
+        return Err(ProtocolValidationError::InvalidField("sandbox_spec declaration"));
     }
     let expected_resource_digest = optional_digest(
         &request.expected_resource_digest,
@@ -567,7 +597,27 @@ pub fn decode_destination_slot_request(
     })
 }
 
-fn resource_fence_precedes(
+/// Validates the one canonical specification shared by slot and namespace requests.
+pub(crate) fn validate_destination_specification_v1(
+    descriptor: &aos_proto::aos::sandbox::local::v1::Descriptor,
+    bytes: &[u8],
+) -> Result<(ObjectDescriptor, aos_sandbox_core::model::SandboxSpec), ProtocolValidationError> {
+    let sandbox_spec = validate_descriptor(descriptor, DescriptorRole::SnapshotSpec)?;
+    if bytes.is_empty() || bytes.len() > MAXIMUM_DESTINATION_SLOT_SPEC_BYTES {
+        return Err(ProtocolValidationError::InvalidField("sandbox_spec_bytes"));
+    }
+    let specification = decode_sandbox_spec(bytes, sandbox_spec_decode_limits())
+        .map_err(|error| ProtocolValidationError::InvalidDescriptor(error.to_string()))?;
+    if encode_sandbox_spec(&specification) != bytes
+        || sandbox_spec.media_type().as_str() != sandbox_spec_media_type(&specification).as_str()
+        || descriptor_for_bytes(sandbox_spec.media_type().clone(), bytes) != sandbox_spec
+    {
+        return Err(ProtocolValidationError::InvalidField("sandbox_spec declaration"));
+    }
+    Ok((sandbox_spec, specification))
+}
+
+pub(crate) fn resource_fence_precedes(
     authority_fence: &ValidatedAssignmentFence,
     resource_fence: &ValidatedAssignmentFence,
 ) -> bool {
@@ -693,6 +743,17 @@ pub fn decode_destination_slot_inventory_response(
 fn validate_inventory_response(
     response: &InventoryDestinationSlotsResponse,
 ) -> Result<ValidatedDestinationSlotInventory, ProtocolValidationError> {
+    let native_absence = if response.native_absence_v2.is_empty() { None } else {
+        let absence = crate::fixed_service_inventory_absence::FixedServiceInventoryAbsenceDataV2::decode_mount_v2(
+            &response.native_absence_v2)?;
+        if !response.slots.is_empty() || !response.attachment_anchors.is_empty()
+            || !response.namespace_anchors.is_empty()
+            || absence.boot_v2().as_slice() != response.kernel_boot_id.as_slice()
+            || absence.recipient_invocation_v2().as_slice() != response.broker_instance_id.as_slice() {
+            return Err(ProtocolValidationError::InvalidField("Mount native absence association"));
+        }
+        Some(absence)
+    };
     if response.journal_sequence == 0 {
         return Err(ProtocolValidationError::InvalidField("journal_sequence"));
     }
@@ -715,6 +776,11 @@ fn validate_inventory_response(
     let mut operations = BTreeSet::new();
     let mut current_ready_anchors = BTreeMap::new();
     for source in &response.slots {
+        if source.compute_size(&mut buffa::SizeCache::new()) as usize
+            > MAXIMUM_DESTINATION_RESOURCE_RECORD_BYTES_V4
+        {
+            return Err(ProtocolValidationError::InvalidField("inventory.slot schema bound"));
+        }
         let slot = validate_inventory_record(source)?;
         if slots
             .last()
@@ -768,6 +834,37 @@ fn validate_inventory_response(
         slots.push(slot);
     }
 
+    if response.slots.len().checked_add(response.namespace_anchors.len())
+        .is_none_or(|count| count > MAXIMUM_DESTINATION_SLOT_INVENTORY_RECORDS)
+    {
+        return Err(ProtocolValidationError::InvalidField("inventory.destination_resource count"));
+    }
+    let mut namespace_anchors = Vec::with_capacity(response.namespace_anchors.len());
+    let mut namespace_physical = BTreeMap::new();
+    for source in &response.namespace_anchors {
+        let row = crate::mount_attachment_anchor::validate_attachment_anchor_resource_v1(source)?;
+        if namespace_anchors.last().is_some_and(|previous: &crate::mount_attachment_anchor::ValidatedAttachmentAnchorResourceV1|
+            previous.key_v1() >= row.key_v1())
+            || slots.iter().any(|slot| slot.fence().sandbox_id() == row.fence().sandbox_id()
+                && slot.fence().incarnation_id() == row.fence().incarnation_id()
+                && slot.namespace_generation() == row.namespace_generation())
+        {
+            return Err(ProtocolValidationError::InvalidField("inventory.namespace_anchors order or slot alias"));
+        }
+        if row.lifecycle() == aos_proto::aos::sandbox::local::v1::AttachmentAnchorLifecycleV1::ATTACHMENT_ANCHOR_LIFECYCLE_V1_READY
+            && row.resource_kernel_boot_id() == &kernel_boot_id
+        {
+            let physical = row.physical_identity_v1().ok_or(ProtocolValidationError::InvalidField("namespace physical identity"))?;
+            let key = (*row.fence().sandbox_id(), *row.fence().incarnation_id(), row.namespace_generation());
+            if current_ready_anchors.insert(key, (physical.2, physical.0)).is_some()
+                || namespace_physical.insert(key, physical).is_some()
+            {
+                return Err(ProtocolValidationError::InvalidField("inventory.namespace_anchors alias"));
+            }
+        }
+        namespace_anchors.push(row);
+    }
+
     let mut attachment_anchors = Vec::with_capacity(response.attachment_anchors.len());
     for source in &response.attachment_anchors {
         let anchor = validate_attachment_anchor(source)?;
@@ -792,6 +889,11 @@ fn validate_inventory_response(
                 "inventory.attachment_anchor physical cross-link",
             ));
         }
+        if namespace_physical.get(&anchor.key()).is_some_and(|physical|
+            *physical != (anchor.directory_device, anchor.directory_inode, anchor.unique_mount_id))
+        {
+            return Err(ProtocolValidationError::InvalidField("inventory.namespace_anchor physical cross-link"));
+        }
         attachment_anchors.push(anchor);
     }
     if attachment_anchors.len() != current_ready_anchors.len() {
@@ -801,10 +903,12 @@ fn validate_inventory_response(
     }
 
     Ok(ValidatedDestinationSlotInventory {
+        native_absence,
         kernel_boot_id,
         journal_sequence: response.journal_sequence,
         slots,
         attachment_anchors,
+        namespace_anchors,
         broker_instance_id,
     })
 }
@@ -1056,7 +1160,13 @@ fn reject_unknown(fields: &buffa::UnknownFields) -> Result<(), ProtocolValidatio
     }
 }
 
-const fn sandbox_spec_decode_limits() -> DecodeLimits {
+/// Returns the sole canonical Mount specification decoder's fixed ceilings.
+///
+/// Root's immutable-object reader uses these same passive limits to prepay and
+/// decode the exact Spec before issuing a Mount request. Limits provide neither
+/// immutable-file custody nor request, signing or effect authority.
+#[must_use]
+pub const fn sandbox_spec_decode_limits() -> DecodeLimits {
     DecodeLimits {
         maximum_bytes: MAXIMUM_DESTINATION_SLOT_SPEC_BYTES,
         maximum_collection_items: MAXIMUM_DESTINATION_SLOT_INVENTORY_RECORDS,
@@ -1855,4 +1965,39 @@ mod tests {
             ]
         );
     }
+}
+
+/// Prices the actual Mount16 schema/model/index peak before hostile decoding.
+///
+/// The supplied width is comparison DATA from the captured packet. No request,
+/// native namespace or completed Inventory owner is constructed here.
+/// Returns `None` on checked arithmetic overflow.
+#[must_use]
+pub fn destination_slot_inventory_receiving_demand_v2(packet_bytes: usize)
+    -> Option<aos_sandbox_core::ResourceVector> {
+    use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+    let bytes = u64::try_from(packet_bytes).ok()?;
+    let generated = aos_sandbox_broker_session_protocol::receiving_geometry::
+        schema_protobuf_carriers_v1(bytes, 1).ok()?.checked_mul(2)?;
+    // The decoder bounds slots plus namespace resources together. Each raw
+    // repeated element consumes at least a tag and length before validation.
+    let resources = (bytes / 2).min(u64::try_from(MAXIMUM_DESTINATION_SLOT_INVENTORY_RECORDS).ok()?);
+    let anchors = (bytes / 2).min(u64::try_from(MAXIMUM_ATTACHMENT_ANCHOR_INVENTORY_RECORDS).ok()?);
+    let resource_width = std::mem::size_of::<ValidatedDestinationSlotInventoryRecord>()
+        .max(std::mem::size_of::<crate::mount_attachment_anchor::ValidatedAttachmentAnchorResourceV1>());
+    let models = resources.checked_mul(u64::try_from(resource_width).ok()?)?
+        .checked_add(anchors.checked_mul(u64::try_from(std::mem::size_of::<ValidatedAttachmentAnchorInventoryRecord>()).ok()?)?)?
+        .checked_mul(3)?;
+    // Three operation-ID uniqueness entries and one current-ready physical
+    // map per slot; namespace rows instead own ready and physical maps. Five
+    // entries per resource dominate both finite cases, including the row itself.
+    let named = resources.checked_mul(5)?.checked_add(anchors)?;
+    let index_width = std::mem::size_of::<(([u8; 16], [u8; 16], u64), (u64, u64, u64))>();
+    let indexes = named.checked_mul(u64::try_from(index_width.checked_mul(11)?
+        .checked_add(3 * 12 * std::mem::size_of::<usize>())?).ok()?)?;
+    // Decoded media strings, generated bytes and canonical comparison buffers
+    // are bounded by this actual packet; no Rust field becomes a namespace.
+    let backing = bytes.checked_mul(4)?;
+    let memory = generated.checked_add(models)?.checked_add(indexes)?.checked_add(backing)?;
+    Some(ResourceVector::ZERO.with(D::MemoryBytes, memory).with(D::MetadataEntries, named))
 }

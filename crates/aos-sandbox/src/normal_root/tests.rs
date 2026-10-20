@@ -11,7 +11,7 @@ use super::*;
 
 const ROOT: &str = "/nix/store/00000000000000000000000000000000-aos-sandboxd-0.1.0";
 const PROFILE: &str =
-    "/nix/store/11111111111111111111111111111111-aos-normal-root-startup-profile-1/profile.json";
+    "/nix/store/11111111111111111111111111111111-aos-normal-root-startup-profile-2/profile.json";
 
 fn value(value: impl Into<Value<'static>>) -> OwnedValue {
     OwnedValue::try_from(value.into()).unwrap()
@@ -22,8 +22,9 @@ fn inert_profile() -> serde_json::Value {
     let executable = pin(format!("{ROOT}/bin/aos-sandbox-policy-authorityd"));
     let loader = pin(format!("{ROOT}/lib/ld.so"));
     json!({
-        "format": "AOS_NORMAL_ROOT_STARTUP_1", "unit": UNIT, "context": CONTEXT,
-        "identities": [811, 811, 0, 0], "executable": executable, "loader": loader,
+        "format": "AOS_NORMAL_ROOT_STARTUP_2", "unit": UNIT, "context": CONTEXT,
+        "identities": [811, 811, 0, 0], "cache_signer_gid": 0,
+        "executable": executable, "loader": loader,
         "pid1": pin(format!("{ROOT}/lib/systemd/systemd")),
         "runtime_files": [executable, loader], "closure_roots": [ROOT],
         "canonical_policy": pin("/nix/store/22222222222222222222222222222222-aos-selinux-kernel-policy-readback-1/policy.33".into()),
@@ -125,7 +126,7 @@ fn normal_root_profile_decoder_has_exact_bounds_and_fields() {
     assert!(NormalRootProfileV1::decode(&serde_json::to_vec(&profile).unwrap()).is_err());
     let bytes = serde_json::to_vec(&inert_profile()).unwrap();
     let duplicate = [
-        b"{\"format\":\"AOS_NORMAL_ROOT_STARTUP_1\",".as_slice(),
+        b"{\"format\":\"AOS_NORMAL_ROOT_STARTUP_2\",".as_slice(),
         &bytes[1..],
     ]
     .concat();
@@ -135,7 +136,7 @@ fn normal_root_profile_decoder_has_exact_bounds_and_fields() {
 #[test]
 fn normal_root_unit_normalization_excludes_only_one_exact_self_reference() {
     let unit = format!(
-        "[Service]\nExecStart={ROOT}/bin/aos-sandbox-policy-authorityd 811 811 0 0\nOpenFile={PROFILE}:aos-normal-root-profile:read-only\nNoNewPrivileges=true\n"
+        "[Service]\nExecStart={ROOT}/bin/aos-sandbox-policy-authorityd 811 811 0 0 0\nOpenFile={PROFILE}:aos-normal-root-profile:read-only\nNoNewPrivileges=true\n"
     );
     let normalized = profile::normalized_unit(unit.as_bytes(), PROFILE).unwrap();
     assert!(
@@ -496,6 +497,7 @@ fn original_root_pid1_launch_requires_exact_image_argv_and_no_extra_commands() {
         "811".into(),
         "0".into(),
         "0".into(),
+        "0".into(),
     ];
     let empty = value(Vec::<InertCommand>::new());
     let start = |path: &str, args: Vec<String>, ignore_failure: bool, pid: u32| {
@@ -539,4 +541,52 @@ fn original_root_pid1_launch_requires_exact_image_argv_and_no_extra_commands() {
     ] {
         assert!(service::require_peer_launch(&malformed, 22, &profile).is_err());
     }
+}
+
+#[test]
+fn root_profile_requires_explicit_distinct_cache_gid_and_rejects_old_format() {
+    let mut data = inert_profile();
+    data["identities"] = json!([811, 812, 813, 814]);
+    data["cache_signer_gid"] = json!(947);
+    let profile = NormalRootProfileV1::decode(&serde_json::to_vec(&data).unwrap()).unwrap();
+
+    assert_eq!(profile.cache_signer_gid, 947);
+    assert_ne!(profile.cache_signer_gid, profile.identities[1]);
+    assert_ne!(profile.cache_signer_gid, profile.identities[2]);
+
+    for (field, bad) in [
+        ("cache_signer_gid", json!(0)), ("cache_signer_gid", json!(true)),
+        ("cache_signer_gid", json!(-1)), ("cache_signer_gid", json!(1_u64 << 32)),
+        ("format", json!("AOS_NORMAL_ROOT_STARTUP_1")),
+    ] {
+        let mut changed = data.clone();
+        changed[field] = bad;
+        assert!(NormalRootProfileV1::decode(&serde_json::to_vec(&changed).unwrap()).is_err());
+    }
+    data.as_object_mut().unwrap().remove("cache_signer_gid");
+    assert!(NormalRootProfileV1::decode(&serde_json::to_vec(&data).unwrap()).is_err());
+}
+
+#[test]
+fn root_peer_argv_requires_the_actual_cache_gid_without_uid_or_socket_group_inference() {
+    let mut data = inert_profile();
+    data["identities"] = json!([811, 812, 813, 814]);
+    data["cache_signer_gid"] = json!(947);
+    let profile = NormalRootProfileV1::decode(&serde_json::to_vec(&data).unwrap()).unwrap();
+    let argv = vec![profile.executable.path.clone(), "811".into(), "812".into(),
+                    "813".into(), "814".into(), "947".into()];
+    let empty = value(Vec::<InertCommand>::new());
+    let launch = |args| vec![value(vec![peer_command(&profile.executable.path, args, false, 22)]),
+                            empty.clone(), empty.clone()];
+
+    assert!(service::require_peer_launch(&launch(argv.clone()), 22, &profile).is_ok());
+
+    for replacement in ["812", "813", "0"] {
+        let mut changed = argv.clone();
+        changed[5] = replacement.into();
+        assert!(service::require_peer_launch(&launch(changed), 22, &profile).is_err());
+    }
+    let mut old = argv;
+    old.pop();
+    assert!(service::require_peer_launch(&launch(old), 22, &profile).is_err());
 }

@@ -2,18 +2,39 @@
 //!
 //! The model contains plans, progress, receipts and retained dispatch data. The
 //! context and dispatch modules hold public-mutation and lease-attempt history;
-//! the codec reads and writes the closed V2 through V6 record grammar.
+//! the codec reads and writes the closed V2 through V7 record grammar.
 //! Native owners retain admission, publication, currentness and executor custody.
 //! Historical values alone do not authorize execution or authenticate a receipt.
 
 mod codec;
 mod context;
 mod dispatch;
+#[cfg(target_os = "linux")]
+mod lifecycle_terminal;
+#[cfg(target_os = "linux")]
+pub use lifecycle_terminal::{CreateStoppedRecoveredTerminalDataV1, CreateStoppedRecoveredTerminalDataErrorV1,
+    CreateStoppedNativeObservationDataV2, CreateStoppedNativeObservationErrorV2, CreateStoppedTerminalDataErrorV1,
+    CreateStoppedTerminalTransactionDataV1, create_stopped_terminal_transaction_id_v1,
+    CreateStoppedPreAckTransactionDataV1, create_stopped_pre_ack_transaction_id_v1};
+
+mod lifecycle_completion;
+pub use lifecycle_completion::{
+    CreateStoppedLifecycleReceiptDataV1, LifecycleEffectReceiptDataV1,
+    StopResidualLifecycleReceiptDataV4, STOP_RESIDUAL_LIFECYCLE_RECEIPT_BYTES_V4,
+    encode_stop_residual_lifecycle_receipt_v4,
+    LIFECYCLE_EFFECT_RECEIPT_BYTES_V1, CREATE_STOPPED_LIFECYCLE_RECEIPT_BYTES_V1,
+    encode_lifecycle_effect_receipt_v1, decode_lifecycle_effect_receipt_v1,
+    lifecycle_child_effect_commitment_v1,
+};
 mod model;
+/// Owns completed reserved first-Observe Effect extension DATA.
+pub mod observe_completion;
+mod receiving;
+pub use receiving::effect_decoding_receiving_bytes_v1;
 
 pub use codec::{
     decode_effect, encode_effect, effect_body_digest, effect_binding_digest, attempt_token_digest,
-    audience_code, audience_from_code,
+    audience_code, audience_from_code, authority_effect_record_bound_v1,
 };
 #[cfg(target_os = "linux")]
 pub use codec::{decode_effect_with_q04, encode_q04_effect, q04_effect_subgate};

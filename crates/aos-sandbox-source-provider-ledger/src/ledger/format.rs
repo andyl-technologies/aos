@@ -1925,9 +1925,11 @@ mod native_selected_reservation_tests {
     fn protected_native_terminal_replay(key: &[u8], applying: &[u8], terminal: &[u8]) {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-        use aos_sandbox::{
-            Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
+        use aos_sandbox_core::RecordNamespace;
+        use aos_sandbox_protocol::domain_ledger::transaction::{
+            JournalLimits, JournalRecord, JournalTransaction,
         };
+        use aos_sandbox_source::provider_journal::SourceProviderJournalV1 as Journal;
 
         const FILE: &str = "native-no-dispatch-record.journal";
         let directory = tempfile::tempdir().unwrap();

@@ -13,8 +13,14 @@ use super::effect_owner::{
     SIGNER_OBJECT_VIEW, read_fixed_signer_cache_object_view_v1,
 };
 use super::owner_readback::{
-    CLOSED_CACHE_OWNER_READBACK_BYTES_V2, CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1,
-    CacheOwnerReadbackFieldsV1, cache_owner_limits_digest_v1, sign_closed_cache_owner_readback_v2,
+    CacheOwnerReadbackErrorV1,
+    cache_owner_limits_digest_v1,
+    sign_closed_cache_owner_readback_v2,
+};
+use aos_sandbox_protocol::cache_owner_readback::{
+    CLOSED_CACHE_OWNER_READBACK_BYTES_V2,
+    CacheOwnerReadbackChallengeV1,
+    CacheOwnerReadbackFieldsDataV1,
 };
 use super::protected_owner::{
     CacheResidencyRootReadOnlyPolicyHoldV1, PROTECTED_CACHE_ROOT, SIGNER_READ_ONLY_CACHE_VIEW,
@@ -81,7 +87,7 @@ pub fn sign_fixed_signer_cache_owner_readback_v2(
     let (root_device, root_inode) = physical.root_identity();
     let (lock_device, lock_inode) = physical.lock_identity();
     let current = physical.currentness();
-    let fields = CacheOwnerReadbackFieldsV1 {
+    let fields = CacheOwnerReadbackFieldsDataV1 {
         root_device,
         root_inode,
         root_uid: physical.owner_uid(),

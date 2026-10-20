@@ -4,6 +4,10 @@
 //! must provide the exact retained Host cgroup and pinned verification policy;
 //! this adapter never derives either from a public request or a socket reply.
 
+pub(super) mod startup_identity;
+mod retained_source;
+pub(super) use retained_source::ControllerAttachmentSourceOriginalV1;
+
 use std::path::Path;
 use std::time::Duration;
 
@@ -15,7 +19,7 @@ use aos_sandbox::attachment_effect_owner::{
 use aos_sandbox_protocol::public_api::projection::{PublicProjectionResourceV1};
 use aos_sandbox::controller_service::public_projection::{PublicProjectionStoreV1};
 use aos_sandbox::mount_preparation::MountServiceIdentity;
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_authority::{
     RuntimeAuthorityError, RuntimeAuthorityLimits, RuntimeAuthorityStateV1, RuntimeAuthorityStore,
 };
@@ -245,27 +249,65 @@ impl ControllerAttachmentTargetInputsV1 {
         host: &HostServiceIdentity,
         node: NodeId,
     ) -> Result<Self, ControllerAttachmentProvisionErrorV1> {
-        let duplicated = rustix::io::dup(host.cgroup.as_fd())?;
-        let cgroup = CgroupV2Root::from_owned(duplicated)?.resolve(Path::new("."))?;
-        let ownership = ControllerOwnershipConfigurationV1::from_process_credentials_optional()?
-            .ok_or(ControllerAttachmentProvisionErrorV1::MissingOwnership)?;
-        let broker_anchor = ControllerBrokerPlanSignerV1::trust_anchor_from_process_credentials()?;
-        let mount_broker_anchor =
-            ControllerBrokerPlanSignerV1::mount_trust_anchor_from_process_credentials()?;
+        Self::from_configuration_with_disposition(host, node, None)
+    }
+
+    fn from_configuration_with_disposition(
+        host: &HostServiceIdentity,
+        node: NodeId,
+        original: Option<&mut ControllerAttachmentSourceOriginalV1>,
+    ) -> Result<Self, ControllerAttachmentProvisionErrorV1> {
+        use retained_source::{HeldInputV1, InputDestinationsV1};
+        let mut destinations = InputDestinationsV1::new(original);
+        let duplicated = rustix::io::dup(host.cgroup.as_fd());
+        let cgroup = if let Some(original) = destinations.cgroup_admission.take() {
+            let duplicated = match duplicated {
+                Ok(fd) => fd,
+                Err(cause) => return Err(cause.into()),
+            };
+            original.capture_once(duplicated)?;
+            let (root, anchor) = original.take_completed_once()
+                .ok_or(ControllerAttachmentProvisionErrorV1::MissingOwnership)?;
+            if let Some(destination) = destinations.cgroup_root.take() { *destination = Some(root); }
+            anchor
+        } else { CgroupV2Root::from_owned(duplicated?)?.resolve(Path::new("."))? };
+        let cgroup = HeldInputV1::new(cgroup, destinations.cgroup.take());
+        let ownership = if let Some(attempt) = destinations.ownership_credentials.take() {
+            if !attempt.capture_once(ControllerOwnershipConfigurationV1::from_process_credentials_with_source) {
+                return Err(ControllerAttachmentProvisionErrorV1::MissingOwnership);
+            }
+            attempt.take_completed().flatten().ok_or(ControllerAttachmentProvisionErrorV1::MissingOwnership)?
+        } else { ControllerOwnershipConfigurationV1::from_process_credentials_optional()?
+            .ok_or(ControllerAttachmentProvisionErrorV1::MissingOwnership)? };
+        let ownership = HeldInputV1::new(ownership, destinations.ownership.take());
+        let broker_anchor = if let Some(attempt) = destinations.broker_credentials.take() {
+            if !attempt.capture_once(|source| ControllerBrokerPlanSignerV1::trust_anchor_from_process_credentials_with_source(source).map(Some)) {
+                return Err(ControllerBrokerPlanSignerError::Credential.into());
+            }
+            attempt.take_completed().flatten().ok_or(ControllerBrokerPlanSignerError::Credential)?
+        } else { ControllerBrokerPlanSignerV1::trust_anchor_from_process_credentials()? };
+        let broker_anchor = HeldInputV1::new(broker_anchor, destinations.broker_anchor.take());
+        let mount_broker_anchor = if let Some(attempt) = destinations.mount_credentials.take() {
+            if !attempt.capture_once(|source| ControllerBrokerPlanSignerV1::mount_trust_anchor_from_process_credentials_with_source(source).map(Some)) {
+                return Err(ControllerBrokerPlanSignerError::Credential.into());
+            }
+            attempt.take_completed().flatten().ok_or(ControllerBrokerPlanSignerError::Credential)?
+        } else { ControllerBrokerPlanSignerV1::mount_trust_anchor_from_process_credentials()? };
+        let mount_broker_anchor = HeldInputV1::new(mount_broker_anchor, destinations.mount_broker_anchor.take());
         Ok(Self {
             host: HostServiceIdentity {
                 uid: host.uid,
                 gid: host.gid,
-                cgroup,
+                cgroup: cgroup.take().ok_or(ControllerAttachmentProvisionErrorV1::MissingOwnership)?,
             },
             policy: CurrentRuntimeScopePolicy {
                 node,
                 clock_provenance: CLOCK_PROVENANCE,
                 maximum_validity_seconds: 10,
                 runtime_limits: RuntimeAuthorityLimits::default(),
-                ownership_verifier: ownership.into_verifier(),
-                broker_anchor,
-                mount_broker_anchor,
+                ownership_verifier: ownership.take().ok_or(ControllerAttachmentProvisionErrorV1::MissingOwnership)?.into_verifier(),
+                broker_anchor: broker_anchor.take().ok_or(ControllerBrokerPlanSignerError::Credential)?,
+                mount_broker_anchor: mount_broker_anchor.take().ok_or(ControllerBrokerPlanSignerError::Credential)?,
             },
         })
     }
@@ -318,7 +360,24 @@ impl ControllerAttachmentTargetInputsV1 {
         journal: &mut Journal,
         sandbox: SandboxId,
     ) -> Result<CurrentRuntimeScope, ControllerAttachmentTargetErrorV1> {
-        let binding = RuntimeAuthorityStore::load(journal, self.policy.runtime_limits)?
+        self.acquire_source_with_disposition(journal, sandbox, None)
+    }
+
+    fn acquire_source_with_disposition(
+        self,
+        journal: &mut Journal,
+        sandbox: SandboxId,
+        original: Option<&mut ControllerAttachmentSourceOriginalV1>,
+    ) -> Result<CurrentRuntimeScope, ControllerAttachmentTargetErrorV1> {
+        use retained_source::HeldInputV1;
+        let (input_destination, opening, client_destination, policy_destination, acquisition) = match original {
+            Some(original) => (Some(&mut original.inputs), Some(&mut original.opening),
+                Some(&mut original.client), Some(&mut original.policy), Some(&mut original.acquisition)),
+            None => (None, None, None, None, None),
+        };
+        let inputs = HeldInputV1::new(self, input_destination);
+        let input = inputs.get().ok_or(ControllerAttachmentTargetErrorV1::MissingHolder)?;
+        let binding = RuntimeAuthorityStore::load(journal, input.policy.runtime_limits)?
             .current(sandbox)?
             .ok_or(ControllerAttachmentTargetErrorV1::MissingHolder)?;
         if binding.state() != RuntimeAuthorityStateV1::Bound {
@@ -328,17 +387,22 @@ impl ControllerAttachmentTargetInputsV1 {
             .holder()
             .ok_or(ControllerAttachmentTargetErrorV1::MissingHolder)?;
 
-        let client = RuntimeScopeClient::connect(Path::new(HOST_SOCKET), self.host)?;
+        let input = inputs.take().ok_or(ControllerAttachmentTargetErrorV1::MissingHolder)?;
+        let policy = HeldInputV1::new(input.policy, policy_destination);
+        let client = match opening {
+            Some(original) => RuntimeScopeClient::connect_retaining_v1(Path::new(HOST_SOCKET), input.host, original),
+            None => RuntimeScopeClient::connect(Path::new(HOST_SOCKET), input.host),
+        }?;
+        let client = HeldInputV1::new(client, client_destination);
         let mut owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
             .map_err(ProtectedAttachmentTargetErrorV1::from)?;
         let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
-        owner
-            .observe_current_source(
-                RuntimeScopeHolder { sandbox, holder },
-                client,
-                self.policy,
-                &mut clock,
-            )
-            .map_err(Into::into)
+        let holder = RuntimeScopeHolder { sandbox, holder };
+        let client = client.take().ok_or(ControllerAttachmentTargetErrorV1::MissingHolder)?;
+        let policy = policy.take().ok_or(ControllerAttachmentTargetErrorV1::MissingHolder)?;
+        match acquisition {
+            Some(original) => owner.observe_current_source_retaining_v1(holder, client, policy, &mut clock, original),
+            None => owner.observe_current_source(holder, client, policy, &mut clock),
+        }.map_err(Into::into)
     }
 }

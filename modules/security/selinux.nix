@@ -22,6 +22,11 @@
   refpolicy = pkgs.refpolicy;
   viewPreparers = [
     {
+      package = config.aos.sandbox.policyAuthority._stopPreparerPackage;
+      program = "aos-sandbox-cache-journal-view-stop";
+      role = "cache";
+    }
+    {
       package = config.aos.sandbox.policyAuthority._preparerPackage;
       program = "aos-sandbox-cache-journal-view";
       role = "cache";
@@ -46,6 +51,7 @@
   # interpreter/tool paths do not depend on this policy, avoiding a cycle.
   productionPolicy = pkgs.aosSelinuxProductionPolicyWith ({
     inherit viewPreparers homeContextAliases;
+    environmentProvision = config.aos.sandbox.policyAuthority.environmentProvision;
     gitReadDelegation = config.aos.sandbox.controllerService.gitReadInspection.enable;
     sourceProviderMount = selectedSourceMount;
     runtimeDeploymentPublisher = config.aos.sandbox.runtimeDeploymentPublisher.enable;
@@ -80,6 +86,7 @@
         sourceViewRequired = config.aos.sandbox.sourceSignerView.enable;
         cacheViewRequired = config.aos.sandbox.policyAuthority.enable;
         cacheSignerViewRequired = config.aos.sandbox.cacheSignerView.enable;
+        environmentEvidenceRequired = config.aos.sandbox.policyAuthority.environmentProvision != null;
         viewZfsState = config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState;
         viewZfsSource = "${config.aos.filesystems.zfs.poolName}/var/lib";
         aos-selinux-production-policy = productionPolicy;

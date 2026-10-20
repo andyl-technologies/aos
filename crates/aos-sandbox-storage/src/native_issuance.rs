@@ -55,6 +55,8 @@ const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.storage.native-issuance.transact
 
 pub(crate) mod held_completion;
 mod held_custody;
+mod startup;
+pub(crate) use startup::StorageNativeIssuanceStartupV1;
 
 /// Rejects malformed, stale, conflicting, or indeterminate issuance state.
 #[derive(Debug, thiserror::Error)]
@@ -561,10 +563,14 @@ impl StorageNativeIssuanceLedgerV1 {
             state_directory: state_directory.to_path_buf(),
             custody,
         };
-        owner.validate_boundary()?;
-        let rows = owner.rows()?;
-        owner.preflight_retirements(&rows, None)?;
+        owner.validate_opened_ordinary_v1()?;
         Ok(owner)
+    }
+
+    fn validate_opened_ordinary_v1(&mut self) -> Result<(), StorageNativeIssuanceErrorV1> {
+        self.validate_boundary()?;
+        let rows = self.rows()?;
+        self.preflight_retirements(&rows, None)
     }
 
     fn validate_boundary(&mut self) -> Result<(), StorageNativeIssuanceErrorV1> {

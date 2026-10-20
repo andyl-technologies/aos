@@ -1,9 +1,9 @@
 //! Closed, two-phase ZFS create effect for retained execution output.
 //!
-//! An independently authenticated Controller Storage grant, Host output
-//! receipt, current AOSEOR03 record, and durably prepared Storage attempt must
-//! eventually mint [`AuthorizedCaptureCreateAttemptV1`]. No production issuer
-//! exists yet. The effect phase observes checkpoint-free headroom and invokes
+//! A fresh Controller-signed admission, actual Host45 readback, protected
+//! AOSEOR03 row and newly committed AOSCOA03 mint the private native owner.
+//! The authenticated fixed worker alone reconstructs the closed create/writer
+//! recipes; parsed Source or historical attempt DATA cannot enter them. The effect phase observes checkpoint-free headroom and invokes
 //! one fixed create command; even a zero exit yields only an ambiguous effect
 //! record. A separate cold catalog readback must prove the exact GUID and
 //! create operation before any detached mount or writer can be admitted.
@@ -35,12 +35,27 @@ use crate::execution_output::ProtectedRetainedCaptureV1;
 use crate::pin_worker::boottime_now_nanoseconds;
 use crate::process::{PinnedCaptureZfsTools, ZfsWorkerError, process_timeout};
 
+mod clock;
+pub(crate) use clock::CaptureWorkerClockOriginalV3;
+
+mod create_execution;
+pub(crate) use create_execution::CaptureCreateExecutionOriginalV3;
+
+mod preparation;
+mod completion;
+pub(crate) use completion::CaptureWriterCompletionOriginalV3;
+mod issuance;
+pub(crate) use issuance::NativeCaptureCreateOriginalV3;
+pub(crate) use preparation::CaptureWriterPreparationFailureV2;
+
 const ATTEMPT_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-create-attempt.v1\0";
 const WRITE_RESULT_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-detached-write.v1\0";
 
 /// Rejects a stale protected join or a failed pre-effect readback.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CaptureCreateWorkerErrorV1 {
+    #[error("capture worker source differs from the authenticated parent: {0}")]
+    Source(crate::execution_output::ExecutionOutputLedgerErrorV1),
     #[error("capture create authority is not current")]
     InvalidAttempt,
     #[error("capture create preflight or command is invalid: {0}")]
@@ -49,12 +64,11 @@ pub(crate) enum CaptureCreateWorkerErrorV1 {
     Observation(#[from] ZfsWorkerError),
 }
 
-/// Holds a future signed-grant and receipt join under a durable attempt.
+/// Holds the closed worker recipe under the actual fresh native admission.
 ///
-/// All fields are private, and there is no production constructor. The future
-/// issuer must validate the exact Controller grant, Host receipt, protected
-/// AOSEOR03 readback, selected ZFS root and allocation, boot/deadline, and
-/// durable effect-scheduled record before constructing this type.
+/// Only the authenticated inherited worker reconstructs it after the genuine
+/// parent joins the signed Controller grant, Host45, protected logical output,
+/// selected allocation and newly committed attempt on the same Storage F.
 pub(crate) struct AuthorizedCaptureCreateAttemptV1 {
     attempt: [u8; 16],
     controller_grant_digest: ObjectDigest,
@@ -65,9 +79,12 @@ pub(crate) struct AuthorizedCaptureCreateAttemptV1 {
     retained: ProtectedRetainedCaptureV1,
     requirement: CaptureDatasetRequirementV1,
     preflight: CaptureZfsPreflightPlanV1,
+    expected_pool_guid: u64,
 }
 
 impl AuthorizedCaptureCreateAttemptV1 {
+    pub(crate) fn deadline_data_v3(&self) -> u64 { self.deadline_boottime_nanoseconds }
+
     fn check_live(&self) -> Result<(), CaptureCreateWorkerErrorV1> {
         let boot_id =
             KernelBootId::current().map_err(|_| CaptureCreateWorkerErrorV1::InvalidAttempt)?;
@@ -87,48 +104,17 @@ impl AuthorizedCaptureCreateAttemptV1 {
 
     /// Runs preflight and exactly one effect call, never returning create success.
     ///
-    /// The backend's effect error is deliberately folded into an ambiguous
+    /// The backend's effect error is retained alongside the ambiguous
     /// disposition. Once `create` is entered, recovery may only observe; it
     /// cannot infer that no dataset was made from a timeout or nonzero exit.
+    #[cfg(test)]
     pub(crate) fn execute_with<B: CaptureCreateBackendV1>(
         self,
         backend: &mut B,
     ) -> Result<CaptureCreateAttemptedV1, CaptureCreateWorkerErrorV1> {
-        self.check_live()?;
-        let outputs = backend.observe_preflight(&self, &self.preflight)?;
-        let observed = self.preflight.evaluate([&outputs[0], &outputs[1]])?;
-        let command = CaptureZfsCreateCommandV1::new(&self.requirement, &self.retained, &observed)?;
-        self.check_live()?;
-
-        let reported_zero_exit = backend.create(&self, &command).unwrap_or(false);
-        let mut digest = Sha256::new();
-        digest.update(ATTEMPT_DOMAIN);
-        digest.update(self.attempt);
-        digest.update(self.controller_grant_digest.as_bytes());
-        digest.update(self.host_receipt_digest.as_bytes());
-        digest.update(self.durable_attempt_digest.as_bytes());
-        digest.update(self.kernel_boot_id);
-        digest.update(self.deadline_boottime_nanoseconds.to_be_bytes());
-        digest.update(command.record_digest.as_bytes());
-        digest.update(command.storage_create_operation.as_bytes());
-        digest.update(command.preflight_digest.as_bytes());
-        digest.update(command.command_digest.as_bytes());
-        digest.update([u8::from(reported_zero_exit)]);
-
-        Ok(CaptureCreateAttemptedV1 {
-            attempt: self.attempt,
-            record_digest: command.record_digest,
-            storage_create_operation: command.storage_create_operation,
-            controller_grant_digest: self.controller_grant_digest,
-            host_receipt_digest: self.host_receipt_digest,
-            durable_attempt_digest: self.durable_attempt_digest,
-            kernel_boot_id: self.kernel_boot_id,
-            deadline_boottime_nanoseconds: self.deadline_boottime_nanoseconds,
-            preflight_digest: command.preflight_digest,
-            command_digest: command.command_digest,
-            reported_zero_exit,
-            attempt_digest: ObjectDigest::from_bytes(digest.finalize().into()),
-        })
+        let mut original = create_execution::CaptureCreateExecutionOriginalV3::new(self);
+        original.run_once_v3(backend);
+        original.into_ordinary_result_v3()
     }
 
     #[cfg(test)]
@@ -148,6 +134,7 @@ impl AuthorizedCaptureCreateAttemptV1 {
             retained,
             requirement,
             preflight,
+            expected_pool_guid: 17,
         }
     }
 }
@@ -185,114 +172,24 @@ pub(crate) struct CaptureCreateAttemptedV1 {
     pub(crate) preflight_digest: ObjectDigest,
     pub(crate) command_digest: ObjectDigest,
     pub(crate) reported_zero_exit: bool,
+    effect_result: Result<bool, ZfsWorkerError>,
     pub(crate) attempt_digest: ObjectDigest,
 }
 
-/// Runs pinned AOS-store commands only after a dedicated worker receives a permit.
-///
-/// The installed Storage broker does not invoke this entry point and has no
-/// CAP_SYS_ADMIN. A future dedicated process must independently authenticate
-/// its own cgroup/peer provenance and the durable permit issuer.
-pub(crate) fn run_capture_create_for(
-    authorized: AuthorizedCaptureCreateAttemptV1,
-    zfs: &ZfsHelperContract,
-) -> Result<CaptureCreateAttemptedV1, CaptureCreateWorkerErrorV1> {
-    authorized.check_live()?;
-    let mut backend = FixedCaptureCreateBackendV1::new(zfs)?;
-    authorized.execute_with(&mut backend)
-}
-
-struct FixedCaptureCreateBackendV1<'a> {
-    tools: PinnedCaptureZfsTools<'a>,
-}
-
-impl<'a> FixedCaptureCreateBackendV1<'a> {
-    fn new(zfs: &'a ZfsHelperContract) -> Result<Self, ZfsWorkerError> {
-        let tools = PinnedCaptureZfsTools::new(
-            zfs,
-            "capture create requires the fixed AOS zfs executable",
-        )?;
-        Ok(Self { tools })
-    }
-
-    fn remaining(
-        authorized: &AuthorizedCaptureCreateAttemptV1,
-    ) -> Result<Duration, ZfsWorkerError> {
-        let now = boottime_now_nanoseconds()?;
-        let nanoseconds = authorized
-            .deadline_boottime_nanoseconds
-            .checked_sub(now)
-            .filter(|remaining| *remaining != 0)
-            .ok_or(ZfsWorkerError::Authority)?;
-        Ok(Duration::from_nanos(nanoseconds).min(process_timeout()))
-    }
-}
-
-impl CaptureCreateBackendV1 for FixedCaptureCreateBackendV1<'_> {
-    fn observe_preflight(
-        &mut self,
-        authorized: &AuthorizedCaptureCreateAttemptV1,
-        plan: &CaptureZfsPreflightPlanV1,
-    ) -> Result<[Vec<u8>; 2], ZfsWorkerError> {
-        let mut outputs = Vec::with_capacity(2);
-        for command in plan.commands() {
-            let (contract, pin) = self.tools.for_tool(command.tool);
-            pin.validate_current(contract)?;
-            let arguments: Vec<OsString> = command.arguments.iter().map(OsString::from).collect();
-            let output = run_fixed_process(FixedProcessRequest {
-                executable: contract.executable(),
-                arguments: &arguments,
-                timeout: Self::remaining(authorized)?,
-                maximum_stdout_bytes: MAXIMUM_MACHINE_OUTPUT_BYTES,
-                maximum_stderr_bytes: MAXIMUM_MACHINE_OUTPUT_BYTES,
-            })?;
-            match output {
-                FixedProcessOutcome::Completed(output)
-                    if output.exit_code == Some(0)
-                        && output.signal.is_none()
-                        && output.stderr.is_empty() =>
-                {
-                    outputs.push(output.stdout);
-                }
-                _ => return Err(ZfsWorkerError::Protocol("capture preflight command failed")),
-            }
-        }
-        self.tools.validate_current()?;
-        outputs
-            .try_into()
-            .map_err(|_| ZfsWorkerError::Protocol("capture preflight is incomplete"))
-    }
-
-    fn create(
-        &mut self,
-        authorized: &AuthorizedCaptureCreateAttemptV1,
-        command: &CaptureZfsCreateCommandV1,
-    ) -> Result<bool, ZfsWorkerError> {
-        self.tools.validate_current()?;
-        let (zfs, _) = self.tools.for_tool(CaptureZfsToolV1::Zfs);
-        let arguments: Vec<OsString> = command.arguments.iter().map(OsString::from).collect();
-        let output = run_fixed_process(FixedProcessRequest {
-            executable: zfs.executable(),
-            arguments: &arguments,
-            timeout: Self::remaining(authorized)?,
-            maximum_stdout_bytes: MAXIMUM_MACHINE_OUTPUT_BYTES,
-            maximum_stderr_bytes: MAXIMUM_MACHINE_OUTPUT_BYTES,
-        })?;
-        self.tools.validate_current()?;
-        Ok(matches!(
-            output,
-            FixedProcessOutcome::Completed(output)
-                if output.exit_code == Some(0)
-                    && output.signal.is_none()
-                    && output.stdout.is_empty()
-                    && output.stderr.is_empty()
-        ))
+impl CaptureCreateAttemptedV1 {
+    /// Borrows the actual failed effect call without asserting no effect.
+    pub(crate) fn effect_failure_v2(&self) -> Option<&ZfsWorkerError> {
+        self.effect_result.as_ref().err()
     }
 }
 
 /// Rejects an unqualified detached mount, writer failure, or stale ZFS state.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CaptureWriterWorkerErrorV1 {
+    #[error("capture protected source changed: {0}")]
+    Source(#[from] crate::execution_output::ExecutionOutputLedgerErrorV1),
+    #[error("capture catalog association changed: {0}")]
+    Dataset(#[from] crate::catalog_transition::execution_capture::ExecutionCaptureDatasetErrorV1),
     #[error("capture writer attempt is not current")]
     InvalidAttempt,
     #[error("capture writer ZFS readback is invalid: {0}")]
@@ -311,10 +208,9 @@ pub(crate) enum CaptureWriterWorkerErrorV1 {
 
 /// Retains the exact catalog and AOSEOR03 join for a detached writer phase.
 ///
-/// No production constructor exists. The future issuer must cold-read the
-/// committed physical binding, independently authenticate the signed
-/// Controller Storage grant and Host receipt, and prove a durable one-shot
-/// writer attempt before constructing this token.
+/// Its private constructor requires the actual authenticated child context
+/// and same-parent catalog handoff. The parent retains the fresh admission,
+/// whole catalog replay and exact Output physical-row commit/readback.
 pub(crate) struct AuthorizedCaptureWriterAttemptV1 {
     attempt: [u8; 16],
     controller_grant_digest: ObjectDigest,
@@ -324,11 +220,27 @@ pub(crate) struct AuthorizedCaptureWriterAttemptV1 {
     deadline_boottime_nanoseconds: u64,
     retained: ProtectedRetainedCaptureV1,
     verified: VerifiedCaptureDatasetV1,
+    ongoing_source: Option<ObjectDigest>,
     metadata_headroom_bytes: u64,
     minimum_remaining_bytes: u64,
 }
 
 impl AuthorizedCaptureWriterAttemptV1 {
+    pub(crate) fn from_authenticated_catalog_v3(
+        context: &crate::process::capture_worker::AuthenticatedCaptureWorkerContextV3<'_>,
+        catalog: &crate::process::capture_worker::CaptureWorkerCatalogOriginalV3,
+    ) -> Result<Self, CaptureWriterWorkerErrorV1> {
+        let verified = CaptureDatasetRequirementV1::from_authenticated_worker_catalog_v3(context, catalog)?;
+        let (retained, attempt, controller, host, durable, boot, deadline) =
+            crate::execution_output::capture_worker_inputs_v3(context)?;
+        Ok(Self { attempt, controller_grant_digest: controller, host_receipt_digest: host,
+            durable_attempt_digest: durable, kernel_boot_id: boot,
+            deadline_boottime_nanoseconds: deadline, retained, verified,
+            ongoing_source: Some(context.source_v3().source_digest_v2()),
+            metadata_headroom_bytes: context.metadata_headroom_v3(),
+            minimum_remaining_bytes: context.remaining_floor_v3() })
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(
         retained: ProtectedRetainedCaptureV1,
@@ -343,6 +255,7 @@ impl AuthorizedCaptureWriterAttemptV1 {
             deadline_boottime_nanoseconds: boottime_now_nanoseconds().unwrap() + 30_000_000_000,
             retained,
             verified,
+            ongoing_source: None,
             metadata_headroom_bytes: 20,
             minimum_remaining_bytes: 100,
         }
@@ -389,79 +302,34 @@ impl AuthorizedCaptureWriterAttemptV1 {
         )
     }
 
+    pub(crate) fn prepare_detached_in_scope_v3(
+        self,
+        zfs: &ZfsHelperContract,
+        execution: &mut crate::process::worker_aggregate::WorkerExecutionScopeV1<'_>,
+        context: &crate::process::capture_worker::AuthenticatedCaptureWorkerContextV3<'_>,
+    ) -> Result<PreparedDetachedCaptureWriterV1, CaptureWriterPreparationFailureV2> {
+        preparation::prepare_in_scope_v3(self, zfs, execution, context)
+    }
+
     /// Probes current ZFS state and opens an unpublished, secure ZFS mount.
     ///
     /// An already occupied claim, changed mount identity, unexpected root
     /// owner, or unavailable reservation leaves no success-shaped writer.
+    #[cfg(test)]
     pub(crate) fn prepare_detached(
         self,
         zfs: &ZfsHelperContract,
     ) -> Result<PreparedDetachedCaptureWriterV1, CaptureWriterWorkerErrorV1> {
-        self.check_live()?;
-        let readback_plan = CaptureZfsReadbackPlanV1::new(
-            &self.verified,
-            &self.retained,
-            self.metadata_headroom_bytes,
-            self.minimum_remaining_bytes,
-        )?;
-        let before = crate::process::observe_capture_zfs_for(zfs, &readback_plan)?;
-        self.check_live()?;
+        preparation::prepare_ordinary_v3(self, zfs)
+    }
 
-        let mut filesystem = FileSystemContext::open("zfs")?;
-        filesystem.set_string("source", self.verified.dataset_name())?;
-        let detached = filesystem.create()?.mount()?;
-        detached.set_attributes(
-            false,
-            MountAttributes::secure_writable().with_no_exec(true),
-            None,
-        )?;
-        let directory = rustix::fs::openat(
-            detached.as_fd(),
-            ".",
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )?;
-        let original = rustix::fs::fstat(&directory)?;
-        if rustix::fs::FileType::from_raw_mode(original.st_mode) != rustix::fs::FileType::Directory
-            || original.st_uid != 0
-            || original.st_dev == 0
-            || original.st_ino == 0
-        {
-            return Err(CaptureWriterWorkerErrorV1::InvalidAttempt);
-        }
-        rustix::fs::fchmod(&directory, rustix::fs::Mode::from_raw_mode(0o700))?;
-        rustix::fs::fsync(&directory)?;
-        let after = rustix::fs::fstat(&directory)?;
-        if after.st_dev != original.st_dev
-            || after.st_ino != original.st_ino
-            || after.st_uid != 0
-            || after.st_mode & 0o7777 != 0o700
-        {
-            return Err(CaptureWriterWorkerErrorV1::InvalidAttempt);
-        }
-
-        // A same-name replacement between the first probe and fsopen must
-        // not become this execution's backing. A platform that reports a
-        // detached mount as mounted remains closed pending qualification.
-        let mounted_readback = crate::process::observe_capture_zfs_for(zfs, &readback_plan)?;
-        self.check_live()?;
-
-        let pin =
-            PinnedCaptureDirectoryV1::from_authorized_detached_root(&self, &detached, directory)?;
-        let files = pin.claim_files()?;
-        let (writer, guard) = files.into_writer(&self.retained)?;
-        self.check_live()?;
-        Ok(PreparedDetachedCaptureWriterV1 {
-            authority: self,
-            detached,
-            writer,
-            guard,
-            before_observation_digest: before.observation_digest,
-            mounted_observation_digest: mounted_readback.observation_digest,
-        })
+    /// Runs the same detached preparation while parking every reached native owner.
+    #[cfg(test)]
+    pub(crate) fn prepare_detached_retaining_v2(
+        self,
+        zfs: &ZfsHelperContract,
+    ) -> Result<PreparedDetachedCaptureWriterV1, CaptureWriterPreparationFailureV2> {
+        preparation::prepare_retaining_v2(self, zfs)
     }
 }
 
@@ -475,7 +343,53 @@ pub(crate) struct PreparedDetachedCaptureWriterV1 {
     mounted_observation_digest: ObjectDigest,
 }
 
+pub(crate) struct CaptureMountedWriterDataV3 {
+    pub(crate) source: ObjectDigest,
+    pub(crate) durable: ObjectDigest,
+    pub(crate) dataset_binding: ObjectDigest,
+    pub(crate) mount_id: u64,
+    pub(crate) before: ObjectDigest,
+    pub(crate) mounted: ObjectDigest,
+}
+
 impl PreparedDetachedCaptureWriterV1 {
+    pub(crate) fn native_io_failure_v3(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.writer.native_io_failure_v3()
+    }
+
+    pub(crate) fn mounted_data_v3(
+        &self,
+        context: &crate::process::capture_worker::AuthenticatedCaptureWorkerContextV3<'_>,
+    ) -> Result<CaptureMountedWriterDataV3, CaptureWriterWorkerErrorV1> {
+        let (_, _, _, _, durable, _, cutoff) = crate::execution_output::capture_worker_inputs_v3(context)?;
+        if self.authority.ongoing_source != Some(context.source_v3().source_digest_v2())
+            || self.authority.durable_attempt_digest != durable
+            || self.authority.deadline_boottime_nanoseconds != cutoff
+        { return Err(CaptureWriterWorkerErrorV1::InvalidAttempt); }
+        Ok(CaptureMountedWriterDataV3 {
+            source: context.source_v3().source_digest_v2(), durable,
+            dataset_binding: self.authority.verified.binding(), mount_id: self.detached.mount_id().get(),
+            before: self.before_observation_digest, mounted: self.mounted_observation_digest,
+        })
+    }
+
+    pub(crate) fn consume_native_drain_read_v3(
+        &mut self,
+        read: crate::process::capture_worker::CaptureDrainReadBorrowV3<'_>,
+    ) -> Result<(), CaptureWriterWorkerErrorV1> {
+        if self.authority.ongoing_source != Some(read.source_v3())
+            || self.authority.durable_attempt_digest != read.durable_v3()
+            || self.authority.deadline_boottime_nanoseconds != read.cutoff_v3()
+        { return Err(CaptureWriterWorkerErrorV1::InvalidAttempt); }
+        if read.chunk_v3().is_empty() {
+            self.writer.finish_stream(read.stream_v3())?;
+        } else {
+            self.writer.write_chunk(read.stream_v3(), read.chunk_v3())?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) fn write_chunk(
         &mut self,
         stream: CaptureStreamV1,
@@ -486,6 +400,7 @@ impl PreparedDetachedCaptureWriterV1 {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn finish_stream(
         &mut self,
         stream: CaptureStreamV1,
@@ -495,53 +410,17 @@ impl PreparedDetachedCaptureWriterV1 {
         Ok(())
     }
 
-    /// Returns only an unbound result after EOF, sync, and current ZFS readback.
+    /// Runs the sole completion engine for the established local fixtures.
+    #[cfg(test)]
     pub(crate) fn finish(
         self,
         zfs: &ZfsHelperContract,
     ) -> Result<UnboundCaptureWorkerResultV1, CaptureWriterWorkerErrorV1> {
-        self.authority.check_live()?;
-        let written = self.writer.finish()?;
-        self.guard.sync_after_write()?;
-        let mount_id = self.detached.mount_id().get();
-        drop(self.guard);
-        drop(self.detached);
-
-        let after_plan = CaptureZfsReadbackPlanV1::after_write(
-            &self.authority.verified,
-            &self.authority.retained,
-            &written,
-            self.authority.metadata_headroom_bytes,
-            self.authority.minimum_remaining_bytes,
-        )?;
-        let after = crate::process::observe_capture_zfs_for(zfs, &after_plan)?;
-        self.authority.check_live()?;
-
-        let mut digest = Sha256::new();
-        digest.update(WRITE_RESULT_DOMAIN);
-        digest.update(self.authority.attempt);
-        digest.update(self.authority.controller_grant_digest.as_bytes());
-        digest.update(self.authority.host_receipt_digest.as_bytes());
-        digest.update(self.authority.durable_attempt_digest.as_bytes());
-        digest.update(self.authority.verified.binding().as_bytes());
-        digest.update(self.before_observation_digest.as_bytes());
-        digest.update(self.mounted_observation_digest.as_bytes());
-        digest.update(mount_id.to_be_bytes());
-        digest.update(written.result_digest.as_bytes());
-        digest.update(after.observation_digest.as_bytes());
-
-        Ok(UnboundCaptureWorkerResultV1 {
-            attempt: self.authority.attempt,
-            record_digest: self.authority.retained.record_digest(),
-            dataset_binding: self.authority.verified.binding(),
-            mount_id,
-            before_observation_digest: self.before_observation_digest,
-            mounted_observation_digest: self.mounted_observation_digest,
-            after_observation_digest: after.observation_digest,
-            written,
-            result_digest: ObjectDigest::from_bytes(digest.finalize().into()),
-        })
+        let mut original = completion::CaptureWriterCompletionOriginalV3::from_prepared_v3(self);
+        original.run_once_v3(zfs, None);
+        original.into_ordinary_result_v3()
     }
+
 }
 
 /// Contains physical observations and bytes without signed broker provenance.
@@ -555,4 +434,30 @@ pub(crate) struct UnboundCaptureWorkerResultV1 {
     pub(crate) after_observation_digest: ObjectDigest,
     pub(crate) written: UnboundCaptureWriteResultV1,
     pub(crate) result_digest: ObjectDigest,
+}
+
+
+pub(crate) struct CaptureWorkerResultIdentityDataV3 {
+    pub(crate) attempt: [u8; 16],
+    pub(crate) controller: ObjectDigest,
+    pub(crate) host: ObjectDigest,
+    pub(crate) durable: ObjectDigest,
+}
+
+impl UnboundCaptureWorkerResultV1 {
+    pub(crate) fn result_digest_data_v3(&self, identity: &CaptureWorkerResultIdentityDataV3) -> ObjectDigest {
+        let mut digest = Sha256::new();
+        digest.update(WRITE_RESULT_DOMAIN);
+        digest.update(identity.attempt);
+        digest.update(identity.controller.as_bytes());
+        digest.update(identity.host.as_bytes());
+        digest.update(identity.durable.as_bytes());
+        digest.update(self.dataset_binding.as_bytes());
+        digest.update(self.before_observation_digest.as_bytes());
+        digest.update(self.mounted_observation_digest.as_bytes());
+        digest.update(self.mount_id.to_be_bytes());
+        digest.update(self.written.result_digest.as_bytes());
+        digest.update(self.after_observation_digest.as_bytes());
+        ObjectDigest::from_bytes(digest.finalize().into())
+    }
 }

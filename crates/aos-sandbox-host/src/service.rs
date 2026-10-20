@@ -469,7 +469,7 @@ where
                 }
                 let request_id = *header.request_id();
                 let ceiling = header.maximum_response_bytes();
-                let result = self.broker.inventory_runtime(ceiling).await;
+                let result = self.broker.inventory_runtime_authenticated_v4(&header).await;
                 (request_id, ceiling, result)
             }
             BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => {

@@ -20,22 +20,15 @@ pub(super) fn frame_transfer(
     limits: JournalLimits,
     errors: (&'static str, &'static str),
 ) -> Result<JournalTransaction, JournalError> {
-    records.push(JournalRecord::delete(
-        RecordNamespace::GlobalCapacityReservation,
-        old.to_journal_record().key().to_vec(),
-    ));
-    if let Some(next) = next {
-        records.push(next.to_journal_record());
-    }
-    let transaction = JournalTransaction::new(transaction_id, records)?;
-    check_transfer(
-        &transaction,
-        old.request(),
-        next.map(NativeHeldCapacityRecordV3::request),
+    aos_sandbox_ledger_replay::replay::native_transfer::frame_transfer(
+        transaction_id,
+        records,
+        old,
+        next,
         limits,
         errors,
-    )?;
-    Ok(transaction)
+    )
+        .map_err(JournalError::from)
 }
 
 pub(in crate::journal) fn check_transfer(
@@ -45,21 +38,14 @@ pub(in crate::journal) fn check_transfer(
     limits: JournalLimits,
     errors: (&'static str, &'static str),
 ) -> Result<(), JournalError> {
-    check_bounded_transfer(
+    aos_sandbox_ledger_replay::replay::native_transfer::check_transfer(
         transaction,
-        (
-            old_request.terminal_records.max(old_request.poison_records),
-            old_request.terminal_bytes.max(old_request.poison_bytes),
-        ),
-        next.map(|request| {
-            (
-                request.terminal_records.max(request.poison_records),
-                request.terminal_bytes.max(request.poison_bytes),
-            )
-        }),
+        old_request,
+        next,
         limits,
         errors,
     )
+        .map_err(JournalError::from)
 }
 
 /// Checks actual framed consumption against a family-owned remaining envelope.
@@ -74,22 +60,12 @@ pub(in crate::journal) fn check_bounded_transfer(
     limits: JournalLimits,
     errors: (&'static str, &'static str),
 ) -> Result<(), JournalError> {
-    validate_transaction(transaction, limits)?;
-
-    let consumed_bytes = encoded_transaction_append_bytes(transaction)?;
-    let consumed_records = u32::try_from(transaction.records().len())
-        .map_err(|_| JournalError::LimitExceeded(errors.0))?;
-    let (remaining_records, remaining_bytes) = next.unwrap_or((0, 0));
-    let (old_records, old_bytes) = old;
-    if remaining_records
-        .checked_add(consumed_records)
-        .is_none_or(|records| records > old_records)
-        || remaining_bytes
-            .checked_add(consumed_bytes)
-            .is_none_or(|bytes| bytes > old_bytes)
-    {
-        return Err(JournalError::LimitExceeded(errors.1));
-    }
-
-    Ok(())
+    aos_sandbox_ledger_replay::replay::native_transfer::check_bounded_transfer(
+        transaction,
+        old,
+        next,
+        limits,
+        errors,
+    )
+        .map_err(JournalError::from)
 }

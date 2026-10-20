@@ -25,7 +25,6 @@ use aos_sandbox_core::{NodeId, ObjectDigest, OperationId};
 use sha2::{Digest as _, Sha256};
 
 use crate::local_inventory::assignment::NodeAssignmentObservationV1;
-use crate::local_inventory::capability::{NodeBootLineageV1, NodeCapabilitySnapshotV1};
 use crate::local_inventory::draining::DrainObservationV1;
 use crate::local_inventory::journal::{
     MultiNodeJournalCheckpointV1, MultiNodeJournalDomainV1, MultiNodeJournalRecordV1,
@@ -33,12 +32,14 @@ use crate::local_inventory::journal::{
 };
 use crate::local_inventory::protected_artifact_store::ProtectedArtifactKindV1;
 use crate::local_inventory::protocol::{
-    CanonicalNodeSemanticCodecV1, InvalidMultiNodeProtocol, NodeWatchEventBodyV1, ResyncInventoryV1,
+    CanonicalNodeSemanticCodecV1, NodeWatchEventBodyV1, ResyncInventoryV1,
 };
 use crate::local_inventory::reducer_state::{
     DurableAssignmentObservationV1, DurableDrainObservationV1, MultiNodeReducerStateV1,
     WatchJournalStateV1,
 };
+use aos_sandbox_core::InvalidMultiNodeProtocol;
+use aos_sandbox_core::{NodeBootLineageV1, NodeCapabilitySnapshotV1};
 
 use super::{
     AuthenticatedEvidenceContextV1, InvalidMultiNodeJournal, MAXIMUM_PROTECTED_STORE_HISTORY_BYTES,
@@ -191,9 +192,8 @@ pub(super) fn decode_protected_store_history(
     if retained_digest != expected_digest {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
-    let mut decoder = BoundedReader::new(payload, |_| {
-        InvalidMultiNodeJournal::ProtectedStoreMismatch
-    });
+    let mut decoder =
+        BoundedReader::new(payload, |_| InvalidMultiNodeJournal::ProtectedStoreMismatch);
     if decoder.bytes(8)? != PROTECTED_STORE_HISTORY_MAGIC
         || decoder.u16()? != 1
         || decoder.bytes(6)? != [0; 6]
@@ -693,8 +693,8 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
                 && report.assignments().iter().any(|assignment| {
                     matches!(
                         assignment.progress(),
-                        super::super::draining::DrainAssignmentProgressV1::Contained
-                            | super::super::draining::DrainAssignmentProgressV1::Released
+                        aos_sandbox_core::DrainAssignmentProgressV1::Contained
+                            | aos_sandbox_core::DrainAssignmentProgressV1::Released
                     )
                 })
                 && !self.history_contains_verified_drain_event(

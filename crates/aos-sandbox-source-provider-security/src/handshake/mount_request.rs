@@ -149,8 +149,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// an exact pinned live predecessor yields `None`.
     pub fn try_prove_mount_provider_execution_dead_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: &aos_sandbox_mount_native::ProtectedJournalSnapshot,
         retained_session_key: &[u8],
         retained_session_record: &[u8],
     ) -> Result<Option<crate::DeadProviderExecutionV1>, SourceProviderSecurityError> {
@@ -215,8 +215,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// absent. Bootstrap sequences are fixed at one.
     pub fn initial_mount_provider_session_plan_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         head_key: Vec<u8>,
     ) -> Result<CurrentMountProviderSessionPlanV2, SourceProviderSecurityError> {
         self.revalidate()?;
@@ -273,8 +273,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// contain the supplied nonzero request/response sequence heads.
     pub fn current_mount_provider_session_plan_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         head_key: Vec<u8>,
         head_record: Vec<u8>,
         current_request_sequence: u64,
@@ -302,7 +302,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn current_original_release_session_plan_v1(
         &mut self,
-        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        writer: &aos_sandbox_mount_native::MountOriginalNativeJournalAuthorityV5<'_>,
         head_key: Vec<u8>,
         head_record: Vec<u8>,
         request_sequence: u64,
@@ -318,7 +318,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     fn current_mount_provider_session_plan_with_view_v2(
         &mut self,
         journal: &impl MountSourceAcquisitionJournalViewV2,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         head_key: Vec<u8>,
         head_record: Vec<u8>,
         current_request_sequence: u64,
@@ -403,8 +403,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[allow(clippy::too_many_arguments)]
     pub fn replacement_mount_provider_session_plan_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         head_key: Vec<u8>,
         head_record: Vec<u8>,
         predecessor_session_key: Vec<u8>,
@@ -441,8 +441,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[allow(clippy::too_many_arguments)]
     pub fn dead_replacement_mount_provider_session_plan_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         head_key: Vec<u8>,
         head_record: Vec<u8>,
         predecessor_session_key: Vec<u8>,
@@ -475,8 +475,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn recovery_replacement_mount_provider_session_plan_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         head_key: Vec<u8>,
         head_record: Vec<u8>,
         predecessor_session_key: Vec<u8>,
@@ -513,8 +513,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn barrier_idle_replacement_mount_provider_session_plan_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         head_key: Vec<u8>,
         head_record: Vec<u8>,
         predecessor_session_key: Vec<u8>,
@@ -557,8 +557,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[allow(clippy::too_many_arguments)]
     fn replacement_mount_provider_session_plan_inner(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         head_key: Vec<u8>,
         head_record: Vec<u8>,
         predecessor_session_key: Vec<u8>,
@@ -682,7 +682,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             MountProviderSessionProjectionV2,
             u64,
             u64,
-            aos_sandbox::ProtectedJournalSnapshot,
+            aos_sandbox_mount_native::ProtectedJournalSnapshot,
         ),
         SourceProviderSecurityError,
     > {
@@ -710,11 +710,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn with_barrier_idle_replacement_v4<R>(
         &mut self,
-        writer: &mut aos_sandbox::MountBarrierIdleReplacementJournalAuthorityV4<'_>,
+        writer: &mut aos_sandbox_mount_native::MountBarrierIdleReplacementJournalAuthorityV4<'_>,
         plan: CurrentMountProviderSessionPlanV2,
         operation: impl FnOnce(
             &MountProviderSessionProjectionV2,
-            &mut aos_sandbox::MountBarrierIdleReplacementJournalAuthorityV4<'_>,
+            &mut aos_sandbox_mount_native::MountBarrierIdleReplacementJournalAuthorityV4<'_>,
         ) -> R,
     ) -> Result<R, SourceProviderSecurityError> {
         let (session, _, _, _) =
@@ -738,11 +738,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn with_dead_replacement_v4<R>(
         &mut self,
-        writer: &mut aos_sandbox::MountDeadReplacementJournalAuthorityV4<'_>,
+        writer: &mut aos_sandbox_mount_native::MountDeadReplacementJournalAuthorityV4<'_>,
         plan: CurrentMountProviderSessionPlanV2,
         operation: impl FnOnce(
             &MountProviderSessionProjectionV2,
-            &mut aos_sandbox::MountDeadReplacementJournalAuthorityV4<'_>,
+            &mut aos_sandbox_mount_native::MountDeadReplacementJournalAuthorityV4<'_>,
         ) -> R,
     ) -> Result<R, SourceProviderSecurityError> {
         if plan.predecessor_death_commitment.is_none()
@@ -818,7 +818,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// successful atomic send never recreates retry authority.
     pub fn send_reserved_mount_request_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         reservation: ReservedMountProviderRequestV2,
     ) -> Result<SentMountProviderRequestV2, MountProviderRequestSendRecoveryV2> {
         self.send_reserved_mount_request_with_view(journal, reservation, |_, _| Ok(()))
@@ -972,7 +972,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// journal readback, or the atomic carrier send is still unavailable.
     pub fn retry_reserved_mount_request_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         recovery: MountProviderRequestSendRecoveryV2,
     ) -> Result<SentMountProviderRequestV2, MountProviderRequestSendRecoveryV2> {
         self.send_reserved_mount_request_v2(journal, recovery.reservation)
@@ -987,9 +987,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// floor, or selection evidence outside the validated Mount graph.
     pub fn authorize_mount_acquire_verification_floor_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
-        catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
+        catalog_journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         current_catalog: crate::ProtectedCurrentCatalogPublicationV1,
         selection_acquisition_key: Option<Vec<u8>>,
     ) -> Result<AuthorizedMountAcquireVerificationFloorV2, SourceProviderSecurityError> {
@@ -1069,8 +1069,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// key, or signing failure.
     pub fn prepare_acquire_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        catalog_journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         plan: CurrentMountProviderSessionPlanV2,
         request: AcquireSourceRequestV1,
         normalized_intent: NormalizedAcquisitionIntentV2,
@@ -1353,7 +1353,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// or response-sequence field is inconsistent.
     pub fn prepare_release_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         plan: CurrentMountProviderSessionPlanV2,
         request: ReleaseSourceRequestV1,
         acquisition_sequence: u64,
@@ -1426,7 +1426,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn prepare_original_release_signing_data_v1(
         &mut self,
-        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        writer: &aos_sandbox_mount_native::MountOriginalNativeJournalAuthorityV5<'_>,
         plan: &CurrentMountProviderSessionPlanV2,
         request: &ReleaseSourceRequestV1,
         acquisition_sequence: u64,
@@ -1459,7 +1459,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn borrow_original_release_signing_loan_v1<'data, 'key>(
         &'key mut self,
-        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        writer: &aos_sandbox_mount_native::MountOriginalNativeJournalAuthorityV5<'_>,
         plan: &CurrentMountProviderSessionPlanV2,
         request: &ReleaseSourceRequestV1,
         acquisition_sequence: u64,
@@ -1480,7 +1480,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
 
     fn validate_original_release_signing_inputs_v1(
         &mut self,
-        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        writer: &aos_sandbox_mount_native::MountOriginalNativeJournalAuthorityV5<'_>,
         plan: &CurrentMountProviderSessionPlanV2,
         request: &ReleaseSourceRequestV1,
         acquisition_sequence: u64,
@@ -1514,7 +1514,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn finish_original_release_signing_v1(
         &mut self,
-        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        writer: &aos_sandbox_mount_native::MountOriginalNativeJournalAuthorityV5<'_>,
         plan: CurrentMountProviderSessionPlanV2,
         request: &ReleaseSourceRequestV1,
         acquisition_sequence: u64,
@@ -1544,7 +1544,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// exactly match the retained predecessor lineage.
     pub fn prepare_historical_release_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         plan: CurrentMountProviderSessionPlanV2,
         request: ReleaseSourceRequestV1,
         historical: HistoricalMountReleaseAuthorizationV2,
@@ -1595,7 +1595,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// inconsistent.
     pub fn prepare_inventory_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         plan: CurrentMountProviderSessionPlanV2,
         request: InventorySourceRequestV1,
         correlations: aos_sandbox_protocol::mount_source_acquisition_state::InventoryCorrelationSetV2,
@@ -1609,7 +1609,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
 
     fn prepare_inventory_with_correlations_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         plan: CurrentMountProviderSessionPlanV2,
         request: InventorySourceRequestV1,
         correlations: aos_sandbox_protocol::mount_source_acquisition_state::InventoryCorrelationSetV2,
@@ -1654,7 +1654,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// provider and authenticated successor holder.
     pub fn prepare_historical_inventory_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         plan: CurrentMountProviderSessionPlanV2,
         request: InventorySourceRequestV1,
         correlations: aos_sandbox_protocol::mount_source_acquisition_state::InventoryCorrelationSetV2,

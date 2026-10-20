@@ -24,7 +24,7 @@
 //!                 || storage-destroy-operation[16] || hmac[32]
 //! deletion-grant = AOSEOD01 || execution[16] || create[16]
 //!                 || v2-claim-digest[32] || delete-operation[16] || hmac[32]
-//! observation   = AOSPOV01 || AOSEOR03/AOSCOA01/catalog/ZFS digest tuple
+//! observation   = AOSPOV01 || AOSEOR03/AOSCOA03/catalog/ZFS digest tuple
 //!                 || measured available/headroom || observation boot/time
 //!                 || hmac[32]
 //! ```
@@ -46,14 +46,22 @@ use crate::catalog_transition::execution_capture::{
 };
 
 mod capture_attempt;
+pub(crate) use capture_attempt::capture_worker_inputs_v3;
+pub(crate) use capture_attempt::{CaptureCreateIssuanceOriginalV3, FreshCaptureCreateCommitV3};
+pub(crate) use capture_attempt::ProtectedCaptureQueryDataV2;
+pub(crate) use capture_attempt::CaptureCompletePersistenceOriginalV2;
+pub(crate) mod startup;
+pub(crate) use startup::ExecutionOutputLedgerStartupV1;
 #[allow(
     dead_code,
     reason = "method-41 candidate awaits pinned Storage BSA verification and signed response"
 )]
 mod capture_candidate;
-pub(crate) use capture_candidate::CaptureCandidateErrorV1;
+pub(crate) use capture_candidate::{CaptureCandidateErrorV1, CandidateProbeTimeOriginalV1, CandidateProbeTimeV1, CandidateProbeV1};
 mod held_readback;
 mod physical_observation;
+mod physical_binding;
+pub(crate) use physical_binding::CapturePhysicalBindingOriginalV3;
 #[allow(
     dead_code,
     reason = "original Storage reserve awaits Controller signature and same-session Host verification"
@@ -341,6 +349,7 @@ impl ProtectedRetainedCaptureV1 {
     }
 }
 
+#[derive(Eq, PartialEq)]
 struct PhysicalBindingRecord {
     binding: ObjectDigest,
     claim_digest: [u8; 32],
@@ -368,6 +377,11 @@ pub struct ExecutionOutputLedgerV1 {
 }
 
 impl ExecutionOutputLedgerV1 {
+    pub(crate) fn held_journal_for_receiving_v1(&self) -> &Journal {
+        &self.journal
+    }
+
+
     // The credential custody rechecks its actual source and PID1 originals;
     // this closed ledger comparison independently rejects every output row,
     // including zero-byte claims and deleted/tombstoned historical captures.
@@ -460,132 +474,8 @@ impl ExecutionOutputLedgerV1 {
         key: ExecutionOutputLedgerKeyV1,
         allow_initialization: bool,
     ) -> Result<Self, ExecutionOutputLedgerErrorV1> {
-        let expected_config = configuration_bytes(capacity_bytes, &key)?;
-        match journal.get(NAMESPACE, CONFIG_KEY) {
-            Some(existing) if existing == expected_config => {}
-            Some(_) => return Err(ExecutionOutputLedgerErrorV1::Corrupt),
-            None => {
-                if !allow_initialization || journal.all_records().next().is_some() {
-                    return Err(ExecutionOutputLedgerErrorV1::Corrupt);
-                }
-                journal.commit(&JournalTransaction::new(
-                    *b"AOSOUTPUTCONFIG1",
-                    vec![JournalRecord::put(
-                        NAMESPACE,
-                        CONFIG_KEY.to_vec(),
-                        expected_config.to_vec(),
-                    )],
-                ).map_err(aos_sandbox::JournalError::from)?)?;
-            }
-        }
-
-        let mut retained_bytes = 0_u64;
-        let mut reservation_executions = HashSet::new();
-        let mut original_reserve_executions = HashSet::new();
-        for (namespace, location, value) in journal.all_records() {
-            if namespace != NAMESPACE {
-                return Err(ExecutionOutputLedgerErrorV1::Corrupt);
-            }
-            if location == CONFIG_KEY {
-                continue;
-            }
-            match location.first() {
-                Some(b'r') => {
-                    let record = decode_record(location, value, &key)?;
-                    reservation_executions.insert(record.execution);
-                    if record.state == STATE_RETAINED {
-                        retained_bytes = retained_bytes
-                            .checked_add(record.bytes)
-                            .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
-                    } else if record.bytes > 0
-                        && (journal
-                            .get(NAMESPACE, &physical_key(record.execution))
-                            .is_none()
-                            || journal
-                                .get(NAMESPACE, &deletion_key(record.execution))
-                                .is_none())
-                    {
-                        return Err(ExecutionOutputLedgerErrorV1::Corrupt);
-                    }
-                }
-                Some(b'p') => {
-                    let physical = decode_physical(location, value, &key)?;
-                    let logical_key = reservation_key(
-                        location[1..]
-                            .try_into()
-                            .map_err(|_| ExecutionOutputLedgerErrorV1::Corrupt)?,
-                    );
-                    let logical = journal
-                        .get(NAMESPACE, &logical_key)
-                        .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
-                    let logical = decode_record(&logical_key, logical, &key)?;
-                    if logical.bytes == 0
-                        || physical.claim_digest != logical.claim_digest
-                        || physical.bytes != logical.bytes
-                    {
-                        return Err(ExecutionOutputLedgerErrorV1::Corrupt);
-                    }
-                    if logical.state == STATE_DELETED {
-                        let deletion_key = deletion_key(logical.execution);
-                        let deletion = journal
-                            .get(NAMESPACE, &deletion_key)
-                            .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
-                        let deletion = decode_deletion(&deletion_key, deletion, &key)?;
-                        if deletion.binding != physical.binding
-                            || deletion.execution_delete_operation != logical.delete_operation
-                        {
-                            return Err(ExecutionOutputLedgerErrorV1::Corrupt);
-                        }
-                    }
-                }
-                Some(b'd') => {
-                    let deletion = decode_deletion(location, value, &key)?;
-                    let execution: [u8; 16] = location[1..]
-                        .try_into()
-                        .map_err(|_| ExecutionOutputLedgerErrorV1::Corrupt)?;
-                    let physical_key = physical_key(execution);
-                    let physical = journal
-                        .get(NAMESPACE, &physical_key)
-                        .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
-                    if decode_physical(&physical_key, physical, &key)?.binding != deletion.binding {
-                        return Err(ExecutionOutputLedgerErrorV1::Corrupt);
-                    }
-                    let logical_key = reservation_key(execution);
-                    let logical = journal
-                        .get(NAMESPACE, &logical_key)
-                        .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
-                    let logical = decode_record(&logical_key, logical, &key)?;
-                    if logical.state != STATE_DELETED
-                        || logical.delete_operation != deletion.execution_delete_operation
-                    {
-                        return Err(ExecutionOutputLedgerErrorV1::Corrupt);
-                    }
-                }
-                Some(b'a') => {
-                    capture_attempt::verify_replayed_capture_attempt(
-                        &journal, location, value, &key,
-                    )?;
-                }
-                Some(b'o') => {
-                    physical_observation::verify_replayed_capture_observation(
-                        &journal, location, value, &key,
-                    )?;
-                }
-                Some(b'm') => {
-                    let execution = reserve_source::verify_replayed_original_reserve(
-                        &journal, location, value, &key,
-                    )?;
-                    if !original_reserve_executions.insert(execution) {
-                        return Err(ExecutionOutputLedgerErrorV1::Corrupt);
-                    }
-                }
-                _ => return Err(ExecutionOutputLedgerErrorV1::Corrupt),
-            }
-        }
-        if reservation_executions != original_reserve_executions || retained_bytes > capacity_bytes
-        {
-            return Err(ExecutionOutputLedgerErrorV1::Corrupt);
-        }
+        initialize_configuration_v1(&mut journal, capacity_bytes, &key, allow_initialization)?;
+        let retained_bytes = load_retained_output_bytes_v1(&journal, capacity_bytes, &key)?;
         Ok(Self {
             journal,
             key,
@@ -765,59 +655,13 @@ impl ExecutionOutputLedgerV1 {
         self.reserve_test_record(record)
     }
 
-    /// Retains the exact authenticated dedicated ZFS dataset observation.
-    ///
-    /// The dataset witness must join the current accepted claim under an
-    /// external cross-owner barrier before capture effects may be enabled.
-    /// This record alone is not that barrier or a Host grant.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a missing or mismatched logical reservation,
-    /// conflicting physical reuse, or an ambiguous journal commit.
-    pub(crate) fn bind_verified_capture_dataset(
+    #[cfg(test)]
+    fn bind_verified_capture_dataset(
         &mut self,
         verified: &VerifiedCaptureDatasetV1,
         execution: [u8; 16],
     ) -> Result<(), ExecutionOutputLedgerErrorV1> {
-        let logical_key = reservation_key(execution);
-        let logical = self
-            .journal
-            .get(NAMESPACE, &logical_key)
-            .ok_or(ExecutionOutputLedgerErrorV1::MissingPhysicalBacking)?;
-        let logical = decode_record(&logical_key, logical, &self.key)?;
-        if logical.state != STATE_RETAINED
-            || !verified.matches_logical(
-                logical.execution,
-                logical.create,
-                logical.claim_digest,
-                logical.bytes,
-            )
-        {
-            return Err(ExecutionOutputLedgerErrorV1::MissingPhysicalBacking);
-        }
-        let physical_key = physical_key(execution);
-        let physical = PhysicalBindingRecord {
-            binding: verified.binding(),
-            claim_digest: logical.claim_digest,
-            bytes: logical.bytes,
-            creation_generation: verified.catalog_generation(),
-            guid: verified.guid(),
-            dataset_name: verified.dataset_name().to_owned(),
-        };
-        let bytes = encode_physical(&physical_key, &physical, &self.key)?;
-        if let Some(existing) = self.journal.get(NAMESPACE, &physical_key) {
-            return if existing == bytes {
-                Ok(())
-            } else {
-                Err(ExecutionOutputLedgerErrorV1::Conflict)
-            };
-        }
-        self.journal.commit(&JournalTransaction::new(
-            transaction_id(b"physical", &physical_key, verified.binding().as_bytes()),
-            vec![JournalRecord::put(NAMESPACE, physical_key, bytes)],
-        ).map_err(aos_sandbox::JournalError::from)?)?;
-        Ok(())
+        self.bind_verified_capture_dataset_for_test_v3(verified, execution)
     }
 
     /// Releases logical custody only after exact authenticated ZFS deletion.
@@ -969,6 +813,152 @@ impl ExecutionOutputLedgerV1 {
         self.retained_bytes = next;
         Ok(())
     }
+}
+
+fn initialize_configuration_v1(
+    journal: &mut Journal,
+    capacity_bytes: u64,
+    key: &ExecutionOutputLedgerKeyV1,
+    allow_initialization: bool,
+) -> Result<(), ExecutionOutputLedgerErrorV1> {
+    let expected_config = configuration_bytes(capacity_bytes, &key)?;
+    match journal.get(NAMESPACE, CONFIG_KEY) {
+        Some(existing) if existing == expected_config => {}
+        Some(_) => return Err(ExecutionOutputLedgerErrorV1::Corrupt),
+        None => {
+            if !allow_initialization || journal.all_records().next().is_some() {
+                return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+            }
+            journal.commit(&JournalTransaction::new(
+                *b"AOSOUTPUTCONFIG1",
+                vec![JournalRecord::put(
+                    NAMESPACE,
+                    CONFIG_KEY.to_vec(),
+                    expected_config.to_vec(),
+                )],
+            ).map_err(aos_sandbox::JournalError::from)?)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn load_retained_output_bytes_v1(
+    journal: &Journal,
+    capacity_bytes: u64,
+    key: &ExecutionOutputLedgerKeyV1,
+) -> Result<u64, ExecutionOutputLedgerErrorV1> {
+    let mut retained_bytes = 0_u64;
+    let mut reservation_executions = HashSet::new();
+    let mut original_reserve_executions = HashSet::new();
+    for (namespace, location, value) in journal.all_records() {
+        if namespace != NAMESPACE {
+            return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+        }
+        if location == CONFIG_KEY {
+            continue;
+        }
+        match location.first() {
+            Some(b'r') => {
+                let record = decode_record(location, value, &key)?;
+                reservation_executions.insert(record.execution);
+                if record.state == STATE_RETAINED {
+                    retained_bytes = retained_bytes
+                        .checked_add(record.bytes)
+                        .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
+                } else if record.bytes > 0
+                    && (journal
+                        .get(NAMESPACE, &physical_key(record.execution))
+                        .is_none()
+                        || journal
+                            .get(NAMESPACE, &deletion_key(record.execution))
+                            .is_none())
+                {
+                    return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+                }
+            }
+            Some(b'p') => {
+                let physical = decode_physical(location, value, &key)?;
+                let logical_key = reservation_key(
+                    location[1..]
+                        .try_into()
+                        .map_err(|_| ExecutionOutputLedgerErrorV1::Corrupt)?,
+                );
+                let logical = journal
+                    .get(NAMESPACE, &logical_key)
+                    .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
+                let logical = decode_record(&logical_key, logical, &key)?;
+                if logical.bytes == 0
+                    || physical.claim_digest != logical.claim_digest
+                    || physical.bytes != logical.bytes
+                {
+                    return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+                }
+                if logical.state == STATE_DELETED {
+                    let deletion_key = deletion_key(logical.execution);
+                    let deletion = journal
+                        .get(NAMESPACE, &deletion_key)
+                        .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
+                    let deletion = decode_deletion(&deletion_key, deletion, &key)?;
+                    if deletion.binding != physical.binding
+                        || deletion.execution_delete_operation != logical.delete_operation
+                    {
+                        return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+                    }
+                }
+            }
+            Some(b'd') => {
+                let deletion = decode_deletion(location, value, &key)?;
+                let execution: [u8; 16] = location[1..]
+                    .try_into()
+                    .map_err(|_| ExecutionOutputLedgerErrorV1::Corrupt)?;
+                let physical_key = physical_key(execution);
+                let physical = journal
+                    .get(NAMESPACE, &physical_key)
+                    .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
+                if decode_physical(&physical_key, physical, &key)?.binding != deletion.binding {
+                    return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+                }
+                let logical_key = reservation_key(execution);
+                let logical = journal
+                    .get(NAMESPACE, &logical_key)
+                    .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
+                let logical = decode_record(&logical_key, logical, &key)?;
+                if logical.state != STATE_DELETED
+                    || logical.delete_operation != deletion.execution_delete_operation
+                {
+                    return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+                }
+            }
+            Some(b'a') => {
+                capture_attempt::verify_replayed_capture_attempt(
+                    &journal, location, value, &key,
+                )?;
+            }
+            Some(b'c') => {
+                capture_attempt::verify_replayed_complete_v2(&journal, location, value, &key)?;
+            }
+            Some(b'o') => {
+                physical_observation::verify_replayed_capture_observation(
+                    &journal, location, value, &key,
+                )?;
+            }
+            Some(b'm') => {
+                let execution = reserve_source::verify_replayed_original_reserve(
+                    &journal, location, value, &key,
+                )?;
+                if !original_reserve_executions.insert(execution) {
+                    return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+                }
+            }
+            _ => return Err(ExecutionOutputLedgerErrorV1::Corrupt),
+        }
+    }
+    if reservation_executions != original_reserve_executions || retained_bytes > capacity_bytes
+    {
+        return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+    }
+    Ok(retained_bytes)
 }
 
 fn configuration_bytes(
@@ -1903,7 +1893,7 @@ mod tests {
             Some(CaptureZfsReadbackErrorV1::DatasetMismatch)
         );
 
-        let mut writer_attempt = AuthorizedCaptureWriterAttemptV1::for_test(protected, verified);
+        let mut writer_attempt = AuthorizedCaptureWriterAttemptV1::for_test(protected, verified.clone());
         let binding = writer_attempt.file_custody_binding();
         assert_eq!(binding.3, digest);
         writer_attempt.expire_for_test();
@@ -1912,6 +1902,15 @@ mod tests {
         assert!(matches!(
             writer_attempt.prepare_detached(&fixed_zfs),
             Err(CaptureWriterWorkerErrorV1::InvalidAttempt)
+        ));
+
+        let mut selected = AuthorizedCaptureWriterAttemptV1::for_test(protected, verified);
+        selected.expire_for_test();
+        let failure = selected.prepare_detached_retaining_v2(&fixed_zfs).err().unwrap();
+        assert_eq!(failure.retained_binding_for_test(), Some(binding));
+        assert!(matches!(
+            failure.failure().and_then(|cause| cause.downcast_ref::<CaptureWriterWorkerErrorV1>()),
+            Some(CaptureWriterWorkerErrorV1::InvalidAttempt)
         ));
     }
 
@@ -1993,6 +1992,10 @@ mod tests {
         let uncertain = attempt.execute_with(&mut backend).unwrap();
         assert_eq!(backend.create_calls, 1);
         assert!(!uncertain.reported_zero_exit);
+        assert!(matches!(uncertain.effect_failure_v2(),
+            Some(ZfsWorkerError::Protocol("scripted effect uncertainty"))));
+        let cause = std::ptr::from_ref(uncertain.effect_failure_v2().unwrap());
+        assert_eq!(std::ptr::from_ref(uncertain.effect_failure_v2().unwrap()), cause);
         assert_eq!(uncertain.record_digest, digest);
         assert_ne!(uncertain.attempt_digest.as_bytes(), &[0; 32]);
 
@@ -2005,6 +2008,7 @@ mod tests {
         let zero_exit = attempt.execute_with(&mut backend).unwrap();
         assert_eq!(backend.create_calls, 2);
         assert!(zero_exit.reported_zero_exit);
+        assert!(zero_exit.effect_failure_v2().is_none());
         assert_ne!(zero_exit.attempt_digest, uncertain.attempt_digest);
     }
 
@@ -2179,7 +2183,7 @@ mod tests {
     fn physical_binding_and_exact_zfs_tombstone_survive_replay() {
         let directory = TempDir::new().unwrap();
         let path = directory.path().join("output.journal");
-        let mut ledger = open(&path, 200).unwrap();
+        let mut ledger = open_protected(&path, 200).unwrap();
         let (requirement, catalog) = capture_fixture();
         let present = requirement.verify_present(&catalog).unwrap();
         let mut retained = record(1, 100);
@@ -2190,7 +2194,7 @@ mod tests {
             .unwrap();
         drop(ledger);
 
-        let mut ledger = open(&path, 200).unwrap();
+        let mut ledger = open_protected(&path, 200).unwrap();
 
         let grant = grant(&ledger, &retained, 6);
         assert!(matches!(
@@ -2201,7 +2205,7 @@ mod tests {
         let catalog = deleted_fixture(&requirement, catalog, 7);
         drop(ledger);
 
-        let mut ledger = open(&path, 200).unwrap();
+        let mut ledger = open_protected(&path, 200).unwrap();
         assert_eq!(ledger.retained_bytes(), 100);
         assert!(matches!(
             ledger.settle_verified_capture_deletion(
@@ -2217,7 +2221,7 @@ mod tests {
             .unwrap();
         drop(ledger);
 
-        let mut reopened = open(&path, 200).unwrap();
+        let mut reopened = open_protected(&path, 200).unwrap();
         assert_eq!(reopened.retained_bytes(), 0);
         let deletion_key = deletion_key([1; 16]);
         let record = decode_deletion(
@@ -2237,7 +2241,7 @@ mod tests {
     fn tampered_physical_identity_fails_cold_replay() {
         let directory = TempDir::new().unwrap();
         let path = directory.path().join("output.journal");
-        let mut ledger = open(&path, 200).unwrap();
+        let mut ledger = open_protected(&path, 200).unwrap();
         let (requirement, catalog) = capture_fixture();
         let present = requirement.verify_present(&catalog).unwrap();
         let mut retained = record(1, 100);
@@ -2263,7 +2267,7 @@ mod tests {
         drop(ledger);
 
         assert!(matches!(
-            open(&path, 200),
+            open_protected(&path, 200),
             Err(ExecutionOutputLedgerErrorV1::Corrupt)
         ));
     }

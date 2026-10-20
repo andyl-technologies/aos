@@ -30,10 +30,29 @@ impl ConnectedSocketBinding {
 
     /// Requires the borrowed descriptor to name this exact retained socket.
     pub(super) fn require_current(self, fd: BorrowedFd<'_>) -> Result<(), RecordBindingError> {
+        self.require_current_with_originals_v1(fd, None)
+    }
+
+    pub(super) fn require_current_with_originals_v1(
+        self,
+        fd: BorrowedFd<'_>,
+        retained: Option<&mut Option<Result<u64, crate::Error>>>,
+    ) -> Result<(), RecordBindingError> {
         #[cfg(test)]
         CURRENT_QUERY_COUNT.with(|count| count.set(count.get() + 1));
 
-        let cookie = uapi::socket_cookie(fd).map_err(|_| RecordBindingError::current_socket())?;
+        let observed = uapi::socket_cookie(fd);
+        let cookie = match retained {
+            None => observed.map_err(|_| RecordBindingError::current_socket())?,
+            Some(destination) => {
+                if destination.is_some() { return Err(RecordBindingError::current_socket()); }
+                *destination = Some(observed);
+                match destination.as_ref() {
+                    Some(Ok(cookie)) => *cookie,
+                    _ => return Err(RecordBindingError::current_socket()),
+                }
+            }
+        };
         if Self::decode_current_cookie(cookie)? != self {
             return Err(RecordBindingError::current_socket());
         }

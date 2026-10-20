@@ -12,8 +12,9 @@ use serde::Serialize;
 use super::model::{
     AuthorityPlanCommitmentV1, ExplanationDecisionV1, ExplanationEntryV1, ExplanationReasonV1,
     ExplanationStageV1, InputSourceV1, MAXIMUM_GRANTS_PER_LAYER, PolicyCompilerInputV1,
-    PolicyModelError, RedactedSubjectV1, canonical_bytes, digest,
+    PolicyModelError, RedactedSubjectV1,
 };
+use aos_sandbox_protocol::policy_data::{canonical_bytes, digest};
 
 /// Selects one closed endpoint use operation.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -146,6 +147,7 @@ pub fn canonical_endpoint_catalog_v1(
         return Err(EndpointCatalogError::InvalidCatalog);
     }
     let bytes = canonical_bytes(b"aos.sandbox.endpoint-catalog.v2", &entries)
+        .map_err(crate::PolicyModelError::from)
         .map_err(|_| EndpointCatalogError::InvalidCatalog)?;
     let media = MediaType::new(PortableMediaType::Content.as_str())
         .map_err(|_| EndpointCatalogError::InvalidCatalog)?;
@@ -394,10 +396,13 @@ pub(crate) fn compile_authority(
         ));
     }
     let endpoint_catalog = input.endpoints().descriptor().clone();
-    let commitment = AuthorityPlanCommitmentV1::new(digest(
-        b"aos.sandbox.authority-plan.v2",
-        &(&effective, &endpoints, &endpoint_catalog),
-    )?);
+    let commitment = AuthorityPlanCommitmentV1::new(
+        digest(
+            b"aos.sandbox.authority-plan.v2",
+            &(&effective, &endpoints, &endpoint_catalog),
+        )
+        .map_err(crate::PolicyModelError::from)?,
+    );
     Ok((
         AuthorityPlanV1 {
             commitment,
@@ -435,7 +440,8 @@ pub(crate) fn canonicalize_grants(grants: Vec<Grant>) -> Result<Vec<Grant>, Poli
                 grant.operations().bits(),
                 grant.delegable(),
             ),
-        )?;
+        )
+        .map_err(crate::PolicyModelError::from)?;
         if !semantics.insert(semantic) {
             return Err(PolicyModelError::DuplicateSemanticGrant);
         }
@@ -501,6 +507,7 @@ fn grant_key(grant: &Grant) -> Result<ObjectDigest, PolicyModelError> {
             grant.id(),
         ),
     )
+    .map_err(crate::PolicyModelError::from)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

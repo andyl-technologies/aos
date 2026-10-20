@@ -45,6 +45,8 @@ pub(crate) struct RetainedCacheGateChecksV1 {
 /// Selects ordinary acquisition or a borrowed original interlock.
 pub(crate) enum CacheMutationGateV1<'held> {
     Ordinary,
+    SourceProvisioning(super::super::source_provisioning::SourceProvisioningAppendLoanV1<'held>),
+    StopCleanupSource(&'held crate::controller_lifecycle_stop::StopCleanupSourceAppendAuthorizationV1<'held>),
     Retained(&'held mut HeldCacheMutationGateV1),
     Resident(&'held mut Journal, &'held mut RetainedCacheGateChecksV1),
 }
@@ -62,6 +64,12 @@ impl CacheMutationGateV1<'_> {
         self.refuse_exclusive_mutation(journal)?;
         match self {
             Self::Ordinary => journal.preflight_transactions(transactions),
+            Self::SourceProvisioning(loan) => journal.preflight_source_provisioning_v1(transactions, loan),
+            Self::StopCleanupSource(original) => {
+                let [transaction] = transactions else { return Err(JournalError::ProtectedBoundary); };
+                original.precheck_transaction_once_v1(journal, transaction)?;
+                journal.preflight_with_original_cache_gate_v1(transactions, self.reborrow())
+            }
             Self::Retained(gate) => {
                 journal.preflight_with_retained_cache_gate_v1(transactions, gate)
             }
@@ -83,6 +91,8 @@ impl CacheMutationGateV1<'_> {
         self.refuse_exclusive_mutation(journal)?;
         match self {
             Self::Ordinary => journal.commit(transaction),
+            Self::SourceProvisioning(loan) => journal.commit_source_provisioning_v1(transaction, loan),
+            Self::StopCleanupSource(_) => journal.commit_with_original_cache_gate_v1(transaction, self.reborrow()),
             Self::Retained(gate) => journal.commit_with_retained_cache_gate_v1(transaction, gate),
             Self::Resident(_, _) => {
                 journal.commit_with_original_cache_gate_v1(transaction, self.reborrow())
@@ -92,7 +102,7 @@ impl CacheMutationGateV1<'_> {
 
     pub(in crate::journal) fn check(&mut self, target: &Journal) -> Result<(), JournalError> {
         match self {
-            Self::Ordinary => super::check_unheld(target),
+            Self::Ordinary | Self::SourceProvisioning(_) | Self::StopCleanupSource(_) => super::check_unheld(target),
             Self::Retained(gate) => gate.require_for_target(target),
             Self::Resident(gate, checks) => checks.require_for_target(gate, target),
         }
@@ -103,7 +113,7 @@ impl CacheMutationGateV1<'_> {
         target: &Journal,
     ) -> Result<Option<Journal>, JournalError> {
         match self {
-            Self::Ordinary => mutation_guard(target),
+            Self::Ordinary | Self::SourceProvisioning(_) | Self::StopCleanupSource(_) => mutation_guard(target),
             Self::Retained(gate) => {
                 gate.require_for_target(target)?;
                 gate.checks.state.require_new_mutation()?;
@@ -122,7 +132,7 @@ impl CacheMutationGateV1<'_> {
     // used as a mutation gate by the same caller after that read succeeds.
     fn refuse_exclusive_mutation(&mut self, target: &Journal) -> Result<(), JournalError> {
         let exclusive = match self {
-            Self::Ordinary => false,
+            Self::Ordinary | Self::SourceProvisioning(_) | Self::StopCleanupSource(_) => false,
             Self::Retained(gate) => {
                 gate.checks.state.is_exclusive()
             }
@@ -145,7 +155,7 @@ impl CacheMutationGateV1<'_> {
         length: u64,
     ) -> Result<(), JournalError> {
         match self {
-            Self::Ordinary => Ok(()),
+            Self::Ordinary | Self::SourceProvisioning(_) | Self::StopCleanupSource(_) => Ok(()),
             Self::Retained(gate) => gate.own_successor(target, transaction, sequence, length),
             Self::Resident(gate, checks) => {
                 checks.own_successor(gate, target, transaction, sequence, length)
@@ -157,6 +167,8 @@ impl CacheMutationGateV1<'_> {
     pub(crate) fn reborrow(&mut self) -> CacheMutationGateV1<'_> {
         match self {
             Self::Ordinary => CacheMutationGateV1::Ordinary,
+            Self::SourceProvisioning(loan) => CacheMutationGateV1::SourceProvisioning(*loan),
+            Self::StopCleanupSource(original) => CacheMutationGateV1::StopCleanupSource(*original),
             Self::Retained(gate) => CacheMutationGateV1::Retained(gate),
             Self::Resident(gate, checks) => CacheMutationGateV1::Resident(gate, checks),
         }
@@ -170,7 +182,7 @@ impl CacheMutationGateV1<'_> {
         result: &super::super::CommitResult,
     ) -> Result<(), JournalError> {
         match self {
-            Self::Ordinary => Err(JournalError::ProtectedBoundary),
+            Self::Ordinary | Self::SourceProvisioning(_) | Self::StopCleanupSource(_) => Err(JournalError::ProtectedBoundary),
             Self::Retained(gate) => gate.require_own_append(target, before, transaction, result),
             Self::Resident(gate, checks) => {
                 checks.require_own_append(gate, target, before, transaction, result)
@@ -238,17 +250,8 @@ impl Journal {
         let (mut gate, _) =
             Journal::open_existing_protected_at_for_uid(directory, NAME, hold_limits(), *uid)?;
         #[cfg(test)]
-        let (mut gate, _) = Journal::open_protected_directory(
-            directory,
-            state
-                .protected
-                .as_ref()
-                .ok_or(JournalError::ProtectedBoundary)?
-                .clone_directory_for_test()?,
-            NAME,
-            hold_limits(),
-            super::super::ProtectedOwnerPolicy::Exact(*uid),
-            false,
+        let (mut gate, _) = Journal::open_existing_protected_at_uid(
+            directory, NAME, hold_limits(), *uid,
         )?;
         require_named(&gate, directory, NAME, *uid, hold_limits())?;
         let current = current_gate_state(&mut gate)?;

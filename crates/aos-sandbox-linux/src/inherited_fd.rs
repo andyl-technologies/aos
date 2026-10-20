@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{Error, Result};
 
+mod network_child;
+pub use network_child::NetworkWorkerChildInitialTableV2;
+
 const SYSTEMD_ACTIVATION_FD_BASE: RawFd = 3;
 const MAXIMUM_SYSTEMD_ACTIVATION_DESCRIPTORS: usize = 1_025;
 const MOUNT_HELPER_PLAN_FD: RawFd = 3;
@@ -22,6 +25,65 @@ const DUPLICATE_FD_MINIMUM: RawFd = 64;
 
 static CLAIMED_DESCRIPTOR_NUMBERS: Mutex<BTreeSet<RawFd>> = Mutex::new(BTreeSet::new());
 static INITIAL_ACTIVATION_DUPLICATED: AtomicBool = AtomicBool::new(false);
+
+/// Keeps Storage workers' fixed one-slot aggregate-directory prefix resident through observation.
+///
+/// Slots are descriptor DATA, not launch, role or image authority. Construction
+/// performs no observation. A failed or abandoned attempt must remain resident
+/// until intentional process termination; armed Drop aborts before field release.
+#[must_use]
+pub struct StorageWorkerAggregateInitialTableV1 {
+    original: FixedInitialActivationTable<1>,
+}
+
+impl StorageWorkerAggregateInitialTableV1 {
+    /// Creates empty fixed storage without reading the descriptor table.
+    pub const fn new() -> Self {
+        Self {
+            original: FixedInitialActivationTable::new(),
+        }
+    }
+
+    /// Observes the names-derived prefix of original entry 3 once.
+    ///
+    /// # Errors
+    /// Keeps the first actual duplication, flag or complete-table refusal.
+    /// A repeated call ends observation without touching the process table.
+    pub fn observe_once(&mut self, count: usize) -> std::result::Result<(), &Error> {
+        self.original.observe_once(
+            count,
+            "Storage worker aggregate table",
+            "count exceeds one slot",
+            "observation is closed",
+        )
+    }
+
+    /// Borrows the permanently retained first observation failure.
+    pub fn failure(&self) -> Option<&Error> {
+        self.original.failure()
+    }
+
+    /// Moves the complete fixed slots once without another observation.
+    ///
+    /// The caller parks the returned array before any fallible continuation.
+    /// No failed or interrupted observation exposes its successful prefix.
+    #[must_use]
+    pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 1]> {
+        self.original.take_completed_entries()
+    }
+}
+
+impl Default for StorageWorkerAggregateInitialTableV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for StorageWorkerAggregateInitialTableV1 {
+    fn drop(&mut self) {
+        self.original.abort_if_armed();
+    }
+}
 
 /// Keeps Controller's fixed six-slot duplicate prefix resident through observation.
 ///
@@ -82,14 +144,14 @@ impl Drop for ControllerInitialActivationTableV1 {
     }
 }
 
-/// Keeps Controller's fixed eight-slot duplicate prefix resident through observation.
+/// Keeps Controller's fixed nine-slot duplicate prefix resident through observation.
 ///
 /// Slots are descriptor DATA, not launch, role or image authority. Construction
 /// performs no observation. A failed or abandoned attempt must remain resident
 /// until intentional process termination; armed Drop aborts before field release.
 #[must_use]
 pub struct ControllerResourceInitialActivationTableV1 {
-    original: FixedInitialActivationTable<8>,
+    original: FixedInitialActivationTable<9>,
 }
 
 impl ControllerResourceInitialActivationTableV1 {
@@ -100,7 +162,7 @@ impl ControllerResourceInitialActivationTableV1 {
         }
     }
 
-    /// Observes the names-derived prefix of original entries 3 through 10 once.
+    /// Observes the names-derived prefix of original entries 3 through 11 once.
     ///
     /// # Errors
     /// Keeps the first actual duplication, flag or complete-table refusal.
@@ -109,7 +171,7 @@ impl ControllerResourceInitialActivationTableV1 {
         self.original.observe_once(
             count,
             "Controller resource initial table",
-            "count exceeds eight slots",
+            "count exceeds nine slots",
             "observation is closed",
         )
     }
@@ -124,7 +186,7 @@ impl ControllerResourceInitialActivationTableV1 {
     /// The caller parks the returned array before any fallible continuation.
     /// No failed or interrupted observation exposes its successful prefix.
     #[must_use]
-    pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 8]> {
+    pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 9]> {
         self.original.take_completed_entries()
     }
 }
@@ -197,6 +259,99 @@ impl Drop for RootInitialActivationTableV1 {
         self.original.abort_if_armed();
     }
 }
+
+// These roles differ only in their fixed diagnostic label. They all retain
+// the same two-entry process-original table and abort before a failed prefix
+// can be released. A table capture supplies native DATA, never role payment.
+macro_rules! fixed_service_initial_table {
+    ($name:ident, $field:literal, $description:literal) => {
+        fixed_service_initial_table!($name, $field, $description, 2, "count exceeds two slots");
+    };
+
+    ($name:ident, $field:literal, $description:literal, $count:literal, $excess:literal) => {
+        #[doc = $description]
+        ///
+        /// The actual role receiver independently authenticates the original
+        /// PID1 channel, delivered profile and same-process resource transfer.
+        #[must_use = "retain the initial table through its actual receiving disposition"]
+        pub struct $name {
+            original: FixedInitialActivationTable<$count>,
+        }
+
+        impl $name {
+            /// Creates fixed empty custody without observing any descriptor.
+            #[must_use]
+            pub const fn new() -> Self {
+                Self { original: FixedInitialActivationTable::new() }
+            }
+
+            /// Captures exactly the fixed original entries once.
+            ///
+            /// # Errors
+            /// Retains the first native/shape failure and every acquired entry.
+            /// Reentry cannot resample the process's initial descriptor table.
+            pub fn observe_once(&mut self) -> std::result::Result<(), &Error> {
+                self.original.observe_once(
+                    $count, $field, $excess, "observation is closed",
+                )
+            }
+
+            /// Moves the same complete fixed prefix without another observation.
+            #[must_use]
+            pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; $count]> {
+                self.original.take_completed_entries()
+            }
+
+            /// Borrows the first actual initial-table refusal without resampling.
+            #[must_use]
+            pub fn failure(&self) -> Option<&Error> {
+                self.original.failure()
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl Drop for $name {
+            fn drop(&mut self) {
+                self.original.abort_if_armed();
+            }
+        }
+    };
+}
+
+fixed_service_initial_table!(
+    RuntimeBootPreparationInitialActivationTableV1,
+    "Host BootPreparation initial origin table",
+    "Retains the original publisher listener, PID1 image, profile and distinct paid source channel.",
+    4,
+    "count exceeds four slots"
+);
+
+fixed_service_initial_table!(
+    SourceSignerInitialActivationTableV1, "Source initial origin table",
+    "Retains Source's original PID1 service channel and image-delivered Root profile."
+);
+fixed_service_initial_table!(
+    OwnershipInitialActivationTableV1, "Ownership initial origin table",
+    "Retains Ownership's original PID1 service channel and fixed profile."
+);
+fixed_service_initial_table!(
+    CacheSignerInitialActivationTableV1, "Cache signer initial origin table",
+    "Retains Cache signer's original PID1 service channel and fixed profile."
+);
+
+fixed_service_initial_table!(
+    MountInitialActivationTableV4, "Mount initial origin table",
+    "Retains Mount's original Parent04 service channel and image-delivered Root profile."
+);
+fixed_service_initial_table!(
+    NetworkInitialActivationTableV4, "Network initial origin table",
+    "Retains Network's original Parent04 service channel and image-delivered Root profile."
+);
 
 struct AbortInitialCaptureUnwind;
 

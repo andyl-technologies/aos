@@ -741,10 +741,28 @@ pub(crate) fn repair_intent_record(
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<JournalRecord, StorageStateError> {
+    repair_intent_record_inner_v1(intent, key_id, secret, None)
+}
+
+pub(crate) fn repair_intent_record_receiving_v1(
+    intent: &StorageWorkspacePinRepairIntentV1,
+    key_id: [u8; 16],
+    secret: &[u8; 32],
+    receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+) -> Result<JournalRecord, StorageStateError> {
+    repair_intent_record_inner_v1(intent, key_id, secret, Some(receiving))
+}
+
+fn repair_intent_record_inner_v1(
+    intent: &StorageWorkspacePinRepairIntentV1,
+    key_id: [u8; 16],
+    secret: &[u8; 32],
+    receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+) -> Result<JournalRecord, StorageStateError> {
     Ok(JournalRecord::put(
         RecordNamespace::StorageWorkspacePinRepairIntent,
         intent.repair_operation_id().to_vec(),
-        encode_intent(intent, key_id, secret)?,
+        encode_intent_inner_v1(intent, key_id, secret, receiving)?,
     ))
 }
 
@@ -753,7 +771,22 @@ fn encode_intent(
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<Vec<u8>, StorageStateError> {
+    encode_intent_inner_v1(intent, key_id, secret, None)
+}
+
+fn encode_intent_inner_v1(
+    intent: &StorageWorkspacePinRepairIntentV1,
+    key_id: [u8; 16],
+    secret: &[u8; 32],
+    receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+) -> Result<Vec<u8>, StorageStateError> {
     intent.validate()?;
+    if let Some(receiving) = receiving {
+        let bytes = FIXED_ENCODED_BYTES.checked_add(intent.admitted_effect_record.len())
+            .ok_or(StorageStateError::InvalidValue)?;
+        receiving.reserve_encoded_capacity_v1(bytes, 0)
+            .map_err(|_| StorageStateError::Receiving)?;
+    }
     let mut bytes = Vec::with_capacity(FIXED_ENCODED_BYTES + intent.admitted_effect_record.len());
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&VERSION.to_be_bytes());

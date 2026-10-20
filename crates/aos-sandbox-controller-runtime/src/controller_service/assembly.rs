@@ -48,6 +48,15 @@ pub trait ControllerServerAssembly {
     /// Allocates empty public-listener startup slots without performing I/O.
     fn public_startup() -> Self::PublicStartup;
 
+    /// Describes the installed rich reader before its first allocation or read.
+    ///
+    /// This passive DATA is specific to this assembly's actual `PublicStartup`.
+    /// It neither admits work nor supplies authority. Enabled selected public
+    /// startup requires a complete shape under the same original Controller.
+    fn public_receiving_credential_geometry() -> Option<
+        aos_sandbox::public_api_session::ControllerStartupCredentialGeometryV1,
+    >;
+
     /// Binds a socket under the fixed Controller ownership and permission rules.
     ///
     /// # Errors
@@ -86,6 +95,7 @@ pub trait ControllerServerAssembly {
     /// A failure terminates before partial listener custody can be released.
     fn bind_public_retained(
         uid: u32,
+        credentials: Option<&mut aos_sandbox::ControllerPublicTlsReceivingV1>,
         partial: &mut Self::PublicStartup,
         destination: &mut Option<Option<Self::PublicListener>>,
         terminal: &dyn ControllerServerTerminal,
@@ -117,4 +127,21 @@ pub trait ControllerServerAssembly {
         listener: Self::DiagnosticListener,
         application: Self::Application,
     ) -> Result<(), ControllerRuntimeError>;
+}
+
+/// Returns concrete structural DATA for the trusted installed assembly.
+///
+/// This performs no IO, allocation, credential capture or resource admission.
+/// It uses the same private type/extent producers as actual selected startup;
+/// callers cannot obtain a payer, currentness witness or Native receiver.
+#[doc(hidden)]
+pub fn installed_startup_shapes_v1<A: ControllerServerAssembly>(
+    public_api: bool,
+    cache_bundle: bool,
+    publisher: bool,
+) -> (aos_sandbox::ControllerRuntimeStartupShapeV1, aos_sandbox::ControllerRuntimeCredentialShapeV1) {
+    (
+        super::runtime_receiving::startup_shape::<A>(public_api, publisher),
+        super::runtime_receiving::credential_shape::<A>(public_api, cache_bundle, publisher),
+    )
 }

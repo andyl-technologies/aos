@@ -234,7 +234,7 @@ mod tests {
         let mut producer = OriginalSourceProducerV5::default();
         producer.selected_archive_attempted = true;
         producer.selected_archive = Some(Err(OriginalProducerErrorV5::Journal(
-            aos_sandbox::JournalError::JournalTooLarge,
+            aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::JournalTooLarge,
         )));
         producer.selected_archive_postcheck = Some(OriginalProducerErrorV5::Owner(
             ProviderLedgerError::RuntimePoisoned,

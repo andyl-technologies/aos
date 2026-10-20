@@ -26,6 +26,9 @@
 mod named_storage_tests;
 mod original_control;
 
+mod trust_original;
+pub(crate) use trust_original::HostLaunchTrustOriginalV2;
+
 use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
@@ -1167,6 +1170,20 @@ impl HostOpenSshStaticTrustV1 {
         })
     }
 
+    pub(crate) fn load_receiving_v2(
+        original: &mut HostLaunchTrustOriginalV2,
+        receiving: &crate::plan::HostExecutionReceivingLoanV2<'_>,
+    ) -> Result<Self, HostOpenSshAttachRouteErrorV1> {
+        receiving.require_launch_current_v2().map_err(|_| HostOpenSshAttachRouteErrorV1::Stale)?;
+        read_fixed_credential_engine(TRUST_CREDENTIAL_PATH, MAXIMUM_ROUTE_BYTES, Some(&mut *original))?;
+        let (trust, credential_digest) = decode_deployment_trust(&original.bytes)?;
+        Ok(Self {
+            host_public_key: trust.host_public_key,
+            trusted_user_ca_public_key: trust.trusted_user_ca_public_key,
+            credential_digest,
+        })
+    }
+
     /// Returns the exact canonical server host public key line.
     #[must_use]
     pub fn host_public_key(&self) -> &str {
@@ -1365,25 +1382,52 @@ fn read_fixed_credential(
     path: &str,
     maximum: usize,
 ) -> Result<Vec<u8>, HostOpenSshAttachRouteErrorV1> {
-    let file = OpenOptions::new()
+    read_fixed_credential_engine(path, maximum, None)?
+        .ok_or(HostOpenSshAttachRouteErrorV1::TrustUnavailable)
+}
+
+fn read_fixed_credential_engine(
+    path: &str,
+    maximum: usize,
+    original: Option<&mut HostLaunchTrustOriginalV2>,
+) -> Result<Option<Vec<u8>>, HostOpenSshAttachRouteErrorV1> {
+    let mut local_file = None;
+    let mut local_metadata = None;
+    let mut local_bytes = Vec::new();
+    let mut local_read = None;
+    let selected = original.is_some();
+    let (file, metadata, bytes, read) = match original {
+        Some(original) => (&mut original.file, &mut original.metadata,
+            &mut original.bytes, &mut original.read),
+        None => (&mut local_file, &mut local_metadata, &mut local_bytes, &mut local_read),
+    };
+    *file = Some(OpenOptions::new()
         .read(true)
         .custom_flags(O_NOFOLLOW | O_CLOEXEC)
-        .open(path)
-        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+        .open(path));
+    let opened = file.as_mut().and_then(|result| result.as_mut().ok())
+        .ok_or(HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+    *metadata = Some(opened.metadata());
+    let metadata = metadata.as_ref().and_then(|result| result.as_ref().ok())
+        .ok_or(HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
     if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
         return Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable);
     }
-    let mut bytes = Vec::new();
-    file.take((maximum + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
-    if bytes.is_empty() || bytes.len() > maximum {
+    *read = Some(if selected {
+        opened.take((maximum + 1) as u64).read_to_end(bytes)
+    } else {
+        // Ordinary File::take owns and closes the leaf at this original
+        // read-return boundary, before length checks or semantic decoding.
+        let opened = match file.take() {
+            Some(Ok(file)) => file,
+            _ => return Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable),
+        };
+        opened.take((maximum + 1) as u64).read_to_end(bytes)
+    });
+    if !read.as_ref().is_some_and(Result::is_ok) || bytes.is_empty() || bytes.len() > maximum {
         return Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable);
     }
-    Ok(bytes)
+    if selected { Ok(None) } else { Ok(Some(std::mem::take(bytes))) }
 }
 
 fn decode_route_record(bytes: &[u8]) -> Result<RouteRecordV1, HostOpenSshAttachRouteErrorV1> {
@@ -1683,5 +1727,55 @@ mod tests {
             trust_digest
         );
         assert!(decode_route_record(&serde_json::to_vec(&second).unwrap()).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod retained_trust_reader_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+    #[test]
+    fn refused_trust_policy_keeps_the_actual_open_file_and_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("trust.json");
+        std::fs::write(&path, b"untrusted").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let path = path.to_str().unwrap();
+        let mut original = HostLaunchTrustOriginalV2::new();
+
+        let selected = read_fixed_credential_engine(path, MAXIMUM_ROUTE_BYTES, Some(&mut original));
+        let ordinary = read_fixed_credential(path, MAXIMUM_ROUTE_BYTES);
+
+        assert!(matches!(selected, Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable)));
+        assert!(matches!(ordinary, Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable)));
+        assert!(matches!(original.file, Some(Ok(_))));
+        assert!(matches!(original.metadata, Some(Ok(_))));
+        assert!(original.read.is_none());
+        assert!(original.bytes.is_empty());
+        let actual = original.file.as_ref().unwrap().as_ref().unwrap().metadata().unwrap();
+        let captured = original.metadata.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!((actual.dev(), actual.ino()), (captured.dev(), captured.ino()));
+    }
+
+    #[test]
+    fn refused_symlink_keeps_the_original_native_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        let link = directory.path().join("trust.json");
+        std::fs::write(&target, b"untrusted").unwrap();
+        symlink(&target, &link).unwrap();
+        let mut original = HostLaunchTrustOriginalV2::new();
+
+        let result = read_fixed_credential_engine(link.to_str().unwrap(), MAXIMUM_ROUTE_BYTES,
+            Some(&mut original));
+
+        assert!(matches!(result, Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable)));
+        let actual = original.file.as_ref().unwrap().as_ref().unwrap_err();
+        assert_eq!(actual.raw_os_error(), Some(rustix::io::Errno::LOOP.raw_os_error()));
+        let retained = original.failure().unwrap().downcast_ref::<std::io::Error>().unwrap();
+        assert!(std::ptr::eq(retained, actual));
+        assert!(original.metadata.is_none());
+        assert!(original.read.is_none());
     }
 }

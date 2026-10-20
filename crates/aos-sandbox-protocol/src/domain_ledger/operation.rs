@@ -1,6 +1,6 @@
 //! Owns canonical Operation record DATA and Operation/Effect key layouts.
 //!
-//! Both established record versions share one decoder and an intentionally
+//! The established record versions and Start-only V3 share one decoder and an intentionally
 //! unchecked encoder. The opaque Copy record holds historical state and optional
 //! V2 public metadata. Its constructor and replacement assemble DATA without
 //! admitting a transition, validating an Effect, acquiring a clock, or granting
@@ -13,6 +13,7 @@
 //! V1 (40 bytes): version=1:u8 | state:u8 | flags:u8 | reserved=0:u8 |
 //!               effect-count:u32le | runtime-intent-digest-or-zero[32]
 //! V2 (104 bytes): version=2 header with public flag | V2 public-metadata[64]
+//! V3 (184 bytes): V2 header/public metadata | accepted Start origin[80]
 //! flags: ownership-gated=0x01, public-metadata=0x02
 //! Operation key: operation-id[16]
 //! Effect key: operation-id[16] | step:u32be
@@ -41,6 +42,11 @@
 //! # }
 //! ```
 
+mod start_acceptance;
+
+pub use start_acceptance::{AcceptedStartOriginDataV1, StartNativeOriginDataV1,
+    ACCEPTED_START_ORIGIN_BYTES, START_NATIVE_ORIGIN_BYTES};
+
 use aos_sandbox_core::{ObjectDigest, OperationId};
 
 use super::public_operation::{
@@ -51,6 +57,7 @@ use super::public_operation::{
 /// Identifies the original Operation record without a public metadata tail.
 pub const RECORD_VERSION_V1: u8 = 1;
 const RECORD_VERSION_V2: u8 = 2;
+const RECORD_VERSION_V3: u8 = 3;
 const OPERATION_FLAG_OWNERSHIP_GATED: u8 = 1;
 const OPERATION_FLAG_PUBLIC: u8 = 2;
 /// Bounds the optional runtime-intent digest slot, including its zero sentinel.
@@ -60,6 +67,8 @@ pub const OPERATION_RECORD_V1_BYTES: usize = 8 + OPERATION_RUNTIME_INTENT_DIGEST
 /// Bounds the complete fixed-width V2 Operation record and public metadata tail.
 pub const OPERATION_RECORD_V2_BYTES: usize =
     OPERATION_RECORD_V1_BYTES + PUBLIC_OPERATION_RECORD_BYTES;
+/// Bounds public Start metadata and its immutable original-admission tail.
+pub const OPERATION_RECORD_V3_BYTES: usize = OPERATION_RECORD_V2_BYTES + ACCEPTED_START_ORIGIN_BYTES;
 /// Bounds an Operation key containing exactly one native operation identity.
 pub const OPERATION_KEY_BYTES: usize = 16;
 const EFFECT_KEY_BYTES: usize = 20;
@@ -80,6 +89,7 @@ pub struct OperationRecord {
     ownership_gated: bool,
     runtime_intent_digest: Option<ObjectDigest>,
     public_operation: Option<DurablePublicOperationV1>,
+    accepted_start: Option<AcceptedStartOriginDataV1>,
 }
 
 impl OperationRecord {
@@ -101,7 +111,21 @@ impl OperationRecord {
             ownership_gated,
             runtime_intent_digest,
             public_operation,
+            accepted_start: None,
         }
+    }
+
+    /// Attaches inert historical Start admission DATA without granting authority.
+    ///
+    /// Encoding remains unchecked; the sole decoder rejects a tail on another method.
+    pub const fn with_accepted_start_origin_v1(mut self, origin: AcceptedStartOriginDataV1) -> Self {
+        self.accepted_start = Some(origin);
+        self
+    }
+
+    /// Returns the immutable accepted Start origin, when historically present.
+    pub const fn accepted_start_origin_v1(self) -> Option<AcceptedStartOriginDataV1> {
+        self.accepted_start
     }
 
     /// Returns a Copy of the recorded historical state.
@@ -174,18 +198,22 @@ pub fn decode_operation_key(bytes: &[u8]) -> Result<OperationId, PublicOperation
     Ok(OperationId::from_bytes(value))
 }
 
-/// Encodes the supplied DATA using V1 or V2 according to metadata presence.
+/// Encodes historical DATA using V1, V2, or Start-only V3.
 ///
 /// Encoding is intentionally unchecked. It allocates the selected fixed width
 /// and writes fields in their established order; it grants no commit authority.
 pub fn encode_operation_record(operation: OperationRecord) -> Vec<u8> {
     let public = operation.public_operation;
-    let mut bytes = Vec::with_capacity(if public.is_some() {
+    let mut bytes = Vec::with_capacity(if operation.accepted_start.is_some() {
+        OPERATION_RECORD_V3_BYTES
+    } else if public.is_some() {
         OPERATION_RECORD_V2_BYTES
     } else {
         OPERATION_RECORD_V1_BYTES
     });
-    bytes.push(if public.is_some() {
+    bytes.push(if operation.accepted_start.is_some() {
+        RECORD_VERSION_V3
+    } else if public.is_some() {
         RECORD_VERSION_V2
     } else {
         RECORD_VERSION_V1
@@ -204,10 +232,25 @@ pub fn encode_operation_record(operation: OperationRecord) -> Vec<u8> {
     if let Some(public) = public {
         public.encode(&mut bytes);
     }
+    if let Some(origin) = operation.accepted_start {
+        origin.encode_into_v1(&mut bytes);
+    }
     bytes
 }
 
-/// Decodes a complete canonical V1 or V2 Operation record.
+/// Recognizes the version byte of a Controller Operation record as DATA.
+///
+/// Other services use the shared journal namespace with separate record
+/// formats. This discriminator selects the Controller decoder without
+/// validating the record, its transition, or any mutation authority.
+#[must_use]
+pub fn has_operation_record_version_data_v1(bytes: &[u8]) -> bool {
+    bytes.first().is_some_and(|version| {
+        matches!(*version, RECORD_VERSION_V1 | RECORD_VERSION_V2 | RECORD_VERSION_V3)
+    })
+}
+
+/// Decodes a complete canonical V1, V2, or Start-only V3 Operation record.
 ///
 /// # Errors
 /// Returns [`PublicOperationDataError::CorruptLedger`] for fixed-width, state,
@@ -216,7 +259,10 @@ pub fn encode_operation_record(operation: OperationRecord) -> Vec<u8> {
 /// count and runtime provenance precede metadata. Decoding proves DATA structure
 /// only and does not validate the enclosing Effect or current protected owners.
 pub fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, PublicOperationDataError> {
-    if bytes.len() != OPERATION_RECORD_V1_BYTES && bytes.len() != OPERATION_RECORD_V2_BYTES {
+    if bytes.len() != OPERATION_RECORD_V1_BYTES
+        && bytes.len() != OPERATION_RECORD_V2_BYTES
+        && bytes.len() != OPERATION_RECORD_V3_BYTES
+    {
         return Err(PublicOperationDataError::CorruptLedger(
             "invalid operation record version, flags, or length",
         ));
@@ -229,7 +275,8 @@ pub fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, PublicOperation
         || flags & !(OPERATION_FLAG_OWNERSHIP_GATED | OPERATION_FLAG_PUBLIC) != 0
         || (version == RECORD_VERSION_V1 && (bytes.len() != OPERATION_RECORD_V1_BYTES || public))
         || (version == RECORD_VERSION_V2 && (bytes.len() != OPERATION_RECORD_V2_BYTES || !public))
-        || !matches!(version, RECORD_VERSION_V1 | RECORD_VERSION_V2)
+        || (version == RECORD_VERSION_V3 && (bytes.len() != OPERATION_RECORD_V3_BYTES || !public))
+        || !matches!(version, RECORD_VERSION_V1 | RECORD_VERSION_V2 | RECORD_VERSION_V3)
     {
         return Err(PublicOperationDataError::CorruptLedger(
             "invalid operation record version, flags, or length",
@@ -241,8 +288,14 @@ pub fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, PublicOperation
             .map_err(|_| PublicOperationDataError::CorruptLedger("invalid effect count"))?,
     );
     let ownership_gated = flags & OPERATION_FLAG_OWNERSHIP_GATED != 0;
+    // Only explicit closed recovery tags admit a pending zero-effect
+    // record. Full metadata validation still follows the established header,
+    // count and runtime checks; ordinary zero-effect records remain terminal.
+    let closed_recovery = version == RECORD_VERSION_V2
+        && bytes.get(40) == Some(&25) && matches!(bytes.get(41), Some(1 | 2 | 3));
     if effect_count as usize > MAXIMUM_EFFECTS
-        || (effect_count == 0 && (state != OperationState::Succeeded || ownership_gated))
+        || (effect_count == 0 && (ownership_gated
+            || (state != OperationState::Succeeded && !closed_recovery)))
     {
         return Err(PublicOperationDataError::CorruptLedger(
             "invalid effect count",
@@ -276,13 +329,50 @@ pub fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, PublicOperation
         ));
     }
     let public_operation = public
-        .then(|| DurablePublicOperationV1::decode(&bytes[40..], state))
+        .then(|| DurablePublicOperationV1::decode(&bytes[40..OPERATION_RECORD_V2_BYTES], state))
         .transpose()?;
+    if state == OperationState::CommittedWithResidualCleanup
+        && (version != RECORD_VERSION_V2 || effect_count != 1 || ownership_gated
+            || runtime_intent_digest.is_some()
+            || public_operation.is_none_or(|public| public.method()
+                != crate::public_api::PublicOperationMethodV1::StopSandbox)) {
+        return Err(PublicOperationDataError::CorruptLedger("invalid residual Stop operation"));
+    }
+    if closed_recovery && (effect_count != 0 || ownership_gated
+        || runtime_intent_digest.is_some()
+        || !(matches!(state, OperationState::Accepted | OperationState::Succeeded)
+            || (state == OperationState::PermanentlyBlocked
+                && public_operation.is_some_and(|public| public.recovery_kind_v1()
+                    == crate::domain_ledger::public_operation::PublicRecoveryKindV1::StopCleanup)))) {
+        return Err(PublicOperationDataError::CorruptLedger(
+            if bytes.get(41) == Some(&1) {
+                "invalid metadata-completion operation"
+            } else {
+                "invalid cleanup-recovery operation"
+            },
+        ));
+    }
+    let accepted_start = if version == RECORD_VERSION_V3 {
+        let public = public_operation.ok_or(PublicOperationDataError::CorruptLedger(
+            "Start origin lacks public metadata",
+        ))?;
+        if public.method() != crate::public_api::PublicOperationMethodV1::StartSandbox
+            || effect_count != 1 || ownership_gated || runtime_intent_digest.is_some()
+        {
+            return Err(PublicOperationDataError::CorruptLedger("Start origin on another method"));
+        }
+        let origin = AcceptedStartOriginDataV1::decode_v1(&bytes[OPERATION_RECORD_V2_BYTES..])?;
+        if origin.accepted_clock_v1().wall_seconds() != public.accepted_wall_seconds_v1() {
+            return Err(PublicOperationDataError::CorruptLedger("Start origin accepted wall differs"));
+        }
+        Some(origin)
+    } else { None };
     Ok(OperationRecord {
         state,
         effect_count,
         ownership_gated,
         runtime_intent_digest,
         public_operation,
+        accepted_start,
     })
 }

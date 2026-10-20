@@ -8,8 +8,8 @@ use super::*;
 use aos_sandbox_source_provider_ledger::ledger::native_completion::export_result::native_export_fence_subject_v1;
 
 fn original_pending_fence_subject_v1(
-    writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
-    readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+    writer: &aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+    readback: &aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
     authorization: &super::ProviderOutcomeAuthorizationV1,
     records: &[(Vec<u8>, Vec<u8>)],
 ) -> Result<aos_sandbox_source_provider_protocol::SourceProviderNativeExportFenceV1, super::OriginalNativeSigningErrorV5> {
@@ -18,10 +18,10 @@ fn original_pending_fence_subject_v1(
         .ok_or(SourceProviderSecurityError::SessionContinuity)?;
     if authorization.method != SourceProviderMethod::Release
         || records.len() != readback.rows().keys().filter(|(namespace, _)| {
-            *namespace == aos_sandbox::RecordNamespace::SourceProviderAuthority
+            *namespace == aos_sandbox_core::RecordNamespace::SourceProviderAuthority
         }).count()
         || records.iter().any(|(key, value)| {
-            readback.rows().get(&(aos_sandbox::RecordNamespace::SourceProviderAuthority, key.clone()))
+            readback.rows().get(&(aos_sandbox_core::RecordNamespace::SourceProviderAuthority, key.clone()))
                 != Some(value)
         })
     {
@@ -43,8 +43,8 @@ impl CurrentProviderIngressSessionV1 {
     #[doc(hidden)]
     pub fn prepare_original_native_release_fence_v1(
         &mut self,
-        writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
-        readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+        writer: &aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+        readback: &aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
         authorization: &super::ProviderOutcomeAuthorizationV1,
         records: &[(Vec<u8>, Vec<u8>)],
     ) -> Result<aos_sandbox_source_provider_protocol::PreparedNativeExportFenceDataV1, super::OriginalNativeSigningErrorV5> {
@@ -70,8 +70,8 @@ impl CurrentProviderIngressSessionV1 {
     #[doc(hidden)]
     pub fn borrow_original_native_release_fence_v1<'data, 'key>(
         &'key mut self,
-        writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
-        readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+        writer: &aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+        readback: &aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
         authorization: &super::ProviderOutcomeAuthorizationV1,
         records: &[(Vec<u8>, Vec<u8>)],
         physical: &crate::ProviderSourceRootHandoffV1,
@@ -101,8 +101,8 @@ impl CurrentProviderIngressSessionV1 {
     #[doc(hidden)]
     pub fn prepare_original_pending_release_status_v1(
         &mut self,
-        writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
-        readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+        writer: &aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+        readback: &aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
         authorization: &super::ProviderOutcomeAuthorizationV1,
         records: &[(Vec<u8>, Vec<u8>)],
         fence: &aos_sandbox_source_provider_protocol::SignedSourceProviderNativeExportFenceV1,
@@ -140,8 +140,8 @@ impl CurrentProviderIngressSessionV1 {
     #[doc(hidden)]
     pub fn borrow_original_pending_release_status_v1<'data, 'key>(
         &'key mut self,
-        writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
-        readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+        writer: &aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+        readback: &aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
         authorization: &super::ProviderOutcomeAuthorizationV1,
         records: &[(Vec<u8>, Vec<u8>)],
         physical: &crate::ProviderSourceRootHandoffV1,

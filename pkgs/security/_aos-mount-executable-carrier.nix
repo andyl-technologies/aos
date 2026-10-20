@@ -1,14 +1,19 @@
 ##! Build exact systemd and Mount executable inodes with kernel fs-verity.
 {
-  mkDerivation,
   lib,
   hostPackages,
   buildPackages,
+  stdenv,
   linux,
   systemd,
   aos-sandbox-mountd,
   sourceProviderCarrier ? false,
 }: let
+  # The guest only seals and reads target executable bytes; it never runs
+  # them. Its kernel, sealer and rootfs must execute on the build machine.
+  # Retain the selected target kernel separately for the existing image join.
+  sealingKernel = if stdenv.isCross then buildPackages.linux else linux;
+
   # This closed variant changes only Mount's executable subject. PID1 retains
   # its existing init_exec_t launcher and the same carrier/sealing engine.
   daemonContext =
@@ -56,7 +61,7 @@
     test "$(grep -c '^AOS_CARRIER_INSTALL_SHA256=[0-9a-f]\{64\}$' serial-clean.log)" -eq 1
     test "$(grep -c '^AOS_CARRIER_CHMOD_SHA256=[0-9a-f]\{64\}$' serial-clean.log)" -eq 1
   '';
-  sealTool = mkDerivation {
+  sealTool = buildPackages.mkDerivation {
     pname = "aos-mount-carrier-seal";
     version = "1";
     src = ./_aos-mount-carrier-seal.c;
@@ -88,7 +93,7 @@
 
   firecrackerRootfs =
     (import ../../lib/testing/firecracker.nix {
-      pkgs = hostPackages;
+      pkgs = buildPackages;
       inherit lib;
     })
     .mkFirecrackerRootfs {
@@ -124,7 +129,8 @@
       '';
     };
 in
-  mkDerivation {
+  assert sealingKernel.version == linux.version;
+  buildPackages.mkDerivation {
     pname = "aos-mount-executable-carrier";
     version = "1";
     src = null;
@@ -171,7 +177,7 @@ in
 
           cp ${firecrackerRootfs} rootfs.img
           chmod u+w rootfs.img
-          kernel_image=$(find ${linux.vmlinux}/boot -maxdepth 1 -name 'vmlinux-*' -print)
+          kernel_image=$(find ${sealingKernel.vmlinux}/boot -maxdepth 1 -name 'vmlinux-*' -print)
           test -n "$kernel_image"
           test "$(printf '%s\n' "$kernel_image" | wc -l)" -eq 1
 
@@ -247,6 +253,10 @@ in
 
     passthru = {
       kernel = linux;
+      targetSystem = stdenv.hostPlatform.system;
+      inherit sealingKernel;
+      sealingTool = sealTool;
+      sealingRootfs = firecrackerRootfs;
       launcher = systemd;
       daemon = aos-sandbox-mountd;
       inherit sourceProviderCarrier;

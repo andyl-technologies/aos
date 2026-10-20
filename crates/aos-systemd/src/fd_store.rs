@@ -4,6 +4,15 @@
 //! the complete row set against their own typed custody state before treating
 //! any observation as authority.
 
+#[cfg(target_os = "linux")]
+mod network_original;
+
+#[cfg(target_os = "linux")]
+pub use network_original::{
+    NetworkFdStoreFailureViewV4, NetworkFdStoreFootprintV4,
+    NetworkFdStoreInspectionOriginalV4, NetworkFdStoreInspectionRefusalV4,
+};
+
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -59,6 +68,10 @@ impl SnapshotReadErrorV1 {
 
 enum SnapshotReadStorageV1<'resident> {
     Legacy,
+    Network {
+        dump: &'resident mut Option<Result<zbus::Message, zbus::Error>>,
+        parts: &'resident mut SnapshotPartsV1,
+    },
     Retained {
         dump: &'resident mut Option<Result<zbus::Message, zbus::Error>>,
         parts: &'resident mut SnapshotPartsV1,
@@ -503,8 +516,12 @@ async fn read_systemd_snapshot_from_original(
     expected_path: Option<&zbus::zvariant::OwnedObjectPath>,
     storage: SnapshotReadStorageV1<'_>,
 ) -> Result<FdStoreSnapshot, SnapshotReadFailureV1> {
+    let fixed_network = matches!(&storage, SnapshotReadStorageV1::Network { .. });
     let (mode, mut dump, mut parts) = match storage {
         SnapshotReadStorageV1::Legacy => (SnapshotReadModeV1::Legacy, None, None),
+        SnapshotReadStorageV1::Network { dump, parts } => (
+            SnapshotReadModeV1::Retained, Some(dump), Some(parts),
+        ),
         SnapshotReadStorageV1::Retained { dump, parts } => (
             SnapshotReadModeV1::Retained, Some(dump), Some(parts),
         ),
@@ -569,17 +586,33 @@ async fn read_systemd_snapshot_from_original(
     )
     .await
     .map_err(|cause| mode.bus("systemd service proxy failed", cause))?;
-    let maximum_entries = service
-        .get_property("FileDescriptorStoreMax")
-        .await
-        .map_err(|cause| mode.bus("systemd FD-store capacity read failed", cause))?;
+    let maximum_entries = {
+        #[cfg(target_os = "linux")]
+        {
+            if fixed_network {
+                service.get_uncached_property_typed("FileDescriptorStoreMax").await
+            } else {
+                service.get_property("FileDescriptorStoreMax").await
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        { service.get_property("FileDescriptorStoreMax").await }
+    }.map_err(|cause| mode.bus("systemd FD-store capacity read failed", cause))?;
     if let Some(resident) = parts.as_mut() {
         resident.maximum_entries = Some(maximum_entries);
     }
-    let reported_entries = service
-        .get_property("NFileDescriptorStore")
-        .await
-        .map_err(|cause| mode.bus("systemd FD-store count read failed", cause))?;
+    let reported_entries = {
+        #[cfg(target_os = "linux")]
+        {
+            if fixed_network {
+                service.get_uncached_property_typed("NFileDescriptorStore").await
+            } else {
+                service.get_property("NFileDescriptorStore").await
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        { service.get_property("NFileDescriptorStore").await }
+    }.map_err(|cause| mode.bus("systemd FD-store count read failed", cause))?;
     if let Some(resident) = parts.as_mut() {
         resident.reported_entries = Some(reported_entries);
     }

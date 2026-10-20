@@ -7,6 +7,8 @@
   pkg-config,
   gawk,
   linux-headers,
+  linux,
+  kernelCloneLayout ? linux.dev,
   util-linux,
   kmod,
   zlib,
@@ -142,6 +144,11 @@ in
     #          fragment, excluding mutable aliases, environment and overrides.
     #   0024 — Opt-in original PID1/component CPU, memory and PID enclosures
     #          before generators; preserve finite contexts and checked originals.
+    #   0025 — Retain fixed Source/Controller launch originals through exec and
+    #          charge bounded preparation to the original parent subdivisions.
+    #   0026 — Deliver Cache's distinct original through the same retained sender.
+    #   0027 — Select canonical Parent04 and distinct Mount/Network F/M slices,
+    #          preserving the enrolled Controller normal/recovery sender paths.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -168,6 +175,15 @@ in
       ./patches/0022-pin-online-nix-unit-fragment-before-spawn.patch
       ./patches/0023-controller-resource-enrollment.patch
       ./patches/0024-component-parent-enclosure.patch
+      ./patches/0025-source-signer-origin.patch
+      ./patches/0026-cache-signer-origin.patch
+      ./patches/0027-fixed-service-parent04.patch
+      ./patches/0028-network-worker-source-custody.patch
+      ./patches/0029-host-component-readiness-report.patch
+      ./patches/0030-boot-preparation-source-origin.patch
+      ./patches/0031-source-clone-dominant-permits.patch
+      ./patches/0032-network-worker-reaped-status.patch
+      ./patches/0033-controller-prepaid-recipient-range.patch
     ];
 
     buildDeps = [
@@ -185,6 +201,10 @@ in
       # runtimeDeps avoids a dead RPATH/RUNPATH entry (linux-headers ships no
       # shared library) and keeps the 7 MiB header tree out of the closure.
       linux-headers
+      # Preserve this exact target DATA output. Tool dependency splicing selects
+      # native packages by name and would substitute the default kernel variant.
+      # String coercion keeps its store dependency without treating it as a tool.
+      (toString kernelCloneLayout)
     ];
     # Installed helpers and the cryptsetup/ukify wrappers execute the target
     # interpreters. TPM2 supplies libtss2-esys/rc/mu and the device TCTI for
@@ -301,6 +321,18 @@ in
           PYW
                   chmod +x .python-wrapper/bin/python3
                   export PATH="$(pwd)/.python-wrapper/bin:$PATH"
+
+                  # Keep the numeric layout and its image association together.
+                  # Only these generated headers enter the source tree; none
+                  # embeds a development-output path in the running manager.
+                  clone_layout="${kernelCloneLayout}/share/aos-kernel-clone-layout-v1"
+                  for clone_header in \
+                    aos-kernel-clone-layout-v1.h \
+                    aos-kernel-clone-association-v1.h
+                  do
+                    test -s "$clone_layout/$clone_header"
+                    cp "$clone_layout/$clone_header" "src/core/$clone_header"
+                  done
 
                   # Explicit RPATH keeps systemd's own shared libs resolvable.
                   export LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib -Wl,-rpath,$out/lib/systemd"

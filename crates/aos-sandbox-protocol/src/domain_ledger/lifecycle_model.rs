@@ -205,14 +205,57 @@ pub fn canonical_dependency_postorder_is_complete(
     edges: &[LifecycleDependencyEdgeV1],
     postorder: &[LifecycleResourceV1],
 ) -> bool {
-    use std::collections::{BTreeMap, BTreeSet};
-
     if !dependency_postorder_is_complete(edges, postorder) {
         return false;
     }
+    let mut index = 0;
+    visit_canonical_dependency_order_v2(edges, postorder, |resource| {
+        let matches = postorder.get(index) == Some(&resource);
+        index += 1;
+        matches
+    })
+}
 
-    let mut incoming: BTreeMap<_, usize> = postorder.iter().map(|item| (*item, 0)).collect();
+/// Derives the canonical dependent-before-dependency order from complete DATA.
+///
+/// The caller independently authenticates every resource and edge and admits
+/// the output and same graph-validator scratch before entry. The sole ready-
+/// node walk is shared with the existing canonical validator above.
+///
+/// # Errors
+/// Refuses duplicate, cyclic, disconnected or dangling resources/edges, a root
+/// that is not the terminal dependency, or a failed bounded output reservation.
+pub fn canonical_dependency_postorder_data_v2(
+    edges: &[LifecycleDependencyEdgeV1],
+    resources: &[LifecycleResourceV1],
+    root: LifecycleResourceV1,
+) -> Result<Vec<LifecycleResourceV1>, LifecycleModelError> {
+    let mut postorder = Vec::new();
+    postorder.try_reserve_exact(resources.len()).map_err(|_| LifecycleModelError::Allocation)?;
+    if !visit_canonical_dependency_order_v2(edges, resources, |resource| {
+        postorder.push(resource);
+        true
+    }) || postorder.last() != Some(&root)
+        || !dependency_postorder_is_complete(edges, &postorder)
+    {
+        return Err(LifecycleModelError::InvalidModel);
+    }
+    Ok(postorder)
+}
+
+// This pure visitor emits only typed resource DATA. It has no native owner,
+// financial borrower, writer capability or error/IO callback.
+fn visit_canonical_dependency_order_v2(
+    edges: &[LifecycleDependencyEdgeV1],
+    resources: &[LifecycleResourceV1],
+    mut visit: impl FnMut(LifecycleResourceV1) -> bool,
+) -> bool {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut incoming: BTreeMap<_, usize> = resources.iter().map(|item| (*item, 0)).collect();
+    if incoming.len() != resources.len() { return false; }
     for edge in edges {
+        if !incoming.contains_key(&edge.dependent()) { return false; }
         let Some(count) = incoming.get_mut(&edge.dependency()) else {
             return false;
         };
@@ -223,11 +266,10 @@ pub fn canonical_dependency_postorder_is_complete(
         .filter_map(|(item, count)| (*count == 0).then_some(*item))
         .collect();
 
-    for actual in postorder {
-        if ready.pop_first() != Some(*actual) {
-            return false;
-        }
-        for edge in edges.iter().filter(|edge| edge.dependent() == *actual) {
+    for _ in resources {
+        let Some(actual) = ready.pop_first() else { return false; };
+        if !visit(actual) { return false; }
+        for edge in edges.iter().filter(|edge| edge.dependent() == actual) {
             let Some(count) = incoming.get_mut(&edge.dependency()) else {
                 return false;
             };
@@ -241,4 +283,29 @@ pub fn canonical_dependency_postorder_is_complete(
         }
     }
     ready.is_empty()
+}
+
+#[cfg(test)]
+mod canonical_order_tests {
+    use super::*;
+
+    #[test]
+    fn producer_uses_the_existing_canonical_tie_rule_and_rejects_partial_graphs() {
+        let resource = |byte| LifecycleResourceV1::Sandbox(SandboxId::from_bytes([byte; 16]));
+        let first = resource(1);
+        let second = resource(2);
+        let root = resource(3);
+        let edges = [LifecycleDependencyEdgeV1::new(first, root).unwrap(),
+            LifecycleDependencyEdgeV1::new(second, root).unwrap()];
+
+        let order = canonical_dependency_postorder_data_v2(&edges, &[root, second, first], root).unwrap();
+        assert_eq!(order, [first, second, root]);
+        assert!(canonical_dependency_postorder_is_complete(&edges, &order));
+        assert!(canonical_dependency_postorder_data_v2(&edges, &[root, first], root).is_err());
+        assert!(canonical_dependency_postorder_data_v2(&edges, &[root, second, first, first], root).is_err());
+        assert!(canonical_dependency_postorder_data_v2(&edges, &[root, second, first, resource(4)], root).is_err());
+        let cycle = [LifecycleDependencyEdgeV1::new(first, second).unwrap(),
+            LifecycleDependencyEdgeV1::new(second, first).unwrap()];
+        assert!(canonical_dependency_postorder_data_v2(&cycle, &[first, second], root).is_err());
+    }
 }

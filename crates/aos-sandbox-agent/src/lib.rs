@@ -15,6 +15,7 @@
 //! Durable execution admission and semantic commit remain with their respective
 //! protected runtime owners.
 
+pub mod capture_receiving;
 pub mod guest_attach_trust;
 pub mod guest_root_publication;
 pub mod launch;
@@ -25,6 +26,7 @@ pub mod openssh_control;
 pub mod openssh_control_channel;
 pub mod openssh_gate;
 pub mod openssh_monitor;
+pub mod openssh_receiving;
 pub mod openssh_session;
 pub mod openssh_ticket;
 pub mod protocol;
@@ -39,6 +41,7 @@ pub use model::{
 };
 pub use protocol::{
     AgentFrameV1, AgentProtocolError, AgentSealedAuthorizeReferenceV1,
+    AgentSealedSshAuthorizeReferenceV1,
     MAX_AGENT_SEALED_SPEC_BYTES_V1, decode_frame_v1, encode_frame_v1,
 };
 pub use runtime_argument_observation::{
@@ -49,3 +52,4 @@ pub use signed_outcome_packet::{
     SignedAgentOutcomePacketErrorV1, SignedAgentOutcomePacketV1,
     decode_signed_agent_outcome_packet_v1, encode_signed_agent_outcome_packet_v1,
 };
+

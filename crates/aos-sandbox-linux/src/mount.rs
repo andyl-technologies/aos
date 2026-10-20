@@ -246,6 +246,23 @@ pub struct DetachedMount {
     mount_id: MountId,
 }
 
+/// Keeps an inherited mount candidate resident after failed adoption checks.
+#[derive(Debug)]
+pub struct MountAdoptionFailureV2 {
+    fd: OwnedFd,
+    cause: Error,
+}
+
+impl MountAdoptionFailureV2 {
+    /// Borrows the actual validation error without replacing its descriptor.
+    #[must_use]
+    pub const fn cause(&self) -> &Error { &self.cause }
+
+    /// Borrows the same rejected descriptor without extracting or duplicating it.
+    #[must_use]
+    pub fn as_fd(&self) -> BorrowedFd<'_> { self.fd.as_fd() }
+}
+
 impl DetachedMount {
     /// Validates and adopts a detached-mount descriptor inherited by a helper.
     ///
@@ -259,10 +276,30 @@ impl DetachedMount {
     /// Returns an error when the descriptor cannot be inspected or secured
     /// with close-on-exec semantics.
     pub fn from_inherited(fd: OwnedFd) -> Result<Self> {
-        uapi::ensure_cloexec(fd.as_fd())?;
-        let _ = uapi::fstat(fd.as_fd())?;
-        let mount_id = MountId::from_fd(fd.as_fd())?;
-        Ok(Self { fd, mount_id })
+        Self::from_inherited_retaining_v2(fd).map_err(|failure| failure.cause)
+    }
+
+    /// Retains an inherited descriptor when the same mount checks fail.
+    ///
+    /// The caller must independently authenticate the descriptor's origin.
+    /// This mechanical disposition performs the exact existing close-on-exec,
+    /// stat and mount-ID checks; it creates no grant or detachment evidence.
+    ///
+    /// # Errors
+    /// Returns the same descriptor and actual failed check without reacquiring
+    /// a replacement descriptor or treating destruction as successful cleanup.
+    pub fn from_inherited_retaining_v2(
+        fd: OwnedFd,
+    ) -> std::result::Result<Self, MountAdoptionFailureV2> {
+        let validation = (|| {
+            uapi::ensure_cloexec(fd.as_fd())?;
+            let _ = uapi::fstat(fd.as_fd())?;
+            MountId::from_fd(fd.as_fd())
+        })();
+        match validation {
+            Ok(mount_id) => Ok(Self { fd, mount_id }),
+            Err(cause) => Err(MountAdoptionFailureV2 { fd, cause }),
+        }
     }
     /// Clones the mount containing `source` without publishing it.
     ///
@@ -435,8 +472,23 @@ impl FileSystemContext {
     /// Returns an error if the filesystem rejects its completed configuration,
     /// access is denied, or the syscall fails.
     pub fn create(self) -> Result<CreatedFileSystem> {
-        uapi::fsconfig(self.fd.as_fd(), FSCONFIG_CMD_CREATE, None, None, 0)?;
-        Ok(CreatedFileSystem { fd: self.fd })
+        self.create_retaining_v1().map_err(FileSystemCreateFailureV1::into_ordinary_error)
+    }
+
+    /// Finalizes the same filesystem context while retaining it on refusal.
+    ///
+    /// The failed context remains owned by the returned error. This native
+    /// destination supplies no filesystem policy, role or mount authority.
+    ///
+    /// # Errors
+    ///
+    /// Retains this exact context and original error when `fsconfig` refuses
+    /// superblock creation. No descriptor is duplicated or silently adopted.
+    pub fn create_retaining_v1(self) -> std::result::Result<CreatedFileSystem, FileSystemCreateFailureV1> {
+        match uapi::fsconfig(self.fd.as_fd(), FSCONFIG_CMD_CREATE, None, None, 0) {
+            Ok(()) => Ok(CreatedFileSystem { fd: self.fd }),
+            Err(error) => Err(FileSystemCreateFailureV1 { context: self, error }),
+        }
     }
 }
 
@@ -454,9 +506,94 @@ impl CreatedFileSystem {
     /// Returns an error for access denial, an invalid context, or syscall
     /// failure.
     pub fn mount(self) -> Result<DetachedMount> {
-        let fd = uapi::fsmount(self.fd.as_fd())?;
-        let mount_id = MountId::from_fd(fd.as_fd())?;
-        Ok(DetachedMount { fd, mount_id })
+        self.mount_retaining_v1().map_err(FileSystemMountFailureV1::into_ordinary_error)
+    }
+
+    /// Creates the same detached mount while retaining every reached native owner.
+    ///
+    /// This does not authenticate a source, acquire role funding, or publish
+    /// the mount. The caller retains its own policy and currentness guards.
+    ///
+    /// # Errors
+    ///
+    /// Retains the finalized context on `fsmount` failure and additionally
+    /// retains the exact returned mount descriptor if its identity read fails.
+    pub fn mount_retaining_v1(self) -> std::result::Result<DetachedMount, FileSystemMountFailureV1> {
+        let fd = match uapi::fsmount(self.fd.as_fd()) {
+            Ok(fd) => fd,
+            Err(error) => return Err(FileSystemMountFailureV1 { context: self, mount: None, error }),
+        };
+        match MountId::from_fd(fd.as_fd()) {
+            Ok(mount_id) => Ok(DetachedMount { fd, mount_id }),
+            Err(error) => Err(FileSystemMountFailureV1 { context: self, mount: Some(fd), error }),
+        }
+    }
+}
+
+/// Owns the original filesystem context and its actual creation refusal.
+#[derive(Debug)]
+pub struct FileSystemCreateFailureV1 {
+    context: FileSystemContext,
+    error: Error,
+}
+
+impl FileSystemCreateFailureV1 {
+    /// Disposes the owned failed native inputs and returns the original cause.
+    ///
+    /// Retained callers keep this whole original until their own disposition.
+    #[doc(hidden)]
+    pub fn into_ordinary_error(self) -> Error {
+        // Ordinary create drops its consumed context at the existing error
+        // return frontier. Selected callers keep this whole original instead.
+        let Self { context, error } = self;
+        drop(context);
+        error
+    }
+}
+
+impl std::fmt::Display for FileSystemCreateFailureV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.error, formatter)
+    }
+}
+
+impl std::error::Error for FileSystemCreateFailureV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+/// Owns a failed mount's finalized context and any reached mount descriptor.
+#[derive(Debug)]
+pub struct FileSystemMountFailureV1 {
+    context: CreatedFileSystem,
+    mount: Option<OwnedFd>,
+    error: Error,
+}
+
+impl FileSystemMountFailureV1 {
+    /// Disposes the owned failed native inputs and returns the original cause.
+    ///
+    /// Retained callers keep this whole original until their own disposition.
+    #[doc(hidden)]
+    pub fn into_ordinary_error(self) -> Error {
+        // Preserve the old local-FD-before-self disposal on an ordinary error.
+        let Self { context, mount, error } = self;
+        drop(mount);
+        drop(context);
+        error
+    }
+}
+
+impl std::fmt::Display for FileSystemMountFailureV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.error, formatter)
+    }
+}
+
+impl std::error::Error for FileSystemMountFailureV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
     }
 }
 
@@ -494,6 +631,41 @@ mod tests {
     use std::os::fd::OwnedFd;
 
     use super::*;
+
+    #[test]
+    fn failed_fsconfig_keeps_the_same_consumed_context_and_native_cause() {
+        let file = tempfile::tempfile().unwrap();
+        let identity = rustix::fs::fstat(&file).unwrap();
+        let descriptor = file.as_raw_fd();
+        let context = FileSystemContext { fd: file.into() };
+
+        let failure = match context.create_retaining_v1() {
+            Err(failure) => failure,
+            Ok(_) => panic!("regular file cannot be a filesystem context"),
+        };
+
+        assert_eq!(failure.context.fd.as_raw_fd(), descriptor);
+        let retained = rustix::fs::fstat(&failure.context.fd).unwrap();
+        assert_eq!((retained.st_dev, retained.st_ino), (identity.st_dev, identity.st_ino));
+        assert!(std::error::Error::source(&failure).unwrap().downcast_ref::<Error>().is_some());
+    }
+
+    #[test]
+    fn failed_fsmount_keeps_the_same_finalized_context_without_a_mount_adopter() {
+        let file = tempfile::tempfile().unwrap();
+        let descriptor = file.as_raw_fd();
+        let created = CreatedFileSystem { fd: file.into() };
+
+        let failure = match created.mount_retaining_v1() {
+            Err(failure) => failure,
+            Ok(_) => panic!("regular file cannot be a created filesystem"),
+        };
+
+        assert_eq!(failure.context.fd.as_raw_fd(), descriptor);
+        assert!(failure.mount.is_none());
+        assert!(rustix::fs::fstat(&failure.context.fd).is_ok());
+        assert!(std::error::Error::source(&failure).unwrap().downcast_ref::<Error>().is_some());
+    }
 
     #[test]
     fn ordinary_unmount_rejects_noncanonical_children_before_effects() {

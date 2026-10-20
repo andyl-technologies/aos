@@ -26,6 +26,20 @@ impl RetainedSelfExecutionGuard {
         Ok(Self { native })
     }
 
+    /// Retains actual selected native capture prefixes before classification.
+    pub(crate) fn capture_retaining() -> Result<Self, aos_sandbox_linux::self_execution::RetainedSelfExecutionCaptureError> {
+        NativeRetainedSelfExecutionGuard::capture_retaining().map(|native| Self { native })
+    }
+
+    /// Observes the same pin into the caller's actual owning destination.
+    pub(crate) fn validate_current_retaining(
+        &self,
+        destination: &mut aos_sandbox_linux::self_execution::SelfExecutionObservationV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.native.validate_current_retaining(destination)
+            .map_err(|_| BrokerSessionSecurityError::ExecutionChanged)
+    }
+
     /// Returns the boot identity pinned by the complete capture sandwich.
     pub(crate) const fn boot_id(&self) -> [u8; 16] {
         self.native.boot_id()

@@ -22,6 +22,9 @@ use super::{
     string_array_property, string_property, u32_property, u64_property,
 };
 
+#[macro_use]
+mod property_recipe;
+
 // This is the phase-0 candidate ceiling for the outer nspawn supervisor, not
 // the payload capability set. The VM probe must pin it against the packaged
 // nspawn build before the backend is enabled on a node.
@@ -65,6 +68,10 @@ const NSPAWN_ROOT_DESCRIPTOR_ROLE: &str = "aos-sandbox-root-mount-v1";
 const NSPAWN_ATTACHMENT_ANCHOR_DESCRIPTOR_ROLE: &str = "aos-sandbox-attachment-anchor-v1";
 const NSPAWN_ATTACHMENT_ANCHOR_NAMESPACE_DESCRIPTOR_ROLE: &str =
     "aos-sandbox-attachment-anchor-namespace-v1";
+const GUEST_CHANNEL_ROLE_V2: &str = "aos-sandbox-guest-agent-channel-v1";
+const GUEST_PROVISIONING_ROLE_V2: &str = "aos-sandbox-guest-agent-provisioning-v1";
+const GUEST_ATTACH_TRUST_ROLE_V2: &str = "aos-sandbox-guest-attach-trust-v1";
+const HOST_REPORT_ROLE_V2: &str = "aos-host-readiness-report";
 const NSPAWN_SUPERVISOR_SELINUX_CONTEXT: &str = "system_u:system_r:aos_nspawn_t:s0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -795,198 +802,101 @@ const fn sandbox_device_tag(device: SandboxDevice) -> u8 {
 
 impl PayloadRootContinuityProjectionV1<'_> {
     fn properties(self, spec: &SandboxUnitSpec) -> Result<Vec<TransientProperty>> {
-        let mut argv = Vec::with_capacity(spec.arguments.len() + 1);
-        argv.push(spec.command.executable.clone());
-        argv.extend(spec.arguments.iter().cloned());
-
-        let mut properties = Vec::with_capacity(self.unit_properties.len());
-        for policy in self.unit_properties {
-            let property = match policy {
-                UnitPropertyPolicyV1::Description { name, prefix } => {
-                    Some(string_property(name, format!("{prefix}{}", spec.name)))
-                }
-                UnitPropertyPolicyV1::String { name, value } => Some(string_property(name, value)),
-                UnitPropertyPolicyV1::Bool { name, value } => Some(bool_property(name, *value)),
-                UnitPropertyPolicyV1::U32 { name, value } => Some(u32_property(name, *value)),
-                UnitPropertyPolicyV1::U64 { name, value } => Some(u64_property(name, *value)),
-                UnitPropertyPolicyV1::BoolStringArray {
-                    name,
-                    allow,
-                    values,
-                } => Some(complex_property(
-                    name,
-                    (
-                        *allow,
-                        values
-                            .iter()
-                            .map(|value| (*value).to_owned())
-                            .collect::<Vec<_>>(),
-                    ),
-                )?),
-                UnitPropertyPolicyV1::StringArray { name, values } => Some(string_array_property(
-                    name,
-                    values
-                        .iter()
-                        .map(|value| (*value).to_owned())
-                        .collect::<Vec<_>>(),
-                )?),
-                UnitPropertyPolicyV1::StringPairs { name, values } => {
-                    let pairs = values
-                        .iter()
-                        .map(|(first, second)| ((*first).to_owned(), (*second).to_owned()))
-                        .collect::<Vec<_>>();
-                    Some(complex_property(name, pairs)?)
-                }
-                UnitPropertyPolicyV1::ExtraFileDescriptors { name } => {
-                    // The supervisor cannot dereference the broker's procfs
-                    // aliases, so root objects cross D-Bus as named fds.
-                    let root_fd = spec.paths.root_pin.pin.try_clone().map_err(|error| {
-                        invalid(format!("cannot duplicate nspawn root descriptor: {error}"))
-                    })?;
-                    let mut descriptors =
-                        vec![(Fd::from(root_fd), self.descriptor_roles.root.to_owned())];
-                    if let Some(anchor) = &spec.paths.attachment_anchor_pin {
-                        let source_namespace = spec
-                            .paths
-                            .attachment_anchor_namespace_pin
-                            .as_ref()
-                            .ok_or_else(|| {
-                                invalid(
-                                    "nspawn attachment anchor omitted its source mount namespace",
-                                )
-                            })?;
-                        let anchor_fd = anchor.pin.try_clone().map_err(|error| {
-                            invalid(format!(
-                                "cannot duplicate nspawn attachment-anchor descriptor: {error}"
-                            ))
-                        })?;
-                        let source_namespace_fd =
-                            source_namespace.pin.try_clone().map_err(|error| {
-                                invalid(format!(
-                                    "cannot duplicate nspawn attachment-anchor namespace: {error}"
-                                ))
-                            })?;
-                        descriptors.push((
-                            Fd::from(anchor_fd),
-                            self.descriptor_roles.attachment_anchor.to_owned(),
-                        ));
-                        descriptors.push((
-                            Fd::from(source_namespace_fd),
-                            self.descriptor_roles.attachment_anchor_namespace.to_owned(),
-                        ));
-                    }
-                    if let Some(guest) = &spec.guest_agent_descriptors {
-                        for (pin, role) in [
-                            (&guest.channel, "aos-sandbox-guest-agent-channel-v1"),
-                            (
-                                &guest.provisioning,
-                                "aos-sandbox-guest-agent-provisioning-v1",
-                            ),
-                            (&guest.attach_trust, "aos-sandbox-guest-attach-trust-v1"),
-                        ] {
-                            let descriptor = pin.pin.try_clone().map_err(|error| {
-                                invalid(format!("cannot duplicate {role} descriptor: {error}"))
-                            })?;
-                            descriptors.push((Fd::from(descriptor), role.to_owned()));
-                        }
-                    }
-                    if let Some(report) = &spec.host_canary_report {
-                        let descriptor = report.pin.try_clone().map_err(|error| {
-                            invalid(format!("cannot duplicate Host canary report descriptor: {error}"))
-                        })?;
-                        descriptors.push((Fd::from(descriptor), "aos-host-readiness-report".to_owned()));
-                    }
-                    Some(complex_property(name, descriptors)?)
-                }
-                UnitPropertyPolicyV1::Environment {
-                    name,
-                    fixed,
-                    binding_prefix,
-                } => {
-                    let mut environment = fixed
-                        .iter()
-                        .map(|value| (*value).to_owned())
-                        .collect::<Vec<_>>();
-                    if let Some(binding) = spec.launch_binding {
-                        environment.push(format!("{binding_prefix}{}", encode_hex32(binding)));
-                    }
-                    Some(string_array_property(name, environment)?)
-                }
-                UnitPropertyPolicyV1::GuardianDependency { name } => Some(string_array_property(
-                    name,
-                    vec![spec.name.guardian.to_string()],
-                )?),
-                UnitPropertyPolicyV1::ResourceU64 { name, field } => {
-                    let value = match field {
-                        ResourceU64FieldV1::TasksMax => spec.resources.tasks_max,
-                        ResourceU64FieldV1::MemoryHigh => spec.resources.memory_high_bytes,
-                        ResourceU64FieldV1::MemoryMax => spec.resources.memory_max_bytes,
-                        ResourceU64FieldV1::CpuWeight => spec.resources.cpu_weight.get(),
-                    };
-                    Some(u64_property(name, value))
-                }
-                UnitPropertyPolicyV1::DurationU64 { name, field } => {
-                    let (duration, label) = match field {
-                        DurationU64FieldV1::TimeoutStart => (spec.timeout_start, "start timeout"),
-                        DurationU64FieldV1::TimeoutStop => (spec.timeout_stop, "stop timeout"),
-                    };
-                    Some(u64_property(name, duration_micros(duration, label)?))
-                }
-                UnitPropertyPolicyV1::OptionalU64 { name, field } => {
-                    let value = match field {
-                        OptionalU64FieldV1::CpuQuota => spec
-                            .resources
-                            .cpu_quota_per_second
-                            .map(|quota| duration_micros(quota, "CPU quota"))
-                            .transpose()?,
-                        OptionalU64FieldV1::IoWeight => spec.resources.io_weight,
-                        OptionalU64FieldV1::OpenFiles => spec.resources.open_files,
-                    };
-                    value.map(|value| u64_property(name, value))
-                }
-                UnitPropertyPolicyV1::NetworkNamespace { name } => {
-                    Some(string_property(name, &spec.paths.network_namespace_path))
-                }
-                UnitPropertyPolicyV1::ExecStart {
-                    name,
-                    ignore_failure,
-                } => Some(named_exec_property(
-                    name,
-                    &spec.command.executable,
-                    argv.clone(),
-                    *ignore_failure,
-                )?),
-                UnitPropertyPolicyV1::DeviceAllow { name, rules } => {
-                    if spec.devices.is_empty() {
-                        None
-                    } else {
-                        let mut allow = Vec::with_capacity(spec.devices.len());
-                        for device in &spec.devices {
-                            let rule = rules
-                                .iter()
-                                .find(|rule| rule.device == *device)
-                                .ok_or_else(|| {
-                                    invalid("device is absent from fixed DeviceAllow policy")
-                                })?;
-                            allow.push((rule.path.to_owned(), rule.permissions.to_owned()));
-                        }
-                        Some(complex_property(name, allow)?)
-                    }
-                }
-            };
-            if let Some((name, _)) = &property {
-                debug_assert_eq!(name, policy.name());
-            }
-            properties.extend(property);
-        }
-
-        Ok(properties)
+        payload_properties_v2!(Local, unused, self, spec)
     }
 }
 
 pub(super) fn properties(spec: &SandboxUnitSpec) -> Result<Vec<TransientProperty>> {
     PAYLOAD_ROOT_CONTINUITY_PROJECTION_V1.properties(spec)
 }
+
+pub(super) fn properties_retaining_v2(
+    spec: &SandboxUnitSpec,
+    original: &mut super::payload_property_original::PayloadUnitPropertyOriginalV2,
+) -> Result<()> {
+    let projection = PAYLOAD_ROOT_CONTINUITY_PROJECTION_V1;
+    payload_properties_v2!(Retained, original, projection, spec)
+}
+
+pub(super) fn property_count_v2() -> usize { UNIT_PROPERTY_POLICY_V1.len() }
+
+pub(super) fn property_literal_bytes_v2() -> Option<usize> {
+    let mut bytes = 0usize;
+    for property in UNIT_PROPERTY_POLICY_V1 {
+        bytes = bytes.checked_add(property.name().len())?;
+        match property {
+            UnitPropertyPolicyV1::Description { prefix, .. } => {
+                bytes = bytes.checked_add(prefix.len())?;
+            }
+            UnitPropertyPolicyV1::String { value, .. } => {
+                bytes = bytes.checked_add(value.len())?;
+            }
+            UnitPropertyPolicyV1::BoolStringArray { values, .. }
+            | UnitPropertyPolicyV1::StringArray { values, .. } => {
+                for value in *values { bytes = bytes.checked_add(value.len())?; }
+            }
+            UnitPropertyPolicyV1::StringPairs { values, .. } => {
+                for (first, second) in *values {
+                    bytes = bytes.checked_add(first.len())?.checked_add(second.len())?;
+                }
+            }
+            UnitPropertyPolicyV1::ExtraFileDescriptors { .. } => {
+                for role in [NSPAWN_ROOT_DESCRIPTOR_ROLE, NSPAWN_ATTACHMENT_ANCHOR_DESCRIPTOR_ROLE,
+                    NSPAWN_ATTACHMENT_ANCHOR_NAMESPACE_DESCRIPTOR_ROLE, GUEST_CHANNEL_ROLE_V2,
+                    GUEST_PROVISIONING_ROLE_V2, GUEST_ATTACH_TRUST_ROLE_V2, HOST_REPORT_ROLE_V2,
+                    "aos-host-component-readiness-report"]
+                { bytes = bytes.checked_add(role.len())?; }
+            }
+            UnitPropertyPolicyV1::Environment { fixed, binding_prefix, .. } => {
+                for value in *fixed { bytes = bytes.checked_add(value.len())?; }
+                bytes = bytes.checked_add(binding_prefix.len())?.checked_add(64)?;
+            }
+            UnitPropertyPolicyV1::DeviceAllow { rules, .. } => {
+                let maximum = rules.iter().map(|rule| rule.path.len() + rule.permissions.len()).max().unwrap_or(0);
+                bytes = bytes.checked_add(maximum.checked_mul(super::MAX_DEVICES)?)?;
+            }
+            _ => {}
+        }
+    }
+    Some(bytes)
+}
+
+// D-Bus strings use their UTF-8 byte lengths plus fixed alignment/length
+// words. Every dynamic byte comes from the existing validated argument cap,
+// generated unit names, proc FD aliases, or the SAME fixed property vocabulary.
+pub(super) fn maximum_encoded_request_bytes_v2() -> Option<usize> {
+    let descriptor_alias = "/proc//fd/".len().checked_add(2 * (u32::MAX.ilog10() as usize + 1))?;
+    let unit_name = super::UNIT_PREFIX.len().max(super::GUARD_PREFIX.len())
+        .checked_add(32)?.checked_add(super::UNIT_SUFFIX.len())?;
+    let source_text = super::MAX_ARGUMENT_BYTES.checked_add(2 * descriptor_alias)?
+        .checked_add(4 * unit_name)?.checked_add(property_literal_bytes_v2()?)?;
+    let rows = property_namespace_entries_v2()?;
+    // Each scalar/array record has at most 32 framing/alignment bytes beyond
+    // its text; each named variant property additionally has 64. The fixed
+    // header pays eight maximal 255-byte D-Bus name/signature fields separately.
+    source_text.checked_add(rows.checked_mul(32)?)?
+        .checked_add(property_count_v2().checked_mul(64)?)?
+        .checked_add(16 + 8 * (8 + 4 + 255 + 1))
+}
+
+pub(super) fn property_namespace_entries_v2() -> Option<usize> {
+    let mut entries = UNIT_PROPERTY_POLICY_V1.len();
+    for property in UNIT_PROPERTY_POLICY_V1 {
+        let rows = match property {
+            UnitPropertyPolicyV1::BoolStringArray { values, .. } => values.len().checked_add(1)?,
+            UnitPropertyPolicyV1::StringArray { values, .. } => values.len(),
+            UnitPropertyPolicyV1::StringPairs { values, .. } => values.len(),
+            UnitPropertyPolicyV1::ExtraFileDescriptors { .. } => 7,
+            UnitPropertyPolicyV1::Environment { fixed, .. } => fixed.len().checked_add(1)?,
+            UnitPropertyPolicyV1::ExecStart { .. } => super::MAX_ARGUMENTS.checked_add(2)?,
+            UnitPropertyPolicyV1::DeviceAllow { .. } => super::MAX_DEVICES,
+            _ => 0,
+        };
+        entries = entries.checked_add(rows)?;
+    }
+    Some(entries)
+}
+
 
 #[cfg(test)]
 mod tests;

@@ -1,40 +1,20 @@
-//! Canonical data shared by the existing Controller, Source, and Root owners.
+//! Native Source-genesis owner failures and shared internal field helpers.
 //!
-//! These records carry administrative provenance, not current authority. Only
-//! the held owner APIs may append a genesis or accept its independently held
-//! Root floor. The local-Root profile trusts protected Root state; it does not
-//! resist rollback of the whole host disk.
-//!
-//! ```text
-//! AOSSGC01 | version:u16=1 | reserved[6] | project[16] |
-//! AOSCSE01[224] | AOSPSC02[224] | publisher-pointer[32] |
-//! publisher-revision[32] | project-authorization-head[32] |
-//! administrative-role-tuple[32]
-//! AOSSGC02 retains the same seed and joins with exact AOSPSC03[400].
-//! ```
+//! Canonical immutable acceptance DATA lives in Protocol. This module preserves
+//! the native Source/Root error classes at the actual owner boundaries; parsing
+//! DATA alone cannot retain a writer, authenticate current heads, or append.
+
+use aos_sandbox_protocol::source_genesis_wire as genesis_wire;
 
 use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
 
-use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceVector};
-use aos_sandbox_protocol::source_project_authorization::{
-    ProjectAuthorizationSourceDataErrorV2, parse_unverified_project_authorization_claims_v2,
-};
-use sha2::{Digest as _, Sha256};
+use aos_sandbox_protocol::source_project_authorization::ProjectAuthorizationSourceDataErrorV2;
+use aos_sandbox_protocol::source_genesis_acceptance::ControllerSourceGenesisAcceptanceDataErrorV1;
 
-use super::source_seed::{
-    ControllerSourceTreeSeedErrorV1, ControllerSourceTreeSeedV1, decode_source_tree_seed_body_v1,
-};
+
+use aos_sandbox_protocol::controller_source_seed::ControllerSourceTreeSeedErrorV1;
 use crate::journal::JournalError;
-use crate::publisher_policy::{ProjectAuthorizationSourceErrorV2, PublisherPolicyError};
-
-/// Bounds one immutable Controller acceptance of the exact signed inputs.
-pub const CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V1: usize = 608;
-/// Bounds an acceptance retaining the complete signed resource envelope.
-pub const CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V2: usize = 784;
-
-const ACCEPTANCE_MAGIC: &[u8; 8] = b"AOSSGC01";
-const ACCEPTANCE_DOMAIN: &[u8] = b"aos.sandbox.source-genesis.controller-acceptance.v1\0";
-const ACCEPTANCE_DOMAIN_V2: &[u8] = b"aos.sandbox.source-genesis.controller-acceptance.v2\0";
+use crate::publisher_admin::policy::{ProjectAuthorizationSourceErrorV2, PublisherPolicyError};
 
 /// Reports a refused or incomplete held Source-genesis flight.
 #[derive(Debug, thiserror::Error)]
@@ -79,6 +59,20 @@ pub enum SourceGenesisErrorV1 {
     Subject(#[from] aos_sandbox_linux::seqpacket::SeqpacketError),
 }
 
+impl From<aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootFlightErrorV1>
+    for SourceGenesisErrorV1
+{
+    fn from(error: aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootFlightErrorV1) -> Self {
+        use aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootFlightErrorV1;
+        match error {
+            ControllerRootFlightErrorV1::Stale => Self::Stale,
+            ControllerRootFlightErrorV1::Transport(error) => Self::Transport(error),
+            ControllerRootFlightErrorV1::Kernel(error) => Self::Kernel(error),
+            ControllerRootFlightErrorV1::Subject(error) => Self::Subject(error),
+        }
+    }
+}
+
 impl From<JournalTransactionDataError> for SourceGenesisErrorV1 {
     fn from(error: JournalTransactionDataError) -> Self {
         <Self as From<JournalError>>::from(JournalError::from(error))
@@ -92,190 +86,178 @@ impl From<ProjectAuthorizationSourceDataErrorV2> for SourceGenesisErrorV1 {
     }
 }
 
-/// Retains the immutable signed input tuple accepted by the Controller owner.
-///
-/// Decoding authenticates neither the signatures nor their currentness. The
-/// held Controller consumer independently rejoins both fixed issuers and the
-/// actual current publisher/project-authorization records before use.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ControllerSourceGenesisAcceptanceRecordV1 {
-    bytes: Vec<u8>,
-    seed: [u8; 224],
+pub(crate) use aos_sandbox_ledger_replay::data::{digest_at, hash};
+
+pub(crate) fn take<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], SourceGenesisErrorV1> {
+    aos_sandbox_ledger_replay::data::take(bytes, offset).map_err(SourceGenesisErrorV1::from)
 }
 
-impl ControllerSourceGenesisAcceptanceRecordV1 {
-    pub(crate) fn new(
-        seed: [u8; 224],
-        authorization: impl AsRef<[u8]>,
-        publisher_pointer: ObjectDigest,
-        publisher_revision: ObjectDigest,
-        authorization_head: ObjectDigest,
-        administrative_roles: ObjectDigest,
-    ) -> Result<Self, SourceGenesisErrorV1> {
-        let claims = decode_source_tree_seed_body_v1(&seed[..160])?;
-        let authorization = authorization.as_ref();
-        let authorization_claims = parse_unverified_project_authorization_claims_v2(authorization)?;
-        let resource_version = authorization_claims.resource_envelope().is_some();
-        let mut bytes = vec![0; 32 + seed.len() + authorization.len() + 128];
-        bytes[..8].copy_from_slice(if resource_version { b"AOSSGC02" } else { ACCEPTANCE_MAGIC });
-        bytes[8..10].copy_from_slice(&(if resource_version { 2_u16 } else { 1 }).to_be_bytes());
-        bytes[16..32].copy_from_slice(claims.project().as_bytes());
-        bytes[32..256].copy_from_slice(&seed);
-        let joins = 256 + authorization.len();
-        bytes[256..joins].copy_from_slice(authorization);
-        bytes[joins..joins + 32].copy_from_slice(publisher_pointer.as_bytes());
-        bytes[joins + 32..joins + 64].copy_from_slice(publisher_revision.as_bytes());
-        bytes[joins + 64..joins + 96].copy_from_slice(authorization_head.as_bytes());
-        bytes[joins + 96..].copy_from_slice(administrative_roles.as_bytes());
-        Self::from_record_bytes(&bytes)
-    }
+impl From<aos_sandbox_ledger_replay::data::SourceSuccessorDataErrorV2> for SourceGenesisErrorV1 {
+    fn from(error: aos_sandbox_ledger_replay::data::SourceSuccessorDataErrorV2) -> Self {
+        use aos_sandbox_ledger_replay::data::SourceSuccessorDataErrorV2;
 
-    /// Decodes canonical data without granting an append or currentness proof.
-    ///
-    /// # Errors
-    /// Rejects wrong framing, sentinel commitments, or differing signed claims.
-    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, SourceGenesisErrorV1> {
-        let resource_version = bytes.len() == CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V2
-            && bytes.get(..8) == Some(b"AOSSGC02".as_slice())
-            && bytes.get(8..16) == Some([0, 2, 0, 0, 0, 0, 0, 0].as_slice());
-        let legacy = bytes.len() == CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V1
-            && bytes.get(..8) == Some(ACCEPTANCE_MAGIC.as_slice())
-            && bytes.get(8..16) == Some([0, 1, 0, 0, 0, 0, 0, 0].as_slice());
-        if !legacy && !resource_version {
-            return Err(SourceGenesisErrorV1::NonCanonical);
+        match error {
+            SourceSuccessorDataErrorV2::NonCanonical => Self::NonCanonical,
+            SourceSuccessorDataErrorV2::Conflict => Self::Conflict,
+            SourceSuccessorDataErrorV2::Seed(error) => Self::Seed(error),
+            SourceSuccessorDataErrorV2::Authorization(error) => Self::Authorization(error.into()),
+            SourceSuccessorDataErrorV2::AuthorizationSignature(error) => Self::Authorization(error.into()),
         }
-        let record = Self {
-            bytes: bytes.to_vec(),
-            seed: take(bytes, 32)?,
+    }
+}
+
+impl From<aos_sandbox_ledger_replay::genesis::SourceGenesisReceiptDataErrorV1> for SourceGenesisErrorV1 {
+    fn from(error: aos_sandbox_ledger_replay::genesis::SourceGenesisReceiptDataErrorV1) -> Self {
+        match error {
+            aos_sandbox_ledger_replay::genesis::SourceGenesisReceiptDataErrorV1::NonCanonical => Self::NonCanonical,
+        }
+    }
+}
+
+impl From<ControllerSourceGenesisAcceptanceDataErrorV1> for SourceGenesisErrorV1 {
+    fn from(error: ControllerSourceGenesisAcceptanceDataErrorV1) -> Self {
+        match error {
+            ControllerSourceGenesisAcceptanceDataErrorV1::NonCanonical => Self::NonCanonical,
+            ControllerSourceGenesisAcceptanceDataErrorV1::Seed(error) => Self::Seed(error),
+            ControllerSourceGenesisAcceptanceDataErrorV1::Authorization(error) => {
+                Self::Authorization(error.into())
+            }
+        }
+    }
+}
+
+impl From<crate::publisher_admin::policy::PublisherProjectGenesisErrorV1> for SourceGenesisErrorV1 {
+    fn from(error: crate::publisher_admin::policy::PublisherProjectGenesisErrorV1) -> Self {
+        use crate::publisher_admin::policy::PublisherProjectGenesisErrorV1;
+
+        match error {
+            PublisherProjectGenesisErrorV1::NonCanonical => Self::NonCanonical,
+            PublisherProjectGenesisErrorV1::Stale => Self::Stale,
+            PublisherProjectGenesisErrorV1::Publisher(error) => Self::Publisher(error),
+            PublisherProjectGenesisErrorV1::Seed(error) => Self::Seed(error),
+            PublisherProjectGenesisErrorV1::Authorization(error) => Self::Authorization(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::publisher_admin::policy::PublisherProjectGenesisErrorV1;
+
+    #[test]
+    fn publisher_historical_native_error_keeps_the_actual_inner_cause() {
+        let native = std::io::Error::other(std::io::Error::from_raw_os_error(9));
+        let original = native.get_ref().unwrap() as *const _;
+        let publisher = PublisherPolicyError::Journal(JournalError::Io(native));
+        let projected = SourceGenesisErrorV1::from(
+            PublisherProjectGenesisErrorV1::from(publisher),
+        );
+
+        let SourceGenesisErrorV1::Publisher(PublisherPolicyError::Journal(
+            JournalError::Io(actual),
+        )) = projected else {
+            panic!("Publisher historical error changed its native Source category");
         };
-        let seed_packet = record.seed_packet();
-        if &seed_packet[..8] != b"AOSCSE01" || seed_packet[8..12] != [0, 1, 0, 0] {
-            return Err(SourceGenesisErrorV1::NonCanonical);
+        assert!(std::ptr::eq(original, actual.get_ref().unwrap() as *const _));
+        assert_eq!(
+            actual.get_ref().unwrap().downcast_ref::<std::io::Error>().unwrap().raw_os_error(),
+            Some(9),
+        );
+    }
+
+    #[test]
+    fn source_data_boundary_preserves_the_existing_native_error_categories() {
+        use aos_sandbox_ledger_replay::data::SourceSuccessorDataErrorV2;
+
+        let malformed = SourceGenesisErrorV1::from(SourceSuccessorDataErrorV2::NonCanonical);
+        let authorization = SourceGenesisErrorV1::from(SourceSuccessorDataErrorV2::Authorization(
+            ProjectAuthorizationSourceDataErrorV2::NonCanonical,
+        ));
+
+        assert!(matches!(malformed, SourceGenesisErrorV1::NonCanonical));
+        assert!(matches!(authorization, SourceGenesisErrorV1::Authorization(
+            ProjectAuthorizationSourceErrorV2::NonCanonical,
+        )));
+    }
+
+    #[test]
+    fn source_owned_receipt_failure_keeps_native_noncanonical_classification() {
+        let data = aos_sandbox_ledger_replay::genesis::SourceTreeGenesisReceiptV1::decode(&[])
+            .unwrap_err();
+        let native = SourceGenesisErrorV1::from(data);
+
+        assert!(matches!(native, SourceGenesisErrorV1::NonCanonical));
+    }
+
+    #[test]
+    fn publisher_local_refusals_preserve_native_source_categories() {
+        let stale = SourceGenesisErrorV1::from(PublisherProjectGenesisErrorV1::Stale);
+        let malformed = SourceGenesisErrorV1::from(
+            PublisherProjectGenesisErrorV1::from(
+                ProjectAuthorizationSourceDataErrorV2::NonCanonical,
+            ),
+        );
+        let seed = SourceGenesisErrorV1::from(PublisherProjectGenesisErrorV1::Seed(
+            ControllerSourceTreeSeedErrorV1::Signature,
+        ));
+
+        assert!(matches!(stale, SourceGenesisErrorV1::Stale));
+        assert!(matches!(malformed, SourceGenesisErrorV1::Authorization(
+            ProjectAuthorizationSourceErrorV2::NonCanonical,
+        )));
+        assert!(matches!(seed, SourceGenesisErrorV1::Seed(
+            ControllerSourceTreeSeedErrorV1::Signature,
+        )));
+    }
+}
+
+#[cfg(test)]
+mod signature_error_projection_tests {
+    use super::*;
+    use aos_sandbox_protocol::publisher_project_authorization::ProjectAuthorizationSignatureErrorV2;
+    use aos_sandbox_ledger_replay::data::SourceSuccessorDataErrorV2;
+
+    #[test]
+    fn lower_signature_leaf_restores_the_existing_native_authorization_category() {
+        for (index, error) in [ProjectAuthorizationSignatureErrorV2::NonCanonical,
+            ProjectAuthorizationSignatureErrorV2::Stale, ProjectAuthorizationSignatureErrorV2::Signature].into_iter().enumerate() {
+            let projected = SourceGenesisErrorV1::from(SourceSuccessorDataErrorV2::from(error));
+
+            let SourceGenesisErrorV1::Authorization(actual) = projected else {
+                panic!("signature leaf changed native category");
+            };
+            assert!(match index {
+                0 =>
+                    matches!(actual, ProjectAuthorizationSourceErrorV2::NonCanonical),
+                1 =>
+                    matches!(actual, ProjectAuthorizationSourceErrorV2::Stale),
+                _ =>
+                    matches!(actual, ProjectAuthorizationSourceErrorV2::Signature),
+            });
         }
-        let seed = record.seed_claims()?;
-        let authorization = parse_unverified_project_authorization_claims_v2(record.auth_packet())?;
-        if record.project() != seed.project()
-            || authorization.project() != seed.project()
-            || authorization.request_id() != seed.request_id()
-            || authorization.limits() != seed.limits()
-            || authorization.epoch() != seed.epoch()
-            || authorization.publisher_generation() != seed.publisher_generation()
-            || authorization.publisher_head_digest() != seed.publisher_head()
-            || record.publisher_pointer() != seed.publisher_head()
-            || record.publisher_revision() != authorization.publisher_revision_digest()
-            || record.authorization_head() != seed.project_authorization_head()
-            || authorization.resource_envelope().is_some() != resource_version
-            || record.bytes[record.joins_offset()..]
-                .chunks_exact(32)
-                .any(|digest| digest == [0; 32])
-        {
-            return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+}
+
+impl From<aos_sandbox_ledger_replay::source_signer_data::SourceSignerGenesisDataErrorV1> for SourceGenesisErrorV1 {
+    fn from(error: aos_sandbox_ledger_replay::source_signer_data::SourceSignerGenesisDataErrorV1) -> Self {
+        use aos_sandbox_ledger_replay::source_signer_data::SourceSignerGenesisDataErrorV1;
+        match error {
+            SourceSignerGenesisDataErrorV1::NonCanonical => Self::NonCanonical,
+            SourceSignerGenesisDataErrorV1::Conflict => Self::Conflict,
+            SourceSignerGenesisDataErrorV1::Mechanical(cause) => Self::Journal(JournalError::from(cause)),
+            SourceSignerGenesisDataErrorV1::History(cause) => Self::Journal(JournalError::from(cause)),
+            SourceSignerGenesisDataErrorV1::SourceData(cause) => Self::from(cause),
         }
-        Ok(record)
-    }
-
-    /// Returns the exact accepted project identity.
-    #[must_use]
-    pub fn project(&self) -> ProjectId {
-        let mut project = [0; 16];
-        project.copy_from_slice(&self.bytes[16..32]);
-        ProjectId::from_bytes(project)
-    }
-
-    /// Borrows the original signed seed without reissuing it.
-    #[must_use]
-    pub fn seed_packet(&self) -> &[u8; 224] {
-        &self.seed
-    }
-
-    /// Borrows the original separate project-authorization packet.
-    #[must_use]
-    pub fn auth_packet(&self) -> &[u8] {
-        &self.bytes[256..self.joins_offset()]
-    }
-
-    pub(crate) fn seed_claims(&self) -> Result<ControllerSourceTreeSeedV1, SourceGenesisErrorV1> {
-        Ok(decode_source_tree_seed_body_v1(&self.bytes[32..192])?)
-    }
-
-    /// Returns the exact protected publisher-pointer commitment.
-    #[must_use]
-    pub fn publisher_pointer(&self) -> ObjectDigest {
-        digest_at(&self.bytes, self.joins_offset())
-    }
-
-    /// Returns the exact immutable publisher-revision commitment.
-    #[must_use]
-    pub fn publisher_revision(&self) -> ObjectDigest {
-        digest_at(&self.bytes, self.joins_offset() + 32)
-    }
-
-    /// Returns the exact retained administrative authorization head.
-    #[must_use]
-    pub fn authorization_head(&self) -> ObjectDigest {
-        digest_at(&self.bytes, self.joins_offset() + 64)
-    }
-
-    /// Returns the two independent administrative role-pin commitment.
-    #[must_use]
-    pub fn administrative_roles(&self) -> ObjectDigest {
-        digest_at(&self.bytes, self.joins_offset() + 96)
-    }
-
-    /// Borrows the canonical immutable acceptance bytes.
-    #[must_use]
-    pub fn record_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// Returns the domain-separated immutable acceptance commitment.
-    #[must_use]
-    pub fn digest(&self) -> ObjectDigest {
-        let domain = if self.bytes.len() == CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V2 {
-            ACCEPTANCE_DOMAIN_V2
-        } else {
-            ACCEPTANCE_DOMAIN
-        };
-        hash(domain, &self.bytes)
-    }
-
-    /// Returns signed resource DATA only for the complete SGC02 recipe.
-    ///
-    /// Decoding this value does not authenticate a current owner or pay capacity.
-    #[must_use]
-    pub fn resource_envelope(&self) -> Option<ResourceVector> {
-        parse_unverified_project_authorization_claims_v2(self.auth_packet())
-            .ok()
-            .and_then(|claims| claims.resource_envelope())
-    }
-
-    fn joins_offset(&self) -> usize {
-        self.bytes.len() - 128
     }
 }
 
-pub(crate) fn hash(domain: &[u8], bytes: &[u8]) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(domain)
-            .chain_update(bytes)
-            .finalize()
-            .into(),
-    )
-}
 
-pub(crate) fn take<const N: usize>(
-    bytes: &[u8],
-    offset: usize,
-) -> Result<[u8; N], SourceGenesisErrorV1> {
-    bytes
-        .get(offset..offset + N)
-        .and_then(|part| part.try_into().ok())
-        .ok_or(SourceGenesisErrorV1::NonCanonical)
-}
-
-pub(crate) fn digest_at(bytes: &[u8], offset: usize) -> ObjectDigest {
-    let mut digest = [0; 32];
-    digest.copy_from_slice(&bytes[offset..offset + 32]);
-    ObjectDigest::from_bytes(digest)
+pub(crate) fn project_source_genesis_wire_error_v1(
+    cause: genesis_wire::SourceGenesisWireErrorV1,
+) -> SourceGenesisErrorV1 {
+    match cause {
+        genesis_wire::SourceGenesisWireErrorV1::NonCanonical =>
+            SourceGenesisErrorV1::NonCanonical,
+    }
 }

@@ -31,6 +31,8 @@ pub mod keeper;
 pub mod peer;
 pub mod plan;
 pub mod service;
+mod service_original;
+pub use service_original::{MountAttachmentAnchorServiceOriginalV4, MountServiceDomainCallsiteV4, MountServiceObservationV4, MountServiceEffectOriginalV4, MountServiceInventoryOriginalV4, MountServiceSessionInputsV4};
 pub mod source_acquisition;
 pub mod source_pin;
 pub mod spawn;
@@ -48,6 +50,9 @@ pub(crate) const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
 /// Errors returned by the fixed mount broker.
 #[derive(Debug, thiserror::Error)]
 pub enum MountError {
+    /// Retains checked native append geometry without discarding its source.
+    #[error(transparent)]
+    AnchorGeometry(aos_sandbox_mount_native::MountJournalAppendReceivingDemandErrorV1),
     /// Hostile or unauthorized local input was rejected.
     #[error("mount protocol rejected request: {0}")]
     Protocol(#[from] aos_sandbox_protocol::ProtocolValidationError),
@@ -64,7 +69,13 @@ pub enum MountError {
 
 impl From<JournalTransactionDataError> for MountError {
     fn from(error: JournalTransactionDataError) -> Self {
-        Self::from(aos_sandbox::journal::JournalError::from(error))
+        Self::from(aos_sandbox_mount_native::MountJournalErrorV1::from(error))
+    }
+}
+
+impl From<aos_sandbox_mount_native::MountJournalErrorV1> for MountError {
+    fn from(error: aos_sandbox_mount_native::MountJournalErrorV1) -> Self {
+        Self::State(error.to_string())
     }
 }
 

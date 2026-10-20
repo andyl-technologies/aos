@@ -2,15 +2,22 @@
 
 The input is a normalized JSON list of records with ``source``, ``name``,
 ``version``, ``archiveSha256``, ``patch``, ``patchSha256`` and ``files``. Each
-file has ``path``, ``beforeSha256`` and ``afterSha256``. The existing staging
-archive and Cargo.lock remain unchanged. Only the explicitly selected existing
-files may change; the fixed source-built patch tool owns patch application.
+file has ``path``, ``beforeSha256`` and ``afterSha256``. An optional
+``manifestFeatureAdditions`` list declares only extra features of existing
+normal dependencies, each identified by ``target`` (null for unconditional),
+``dependency`` and sorted ``features``. A selected root Cargo.toml must retain
+every other parsed TOML field, dependency version, source and target unchanged.
+The existing staging archive and Cargo.lock remain unchanged. A null
+``beforeSha256`` selects a
+regular source file absent from that archive; all other files must match their
+original digests. The fixed source-built patch tool owns patch application.
 
 The output receipt is unsigned source-provenance DATA, never runtime authority.
 An empty recipe performs no reads, writes or subprocess invocation below.
 """
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -134,6 +141,8 @@ def validate_recipe(records):
     )
     identities = set()
     for record in records:
+        require(isinstance(record, dict), "recipe schema differs")
+        optional = ("manifestFeatureAdditions",) if "manifestFeatureAdditions" in record else ()
         exact_keys(
             record,
             (
@@ -144,7 +153,7 @@ def validate_recipe(records):
                 "patch",
                 "patchSha256",
                 "files",
-            ),
+            ) + optional,
             "recipe",
         )
         require(record["source"] == REGISTRY, "unsupported registry source")
@@ -161,6 +170,9 @@ def validate_recipe(records):
         identities.add(identity)
         digest(record["archiveSha256"])
         digest(record["patchSha256"])
+        additions = record.get("manifestFeatureAdditions", [])
+        if optional:
+            validate_manifest_feature_additions(additions)
         require(
             isinstance(record["patch"], str) and Path(record["patch"]).is_absolute(),
             "patch must be an absolute source path",
@@ -176,15 +188,18 @@ def validate_recipe(records):
             exact_keys(selected, ("path", "beforeSha256", "afterSha256"), "selected file")
             path = relative_path(selected["path"])
             require(
-                Path(path).name not in ("Cargo.toml", "Cargo.lock", CHECKSUM),
+                Path(path).name not in ("Cargo.toml", "Cargo.lock", CHECKSUM)
+                or (path == "Cargo.toml" and additions and selected["beforeSha256"] is not None),
                 "manifest or checksum patch refused",
             )
             require(not path.startswith(".cargo/"), "Cargo configuration patch refused")
-            digest(selected["beforeSha256"])
+            if selected["beforeSha256"] is not None:
+                digest(selected["beforeSha256"])
             digest(selected["afterSha256"])
             require(selected["beforeSha256"] != selected["afterSha256"], "no-op selected file")
             paths.append(path)
         require(paths == sorted(set(paths)), "selected paths must be unique and sorted")
+        require(not additions or "Cargo.toml" in paths, "manifest feature additions need a selected manifest")
     require(
         records == sorted(
             records,
@@ -192,6 +207,85 @@ def validate_recipe(records):
         ),
         "recipe must be sorted",
     )
+
+
+def validate_manifest_feature_additions(additions):
+    """Checks the finite declarations without permitting dependency creation."""
+    require(isinstance(additions, list) and 0 < len(additions) <= MAXIMUM_RECORDS,
+            "invalid manifest feature additions")
+    identities = []
+    for addition in additions:
+        exact_keys(addition, ("target", "dependency", "features"), "manifest feature addition")
+        target = addition["target"]
+        require(target is None or (isinstance(target, str) and 0 < len(target) <= 1024
+                                  and "\0" not in target), "invalid dependency target")
+        component(addition["dependency"])
+        features = addition["features"]
+        require(isinstance(features, list) and 0 < len(features) <= MAXIMUM_RECORDS,
+                "invalid added feature list")
+        for feature in features:
+            component(feature)
+        require(features == sorted(set(features)), "added features must be unique and sorted")
+        identities.append((target or "", addition["dependency"]))
+    require(identities == sorted(set(identities)), "dependency additions must be unique and sorted")
+
+
+def manifest_dependency(manifest, addition):
+    """Borrows only an existing normal dependency in the exact declared target."""
+    table = manifest
+    if addition["target"] is not None:
+        targets = table.get("target")
+        require(isinstance(targets, dict), "dependency target does not exist")
+        table = targets.get(addition["target"])
+    require(isinstance(table, dict), "dependency target does not exist")
+    dependencies = table.get("dependencies")
+    require(isinstance(dependencies, dict), "normal dependency table does not exist")
+    dependency = dependencies.get(addition["dependency"])
+    require(isinstance(dependency, dict), "existing dependency table required")
+    return dependency
+
+
+def dependency_features(dependency):
+    """Returns the existing feature set without changing its other properties."""
+    features = dependency.get("features", [])
+    require(isinstance(features, list) and len(features) <= MAXIMUM_FILES,
+            "invalid existing dependency features")
+    require(all(isinstance(feature, str) and 0 < len(feature) <= 256 for feature in features),
+            "invalid existing dependency feature")
+    require(len(features) == len(set(features)), "duplicate existing dependency feature")
+    return features
+
+
+def manifest_with_feature_additions(manifest, additions):
+    """Builds the sole permitted semantic successor from the original TOML."""
+    expected = copy.deepcopy(manifest)
+    for addition in additions:
+        dependency = manifest_dependency(expected, addition)
+        features = dependency_features(dependency)
+        require(not (set(features) & set(addition["features"])), "added feature already exists")
+        dependency["features"] = sorted(features + addition["features"])
+    return expected
+
+
+def require_manifest_feature_successor(expected, actual, additions):
+    """Rejects all semantic changes beyond the exact declared feature union."""
+    normalized = copy.deepcopy(actual)
+    for addition in additions:
+        dependency = manifest_dependency(normalized, addition)
+        dependency["features"] = sorted(dependency_features(dependency))
+    require(same_toml_value(normalized, expected),
+            "manifest changed beyond declared feature additions")
+
+
+def same_toml_value(left, right):
+    """Preserves TOML types as well as values, including boolean versus integer."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same_toml_value(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same_toml_value(a, b) for a, b in zip(left, right))
+    return left == right
 
 
 def tree_snapshot(root):
@@ -300,12 +394,20 @@ def selected_crate(staging, vendor, record, lock):
         manifest.get("package", {}).get("version") == record["version"],
         "crate manifest version differs",
     )
+    if "manifestFeatureAdditions" in record:
+        manifest_with_feature_additions(manifest, record["manifestFeatureAdditions"])
     for selected in record["files"]:
-        require(selected["path"] in before, "selected file does not exist")
-        require(
-            before[selected["path"]][0] == selected["beforeSha256"],
-            "selected before checksum differs",
-        )
+        if selected["beforeSha256"] is None:
+            require(selected["path"] not in before and selected["path"] not in directories,
+                    "created source path already exists")
+            require(all(str(parent) not in before for parent in Path(selected["path"]).parents),
+                    "created source parent is an existing file")
+        else:
+            require(selected["path"] in before, "selected file does not exist")
+            require(
+                before[selected["path"]][0] == selected["beforeSha256"],
+                "selected before checksum differs",
+            )
     return root, before, directories
 
 
@@ -327,6 +429,7 @@ def check_unified_patch(data, root, record, before):
     lines = split_lf_lines(data)
     index = 0
     selected = {item["path"] for item in record["files"]}
+    created = {item["path"] for item in record["files"] if item["beforeSha256"] is None}
     changed = set()
     while index < len(lines):
         git_path = None
@@ -354,14 +457,18 @@ def check_unified_patch(data, root, record, before):
 
         require(
             index + 1 < len(lines)
-            and lines[index].startswith(b"--- a/")
+            and (lines[index].startswith(b"--- a/") or lines[index] == b"--- /dev/null\n")
             and lines[index + 1].startswith(b"+++ b/"),
-            "non-unified, create/delete or extra patch header",
+            "non-unified, deletion or extra patch header",
         )
-        path = lines[index][6:].removesuffix(b"\n").decode("ascii")
+        creation = lines[index] == b"--- /dev/null\n"
+        path = lines[index + 1][6:].removesuffix(b"\n").decode("ascii")
         relative_path(path)
+        require(creation == (path in created), "source creation and recipe disagree")
+        require((path not in before) if creation else (path in before),
+                "source before path differs")
         require(
-            lines[index + 1] == b"+++ b/" + path.encode() + b"\n",
+            creation or lines[index] == b"--- a/" + path.encode() + b"\n",
             "rename, timestamp or path mismatch",
         )
         require(git_path is None or git_path == path, "Git and unified headers differ")
@@ -369,7 +476,7 @@ def check_unified_patch(data, root, record, before):
         changed.add(path)
         index += 2
 
-        original_lines = split_lf_lines((root / path).read_bytes())
+        original_lines = [] if creation else split_lf_lines((root / path).read_bytes())
         previous_end = 0
         delta = 0
         hunks = 0
@@ -420,12 +527,28 @@ def check_unified_patch(data, root, record, before):
 
 
 def apply_record(root, before, directories, record, patch_tool):
+    additions = record.get("manifestFeatureAdditions", [])
+    expected_manifest = None
+    if additions:
+        with (root / "Cargo.toml").open("rb") as source:
+            expected_manifest = manifest_with_feature_additions(tomllib.load(source), additions)
     patch = Path(record["patch"])
     require(
         file_hash(patch, MAXIMUM_PATCH_BYTES) == record["patchSha256"],
         "patch checksum differs",
     )
     check_unified_patch(patch.read_bytes(), root, record, before)
+
+    created = {item["path"] for item in record["files"] if item["beforeSha256"] is None}
+    expected_directories = dict(directories)
+    for path in created:
+        for parent in Path(path).parents:
+            if str(parent) != ".":
+                expected_directories.setdefault(str(parent), 0o755)
+    require(not (created & expected_directories.keys()), "created source shadows a directory")
+    require(len(before) + len(created) <= MAXIMUM_FILES
+            and len(expected_directories) <= MAXIMUM_DIRECTORIES,
+            "created source tree limit")
 
     result = subprocess.run(
         [
@@ -452,16 +575,19 @@ def apply_record(root, before, directories, record, patch_tool):
 
     after, after_directories = tree_snapshot(root)
     require(
-        after.keys() == before.keys() and after_directories == directories,
-        "patch changed tree paths or directory modes",
+        after.keys() == before.keys() | created and after_directories == expected_directories,
+        "patch changed undeclared tree paths or directory modes",
     )
     targets = {item["path"]: item["afterSha256"] for item in record["files"]}
     for path, (checksum, mode) in after.items():
-        require(mode == before[path][1], "patch changed file mode")
-        require(
-            checksum == targets.get(path, before[path][0]),
-            "unexpected patched or unselected content",
-        )
+        require(mode == (0o644 if path in created else before[path][1]),
+                "patch changed file mode")
+        expected = targets[path] if path in targets else before[path][0]
+        require(checksum == expected, "unexpected patched or unselected content")
+
+    if additions:
+        with (root / "Cargo.toml").open("rb") as source:
+            require_manifest_feature_successor(expected_manifest, tomllib.load(source), additions)
 
     checksums = {
         "files": {path: after[path][0] for path in sorted(after) if path != CHECKSUM},

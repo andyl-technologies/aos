@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::journal::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
 };
@@ -22,6 +22,9 @@ use crate::namespace_catalog::{
     NetworkNamespaceLifecycleAuthorityV1, NetworkNamespaceLifecycleTransitionV1,
     NetworkNamespaceObservedStateKindV1, NetworkNamespaceObservedStateV1,
 };
+
+mod startup;
+pub(crate) use startup::NetworkLifecycleOpeningOriginalV4;
 
 const MAGIC: &[u8; 8] = b"AOSNLC01";
 const VERSION: u16 = 1;
@@ -53,7 +56,7 @@ fn journal_limits() -> JournalLimits {
 pub enum NetworkLifecycleStateError {
     /// The protected journal failed validation, locking, or publication.
     #[error("network lifecycle journal failure: {0}")]
-    Journal(#[from] aos_sandbox::JournalError),
+    Journal(#[from] crate::journal::JournalError),
     /// A sealed record or its authority/effect links did not authenticate.
     #[error("network lifecycle authority links are invalid")]
     AuthorityLink,
@@ -69,6 +72,9 @@ pub enum NetworkLifecycleStateError {
     /// The bounded lifecycle journal epoch is exhausted.
     #[error("network lifecycle operation epoch is exhausted")]
     ResourceExhausted,
+    /// The same enrolled receiving loan refused a reached append frontier.
+    #[error("network lifecycle receiving frontier refused")]
+    Receiving,
     /// The requested phase or verified result is not current.
     #[error("network lifecycle phase transition is invalid")]
     InvalidTransition,
@@ -343,42 +349,10 @@ impl NetworkLifecycleStateStore {
     }
 
     fn from_journal(
-        journal: Journal,
-        authority: &NetworkAuthorityV1,
+        journal: Journal, authority: &NetworkAuthorityV1,
     ) -> Result<Self, NetworkLifecycleStateError> {
-        let mut records = BTreeMap::new();
-        for (key, sealed) in journal.records(RecordNamespace::Operation) {
-            let request_id: [u8; 16] = key
-                .try_into()
-                .map_err(|_| NetworkLifecycleStateError::CorruptRecord)?;
-            let payload = authority
-                .open_local(&request_id, record_domain()?, sealed)
-                .map_err(|_| NetworkLifecycleStateError::AuthorityLink)?;
-            let record = decode_record(payload)?;
-            if record.request_id != request_id || records.insert(request_id, record).is_some() {
-                return Err(NetworkLifecycleStateError::CorruptRecord);
-            }
-        }
-
-        let mut heads = BTreeMap::new();
-        for (key, value) in journal.records(RecordNamespace::NetworkResourceInventory) {
-            let handle: [u8; 32] = key
-                .try_into()
-                .map_err(|_| NetworkLifecycleStateError::CorruptRecord)?;
-            let request_id: [u8; 16] = value
-                .try_into()
-                .map_err(|_| NetworkLifecycleStateError::CorruptRecord)?;
-            if heads.insert(handle, request_id).is_some() {
-                return Err(NetworkLifecycleStateError::CorruptRecord);
-            }
-        }
-
-        validate_materialized_view(&journal, authority, &records, &heads)?;
-        Ok(Self {
-            journal,
-            records,
-            heads,
-        })
+        let (records, heads) = replay_models_v4(&journal, authority)?;
+        Ok(Self { journal, records, heads })
     }
 
     pub(crate) fn current_fence(&self, sandbox_id: &[u8; 16]) -> Option<&[u8]> {
@@ -435,6 +409,16 @@ impl NetworkLifecycleStateStore {
         &mut self,
         authority: &NetworkAuthorityV1,
         record: DurableNetworkLifecycleRecord,
+    ) -> Result<NetworkLifecycleBeginOutcome, NetworkLifecycleStateError> {
+        self.begin_authorized_guarded_v4(authority, record, None)
+    }
+
+    pub(crate) fn begin_authorized_guarded_v4(
+        &mut self,
+        authority: &NetworkAuthorityV1,
+        record: DurableNetworkLifecycleRecord,
+        before_commit: Option<&mut dyn FnMut(&Journal, &JournalTransaction)
+            -> Result<(), NetworkLifecycleStateError>>,
     ) -> Result<NetworkLifecycleBeginOutcome, NetworkLifecycleStateError> {
         if let Some(existing) = self.records.get(&record.request_id) {
             if !same_intent(existing, &record) {
@@ -507,7 +491,10 @@ impl NetworkLifecycleStateStore {
                     record.request_id.to_vec(),
                 ),
             ],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(crate::journal::JournalError::from)?;
+        if let Some(before_commit) = before_commit {
+            before_commit(&self.journal, &transaction)?;
+        }
         self.journal.commit(&transaction)?;
         let effect_digest = record.effect_digest;
         self.heads.insert(handle, record.request_id);
@@ -521,6 +508,17 @@ impl NetworkLifecycleStateStore {
         request_id: [u8; 16],
         effect_digest: ObjectDigest,
     ) -> Result<AmbiguousNetworkLifecycleDispatchV1, NetworkLifecycleStateError> {
+        self.mark_effect_ambiguous_guarded_v4(authority, request_id, effect_digest, None)
+    }
+
+    pub(crate) fn mark_effect_ambiguous_guarded_v4(
+        &mut self,
+        authority: &NetworkAuthorityV1,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+        before_commit: Option<&mut dyn FnMut(&Journal, &JournalTransaction)
+            -> Result<(), NetworkLifecycleStateError>>,
+    ) -> Result<AmbiguousNetworkLifecycleDispatchV1, NetworkLifecycleStateError> {
         let mut record = self.exact_current(request_id, effect_digest)?.clone();
         if record.phase != DurableNetworkLifecyclePhase::Prepared
             || record.authority.kernel_plan_digest.as_bytes() == &[0; 32]
@@ -529,7 +527,7 @@ impl NetworkLifecycleStateStore {
         }
         record.phase = DurableNetworkLifecyclePhase::Ambiguous;
         let dispatch = ambiguous_dispatch(&record)?;
-        self.publish(authority, record, b"ambiguous")?;
+        self.publish_guarded_v4(authority, record, b"ambiguous", before_commit)?;
         Ok(dispatch)
     }
 
@@ -577,6 +575,28 @@ impl NetworkLifecycleStateStore {
         effect_digest: ObjectDigest,
         transition: NetworkNamespaceLifecycleTransitionV1,
     ) -> Result<CommittedNetworkLifecycleResultV1, NetworkLifecycleStateError> {
+        self.commit_verified_engine_v2(authority, request_id, effect_digest, transition, None)
+    }
+
+    pub(crate) fn commit_verified_guarded_v2(
+        &mut self,
+        authority: &NetworkAuthorityV1,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+        transition: NetworkNamespaceLifecycleTransitionV1,
+        gate: &mut dyn FnMut(&Journal, &JournalTransaction) -> Result<(), NetworkLifecycleStateError>,
+    ) -> Result<CommittedNetworkLifecycleResultV1, NetworkLifecycleStateError> {
+        self.commit_verified_engine_v2(authority, request_id, effect_digest, transition, Some(gate))
+    }
+
+    fn commit_verified_engine_v2(
+        &mut self,
+        authority: &NetworkAuthorityV1,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+        transition: NetworkNamespaceLifecycleTransitionV1,
+        gate: Option<&mut dyn FnMut(&Journal, &JournalTransaction) -> Result<(), NetworkLifecycleStateError>>,
+    ) -> Result<CommittedNetworkLifecycleResultV1, NetworkLifecycleStateError> {
         self.validate_verified_transition(request_id, effect_digest, transition)?;
         let mut record = self.exact_current(request_id, effect_digest)?.clone();
         let observation = transition.observation();
@@ -589,8 +609,19 @@ impl NetworkLifecycleStateStore {
         };
         record.phase = DurableNetworkLifecyclePhase::Committed;
         record.result = Some(result);
-        self.publish(authority, record, b"commit")?;
+        self.publish_guarded_v4(authority, record, b"commit", gate)?;
         Ok(result)
+    }
+
+    pub(crate) fn destroy_suffix_receiving_demand_v2(&self)
+        -> Result<aos_sandbox_core::ResourceVector, crate::journal::JournalAppendReceivingDemandErrorV1>
+    {
+        self.journal.append_receiving_demand_v1([
+            aos_sandbox_journal::geometry::RecordShape {
+                key_bytes: 16,
+                value_bytes: Some(MAXIMUM_RECORD_BYTES),
+            },
+        ].into_iter())
     }
 
     pub(crate) fn validate_verified_transition(
@@ -629,7 +660,7 @@ impl NetworkLifecycleStateStore {
                 RecordNamespace::DesiredState,
                 sandbox_id.to_vec(),
             )],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(crate::journal::JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(())
     }
@@ -653,7 +684,7 @@ impl NetworkLifecycleStateStore {
                 sandbox_id.to_vec(),
                 fence,
             )],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(crate::journal::JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(())
     }
@@ -671,7 +702,7 @@ impl NetworkLifecycleStateStore {
                 sandbox_id.to_vec(),
                 fence,
             )],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(crate::journal::JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(())
     }
@@ -692,7 +723,7 @@ impl NetworkLifecycleStateStore {
                 RecordNamespace::NetworkResourceInventory,
                 network_handle.to_vec(),
             )],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(crate::journal::JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(())
     }
@@ -755,7 +786,7 @@ impl NetworkLifecycleStateStore {
                 record.request_id.to_vec(),
                 sealed,
             )],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(crate::journal::JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(())
     }
@@ -783,6 +814,17 @@ impl NetworkLifecycleStateStore {
         record: DurableNetworkLifecycleRecord,
         label: &[u8],
     ) -> Result<(), NetworkLifecycleStateError> {
+        self.publish_guarded_v4(authority, record, label, None)
+    }
+
+    fn publish_guarded_v4(
+        &mut self,
+        authority: &NetworkAuthorityV1,
+        record: DurableNetworkLifecycleRecord,
+        label: &[u8],
+        before_commit: Option<&mut dyn FnMut(&Journal, &JournalTransaction)
+            -> Result<(), NetworkLifecycleStateError>>,
+    ) -> Result<(), NetworkLifecycleStateError> {
         let payload = encode_record(&record)?;
         let sealed = authority
             .seal_local(&record.request_id, record_domain()?, &payload)
@@ -794,11 +836,32 @@ impl NetworkLifecycleStateStore {
                 record.request_id.to_vec(),
                 sealed,
             )],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(crate::journal::JournalError::from)?;
+        if let Some(before_commit) = before_commit {
+            before_commit(&self.journal, &transaction)?;
+        }
         self.journal.commit(&transaction)?;
         self.records.insert(record.request_id, record);
         Ok(())
     }
+}
+
+pub(crate) fn lifecycle_record_receiving_demand_v4()
+    -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError> {
+    use aos_sandbox_core::{AccountingError, ResourceDimension as D, ResourceVector};
+    let overflow = AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes };
+    let records = aos_sandbox_journal::geometry::conservative_btree_node_bytes_v1::<
+        [u8; 16], DurableNetworkLifecycleRecord>(1).ok_or(overflow)?;
+    let heads = aos_sandbox_journal::geometry::conservative_btree_node_bytes_v1::<
+        [u8; 32], [u8; 16]>(1).ok_or(overflow)?;
+    // The bounded record, payload/sealer and transaction copies coexist with
+    // the resident row and dispatch. Exact durable traffic is priced later
+    // from the actual transaction at each reached append frontier.
+    let bytes = MAXIMUM_RECORD_BYTES.checked_mul(8)
+        .and_then(|bytes| bytes.checked_add(records))
+        .and_then(|bytes| bytes.checked_add(heads))
+        .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(overflow)?;
+    Ok(ResourceVector::ZERO.with(D::MemoryBytes, bytes).with(D::MetadataEntries, 2))
 }
 
 fn validate_materialized_view(
@@ -1484,5 +1547,63 @@ mod tests {
                 Err(NetworkLifecycleStateError::CorruptRecord)
             ));
         }
+    }
+}
+
+/// Verifies the sole lifecycle model without consuming a startup writer.
+fn replay_models_v4(journal: &Journal, authority: &NetworkAuthorityV1)
+    -> Result<(BTreeMap<[u8; 16], DurableNetworkLifecycleRecord>, BTreeMap<[u8; 32], [u8; 16]>), NetworkLifecycleStateError> {
+        let mut records = BTreeMap::new();
+        for (key, sealed) in journal.records(RecordNamespace::Operation) {
+            let request_id: [u8; 16] = key
+                .try_into()
+                .map_err(|_| NetworkLifecycleStateError::CorruptRecord)?;
+            let payload = authority
+                .open_local(&request_id, record_domain()?, sealed)
+                .map_err(|_| NetworkLifecycleStateError::AuthorityLink)?;
+            let record = decode_record(payload)?;
+            if record.request_id != request_id || records.insert(request_id, record).is_some() {
+                return Err(NetworkLifecycleStateError::CorruptRecord);
+            }
+        }
+
+        let mut heads = BTreeMap::new();
+        for (key, value) in journal.records(RecordNamespace::NetworkResourceInventory) {
+            let handle: [u8; 32] = key
+                .try_into()
+                .map_err(|_| NetworkLifecycleStateError::CorruptRecord)?;
+            let request_id: [u8; 16] = value
+                .try_into()
+                .map_err(|_| NetworkLifecycleStateError::CorruptRecord)?;
+            if heads.insert(handle, request_id).is_some() {
+                return Err(NetworkLifecycleStateError::CorruptRecord);
+            }
+        }
+
+        validate_materialized_view(&journal, authority, &records, &heads)?;
+        Ok((records, heads))
+}
+
+
+impl NetworkLifecycleStateStore {
+    // Only the private whole-service inventory callsite borrows this exact
+    // continuously held writer; the borrow creates no new claim or file.
+    pub(crate) fn inventory_journal_v2(&self) -> &Journal {
+        &self.journal
+    }
+
+    pub(crate) fn inventory_history_memory_v2(&self) -> Option<usize> {
+        // Whole-history emptiness is an allocation-free map/row comparison.
+        Some(0)
+    }
+}
+
+impl NetworkLifecycleStateStore {
+    pub(crate) fn inventory_no_resource_history_v2(&self)
+        -> Result<bool, NetworkLifecycleStateError>
+    {
+        self.journal.ensure_healthy()?;
+        Ok(self.records.is_empty() && self.heads.is_empty()
+            && self.journal.all_records().next().is_none())
     }
 }

@@ -7,9 +7,17 @@
 
 use super::*;
 
+pub(in crate::controller_service) mod resident_geometry;
+
+mod delete_planning;
 mod admission;
 mod execution;
+mod operator_create_recovery;
+#[cfg(target_os = "linux")]
+mod reconciliation;
+mod cold_launch_publication;
 mod lifecycle;
+mod lifecycle_stop;
 mod snapshot_coordination;
 
 use admission::is_lifecycle_mutation;
@@ -29,6 +37,17 @@ pub(super) use lifecycle::{lifecycle_plan_resource_id, lifecycle_progress_transa
 pub(super) struct ProductionEffectExecutor {
     pub(in crate::controller_service) resource_bank:
         Option<Arc<Mutex<aos_sandbox::ControllerResourceBankOpeningV1>>>,
+    pub(in crate::controller_service) execution_profile:
+        Option<Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
+    pub(in crate::controller_service) execution_credential_directory: Option<std::ffi::OsString>,
+    pub(in crate::controller_service) execution_original:
+        Option<super::execution_output_effect::ControllerExecutionOriginalV1>,
+    // Initial claim and the genuine post-Recover handoff retain the same D
+    // owner here. No new claim is made when the recovered original is present.
+    pub(in crate::controller_service) delete_original:
+        Option<aos_sandbox::ControllerDeleteAuthorizationOriginalV1>,
+    delete_claim: Option<Result<(), aos_sandbox::ResourceReservationErrorV1>>,
+    lifecycle_stop: Option<lifecycle_stop::LifecycleStopOriginalV4>,
     pub(in crate::controller_service) first_global_prefix:
         Option<aos_sandbox::ControllerFirstGlobalPrefixAttemptV1>,
 
@@ -60,6 +79,19 @@ pub(super) struct ProductionEffectExecutor {
     pub(in crate::controller_service) pending_attachment_source_consume:
         Option<aos_sandbox::attachment_mount::CompletedCurrentAttachmentMountAttemptV1>,
     pub(in crate::controller_service) source_domains: ProtectedSourceDomainJournalOwnerV1,
+    #[cfg(target_os = "linux")]
+    cold_create_observer: aos_sandbox::journal::CreateStoppedColdObserverOriginalV1,
+    #[cfg(target_os = "linux")]
+    cold_create_observer_result: Option<Result<(), aos_sandbox::journal::CreateStoppedColdObserverClosedV1>>,
+    #[cfg(target_os = "linux")]
+    operator_recover: operator_create_recovery::OperatorRecoverObservationsV1,
+    #[cfg(target_os = "linux")]
+    first_local_reconciliation: reconciliation::FirstLocalReconciliationV2,
+    #[cfg(target_os = "linux")]
+    first_local_enrollment: aos_sandbox::OperatorFirstLocalOrdinaryEnrollmentOriginalV2,
+    lifecycle_stop_intake: Option<aos_sandbox_broker::controller_receiving::bank_launch::ControllerOperationIntakeOriginalV1>,
+    #[cfg(target_os = "linux")]
+    recovered_sessions: Option<Result<aos_sandbox_broker::controller_receiving::bank_launch::ControllerRecoveredOrdinarySessionsOriginalV2, aos_sandbox::ResourceReservationErrorV1>>,
     pub(in crate::controller_service) cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
     pub(in crate::controller_service) cache_resident_usage:
         aos_sandbox::cache_residency::CacheResidentInitializationV1,
@@ -78,6 +110,10 @@ pub(super) struct ProductionEffectExecutor {
     pending_snapshot_coordination: Option<PendingSnapshotCoordinationV2>,
     pub(in crate::controller_service) pending_atomic_snapshot:
         Option<storage_snapshot::PendingAtomicSnapshotV1>,
+    create_provisioning: cold_launch_publication::OriginalCreateProvisioningIssuerV1,
+    start_entry: Option<aos_sandbox::AcceptedStartEntryOriginalV1>,
+    start_entry_preparation: Option<Result<(), aos_sandbox::ResourceReservationErrorV1>>,
+    start_resources: cold_launch_publication::OriginalStartResourcesV2,
     pub(in crate::controller_service) q04: Option<create_q04::OriginalQ04ControllerSelectionV1>,
 }
 
@@ -107,6 +143,25 @@ struct ProductionCancellationRequest {
 }
 
 impl ProductionEffectExecutor {
+    /// Quotes every distinct fixed heap destination before startup allocates it.
+    pub(in crate::controller_service) fn inactive_receiving_bytes_v1() -> Option<usize> {
+        let (source_turns, namespace_entries) =
+            aos_sandbox::controller_lifecycle_stop::ControllerLifecycleStopOriginalV4::
+                inactive_receiving_footprint_v4()?;
+        // Ordinary Stop and recovered Stop22 retain distinct Core originals.
+        if namespace_entries != 0 { return None; }
+        resident_geometry::sum_bytes([
+            operator_create_recovery::OperatorRecoverObservationsV1::inactive_receiving_bytes_v1(),
+            reconciliation::FirstLocalReconciliationV2::inactive_receiving_bytes_v1(),
+            cold_launch_publication::OriginalStartResourcesV2::inactive_receiving_bytes_v1(),
+            aos_sandbox::AcceptedStartEntryOriginalV1::inactive_receiving_bytes_v2(),
+            super::execution_output_effect::ControllerExecutionOriginalV1::inactive_receiving_bytes_v1(),
+            lifecycle_stop::LifecycleStopOriginalV4::inactive_receiving_bytes_v1(),
+            source_turns.checked_mul(2),
+        ])
+    }
+
+
     /// Opens and recovers the original fixed Source owner before executor assembly.
     ///
     /// # Errors
@@ -175,6 +230,12 @@ impl ProductionEffectExecutor {
     ) -> Self {
         Self {
             resource_bank: None,
+            execution_profile: None,
+            execution_credential_directory: None,
+            execution_original: None,
+            delete_original: None,
+            delete_claim: None,
+            lifecycle_stop: None,
             first_global_prefix: None,
             snapshot_ownership: None,
             pending_snapshot_derivative: None,
@@ -195,6 +256,19 @@ impl ProductionEffectExecutor {
             pending_attachment_source_attempt: None,
             pending_attachment_source_consume: None,
             source_domains,
+            #[cfg(target_os = "linux")]
+            cold_create_observer: aos_sandbox::journal::CreateStoppedColdObserverOriginalV1::new(),
+            #[cfg(target_os = "linux")]
+            cold_create_observer_result: None,
+            #[cfg(target_os = "linux")]
+            operator_recover: operator_create_recovery::OperatorRecoverObservationsV1::default(),
+            #[cfg(target_os = "linux")]
+            first_local_reconciliation: reconciliation::FirstLocalReconciliationV2::default(),
+            #[cfg(target_os = "linux")]
+            first_local_enrollment: aos_sandbox::OperatorFirstLocalOrdinaryEnrollmentOriginalV2::default(),
+            lifecycle_stop_intake: None,
+            #[cfg(target_os = "linux")]
+            recovered_sessions: None,
             cache_inventory: None,
             cache_resident_usage: aos_sandbox::cache_residency::CacheResidentInitializationV1::new(),
             cache_mutation: cache_mutation::ControllerCacheMutationV1::default(),
@@ -210,6 +284,9 @@ impl ProductionEffectExecutor {
             pending_snapshot_coordination: None,
             pending_atomic_snapshot: None,
             q04: None,
+            create_provisioning: cold_launch_publication::OriginalCreateProvisioningIssuerV1::new(),
+            start_entry: None, start_entry_preparation: None,
+            start_resources: cold_launch_publication::OriginalStartResourcesV2::new(),
         }
     }
 
@@ -315,33 +392,15 @@ impl ProductionEffectExecutor {
     fn ensure_lifecycle_inventory_owners(&mut self) -> Result<(), EffectFailure> {
         self.ensure_cache_inventory_owner()?;
 
+        // Default local lifecycle collection may not initialize the deferred
+        // remote authority graph merely to obtain an empty Transfer inventory.
+        // A genuinely already-opened local owner can still be consumed here.
+        // The new Delete path joins its sealed no-remote-open Runtime original
+        // with Root's independent exact Transfer-name absence observation.
         if self.transfer_inventory.is_none() {
-            let (mut owner, _, initial) =
-                aos_sandbox::local_inventory::ProtectedMultiNodeAuthorityOwnerV1::open_fixed_protected()
-                    .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-            if let Some(initial) = initial {
-                match initial {
-                    aos_sandbox::local_inventory::ProtectedRecordCommitOutcomeV1::Committed(_) => {}
-                    aos_sandbox::local_inventory::ProtectedRecordCommitOutcomeV1::RecoveryRequired(
-                        recovery,
-                    ) => match owner.resolve_store_write(recovery) {
-                        aos_sandbox::local_inventory::ProtectedStoreRecoveryOutcomeV1::RecordCommitted(
-                            _,
-                        ) => {}
-                        aos_sandbox::local_inventory::ProtectedStoreRecoveryOutcomeV1::CheckpointCommitted(
-                            _,
-                        )
-                        | aos_sandbox::local_inventory::ProtectedStoreRecoveryOutcomeV1::RecoveryRequired {
-                            ..
-                        } => {
-                            return Err(EffectFailure::Permanent(
-                                "protected Transfer bootstrap durability is unresolved".to_owned(),
-                            ));
-                        }
-                    },
-                }
-            }
-            self.transfer_inventory = Some(owner);
+            return Err(EffectFailure::Permanent(
+                "Transfer inventory requires its existing protected owner or the qualified local absence path".to_owned(),
+            ));
         }
         Ok(())
     }

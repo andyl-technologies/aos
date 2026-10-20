@@ -76,7 +76,10 @@ impl std::fmt::Display for StorageOriginalWorkerStartupErrorV3 {
 
 impl std::error::Error for StorageOriginalWorkerStartupErrorV3 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.cause)
+        self.admitted.as_ref().and_then(StorageOriginalWorkerStartupV3::storage_receiving_failure_v1)
+            .or_else(|| self.rejected.as_ref()
+                .and_then(|rejected| rejected.retained_initial_cgroup_failure_v1()))
+            .or(Some(&self.cause))
     }
 }
 
@@ -131,6 +134,53 @@ pub struct StorageOriginalWorkerStartupV3 {
 }
 
 impl StorageOriginalWorkerStartupV3 {
+    /// Checks the same original's completed service ownership handoff.
+    ///
+    /// # Errors
+    /// Refuses an unfinished borrower, pending post or failed actual recipient.
+    pub(crate) fn require_service_handoff_v1(&self) -> Result<(), aos_sandbox::StorageReceivingClosedV1> {
+        self.original.require_storage_service_handoff_v1()
+    }
+
+    /// Reports actual service-receiver custody without creating admission.
+    #[must_use]
+    pub fn has_storage_service_receiving_original_v1(&self) -> bool {
+        self.original.has_storage_service_receiving_original_v1()
+    }
+
+    /// Borrows the retained actual receiving cause after any closed interval.
+    pub fn storage_receiving_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        self.original.storage_receiving_failure_v1()
+    }
+
+    /// Borrows this same installed original's paid Storage receiving interval.
+    ///
+    /// This forwards the actual retained owner without cloning its resource
+    /// account, reconstructing delivery or converting observation DATA into a
+    /// grant. Legacy startup cannot provide the receiving original.
+    ///
+    /// # Errors
+    /// Refuses absent original receiving custody, a closed original or retained
+    /// initial admission debt, preserving the concrete cause on this owner.
+    pub fn borrow_storage_prepare_receiving_v1(
+        &mut self,
+    ) -> Result<aos_sandbox::StoragePrepareReceivingLoanV1<'_>, aos_sandbox::StorageReceivingClosedV1> {
+        self.original.borrow_storage_prepare_receiving_v1()
+    }
+
+    /// Attempts this actual original's prearmed negative Capture post after closure.
+    ///
+    /// # Errors
+    /// Always preserves a negative interval and its first cause. A foreign
+    /// resident lends no work and cannot trigger a new observation.
+    pub(crate) fn finish_failed_capture_worker_v2(
+        &mut self, resident: &aos_sandbox::StorageResidentCaptureWorkerV2,
+    ) -> Result<(), aos_sandbox::StorageReceivingClosedV1> {
+        self.original.finish_failed_capture_worker_v2(resident)
+    }
+
     /// Pre-arms before any observation; Err, unwind, drop and forget stay closed.
     pub(crate) fn recheck(&mut self) -> Result<(), StorageOriginalWorkerStartupCauseV3> {
         self.original.recheck().map_err(project_origin_cause)

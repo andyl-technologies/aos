@@ -445,6 +445,63 @@ impl DormantAuthenticatedBrokerSessionV1 {
         finish_current_attestation(&mut held, completed)
     }
 
+    /// Retains the exact adjacent Host Inventory attestation for genuine Stop.
+    ///
+    /// # Errors
+    /// Returns the original currentness owner and retained failure if the
+    /// canonical pair, protected writer, signer, native checks or posts refuse.
+    pub fn complete_host_stop_inventory_retaining_v5(
+        &mut self,
+        challenge: LifecycleBootInventoryBootstrapChallengeV1,
+        effect: CurrentLifecycleEffectV1<'_>,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        inventory: &AuthenticatedBrokerMethodOutcomeV1,
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        post: &mut crate::ExecutionClientPostOriginalV1,
+        original: &mut crate::HostStopInventoryAttestationOriginalV5,
+    ) -> (ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        Result<LifecycleEffectObservationV1, LifecyclePhase6ErrorV1>) {
+        if original.entered || original.closed.is_some() {
+            original.closed.get_or_insert(crate::BrokerSessionSecurityError::Currentness);
+            return (currentness, Err(LifecyclePhase6ErrorV1::StaleAuthority));
+        }
+        original.entered = true;
+        let mut held = match self.retain_execution_outcome_current_with_post_v1(currentness, post) {
+            Ok(held) => { original.current = Some(Ok(())); held }
+            Err((owner, cause)) => {
+                original.current = Some(Err(cause));
+                return (owner, Err(LifecyclePhase6ErrorV1::StaleAuthority));
+            }
+        };
+        let primary = (|| {
+            if held.authenticated_outcome() != inventory {
+                return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+            }
+            original.message = Some(challenge.broker_effect_signing_message(
+                LifecycleBootBootstrapEndpointV1::Host, &effect, outcome, inventory));
+            let message = original.message.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+            held.revalidate_stop_inventory_attestation_v5(post, &mut original.before, false)
+                .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+            let signature = held.sign_stop_inventory_attestation_v5(message, &mut original.signature)
+                .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+            original.observation = Some(effect.observe_fixed_broker_effect(&challenge,
+                LifecycleBootBootstrapEndpointV1::Host, outcome, inventory, signature));
+            original.observation.as_ref().and_then(|result| result.as_ref().ok())
+                .copied().ok_or(LifecyclePhase6ErrorV1::StaleAuthority)
+        })();
+        // Once currentness entry succeeded its distinct after is owed even if
+        // message formation, pre-sign checks, signing or canonical fold refused.
+        let after = held.revalidate_stop_inventory_attestation_v5(post, &mut original.after, true);
+        let owner = held.into_currentness_owner();
+        let returned = match primary {
+            Err(cause) => Err(cause),
+            Ok(observation) if after.is_ok() => Ok(observation),
+            Ok(_) => Err(LifecyclePhase6ErrorV1::StaleAuthority),
+        };
+        (owner, returned)
+    }
+
     fn complete_domain_inventory_successor(
         &mut self,
         challenge: &LifecycleBootInventoryBootstrapChallengeV1,

@@ -22,7 +22,7 @@ fn fresh_cold_kind5_constructor_refuses_an_unprotected_journal_without_floor_cha
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("mount.journal");
     let (mut journal, _) =
-        aos_sandbox::Journal::open(&path, aos_sandbox::JournalLimits::default()).unwrap();
+        aos_sandbox_mount_native::MountJournalV1::open(&path, aos_sandbox_mount_native::JournalLimits::default()).unwrap();
     assert!(
         super::FixedMountSourceAcquisitionOwnerV2::borrow_existing_kind5_fixed_journal(
             &mut journal
@@ -31,7 +31,7 @@ fn fresh_cold_kind5_constructor_refuses_an_unprotected_journal_without_floor_cha
     );
     assert_eq!(
         journal
-            .records(aos_sandbox::RecordNamespace::GlobalCapacityReservation)
+            .records(aos_sandbox_core::RecordNamespace::GlobalCapacityReservation)
             .count(),
         0
     );

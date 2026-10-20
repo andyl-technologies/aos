@@ -6,6 +6,17 @@
 //! This local profile assumes protected Root state is not rolled back with the
 //! whole host disk. Diagnostic frame sequence never orders a semantic floor.
 
+use aos_sandbox_policy::controller_project_readback::{
+    ControllerProjectAdmissionChallengeV1, VerifiedControllerProjectAdmissionV1,
+    verify_controller_project_admission_readback_v1,
+};
+
+use aos_sandbox_protocol::source_genesis_wire as genesis_wire;
+
+use aos_sandbox_policy::signed_inputs::verify_historical_policy_deployment_packet_v1;
+
+use aos_sandbox_policy::journal_keys::{HEAD_KEY, SIGNER_PINS_KEY};
+
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,16 +24,17 @@ use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::VerifyingKey;
 
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
-use crate::hierarchy::source_genesis::{SourceTreeGenesisReceiptV1, SourceTreeGenesisStateV1};
+use aos_sandbox_ledger_replay::genesis::{
+    SourceTreeGenesisReceiptV1,
+};
+use crate::hierarchy::source_genesis::{SourceTreeGenesisStateV1};
 use crate::journal::{
     Journal, JournalRecord, JournalTransaction, ProtectedJournalNamesV1, RecordNamespace,
 };
 
 use super::super::PinnedSourceHoldReadbackSignerV1;
-use super::super::root_nonce::fresh_root_nonce;
-use super::super::deployment_head::{
-    HEAD_KEY, SIGNER_PINS_KEY, decode_policy_signer_pins_v1, verify_historical_packet,
-};
+use aos_sandbox_broker::root_nonce::fresh_root_nonce;
+use super::super::deployment_head::decode_policy_signer_pins_v1;
 use super::super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
@@ -33,9 +45,10 @@ use super::super::source_genesis_readback::{
 use super::capacity;
 use super::controller_readback::{self, VerifiedControllerSourceGenesisReadbackV1};
 use super::pins::RootGenesisRolePinsV1;
+use aos_sandbox_ledger_replay::replay::root_genesis_records::project_key;
 use super::records::{
     FLOOR_PREFIX, INSTANCE_KEY, INTENT_PREFIX, PINS_KEY, RootSourceGenesisIntentRecordV1,
-    SourceHierarchyFloorRecordV1, decode_instance, instance_bytes, project_key,
+    SourceHierarchyFloorRecordV1, decode_instance, instance_bytes,
 };
 
 #[cfg(test)]
@@ -43,7 +56,7 @@ mod tests;
 
 pub(super) const INSTANCE_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.source-genesis.root-instance-transaction.v1\0";
-const MAXIMUM_PROJECTS: usize = 4096;
+pub(super) const MAXIMUM_PROJECTS: usize = 4096;
 
 /// Retains only the fixed Root writer, pinned roles, and one original flight nonce.
 ///
@@ -58,7 +71,7 @@ pub struct RootSourceGenesisAuthorityV1 {
     pub(super) source_uid: u32,
     pub(super) accepted: Option<VerifiedControllerSourceGenesisReadbackV1>,
     genesis_recipe: RootGenesisOwnerRecipeV3,
-    pub(super) successor_recipe: super::wire::FirstSuccessorWireRecipeV3,
+    pub(super) successor_recipe: genesis_wire::FirstSuccessorWireRecipeV3,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -208,7 +221,7 @@ impl RootFirstSourceSuccessorOpeningV2 {
     ) -> Result<(), ()> {
         self.open_into(owner, controller_uid, source_uid)?;
         let actual = owner.as_mut().ok_or(())?;
-        actual.successor_recipe = super::wire::FirstSuccessorWireRecipeV3::MixedV3;
+        actual.successor_recipe = genesis_wire::FirstSuccessorWireRecipeV3::MixedV3;
         Ok(())
     }
 
@@ -243,7 +256,7 @@ impl RootFirstSourceSuccessorOpeningV2 {
                         *owner = Some(RootSourceGenesisAuthorityV1 {
                             journal, pins, names, nonce, controller_uid, source_uid, accepted: None,
                             genesis_recipe: RootGenesisOwnerRecipeV3::StrictV1,
-                            successor_recipe: super::wire::FirstSuccessorWireRecipeV3::StrictV2,
+                            successor_recipe: genesis_wire::FirstSuccessorWireRecipeV3::StrictV2,
                         });
                         drop(recovery);
                         Ok(())
@@ -371,7 +384,7 @@ impl Q04RootGen1CutLoanV1<'_> {
     ) -> Result<
         (
             super::super::create_q04::Q04PreholdInputDataV1<'packet>,
-            super::super::VerifiedControllerProjectAdmissionV1,
+            VerifiedControllerProjectAdmissionV1,
         ),
         super::super::create_q04::CreateQ04ErrorV1,
     > {
@@ -404,8 +417,8 @@ impl Q04RootGen1CutLoanV1<'_> {
         identity: &super::super::create_q04::Q04CutIdentityV1,
     ) -> Result<
         (
-            super::super::VerifiedControllerProjectAdmissionV1,
-            super::super::VerifiedControllerHoldReadbackV1,
+            VerifiedControllerProjectAdmissionV1,
+            aos_sandbox_policy::controller_readback::VerifiedControllerHoldReadbackV1,
         ),
         super::super::create_q04::CreateQ04ErrorV1,
     > {
@@ -425,8 +438,8 @@ impl Q04RootGen1CutLoanV1<'_> {
         stage: &super::super::binding_v2::Q04RootStageRecipeV1,
         identity: &super::super::create_q04::Q04CutIdentityV1,
         original_next: u64,
-    ) -> Result<(super::super::VerifiedControllerProjectAdmissionV1,
-        super::super::VerifiedControllerHoldReadbackV1), super::super::create_q04::CreateQ04ErrorV1> {
+    ) -> Result<(VerifiedControllerProjectAdmissionV1,
+        aos_sandbox_policy::controller_readback::VerifiedControllerHoldReadbackV1), super::super::create_q04::CreateQ04ErrorV1> {
         self.owner.q04_verify_controller_cut_for(
             current_packet, held_packet, proposed, self, stage, identity,
             Q04ControllerPacketPositionV1::OriginalHeld { original_next },
@@ -436,13 +449,13 @@ impl Q04RootGen1CutLoanV1<'_> {
     pub(in crate::policy_compiler) fn signed_project_sources(
         &self,
         project_input: &[u8],
-        deployment_inputs: &super::super::PolicyDeploymentInputsV1<'_>,
+        deployment_inputs: &aos_sandbox_policy::signed_inputs::PolicyDeploymentInputsV1<'_>,
         now_unix_seconds: i64,
     ) -> Result<
         (
-            super::super::VerifiedSignedProjectPolicySourceV2,
-            super::super::PolicyDeploymentHeadV1,
-            super::super::PolicyDeploymentSourcesV1,
+            aos_sandbox_policy::signed_inputs::VerifiedSignedProjectPolicySourceV2,
+            aos_sandbox_policy::signed_inputs::PolicyDeploymentHeadV1,
+            aos_sandbox_policy::signed_inputs::PolicyDeploymentSourcesV1,
         ),
         super::super::create_q04::CreateQ04ErrorV1,
     > {
@@ -462,7 +475,7 @@ impl Q04RootGen1CutLoanV1<'_> {
         identity: &super::super::create_q04::Q04CutIdentityV1,
         cache_uid: u32,
     ) -> Result<
-        crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+        aos_sandbox_protocol::cache_owner_readback::VerifiedClosedCacheOwnerReadbackV2,
         super::super::create_q04::CreateQ04ErrorV1,
     > {
         self.recheck()?;
@@ -478,7 +491,7 @@ impl Q04RootGen1CutLoanV1<'_> {
         stage: &super::super::binding_v2::Q04RootStageRecipeV1,
         identity: &super::super::create_q04::Q04CutIdentityV1,
         cache_uid: u32,
-    ) -> Result<crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+    ) -> Result<aos_sandbox_protocol::cache_owner_readback::VerifiedClosedCacheOwnerReadbackV2,
         super::super::create_q04::CreateQ04ErrorV1> {
         self.recheck()?;
         let observed = self.owner.q04_verify_original_cache_packet(packet, proposed, stage, identity, cache_uid)?;
@@ -1162,7 +1175,7 @@ impl RootSourceGenesisAuthorityV1 {
     ) -> Result<
         (
             super::super::create_q04::Q04PreholdInputDataV1<'packet>,
-            super::super::VerifiedControllerProjectAdmissionV1,
+            VerifiedControllerProjectAdmissionV1,
         ),
         super::super::create_q04::CreateQ04ErrorV1,
     > {
@@ -1184,9 +1197,9 @@ impl RootSourceGenesisAuthorityV1 {
         let challenge = super::super::staged_closed_policy_signer_challenge_v2(
             stage.staged(), fields[4],
         )?;
-        let controller = super::super::verify_controller_project_admission_readback_v1(
+        let controller = verify_controller_project_admission_readback_v1(
             fields[5], &self.pins.controller,
-            super::super::ControllerProjectAdmissionChallengeV1::new(challenge.nonce(), challenge.cut())?,
+            ControllerProjectAdmissionChallengeV1::new(challenge.nonce(), challenge.cut())?,
             self.controller_uid,
         )?;
         let accepted = self.accepted.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
@@ -1346,8 +1359,8 @@ impl RootSourceGenesisAuthorityV1 {
         identity: &super::super::create_q04::Q04CutIdentityV1,
     ) -> Result<
         (
-            super::super::VerifiedControllerProjectAdmissionV1,
-            super::super::VerifiedControllerHoldReadbackV1,
+            VerifiedControllerProjectAdmissionV1,
+            aos_sandbox_policy::controller_readback::VerifiedControllerHoldReadbackV1,
         ),
         super::super::create_q04::CreateQ04ErrorV1,
     > {
@@ -1365,8 +1378,8 @@ impl RootSourceGenesisAuthorityV1 {
         stage: &super::super::binding_v2::Q04RootStageRecipeV1,
         identity: &super::super::create_q04::Q04CutIdentityV1,
         position: Q04ControllerPacketPositionV1,
-    ) -> Result<(super::super::VerifiedControllerProjectAdmissionV1,
-        super::super::VerifiedControllerHoldReadbackV1), super::super::create_q04::CreateQ04ErrorV1> {
+    ) -> Result<(VerifiedControllerProjectAdmissionV1,
+        aos_sandbox_policy::controller_readback::VerifiedControllerHoldReadbackV1), super::super::create_q04::CreateQ04ErrorV1> {
         use super::super::create_q04::CreateQ04ErrorV1;
 
         self.recheck()?;
@@ -1388,18 +1401,23 @@ impl RootSourceGenesisAuthorityV1 {
         let challenge = super::super::staged_closed_policy_signer_challenge_v2(
             stage.staged(), proposed,
         )?;
-        let current = super::super::verify_controller_project_admission_readback_v1(
+        let current = verify_controller_project_admission_readback_v1(
             current_packet,
             &self.pins.controller,
-            super::super::ControllerProjectAdmissionChallengeV1::new(challenge.nonce(), challenge.cut())?,
+            ControllerProjectAdmissionChallengeV1::new(challenge.nonce(), challenge.cut())?,
             self.controller_uid,
         )?;
-        let held = super::super::verify_controller_hold_readback_v1(
+        let held = aos_sandbox_policy::controller_readback::verify_controller_hold_readback_v1(
             held_packet,
             &self.pins.controller,
-            super::super::ControllerHoldReadbackChallengeV1::new(challenge.nonce(), challenge.cut())?,
+            aos_sandbox_policy::controller_readback::ControllerHoldReadbackChallengeV1::new(
+                challenge.nonce(),
+                challenge.cut(),
+            )
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)?,
             self.controller_uid,
-        )?;
+        )
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)?;
         let accepted = self.accepted.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         if !accepted.completed
             || accepted.acceptance.project() != current.project()
@@ -1452,56 +1470,29 @@ impl RootSourceGenesisAuthorityV1 {
     pub(in crate::policy_compiler) fn q04_signed_project_sources(
         &self,
         project_input: &[u8],
-        deployment_inputs: &super::super::PolicyDeploymentInputsV1<'_>,
+        deployment_inputs: &aos_sandbox_policy::signed_inputs::PolicyDeploymentInputsV1<'_>,
         now_unix_seconds: i64,
     ) -> Result<
         (
-            super::super::VerifiedSignedProjectPolicySourceV2,
-            super::super::PolicyDeploymentHeadV1,
-            super::super::PolicyDeploymentSourcesV1,
+            aos_sandbox_policy::signed_inputs::VerifiedSignedProjectPolicySourceV2,
+            aos_sandbox_policy::signed_inputs::PolicyDeploymentHeadV1,
+            aos_sandbox_policy::signed_inputs::PolicyDeploymentSourcesV1,
         ),
         super::super::create_q04::CreateQ04ErrorV1,
     > {
         use super::super::create_q04::CreateQ04ErrorV1;
-        use super::super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 
         self.recheck()?;
-        let namespace = RecordNamespace::DesiredState;
-        let pins = self.journal.get(namespace, SIGNER_PINS_KEY)
-            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        let (deployment_generation, deployment_key, project_generation, project_key) =
-            decode_policy_signer_pins_v1(pins)?;
-        let deployment_packet = self.journal.get(namespace, HEAD_KEY)
-            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        let deployment = super::super::verify_policy_deployment_head_v1(
-            deployment_packet,
-            deployment_inputs,
-            &deployment_key,
-            now_unix_seconds,
-        )?;
-        let decoded = super::super::decode_policy_deployment_sources_v1(
-            deployment_inputs,
-            deployment,
-        )?;
-        let project_packet = self.journal.get(namespace, HEAD_KEY_V2)
-            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        if self.journal.get(namespace, INPUT_KEY_V2) != Some(project_input) {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        let project = super::super::verify_signed_project_policy_source_v2(
-            project_packet,
-            project_input,
-            &project_key,
-            now_unix_seconds,
-        )?;
-        if project.head().deployment_signer_generation() != deployment_generation
-            || project.head().project_signer_generation() != project_generation
-            || project.head().prerequisite_claims()[1] != deployment.packet_digest()
-        {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
+        let sources = super::super::root_signed_sources::verify_root_signed_project_sources_v1(
+            &self.journal, project_input, deployment_inputs, now_unix_seconds,
+        ).map_err(|cause| match cause {
+            super::super::root_signed_sources::RootSignedSourcesErrorV1::ChangedCut =>
+                CreateQ04ErrorV1::ChangedCut,
+            super::super::root_signed_sources::RootSignedSourcesErrorV1::Deployment(cause) =>
+                CreateQ04ErrorV1::Deployment(cause),
+        })?;
         self.recheck()?;
-        Ok((project, deployment, decoded))
+        Ok(sources)
     }
 
     // This uses the actual Root-retained Cache pin and the unchanged fixed
@@ -1515,7 +1506,7 @@ impl RootSourceGenesisAuthorityV1 {
         identity: &super::super::create_q04::Q04CutIdentityV1,
         cache_uid: u32,
     ) -> Result<
-        crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+        aos_sandbox_protocol::cache_owner_readback::VerifiedClosedCacheOwnerReadbackV2,
         super::super::create_q04::CreateQ04ErrorV1,
     > {
         use super::super::cache_readback_pin::CACHE_PIN_KEY;
@@ -1560,7 +1551,7 @@ impl RootSourceGenesisAuthorityV1 {
         stage: &super::super::binding_v2::Q04RootStageRecipeV1,
         identity: &super::super::create_q04::Q04CutIdentityV1,
         cache_uid: u32,
-    ) -> Result<crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+    ) -> Result<aos_sandbox_protocol::cache_owner_readback::VerifiedClosedCacheOwnerReadbackV2,
         super::super::create_q04::CreateQ04ErrorV1> {
         use super::super::cache_readback_pin::CACHE_PIN_KEY;
         use super::super::create_q04::CreateQ04ErrorV1;
@@ -1575,13 +1566,13 @@ impl RootSourceGenesisAuthorityV1 {
         }
         let pin = self.journal.get(RecordNamespace::DesiredState, CACHE_PIN_KEY)
             .ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        let signer = crate::cache_residency::PinnedCacheOwnerReadbackSignerV1::decode(pin)?;
+        let signer = aos_sandbox_protocol::cache_owner_readback::PinnedCacheOwnerReadbackSignerV1::decode(pin)?;
         let challenge = super::super::staged_closed_policy_signer_challenge_v2(stage.staged(), proposed)?;
         // The signed physical root belongs to the actual Controller. The
         // separate Cache-view UID still governs named journal/idmap checks.
-        let observed = crate::cache_residency::verify_closed_cache_owner_readback_v2(
+        let observed = aos_sandbox_protocol::cache_owner_readback::verify_closed_cache_owner_readback_v2(
             packet, &signer,
-            crate::cache_residency::CacheOwnerReadbackChallengeV1::new(challenge.nonce(), challenge.cut())?,
+            aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackChallengeV1::new(challenge.nonce(), challenge.cut())?,
             self.controller_uid,
         )?;
         if !observed.hold().is_held() || observed.hold().project() != identity.project()
@@ -1648,7 +1639,7 @@ impl RootSourceGenesisAuthorityV1 {
         &self,
         output: &mut Vec<u8>,
         stage: &super::super::binding_v2::Q04RootStageRecipeV1,
-        inputs: &super::super::PolicyDeploymentInputsV1<'_>,
+        inputs: &aos_sandbox_policy::signed_inputs::PolicyDeploymentInputsV1<'_>,
         project_input: &[u8],
         original_clock: aos_sandbox_core::RawPairedClockSample,
         now_unix_seconds: i64,
@@ -1725,7 +1716,7 @@ impl RootSourceGenesisAuthorityV1 {
             source_uid,
             accepted: None,
             genesis_recipe: RootGenesisOwnerRecipeV3::StrictV1,
-            successor_recipe: super::wire::FirstSuccessorWireRecipeV3::StrictV2,
+            successor_recipe: genesis_wire::FirstSuccessorWireRecipeV3::StrictV2,
         };
         owner.recheck()?;
         Ok(owner)
@@ -2348,7 +2339,9 @@ pub(super) fn require_current_deployment(journal: &Journal) -> Result<i64, Sourc
     let packet = journal
         .get(namespace, HEAD_KEY)
         .ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
-    verify_historical_packet(packet, &key).map_err(|_| SourceGenesisErrorV1::AdmissionClosed)?;
+    verify_historical_policy_deployment_packet_v1(packet, &key)
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+        .map_err(|_| SourceGenesisErrorV1::AdmissionClosed)?;
     let now = i64::try_from(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2397,60 +2390,5 @@ pub(super) fn validate_history(
     journal: &Journal,
     pins: &RootGenesisRolePinsV1,
 ) -> Result<(), SourceGenesisErrorV1> {
-    let namespace = RecordNamespace::DesiredState;
-    let instance = journal
-        .get(namespace, INSTANCE_KEY)
-        .map(decode_instance)
-        .transpose()?;
-    let retained_pins = journal.get(namespace, PINS_KEY);
-    if instance.is_some() != retained_pins.is_some()
-        || retained_pins.is_some_and(|bytes| bytes != pins.record_bytes())
-    {
-        return Err(SourceGenesisErrorV1::Stale);
-    }
-    let mut intents = 0_usize;
-    let mut floors = 0_usize;
-    let mut capacities = journal.root_source_genesis_capacity_ids_v1()?;
-    for (key, value) in journal.records(namespace) {
-        if key.starts_with(INTENT_PREFIX) {
-            let intent = RootSourceGenesisIntentRecordV1::from_record_bytes(value)?;
-            if instance != Some(intent.instance())
-                || key != capacity::intent_key(&intent)
-                || intent.roles() != pins.digest()
-                || journal
-                    .get(namespace, &project_key(FLOOR_PREFIX, intent.project()))
-                    .is_some()
-            {
-                return Err(SourceGenesisErrorV1::Stale);
-            }
-            pins.verify_administrative_input(intent.accepted_input())?;
-            let capacity_id = journal.root_source_genesis_capacity_identity_v1(
-                &capacity::request(&intent),
-                capacity::admission_id(&intent),
-            )?;
-            let position = capacities
-                .iter()
-                .position(|candidate| *candidate == capacity_id)
-                .ok_or(SourceGenesisErrorV1::Stale)?;
-            capacities.remove(position);
-            intents += 1;
-        } else if key.starts_with(FLOOR_PREFIX) {
-            let floor = SourceHierarchyFloorRecordV1::from_record_bytes(value)?;
-            if instance != Some(floor.instance())
-                || key != capacity::floor_key(&floor)
-                || floor.roles() != pins.digest()
-            {
-                return Err(SourceGenesisErrorV1::Stale);
-            }
-            floors += 1;
-        }
-        if intents > 1 || floors > MAXIMUM_PROJECTS {
-            return Err(SourceGenesisErrorV1::NonCanonical);
-        }
-    }
-    if !capacities.is_empty() {
-        return Err(SourceGenesisErrorV1::Stale);
-    }
-    super::successor_owner::validate_root_first_successor_journal_v2(journal)?;
-    Ok(())
+    super::history::validate_history_with_pins_v1(journal, pins.record_bytes())
 }

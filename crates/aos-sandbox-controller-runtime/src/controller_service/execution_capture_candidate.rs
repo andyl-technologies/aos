@@ -16,7 +16,7 @@ use aos_sandbox::controller_execution_preissue::{
 };
 use aos_sandbox::environment::EnvironmentProtectedJournalOwnerV1;
 use aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1;
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{AuthorityPublicationStore, EffectFailure, Journal};
 use aos_sandbox_core::{
@@ -306,8 +306,7 @@ fn validate_settlement(
     let admitted_bytes = maximum_stdout_bytes
         .checked_add(maximum_stderr_bytes)
         .ok_or_else(|| retryable("Storage candidate output split overflowed"))?;
-    if admitted_bytes == 0
-        || settlement.execution() != preissue.execution()
+    if settlement.execution() != preissue.execution()
         || settlement.create_operation() != preissue.create_operation()
         || settlement.claim_digest() != attempt.source().output_claim_digest()
         || settlement.correlation_digest().as_bytes() == &[0; 32]

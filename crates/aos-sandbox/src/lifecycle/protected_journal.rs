@@ -4,6 +4,13 @@
 //! join, then checkpoint. A transaction is entirely durable before any
 //! postcommit effect capability can leave this module.
 
+mod receiving;
+pub use receiving::LifecycleReplayReceivingV1;
+
+mod schema_capture;
+pub use schema_capture::LifecycleSchemaReplayCaptureV1;
+use schema_capture::{decode_reducer_phase_with_original, operation_tuple};
+
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, ResourceId};
 
 use crate::journal::{Journal, RecordNamespace};
@@ -28,6 +35,19 @@ use super::{
     decode_operation_record_v1, encode_lifecycle_auxiliary_record_v1,
     encode_lifecycle_journal_record_v1,
 };
+
+pub(super) const LIFECYCLE_PROTECTED_IDENTITY_BYTES: usize = 48;
+
+// This is the same immutable operation selector used by the full retained
+// latest/history engine. Keys have already passed this schema's identity-width
+// check; this comparison is DATA and creates no CurrentLifecycle capability.
+pub(crate) fn lifecycle_key_selects_operation_v2(
+    key: &LifecycleProtectedJournalKeyV1, operation: OperationId,
+) -> bool {
+    matches!(key.kind(), LifecycleProtectedRecordKindV1::Intent
+        | LifecycleProtectedRecordKindV1::Operation | LifecycleProtectedRecordKindV1::Effect)
+        && key.identity()[32..48] == operation.as_bytes()[..]
+}
 
 /// Selects one closed lifecycle protected-journal family.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -56,10 +76,10 @@ impl ProtectedDomainSchemaV1 for LifecycleProtectedJournalSchemaV1 {
     type Kind = LifecycleProtectedRecordKindV1;
     type ReplayValidator = LifecycleJournalVerifierV1;
 
-    const MAGIC: [u8; 8] = *b"AOSLPJ01";
-    const HASH_DOMAIN: &'static [u8] = b"aos.sandbox.lifecycle.protected-journal.v1\0";
-    const KEY_PREFIX: &'static [u8] = b"\0aos-lifecycle-v1\0";
-    const MAXIMUM_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
+    const MAGIC: [u8; 8] = aos_sandbox_protocol::domain_ledger::lifecycle_auxiliary::LIFECYCLE_PROTECTED_MAGIC_V1;
+    const HASH_DOMAIN: &'static [u8] = aos_sandbox_protocol::domain_ledger::lifecycle_auxiliary::LIFECYCLE_PROTECTED_DOMAIN_V1;
+    const KEY_PREFIX: &'static [u8] = aos_sandbox_protocol::domain_ledger::lifecycle_auxiliary::LIFECYCLE_PROTECTED_KEY_PREFIX_V1;
+    const MAXIMUM_PAYLOAD_BYTES: usize = aos_sandbox_protocol::domain_ledger::lifecycle_auxiliary::LIFECYCLE_PROTECTED_MAXIMUM_PAYLOAD_BYTES_V1;
 
     fn kind_code(kind: Self::Kind) -> u8 {
         kind as u8
@@ -124,69 +144,7 @@ impl ProtectedDomainSchemaV1 for LifecycleProtectedJournalSchemaV1 {
         identity: &[u8],
         body: &[u8],
     ) -> Option<ProtectedReducerPhaseV1> {
-        if identity.len() != 48 {
-            return None;
-        }
-        match kind {
-            Self::Kind::Intent | Self::Kind::Operation | Self::Kind::Effect => {
-                let operation = canonical_operation(body)?;
-                if operation.project().as_bytes() != identity.get(..16)?
-                    || lifecycle_journal_subject(operation.intent()).as_slice()
-                        != identity.get(16..32)?
-                    || operation.operation_id().as_bytes() != identity.get(32..48)?
-                {
-                    return None;
-                }
-                operation_phase(kind, operation.phase() as u8)
-            }
-            Self::Kind::Idempotency => {
-                let record = decode_lifecycle_journal_record_v1(body, verifier).ok()?;
-                if encode_lifecycle_journal_record_v1(record).ok()?.as_slice() != body
-                    || record.kind() != LifecycleJournalRecordKindV1::Idempotency
-                    || record.project().as_bytes() != &identity[..16]
-                    || record.namespace().as_bytes() != &identity[16..32]
-                    || record
-                        .operation()
-                        .is_none_or(|operation| operation.as_bytes() != &identity[32..48])
-                {
-                    return None;
-                }
-                Some(ProtectedReducerPhaseV1::Observed)
-            }
-            Self::Kind::Auxiliary => {
-                let record = super::decode_lifecycle_auxiliary_record_from_protected_envelope_v1(
-                    body,
-                    verifier.replay(),
-                )
-                .ok()?;
-                if encode_lifecycle_auxiliary_record_v1(&record)
-                    .ok()?
-                    .as_slice()
-                    != body
-                    || record.project().as_bytes() != &identity[..16]
-                    || record.lineage().as_bytes() != &identity[16..32]
-                    || record.operation().as_bytes() != &identity[32..48]
-                {
-                    return None;
-                }
-                match record.kind() {
-                    LifecycleAuxiliaryKindV1::Coordination => {
-                        Some(ProtectedReducerPhaseV1::Prepared)
-                    }
-                    LifecycleAuxiliaryKindV1::Operation
-                    | LifecycleAuxiliaryKindV1::RetentionLedger
-                    | LifecycleAuxiliaryKindV1::SuspendObservation
-                    | LifecycleAuxiliaryKindV1::BootInventory
-                    | LifecycleAuxiliaryKindV1::DeleteBatch => {
-                        Some(ProtectedReducerPhaseV1::Observed)
-                    }
-                    LifecycleAuxiliaryKindV1::Cancellation => {
-                        Some(ProtectedReducerPhaseV1::Terminal)
-                    }
-                }
-            }
-            Self::Kind::Checkpoint => None,
-        }
+        decode_reducer_phase_with_original(verifier, kind, identity, body, None)
     }
 
     fn semantic_tuple(kind: Self::Kind, identity: &[u8], body: &[u8]) -> Option<[u8; 32]> {
@@ -197,14 +155,11 @@ impl ProtectedDomainSchemaV1 for LifecycleProtectedJournalSchemaV1 {
             return None;
         }
         let operation = canonical_operation(body)?;
-        let mut tuple = [0; 32];
-        tuple[..16].copy_from_slice(operation.project().as_bytes());
-        tuple[16..].copy_from_slice(&lifecycle_journal_subject(operation.intent()));
-        (identity.get(..32) == Some(tuple.as_slice())).then_some(tuple)
+        operation_tuple(&operation, identity)
     }
 
     fn validates_identity(_kind: Self::Kind, identity: &[u8]) -> bool {
-        identity.len() == 48
+        identity.len() == LIFECYCLE_PROTECTED_IDENTITY_BYTES
             && identity
                 .chunks_exact(16)
                 .all(|component| component != [0; 16])
@@ -349,7 +304,7 @@ pub fn lifecycle_protected_key_v1(
     {
         return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
     }
-    let mut identity = Vec::with_capacity(48);
+    let mut identity = Vec::with_capacity(LIFECYCLE_PROTECTED_IDENTITY_BYTES);
     identity.extend_from_slice(project.as_bytes());
     identity.extend_from_slice(namespace.as_bytes());
     identity.extend_from_slice(operation.as_bytes());
@@ -372,6 +327,18 @@ pub(crate) fn lifecycle_reducer_envelope_v1(
     record: LifecycleReducerRecordV1<'_>,
     verifier: &LifecycleJournalVerifierV1,
 ) -> Result<LifecycleProtectedJournalEnvelopeV1, LifecycleProtectedJournalErrorV1> {
+    lifecycle_reducer_envelope_with_record_digest_v2(key, revision, predecessor, record, verifier, None)
+}
+
+// The same encoder lends only its exact canonical operation digest. This DATA
+// becomes completion evidence only after the caller's actual commit/readback
+// and independently owed native posts have completed.
+pub(crate) fn lifecycle_reducer_envelope_with_record_digest_v2(
+    key: LifecycleProtectedJournalKeyV1, revision: u64, predecessor: Option<ObjectDigest>,
+    record: LifecycleReducerRecordV1<'_>, verifier: &LifecycleJournalVerifierV1,
+    digest: Option<&mut Option<super::LifecycleRecordDigestV1>>,
+) -> Result<LifecycleProtectedJournalEnvelopeV1, LifecycleProtectedJournalErrorV1> {
+    let is_operation = matches!(&record, LifecycleReducerRecordV1::Operation(_));
     let body = match record {
         LifecycleReducerRecordV1::Operation(operation)
             if operation.project().as_bytes() == &key.identity()[..16]
@@ -408,6 +375,13 @@ pub(crate) fn lifecycle_reducer_envelope_v1(
         }
     }
     .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+    if let Some(digest) = digest {
+        if !is_operation || digest.is_some() {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        *digest = Some(super::format::record_digest(&body)
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?);
+    }
     let payload = encode_reducer_payload_with_validator::<LifecycleProtectedJournalSchemaV1>(
         &key, &body, verifier,
     )?;

@@ -12,6 +12,11 @@
 
 use std::collections::BTreeMap;
 
+mod boot_preparation;
+pub use boot_preparation::{RuntimeBootPreparationOriginsClosedV1, RuntimeBootPreparationOriginsOriginalV1};
+mod boot_native;
+pub use boot_native::{RuntimeBootPreparationNativeFailureViewV1, RuntimeBootPreparationNativeOriginalV1};
+
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_protocol::runtime_deployment::DeploymentGenesisV1;
 
@@ -51,6 +56,8 @@ enum ComparisonFailureV1 {
     Journal(#[source] JournalError),
     #[error("deployment original startup or child population differs")]
     Startup(#[source] RuntimeDeploymentStartupErrorV1),
+    #[error("normal deployment original Source startup differs")]
+    BootStartup(#[source] super::RuntimeBootPreparationStartupClosedV1),
     #[error("deployment comparison guard is unusable")]
     Unusable,
     #[error("deployment retained comparison differs")]
@@ -121,6 +128,12 @@ impl From<RuntimeDeploymentStartupErrorV1> for RuntimeDeploymentComparisonErrorV
         Self {
             cause: ComparisonFailureV1::Startup(error),
         }
+    }
+}
+
+impl From<super::RuntimeBootPreparationStartupClosedV1> for RuntimeDeploymentComparisonErrorV1 {
+    fn from(error: super::RuntimeBootPreparationStartupClosedV1) -> Self {
+        Self { cause: ComparisonFailureV1::BootStartup(error) }
     }
 }
 
@@ -324,7 +337,7 @@ impl<'startup> RuntimeDeploymentComparisonOriginsV1<'startup> {
     ///
     /// Rejects startup, policy, image, service or fixed credential drift.
     pub fn recheck(&self) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
-        if self.genesis.canary_purpose().is_some() {
+        if self.genesis.canary_purpose().is_some() || self.genesis.boot_purpose().is_some() {
             return self.genesis.recheck_selected();
         }
         self.genesis.recheck().map_err(Into::into)
@@ -347,7 +360,7 @@ impl<'startup> RuntimeDeploymentComparisonOriginsV1<'startup> {
         HostPhysicalInvocationLeaseV1::claim(self)
     }
 
-    pub(super) fn host_physical_invocation_startup(&self) -> &ProductionRuntimeDeploymentStartupV1 {
+    pub(super) fn host_physical_invocation_startup(&self) -> super::startup_original::PublisherStartupOriginalRefV3<'startup> {
         self.genesis.startup()
     }
 
@@ -363,6 +376,227 @@ impl<'startup> RuntimeDeploymentComparisonOriginsV1<'startup> {
         -> Option<&aos_sandbox_protocol::runtime_deployment::canary::CanaryPurposeV2>
     {
         self.genesis.canary_purpose()
+    }
+
+    /// Borrows the normal signed purpose from this same genuine Source cohort.
+    ///
+    /// The returned value is historical DATA, never signing or floor authority.
+    #[must_use]
+    pub fn boot_purpose_v1(&self)
+        -> Option<&aos_sandbox_protocol::runtime_deployment::boot_preparation::SignedBootPreparationPurposeDataV1>
+    {
+        self.genesis.boot_purpose()
+    }
+
+    /// Compares the normal signing original with its retained fixed delivery.
+    ///
+    /// No key, preimage callback, signer or positive publication token escapes.
+    ///
+    /// # Errors
+    /// Refuses another purpose, Source or credential drift, exhausted same-M
+    /// funds, or a foreign protected original directory or signing leaf.
+    pub fn compare_boot_signing_original_v1(
+        &self,
+        directory: &std::fs::File,
+        signing_file: &std::fs::File,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        self.genesis.compare_boot_signing_original(directory, signing_file)
+    }
+
+    /// Prepays the sole fixed helper birth on this actual normal Source.
+    ///
+    /// This uses the shared configured-kernel supplier and this publisher's own
+    /// kernel notes proof. It grants no helper identity, session or NV result.
+    ///
+    /// # Errors
+    /// Refuses another purpose, Source drift, exhaustion, unconfigured kernel
+    /// geometry, notes mismatch or a repeated helper birth preparation.
+    pub fn prepare_boot_helper_birth_once_v1(&self) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        self.recheck()?;
+        self.genesis.startup().boot().ok_or(NvCustodyErrorV1::Provisioning)?
+            .prepare_tpm_helper_birth_once_v1().map_err(Into::into)
+    }
+
+    /// Admits a reached publisher shape on this same actual normal Source.
+    ///
+    /// The shape is passive receiving DATA. This only debits the actual
+    /// unfinished original ledger; it returns no effect, role, key, native
+    /// scope, publication token or independently usable allowance.
+    ///
+    /// # Errors
+    /// Refuses another purpose, closed or poisoned Source, invalid checked
+    /// geometry or insufficient funds before the caller's allocation or IO.
+    pub fn admit_boot_publisher_representation_v1(
+        &self,
+        demand: Option<aos_sandbox_core::ResourceVector>,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        self.genesis.startup().boot().ok_or(NvCustodyErrorV1::Provisioning)?
+            .fund_additional(demand).map_err(Into::into)
+    }
+
+    /// Drains reached normal journal posts from the same retained original pair.
+    ///
+    /// This consumes only earlier prepaid native frames. It performs no fresh
+    /// Source debit, opens no journal and restores no owner or writer health.
+    ///
+    /// # Errors
+    /// Retains interrupted/failed native observations and rejects a busy archive.
+    pub fn drain_boot_journal_after_unwind_once_v1(
+        &self,
+        main: &Journal,
+        sidecar: &Journal,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        let main_result = main.drain_boot_history_after_unwind_once_v1(&self.genesis);
+        let sidecar_result = sidecar.drain_boot_history_after_unwind_once_v1(&self.genesis);
+        main_result?;
+        sidecar_result?;
+        Ok(())
+    }
+
+    /// Drains a reached normal member while admission still holds a partial pair.
+    ///
+    /// This uses only the already parked native post for this actual fixed file;
+    /// it performs no Source debit and creates no writer or healthy admission.
+    ///
+    /// # Errors
+    /// Retains the member's failed or interrupted original native observation.
+    pub fn drain_boot_journal_member_after_unwind_once_v1(
+        &self,
+        journal: &Journal,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        journal.drain_boot_history_after_unwind_once_v1(&self.genesis)?;
+        Ok(())
+    }
+
+    /// Debits actual normal Source before a borrowed journal's fixed native guard.
+    ///
+    /// # Errors
+    /// Refuses another purpose, invalid geometry or exhausted original Source.
+    pub fn admit_boot_journal_currentness_representation_v1(
+        &self,
+        journal: &Journal,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        if self.genesis.boot_purpose().is_none() {
+            return Err(changed_comparison());
+        }
+        journal.admit_boot_named_guard_receiving_v1(&self.genesis, true)?;
+        Ok(())
+    }
+
+    /// Debits actual Source before the unchanged same-OFD lock-loan recipe.
+    ///
+    /// # Errors
+    /// Refuses another purpose, lower geometry or exhausted original Source.
+    pub fn admit_boot_journal_lock_loan_representation_v1(
+        &self,
+        journal: &Journal,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        if self.genesis.boot_purpose().is_none() {
+            return Err(changed_comparison());
+        }
+        journal.admit_boot_lock_loan_receiving_v1(&self.genesis)?;
+        Ok(())
+    }
+
+    /// Debits actual normal Source before models copied from this held journal.
+    ///
+    /// # Errors
+    /// Refuses another purpose, model overflow or exhausted original Source.
+    pub fn admit_boot_journal_model_representation_v1(
+        &self,
+        journal: &Journal,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        if self.genesis.boot_purpose().is_none() {
+            return Err(changed_comparison());
+        }
+        journal.admit_boot_model_receiving_v1(&self.genesis)?;
+        Ok(())
+    }
+
+    /// Debits actual Source before this transaction's prepared/model copies.
+    ///
+    /// This prices only borrowed model geometry and no future disk allocation.
+    ///
+    /// # Errors
+    /// Refuses another purpose, encoded overflow or exhausted original Source.
+    pub fn admit_boot_transaction_model_representation_v1(
+        &self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        if self.genesis.boot_purpose().is_none() {
+            return Err(changed_comparison());
+        }
+        let demand =
+            crate::journal::runtime_deployment_receiving::boot_transaction_model_demand_v1(
+                transaction,
+            )?;
+        self.genesis
+            .admit_boot_journal_representation_v1(Some(demand))?;
+        Ok(())
+    }
+
+    /// Debits actual normal Source before this writer's real typed append work.
+    ///
+    /// # Errors
+    /// Retains same-file metadata/forecast refusal or exhausted original Source.
+    pub fn admit_boot_journal_append_representation_v1(
+        &self,
+        journal: &Journal,
+        transaction: &JournalTransaction,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        if self.genesis.boot_purpose().is_none() {
+            return Err(changed_comparison());
+        }
+        journal.admit_boot_append_receiving_v1(&self.genesis, transaction)?;
+        Ok(())
+    }
+
+    /// Debits actual normal Source before encoding a typed ordered native suffix.
+    ///
+    /// The borrowed widths are passive DATA and provide no writer or effect.
+    ///
+    /// # Errors
+    /// Retains real metadata, ordinary forecast limits or Source refusal.
+    pub fn admit_boot_journal_sequence_representation_v1<I, T>(
+        &self,
+        journal: &Journal,
+        transactions: I,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1>
+    where
+        I: IntoIterator<Item = Result<T, JournalError>>,
+        T: ExactSizeIterator<Item = aos_sandbox_journal::geometry::RecordShape>,
+    {
+        if self.genesis.boot_purpose().is_none() {
+            return Err(changed_comparison());
+        }
+        journal.admit_boot_append_shapes_receiving_v1(&self.genesis, transactions)?;
+        Ok(())
+    }
+
+    /// Borrows the measured normal profile from this same admitted original.
+    ///
+    /// This DATA cannot replace a startup owner or authenticate a later effect.
+    ///
+    /// # Errors
+    /// Refuses another purpose or an incomplete, closed or poisoned Source.
+    pub fn boot_profile_data_v1(
+        &self,
+    ) -> Result<&aos_sandbox_broker::profile_data::runtime_deployment::BootPreparationPublisherProfileDataV1, RuntimeDeploymentComparisonErrorV1> {
+        self.genesis.startup().boot().ok_or(NvCustodyErrorV1::Provisioning)?
+            .profile_data_v1().map_err(Into::into)
+    }
+
+    /// Borrows only authenticated comparison coordinates of the actual Source.
+    ///
+    /// No copied coordinate can construct or reopen its native interval.
+    ///
+    /// # Errors
+    /// Refuses another purpose or absent original Source capture.
+    pub fn boot_source_comparison_data_v1(
+        &self,
+    ) -> Result<&aos_sandbox_broker::receiving::RuntimeBootPreparationOriginComparisonDataV1, RuntimeDeploymentComparisonErrorV1> {
+        self.genesis.startup().boot().ok_or(NvCustodyErrorV1::Provisioning)?
+            .origin_data_v1().map_err(Into::into)
     }
 
     /// Compares an additional original signing File with the selected fixed delivery.
@@ -403,7 +637,7 @@ impl<'startup> RuntimeDeploymentComparisonOriginsV1<'startup> {
         self.recheck()?;
         let purpose = self.genesis.canary_purpose().ok_or(NvCustodyErrorV1::Provisioning)?;
         Ok(super::startup::RuntimeDeploymentStorageDelegateCaptureV2::new(
-            self.genesis.startup(), purpose,
+            self.genesis.startup().existing().ok_or(NvCustodyErrorV1::Provisioning)?, purpose,
         ))
     }
 
@@ -416,9 +650,12 @@ impl<'startup> RuntimeDeploymentComparisonOriginsV1<'startup> {
     }
 
     /// Borrows the actual originally captured PID1 file, not a reopened image.
+    ///
+    /// # Errors
+    /// Refuses an incomplete original normal image acquisition.
     #[must_use]
-    pub fn retained_pid1(&self) -> &RetainedImmutableFileV1 {
-        self.genesis.startup().retained_pid1()
+    pub fn retained_pid1(&self) -> Result<&RetainedImmutableFileV1, RuntimeDeploymentComparisonErrorV1> {
+        self.genesis.startup().retained_pid1().map_err(Into::into)
     }
 
     /// Compares a retained child's actual parent and fixed cgroup population.
@@ -454,6 +691,7 @@ impl<'startup> RuntimeDeploymentComparisonOriginsV1<'startup> {
     > {
         self.recheck()?;
         require_deployment_main_v1(&self.genesis, main)?;
+        main.admit_boot_named_guard_receiving_v1(&self.genesis, false)?;
         let witness = main.protected_writer_name_witness()?;
         let snapshot = main.claim_protected_authority(NAMESPACE)?.snapshot()?;
         let head = compared_current_head(&self.genesis, main, snapshot.sequence())?;
@@ -495,7 +733,10 @@ impl<'startup> RuntimeDeploymentComparisonOriginsV1<'startup> {
         let current = self.hold_main(main)?;
         let main_history = current.main.capture_runtime_deployment_main_history_v1(&self.genesis)?;
         let sidecar_history = sidecar.capture_runtime_deployment_sidecar_history_v1(&self.genesis)?;
+        current.main.admit_boot_named_guard_receiving_v1(&self.genesis, false)?;
+        sidecar.admit_boot_named_guard_receiving_v1(&self.genesis, false)?;
         current.main.require_deployment_pair_independence_v1(sidecar)?;
+        sidecar.admit_boot_named_guard_receiving_v1(&self.genesis, false)?;
         let witness = sidecar.protected_writer_name_witness()?;
         let snapshot = sidecar.claim_protected_authority(NAMESPACE)?.snapshot()?;
         let limits = sidecar.configured_limits();
@@ -650,6 +891,16 @@ impl HeldRuntimeDeploymentPairComparisonV1<'_, '_, '_, '_> {
         &mut self,
     ) -> Result<&[RuntimeDeploymentNativeTransactionDataV1], RuntimeDeploymentComparisonErrorV1> {
         self.recheck()?;
+        if self.current.origins.genesis.boot_purpose().is_some() {
+            let demand =
+                crate::journal::runtime_deployment_receiving::boot_history_model_demand_v1(
+                    self.sidecar_history.transactions(),
+                )?;
+            self.current
+                .origins
+                .genesis
+                .admit_boot_journal_representation_v1(Some(demand))?;
+        }
         Ok(self.sidecar_history.transactions())
     }
 
@@ -710,12 +961,15 @@ impl HeldRuntimeDeploymentPairComparisonV1<'_, '_, '_, '_> {
         let origins = self.current.origins;
         origins.recheck()?;
         self.current.recheck()?;
+        self.sidecar.admit_boot_named_guard_receiving_v1(&self.current.origins.genesis, false)?;
         self.sidecar.validate_protected_writer_name_witness(&self.witness)?;
         self.sidecar.claim_protected_authority(NAMESPACE)?
             .validate_snapshot_for_effect(&self.snapshot)?;
         if self.sidecar.configured_limits() != self.limits {
             return Err(changed_comparison());
         }
+        self.current.main.admit_boot_named_guard_receiving_v1(&self.current.origins.genesis, false)?;
+        self.sidecar.admit_boot_named_guard_receiving_v1(&self.current.origins.genesis, false)?;
         self.current.main.require_deployment_pair_independence_v1(self.sidecar)?;
 
         let main_history = self.current.main
@@ -732,9 +986,12 @@ impl HeldRuntimeDeploymentPairComparisonV1<'_, '_, '_, '_> {
         drop(sidecar_history);
 
         self.current.recheck()?;
+        self.sidecar.admit_boot_named_guard_receiving_v1(&self.current.origins.genesis, false)?;
         self.sidecar.validate_protected_writer_name_witness(&self.witness)?;
         self.sidecar.claim_protected_authority(NAMESPACE)?
             .validate_snapshot_for_effect(&self.snapshot)?;
+        self.current.main.admit_boot_named_guard_receiving_v1(&self.current.origins.genesis, false)?;
+        self.sidecar.admit_boot_named_guard_receiving_v1(&self.current.origins.genesis, false)?;
         self.current.main.require_deployment_pair_independence_v1(self.sidecar)?;
         origins.recheck()
     }
@@ -810,6 +1067,8 @@ impl<'origin, 'startup, 'main>
         &mut self,
     ) -> Result<ProtectedJournalLockCustodyV1, RuntimeDeploymentComparisonErrorV1> {
         self.recheck()?;
+        self.main
+            .admit_boot_lock_loan_receiving_v1(&self.origins.genesis)?;
         let result = self.main.loan_protected_lock_custody().map_err(Into::into);
         let loan = latch_failure(&mut self.usable, result)?;
         self.recheck()?;
@@ -833,6 +1092,8 @@ impl<'origin, 'startup, 'main>
         RuntimeDeploymentComparisonErrorV1,
     > {
         self.recheck()?;
+        self.main
+            .admit_boot_append_receiving_v1(&self.origins.genesis, transaction)?;
         let result = self
             .main
             .claim_protected_authority(NAMESPACE)?
@@ -856,6 +1117,7 @@ impl<'origin, 'startup, 'main>
 
     fn recheck_inner(&mut self) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
         self.origins.recheck()?;
+        self.main.admit_boot_named_guard_receiving_v1(&self.origins.genesis, false)?;
         self.main.validate_protected_writer_name_witness(&self.witness)?;
         self.main
             .claim_protected_authority(NAMESPACE)?
@@ -868,6 +1130,7 @@ impl<'origin, 'startup, 'main>
             return Err(changed_comparison());
         }
 
+        self.main.admit_boot_named_guard_receiving_v1(&self.origins.genesis, false)?;
         self.main.validate_protected_writer_name_witness(&self.witness)?;
         self.main
             .claim_protected_authority(NAMESPACE)?
@@ -878,6 +1141,7 @@ impl<'origin, 'startup, 'main>
         if readback != self.head {
             return Err(changed_comparison());
         }
+        self.main.admit_boot_named_guard_receiving_v1(&self.origins.genesis, false)?;
         self.main.validate_protected_writer_name_witness(&self.witness)?;
         self.main
             .claim_protected_authority(NAMESPACE)?
@@ -891,6 +1155,17 @@ impl<'origin, 'startup, 'main>
     ) -> Result<((u64, [u8; 32]), Vec<u8>), RuntimeDeploymentComparisonErrorV1> {
         // The original-main audit refuses excess rows before this borrowed map.
         require_deployment_main_v1(&self.origins.genesis, self.main)?;
+        self.main
+            .admit_boot_model_receiving_v1(&self.origins.genesis)?;
+        if self.origins.genesis.boot_purpose().is_some() {
+            let demand =
+                crate::journal::runtime_deployment_receiving::boot_transaction_model_demand_v1(
+                    transaction,
+                )?;
+            self.origins
+                .genesis
+                .admit_boot_journal_representation_v1(Some(demand))?;
+        }
         let records = self.main.records(NAMESPACE).collect::<BTreeMap<_, _>>();
         let target = compared_prospective_deployment_head_v1(
             &self.origins.genesis, self.snapshot.sequence(), &records, transaction,
@@ -1022,6 +1297,7 @@ fn compared_current_head(
     sequence: u64,
 ) -> Result<[u8; 32], RuntimeDeploymentComparisonErrorV1> {
     require_deployment_main_v1(owner, main)?;
+    main.admit_boot_model_receiving_v1(owner)?;
     let records = main.records(NAMESPACE).collect::<BTreeMap<_, _>>();
     require_current_deployment_rows_v1(owner, sequence, &records)?;
     canonical_purpose_main_head_v1(

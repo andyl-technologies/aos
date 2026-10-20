@@ -228,7 +228,16 @@ struct UnitReference {
 }
 
 impl UnitReference {
-    async fn release(&self, manager: &ManagerProxy<'static>) -> Result<()> {
+    async fn release(&self, client: &SystemdClient) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        let destination = client.arm_host_disposition_v2("UnrefUnit reply")?;
+        let result = self.release_engine(&client.manager).await;
+        #[cfg(target_os = "linux")]
+        if let Some(destination) = destination { return destination.complete(result); }
+        result
+    }
+
+    async fn release_engine(&self, manager: &ManagerProxy<'static>) -> Result<()> {
         tokio::time::timeout(REFERENCE_OPERATION_TIMEOUT, manager.unref_unit(&self.name))
             .await
             .map_err(|_| Error::ExactUnitTimeout("UnrefUnit reply"))??;
@@ -250,6 +259,13 @@ impl Drop for SocketShutdownAnchor {
     }
 }
 
+#[cfg(unix)]
+enum ExactShutdownAnchorV2 {
+    Ordinary(SocketShutdownAnchor),
+    #[cfg(target_os = "linux")]
+    Retained(zbus::connection::FixedLauncherImageCancellationV1),
+}
+
 /// Owns a disposable systemd connection for one reference-sensitive operation.
 ///
 /// Methods consume this value. Cancellation or an ambiguous `RefUnit`/
@@ -258,11 +274,20 @@ impl Drop for SocketShutdownAnchor {
 /// not use a shared [`SystemdClient`] for exact reference lifetimes.
 pub struct ExactUnitClient {
     #[cfg(unix)]
-    _shutdown: SocketShutdownAnchor,
+    _shutdown: ExactShutdownAnchorV2,
     client: SystemdClient,
 }
 
 impl ExactUnitClient {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn from_host_launch_v2(
+        client: SystemdClient,
+        shutdown: zbus::connection::FixedLauncherImageCancellationV1,
+    ) -> Self {
+        Self { _shutdown: ExactShutdownAnchorV2::Retained(shutdown), client }
+    }
+
+
     /// Opens a disposable system-bus connection for one exact operation.
     ///
     /// # Errors
@@ -319,7 +344,7 @@ impl ExactUnitClient {
             let client = SystemdClient::from_connection(connection).await?;
 
             Ok(Self {
-                _shutdown: shutdown,
+                _shutdown: ExactShutdownAnchorV2::Ordinary(shutdown),
                 client,
             })
         })
@@ -345,7 +370,7 @@ impl ExactUnitClient {
             match self.client.acquire_unit_reference(name, role).await {
                 Ok(Some(reference)) => {
                     let observation = self.client.observe_reference(name, role, &reference).await;
-                    finish_reference(&self.client.manager, &reference, observation)
+                    finish_reference(&self.client, &reference, observation)
                         .await
                         .map(Some)
                 }
@@ -377,23 +402,7 @@ impl ExactUnitClient {
         name: &SandboxUnitName,
         role: ExactUnitRole,
     ) -> Result<PostUnrefUnitObservation> {
-        let operation = async {
-            let unit_name = role.name(name);
-            match self.client.manager.get_unit(unit_name).await {
-                Err(error) if is_no_such_unit(&error) => Ok(PostUnrefUnitObservation::Absent),
-                Err(error) => Err(error.into()),
-                Ok(object_path) => {
-                    let unreferenced = UnitReference {
-                        name: unit_name.to_owned(),
-                        object_path,
-                    };
-                    self.client
-                        .observe_reference(name, role, &unreferenced)
-                        .await
-                        .map(PostUnrefUnitObservation::Present)
-                }
-            }
-        };
+        let operation = self.client.observe_unreferenced_exact_unit_v8(name, role);
         let result = tokio::time::timeout(EXACT_OPERATION_TIMEOUT, operation)
             .await
             .unwrap_or_else(|_| Err(Error::ExactUnitTimeout("post-Unref observation")));
@@ -426,10 +435,65 @@ impl ExactUnitClient {
         before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
     ) -> std::result::Result<JobOutcome, ExactStartError<E>> {
         let properties = spec.properties().map_err(ExactStartError::Systemd)?;
+        self.start_payload_with_properties_guarded_v2(
+            spec, guardian, before_submission, &properties,
+        ).await
+    }
+
+    /// Prepares and submits the same payload with retained native properties.
+    ///
+    /// The actual caller prepays `original` before any preparation. Its exact
+    /// source/spec/FD and property prefix remain held through StartTransientUnit,
+    /// the job and all independent upper posts. This method supplies no launch
+    /// authority; the existing synchronous guard and exact Guardian checks stay
+    /// in the sole submission engine.
+    ///
+    /// # Errors
+    /// Returns the same guard/Systemd errors as `start_payload_guarded`, retaining
+    /// original property failures in `original`. Already-owed close still runs
+    /// after a property refusal, preserving that earlier primary error.
+    pub async fn start_payload_guarded_retaining_v2<E>(
+        self,
+        spec: &SandboxUnitSpec,
+        original: &mut super::PayloadUnitPropertyOriginalV2,
+        guardian: ExactUnitTarget,
+        before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
+    ) -> std::result::Result<JobOutcome, ExactStartError<E>> {
+        if !self.client.is_retained_host_launch_v2() {
+            return Err(ExactStartError::Systemd(Error::HostLaunchRetained(
+                "payload retained connection missing",
+            )));
+        }
+        if let Err(error) = original.prepare_once_v2(spec) {
+            return finish_exact_start_connection(self, Err(ExactStartError::Systemd(error))).await;
+        }
+        let properties = match original.completed_properties_v2(spec) {
+            Ok(properties) => properties,
+            Err(error) => {
+                return finish_exact_start_connection(self, Err(ExactStartError::Systemd(error))).await;
+            }
+        };
+        self.start_payload_with_properties_guarded_v2(
+            spec, guardian, before_submission, properties,
+        ).await
+    }
+
+    async fn start_payload_with_properties_guarded_v2<E>(
+        self,
+        spec: &SandboxUnitSpec,
+        guardian: ExactUnitTarget,
+        before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
+        properties: &[crate::manager_proxy::TransientProperty],
+    ) -> std::result::Result<JobOutcome, ExactStartError<E>> {
+
         if spec.launch_binding() != Some(guardian.binding()) {
-            return Err(ExactStartError::Systemd(Error::InvalidSandboxUnit(
+            let refused = Err(ExactStartError::Systemd(Error::InvalidSandboxUnit(
                 "payload and Guardian launch bindings differ".to_owned(),
             )));
+            if self.client.is_retained_host_launch_v2() {
+                return finish_exact_start_connection(self, refused).await;
+            }
+            return refused;
         }
 
         let operation = async {
@@ -489,7 +553,7 @@ impl ExactUnitClient {
             }
             .await;
 
-            finish_exact_start(&self.client.manager, &reference, result).await
+            finish_exact_start(&self.client, &reference, result).await
         };
         let result = tokio::time::timeout(EXACT_OPERATION_TIMEOUT, operation)
             .await
@@ -500,7 +564,7 @@ impl ExactUnitClient {
             });
 
         finish_exact_start_connection(self, result).await
-    }
+        }
 
     /// Stops only the manager object matching an exact binding and invocation.
     ///
@@ -611,7 +675,7 @@ impl ExactUnitClient {
             }
             .await;
 
-            finish_exact_stop(&self.client.manager, &reference, outcome).await
+            finish_exact_stop(&self.client, &reference, outcome).await
         };
         let result = tokio::time::timeout(EXACT_OPERATION_TIMEOUT, operation)
             .await
@@ -634,7 +698,7 @@ impl ExactUnitClient {
         let client = SystemdClient::from_connection(connection).await?;
 
         Ok(Self {
-            _shutdown: shutdown,
+            _shutdown: ExactShutdownAnchorV2::Ordinary(shutdown),
             client,
         })
     }
@@ -695,17 +759,40 @@ impl SystemdClient {
                 } else {
                     Err(error.into())
                 };
-                return finish_reference(&self.manager, &reference, result).await;
+                return finish_reference(self, &reference, result).await;
             }
         };
         if current != reference.object_path {
             let result = Err(Error::InvalidSandboxUnit(
                 "unit object path changed across RefUnit".to_owned(),
             ));
-            return finish_reference(&self.manager, &reference, result).await;
+            return finish_reference(self, &reference, result).await;
         }
 
         Ok(Some(reference))
+    }
+
+    // Both the ordinary post-Unref path and the finite restart census use the
+    // same property parser and sandwich. Neither operation takes a reference.
+    pub(crate) async fn observe_unreferenced_exact_unit_v8(
+        &self,
+        name: &SandboxUnitName,
+        role: ExactUnitRole,
+    ) -> Result<PostUnrefUnitObservation> {
+        let unit_name = role.name(name);
+        match self.manager.get_unit(unit_name).await {
+            Err(error) if is_no_such_unit(&error) => Ok(PostUnrefUnitObservation::Absent),
+            Err(error) => Err(error.into()),
+            Ok(object_path) => {
+                let unreferenced = UnitReference {
+                    name: unit_name.to_owned(),
+                    object_path,
+                };
+                self.observe_reference(name, role, &unreferenced)
+                    .await
+                    .map(PostUnrefUnitObservation::Present)
+            }
+        }
     }
 
     async fn observe_reference(
@@ -726,20 +813,20 @@ impl SystemdClient {
             .await?;
 
         let expected_name = role.name(name);
-        let id_before = unit.id().await?;
-        let invocation_before = parse_invocation_id(unit.invocation_id().await?)?;
-        let environment_before = service.environment().await?;
+        let id_before = launch_property_v2!(self, unit, id, "Id", String)?;
+        let invocation_before = parse_invocation_id(launch_property_v2!(self, unit, invocation_id, "InvocationID", Vec<u8>)?)?;
+        let environment_before = launch_property_v2!(self, service, environment, "Environment", Vec<String>)?;
         let binding = parse_launch_binding(&environment_before, role)?;
 
-        let active_state = unit.active_state().await?;
-        let sub_state = unit.sub_state().await?;
-        let main_pid = NonZeroU32::new(service.main_pid().await?);
+        let active_state = launch_property_v2!(self, unit, active_state, "ActiveState", String)?;
+        let sub_state = launch_property_v2!(self, unit, sub_state, "SubState", String)?;
+        let main_pid = NonZeroU32::new(launch_property_v2!(self, service, main_pid, "MainPID", u32)?);
         let cgroup =
-            parse_exact_cgroup(&role.expected_cgroup(name), service.control_group().await?)?;
+            parse_exact_cgroup(&role.expected_cgroup(name), launch_property_v2!(self, service, control_group, "ControlGroup", String)?)?;
 
-        let environment_after = service.environment().await?;
-        let invocation_after = parse_invocation_id(unit.invocation_id().await?)?;
-        let id_after = unit.id().await?;
+        let environment_after = launch_property_v2!(self, service, environment, "Environment", Vec<String>)?;
+        let invocation_after = parse_invocation_id(launch_property_v2!(self, unit, invocation_id, "InvocationID", Vec<u8>)?)?;
+        let id_after = launch_property_v2!(self, unit, id, "Id", String)?;
         if id_before != expected_name
             || id_after != expected_name
             || id_before != id_after
@@ -766,11 +853,11 @@ impl SystemdClient {
 }
 
 async fn finish_reference<T>(
-    manager: &ManagerProxy<'static>,
+    client: &SystemdClient,
     reference: &UnitReference,
     result: Result<T>,
 ) -> Result<T> {
-    let released = reference.release(manager).await;
+    let released = reference.release(client).await;
     match (result, released) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), _) => Err(error),
@@ -779,12 +866,12 @@ async fn finish_reference<T>(
 }
 
 async fn finish_exact_stop<T, E>(
-    manager: &ManagerProxy<'static>,
+    client: &SystemdClient,
     reference: &UnitReference,
     result: std::result::Result<T, ExactStopError<E>>,
 ) -> std::result::Result<T, ExactStopError<E>> {
     let released = reference
-        .release(manager)
+        .release(client)
         .await
         .map_err(ExactStopError::Systemd);
     match (result, released) {
@@ -795,12 +882,12 @@ async fn finish_exact_stop<T, E>(
 }
 
 async fn finish_exact_start<T, E>(
-    manager: &ManagerProxy<'static>,
+    client: &SystemdClient,
     reference: &UnitReference,
     result: std::result::Result<T, ExactStartError<E>>,
 ) -> std::result::Result<T, ExactStartError<E>> {
     let released = reference
-        .release(manager)
+        .release(client)
         .await
         .map_err(ExactStartError::Systemd);
     match (result, released) {
@@ -811,7 +898,7 @@ async fn finish_exact_start<T, E>(
 }
 
 async fn finish_connection<T>(client: ExactUnitClient, result: Result<T>) -> Result<T> {
-    let closed = close_connection(&client.client.conn).await;
+    let closed = close_connection(&client.client).await;
     match (result, closed) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), _) => Err(error),
@@ -823,7 +910,7 @@ async fn finish_exact_connection<T, E>(
     client: ExactUnitClient,
     result: std::result::Result<T, ExactStopError<E>>,
 ) -> std::result::Result<T, ExactStopError<E>> {
-    let closed = close_connection(&client.client.conn)
+    let closed = close_connection(&client.client)
         .await
         .map_err(ExactStopError::Systemd);
     match (result, closed) {
@@ -837,7 +924,7 @@ async fn finish_exact_start_connection<T, E>(
     client: ExactUnitClient,
     result: std::result::Result<T, ExactStartError<E>>,
 ) -> std::result::Result<T, ExactStartError<E>> {
-    let closed = close_connection(&client.client.conn)
+    let closed = close_connection(&client.client)
         .await
         .map_err(ExactStartError::Systemd);
     match (result, closed) {
@@ -847,7 +934,21 @@ async fn finish_exact_start_connection<T, E>(
     }
 }
 
-async fn close_connection(connection: &zbus::Connection) -> Result<()> {
+async fn close_connection(client: &SystemdClient) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    let destination = client.arm_host_disposition_v2("connection close")?;
+    #[cfg(target_os = "linux")]
+    let streams = client.finish_host_streams_v2().await;
+    let result = close_connection_engine(&client.conn).await;
+    #[cfg(target_os = "linux")]
+    if let Some(destination) = destination {
+        let close = destination.complete(result);
+        return match streams { Err(error) => Err(error), Ok(()) => close };
+    }
+    result
+}
+
+async fn close_connection_engine(connection: &zbus::Connection) -> Result<()> {
     tokio::time::timeout(REFERENCE_OPERATION_TIMEOUT, connection.clone().close())
         .await
         .map_err(|_| Error::ExactUnitTimeout("connection close"))??;
@@ -856,7 +957,8 @@ async fn close_connection(connection: &zbus::Connection) -> Result<()> {
 
 pub(super) fn prepare_then_guard<T, E>(
     prepare: impl FnOnce() -> Result<T>,
-    before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
+    // Invoked synchronously here, before the caller submits or awaits anything.
+    before_submission: &mut dyn FnMut() -> std::result::Result<(), E>,
 ) -> std::result::Result<T, ExactStartError<E>> {
     let prepared = prepare().map_err(ExactStartError::Systemd)?;
     before_submission().map_err(ExactStartError::Guard)?;

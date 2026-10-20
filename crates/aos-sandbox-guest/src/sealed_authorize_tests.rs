@@ -121,3 +121,17 @@ fn maximum_size_content_crosses_one_sealed_descriptor_not_a_large_datagram() {
         ObjectDigest::from_bytes(Sha256::digest(&content).into())
     );
 }
+
+#[test]
+fn capture_reference_has_distinct_kind_and_reuses_the_complete_request_binding() {
+    let reference = reference(b"x");
+    let ordinary = encode_frame_v1(&AgentFrameV1::SealedAuthorizeRequest(reference));
+    let capture = encode_frame_v1(&AgentFrameV1::SealedCaptureAuthorizeRequestV2(reference));
+
+    assert_eq!(capture[8], 14);
+    assert_eq!(ordinary[8], 8);
+    assert_eq!(&ordinary[..8], &capture[..8]);
+    assert_eq!(&ordinary[9..], &capture[9..]);
+    assert_eq!(decode_frame_v1(&capture).unwrap(), AgentFrameV1::SealedCaptureAuthorizeRequestV2(reference));
+    assert_eq!(reference.reconstruct(b"changed"), Err(AgentProtocolError::CommitmentMismatch));
+}

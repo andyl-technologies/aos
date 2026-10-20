@@ -4,7 +4,7 @@
 //! and exact predecessor witness. A newer holder authority may rederive the
 //! provider ID without consuming another holder sequence.
 
-use aos_sandbox::journal::ProtectedJournalAuthority;
+use aos_sandbox_mount_native::ProtectedJournalAuthority;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::mount_source_acquisition_state::acquire_verification_floor_v2;
 use aos_sandbox_source_provider_protocol::{
@@ -44,7 +44,7 @@ impl SourceAcquisitionTableV2 {
     pub(crate) fn prepare_and_reserve_acquire_retry_v2(
         &mut self,
         journal: &mut ProtectedJournalAuthority<'_>,
-        catalog_journal: &ProtectedJournalAuthority<'_>,
+        catalog_journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         acquisition_id: [u8; 32],
         expected_revision: u64,

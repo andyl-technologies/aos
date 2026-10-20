@@ -16,6 +16,10 @@
 //! provenance only. Source genesis/floor, installed backend/catalog owners,
 //! publication history, and the all-owner effect barrier remain independent.
 
+use aos_sandbox_policy::signed_inputs::{PolicyDeploymentInputProfileV2, PolicyDeploymentInputsV1};
+
+use aos_sandbox_policy::journal_keys::SIGNER_PINS_KEY;
+
 use std::path::Path;
 
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId};
@@ -24,22 +28,22 @@ use sha2::{Digest as _, Sha256};
 
 use crate::controller::ControllerRequestScopeV1;
 use crate::journal::controller::production_journal_limits;
-use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
+use crate::publisher_admin::policy::{PublisherPolicyLimits, PublisherPolicyStore};
 use aos_sandbox_protocol::domain_ledger::effect_history::EffectPlan;
 use crate::{Journal, RecordNamespace};
 
-use super::deployment_head::{SIGNER_PINS_KEY, decode_policy_signer_pins_v1};
-use aos_sandbox_policy::canonical_bytes;
+use super::deployment_head::decode_policy_signer_pins_v1;
+use aos_sandbox_protocol::policy_data::canonical_bytes;
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
 use super::{
     CompiledPublisherPolicyRevisionV2, CurrentCreatePolicySourceErrorV1,
     CurrentCreateProjectPolicySourceV1, PolicyDeploymentHeadErrorV1,
-    PolicyDeploymentInputProfileV2, PolicyDeploymentInputsV1, RetainedPublisherCompilerOriginV3,
     current_parentless_create_project_source_for_operation_v1,
     verify_current_policy_deployment_profile_v2,
 };
+use aos_sandbox_protocol::policy_data::RetainedPublisherCompilerOriginV3;
 use aos_sandbox_policy::{PolicyCompilerInputV1, ProjectPolicyInputV1, RequestPolicyInputV1};
 
 const MAGIC: &[u8; 8] = b"AOSPPH03";
@@ -79,9 +83,8 @@ impl ProjectPolicyAssociationV3 {
         let origin = revision
             .compiler_origin()
             .ok_or(PolicyDeploymentHeadErrorV1::InvalidHead)?;
-        origin
-            .verify_original_derivation(original_input)
-            .map_err(crate::publisher_policy::PublisherPolicyError::from)?;
+        aos_sandbox_policy::verify_publisher_compiler_derivation_v3(origin, original_input)
+            .map_err(crate::publisher_admin::policy::PublisherPolicyError::from)?;
         Ok(Self {
             project: revision.project(),
             generation: source_generation,
@@ -268,9 +271,8 @@ fn with_current_inputs_at<R>(
     {
         return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
     }
-    origin
-        .verify_original_derivation(original_input)
-        .map_err(crate::publisher_policy::PublisherPolicyError::from)?;
+    aos_sandbox_policy::verify_publisher_compiler_derivation_v3(&origin, original_input)
+        .map_err(crate::publisher_admin::policy::PublisherPolicyError::from)?;
     let held = HeldCurrentCreatePolicyInputsV3 {
         sequence: controller.snapshot_sequence(),
         controller,
@@ -362,7 +364,7 @@ fn verify_association_at_held_cut(
     let revision_descriptor = held
         .origin
         .output_descriptors()
-        .map_err(crate::publisher_policy::PublisherPolicyError::from)?[0]
+        .map_err(crate::publisher_admin::policy::PublisherPolicyError::from)?[0]
         .clone();
     let source_generation = read_u64(packet, 24)?;
     let association = association_bytes(
@@ -409,13 +411,14 @@ fn association_bytes(
             policy,
             origin
                 .record_digest()
-                .map_err(crate::publisher_policy::PublisherPolicyError::from)?,
+                .map_err(crate::publisher_admin::policy::PublisherPolicyError::from)?,
             origin.original_target(),
             origin.normalized_input(),
             input.project().descriptor(),
             input.request().descriptor(),
         ),
     )
+    .map_err(aos_sandbox_policy::PolicyModelError::from)
     .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)
 }
 

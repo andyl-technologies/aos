@@ -4,6 +4,11 @@
 //! cannot authorize Create, Observe, or a Host effect without the ordered
 //! all-owner barrier.
 
+mod retaining;
+pub(crate) mod capture;
+pub(crate) use retaining::StorageExistingOutputOriginalV2;
+use retaining::*;
+
 use std::fs;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 use std::path::Path;
@@ -198,8 +203,16 @@ impl StorageExistingOutputClientV1 {
         create: [u8; 16],
         record_digest: [u8; 32],
     ) -> Result<ExistingOutputObservationV1> {
-        let (mut socket, route, manager) = self.open_checked_socket()?;
-        let (nonce, deadline) = fresh_challenge()?;
+        self.query_exchange_with_disposition(execution, create, record_digest, None, None)
+    }
+
+    fn query_exchange_with_disposition(
+        &self, execution: [u8; 16], create: [u8; 16], record_digest: [u8; 32],
+        cutoff: Option<u64>, original: Option<&mut QueryOriginalV2>,
+    ) -> Result<ExistingOutputObservationV1> {
+        let (open, mut native, reply) = query_destinations(original);
+        let (mut socket, route, manager) = self.open_checked_socket_with_disposition(open)?;
+        let (nonce, deadline) = fresh_challenge_observed(cutoff, &mut native)?;
         let request = ExistingOutputRequestV1 {
             nonce,
             deadline_boottime_nanoseconds: deadline,
@@ -207,25 +220,29 @@ impl StorageExistingOutputClientV1 {
             create,
             record_digest,
         };
-        if self.verify_activation_peer(&socket)? != manager || validate_socket_route()? != route {
+        if self.verify_activation_peer_observed(socket.get()?, &mut native)? != manager
+            || validate_socket_route_observed(&mut native)? != route
+        {
             return Err(query_error("socket activation peer changed"));
         }
-        send_request(
-            &mut socket,
-            &request.encode().map_err(query_error)?,
-            deadline,
-        )?;
+        if let Some(original) = native.as_deref_mut() { original.request = Some(request); }
+        {
+            let encoded = capture(request.encode(), &mut native)?;
+            send_observed(socket.get_mut()?, &encoded, deadline, &mut native)?;
+        }
 
-        let (response_bytes, _, _) = self.receive_storage_record(
-            &mut socket,
+        let mut reply = self.receive_storage_record_observed(
+            socket.get_mut()?,
             manager,
             route,
             deadline,
             RESPONSE_BYTES,
             None,
+            reply,
         )?;
-        let response = ExistingOutputResponseV1::decode(&response_bytes).map_err(query_error)?;
-        response.verify_request(request).map_err(query_error)?;
+        reply.retire_ordinary_subject();
+        let response = capture(ExistingOutputResponseV1::decode(reply.bytes()?), &mut native)?;
+        capture(response.verify_request(request), &mut native)?;
         Ok(ExistingOutputObservationV1 { request, response })
     }
 
@@ -268,8 +285,37 @@ impl StorageExistingOutputClientV1 {
         expected: ExistingOutputResponseV1,
         inspect: impl FnOnce(&HeldOutputProofV1) -> Result<(T, [u8; 32])>,
     ) -> Result<T> {
-        let (mut socket, route, manager) = self.open_checked_socket()?;
-        let (nonce, deadline) = fresh_challenge()?;
+        let mut held = self.begin_held_observed(expected, None, None)?;
+        match inspect(&held.proof) {
+            Ok((value, settlement_digest)) => {
+                let deadline = held.begin.deadline_boottime_nanoseconds;
+                self.terminal_observed(&mut held, HeldOutputTerminalModeV1::Settle,
+                    settlement_digest, deadline, None, None)?;
+                Ok(value)
+            }
+            Err(error) => {
+                // Preserve the ordinary precursor's send-only best-effort Abort.
+                // Selected ownership uses the same terminal grammar plus its Ack.
+                if let Ok(abort) = HeldOutputTerminalV1::new(
+                    held.begin, held.proof, HeldOutputTerminalModeV1::Abort, [0;32],
+                ) {
+                    if let Ok(bytes) = abort.encode() {
+                        let _ = send_request(&mut held.socket, &bytes,
+                            held.begin.deadline_boottime_nanoseconds);
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn begin_held_observed(
+        &self, expected: ExistingOutputResponseV1, cutoff: Option<u64>,
+        original: Option<&mut QueryOriginalV2>,
+    ) -> Result<HeldClientStateV2> {
+        let (open, mut native, reply) = query_destinations(original);
+        let (mut socket, route, manager) = self.open_checked_socket_with_disposition(open)?;
+        let (nonce, deadline) = fresh_challenge_observed(cutoff, &mut native)?;
         let begin = HeldOutputBeginV1 {
             nonce,
             deadline_boottime_nanoseconds: deadline,
@@ -283,76 +329,94 @@ impl StorageExistingOutputClientV1 {
             maximum_stdout_bytes: expected.maximum_stdout_bytes,
             maximum_stderr_bytes: expected.maximum_stderr_bytes,
         };
-        if self.verify_activation_peer(&socket)? != manager || validate_socket_route()? != route {
+        if self.verify_activation_peer_observed(socket.get()?, &mut native)? != manager
+            || validate_socket_route_observed(&mut native)? != route
+        {
             return Err(query_error("socket activation peer changed"));
         }
-        send_request(&mut socket, &begin.encode().map_err(query_error)?, deadline)?;
-
-        let (proof_bytes, storage, proof_subject) =
-            self.receive_storage_record(&mut socket, manager, route, deadline, PROOF_BYTES, None)?;
-        let proof = HeldOutputProofV1::decode(&proof_bytes).map_err(query_error)?;
-        proof.verify_begin(begin).map_err(query_error)?;
-
-        match inspect(&proof) {
-            Ok((value, settlement_digest)) => {
-                let terminal = HeldOutputTerminalV1::new(
-                    begin,
-                    proof,
-                    HeldOutputTerminalModeV1::Settle,
-                    settlement_digest,
-                )
-                .map_err(query_error)?;
-                send_request(
-                    &mut socket,
-                    &terminal.encode().map_err(query_error)?,
-                    deadline,
-                )?;
-                let (ack_bytes, _, _) = self.receive_storage_record(
-                    &mut socket,
-                    manager,
-                    route,
-                    deadline,
-                    ACK_BYTES,
-                    Some((storage, &proof_subject)),
-                )?;
-                let ack = HeldOutputAckV1::decode(&ack_bytes).map_err(query_error)?;
-                ack.verify_terminal(begin, proof, terminal)
-                    .map_err(query_error)?;
-                Ok(value)
-            }
-            Err(error) => {
-                if let Ok(abort) = HeldOutputTerminalV1::new(
-                    begin,
-                    proof,
-                    HeldOutputTerminalModeV1::Abort,
-                    [0; 32],
-                ) {
-                    if let Ok(bytes) = abort.encode() {
-                        let _ = send_request(&mut socket, &bytes, deadline);
-                    }
-                }
-                Err(error)
-            }
+        if let Some(original) = native.as_deref_mut() { original.begin = Some(begin); }
+        {
+            let encoded = capture(begin.encode(), &mut native)?;
+            send_observed(socket.get_mut()?, &encoded, deadline, &mut native)?;
         }
+
+        let reply = self.receive_storage_record_observed(
+            socket.get_mut()?, manager, route, deadline, PROOF_BYTES, None, reply,
+        )?;
+        let proof = capture(HeldOutputProofV1::decode(reply.bytes()?), &mut native)?;
+        capture(proof.verify_begin(begin), &mut native)?;
+        let (proof_bytes, storage, proof_subject) = reply.into_parts()?;
+
+        Ok(HeldClientStateV2 {
+            proof_subject, proof_bytes, socket: socket.take()?, route, manager,
+            begin, proof, storage,
+        })
     }
 
-    fn open_checked_socket(
-        &self,
-    ) -> Result<(DescriptorSubjectSocket, SocketRouteIdentity, PidFdInfo)> {
-        self.storage_cgroup
-            .validate_current()
-            .map_err(query_error)?;
-        let route = validate_socket_route()?;
-        let socket =
-            DescriptorSubjectSocket::connect(Path::new(QUERY_SOCKET)).map_err(query_error)?;
-        let manager = self.verify_activation_peer(&socket)?;
-        if validate_socket_route()? != route {
+    fn terminal_observed(
+        &self, held: &mut HeldClientStateV2, mode: HeldOutputTerminalModeV1,
+        settlement_digest: [u8;32], cutoff: u64,
+        mut native: NativeDestinationV2<'_>, reply: Option<&mut ReplyOriginalV2>,
+    ) -> Result<()> {
+        let terminal = capture(HeldOutputTerminalV1::new(
+            held.begin, held.proof, mode, settlement_digest,
+        ), &mut native)?;
+        if let Some(original) = native.as_deref_mut() { original.terminal = Some(terminal); }
+        let deadline = held.begin.deadline_boottime_nanoseconds.min(cutoff);
+        let sent = {
+            let encoded = capture(terminal.encode(), &mut native)?;
+            send_observed(&mut held.socket, &encoded, deadline, &mut native)
+        };
+        // The selected original always attempts its already owed Ack on the
+        // SAME held channel, including after send refusal or native poison.
+        // Ordinary None keeps the old short-circuit send/receive chronology.
+        let selected = native.is_some();
+        let sent = if selected { sent } else { sent?; Ok(()) };
+        let acknowledged = (|| {
+            let mut received = self.receive_storage_record_observed(
+                &mut held.socket, held.manager, held.route, deadline, ACK_BYTES,
+                Some((held.storage, &held.proof_subject)), reply,
+            )?;
+            received.retire_ordinary_subject();
+            let ack = capture(HeldOutputAckV1::decode(received.bytes()?), &mut native)?;
+            capture(ack.verify_terminal(held.begin, held.proof, terminal), &mut native)
+        })();
+        if native.is_some() { sent.and(acknowledged) } else { acknowledged }
+    }
+
+    fn open_checked_socket_with_disposition<'original>(
+        &self, original: Option<&'original mut OpenOriginalV2>,
+    ) -> Result<(SocketGuardV2<'original>, SocketRouteIdentity, PidFdInfo)> {
+        let retain_raw_peer = original.is_some();
+        self.open_checked_socket_recipe_v3(original, retain_raw_peer, retain_raw_peer)
+    }
+
+    // Actual Capture selects the same raw-native peer admission destination.
+    // This remains mechanical custody; all Storage/manager/route checks below
+    // run in the same engine, and this port grants no physical authority.
+    fn open_capture_socket_retaining_v3<'original>(
+        &self, original: &'original mut OpenOriginalV2,
+    ) -> Result<(SocketGuardV2<'original>, SocketRouteIdentity, PidFdInfo)> {
+        self.open_checked_socket_recipe_v3(Some(original), true, false)
+    }
+
+    fn open_checked_socket_recipe_v3<'original>(
+        &self, original: Option<&'original mut OpenOriginalV2>, retain_raw_peer: bool,
+        descriptor_free: bool,
+    ) -> Result<(SocketGuardV2<'original>, SocketRouteIdentity, PidFdInfo)> {
+        let (destination, admission, mut native) = open_destinations(original);
+        active_observed(&self.storage_cgroup, &mut native)?;
+        let route = validate_socket_route_observed(&mut native)?;
+        let socket = connect_observed_with_mode_v6(destination, admission, &mut native,
+            retain_raw_peer, descriptor_free)?;
+        let manager = self.verify_activation_peer_observed(socket.get()?, &mut native)?;
+        if validate_socket_route_observed(&mut native)? != route {
             return Err(query_error("socket route changed"));
         }
         Ok((socket, route, manager))
     }
 
-    fn receive_storage_record(
+    fn receive_storage_record_observed<'original>(
         &self,
         socket: &mut DescriptorSubjectSocket,
         manager: PidFdInfo,
@@ -360,44 +424,63 @@ impl StorageExistingOutputClientV1 {
         deadline: u64,
         maximum_bytes: usize,
         expected_storage: Option<(PidFdInfo, &KernelAuthorizedRecordSubject)>,
-    ) -> Result<(Vec<u8>, PidFdInfo, KernelAuthorizedRecordSubject)> {
-        let packet = receive_reply(socket, deadline, maximum_bytes, 0)?;
-        let record = socket.bind_received(packet).map_err(query_error)?;
-        let credentials = record.subject().credentials();
-        if credentials.uid() != 0 || credentials.gid() != 0 || !record.descriptors().is_empty() {
+        original: Option<&'original mut ReplyOriginalV2>,
+    ) -> Result<StorageReplyGuardV2<'original>> {
+        self.receive_storage_record_kind_observed(
+            socket, manager, route, deadline, maximum_bytes, expected_storage, original, false,
+        )
+    }
+
+    fn receive_storage_record_kind_observed<'original>(
+        &self,
+        socket: &mut DescriptorSubjectSocket,
+        manager: PidFdInfo,
+        route: SocketRouteIdentity,
+        deadline: u64,
+        maximum_bytes: usize,
+        expected_storage: Option<(PidFdInfo, &KernelAuthorizedRecordSubject)>,
+        original: Option<&'original mut ReplyOriginalV2>,
+        capture_pipes: bool,
+    ) -> Result<StorageReplyGuardV2<'original>> {
+        let (packet_destination, subject_destination, bytes_destination, descriptors_destination, mut native) = reply_destinations(original);
+        let record = if capture_pipes {
+            receive_capture_pipes_observed(socket, deadline, maximum_bytes, packet_destination, &mut native)?
+        } else {
+            receive_observed(socket, deadline, maximum_bytes, packet_destination, &mut native)?
+        };
+        validate_origin_observed(socket, record.get()?, &mut native)?;
+        let credentials = record.get()?.subject().credentials();
+        if credentials.uid() != 0 || credentials.gid() != 0
+            || record.get()?.descriptors().len() != if capture_pipes { 2 } else { 0 } {
             return Err(query_error("responder identity is invalid"));
         }
-        let storage = self
-            .storage_cgroup
-            .verify_exact_membership(record.subject().pidfd())
-            .map_err(query_error)?;
+        let storage = membership_observed(&self.storage_cgroup, record.get()?.subject().pidfd(), &mut native)?;
         if storage.pid() != credentials.pid().get()
             || storage.thread_group_id() != storage.pid()
             || expected_storage.is_some_and(|(expected, subject)| {
-                expected != storage || subject.is_alive().ok() != Some(true)
+                expected != storage || !alive_observed(subject, &mut native, true).unwrap_or(false)
             })
-            || !record.subject().is_alive().map_err(query_error)?
+            || !alive_observed(record.get()?.subject(), &mut native, false)?
         {
             return Err(query_error("responder execution changed"));
         }
-        let bytes = record.payload().to_vec();
-        let (_, subject, _, _) = record.into_parts();
-        if boottime()? >= deadline
-            || self.verify_activation_peer(socket)? != manager
-            || validate_socket_route()? != route
-            || self
-                .storage_cgroup
-                .verify_exact_membership(subject.pidfd())
-                .map_err(query_error)?
+        let bytes = ValueGuardV2::new(record.get()?.payload().to_vec(), bytes_destination);
+        let (_, subject, descriptors) = record.take()?.into_parts();
+        let subject = ValueGuardV2::new(subject, subject_destination);
+        let descriptors = ValueGuardV2::new(descriptors, descriptors_destination);
+        if clock_observed(&mut native)? >= deadline
+            || self.verify_activation_peer_observed(socket, &mut native)? != manager
+            || validate_socket_route_observed(&mut native)? != route
+            || membership_observed(&self.storage_cgroup, subject.get()?.pidfd(), &mut native)?
                 != storage
-            || !subject.is_alive().map_err(query_error)?
+            || !alive_observed(subject.get()?, &mut native, false)?
         {
             return Err(query_error("responder changed or deadline elapsed"));
         }
-        Ok((bytes, storage, subject))
+        Ok(StorageReplyGuardV2 { bytes, subject, descriptors, storage })
     }
 
-    fn verify_activation_peer(&self, socket: &DescriptorSubjectSocket) -> Result<PidFdInfo> {
+    fn verify_activation_peer_observed(&self, socket: &DescriptorSubjectSocket, native: &mut NativeDestinationV2<'_>) -> Result<PidFdInfo> {
         // A systemd-owned listening socket reports PID 1 as the connection
         // peer. The response record independently names the Storage worker.
         let peer = socket.peer();
@@ -405,17 +488,14 @@ impl StorageExistingOutputClientV1 {
         if credentials.uid() != 0 || credentials.gid() != 0 || credentials.pid().get() != 1 {
             return Err(query_error("socket activation peer is invalid"));
         }
-        let info = self
-            .manager_cgroup
-            .verify_exact_membership(peer.pidfd())
-            .map_err(query_error)?;
+        let info = membership_observed(&self.manager_cgroup, peer.pidfd(), native)?;
         if !manager_identity_is_valid(
             credentials.uid(),
             credentials.gid(),
             credentials.pid().get(),
             info.pid(),
             info.thread_group_id(),
-        ) || !peer.is_alive().map_err(query_error)?
+        ) || !peer_alive_observed(peer, native)?
         {
             return Err(query_error("socket activation manager is invalid"));
         }
@@ -423,9 +503,9 @@ impl StorageExistingOutputClientV1 {
     }
 }
 
-fn validate_socket_route() -> Result<SocketRouteIdentity> {
+fn validate_socket_route_observed(native: &mut NativeDestinationV2<'_>) -> Result<SocketRouteIdentity> {
     for directory in ["/run", "/run/aos", "/run/aos/sandbox-storage"] {
-        let metadata = fs::symlink_metadata(directory).map_err(query_error)?;
+        let metadata = route_metadata_observed(directory, native)?;
         if !route_directory_is_safe(
             metadata.file_type().is_dir(),
             metadata.uid(),
@@ -434,7 +514,7 @@ fn validate_socket_route() -> Result<SocketRouteIdentity> {
             return Err(query_error("socket route directory is unsafe"));
         }
     }
-    let metadata = fs::symlink_metadata(QUERY_SOCKET).map_err(query_error)?;
+    let metadata = route_metadata_observed(QUERY_SOCKET, native)?;
     if !route_endpoint_is_safe(
         metadata.file_type().is_socket(),
         metadata.uid(),
@@ -451,12 +531,7 @@ fn validate_socket_route() -> Result<SocketRouteIdentity> {
 }
 
 fn fresh_challenge() -> Result<([u8; 32], u64)> {
-    let mut nonce = [0; 32];
-    OsRng.try_fill_bytes(&mut nonce).map_err(query_error)?;
-    let deadline = boottime()?
-        .checked_add(QUERY_DEADLINE_NANOSECONDS)
-        .ok_or_else(|| query_error("deadline overflow"))?;
-    Ok((nonce, deadline))
+    fresh_challenge_observed(None, &mut None)
 }
 
 fn manager_identity_is_valid(

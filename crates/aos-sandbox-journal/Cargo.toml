@@ -20,5 +20,8 @@ rustix = { workspace = true, features = ["fs"], optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 aos-sandbox-linux = { workspace = true, optional = true }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

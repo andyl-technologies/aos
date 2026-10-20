@@ -76,7 +76,7 @@ impl LiveAuthorityClockSampleV1 {
 }
 
 /// Supplies live boot-scoped monotonic observations to protected owners.
-trait LiveAuthorityClockSourceV1 {
+trait LiveAuthorityClockSourceV1: Send {
     /// Samples one indivisible live boot-clock pair.
     ///
     /// # Errors
@@ -84,6 +84,8 @@ trait LiveAuthorityClockSourceV1 {
     /// Returns [`LiveAuthorityClockErrorV1`] when the source is unavailable or
     /// cannot prove that the boot remained stable across the clock read.
     fn sample(&mut self) -> Result<LiveAuthorityClockSampleV1, LiveAuthorityClockErrorV1>;
+
+    fn native_failure(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
 }
 
 /// Rejects every authority request on platforms without an installed source.
@@ -98,7 +100,7 @@ impl LiveAuthorityClockSourceV1 for UnavailableLiveAuthorityClockV1 {
 
 /// Computes the canonical commitment stored for one Linux kernel boot UUID.
 #[must_use]
-fn linux_kernel_boot_commitment_v1(boot_id: [u8; 16]) -> ObjectDigest {
+pub(super) fn linux_kernel_boot_commitment_v1(boot_id: [u8; 16]) -> ObjectDigest {
     ObjectDigest::from_bytes(
         Sha256::new()
             .chain_update(b"aos.sandbox.live-authority-clock.linux-boot-id.v1\0")
@@ -116,28 +118,111 @@ struct LinuxLiveAuthorityClockV1;
 #[cfg(target_os = "linux")]
 impl LiveAuthorityClockSourceV1 for LinuxLiveAuthorityClockV1 {
     fn sample(&mut self) -> Result<LiveAuthorityClockSampleV1, LiveAuthorityClockErrorV1> {
-        use aos_sandbox_linux::boot::KernelBootId;
-
-        let boot_before = KernelBootId::current()
-            .map_err(|_| LiveAuthorityClockErrorV1::Unavailable)?
-            .into_bytes();
-        let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-        let boot_after = KernelBootId::current()
-            .map_err(|_| LiveAuthorityClockErrorV1::Unavailable)?
-            .into_bytes();
-        if boot_before != boot_after {
-            return Err(LiveAuthorityClockErrorV1::InvalidSample);
-        }
-        let seconds =
-            u64::try_from(boottime.tv_sec).map_err(|_| LiveAuthorityClockErrorV1::InvalidSample)?;
-        let nanoseconds = u64::try_from(boottime.tv_nsec)
-            .map_err(|_| LiveAuthorityClockErrorV1::InvalidSample)?;
-        let value = seconds
-            .checked_mul(1_000_000_000)
-            .and_then(|value| value.checked_add(nanoseconds))
-            .ok_or(LiveAuthorityClockErrorV1::InvalidSample)?;
-        LiveAuthorityClockSampleV1::new(linux_kernel_boot_commitment_v1(boot_before), value)
+        sample_linux_clock_engine_v1(None)
     }
+}
+
+// Both dispositions use exactly the original boot→BOOTTIME→boot recipe and
+// pure conversion. A failed selected primitive retains its actual native input;
+// completed positive primitives may dispose before the next clock primitive.
+#[cfg(target_os = "linux")]
+fn sample_linux_clock_engine_v1(
+    mut original: Option<&mut LiveClockNativeOriginalV1>,
+) -> Result<LiveAuthorityClockSampleV1, LiveAuthorityClockErrorV1> {
+    use aos_sandbox_linux::boot::KernelBootId;
+
+    let boot_before = match original.as_deref_mut() {
+        Some(original) => original.before.observe_once()
+            .map(|boot| boot.into_bytes()).map_err(|_| LiveAuthorityClockErrorV1::Unavailable)?,
+        None => KernelBootId::current()
+            .map_err(|_| LiveAuthorityClockErrorV1::Unavailable)?.into_bytes(),
+    };
+    let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    if let Some(original) = original.as_deref_mut() { original.boottime = Some(boottime); }
+    let boot_after = match original.as_deref_mut() {
+        Some(original) => original.after.observe_once()
+            .map(|boot| boot.into_bytes()).map_err(|_| LiveAuthorityClockErrorV1::Unavailable)?,
+        None => KernelBootId::current()
+            .map_err(|_| LiveAuthorityClockErrorV1::Unavailable)?.into_bytes(),
+    };
+    if boot_before != boot_after {
+        return Err(LiveAuthorityClockErrorV1::InvalidSample);
+    }
+    let seconds =
+        u64::try_from(boottime.tv_sec).map_err(|_| LiveAuthorityClockErrorV1::InvalidSample)?;
+    let nanoseconds = u64::try_from(boottime.tv_nsec)
+        .map_err(|_| LiveAuthorityClockErrorV1::InvalidSample)?;
+    let value = seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or(LiveAuthorityClockErrorV1::InvalidSample)?;
+    LiveAuthorityClockSampleV1::new(linux_kernel_boot_commitment_v1(boot_before), value)
+}
+
+#[cfg(target_os = "linux")]
+struct LiveClockNativeOriginalV1 {
+    before: aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1,
+    after: aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1,
+    boottime: Option<rustix::time::Timespec>,
+    result: Option<Result<LiveAuthorityClockSampleV1, LiveAuthorityClockErrorV1>>,
+}
+
+#[cfg(target_os = "linux")]
+impl LiveClockNativeOriginalV1 {
+    fn new() -> Self {
+        Self { before: aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::new(),
+            after: aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::new(),
+            boottime: None, result: None }
+    }
+
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.before.failure().or_else(|| self.after.failure())
+            .or_else(|| self.result.as_ref()?.as_ref().err().map(|cause| cause as _))
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct RetainingLinuxLiveAuthorityClockV1 {
+    original: Option<LiveClockNativeOriginalV1>,
+}
+
+#[cfg(target_os = "linux")]
+impl LiveAuthorityClockSourceV1 for RetainingLinuxLiveAuthorityClockV1 {
+    fn sample(&mut self) -> Result<LiveAuthorityClockSampleV1, LiveAuthorityClockErrorV1> {
+        if self.original.as_ref().is_some_and(|original|
+            original.result.as_ref().is_none_or(Result::is_err))
+        {
+            return Err(LiveAuthorityClockErrorV1::Unavailable);
+        }
+        // The preceding complete primitive has no native proof borrow: its
+        // caller owns copied boot/time DATA. Refused/partial primitives never
+        // reach this disposal boundary and remain resident without retry.
+        drop(self.original.take());
+        self.original = Some(LiveClockNativeOriginalV1::new());
+        let original = self.original.as_mut().ok_or(LiveAuthorityClockErrorV1::Unavailable)?;
+        let result = sample_linux_clock_engine_v1(Some(original));
+        original.result = Some(result);
+        result
+    }
+
+    fn native_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original.as_ref()?.failure()
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn retaining_live_authority_clock_v1() -> FixedLiveAuthorityClockV1 {
+    FixedLiveAuthorityClockV1 { source: Box::new(RetainingLinuxLiveAuthorityClockV1 { original: None }) }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn retained_live_clock_demand_v1() -> Option<aos_sandbox_core::ResourceVector> {
+    use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+    let boot = aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?;
+    let bytes = std::mem::size_of::<RetainingLinuxLiveAuthorityClockV1>()
+        .checked_mul(2)?.checked_add(boot.checked_mul(2)?)?;
+    Some(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(bytes).ok()?)
+        .with(D::OpenFiles, 2))
 }
 
 /// Constructs the only clock implementation admitted by authority owners.
@@ -150,6 +235,10 @@ impl FixedLiveAuthorityClockV1 {
         &mut self,
     ) -> Result<LiveAuthorityClockSampleV1, LiveAuthorityClockErrorV1> {
         self.source.sample()
+    }
+
+    pub(super) fn native_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.native_failure()
     }
 }
 

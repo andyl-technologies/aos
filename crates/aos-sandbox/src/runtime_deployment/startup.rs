@@ -10,6 +10,8 @@
 //! runtime closure + canonical/source/effective policy pins + normalized unit SHA256
 //! ```
 
+pub(super) mod boot_preparation;
+
 use std::fs::File;
 use std::io::Read as _;
 use std::num::NonZeroU32;
@@ -41,29 +43,17 @@ pub(super) const STORAGE_UNIT_V2: &str = "aos-storaged.service";
 pub(super) const STORAGE_CONTEXT_V2: &str = "system_u:system_r:aos_sandbox_storage_t";
 pub(super) const STORAGE_CGROUP_V2: &str = "/aos.slice/aos-control.slice/aos-storaged.service";
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ImagePinV1 {
-    path: String,
-    sha256: [u8; 32],
-}
+use aos_sandbox_broker::profile_data::schema::ImagePinV1;
+use aos_sandbox_broker::profile_data::runtime_deployment::RuntimeDeploymentPublisherProfileDataV1;
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RuntimeDeploymentProfileV1 {
-    format: String,
-    unit: String,
-    owner_context: String,
-    helper_context: String,
-    executable: ImagePinV1,
-    pid1: ImagePinV1,
-    loader: ImagePinV1,
-    runtime_files: Vec<ImagePinV1>,
-    closure_roots: Vec<String>,
-    canonical_policy: ImagePinV1,
-    source_policy: ImagePinV1,
-    effective_matrix: ImagePinV1,
-    unit_sha256: [u8; 32],
+#[serde(transparent)]
+struct RuntimeDeploymentProfileV1(RuntimeDeploymentPublisherProfileDataV1);
+
+impl std::ops::Deref for RuntimeDeploymentProfileV1 {
+    type Target = RuntimeDeploymentPublisherProfileDataV1;
+
+    fn deref(&self) -> &Self::Target { &self.0 }
 }
 
 /// Separates selected profile grammar from the literal ordinary serde schema.
@@ -86,88 +76,8 @@ impl RuntimeDeploymentProfileV1 {
     }
 
     fn validate(profile: Self) -> Result<Self, RuntimeDeploymentStartupErrorV1> {
-        if profile.format != "AOS_RUNTIME_DEPLOYMENT_STARTUP_1"
-            || profile.unit != UNIT
-            || profile.owner_context != OWNER_CONTEXT
-            || profile.helper_context != HELPER_CONTEXT
-            || profile.unit_sha256 == [0; 32]
-            || profile.runtime_files.is_empty()
-            || profile.runtime_files.len() > MAXIMUM_RUNTIME_FILES
-            || profile.closure_roots.is_empty()
-            || profile.closure_roots.len() > MAXIMUM_RUNTIME_FILES
-            || profile
-                .runtime_files
-                .windows(2)
-                .any(|pair| pair[0].path >= pair[1].path)
-            || profile
-                .closure_roots
-                .windows(2)
-                .any(|pair| pair[0] >= pair[1])
-        {
-            return Err(RuntimeDeploymentStartupErrorV1::Profile);
-        }
-
-        for root in &profile.closure_roots {
-            require_path_shape(root)?;
-            if Path::new(root).components().count() != 4 {
-                return Err(RuntimeDeploymentStartupErrorV1::Profile);
-            }
-        }
-        for pin in profile.runtime_files.iter().chain([
-            &profile.executable,
-            &profile.pid1,
-            &profile.loader,
-            &profile.canonical_policy,
-            &profile.source_policy,
-            &profile.effective_matrix,
-        ]) {
-            require_path_shape(&pin.path)?;
-            if pin.sha256 == [0; 32] {
-                return Err(RuntimeDeploymentStartupErrorV1::Profile);
-            }
-        }
-        if profile
-            .runtime_files
-            .iter()
-            .any(|pin| {
-                !profile.closure_roots.iter().any(|root| {
-                    Path::new(&pin.path)
-                        .strip_prefix(root)
-                        .is_ok_and(|suffix| suffix.components().count() > 0)
-                })
-            })
-        {
-            return Err(RuntimeDeploymentStartupErrorV1::Profile);
-        }
-        for required in [&profile.executable, &profile.loader] {
-            if !profile
-                .runtime_files
-                .iter()
-                .any(|member| member.path == required.path && member.sha256 == required.sha256)
-            {
-                return Err(RuntimeDeploymentStartupErrorV1::Profile);
-            }
-        }
-        if Path::new(&profile.executable.path)
-            .file_name()
-            .is_none_or(|name| name != "aos-sandbox-runtime-publisher")
-            || !profile
-                .canonical_policy
-                .path
-                .ends_with("-aos-selinux-kernel-policy-readback-1/policy.33")
-            || !profile
-                .source_policy
-                .path
-                .ends_with("-aos-runtime-deployment-startup-profile-1/source-policy.33")
-            || !profile
-                .effective_matrix
-                .path
-                .ends_with("-aos-runtime-deployment-startup-profile-1/effective-policy.tsv")
-            || Path::new(&profile.source_policy.path).parent()
-                != Path::new(&profile.effective_matrix.path).parent()
-        {
-            return Err(RuntimeDeploymentStartupErrorV1::Profile);
-        }
+        profile.0.require_shape_data_v1()
+            .map_err(|_| RuntimeDeploymentStartupErrorV1::Profile)?;
         Ok(profile)
     }
 }
@@ -552,7 +462,7 @@ impl ProductionRuntimeDeploymentStartupV1 {
     }
 
     /// Returns parsed policy comparison DATA; callers still recheck live custody.
-    pub(crate) const fn canonical_policy_digest(&self) -> [u8; 32] {
+    pub(crate) fn canonical_policy_digest(&self) -> [u8; 32] {
         self.profile.canonical_policy.sha256
     }
 

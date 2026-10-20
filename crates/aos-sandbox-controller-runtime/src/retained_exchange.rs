@@ -171,7 +171,7 @@ impl<C> RetainedBrokerExchangeV1<C> {
         session: &mut DormantAuthenticatedBrokerSessionV1,
         errors: &RetainedExchangeErrorsV1,
     ) -> Result<(C, AuthenticatedBrokerMethodOutcomeV1), EffectFailure> {
-        self.drive_with_disposition(session, errors, ExchangeDispositionV1::Legacy)?
+        self.drive_with_disposition(session, errors, ExchangeDispositionV1::Legacy, false)?
             .ok_or_else(|| EffectFailure::Retryable(errors.unusable.to_owned()))
     }
 
@@ -182,7 +182,7 @@ impl<C> RetainedBrokerExchangeV1<C> {
         session: &mut DormantAuthenticatedBrokerSessionV1,
         errors: &RetainedExchangeErrorsV1,
     ) -> Result<(), EffectFailure> {
-        self.drive_with_disposition(session, errors, ExchangeDispositionV1::Generation)
+        self.drive_with_disposition(session, errors, ExchangeDispositionV1::Generation, false)
             .map(|_| ())
     }
 
@@ -206,7 +206,7 @@ impl<C> RetainedBrokerExchangeV1<C> {
         // A preceding healthy delivery has released its DATA, not authority.
         // Failed attempts cannot enter here and cannot overwrite this archive.
         self.execution_response_data = Default::default();
-        self.drive_with_disposition(session, errors, ExchangeDispositionV1::ExecutionPublication)?;
+        self.drive_with_disposition(session, errors, ExchangeDispositionV1::ExecutionPublication, false)?;
         match (self.original_context.take(), self.original_outcome.take(), self.execution_currentness.take()) {
             (Some(context), Some(outcome), Some(currentness)) => Ok((context, outcome, currentness)),
             (context, outcome, currentness) => {
@@ -215,6 +215,28 @@ impl<C> RetainedBrokerExchangeV1<C> {
                 self.execution_currentness = currentness;
                 self.fail(errors)
             }
+        }
+    }
+
+    /// Sends the original Capture60 once, retaining it before side-record IO.
+    pub(crate) fn begin_capture_preparation_v3(
+        &mut self, session: &mut DormantAuthenticatedBrokerSessionV1,
+        errors: &RetainedExchangeErrorsV1,
+    ) -> Result<(), EffectFailure> {
+        self.drive_with_disposition(session, errors,
+            ExchangeDispositionV1::ExecutionPublication, true)?;
+        if self.capture_preparation_request_v3().is_none() { return self.fail(errors); }
+        Ok(())
+    }
+
+    /// Borrows only the actual sent Capture60 original, never an encoded copy.
+    pub(crate) fn capture_preparation_request_v3(&self)
+        -> Option<&aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1>
+    {
+        if self.failed { return None; }
+        match &self.pending.as_ref()?.stage {
+            ExchangeStageV1::Receive(original) => original.capture_preparation_request_v3(),
+            _ => None,
         }
     }
 
@@ -240,6 +262,7 @@ impl<C> RetainedBrokerExchangeV1<C> {
 
     /// Borrows an execution transport refusal without taking its resident cause.
     pub(crate) fn execution_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(error) = self.execution_response_data.raw_error() { return Some(error); }
         if let Some(error) = self.execution_response_data.decode_error() { return Some(error); }
         if let Some(error) = self.execution_response_data.native_error() { return Some(error); }
         if let Some(Err((_, error))) = &self.execution_send { return Some(error); }
@@ -259,6 +282,7 @@ impl<C> RetainedBrokerExchangeV1<C> {
         session: &mut DormantAuthenticatedBrokerSessionV1,
         errors: &RetainedExchangeErrorsV1,
         disposition: ExchangeDispositionV1,
+        pause_for_capture_preparation: bool,
     ) -> Result<Option<(C, AuthenticatedBrokerMethodOutcomeV1)>, EffectFailure> {
         if self.failed {
             return Err(EffectFailure::Retryable(errors.unusable.to_owned()));
@@ -266,6 +290,12 @@ impl<C> RetainedBrokerExchangeV1<C> {
 
         let mut attempted_recovery = false;
         loop {
+            if pause_for_capture_preparation
+                && self.pending.as_ref().is_some_and(|pending|
+                    matches!(&pending.stage, ExchangeStageV1::Receive(_)))
+            {
+                return Ok(None);
+            }
             let pending = self
                 .pending
                 .take()

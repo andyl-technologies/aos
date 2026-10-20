@@ -9,6 +9,10 @@
 //! SHA-256(challenge-record-domain || preceding 64 bytes):32
 //! ```
 
+use aos_sandbox_policy::journal_keys::{HEAD_KEY, SIGNER_PINS_KEY};
+
+use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+
 use std::io;
 use std::path::Path;
 
@@ -16,9 +20,12 @@ use aos_sandbox_core::ObjectDigest;
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
-use crate::cache_residency::{
-    CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1, PinnedCacheOwnerReadbackSignerV1,
-    VerifiedClosedCacheOwnerReadbackV2, verify_closed_cache_owner_readback_v2,
+use crate::cache_residency::CacheOwnerReadbackErrorV1;
+use aos_sandbox_protocol::cache_owner_readback::{
+    CacheOwnerReadbackChallengeV1,
+    PinnedCacheOwnerReadbackSignerV1,
+    VerifiedClosedCacheOwnerReadbackV2,
+    verify_closed_cache_owner_readback_v2,
 };
 use crate::journal::{Journal, JournalError, ProtectedJournalAuthority, RecordNamespace};
 
@@ -26,9 +33,7 @@ use super::cache_readback_pin::CACHE_PIN_KEY;
 use super::cache_root_settlement::{
     CacheRootSettlementV2, SETTLEMENT_ARCHIVE_WINDOW, SETTLEMENT_KEY, archive_key,
 };
-use super::deployment_head::{
-    HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1,
-};
+use super::deployment_head::{PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, encode_policy_signer_pins_v1};
 use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
@@ -78,6 +83,15 @@ pub enum ClosedCacheReadbackSessionErrorV1 {
     /// The local Controller exchange failed while the root writer was held.
     #[error(transparent)]
     Transport(#[from] io::Error),
+}
+
+// Preserve the existing upper flattened packet-error lane after the pure codec move.
+impl From<aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackDataErrorV1>
+    for ClosedCacheReadbackSessionErrorV1
+{
+    fn from(cause: aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackDataErrorV1) -> Self {
+        Self::Readback(crate::cache_residency::CacheOwnerReadbackErrorV1::from(cause))
+    }
 }
 
 /// Carries a durably spent Cache-only signer challenge after Root releases its writer.
@@ -873,10 +887,10 @@ mod tests {
     use aos_sandbox_core::ProjectId;
     use ed25519_dalek::SigningKey;
 
-    use crate::cache_residency::{
-        encode_cache_owner_readback_signer_credential_v1, sign_test_cache_owner_readback_v2,
-    };
-    use crate::journal::{CachePolicyHoldV1, JournalLimits, JournalRecord, JournalTransaction};
+    use crate::cache_residency::sign_test_cache_owner_readback_v2;
+    use aos_sandbox_protocol::cache_owner_readback::encode_cache_owner_readback_signer_credential_v1;
+    use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+    use crate::journal::{JournalLimits, JournalRecord, JournalTransaction};
 
     use super::*;
     use crate::policy_compiler::cache_readback_pin::admit_cache_readback_pin_in_journal_v1;

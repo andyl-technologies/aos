@@ -12,6 +12,9 @@ pub mod authority_archive;
 /// Defines closed pending-registration comparison and terminal DATA formats.
 pub mod continuation;
 
+#[cfg(any(test, feature = "test-fixtures"))]
+pub(crate) mod fixture;
+
 use aos_proto::aos::sandbox::local::v1::{
     Audience, QueryStorageExecutionOutputRequestV1, ReserveStorageExecutionOutputRequestV1,
 };
@@ -190,6 +193,19 @@ impl StorageOutputReserveRecordsV1 {
     #[must_use]
     pub const fn assignment(&self) -> BrokerAssignment {
         self.assignment
+    }
+
+    /// Returns the accepted total, stdout and stderr limits from the original claim.
+    #[must_use]
+    pub fn output_limits_v2(&self) -> (u64, u64, u64) {
+        let source = &self.attempt[8..696];
+        let read = |offset| {
+            let mut bytes = [0; 8];
+            bytes.copy_from_slice(&source[offset..offset + 8]);
+            u64::from_be_bytes(bytes)
+        };
+
+        (read(424), read(440), read(448))
     }
 
     /// Returns the Controller preissue deadline shared by both owner records.
@@ -384,12 +400,51 @@ pub(crate) fn reserve_grant_profile(
     if request_id == [0; 16] || body.is_empty() || body.len() > MAXIMUM_BODY_BYTES {
         return Err(invalid());
     }
+    parse_reserve_records_profile(assignment, Some(request_id), body, profile)?;
+    let mut statement = Vec::with_capacity(GRANT_DOMAIN.len() + 1 + 16 + body.len());
+    statement.extend_from_slice(GRANT_DOMAIN);
+    statement.push(1);
+    statement.extend_from_slice(&request_id);
+    statement.extend_from_slice(body);
+    BrokerGrant::new(
+        BrokerVerb::StorageReserveExecutionOutput,
+        BrokerGrantTarget::Assignment,
+        BrokerArgumentCommitment::for_canonical_bytes(&statement),
+        MAXIMUM_BODY_BYTES as u32,
+        0,
+    )
+    .map_err(|_| invalid())
+}
+
+/// Parses the historical registration body used by the closed Capture request.
+///
+/// Its original header is structural history; the Capture header and signed
+/// request own fresh admission. This does not issue a physical effect permit.
+pub(crate) fn capture_original_records_v2(
+    body: &[u8],
+    assignment: BrokerAssignment,
+) -> Result<StorageOutputReserveRecordsV1, ProtocolValidationError> {
+    if body.is_empty() || body.len() > MAXIMUM_BODY_BYTES {
+        return Err(invalid());
+    }
+    parse_reserve_records_profile(assignment, None, body, OutputReserveProfileV1::Captured)
+}
+
+fn parse_reserve_records_profile(
+    assignment: BrokerAssignment,
+    expected_request_id: Option<[u8; 16]>,
+    body: &[u8],
+    profile: OutputReserveProfileV1,
+) -> Result<StorageOutputReserveRecordsV1, ProtocolValidationError> {
     let request = ReserveStorageExecutionOutputRequestV1::decode_from_slice(body)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
     let header = request.header.as_option().ok_or_else(invalid)?;
     if !request.__buffa_unknown_fields.is_empty()
         || request.encode_to_vec() != body
-        || header.request_id != request_id
+        || (match expected_request_id {
+            Some(request_id) => header.request_id != request_id,
+            None => exact_nonzero::<16>(&header.request_id, "original Storage request").is_err(),
+        })
         || header.protocol_major != 1
         || header.protocol_minor != 0
         || header.audience.as_known() != Some(Audience::AUDIENCE_NODE_CONTROLLER)
@@ -412,19 +467,7 @@ pub(crate) fn reserve_grant_profile(
     {
         return Err(invalid());
     }
-    let mut statement = Vec::with_capacity(GRANT_DOMAIN.len() + 1 + 16 + body.len());
-    statement.extend_from_slice(GRANT_DOMAIN);
-    statement.push(1);
-    statement.extend_from_slice(&request_id);
-    statement.extend_from_slice(body);
-    BrokerGrant::new(
-        BrokerVerb::StorageReserveExecutionOutput,
-        BrokerGrantTarget::Assignment,
-        BrokerArgumentCommitment::for_canonical_bytes(&statement),
-        MAXIMUM_BODY_BYTES as u32,
-        0,
-    )
-    .map_err(|_| invalid())
+    Ok(records)
 }
 
 /// Parses a fresh historical query without admitting a Storage effect.
@@ -662,97 +705,7 @@ pub(crate) mod tests {
         assert!(OutputReserveProfileV1::Captured.rejects_quantities(&source));
     }
 
-    fn seal(domain: &[u8], bytes: &mut [u8], digest_start: usize) {
-        let digest = Sha256::new()
-            .chain_update(domain)
-            .chain_update(&bytes[..digest_start])
-            .finalize();
-        bytes[digest_start..digest_start + 32].copy_from_slice(&digest);
-    }
-
-    pub(crate) fn fixture() -> (ReserveStorageExecutionOutputRequestV1, BrokerAssignment) {
-        let mut source = [0_u8; 688];
-        source[..8].copy_from_slice(b"AOSCIR01");
-        source[8..16].copy_from_slice(b"AOSCIP01");
-        source[16..32].fill(1);
-        source[32..48].fill(2);
-        source[48..80].fill(3);
-        source[96..104].copy_from_slice(&1_u64.to_be_bytes());
-        source[104..120].fill(4);
-        source[120..128].copy_from_slice(&1_000_u64.to_be_bytes());
-        source[128..160].fill(5);
-        let preissue_digest = Sha256::new()
-            .chain_update(PREISSUE_DOMAIN)
-            .chain_update(&source[8..160])
-            .finalize();
-        source[160..192].copy_from_slice(&preissue_digest);
-
-        source[192..200].copy_from_slice(b"AOSEOR02");
-        source[200..216].fill(1);
-        source[216..232].fill(2);
-        for offset in [232, 264, 328, 360, 392, 456] {
-            source[offset..offset + 32].fill(6);
-        }
-        source[296..328].fill(7);
-        source[432..440].copy_from_slice(&100_u64.to_be_bytes());
-        let claim_checksum = Sha256::digest(&source[192..488]);
-        source[488..520].copy_from_slice(&claim_checksum);
-        source[520..552].fill(8);
-        source[552..568].fill(9);
-        source[568..584].fill(10);
-        source[584..600].fill(11);
-        for offset in [600, 608, 616] {
-            source[offset..offset + 8].copy_from_slice(&1_u64.to_be_bytes());
-        }
-        source[624..656].fill(7);
-        seal(SOURCE_DOMAIN, &mut source, 656);
-
-        let assignment = BrokerAssignment::new(
-            SandboxId::from_bytes([9; 16]),
-            IncarnationId::from_bytes([10; 16]),
-            AssignmentEpoch::new(1),
-            DesiredGeneration::new(1),
-            ObjectDigest::from_bytes([7; 32]),
-        )
-        .unwrap();
-        let semantic = host_output_reserve_grant_v1(assignment, [12; 16], &source).unwrap();
-
-        let mut attempt = [0_u8; CONTROLLER_OUTPUT_ATTEMPT_BYTES_V1];
-        attempt[..8].copy_from_slice(b"AOSCIA01");
-        attempt[8..696].copy_from_slice(&source);
-        attempt[696..712].fill(12);
-        attempt[712..744].fill(13);
-        attempt[744..776].copy_from_slice(semantic.commitment().digest().as_bytes());
-        attempt[776..784].copy_from_slice(&900_u64.to_be_bytes());
-        seal(ATTEMPT_DOMAIN, &mut attempt, 784);
-
-        let mut settlement = [0_u8; CONTROLLER_OUTPUT_SETTLEMENT_BYTES_V1];
-        settlement[..8].copy_from_slice(b"AOSCIS01");
-        settlement[8..24].fill(1);
-        settlement[24..40].fill(2);
-        settlement[40..72].copy_from_slice(&attempt[784..816]);
-        settlement[72..104].fill(15);
-        settlement[104..112].copy_from_slice(&1_u64.to_be_bytes());
-        settlement[112..144].fill(16);
-        settlement[144..176].fill(17);
-        seal(SETTLEMENT_DOMAIN, &mut settlement, 176);
-
-        let request = ReserveStorageExecutionOutputRequestV1 {
-            header: Some(RequestHeader {
-                protocol_major: 1,
-                request_id: vec![18; 16],
-                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
-                deadline_boottime_nanoseconds: 950,
-                maximum_response_bytes: 4_096,
-                ..Default::default()
-            })
-            .into(),
-            canonical_controller_attempt: attempt.to_vec(),
-            canonical_controller_settlement: settlement.to_vec(),
-            ..Default::default()
-        };
-        (request, assignment)
-    }
+    use super::fixture::{fixture, captured_fixture, seal};
 
     #[test]
     fn zero_output_records_bind_exact_original_host_attempt_and_settlement() {
@@ -935,4 +888,32 @@ pub(crate) mod tests {
                 .is_err()
         );
     }
+}
+
+/// Bounds canonical logical-output inspection carriers before their allocation.
+///
+/// This geometry describes only the existing generated/validated records and
+/// named encoding planes. It performs no parse, IO, admission or allocation.
+///
+/// # Errors
+/// Returns an arithmetic refusal if the actual body width cannot be represented.
+pub fn storage_output_inspection_receiving_bytes_v1(body_bytes: usize)
+    -> Result<usize, aos_sandbox_core::AccountingError>
+{
+    use aos_sandbox_core::{AccountingError, ResourceDimension};
+    let overflow = || AccountingError::ArithmeticOverflow { dimension: ResourceDimension::MemoryBytes };
+    let statement = GRANT_DOMAIN.len().checked_add(1 + 16)
+        .and_then(|prefix| prefix.checked_add(body_bytes)).ok_or_else(overflow)?;
+    let typed = [
+        std::mem::size_of::<ReserveStorageExecutionOutputRequestV1>(),
+        std::mem::size_of::<ReserveStorageExecutionOutputRequestV1>(),
+        std::mem::size_of::<aos_proto::aos::sandbox::local::v1::RequestHeader>(),
+        std::mem::size_of::<StorageOutputReserveRecordsV1>(),
+        std::mem::size_of::<StorageOutputReserveRecordsV1>(),
+        std::mem::size_of::<BrokerGrant>(),
+    ].into_iter().try_fold(0usize, |bytes, width| bytes.checked_add(width).ok_or_else(overflow))?;
+    // The outer inspector remains live while the grant revalidates the body.
+    // Each canonical generated field set is bounded by its actual wire bytes.
+    [body_bytes, body_bytes, body_bytes, statement].into_iter()
+        .try_fold(typed, |bytes, width| bytes.checked_add(width).ok_or_else(overflow))
 }

@@ -973,12 +973,9 @@ impl ProductionEffectExecutor {
                 return Ok(None);
             }
         }
-        let bytes = [
-            b"AOSLIF01".as_slice(),
-            operation_id.as_bytes(),
-            current.record().digest().as_bytes(),
-        ]
-        .concat();
+        let bytes = aos_sandbox_protocol::domain_ledger::effect_history::
+            encode_lifecycle_effect_receipt_v1(operation_id, current.record().digest())
+                .to_vec();
         EffectReceipt::new(bytes)
             .map_err(aos_sandbox::ReconcilerError::from)
             .map(Some)
@@ -1016,14 +1013,7 @@ pub(in crate::controller_service) fn lifecycle_plan_resource_id(
     operation: OperationId,
     purpose: &[u8],
 ) -> ResourceId {
-    let digest: [u8; 32] = Sha256::new()
-        .chain_update(b"aos.sandbox.lifecycle.plan-resource.v1\0")
-        .chain_update(operation.as_bytes())
-        .chain_update((purpose.len() as u64).to_be_bytes())
-        .chain_update(purpose)
-        .finalize()
-        .into();
-    ResourceId::from_bytes(nonzero_lifecycle_id_from_digest(digest))
+    aos_sandbox::lifecycle::lifecycle_plan_resource_id_v5(operation, purpose)
 }
 
 pub(super) fn lifecycle_progress_resource_id(
@@ -1057,26 +1047,14 @@ fn lifecycle_plan_binding_transaction_id(
     operation: OperationId,
     current_record: ObjectDigest,
 ) -> [u8; 16] {
-    let digest: [u8; 32] = Sha256::new()
-        .chain_update(b"aos.sandbox.lifecycle.plan-binding-transaction.v1\0")
-        .chain_update(operation.as_bytes())
-        .chain_update(current_record.as_bytes())
-        .finalize()
-        .into();
-    nonzero_lifecycle_id_from_digest(digest)
+    aos_sandbox::lifecycle::lifecycle_plan_binding_transaction_id_v1(operation, current_record)
 }
 
 fn lifecycle_initial_reservation_transaction_id(
     operation: OperationId,
     current_record: ObjectDigest,
 ) -> [u8; 16] {
-    let digest: [u8; 32] = Sha256::new()
-        .chain_update(b"aos.sandbox.lifecycle.initial-reservation-transaction.v1\0")
-        .chain_update(operation.as_bytes())
-        .chain_update(current_record.as_bytes())
-        .finalize()
-        .into();
-    nonzero_lifecycle_id_from_digest(digest)
+    aos_sandbox::lifecycle::lifecycle_initial_reservation_transaction_id_v1(operation, current_record)
 }
 
 /// Derives the original progress transaction identity from the current record.
@@ -1085,15 +1063,7 @@ pub(in crate::controller_service) fn lifecycle_progress_transaction_id(
     current_record: ObjectDigest,
     purpose: &[u8],
 ) -> [u8; 16] {
-    let digest: [u8; 32] = Sha256::new()
-        .chain_update(b"aos.sandbox.lifecycle.progress-transaction.v1\0")
-        .chain_update(operation.as_bytes())
-        .chain_update(current_record.as_bytes())
-        .chain_update((purpose.len() as u64).to_be_bytes())
-        .chain_update(purpose)
-        .finalize()
-        .into();
-    nonzero_lifecycle_id_from_digest(digest)
+    aos_sandbox::lifecycle::lifecycle_progress_transaction_id_v1(operation, current_record, purpose)
 }
 
 fn nonzero_lifecycle_id_from_digest(digest: [u8; 32]) -> [u8; 16] {

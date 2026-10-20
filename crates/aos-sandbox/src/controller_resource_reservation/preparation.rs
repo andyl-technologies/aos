@@ -63,6 +63,8 @@ pub struct ProjectPreparationReservationAttemptV1 {
     input_first: std::cell::Cell<Option<InputFailureSite>>,
     input_closed: std::cell::Cell<bool>,
     child: Option<RetainedQ04Child>,
+    continuation_originals: Option<RetainedCreateOriginalsV1>,
+    continuation_retention: Option<Result<(), ResourceReservationErrorV1>>,
     terminal_preparation: Option<Result<(), ResourceReservationErrorV1>>,
     terminal_borrows: [Option<Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1>>; 2],
     terminal_bank: Option<Result<(), ResourceReservationErrorV1>>,
@@ -78,6 +80,17 @@ enum InputFailureSite {
     Completed,
     Post(usize),
     LastClock,
+}
+
+// These are the actual paid original values moved after the terminal posts,
+// not reconstructed accepted rows or a current policy/signing permit.
+struct RetainedCreateOriginalsV1 {
+    ledger: Option<Result<
+        crate::reconciler::OriginalQ04ControllerLedgerV1,
+        crate::policy_compiler::create_q04::CreateQ04ErrorV1,
+    >>,
+    credentials: crate::public_api_session::ControllerQ04CredentialCustodyV1,
+    policy_sources: crate::policy_compiler::create_q04::RetainedCreatePolicySourcesDataV1,
 }
 
 struct RetainedQ04Child {
@@ -105,6 +118,8 @@ impl ProjectPreparationReservationAttemptV1 {
             input_first: std::cell::Cell::new(None),
             input_closed: std::cell::Cell::new(false),
             child: None,
+            continuation_originals: None,
+            continuation_retention: None,
             terminal_preparation: None,
             terminal_borrows: [None, None],
             terminal_bank: None,
@@ -115,19 +130,238 @@ impl ProjectPreparationReservationAttemptV1 {
         }
     }
 
+    pub(super) fn create_continuation_lane(
+        &self,
+        bank: &Arc<Mutex<ControllerResourceBankOpeningV1>>,
+    ) -> Result<[u8; 16], ResourceReservationErrorV1> {
+        self.require_terminal_retention()?;
+        let intake = self.intake.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?;
+        if !intake.same_bank(bank) {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        let child = self.child.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?;
+        if child.native.iter().any(|result| !matches!(result, Some(Ok(_))))
+            || child.posts.iter().any(|result| !matches!(result, Some(Ok(()))))
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        let prepared = self.prepared.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        child.original.create_continuation_lane(prepared.operation)
+    }
+
+    // Pure same-original association precedes new-stage payment. Physical
+    // currentness remains mandatory in the paid retained observation stage.
+    pub(super) fn require_create_storage_association(&self, controller: &Journal,
+        source: &crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
+        profile: &ProductionControllerNormalRootProfileV1) -> Result<(), ResourceReservationErrorV1>
+    {
+        self.require_terminal_retention()?;
+        self.intake.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?
+            .require_create_storage_association(controller, source, profile)
+    }
+
+    pub(super) fn require_create_storage_names(&self, controller: crate::journal::ProtectedJournalNamesV1,
+        source: crate::journal::ProtectedJournalNamesV1) -> Result<(), ResourceReservationErrorV1>
+    {
+        self.require_terminal_retention()?;
+        self.intake.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?
+            .require_create_storage_names(controller, source)
+    }
+
+    pub(super) fn require_create_continuation_owners(
+        &self,
+        controller: &Journal,
+        source: &crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
+        profile: &ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        self.require_terminal_retention()?;
+        self.intake.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?
+            .require_continuation_owners(controller, source, profile)
+    }
+
+    pub(super) fn require_create_continuation_replay(
+        &self,
+        journal: &Journal,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        self.require_terminal_retention()?;
+        self.child.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?
+            .original.binding.require_replayed(journal.controller_resource_state_v1()?)
+            .map_err(ResourceReservationErrorV1::from)
+    }
+
+    pub(super) fn matches_create_continuation_identity(
+        &self,
+        identity: &crate::policy_compiler::create_q04::Q04CutIdentityV1,
+    ) -> bool {
+        self.child.as_ref().is_some_and(|child| child.original.binding.matches_q04_cut(identity))
+    }
+
+    // The actual terminal parent owns these originals. This private borrow
+    // exports no native writer, signer, resource amount or replay-built permit.
+    pub(super) fn create_storage_original_identity_v1(
+        &self,
+    ) -> Result<super::create_intake::ready::CreateStorageAcceptedIdentityV1, ResourceReservationErrorV1> {
+        self.require_terminal_retention()?;
+        if !matches!(self.continuation_retention, Some(Ok(()))) {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        let originals = self.continuation_originals.as_ref()
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        if originals.credentials.failure().is_some() {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        let ledger = originals.ledger.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        let (operation, project, sandbox, accepted_request) = ledger.create_storage_accepted_identity_v1();
+        let prepared = self.prepared.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        let child = self.child.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?;
+        if operation != prepared.operation || project != prepared.project {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok(super::create_intake::ready::CreateStorageAcceptedIdentityV1 {
+            operation, project, sandbox, accepted_request,
+            coissuance_binding: child.original.binding.commitment()?,
+            original_cutoff: prepared.deadline,
+        })
+    }
+
+    // Both values are historical compiler proposal DATA. The caller must pay
+    // new decode/recompile work and independently verify the current cut.
+    pub(super) fn create_storage_policy_sources_v1(
+        &self,
+    ) -> Result<(
+        &crate::policy_compiler::create_q04::RetainedCreatePolicySourcesDataV1,
+        &[u8],
+    ), ResourceReservationErrorV1> {
+        self.create_storage_original_identity_v1()?;
+        let originals = self.continuation_originals.as_ref()
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        if originals.policy_sources.failure().is_some() {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        let child = self.child.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?;
+        Ok((&originals.policy_sources, child.original.create_storage_input_origin_bytes_v1()))
+    }
+
+    // The actual completed parent retains these historical public pins and
+    // signed source bytes. A fresh Start pays and re-verifies their signatures
+    // and expiry against its own current C/Source cut; this grants no old Root
+    // currentness, signing permission or Create financial interval.
+    pub(super) fn start_assignment_policy_inputs_v2(&self) -> Result<(
+        &crate::policy_compiler::create_q04::RetainedCreatePolicySourcesDataV1,
+        ((u64, &ed25519_dalek::VerifyingKey), (u64, &ed25519_dalek::VerifyingKey)),
+    ), ResourceReservationErrorV1> {
+        let (sources, _) = self.create_storage_policy_sources_v1()?;
+        let originals = self.continuation_originals.as_ref()
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        let pins = originals.credentials.policy_pins()
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        Ok((sources, pins))
+    }
+
+    pub(super) fn create_storage_assignment_proposal_inputs_v1(
+        &self,
+    ) -> Result<(&crate::sandbox_spec_state::DurableSandboxSpecV1, aos_sandbox_core::ResourceVector), ResourceReservationErrorV1> {
+        self.create_storage_original_identity_v1()?;
+        self.child.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?
+            .original.assignment_proposal_inputs_v1()
+    }
+
+    // Only the actual completed parent lends these original canonical inputs.
+    pub(super) fn create_storage_intent_components_v1(
+        &self,
+        coissuance_commitment: [u8; 32],
+    ) -> Result<super::create_intake::history::OriginalIntentComponentsV1<'_>, ResourceReservationErrorV1> {
+        self.require_terminal_retention()?;
+        let originals = self.continuation_originals.as_ref()
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        let ledger = originals.ledger.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        let child = self.child.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?;
+        let (specification, coissuance) = child.original.create_storage_original_components_v1(coissuance_commitment)?;
+        let transition = self.terminal.require_committed()?;
+        let binding = transition.terminal.ok_or(ResourceReservationErrorV1::Conflict)?;
+        let transaction = self.terminal.transaction.as_ref()
+            .and_then(|result| result.as_ref().ok()).ok_or(ResourceReservationErrorV1::Conflict)?;
+        let terminal = transaction.records().iter().filter_map(|record| record.value())
+            .find(|value| value.starts_with(b"AOSRST01") || value.starts_with(b"AOSRST02"))
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        if !binding.matches_canonical(terminal)? || specification.descriptor() != ledger.specification() {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        let [operation, desired, effect] = ledger.original_rows();
+        Ok(super::create_intake::history::OriginalIntentComponentsV1 {
+            accepted_context: ledger.create_storage_accepted_context_v1(),
+            operation, desired, effect, specification: specification.descriptor(),
+            coissuance, terminal,
+        })
+    }
+
+    pub(super) fn matches_create_operation(&self, operation: OperationId) -> bool {
+        self.prepared.as_ref().and_then(|result| result.as_ref().ok())
+            .is_some_and(|original| original.operation == operation.into_bytes())
+    }
+
+    pub(super) fn require_create_continuation_state(
+        &self,
+        state: &super::State,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        self.require_terminal_retention()?;
+        let child = self.child.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?;
+        child.original.binding.require_replayed(state)?;
+        let terminal = self.terminal.require_committed()?;
+        let binding = terminal.terminal.ok_or(ResourceReservationErrorV1::Conflict)?;
+        let bytes = bank::terminal_bytes(state, binding.native_fields().original_id)
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        if !binding.matches_canonical(bytes)?
+            || bank::find_head(state, terminal.after.native_fields().id)? != terminal.after
+            || bank::claim_bytes(state, terminal.claim.native_fields().id)
+                .map(super::Claim::decode).transpose()? != Some(terminal.claim)
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_create_continuation_position(
+        &self,
+        journal: &Journal,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        self.require_terminal_retention()?;
+        self.child.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?
+            .original.require_readback(journal)?;
+        let transition = self.terminal.require_committed()?;
+        let native = self.terminal.native.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        let names = self.terminal.names.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        let transaction = self.terminal.transaction.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        if transaction.id() != &transition.transaction_id || transaction.records().len() != 3 {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        journal.require_create_intake_preappend_position_v1(*names, transaction, native)?;
+        journal.require_controller_resource_history_v1()
+            .map_err(|error| ResourceReservationErrorV1::Terminal(Box::new(error)))?;
+        self.require_create_continuation_state(journal.controller_resource_state_v1()?)
+    }
+
     pub(crate) fn prepare_original_intake_once(
         &mut self,
         journal: &mut Journal,
         source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         bank: &Arc<Mutex<ControllerResourceBankOpeningV1>>,
         profile: &ProductionControllerNormalRootProfileV1,
+        cache: &mut crate::cache_residency::OriginalQ04CachePreflightLoanV1<'_>,
     ) -> Result<(), ResourceReservationErrorV1> {
         if self.intake.is_some() {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         self.intake = Some(super::q04_intake::Q04OriginalIntakeAttemptV1::begin(Arc::clone(bank)));
         self.intake.as_mut().ok_or(ResourceReservationErrorV1::Conflict)?
-            .prepare_once(journal, source, profile)
+            .prepare_once(journal, source, profile, cache)
     }
 
     pub(crate) fn require_original_intake(
@@ -364,6 +598,44 @@ impl ProjectPreparationReservationAttemptV1 {
             .map(|data| data.original).ok_or(ResourceReservationErrorV1::Conflict)
     }
 
+    // Called only after all original terminal posts and LAST are resident.
+    // The empty replacement is allocation-free and has no signing authority.
+    pub(crate) fn retain_create_originals(
+        &mut self,
+        ledger: Option<Result<
+            crate::reconciler::OriginalQ04ControllerLedgerV1,
+            crate::policy_compiler::create_q04::CreateQ04ErrorV1,
+        >>,
+        credentials: crate::public_api_session::ControllerQ04CredentialCustodyV1,
+        policy_sources: crate::policy_compiler::create_q04::RetainedCreatePolicySourcesDataV1,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        if self.continuation_originals.is_some() {
+            // Never drop an unexpected second set of genuine original files.
+            std::process::exit(1);
+        }
+        self.continuation_originals = Some(RetainedCreateOriginalsV1 {
+            ledger,
+            credentials,
+            policy_sources,
+        });
+        self.continuation_retention = Some((|| {
+            self.require_terminal_retention()?;
+            let original = self.continuation_originals.as_ref()
+                .ok_or(ResourceReservationErrorV1::Conflict)?;
+            if !matches!(original.ledger, Some(Ok(_))) || original.credentials.failure().is_some()
+                || original.policy_sources.failure().is_some()
+            {
+                return Err(ResourceReservationErrorV1::Conflict);
+            }
+            Ok(())
+        })());
+        if matches!(self.continuation_retention, Some(Ok(()))) {
+            Ok(())
+        } else {
+            Err(ResourceReservationErrorV1::Conflict)
+        }
+    }
+
     pub(crate) fn retain_cleared_child(
         &mut self,
         original: super::Q04ResourceTransferV1,
@@ -578,6 +850,14 @@ impl ProjectPreparationReservationAttemptV1 {
                 .map(|error| error as &(dyn std::error::Error + 'static)))
             .or_else(|| self.terminal_clock.as_ref().and_then(|result| result.as_ref().err())
                 .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.continuation_originals.as_ref().and_then(|original| {
+                original.ledger.as_ref().and_then(|result| result.as_ref().err())
+                    .map(|error| error as &(dyn std::error::Error + 'static))
+                    .or_else(|| original.credentials.failure().map(|error| error as _))
+                    .or_else(|| original.policy_sources.failure().map(|error| error as _))
+            }))
+            .or_else(|| self.continuation_retention.as_ref().and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
     }
 }
 
@@ -650,5 +930,37 @@ impl OriginalPreparationData {
             self.lineage_head,
         )));
         Ok(transition)
+    }
+}
+
+impl ProjectPreparationReservationAttemptV1 {
+    // Lends only the actual retained co-issuance's historical account locator.
+    // The caller separately borrows current bytes from the SAME held writer;
+    // neither these comparison IDs nor a decoded claim create a child grant.
+    pub(super) fn create_storage_child_account_data_v1(&self)
+        -> Result<(EnrollmentIdentity, [u8; 16]), ResourceReservationErrorV1>
+    {
+        self.create_storage_original_identity_v1()?;
+        let child = self.child.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?;
+        let fields = child.original.binding.native_fields().use_claim.native_fields();
+        Ok((fields.enrollment, fields.account))
+    }
+}
+
+impl ProjectPreparationReservationAttemptV1 {
+    // Lends only the actual retained original; the same native append must
+    // still prove its exact terminal bank predecessor and live Root binding.
+    pub(super) fn create_storage_use_original_binding_v1(&self)
+        -> Result<bank::CoissuanceBinding, ResourceReservationErrorV1>
+    {
+        self.create_storage_original_identity_v1()?;
+        let child = self.child.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?;
+        if child.original.crossing_failure().is_some()
+            || child.native.iter().any(|result| !matches!(result, Some(Ok(_))))
+            || !matches!(child.disposition, Some(Ok(_)))
+            || child.posts.iter().any(|post| !matches!(post, Some(Ok(())))) {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok(child.original.binding)
     }
 }

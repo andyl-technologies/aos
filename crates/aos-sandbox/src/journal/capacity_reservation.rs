@@ -13,14 +13,11 @@
 //! other kinds remain opaque to protected producers. Generic append gates stay
 //! closed, and no original native admission follows from canonical floor DATA.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::family::{
-    CanonicalCapacityFamily, canonical_reservations,
-};
 #[cfg(test)]
 use aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservation;
 use aos_sandbox_protocol::domain_ledger::capacity_family::{
     decode_capacity_reservation_request_v1, legacy_capacity_ids_for_purpose,
-    validate_capacity_snapshot_data_v2, validate_request_with_limits,
+    validate_request_with_limits,
 };
 
 use crate::journal::CacheMutationGateV1;
@@ -53,6 +50,19 @@ use aos_sandbox_protocol::domain_ledger::capacity::{encode_reservation, reservat
 use aos_sandbox_protocol::domain_ledger::capacity::{uses_v2, valid_future_transactions};
 #[cfg(test)]
 use aos_sandbox_protocol::domain_ledger::capacity::{RECORD_DOMAIN, VALUE_BYTES_V1, VALUE_BYTES_V2};
+
+use aos_sandbox_broker::domain_transaction_custody::capacity_records as shared_capacity;
+
+fn capacity_record_data(reservation: &GlobalCapacityReservationV1)
+    -> shared_capacity::RetainedCapacityRecordDataV1
+{
+    shared_capacity::RetainedCapacityRecordDataV1 {
+        request: reservation.request,
+        admission_transaction_id: reservation.admission_transaction_id,
+        reservation_id: reservation.reservation_id,
+        record_digest: reservation.record_digest,
+    }
+}
 
 /// Carries the exact reservation record that must join its admission transaction.
 #[must_use = "a prepared capacity reservation must be committed or discarded before admission"]
@@ -134,17 +144,7 @@ impl GlobalCapacityReservationV1 {
         &self,
         binding: &GlobalCapacityReservationRecoveryBindingV1,
     ) -> bool {
-        self.request.purpose == binding.purpose
-            && self.request.owner_namespace == binding.purpose.owner_namespace()
-            && self.request.operation_id == binding.operation_id
-            && self.request.artifact_digest == binding.artifact_digest
-            && self.request.checkpoint_digest == binding.checkpoint_digest
-            && self.request.chain_head_digest == binding.chain_head_digest
-            && self.request.future_transactions == binding.future_transactions
-            && self.request.terminal_records == binding.terminal_records
-            && self.request.terminal_bytes == binding.terminal_bytes
-            && self.request.poison_records == binding.poison_records
-            && self.request.poison_bytes == binding.poison_bytes
+        capacity_record_data(self).matches_recovery_binding(binding)
     }
 }
 
@@ -340,22 +340,14 @@ impl Journal {
         if request.purpose == GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
             crate::policy_compiler::require_root_source_genesis_capacity_owner_v1(self)?;
         }
-        if admission_transaction_id == [0; 16] {
-            return Err(JournalError::InvalidTransaction);
-        }
-        let reservation_id = reservation_id(&request, admission_transaction_id);
-        let key = reservation_key(reservation_id);
-        if self.native.state()
-            .contains_key(&(RecordNamespace::GlobalCapacityReservation, key.clone()))
-        {
-            return Err(JournalError::DuplicateRecordKey);
-        }
-        let value = encode_reservation(&request, admission_transaction_id, reservation_id);
+        let data = shared_capacity::prepare_capacity_record_v1(
+            self.historical_read_view_v1(), request, admission_transaction_id,
+        ).map_err(JournalError::from)?;
         Ok(PreparedGlobalCapacityReservationV1 {
-            request,
-            admission_transaction_id,
-            reservation_id,
-            record: JournalRecord::put(RecordNamespace::GlobalCapacityReservation, key, value),
+            request: data.request,
+            admission_transaction_id: data.admission_transaction_id,
+            reservation_id: data.reservation_id,
+            record: data.record,
         })
     }
 
@@ -438,34 +430,20 @@ impl Journal {
         expected_reservation_id: [u8; 32],
     ) -> Result<Option<GlobalCapacityReservationV1>, JournalError> {
         self.ensure_healthy()?;
-        validate_capacity_snapshot_data_v2(self.native.state())?;
-        let Some(value) = self.native.state().get(&(
-            RecordNamespace::GlobalCapacityReservation,
-            reservation_key(expected_reservation_id),
-        )) else {
+        let Some(data) = shared_capacity::lookup_capacity_record_v1(
+            self.historical_read_view_v1(), expected_reservation_id,
+        ).map_err(JournalError::from)? else {
             return Ok(None);
         };
-        let (request, admission_transaction_id, decoded_id) =
-            CanonicalCapacityFamily::decode(&reservation_key(expected_reservation_id), value)?
-                .require_legacy()?;
-        if request.purpose.is_first_source_successor() {
+        if data.request.purpose.is_first_source_successor() {
             return Err(JournalError::ProtectedBoundary);
         }
-        // The record's deterministic ID commits the original admission ID and
-        // full request. Initial append enforces their atomic transaction; after
-        // compaction this materialized self-binding is the durable provenance.
-        if decoded_id != expected_reservation_id
-            || reservation_id(&request, admission_transaction_id) != expected_reservation_id
-        {
-            return Err(JournalError::MalformedRecord(
-                "capacity reservation provenance is invalid",
-            ));
-        }
+        let data = data.compare_provenance().map_err(JournalError::from)?;
         Ok(Some(GlobalCapacityReservationV1 {
-            request,
-            admission_transaction_id,
-            reservation_id: expected_reservation_id,
-            record_digest: digest_bytes(value),
+            request: data.request,
+            admission_transaction_id: data.admission_transaction_id,
+            reservation_id: data.reservation_id,
+            record_digest: data.record_digest,
         }))
     }
 
@@ -478,38 +456,14 @@ impl Journal {
         if binding.purpose.is_first_source_successor() {
             return Err(JournalError::ProtectedBoundary);
         }
-        let families = canonical_reservations(self.native.state())?;
-        let mut matching = None;
-        for family in families {
-            let Some((request, admission_transaction_id, decoded_id)) = family.legacy() else {
-                continue;
-            };
-            let value = self.native.state()
-                .get(&(
-                    RecordNamespace::GlobalCapacityReservation,
-                    reservation_key(decoded_id),
-                ))
-                .ok_or(JournalError::MalformedRecord(
-                    "capacity reservation disappeared during selection",
-                ))?;
-            let reservation = GlobalCapacityReservationV1 {
-                request,
-                admission_transaction_id,
-                reservation_id: decoded_id,
-                record_digest: digest_bytes(value),
-            };
-            if !reservation.matches_recovery_binding(binding) {
-                continue;
-            }
-            if matching.replace(reservation).is_some() {
-                return Err(JournalError::MalformedRecord(
-                    "capacity recovery binding is not unique",
-                ));
-            }
-        }
-        matching.ok_or(JournalError::MalformedRecord(
-            "capacity reservation is absent",
-        ))
+        let data = shared_capacity::unique_capacity_record_v1(self.historical_read_view_v1(), binding)
+            .map_err(JournalError::from)?;
+        Ok(GlobalCapacityReservationV1 {
+            request: data.request,
+            admission_transaction_id: data.admission_transaction_id,
+            reservation_id: data.reservation_id,
+            record_digest: data.record_digest,
+        })
     }
 
     pub(super) fn settle_global_capacity_reservation_v1(
@@ -541,51 +495,9 @@ pub(super) fn validate_settlement_shape(
     if reservation.request.future_transactions != 1 {
         return Err(JournalError::AuthorityPreflightMismatch);
     }
-    let key = reservation_key(reservation.reservation_id);
-    let current = journal.native.state()
-        .get(&(RecordNamespace::GlobalCapacityReservation, key.clone()))
-        .ok_or(JournalError::MalformedRecord(
-            "capacity reservation is absent",
-        ))?;
-    if digest_bytes(current) != reservation.record_digest
-        || decode_reservation(current)?
-            != (
-                reservation.request,
-                reservation.admission_transaction_id,
-                reservation.reservation_id,
-            )
-    {
-        return Err(JournalError::MalformedRecord(
-            "capacity reservation changed before settlement",
-        ));
-    }
-    let reservation_records = transaction
-        .records()
-        .iter()
-        .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
-        .collect::<Vec<_>>();
-    if reservation_records
-        != [&JournalRecord::delete(
-            RecordNamespace::GlobalCapacityReservation,
-            key,
-        )]
-    {
-        return Err(JournalError::InvalidTransaction);
-    }
-    let encoded_bytes = super::encoded_transaction_record_bytes(transaction)?;
-    let terminal_fits = transaction.records().len()
-        <= usize::try_from(reservation.request.terminal_records)
-            .map_err(|_| JournalError::InvalidTransaction)?
-        && encoded_bytes <= reservation.request.terminal_bytes;
-    let poison_fits = transaction.records().len()
-        <= usize::try_from(reservation.request.poison_records)
-            .map_err(|_| JournalError::InvalidTransaction)?
-        && encoded_bytes <= reservation.request.poison_bytes;
-    if !terminal_fits && !poison_fits {
-        return Err(JournalError::LimitExceeded(
-            "capacity-reserved terminal transaction",
-        ));
-    }
+    let _comparison = shared_capacity::compare_capacity_settlement_v1(
+        journal.historical_read_view_v1(), capacity_record_data(reservation), transaction,
+    ).map_err(JournalError::from)?;
     if reservation.request.purpose == GlobalCapacityReservationPurposeV1::ControllerProjectAdmission
     {
         validate_capacity_settlement(
@@ -629,18 +541,8 @@ pub(crate) fn first_source_successor_capacity_record_v2(
     request: &GlobalCapacityReservationRequestV1,
     admission: [u8; 16],
 ) -> Result<JournalRecord, JournalError> {
-    if !request.purpose.is_first_source_successor()
-        || request.owner_namespace != RecordNamespace::DesiredState
-        || admission == [0; 16]
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    let identity = reservation_id(request, admission);
-    Ok(JournalRecord::put(
-        RecordNamespace::GlobalCapacityReservation,
-        reservation_key(identity),
-        encode_reservation(request, admission, identity),
-    ))
+    aos_sandbox_ledger_replay::replay::source_tree_successor::first_source_successor_capacity_record_v2(request, admission)
+        .map_err(JournalError::from)
 }
 
 /// Rejoins the exact native reservation before constructing its deletion DATA.
@@ -652,14 +554,8 @@ pub(crate) fn first_source_successor_capacity_delete_v2(
     request: &GlobalCapacityReservationRequestV1,
     admission: [u8; 16],
 ) -> Result<JournalRecord, JournalError> {
-    canonical_reservations(state)?;
-    let expected = first_source_successor_capacity_record_v2(request, admission)?;
-    if state.get(&(expected.namespace(), expected.key().to_vec())).map(Vec::as_slice)
-        != expected.value()
-    {
-        return Err(JournalError::AuthorityPreflightMismatch);
-    }
-    Ok(JournalRecord::delete(expected.namespace(), expected.key().to_vec()))
+    aos_sandbox_ledger_replay::replay::source_tree_successor::first_source_successor_capacity_delete_v2(state, request, admission)
+        .map_err(JournalError::from)
 }
 
 /// Derives the canonical identity of one closed native reservation.
@@ -670,8 +566,8 @@ pub(crate) fn first_source_successor_capacity_identity_v2(
     request: &GlobalCapacityReservationRequestV1,
     admission: [u8; 16],
 ) -> Result<[u8; 32], JournalError> {
-    first_source_successor_capacity_record_v2(request, admission)?;
-    Ok(reservation_id(request, admission))
+    aos_sandbox_ledger_replay::replay::source_tree_successor::first_source_successor_capacity_identity_v2(request, admission)
+        .map_err(JournalError::from)
 }
 
 pub(super) fn validate_first_source_successor_capacity_records_v2(
@@ -727,7 +623,7 @@ impl Journal {
 }
 
 pub(in crate::journal) fn digest_bytes(value: &[u8]) -> [u8; 32] {
-    Sha256::digest(value).into()
+    aos_sandbox_ledger_replay::replay::digest_bytes(value)
 }
 
 fn validate_capacity_transfer(

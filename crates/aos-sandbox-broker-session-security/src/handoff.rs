@@ -21,10 +21,6 @@ use aos_sandbox_host::{
 use aos_sandbox_mount::{
     DormantMountBrokerCallErrorV1, DormantMountBrokerCallsiteV1, DormantMountBrokerObservationV1,
 };
-use aos_sandbox_network::{
-    DormantNetworkBrokerCallErrorV1, DormantNetworkBrokerCallsiteV1,
-    DormantNetworkBrokerObservationV1,
-};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
     AuthenticatedBrokerOutcomeDirectionV1, AuthenticatedBrokerRequestDirectionV1,
@@ -378,16 +374,6 @@ impl<'owner> ProtectedBrokerEffectHandoffV1<'owner> {
             .map(ProtectedMountEffectHandoffV1)
     }
 
-    /// Selects Network authority without weakening the protected-owner borrow.
-    ///
-    /// # Errors
-    ///
-    /// Returns the intact handoff when it belongs to another broker family.
-    pub fn into_network(self) -> Result<ProtectedNetworkEffectHandoffV1<'owner>, Self> {
-        self.select(BrokerSessionProtocolV1::Network)
-            .map(ProtectedNetworkEffectHandoffV1)
-    }
-
     fn select(self, expected: BrokerSessionProtocolV1) -> Result<Self, Self> {
         if self.evidence.protocol == expected {
             Ok(self)
@@ -600,10 +586,6 @@ family_handoff!(
     ProtectedMountEffectHandoffV1,
     "Protected Mount broker effect authority."
 );
-family_handoff!(
-    ProtectedNetworkEffectHandoffV1,
-    "Protected Network broker effect authority."
-);
 
 /// Adapts only the sealed Host callsite implemented by `aos-sandbox-host`.
 pub struct DormantHostBrokerEffectAdapterV1<'adapter> {
@@ -703,21 +685,13 @@ impl<'adapter> DormantHostBrokerEffectAdapterV1<'adapter> {
     pub(crate) async fn execute_before_outcome(
         self,
         request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        retained_agent: Option<&aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
         protocol_version: ProtocolVersion,
         protected_boot_id: [u8; 16],
     ) -> Result<DormantHostBrokerObservationV1, DormantHostBrokerCallErrorV1> {
-        self.callsite
-            .consume_authenticated_apply(
-                request.exact_body(),
-                request.request_id(),
-                ObjectDigest::from_bytes(Sha256::digest(request.exact_body()).into()),
-                self.artifacts,
-                request.peer(),
-                request.peer_policy(),
-                protocol_version,
-                protected_boot_id,
-            )
-            .await
+        self.callsite.consume_authenticated_runtime_v2(
+            request, retained_agent, self.artifacts, protocol_version, protected_boot_id,
+        ).await
     }
 
     pub(crate) async fn execute_scope_before_outcome(
@@ -1126,97 +1100,6 @@ impl<'owner> ProtectedMountEffectHandoffV1<'owner> {
         handoff.current.revalidate()?;
         let evidence = handoff.evidence;
         if evidence.method != BrokerMethod::BROKER_METHOD_MOUNT_APPLY {
-            return Err(DormantBrokerEffectHandoffErrorV1::Currentness(
-                BrokerSessionSecurityError::Currentness,
-            ));
-        }
-        if artifact_commitment(adapter.artifacts) != evidence.authorization_digest {
-            return Err(DormantBrokerEffectHandoffErrorV1::Currentness(
-                BrokerSessionSecurityError::Currentness,
-            ));
-        }
-        let observation = adapter
-            .callsite
-            .consume_authenticated_apply(
-                &handoff.request_body,
-                evidence.request_id,
-                evidence.request_body_digest,
-                adapter.artifacts,
-                evidence.peer,
-                evidence.peer_policy,
-                evidence.protocol_version,
-                evidence.kernel_boot_id,
-            )
-            .map_err(DormantBrokerEffectHandoffErrorV1::Domain)?;
-        let commitment = observation.commitment();
-        Ok(handoff.seal(observation, commitment))
-    }
-}
-
-/// Adapts only the sealed Network callsite implemented by `aos-sandbox-network`.
-pub struct DormantNetworkBrokerEffectAdapterV1<'adapter> {
-    callsite: &'adapter mut dyn DormantNetworkBrokerCallsiteV1,
-    artifacts: &'adapter ValidatedUntrustedAuthorizationArtifacts,
-}
-
-impl<'adapter> DormantNetworkBrokerEffectAdapterV1<'adapter> {
-    pub(crate) fn matches_request(
-        &self,
-        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
-    ) -> bool {
-        request_artifacts_match(request, self.artifacts)
-    }
-
-    /// Constructs an explicit source-only Network adapter.
-    #[must_use]
-    pub fn new(
-        callsite: &'adapter mut dyn DormantNetworkBrokerCallsiteV1,
-        artifacts: &'adapter ValidatedUntrustedAuthorizationArtifacts,
-    ) -> Self {
-        Self {
-            callsite,
-            artifacts,
-        }
-    }
-
-    pub(crate) fn execute_before_outcome(
-        self,
-        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
-        protocol_version: ProtocolVersion,
-        protected_boot_id: [u8; 16],
-    ) -> Result<DormantNetworkBrokerObservationV1, DormantNetworkBrokerCallErrorV1> {
-        self.callsite.consume_authenticated_apply(
-            request.exact_body(),
-            request.request_id(),
-            ObjectDigest::from_bytes(Sha256::digest(request.exact_body()).into()),
-            self.artifacts,
-            request.peer(),
-            request.peer_policy(),
-            protocol_version,
-            protected_boot_id,
-        )
-    }
-}
-
-impl<'owner> ProtectedNetworkEffectHandoffV1<'owner> {
-    /// Immediately consumes Network Apply and seals its post-read observation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error before or during the domain call when the exact family,
-    /// artifacts, currentness, or Network operation rejects the handoff. Ambiguous
-    /// post-effect readback is retained in the successful outcome for bounded retry.
-    pub fn handoff_to(
-        self,
-        adapter: DormantNetworkBrokerEffectAdapterV1<'_>,
-    ) -> Result<
-        ProtectedBrokerEffectObservationOutcomeV1<'owner, DormantNetworkBrokerObservationV1>,
-        DormantBrokerEffectHandoffErrorV1<DormantNetworkBrokerCallErrorV1>,
-    > {
-        let mut handoff = self.0;
-        handoff.current.revalidate()?;
-        let evidence = handoff.evidence;
-        if evidence.method != BrokerMethod::BROKER_METHOD_NETWORK_APPLY {
             return Err(DormantBrokerEffectHandoffErrorV1::Currentness(
                 BrokerSessionSecurityError::Currentness,
             ));

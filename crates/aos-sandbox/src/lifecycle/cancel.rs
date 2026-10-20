@@ -184,12 +184,33 @@ impl LifecycleCancellationRecordV1 {
         outcome: LifecycleCancelOutcomeV1,
         operation_record: super::LifecycleRecordDigestV1,
     ) -> Result<Self, LifecycleModelError> {
+        let mut outcome = Some(outcome);
+        let mut operation = Some(operation);
+        Self::new_with_record_from_decode_parts(
+            request,
+            &mut operation,
+            &mut outcome,
+            operation_record,
+        )
+    }
+
+    /// Preserves the actual decoder input graph until model validation succeeds.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_with_record_from_decode_parts(
+        request: LifecycleCancelRequestV1,
+        operation_original: &mut Option<LifecycleOperationV1>,
+        outcome_original: &mut Option<LifecycleCancelOutcomeV1>,
+        operation_record: super::LifecycleRecordDigestV1,
+    ) -> Result<Self, LifecycleModelError> {
+        let outcome = outcome_original.as_ref().ok_or(LifecycleModelError::CorruptEncoding)?;
+        let operation = operation_original.as_ref().ok_or(LifecycleModelError::CorruptEncoding)?;
+
         let operation_matches = request.operation_id() == operation.operation_id()
             && request.project() == operation.project()
             && request.requested_at() >= operation.accepted_at();
-        let outcome_matches = match &outcome {
+        let outcome_matches = match outcome {
             LifecycleCancelOutcomeV1::CanceledBeforeCommit(successor) => {
-                successor == &operation
+                successor == operation
                     && successor.predecessor_digest() == Some(request.expected_record())
                     && request
                         .expected_revision()
@@ -218,8 +239,8 @@ impl LifecycleCancellationRecordV1 {
         }
         Ok(Self {
             request,
-            operation,
-            outcome,
+            operation: operation_original.take().ok_or(LifecycleModelError::CorruptEncoding)?,
+            outcome: outcome_original.take().ok_or(LifecycleModelError::CorruptEncoding)?,
         })
     }
 

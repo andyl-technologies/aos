@@ -11,9 +11,12 @@
 //! transaction also retires the fixed V8 flight slots. The immutable marker
 //! lets owners clear their pending-release fences before new hold acquisition.
 
+use aos_sandbox_policy::journal_keys::CONTROLLER_HOLD_PIN_KEY;
+
 use std::{io, path::Path};
 
 use aos_sandbox_core::ObjectDigest;
+pub use aos_sandbox_protocol::root_settlement::RootV8SuccessorSettlementV1;
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{
@@ -28,180 +31,9 @@ use crate::policy_compiler::controller_v8_settlement_readback::verify_controller
 use super::*;
 
 const KEY_PREFIX: &[u8] = b"\0aos-policy-compiler-root-v8-successor-settlement-v1\0";
-const MAGIC: &[u8; 8] = b"AOSPC88S";
-const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.root-v8-successor-settlement.v1\0";
 const TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.policy-compiler.root-v8-successor-settlement-transaction.v1\0";
 const CUT_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.root-v8-successor-settlement-cut.v1\0";
-const RECORD_BYTES: usize = 256;
-
-/// Authenticated, immutable Root settlement of one V8 predecessor.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RootV8SuccessorSettlementV1 {
-    predecessor: ObjectDigest,
-    epoch: u64,
-    next_epoch: u64,
-    settlement: ObjectDigest,
-    release_marker: ObjectDigest,
-    cache_released: ObjectDigest,
-    source_released: ObjectDigest,
-    signed_receipt: ObjectDigest,
-}
-
-impl RootV8SuccessorSettlementV1 {
-    /// Returns the released predecessor binding.
-    #[must_use]
-    pub const fn predecessor(self) -> ObjectDigest {
-        self.predecessor
-    }
-
-    /// Returns the predecessor handoff epoch.
-    #[must_use]
-    pub const fn epoch(self) -> u64 {
-        self.epoch
-    }
-
-    /// Returns the next permitted Root epoch.
-    #[must_use]
-    pub const fn next_epoch(self) -> u64 {
-        self.next_epoch
-    }
-
-    /// Returns the canonical Controller AOSQ8S01 digest.
-    #[must_use]
-    pub const fn settlement(self) -> ObjectDigest {
-        self.settlement
-    }
-
-    /// Returns the canonical Root AOSPC88L digest.
-    #[must_use]
-    pub const fn release_marker(self) -> ObjectDigest {
-        self.release_marker
-    }
-
-    /// Returns the exact released Cache hold digest.
-    #[must_use]
-    pub const fn cache_released(self) -> ObjectDigest {
-        self.cache_released
-    }
-
-    /// Returns the exact released Source hold digest.
-    #[must_use]
-    pub const fn source_released(self) -> ObjectDigest {
-        self.source_released
-    }
-
-    /// Returns the digest of the signed Controller settlement receipt.
-    #[must_use]
-    pub const fn signed_receipt(self) -> ObjectDigest {
-        self.signed_receipt
-    }
-
-    /// Encodes the canonical Root settlement for a future fixed Root signer.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid predecessor epochs or zero evidence digests.
-    pub(crate) fn record_bytes(self) -> Result<[u8; RECORD_BYTES], PolicyCompilerJournalErrorV1> {
-        self.encode()
-    }
-
-    /// Decodes the exact canonical Root settlement record.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed fields or a changed checksum.
-    pub(crate) fn from_record_bytes(bytes: &[u8]) -> Result<Self, PolicyCompilerJournalErrorV1> {
-        Self::decode(bytes)
-    }
-
-    fn encode(self) -> Result<[u8; RECORD_BYTES], PolicyCompilerJournalErrorV1> {
-        if self.predecessor.as_bytes() == &[0; 32]
-            || self.epoch == 0
-            || self.next_epoch
-                != self
-                    .epoch
-                    .checked_add(1)
-                    .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
-            || [
-                self.settlement,
-                self.release_marker,
-                self.cache_released,
-                self.source_released,
-                self.signed_receipt,
-            ]
-            .iter()
-            .any(|digest| digest.as_bytes() == &[0; 32])
-        {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-
-        let mut bytes = [0; RECORD_BYTES];
-        bytes[..8].copy_from_slice(MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[16..48].copy_from_slice(self.predecessor.as_bytes());
-        bytes[48..56].copy_from_slice(&self.epoch.to_be_bytes());
-        bytes[56..64].copy_from_slice(&self.next_epoch.to_be_bytes());
-        for (index, digest) in [
-            self.settlement,
-            self.release_marker,
-            self.cache_released,
-            self.source_released,
-            self.signed_receipt,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let offset = 64 + index * 32;
-            bytes[offset..offset + 32].copy_from_slice(digest.as_bytes());
-        }
-        let checksum = Sha256::new()
-            .chain_update(CHECKSUM_DOMAIN)
-            .chain_update(&bytes[..224])
-            .finalize();
-        bytes[224..256].copy_from_slice(&checksum);
-        Ok(bytes)
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, PolicyCompilerJournalErrorV1> {
-        if bytes.len() != RECORD_BYTES
-            || bytes.get(..8) != Some(MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || bytes[10..16] != [0; 6]
-        {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        let digest = |offset: usize| -> Result<ObjectDigest, PolicyCompilerJournalErrorV1> {
-            Ok(ObjectDigest::from_bytes(
-                bytes[offset..offset + 32]
-                    .try_into()
-                    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
-            ))
-        };
-        let settlement = Self {
-            predecessor: digest(16)?,
-            epoch: u64::from_be_bytes(
-                bytes[48..56]
-                    .try_into()
-                    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
-            ),
-            next_epoch: u64::from_be_bytes(
-                bytes[56..64]
-                    .try_into()
-                    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
-            ),
-            settlement: digest(64)?,
-            release_marker: digest(96)?,
-            cache_released: digest(128)?,
-            source_released: digest(160)?,
-            signed_receipt: digest(192)?,
-        };
-        if settlement.encode()?.as_slice() != bytes {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        Ok(settlement)
-    }
-}
 
 fn key(predecessor: ObjectDigest) -> Vec<u8> {
     [KEY_PREFIX, predecessor.as_bytes()].concat()
@@ -210,7 +42,8 @@ fn key(predecessor: ObjectDigest) -> Vec<u8> {
 fn settlement_transaction(
     settlement: RootV8SuccessorSettlementV1,
 ) -> Result<JournalTransaction, PolicyCompilerJournalErrorV1> {
-    let bytes = settlement.encode()?;
+    let bytes = settlement.record_bytes()
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     let digest = Sha256::new()
         .chain_update(TRANSACTION_DOMAIN)
         .chain_update(bytes)
@@ -243,7 +76,8 @@ pub(in crate::policy_compiler::binding_v2) fn settlement_for_predecessor(
     let Some(bytes) = authority.get(&key(predecessor))? else {
         return Ok(None);
     };
-    let settlement = RootV8SuccessorSettlementV1::decode(bytes)?;
+    let settlement = RootV8SuccessorSettlementV1::from_record_bytes(bytes)
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     if settlement.predecessor != predecessor {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
@@ -313,7 +147,7 @@ pub fn settle_fixed_closed_root_v8_predecessor_v1(
         epoch,
         uid,
         credential,
-        super::super::super::root_nonce::fresh_root_nonce,
+        aos_sandbox_broker::root_nonce::fresh_root_nonce,
         exchange,
     )
 }
@@ -467,33 +301,4 @@ pub(super) fn settle_in_authority(
         return Err(RootV8EffectAckErrorV1::Stale);
     }
     Ok(marker)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn root_settlement_record_rejects_changed_owner_or_release_digests() {
-        let marker = RootV8SuccessorSettlementV1 {
-            predecessor: ObjectDigest::from_bytes([1; 32]),
-            epoch: 2,
-            next_epoch: 3,
-            settlement: ObjectDigest::from_bytes([4; 32]),
-            release_marker: ObjectDigest::from_bytes([5; 32]),
-            cache_released: ObjectDigest::from_bytes([6; 32]),
-            source_released: ObjectDigest::from_bytes([7; 32]),
-            signed_receipt: ObjectDigest::from_bytes([8; 32]),
-        };
-        let encoded = marker.record_bytes().unwrap();
-        assert_eq!(
-            RootV8SuccessorSettlementV1::from_record_bytes(&encoded).unwrap(),
-            marker,
-        );
-        for offset in [0, 8, 16, 48, 56, 64, 96, 128, 160, 192, 224] {
-            let mut changed = encoded;
-            changed[offset] ^= 1;
-            assert!(RootV8SuccessorSettlementV1::from_record_bytes(&changed).is_err());
-        }
-    }
 }

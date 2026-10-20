@@ -5,29 +5,32 @@
 //! receipt against its own AOSCTK01 pin and join independent Source ancestry;
 //! neither the receipt nor its copied journal sequence transfers writer custody.
 //!
-//! ```text
-//! AOSCTP03 | version:u16 | reserved:u16 | signer-generation:u64 |
-//! Root-nonce:16 | Root-cut:32 | Controller-UID:u32 | journal-sequence:u64 |
-//! operation:16 | sandbox:16 | project:16 | source-commitment:32 |
-//! publisher-generation:u64 | publisher-descriptor-digest:32 |
-//! project-cache-domain-head:32 | revocation-scope:16 |
-//! revocation-generation:u64 | revocation-head:32 | revocation-mode:u8 |
-//! revocation-grace-nanos:u64 | reserved:3 | Ed25519-signature:64
-//! ```
+//! The canonical packet and strict raw verifier live in
+//! `aos_sandbox_policy::controller_project_readback`; this module retains the
+//! native Controller source, Publisher checks and real signing boundary.
+
+use aos_sandbox_policy::controller_project_readback::{
+    CONTROLLER_PROJECT_ADMISSION_BODY_BYTES_V1 as BODY_BYTES,
+    CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1, ControllerProjectAdmissionDataErrorV1,
+    ControllerProjectAdmissionChallengeV1, ControllerProjectAdmissionFieldsDataV1,
+    controller_project_admission_signature_preimage_v1 as signature_preimage,
+    prepare_controller_project_admission_body_v1,
+};
+#[cfg(test)]
+use aos_sandbox_policy::controller_project_readback::verify_controller_project_admission_readback_v1;
 
 use std::path::Path;
 
 use aos_sandbox_core::model::{CacheDomainKind, RevocationMode};
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, RevocationScopeId, SandboxId};
-use ed25519_dalek::{Signature, Signer as _, SigningKey};
+use ed25519_dalek::{Signer as _, SigningKey};
 
 use crate::controller::ControllerRequestScopeV1;
 use crate::journal::controller::production_journal_limits;
 use crate::journal::{Journal, JournalError, RecordNamespace};
-use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
+use crate::publisher_admin::policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use aos_sandbox_protocol::domain_ledger::effect_history::EffectPlan;
 
-use super::controller_hold_readback::PinnedControllerHoldSignerV1;
 use super::public_create_source::{
     CurrentCreatePolicySourceErrorV1, CurrentCreateProjectPolicySourceV1,
     current_parentless_create_project_source_for_operation_v1,
@@ -35,175 +38,6 @@ use super::public_create_source::{
 
 const CONTROLLER_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const CONTROLLER_JOURNAL: &str = "controller.journal";
-const MAGIC: &[u8; 8] = b"AOSCTP03";
-const VERSION: u16 = 3;
-const BODY_BYTES: usize = 300;
-const SIGNATURE_DOMAIN: &[u8] =
-    b"aos.sandbox.controller-project-admission.readback.v1\0/var/lib/aos/sandboxd/controller.journal\0";
-
-/// Bounds the exact signed Controller project-admission receipt.
-pub const CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1: usize = BODY_BYTES + 64;
-
-/// Names one Root-owned admission session without nominating a publisher head.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ControllerProjectAdmissionChallengeV1 {
-    nonce: [u8; 16],
-    cut: ObjectDigest,
-}
-
-impl ControllerProjectAdmissionChallengeV1 {
-    /// Constructs a nonzero Root-generated nonce and session commitment.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a zero nonce or cut.
-    pub fn new(
-        nonce: [u8; 16],
-        cut: ObjectDigest,
-    ) -> Result<Self, ControllerProjectAdmissionReadbackErrorV1> {
-        if nonce == [0; 16] || cut.as_bytes() == &[0; 32] {
-            return Err(ControllerProjectAdmissionReadbackErrorV1::NonCanonical);
-        }
-        Ok(Self { nonce, cut })
-    }
-
-    /// Returns the Root-generated nonce.
-    #[must_use]
-    pub const fn nonce(self) -> [u8; 16] {
-        self.nonce
-    }
-
-    /// Returns the Root-owned session commitment.
-    #[must_use]
-    pub const fn cut(self) -> ObjectDigest {
-        self.cut
-    }
-}
-
-/// Retains the exact Controller claims authenticated by the pinned role key.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct VerifiedControllerProjectAdmissionV1 {
-    controller_uid: u32,
-    journal_sequence: u64,
-    operation: OperationId,
-    sandbox: SandboxId,
-    project: ProjectId,
-    source_commitment: ObjectDigest,
-    publisher_generation: u64,
-    publisher_digest: ObjectDigest,
-    cache_domain_head: ObjectDigest,
-    revocation_scope: RevocationScopeId,
-    revocation_generation: u64,
-    revocation_head: ObjectDigest,
-    revocation_mode: RevocationMode,
-    revocation_grace_nanos: u64,
-}
-
-impl VerifiedControllerProjectAdmissionV1 {
-    /// Returns the protected Controller owner UID claimed by the signer.
-    #[must_use]
-    pub const fn controller_uid(self) -> u32 {
-        self.controller_uid
-    }
-
-    /// Returns the checked diagnostic journal sequence.
-    #[must_use]
-    pub const fn journal_sequence(self) -> u64 {
-        self.journal_sequence
-    }
-
-    /// Returns the exact admitted public Create operation.
-    #[must_use]
-    pub const fn operation(self) -> OperationId {
-        self.operation
-    }
-
-    /// Returns the selected parentless sandbox.
-    #[must_use]
-    pub const fn sandbox(self) -> SandboxId {
-        self.sandbox
-    }
-
-    /// Returns the protected project partition.
-    #[must_use]
-    pub const fn project(self) -> ProjectId {
-        self.project
-    }
-
-    /// Returns the checked public Create and publisher join commitment.
-    #[must_use]
-    pub const fn source_commitment(self) -> ObjectDigest {
-        self.source_commitment
-    }
-
-    /// Returns the current Controller publisher generation.
-    #[must_use]
-    pub const fn publisher_generation(self) -> u64 {
-        self.publisher_generation
-    }
-
-    /// Returns the canonical current publisher policy descriptor digest.
-    #[must_use]
-    pub const fn publisher_digest(self) -> ObjectDigest {
-        self.publisher_digest
-    }
-
-    /// Returns the current project disclosure-domain head.
-    #[must_use]
-    pub const fn cache_domain_head(self) -> ObjectDigest {
-        self.cache_domain_head
-    }
-
-    /// Returns the publisher-selected revocation scope.
-    #[must_use]
-    pub const fn revocation_scope(self) -> RevocationScopeId {
-        self.revocation_scope
-    }
-
-    /// Returns the current revocation generation.
-    #[must_use]
-    pub const fn revocation_generation(self) -> u64 {
-        self.revocation_generation
-    }
-
-    /// Returns the current project revocation head.
-    #[must_use]
-    pub const fn revocation_head(self) -> ObjectDigest {
-        self.revocation_head
-    }
-
-    /// Returns the current publisher policy's revocation mode.
-    #[must_use]
-    pub const fn revocation_mode(self) -> RevocationMode {
-        self.revocation_mode
-    }
-
-    /// Returns the current publisher policy's revocation grace interval.
-    #[must_use]
-    pub const fn revocation_grace_nanos(self) -> u64 {
-        self.revocation_grace_nanos
-    }
-
-    fn validate(self, expected_uid: u32) -> Result<(), ControllerProjectAdmissionReadbackErrorV1> {
-        if expected_uid == 0
-            || self.controller_uid != expected_uid
-            || self.journal_sequence == 0
-            || self.operation.as_bytes() == &[0; 16]
-            || self.sandbox.as_bytes() == &[0; 16]
-            || self.project.as_bytes() == &[0; 16]
-            || self.source_commitment.as_bytes() == &[0; 32]
-            || self.publisher_generation == 0
-            || self.publisher_digest.as_bytes() == &[0; 32]
-            || self.cache_domain_head.as_bytes() == &[0; 32]
-            || self.revocation_scope.as_bytes() == &[0; 16]
-            || self.revocation_generation == 0
-            || self.revocation_head.as_bytes() == &[0; 32]
-        {
-            return Err(ControllerProjectAdmissionReadbackErrorV1::NonCanonical);
-        }
-        Ok(())
-    }
-}
 
 /// Signs exact current Controller Create and publisher fields under its writer.
 ///
@@ -398,7 +232,7 @@ fn fields_from_source(
     source: &CurrentCreateProjectPolicySourceV1,
     uid: u32,
     sequence: u64,
-) -> Result<VerifiedControllerProjectAdmissionV1, ControllerProjectAdmissionReadbackErrorV1> {
+) -> Result<ControllerProjectAdmissionFieldsDataV1, ControllerProjectAdmissionReadbackErrorV1> {
     let publisher = PublisherPolicyStore::load(journal, PublisherPolicyLimits::default())?;
     let revision = publisher
         .current_policy(source.project())?
@@ -412,7 +246,7 @@ fn fields_from_source(
         return Err(ControllerProjectAdmissionReadbackErrorV1::Stale);
     }
     let revocation = revision.policy().revocation();
-    let fields = VerifiedControllerProjectAdmissionV1 {
+    let fields = ControllerProjectAdmissionFieldsDataV1 {
         controller_uid: uid,
         journal_sequence: sequence,
         operation: source.operation(),
@@ -513,63 +347,8 @@ pub(in crate::policy_compiler) fn sign_q04_prehold_input_v1(
     result.and(postflight)
 }
 
-/// Verifies a Controller project-admission receipt against a Root-owned pin.
-///
-/// Root must independently load the AOSCTK01 pin and compare this receipt to
-/// its signed project/deployment source and a current Source ancestry proof.
-/// Verification alone cannot authorize admission, publication, or Create.
-///
-/// # Errors
-///
-/// Rejects a changed challenge, role generation, UID, canonical field, or
-/// signature.
-pub fn verify_controller_project_admission_readback_v1(
-    bytes: &[u8],
-    signer: &PinnedControllerHoldSignerV1,
-    challenge: ControllerProjectAdmissionChallengeV1,
-    expected_uid: u32,
-) -> Result<VerifiedControllerProjectAdmissionV1, ControllerProjectAdmissionReadbackErrorV1> {
-    if bytes.len() != CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1 {
-        return Err(ControllerProjectAdmissionReadbackErrorV1::NonCanonical);
-    }
-    let body = &bytes[..BODY_BYTES];
-    if body[..8] != MAGIC[..]
-        || take::<2>(body, 8)? != VERSION.to_be_bytes()
-        || take::<2>(body, 10)? != [0; 2]
-        || u64::from_be_bytes(take::<8>(body, 12)?) != signer.generation()
-        || take::<16>(body, 20)? != challenge.nonce
-        || take::<32>(body, 36)? != *challenge.cut.as_bytes()
-        || take::<3>(body, 297)? != [0; 3]
-    {
-        return Err(ControllerProjectAdmissionReadbackErrorV1::Stale);
-    }
-    let fields = VerifiedControllerProjectAdmissionV1 {
-        controller_uid: u32::from_be_bytes(take::<4>(body, 68)?),
-        journal_sequence: u64::from_be_bytes(take::<8>(body, 72)?),
-        operation: OperationId::from_bytes(take::<16>(body, 80)?),
-        sandbox: SandboxId::from_bytes(take::<16>(body, 96)?),
-        project: ProjectId::from_bytes(take::<16>(body, 112)?),
-        source_commitment: ObjectDigest::from_bytes(take::<32>(body, 128)?),
-        publisher_generation: u64::from_be_bytes(take::<8>(body, 160)?),
-        publisher_digest: ObjectDigest::from_bytes(take::<32>(body, 168)?),
-        cache_domain_head: ObjectDigest::from_bytes(take::<32>(body, 200)?),
-        revocation_scope: RevocationScopeId::from_bytes(take::<16>(body, 232)?),
-        revocation_generation: u64::from_be_bytes(take::<8>(body, 248)?),
-        revocation_head: ObjectDigest::from_bytes(take::<32>(body, 256)?),
-        revocation_mode: decode_revocation_mode(body[288])?,
-        revocation_grace_nanos: u64::from_be_bytes(take::<8>(body, 289)?),
-    };
-    fields.validate(expected_uid)?;
-    let signature = Signature::from_bytes(&take::<64>(bytes, BODY_BYTES)?);
-    signer
-        .verifying_key()
-        .verify_strict(&signature_preimage(body), &signature)
-        .map_err(|_| ControllerProjectAdmissionReadbackErrorV1::Signature)?;
-    Ok(fields)
-}
-
 fn sign_fields(
-    fields: VerifiedControllerProjectAdmissionV1,
+    fields: ControllerProjectAdmissionFieldsDataV1,
     challenge: ControllerProjectAdmissionChallengeV1,
     signer_generation: u64,
     key: &SigningKey,
@@ -577,44 +356,9 @@ fn sign_fields(
     [u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1],
     ControllerProjectAdmissionReadbackErrorV1,
 > {
-    let bytes = prepare_fields(fields, challenge, signer_generation)?;
+    let bytes = prepare_controller_project_admission_body_v1(fields, challenge, signer_generation)?;
     let preimage = signature_preimage(&bytes[..BODY_BYTES]);
     Ok(finish_fields(bytes, preimage, key))
-}
-
-fn prepare_fields(
-    fields: VerifiedControllerProjectAdmissionV1,
-    challenge: ControllerProjectAdmissionChallengeV1,
-    signer_generation: u64,
-) -> Result<
-    [u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1],
-    ControllerProjectAdmissionReadbackErrorV1,
-> {
-    if signer_generation == 0 {
-        return Err(ControllerProjectAdmissionReadbackErrorV1::NonCanonical);
-    }
-    fields.validate(fields.controller_uid)?;
-    let mut bytes = [0; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1];
-    bytes[..8].copy_from_slice(MAGIC);
-    bytes[8..10].copy_from_slice(&VERSION.to_be_bytes());
-    bytes[12..20].copy_from_slice(&signer_generation.to_be_bytes());
-    bytes[20..36].copy_from_slice(&challenge.nonce);
-    bytes[36..68].copy_from_slice(challenge.cut.as_bytes());
-    bytes[68..72].copy_from_slice(&fields.controller_uid.to_be_bytes());
-    bytes[72..80].copy_from_slice(&fields.journal_sequence.to_be_bytes());
-    bytes[80..96].copy_from_slice(fields.operation.as_bytes());
-    bytes[96..112].copy_from_slice(fields.sandbox.as_bytes());
-    bytes[112..128].copy_from_slice(fields.project.as_bytes());
-    bytes[128..160].copy_from_slice(fields.source_commitment.as_bytes());
-    bytes[160..168].copy_from_slice(&fields.publisher_generation.to_be_bytes());
-    bytes[168..200].copy_from_slice(fields.publisher_digest.as_bytes());
-    bytes[200..232].copy_from_slice(fields.cache_domain_head.as_bytes());
-    bytes[232..248].copy_from_slice(fields.revocation_scope.as_bytes());
-    bytes[248..256].copy_from_slice(&fields.revocation_generation.to_be_bytes());
-    bytes[256..288].copy_from_slice(fields.revocation_head.as_bytes());
-    bytes[288] = encode_revocation_mode(fields.revocation_mode);
-    bytes[289..297].copy_from_slice(&fields.revocation_grace_nanos.to_be_bytes());
-    Ok(bytes)
 }
 
 fn finish_fields(
@@ -631,13 +375,13 @@ fn finish_fields(
 
 #[cfg(target_os = "linux")]
 fn sign_q04_fields(
-    fields: VerifiedControllerProjectAdmissionV1,
+    fields: ControllerProjectAdmissionFieldsDataV1,
     challenge: ControllerProjectAdmissionChallengeV1,
     signer_generation: u64,
     key: &SigningKey,
     original: &super::source_genesis_root::OriginalRootGenesisFlightV1<'_>,
 ) -> Result<[u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1], super::create_q04::CreateQ04ErrorV1> {
-    let bytes = prepare_fields(fields, challenge, signer_generation)?;
+    let bytes = prepare_controller_project_admission_body_v1(fields, challenge, signer_generation)?;
     let preimage = signature_preimage(&bytes[..BODY_BYTES]);
 
     original.require_q04_signing_boundary()?;
@@ -661,7 +405,7 @@ pub(super) fn sign_synthetic_controller_project_admission_v1(
     [u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1],
     ControllerProjectAdmissionReadbackErrorV1,
 > {
-    let fields = VerifiedControllerProjectAdmissionV1 {
+    let fields = ControllerProjectAdmissionFieldsDataV1 {
         controller_uid: 811,
         journal_sequence: 1,
         operation,
@@ -679,43 +423,6 @@ pub(super) fn sign_synthetic_controller_project_admission_v1(
     };
     sign_fields(fields, challenge, signer_generation, key)
 }
-
-fn encode_revocation_mode(mode: RevocationMode) -> u8 {
-    match mode {
-        RevocationMode::DenyNew => 1,
-        RevocationMode::Freeze => 2,
-        RevocationMode::Stop => 3,
-    }
-}
-
-fn decode_revocation_mode(
-    mode: u8,
-) -> Result<RevocationMode, ControllerProjectAdmissionReadbackErrorV1> {
-    match mode {
-        1 => Ok(RevocationMode::DenyNew),
-        2 => Ok(RevocationMode::Freeze),
-        3 => Ok(RevocationMode::Stop),
-        _ => Err(ControllerProjectAdmissionReadbackErrorV1::NonCanonical),
-    }
-}
-
-fn signature_preimage(body: &[u8]) -> Vec<u8> {
-    let mut preimage = Vec::with_capacity(SIGNATURE_DOMAIN.len() + body.len());
-    preimage.extend_from_slice(SIGNATURE_DOMAIN);
-    preimage.extend_from_slice(body);
-    preimage
-}
-
-fn take<const N: usize>(
-    bytes: &[u8],
-    offset: usize,
-) -> Result<[u8; N], ControllerProjectAdmissionReadbackErrorV1> {
-    bytes
-        .get(offset..offset + N)
-        .and_then(|part| part.try_into().ok())
-        .ok_or(ControllerProjectAdmissionReadbackErrorV1::NonCanonical)
-}
-
 /// Reports a rejected Controller-owned project-admission readback.
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerProjectAdmissionReadbackErrorV1 {
@@ -739,15 +446,27 @@ pub enum ControllerProjectAdmissionReadbackErrorV1 {
     Publisher(#[from] PublisherPolicyError),
 }
 
+impl From<ControllerProjectAdmissionDataErrorV1> for ControllerProjectAdmissionReadbackErrorV1 {
+    fn from(error: ControllerProjectAdmissionDataErrorV1) -> Self {
+        match error {
+            ControllerProjectAdmissionDataErrorV1::NonCanonical => Self::NonCanonical,
+            ControllerProjectAdmissionDataErrorV1::Stale => Self::Stale,
+            ControllerProjectAdmissionDataErrorV1::Signature => Self::Signature,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
 
     use super::*;
-    use crate::policy_compiler::encode_controller_hold_signer_credential_v1;
+    use aos_sandbox_policy::controller_readback::{
+        PinnedControllerHoldSignerV1, encode_controller_hold_signer_credential_v1,
+    };
 
-    fn fields() -> VerifiedControllerProjectAdmissionV1 {
-        VerifiedControllerProjectAdmissionV1 {
+    fn fields() -> ControllerProjectAdmissionFieldsDataV1 {
+        ControllerProjectAdmissionFieldsDataV1 {
             controller_uid: 811,
             journal_sequence: 7,
             operation: OperationId::from_bytes([1; 16]),
@@ -769,8 +488,11 @@ mod tests {
     fn exact_receipt_rejects_changed_owner_pin_challenge_and_currentness() {
         let key = SigningKey::from_bytes(&[15; 32]);
         let credential = encode_controller_hold_signer_credential_v1(16, &key.verifying_key())
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
             .expect("Controller-only pin");
-        let signer = PinnedControllerHoldSignerV1::decode(&credential).expect("pinned signer");
+        let signer = PinnedControllerHoldSignerV1::decode(&credential)
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+            .expect("pinned signer");
         let challenge = ControllerProjectAdmissionChallengeV1::new(
             [17; 16],
             ObjectDigest::from_bytes([18; 32]),
@@ -779,7 +501,8 @@ mod tests {
         let packet = sign_fields(fields(), challenge, 16, &key).expect("signed packet");
         assert_eq!(
             verify_controller_project_admission_readback_v1(&packet, &signer, challenge, 811)
-                .expect("exact Controller evidence"),
+                .expect("exact Controller evidence")
+                .fields_data_v1(),
             fields()
         );
 
@@ -798,9 +521,12 @@ mod tests {
             verify_controller_project_admission_readback_v1(&packet, &signer, challenge, 812)
                 .is_err()
         );
-        let rotated =
-            encode_controller_hold_signer_credential_v1(17, &key.verifying_key()).unwrap();
-        let rotated = PinnedControllerHoldSignerV1::decode(&rotated).unwrap();
+        let rotated = encode_controller_hold_signer_credential_v1(17, &key.verifying_key())
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+            .unwrap();
+        let rotated = PinnedControllerHoldSignerV1::decode(&rotated)
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+            .unwrap();
         assert!(
             verify_controller_project_admission_readback_v1(&packet, &rotated, challenge, 811)
                 .is_err()

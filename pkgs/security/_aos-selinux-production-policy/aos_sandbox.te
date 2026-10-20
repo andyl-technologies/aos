@@ -387,6 +387,9 @@ allow aos_sandbox_guest_owner_t aos_sandbox_guest_publication_t:file { getattr o
 
 allow aos_sandbox_guest_owner_t self:process { fork getcap getattr getpgid getsched setexec setpgid setrlimit setsched sigchld sigkill signal sigstop };
 allow aos_sandbox_guest_owner_t self:file { getattr ioctl open read write };
+# The fixed PID 1 producer seals its own 64-byte topology receipt before the
+# actual Agent child inherits it. No tenant or other-domain memfd is writable.
+allow aos_sandbox_guest_owner_t self:memfd_file { create getattr ioctl map open read write };
 allow aos_sandbox_guest_owner_t self:dir { getattr open read search };
 allow aos_sandbox_guest_owner_t self:lnk_file { getattr read };
 allow aos_sandbox_guest_owner_t self:fd use;

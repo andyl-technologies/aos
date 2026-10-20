@@ -5,6 +5,8 @@
 //! only cancellation and AbortOnly outcomes: the production ancestry gate
 //! remains closed until Source genesis and rollback authority are qualified.
 
+use aos_sandbox_policy::signed_inputs::{PolicyDeploymentInputsV1, verify_policy_deployment_head_v1};
+
 use std::error::Error;
 use std::fs;
 use std::os::fd::OwnedFd;
@@ -18,8 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use aos_sandbox::journal::SourceProjectAdmissionReservationV1;
 use aos_sandbox::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
-    PolicyDeploymentInputsV1, RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionStageV1,
-    SourceHoldReadbackChallengeV1, abort_fixed_root_project_admission_over_socket_v1,
+    RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionStageV1, SourceHoldReadbackChallengeV1,
+    abort_fixed_root_project_admission_over_socket_v1,
     cancel_fixed_root_project_reservation_over_socket_v1,
     prepare_fixed_root_project_intent_over_socket_v1,
     query_fixed_root_current_project_admission_stage_v1,
@@ -27,7 +29,6 @@ use aos_sandbox::policy_compiler::{
     query_fixed_root_project_reservation_cancellation_v1, read_source_project_admission_status_v1,
     read_source_project_reservation_status_v1, record_source_project_abort_only_challenge_v1,
     reserve_source_project_admission_v1, stage_fixed_root_project_admission_over_socket_v1,
-    verify_policy_deployment_head_v1,
 };
 use aos_sandbox::reconciler::preview_project_history_vm_reservation_v1;
 use aos_sandbox_core::{ObjectDigest, ProjectId};
@@ -233,8 +234,12 @@ pub(super) fn expire_deployment_credential() -> Result<(), Box<dyn Error>> {
         backend: &inputs[2],
         catalogs: &inputs[3],
     };
-    verify_policy_deployment_head_v1(&packet, &exact, &key.verifying_key(), now - 90)?;
-    if verify_policy_deployment_head_v1(&packet, &exact, &key.verifying_key(), now).is_ok() {
+    verify_policy_deployment_head_v1(&packet, &exact, &key.verifying_key(), now - 90)
+        .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
+    if verify_policy_deployment_head_v1(&packet, &exact, &key.verifying_key(), now)
+        .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+        .is_ok()
+    {
         return Err("replacement deployment packet is not expired".into());
     }
     fs::write(credential_path(root, "deployment-head.packet"), packet)?;

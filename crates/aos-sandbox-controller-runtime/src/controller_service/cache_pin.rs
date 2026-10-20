@@ -7,7 +7,7 @@
 use aos_filesystem_view_core::{ProjectionLimits, TreeCompileLimits};
 use aos_sandbox::cache_residency::{CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1};
 use aos_sandbox::filesystem_view_state::current_filesystem_view_revision_v1;
-use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
+use aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1;
 use aos_sandbox_core::DecodeLimits;
 use sha2::{Digest as _, Sha256};
 
@@ -53,7 +53,7 @@ impl ProductionEffectExecutor {
     pub(super) fn apply_public_cache_pin(
         &mut self,
         operation_id: OperationId,
-        consumer: &RecheckedCacheConsumerV1,
+        consumer: &CacheConsumerDataV1,
         journal: &Journal,
         request: &DormantSandboxRequestKindV1,
     ) -> Result<EffectReceipt, EffectFailure> {
@@ -100,7 +100,7 @@ impl ProductionEffectExecutor {
     fn acquire_public_cache_pin(
         &mut self,
         operation_id: OperationId,
-        consumer: &RecheckedCacheConsumerV1,
+        consumer: &CacheConsumerDataV1,
         journal: &Journal,
         request: &DormantSandboxRequestKindV1,
     ) -> Result<EffectReceipt, EffectFailure> {

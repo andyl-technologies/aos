@@ -149,7 +149,7 @@ enum CauseV1 {
     Native(rustix::io::Errno),
     Session(PublicApiSessionError),
     Image(crate::immutable_image::ImmutableImageErrorV1),
-    Clock(crate::ProtectedOwnershipClockError),
+    Clock(aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError),
     Pair(aos_sandbox_core::OwnershipLeaseVerificationError),
     Timeout(tokio::time::error::Elapsed),
     Gateway(super::gateway_service::GitGatewayServiceErrorV1),
@@ -850,8 +850,8 @@ pub struct GitReadRequestOwnerV1 {
     pub(crate) decision: Option<Result<CurrentCapabilityDecisionV1, CliAuthorizationAdapterError>>,
     result: Option<[u8; RESULT_BYTES]>,
     evaluation_attempted: bool,
-    pub(crate) lookup_failure: Option<crate::publisher_authority::PublisherAuthorityError>,
-    pub(crate) coverage_sample: Option<Result<RawPairedClockSample, crate::ProtectedOwnershipClockError>>,
+    pub(crate) lookup_failure: Option<crate::publisher_admin::capabilities::PublisherAuthorityError>,
+    pub(crate) coverage_sample: Option<Result<RawPairedClockSample, aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError>>,
     pub(crate) coverage_prefix: Option<Result<bool, crate::journal::GitCoverageNativeHistoryErrorV1>>,
     pub(crate) coverage_entitlements: Option<crate::public_capability_issuance::RetainedGitEntitlementReadV1>,
     pub(crate) coverage_prepared: Option<Result<CurrentCapabilityDecisionV1, CliAuthorizationAdapterError>>,
@@ -1007,8 +1007,8 @@ impl GitReadRequestOwnerV1 {
             return;
         };
         self.decision = Some(crate::cli_model::authorization_adapter::evaluate_current_protected_capability_retained(
-            journal, crate::publisher_authority::PublisherAuthorityLimits::default(),
-            crate::publisher_policy::PublisherPolicyLimits::default(), capability,
+            journal, crate::publisher_admin::capabilities::PublisherAuthorityLimits::default(),
+            crate::publisher_admin::policy::PublisherPolicyLimits::default(), capability,
             facts.project, facts.principal, facts.binding, clock,
             aos_sandbox_core::ResourceKind::GitObjectDatabase, aos_sandbox_core::Operation::ContentRead,
             &aos_sandbox_core::Selector::Resource { resource: facts.resource }, &mut self.crossing,
@@ -1132,7 +1132,7 @@ impl GitReadRequestOwnerV1 {
     }
 
     pub(crate) fn handle_rejected(&self) -> bool {
-        use crate::publisher_authority::PublisherAuthorityError as Error;
+        use crate::publisher_admin::capabilities::PublisherAuthorityError as Error;
         matches!(self.lookup_failure, Some(Error::UnknownCapability | Error::Revoked
             | Error::InvalidHandle | Error::HandleHolderMismatch))
     }

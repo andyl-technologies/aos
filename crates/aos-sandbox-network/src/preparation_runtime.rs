@@ -289,8 +289,45 @@ pub fn finalize_observation_worker_preparation(
     coordinator: &mut NetworkLifecycleAdmissionCoordinator,
     preparations: &NetworkPreparationCatalogV1,
     namespaces: &mut NetworkNamespaceCatalogV1,
-    input: NetworkPreparationFinalizationInput<'_>,
-    proof: PreparedNetworkObservationV1,
+    input: NetworkPreparationFinalizationInput<'_>, proof: PreparedNetworkObservationV1,
+) -> Result<FinalizedNetworkPreparationCommitV1, NetworkPreparationRuntimeError> {
+    finalize_observation_worker_preparation_engine_v4(coordinator, preparations, namespaces,
+        input, proof, &mut OrdinaryPreparationFinalizationV4)
+}
+
+/// Supplies the selected retained commit/publication frontiers to the sole finalizer.
+pub(crate) trait NetworkPreparationFinalizationReceivingV4 {
+    fn commit_v4(&mut self, coordinator: &mut NetworkLifecycleAdmissionCoordinator,
+        request_id: [u8; 16], effect_digest: ObjectDigest, verified: VerifiedNetworkResultV1)
+        -> Result<CommittedNetworkResultV1, NetworkPreparationRuntimeError>;
+    fn publish_v4(&mut self, coordinator: &NetworkLifecycleAdmissionCoordinator,
+        preparations: &NetworkPreparationCatalogV1, namespaces: &mut NetworkNamespaceCatalogV1,
+        result: CommittedNetworkResultV1) -> Result<NetworkNamespaceCatalogOutcomeV1, NetworkPreparationRuntimeError>;
+}
+
+struct OrdinaryPreparationFinalizationV4;
+
+impl NetworkPreparationFinalizationReceivingV4 for OrdinaryPreparationFinalizationV4 {
+    fn commit_v4(&mut self, coordinator: &mut NetworkLifecycleAdmissionCoordinator,
+        request_id: [u8; 16], effect_digest: ObjectDigest, verified: VerifiedNetworkResultV1)
+        -> Result<CommittedNetworkResultV1, NetworkPreparationRuntimeError> {
+        coordinator.commit_verified_preparation(request_id, effect_digest, verified).map_err(Into::into)
+    }
+
+    fn publish_v4(&mut self, coordinator: &NetworkLifecycleAdmissionCoordinator,
+        preparations: &NetworkPreparationCatalogV1, namespaces: &mut NetworkNamespaceCatalogV1,
+        result: CommittedNetworkResultV1) -> Result<NetworkNamespaceCatalogOutcomeV1, NetworkPreparationRuntimeError> {
+        publish_committed_network_preparation(coordinator, preparations, namespaces, result)
+    }
+}
+
+/// Applies the unchanged full proof comparison before selected retained writes.
+pub(crate) fn finalize_observation_worker_preparation_engine_v4(
+    coordinator: &mut NetworkLifecycleAdmissionCoordinator,
+    preparations: &NetworkPreparationCatalogV1,
+    namespaces: &mut NetworkNamespaceCatalogV1,
+    input: NetworkPreparationFinalizationInput<'_>, proof: PreparedNetworkObservationV1,
+    receiving: &mut dyn NetworkPreparationFinalizationReceivingV4,
 ) -> Result<FinalizedNetworkPreparationCommitV1, NetworkPreparationRuntimeError> {
     let namespace_identity = input.worker_output.namespace().identity();
     if proof.request_id() != input.worker_output.request_id()
@@ -314,13 +351,8 @@ pub fn finalize_observation_worker_preparation(
         proof.kernel_plan_digest(),
         proof.observation_digest(),
     )?;
-    let result = coordinator.commit_verified_preparation(
-        proof.request_id(),
-        proof.effect_digest(),
-        verified,
-    )?;
-    let publication =
-        publish_committed_network_preparation(coordinator, preparations, namespaces, result)?;
+    let result = receiving.commit_v4(coordinator, proof.request_id(), proof.effect_digest(), verified)?;
+    let publication = receiving.publish_v4(coordinator, preparations, namespaces, result)?;
 
     Ok(FinalizedNetworkPreparationCommitV1 {
         observation_digest: proof.observation_digest(),
@@ -544,6 +576,10 @@ mod tests {
     };
     use aos_sandbox_linux::boot::KernelBootId;
     use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
+    use aos_sandbox_protocol::semantics::network::preparation_content::{
+        NetworkPreparationContentReferenceV2, NetworkPreparationContentV2,
+        canonical_network_preparation_specification_v2,
+    };
     use buffa::Message as _;
     use tempfile::TempDir;
 
@@ -642,7 +678,7 @@ mod tests {
                 .program_for_resolution(handle, &resolution)
                 .unwrap();
             let plan = NetworkKernelPlanV1::compile(assignment, namespace_plan, program).unwrap();
-            let request = prepare_request(assignment);
+            let request = prepare_request(&manifest, &spec);
             let creation =
                 NetworkStateStore::open_for_test(&operation_directory, &authority, 0).unwrap();
             let lifecycle =
@@ -857,7 +893,24 @@ mod tests {
         )
     }
 
-    fn prepare_request(assignment: aos_sandbox_core::BrokerAssignment) -> Vec<u8> {
+    fn prepare_request(
+        manifest: &CanonicalAssignmentManifestV1,
+        specification: &aos_sandbox_core::model::SandboxSpec,
+    ) -> Vec<u8> {
+        let assignment = manifest.broker_assignment().unwrap();
+        let specification_bytes =
+            canonical_network_preparation_specification_v2(manifest, specification).unwrap();
+        let content =
+            NetworkPreparationContentV2::new(manifest.canonical_bytes(), &specification_bytes)
+                .unwrap()
+                .encode()
+                .unwrap();
+        let reference = NetworkPreparationContentReferenceV2::for_content(&content).unwrap();
+        NetworkPreparationReservationV1::new(manifest, specification)
+            .unwrap()
+            .require_content_reference_v4(&reference)
+            .unwrap();
+
         let mut request = ApplyNetworkRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
@@ -873,6 +926,7 @@ mod tests {
         fence.desired_generation = assignment.desired_generation().get();
         fence.assignment_digest = assignment.digest().as_bytes().to_vec();
         request.action = NetworkAction::NETWORK_ACTION_PREPARE.into();
+        reference.bind_request(&mut request);
         request.encode_to_vec()
     }
 

@@ -262,8 +262,8 @@ in {
             ${pkgs.coreutils}/bin/mkdir -p /run/systemd/system
             ${pkgs.coreutils}/bin/cp "$generated_verity_unit" \
               /run/systemd/system/systemd-veritysetup@root.service
-            ${pkgs.systemd}/bin/systemctl daemon-reload
-            ${pkgs.systemd}/bin/systemctl start --no-block systemd-veritysetup@root.service
+            ${config.systemd.package}/bin/systemctl daemon-reload
+            ${config.systemd.package}/bin/systemctl start --no-block systemd-veritysetup@root.service
             ${pkgs.coreutils}/bin/touch /run/aos/boot-identity-valid
           '';
         };
@@ -351,6 +351,7 @@ in {
     system.build.initrd = import ../base/_initrd-builder.nix {
       inherit pkgs lib;
       kernel = config.system.build.kernel;
+      systemd = config.systemd.package;
       kernelModulePackages = config.aos.boot.initrd.modulePackages;
       firmwarePackages =
         lib.optionals config.aos.kernel.includeFirmware

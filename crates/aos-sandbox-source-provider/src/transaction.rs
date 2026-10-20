@@ -2,10 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use aos_sandbox::{
-    JournalRecord, JournalTransaction, ProtectedJournalAuthority, ProtectedJournalPreflight,
-    RecordNamespace,
-};
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction;
+use aos_sandbox_source::provider_journal::ProtectedJournalAuthority;
+use aos_sandbox_source::provider_journal::ProtectedJournalPreflight;
+use aos_sandbox_core::RecordNamespace;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     AcquireSourceRequestV1, ProviderRequestSequenceExpectationV1, SignedSourceProviderRequestV1,
@@ -50,16 +51,16 @@ enum MutationShapeV1 {
 enum MutationSourceV1<'borrow, 'journal, 'challenge> {
     Legacy(&'borrow ProviderLedgerV1<'journal>),
     Original {
-        writer: &'borrow aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'journal, 'challenge>,
-        readback: &'borrow aos_sandbox::OriginalSourceProtectedReadbackV5,
+        writer: &'borrow aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'journal, 'challenge>,
+        readback: &'borrow aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
         configuration: &'borrow crate::ProtectedProviderConfigurationV1,
         archived: &'borrow aos_sandbox_source_provider_security::ProtectedOriginalDeploymentV5,
     },
 }
 
 pub(crate) fn original_release_status_records_v1(
-    writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
-    readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+    writer: &aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+    readback: &aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
     configuration: &crate::ProtectedProviderConfigurationV1,
     archived: &aos_sandbox_source_provider_security::ProtectedOriginalDeploymentV5,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ProviderLedgerError> {
@@ -281,7 +282,7 @@ fn completion_capacity_transaction(
             key,
             vec![0; maximum_completion_bytes],
         )],
-    ).map_err(aos_sandbox::JournalError::from)?;
+    ).map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?;
     Ok(transaction)
 }
 
@@ -537,7 +538,7 @@ fn request_sequence_expectation(
 
 /// Shares exact replay/Fresh classification with original ingress observations.
 pub(crate) fn request_sequence_expectation_at(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     recovered: &crate::model::RecoveredProviderLedgerV1,
     signed: &SignedSourceProviderRequestV1,
 ) -> Result<ProviderRequestSequenceExpectationV1, ProviderLedgerError> {
@@ -1510,8 +1511,8 @@ fn prepare_mutations_with_shape(
 /// Refuses stale custody, malformed rows or a noncanonical native Release CAS.
 /// This does not append, sign, lend Ready or authorize a physical release.
 pub(crate) fn prepare_original_release_admission(
-    writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
-    readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+    writer: &aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+    readback: &aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
     configuration: &crate::ProtectedProviderConfigurationV1,
     archived: &aos_sandbox_source_provider_security::ProtectedOriginalDeploymentV5,
     acquisition: ObjectDigest,
@@ -1644,7 +1645,7 @@ fn prepare_mutations_from_owner(
         })
         .collect();
     let transaction = JournalTransaction::new(transaction_id, journal_records)
-        .map_err(aos_sandbox::JournalError::from)?;
+        .map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?;
     Ok(PreparedLedgerMutationV1 {
         transaction,
         digest: ObjectDigest::from_bytes(digest),

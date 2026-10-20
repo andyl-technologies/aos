@@ -13,10 +13,11 @@ use super::advisory::{AdvisoryCompilationError, compile_advisory};
 use super::authority::{AuthorityCompilationError, compile_authority};
 use super::model::{
     CacheDomainInputV1, CompiledPolicyCandidateV1, ExplanationDecisionV1, ExplanationEntryV1,
-    ExplanationReasonV1, ExplanationStageV1, InputSourceV1, MAXIMUM_CANONICAL_OBJECT_BYTES,
-    PlanExplanationV1, PolicyCompilerInputV1, PolicyModelError, PortablePolicyOutputV1,
-    RedactedSubjectV1, RevocationInputV1, StageExplanationV1,
+    ExplanationReasonV1, ExplanationStageV1, InputSourceV1, PlanExplanationV1,
+    PolicyCompilerInputV1, PolicyModelError, PortablePolicyOutputV1, RedactedSubjectV1,
+    RevocationInputV1, StageExplanationV1,
 };
+use aos_sandbox_protocol::policy_data::MAXIMUM_CANONICAL_OBJECT_BYTES;
 use super::namespace::{NamespaceCompilationError, NamespaceRuleV1, compile_namespace};
 use super::resources::{HardResourceCompilationError, compile_resources};
 

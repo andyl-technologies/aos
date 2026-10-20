@@ -175,7 +175,7 @@ impl LifecycleOperationV1 {
             .try_reserve_exact(self.expectations().len())
             .map_err(|_| LifecycleModelError::Allocation)?;
         expectations.extend_from_slice(self.expectations());
-        Self::new(
+        let mut successor = Self::new(
             self.operation_id(),
             self.caller(),
             self.project(),
@@ -195,6 +195,11 @@ impl LifecycleOperationV1 {
             finished_at,
             Some(predecessor_digest),
         )
-        .map_err(|_| LifecycleModelError::InvalidTransition)
+        .map_err(|_| LifecycleModelError::InvalidTransition)?;
+        if let Some(origin) = self.start_native_origin_v1() {
+            successor.select_start_native_origin_retaining_v1(origin)
+                .map_err(|_| LifecycleModelError::InvalidTransition)?;
+        }
+        Ok(successor)
     }
 }

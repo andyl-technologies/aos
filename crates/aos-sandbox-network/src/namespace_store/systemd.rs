@@ -1,6 +1,9 @@
 //! Bounded systemd notification transport and complete FD-store inspection.
 
+pub(super) mod notifier_original;
+
 use std::ffi::OsStr;
+use std::sync::Arc;
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
@@ -21,24 +24,53 @@ const SERVICE_NAME: &str = "aos-netd.service";
 const BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
 const SYSTEMD_METHOD_TIMEOUT: Duration = Duration::from_secs(5);
 
+enum NotifierOwnerV4 {
+    Ordinary(SystemdNotifier),
+    Selected(Arc<SystemdNotifier>),
+}
+
+impl std::ops::Deref for NotifierOwnerV4 {
+    type Target = SystemdNotifier;
+    fn deref(&self) -> &Self::Target {
+        match self { Self::Ordinary(notifier) => notifier, Self::Selected(notifier) => notifier }
+    }
+}
+
 pub(super) struct SystemdStoreBackend {
-    notifier: SystemdNotifier,
-    inspector: FdStoreInspector,
+    notifier: NotifierOwnerV4,
+    inspector: Option<FdStoreInspector>,
 }
 
 impl SystemdStoreBackend {
     pub(super) fn from_environment() -> Result<Self, NetworkNamespaceStoreError> {
         Ok(Self {
-            notifier: SystemdNotifier::from_environment()?,
-            inspector: FdStoreInspector::connect(SERVICE_NAME, SYSTEMD_METHOD_TIMEOUT)
-                .map_err(NetworkNamespaceStoreError::Systemd)?,
+            notifier: NotifierOwnerV4::Ordinary(SystemdNotifier::from_environment()?),
+            inspector: Some(FdStoreInspector::connect(SERVICE_NAME, SYSTEMD_METHOD_TIMEOUT)
+                .map_err(NetworkNamespaceStoreError::Systemd)?),
         })
     }
+    pub(super) fn selected_from_notifier_v4(notifier: Arc<SystemdNotifier>) -> Self {
+        Self { notifier: NotifierOwnerV4::Selected(notifier), inspector: None }
+    }
+
+    pub(super) fn is_selected_v4(&self) -> bool {
+        matches!(self.notifier, NotifierOwnerV4::Selected(_))
+    }
+
+    pub(super) fn selected_notifier_v4(&self) -> Option<Arc<SystemdNotifier>> {
+        match &self.notifier {
+            NotifierOwnerV4::Selected(notifier) => Some(Arc::clone(notifier)),
+            NotifierOwnerV4::Ordinary(_) => None,
+        }
+    }
+
 }
 
 impl StoreBackend for SystemdStoreBackend {
     fn snapshot(&self) -> Result<StoreSnapshot, String> {
-        let snapshot = self.inspector.snapshot()?;
+        let inspector = self.inspector.as_ref().ok_or_else(||
+            "fixed Network Store requires its retained receiving interval".to_owned())?;
+        let snapshot = inspector.snapshot()?;
         parse_systemd_snapshot(
             snapshot.maximum_entries,
             snapshot.reported_entries,
@@ -72,7 +104,7 @@ impl StoreBackend for SystemdStoreBackend {
     }
 }
 
-struct SystemdNotifier {
+pub(super) struct SystemdNotifier {
     socket: OwnedFd,
     address: SocketAddrUnix,
 }
@@ -86,81 +118,21 @@ impl SystemdNotifier {
     }
 
     fn from_notify_socket(value: &OsStr) -> Result<Self, NetworkNamespaceStoreError> {
-        let value = value.to_str().ok_or_else(|| {
-            NetworkNamespaceStoreError::Systemd("NOTIFY_SOCKET is not Unicode".to_owned())
-        })?;
-        if value.is_empty() {
-            return Err(NetworkNamespaceStoreError::Systemd(
-                "NOTIFY_SOCKET is empty".to_owned(),
-            ));
-        }
-        let address = if let Some(name) = value.strip_prefix('@') {
-            if name.is_empty() {
-                return Err(NetworkNamespaceStoreError::Systemd(
-                    "NOTIFY_SOCKET abstract name is empty".to_owned(),
-                ));
-            }
-            SocketAddrUnix::new_abstract_name(name.as_bytes())
-        } else {
-            SocketAddrUnix::new(Path::new(value))
-        }
-        .map_err(systemd_io_error)?;
-        let socket = socket_with(
-            AddressFamily::UNIX,
-            SocketType::DGRAM,
-            SocketFlags::CLOEXEC,
-            None,
-        )
-        .map_err(systemd_io_error)?;
-        set_socket_timeout(&socket, Timeout::Send, Some(BARRIER_TIMEOUT))
-            .map_err(systemd_io_error)?;
-
-        Ok(Self { socket, address })
+        notifier_original::open_notifier_local(value)
     }
 
     fn notify(&self, payload: &[u8], descriptor: Option<BorrowedFd<'_>>) -> Result<(), String> {
-        let iov = [IoSlice::new(payload)];
-        let borrowed = descriptor.into_iter().collect::<Vec<_>>();
-        let mut control_space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
-        let mut control = SendAncillaryBuffer::new(&mut control_space);
-        if !borrowed.is_empty() && !control.push(SendAncillaryMessage::ScmRights(&borrowed)) {
-            return Err("systemd notification ancillary buffer is exhausted".to_owned());
-        }
-        let written = sendmsg_addr(
-            &self.socket,
-            &self.address,
-            &iov,
-            &mut control,
-            SendFlags::NOSIGNAL,
+        notifier_original::notify_engine(
+            self, payload, descriptor, &mut notifier_original::NotifyAttemptV4::default(), None,
         )
-        .map_err(|error| format!("systemd notification send failed: {error}"))?;
-        if written != payload.len() {
-            return Err("systemd notification was partially written".to_owned());
-        }
-        Ok(())
     }
 
     fn barrier(&self) -> Result<(), String> {
-        let (waiter, manager_end) = socketpair(
-            AddressFamily::UNIX,
-            SocketType::STREAM,
-            SocketFlags::CLOEXEC,
-            None,
+        notifier_original::barrier_engine(
+            self, &mut notifier_original::BarrierAttemptV4::default(), None, None,
         )
-        .map_err(|error| format!("systemd barrier socketpair failed: {error}"))?;
-        set_socket_timeout(&waiter, Timeout::Recv, Some(BARRIER_TIMEOUT))
-            .map_err(|error| format!("systemd barrier timeout setup failed: {error}"))?;
-        self.notify(b"BARRIER=1", Some(manager_end.as_fd()))?;
-        drop(manager_end);
-
-        let mut byte = [0_u8; 1];
-        let (received, _) = recv(&waiter, &mut byte, RecvFlags::empty())
-            .map_err(|error| format!("systemd barrier wait failed: {error}"))?;
-        if received != 0 {
-            return Err("systemd barrier descriptor carried data".to_owned());
-        }
-        Ok(())
     }
+
 }
 
 fn systemd_io_error(error: rustix::io::Errno) -> NetworkNamespaceStoreError {

@@ -16,7 +16,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
     AuthenticatedBrokerOutcomeDirectionV1,
 };
-use aos_sandbox_protocol::semantics::decode_storage_guest_root_response_v1;
+use aos_sandbox_protocol::semantics::decode_storage_guest_root_response_v2;
 use buffa::Message as _;
 
 use crate::DormantAuthenticatedBrokerSessionV1;
@@ -197,9 +197,10 @@ fn classify_outcome(
             ));
         }
     };
-    let proof = decode_storage_guest_root_response_v1(exact_body, MAXIMUM_RESPONSE_BYTES).map_err(
+    let response = decode_storage_guest_root_response_v2(exact_body, MAXIMUM_RESPONSE_BYTES).map_err(
         |_| EffectFailure::Permanent("Storage guest-root response proof is malformed".to_owned()),
     )?;
+    let proof = response.proof_v1();
     reservation.verify_response_proof(proof).map_err(|_| {
         EffectFailure::Permanent("Storage guest-root response proof is foreign".to_owned())
     })?;

@@ -10,13 +10,17 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use aos_sandbox::{JournalTransaction, RecordNamespace};
-use aos_sandbox::journal::{
-    OriginalSourceProtectedReadbackV5, PreparedOriginalSourceAppendV5,
-    SourceCapacityStateV5, SourceOriginalAdmissionDataV5, SourceOriginalChallengeHistoryViewV5,
-    SourceOriginalNativeJournalAuthorityV5, SourceOriginalPhysicalCutV5, SourceOriginalReplayViewV5,
-    SourceOriginalAppendSubjectV5,
-};
+use aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction;
+use aos_sandbox_core::RecordNamespace;
+use aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5;
+use aos_sandbox_source::provider_journal::PreparedOriginalSourceAppendV5;
+use aos_sandbox_ledger_replay::replay::source_original::union::SourceCapacityStateV5;
+use aos_sandbox_ledger_replay::replay::source_original::union::SourceOriginalAdmissionDataV5;
+use aos_sandbox_source::provider_journal::SourceOriginalChallengeHistoryViewV5;
+use aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5;
+use aos_sandbox_source::provider_journal::SourceOriginalPhysicalCutV5;
+use aos_sandbox_source::provider_journal::SourceOriginalReplayViewV5;
+use aos_sandbox_source::provider_journal::SourceOriginalAppendSubjectV5;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     RecoveryCurrentnessQueryV1, VerifiedProviderRequestV1, VerifiedProviderRequestSequenceV1,
@@ -899,7 +903,7 @@ fn authenticate_current_prefix(
     original: &mut OriginalJournalHistoryV5,
     replay: &SourceOriginalReplayViewV5<'_>,
     challenges: &SourceOriginalChallengeHistoryViewV5<'_>,
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
     publication: &[u8],
     backend: &crate::backend_verifier::ProtectedBackendVerifierV1,
 ) -> Result<(), ProviderLedgerError> {
@@ -937,7 +941,7 @@ fn authenticate_replay(
     original: &mut OriginalJournalHistoryV5,
     replay: &SourceOriginalReplayViewV5<'_>,
     challenges: &SourceOriginalChallengeHistoryViewV5<'_>,
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
     backend: &crate::backend_verifier::ProtectedBackendVerifierV1,
 ) -> Result<(), ProviderLedgerError> {
     if original.references.len() > replay.cuts().len() {
@@ -1029,7 +1033,7 @@ fn authenticate_candidate(
     eligibility: &Arc<ProtectedOriginalDeploymentV5>,
     subject: &SourceOriginalAppendSubjectV5,
     challenges: &SourceOriginalChallengeHistoryViewV5<'_>,
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
     backend: &crate::backend_verifier::ProtectedBackendVerifierV1,
 ) -> Result<(), ProviderLedgerError> {
     let archive = original.archive.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
@@ -1095,7 +1099,7 @@ fn cut_context(
     retained_projection_bytes: &mut usize,
     reference: &ProtectedOriginalCutReferenceV5,
     physical: ([u8; 16], u64),
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
 ) -> Result<ControlOriginV5, ProviderLedgerError> {
     let (identity, seconds) = reference.eligibility_context();
     let eligibility = archive.read_deployment(identity)?;
@@ -1181,7 +1185,7 @@ fn register_context(
     contexts: &mut ControlContextsV5,
     digest: ObjectDigest,
     context: &ControlOriginV5,
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
 ) -> Result<(), ProviderLedgerError> {
     if contexts.contains_key(&digest) {
         return Ok(());
@@ -1201,7 +1205,7 @@ fn register_control(
     contexts: &mut ControlContextsV5,
     control: &SignedNativeHeldControlV1,
     context: &ControlOriginV5,
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
 ) -> Result<(), ProviderLedgerError> {
     let mut pinned = context.clone();
     pinned.native_kind = Some(control.kind());
@@ -1223,7 +1227,7 @@ fn register_original_context(
     acquisition: ObjectDigest,
     root: &SignedNativeHeldControlV1,
     context: &ControlOriginV5,
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
 ) -> Result<(), ProviderLedgerError> {
     if contexts.originals.contains_key(&acquisition) {
         return Err(ProviderLedgerError::Equivocation);
@@ -1249,7 +1253,7 @@ fn authenticate_native_rows(
     current: &ProtectedProviderConfigurationV1,
     storage: &ProtectedStorageZfsHoldVerifierV1,
     challenges: &SourceOriginalChallengeHistoryViewV5<'_>,
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
     selected: &mut selected_archive::SelectedArchiveReplayV1<'_>,
 ) -> Result<(), ProviderLedgerError> {
     for ((namespace, key), value) in rows {
@@ -1339,7 +1343,7 @@ fn verify_control(
     contexts: &mut ControlContextsV5,
     current: &ProtectedProviderConfigurationV1,
     storage: &ProtectedStorageZfsHoldVerifierV1,
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
     depth: usize,
 ) -> Result<(), ProviderLedgerError> {
     if depth > 4 {
@@ -1415,7 +1419,7 @@ fn verify_nested(
     contexts: &mut ControlContextsV5,
     current: &ProtectedProviderConfigurationV1,
     storage: &ProtectedStorageZfsHoldVerifierV1,
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
     depth: usize,
 ) -> Result<(), ProviderLedgerError> {
     for section in prepared.sections() {
@@ -1474,7 +1478,7 @@ fn verify_cold(
     admissions: &BTreeMap<ObjectDigest, ([u8; 16], u64)>,
     current: &ProtectedProviderConfigurationV1,
     challenges: &SourceOriginalChallengeHistoryViewV5<'_>,
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
 ) -> Result<(), ProviderLedgerError> {
     let digest = exact_digest(cold.prepared().as_canonical_bytes());
     register_context(contexts, digest, observed, limits)?;

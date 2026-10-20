@@ -5,21 +5,27 @@
 //! already match the fixed credentials; exact replay is allowed, rotation is
 //! closed, and the Cache key cannot reuse either policy signing key.
 
+use aos_sandbox_policy::journal_keys::{
+    CONTROLLER_HOLD_PIN_KEY, SIGNER_PINS_KEY, SOURCE_HOLD_PIN_KEY,
+};
+
+use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
+
 use std::path::Path;
 
 use ed25519_dalek::VerifyingKey;
 
-use crate::cache_residency::PinnedCacheOwnerReadbackSignerV1;
+use aos_sandbox_protocol::cache_owner_readback::PinnedCacheOwnerReadbackSignerV1;
 use crate::journal::{Journal, JournalError, RecordNamespace};
 
-use super::controller_hold_pin::CONTROLLER_HOLD_PIN_KEY;
-use super::controller_hold_readback::PinnedControllerHoldSignerV1;
-use super::deployment_head::{SIGNER_PINS_KEY, encode_policy_signer_pins_v1};
+
+
+use super::deployment_head::encode_policy_signer_pins_v1;
 use super::owner_pin_transaction::owner_pin_transaction;
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
-use super::source_hold_pin::SOURCE_HOLD_PIN_KEY;
+
 use super::source_hold_readback::PinnedSourceHoldReadbackSignerV1;
 
 pub(super) const CACHE_PIN_KEY: &[u8] = b"\0aos-policy-cache-readback-pin-v1\0";
@@ -78,6 +84,26 @@ pub(super) fn admit_cache_readback_pin_in_journal_v1(
     project_generation: u64,
     project_key: &VerifyingKey,
 ) -> Result<(), CacheReadbackPinErrorV1> {
+    admit_cache_readback_pin_in_journal_v1_with_root_receiving(
+        journal,
+        credential,
+        deployment_generation,
+        deployment_key,
+        project_generation,
+        project_key,
+        None,
+    )
+}
+
+pub(super) fn admit_cache_readback_pin_in_journal_v1_with_root_receiving(
+    journal: &mut Journal,
+    credential: Option<&[u8]>,
+    deployment_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_generation: u64,
+    project_key: &VerifyingKey,
+    original: Option<&aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'_>>,
+) -> Result<(), CacheReadbackPinErrorV1> {
     let policy_pins = encode_policy_signer_pins_v1(
         deployment_generation,
         deployment_key,
@@ -106,6 +132,7 @@ pub(super) fn admit_cache_readback_pin_in_journal_v1(
     }
     if let Some(controller_pin) = authority.get(CONTROLLER_HOLD_PIN_KEY)? {
         let controller = PinnedControllerHoldSignerV1::decode(controller_pin)
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
             .map_err(|_| CacheReadbackPinErrorV1::StalePin)?;
         if controller.verifying_key() == cache.verifying_key() {
             return Err(CacheReadbackPinErrorV1::InvalidPin);
@@ -125,7 +152,10 @@ pub(super) fn admit_cache_readback_pin_in_journal_v1(
     }
 
     let transaction = owner_pin_transaction(TRANSACTION_DOMAIN, CACHE_PIN_KEY, credential)?;
-    authority.commit(&transaction)?;
+    match original {
+        Some(original) => authority.commit_root_credential_receiving_v1(&transaction, original)?,
+        None => authority.commit(&transaction)?,
+    };
     if authority.get(CACHE_PIN_KEY)? != Some(credential) {
         return Err(CacheReadbackPinErrorV1::StalePin);
     }
@@ -139,7 +169,7 @@ mod tests {
 
     use ed25519_dalek::SigningKey;
 
-    use crate::cache_residency::encode_cache_owner_readback_signer_credential_v1;
+    use aos_sandbox_protocol::cache_owner_readback::encode_cache_owner_readback_signer_credential_v1;
     use crate::journal::JournalLimits;
 
     use super::*;

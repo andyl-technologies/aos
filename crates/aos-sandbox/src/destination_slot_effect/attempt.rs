@@ -42,7 +42,7 @@ use crate::dispatch::{
     BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1, semantic_identity_digest,
     template_digest_from_parts, validate_durable_attempt_body, validate_durable_deadline_free_body,
 };
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_authority::{
     DurableRuntimeAuthorityReferenceV1, RuntimeAuthorityLimits, RuntimeAuthorityStateV1,
     RuntimeAuthorityStore, binding_for_durable_reference_in_validated_namespace,

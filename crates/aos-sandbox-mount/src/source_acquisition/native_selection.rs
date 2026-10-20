@@ -6,7 +6,7 @@
 //! Mount service scheduler and Provider V3 effect/outcome acceptance remain
 //! unimplemented activation prerequisites; this module registers no service.
 
-use aos_sandbox::journal::ProtectedJournalAuthority;
+use aos_sandbox_mount_native::ProtectedJournalAuthority;
 use aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest;
 use aos_sandbox_source_provider_security::{
     CurrentRootMountSourceProviderSessionV1, PendingNativeMountAcquireV3,
@@ -166,25 +166,6 @@ pub(super) fn confirm_native_reservation(
     })
 }
 
-/// Holds every original owner borrow until native preparation is reserved.
-#[must_use = "advance the original pending native flight or abandon it"]
-pub(crate) struct PendingNativeProviderAcquireV3<'flight, 'journal> {
-    table: &'flight mut SourceAcquisitionTableV2,
-    journal: &'flight mut ProtectedJournalAuthority<'journal>,
-    session: &'flight mut CurrentRootMountSourceProviderSessionV1,
-    live_request: &'flight LiveValidatedAcquireMountSourceRequest,
-    mount_request: Option<Vec<u8>>,
-    mount_plan_digest: [u8; 32],
-    ownership_lease_digest: [u8; 32],
-    pending: PendingNativeMountAcquireV3,
-}
-
-impl core::fmt::Debug for PendingNativeProviderAcquireV3<'_, '_> {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.write_str("PendingNativeProviderAcquireV3([borrowed original flight])")
-    }
-}
-
 impl SourceAcquisitionTableV2 {
     /// Parks the original Security plan/query before fallible catalog I/O.
     #[allow(clippy::too_many_arguments)]
@@ -238,110 +219,6 @@ impl SourceAcquisitionTableV2 {
             )
             .map_err(|_| state_error("original native catalog challenge failed"))?;
         Ok(())
-    }
-
-    /// Begins native preparation under the original live Mount admission.
-    ///
-    /// The protected session supplies the fixed identities; artifacts are
-    /// untrusted data and cannot select a signer, route, writer, or deadline.
-    ///
-    /// # Errors
-    ///
-    /// Rejects nonnative requests, noncurrent planning custody, invalid catalog
-    /// artifacts, or failure to begin the exact original control exchange.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn begin_native_provider_acquire_v3<'flight, 'journal>(
-        &'flight mut self,
-        journal: &'flight mut ProtectedJournalAuthority<'journal>,
-        session: &'flight mut CurrentRootMountSourceProviderSessionV1,
-        live_request: &'flight LiveValidatedAcquireMountSourceRequest,
-        mount_request: Vec<u8>,
-        mount_plan_digest: [u8; 32],
-        ownership_lease_digest: [u8; 32],
-        canonical_publication: &[u8],
-        canonical_catalog: &[u8],
-        selection_key: Option<Vec<u8>>,
-        provider_deadline_seconds: i64,
-    ) -> Result<PendingNativeProviderAcquireV3<'flight, 'journal>> {
-        let mut pending = None;
-        let mut plan = None;
-        let mut draft = None;
-        self.begin_original_native_provider_acquire_retaining_v5(
-            journal,
-            session,
-            live_request,
-            &mount_request,
-            mount_plan_digest,
-            ownership_lease_digest,
-            canonical_publication,
-            canonical_catalog,
-            selection_key,
-            provider_deadline_seconds,
-            &mut plan,
-            &mut draft,
-            &mut pending,
-        )?;
-        let pending = pending.ok_or_else(|| state_error("original catalog owner absent"))?;
-        Ok(PendingNativeProviderAcquireV3 {
-            table: self,
-            journal,
-            session,
-            live_request,
-            mount_request: Some(mount_request),
-            mount_plan_digest,
-            ownership_lease_digest,
-            pending,
-        })
-    }
-}
-
-impl PendingNativeProviderAcquireV3<'_, '_> {
-    /// Advances once without replacing any original owner, nonce, or deadline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if preparation was consumed, any original cut expired
-    /// or changed, or exact signed-request admission/reservation fails.
-    pub(crate) fn advance(&mut self) -> Result<NativeProviderAcquireProgressV3> {
-        if self.mount_request.is_none() {
-            return Err(state_error("native preparation was already consumed"));
-        }
-        let Some(prepared) = self
-            .session
-            .prepare_native_acquire_v3(self.journal, &mut self.pending)
-            .map_err(|_| state_error("original native catalog preparation failed"))?
-        else {
-            return Ok(NativeProviderAcquireProgressV3::Pending);
-        };
-        let mount_request = self
-            .mount_request
-            .take()
-            .ok_or_else(|| state_error("native preparation was already consumed"))?;
-        self.table.admit_native_acquire_v3(
-            self.journal,
-            self.session,
-            self.live_request,
-            mount_request,
-            self.mount_plan_digest,
-            self.ownership_lease_digest,
-            prepared,
-        )
-    }
-
-    /// Uses the original borrowed owners for the existing guarded atomic send.
-    ///
-    /// # Errors
-    ///
-    /// Retains exact send recovery for any stale/poisoned original session,
-    /// changed journal readback, expired deadline, or failed carrier send.
-    pub(crate) fn send_reserved(
-        &mut self,
-        reservation: ReservedProviderQueryV2,
-    ) -> core::result::Result<
-        super::reservation::SentProviderQueryV2,
-        super::reservation::ProviderQuerySendRecoveryV2,
-    > {
-        reservation.send(self.journal, self.session)
     }
 }
 

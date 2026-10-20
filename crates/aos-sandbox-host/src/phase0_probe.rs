@@ -12,21 +12,28 @@
 //! || Ed25519_signature[64]
 //! ```
 
-use std::fs::File;
-use std::io::Read as _;
 use std::path::Path;
 
 use aos_sandbox_linux::pidfd::NamespaceIdentity;
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
-use rustix::fs::{FileType, Mode, OFlags, fstat, open};
 use sha2::{Digest as _, Sha256};
 
 use crate::{HostError, Result};
 
+mod executable_original;
+pub use executable_original::{
+    PackagedExecutableHashClosedV2, PackagedExecutableHashShapeDataV2,
+    ProtectedPackagedExecutableHashOriginalV2,
+};
+
+mod deployment_facts;
+pub use deployment_facts::{
+    Phase0DeploymentFactsClosedV2, Phase0DeploymentFactsDataV2, Phase0DeploymentFactsOriginalV2,
+};
+
 const MAGIC: &[u8; 8] = b"AOSHPB02";
 const MESSAGE_BYTES: usize = 240;
 const DIGEST_DOMAIN: &[u8] = b"aos.sandbox.host-phase0-probe.v2\0";
-const MAXIMUM_PROBE_BINARY_BYTES: u64 = 256 * 1024 * 1024;
 /// Exact signed AOSHPB02 record length.
 pub const PHASE0_PROBE_RECORD_BYTES: usize = MESSAGE_BYTES + 64;
 
@@ -59,62 +66,16 @@ fn verified_packaged_probe_binary_digest(path: &Path, expected_suffix: &str) -> 
             "Host probe is not the fixed packaged executable".to_owned(),
         ));
     }
-    let descriptor = open(
-        path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map_err(|error| HostError::State(format!("cannot open packaged Host probe: {error}")))?;
-    let before = fstat(&descriptor)
-        .map_err(|error| HostError::State(format!("cannot stat packaged Host probe: {error}")))?;
-    if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
-        || before.st_uid != 0
-        || before.st_mode & 0o022 != 0
-        || before.st_mode & 0o111 == 0
-        || before.st_size <= 0
-        || u64::try_from(before.st_size).unwrap_or(u64::MAX) > MAXIMUM_PROBE_BINARY_BYTES
-    {
-        return Err(HostError::State(
-            "packaged Host probe has invalid protected metadata".to_owned(),
-        ));
-    }
-    let mut file = File::from(descriptor);
-    let mut digest = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    let mut total = 0u64;
-    loop {
-        let amount = file
-            .read(&mut buffer)
-            .map_err(|error| HostError::State(format!("cannot read Host probe: {error}")))?;
-        if amount == 0 {
-            break;
-        }
-        total = total
-            .checked_add(amount as u64)
-            .ok_or_else(|| HostError::State("Host probe is oversized".to_owned()))?;
-        if total > MAXIMUM_PROBE_BINARY_BYTES {
-            return Err(HostError::State("Host probe is oversized".to_owned()));
-        }
-        digest.update(&buffer[..amount]);
-    }
-    let after = fstat(&file)
-        .map_err(|error| HostError::State(format!("cannot restat packaged Host probe: {error}")))?;
-    if total != before.st_size as u64
-        || after.st_dev != before.st_dev
-        || after.st_ino != before.st_ino
-        || after.st_size != before.st_size
-        || after.st_mode != before.st_mode
-        || after.st_uid != before.st_uid
-        || after.st_mtime != before.st_mtime
-        || after.st_mtime_nsec != before.st_mtime_nsec
-        || after.st_ctime != before.st_ctime
-        || after.st_ctime_nsec != before.st_ctime_nsec
-    {
-        return Err(HostError::State(
-            "packaged Host probe changed during measurement".to_owned(),
-        ));
-    }
-    Ok(digest.finalize().into())
+    let mut original = ProtectedPackagedExecutableHashOriginalV2::new();
+    original.observe_once_v2(path).map_err(|_| {
+        HostError::State(match original.failure_v2() {
+            Some(cause) => format!("packaged Host probe measurement failed: {cause}"),
+            None => "packaged Host probe measurement is incomplete".to_owned(),
+        })
+    })?;
+    original
+        .digest_v2()
+        .ok_or_else(|| HostError::State("packaged Host probe measurement is incomplete".to_owned()))
 }
 
 /// Carries kernel identities observed by the privileged shifted-target inspector.

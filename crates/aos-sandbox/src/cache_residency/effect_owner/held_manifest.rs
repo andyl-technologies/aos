@@ -24,16 +24,11 @@ struct ManifestStream {
 
 /// Prices the actual fixed streaming state; this supplies no currentness grant.
 pub(crate) const fn original_recheck_scratch_bytes() -> usize {
-    std::mem::size_of::<(
-        ManifestStream,
-        File,
-        rustix::fs::Stat,
-        rustix::fs::Stat,
-        [u8; 1],
-        [usize; 4],
-        CacheOwnerCurrentnessV1,
-        Option<ManifestIdentity>,
-    )>()
+    // The immediate ordinary adapter owns its retained layout while the
+    // current stream is constructed. Selected persistent layouts are already
+    // included in Runtime's actual inline worker; this also conservatively
+    // covers their current stream/hash construction peak.
+    std::mem::size_of::<(ManifestStreamOriginalsV1, ManifestStream, [u8; 1], Sha256)>()
 }
 
 // Only validate_held_snapshot calls this with its original validated owner
@@ -48,114 +43,179 @@ pub(super) fn require_original(
     identity: Option<ManifestIdentity>,
     expected: CacheOwnerCurrentnessV1,
 ) -> Result<(), CacheOwnerErrorV1> {
-    require_manifest_identity(root, identity)?;
-    let descriptor = match rustix::fs::openat(
-        root,
-        MANIFEST_NAME,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    ) {
-        Ok(descriptor) => descriptor,
-        Err(rustix::io::Errno::NOENT)
-            if identity.is_none()
-                && expected.generation == 0
-                && expected.digest.as_bytes() == &[0; 32] =>
-        {
-            return require_manifest_identity(root, identity);
-        }
-        Err(rustix::io::Errno::NOENT) => return Err(CacheOwnerErrorV1::Stale),
-        Err(error) => return Err(error.into()),
-    };
-    let before = rustix::fs::fstat(&descriptor)?;
-    let length = usize::try_from(before.st_size).map_err(|_| CacheOwnerErrorV1::InvalidManifest)?;
-    if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
-        || before.st_nlink != 1
-        || before.st_uid != rustix::process::geteuid().as_raw()
-        || before.st_mode & 0o7777 != 0o600
-        || identity
-            != Some(ManifestIdentity {
-                device: before.st_dev,
-                inode: before.st_ino,
-            })
-        || !(56..=MAXIMUM_MANIFEST_BYTES).contains(&length)
-    {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
+    let mut original = ManifestStreamOriginalsV1::default();
+    original.capture_once(root, identity, expected);
+    original.into_result()
+}
+
+#[derive(Default)]
+pub(super) struct ManifestStreamOriginalsV1 {
+    // Preserve ordinary local Drop order: streaming state before its File.
+    stream: Option<ManifestStream>,
+    file: Option<Result<File, rustix::io::Errno>>,
+    absent_genesis: bool,
+    before: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
+    read: Option<Result<usize, CacheOwnerErrorV1>>,
+    after: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
+    result: Option<Result<(), CacheOwnerErrorV1>>,
+}
+
+impl ManifestStreamOriginalsV1 {
+    pub(super) fn capture_once(&mut self, root: &OwnedFd,
+        identity: Option<ManifestIdentity>, expected: CacheOwnerCurrentnessV1) {
+        if self.result.is_some() { return; }
+        self.result = Some(self.capture_inner(root, identity, expected));
     }
 
-    let mut file = File::from(descriptor);
-    let mut stream = ManifestStream {
-        buffer: [0; STREAM_BYTES],
-        header: [0; HEADER_BYTES],
-        checksum: [0; CHECKSUM_BYTES],
-        complete: Sha256::new(),
-        payload: Sha256::new(),
-        position: 0,
-        payload_bytes: length - CHECKSUM_BYTES,
-    };
-    while stream.position < length {
-        let wanted = stream.buffer.len().min(length - stream.position);
-        let count = read_retry(&mut file, &mut stream.buffer[..wanted])?;
-        if count == 0 {
+    fn capture_inner(&mut self, root: &OwnedFd,
+        identity: Option<ManifestIdentity>, expected: CacheOwnerCurrentnessV1)
+        -> Result<(), CacheOwnerErrorV1>
+    {
+        require_manifest_identity(root, identity)?;
+        self.file = Some(rustix::fs::openat(root, MANIFEST_NAME,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).map(File::from));
+        match self.file.as_ref() {
+            Some(Ok(_)) => {}
+            Some(Err(rustix::io::Errno::NOENT))
+                if identity.is_none() && expected.generation == 0 && expected.digest.as_bytes() == &[0; 32] =>
+            {
+                self.absent_genesis = true;
+                return require_manifest_identity(root, identity);
+            }
+            Some(Err(rustix::io::Errno::NOENT)) => return Err(CacheOwnerErrorV1::Stale),
+            Some(Err(_)) | None => return Err(CacheOwnerErrorV1::InvalidManifest),
+        }
+        let file = self.file.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(CacheOwnerErrorV1::InvalidManifest)?;
+        self.before = Some(rustix::fs::fstat(file));
+        let before = self.before.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(CacheOwnerErrorV1::InvalidManifest)?;
+        let length = usize::try_from(before.st_size).map_err(|_| CacheOwnerErrorV1::InvalidManifest)?;
+        if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
+            || before.st_nlink != 1
+            || before.st_uid != rustix::process::geteuid().as_raw()
+            || before.st_mode & 0o7777 != 0o600
+            || identity
+                != Some(ManifestIdentity {
+                    device: before.st_dev,
+                    inode: before.st_ino,
+                })
+            || !(56..=MAXIMUM_MANIFEST_BYTES).contains(&length)
+        {
             return Err(CacheOwnerErrorV1::InvalidManifest);
         }
-        let end = stream
-            .position
-            .checked_add(count)
-            .filter(|end| *end <= length)
+
+        self.stream = Some(ManifestStream {
+            buffer: [0; STREAM_BYTES],
+            header: [0; HEADER_BYTES],
+            checksum: [0; CHECKSUM_BYTES],
+            complete: Sha256::new(),
+            payload: Sha256::new(),
+            position: 0,
+            payload_bytes: length - CHECKSUM_BYTES,
+        });
+        let stream = self.stream.as_mut().ok_or(CacheOwnerErrorV1::InvalidManifest)?;
+        let file = self.file.as_mut().and_then(|result| result.as_mut().ok())
             .ok_or(CacheOwnerErrorV1::InvalidManifest)?;
-        let bytes = &stream.buffer[..count];
-        stream.complete.update(bytes);
-        if stream.position < HEADER_BYTES {
-            let header_end = end.min(HEADER_BYTES);
-            stream.header[stream.position..header_end]
-                .copy_from_slice(&bytes[..header_end - stream.position]);
+        while stream.position < length {
+            let wanted = stream.buffer.len().min(length - stream.position);
+            self.read = Some(read_retry(file, &mut stream.buffer[..wanted]));
+            let count = *self.read.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(CacheOwnerErrorV1::InvalidManifest)?;
+            if count == 0 {
+                return Err(CacheOwnerErrorV1::InvalidManifest);
+            }
+            let end = stream
+                .position
+                .checked_add(count)
+                .filter(|end| *end <= length)
+                .ok_or(CacheOwnerErrorV1::InvalidManifest)?;
+            let bytes = &stream.buffer[..count];
+            stream.complete.update(bytes);
+            if stream.position < HEADER_BYTES {
+                let header_end = end.min(HEADER_BYTES);
+                stream.header[stream.position..header_end]
+                    .copy_from_slice(&bytes[..header_end - stream.position]);
+            }
+            if stream.position < stream.payload_bytes {
+                stream
+                    .payload
+                    .update(&bytes[..count.min(stream.payload_bytes - stream.position)]);
+            }
+            if end > stream.payload_bytes {
+                let start = stream.position.max(stream.payload_bytes);
+                stream.checksum[start - stream.payload_bytes..end - stream.payload_bytes]
+                    .copy_from_slice(&bytes[start - stream.position..]);
+            }
+            stream.position = end;
         }
-        if stream.position < stream.payload_bytes {
-            stream
-                .payload
-                .update(&bytes[..count.min(stream.payload_bytes - stream.position)]);
+
+        // An exact EOF probe catches growth even if metadata changed after open.
+        let mut tail = [0; 1];
+        self.read = Some(read_retry(file, &mut tail));
+        if *self.read.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(CacheOwnerErrorV1::InvalidManifest)? != 0 {
+            return Err(CacheOwnerErrorV1::InvalidManifest);
         }
-        if end > stream.payload_bytes {
-            let start = stream.position.max(stream.payload_bytes);
-            stream.checksum[start - stream.payload_bytes..end - stream.payload_bytes]
-                .copy_from_slice(&bytes[start - stream.position..]);
+        self.after = Some(rustix::fs::fstat(file));
+        let after = self.after.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(CacheOwnerErrorV1::InvalidManifest)?;
+        if before.st_dev != after.st_dev
+            || before.st_ino != after.st_ino
+            || before.st_size != after.st_size
+            || before.st_nlink != after.st_nlink
+            || before.st_uid != after.st_uid
+            || before.st_mode != after.st_mode
+            || before.st_mtime != after.st_mtime
+            || before.st_mtime_nsec != after.st_mtime_nsec
+            || before.st_ctime != after.st_ctime
+            || before.st_ctime_nsec != after.st_ctime_nsec
+        {
+            return Err(CacheOwnerErrorV1::Stale);
         }
-        stream.position = end;
+        require_manifest_identity(root, identity)?;
+
+        let generation = decode_generation(&stream.header)?;
+        if generation == 0 || stream.payload.clone().finalize().as_slice() != stream.checksum.as_slice() {
+            return Err(CacheOwnerErrorV1::InvalidManifest);
+        }
+        let actual = CacheOwnerCurrentnessV1 {
+            generation,
+            digest: ObjectDigest::from_bytes(stream.complete.clone().finalize().into()),
+        };
+        if actual != expected {
+            return Err(CacheOwnerErrorV1::Stale);
+        }
+        Ok(())
     }
 
-    // An exact EOF probe catches growth even if metadata changed after open.
-    let mut tail = [0; 1];
-    if read_retry(&mut file, &mut tail)? != 0 {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
-    }
-    let after = rustix::fs::fstat(&file)?;
-    if before.st_dev != after.st_dev
-        || before.st_ino != after.st_ino
-        || before.st_size != after.st_size
-        || before.st_nlink != after.st_nlink
-        || before.st_uid != after.st_uid
-        || before.st_mode != after.st_mode
-        || before.st_mtime != after.st_mtime
-        || before.st_mtime_nsec != after.st_mtime_nsec
-        || before.st_ctime != after.st_ctime
-        || before.st_ctime_nsec != after.st_ctime_nsec
-    {
-        return Err(CacheOwnerErrorV1::Stale);
-    }
-    require_manifest_identity(root, identity)?;
+    pub(super) fn is_complete(&self) -> bool { matches!(self.result, Some(Ok(()))) }
 
-    let generation = decode_generation(&stream.header)?;
-    if generation == 0 || stream.payload.finalize().as_slice() != stream.checksum.as_slice() {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
+    pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if self.is_complete() { return None; }
+        self.file.as_ref().and_then(|result| result.as_ref().err())
+            .filter(|_| !self.absent_genesis).map(|error| error as _)
+            .or_else(|| self.before.as_ref().and_then(|result| result.as_ref().err()).map(|error| error as _))
+            .or_else(|| self.read.as_ref().and_then(|result| result.as_ref().err()).map(|error| error as _))
+            .or_else(|| self.after.as_ref().and_then(|result| result.as_ref().err()).map(|error| error as _))
+            .or_else(|| self.result.as_ref().and_then(|result| result.as_ref().err()).map(|error| error as _))
     }
-    let actual = CacheOwnerCurrentnessV1 {
-        generation,
-        digest: ObjectDigest::from_bytes(stream.complete.finalize().into()),
-    };
-    if actual != expected {
-        return Err(CacheOwnerErrorV1::Stale);
+
+    fn into_result(mut self) -> Result<(), CacheOwnerErrorV1> {
+        let result = self.result.take().ok_or(CacheOwnerErrorV1::InvalidManifest)?;
+        if result.is_ok() || self.absent_genesis { return result; }
+        if let Some(Err(error)) = self.file.as_ref() {
+            // A missing manifest at non-genesis originally projects Stale.
+            if *error == rustix::io::Errno::NOENT { return Err(CacheOwnerErrorV1::Stale); }
+            return Err((*error).into());
+        }
+        if let Some(Err(error)) = self.before.as_ref() { return Err((*error).into()); }
+        if matches!(self.read, Some(Err(_))) {
+            if let Some(Err(error)) = self.read.take() { return Err(error); }
+        }
+        if let Some(Err(error)) = self.after.as_ref() { return Err((*error).into()); }
+        result
     }
-    Ok(())
 }
 
 fn read_retry(
@@ -228,11 +288,36 @@ mod tests {
     }
 
     #[test]
+    fn failed_retained_stream_keeps_its_file_scratch_and_original_cause_through_posts() {
+        let (directory, root, _lock, identity, original) = fixture();
+        let path = directory.path().join(MANIFEST_NAME);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[24] ^= 1;
+        fs::write(&path, &bytes).unwrap();
+        let mut primary = ManifestStreamOriginalsV1::default();
+
+        primary.capture_once(&root, identity, original);
+
+        assert!(!primary.is_complete());
+        assert!(matches!(primary.file, Some(Ok(_))));
+        assert!(primary.stream.is_some());
+        let cause = primary.failure().unwrap().downcast_ref::<CacheOwnerErrorV1>().unwrap()
+            as *const CacheOwnerErrorV1;
+        let mut independent_post = ManifestStreamOriginalsV1::default();
+        independent_post.capture_once(&root, identity, original);
+        assert!(independent_post.failure().is_some());
+        primary.capture_once(&root, identity, original);
+        assert!(std::ptr::eq(primary.failure().unwrap().downcast_ref::<CacheOwnerErrorV1>().unwrap(), cause));
+        assert!(matches!(primary.file, Some(Ok(_))));
+        assert!(primary.stream.is_some());
+    }
+
+    #[test]
     fn original_canonical_native_head_rechecks_with_fixed_scratch() {
         let (_directory, root, lock, identity, original) = fixture();
         assert!(check(&root, &lock, identity, original).is_ok());
-        assert!(original_recheck_scratch_bytes() >= STREAM_BYTES);
-        assert!(original_recheck_scratch_bytes() < STREAM_BYTES + 1024);
+        assert!(original_recheck_scratch_bytes() >= 2 * STREAM_BYTES);
+        assert!(original_recheck_scratch_bytes() < 2 * STREAM_BYTES + 2048);
     }
 
     #[test]

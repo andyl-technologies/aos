@@ -22,6 +22,7 @@ type aos_sandbox_cache_journal_t;
 type aos_sandbox_cache_object_t;
 type aos_sandbox_source_view_mount_t;
 type aos_sandbox_cache_view_mount_t;
+type aos_sandbox_root_read_journal_t;
 
 # Explicit normal-unit contexts, not a generic script/interpreter transition.
 allow init_t { aos_sandbox_source_view_preparer_exec_t aos_sandbox_cache_view_preparer_exec_t }:file { execute execute_no_trans getattr open read };
@@ -85,8 +86,9 @@ type_transition aos_sandbox_controller_t aos_sandbox_cache_object_t:file aos_san
 allow aos_sandbox_policy_authority_t aos_sandbox_cache_journal_t:dir { getattr open read search };
 allow aos_sandbox_policy_authority_t aos_sandbox_cache_journal_t:file { getattr lock open read };
 
-# Fixed signer servers accept only inherited listeners. They do not translate
-# SELinux contexts; ambient setrans grants would permit new outbound sockets.
+# Signer listeners are inherited. Source additionally makes the fixed status-
+# only PID1 D-Bus observation below; Cache keeps its inherited-only contract.
+# Neither signer translates SELinux contexts or gains ambient setrans access.
 attribute aos_sandbox_readback_signer;
 type aos_sandbox_source_signer_t;
 typeattribute aos_sandbox_source_signer_t domain;
@@ -134,6 +136,31 @@ allow aos_sandbox_source_signer_t aos_sandbox_source_signer_credential_t:file { 
 allow aos_sandbox_cache_signer_t aos_sandbox_cache_signer_credential_t:dir { getattr open search };
 allow aos_sandbox_cache_signer_t aos_sandbox_cache_signer_credential_t:file { getattr open read };
 
+# The selected Source original independently compares its image-delivered
+# Root profile, immutable inputs and live canonical policy, then uses the SAME
+# bounded PID1 status worker as Controller. This is Source-only read access;
+# it grants no journal write, service mutation, task ptrace or listener factory.
+allow aos_sandbox_source_signer_t { usr_t aos_sandbox_policy_authority_profile_t aos_sandbox_policy_authority_exec_t init_exec_t }:file { getattr open read };
+allow aos_sandbox_source_signer_t { fs_t tmpfs_t cgroup_t security_t }:filesystem getattr;
+allow aos_sandbox_source_signer_t { cgroup_t security_t }:dir { getattr open read search };
+allow aos_sandbox_source_signer_t { cgroup_t security_t }:file { getattr open read };
+allow aos_sandbox_source_signer_t security_t:security read_policy;
+allow aos_sandbox_source_signer_t self:lnk_file { getattr read };
+allow aos_sandbox_source_signer_t self:process fork;
+# PIDFD_GET_INFO is the exact 0xff0b ioctl. It does not request a task namespace
+# or PTRACE_MODE access; pidfs gives each inode its original task's SID.
+allow aos_sandbox_source_signer_t { aos_sandbox_source_signer_t aos_sandbox_policy_authority_t init_t }:file { getattr ioctl };
+allowxperm aos_sandbox_source_signer_t aos_sandbox_source_signer_t:file ioctl { 0xff0b };
+allowxperm aos_sandbox_source_signer_t aos_sandbox_policy_authority_t:file ioctl { 0xff0b };
+allowxperm aos_sandbox_source_signer_t init_t:file ioctl { 0xff0b };
+allow aos_sandbox_source_signer_t self:unix_stream_socket { connect create };
+allow aos_sandbox_source_signer_t system_dbusd_var_run_t:sock_file { getattr open read write };
+allow aos_sandbox_source_signer_t system_dbusd_t:unix_stream_socket connectto;
+allow aos_sandbox_source_signer_t { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } aos_sandbox_source_signer_t:dbus send_msg;
+allow aos_sandbox_source_signer_t systemd_unit_t:service status;
+allow aos_sandbox_source_signer_t init_t:system status;
+
 # systemd 261.2 determines the activated socket's creation SID from the
 # service's explicit SELinuxContext before creating it. SO_PEERCRED still
 # names PID 1; these rules do not relabel that credential as the signer task.
@@ -152,3 +179,32 @@ allow aos_sandbox_controller_t aos_sandbox_cache_signer_t:unix_stream_socket con
 allow { aos_sandbox_view_parent_t aos_sandbox_source_journal_t aos_sandbox_cache_journal_t aos_sandbox_cache_object_t aos_sandbox_controller_state_t aos_sandbox_storage_state_t aos_sandbox_policy_authority_state_t aos_method46_controller_floor_t aos_method46_controller_lock_t aos_method46_storage_floor_t aos_method46_storage_lock_t } fs_t:filesystem associate;
 allow { aos_sandbox_source_view_mount_t aos_sandbox_cache_view_mount_t aos_sandbox_controller_runtime_t aos_sandbox_storage_runtime_t aos_sandbox_policy_authority_runtime_t aos_sandbox_source_signer_credential_t aos_sandbox_cache_signer_credential_t aos_sandbox_source_signer_socket_t aos_sandbox_cache_signer_socket_t aos_sandbox_controller_credential_t aos_sandbox_storage_credential_t aos_sandbox_policy_authority_credential_t } tmpfs_t:filesystem associate;
 allow aos_method46_tpm_device_t device_t:filesystem associate;
+
+# Normal Root's fixed readonly mappings preserve source inode labels. The Root
+# unit has no DAC capabilities; original Controller directories remain 0700.
+# These rules expose only the existing journal/object reader operations.
+allow aos_sandbox_cache_view_preparer_t { aos_sandbox_controller_state_t aos_method46_controller_floor_t aos_sandbox_source_journal_t }:dir { getattr open read search };
+allow aos_sandbox_cache_view_preparer_t { aos_sandbox_controller_state_t aos_method46_controller_floor_t aos_method46_controller_lock_t aos_sandbox_source_journal_t }:file getattr;
+allow aos_sandbox_cache_view_preparer_t aos_sandbox_source_view_mount_t:dir { getattr mounton open read search };
+allow aos_sandbox_policy_authority_t { aos_sandbox_controller_state_t aos_method46_controller_floor_t aos_sandbox_source_journal_t aos_sandbox_cache_object_t }:dir { getattr open read search };
+allow aos_sandbox_policy_authority_t { aos_sandbox_root_read_journal_t aos_method46_controller_lock_t aos_sandbox_source_journal_t aos_sandbox_cache_object_t }:file { getattr open read };
+
+# A mapped Controller directory must not expose arbitrary private Controller
+# files to Root. Only these exact journal names acquire this read-only label.
+allow aos_sandbox_root_read_journal_t fs_t:filesystem associate;
+allow aos_sandbox_controller_t aos_sandbox_root_read_journal_t:file { append create getattr lock open read rename setattr unlink write };
+allow aos_sandbox_cache_view_preparer_t aos_sandbox_root_read_journal_t:file getattr;
+allow aos_sandbox_cache_signer_t aos_sandbox_root_read_journal_t:file { getattr lock open read };
+type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_root_read_journal_t "controller.journal";
+type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_root_read_journal_t "controller.journal.lock";
+type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_root_read_journal_t "controller.journal.compact.tmp";
+type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_root_read_journal_t "bootstrap-v1.journal";
+type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_root_read_journal_t "bootstrap-v1.journal.lock";
+type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_root_read_journal_t "bootstrap-v1.journal.compact.tmp";
+# The three fixed non-Storage Session roots share the Controller directory
+# type. Only their canonical journal basenames become independently readable.
+type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_root_read_journal_t "session.journal";
+type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_root_read_journal_t "session.journal.lock";
+type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_root_read_journal_t "session.journal.compact.tmp";
+type_transition aos_sandbox_controller_t aos_method46_controller_floor_t:file aos_sandbox_root_read_journal_t "session.journal";
+type_transition aos_sandbox_controller_t aos_method46_controller_floor_t:file aos_sandbox_root_read_journal_t "session.journal.compact.tmp";

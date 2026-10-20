@@ -4,6 +4,16 @@
 //! Root custody. Synthetic verifiers appear only in the pure intersection test;
 //! these tests confer no Source genesis, catalog currentness, or worker authority.
 
+use aos_sandbox_policy::signed_inputs::DEPLOYMENT_PROFILE_INPUT_DOMAINS as INPUT_DOMAINS;
+
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentCatalogDeclarationsV2, PolicyDeploymentInputProfileV2,
+    PolicyDeploymentInputsV1, decode_policy_deployment_sources_v1,
+    verify_historical_policy_deployment_packet_v1, verify_policy_deployment_head_v1,
+};
+
+use aos_sandbox_policy::journal_keys::HEAD_KEY;
+
 use std::fs;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
@@ -67,8 +77,11 @@ fn fixture_profile(generation: u64, signer_generation: u64) -> PolicyDeploymentI
     let views = input_views(&legacy_inputs);
     let legacy_head =
         verify_policy_deployment_head_v1(&legacy_packet, &views, &key.verifying_key(), 20)
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .expect("legacy resource fixture");
-    let legacy = decode_policy_deployment_sources_v1(&views, legacy_head).expect("typed resources");
+    let legacy = decode_policy_deployment_sources_v1(&views, legacy_head)
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+        .expect("typed resources");
     let source = ResourceId::from_bytes([73; 16]);
     let selector = source_selector();
     let operations = OperationSet::one(Operation::Discover)
@@ -140,6 +153,7 @@ fn fixture_profile(generation: u64, signer_generation: u64) -> PolicyDeploymentI
             ResourceId::from_bytes([79; 16]),
         )],
     )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
     .expect("plain nonempty catalog declarations");
 
     PolicyDeploymentInputProfileV2::new(
@@ -150,6 +164,7 @@ fn fixture_profile(generation: u64, signer_generation: u64) -> PolicyDeploymentI
         backend,
         catalogs,
     )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
     .expect("explicit V2 profile")
 }
 
@@ -213,8 +228,15 @@ fn explicit_deployment_profile_v2_retains_all_typed_inputs_and_current_owner_hea
     let directory = private_directory();
     let mut journal = pinned_journal(directory.path(), &key.verifying_key(), 3);
     let views = input_views(&inputs);
-    let head = verify_signed_profile(&packet, &views, &profile, &key.verifying_key(), 20)
-        .expect("exact signed declaration");
+    let head = verify_policy_deployment_profile_data_v2(
+        &packet,
+        &views,
+        &profile,
+        &key.verifying_key(),
+        20,
+    )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+    .expect("exact signed declaration");
     admit_deployment_head_in_journal(&mut journal, &packet, head, &key.verifying_key())
         .expect("existing protected head CAS");
     let sequence = journal.snapshot_sequence();
@@ -239,16 +261,21 @@ fn explicit_deployment_profile_v2_never_upgrades_legacy_or_substituted_signed_in
     let inputs = profile.canonical_inputs().expect("typed profile bytes");
     let packet = sign_head(1, &inputs, &key);
     let views = input_views(&inputs);
-    assert!(verify_policy_deployment_head_v1(&packet, &views, &key.verifying_key(), 20).is_err());
+    assert!(
+        verify_policy_deployment_head_v1(&packet, &views, &key.verifying_key(), 20)
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+            .is_err()
+    );
     let (legacy, legacy_inputs) = super::super::tests::signed_deployment_fixture(&key);
     assert!(
-        verify_signed_profile(
+        verify_policy_deployment_profile_data_v2(
             &legacy,
             &input_views(&legacy_inputs),
             &profile,
             &key.verifying_key(),
             20,
         )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .is_err()
     );
 
@@ -258,25 +285,31 @@ fn explicit_deployment_profile_v2_never_upgrades_legacy_or_substituted_signed_in
         let mut changed = inputs.clone();
         changed[index].push(b' ');
         let signed = sign_head(1, &changed, &key);
-        assert!(verify_historical_packet(&signed, &key.verifying_key()).is_ok());
         assert!(
-            verify_signed_profile(
+            verify_historical_policy_deployment_packet_v1(&signed, &key.verifying_key())
+                .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+                .is_ok()
+        );
+        assert!(
+            verify_policy_deployment_profile_data_v2(
                 &signed,
                 &input_views(&changed),
                 &profile,
                 &key.verifying_key(),
                 20,
             )
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .is_err()
         );
         assert!(
-            verify_signed_profile(
+            verify_policy_deployment_profile_data_v2(
                 &packet,
                 &input_views(&changed),
                 &profile,
                 &key.verifying_key(),
                 20,
             )
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .is_err()
         );
     }
@@ -295,15 +328,20 @@ fn explicit_deployment_profile_v2_never_upgrades_legacy_or_substituted_signed_in
         let mut changed = inputs.clone();
         changed[0] = canonical_bytes(INPUT_DOMAINS[0], &raw).expect("untrusted shaped bytes");
         let signed = sign_head(1, &changed, &key);
-        assert!(verify_historical_packet(&signed, &key.verifying_key()).is_ok());
         assert!(
-            verify_signed_profile(
+            verify_historical_policy_deployment_packet_v1(&signed, &key.verifying_key())
+                .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+                .is_ok()
+        );
+        assert!(
+            verify_policy_deployment_profile_data_v2(
                 &signed,
                 &input_views(&changed),
                 &profile,
                 &key.verifying_key(),
                 20,
             )
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .is_err()
         );
     }
@@ -325,6 +363,7 @@ fn explicit_deployment_profile_v2_never_upgrades_legacy_or_substituted_signed_in
     )
     .expect("different explicit backend declaration");
     let empty_catalogs = PolicyDeploymentCatalogDeclarationsV2::new(Vec::new(), Vec::new())
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .expect("different explicit catalog declaration");
     for index in 0..4 {
         let changed = PolicyDeploymentInputProfileV2::new(
@@ -351,6 +390,7 @@ fn explicit_deployment_profile_v2_never_upgrades_legacy_or_substituted_signed_in
                 profile.catalogs().clone()
             },
         )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .expect("well-formed but different typed profile");
         let changed_inputs = changed
             .canonical_inputs()
@@ -363,35 +403,54 @@ fn explicit_deployment_profile_v2_never_upgrades_legacy_or_substituted_signed_in
         }
         let changed_packet = sign_head(1, &changed_inputs, &key);
         assert!(
-            verify_signed_profile(
+            verify_policy_deployment_profile_data_v2(
                 &changed_packet,
                 &input_views(&changed_inputs),
                 &changed,
                 &key.verifying_key(),
                 20,
             )
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .is_ok()
         );
         assert!(
-            verify_signed_profile(
+            verify_policy_deployment_profile_data_v2(
                 &changed_packet,
                 &input_views(&changed_inputs),
                 &profile,
                 &key.verifying_key(),
                 20,
             )
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .is_err()
         );
     }
     let changed_generation = fixture_profile(2, 3);
     let changed_signer = fixture_profile(1, 4);
     for changed in [&changed_generation, &changed_signer] {
-        assert!(verify_signed_profile(&packet, &views, changed, &key.verifying_key(), 20).is_err());
+        assert!(
+            verify_policy_deployment_profile_data_v2(
+                &packet,
+                &views,
+                changed,
+                &key.verifying_key(),
+                20
+            )
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+            .is_err()
+        );
     }
     for instant in [9, 30] {
         assert!(
-            verify_signed_profile(&packet, &views, &profile, &key.verifying_key(), instant)
-                .is_err()
+            verify_policy_deployment_profile_data_v2(
+                &packet,
+                &views,
+                &profile,
+                &key.verifying_key(),
+                instant
+            )
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+            .is_err()
         );
     }
 
@@ -420,21 +479,29 @@ fn explicit_deployment_profile_v2_pins_role_generation_and_rejects_head_equivoca
 
     let directory = private_directory();
     let mut journal = pinned_journal(directory.path(), &key.verifying_key(), 3);
-    let head = verify_signed_profile(&packet, &views, &profile, &key.verifying_key(), 20)
-        .expect("correct role signature");
+    let head = verify_policy_deployment_profile_data_v2(
+        &packet,
+        &views,
+        &profile,
+        &key.verifying_key(),
+        20,
+    )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+    .expect("correct role signature");
     admit_deployment_head_in_journal(&mut journal, &packet, head, &key.verifying_key())
         .expect("initial current head");
     let sequence = journal.snapshot_sequence();
     assert!(verify_current_profile(&mut journal, &packet, &views, &profile, 30).is_err());
     let project_signed = sign_head(1, &inputs, &project_key);
     assert!(
-        verify_signed_profile(
+        verify_policy_deployment_profile_data_v2(
             &project_signed,
             &views,
             &profile,
             &project_key.verifying_key(),
             20,
         )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .is_ok()
     );
     assert!(verify_current_profile(&mut journal, &project_signed, &views, &profile, 20).is_err());
@@ -490,13 +557,14 @@ fn explicit_deployment_profile_v2_reuses_exact_head_cas_and_cold_replay() {
         let profile = fixture_profile(generation, 3);
         let inputs = profile.canonical_inputs().expect("successor inputs");
         let packet = sign_head(generation, &inputs, &key);
-        let head = verify_signed_profile(
+        let head = verify_policy_deployment_profile_data_v2(
             &packet,
             &input_views(&inputs),
             &profile,
             &key.verifying_key(),
             20,
         )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .expect("signed successor");
         admit_deployment_head_in_journal(&mut journal, &packet, head, &key.verifying_key())
             .expect("one-generation shared CAS");
@@ -505,12 +573,22 @@ fn explicit_deployment_profile_v2_reuses_exact_head_cas_and_cold_replay() {
             .expect("lost-reply exact retry");
         assert_eq!(journal.snapshot_sequence(), sequence);
 
-        let mut conflict = inputs.clone();
-        conflict[0].push(b' ');
-        let equivocated = sign_head(generation, &conflict, &key);
-        let mut conflicting_head = head;
-        conflicting_head.packet_digest =
-            ObjectDigest::from_bytes(Sha256::digest(&equivocated).into());
+        // A second valid signed interval changes the packet commitment while
+        // retaining the same generation and exact canonical profile inputs.
+        let mut equivocated = sign_head(generation, &inputs, &key);
+        equivocated[16..24].copy_from_slice(&11_i64.to_be_bytes());
+        let mut signed = SIGNING_DOMAIN.to_vec();
+        signed.extend_from_slice(&equivocated[..PAYLOAD_BYTES]);
+        equivocated[PAYLOAD_BYTES..].copy_from_slice(&key.sign(&signed).to_bytes());
+        let conflicting_head = verify_policy_deployment_profile_data_v2(
+            &equivocated,
+            &input_views(&inputs),
+            &profile,
+            &key.verifying_key(),
+            20,
+        )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+        .expect("verified same-generation conflict");
         assert!(
             admit_deployment_head_in_journal(
                 &mut journal,
@@ -527,13 +605,14 @@ fn explicit_deployment_profile_v2_reuses_exact_head_cas_and_cold_replay() {
     let gap = fixture_profile(4, 3);
     let gap_inputs = gap.canonical_inputs().expect("gap input");
     let gap_packet = sign_head(4, &gap_inputs, &key);
-    let gap_head = verify_signed_profile(
+    let gap_head = verify_policy_deployment_profile_data_v2(
         &gap_packet,
         &input_views(&gap_inputs),
         &gap,
         &key.verifying_key(),
         20,
     )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
     .expect("correctly signed but skipped generation");
     assert!(
         admit_deployment_head_in_journal(&mut journal, &gap_packet, gap_head, &key.verifying_key())
@@ -555,10 +634,13 @@ fn explicit_deployment_profile_v2_catalog_shapes_and_generations_are_closed() {
     let endpoint = profile.catalogs().endpoints()[0];
     let destination = profile.catalogs().destinations()[0];
     assert!(
-        PolicyDeploymentCatalogDeclarationsV2::new(vec![endpoint, endpoint], Vec::new()).is_err()
+        PolicyDeploymentCatalogDeclarationsV2::new(vec![endpoint, endpoint], Vec::new())
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+            .is_err()
     );
     assert!(
         PolicyDeploymentCatalogDeclarationsV2::new(Vec::new(), vec![destination, destination])
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .is_err()
     );
     let sentinel = EndpointCatalogEntryV1::new(
@@ -567,7 +649,11 @@ fn explicit_deployment_profile_v2_catalog_shapes_and_generations_are_closed() {
         ObjectDigest::from_bytes([2; 32]),
         EndpointUseV1::Discover,
     );
-    assert!(PolicyDeploymentCatalogDeclarationsV2::new(vec![sentinel], Vec::new()).is_err());
+    assert!(
+        PolicyDeploymentCatalogDeclarationsV2::new(vec![sentinel], Vec::new())
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+            .is_err()
+    );
     for (generation, signer_generation) in [(0, 3), (1, 0)] {
         assert!(
             PolicyDeploymentInputProfileV2::new(
@@ -578,6 +664,7 @@ fn explicit_deployment_profile_v2_catalog_shapes_and_generations_are_closed() {
                 profile.backend().clone(),
                 profile.catalogs().clone(),
             )
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .is_err()
         );
     }
@@ -591,6 +678,7 @@ fn explicit_deployment_profile_v2_catalog_shapes_and_generations_are_closed() {
         })
         .collect();
     let catalogs = PolicyDeploymentCatalogDeclarationsV2::new(Vec::new(), many)
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .expect("ordered catalog within shape bound");
     assert!(
         PolicyDeploymentInputProfileV2::new(
@@ -601,6 +689,7 @@ fn explicit_deployment_profile_v2_catalog_shapes_and_generations_are_closed() {
             profile.backend().clone(),
             catalogs,
         )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .is_err()
     );
 

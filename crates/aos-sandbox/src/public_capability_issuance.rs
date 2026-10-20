@@ -21,10 +21,10 @@ use crate::cli_model::authorization_adapter::CliAuthorizationAdapterError;
 use crate::controller::ControllerProtectedClockV1;
 use crate::public_api_session::PublicApiPeer;
 use crate::public_api_session::load_entitlement_credentials;
-use crate::publisher_authority::{
+use crate::publisher_admin::capabilities::{
     PublisherAuthorityError, PublisherAuthorityLimits, PublisherCapabilityRegistry,
 };
-use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
+use crate::publisher_admin::policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use crate::{JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
 mod entitlement;
@@ -33,11 +33,13 @@ use entitlement::{EntitlementEntryV1, VerifiedEntitlementsV1};
 
 #[cfg(test)]
 const MAXIMUM_VALIDITY_SECONDS: i64 = 3_600;
-const BOOTSTRAP_KEY_DOMAIN: &[u8] = b"aos.sandbox.public-capability-bootstrap-key.v1\0";
+
+use crate::publisher_admin::capabilities as provider_capability_record_data;
+
+aos_sandbox_ledger_replay::define_provider_initial_issuance_data_recipe_v1!(
+    InitialPublicCapabilityErrorV1::Rejected
+);
 const BOOTSTRAP_REQUEST_DOMAIN: &[u8] = b"aos.sandbox.public-capability-bootstrap-request.v1\0";
-const BOOTSTRAP_KEY_PREFIX: &[u8] = b"bootstrap/";
-const ENTITLEMENT_HEAD_KEY: &[u8] = b"entitlement/current";
-const MAXIMUM_BOOTSTRAP_RECORDS: usize = 65_536;
 
 /// An explicit grant approval supplied only by trusted controller administration.
 ///
@@ -119,28 +121,6 @@ struct AuthenticatedHolderV1 {
     key_binding: ChannelBinding,
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct BootstrapRecordV1 {
-    version: u16,
-    key_digest: [u8; 32],
-    request_digest: [u8; 32],
-    entitlement_digest: ObjectDigest,
-    entitlement_generation: u64,
-    capability_id: CapabilityId,
-    principal: PrincipalId,
-    project: ProjectId,
-    channel_binding: [u8; 32],
-}
-
-#[derive(Clone, Copy, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct EntitlementHeadV1 {
-    version: u16,
-    generation: u64,
-    digest: ObjectDigest,
-}
-
 fn bootstrap_checked(
     journal: &mut Journal,
     holder: AuthenticatedHolderV1,
@@ -164,9 +144,9 @@ struct PreparedInitialIssuerV1 {
 #[cfg(target_os = "linux")]
 struct RetainedInitialInputsV1 {
     capability: CapabilityRecord,
-    policy: crate::publisher_policy::PreparedPublisherPolicyRevisionV1,
-    controller: crate::publisher_policy::PublisherControllerHeadV1,
-    revocation: crate::publisher_policy::PublisherProjectRevocationHeadV1,
+    policy: aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1,
+    controller: crate::publisher_admin::policy::PublisherControllerHeadV1,
+    revocation: crate::publisher_admin::policy::PublisherProjectRevocationHeadV1,
 }
 
 // Inspection owns these originals in its real request, not a poll-local
@@ -233,9 +213,9 @@ impl RetainedGitEntitlementReadV1 {
     pub(crate) fn check_current_inputs(
         &mut self,
         capability: &CapabilityRecord,
-        policy: &crate::publisher_policy::PreparedPublisherPolicyRevisionV1,
-        controller: &crate::publisher_policy::PublisherControllerHeadV1,
-        revocation: &crate::publisher_policy::PublisherRevocationHeadV1,
+        policy: &aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1,
+        controller: &crate::publisher_admin::policy::PublisherControllerHeadV1,
+        revocation: &crate::publisher_admin::policy::PublisherRevocationHeadV1,
         now: i64,
     ) -> Result<(), ()> {
         if self.failure().is_some() || !matches!(self.compared, Some(Ok(()))) {
@@ -311,11 +291,11 @@ pub struct RetainedGitInitialIssuanceV1 {
     credentials: crate::public_api_session::InitialEntitlementCredentialCustodyV1,
     entitlements: Option<Result<VerifiedEntitlementsV1, InitialPublicCapabilityErrorV1>>,
     entitlement_history: Option<Result<(), InitialPublicCapabilityErrorV1>>,
-    clock: Option<Result<ControllerProtectedClockV1, crate::ProtectedOwnershipClockError>>,
-    sample: Option<Result<aos_sandbox_core::RawPairedClockSample, crate::ProtectedOwnershipClockError>>,
-    post_sample: Option<Result<aos_sandbox_core::RawPairedClockSample, crate::ProtectedOwnershipClockError>>,
+    clock: Option<Result<ControllerProtectedClockV1, aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError>>,
+    sample: Option<Result<aos_sandbox_core::RawPairedClockSample, aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError>>,
+    post_sample: Option<Result<aos_sandbox_core::RawPairedClockSample, aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError>>,
     crossing_inputs: Option<Result<RetainedInitialInputsV1, InitialPublicCapabilityErrorV1>>,
-    crossing_sample: Option<Result<aos_sandbox_core::RawPairedClockSample, crate::ProtectedOwnershipClockError>>,
+    crossing_sample: Option<Result<aos_sandbox_core::RawPairedClockSample, aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError>>,
     crossing_pair: Option<Result<(), aos_sandbox_core::OwnershipLeaseVerificationError>>,
     prefix: Option<Result<bool, crate::journal::GitCoverageNativeHistoryErrorV1>>,
     floor: crate::cli_model::authorization_adapter::RetainedAuthorizationTimeFloorV1,
@@ -474,7 +454,7 @@ impl RetainedGitInitialIssuanceV1 {
             let capability = if self.expected.is_some() {
                 let record = self.transactions.get(1).and_then(|tx| tx.records().first())
                     .ok_or_else(refused)?;
-                crate::publisher_authority::decode_git_coverage_initial_content_read_v1(
+                crate::publisher_admin::capabilities::decode_git_coverage_initial_content_read_v1(
                     record.key(), record.value().ok_or_else(refused)?,
                 )?.0
             } else {
@@ -927,7 +907,7 @@ fn bootstrap_checked_inner(
 
 fn grants_covered(
     grants: &[Grant],
-    policy: &crate::publisher_policy::PreparedPublisherPolicyRevisionV1,
+    policy: &aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1,
 ) -> bool {
     grants.iter().all(|grant| {
         if grant.id().as_bytes() == &[0; 16] {
@@ -954,8 +934,8 @@ fn grants_covered(
 // Reuses the ordinary issuer's exact ordered signed-entry/policy predicate.
 fn initial_entitlement_is_current(
     entry: &EntitlementEntryV1,
-    policy: &crate::publisher_policy::PreparedPublisherPolicyRevisionV1,
-    controller: &crate::publisher_policy::PublisherControllerHeadV1,
+    policy: &aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1,
+    controller: &crate::publisher_admin::policy::PublisherControllerHeadV1,
     revocation: (aos_sandbox_core::RevocationScopeId, u64),
     now: i64,
 ) -> bool {
@@ -975,8 +955,8 @@ fn initial_entitlement_is_current(
 fn require_current_entitlement_capability(
     document: &VerifiedEntitlementsV1,
     capability: &CapabilityRecord,
-    policy: &crate::publisher_policy::PreparedPublisherPolicyRevisionV1,
-    controller: &crate::publisher_policy::PublisherControllerHeadV1,
+    policy: &aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1,
+    controller: &crate::publisher_admin::policy::PublisherControllerHeadV1,
     revocation: (aos_sandbox_core::RevocationScopeId, u64),
     now: i64,
 ) -> Result<(), InitialPublicCapabilityErrorV1> {
@@ -999,7 +979,7 @@ fn claims_match(
     capability: &CapabilityRecord,
     holder: &AuthenticatedHolderV1,
     entry: &EntitlementEntryV1,
-    policy: &crate::publisher_policy::PreparedPublisherPolicyRevisionV1,
+    policy: &aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1,
     controller: PrincipalId,
     revocation: (aos_sandbox_core::RevocationScopeId, u64),
     now: i64,
@@ -1059,7 +1039,7 @@ fn compare_git_coverage_initial_entitlements_v1(
         {
             return Err(InitialPublicCapabilityErrorV1::Rejected);
         }
-        let capability = crate::publisher_authority::decode_git_coverage_initial_for_id_v1(
+        let capability = crate::publisher_admin::capabilities::decode_git_coverage_initial_for_id_v1(
             journal, original.capability_id,
         )?;
         let holder = AuthenticatedHolderV1 {
@@ -1089,87 +1069,10 @@ fn compare_git_coverage_initial_entitlements_v1(
     Ok(())
 }
 
-fn bootstrap_key(digest: &[u8; 32]) -> Vec<u8> {
-    let mut key = Vec::with_capacity(BOOTSTRAP_KEY_PREFIX.len() + digest.len());
-    key.extend_from_slice(BOOTSTRAP_KEY_PREFIX);
-    key.extend_from_slice(digest);
-    key
-}
-
-fn holder_key_digest(principal: PrincipalId, project: ProjectId, binding: &[u8; 32]) -> [u8; 32] {
-    Sha256::new()
-        .chain_update(BOOTSTRAP_KEY_DOMAIN)
-        .chain_update(principal.as_bytes())
-        .chain_update(project.as_bytes())
-        .chain_update(binding)
-        .finalize()
-        .into()
-}
-
-fn decode_canonical<T>(bytes: &[u8]) -> Result<T, InitialPublicCapabilityErrorV1>
-where
-    T: for<'de> Deserialize<'de> + Serialize,
-{
-    let value: T =
-        serde_json::from_slice(bytes).map_err(|_| InitialPublicCapabilityErrorV1::Rejected)?;
-    if serde_json::to_vec(&value).map_err(|_| InitialPublicCapabilityErrorV1::Rejected)? != bytes {
-        return Err(InitialPublicCapabilityErrorV1::Rejected);
-    }
-    Ok(value)
-}
-
 fn validate_bootstrap_namespace(
     journal: &Journal,
 ) -> Result<Option<EntitlementHeadV1>, InitialPublicCapabilityErrorV1> {
     validate_bootstrap_records(journal.records(RecordNamespace::PublicCapabilityBootstrap))
-}
-
-fn validate_bootstrap_records<'a>(
-    records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
-) -> Result<Option<EntitlementHeadV1>, InitialPublicCapabilityErrorV1> {
-    let mut head = None;
-    let mut count = 0_usize;
-    let mut greatest_record_generation = 0_u64;
-    for (key, bytes) in records {
-        count = count
-            .checked_add(1)
-            .ok_or(InitialPublicCapabilityErrorV1::Rejected)?;
-        if count > MAXIMUM_BOOTSTRAP_RECORDS || bytes.len() > 2_048 {
-            return Err(InitialPublicCapabilityErrorV1::Rejected);
-        }
-        if key == ENTITLEMENT_HEAD_KEY {
-            let value: EntitlementHeadV1 = decode_canonical(bytes)?;
-            if value.version != 1 || value.generation == 0 || value.digest.as_bytes() == &[0; 32] {
-                return Err(InitialPublicCapabilityErrorV1::Rejected);
-            }
-            head = Some(value);
-        } else if let Some(digest) = key.strip_prefix(BOOTSTRAP_KEY_PREFIX) {
-            let value: BootstrapRecordV1 = decode_canonical(bytes)?;
-            if digest.len() != 32
-                || digest != value.key_digest
-                || value.version != 1
-                || value.request_digest == [0; 32]
-                || value.entitlement_digest.as_bytes() == &[0; 32]
-                || value.entitlement_generation == 0
-                || value.capability_id.as_bytes() == &[0; 16]
-                || value.principal.as_bytes() == &[0; 16]
-                || value.project.as_bytes() == &[0; 16]
-                || value.channel_binding == [0; 32]
-                || value.key_digest
-                    != holder_key_digest(value.principal, value.project, &value.channel_binding)
-            {
-                return Err(InitialPublicCapabilityErrorV1::Rejected);
-            }
-            greatest_record_generation =
-                greatest_record_generation.max(value.entitlement_generation);
-        } else {
-            return Err(InitialPublicCapabilityErrorV1::Rejected);
-        }
-    }
-    if count != 0 && head.is_none_or(|head| head.generation < greatest_record_generation) {
-        return Err(InitialPublicCapabilityErrorV1::Rejected);
-    }
-    Ok(head)
 }
 
 /// Keeps only the bounded head and counters of validated initial-read groups.
@@ -1212,94 +1115,6 @@ impl GitCoverageInitialIssuanceHistoryV1 {
         }
         Ok(())
     }
-}
-
-fn require_git_coverage_initial_transaction_v1(
-    transaction: &JournalTransaction,
-    previous_head: Option<EntitlementHeadV1>,
-) -> Result<EntitlementHeadV1, InitialPublicCapabilityErrorV1> {
-    let records = transaction.records();
-    if !(2..=3).contains(&records.len())
-        || records[0].namespace() != RecordNamespace::PublisherAuthority
-        || records[1].namespace() != RecordNamespace::PublicCapabilityBootstrap
-        || records.iter().any(|record| record.value().is_none())
-        || records[1].value().is_none_or(|value| value.len() > 2_048)
-    {
-        return Err(InitialPublicCapabilityErrorV1::Rejected);
-    }
-    let (capability, _) = crate::publisher_authority::decode_git_coverage_initial_content_read_v1(
-        records[0].key(), records[0].value().ok_or(InitialPublicCapabilityErrorV1::Rejected)?,
-    )?;
-    let retained: BootstrapRecordV1 = decode_canonical(
-        records[1].value().ok_or(InitialPublicCapabilityErrorV1::Rejected)?,
-    )?;
-    let claims = capability.claims();
-    if retained.version != 1
-        || retained.capability_id != capability.id()
-        || transaction.id() != capability.id().as_bytes()
-        || retained.principal != claims.holder
-        || retained.project != claims.project
-        || retained.channel_binding != *claims.channel_binding.as_bytes()
-        || claims.root_subject != claims.holder
-        || claims.issuer != claims.audience
-        || claims.sandbox.is_some() || claims.incarnation.is_some()
-        || claims.assignment_epoch.is_some()
-        || retained.key_digest != holder_key_digest(
-            retained.principal, retained.project, &retained.channel_binding,
-        )
-        || records[1].key() != bootstrap_key(&retained.key_digest)
-        || retained.request_digest == [0; 32]
-        || retained.entitlement_digest.as_bytes() == &[0; 32]
-        || retained.entitlement_generation == 0
-    {
-        return Err(InitialPublicCapabilityErrorV1::Rejected);
-    }
-    let next = EntitlementHeadV1 {
-        version: 1, generation: retained.entitlement_generation,
-        digest: retained.entitlement_digest,
-    };
-    let advances = previous_head.is_none_or(|old| next.generation > old.generation);
-    if records.len() != if advances { 3 } else { 2 }
-        || previous_head.is_some_and(|old| next.generation < old.generation
-            || (next.generation == old.generation && next.digest != old.digest))
-    {
-        return Err(InitialPublicCapabilityErrorV1::Rejected);
-    }
-    if advances {
-        let head = &records[2];
-        if head.namespace() != RecordNamespace::PublicCapabilityBootstrap
-            || head.key() != ENTITLEMENT_HEAD_KEY
-            || head.value().is_none_or(|value| value.len() > 2_048)
-        {
-            return Err(InitialPublicCapabilityErrorV1::Rejected);
-        }
-        let encoded: EntitlementHeadV1 = decode_canonical(
-            head.value().ok_or(InitialPublicCapabilityErrorV1::Rejected)?,
-        )?;
-        if (encoded.version, encoded.generation, encoded.digest)
-            != (next.version, next.generation, next.digest)
-        {
-            return Err(InitialPublicCapabilityErrorV1::Rejected);
-        }
-    }
-    Ok(next)
-}
-
-pub(crate) fn require_git_coverage_initial_from_state_v1(
-    transaction: &JournalTransaction,
-    state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-) -> Result<(), InitialPublicCapabilityErrorV1> {
-    let head = validate_bootstrap_records(state.iter()
-        .filter(|((namespace, _), _)| *namespace == RecordNamespace::PublicCapabilityBootstrap)
-        .map(|((_, key), value)| (key.as_slice(), value.as_slice())))?;
-    if transaction.records().iter().take(2).any(|record| {
-        state.keys().any(|(namespace, key)| {
-            *namespace == record.namespace() && key.as_slice() == record.key()
-        })
-    }) {
-        return Err(InitialPublicCapabilityErrorV1::Rejected);
-    }
-    require_git_coverage_initial_transaction_v1(transaction, head).map(|_| ())
 }
 
 /// Issues or replays the first capability under fixed signed deployment authority.

@@ -13,6 +13,28 @@
 //! retained unit cgroup reports `populated 0`. A separate observation worker is
 //! still required before committing or publishing the namespace.
 
+mod child_intake_v2;
+pub(crate) mod child_programme_v2;
+mod executor_opening;
+mod preparation_input_v2;
+mod retaining;
+pub use child_programme_v2::run_inherited_network_prepare_worker_entry_v2;
+
+pub(crate) use child_intake_v2::{NetworkPreparationIntakeOriginalV2, PreparationIntakeClosedV2};
+pub(crate) use preparation_input_v2::PreparationInputDataV2;
+
+pub(crate) use retaining::{
+    NetworkParentMutationInputV2, NetworkParentMutationOriginalV2,
+    NetworkParentTransportOriginalV2, WorkerQuiescenceOriginalV4,
+};
+
+pub(crate) use executor_opening::CompletedObservationOpeningV4;
+pub(crate) use executor_opening::prepare_observation_local;
+pub use executor_opening::{
+    NetworkObservationExecutorOpeningOriginalV4, NetworkPrepareExecutorOpeningOriginalV4,
+    NetworkPrepareExecutorOpeningRefusalV4,
+};
+
 use std::fs::File;
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
@@ -38,7 +60,6 @@ use crate::worker_process::{
     NetworkWorkerProcessError, NetworkWorkerReadyV1, NetworkWorkerResultV1, acknowledgement,
     decode_acknowledgement, validate_broker_peer, validate_broker_request, validate_broker_subject,
     validate_exact_worker_subject, validate_same_worker_execution, validate_systemd_manager_peer,
-    validate_worker_ready,
 };
 use crate::worker_protocol::{
     MAXIMUM_NETWORK_WORKER_REQUEST_BYTES, NetworkPrepareWorkerDispatchV1,
@@ -52,8 +73,8 @@ use crate::{
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const SYSTEMD_MANAGER_CGROUP: &str = "init.scope";
 const CONTROL_SLICE_CGROUP: &str = "aos.slice/aos-control.slice";
-const FRAME_MAGIC: &[u8; 8] = b"AOSNFRM1";
-const FRAME_VERSION: u16 = 1;
+const FRAME_MAGIC: &[u8; 8] = b"AOSNFRM2";
+const FRAME_VERSION: u16 = 2;
 const FRAME_FIRST: u16 = 1;
 const FRAME_FINAL: u16 = 2;
 const FRAME_HEADER_BYTES: usize = 56;
@@ -107,25 +128,6 @@ pub enum NetworkWorkerRuntimeError {
     /// Durable namespace-custody correlation could not be committed.
     #[error(transparent)]
     Broker(#[from] crate::NetworkBrokerError),
-}
-
-/// Names the fixed protected state and immutable artifacts of the effect worker.
-#[derive(Clone, Debug)]
-pub struct NetworkWorkerConfiguration {
-    /// Root-owned protected Network authority directory.
-    pub authority_directory: PathBuf,
-    /// Root-owned exactly-once worker replay directory.
-    pub replay_directory: PathBuf,
-    /// Fixed AOS-built `ip` executable.
-    pub ip: PathBuf,
-    /// Fixed AOS-built `nft` executable.
-    pub nft: PathBuf,
-    /// Reviewed executable whose digest is committed by the kernel plan.
-    pub enforcement_artifact: PathBuf,
-    /// Fixed disarmed lease-gate loader executable.
-    pub lease_gate_loader: PathBuf,
-    /// Exact BPF object installed by the lease-gate loader.
-    pub lease_gate_object: PathBuf,
 }
 
 /// Carries a prepared namespace only after the effect worker is wholly quiescent.
@@ -238,6 +240,12 @@ impl<'a> RecoveredNetworkPreparationObservation<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ExecutorOriginV4 {
+    Ordinary,
+    FixedService,
+}
+
 /// Executes authenticated preparation dispatches through systemd one-shot workers.
 pub struct SystemdNetworkPrepareExecutor {
     socket_path: PathBuf,
@@ -245,146 +253,7 @@ pub struct SystemdNetworkPrepareExecutor {
     worker_parent_cgroup: RetainedCgroupAnchor,
     host_namespace: NamespaceFd,
     fail_stopped: bool,
-}
-
-impl SystemdNetworkPrepareExecutor {
-    /// Retains the fixed host namespace and worker-service cgroup roots.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unsafe socket path, substituted host namespace,
-    /// or unavailable systemd-manager or control-slice cgroup.
-    pub fn new(
-        socket_path: PathBuf,
-        cgroup_root: CgroupV2Root,
-        host_namespace: NamespaceFd,
-    ) -> Result<Self, NetworkWorkerRuntimeError> {
-        if !normalized_absolute_path(&socket_path) {
-            return Err(NetworkWorkerRuntimeError::Protocol(
-                "unsafe Network worker socket path",
-            ));
-        }
-        host_namespace.validate_current_network()?;
-        Ok(Self {
-            socket_path,
-            systemd_manager_cgroup: cgroup_root.resolve(Path::new(SYSTEMD_MANAGER_CGROUP))?,
-            worker_parent_cgroup: cgroup_root.resolve(Path::new(CONTROL_SLICE_CGROUP))?,
-            host_namespace,
-            fail_stopped: false,
-        })
-    }
-
-    /// Transfers one already-durable dispatch and proves whole-worker quiescence.
-    ///
-    /// The dispatch is sent at most once. Any failure after its first frame is
-    /// an ambiguous effect outcome and must be resolved only by observation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for activation or peer substitution, malformed frames,
-    /// result mismatch, timeout, worker failure, or unproved whole-cgroup exit.
-    /// Failure to prove cancellation permanently fail-stops this executor.
-    pub fn execute_once(
-        &mut self,
-        dispatch: &NetworkPrepareWorkerDispatchV1,
-        coordinator: &mut NetworkLifecycleAdmissionCoordinator,
-        namespace_store: &SystemdNetworkNamespaceStore,
-    ) -> Result<PreparedNetworkWorkerOutput, NetworkWorkerRuntimeError> {
-        if self.fail_stopped {
-            return Err(NetworkWorkerRuntimeError::Quiescence(
-                "Network worker executor is fail-stopped".to_owned(),
-            ));
-        }
-        self.host_namespace.validate_current_network()?;
-        let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
-        validate_systemd_manager_peer(socket.peer(), &self.systemd_manager_cgroup)?;
-
-        let ready_deadline = deadline_after(TRANSFER_TIMEOUT)?;
-        let ready_record =
-            receive_record_before(&mut socket, MAXIMUM_READY_BYTES, 1, ready_deadline)?;
-        let ready = NetworkWorkerReadyV1::decode(ready_record.payload())?;
-        let (ready_bytes, ready_subject, ready_descriptors) = ready_record.into_parts();
-        drop(ready_bytes);
-        let (worker_cgroup, target_namespace) = validate_worker_ready(
-            &ready,
-            &ready_subject,
-            ready_descriptors,
-            &self.worker_parent_cgroup,
-            &self.host_namespace,
-        )?;
-        let population = match worker_cgroup.population_monitor() {
-            Ok(population) => population,
-            Err(error) => {
-                let _ = worker_cgroup.kill_all();
-                self.fail_stopped = true;
-                return Err(NetworkWorkerRuntimeError::Quiescence(format!(
-                    "worker population monitor could not be retained: {error}"
-                )));
-            }
-        };
-
-        let custody = (|| {
-            let network_handle = *dispatch.kernel_plan().network_handle();
-            let target_identity = target_namespace.identity();
-            let kernel_boot_id = KernelBootId::current()?.into_bytes();
-            coordinator.bind_effect_namespace_custody(
-                dispatch.request_id(),
-                dispatch.effect_digest(),
-                network_handle,
-                kernel_boot_id,
-                target_identity.device,
-                target_identity.inode,
-                dispatch.kernel_plan().digest(),
-            )?;
-            confirm_namespace_custody(namespace_store, network_handle, &target_namespace)
-        })();
-        let exchange = exchange_after_confirmed_custody(custody, || {
-            exchange_after_ready(
-                &mut socket,
-                dispatch,
-                &self.host_namespace,
-                &target_namespace,
-                &ready_subject,
-                &worker_cgroup,
-            )
-        });
-        match exchange {
-            Ok(result) => {
-                let release = release_after_quiescence(
-                    wait_for_quiescence(&ready_subject, &population, NATURAL_EXIT_TIMEOUT),
-                    || output_from_result(target_namespace, result),
-                );
-                match release {
-                    Ok(output) => Ok(output),
-                    Err(natural_error) => {
-                        if let Err(cancellation_error) =
-                            quiesce_worker(&ready_subject, &worker_cgroup, &population)
-                        {
-                            self.fail_stopped = true;
-                            Err(NetworkWorkerRuntimeError::Quiescence(format!(
-                                "successful worker remained live ({natural_error}); cancellation was not proved ({cancellation_error})"
-                            )))
-                        } else {
-                            Err(NetworkWorkerRuntimeError::Quiescence(format!(
-                                "successful worker did not terminate naturally: {natural_error}"
-                            )))
-                        }
-                    }
-                }
-            }
-            Err(error) => {
-                if let Err(cancellation_error) =
-                    quiesce_worker(&ready_subject, &worker_cgroup, &population)
-                {
-                    self.fail_stopped = true;
-                    return Err(NetworkWorkerRuntimeError::Quiescence(format!(
-                        "worker exchange failed ({error}); cancellation was not proved ({cancellation_error})"
-                    )));
-                }
-                Err(error)
-            }
-        }
-    }
+    origin: ExecutorOriginV4,
 }
 
 fn release_after_quiescence<T>(
@@ -403,156 +272,6 @@ fn exchange_after_confirmed_custody<T>(
     exchange()
 }
 
-trait NamespaceCustodyStore {
-    fn store_namespace(
-        &self,
-        name: &NetworkNamespaceStoreName,
-        namespace: &NamespaceFd,
-    ) -> Result<(), NetworkNamespaceStoreError>;
-
-    fn retained_namespace_identity(
-        &self,
-        name: &NetworkNamespaceStoreName,
-    ) -> Result<Option<NamespaceIdentity>, NetworkNamespaceStoreError>;
-}
-
-impl NamespaceCustodyStore for SystemdNetworkNamespaceStore {
-    fn store_namespace(
-        &self,
-        name: &NetworkNamespaceStoreName,
-        namespace: &NamespaceFd,
-    ) -> Result<(), NetworkNamespaceStoreError> {
-        self.store(name, namespace).map(|_| ())
-    }
-
-    fn retained_namespace_identity(
-        &self,
-        name: &NetworkNamespaceStoreName,
-    ) -> Result<Option<NamespaceIdentity>, NetworkNamespaceStoreError> {
-        self.retained_identity(name)
-    }
-}
-
-fn confirm_namespace_custody(
-    store: &impl NamespaceCustodyStore,
-    network_handle: [u8; 32],
-    target_namespace: &NamespaceFd,
-) -> Result<(), NetworkWorkerRuntimeError> {
-    let store_name = NetworkNamespaceStoreName::from_network_handle(network_handle)?;
-    store.store_namespace(&store_name, target_namespace)?;
-    if store.retained_namespace_identity(&store_name)? != Some(target_namespace.identity()) {
-        return Err(NetworkWorkerRuntimeError::Quiescence(
-            "confirmed namespace custody changed before dispatch".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-/// Runs one inherited, root-privileged Network preparation worker.
-///
-/// PID 1 supplies the connected sequenced-packet socket as standard input and
-/// creates the process in a fresh private Network namespace. The function
-/// performs at most one replay-claimed mutation and waits for broker ACK before
-/// returning.
-///
-/// # Errors
-///
-/// Returns an error unless protected configuration, every record subject,
-/// descriptor role, current namespace, replay claim, freshness check, fixed
-/// artifact, mutation step, result transfer, and acknowledgement all validate.
-pub fn run_inherited_network_prepare_worker(
-    configuration: NetworkWorkerConfiguration,
-) -> Result<(), NetworkWorkerRuntimeError> {
-    let worker = SingleThreadedProcess::verify()?;
-    worker.disable_core_dumps()?;
-    let authority =
-        NetworkAuthorityV1::from_protected_directory(&configuration.authority_directory)
-            .map_err(|_| NetworkWorkerRuntimeError::Authority)?;
-    let mut replay = NetworkWorkerReplayLedger::open_root_owned(&configuration.replay_directory)?;
-    let mutator = FixedNetworkKernelMutator::new(
-        configuration.ip,
-        configuration.nft,
-        configuration.enforcement_artifact,
-        configuration.lease_gate_loader,
-        configuration.lease_gate_object,
-    )?;
-    let cgroup_root = open_cgroup_root()?;
-    let control_cgroup = cgroup_root.resolve(Path::new(CONTROL_SLICE_CGROUP))?;
-    let target_namespace = NamespaceFd::current_network()?;
-    let descriptor: OwnedFd = rustix::io::dup(std::io::stdin().as_fd())?;
-    let mut socket = DescriptorSubjectSocket::from_owned(descriptor)?;
-    validate_broker_peer(socket.peer(), &control_cgroup)?;
-
-    let ready = NetworkWorkerReadyV1::new(current_cgroup()?, target_namespace.identity())?;
-    let deadline = deadline_after(TRANSFER_TIMEOUT)?;
-    send_record_with_descriptors_before(
-        &mut socket,
-        &ready.encode()?,
-        &[target_namespace.as_fd()],
-        deadline,
-    )?;
-    let (dispatch_bytes, host_namespace) = receive_request_before(
-        &mut socket,
-        &control_cgroup,
-        &target_namespace,
-        deadline_after(TRANSFER_TIMEOUT)?,
-    )?;
-    let dispatch = NetworkPrepareWorkerDispatchV1::decode(&dispatch_bytes)?;
-    let authenticated = dispatch.authenticate(&authority)?;
-    let authorization =
-        authenticated.authorize_mutation(&authority, &mut replay, &mut protected_clock)?;
-    let prepared = mutator.install_default_drop(&authorization, &target_namespace)?;
-    let activation = authorization.authorize_activation(&authority, &mut protected_clock)?;
-    mutator.realize_prepared(
-        prepared,
-        &activation,
-        &target_namespace,
-        &host_namespace,
-        &worker,
-    )?;
-    mutator.publish_prepared_namespace(&authorization, &target_namespace)?;
-
-    let result = NetworkWorkerResultV1::new(
-        authorization.request_id(),
-        authorization.effect_digest(),
-        authorization.kernel_plan().digest(),
-        KernelBootId::current()?.into_bytes(),
-        target_namespace.identity(),
-    )?;
-    let response_deadline = deadline_after(TRANSFER_TIMEOUT)?;
-    send_record_before(&mut socket, &result.encode(), response_deadline)?;
-    let acknowledgement = receive_record_before(&mut socket, ACK_BYTES, 0, response_deadline)?;
-    validate_broker_subject(socket.peer(), acknowledgement.subject(), &control_cgroup)?;
-    decode_acknowledgement(acknowledgement.payload()).map_err(NetworkWorkerRuntimeError::from)
-}
-
-fn exchange_after_ready(
-    socket: &mut DescriptorSubjectSocket,
-    dispatch: &NetworkPrepareWorkerDispatchV1,
-    host_namespace: &NamespaceFd,
-    target_namespace: &NamespaceFd,
-    ready_subject: &KernelAuthorizedRecordSubject,
-    worker_cgroup: &RetainedCgroupAnchor,
-) -> Result<NetworkWorkerResultV1, NetworkWorkerRuntimeError> {
-    let bytes = dispatch.encode()?;
-    let deadline = deadline_after(TRANSFER_TIMEOUT)?;
-    send_request_before(socket, &bytes, host_namespace.as_fd(), deadline)?;
-    let response = receive_record_before(socket, RESULT_BYTES, 0, deadline)?;
-    validate_same_worker_execution(ready_subject, response.subject())?;
-    validate_exact_worker_subject(response.subject(), worker_cgroup)?;
-    let result = NetworkWorkerResultV1::decode(response.payload())?;
-    if result.request_id() != dispatch.request_id()
-        || result.effect_digest() != dispatch.effect_digest()
-        || result.kernel_plan_digest() != dispatch.kernel_plan().digest()
-        || result.kernel_boot_id() != KernelBootId::current()?.into_bytes()
-        || result.namespace() != target_namespace.identity()
-    {
-        return Err(NetworkWorkerRuntimeError::Authority);
-    }
-    send_record_before(socket, &acknowledgement(), deadline)?;
-    Ok(result)
-}
-
 fn output_from_result(
     namespace: NamespaceFd,
     result: NetworkWorkerResultV1,
@@ -564,83 +283,6 @@ fn output_from_result(
         kernel_plan_digest: result.kernel_plan_digest(),
         kernel_boot_id: result.kernel_boot_id(),
     }
-}
-
-fn send_request_before(
-    socket: &mut DescriptorSubjectSocket,
-    request: &[u8],
-    host_namespace: BorrowedFd<'_>,
-    deadline: u64,
-) -> Result<(), NetworkWorkerRuntimeError> {
-    if request.is_empty() || request.len() > MAXIMUM_NETWORK_WORKER_REQUEST_BYTES {
-        return Err(NetworkWorkerRuntimeError::Protocol(
-            "Network worker request length is invalid",
-        ));
-    }
-    let digest: [u8; 32] = Sha256::digest(request).into();
-    let mut offset = 0;
-    while offset < request.len() {
-        let end = request
-            .len()
-            .min(offset.saturating_add(MAXIMUM_FRAME_PAYLOAD_BYTES));
-        let frame = encode_frame(request, digest, offset, end)?;
-        if offset == 0 {
-            send_record_with_descriptors_before(socket, &frame, &[host_namespace], deadline)?;
-        } else {
-            send_record_before(socket, &frame, deadline)?;
-        }
-        offset = end;
-    }
-    ensure_before_deadline(deadline)
-}
-
-fn receive_request_before(
-    socket: &mut DescriptorSubjectSocket,
-    control_cgroup: &RetainedCgroupAnchor,
-    target_namespace: &NamespaceFd,
-    deadline: u64,
-) -> Result<(Vec<u8>, NamespaceFd), NetworkWorkerRuntimeError> {
-    let first = receive_record_before(socket, MAXIMUM_FRAME_BYTES, 1, deadline)?;
-    let (first_bytes, first_subject, descriptors) = first.into_parts();
-    let first_frame = decode_frame(&first_bytes)?;
-    if first_frame.offset != 0 || first_frame.flags & FRAME_FIRST == 0 {
-        return Err(NetworkWorkerRuntimeError::Protocol(
-            "first Network worker frame is invalid",
-        ));
-    }
-    let host_namespace = validate_broker_request(
-        socket.peer(),
-        &first_subject,
-        descriptors,
-        control_cgroup,
-        target_namespace,
-    )?;
-    let mut request = Vec::with_capacity(first_frame.total);
-    request.extend_from_slice(first_frame.payload);
-    let expected_digest = first_frame.digest;
-
-    while request.len() < first_frame.total {
-        let record = receive_record_before(socket, MAXIMUM_FRAME_BYTES, 0, deadline)?;
-        validate_broker_subject(socket.peer(), record.subject(), control_cgroup)?;
-        let frame = decode_frame(record.payload())?;
-        if frame.flags & FRAME_FIRST != 0
-            || frame.total != first_frame.total
-            || frame.offset != request.len()
-            || frame.digest != expected_digest
-        {
-            return Err(NetworkWorkerRuntimeError::Protocol(
-                "continuation Network worker frame is inconsistent",
-            ));
-        }
-        request.extend_from_slice(frame.payload);
-    }
-    if Sha256::digest(&request).as_slice() != expected_digest {
-        return Err(NetworkWorkerRuntimeError::Protocol(
-            "Network worker frame digest mismatched",
-        ));
-    }
-    ensure_before_deadline(deadline)?;
-    Ok((request, host_namespace))
 }
 
 struct DecodedFrame<'a> {
@@ -795,16 +437,12 @@ pub(crate) fn quiesce_worker(
     cgroup: &RetainedCgroupAnchor,
     population: &CgroupPopulationMonitor,
 ) -> Result<(), NetworkWorkerRuntimeError> {
-    if !subject.pidfd().is_alive()? && cgroup_is_quiescent(population)? {
-        return Ok(());
-    }
-    if let Err(error) = cgroup.kill_all() {
-        if !subject.pidfd().is_alive()? && cgroup_is_quiescent(population)? {
-            return Ok(());
-        }
-        return Err(error.into());
-    }
-    wait_for_quiescence(subject, population, QUIESCENCE_TIMEOUT)
+    retaining::quiesce_engine_v4(
+        subject,
+        cgroup,
+        population,
+        &mut retaining::LocalQuiescenceV4,
+    )
 }
 
 pub(crate) fn wait_for_quiescence(
@@ -812,19 +450,12 @@ pub(crate) fn wait_for_quiescence(
     population: &CgroupPopulationMonitor,
     timeout: Duration,
 ) -> Result<(), NetworkWorkerRuntimeError> {
-    let deadline = deadline_after(timeout)?;
-    loop {
-        if !subject.pidfd().is_alive()? && cgroup_is_quiescent(population)? {
-            return Ok(());
-        }
-        let remaining = deadline
-            .checked_sub(boottime_now_nanoseconds()?)
-            .filter(|remaining| *remaining != 0)
-            .ok_or(NetworkWorkerRuntimeError::Quiescence(
-                "Network worker quiescence deadline elapsed".to_owned(),
-            ))?;
-        std::thread::sleep(Duration::from_nanos(remaining).min(QUIESCENCE_POLL_INTERVAL));
-    }
+    retaining::wait_engine_v4(
+        subject,
+        population,
+        timeout,
+        &mut retaining::LocalQuiescenceV4,
+    )
 }
 
 fn cgroup_is_quiescent(
@@ -924,15 +555,21 @@ pub(crate) fn current_cgroup() -> Result<String, NetworkWorkerRuntimeError> {
 }
 
 pub(crate) fn open_cgroup_root() -> Result<CgroupV2Root, NetworkWorkerRuntimeError> {
-    let descriptor = rustix::fs::open(
+    let descriptor = open_cgroup_root_candidate_retaining_v4()?;
+    CgroupV2Root::from_owned(descriptor).map_err(Into::into)
+}
+
+/// Returns the existing raw root-open result to the genuine startup owner.
+/// The caller parks it before the same retained CgroupV2Root admission.
+pub(crate) fn open_cgroup_root_candidate_retaining_v4() -> Result<OwnedFd, rustix::io::Errno> {
+    rustix::fs::open(
         CGROUP_ROOT,
         rustix::fs::OFlags::PATH
             | rustix::fs::OFlags::DIRECTORY
             | rustix::fs::OFlags::NOFOLLOW
             | rustix::fs::OFlags::CLOEXEC,
         rustix::fs::Mode::empty(),
-    )?;
-    CgroupV2Root::from_owned(descriptor).map_err(Into::into)
+    )
 }
 
 pub(crate) fn normalized_absolute_path(path: &Path) -> bool {
@@ -954,6 +591,17 @@ pub(crate) fn normalized_absolute_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+
+    #[test]
+    fn version_one_network_frame_is_refused() {
+        let request = b"canonical request framing data";
+        let digest = Sha256::digest(request).into();
+        let mut bytes = encode_frame(request, digest, 0, request.len()).unwrap();
+        bytes[..8].copy_from_slice(b"AOSNFRM1");
+        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+
+        assert!(decode_frame(&bytes).is_err());
+    }
 
     use std::cell::Cell;
 
@@ -1051,79 +699,18 @@ mod tests {
     }
 
     #[test]
-    fn namespace_store_failure_or_readback_mismatch_sends_no_effect_frame() {
-        enum StoreMode {
-            StoreFailure,
-            Missing,
-            Wrong,
-            Matching,
-        }
-
-        struct FakeStore {
-            mode: StoreMode,
-        }
-
-        impl NamespaceCustodyStore for FakeStore {
-            fn store_namespace(
-                &self,
-                _name: &NetworkNamespaceStoreName,
-                _namespace: &NamespaceFd,
-            ) -> Result<(), NetworkNamespaceStoreError> {
-                match self.mode {
-                    StoreMode::StoreFailure => Err(NetworkNamespaceStoreError::Rejected),
-                    StoreMode::Missing | StoreMode::Wrong | StoreMode::Matching => Ok(()),
-                }
-            }
-
-            fn retained_namespace_identity(
-                &self,
-                _name: &NetworkNamespaceStoreName,
-            ) -> Result<Option<NamespaceIdentity>, NetworkNamespaceStoreError> {
-                match self.mode {
-                    StoreMode::StoreFailure => unreachable!("store failure stops before readback"),
-                    StoreMode::Missing => Ok(None),
-                    StoreMode::Wrong => Ok(Some(NamespaceIdentity {
-                        device: u64::MAX,
-                        inode: u64::MAX,
-                    })),
-                    StoreMode::Matching => NamespaceFd::current_network()
-                        .map(|namespace| Some(namespace.identity()))
-                        .map_err(|error| NetworkNamespaceStoreError::Systemd(error.to_string())),
-                }
-            }
-        }
-
-        let target = NamespaceFd::current_network().unwrap();
-        for mode in [
-            StoreMode::StoreFailure,
-            StoreMode::Missing,
-            StoreMode::Wrong,
-        ] {
-            let effect_sent = Cell::new(false);
-            let custody = confirm_namespace_custody(&FakeStore { mode }, [7; 32], &target);
-            let result: Result<(), _> = exchange_after_confirmed_custody(custody, || {
-                effect_sent.set(true);
+    fn custody_refusal_prevents_the_shared_effect_exchange() {
+        let effects = Cell::new(0);
+        let result = exchange_after_confirmed_custody(
+            Err(NetworkWorkerRuntimeError::Authority),
+            || {
+                effects.set(effects.get() + 1);
                 Ok(())
-            });
-
-            assert!(result.is_err());
-            assert!(!effect_sent.get());
-        }
-
-        let effect_count = Cell::new(0);
-        let custody = confirm_namespace_custody(
-            &FakeStore {
-                mode: StoreMode::Matching,
             },
-            [7; 32],
-            &target,
         );
-        exchange_after_confirmed_custody(custody, || {
-            effect_count.set(effect_count.get() + 1);
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(effect_count.get(), 1);
+
+        assert!(matches!(result, Err(NetworkWorkerRuntimeError::Authority)));
+        assert_eq!(effects.get(), 0);
     }
 
     #[test]
@@ -1141,5 +728,13 @@ mod tests {
 
         release_after_quiescence(Ok(()), || released.set(released.get() + 1)).unwrap();
         assert_eq!(released.get(), 1);
+    }
+}
+
+impl SystemdNetworkPrepareExecutor {
+    // Synchronous calls retain all live worker custody until completion. This
+    // local check is only a conjunct of the independent whole-native census.
+    pub(crate) fn inventory_local_custody_clear_v2(&self) -> bool {
+        !self.fail_stopped && matches!(self.origin, ExecutorOriginV4::FixedService)
     }
 }

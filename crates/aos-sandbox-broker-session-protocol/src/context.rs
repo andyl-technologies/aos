@@ -28,6 +28,10 @@ use crate::model::{
     BrokerSessionValidationError, audience_code, audience_from_code, require_nonzero,
 };
 
+mod checkpoint_capture;
+#[doc(hidden)]
+pub use checkpoint_capture::BrokerSessionContextCheckpointDecodeCaptureV1;
+
 const PROTECTED_CONTEXT_DOMAIN: &[u8] = b"aos-sandbox-broker-session-protected-context-v1\0";
 const CHECKPOINT_MAGIC: &[u8; 8] = b"AOSBSC01";
 const CHECKPOINT_BYTES: usize = 8 + 2 + 222 + 4 * 178;
@@ -206,79 +210,29 @@ impl ProtectedBrokerSessionVerificationContextV1 {
     ///
     /// Returns an error for malformed, noncanonical, or shape-invalid bytes.
     pub fn from_checkpoint_bytes(bytes: &[u8]) -> Result<Self, BrokerSessionValidationError> {
-        if bytes.len() != CHECKPOINT_BYTES {
-            return Err(BrokerSessionValidationError::InvalidEncoding);
-        }
-        let mut input = bytes;
-        if checkpoint_field::<8>(&mut input)? != *CHECKPOINT_MAGIC
-            || checkpoint_field::<2>(&mut input)? != 1_u16.to_be_bytes()
-        {
-            return Err(BrokerSessionValidationError::InvalidEncoding);
-        }
-        let domain_id = checkpoint_field(&mut input)?;
-        let route_id = checkpoint_field(&mut input)?;
-        let route_generation = u64::from_be_bytes(checkpoint_field(&mut input)?);
-        let route_digest = checkpoint_field(&mut input)?;
-        let trust_generation = u64::from_be_bytes(checkpoint_field(&mut input)?);
-        let trust_digest = checkpoint_field(&mut input)?;
-        let revocation_generation = u64::from_be_bytes(checkpoint_field(&mut input)?);
-        let revocation_digest = checkpoint_field(&mut input)?;
-        let node_id = checkpoint_field(&mut input)?;
-        let boot_id = checkpoint_field(&mut input)?;
-        let protocol = BrokerSessionProtocolV1::from_code(checkpoint_field::<1>(&mut input)?[0])?;
-        let major = u16::from_be_bytes(checkpoint_field(&mut input)?);
-        let minor = u16::from_be_bytes(checkpoint_field(&mut input)?);
-        let audience = audience_from_code(checkpoint_field::<1>(&mut input)?[0])?;
-        let client_process = checkpoint_field(&mut input)?;
-        let broker_process = checkpoint_field(&mut input)?;
-        let mut keys = Vec::with_capacity(4);
-        for _ in 0..4 {
-            let signer =
-                BrokerSessionSignerReferenceV1::decode(checkpoint_slice(&mut input, 120)?)?;
-            let public_key = checkpoint_field(&mut input)?;
-            let minimum_authority_generation = u64::from_be_bytes(checkpoint_field(&mut input)?);
-            let minimum_key_generation = u64::from_be_bytes(checkpoint_field(&mut input)?);
-            let revoked = checkpoint_field::<1>(&mut input)?[0];
-            let superseded = checkpoint_field::<1>(&mut input)?[0];
-            let generation = u64::from_be_bytes(checkpoint_field(&mut input)?);
-            if revoked > 1 || superseded > 1 || (superseded == 0 && generation != 0) {
-                return Err(BrokerSessionValidationError::InvalidEncoding);
-            }
-            keys.push(ProtectedBrokerSessionKeyV1::new(
-                signer,
-                public_key,
-                minimum_authority_generation,
-                minimum_key_generation,
-                revoked == 1,
-                (superseded == 1).then_some(generation),
-            )?);
-        }
-        let keys = keys
-            .try_into()
-            .map_err(|_| BrokerSessionValidationError::InvalidEncoding)?;
-        let context = Self::new(
-            domain_id,
-            route_id,
-            route_generation,
-            route_digest,
-            trust_generation,
-            trust_digest,
-            revocation_generation,
-            revocation_digest,
-            node_id,
-            boot_id,
-            protocol,
-            major,
-            minor,
-            audience,
-            client_process,
-            broker_process,
-            keys,
-        )?;
-        if !input.is_empty() || context.checkpoint_bytes() != bytes {
-            return Err(BrokerSessionValidationError::InvalidEncoding);
-        }
-        Ok(context)
+        let mut captured = BrokerSessionContextCheckpointDecodeCaptureV1::new();
+        let _classification = captured.capture_once(bytes, checkpoint_capture::Disposition::Ordinary);
+        captured.into_ordinary_result()
+    }
+
+    /// Captures reached historical context parsing without granting provenance.
+    ///
+    /// # Errors
+    /// Retains partial fixed keys, canonical bytes and the original decode
+    /// cause on malformed input; refuses a repeated destination.
+    #[doc(hidden)]
+    pub fn from_checkpoint_bytes_retaining_v1(
+        bytes: &[u8],
+        captured: &mut BrokerSessionContextCheckpointDecodeCaptureV1,
+    ) -> Result<(), BrokerSessionValidationError> {
+        captured.capture_once(bytes, checkpoint_capture::Disposition::Retained)
+    }
+
+    /// Reports the fixed canonical context width as nonauthorizing layout DATA.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn checkpoint_encoded_bytes_v1() -> usize {
+        CHECKPOINT_BYTES
     }
 
     /// Constructs one complete shape-only verification context.

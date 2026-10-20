@@ -32,8 +32,8 @@ use crate::public_mutation_compiler::{
     AuthorizedPublicMutationRequestV1, PublicMutationAuthorizationErrorV1,
     ResolvedPublicMutationRequestV1,
 };
-use crate::publisher_authority::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
-use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
+use crate::publisher_admin::capabilities::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
+use crate::publisher_admin::policy::{PublisherPolicyLimits, PublisherPolicyStore};
 use crate::{
     ActivatedOperationCompiler, IdempotencyOutcome, Journal, OperationCompilationError,
     OperationPlan, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
@@ -72,10 +72,7 @@ pub(crate) use operator_recovery::{
 };
 
 pub use execution_control::{PublicExecutionControlDispatchV1, lower_public_execution_control_v1};
-pub use public_mutation::{
-    RecheckedCacheAcquisitionFenceV1, RecheckedCacheConsumerV1, RecheckedCacheRuntimeFenceV1,
-    recheck_cache_consumer_projection_v1,
-};
+pub use public_mutation::recheck_cache_consumer_projection_v1;
 
 const CAPABILITY_RESOURCE_VERSION_DOMAIN: &[u8] =
     b"aos.sandbox.public-capability-resource-version.v1\0";
@@ -838,7 +835,7 @@ fn replay_capability_renewal(
         .map_err(|_| OperationCompilationError::Rejected)?;
     if !matches!(
         registry.resolve_current(predecessor_id),
-        Err(crate::publisher_authority::PublisherAuthorityError::Revoked)
+        Err(crate::publisher_admin::capabilities::PublisherAuthorityError::Revoked)
     ) {
         return Err(OperationCompilationError::Rejected);
     }
@@ -931,6 +928,8 @@ fn attach_public_operation(
     .map_err(|_| OperationCompilationError::Rejected)?;
 
     plan.with_public_operation(public)
+        .map_err(|_| OperationCompilationError::Rejected)?
+        .with_accepted_start_origin_v1(authorized.accepted_start_origin_v1())
         .map_err(|_| OperationCompilationError::Rejected)
 }
 
@@ -1156,7 +1155,7 @@ mod renewal_replay_tests {
         let directory = TestDirectory::new();
         let mut reconciler = Reconciler::new(directory.open(), NoEffects);
         let predecessor_id = CapabilityId::from_bytes([41; 16]);
-        let predecessor = crate::publisher_authority::tests::capability(predecessor_id, 200);
+        let predecessor = crate::publisher_admin::capabilities::tests::capability(predecessor_id, 200);
         let holder = predecessor.claims().holder;
         let binding = predecessor.claims().channel_binding;
         let project = predecessor.claims().project;
@@ -1413,4 +1412,87 @@ mod renewal_replay_tests {
             .is_err()
         );
     }
+}
+
+impl ProductionOperationCompilerV1 {
+    pub(crate) fn authorize_original_start_v1(&self, journal:&mut Journal,
+        peer:&crate::public_api_session::PublicApiPeer, capability:CapabilityId,
+        encoded:&[u8], native:&mut crate::public_mutation_compiler::PublicMutationAuthorizationNativeV1,
+    )->Result<AuthorizedPublicMutationRequestV1,PublicMutationAuthorizationErrorV1> {
+        AuthorizedPublicMutationRequestV1::authorize_start_retaining_v1(journal,peer,capability,
+            encoded,native,self.nix_start.as_deref())
+    }
+
+    pub(crate) fn compile_original_start_v1(&mut self,journal:&mut Journal,
+        authorized:&AuthorizedPublicMutationRequestV1,encoded:&[u8],digest:[u8;32],
+    )->Result<OperationPlan,OperationCompilationError> {
+        if !matches!(authorized.request().request(),
+            aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Start(_)) {
+            return Err(OperationCompilationError::Rejected);
+        }
+        public_mutation::compile_public_mutation(journal,authorized,encoded,digest,self.nix_start.as_deref())
+    }
+}
+
+pub(crate) use operator_recovery::require_create_recovery_target_v1;
+#[cfg(target_os = "linux")]
+pub(crate) use operator_recovery::{StopRecoveryTargetDataV1, ExecutionNoApplyRecoveryTargetDataV1,
+    require_execution_no_apply_recovery_target_v1, require_stop_recovery_target_v1};
+
+impl ProductionOperationCompilerV1 {
+    pub(crate) fn authorize_original_execution_v2(
+        &self,
+        journal: &mut Journal,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability: CapabilityId,
+        encoded: &[u8],
+        native: &mut crate::public_mutation_compiler::PublicMutationAuthorizationNativeV1,
+    ) -> Result<AuthorizedPublicMutationRequestV1, PublicMutationAuthorizationErrorV1> {
+        AuthorizedPublicMutationRequestV1::authorize_execution_retaining_v2(
+            journal, peer, capability, encoded, native,
+        )
+    }
+
+    pub(crate) fn compile_original_execution_v2(
+        &mut self,
+        journal: &mut Journal,
+        authorized: &AuthorizedPublicMutationRequestV1,
+        encoded: &[u8],
+        digest: [u8; 32],
+    ) -> Result<OperationPlan, OperationCompilationError> {
+        journal.require_execution_admission_current_v2()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        if !matches!(authorized.request().request(),
+            aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Exec(_))
+        {
+            return Err(OperationCompilationError::Rejected);
+        }
+        public_mutation::compile_public_mutation(journal, authorized, encoded, digest,
+            #[cfg(target_os = "linux")]
+            self.nix_start.as_deref(),
+        )
+    }
+}
+
+// The same public compiler owns these concrete model layouts and clone peaks.
+// This is receiving DATA; it cannot select a C purpose or authorize a request.
+pub(crate) fn public_execution_compiler_receiving_bytes_v2(
+    encoded: usize,
+    body: usize,
+) -> Option<usize> {
+    use std::mem::size_of;
+    use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, PublicMutationEffectHistoryV1};
+    use aos_sandbox_protocol::public_api::projection::PublicProjectionRecordV1;
+
+    let request = aos_sandbox_protocol::public_api::mutation::
+        create_execution_model_receiving_bytes_v2(body)?;
+    let fixed = size_of::<AuthorizedPublicMutationRequestV1>()
+        .checked_add(size_of::<OperationPlan>())?
+        .checked_add(size_of::<EffectPlan>())?
+        .checked_add(size_of::<PublicMutationEffectHistoryV1>())?
+        .checked_add(size_of::<PublicProjectionRecordV1>())?
+        .checked_mul(4)?;
+    // The request, capability/audit JSON envelopes, canonical effect and
+    // prospective public projection coexist with their validation clones.
+    request.checked_add(encoded.checked_mul(32)?)?.checked_add(fixed)
 }

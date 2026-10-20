@@ -88,7 +88,7 @@ pub(crate) struct PaidNixStartOriginalsV1 {
 #[must_use]
 pub struct NixOriginalStartIntakeAttemptV1 {
     bank: Arc<Mutex<ControllerResourceBankOpeningV1>>,
-    original: Option<Result<bootstrap::OriginalEnrollment, ResourceReservationErrorV1>>,
+    original: Option<Result<aos_sandbox_broker::receiving::OriginalEnrollment, ResourceReservationErrorV1>>,
     containment: Option<Result<(), ResourceReservationErrorV1>>,
     receiver: Option<Result<OriginalReceiver, ResourceReservationErrorV1>>,
     initial_clock: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>,
@@ -103,6 +103,10 @@ pub struct NixOriginalStartIntakeAttemptV1 {
     final_clock: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>,
     final_clock_check: Option<Result<(), SourceGenesisErrorV1>>,
     lifetime: Option<ObserverLifetime>,
+    observer_origin: Option<Result<
+        aos_sandbox_broker::controller_receiving::bank_launch::ControllerReservedObserverOriginalV1,
+        ResourceReservationErrorV1,
+    >>,
     authorization: [RetainedAuthorizationTimeFloorV1; 6],
     authorization_count: usize,
     attempted: bool,
@@ -158,6 +162,7 @@ impl NixOriginalStartIntakeAttemptV1 {
             final_clock: None,
             final_clock_check: None,
             lifetime: None,
+            observer_origin: None,
             authorization: std::array::from_fn(|_| Default::default()),
             authorization_count: 0,
             attempted: false,
@@ -309,10 +314,7 @@ impl NixOriginalStartIntakeAttemptV1 {
         if !matches!(self.cpu_capture, Some(Ok(()))) {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        let (quota, period) = self.cpu.quota_and_period().ok_or(ResourceReservationErrorV1::Conflict)?;
-        if period != 100_000 || quota > provision.get(D::CpuMicrosPerPeriod) {
-            return Err(ResourceReservationErrorV1::Conflict);
-        }
+        super::service_interval::require_original_controller_cpu(&self.cpu, original)?;
         let controller_shape = controller.first_global_allocation_shape_v1()?;
         let source_shape = source.journal().first_global_allocation_shape_v1()?;
         let fixed = fixed_demand(&controller_shape, &source_shape, provision)?;
@@ -322,12 +324,30 @@ impl NixOriginalStartIntakeAttemptV1 {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         provision.checked_sub(fixed.checked_add(multiply(per_observer, capacity)?)?)?;
-        self.lifetime = Some(ObserverLifetime::begin());
+        self.observer_origin = Some(
+            self.bank.lock()
+                .map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)
+                .and_then(|bank| bank.begin_nix_observers_v1(controller, profile, fixed)),
+        );
+        let observer_origin = self.observer_origin.as_ref()
+            .and_then(|returned| returned.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        if observer_origin.capacity_data_v1() != capacity {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        self.lifetime = Some(observer_origin.lifetime_v1());
         let admission = ObserverAdmission::for_nix_intake(
             profile, original, capacity,
             self.lifetime.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?,
         );
-        profile.attach_nix_intake_observers(&admission)?;
+        let origin = match self.observer_origin.take() {
+            Some(Ok(origin)) => origin,
+            retained => {
+                self.observer_origin = retained;
+                return Err(ResourceReservationErrorV1::Conflict);
+            }
+        };
+        profile.attach_nix_intake_observers(&admission, origin)?;
         profile.require_resource_producer()?;
         if self.bank.lock().map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?
             .first_global_original(controller)? != *original
@@ -472,7 +492,9 @@ impl NixOriginalStartIntakeAttemptV1 {
             FailureSite::Cpu => self.cpu.failure().map(|error| error as _),
             FailureSite::CpuCapture => self.cpu_capture.as_ref()?.as_ref().err().map(|error| error as _),
             FailureSite::Append => self.append.failure(),
-            FailureSite::Preparation => self.preparation.as_ref()?.as_ref().err().map(|error| error as _),
+            FailureSite::Preparation => self.observer_origin.as_ref()
+                .and_then(|returned| returned.as_ref().err()).map(|cause| cause as _)
+                .or_else(|| self.preparation.as_ref()?.as_ref().err().map(|error| error as _)),
             FailureSite::ControllerPost => self.controller_post.as_ref()?.as_ref().err().map(|error| error as _),
             FailureSite::SourcePost => self.source_post.as_ref()?.as_ref().err().map(|error| error as _),
             FailureSite::ProfilePost => self.profile_post.as_ref()?.as_ref().err().map(|error| error as _),
@@ -597,7 +619,10 @@ fn fixed_demand(
         .with(D::Pids, 0)
         .with(D::OpenFiles, 0)
         .with(D::ConcurrentOperations, 0);
-    Ok(whole.checked_add(input)?.checked_add(retained_prefix)?)
+    let observer_controls = super::service_interval::original_observer_control_bytes()
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    Ok(whole.checked_add(input)?.checked_add(retained_prefix)?
+        .checked_add(ResourceVector::ZERO.with(D::MemoryBytes, observer_controls))?)
 }
 
 pub(super) fn minimum_failure_demand() -> Result<ResourceVector, ResourceReservationErrorV1> {

@@ -397,6 +397,36 @@ pub(crate) fn commit(
     ))
 }
 
+// Prices the same complete History::load and its selected record clones.
+// No decoder, native check or authority construction runs in this supplier.
+pub(crate) fn execution_source_receiving_bytes_v1(journal: &Journal) -> Option<u64> {
+    use std::mem::size_of;
+    use aos_sandbox_core::model::{Limit, NetworkProfile, ResourceProfile};
+    use aos_sandbox_core::FeatureRef;
+    let mut rows = 0usize;
+    let mut bytes = 0usize;
+    for (key, value) in journal.records(RecordNamespace::SandboxSpec) {
+        rows = rows.checked_add(1)?;
+        bytes = bytes.checked_add(key.len())?.checked_add(value.len())?;
+    }
+    let cells = [size_of::<FeatureRef>(), size_of::<Limit>(), size_of::<AttachmentSlotId>(),
+        size_of::<aos_sandbox_core::NetworkEndpointId>(), size_of::<ObjectDescriptor>(),
+        size_of::<u32>()].into_iter().max()?;
+    // Successful elements consume distinct encoded heads. A single malformed
+    // current collection can reserve its whole default capacity first; prior
+    // successful cells and all clones are already bounded by the held bytes.
+    let announced = DecodeLimits::default().maximum_collection_items.checked_mul(cells)?;
+    let model = bytes.checked_mul(cells.checked_add(2)?)?
+        .checked_mul(2)?
+        .checked_add(rows.checked_mul(size_of::<Record>()
+            .checked_add(size_of::<NetworkProfile>())?.checked_add(size_of::<ResourceProfile>())?)?)?;
+    let maps = aos_sandbox_journal::geometry::conservative_btree_node_bytes_v1::<([u8;32],u64),Record>(rows)?
+        .checked_add(aos_sandbox_journal::geometry::conservative_btree_node_bytes_v1::<OperationId,([u8;32],u64)>(rows)?)?;
+    // Complete scan plus selected Record, durable Parent and preview's retained
+    // specification can coexist; canonical encoding has its own byte plane.
+    u64::try_from(model.checked_add(maps)?.checked_mul(4)?.checked_add(announced)?).ok()
+}
+
 pub(crate) fn get(
     journal: &Journal,
     descriptor: &ObjectDescriptor,

@@ -6,6 +6,8 @@
 //! residency and pin obligations, and evicts only zero-pin LRU entries. It is
 //! not opened by any service or installed profile.
 
+pub(in crate::cache_residency) mod delete_metadata;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::File;
@@ -27,9 +29,14 @@ use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags, RenameFlags};
 use sha2::{Digest as _, Sha256};
 
 use super::owner_readback::{
+    CacheOwnerReadbackErrorV1,
+    cache_owner_limits_digest_v1,
+};
+use aos_sandbox_protocol::cache_owner_readback::{
     CLOSED_CACHE_OWNER_READBACK_BYTES_V2,
-    CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1,
-    CacheOwnerReadbackFieldsV1, VerifiedClosedCacheOwnerReadbackV2, cache_owner_limits_digest_v1,
+    CacheOwnerReadbackChallengeV1,
+    CacheOwnerReadbackFieldsDataV1,
+    VerifiedClosedCacheOwnerReadbackV2,
 };
 use super::{
     AuthorizedLookupKey, CacheAuthorityOwner, CachePinId, CurrentReadAuthorityV1,
@@ -42,13 +49,20 @@ use aos_sandbox_protocol::cache_state::{
 pub(crate) const FIXED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency-objects";
 const LEGACY_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency";
 const MANIFEST_NAME: &str = "owner-state";
-const MANIFEST_MAGIC: &[u8; 8] = b"AOSCOO01";
-const MANIFEST_VERSION: u32 = 3;
-const MAXIMUM_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
+use aos_sandbox_protocol::cache_state::physical_manifest::{
+    CACHE_PHYSICAL_MANIFEST_MAGIC_V1 as MANIFEST_MAGIC,
+    CACHE_PHYSICAL_MANIFEST_VERSION_V1 as MANIFEST_VERSION,
+    CACHE_PHYSICAL_MANIFEST_MAXIMUM_BYTES_V1 as MAXIMUM_MANIFEST_BYTES,
+};
+
+mod manifest_read;
+use manifest_read::PhysicalManifestReadV1;
 
 #[cfg(test)]
 mod descriptor_tests;
 mod held_manifest;
+mod held_current;
+pub(in crate::cache_residency) use held_current::CachePhysicalReadbackOriginalsV1;
 mod signer_view;
 
 pub(crate) use signer_view::SIGNER_OBJECT_VIEW;
@@ -73,105 +87,12 @@ pub struct CacheOwnerLimitsV1 {
     pub maximum_pinned_bytes: u64,
 }
 
-impl CacheOwnerLimitsV1 {
-    /// Derives one node-global physical owner envelope from protected quotas.
-    ///
-    /// The caller supplies only the separate heap-tier ceiling. Physical bytes,
-    /// resident entries, and pin obligations come from the complete protected
-    /// partition set. The negative cache is advisory and shares the resident
-    /// entry ceiling; it cannot expand correctness authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CacheOwnerErrorV1::InvalidLimits`] for absent, duplicate,
-    /// cross-node, invalid, or unrepresentable partition quotas.
-    pub fn from_node_quotas(
-        maximum_memory_bytes: u64,
-        quotas: impl IntoIterator<Item = NodeCacheQuotaV1>,
-    ) -> Result<Self, CacheOwnerErrorV1> {
-        let mut partitions = BTreeSet::new();
-        let mut node = None;
-        let mut maximum_disk_bytes = 0_u64;
-        let mut disk_low_water_bytes = 0_u64;
-        let mut maximum_positive_entries = 0_u64;
-        let mut maximum_pins = 0_u64;
-        let mut maximum_pinned_bytes = 0_u64;
 
-        for quota in quotas {
-            quota
-                .validate()
-                .map_err(|_| CacheOwnerErrorV1::InvalidLimits)?;
-            if !partitions.insert(*quota.partition.digest().as_bytes())
-                || node.is_some_and(|current| current != *quota.partition.node().as_bytes())
-            {
-                return Err(CacheOwnerErrorV1::InvalidLimits);
-            }
-            node = Some(*quota.partition.node().as_bytes());
 
-            let partition_pins = quota
-                .maximum_logical_pins
-                .checked_add(quota.maximum_source_retentions)
-                .and_then(|count| count.checked_add(quota.maximum_kernel_references))
-                .and_then(|count| count.checked_add(quota.maximum_backing_registrations))
-                .ok_or(CacheOwnerErrorV1::InvalidLimits)?;
-            maximum_disk_bytes = maximum_disk_bytes
-                .checked_add(quota.maximum_physical_bytes)
-                .ok_or(CacheOwnerErrorV1::InvalidLimits)?;
-            disk_low_water_bytes = disk_low_water_bytes
-                .checked_add(quota.low_water_bytes)
-                .ok_or(CacheOwnerErrorV1::InvalidLimits)?;
-            maximum_positive_entries = maximum_positive_entries
-                .checked_add(quota.maximum_resident_objects)
-                .ok_or(CacheOwnerErrorV1::InvalidLimits)?;
-            maximum_pins = maximum_pins
-                .checked_add(partition_pins)
-                .ok_or(CacheOwnerErrorV1::InvalidLimits)?;
-            // Each pin charges its object's bytes independently. Saturation
-            // keeps the owner bound representable without rejecting valid
-            // large protected quotas; checked runtime accounting still fails
-            // before u64 overflow.
-            maximum_pinned_bytes = maximum_pinned_bytes
-                .saturating_add(quota.maximum_physical_bytes.saturating_mul(partition_pins));
-        }
-
-        if partitions.is_empty() {
-            return Err(CacheOwnerErrorV1::InvalidLimits);
-        }
-        Self {
-            maximum_memory_bytes,
-            maximum_disk_bytes,
-            disk_low_water_bytes,
-            maximum_positive_entries: usize::try_from(maximum_positive_entries)
-                .map_err(|_| CacheOwnerErrorV1::InvalidLimits)?,
-            maximum_negative_entries: usize::try_from(maximum_positive_entries)
-                .map_err(|_| CacheOwnerErrorV1::InvalidLimits)?,
-            maximum_pins: usize::try_from(maximum_pins)
-                .map_err(|_| CacheOwnerErrorV1::InvalidLimits)?,
-            maximum_pinned_bytes,
-        }
-        .validate()
-    }
-
-    /// Matches the entire physical envelope to protected node quotas.
-    pub(crate) fn matches_node_quotas(self, quotas: &[NodeCacheQuotaV1]) -> bool {
-        Self::from_node_quotas(self.maximum_memory_bytes, quotas.iter().copied())
-            .is_ok_and(|derived| derived == self)
-    }
-
-    fn validate(self) -> Result<Self, CacheOwnerErrorV1> {
-        if self.maximum_memory_bytes == 0
-            || self.maximum_disk_bytes == 0
-            || self.disk_low_water_bytes > self.maximum_disk_bytes
-            || self.maximum_positive_entries == 0
-            || self.maximum_negative_entries == 0
-            || self.maximum_pins == 0
-            || self.maximum_pinned_bytes == 0
-        {
-            return Err(CacheOwnerErrorV1::InvalidLimits);
-        }
-        Ok(self)
-    }
-}
+aos_sandbox_protocol::define_cache_physical_manifest_data_recipe_v1!(
+    CacheOwnerErrorV1, CacheOwnerLimitsV1, ObjectKey, DiskEntry,
+    AuthorizedLookupKey, NegativeEntry, CacheOwnerPinIdV1
+);
 
 /// Identifies one owner-local durable correctness pin.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -204,9 +125,8 @@ impl CacheOwnerPinIdV1 {
     ///
     /// Returns [`CacheOwnerErrorV1::InvalidPin`] for the zero sentinel.
     pub fn from_bytes(bytes: [u8; 16]) -> Result<Self, CacheOwnerErrorV1> {
-        if bytes == [0; 16] {
-            return Err(CacheOwnerErrorV1::InvalidPin);
-        }
+        let bytes = aos_sandbox_protocol::cache_state::physical_manifest::validate_owner_pin_bytes_v1(bytes)
+            .map_err(|_| CacheOwnerErrorV1::InvalidPin)?;
         Ok(Self(bytes))
     }
 
@@ -383,13 +303,90 @@ pub(super) struct ResidentCachePhysicalOpenV1 {
     publication: Option<FsVerityPublicationRoot>,
     mapping: Option<BeneathRoot>,
     manifest: Option<Vec<u8>>,
+    manifest_read: PhysicalManifestReadV1,
     first_failure: Option<CacheOwnerErrorV1>,
     started: bool,
 }
 
 impl ResidentCachePhysicalOpenV1 {
-    pub(super) fn failure(&self) -> Option<&CacheOwnerErrorV1> {
-        self.first_failure.as_ref()
+    // The fixed raw-reader/native/payload peak is funded before any physical
+    // capture. Typed carriers are raised later from the SAME retained bytes,
+    // before decode_manifest; the format ceiling is not every installed model.
+    pub(in crate::cache_residency) fn selected_preparation_demand_v1(
+        maximum_memory_bytes: u64,
+    ) -> Result<aos_sandbox_core::ResourceVector, CacheOwnerErrorV1> {
+        Self::selected_receiving_demand_v1(maximum_memory_bytes, 0)
+    }
+
+    // Complete selected ExistingOnly peak for the actual captured extent.
+    // The decoder inserts BTree children only AFTER their bytes are reached;
+    // declared disk/negative/pin counts never preallocate a carrier array.
+    // Disjoint reached wire minima: disk216, negative48, pin16. One additional partial
+    // child covers a malformed/truncated next record and its native error.
+    fn selected_receiving_demand_v1(
+        maximum_memory_bytes: u64,
+        encoded: usize,
+    ) -> Result<aos_sandbox_core::ResourceVector, CacheOwnerErrorV1> {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+
+        let capacity = || CacheOwnerErrorV1::CapacityExhausted;
+        if encoded > MAXIMUM_MANIFEST_BYTES {
+            return Err(CacheOwnerErrorV1::CapacityExhausted);
+        }
+        let partial = usize::from(encoded != 0);
+        let disk = encoded / 216 + partial;
+        let negatives = encoded / 48 + partial;
+        let pins = encoded / 16 + partial;
+        let slots = |count: usize| count.checked_mul(3).and_then(|count| count.checked_add(11));
+        let disk_cells = slots(disk).and_then(|count| count.checked_mul(
+            std::mem::size_of::<(ObjectKey, DiskEntry, [usize; 6])>(),
+        )).ok_or_else(capacity)?;
+        let negative_cells = slots(negatives).and_then(|count| count.checked_mul(
+            std::mem::size_of::<(AuthorizedLookupKey, NegativeEntry, [usize; 6])>(),
+        )).ok_or_else(capacity)?;
+        // Each nonempty set has one disk parent. Sparse first-node floors
+        // therefore occur at most min(disk,pins) times; further pin cells keep
+        // their own conservative growth allowance without inventing parents.
+        let pin_slots = pins.checked_mul(3)
+            .and_then(|count| count.checked_add(disk.min(pins).checked_mul(11)?))
+            .ok_or_else(capacity)?;
+        let pin_sets = pin_slots.checked_mul(
+            std::mem::size_of::<(CacheOwnerPinIdV1, [usize; 6])>(),
+        ).ok_or_else(capacity)?;
+        let pin_index = slots(pins).and_then(|count| count.checked_mul(
+            std::mem::size_of::<(CacheOwnerPinIdV1, ObjectKey, [usize; 6])>(),
+        )).and_then(|bytes| bytes.checked_add(pins.checked_mul(255)?))
+            .ok_or_else(capacity)?;
+        // Raw manifest old/new read allocation, retained capture and reached
+        // String payloads coexist. Only valid MediaType<=255 reaches pin_index;
+        // a malformed longer String is included in these reached byte lanes.
+        let memory = MAXIMUM_MANIFEST_BYTES.checked_add(1).and_then(|bytes| bytes.checked_mul(5))
+            .and_then(|bytes| bytes.checked_add(disk_cells))
+            .and_then(|bytes| bytes.checked_add(negative_cells))
+            .and_then(|bytes| bytes.checked_add(pin_sets))
+            .and_then(|bytes| bytes.checked_add(pin_index))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<DormantCacheOwnerV1>()))
+            // Fixed directory iterator/native path/error buffers, not a new
+            // codec or object-data ceiling. Object verification opens no copy.
+            .and_then(|bytes| bytes.checked_add(16 * 4096)).ok_or_else(capacity)?;
+        let metadata = disk.checked_mul(14)
+            .and_then(|entries| entries.checked_add(negatives.checked_mul(14)?))
+            .and_then(|entries| entries.checked_add(pin_slots.checked_mul(2)?))
+            .and_then(|entries| entries.checked_add(slots(pins)?.checked_mul(2)?))
+            .and_then(|entries| entries.checked_add(32)).ok_or_else(capacity)?;
+        Ok(ResourceVector::ZERO
+            .with(D::MemoryBytes, u64::try_from(memory).map_err(|_| capacity())?
+                .checked_add(maximum_memory_bytes).ok_or_else(capacity)?)
+            .with(D::MetadataEntries, u64::try_from(metadata).map_err(|_| capacity())?)
+            // Root/lock/publication/mapping plus name/currentness/manifest,
+            // directory iteration and one sequential object verification.
+            .with(D::OpenFiles, 16))
+    }
+
+    pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.manifest_read.failure()
+            .or_else(|| self.first_failure.as_ref().map(|cause| cause as &(dyn std::error::Error + 'static)))
     }
 
     pub(super) fn open_once(
@@ -397,11 +394,32 @@ impl ResidentCachePhysicalOpenV1 {
         destination: &mut Option<DormantCacheOwnerV1>,
         limits: CacheOwnerLimitsV1,
     ) -> Result<(), CacheOwnerErrorV1> {
+        self.open_with_capture::<false, ()>(destination, limits, None)
+    }
+
+    // The opaque actual B loan accompanies this same native read. Its fixed
+    // preparation was admitted before entry; its complete typed peak is raised
+    // from the captured bytes below before the shared decoder grows models.
+    pub(super) fn open_selected_once<P>(
+        &mut self,
+        destination: &mut Option<DormantCacheOwnerV1>,
+        limits: CacheOwnerLimitsV1,
+        baseline: &super::protected_owner::CacheConstructionReceivingV1<'_, '_, '_, '_, P>,
+    ) -> Result<(), CacheOwnerErrorV1> {
+        self.open_with_capture::<true, P>(destination, limits, Some(baseline))
+    }
+
+    fn open_with_capture<const RETAINED: bool, P>(
+        &mut self,
+        destination: &mut Option<DormantCacheOwnerV1>,
+        limits: CacheOwnerLimitsV1,
+        baseline: Option<&super::protected_owner::CacheConstructionReceivingV1<'_, '_, '_, '_, P>>,
+    ) -> Result<(), CacheOwnerErrorV1> {
         if self.started || destination.is_some() {
             return Err(CacheOwnerErrorV1::Fenced);
         }
         self.started = true;
-        let returned = self.capture_existing(destination, limits);
+        let returned = self.capture_existing::<RETAINED, P>(destination, limits, baseline);
         match returned {
             Ok(()) => Ok(()),
             Err(cause) => {
@@ -411,10 +429,11 @@ impl ResidentCachePhysicalOpenV1 {
         }
     }
 
-    fn capture_existing(
+    fn capture_existing<const RETAINED: bool, P>(
         &mut self,
         destination: &mut Option<DormantCacheOwnerV1>,
         limits: CacheOwnerLimitsV1,
+        baseline: Option<&super::protected_owner::CacheConstructionReceivingV1<'_, '_, '_, '_, P>>,
     ) -> Result<(), CacheOwnerErrorV1> {
         let limits = limits.validate()?;
         reject_legacy_object_root()?;
@@ -437,8 +456,24 @@ impl ResidentCachePhysicalOpenV1 {
             return Err(CacheOwnerErrorV1::RootChanged);
         }
         self.mapping = Some(BeneathRoot::from_owned(rustix::io::dup(root)?)?);
-        self.manifest = Some(read_bounded_at(root, MANIFEST_NAME, MAXIMUM_MANIFEST_BYTES)?);
+        if RETAINED {
+            // Same lower reader as Ordinary, with original File/metadata/
+            // partial bytes/read Result parked through every negative path.
+            self.manifest_read.capture::<true>(root, MANIFEST_NAME, MAXIMUM_MANIFEST_BYTES)?;
+            self.manifest = Some(self.manifest_read.take_bytes().ok_or(CacheOwnerErrorV1::Fenced)?);
+        } else {
+            self.manifest = Some(read_bounded_at(root, MANIFEST_NAME, MAXIMUM_MANIFEST_BYTES)?);
+        }
         let bytes = self.manifest.as_ref().ok_or(CacheOwnerErrorV1::Fenced)?;
+        if let Some(baseline) = baseline {
+            // No detached metadata probe or second parser: these are the
+            // exact bytes just read through the retained original File.
+            let complete = Self::selected_receiving_demand_v1(
+                limits.maximum_memory_bytes, bytes.len(),
+            )?;
+            baseline.require_physical_complete(complete)
+                .map_err(|_| CacheOwnerErrorV1::Fenced)?;
+        }
         let (generation, disk, negatives) = decode_manifest(bytes, limits)?;
         let manifest_digest = ObjectDigest::from_bytes(Sha256::digest(bytes).into());
 
@@ -530,12 +565,31 @@ pub struct CacheOwnerHeldSnapshotV1<'owner> {
 }
 
 /// Preserves the first held physical identity across another owner's postchecks.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct CacheOwnerHeldIdentityV1 {
     root: RootIdentity,
     lock: LockIdentity,
     manifest: Option<ManifestIdentity>,
     current: CacheOwnerCurrentnessV1,
+}
+
+impl CacheOwnerHeldIdentityV1 {
+    // Reuses the actual retained root/lock/manifest/head and actual immutable
+    // owner's limits. This pure projection performs no new native observation.
+    pub(in crate::cache_residency) fn physical_comparison_data_v2(self, limits: CacheOwnerLimitsV1)
+        -> Result<aos_sandbox_protocol::domain_ledger::create_storage_history::cache_held::CachePhysicalDataV1,
+            CacheOwnerErrorV1>
+    {
+        use aos_sandbox_protocol::domain_ledger::create_storage_history::cache_held::CachePhysicalDataV1;
+        Ok(CachePhysicalDataV1 {
+            root: (self.root.device, self.root.inode), uid: self.root.uid, mode: self.root.mode,
+            lock: (self.lock.device, self.lock.inode),
+            manifest: self.manifest.map(|value| (value.device, value.inode)).unwrap_or((0, 0)),
+            generation: self.current.generation(), digest: *self.current.digest().as_bytes(),
+            limits: *cache_owner_limits_digest_v1(limits)
+                .map_err(|_| CacheOwnerErrorV1::InvalidLimits)?.as_bytes(),
+        })
+    }
 }
 
 impl CacheOwnerHeldSnapshotV1<'_> {
@@ -616,40 +670,32 @@ impl CacheOwnerHeldSnapshotV1<'_> {
         Ok(())
     }
 
-    // The original Q04 initializer joins the protected writers separately and
-    // parks this complete signing result before its physical/native/clock
-    // postchecks. In particular, a postcheck cannot erase an actual signature.
-    #[cfg(target_os = "linux")]
-    pub(in crate::cache_residency) fn sign_original_q04_readback_v2(
+    /// Prepares unsigned readback DATA from this actual held physical snapshot.
+    ///
+    /// The upper Q04 owner retains its genuine Root loan and signing key. This
+    /// method neither signs nor supplies Root, publication or effect authority.
+    ///
+    /// # Errors
+    /// Refuses changed held names/flock or a noncanonical physical/protected body.
+    pub fn prepare_held_readback_data_v2(
         &self,
         readback: &super::protected_owner::CacheResidencyWriterReadbackV2,
         challenge: CacheOwnerReadbackChallengeV1,
         signer_generation: u64,
-        signing_key: &ed25519_dalek::SigningKey,
-        original: &crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'_, '_, '_>,
-    ) -> Result<
-        [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
-        crate::policy_compiler::create_q04::CreateQ04ErrorV1,
-    > {
+    ) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2], CacheOwnerReadbackErrorV1> {
         self.revalidate()?;
         let fields = self.readback_fields()?;
         let manifest = self.manifest_identity
             .map(|identity| (identity.device, identity.inode));
 
-        super::owner_readback::sign_original_q04_cache_owner_readback_v2(
-            fields,
-            manifest,
-            readback.hold(),
-            readback.quota_digest(),
-            challenge,
-            signer_generation,
-            signing_key,
-            original,
-        )
+        aos_sandbox_protocol::cache_owner_readback::prepare_closed_cache_owner_readback_data_v2(
+            fields, manifest, readback.hold(), readback.quota_digest(),
+            challenge, signer_generation,
+        ).map_err(CacheOwnerReadbackErrorV1::from)
     }
 
-    fn readback_fields(&self) -> Result<CacheOwnerReadbackFieldsV1, CacheOwnerReadbackErrorV1> {
-        Ok(CacheOwnerReadbackFieldsV1 {
+    fn readback_fields(&self) -> Result<CacheOwnerReadbackFieldsDataV1, CacheOwnerReadbackErrorV1> {
+        Ok(CacheOwnerReadbackFieldsDataV1 {
             root_device: self.root_identity.device,
             root_inode: self.root_identity.inode,
             root_uid: self.root_identity.uid,
@@ -663,8 +709,32 @@ impl CacheOwnerHeldSnapshotV1<'_> {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl CacheOwnerHeldSnapshotV1<'_> {
+    // Comparison DATA is sampled only from this actual validated held original.
+    // Neither this fixed shape nor its digest can reconstruct the physical loan.
+    pub(in crate::cache_residency) fn create_storage_physical_data_v1(
+        &self,
+    ) -> Result<(
+        aos_sandbox_protocol::domain_ledger::create_storage_history::cache_held::CachePhysicalDataV1,
+        [u64; 3],
+    ), CacheOwnerErrorV1> {
+        let pins = self.owner.disk.values().try_fold(0_u64, |count, entry| {
+            count.checked_add(u64::try_from(entry.pins.len()).map_err(|_| CacheOwnerErrorV1::CapacityExhausted)?)
+                .ok_or(CacheOwnerErrorV1::CapacityExhausted)
+        })?;
+        let counts = [
+            u64::try_from(self.owner.disk.len()).map_err(|_| CacheOwnerErrorV1::CapacityExhausted)?,
+            u64::try_from(self.owner.negatives.len()).map_err(|_| CacheOwnerErrorV1::CapacityExhausted)?,
+            pins,
+        ];
+        let physical = self.identity().physical_comparison_data_v2(self.owner.limits)?;
+        Ok((physical, counts))
+    }
+}
+
 fn require_matching_verified_physical_v2(
-    held: CacheOwnerReadbackFieldsV1,
+    held: CacheOwnerReadbackFieldsDataV1,
     manifest: Option<ManifestIdentity>,
     verified: VerifiedClosedCacheOwnerReadbackV2,
 ) -> Result<(), CacheOwnerReadbackErrorV1> {
@@ -770,25 +840,11 @@ impl CacheOwnerReleaseFailureV1 {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RootIdentity {
-    device: u64,
-    inode: u64,
-    uid: u32,
-    mode: u32,
-}
+use aos_sandbox_broker::physical_cache_observation::CacheRootObservationDataV1 as RootIdentity;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct LockIdentity {
-    device: u64,
-    inode: u64,
-}
+use aos_sandbox_broker::physical_cache_observation::CacheLockObservationDataV1 as LockIdentity;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ManifestIdentity {
-    device: u64,
-    inode: u64,
-}
+use aos_sandbox_broker::physical_cache_observation::CacheManifestObservationDataV1 as ManifestIdentity;
 
 /// Retains the exact manifest generation after a replacement became ambiguous.
 #[derive(Debug)]
@@ -1474,25 +1530,57 @@ impl DormantCacheOwnerV1 {
         manifest_identity: Option<ManifestIdentity>,
         current: CacheOwnerCurrentnessV1,
     ) -> Result<(), CacheOwnerErrorV1> {
+        self.validate_held_snapshot_with(root_identity, lock_identity, manifest_identity, current, None)
+    }
+
+    fn validate_held_snapshot_with(
+        &self,
+        root_identity: RootIdentity,
+        lock_identity: LockIdentity,
+        manifest_identity: Option<ManifestIdentity>,
+        current: CacheOwnerCurrentnessV1,
+        mut retained: Option<&mut CachePhysicalReadbackOriginalsV1>,
+    ) -> Result<(), CacheOwnerErrorV1> {
         if !self.replayable_after_release() {
             return Err(CacheOwnerErrorV1::UnsafeRelease);
         }
-        self.recheck_root()?;
+        match retained.as_deref_mut() {
+            Some(original) => original.before_root.capture_once(self)?,
+            None => self.recheck_root()?,
+        }
         if self.root_identity != root_identity
             || inspect_lock(&self.root, &self._owner_lock)? != lock_identity
         {
             return Err(CacheOwnerErrorV1::RootChanged);
         }
-        ensure_held_lock(&self.root, &self._owner_lock)?;
+        match retained.as_deref_mut() {
+            Some(original) => original.held_lock.capture_once(&self.root, &self._owner_lock)?,
+            None => ensure_held_lock(&self.root, &self._owner_lock)?,
+        }
         require_manifest_identity(&self.root, manifest_identity)?;
         if self.currentness() != current {
             return Err(CacheOwnerErrorV1::Stale);
         }
-        held_manifest::require_original(&self.root, manifest_identity, current)?;
+        match retained.as_deref_mut() {
+            Some(original) => {
+                original.streams[0].capture_once(&self.root, manifest_identity, current);
+                if !original.streams[0].is_complete() { return Err(CacheOwnerErrorV1::Stale); }
+            }
+            None => held_manifest::require_original(&self.root, manifest_identity, current)?,
+        }
         // Keep the second independent root/head observation in its original
         // order. Both rereads share fixed scratch and the actual original cut.
-        self.recheck_root()?;
-        held_manifest::require_original(&self.root, manifest_identity, current)?;
+        match retained.as_deref_mut() {
+            Some(original) => original.after_root.capture_once(self)?,
+            None => self.recheck_root()?,
+        }
+        match retained.as_deref_mut() {
+            Some(original) => {
+                original.streams[1].capture_once(&self.root, manifest_identity, current);
+                if !original.streams[1].is_complete() { return Err(CacheOwnerErrorV1::Stale); }
+            }
+            None => held_manifest::require_original(&self.root, manifest_identity, current)?,
+        }
         require_manifest_identity(&self.root, manifest_identity)
     }
 
@@ -2633,19 +2721,29 @@ impl DormantCacheOwnerV1 {
             FsVerityDigest::Sha256(verity),
             key.descriptor.encoded_size(),
         )?;
-        let stat = rustix::fs::fstat(&descriptor)?;
-        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
-            || stat.st_dev != device
-            || stat.st_ino != inode
-            || stat.st_nlink != 1
-            || stat.st_uid != rustix::process::geteuid().as_raw()
-            || stat.st_size < 0
-            || stat.st_size as u64 != key.descriptor.encoded_size()
-        {
+        self.require_disk_file_post_v2(
+            descriptor.as_fd(), key, device, inode, None,
+        )?;
+        Ok(File::from(descriptor))
+    }
+
+    fn require_disk_file_post_v2(
+        &self,
+        descriptor: BorrowedFd<'_>,
+        key: &ObjectKey,
+        device: u64,
+        inode: u64,
+        destination: Option<&mut Option<rustix::fs::Stat>>,
+    ) -> Result<(), CacheOwnerErrorV1> {
+        let stat = rustix::fs::fstat(descriptor)?;
+        if let Some(destination) = destination { *destination = Some(stat); }
+        if !aos_sandbox_broker::physical_cache_observation::disk_object_identity_matches_data_v2(
+            &stat, device, inode, rustix::process::geteuid().as_raw(), key.descriptor.encoded_size(),
+        ) {
             return Err(CacheOwnerErrorV1::RecoveryMismatch);
         }
         self.recheck_root()?;
-        Ok(File::from(descriptor))
+        Ok(())
     }
 
     fn recheck_root(&self) -> Result<(), CacheOwnerErrorV1> {
@@ -3090,11 +3188,7 @@ fn reject_legacy_object_root() -> Result<(), CacheOwnerErrorV1> {
 }
 
 fn reject_legacy_object_root_at(legacy: &Path) -> Result<(), CacheOwnerErrorV1> {
-    match std::fs::symlink_metadata(legacy) {
-        Ok(_) => return Err(CacheOwnerErrorV1::RootChanged),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    }
+    aos_sandbox_broker::physical_cache_observation::reject_legacy_object_root_at_v1(legacy)
 }
 
 #[cfg(test)]
@@ -3172,207 +3266,14 @@ pub(crate) fn cache_owner_effect_commitment_v1(
     )
 }
 
-fn encode_manifest(
-    generation: u64,
-    disk: &BTreeMap<ObjectKey, DiskEntry>,
-    negatives: &BTreeMap<AuthorizedLookupKey, NegativeEntry>,
-) -> Result<Vec<u8>, CacheOwnerErrorV1> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(MANIFEST_MAGIC);
-    bytes.extend_from_slice(&MANIFEST_VERSION.to_be_bytes());
-    bytes.extend_from_slice(&generation.to_be_bytes());
-    put_u32(&mut bytes, disk.len())?;
-    for (key, entry) in disk {
-        bytes.extend_from_slice(key.partition.as_bytes());
-        put_descriptor(&mut bytes, &key.descriptor)?;
-        put_string(&mut bytes, &entry.file_name)?;
-        put_string(&mut bytes, entry.staging_name.as_deref().unwrap_or(""))?;
-        put_string(&mut bytes, entry.deleting_name.as_deref().unwrap_or(""))?;
-        bytes.extend_from_slice(&entry.bytes.to_be_bytes());
-        bytes.extend_from_slice(&entry.device.to_be_bytes());
-        bytes.extend_from_slice(&entry.inode.to_be_bytes());
-        bytes.extend_from_slice(&entry.verity);
-        bytes.extend_from_slice(entry.canonical_name.as_bytes());
-        bytes.extend_from_slice(entry.root_custody.as_bytes());
-        bytes.extend_from_slice(&entry.last_used.to_be_bytes());
-        put_u32(&mut bytes, entry.pins.len())?;
-        for pin in &entry.pins {
-            bytes.extend_from_slice(pin.as_bytes());
-        }
-    }
-    put_u32(&mut bytes, negatives.len())?;
-    for (key, entry) in negatives {
-        bytes.extend_from_slice(key.digest().as_bytes());
-        bytes.extend_from_slice(&entry.valid_until.to_be_bytes());
-        bytes.extend_from_slice(&entry.last_used.to_be_bytes());
-    }
-    let checksum: [u8; 32] = Sha256::digest(&bytes).into();
-    bytes.extend_from_slice(&checksum);
-    if bytes.len() > MAXIMUM_MANIFEST_BYTES {
-        return Err(CacheOwnerErrorV1::CapacityExhausted);
-    }
-    Ok(bytes)
-}
 
-fn decode_manifest(
-    bytes: &[u8],
-    limits: CacheOwnerLimitsV1,
-) -> Result<
-    (
-        u64,
-        BTreeMap<ObjectKey, DiskEntry>,
-        BTreeMap<AuthorizedLookupKey, NegativeEntry>,
-    ),
-    CacheOwnerErrorV1,
-> {
-    if bytes.len() < 56 || bytes.len() > MAXIMUM_MANIFEST_BYTES {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
-    }
-    let (payload, checksum) = bytes.split_at(bytes.len() - 32);
-    if Sha256::digest(payload).as_slice() != checksum {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
-    }
-    let mut cursor = BoundedReader::new(payload, manifest_read_error);
-    if cursor.bytes(8)? != MANIFEST_MAGIC || cursor.u32()? != MANIFEST_VERSION {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
-    }
-    let generation = cursor.u64()?;
-    if generation == 0 {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
-    }
-    let count = cursor.u32()? as usize;
-    if count > limits.maximum_positive_entries {
-        return Err(CacheOwnerErrorV1::CapacityExhausted);
-    }
-    let mut disk = BTreeMap::new();
-    for _ in 0..count {
-        let key = ObjectKey {
-            partition: ObjectDigest::from_bytes(cursor.array()?),
-            descriptor: read_manifest_descriptor(&mut cursor)?,
-        };
-        let file_name = read_manifest_string(&mut cursor)?;
-        validate_basename(&file_name)?;
-        let staging_name = match read_manifest_string(&mut cursor)? {
-            name if name.is_empty() => None,
-            name => {
-                validate_basename(&name)?;
-                Some(name)
-            }
-        };
-        let deleting_name = match read_manifest_string(&mut cursor)? {
-            name if name.is_empty() => None,
-            name => {
-                validate_basename(&name)?;
-                Some(name)
-            }
-        };
-        if staging_name.is_some() && deleting_name.is_some() {
-            return Err(CacheOwnerErrorV1::InvalidManifest);
-        }
-        let bytes = cursor.u64()?;
-        let device = cursor.u64()?;
-        let inode = cursor.u64()?;
-        let verity = cursor.array()?;
-        let canonical_name = ObjectDigest::from_bytes(cursor.array()?);
-        let root_custody = ObjectDigest::from_bytes(cursor.array()?);
-        let last_used = cursor.u64()?;
-        let pin_count = cursor.u32()? as usize;
-        if bytes == 0
-            || device == 0
-            || inode == 0
-            || verity == [0; 32]
-            || canonical_name.as_bytes() == &[0; 32]
-            || root_custody.as_bytes() == &[0; 32]
-            || last_used == 0
-            || pin_count > limits.maximum_pins
-        {
-            return Err(CacheOwnerErrorV1::InvalidManifest);
-        }
-        let mut pins = BTreeSet::new();
-        for _ in 0..pin_count {
-            if !pins.insert(CacheOwnerPinIdV1::from_bytes(cursor.array()?)?) {
-                return Err(CacheOwnerErrorV1::InvalidManifest);
-            }
-        }
-        if disk
-            .insert(
-                key,
-                DiskEntry {
-                    file_name,
-                    staging_name,
-                    deleting_name,
-                    bytes,
-                    device,
-                    inode,
-                    verity,
-                    canonical_name,
-                    root_custody,
-                    last_used,
-                    pins,
-                },
-            )
-            .is_some()
-        {
-            return Err(CacheOwnerErrorV1::InvalidManifest);
-        }
-    }
-    let negative_count = cursor.u32()? as usize;
-    if negative_count > limits.maximum_negative_entries {
-        return Err(CacheOwnerErrorV1::CapacityExhausted);
-    }
-    let mut negatives = BTreeMap::new();
-    for _ in 0..negative_count {
-        let key = AuthorizedLookupKey::from_digest(ObjectDigest::from_bytes(cursor.array()?))
-            .map_err(|_| CacheOwnerErrorV1::InvalidManifest)?;
-        let entry = NegativeEntry {
-            valid_until: cursor.u64()?,
-            last_used: cursor.u64()?,
-        };
-        if entry.valid_until == 0 || entry.last_used == 0 || negatives.insert(key, entry).is_some()
-        {
-            return Err(CacheOwnerErrorV1::InvalidManifest);
-        }
-    }
-    cursor.finish()?;
-    Ok((generation, disk, negatives))
-}
 
-fn decode_generation(bytes: &[u8]) -> Result<u64, CacheOwnerErrorV1> {
-    if bytes.len() < 20
-        || &bytes[..8] != MANIFEST_MAGIC
-        || bytes[8..12] != MANIFEST_VERSION.to_be_bytes()
-    {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
-    }
-    Ok(u64::from_be_bytes(
-        bytes[12..20]
-            .try_into()
-            .map_err(|_| CacheOwnerErrorV1::InvalidManifest)?,
-    ))
-}
-fn put_u32(bytes: &mut Vec<u8>, value: usize) -> Result<(), CacheOwnerErrorV1> {
-    bytes.extend_from_slice(
-        &u32::try_from(value)
-            .map_err(|_| CacheOwnerErrorV1::CapacityExhausted)?
-            .to_be_bytes(),
-    );
-    Ok(())
-}
-fn put_string(bytes: &mut Vec<u8>, value: &str) -> Result<(), CacheOwnerErrorV1> {
-    let length = u16::try_from(value.len()).map_err(|_| CacheOwnerErrorV1::InvalidManifest)?;
-    bytes.extend_from_slice(&length.to_be_bytes());
-    bytes.extend_from_slice(value.as_bytes());
-    Ok(())
-}
-fn put_descriptor(
-    bytes: &mut Vec<u8>,
-    descriptor: &ObjectDescriptor,
-) -> Result<(), CacheOwnerErrorV1> {
-    put_string(bytes, descriptor.media_type().as_str())?;
-    bytes.extend_from_slice(descriptor.digest().as_bytes());
-    bytes.extend_from_slice(&descriptor.encoded_size().to_be_bytes());
-    Ok(())
-}
+
+
+
+
+
+
 fn object_file_name(key: &ObjectKey) -> String {
     format!(
         "{}-{}",
@@ -3436,26 +3337,9 @@ fn read_bounded_at(
     name: &str,
     maximum: usize,
 ) -> Result<Vec<u8>, CacheOwnerErrorV1> {
-    validate_basename(name)?;
-    let descriptor = rustix::fs::openat(
-        root,
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    let stat = rustix::fs::fstat(&descriptor)?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile || stat.st_nlink != 1 {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
-    }
-    let mut file = File::from(descriptor);
-    let mut bytes = Vec::new();
-    std::io::Read::by_ref(&mut file)
-        .take((maximum + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > maximum {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
-    }
-    Ok(bytes)
+    let mut original = PhysicalManifestReadV1::default();
+    original.capture::<false>(root, name, maximum)?;
+    original.take_bytes().ok_or(CacheOwnerErrorV1::Fenced)
 }
 
 fn remove_exact_temporary(
@@ -3487,36 +3371,10 @@ fn write_and_sync_manifest(file: &mut File, bytes: &[u8]) -> Result<(), CacheOwn
     Ok(())
 }
 
-fn validate_basename(name: &str) -> Result<(), CacheOwnerErrorV1> {
-    let bytes = name.as_bytes();
-    if bytes.is_empty()
-        || bytes.len() > 255
-        || bytes == b"."
-        || bytes == b".."
-        || bytes.contains(&b'/')
-        || bytes.contains(&0)
-        || Path::new(name).is_absolute()
-        || Path::new(name).components().count() != 1
-    {
-        return Err(CacheOwnerErrorV1::UnsafeName);
-    }
-    Ok(())
-}
+
 
 fn inspect_root(root: &OwnedFd) -> Result<RootIdentity, CacheOwnerErrorV1> {
-    let stat = rustix::fs::fstat(root)?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::Directory
-        || stat.st_uid != rustix::process::geteuid().as_raw()
-        || stat.st_mode & 0o7777 != 0o700
-    {
-        return Err(CacheOwnerErrorV1::RootChanged);
-    }
-    Ok(RootIdentity {
-        device: stat.st_dev,
-        inode: stat.st_ino,
-        uid: stat.st_uid,
-        mode: stat.st_mode & 0o7777,
-    })
+    aos_sandbox_broker::physical_cache_observation::inspect_root_v1(root)
 }
 
 fn open_owner_lock(root: &OwnedFd) -> Result<OwnedFd, CacheOwnerErrorV1> {
@@ -3579,22 +3437,7 @@ fn validate_owner_lock(root: &OwnedFd, lock: &OwnedFd, created: bool) -> Result<
 }
 
 fn inspect_lock(root: &OwnedFd, lock: &OwnedFd) -> Result<LockIdentity, CacheOwnerErrorV1> {
-    let stat = rustix::fs::fstat(lock)?;
-    let named = rustix::fs::statat(root, ".owner.lock", AtFlags::SYMLINK_NOFOLLOW)?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
-        || stat.st_uid != rustix::process::geteuid().as_raw()
-        || stat.st_mode & 0o7777 != 0o600
-        || stat.st_nlink != 1
-        || named.st_dev != stat.st_dev
-        || named.st_ino != stat.st_ino
-        || named.st_mode != stat.st_mode
-    {
-        return Err(CacheOwnerErrorV1::RootChanged);
-    }
-    Ok(LockIdentity {
-        device: stat.st_dev,
-        inode: stat.st_ino,
-    })
+    aos_sandbox_broker::physical_cache_observation::inspect_lock_v1(root, lock)
 }
 
 fn require_manifest_identity(
@@ -3608,41 +3451,15 @@ fn require_manifest_identity(
 }
 
 fn ensure_held_lock(root: &OwnedFd, lock: &OwnedFd) -> Result<(), CacheOwnerErrorV1> {
-    inspect_lock(root, lock)?;
-    rustix::fs::flock(lock, FlockOperation::NonBlockingLockExclusive)
-        .map_err(|_| CacheOwnerErrorV1::OwnerLockNotHeld)?;
-    let independent = rustix::fs::openat(
-        root,
-        ".owner.lock",
-        OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    match rustix::fs::flock(&independent, FlockOperation::NonBlockingLockExclusive) {
-        Err(rustix::io::Errno::WOULDBLOCK) => Ok(()),
-        Ok(()) => Err(CacheOwnerErrorV1::OwnerLockNotHeld),
-        Err(error) => Err(error.into()),
-    }
+    let mut original = held_current::HeldLockOriginalsV1::default();
+    let _ = original.capture_once(root, lock);
+    original.into_result()
 }
 
 fn inspect_manifest_identity(
     root: &OwnedFd,
 ) -> Result<Option<ManifestIdentity>, CacheOwnerErrorV1> {
-    let named = match rustix::fs::statat(root, MANIFEST_NAME, AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(named) => named,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    if FileType::from_raw_mode(named.st_mode) != FileType::RegularFile
-        || named.st_uid != rustix::process::geteuid().as_raw()
-        || named.st_mode & 0o7777 != 0o600
-        || named.st_nlink != 1
-    {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
-    }
-    Ok(Some(ManifestIdentity {
-        device: named.st_dev,
-        inode: named.st_ino,
-    }))
+    aos_sandbox_broker::physical_cache_observation::inspect_manifest_identity_v1(root)
 }
 
 fn replayed_manifest_head(
@@ -3765,30 +3582,11 @@ impl MaterializationCallbacks for DescriptorVerifier {
     }
 }
 
-fn manifest_read_error(_: ReadError) -> CacheOwnerErrorV1 {
-    CacheOwnerErrorV1::InvalidManifest
-}
 
-fn read_manifest_string(
-    cursor: &mut BoundedReader<'_, CacheOwnerErrorV1>,
-) -> Result<String, CacheOwnerErrorV1> {
-    let length = cursor.u16()? as usize;
-    let value = std::str::from_utf8(cursor.bytes(length)?)
-        .map_err(|_| CacheOwnerErrorV1::InvalidManifest)?;
-    Ok(value.to_owned())
-}
 
-fn read_manifest_descriptor(
-    cursor: &mut BoundedReader<'_, CacheOwnerErrorV1>,
-) -> Result<ObjectDescriptor, CacheOwnerErrorV1> {
-    let media = MediaType::new(read_manifest_string(cursor)?)
-        .map_err(|_| CacheOwnerErrorV1::InvalidManifest)?;
-    Ok(ObjectDescriptor::new(
-        media,
-        ObjectDigest::from_bytes(cursor.array()?),
-        cursor.u64()?,
-    ))
-}
+
+
+
 
 /// Reports bounded cache ownership, durability, or integrity failure.
 #[derive(Debug, thiserror::Error)]
@@ -3900,17 +3698,19 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     use super::{
-        CacheOwnerErrorV1, CacheOwnerLimitsV1, CacheOwnerReadbackFieldsV1, MANIFEST_NAME,
+        CacheOwnerErrorV1, CacheOwnerLimitsV1, CacheOwnerReadbackFieldsDataV1, MANIFEST_NAME,
         ManifestIdentity, encode_manifest, ensure_held_lock, inspect_lock,
         inspect_manifest_identity, open_owner_lock, replayed_manifest_head,
         require_manifest_identity, require_matching_verified_physical_v2,
     };
-    use crate::cache_residency::{
-        CacheOwnerReadbackChallengeV1, PinnedCacheOwnerReadbackSignerV1,
-        encode_cache_owner_readback_signer_credential_v1, sign_test_cache_owner_readback_v2,
+    use crate::cache_residency::sign_test_cache_owner_readback_v2;
+    use aos_sandbox_protocol::cache_owner_readback::{
+        CacheOwnerReadbackChallengeV1,
+        PinnedCacheOwnerReadbackSignerV1,
+        encode_cache_owner_readback_signer_credential_v1,
         verify_closed_cache_owner_readback_v2,
     };
-    use crate::journal::CachePolicyHoldV1;
+    use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
     use rustix::fs::{FlockOperation, Mode, OFlags};
 
     fn fixture_limits() -> CacheOwnerLimitsV1 {
@@ -4056,7 +3856,10 @@ mod tests {
         let returned = original.open_once(&mut destination, fixture_limits());
 
         assert!(matches!(returned, Err(CacheOwnerErrorV1::Fenced)));
-        assert!(matches!(original.failure(), Some(CacheOwnerErrorV1::Rustix(cause)) if *cause == rustix::io::Errno::IO));
+        assert!(matches!(
+            original.failure().and_then(|cause| cause.downcast_ref::<CacheOwnerErrorV1>()),
+            Some(CacheOwnerErrorV1::Rustix(cause)) if *cause == rustix::io::Errno::IO
+        ));
         assert!(destination.is_none());
         assert!(original.root.is_none());
     }
@@ -4108,7 +3911,7 @@ mod tests {
         .expect("valid signed statement");
         let verified = verify_closed_cache_owner_readback_v2(&packet, &signer, challenge, 811)
             .expect("valid signature and owner UID");
-        let held = CacheOwnerReadbackFieldsV1 {
+        let held = CacheOwnerReadbackFieldsDataV1 {
             root_device: 11,
             root_inode: 12,
             root_uid: 811,
@@ -4269,4 +4072,10 @@ mod tests {
             Err(CacheOwnerErrorV1::Stale)
         ));
     }
+}
+
+
+impl aos_sandbox_broker::physical_cache_observation::PhysicalCacheObservationFailureV1 for CacheOwnerErrorV1 {
+    const ROOT_CHANGED: Self = Self::RootChanged;
+    const INVALID_MANIFEST: Self = Self::InvalidManifest;
 }

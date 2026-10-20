@@ -10,6 +10,12 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use aos_sandbox::journal::{
+    CapturedJournalOpenModeV1, RuntimeDeploymentFloorCapturedJournalOpenV1,
+    RuntimeDeploymentMainCapturedJournalOpenV1,
+};
+use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+
 use aos_sandbox::{
     HostPhysicalInvocationErrorV1, HostPhysicalInvocationLeaseV1,
     Journal, JournalLimits, JournalTransaction, ProtectedJournalPreflight,
@@ -27,6 +33,9 @@ use crate::tpm_nv_custody::{
     sidecar_limits,
 };
 
+mod boot_receiving;
+use boot_receiving::BootNamePostsV1;
+
 /// Parks every returned admission prefix before the next fallible observation.
 ///
 /// Only the actual publisher coordinator creates this reservoir. Failed opens,
@@ -35,6 +44,9 @@ use crate::tpm_nv_custody::{
 pub(super) struct HostCanaryJournalAdmissionV2<'origin, 'startup> {
     origins: &'origin RuntimeDeploymentComparisonOriginsV1<'startup>,
     inputs: Option<Result<AdmittedHostTpmInputsV1<'origin, 'startup>, super::HostTpmAdmissionErrorV1>>,
+    boot_inputs: super::HostTpmInputAdmissionOriginalV1<'origin, 'startup>,
+    boot_main: RuntimeDeploymentMainCapturedJournalOpenV1,
+    boot_sidecar: RuntimeDeploymentFloorCapturedJournalOpenV1,
     main: Option<Result<(Journal, aos_sandbox::RecoveryReport), aos_sandbox::JournalError>>,
     sidecar: Option<Result<(Journal, aos_sandbox::RecoveryReport), aos_sandbox::JournalError>>,
     reports: [Option<aos_sandbox::RecoveryReport>; 2],
@@ -42,7 +54,8 @@ pub(super) struct HostCanaryJournalAdmissionV2<'origin, 'startup> {
     attempted: bool,
     first_failure: Arc<Option<HostOwnedJournalErrorV1>>,
     first_stage: Option<CanaryJournalAdmissionStageV2>,
-    post_debt: [Option<HostOwnedJournalErrorV1>; 4],
+    post_debt: [Option<HostOwnedJournalErrorV1>; 6],
+    boot_name_posts: Option<Box<BootNamePostsV1>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -71,8 +84,12 @@ impl<'origin, 'startup> HostCanaryJournalAdmissionV2<'origin, 'startup> {
     pub(super) fn new(origins: &'origin RuntimeDeploymentComparisonOriginsV1<'startup>) -> Self {
         Self {
             origins, inputs: None, main: None, sidecar: None, reports: [None, None], owner: None,
+            boot_inputs: super::HostTpmInputAdmissionOriginalV1::new(),
+            boot_main: RuntimeDeploymentMainCapturedJournalOpenV1::new(),
+            boot_sidecar: RuntimeDeploymentFloorCapturedJournalOpenV1::new(),
             attempted: false, first_failure: Arc::new(None), first_stage: None,
             post_debt: std::array::from_fn(|_| None),
+            boot_name_posts: None,
         }
     }
 
@@ -99,34 +116,164 @@ impl<'origin, 'startup> HostCanaryJournalAdmissionV2<'origin, 'startup> {
             }
             // Each available original is observed independently. A poisoned
             // input is never readmitted merely to manufacture a positive cut.
-            let origins = self.origins.recheck().map_err(HostOwnedJournalErrorV1::from);
-            self.retain_post(0, origins);
+            if self.boot_name_posts.is_none() {
+                let origins = self
+                    .origins
+                    .recheck()
+                    .map_err(HostOwnedJournalErrorV1::from);
+                self.retain_post(0, origins);
+            }
             if let Some(Ok((journal, _))) = self.main.as_ref() {
-                let main = journal.validate_held_root_owned_at(
+                let main = if let Some(posts) = self.boot_name_posts.as_mut() {
+                    posts.observe_once(0, journal)
+                } else { journal.validate_held_root_owned_at(
                     Path::new(JOURNAL_DIRECTORY), MAIN_JOURNAL_NAME,
-                ).map_err(HostOwnedJournalErrorV1::from);
+                ).map_err(HostOwnedJournalErrorV1::from) };
                 self.retain_post(1, main);
             }
             if let Some(Ok((journal, _))) = self.sidecar.as_ref() {
-                let sidecar = journal.validate_held_root_owned_at(
+                let sidecar = if let Some(posts) = self.boot_name_posts.as_mut() {
+                    posts.observe_once(1, journal)
+                } else { journal.validate_held_root_owned_at(
                     Path::new(JOURNAL_DIRECTORY), SIDECAR_JOURNAL_NAME,
-                ).map_err(HostOwnedJournalErrorV1::from);
+                ).map_err(HostOwnedJournalErrorV1::from) };
                 self.retain_post(2, sidecar);
             }
-            if let Some(owner) = self.owner.as_mut() {
-                let whole = owner.recheck();
-                self.retain_post(3, whole);
+            if self.boot_name_posts.is_none() {
+                if let Some(owner) = self.owner.as_mut() {
+                    let whole = owner.recheck();
+                    self.retain_post(3, whole);
+                }
             }
         }
         if self.first_failure.is_some() { Err(self.diagnostic()) } else { Ok(()) }
     }
 
+    pub(super) fn admit_boot_once_v1(
+        &mut self,
+        native: &aos_sandbox::RuntimeBootPreparationNativeOriginalV1<'_, '_>,
+    ) -> Result<(), CanaryJournalAdmissionDiagnosticV2> {
+        if !std::ptr::eq(self.origins, native.origins_v1()) || self.boot_name_posts.is_some() {
+            self.park_first(HostOwnedJournalErrorV1::Changed);
+            return Err(self.diagnostic());
+        }
+        if let Err(cause) = native.begin_outer_startup_after_v1() {
+            self.park_first(cause.into());
+            return Err(self.diagnostic());
+        }
+        match BootNamePostsV1::prepare(self.origins) {
+            Ok(posts) => self.boot_name_posts = Some(Box::new(posts)),
+            Err(cause) => {
+                self.park_first(cause);
+                let after = native
+                    .finish_outer_startup_after_owed_once_v1()
+                    .map_err(HostOwnedJournalErrorV1::from);
+                self.retain_post(4, after);
+                return Err(self.diagnostic());
+            }
+        }
+        let _body = self.admit_once();
+        let native_posts = self.drain_boot_after_unwind_once_v1();
+        self.retain_post(5, native_posts);
+        let after = native
+            .finish_outer_startup_after_owed_once_v1()
+            .map_err(HostOwnedJournalErrorV1::from);
+        self.retain_post(4, after);
+        if self.first_failure.is_some() {
+            Err(self.diagnostic())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn drain_boot_after_unwind_once_v1(
+        &mut self,
+    ) -> Result<(), HostOwnedJournalErrorV1> {
+        let input = match self.owner.as_mut() {
+            Some(owner) => owner.inputs.drain_boot_owed_recheck_after_unwind_once_v1(),
+            None => match self.inputs.as_mut().and_then(|result| result.as_mut().ok()) {
+                Some(inputs) => inputs.drain_boot_owed_recheck_after_unwind_once_v1(),
+                None => Ok(()),
+            },
+        };
+        let history = match self.owner.as_ref() {
+            Some(owner) => owner
+                .origins
+                .drain_boot_journal_after_unwind_once_v1(&owner.main, owner.store.original_ref())
+                .map_err(HostOwnedJournalErrorV1::from),
+            None => {
+                let main = self
+                    .main
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .map(|(journal, _)| {
+                        self.origins
+                            .drain_boot_journal_member_after_unwind_once_v1(journal)
+                    });
+                let sidecar = self
+                    .sidecar
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .map(|(journal, _)| {
+                        self.origins
+                            .drain_boot_journal_member_after_unwind_once_v1(journal)
+                    });
+                main.transpose()
+                    .and_then(|_| sidecar.transpose())
+                    .map(|_| ())
+                    .map_err(HostOwnedJournalErrorV1::from)
+            }
+        };
+        let main = if let Some(posts) = self.boot_name_posts.as_mut() {
+            let journal = self.owner.as_ref().map(|owner| &owner.main).or_else(|| {
+                self.main
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .map(|(journal, _)| journal)
+            });
+            match journal {
+                Some(journal) => posts.observe_once(0, journal),
+                None => Ok(()),
+            }
+        } else {
+            Ok(())
+        };
+        let sidecar = if let Some(posts) = self.boot_name_posts.as_mut() {
+            let journal = self
+                .owner
+                .as_ref()
+                .map(|owner| owner.store.original_ref())
+                .or_else(|| {
+                    self.sidecar
+                        .as_ref()
+                        .and_then(|result| result.as_ref().ok())
+                        .map(|(journal, _)| journal)
+                });
+            match journal {
+                Some(journal) => posts.observe_once(1, journal),
+                None => Ok(()),
+            }
+        } else {
+            Ok(())
+        };
+        // Both name diagnostics are backed by permanent native originals.
+        input?;
+        main?;
+        sidecar?;
+        history?;
+        Ok(())
+    }
+
     fn admit_inner(&mut self) -> Result<(), HostOwnedJournalErrorV1> {
         self.origins.recheck()?;
-        if self.origins.canary_purpose_v2().is_none() {
+        if self.origins.canary_purpose_v2().is_none() && self.origins.boot_purpose_v1().is_none() {
             return Err(HostOwnedJournalErrorV1::Changed);
         }
-        self.inputs = Some(AdmittedHostTpmInputsV1::admit(self.origins));
+        self.inputs = Some(if self.origins.boot_purpose_v1().is_some() {
+            AdmittedHostTpmInputsV1::admit_boot_retaining_once(self.origins, &mut self.boot_inputs)
+        } else {
+            AdmittedHostTpmInputsV1::admit(self.origins)
+        });
         if matches!(self.inputs.as_ref(), Some(Err(_))) {
             self.first_stage = Some(CanaryJournalAdmissionStageV2::Input);
             return match self.inputs.take() {
@@ -134,10 +281,31 @@ impl<'origin, 'startup> HostCanaryJournalAdmissionV2<'origin, 'startup> {
                 _ => std::process::abort(),
             };
         }
+        if self.origins.boot_purpose_v1().is_some() {
+            self.inputs
+                .as_mut()
+                .and_then(|result| result.as_mut().ok())
+                .ok_or(HostOwnedJournalErrorV1::Unusable)?
+                .prepare_boot_owed_recheck_v1()?;
+        }
         let main_limits = self.origins.compared_main_limits()?;
-        self.main = Some(Journal::open_existing_protected_at(
-            Path::new(JOURNAL_DIRECTORY), MAIN_JOURNAL_NAME, main_limits,
-        ));
+        self.main = Some(if self.origins.boot_purpose_v1().is_some() {
+            self.origins.admit_boot_publisher_representation_v1(Some(
+                RuntimeDeploymentMainCapturedJournalOpenV1::fixed_preparation_demand()
+                    .map_err(aos_sandbox::JournalError::from)?,
+            ))?;
+            self.boot_main.prepare_once(main_limits, CapturedJournalOpenModeV1::ExistingOnly);
+            if let Some(extent) = self.boot_main.captured_extent() {
+                let demand = boot_replay_demand_v1(extent)?;
+                self.origins.admit_boot_publisher_representation_v1(demand)?;
+                self.boot_main.replay_once();
+            }
+            self.boot_main.take_opened().ok_or(aos_sandbox::JournalError::ProtectedBoundary)
+        } else {
+            Journal::open_existing_protected_at(
+                Path::new(JOURNAL_DIRECTORY), MAIN_JOURNAL_NAME, main_limits,
+            )
+        });
         if matches!(self.main.as_ref(), Some(Err(_))) {
             self.first_stage = Some(CanaryJournalAdmissionStageV2::Main);
             return match self.main.take() {
@@ -152,9 +320,23 @@ impl<'origin, 'startup> HostCanaryJournalAdmissionV2<'origin, 'startup> {
         }
         drop(self.origins.hold_main(main)?);
         let limits = sidecar_limits(main_limits)?;
-        self.sidecar = Some(Journal::open_existing_protected_at(
-            Path::new(JOURNAL_DIRECTORY), SIDECAR_JOURNAL_NAME, limits,
-        ));
+        self.sidecar = Some(if self.origins.boot_purpose_v1().is_some() {
+            self.origins.admit_boot_publisher_representation_v1(Some(
+                RuntimeDeploymentFloorCapturedJournalOpenV1::fixed_preparation_demand()
+                    .map_err(aos_sandbox::JournalError::from)?,
+            ))?;
+            self.boot_sidecar.prepare_once(limits, CapturedJournalOpenModeV1::ExistingOnly);
+            if let Some(extent) = self.boot_sidecar.captured_extent() {
+                let demand = boot_replay_demand_v1(extent)?;
+                self.origins.admit_boot_publisher_representation_v1(demand)?;
+                self.boot_sidecar.replay_once();
+            }
+            self.boot_sidecar.take_opened().ok_or(aos_sandbox::JournalError::ProtectedBoundary)
+        } else {
+            Journal::open_existing_protected_at(
+                Path::new(JOURNAL_DIRECTORY), SIDECAR_JOURNAL_NAME, limits,
+            )
+        });
         if matches!(self.sidecar.as_ref(), Some(Err(_))) {
             self.first_stage = Some(CanaryJournalAdmissionStageV2::Sidecar);
             return match self.sidecar.take() {
@@ -196,6 +378,17 @@ impl<'origin, 'startup> HostCanaryJournalAdmissionV2<'origin, 'startup> {
         self.owner.as_mut().ok_or(HostOwnedJournalErrorV1::Unusable)
     }
 
+    /// Borrows the original lower cause while every reached admission remains held.
+    pub(super) fn first_native_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first_stage {
+            Some(CanaryJournalAdmissionStageV2::Input) => self.boot_inputs.failure(),
+            Some(CanaryJournalAdmissionStageV2::Main) => self.boot_main.failure(),
+            Some(CanaryJournalAdmissionStageV2::Sidecar) => self.boot_sidecar.failure(),
+            _ => None,
+        }.or_else(|| self.first_failure.as_ref().as_ref()
+            .map(|cause| cause as &(dyn std::error::Error + 'static)))
+    }
+
     fn retain_post(&mut self, index: usize, result: Result<(), HostOwnedJournalErrorV1>) {
         if let Err(cause) = result {
             if self.first_failure.is_none() {
@@ -208,8 +401,13 @@ impl<'origin, 'startup> HostCanaryJournalAdmissionV2<'origin, 'startup> {
     }
 
     fn park_first(&mut self, cause: HostOwnedJournalErrorV1) {
+        if self.first_failure.is_some() {
+            return;
+        }
+        // Normal pre-admission failures occur before admit_once selects a
+        // native stage. Preserve any already selected lower stage and cause.
+        self.first_stage.get_or_insert(CanaryJournalAdmissionStageV2::Other);
         let slot = Arc::get_mut(&mut self.first_failure).unwrap_or_else(|| std::process::abort());
-        if slot.is_some() || self.first_stage.is_none() { std::process::abort(); }
         *slot = Some(cause);
     }
 
@@ -220,6 +418,18 @@ impl<'origin, 'startup> HostCanaryJournalAdmissionV2<'origin, 'startup> {
             stage: self.first_stage.unwrap_or_else(|| std::process::abort()),
         }
     }
+}
+
+// The captured same-File extent is DATA. Only its genuine normal Origins pays
+// before this shared native parser, semantic replay and terminal EOF probe.
+fn boot_replay_demand_v1(
+    extent: &aos_sandbox::journal::ProtectedJournalPreopenReplayExtentV1,
+) -> Result<Option<ResourceVector>, aos_sandbox::JournalError> {
+    let native = extent.dominant_native_receiving_demand_v1()?;
+    let semantic = extent.dominant_semantic_receiving_demand_v1()?;
+    Ok(native.checked_add(semantic).ok().and_then(|demand| {
+        Some(demand.with(D::OutputBytes, extent.native_bytes.checked_add(1)?))
+    }))
 }
 
 /// Carries only the genuine Host constructor's same original fixed sidecar.
@@ -235,6 +445,10 @@ pub(in crate::tpm_nv_custody) struct HostSidecarCustodyV1<'origin, 'startup> {
 impl HostSidecarCustodyV1<'_, '_> {
     pub(in crate::tpm_nv_custody) fn validate_held(&self) -> Result<(), HostOwnedJournalErrorV1> {
         self.origins.recheck()?;
+        if self.origins.boot_purpose_v1().is_some() {
+            self.origins
+                .admit_boot_journal_currentness_representation_v1(&self.journal)?;
+        }
         self.journal.validate_held_root_owned_at(
             Path::new(JOURNAL_DIRECTORY), SIDECAR_JOURNAL_NAME,
         )?;
@@ -244,6 +458,85 @@ impl HostSidecarCustodyV1<'_, '_> {
 
     pub(in crate::tpm_nv_custody) fn journal_mut(&mut self) -> &mut Journal {
         &mut self.journal
+    }
+
+    pub(in crate::tpm_nv_custody) fn journal_ref(&self) -> &Journal {
+        &self.journal
+    }
+
+    pub(in crate::tpm_nv_custody) fn is_boot_v1(&self) -> bool {
+        self.origins.boot_purpose_v1().is_some()
+    }
+
+    pub(in crate::tpm_nv_custody) fn admit_boot_models_v1(
+        &self,
+    ) -> Result<(), HostOwnedJournalErrorV1> {
+        if self.origins.boot_purpose_v1().is_some() {
+            self.origins
+                .admit_boot_journal_model_representation_v1(&self.journal)?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::tpm_nv_custody) fn admit_boot_lock_loan_v1(
+        &self,
+    ) -> Result<(), HostOwnedJournalErrorV1> {
+        if self.origins.boot_purpose_v1().is_some() {
+            self.origins
+                .admit_boot_journal_lock_loan_representation_v1(&self.journal)?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::tpm_nv_custody) fn admit_boot_append_v1(
+        &self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), HostOwnedJournalErrorV1> {
+        if self.origins.boot_purpose_v1().is_some() {
+            self.origins
+                .admit_boot_journal_append_representation_v1(&self.journal, transaction)?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::tpm_nv_custody) fn admit_boot_prepared_v1(
+        &self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), HostOwnedJournalErrorV1> {
+        if self.origins.boot_purpose_v1().is_some() {
+            self.origins
+                .admit_boot_transaction_model_representation_v1(transaction)?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::tpm_nv_custody) fn admit_boot_shapes_v1<I, T>(
+        &self,
+        transactions: I,
+    ) -> Result<(), HostOwnedJournalErrorV1>
+    where
+        I: IntoIterator<Item = Result<T, aos_sandbox::JournalError>>,
+        T: ExactSizeIterator<Item = aos_sandbox_journal::geometry::RecordShape>,
+    {
+        if self.origins.boot_purpose_v1().is_some() {
+            self.origins
+                .admit_boot_journal_sequence_representation_v1(&self.journal, transactions)?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::tpm_nv_custody) fn admit_boot_digest_v1(
+        &self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), HostOwnedJournalErrorV1> {
+        if self.origins.boot_purpose_v1().is_some() {
+            self.origins.admit_boot_publisher_representation_v1(
+                crate::tpm_nv_custody::FloorHeadTransactionOriginalV3::receiving_demand_v3(
+                    transaction,
+                ),
+            )?;
+        }
+        Ok(())
     }
 
     pub(in crate::tpm_nv_custody) const fn main_limits(&self) -> JournalLimits {
@@ -266,6 +559,17 @@ pub(super) struct HostOwnedJournalInputsV1<'origin, 'startup> {
 }
 
 impl<'origin, 'startup> HostOwnedJournalInputsV1<'origin, 'startup> {
+    pub(super) fn require_boot_native_original_v1(
+        &self,
+        original: &aos_sandbox::RuntimeBootPreparationNativeOriginalV1<'_, '_>,
+    ) -> Result<(), HostOwnedJournalErrorV1> {
+        if self.origins.boot_purpose_v1().is_none()
+            || !std::ptr::eq(self.origins, original.origins_v1())
+        {
+            return Err(HostOwnedJournalErrorV1::Changed);
+        }
+        Ok(())
+    }
     /// Admits only independently existing originals under genuine Origins.
     ///
     /// # Errors
@@ -362,6 +666,7 @@ impl<'origin, 'startup> HostOwnedJournalInputsV1<'origin, 'startup> {
             }
             None => {
                 let target = self.compare_prospective(transaction, stored.current)?;
+                self.admit_boot_digest_v1(transaction)?;
                 HostFloorIntentDataV1::compare_successor(
                     self.origins_scope()?, stored.checkpoint, target, transaction,
                 )?
@@ -372,6 +677,10 @@ impl<'origin, 'startup> HostOwnedJournalInputsV1<'origin, 'startup> {
             // predecessor/target above. It must never be preflighted again.
             None
         } else {
+            if self.origins.boot_purpose_v1().is_some() {
+                self.origins
+                    .admit_boot_journal_append_representation_v1(&self.main, transaction)?;
+            }
             let authority = self.main
                 .claim_protected_authority(RecordNamespace::HostCatalogReconciliation)?;
             let token = authority.preflight_transactions(std::slice::from_ref(transaction))?;
@@ -389,6 +698,20 @@ impl<'origin, 'startup> HostOwnedJournalInputsV1<'origin, 'startup> {
 
     fn begin_operation(&mut self) -> Result<(), HostOwnedJournalErrorV1> {
         close_owner_health(&mut self.usable)
+    }
+
+    fn admit_boot_digest_v1(
+        &self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), HostOwnedJournalErrorV1> {
+        if self.origins.boot_purpose_v1().is_some() {
+            self.origins.admit_boot_publisher_representation_v1(
+                crate::tpm_nv_custody::FloorHeadTransactionOriginalV3::receiving_demand_v3(
+                    transaction,
+                ),
+            )?;
+        }
+        Ok(())
     }
 
     fn origins_scope(&mut self) -> Result<[u8; 32], HostOwnedJournalErrorV1> {
@@ -457,6 +780,9 @@ pub(in crate::tpm_nv_custody) struct HeldHostPhysicalJournalV1<'owner, 'origin, 
     admitted_usable: bool,
     canary_funding: Option<CanaryHostFundingV2>,
     canary_commits: [Option<Arc<CanaryNativeResultV2>>; 3],
+    boot_name_posts: [Option<Box<BootNamePostsV1>>; 32],
+    boot_name_next: usize,
+    boot_name_pending: Option<usize>,
 }
 
 impl<'owner, 'origin, 'startup> HeldHostPhysicalJournalV1<'owner, 'origin, 'startup> {
@@ -466,6 +792,9 @@ impl<'owner, 'origin, 'startup> HeldHostPhysicalJournalV1<'owner, 'origin, 'star
         Self {
             owner, admitted_usable, canary_funding: None,
             canary_commits: std::array::from_fn(|_| None),
+            boot_name_posts: std::array::from_fn(|_| None),
+            boot_name_next: 0,
+            boot_name_pending: None,
         }
     }
 
@@ -496,6 +825,19 @@ impl<'owner, 'origin, 'startup> HeldHostPhysicalJournalV1<'owner, 'origin, 'star
 
     pub(super) fn helper_path(&self) -> &Path {
         self.owner.inputs.helper_path()
+    }
+
+    // Only new primary observations use this same-owner debit. Independently
+    // owed drains consume their earlier reserve and never call this forwarder.
+    pub(super) fn admit_boot_representation_v1(
+        &self,
+        demand: Option<ResourceVector>,
+    ) -> Result<(), HostOwnedJournalErrorV1> {
+        if self.owner.origins.boot_purpose_v1().is_none() {
+            return Err(HostOwnedJournalErrorV1::Changed);
+        }
+        self.owner.origins.admit_boot_publisher_representation_v1(demand)?;
+        Ok(())
     }
 
     pub(super) fn require_executed_helper(
@@ -564,7 +906,8 @@ impl<'owner, 'origin, 'startup> HeldHostPhysicalJournalV1<'owner, 'origin, 'star
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<HostFloorIntentDataV1, HostOwnedJournalErrorV1> {
-        if self.canary_funding.is_some() || self.owner.origins.canary_purpose_v2().is_none() {
+        if self.canary_funding.is_some() || (self.owner.origins.canary_purpose_v2().is_none()
+            && self.owner.origins.boot_purpose_v1().is_none()) {
             return Err(HostOwnedJournalErrorV1::Changed);
         }
         let (stored, _) = self.compare_state()?;
@@ -574,7 +917,8 @@ impl<'owner, 'origin, 'startup> HeldHostPhysicalJournalV1<'owner, 'origin, 'star
     }
 
     pub(super) fn prepare_canary_destinations_v2(&mut self) -> Result<(), HostOwnedJournalErrorV1> {
-        if !self.admitted_usable || self.owner.origins.canary_purpose_v2().is_none()
+        if !self.admitted_usable || (self.owner.origins.canary_purpose_v2().is_none()
+            && self.owner.origins.boot_purpose_v1().is_none())
             || self.canary_commits.iter().any(Option::is_some)
         {
             return Err(HostOwnedJournalErrorV1::Unusable);
@@ -592,6 +936,7 @@ impl<'owner, 'origin, 'startup> HeldHostPhysicalJournalV1<'owner, 'origin, 'star
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<[u8; 32], HostOwnedJournalErrorV1> {
+        self.owner.admit_boot_digest_v1(transaction)?;
         let funding = self.canary_funding.as_ref().ok_or(HostOwnedJournalErrorV1::Unusable)?;
         funding.intent.require_transaction(transaction)?;
         let intent = funding.intent;
@@ -619,18 +964,84 @@ impl<'owner, 'origin, 'startup> HeldHostPhysicalJournalV1<'owner, 'origin, 'star
     // Available original input and fixed-file observations remain separate on
     // a failed selected action. They do not reopen, repair or readmit owners.
     pub(super) fn observe_canary_inputs_v2(&mut self) -> Result<(), HostOwnedJournalErrorV1> {
-        self.owner.inputs.recheck()?;
+        if self.owner.origins.boot_purpose_v1().is_some() {
+            self.owner.inputs.observe_boot_owed_recheck_once_v1()?;
+            // The enclosing physical operation independently finishes its
+            // prepaid genuine credential/startup post. This input-only branch
+            // cannot substitute a fresh after-effect Source debit for it.
+            return Ok(());
+        } else {
+            self.owner.inputs.recheck()?;
+        }
         self.owner.origins.recheck()?;
         Ok(())
     }
 
-    pub(super) fn observe_canary_main_name_v2(&self) -> Result<(), HostOwnedJournalErrorV1> {
+    pub(super) fn prepare_boot_input_after_v1(&mut self) -> Result<(), HostOwnedJournalErrorV1> {
+        if self.owner.origins.boot_purpose_v1().is_some() {
+            self.owner.inputs.prepare_boot_owed_recheck_v1()?;
+            let index = self.boot_name_next;
+            if self.boot_name_pending.is_some() || index >= self.boot_name_posts.len() {
+                return Err(HostOwnedJournalErrorV1::Unusable);
+            }
+            let posts = BootNamePostsV1::prepare(self.owner.origins)?;
+            self.boot_name_posts[index] = Some(Box::new(posts));
+            self.boot_name_next += 1;
+            self.boot_name_pending = Some(index);
+        }
+        Ok(())
+    }
+
+    pub(super) fn drain_boot_input_after_unwind_once_v1(&mut self) -> Result<(), HostOwnedJournalErrorV1> {
+        if self.owner.origins.boot_purpose_v1().is_some() {
+            let input = self
+                .owner
+                .inputs
+                .drain_boot_owed_recheck_after_unwind_once_v1();
+            let history = self.owner.origins.drain_boot_journal_after_unwind_once_v1(
+                &self.owner.main,
+                self.owner.store.original_ref(),
+            );
+            let main = self.observe_boot_name_post_v1(0);
+            let sidecar = self.observe_boot_name_post_v1(1);
+            input?;
+            main?;
+            sidecar?;
+            history?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn observe_canary_main_name_v2(&mut self) -> Result<(), HostOwnedJournalErrorV1> {
+        if self.owner.origins.boot_purpose_v1().is_some() { return self.observe_boot_name_post_v1(0); }
         self.owner.main.validate_held_root_owned_at(Path::new(JOURNAL_DIRECTORY), MAIN_JOURNAL_NAME)?;
         Ok(())
     }
 
-    pub(super) fn observe_canary_sidecar_name_v2(&self) -> Result<(), HostOwnedJournalErrorV1> {
+    pub(super) fn observe_canary_sidecar_name_v2(&mut self) -> Result<(), HostOwnedJournalErrorV1> {
+        if self.owner.origins.boot_purpose_v1().is_some() {
+            return self.observe_boot_name_post_v1(1);
+        }
         self.owner.store.validate_held()
+    }
+
+    fn observe_boot_name_post_v1(&mut self, lane: usize) -> Result<(), HostOwnedJournalErrorV1> {
+        let Some(index) = self.boot_name_pending else {
+            return Ok(());
+        };
+        let posts = self.boot_name_posts[index]
+            .as_mut()
+            .ok_or(HostOwnedJournalErrorV1::Unusable)?;
+        let journal = match lane {
+            0 => &self.owner.main,
+            1 => self.owner.store.original_ref(),
+            _ => return Err(HostOwnedJournalErrorV1::Changed),
+        };
+        let result = posts.observe_once(lane, journal);
+        if posts.complete() {
+            self.boot_name_pending = None;
+        }
+        result
     }
 
     /// Performs exactly one already-funded selected native step on these writers.
@@ -641,12 +1052,15 @@ impl<'owner, 'origin, 'startup> HeldHostPhysicalJournalV1<'owner, 'origin, 'star
         &mut self,
         step: CanaryHostNativeStepV2,
         transaction: &JournalTransaction,
-        original: &super::CanaryAuthenticatedRequestV3,
+        original: &super::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Result<(), HostOwnedJournalErrorV1> {
+        self.require_native_original_v3(original)?;
+        self.owner.admit_boot_digest_v1(transaction)?;
         let index = step.index();
         if self.canary_commits[index].as_ref().is_none_or(|slot| slot.as_ref().is_some())
             || !self.admitted_usable
-            || self.owner.origins.canary_purpose_v2().is_none()
+            || (self.owner.origins.canary_purpose_v2().is_none()
+                && self.owner.origins.boot_purpose_v1().is_none())
         {
             return Err(HostOwnedJournalErrorV1::Unusable);
         }
@@ -683,6 +1097,14 @@ impl<'owner, 'origin, 'startup> HeldHostPhysicalJournalV1<'owner, 'origin, 'star
                 )?;
                 drop(authority);
                 self.owner.store.validate_suffix(&funding.suffix)?;
+                if self.owner.origins.boot_purpose_v1().is_some() {
+                    self.owner
+                        .origins
+                        .admit_boot_journal_append_representation_v1(
+                            &self.owner.main,
+                            transaction,
+                        )?;
+                }
                 let mut authority = self.owner.main.claim_protected_authority(RecordNamespace::HostCatalogReconciliation)?;
                 let destination = self.canary_commits[index].as_mut().and_then(Arc::get_mut)
                     .filter(|slot| slot.is_none()).ok_or(HostOwnedJournalErrorV1::Unusable)?;
@@ -740,6 +1162,48 @@ impl<'owner, 'origin, 'startup> HeldHostPhysicalJournalV1<'owner, 'origin, 'star
         }
         Ok(())
     }
+
+    pub(super) fn require_native_original_v3(
+        &self,
+        original: &super::PublisherNativeOriginalRefV3<'_, '_, '_>,
+    ) -> Result<(), HostOwnedJournalErrorV1> {
+        match original {
+            super::PublisherNativeOriginalRefV3::Canary(_)
+                if self.owner.origins.canary_purpose_v2().is_some() => Ok(()),
+            super::PublisherNativeOriginalRefV3::Boot(original)
+                if self.owner.origins.boot_purpose_v1().is_some()
+                    && std::ptr::eq(self.owner.origins, original.origins_v1()) => Ok(()),
+            _ => Err(HostOwnedJournalErrorV1::Changed),
+        }
+    }
+
+    pub(super) fn boot_main_data_v1(&mut self) -> Result<BootHostMainDataV1, HostOwnedJournalErrorV1> {
+        let (stored, scope) = self.compare_state()?;
+        let purpose = self.owner.origins.boot_purpose_v1().ok_or(HostOwnedJournalErrorV1::Changed)?;
+        let mut last = None;
+        for (name, bytes) in self.owner.main.records(RecordNamespace::HostCatalogReconciliation) {
+            if name == aos_sandbox_protocol::runtime_deployment::boot_preparation::BOOT_PREPARATION_GENESIS_KEY_V1 {
+                continue;
+            }
+            // The same original full native fold has already admitted every
+            // row. This projects the final signed DATA without another parser
+            // or Journal read; it grants no new physical floor or append.
+            last = Some(aos_sandbox_protocol::runtime_deployment::boot_preparation::SignedBootPreparationRecordDataV1::verify_v1(
+                bytes, purpose,
+            ).map_err(|_| HostOwnedJournalErrorV1::Changed)?);
+        }
+        let after = self.compare_state()?;
+        if after.0 != stored || after.1 != scope {
+            return Err(HostOwnedJournalErrorV1::Changed);
+        }
+        Ok(BootHostMainDataV1 { stored, scope, last })
+    }
+}
+
+pub(in crate::tpm_nv_custody) struct BootHostMainDataV1 {
+    pub(in crate::tpm_nv_custody) stored: StoredHostFloorV1,
+    pub(in crate::tpm_nv_custody) scope: [u8; 32],
+    pub(in crate::tpm_nv_custody) last: Option<aos_sandbox_protocol::runtime_deployment::boot_preparation::SignedBootPreparationRecordDataV1>,
 }
 
 pub(in crate::tpm_nv_custody) struct CanaryHostMainDataV2 {
@@ -817,6 +1281,7 @@ impl HostFundingCutV1<'_, '_, '_, '_> {
         if self.owner.recheck_inner()? != self.stored {
             return Err(HostOwnedJournalErrorV1::Changed);
         }
+        self.owner.admit_boot_digest_v1(self.transaction)?;
         self.intent.require_transaction(self.transaction)?;
         let authority = self.owner.main
             .claim_protected_authority(RecordNamespace::HostCatalogReconciliation)?;

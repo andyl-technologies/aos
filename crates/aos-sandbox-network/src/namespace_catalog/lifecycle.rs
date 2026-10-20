@@ -572,6 +572,29 @@ impl NetworkNamespaceCatalogV1 {
         &mut self,
         transition: NetworkNamespaceLifecycleTransitionV1,
     ) -> Result<NetworkNamespaceLifecycleOutcomeV1, NetworkNamespaceCatalogError> {
+        self.apply_lifecycle_transition_engine_v2(transition, None, None)
+    }
+
+    pub(crate) fn apply_destroy_transition_guarded_v2(
+        &mut self,
+        transition: NetworkNamespaceLifecycleTransitionV1,
+        pin: &mut super::NetworkPinObservationOriginalV4,
+        gate: &mut dyn FnMut(&crate::journal::Journal, &crate::journal::JournalTransaction)
+            -> Result<(), NetworkNamespaceCatalogError>,
+    ) -> Result<NetworkNamespaceLifecycleOutcomeV1, NetworkNamespaceCatalogError> {
+        if transition.action != NetworkNamespaceLifecycleActionV1::Destroy {
+            return Err(NetworkNamespaceCatalogError::InvalidCandidate);
+        }
+        self.apply_lifecycle_transition_engine_v2(transition, Some(pin), Some(gate))
+    }
+
+    fn apply_lifecycle_transition_engine_v2(
+        &mut self,
+        transition: NetworkNamespaceLifecycleTransitionV1,
+        pin: Option<&mut super::NetworkPinObservationOriginalV4>,
+        gate: Option<&mut dyn FnMut(&crate::journal::Journal, &crate::journal::JournalTransaction)
+            -> Result<(), NetworkNamespaceCatalogError>>,
+    ) -> Result<NetworkNamespaceLifecycleOutcomeV1, NetworkNamespaceCatalogError> {
         self.journal.ensure_healthy()?;
         let observation = transition.observation;
         let identity = observation.namespace;
@@ -584,7 +607,7 @@ impl NetworkNamespaceCatalogV1 {
             if current.last_transition_digest != transition.digest {
                 return Err(NetworkNamespaceCatalogError::IdentityConflict);
             }
-            self.validate_transition_pin(current, transition.action)?;
+            self.validate_transition_pin_retaining_v2(current, transition.action, pin)?;
             return Ok(NetworkNamespaceLifecycleOutcomeV1::Replay);
         }
         if self.records.values().any(|record| {
@@ -600,7 +623,7 @@ impl NetworkNamespaceCatalogV1 {
         {
             return Err(NetworkNamespaceCatalogError::LifecycleConflict);
         }
-        self.validate_transition_pin(current, transition.action)?;
+        self.validate_transition_pin_retaining_v2(current, transition.action, pin)?;
 
         let mut next = current.clone();
         match transition.action {
@@ -658,18 +681,22 @@ impl NetworkNamespaceCatalogV1 {
         next.last_transition_digest = transition.digest;
         next.refresh_digest()?;
         next.validate()?;
-        self.commit(next)?;
+        self.commit_engine_v4(next, gate)?;
 
         Ok(NetworkNamespaceLifecycleOutcomeV1::Applied)
     }
 
-    fn validate_transition_pin(
+    fn validate_transition_pin_retaining_v2(
         &self,
         record: &super::NamespaceRecordV1,
         action: NetworkNamespaceLifecycleActionV1,
+        pin: Option<&mut super::NetworkPinObservationOriginalV4>,
     ) -> Result<(), NetworkNamespaceCatalogError> {
         if action == NetworkNamespaceLifecycleActionV1::Destroy {
-            self.pin_root.ensure_absent(&record.network_handle)
+            match pin {
+                Some(pin) => self.pin_root.ensure_absent_retaining_v4(&record.network_handle, pin),
+                None => self.pin_root.ensure_absent(&record.network_handle),
+            }
         } else if record.kernel_boot_id != self.kernel_boot_id
             || matches!(record.lifecycle, NamespaceLifecycleV1::Retired)
         {
@@ -677,6 +704,46 @@ impl NetworkNamespaceCatalogV1 {
         } else {
             self.pin_root.verify_record(record)
         }
+    }
+
+    /// Retains the exact live target before P removes its canonical name.
+    pub(crate) fn retain_destroy_target_once_v2(
+        &self,
+        identity: NetworkNamespaceIdentityV1,
+        pin: &mut super::NetworkPinObservationOriginalV4,
+    ) -> Result<(), NetworkNamespaceCatalogError> {
+        let record = self.records.get(&identity.network_handle)
+            .ok_or(NetworkNamespaceCatalogError::LifecycleConflict)?;
+        if record.kernel_boot_id != self.kernel_boot_id
+            || record.kernel_boot_id != identity.kernel_boot_id
+            || record.namespace_device != identity.namespace_device
+            || record.namespace_inode != identity.namespace_inode
+            || matches!(record.lifecycle, NamespaceLifecycleV1::Retired)
+        {
+            return Err(NetworkNamespaceCatalogError::LifecycleConflict);
+        }
+        let observed = pin.observe_once_v4(&self.pin_root, &identity.network_handle)?;
+        if observed.device != identity.namespace_device || observed.inode != identity.namespace_inode {
+            return Err(NetworkNamespaceCatalogError::IdentityConflict);
+        }
+        Ok(())
+    }
+
+    /// Observes the canonical name's absence before actual Store retirement.
+    pub(crate) fn observe_destroy_absence_once_v2(
+        &self,
+        identity: NetworkNamespaceIdentityV1,
+        pin: &mut super::NetworkPinObservationOriginalV4,
+    ) -> Result<(), NetworkNamespaceCatalogError> {
+        let record = self.records.get(&identity.network_handle)
+            .ok_or(NetworkNamespaceCatalogError::LifecycleConflict)?;
+        if record.kernel_boot_id != identity.kernel_boot_id
+            || record.namespace_device != identity.namespace_device
+            || record.namespace_inode != identity.namespace_inode
+        {
+            return Err(NetworkNamespaceCatalogError::IdentityConflict);
+        }
+        self.pin_root.ensure_absent_retaining_v4(&identity.network_handle, pin)
     }
 }
 

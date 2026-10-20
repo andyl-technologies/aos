@@ -252,6 +252,28 @@ impl NetworkPrepareWorkerDispatchV1 {
         Ok(bytes)
     }
 
+    /// Measures the canonical codec's exact output without allocation or IO.
+    /// The result is DATA for the original parent's complete receiving quote.
+    pub(crate) fn encoded_length_data_v2(&self) -> Option<usize> {
+        let catalog =
+            154usize.checked_add(self.catalog.resolution.endpoints().len().checked_mul(48)?)?;
+        let total = [
+            self.request_body.len(),
+            self.kernel_plan.as_bytes().len(),
+            catalog,
+            self.catalog.sealed.len(),
+            self.current_fence.len(),
+            self.operation_fence.len(),
+            self.effect.len(),
+            self.dispatch.len(),
+        ]
+        .into_iter()
+        .try_fold(REQUEST_HEADER_BYTES, |total, bytes| {
+            total.checked_add(bytes)
+        })?;
+        (total <= MAXIMUM_NETWORK_WORKER_REQUEST_BYTES).then_some(total)
+    }
+
     /// Independently authenticates every durable and dispatch relationship.
     ///
     /// This step does not establish time freshness. The worker must next call
@@ -452,6 +474,38 @@ pub struct NetworkMutationAuthorizationV1 {
 }
 
 impl NetworkMutationAuthorizationV1 {
+    /// Reports the exact original signed body extent for prepaid receiving DATA.
+    pub(crate) fn original_request_body_bytes_data_v2(&self) -> usize {
+        self.authenticated.request.request_body.len()
+    }
+
+    /// Borrows the unchanged original lease for helper deadline comparisons.
+    pub(crate) fn original_local_lease_v2(&self) -> &aos_sandbox_core::LocalLeaseRecord {
+        self.authenticated.current_fence.local_lease_record()
+    }
+
+    /// Borrows original WALL/BOOT/D comparison facts without issuing a permit.
+    pub(crate) fn original_effect_v2(&self) -> &BrokerEffectIntentV1 {
+        &self.authenticated.effect
+    }
+
+    /// Reuses the same currentness engine at each prepaid helper frontier.
+    pub(crate) fn require_current_before_helper_v2<F>(
+        &self,
+        authority: &NetworkAuthorityV1,
+        trusted_clock: &mut F,
+    ) -> Result<(), NetworkWorkerProtocolError>
+    where
+        F: FnMut() -> Result<aos_sandbox_core::RawPairedClockSample, NetworkAdmissionError>,
+    {
+        check_freshness(
+            authority,
+            &self.authenticated.current_fence,
+            &self.authenticated.effect,
+            trusted_clock,
+        )
+    }
+
     /// Returns the exact canonical plan authorized for kernel realization.
     #[must_use]
     pub const fn kernel_plan(&self) -> &NetworkKernelPlanV1 {

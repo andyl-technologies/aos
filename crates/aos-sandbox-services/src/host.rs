@@ -15,6 +15,13 @@ use aos_sandbox_broker_session_security::{
 };
 use aos_sandbox_host::live_agent::HostAgentLiveErrorV1;
 
+const _: () = assert!(
+    std::mem::size_of::<&mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1>()
+        + std::mem::size_of::<&aos_sandbox_host::live_agent::HostAgentLiveSessionV1>()
+        + std::mem::size_of::<Option<aos_sandbox_host::broker::HostRuntimeNativeCustodyViewV2<'_>>>()
+        <= std::mem::size_of::<aos_sandbox_host::live_agent::HostAgentLiveSessionV1>()
+);
+
 const STORAGE_ROLE: usize = 2;
 const HOST_ROLES: [ProductionHostRoleV1; 3] = [
     ProductionHostRoleV1::Controller,
@@ -29,6 +36,9 @@ pub struct ProductionHostBrokerServiceV1 {
     sessions: [Option<DormantAuthenticatedBrokerSessionV1>; 3],
     agent: Option<aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
     next_role: usize,
+    // A failed autonomous interval keeps the same service and Agent alive;
+    // the actual reached native originals remain in the resident Host owner.
+    monitor_failure: Option<aos_sandbox_host::DormantHostBrokerCallErrorV1>,
 }
 
 /// Reports admission failure or a consumed Host request-cycle failure.
@@ -43,6 +53,9 @@ pub enum ProductionHostBrokerServiceErrorV1 {
     /// The protected runtime generation could not be claimed for a guest launch.
     #[error("guest-agent launch currentness is unavailable: {0}")]
     GuestRuntime(#[from] DormantRuntimeExecutionOwnerErrorV1),
+    /// A retained paid launch could not transfer its exact authenticated Agent.
+    #[error("paid guest-agent launch handoff is unavailable: {0}")]
+    GuestLaunch(#[from] aos_sandbox_host::DormantHostBrokerCallErrorV1),
     /// The private launch channel did not authenticate its exact guest peer.
     #[error("guest-agent launch session is invalid: {0}")]
     GuestSession(#[from] HostAgentLiveErrorV1),
@@ -78,13 +91,23 @@ impl ProductionHostBrokerServiceV1 {
             sessions: [None, None, None],
             agent: None,
             next_role: 0,
+            monitor_failure: None,
         })
     }
 
     fn retain_authenticated_agent_launch(
         &mut self,
-        session: aos_sandbox_host::live_agent::HostAgentLiveSessionV1,
+        host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
     ) -> Result<(), ProductionHostBrokerServiceErrorV1> {
+        if let Some(session) = host.take_paid_authenticated_agent_launch_v2()
+            .map_err(ProductionHostBrokerServiceErrorV1::GuestLaunch)?
+        {
+            self.agent = Some(session);
+            return Ok(());
+        }
+        let Some(session) = host.authenticated_agent_launch() else {
+            return Ok(());
+        };
         // The sealed Host callsite releases this channel only after the
         // Guardian-first transaction durably reaches Complete. There is no
         // standalone pending-session installer that can skip that transition.
@@ -101,6 +124,13 @@ impl ProductionHostBrokerServiceV1 {
                 .into());
             }
         }
+        // All fallible checks ran while the incoming native owner stayed in
+        // the broker. This exclusive sealed callsite now moves that SAME owner.
+        let session = host.take_authenticated_agent_launch().ok_or(
+            ProductionBrokerSessionActivationErrorV1::Activation(
+                "authenticated guest agent disappeared before its owning move",
+            ),
+        )?;
         self.agent = Some(session);
         Ok(())
     }
@@ -123,12 +153,32 @@ impl ProductionHostBrokerServiceV1 {
         publisher: &aos_sandbox_host::catalog::FileHostCatalogPublisher,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<(), ProductionHostBrokerServiceErrorV1> {
-        self.retire_stale_agent_session()?;
-        let role = self.wait_for_ready_role(deadline_boottime_nanoseconds)?;
+        self.retire_stale_agent_session(host)?;
+        let monitor_due = host.resident_execution_monitor_due_data_v5()
+            .filter(|due| *due <= deadline_boottime_nanoseconds);
+        let wait_deadline = monitor_due.unwrap_or(deadline_boottime_nanoseconds);
+        let role = match self.wait_for_ready_role(wait_deadline) {
+            Err(ProductionBrokerSessionActivationErrorV1::Deadline) if monitor_due.is_some() => {
+                if let Err(cause) = host.monitor_resident_execution_once_v5(self.agent.as_mut()).await {
+                    if self.monitor_failure.is_none() { self.monitor_failure = Some(cause); }
+                }
+                // No incoming Session was consumed. Sticky resident refusal
+                // suppresses later ticks while preserving actual uncertainty.
+                return Ok(());
+            }
+            result => result?,
+        };
         self.next_role = (role + 1) % self.sessions.len();
 
         let mut session = match self.sessions[role].take() {
             Some(session) => session,
+            None if HOST_ROLES[role] == ProductionHostRoleV1::Controller => {
+                // A completed old native Stop may have lost its response.
+                // The sealed paid closure drops only that positive old graph;
+                // the new Session and Host3 census still establish currentness.
+                host.retire_completed_unsent_stopped_agent_v1(&mut self.agent).await?;
+                self.activation.accept_current_controller_once_v1(host, deadline_boottime_nanoseconds).await?
+            }
             None => match self
                 .activation
                 .try_accept(HOST_ROLES[role], deadline_boottime_nanoseconds)?
@@ -150,9 +200,14 @@ impl ProductionHostBrokerServiceV1 {
             deadline_boottime_nanoseconds,
         )
         .await;
-        if let Some(agent) = host.take_authenticated_agent_launch() {
-            self.retain_authenticated_agent_launch(agent)?;
+        if served.is_err() && host.retained_runtime_native_custody_v2().is_some() {
+            // A failed selected turn keeps the incoming Agent and every native
+            // prefix on its genuine parent. A later adoption marker cannot
+            // replace the earlier actual request/response failure.
+            return served.map(|_| ()).map_err(ProductionHostBrokerServiceErrorV1::Request);
         }
+        host.retire_authenticated_stopped_agent_v4(&mut self.agent)?;
+        self.retain_authenticated_agent_launch(host)?;
         let mut retained = served?;
         if role == STORAGE_ROLE {
             self.activation.recheck_storage_peer(&mut retained)?;
@@ -161,7 +216,16 @@ impl ProductionHostBrokerServiceV1 {
         Ok(())
     }
 
-    fn retire_stale_agent_session(&mut self) -> Result<(), ProductionHostBrokerServiceErrorV1> {
+    fn retire_stale_agent_session(
+        &mut self,
+        host: &dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+    ) -> Result<(), ProductionHostBrokerServiceErrorV1> {
+        if host.retained_runtime_native_custody_v2().is_some() {
+            // Optional housekeeping cannot reopen the same four OFDs while a
+            // paid stage retains them. Its next authenticated operation must
+            // use that SAME owner's mandatory paid currentness gates instead.
+            return Ok(());
+        }
         let Some(agent) = self.agent.as_ref() else {
             return Ok(());
         };

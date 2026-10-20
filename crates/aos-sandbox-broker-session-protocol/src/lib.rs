@@ -34,6 +34,7 @@ pub mod manifest;
 pub mod model;
 pub mod profile;
 pub mod projection;
+pub mod receiving_geometry;
 pub mod traffic;
 pub mod transcript;
 
@@ -55,7 +56,10 @@ pub use checkpoint::{
     BROKER_SESSION_OUTCOME_COMPANION_BYTES, BROKER_SESSION_REQUEST_COMPANION_BYTES,
     BrokerSessionCheckpointError, BrokerSessionOutcomeCompanionV1, BrokerSessionRequestCompanionV1,
 };
-pub use context::{ProtectedBrokerSessionKeyV1, ProtectedBrokerSessionVerificationContextV1};
+pub use context::{
+    BrokerSessionContextCheckpointDecodeCaptureV1, ProtectedBrokerSessionKeyV1,
+    ProtectedBrokerSessionVerificationContextV1,
+};
 pub use durable::history::{
     BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES, BrokerSessionDurableHistoryV1,
     MAXIMUM_RECORDS as BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_RECORDS,
@@ -66,6 +70,7 @@ pub use durable::{
     BrokerSessionDurableRecordV1, BrokerSessionPeerBindingV1, BrokerSessionProtectedBindingsV1,
     BrokerSessionRecoveredSequenceV1,
     HistoricalTrafficReplayErrorV1, verify_historical_traffic_records_v1,
+    HistoricalTrafficReplayCaptureV1, verify_historical_traffic_records_retaining_v1,
 };
 pub use endpoint_publication::{
     BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES, BrokerSessionEndpointPublicationError,
@@ -118,4 +123,9 @@ pub use transcript::{
     StrictlyVerifiedClientHelloV1, VerifiedBrokerSessionTranscriptV1,
     verify_broker_session_transcript_after_client_v1, verify_broker_session_transcript_v1,
     verify_client_hello_context_v1, verify_client_hello_signature_v1,
+};
+
+#[doc(hidden)]
+pub use transcript::{
+    BrokerSessionTranscriptVerifyCaptureV1, verify_broker_session_transcript_retaining_v1,
 };

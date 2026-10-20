@@ -11,10 +11,9 @@
 //!
 //! The private model module owns bounded inputs and candidate DATA. The compiler
 //! module orders authority, namespace, resources and advisory lowering.
-//! [`PreparedPublisherPolicyRevisionV1`] and [`RetainedPublisherCompilerOriginV3`]
-//! share the complete canonical publisher-revision and provenance codecs.
-//! Their checked DATA operations and normalized input digest do not create
-//! native compiled wrappers, current admissions or protected owner loans.
+//! Protocol owns canonical publisher revisions, provenance and commitment DATA.
+//! This crate qualifies derivation against genuine typed compiler inputs; its
+//! normalized input digest creates no current admission or protected owner loan.
 
 mod advisory;
 mod authority;
@@ -22,12 +21,24 @@ mod compiler;
 mod model;
 mod publisher_revision;
 pub use publisher_revision::{
-    NormalizedPolicyInputErrorV1, PreparedPublisherPolicyRevisionV1, PublisherPolicyDataError,
-    RetainedPublisherCompilerOriginV3, normalized_policy_input_digest_v1,
-    retain_publisher_compiler_derivation_v3,
+    NormalizedPolicyInputErrorV1, compare_publisher_compiler_derivation_v3,
+    normalized_policy_input_digest_v1, retain_publisher_compiler_derivation_v3,
+    verify_publisher_compiler_derivation_v3,
 };
 mod namespace;
 mod resources;
+
+/// Names existing Policy journal DATA keys without granting native authority.
+pub mod journal_keys;
+
+/// Checks canonical signed input DATA without native admission.
+pub mod signed_inputs;
+
+/// Checks signed Controller comparison DATA without native custody or authority.
+pub mod controller_readback;
+
+/// Owns canonical Controller project-readback DATA and raw verification.
+pub mod controller_project_readback;
 
 #[cfg(target_os = "linux")]
 pub mod policy_signer_credential;
@@ -48,15 +59,15 @@ pub use model::{
     CandidateAuthorityV1, CompiledPolicyCandidateV1, CompiledPolicyCommitmentV1,
     ExplanationCommitmentV1, ExplanationDecisionV1, ExplanationEntryV1, ExplanationReasonV1,
     ExplanationStageV1, HardResourcePlanCommitmentV1, InputSourceV1,
-    MAXIMUM_ADVISORY_RULES_PER_LAYER, MAXIMUM_CANONICAL_OBJECT_BYTES,
-    MAXIMUM_EXPLANATION_ENTRIES_PER_STAGE, MAXIMUM_GRANTS_PER_LAYER,
-    MAXIMUM_NAMESPACE_RULES_PER_LAYER, MAXIMUM_POLICY_ANCESTORS, MAXIMUM_POLICY_LAYER_BYTES,
-    MAXIMUM_POLICY_LAYER_WORK_UNITS, NamespaceBackendFeatureV1, NamespacePlanCommitmentV1,
-    NodePolicyCommitmentV1, NodePolicyInputV1, PlanExplanationV1, PolicyCompilerInputV1,
-    PolicyCompilerLimitsV1, PolicyLayerV1, PolicyModelError, PortablePolicyOutputV1,
-    ProjectPolicyCommitmentV1, ProjectPolicyInputV1, RedactedSubjectV1, RequestPolicyCommitmentV1,
-    RequestPolicyInputV1, RevocationInputV1, SandboxProjectRelationVerifierV1,
-    SitePolicyCommitmentV1, SitePolicyInputV1, StageExplanationV1,
+    MAXIMUM_ADVISORY_RULES_PER_LAYER, MAXIMUM_EXPLANATION_ENTRIES_PER_STAGE,
+    MAXIMUM_GRANTS_PER_LAYER, MAXIMUM_NAMESPACE_RULES_PER_LAYER, MAXIMUM_POLICY_ANCESTORS,
+    MAXIMUM_POLICY_LAYER_BYTES, MAXIMUM_POLICY_LAYER_WORK_UNITS, NamespaceBackendFeatureV1,
+    NamespacePlanCommitmentV1, NodePolicyCommitmentV1, NodePolicyInputV1, PlanExplanationV1,
+    PolicyCompilerInputV1, PolicyCompilerLimitsV1, PolicyLayerV1, PolicyModelError,
+    PortablePolicyOutputV1, ProjectPolicyCommitmentV1, ProjectPolicyInputV1, RedactedSubjectV1,
+    RequestPolicyCommitmentV1, RequestPolicyInputV1, RevocationInputV1,
+    SandboxProjectRelationVerifierV1, SitePolicyCommitmentV1, SitePolicyInputV1,
+    StageExplanationV1,
 };
 pub use namespace::{
     AuthenticatedExecutableSourceV1, AuthenticatedNamespaceCatalogV1, ExecutableSourceVerifierV1,
@@ -66,6 +77,8 @@ pub use namespace::{
     PortableNamespaceGraphV1, ViewExecutionV1,
 };
 pub use resources::{
+    inherited_parentless_resource_namespace_entries_v1,
+    SpecResourceCompatibilityErrorV1, require_specification_resource_profile_v1,
     BackendEnforcementSetV1, HardEnforcementV1, HardLimitProvenanceV1, HardLimitRequestV1,
     HardLimitValueV1, HardResourceKeyV1, HardResourceModelError, HardResourcePlanV1,
     HardResourceProfileV1, HardResourceScopeV1, PORTABLE_LIMIT_DIMENSIONS, ResolvedHardLimitV1,
@@ -74,5 +87,4 @@ pub use resources::{
 
 pub use advisory::canonicalize_advisory_actions;
 pub use authority::canonical_endpoint_catalog_v1;
-pub use model::{canonical_bytes, compiled_policy_candidate_digest_v1, digest};
 pub use namespace::{canonical_namespace_catalog_v1, validate_portable_namespace_rule_order};

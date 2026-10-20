@@ -10,6 +10,12 @@
 //! Composite Stop uses the same exact binding, invocation, manager-reference,
 //! and cgroup-quiescence evidence.
 
+mod compensation;
+use compensation::{GuardianCleanupReceivingV1, GuardianCompensationOutcomeV1,
+    SelectedVerificationFailureOriginalV1};
+pub(super) use compensation::SelectedVerificationFailureBorrowV1;
+
+use std::sync::Arc;
 use std::time::Duration;
 
 use aos_sandbox_broker::BrokerEffectIntentV1;
@@ -39,28 +45,140 @@ use crate::worker::{
 use crate::state::transition::RuntimeProofSnapshot;
 use crate::{HostError, Result};
 
+// Failed-Capture Stop and fresh native cleanup share this mechanical terminal
+// proposal. Their distinct native completion proofs gate the final commit;
+// neither the proposal nor its passive response grants terminal permission.
+pub(super) struct CompositeStopTerminalOriginalV4 {
+    proposed: crate::state::HostState,
+    phase: CompositeStopPhase,
+    response: Vec<u8>,
+    request_id: [u8; 16],
+    request_digest: [u8; 32],
+    maximum_response_bytes: u32,
+    entered: bool,
+}
+
 const POST_UNREF_OBSERVATION_DELAY: Duration = Duration::from_millis(50);
 
 pub(super) struct RetainedHostLimitAttemptV1 {
     payload: PreparedLaunch,
+    guardian_spec: Option<Arc<GuardianUnitSpec>>,
     points: [BoundPayloadReadbackV1; 2],
     observed_leader: Option<PinnedLeader>,
+    retention: Option<super::launch_handoff::runtime_retention::HostLaunchRuntimeRetentionV3>,
     failure: Option<HostError>,
+    compensation_entry: Option<HostError>,
+    verification_primary: Option<SelectedVerificationFailureOriginalV1>,
 }
 
 impl RetainedHostLimitAttemptV1 {
     fn new(payload: PreparedLaunch) -> Self {
         Self {
             payload,
+            guardian_spec: None,
             points: std::array::from_fn(|_| BoundPayloadReadbackV1::new()),
             observed_leader: None,
+            retention: None,
             failure: None,
+            compensation_entry: None,
+            verification_primary: None,
         }
+    }
+
+    // The fixed source bound covers the actual Arc allocation plus enlarged
+    // inline map entries, including a minimum B-tree leaf and construction.
+    pub(super) fn guardian_handoff_demand_v2() -> Option<aos_sandbox_core::ResourceVector> {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        let entry = std::mem::size_of::<Option<Arc<GuardianUnitSpec>>>()
+            .checked_add(std::mem::size_of::<Option<HostError>>())?
+            .checked_add(std::mem::size_of::<Option<SelectedVerificationFailureOriginalV1>>())?;
+        let cleanup_carriers = std::mem::size_of::<GuardianCleanupReceivingV1<'static, 'static, 'static>>()
+            .checked_add(std::mem::size_of::<GuardianCompensationOutcomeV1>())?
+            .checked_mul(4)?
+            .checked_add(4 * std::mem::size_of::<SelectedVerificationFailureBorrowV1<'static>>())?;
+        let allocation = std::mem::size_of::<GuardianUnitSpec>()
+            .checked_add(4 * std::mem::size_of::<usize>())?
+            .checked_add(std::mem::align_of::<GuardianUnitSpec>())?;
+        let bytes = allocation.checked_mul(2)?.checked_add(entry.checked_mul(4 * 12)?)?
+            .checked_add(cleanup_carriers)?;
+        Some(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(bytes).ok()?))
+    }
+
+    fn from_parent_launch_once_v2(
+        payload_slot: &mut Option<PreparedLaunch>,
+        spec_slot: &mut Option<GuardianUnitSpec>,
+        receiving: &crate::plan::HostExecutionReceivingLoanV2<'_>,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<Self> {
+        receiving.require_launch_request_v2(request)?;
+        if payload_slot.is_none() || spec_slot.is_none() {
+            return Err(retained_launch_missing());
+        }
+        let (payload, spec) = match (payload_slot.take(), spec_slot.take()) {
+            (Some(payload), Some(spec)) => (payload, spec),
+            (payload, spec) => {
+                *payload_slot = payload;
+                *spec_slot = spec;
+                return Err(retained_launch_missing());
+            }
+        };
+        // The fixed Launch demand paid this actual allocation before catalog.
+        // No fallible native check follows the owning moves or precedes parking.
+        Ok(Self {
+            payload,
+            guardian_spec: Some(Arc::new(spec)),
+            points: std::array::from_fn(|_| BoundPayloadReadbackV1::new_launch_receiving_v2()),
+            observed_leader: None,
+            retention: Some(super::launch_handoff::runtime_retention::HostLaunchRuntimeRetentionV3::new()),
+            failure: None,
+            compensation_entry: None,
+            verification_primary: None,
+        })
+    }
+
+    pub(in crate::broker) fn require_acquisition_disposal_v4(&self) -> Result<()> {
+        if self.failure_cause().is_some() || self.observed_leader.is_some()
+            || self.points.iter().any(|point| point.verified().is_err())
+            || !self.retention.as_ref().is_some_and(|retention| {
+                retention.entered && retention.failure().is_none()
+                    && retention.kernel.completed_for_parent_disposal_v4()
+            })
+        {
+            return Err(HostError::Fence("Launch limit acquisition lacks whole positive completion"));
+        }
+        // Promotion exclusively moved this actual second proof's live pins
+        // into the two native runtime maps before the durable completion.
+        let final_point = self.points[1].verified()?;
+        if final_point.observation.leader.is_some() || final_point.observation.payload.is_some() {
+            return Err(HostError::Fence("Launch final pins have not reached their live owners"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn selected_verification_failure_v1<'cause>(
+        &'cause self,
+        stage: &super::launch_handoff::HostLaunchOriginalV2,
+    ) -> Option<SelectedVerificationFailureBorrowV1<'cause>> {
+        self.verification_primary.as_ref()?.borrow_v1(stage, self.failure_cause()?)
     }
 
     fn failure_cause(&self) -> Option<&dyn std::error::Error> {
         self.points.iter().find_map(BoundPayloadReadbackV1::failure_cause)
+            .or_else(|| self.retention.as_ref().and_then(|original| original.failure())
+                .map(|cause| cause as &dyn std::error::Error))
             .or_else(|| self.failure.as_ref().map(|error| error as &dyn std::error::Error))
+            .or_else(|| self.compensation_entry.as_ref().map(|error| error as &dyn std::error::Error))
+    }
+}
+
+pub(super) enum GuardianStartSpecV2 {
+    Local(GuardianUnitSpec),
+    Retained(Arc<GuardianUnitSpec>),
+}
+
+impl GuardianStartSpecV2 {
+    fn as_spec(&self) -> &GuardianUnitSpec {
+        match self { Self::Local(spec) => spec, Self::Retained(spec) => spec.as_ref() }
     }
 }
 
@@ -152,6 +270,19 @@ where
     where
         W: Sync,
     {
+        self.prepare_composite_stop_receiving_v4(fence, request_id, request_digest, None).await
+    }
+
+    pub(super) async fn prepare_composite_stop_receiving_v4(
+        &self,
+        fence: &ValidatedAssignmentFence,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        mut worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
+    ) -> Result<DurableExecution>
+    where
+        W: Sync,
+    {
         if let Some(record) = self
             .state
             .composite_stop_execution(&request_id)
@@ -187,8 +318,10 @@ where
                             matches!(attempt.phase, GuardianLaunchPhase::Compensated { .. })
                         }) =>
                 {
-                    let payload = self.worker.observe_bound_payload(&identity).await?;
-                    let guardian = self.worker.observe_guardian(&identity).await?;
+                    let payload = self.observe_launch_role_v2(&identity, ExactUnitRole::Payload,
+                        worker_receiving.as_deref_mut()).await?;
+                    let guardian = self.observe_launch_role_v2(&identity, ExactUnitRole::Guardian,
+                        worker_receiving.as_deref_mut()).await?;
                     if payload.state != GuardianObservedState::Absent
                         || guardian.state != GuardianObservedState::Absent
                     {
@@ -197,8 +330,10 @@ where
                     CompositeStopTarget::Absent
                 }
                 Some(_) | None => {
-                    let payload = self.worker.observe_bound_payload(&identity).await?;
-                    let guardian = self.worker.observe_guardian(&identity).await?;
+                    let payload = self.observe_launch_role_v2(&identity, ExactUnitRole::Payload,
+                        worker_receiving.as_deref_mut()).await?;
+                    let guardian = self.observe_launch_role_v2(&identity, ExactUnitRole::Guardian,
+                        worker_receiving.as_deref_mut()).await?;
                     if payload.state != GuardianObservedState::Absent
                         || guardian.state != GuardianObservedState::Absent
                     {
@@ -235,6 +370,61 @@ where
     where
         W: Sync,
     {
+        self.advance_composite_stop_receiving_v4(
+            fence, request_id, request_digest, effect, maximum_response_bytes,
+            trusted_clock, None,
+        ).await
+    }
+
+    pub(super) async fn advance_composite_stop_receiving_v4(
+        &mut self,
+        fence: &ValidatedAssignmentFence,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        effect: &BrokerEffectIntentV1,
+        maximum_response_bytes: u32,
+        trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
+        worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
+    ) -> Result<Vec<u8>>
+    where
+        W: Sync,
+    {
+        self.advance_composite_stop_engine_v4(fence, request_id, request_digest,
+            effect, maximum_response_bytes, trusted_clock, worker_receiving, None).await
+    }
+
+    pub(super) async fn advance_composite_stop_to_terminal_v5(
+        &mut self,
+        fence: &ValidatedAssignmentFence,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        effect: &BrokerEffectIntentV1,
+        maximum_response_bytes: u32,
+        trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
+        worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
+        terminal: &mut Option<CompositeStopTerminalOriginalV4>,
+    ) -> Result<Vec<u8>>
+    where W: Sync,
+    {
+        if terminal.is_some() { return Err(guardian_quarantined()); }
+        self.advance_composite_stop_engine_v4(fence, request_id, request_digest,
+            effect, maximum_response_bytes, trusted_clock, worker_receiving, Some(terminal)).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn advance_composite_stop_engine_v4(
+        &mut self,
+        fence: &ValidatedAssignmentFence,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        effect: &BrokerEffectIntentV1,
+        maximum_response_bytes: u32,
+        trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
+        mut worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
+        mut terminal: Option<&mut Option<CompositeStopTerminalOriginalV4>>,
+    ) -> Result<Vec<u8>>
+    where W: Sync,
+    {
         let identity = HostRuntimeIdentity::from(fence);
         for _ in 0..8 {
             let record = self
@@ -248,19 +438,19 @@ where
                 CompositeStopPhase::StopAuthorized | CompositeStopPhase::Complete { .. } => None,
             };
             let payload = self
-                .observe_stop_unit(
+                .observe_guardian_cleanup_unit(
                     &identity,
                     ExactUnitRole::Payload,
-                    &record.target.payload(),
                     progress == Some(StopProgress::PayloadAwaitingAbsence),
+                    &mut worker_receiving.as_deref_mut().map(GuardianCleanupReceivingV1::Selected),
                 )
                 .await?;
             let guardian = self
-                .observe_stop_unit(
+                .observe_guardian_cleanup_unit(
                     &identity,
                     ExactUnitRole::Guardian,
-                    &record.target.guardian(),
                     progress == Some(StopProgress::GuardianAwaitingAbsence),
+                    &mut worker_receiving.as_deref_mut().map(GuardianCleanupReceivingV1::Selected),
                 )
                 .await?;
 
@@ -272,14 +462,22 @@ where
             } else {
                 0
             };
-            let decision = decide_composite_stop(StopDecisionInput {
+            let freshness = guardian_authority_freshness(&self.authority,effect,trusted_clock);
+            // Ordinary persisted Stop retains its historical retry law. Fresh
+            // cleanup independently requires its new current authorization on
+            // every iteration, including RetryIssued. The SAME SDK write gate
+            // samples its immutable fresh cutoff again immediately before IO.
+            let input = StopDecisionInput {
                 target: &record.target,
                 phase: &record.phase,
-                freshness: guardian_authority_freshness(&self.authority, effect, trusted_clock),
+                freshness,
                 payload,
                 guardian,
                 observation_sequence,
-            });
+            };
+            let decision = if record.cleanup_parent_v1.is_some() {
+                crate::state::transition::decide_fresh_stop_cleanup_v1(input)
+            } else { decide_composite_stop(input) };
             match decision {
                 StopDecision::PersistThen { phase, effect } => {
                     // Persisting the exact target is the authority
@@ -308,8 +506,8 @@ where
                             ));
                         }
                     };
-                    self.execute_exact_stop(&identity, request_id, role, target, awaiting)
-                        .await?;
+                    self.execute_exact_stop_receiving_v4(&identity, request_id, role, target,
+                        awaiting, worker_receiving.as_deref_mut()).await?;
                 }
                 StopDecision::RetryIssued(effect) => {
                     let (role, target, awaiting) = match effect {
@@ -329,8 +527,8 @@ where
                             ));
                         }
                     };
-                    self.execute_exact_stop(&identity, request_id, role, target, awaiting)
-                        .await?;
+                    self.execute_exact_stop_receiving_v4(&identity, request_id, role, target,
+                        awaiting, worker_receiving.as_deref_mut()).await?;
                 }
                 StopDecision::Persist(complete @ CompositeStopPhase::Complete { .. }) => {
                     let observation = WorkerObservation {
@@ -342,6 +540,13 @@ where
                     let response =
                         encode_observation(&identity, observation_sequence, &observation)?;
                     ensure_response_bound(&response, maximum_response_bytes)?;
+                    if let Some(destination) = terminal.as_deref_mut() {
+                        *destination = Some(CompositeStopTerminalOriginalV4 {
+                            proposed, phase: complete, response: response.clone(), request_id,
+                            request_digest, maximum_response_bytes, entered: false,
+                        });
+                        return Ok(response);
+                    }
                     let completed = effect
                         .clone()
                         .complete(response.clone())
@@ -355,7 +560,12 @@ where
                         response.clone(),
                     )?;
                     self.commit_state(&proposed)?;
-                    self.retain_runtime_observation(identity, observation)?;
+                    if worker_receiving.is_none() {
+                        self.retain_runtime_observation(identity, observation)?;
+                    }
+                    // Selected Stop retains its actual prior pins through
+                    // global posts and the authenticated terminal handoff.
+                    // An Absent DATA response alone cannot dispose them.
                     return Ok(response);
                 }
                 StopDecision::ObserveAgain => {
@@ -385,38 +595,70 @@ where
         Err(composite_stop_pending())
     }
 
-    async fn observe_stop_unit(
-        &self,
-        identity: &HostRuntimeIdentity,
-        role: ExactUnitRole,
-        target: &StopUnitTarget,
-        post_unref: bool,
-    ) -> Result<UnitObservation>
-    where
-        W: Sync,
-    {
-        let observed = if post_unref {
-            self.worker.observe_post_unref(identity, role).await?
-        } else {
-            match role {
-                ExactUnitRole::Payload => self.worker.observe_bound_payload(identity).await?,
-                ExactUnitRole::Guardian => self.worker.observe_guardian(identity).await?,
-            }
-        };
-        let projected = guardian_unit_observation(observed);
-        if matches!(target, StopUnitTarget::Absent) && projected != UnitObservation::Absent {
-            return Ok(projected);
-        }
-        Ok(projected)
+    pub(super) fn commit_cleanup_stop_terminal_v1(&mut self,
+        terminal: &mut CompositeStopTerminalOriginalV4, effect: &BrokerEffectIntentV1,
+        native: &super::HostStopCleanupNativeCompletedV1,
+        trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
+    ) -> Result<()> {
+        if terminal.entered || native.request_identity_v1().0 != terminal.request_id
+            || effect.request_id() != &terminal.request_id
+            || effect.transport_request_digest().as_bytes() != &terminal.request_digest
+            || !matches!(guardian_authority_freshness(&self.authority,effect,trusted_clock),AuthorityFreshness::Fresh)
+        { return Err(guardian_quarantined()); }
+        terminal.entered=true;
+        let completed=effect.clone().complete(terminal.response.clone())
+            .map_err(|_|HostError::Fence("fresh cleanup completion effect is invalid"))?;
+        let sealed=self.authority.seal_effect(&terminal.request_id,&completed)?;
+        terminal.proposed.set_composite_stop_phase(&terminal.request_id,terminal.phase.clone(),&self.authority)?;
+        terminal.proposed.complete(terminal.request_id,terminal.request_digest,sealed,terminal.response.clone())?;
+        self.commit_state(&terminal.proposed)
     }
 
-    async fn execute_exact_stop(
+    pub(super) fn commit_capture_stop_terminal_v4(
+        &mut self,
+        terminal: &mut CompositeStopTerminalOriginalV4,
+        effect: &BrokerEffectIntentV1,
+        storage: &crate::storage_existing_output::capture::StorageCaptureOriginalV2,
+    ) -> Result<Vec<u8>> {
+        use buffa::Message as _;
+        let receipt = storage.stopped_with_residual_v4()?;
+        if terminal.entered || terminal.request_id != *effect.request_id()
+            || terminal.request_id != receipt.stop_request_id_v4()
+            || effect.verb() != aos_sandbox_core::BrokerVerb::HostStop
+        {
+            return Err(guardian_quarantined());
+        }
+        // Latch before encoding/sealing/CAS. Uncertain completion is never
+        // retried from an Absent DATA projection or a replacement receipt.
+        terminal.entered = true;
+        let mut observation = aos_proto::aos::sandbox::local::v1::RuntimeObservation::decode_from_slice(
+            &terminal.response,
+        ).map_err(|_| guardian_quarantined())?;
+        if !observation.capture_stop_residual_v4.is_empty() {
+            return Err(guardian_quarantined());
+        }
+        observation.capture_stop_residual_v4 = receipt.canonical_bytes_v4().to_vec();
+        let response = observation.encode_to_vec();
+        ensure_response_bound(&response, terminal.maximum_response_bytes)?;
+        let completed = effect.clone().complete(response.clone())
+            .map_err(|_| HostError::Fence("completed Host residual effect is invalid"))?;
+        let sealed = self.authority.seal_effect(&terminal.request_id, &completed)?;
+        terminal.proposed.set_composite_stop_phase(&terminal.request_id,
+            terminal.phase.clone(), &self.authority)?;
+        terminal.proposed.complete(terminal.request_id, terminal.request_digest,
+            sealed, response.clone())?;
+        self.commit_state(&terminal.proposed)?;
+        Ok(response)
+    }
+
+    async fn execute_exact_stop_receiving_v4(
         &mut self,
         identity: &HostRuntimeIdentity,
         request_id: [u8; 16],
         role: ExactUnitRole,
         target: StopUnitTarget,
         awaiting: StopProgress,
+        worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
     ) -> Result<()>
     where
         W: Sync,
@@ -426,11 +668,9 @@ where
                 "composite Stop effect lost its exact bound target".to_owned(),
             ));
         };
-        match self
-            .worker
-            .stop_exact_unit(identity, role, binding, invocation)
-            .await?
-        {
+        match self.stop_exact_unit_receiving_v4(
+            identity, role, binding, invocation, worker_receiving,
+        ).await? {
             ExactWorkerStopOutcome::AwaitingAbsence(_) | ExactWorkerStopOutcome::Missing => {
                 let mut proposed = self.state.clone();
                 proposed.set_composite_stop_phase(
@@ -452,45 +692,165 @@ where
         }
     }
 
+    async fn stop_exact_unit_receiving_v4(
+        &self,
+        identity: &HostRuntimeIdentity,
+        role: ExactUnitRole,
+        binding: [u8; 32],
+        invocation: [u8; 16],
+        worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
+    ) -> Result<ExactWorkerStopOutcome>
+    where
+        W: Sync,
+    {
+        match worker_receiving {
+            Some(receiving) => {
+                let worker = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
+                receiving.stop_exact_unit_v3(&worker, identity, role, binding, invocation).await
+            }
+            None => self.worker.stop_exact_unit(identity, role, binding, invocation).await,
+        }
+    }
+
+    async fn observe_launch_role_v2(
+        &self,
+        identity: &HostRuntimeIdentity,
+        role: ExactUnitRole,
+        receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
+    ) -> Result<crate::worker::GuardianObservation>
+    where
+        W: Sync,
+    {
+        match receiving {
+            Some(receiving) => {
+                let worker = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
+                receiving.observe_role_v2(&worker, identity, role).await
+            }
+            None => match role {
+                ExactUnitRole::Guardian => self.worker.observe_guardian(identity).await,
+                ExactUnitRole::Payload => self.worker.observe_bound_payload(identity).await,
+            },
+        }
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "Guardian advancement joins one complete durable request and its retained pins"
     )]
-    pub(super) async fn advance_guardian_start(
+    pub(super) fn retain_guardian_start_receiving_v2(
         &mut self,
-        fence: &ValidatedAssignmentFence,
         request_id: [u8; 16],
-        request_digest: [u8; 32],
-        effect: &BrokerEffectIntentV1,
-        spec: GuardianUnitSpec,
-        payload: PreparedLaunch,
-        pending_agent: Option<HostAgentPendingSessionV1>,
-        maximum_response_bytes: u32,
-        trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
-    ) -> Result<Vec<u8>>
-    where
-        W: Sync,
-    {
-        if self.worker.retained_payload_worker().is_none() {
-            return self.advance_guardian_start_inner(fence, request_id, request_digest, effect,
-                spec, LaunchInputV1::Local(payload), pending_agent, maximum_response_bytes,
-                trusted_clock).await;
+        launch: &Arc<std::sync::Mutex<super::launch_handoff::HostLaunchOriginalV2>>,
+        payload: &mut Option<PreparedLaunch>,
+        spec: &mut Option<GuardianUnitSpec>,
+        receiving: &crate::plan::HostExecutionReceivingLoanV2<'_>,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<GuardianStartSpecV2> {
+        // The caller holds this exact Stage mutex. Pointer comparison avoids
+        // recursive locking while retaining the actual parent association.
+        if !self.launch_original.as_ref().is_some_and(|actual| Arc::ptr_eq(actual, launch))
+            || self.worker.retained_payload_worker().is_none()
+            || request.request_id() != request_id
+        {
+            return Err(HostError::Fence("Host retained payload parent differs from its paid Launch"));
         }
-        // The sole installed caller has already committed this genuine request.
-        // The existing durable registry has a fixed bound and no production
-        // deletion; this custody map admits no key absent from that registry.
         if self.state.guardian_attempt(&request_id).is_none() {
             return Err(HostError::State("Guardian launch lost its durable attempt".to_owned()));
         }
         if self.live_limit_attempts.contains_key(&request_id) {
             return Err(retained_launch_missing());
         }
-        // Cancellation or caught unwind leaves this key and its originals in
-        // the same broker; no terminal path removes or reopens the attempt.
-        self.live_limit_attempts.insert(request_id, RetainedHostLimitAttemptV1::new(payload));
+        let attempt = RetainedHostLimitAttemptV1::from_parent_launch_once_v2(
+            payload, spec, receiving, request,
+        )?;
+        self.live_limit_attempts.insert(request_id, attempt);
+        let spec = self.live_limit_attempts.get(&request_id)
+            .and_then(|attempt| attempt.guardian_spec.as_ref()).cloned()
+            .ok_or_else(retained_launch_missing)?;
+        Ok(GuardianStartSpecV2::Retained(spec))
+    }
+
+    pub(super) async fn advance_guardian_start(
+        &mut self,
+        fence: &ValidatedAssignmentFence,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        effect: &BrokerEffectIntentV1,
+        spec: GuardianStartSpecV2,
+        payload: LaunchInputV1<'_>,
+        pending_agent: Option<HostAgentPendingSessionV1>,
+        maximum_response_bytes: u32,
+        trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
+        mut receiving: Option<(&mut crate::plan::HostExecutionReceivingLoanV2<'_>,
+            &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1)>,
+    ) -> Result<Vec<u8>>
+    where
+        W: Sync,
+    {
+        let payload = match payload {
+            LaunchInputV1::Local(payload) => {
+                // The ordinary route keeps its existing local ownership and
+                // registration order. A selected launch never reaches it.
+                if self.worker.retained_payload_worker().is_none() {
+                    if receiving.is_some() {
+                        return Err(HostError::Fence("selected Launch requires its concrete retained worker"));
+                    }
+                    return self.advance_guardian_start_inner(fence, request_id, request_digest, effect,
+                        spec, LaunchInputV1::Local(payload), pending_agent, maximum_response_bytes,
+                        trusted_clock, None).await;
+                }
+                if self.state.guardian_attempt(&request_id).is_none() {
+                    return Err(HostError::State("Guardian launch lost its durable attempt".to_owned()));
+                }
+                if self.live_limit_attempts.contains_key(&request_id) {
+                    return Err(retained_launch_missing());
+                }
+                if receiving.is_some() || self.launch_is_entered_v2(&request_id) {
+                    return Err(HostError::Fence("Host launch payload was not retained before advancement"));
+                }
+                self.live_limit_attempts.insert(request_id, RetainedHostLimitAttemptV1::new(payload));
+                LaunchInputV1::Retained(request_id)
+            }
+            LaunchInputV1::Retained(actual) => {
+                let (receiving, request) = receiving.as_mut().ok_or_else(retained_launch_missing)?;
+                if actual != request_id || request.request_id() != request_id
+                    || !self.launch_is_entered_v2(&request_id)
+                { return Err(HostError::Fence("Host limit originals differ from the paid Launch")); }
+                receiving.require_launch_request_v2(request)?;
+                if self.state.guardian_attempt(&request_id).is_none()
+                    || self.worker.retained_payload_worker().is_none()
+                    || !self.live_limit_attempts.get(&request_id).is_some_and(|attempt|
+                        match (&spec, &attempt.guardian_spec) {
+                            (GuardianStartSpecV2::Retained(spec), Some(actual)) => Arc::ptr_eq(spec, actual),
+                            _ => false,
+                        })
+                { return Err(retained_launch_missing()); }
+                LaunchInputV1::Retained(actual)
+            }
+            LaunchInputV1::Canary(_) => return Err(retained_launch_missing()),
+        };
+        let mut worker_receiving = match receiving {
+            Some((receiving, request)) => {
+                let launch_original = self.launch_original.as_ref().ok_or_else(retained_launch_missing)?;
+                let write_clock = super::launch_handoff::write_clock::HostLaunchWriteClockV2::borrow_v2(
+                    launch_original, request,
+                )?;
+                let (worker, deadline) = {
+                    let launch = launch_original
+                        .lock().map_err(|_| retained_launch_missing())?;
+                    launch.require_same_request(request)?;
+                    (launch.worker.as_ref().cloned().ok_or_else(retained_launch_missing)?,
+                        launch.worker_deadline.ok_or_else(retained_launch_missing)?)
+                };
+                Some(crate::worker::launch::HostLaunchWorkerReceivingV2::new(
+                    receiving, request, worker, deadline, write_clock,
+                ).await?)
+            }
+            None => None,
+        };
         let result = self.advance_guardian_start_inner(
-            fence, request_id, request_digest, effect, spec, LaunchInputV1::Retained(request_id),
-            pending_agent, maximum_response_bytes, trusted_clock,
+            fence, request_id, request_digest, effect, spec, payload,
+            pending_agent, maximum_response_bytes, trusted_clock, worker_receiving.as_mut(),
         ).await;
         match result {
             Ok(body) => Ok(body),
@@ -514,11 +874,12 @@ where
         request_id: [u8; 16],
         request_digest: [u8; 32],
         effect: &BrokerEffectIntentV1,
-        spec: GuardianUnitSpec,
+        spec: GuardianStartSpecV2,
         mut payload: LaunchInputV1<'_>,
         pending_agent: Option<HostAgentPendingSessionV1>,
         maximum_response_bytes: u32,
         trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
+        mut worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
     ) -> Result<Vec<u8>>
     where
         W: Sync,
@@ -533,21 +894,26 @@ where
         let attempt = self.state.guardian_attempt(&request_id).ok_or_else(|| {
             HostError::State("Guardian launch lost its durable attempt".to_owned())
         })?;
-        if attempt.agent_required != (pending_agent.is_some() || payload.original_canary().is_some()) {
+        if attempt.agent_required != (pending_agent.is_some() || payload.original_canary().is_some()
+            || self.launch_is_entered_v2(&request_id)) {
             return Err(HostError::AgentLaunchQuarantined);
         }
         let binding = attempt.binding;
         let mut phase = attempt.phase.clone();
+        if matches!(phase, GuardianLaunchPhase::CompensatedRetainedV1 { .. }) {
+            return Err(guardian_quarantined());
+        }
 
         if matches!(phase, GuardianLaunchPhase::CleanupIssued { .. }) {
             return self
-                .advance_guardian_compensation(
+                .advance_guardian_compensation_receiving_v3(
                     &identity,
                     request_id,
                     request_digest,
                     effect,
                     maximum_response_bytes,
                     binding,
+                    worker_receiving.as_deref_mut(),
                 )
                 .await;
         }
@@ -557,9 +923,13 @@ where
             GuardianLaunchPhase::Authorized | GuardianLaunchPhase::GuardianStartIssued
         ) {
             let guardian =
-                guardian_unit_observation(self.worker.observe_guardian(&identity).await?);
+                guardian_unit_observation(self.observe_launch_role_v2(
+                    &identity, ExactUnitRole::Guardian, worker_receiving.as_deref_mut(),
+                ).await?);
             let payload_observation =
-                guardian_unit_observation(self.worker.observe_bound_payload(&identity).await?);
+                guardian_unit_observation(self.observe_launch_role_v2(
+                    &identity, ExactUnitRole::Payload, worker_receiving.as_deref_mut(),
+                ).await?);
             let decision = decide_guardian_launch(GuardianDecisionInput {
                 binding,
                 phase: &phase,
@@ -588,17 +958,18 @@ where
                     let mut proposed = self.state.clone();
                     proposed.set_guardian_phase(&request_id, cleanup, &self.authority)?;
                     self.commit_state(&proposed)?;
-                    self.execute_guardian_cleanup_effect(&identity, request_id, cleanup_effect)
+                    self.execute_guardian_cleanup_effect_receiving_v3(&identity, request_id, cleanup_effect, worker_receiving.as_deref_mut())
                         .await?;
                     return self
-                        .advance_guardian_compensation(
+                        .advance_guardian_compensation_receiving_v3(
                             &identity,
                             request_id,
                             request_digest,
                             effect,
                             maximum_response_bytes,
                             binding,
-                        )
+                    worker_receiving.as_deref_mut(),
+                )
                         .await;
                 }
                 GuardianDecision::Compensated => {
@@ -635,16 +1006,22 @@ where
                 if let LaunchInputV1::Canary(owner) = &mut payload {
                     owner.recheck_original_before_effect().await?;
                 }
-                self.worker
-                    .start_guardian(&spec, &identity, &mut before_effect)
-                    .await?
+                match worker_receiving.as_deref_mut() {
+                    Some(receiving) => {
+                        let worker = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
+                        receiving.start_guardian_v2(&worker, spec.as_spec(), &identity, &mut before_effect).await?
+                    }
+                    None => self.worker.start_guardian(spec.as_spec(), &identity, &mut before_effect).await?,
+                }
             };
             if let LaunchInputV1::Canary(owner) = &mut payload {
                 let invocation = start.observation.invocation_id.ok_or_else(retained_launch_missing)?;
                 owner.observe_guardian_resources(0, &identity, binding, invocation).await?;
             }
             let payload_observation =
-                guardian_unit_observation(self.worker.observe_bound_payload(&identity).await?);
+                guardian_unit_observation(self.observe_launch_role_v2(
+                    &identity, ExactUnitRole::Payload, worker_receiving.as_deref_mut(),
+                ).await?);
             let decision = decide_guardian_launch(GuardianDecisionInput {
                 binding,
                 phase: &phase,
@@ -673,17 +1050,18 @@ where
                     let mut proposed = self.state.clone();
                     proposed.set_guardian_phase(&request_id, cleanup, &self.authority)?;
                     self.commit_state(&proposed)?;
-                    self.execute_guardian_cleanup_effect(&identity, request_id, cleanup_effect)
+                    self.execute_guardian_cleanup_effect_receiving_v3(&identity, request_id, cleanup_effect, worker_receiving.as_deref_mut())
                         .await?;
                     return self
-                        .advance_guardian_compensation(
+                        .advance_guardian_compensation_receiving_v3(
                             &identity,
                             request_id,
                             request_digest,
                             effect,
                             maximum_response_bytes,
                             binding,
-                        )
+                    worker_receiving.as_deref_mut(),
+                )
                         .await;
                 }
                 GuardianDecision::Compensated => {
@@ -710,9 +1088,13 @@ where
         let mut payload_submission_committed_here = false;
         if let GuardianLaunchPhase::GuardianReady { .. } = phase {
             let guardian =
-                guardian_unit_observation(self.worker.observe_guardian(&identity).await?);
+                guardian_unit_observation(self.observe_launch_role_v2(
+                    &identity, ExactUnitRole::Guardian, worker_receiving.as_deref_mut(),
+                ).await?);
             let payload_observation =
-                guardian_unit_observation(self.worker.observe_bound_payload(&identity).await?);
+                guardian_unit_observation(self.observe_launch_role_v2(
+                    &identity, ExactUnitRole::Payload, worker_receiving.as_deref_mut(),
+                ).await?);
             let decision = decide_guardian_launch(GuardianDecisionInput {
                 binding,
                 phase: &phase,
@@ -741,17 +1123,18 @@ where
                     let mut proposed = self.state.clone();
                     proposed.set_guardian_phase(&request_id, cleanup, &self.authority)?;
                     self.commit_state(&proposed)?;
-                    self.execute_guardian_cleanup_effect(&identity, request_id, cleanup_effect)
+                    self.execute_guardian_cleanup_effect_receiving_v3(&identity, request_id, cleanup_effect, worker_receiving.as_deref_mut())
                         .await?;
                     return self
-                        .advance_guardian_compensation(
+                        .advance_guardian_compensation_receiving_v3(
                             &identity,
                             request_id,
                             request_digest,
                             effect,
                             maximum_response_bytes,
                             binding,
-                        )
+                    worker_receiving.as_deref_mut(),
+                )
                         .await;
                 }
                 GuardianDecision::Compensated => {
@@ -788,6 +1171,7 @@ where
                     binding,
                     phase,
                     trusted_clock,
+                    worker_receiving.as_deref_mut(),
                 )
                 .await;
         }
@@ -827,10 +1211,14 @@ where
                 LaunchInputV1::Retained(request) => {
                     let loan = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
                     let attempt = self.live_limit_attempts.get_mut(request).ok_or_else(retained_launch_missing)?;
-                    loan.start(attempt.payload.spec(), attempt.payload.pins(), &identity,
-                        *guardian_invocation, &mut before_effect, &mut attempt.points[0]).await
-                        .map(|()| (VerifiedLaunchV1::Retained { request: *request, point: 0 },
-                            StartJobEvidence::DoneForCurrentSubmission))
+                    let result = match worker_receiving.as_deref_mut() {
+                        Some(receiving) => loan.start_launch_v3(attempt.payload.spec(), attempt.payload.pins(), &identity,
+                            *guardian_invocation, &mut before_effect, &mut attempt.points[0], receiving).await,
+                        None => loan.start(attempt.payload.spec(), attempt.payload.pins(), &identity,
+                            *guardian_invocation, &mut before_effect, &mut attempt.points[0]).await,
+                    };
+                    result.map(|()| (VerifiedLaunchV1::Retained { request: *request, point: 0 },
+                        StartJobEvidence::DoneForCurrentSubmission))
                 }
                 LaunchInputV1::Canary(owner) => {
                     let loan = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
@@ -848,10 +1236,14 @@ where
                 LaunchInputV1::Retained(request) => {
                     let loan = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
                     let attempt = self.live_limit_attempts.get_mut(request).ok_or_else(retained_launch_missing)?;
-                    loan.prove(attempt.payload.spec(), attempt.payload.pins(), &identity,
-                        &mut attempt.points[0]).await
-                        .map(|()| (VerifiedLaunchV1::Retained { request: *request, point: 0 },
-                            StartJobEvidence::RecoveredExactProof))
+                    let result = match worker_receiving.as_deref_mut() {
+                        Some(receiving) => loan.prove_launch_v3(attempt.payload.spec(), attempt.payload.pins(), &identity,
+                            &mut attempt.points[0], receiving).await,
+                        None => loan.prove(attempt.payload.spec(), attempt.payload.pins(), &identity,
+                            &mut attempt.points[0]).await,
+                    };
+                    result.map(|()| (VerifiedLaunchV1::Retained { request: *request, point: 0 },
+                        StartJobEvidence::RecoveredExactProof))
                 }
                 LaunchInputV1::Canary(owner) => {
                     let loan = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
@@ -862,20 +1254,69 @@ where
         };
         let (verified, payload_job) = match verification {
             Ok(verified) => verified,
+            Err(error) if worker_receiving.is_some() => {
+                // Park the original cause before the first cleanup await. The
+                // native readback and failed worker stay in their same owners.
+                self.live_limit_attempts.get_mut(&request_id)
+                    .ok_or_else(retained_launch_missing)?.failure.get_or_insert(error);
+                let durable = self.state.guardian_attempt(&request_id)
+                    .ok_or_else(retained_launch_missing)?.phase.clone();
+                let receiving = worker_receiving.as_deref_mut().ok_or_else(retained_launch_missing)?;
+                let selected = (|| {
+                    let affinity = receiving.capture_verification_affinity_v1(&identity, binding)?;
+                    let stage = self.launch_original.as_ref().ok_or_else(retained_launch_missing)?;
+                    let stage = stage.lock().map_err(|_| retained_launch_missing())?;
+                    SelectedVerificationFailureOriginalV1::capture_v1(affinity, &stage)
+                })();
+                match selected {
+                    Ok(selected) => self.live_limit_attempts.get_mut(&request_id)
+                        .ok_or_else(retained_launch_missing)?.verification_primary = Some(selected),
+                    Err(error) => {
+                        self.live_limit_attempts.get_mut(&request_id)
+                            .ok_or_else(retained_launch_missing)?.compensation_entry = Some(error);
+                        return Err(HostError::Fence("verification diagnostic association refused; original retained"));
+                    }
+                }
+                match receiving.borrow_compensation_once_v1(&identity, binding, &durable).await {
+                    Ok(loan) => {
+                        let mut cleanup = Some(GuardianCleanupReceivingV1::Negative(loan));
+                        let result = self.begin_guardian_compensation_engine_v1(
+                            &identity, request_id, request_digest, effect,
+                            maximum_response_bytes, binding, &mut cleanup,
+                        ).await;
+                        let result = match result {
+                            Ok(GuardianCompensationOutcomeV1::RetainedNegative) => Ok(()),
+                            Ok(GuardianCompensationOutcomeV1::Completed(_)) => Err(guardian_quarantined()),
+                            Err(error) => Err(error),
+                        };
+                        if let Some(GuardianCleanupReceivingV1::Negative(loan)) = cleanup.take() {
+                            loan.finish_once_v1(result).await;
+                        }
+                    }
+                    Err(error) => {
+                        self.live_limit_attempts.get_mut(&request_id)
+                            .ok_or_else(retained_launch_missing)?.compensation_entry = Some(error);
+                    }
+                }
+                return Err(HostError::Fence("original Launch failed; cause and cleanup outcome retained"));
+            }
             Err(_) => {
                 return self
-                    .begin_guardian_compensation(
+                    .begin_guardian_compensation_receiving_v3(
                         &identity,
                         request_id,
                         request_digest,
                         effect,
                         maximum_response_bytes,
                         binding,
-                    )
+                    worker_receiving.as_deref_mut(),
+                )
                     .await;
             }
         };
-        let guardian = guardian_unit_observation(self.worker.observe_guardian(&identity).await?);
+        let guardian = guardian_unit_observation(self.observe_launch_role_v2(
+                    &identity, ExactUnitRole::Guardian, worker_receiving.as_deref_mut(),
+                ).await?);
         let (verified_binding, verified_invocation, verified_proof) = verified.metadata(
             &self.live_limit_attempts, payload.original_canary(),
         )?;
@@ -911,17 +1352,18 @@ where
                 let mut cleanup_state = self.state.clone();
                 cleanup_state.set_guardian_phase(&request_id, cleanup, &self.authority)?;
                 self.commit_state(&cleanup_state)?;
-                self.execute_guardian_cleanup_effect(&identity, request_id, cleanup_effect)
+                self.execute_guardian_cleanup_effect_receiving_v3(&identity, request_id, cleanup_effect, worker_receiving.as_deref_mut())
                     .await?;
                 return self
-                    .advance_guardian_compensation(
+                    .advance_guardian_compensation_receiving_v3(
                         &identity,
                         request_id,
                         request_digest,
                         effect,
                         maximum_response_bytes,
                         binding,
-                    )
+                    worker_receiving.as_deref_mut(),
+                )
                     .await;
             }
             GuardianDecision::Compensated => {
@@ -956,6 +1398,7 @@ where
             binding,
             verified_phase,
             trusted_clock,
+            worker_receiving.as_deref_mut(),
         )
         .await
     }
@@ -976,10 +1419,14 @@ where
         binding: [u8; 32],
         phase: GuardianLaunchPhase,
         trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
+        mut worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
     ) -> Result<Vec<u8>>
     where
         W: Sync,
     {
+        if self.launch_is_entered_v2(&request_id) && worker_receiving.is_none() {
+            return Err(HostError::Fence("selected Launch finalization requires its genuine worker loan"));
+        }
         let agent_required = self
             .state
             .guardian_attempt(&request_id)
@@ -1000,11 +1447,23 @@ where
             if owner.readback.authenticate_original_agent(&mut owner.agent, &mut owner.job, deadline)
                 .is_err()
             {
-                return self.begin_guardian_compensation(
+                return self.begin_guardian_compensation_receiving_v3(
                     &identity, request_id, request_digest, effect,
                     maximum_response_bytes, binding,
+                    worker_receiving.as_deref_mut(),
                 ).await;
             }
+            None
+        } else if agent_required && self.launch_is_entered_v2(&request_id) {
+            if pending_agent.is_some() { return Err(HostError::AgentLaunchQuarantined); }
+            if self.authenticate_protected_agent_receiving_v2(&request_id).is_err() {
+                return self.begin_guardian_compensation_receiving_v3(&identity, request_id,
+                    request_digest, effect, maximum_response_bytes, binding,
+                    worker_receiving.as_deref_mut(),
+                ).await;
+            }
+            // The same actual live session remains in the launch original
+            // through final durable Guardian completion and all failure paths.
             None
         } else if agent_required {
             let pending = pending_agent.ok_or(HostError::AgentLaunchQuarantined)?;
@@ -1012,14 +1471,15 @@ where
                 Ok(session) => Some(session),
                 Err(_) => {
                     return self
-                        .begin_guardian_compensation(
+                        .begin_guardian_compensation_receiving_v3(
                             &identity,
                             request_id,
                             request_digest,
                             effect,
                             maximum_response_bytes,
                             binding,
-                        )
+                    worker_receiving.as_deref_mut(),
+                )
                         .await;
                 }
             }
@@ -1038,8 +1498,14 @@ where
                 binding,
                 phase,
                 trusted_clock,
+                worker_receiving.as_deref_mut(),
             )
             .await?;
+        let authenticated = match authenticated {
+            Some(session) => Some(session),
+            None if self.launch_is_entered_v2(&request_id) => self.take_completed_launch_agent_v2(&request_id)?,
+            None => None,
+        };
         if let Some(session) = authenticated {
             if matches!(
                 self.state
@@ -1068,10 +1534,14 @@ where
         binding: [u8; 32],
         phase: GuardianLaunchPhase,
         trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
+        mut worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
     ) -> Result<Vec<u8>>
     where
         W: Sync,
     {
+        if self.launch_is_entered_v2(&request_id) && worker_receiving.is_none() {
+            return Err(HostError::Fence("selected Launch finalization requires its genuine worker loan"));
+        }
         let GuardianLaunchPhase::PayloadVerified {
             guardian_invocation,
             payload_invocation,
@@ -1090,9 +1560,13 @@ where
             LaunchInputV1::Retained(request) => {
                 let loan = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
                 let attempt = self.live_limit_attempts.get_mut(request).ok_or_else(retained_launch_missing)?;
-                loan.prove(attempt.payload.spec(), attempt.payload.pins(), &identity,
-                    &mut attempt.points[1]).await
-                    .map(|()| VerifiedLaunchV1::Retained { request: *request, point: 1 })
+                let result = match worker_receiving.as_deref_mut() {
+                    Some(receiving) => loan.prove_launch_v3(attempt.payload.spec(), attempt.payload.pins(), &identity,
+                        &mut attempt.points[1], receiving).await,
+                    None => loan.prove(attempt.payload.spec(), attempt.payload.pins(), &identity,
+                        &mut attempt.points[1]).await,
+                };
+                result.map(|()| VerifiedLaunchV1::Retained { request: *request, point: 1 })
             }
             LaunchInputV1::Canary(owner) => {
                 let loan = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
@@ -1101,20 +1575,71 @@ where
         };
         let verified = match verification {
             Ok(verified) => verified,
+            Err(error) if worker_receiving.is_some() => return Err(error),
             Err(_) => {
                 return self
-                    .begin_guardian_compensation(
+                    .begin_guardian_compensation_receiving_v3(
                         &identity,
                         request_id,
                         request_digest,
                         effect,
                         maximum_response_bytes,
                         binding,
-                    )
+                    worker_receiving.as_deref_mut(),
+                )
                     .await;
             }
         };
-        let guardian = guardian_unit_observation(self.worker.observe_guardian(&identity).await?);
+        if self.nspawn.is_none() && self.component_backend.is_some() {
+            let (request, point) = match &verified {
+                VerifiedLaunchV1::Retained { request, point } => (*request, *point),
+                _ => return Err(HostError::Fence("component readiness requires its actual retained Launch proof")),
+            };
+            let receiving = worker_receiving.as_deref_mut()
+                .ok_or(HostError::Fence("component readiness lost its actual paid worker loan"))?;
+            let attempt = self.live_limit_attempts.get(&request).ok_or_else(retained_launch_missing)?;
+            let proof = attempt.points[point].verified()?;
+            let report = {
+                let stage = self.launch_original.as_ref().ok_or_else(retained_launch_missing)?;
+                let stage = stage.lock().map_err(|_| retained_launch_missing())?;
+                stage.component_report.as_ref().cloned().ok_or_else(retained_launch_missing)?
+            };
+            // The async mutex keeps the actual receiver parked on the retained
+            // Stage across every await; no std mutex or temporary IO owner is
+            // held by the future. Failed/cancelled prefixes remain resident.
+            let mut report = report.lock().await;
+            let config = self.component_backend.as_ref().ok_or_else(retained_launch_missing)?;
+            report.verify_once_v2(&attempt.payload, proof, config.programs_v2()?, receiving).await?;
+            let values = receiving.observe_supervisor_policy_v2(
+                attempt.payload.spec(), proof.proof.supervisor.pid,
+            ).await?;
+            let stage = self.launch_original.as_ref().ok_or_else(retained_launch_missing)?;
+            let mut stage = stage.lock().map_err(|_| retained_launch_missing())?;
+            if stage.request.0 != request || stage.backend_policy.is_some()
+                || stage.backend_policy_result.is_some()
+            {
+                return Err(HostError::Fence("component physical readiness was already entered"));
+            }
+            stage.backend_policy = Some(values);
+            let config = self.component_backend.as_ref().ok_or_else(retained_launch_missing)?;
+            stage.backend_policy_result = Some(config.verify_policy_v2(
+                &attempt.payload, proof.proof.supervisor.pid,
+                stage.backend_policy.as_deref().ok_or_else(retained_launch_missing)?,
+            ));
+            let super::launch_handoff::HostLaunchOriginalV2 {
+                backend_policy_result, backend_readiness, setup, ..
+            } = &mut *stage;
+            let policy = match backend_policy_result.as_ref() {
+                Some(Ok(policy)) => policy,
+                _ => return Err(HostError::Fence("component supervisor policy refused; actual cause retained")),
+            };
+            let agent = setup.as_ref().ok_or_else(retained_launch_missing)?;
+            report.bind_actual_agent_once_v2(agent)?;
+            backend_readiness.complete_once_v2(config, &attempt.payload, proof, policy, agent, &report)?;
+        }
+        let guardian = guardian_unit_observation(self.observe_launch_role_v2(
+            &identity, ExactUnitRole::Guardian, worker_receiving.as_deref_mut(),
+        ).await?);
         let freshness = guardian_authority_freshness(&self.authority, effect, trusted_clock);
         let (verified_binding, verified_invocation, verified_proof) = verified.metadata(
             &self.live_limit_attempts, payload.original_canary(),
@@ -1151,11 +1676,13 @@ where
                     request_id, request_digest, effect, maximum_response_bytes, identity,
                     observation_sequence, CompletionObservationV1::Local(verified.observation),
                     verified_phase,
+                    worker_receiving.as_deref_mut(),
                 ),
                 VerifiedLaunchV1::Retained { request, point } => self.complete_guardian_launch(
                     request_id, request_digest, effect, maximum_response_bytes, identity,
                     observation_sequence, CompletionObservationV1::Retained { request, point },
                     verified_phase,
+                    worker_receiving.as_deref_mut(),
                 ),
                 VerifiedLaunchV1::Canary => self.complete_guardian_launch(
                     request_id, request_digest, effect, maximum_response_bytes, identity,
@@ -1163,6 +1690,7 @@ where
                     CompletionObservationV1::Canary(payload.original_canary()
                         .ok_or_else(retained_launch_missing)?),
                     verified_phase,
+                    worker_receiving.as_deref_mut(),
                 ),
             },
             GuardianDecision::PersistThen {
@@ -1172,15 +1700,16 @@ where
                 let mut proposed = self.state.clone();
                 proposed.set_guardian_phase(&request_id, cleanup, &self.authority)?;
                 self.commit_state(&proposed)?;
-                self.execute_guardian_cleanup_effect(&identity, request_id, cleanup_effect)
+                self.execute_guardian_cleanup_effect_receiving_v3(&identity, request_id, cleanup_effect, worker_receiving.as_deref_mut())
                     .await?;
-                self.advance_guardian_compensation(
+                self.advance_guardian_compensation_receiving_v3(
                     &identity,
                     request_id,
                     request_digest,
                     effect,
                     maximum_response_bytes,
                     binding,
+                    worker_receiving.as_deref_mut(),
                 )
                 .await
             }
@@ -1217,6 +1746,7 @@ where
         observation_sequence: u64,
         observation: CompletionObservationV1<'_>,
         verified_phase: GuardianLaunchPhase,
+        worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
     ) -> Result<Vec<u8>> {
         let GuardianLaunchPhase::PayloadVerified {
             guardian_invocation,
@@ -1255,7 +1785,7 @@ where
         match observation {
             CompletionObservationV1::Local(observation) => self.retain_runtime_observation(identity, observation)?,
             CompletionObservationV1::Retained { request, point } => {
-                self.retain_original_runtime_observation(identity, request, point)?;
+                self.retain_original_runtime_observation_engine_v3(identity, request, point, worker_receiving)?;
             }
             // The selected readiness-only child never owns a public runtime
             // handle or GuestProcessEffects session. Its actual originals stay
@@ -1267,15 +1797,32 @@ where
     }
 
     fn retain_original_runtime_observation(
+        &mut self, identity: HostRuntimeIdentity, request: [u8; 16], point: usize,
+    ) -> Result<()> {
+        self.retain_original_runtime_observation_engine_v3(identity, request, point, None)
+    }
+
+    fn retain_original_runtime_observation_engine_v3(
         &mut self,
         identity: HostRuntimeIdentity,
         request: [u8; 16],
         point: usize,
+        receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
     ) -> Result<()> {
         #[cfg(test)]
         if self.fail_runtime_retention {
             self.fail_runtime_retention = false;
             return Err(HostError::Worker("injected runtime retention failure".to_owned()));
+        }
+        let selected = receiving.is_some();
+        if self.launch_is_entered_v2(&request) && !selected {
+            return Err(HostError::Fence("selected final runtime retention requires its original loan"));
+        }
+        if let Some(receiving) = receiving {
+            receiving.require_final_retention_v3(&request)?;
+            if !self.runtime_pins.is_empty() || !self.observed_leaders.is_empty() {
+                return Err(HostError::Fence("first Launch finalization requires empty prior volatile pins"));
+            }
         }
         // Preserve the old duplicate-before-recheck order. A successfully
         // returned duplicate is resident before scope validation can fail.
@@ -1284,7 +1831,16 @@ where
                 .ok_or_else(retained_launch_missing)?;
             let observation = &attempt.points[point].verified()?.observation;
             let supervisor = observation.leader.as_ref().ok_or_else(retained_launch_missing)?;
-            let observed_leader = supervisor.try_clone()?;
+            let observed_leader = match selected {
+                false => supervisor.try_clone()?,
+                true => {
+                    let original = attempt.retention.as_mut().ok_or_else(retained_launch_missing)?;
+                    if original.entered { return Err(retained_launch_missing()); }
+                    original.entered = true;
+                    original.duplicate.capture_once_v3(supervisor)?;
+                    original.duplicate.take_completed_once_v3().ok_or_else(retained_launch_missing)?
+                }
+            };
             attempt.observed_leader = Some(observed_leader);
         }
 
@@ -1295,7 +1851,19 @@ where
         ) else {
             return Err(retained_launch_missing());
         };
-        let scope_handle = self.prepare_runtime_scope(&identity, invocation_id, supervisor, payload)?;
+        let scope_handle = match selected {
+            false => self.prepare_runtime_scope(&identity, invocation_id, supervisor, payload)?,
+            true => {
+                let attempt = self.live_limit_attempts.get_mut(&request).ok_or_else(retained_launch_missing)?;
+                let RetainedHostLimitAttemptV1 { points, retention, .. } = attempt;
+                let observation = &points[point].verified()?.observation;
+                let supervisor = observation.leader.as_ref().ok_or_else(retained_launch_missing)?;
+                let payload = observation.payload.as_ref().ok_or_else(retained_launch_missing)?;
+                let original = retention.as_mut().ok_or_else(retained_launch_missing)?;
+                original.kernel.capture_once_v3(payload, supervisor)?;
+                super::mint_scope_handle_engine_v3(&self.runtime_pins, Some(original))?
+            }
+        };
 
         // No fallible validation follows the first move. These exclusive
         // Options were all checked while the actual originals were still held.
@@ -1332,6 +1900,49 @@ where
     where
         W: Sync,
     {
+        self.begin_guardian_compensation_receiving_v3(
+            identity, request_id, request_digest, effect, maximum_response_bytes, binding, None,
+        ).await
+    }
+
+    pub(super) async fn begin_guardian_compensation_receiving_v3(
+        &mut self,
+        identity: &HostRuntimeIdentity,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        effect: &BrokerEffectIntentV1,
+        maximum_response_bytes: u32,
+        binding: [u8; 32],
+        worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
+    ) -> Result<Vec<u8>>
+    where
+        W: Sync,
+    {
+        let mut receiving = worker_receiving.map(GuardianCleanupReceivingV1::Selected);
+        match self.begin_guardian_compensation_engine_v1(identity, request_id, request_digest,
+            effect, maximum_response_bytes, binding, &mut receiving).await?
+        {
+            GuardianCompensationOutcomeV1::Completed(response) => Ok(response),
+            GuardianCompensationOutcomeV1::RetainedNegative => Err(guardian_quarantined()),
+        }
+    }
+
+    async fn begin_guardian_compensation_engine_v1(
+        &mut self,
+        identity: &HostRuntimeIdentity,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        effect: &BrokerEffectIntentV1,
+        maximum_response_bytes: u32,
+        binding: [u8; 32],
+        worker_receiving: &mut Option<GuardianCleanupReceivingV1<'_, '_, '_>>,
+    ) -> Result<GuardianCompensationOutcomeV1>
+    where
+        W: Sync,
+    {
+        if self.launch_is_entered_v2(&request_id) && worker_receiving.is_none() {
+            return Err(HostError::Fence("selected Launch cleanup requires its original worker loan"));
+        }
         let attempt = self.state.guardian_attempt(&request_id).ok_or_else(|| {
             HostError::State("Guardian compensation lost its durable attempt".to_owned())
         })?;
@@ -1342,8 +1953,8 @@ where
             freshness: AuthorityFreshness::Expired,
             guardian_job: StartJobEvidence::None,
             payload_job: StartJobEvidence::FailedForCurrentSubmission,
-            guardian: guardian_unit_observation(self.worker.observe_guardian(identity).await?),
-            payload: guardian_unit_observation(self.worker.observe_bound_payload(identity).await?),
+            guardian: self.observe_guardian_cleanup_unit(identity, ExactUnitRole::Guardian, false, worker_receiving).await?,
+            payload: self.observe_guardian_cleanup_unit(identity, ExactUnitRole::Payload, false, worker_receiving).await?,
             worker_proof: None,
         });
         match decision {
@@ -1354,25 +1965,26 @@ where
                 let mut proposed = self.state.clone();
                 proposed.set_guardian_phase(&request_id, cleanup, &self.authority)?;
                 self.commit_state(&proposed)?;
-                self.execute_guardian_cleanup_effect(identity, request_id, cleanup_effect)
+                self.execute_guardian_cleanup_effect_engine_v1(identity, request_id, cleanup_effect, worker_receiving)
                     .await?;
-                self.advance_guardian_compensation(
+                self.advance_guardian_compensation_engine_v1(
                     identity,
                     request_id,
                     request_digest,
                     effect,
                     maximum_response_bytes,
                     binding,
+                    worker_receiving,
                 )
                 .await
             }
-            GuardianDecision::Compensated => self.complete_guardian_compensation(
+            GuardianDecision::Compensated => self.finish_guardian_compensation_engine_v1(
                 request_id,
                 request_digest,
                 effect,
                 maximum_response_bytes,
-                *identity,
-            ),
+                *identity, binding, worker_receiving,
+            ).await,
             GuardianDecision::Reject(_) => Err(guardian_rejected()),
             GuardianDecision::Quarantine => Err(guardian_quarantined()),
             GuardianDecision::Persist(_)
@@ -1397,6 +2009,49 @@ where
     where
         W: Sync,
     {
+        self.advance_guardian_compensation_receiving_v3(
+            identity, request_id, request_digest, effect, maximum_response_bytes, binding, None,
+        ).await
+    }
+
+    pub(super) async fn advance_guardian_compensation_receiving_v3(
+        &mut self,
+        identity: &HostRuntimeIdentity,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        effect: &BrokerEffectIntentV1,
+        maximum_response_bytes: u32,
+        binding: [u8; 32],
+        worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
+    ) -> Result<Vec<u8>>
+    where
+        W: Sync,
+    {
+        let mut receiving = worker_receiving.map(GuardianCleanupReceivingV1::Selected);
+        match self.advance_guardian_compensation_engine_v1(identity, request_id, request_digest,
+            effect, maximum_response_bytes, binding, &mut receiving).await?
+        {
+            GuardianCompensationOutcomeV1::Completed(response) => Ok(response),
+            GuardianCompensationOutcomeV1::RetainedNegative => Err(guardian_quarantined()),
+        }
+    }
+
+    async fn advance_guardian_compensation_engine_v1(
+        &mut self,
+        identity: &HostRuntimeIdentity,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        effect: &BrokerEffectIntentV1,
+        maximum_response_bytes: u32,
+        binding: [u8; 32],
+        worker_receiving: &mut Option<GuardianCleanupReceivingV1<'_, '_, '_>>,
+    ) -> Result<GuardianCompensationOutcomeV1>
+    where
+        W: Sync,
+    {
+        if self.launch_is_entered_v2(&request_id) && worker_receiving.is_none() {
+            return Err(HostError::Fence("selected Launch cleanup requires its original worker loan"));
+        }
         for _ in 0..8 {
             let attempt = self.state.guardian_attempt(&request_id).ok_or_else(|| {
                 HostError::State("Guardian cleanup lost its durable attempt".to_owned())
@@ -1409,15 +2064,13 @@ where
                 .observe_guardian_cleanup_unit(
                     identity,
                     ExactUnitRole::Payload,
-                    *progress == CleanupProgress::PayloadAwaitingAbsence,
-                )
+                    *progress == CleanupProgress::PayloadAwaitingAbsence, worker_receiving)
                 .await?;
             let guardian_observation = self
                 .observe_guardian_cleanup_unit(
                     identity,
                     ExactUnitRole::Guardian,
-                    *progress == CleanupProgress::GuardianAwaitingAbsence,
-                )
+                    *progress == CleanupProgress::GuardianAwaitingAbsence, worker_receiving)
                 .await?;
             let decision = decide_guardian_launch(GuardianDecisionInput {
                 binding,
@@ -1434,21 +2087,21 @@ where
                     let mut proposed = self.state.clone();
                     proposed.set_guardian_phase(&request_id, phase, &self.authority)?;
                     self.commit_state(&proposed)?;
-                    self.execute_guardian_cleanup_effect(identity, request_id, effect)
+                    self.execute_guardian_cleanup_effect_engine_v1(identity, request_id, effect, worker_receiving)
                         .await?;
                 }
                 GuardianDecision::RetryIssued(effect) => {
-                    self.execute_guardian_cleanup_effect(identity, request_id, effect)
+                    self.execute_guardian_cleanup_effect_engine_v1(identity, request_id, effect, worker_receiving)
                         .await?;
                 }
                 GuardianDecision::Compensated => {
-                    return self.complete_guardian_compensation(
+                    return self.finish_guardian_compensation_engine_v1(
                         request_id,
                         request_digest,
                         effect,
                         maximum_response_bytes,
-                        *identity,
-                    );
+                        *identity, binding, worker_receiving,
+                    ).await;
                 }
                 GuardianDecision::ObserveAgain => {
                     // UnrefUnit and transient-unit collection are distinct
@@ -1468,6 +2121,52 @@ where
         Err(guardian_pending())
     }
 
+    fn prepare_guardian_compensation_v1(&self, identity: HostRuntimeIdentity)
+        -> Result<(crate::state::HostState, u64, WorkerObservation)>
+    {
+        let mut proposed = self.state.clone();
+        let sequence = proposed.next_observation_sequence(*identity.incarnation_id())?;
+        Ok((proposed, sequence, WorkerObservation {
+            state: ObservedRuntimeState::Absent,
+            invocation_id: None,
+            leader: None,
+            payload: None,
+        }))
+    }
+
+    async fn finish_guardian_compensation_engine_v1(
+        &mut self,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        effect: &BrokerEffectIntentV1,
+        maximum_response_bytes: u32,
+        identity: HostRuntimeIdentity,
+        binding: [u8; 32],
+        receiving: &mut Option<GuardianCleanupReceivingV1<'_, '_, '_>>,
+    ) -> Result<GuardianCompensationOutcomeV1> {
+        if let Some(GuardianCleanupReceivingV1::Negative(loan)) = receiving {
+            loan.require_terminal_v1(&identity, binding).await?;
+            let actual = self.state.effect(&request_id).ok_or_else(retained_launch_missing)?;
+            let actual = self.authority.open_effect(&request_id, actual)?;
+            if actual != *effect || effect.status() != aos_sandbox_broker::BrokerEffectStatusV1::Pending
+                || !matches!(self.state.query_effect(&request_id, request_digest)?, crate::state::RuntimeEffectQuery::Pending)
+                || !self.state.contains_runtime(&identity)
+                || !self.state.guardian_attempt(&request_id).is_some_and(|attempt|
+                    attempt.binding == binding && matches!(attempt.phase,
+                        GuardianLaunchPhase::PayloadStartIssued { .. } | GuardianLaunchPhase::CleanupIssued { .. }))
+            {
+                return Err(guardian_quarantined());
+            }
+            let (mut proposed, observation_sequence, _) = self.prepare_guardian_compensation_v1(identity)?;
+            proposed.set_guardian_phase(&request_id,
+                GuardianLaunchPhase::CompensatedRetainedV1 { observation_sequence }, &self.authority)?;
+            self.commit_state(&proposed)?;
+            return Ok(GuardianCompensationOutcomeV1::RetainedNegative);
+        }
+        self.complete_guardian_compensation(request_id, request_digest, effect,
+            maximum_response_bytes, identity).map(GuardianCompensationOutcomeV1::Completed)
+    }
+
     fn complete_guardian_compensation(
         &mut self,
         request_id: [u8; 16],
@@ -1476,15 +2175,8 @@ where
         maximum_response_bytes: u32,
         identity: HostRuntimeIdentity,
     ) -> Result<Vec<u8>> {
-        let mut proposed = self.state.clone();
-        let observation_sequence =
-            proposed.next_observation_sequence(*identity.incarnation_id())?;
-        let observation = WorkerObservation {
-            state: ObservedRuntimeState::Absent,
-            invocation_id: None,
-            leader: None,
-            payload: None,
-        };
+        let (mut proposed, observation_sequence, observation) =
+            self.prepare_guardian_compensation_v1(identity)?;
         let response = encode_observation(&identity, observation_sequence, &observation)?;
         ensure_response_bound(&response, maximum_response_bytes)?;
         let completed = effect
@@ -1516,16 +2208,25 @@ where
         identity: &HostRuntimeIdentity,
         role: ExactUnitRole,
         post_unref: bool,
+        worker_receiving: &mut Option<GuardianCleanupReceivingV1<'_, '_, '_>>,
     ) -> Result<UnitObservation>
     where
         W: Sync,
     {
-        let observed = if post_unref {
-            self.worker.observe_post_unref(identity, role).await?
-        } else {
-            match role {
-                ExactUnitRole::Payload => self.worker.observe_bound_payload(identity).await?,
-                ExactUnitRole::Guardian => self.worker.observe_guardian(identity).await?,
+        let observed = match worker_receiving {
+            Some(receiving) => {
+                let worker = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
+                receiving.observe_v1(&worker, identity, role, post_unref).await?
+            }
+            None => {
+                if post_unref {
+                    self.worker.observe_post_unref(identity, role).await?
+                } else {
+                    match role {
+                        ExactUnitRole::Payload => self.worker.observe_bound_payload(identity).await?,
+                        ExactUnitRole::Guardian => self.worker.observe_guardian(identity).await?,
+                    }
+                }
             }
         };
         Ok(guardian_unit_observation(observed))
@@ -1540,6 +2241,38 @@ where
     where
         W: Sync,
     {
+        self.execute_guardian_cleanup_effect_receiving_v3(
+            identity, request_id, effect, None,
+        ).await
+    }
+
+    pub(super) async fn execute_guardian_cleanup_effect_receiving_v3(
+        &mut self,
+        identity: &HostRuntimeIdentity,
+        request_id: [u8; 16],
+        effect: PlannedEffect,
+        worker_receiving: Option<&mut crate::worker::launch::HostLaunchWorkerReceivingV2<'_, '_>>,
+    ) -> Result<()>
+    where
+        W: Sync,
+    {
+        let mut receiving = worker_receiving.map(GuardianCleanupReceivingV1::Selected);
+        self.execute_guardian_cleanup_effect_engine_v1(identity, request_id, effect, &mut receiving).await
+    }
+
+    async fn execute_guardian_cleanup_effect_engine_v1(
+        &mut self,
+        identity: &HostRuntimeIdentity,
+        request_id: [u8; 16],
+        effect: PlannedEffect,
+        worker_receiving: &mut Option<GuardianCleanupReceivingV1<'_, '_, '_>>,
+    ) -> Result<()>
+    where
+        W: Sync,
+    {
+        if self.launch_is_entered_v2(&request_id) && worker_receiving.is_none() {
+            return Err(HostError::Fence("selected Launch cleanup requires its original worker loan"));
+        }
         let (role, target, awaiting) = match effect {
             PlannedEffect::StopPayload(target) => (
                 ExactUnitRole::Payload,
@@ -1562,10 +2295,14 @@ where
                 "Guardian cleanup lost its exact bound target".to_owned(),
             ));
         };
-        match self
-            .worker
-            .stop_exact_unit(identity, role, binding, invocation)
-            .await?
+        let outcome = match worker_receiving {
+            Some(receiving) => {
+                let worker = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
+                receiving.stop_v1(&worker, identity, role, binding, invocation).await?
+            }
+            None => self.worker.stop_exact_unit(identity, role, binding, invocation).await?,
+        };
+        match outcome
         {
             ExactWorkerStopOutcome::AwaitingAbsence(_) | ExactWorkerStopOutcome::Missing => {
                 let attempt = self.state.guardian_attempt(&request_id).ok_or_else(|| {

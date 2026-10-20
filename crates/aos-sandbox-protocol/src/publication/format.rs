@@ -17,6 +17,15 @@
 
 use super::*;
 
+/// Returns the exact current-envelope width around a prepared publication.
+///
+/// This is format DATA only; it neither decodes nor selects a publication.
+/// `None` reports checked length overflow.
+#[must_use]
+pub fn current_publication_encoded_bytes_v1(publication_bytes: usize) -> Option<usize> {
+    CURRENT_HEADER_BYTES.checked_add(publication_bytes)
+}
+
 /// Encodes a history as a current-record envelope with its fixed metadata header.
 ///
 /// The encoded name does not establish currentness; the Native Journal owner

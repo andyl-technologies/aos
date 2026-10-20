@@ -11,6 +11,8 @@
 //!       / 7 immutable original ticket binding-only request (v2 carrier)
 //!       / 8 sealed Authorize reference with one SCM_RIGHTS descriptor
 //!       / 9 signed physical original ticket readback (v2 carrier)
+//!       / 14 sealed Capture Authorize with spec/stdout/stderr pipe descriptors
+//!       / 15 sealed Authorize with request-bound SSH descendant plan DATA
 //! ```
 //!
 //! Integers are big-endian. Variable bytes use a `u32be` length and every
@@ -31,9 +33,20 @@ use crate::model::{
     AgentSessionBindingV1, AgentSessionIdV1, InvalidAgentModel,
 };
 
+mod ssh_reference;
+pub use ssh_reference::{AgentSealedSshAuthorizeReferenceV1, SEALED_SSH_AUTHORIZE_FRAME_BYTES_V1};
+
 const MAGIC: &[u8; 8] = b"AOSAGE01";
 /// Maximum complete agent frame, including header.
 pub const MAX_AGENT_FRAME_BYTES: usize = 16 * 1_048_576 + 1_024;
+
+/// Bounds the fixed canonical request, including its frame prefix and runtime.
+pub const AGENT_HANDSHAKE_REQUEST_BYTES_V2: usize = 8 + 1 + 16 + 4
+    + (16 + 16 + 8 + 32 + 8 + 8 + 16) + 32 + 32;
+
+/// Bounds the canonical response with the existing sixteen-feature limit.
+pub const MAX_AGENT_HANDSHAKE_RESPONSE_BYTES_V2: usize = 8 + 1 + 32 + 16 + 2 + 16 + 64;
+
 /// Maximum canonical execution-specification bytes carried in a sealed memfd.
 pub const MAX_AGENT_SEALED_SPEC_BYTES_V1: usize = 15 * 1_048_576;
 
@@ -175,12 +188,63 @@ pub enum AgentFrameV1 {
     OriginalControlResponseV5(Vec<u8>),
     /// Carries one bounded Authorize reference with exactly one sealed memfd.
     SealedAuthorizeRequest(AgentSealedAuthorizeReferenceV1),
+    /// Carries a sealed Capture spec followed by stdout/stderr write-only pipes.
+    ///
+    /// The kind identifies only transport shape. The Guest authenticates the
+    /// existing complete request and validates all three actual descriptors;
+    /// it receives neither Storage regular output files nor a capture grant.
+    SealedCaptureAuthorizeRequestV2(AgentSealedAuthorizeReferenceV1),
+    /// Carries the same sealed spec and explicit descendant-plan DATA.
+    ///
+    /// The Host must fund the complete source before issuing this frame. The
+    /// Guest separately authenticates the actual request/native owner and
+    /// enforces its caps before any SSH descendant can be released.
+    SealedSshAuthorizeRequestV1(AgentSealedSshAuthorizeReferenceV1),
+}
+
+// These widths follow the fields written by the existing operation encoders.
+const FRAME_PREFIX_BYTES_V5: usize = MAGIC.len() + 1;
+const OPERATION_COORDINATES_BYTES_V5: usize = 32 + 8 + 16;
+
+/// Supplies the exact ordinary Observe request frame width.
+#[must_use]
+pub const fn observe_request_frame_bytes_v5() -> usize {
+    FRAME_PREFIX_BYTES_V5 + OPERATION_COORDINATES_BYTES_V5 + 32 + 1 + 16 + 32
+}
+
+/// Supplies the existing Guest result envelope width for a bounded payload.
+///
+/// Returns `None` on arithmetic overflow. This describes bytes, not authority.
+#[must_use]
+pub fn guest_result_encoded_bytes_v5(payload_bytes: usize) -> Option<usize> {
+    (8usize + 1 + 4).checked_add(payload_bytes)
+}
+
+/// Supplies the standard Observe result width for PID or raw wait status.
+#[must_use]
+pub const fn observe_result_bytes_v5() -> usize { 8 + 1 + 4 + 4 }
+
+/// Supplies the exact operation-outcome frame width before encoding.
+///
+/// Returns `None` on arithmetic overflow.
+#[must_use]
+pub fn operation_outcome_frame_bytes_v5(result_bytes: usize) -> Option<usize> {
+    (FRAME_PREFIX_BYTES_V5 + OPERATION_COORDINATES_BYTES_V5 + 32 + 1 + 4 + 32)
+        .checked_add(result_bytes)
 }
 
 /// Encodes one exact protocol frame.
 #[must_use]
 pub fn encode_frame_v1(frame: &AgentFrameV1) -> Vec<u8> {
-    let mut bytes = Vec::new();
+    let capacity = match frame {
+        AgentFrameV1::OperationRequest(request)
+            if matches!(request.operation(), AgentExecutionOperationV1::Observe { .. }) =>
+                observe_request_frame_bytes_v5(),
+        AgentFrameV1::OperationOutcome(outcome) =>
+            operation_outcome_frame_bytes_v5(outcome.result_bytes().len()).unwrap_or(0),
+        _ => 0,
+    };
+    let mut bytes = Vec::with_capacity(capacity);
     bytes.extend_from_slice(MAGIC);
     match frame {
         AgentFrameV1::HandshakeRequest(request) => {
@@ -210,6 +274,15 @@ pub fn encode_frame_v1(frame: &AgentFrameV1) -> Vec<u8> {
         AgentFrameV1::SealedAuthorizeRequest(reference) => {
             bytes.push(8);
             encode_sealed_authorize_reference(&mut bytes, reference);
+        }
+        AgentFrameV1::SealedCaptureAuthorizeRequestV2(reference) => {
+            bytes.push(14);
+            encode_sealed_authorize_reference(&mut bytes, reference);
+        }
+        AgentFrameV1::SealedSshAuthorizeRequestV1(reference) => {
+            bytes.push(15);
+            encode_sealed_authorize_reference(&mut bytes, &reference.reference);
+            bytes.extend_from_slice(&reference.plan.encode_data_v1());
         }
         AgentFrameV1::OpenSshTicketBindRequestV2(request) => {
             bytes.push(7);
@@ -277,6 +350,15 @@ pub fn decode_frame_v1(bytes: &[u8]) -> Result<AgentFrameV1, AgentProtocolError>
             .to_vec(),
         ),
         8 => AgentFrameV1::SealedAuthorizeRequest(decode_sealed_authorize_reference(&mut cursor)?),
+        14 => AgentFrameV1::SealedCaptureAuthorizeRequestV2(
+            decode_sealed_authorize_reference(&mut cursor)?,
+        ),
+        15 => AgentFrameV1::SealedSshAuthorizeRequestV1(AgentSealedSshAuthorizeReferenceV1 {
+            reference: decode_sealed_authorize_reference(&mut cursor)?,
+            plan: crate::openssh_receiving::OpenSshDescendantPlanDataV1::decode_data_v1(
+                cursor.bytes(crate::openssh_receiving::OPENSSH_DESCENDANT_PLAN_BYTES_V1)?,
+            )?,
+        }),
         10 => AgentFrameV1::OriginalAttachRequestV3(
             read_length_prefixed(
                 &mut cursor,
@@ -576,6 +658,7 @@ fn decode_feature(code: u8) -> Result<AgentFeatureV1, AgentProtocolError> {
         5 => Ok(AgentFeatureV1::ExecutionSignal),
         6 => Ok(AgentFeatureV1::Quiesce),
         7 => Ok(AgentFeatureV1::RuntimeArgumentObservation),
+        8 => Ok(AgentFeatureV1::CapturePipeHandoffV2),
         _ => Err(AgentProtocolError::UnknownValue),
     }
 }
@@ -613,6 +696,9 @@ pub enum AgentProtocolError {
     /// A sealed reference was requested for a different operation.
     #[error("agent descriptor reference does not name an Authorize operation")]
     InvalidDescriptorReference,
+    /// The explicit SSH descendant-plan DATA is noncanonical or foreign.
+    #[error("agent SSH descendant-plan DATA is invalid: {0}")]
+    DescendantPlan(#[from] crate::openssh_receiving::OpenSshDescendantPlanDataErrorV1),
     /// The decoded portable model is invalid.
     #[error("agent frame semantics are invalid: {0}")]
     Model(#[from] InvalidAgentModel),
@@ -671,6 +757,12 @@ mod reader_frontier_tests {
     use super::*;
 
     #[test]
+    fn capture_capability_has_an_explicit_wire_code() {
+        assert_eq!(decode_feature(8), Ok(AgentFeatureV1::CapturePipeHandoffV2));
+        assert_eq!(decode_feature(9), Err(AgentProtocolError::UnknownValue));
+    }
+
+    #[test]
     fn frame_magic_version_and_model_refusals_precede_later_reads_and_eof() {
         for length in 0..=MAGIC.len() {
             assert_eq!(
@@ -684,10 +776,17 @@ mod reader_frontier_tests {
         );
 
         let mut unknown = MAGIC.to_vec();
-        unknown.extend_from_slice(&[14, 0x55]);
+        unknown.extend_from_slice(&[u8::MAX, 0x55]);
         assert_eq!(
             decode_frame_v1(&unknown),
             Err(AgentProtocolError::UnknownValue)
+        );
+
+        let mut sealed_authorize = MAGIC.to_vec();
+        sealed_authorize.extend_from_slice(&[15, 0x55]);
+        assert_eq!(
+            decode_frame_v1(&sealed_authorize),
+            Err(AgentProtocolError::Truncated)
         );
 
         let mut handshake = MAGIC.to_vec();
@@ -776,5 +875,44 @@ mod reader_frontier_tests {
         assert_eq!(payload, &bytes[4..]);
         assert_eq!(payload.as_ptr(), bytes[4..].as_ptr());
         assert_eq!(cursor.finish(), Ok(()));
+    }
+}
+
+#[cfg(test)]
+mod handshake_receiving_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn request_receiving_bound_matches_the_actual_canonical_encoder() {
+        let runtime = AgentRuntimeBindingV1::new(
+            SandboxId::from_bytes([1; 16]), IncarnationId::from_bytes([2; 16]),
+            AssignmentEpoch::new(3), ObjectDigest::from_bytes([4; 32]),
+            DesiredGeneration::new(5), NamespaceGeneration::new(6), [7; 16],
+        ).unwrap();
+        let request = AgentHandshakeRequestV1::new(
+            AgentSessionIdV1::new([8; 16]).unwrap(), runtime,
+            AgentNonceV1::new([9; 32]).unwrap(), ObjectDigest::from_bytes([10; 32]),
+        ).unwrap();
+
+        let bytes = encode_frame_v1(&AgentFrameV1::HandshakeRequest(request));
+
+        assert_eq!(bytes.len(), AGENT_HANDSHAKE_REQUEST_BYTES_V2);
+        assert!(matches!(decode_frame_v1(&bytes), Ok(AgentFrameV1::HandshakeRequest(_))));
+    }
+
+    #[test]
+    fn response_receiving_bound_includes_the_full_prevalidation_feature_table() {
+        // The decoder reaches sixteen feature octets before the same model
+        // rejects duplicates/unknown values. That negative DTO is bounded too.
+        let mut bytes = MAGIC.to_vec();
+        bytes.push(2);
+        bytes.extend_from_slice(&[1; 32]);
+        bytes.extend_from_slice(&[2; 16]);
+        bytes.extend_from_slice(&16_u16.to_be_bytes());
+        bytes.extend_from_slice(&[1; 16]);
+        bytes.extend_from_slice(&[3; 64]);
+
+        assert_eq!(bytes.len(), MAX_AGENT_HANDSHAKE_RESPONSE_BYTES_V2);
+        assert!(decode_frame_v1(&bytes).is_err());
     }
 }

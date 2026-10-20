@@ -100,7 +100,7 @@ fn activated_listener_correlates_nominated_responder_not_creator() {
         transport::receive(&mut client.socket, 64, Some(0), deadline).expect("actual reply");
     let (_, subject, _) = hello.into_parts();
     assert_eq!(subject.initial_info().pid(), child.0.id());
-    let host = HostExecution::new(client.expected_host, subject).expect("child host identity");
+    let host = HostExecution::new(client.expected_host.take().expect("configured Host input"), subject).expect("child host identity");
     assert_eq!(host.recheck().expect("live host").pid(), child.0.id());
     transport::send(&mut client.socket, b"observe", deadline).expect("send request");
     let reply =

@@ -470,7 +470,7 @@ mod tests {
         ObserveHostStorageOutputResponseV1,
         BrokerAssignment,
     ) {
-        let (original, assignment) = crate::storage_output_reserve::tests::fixture();
+        let (original, assignment) = crate::storage_output_reserve::fixture::fixture();
         let records = StorageOutputReserveRecordsV1::from_canonical_records(
             &original.canonical_controller_attempt,
             &original.canonical_controller_settlement,
@@ -718,4 +718,37 @@ mod tests {
                 .is_err()
         );
     }
+}
+
+/// Bounds the existing Host readback builder and its canonical self-inspection.
+///
+/// The caller supplies lengths from its actual frozen original and header.
+/// This pure byte geometry supplies no Host/Storage owner or permission.
+///
+/// # Errors
+/// Returns an arithmetic refusal if any actual carrier width overflows.
+pub fn host_storage_output_readback_receiving_bytes_v1(original_body_bytes: usize, header_bytes: usize)
+    -> Result<usize, aos_sandbox_core::AccountingError>
+{
+    use aos_sandbox_core::{AccountingError, ResourceDimension};
+    let overflow = || AccountingError::ArithmeticOverflow { dimension: ResourceDimension::MemoryBytes };
+    // Five length-delimited fields have at most a five-byte tag and ten-byte
+    // length each. Three fixed digests and the real header/original are backing.
+    let fields = original_body_bytes.checked_add(header_bytes)
+        .and_then(|bytes| bytes.checked_add(3 * 32)).ok_or_else(overflow)?;
+    let encoded = fields.checked_add(5 * (5 + 10)).ok_or_else(overflow)?;
+    let statement = GRANT_DOMAIN.len().checked_add(1 + 16)
+        .and_then(|prefix| prefix.checked_add(encoded)).ok_or_else(overflow)?;
+    let typed = [
+        std::mem::size_of::<ObserveHostStorageOutputRequestV1>(),
+        std::mem::size_of::<ObserveHostStorageOutputRequestV1>(),
+        std::mem::size_of::<ValidatedHostStorageOutputReadbackRequestV1>(),
+        std::mem::size_of::<aos_proto::aos::sandbox::local::v1::RequestHeader>(),
+        std::mem::size_of::<BrokerGrant>(),
+    ].into_iter().try_fold(0usize, |bytes, width| bytes.checked_add(width).ok_or_else(overflow))?;
+    let original = crate::storage_output_reserve::storage_output_inspection_receiving_bytes_v1(original_body_bytes)?;
+    // Builder backing, retained encoded body, decoder backing, canonical
+    // comparison and semantic grant statement can coexist with inspection.
+    [fields, encoded, fields, original_body_bytes, encoded, statement, original].into_iter()
+        .try_fold(typed, |bytes, width| bytes.checked_add(width).ok_or_else(overflow))
 }

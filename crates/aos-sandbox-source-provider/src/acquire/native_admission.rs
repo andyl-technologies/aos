@@ -44,7 +44,7 @@ impl CurrentSelection {
 
     pub(crate) fn require_native_claims(
         &self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         claims: &NativeAcquireCatalogBindingV3,
         namespace: ObjectDigest,
     ) -> Result<(), ProviderLedgerError> {
@@ -115,7 +115,7 @@ pub(super) fn select_current_resource(
 
 /// Shares the original row-selection engine with the immutable pairing view.
 pub(crate) fn select_current_resource_at(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     catalog: &crate::model::CatalogHeadRecordV1,
     session: &mut CurrentProviderIngressSessionV1,
     normalized: &NormalizedAcquisitionIntentV1,

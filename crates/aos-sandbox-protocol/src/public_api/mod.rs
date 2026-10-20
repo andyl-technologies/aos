@@ -19,6 +19,7 @@
 //! native owners retain authenticated admission and mixed carrier selection.
 
 pub mod attach_holder_proof;
+pub mod cache_consumer;
 pub mod audit_event;
 pub mod continuation;
 pub mod create_holder_proof;

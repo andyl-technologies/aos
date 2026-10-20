@@ -6,6 +6,12 @@
 //! independently recompiles argv before invoking its fixed executable. ZFS
 //! observations remain a separate backend and never trust child output.
 
+mod snapshot_startup;
+mod snapshot_read;
+mod recovery_results;
+mod recovery_observation;
+pub(crate) use snapshot_startup::StorageSnapshotMetadataStartupV1;
+
 use std::fs::File;
 use std::io::Read as _;
 use std::os::fd::OwnedFd;
@@ -109,6 +115,71 @@ pub(crate) struct SealedZfsProgram<'a> {
 }
 
 pub(crate) trait ZfsProcessBackend {
+    // Closed actual Capture entry; only a genuine fresh424 Native original
+    // reaches this borrowed port. Other fixed/test backends refuse it.
+    fn begin_capture_created_ongoing_v3(
+        &mut self,
+        physical: &mut crate::process::CapturePhysicalPreparationOriginalV3,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        journal: &aos_sandbox::Journal,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<(), ZfsWorkerError> {
+        let _ = (physical, request, journal, receiving);
+        Err(ZfsWorkerError::Authority)
+    }
+
+    fn observe_capture_candidate_preflight_receiving_v1(
+        &mut self,
+        _contract: &ZfsHelperContract,
+        _plan: &crate::catalog_transition::execution_capture::readback::CaptureZfsPreflightPlanV1,
+        _cutoff: u64,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<crate::catalog_transition::execution_capture::readback::CaptureZfsPreflightV1, ZfsHelperError> {
+        let _ = stage;
+        Err(ZfsHelperError::ProcessContract)
+    }
+
+    fn observe_preconditions_receiving_v1(
+        &mut self,
+        _program: &SealedZfsProgram<'_>,
+        _expected: &[ZfsPrecondition],
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<Vec<ZfsPrecondition>, ZfsHelperError> {
+        let _ = stage;
+        Err(ZfsHelperError::ProcessContract)
+    }
+
+    fn execute_once_receiving_v1(
+        &mut self,
+        _program: &SealedZfsProgram<'_>,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        let _ = stage;
+        Err(ZfsHelperError::ProcessContract)
+    }
+
+    fn atomic_snapshot_once_receiving_v1(
+        &mut self,
+        _contract: &ZfsHelperContract,
+        _program: &crate::DormantAtomicDatasetSnapshotV1,
+        _mutate: bool,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        let _ = stage;
+        Err(ZfsHelperError::ProcessContract)
+    }
+
+    fn observe_postcondition_receiving_v1(
+        &mut self,
+        _program: &SealedZfsProgram<'_>,
+        _expected: &PostconditionPolicyV1,
+        _expected_ancestor: Option<&ProjectAncestorPolicyV1>,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
+        let _ = stage;
+        Err(ZfsHelperError::ProcessContract)
+    }
+
     fn observe_original_held_snapshot(
         &mut self,
         _contract: &ZfsHelperContract,
@@ -159,6 +230,27 @@ pub(crate) trait ZfsProcessBackend {
     ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError>;
 
     /// Reads protected whole-tree identity metadata for one Snapshot commit.
+    fn snapshot_metadata_receiving_v1(
+        &mut self,
+        _operation_id: [u8; 16],
+        _journal: &aos_sandbox::Journal,
+        _receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<Option<crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1>, ZfsHelperError> {
+        Err(ZfsHelperError::ProcessContract)
+    }
+
+    fn snapshot_receiving_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+
+    fn require_snapshot_reads_positive_v1(&self) -> Result<(), ZfsHelperError> {
+        Err(ZfsHelperError::ProcessContract)
+    }
+
+    fn complete_snapshot_reads_disposal_v1(&mut self) {
+        std::process::abort();
+    }
+
     fn snapshot_metadata(
         &mut self,
         _operation_id: [u8; 16],
@@ -169,6 +261,63 @@ pub(crate) trait ZfsProcessBackend {
 }
 
 impl<T: ZfsProcessBackend + ?Sized> ZfsProcessBackend for Box<T> {
+    fn begin_capture_created_ongoing_v3(
+        &mut self,
+        physical: &mut crate::process::CapturePhysicalPreparationOriginalV3,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        journal: &aos_sandbox::Journal,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<(), ZfsWorkerError> {
+        (**self).begin_capture_created_ongoing_v3(physical, request, journal, receiving)
+    }
+
+    fn observe_capture_candidate_preflight_receiving_v1(
+        &mut self,
+        contract: &ZfsHelperContract,
+        plan: &crate::catalog_transition::execution_capture::readback::CaptureZfsPreflightPlanV1,
+        cutoff: u64,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<crate::catalog_transition::execution_capture::readback::CaptureZfsPreflightV1, ZfsHelperError> {
+        (**self).observe_capture_candidate_preflight_receiving_v1(contract, plan, cutoff, stage)
+    }
+
+    fn observe_preconditions_receiving_v1(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &[ZfsPrecondition],
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<Vec<ZfsPrecondition>, ZfsHelperError> {
+        (**self).observe_preconditions_receiving_v1(program, expected, stage)
+    }
+
+    fn execute_once_receiving_v1(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        (**self).execute_once_receiving_v1(program, stage)
+    }
+
+    fn atomic_snapshot_once_receiving_v1(
+        &mut self,
+        contract: &ZfsHelperContract,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        mutate: bool,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        (**self).atomic_snapshot_once_receiving_v1(contract, program, mutate, stage)
+    }
+
+    fn observe_postcondition_receiving_v1(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &PostconditionPolicyV1,
+        expected_ancestor: Option<&ProjectAncestorPolicyV1>,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
+        (**self).observe_postcondition_receiving_v1(program, expected, expected_ancestor, stage)
+    }
+
     fn observe_original_held_snapshot(
         &mut self,
         contract: &ZfsHelperContract,
@@ -224,6 +373,27 @@ impl<T: ZfsProcessBackend + ?Sized> ZfsProcessBackend for Box<T> {
         (**self).observe_postcondition(program, expected, expected_ancestor)
     }
 
+    fn snapshot_metadata_receiving_v1(
+        &mut self,
+        operation_id: [u8; 16],
+        journal: &aos_sandbox::Journal,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<Option<crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1>, ZfsHelperError> {
+        (**self).snapshot_metadata_receiving_v1(operation_id, journal, receiving)
+    }
+
+    fn snapshot_receiving_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        (**self).snapshot_receiving_failure_v1()
+    }
+
+    fn require_snapshot_reads_positive_v1(&self) -> Result<(), ZfsHelperError> {
+        (**self).require_snapshot_reads_positive_v1()
+    }
+
+    fn complete_snapshot_reads_disposal_v1(&mut self) {
+        (**self).complete_snapshot_reads_disposal_v1()
+    }
+
     fn snapshot_metadata(
         &mut self,
         operation_id: [u8; 16],
@@ -236,6 +406,7 @@ impl<T: ZfsProcessBackend + ?Sized> ZfsProcessBackend for Box<T> {
 pub(crate) struct SystemdZfsProcessBackend {
     executor: SystemdZfsExecutor,
     snapshot_metadata: Option<ProtectedSnapshotMetadataDirectoryV1>,
+    snapshot_reads: snapshot_read::SnapshotMetadataReadsV1,
 }
 
 impl SystemdZfsProcessBackend {
@@ -243,6 +414,7 @@ impl SystemdZfsProcessBackend {
         Self {
             executor,
             snapshot_metadata: None,
+            snapshot_reads: snapshot_read::SnapshotMetadataReadsV1::default(),
         }
     }
 
@@ -253,11 +425,83 @@ impl SystemdZfsProcessBackend {
         Ok(Self {
             executor,
             snapshot_metadata: Some(ProtectedSnapshotMetadataDirectoryV1::open_fixed()?),
+            snapshot_reads: snapshot_read::SnapshotMetadataReadsV1::default(),
         })
     }
 }
 
 impl ZfsProcessBackend for SystemdZfsProcessBackend {
+    fn begin_capture_created_ongoing_v3(
+        &mut self,
+        physical: &mut crate::process::CapturePhysicalPreparationOriginalV3,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        journal: &aos_sandbox::Journal,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<(), ZfsWorkerError> {
+        physical.begin_create_once_v3(&self.executor, request, journal, receiving)
+    }
+
+    fn observe_capture_candidate_preflight_receiving_v1(
+        &mut self,
+        contract: &ZfsHelperContract,
+        plan: &crate::catalog_transition::execution_capture::readback::CaptureZfsPreflightPlanV1,
+        cutoff: u64,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<crate::catalog_transition::execution_capture::readback::CaptureZfsPreflightV1, ZfsHelperError> {
+        self.executor.observe_capture_candidate_preflight_receiving_v1(contract, plan, cutoff, stage)
+            .map_err(ZfsHelperError::from)
+    }
+
+    fn observe_preconditions_receiving_v1(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &[ZfsPrecondition],
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<Vec<ZfsPrecondition>, ZfsHelperError> {
+        let contract = ZfsHelperContract::new(program.executable.to_path_buf())?;
+        preconditions_from_worker_v1(self.executor.observe_preconditions_receiving_v1(
+            &contract, program.operation, program.catalog, stage,
+        )?, expected)
+    }
+
+    fn execute_once_receiving_v1(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        let contract = ZfsHelperContract::new(program.executable.to_path_buf())?;
+        let output = self.executor.execute_once_receiving_v1(
+            &contract, program.operation, program.catalog, stage,
+        )?;
+        Ok(ZfsProcessOutput { stdout: output.stdout, stderr: output.stderr,
+            success: output.success, timed_out: output.timed_out })
+    }
+
+    fn atomic_snapshot_once_receiving_v1(
+        &mut self,
+        contract: &ZfsHelperContract,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        mutate: bool,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        let output = self.executor.atomic_snapshot_once_receiving_v1(contract, program, mutate, stage)?;
+        Ok(ZfsProcessOutput { stdout: output.stdout, stderr: output.stderr,
+            success: output.success, timed_out: output.timed_out })
+    }
+
+    fn observe_postcondition_receiving_v1(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &PostconditionPolicyV1,
+        expected_ancestor: Option<&ProjectAncestorPolicyV1>,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
+        let contract = ZfsHelperContract::new(program.executable.to_path_buf())?;
+        postcondition_from_worker_v1(self.executor.observe_postcondition_receiving_v1(
+            &contract, program.operation, program.catalog, stage,
+        )?, expected, expected_ancestor)
+    }
+
     fn observe_original_held_snapshot(
         &mut self,
         contract: &ZfsHelperContract,
@@ -289,18 +533,10 @@ impl ZfsProcessBackend for SystemdZfsProcessBackend {
         expected: &[ZfsPrecondition],
     ) -> Result<Vec<ZfsPrecondition>, ZfsHelperError> {
         let contract = ZfsHelperContract::new(program.executable.to_path_buf())?;
-        match self
-            .executor
-            .observe_preconditions(&contract, program.operation, program.catalog)?
-        {
-            WorkerObservationOutcome::Matched {
-                object_guid: None, ..
-            } => Ok(expected.to_vec()),
-            WorkerObservationOutcome::Matched { .. } => Err(ZfsHelperError::PreconditionMismatch),
-            WorkerObservationOutcome::Incomplete | WorkerObservationOutcome::Mismatch => {
-                Ok(Vec::new())
-            }
-        }
+        preconditions_from_worker_v1(
+            self.executor.observe_preconditions(&contract, program.operation, program.catalog)?,
+            expected,
+        )
     }
 
     fn execute_once(
@@ -343,32 +579,36 @@ impl ZfsProcessBackend for SystemdZfsProcessBackend {
         expected_ancestor: Option<&ProjectAncestorPolicyV1>,
     ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
         let contract = ZfsHelperContract::new(program.executable.to_path_buf())?;
-        match self
-            .executor
-            .observe_postcondition(&contract, program.operation, program.catalog)?
-        {
-            WorkerObservationOutcome::Matched {
-                object_guid,
-                observation_digest,
-            } => {
-                let captures_guid = matches!(
-                    expected,
-                    PostconditionPolicyV1::CaptureDataset { .. }
-                        | PostconditionPolicyV1::CaptureSnapshot { .. }
-                );
-                if captures_guid != object_guid.is_some() {
-                    return Err(ZfsHelperError::PostconditionMismatch);
-                }
-                Ok(Some(ZfsPostconditionObservation {
-                    observed: expected.clone(),
-                    ancestor: expected_ancestor.cloned(),
-                    object_guid,
-                    digest: observation_digest,
-                }))
-            }
-            WorkerObservationOutcome::Incomplete => Ok(None),
-            WorkerObservationOutcome::Mismatch => Err(ZfsHelperError::PostconditionMismatch),
-        }
+        postcondition_from_worker_v1(
+            self.executor.observe_postcondition(&contract, program.operation, program.catalog)?,
+            expected, expected_ancestor,
+        )
+    }
+
+    fn snapshot_metadata_receiving_v1(
+        &mut self,
+        operation_id: [u8; 16],
+        journal: &aos_sandbox::Journal,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<Option<crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1>, ZfsHelperError> {
+        let Some(directory) = self.snapshot_metadata.as_ref() else {
+            return Ok(None);
+        };
+        self.snapshot_reads.capture_receiving_v1(
+            &directory.directory, operation_id, journal, receiving,
+        ).map(Some)
+    }
+
+    fn snapshot_receiving_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.snapshot_reads.failure()
+    }
+
+    fn require_snapshot_reads_positive_v1(&self) -> Result<(), ZfsHelperError> {
+        self.snapshot_reads.require_positive_after_posts_v1()
+    }
+
+    fn complete_snapshot_reads_disposal_v1(&mut self) {
+        self.snapshot_reads.complete_positive_disposal_v1()
     }
 
     fn snapshot_metadata(
@@ -383,6 +623,44 @@ impl ZfsProcessBackend for SystemdZfsProcessBackend {
     }
 }
 
+fn preconditions_from_worker_v1(
+    outcome: WorkerObservationOutcome,
+    expected: &[ZfsPrecondition],
+) -> Result<Vec<ZfsPrecondition>, ZfsHelperError> {
+    match outcome {
+        WorkerObservationOutcome::Matched { object_guid: None, .. } => Ok(expected.to_vec()),
+        WorkerObservationOutcome::Matched { .. } => Err(ZfsHelperError::PreconditionMismatch),
+        WorkerObservationOutcome::Incomplete | WorkerObservationOutcome::Mismatch => Ok(Vec::new()),
+    }
+}
+
+fn postcondition_from_worker_v1(
+    outcome: WorkerObservationOutcome,
+    expected: &PostconditionPolicyV1,
+    expected_ancestor: Option<&ProjectAncestorPolicyV1>,
+) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
+    match outcome {
+        WorkerObservationOutcome::Matched { object_guid, observation_digest } => {
+            let captures_guid = matches!(
+                expected,
+                PostconditionPolicyV1::CaptureDataset { .. }
+                    | PostconditionPolicyV1::CaptureSnapshot { .. }
+            );
+            if captures_guid != object_guid.is_some() {
+                return Err(ZfsHelperError::PostconditionMismatch);
+            }
+            Ok(Some(ZfsPostconditionObservation {
+                observed: expected.clone(),
+                ancestor: expected_ancestor.cloned(),
+                object_guid,
+                digest: observation_digest,
+            }))
+        }
+        WorkerObservationOutcome::Incomplete => Ok(None),
+        WorkerObservationOutcome::Mismatch => Err(ZfsHelperError::PostconditionMismatch),
+    }
+}
+
 /// Retains the fixed root-owned directory containing exact AOSSMT01 records.
 struct ProtectedSnapshotMetadataDirectoryV1 {
     directory: OwnedFd,
@@ -390,65 +668,16 @@ struct ProtectedSnapshotMetadataDirectoryV1 {
 
 impl ProtectedSnapshotMetadataDirectoryV1 {
     fn open_fixed() -> Result<Self, ZfsHelperError> {
-        let directory = open(
-            FIXED_SNAPSHOT_METADATA_DIRECTORY,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|_| ZfsHelperError::ProcessContract)?;
-        let metadata = fstat(&directory).map_err(|_| ZfsHelperError::ProcessContract)?;
-        if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
-            || metadata.st_uid != 0
-            || !matches!(metadata.st_mode & 0o7777, 0o500 | 0o700)
-        {
-            return Err(ZfsHelperError::ProcessContract);
-        }
-        Ok(Self { directory })
+        snapshot_startup::open_ordinary_fixed()
     }
 
     fn read(
         &self,
         operation_id: [u8; 16],
     ) -> Result<crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1, ZfsHelperError> {
-        let name = snapshot_metadata_name(operation_id);
-        let descriptor = openat(
-            &self.directory,
-            name,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|_| ZfsHelperError::ProcessContract)?;
-        let before = fstat(&descriptor).map_err(|_| ZfsHelperError::ProcessContract)?;
-        if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
-            || before.st_uid != 0
-            || before.st_nlink != 1
-            || before.st_mode & 0o7777 != 0o400
-            || before.st_size != SNAPSHOT_METADATA_RECORD_BYTES as i64
-        {
-            return Err(ZfsHelperError::ProcessContract);
-        }
-
-        let mut file = File::from(descriptor);
-        let mut bytes = Vec::with_capacity(SNAPSHOT_METADATA_RECORD_BYTES);
-        (&mut file)
-            .take((SNAPSHOT_METADATA_RECORD_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|_| ZfsHelperError::ProcessContract)?;
-        if bytes.len() != SNAPSHOT_METADATA_RECORD_BYTES {
-            return Err(ZfsHelperError::ProcessContract);
-        }
-        let after = fstat(&file).map_err(|_| ZfsHelperError::ProcessContract)?;
-        if before.st_dev != after.st_dev
-            || before.st_ino != after.st_ino
-            || before.st_size != after.st_size
-            || before.st_mtime != after.st_mtime
-            || before.st_mtime_nsec != after.st_mtime_nsec
-        {
-            return Err(ZfsHelperError::ProcessContract);
-        }
-        crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1::from_canonical_bytes(&bytes)
-            .map_err(|_| ZfsHelperError::ProcessContract)
+        snapshot_read::read_ordinary(&self.directory, operation_id)
     }
+
 }
 
 fn snapshot_metadata_name(operation_id: [u8; 16]) -> String {
@@ -466,6 +695,31 @@ fn snapshot_metadata_name(operation_id: [u8; 16]) -> String {
 pub(crate) struct StorageMutationHelper<B> {
     contract: ZfsHelperContract,
     backend: B,
+    recovery_results: recovery_results::RecoveryHelperResultsV1,
+    recovery_observations: recovery_observation::RecoveryObservationsV1,
+    recovery_failure: Option<RecoveryHelperFailureV1>,
+}
+
+#[derive(Clone, Copy)]
+enum RecoveryHelperFailureV1 {
+    ReturnedOutput,
+    Observation,
+}
+
+/// Keeps every positive helper carrier resident through the last fallible check.
+///
+/// Only the actual helper can prepare this private disposition. The enclosing
+/// Runtime completes its State/native posts before entry and performs actual
+/// sibling-owner cleanup before this infallible final disposal.
+#[must_use]
+pub(crate) struct StorageRecoveryHelperDispositionV1<'helper, B: ZfsProcessBackend> {
+    helper: &'helper mut StorageMutationHelper<B>,
+}
+
+impl<B: ZfsProcessBackend> StorageRecoveryHelperDispositionV1<'_, B> {
+    pub(crate) fn complete_after_disposal_v1(self) {
+        self.helper.complete_recovery_disposition_v1();
+    }
 }
 
 /// Carries one pre-observed persisted transaction into its sole dispatch.
@@ -497,6 +751,49 @@ impl PreobservedZfsMutation {
 }
 
 impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
+    pub(crate) fn begin_capture_created_ongoing_v3(
+        &mut self,
+        physical: &mut crate::process::CapturePhysicalPreparationOriginalV3,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        journal: &aos_sandbox::Journal,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<(), ZfsWorkerError> {
+        self.backend.begin_capture_created_ongoing_v3(physical, request, journal, receiving)
+    }
+
+    pub(crate) fn observe_capture_candidate_preflight_receiving_v1(
+        &mut self,
+        plan: &crate::catalog_transition::execution_capture::readback::CaptureZfsPreflightPlanV1,
+        cutoff: u64,
+        stage: &mut crate::process::receiving_stage::StoragePhysicalWorkerStageV1<'_, '_, '_>,
+    ) -> Result<crate::catalog_transition::execution_capture::readback::CaptureZfsPreflightV1, ZfsHelperError> {
+        self.backend.observe_capture_candidate_preflight_receiving_v1(&self.contract, plan, cutoff, stage)
+    }
+
+    pub(crate) fn complete_recovery_disposition_v1(&mut self) {
+        self.backend.complete_snapshot_reads_disposal_v1();
+        self.recovery_results.complete_positive_disposal_v1();
+        self.recovery_observations.complete_positive_disposal();
+    }
+
+    pub(crate) fn prepare_recovery_disposition_v1(
+        &mut self,
+    ) -> Result<StorageRecoveryHelperDispositionV1<'_, B>, ZfsHelperError> {
+        self.recovery_results.require_positive_after_posts_v1()?;
+        self.recovery_observations.require_positive(&self.backend)?;
+        self.backend.require_snapshot_reads_positive_v1()?;
+        Ok(StorageRecoveryHelperDispositionV1 { helper: self })
+    }
+
+    pub(crate) fn recovery_receiving_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        match self.recovery_failure? {
+            RecoveryHelperFailureV1::ReturnedOutput => self.recovery_results.failure(),
+            RecoveryHelperFailureV1::Observation => self.recovery_observations.failure(&self.backend),
+        }
+    }
+
     pub(crate) fn observe_original_held_snapshot(
         &mut self,
         snapshot: &crate::ResolvedSnapshot,
@@ -527,7 +824,13 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
     }
 
     pub(crate) fn new(contract: ZfsHelperContract, backend: B) -> Self {
-        Self { contract, backend }
+        Self {
+            contract,
+            backend,
+            recovery_results: recovery_results::RecoveryHelperResultsV1::new(),
+            recovery_observations: recovery_observation::RecoveryObservationsV1::default(),
+            recovery_failure: None,
+        }
     }
 
     pub(crate) fn into_boxed(self) -> StorageMutationHelper<Box<dyn ZfsProcessBackend + Send>>
@@ -537,6 +840,9 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
         StorageMutationHelper {
             contract: self.contract,
             backend: Box::new(self.backend),
+            recovery_results: self.recovery_results,
+            recovery_observations: self.recovery_observations,
+            recovery_failure: self.recovery_failure,
         }
     }
 
@@ -548,53 +854,59 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
         let output = self
             .backend
             .atomic_snapshot_once(&self.contract, program, mutate)?;
-        let expected_length = 42_usize
-            .checked_add(program.member_count().saturating_mul(8))
-            .ok_or(ZfsHelperError::PostconditionMismatch)?;
-        if output.timed_out
-            || !output.success
-            || output.stdout.len() != expected_length
-            || !output.stderr.is_empty()
-            || output.stdout.get(..8) != Some(b"AOSASO02".as_slice())
-        {
-            return Err(ZfsHelperError::PostconditionMismatch);
+        parse_atomic_snapshot_output_v1(program, &output)
+    }
+
+    pub(crate) fn atomic_snapshot_once_receiving_v1(
+        &mut self,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        mutate: bool,
+        journal: &aos_sandbox::Journal,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<ObservedAtomicSnapshotGroupV1, ZfsHelperError> {
+        if self.recovery_receiving_failure_v1().is_some() {
+            return Err(StorageStateError::Receiving.into());
         }
-        let digest: [u8; 32] = output.stdout[8..40]
-            .try_into()
-            .map_err(|_| ZfsHelperError::PostconditionMismatch)?;
-        let count = u16::from_be_bytes(
-            output.stdout[40..42]
-                .try_into()
-                .map_err(|_| ZfsHelperError::PostconditionMismatch)?,
+        let result = self.atomic_snapshot_once_receiving_inner_v1(
+            program, mutate, journal, receiving,
         );
-        if digest == [0; 32] || usize::from(count) != program.member_count() {
-            return Err(ZfsHelperError::PostconditionMismatch);
+        if result.is_err() {
+            self.recovery_failure = Some(RecoveryHelperFailureV1::ReturnedOutput);
         }
-        let member_guids = output.stdout[42..]
-            .chunks_exact(8)
-            .map(|bytes| {
-                let guid = u64::from_be_bytes(
-                    bytes
-                        .try_into()
-                        .map_err(|_| ZfsHelperError::PostconditionMismatch)?,
-                );
-                (guid != 0)
-                    .then_some(guid)
-                    .ok_or(ZfsHelperError::PostconditionMismatch)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let expected = crate::lifecycle_atomic_snapshot::atomic_snapshot_observation_digest(
-            program,
-            &member_guids,
-        )
-        .map_err(|_| ZfsHelperError::PostconditionMismatch)?;
-        if expected.as_bytes() != &digest {
-            return Err(ZfsHelperError::PostconditionMismatch);
-        }
-        Ok(ObservedAtomicSnapshotGroupV1 {
-            digest: ObjectDigest::from_bytes(digest),
-            member_guids,
-        })
+        result
+    }
+
+    fn atomic_snapshot_once_receiving_inner_v1(
+        &mut self,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        mutate: bool,
+        journal: &aos_sandbox::Journal,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<ObservedAtomicSnapshotGroupV1, ZfsHelperError> {
+        self.recovery_results.prepare_atomic_v1(
+            receiving,
+            program.member_count(),
+            self.contract.executable().as_os_str().as_encoded_bytes().len(),
+        )?;
+        let output = {
+            let mut physical = crate::process::receiving_stage::StoragePhysicalWorkerStageV1
+                ::state(receiving, journal);
+            self.backend.atomic_snapshot_once_receiving_v1(
+                &self.contract, program, mutate, &mut physical,
+            )
+        };
+        // The complete physical result is resident before semantic inspection.
+        // Its real stdout/stderr remain independent of transport disposition.
+        self.recovery_results.outputs.push(output);
+        let Some(Ok(output)) = self.recovery_results.outputs.last() else {
+            return Err(StorageStateError::Receiving.into());
+        };
+        let mut interpretation = recovery_results::AtomicInterpretationOriginalV1::new();
+        let result = interpretation.run(program, output, true);
+        self.recovery_results.interpretations.push(
+            recovery_results::HelperOutputInterpretationV1::Atomic(interpretation),
+        );
+        result.map_err(|()| StorageStateError::Receiving.into())
     }
 
     /// Observes exact preconditions for the current persisted Prepared entry.
@@ -603,6 +915,26 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
         store: &StorageTransactionStore,
         operation_id: [u8; 16],
     ) -> Result<PreobservedZfsMutation, ZfsHelperError> {
+        self.preobserve_inner_v1(store, operation_id, None)
+    }
+
+    pub(crate) fn preobserve_receiving_v1(
+        &mut self,
+        store: &StorageTransactionStore,
+        operation_id: [u8; 16],
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<PreobservedZfsMutation, ZfsHelperError> {
+        receiving.require_models_current_v1(store.recovery_encoding_journal_v1())
+            .map_err(|_| StorageStateError::Receiving)?;
+        self.preobserve_inner_v1(store, operation_id, Some(receiving))
+    }
+
+    fn preobserve_inner_v1(
+        &mut self,
+        store: &StorageTransactionStore,
+        operation_id: [u8; 16],
+        receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<PreobservedZfsMutation, ZfsHelperError> {
         let context = persisted_context(store, operation_id)?;
         if context.entry.phase() != DurableStoragePhase::Prepared {
             return Err(StorageStateError::InvalidTransition.into());
@@ -610,9 +942,15 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
         let transaction = ZfsTransaction::from_catalog(context.operation, &context.catalog)?;
         let expected_preconditions = all_preconditions(&transaction);
         let program = sealed_program(&self.contract, &context);
-        let observed = self
-            .backend
-            .observe_preconditions(&program, &expected_preconditions)?;
+        let observed = match receiving {
+            Some(receiving) => {
+                let mut physical = crate::process::receiving_stage::StoragePhysicalWorkerStageV1::state(
+                    receiving, store.recovery_encoding_journal_v1(),
+                );
+                self.backend.observe_preconditions_receiving_v1(&program, &expected_preconditions, &mut physical)
+            }
+            None => self.backend.observe_preconditions(&program, &expected_preconditions),
+        }?;
         if observed != expected_preconditions {
             return Err(ZfsHelperError::PreconditionMismatch);
         }
@@ -625,7 +963,37 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
         store: &mut StorageTransactionStore,
         prepared: PreobservedZfsMutation,
         authority: FreshStorageEffectAuthority,
+        check_after_ambiguous: F,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError>
+    where
+        F: FnMut() -> Result<(), ZfsHelperError>,
+    {
+        self.execute_preobserved_inner_v1(store, prepared, authority, check_after_ambiguous, None)
+    }
+
+    pub(crate) fn execute_preobserved_receiving_v1<F>(
+        &mut self,
+        store: &mut StorageTransactionStore,
+        prepared: PreobservedZfsMutation,
+        authority: FreshStorageEffectAuthority,
+        check_after_ambiguous: F,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError>
+    where
+        F: FnMut() -> Result<(), ZfsHelperError>,
+    {
+        receiving.require_models_current_v1(store.recovery_encoding_journal_v1())
+            .map_err(|_| StorageStateError::Receiving)?;
+        self.execute_preobserved_inner_v1(store, prepared, authority, check_after_ambiguous, Some(receiving))
+    }
+
+    fn execute_preobserved_inner_v1<F>(
+        &mut self,
+        store: &mut StorageTransactionStore,
+        prepared: PreobservedZfsMutation,
+        authority: FreshStorageEffectAuthority,
         mut check_after_ambiguous: F,
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
     ) -> Result<ZfsHelperOutcome, ZfsHelperError>
     where
         F: FnMut() -> Result<(), ZfsHelperError>,
@@ -646,21 +1014,69 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
             current.entry.mutation_digest(),
             &current.catalog,
         )?;
-        store.mark_mutation_ambiguous_exact(
-            current.entry.operation_id(),
-            current.entry.request_digest(),
-            current.entry.mutation_digest(),
-            &current.catalog,
-        )?;
+        match receiving.as_deref_mut() {
+            Some(receiving) => store.mark_mutation_ambiguous_exact_receiving_v1(
+                current.entry.operation_id(), current.entry.request_digest(),
+                current.entry.mutation_digest(), &current.catalog, receiving,
+            ),
+            None => store.mark_mutation_ambiguous_exact(
+                current.entry.operation_id(), current.entry.request_digest(),
+                current.entry.mutation_digest(), &current.catalog,
+            ),
+        }?;
 
         // The durable sync may outlive the first authority sample. Failure of
         // this second sample deliberately leaves Ambiguous for observation-only
         // recovery; dispatch must never resume from that phase.
         check_after_ambiguous()?;
 
-        let program = sealed_program(&self.contract, &current);
-        validate_process_output(self.backend.execute_once(&program)?)?;
-        self.observe_postcondition(store, &current, DurableStoragePhase::Ambiguous)
+        match receiving {
+            Some(receiving) => {
+                self.execute_process_receiving_v1(&current, store.recovery_encoding_journal_v1(), receiving)?;
+                // The same held Store is still exclusive. Reusing its existing
+                // observer/commit engine revalidates this Ambiguous context;
+                // no fresh effect authority or second dispatch is created.
+                self.observe_only_receiving_v1(store, current.entry.operation_id(), receiving)
+            }
+            None => {
+                let program = sealed_program(&self.contract, &current);
+                validate_process_output(self.backend.execute_once(&program)?)?;
+                self.observe_postcondition(store, &current, DurableStoragePhase::Ambiguous)
+            }
+        }
+    }
+
+    fn execute_process_receiving_v1(
+        &mut self,
+        context: &PersistedZfsMutation,
+        journal: &aos_sandbox::Journal,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<(), ZfsHelperError> {
+        // Borrow the executable only inside this helper. The caller retains
+        // the same persisted context; backend/result fields remain disjoint.
+        let program = sealed_program(&self.contract, context);
+        let result = (|| {
+            self.recovery_results.prepare_mutation_v1(receiving,
+                self.contract.executable().as_os_str().as_encoded_bytes().len())?;
+            let output = {
+                let mut physical = crate::process::receiving_stage::StoragePhysicalWorkerStageV1::state(receiving, journal);
+                self.backend.execute_once_receiving_v1(&program, &mut physical)
+            };
+            self.recovery_results.outputs.push(output);
+            let Some(Ok(output)) = self.recovery_results.outputs.last() else {
+                return Err(StorageStateError::Receiving.into());
+            };
+            let validation = validate_process_output_ref_v1(output);
+            let positive = validation.is_ok();
+            self.recovery_results.interpretations.push(
+                recovery_results::HelperOutputInterpretationV1::Mutation(validation),
+            );
+            if positive { Ok(()) } else { Err(StorageStateError::Receiving.into()) }
+        })();
+        if result.is_err() {
+            self.recovery_failure = Some(RecoveryHelperFailureV1::ReturnedOutput);
+        }
+        result
     }
 
     /// Re-observes current Prepared or Ambiguous state without dispatching.
@@ -669,14 +1085,27 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
         store: &mut StorageTransactionStore,
         operation_id: [u8; 16],
     ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
-        let context = persisted_context(store, operation_id)?;
-        if !matches!(
-            context.entry.phase(),
-            DurableStoragePhase::Prepared | DurableStoragePhase::Ambiguous
-        ) {
-            return Err(StorageStateError::InvalidTransition.into());
+        let mut original = recovery_observation::ObservationOriginalV1::new();
+        original.run(&mut self.backend, &self.contract, store, operation_id, None);
+        original.take_ordinary_result()
+    }
+
+    pub(crate) fn observe_only_receiving_v1(
+        &mut self,
+        store: &mut StorageTransactionStore,
+        operation_id: [u8; 16],
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
+        if self.recovery_receiving_failure_v1().is_some() {
+            return Err(StorageStateError::Receiving.into());
         }
-        self.observe_postcondition(store, &context, context.entry.phase())
+        let result = self.recovery_observations.capture(
+            &mut self.backend, &self.contract, store, operation_id, receiving,
+        );
+        if result.is_err() {
+            self.recovery_failure = Some(RecoveryHelperFailureV1::Observation);
+        }
+        result
     }
 
     fn observe_postcondition(
@@ -685,50 +1114,22 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
         context: &PersistedZfsMutation,
         phase: DurableStoragePhase,
     ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
-        let transaction = ZfsTransaction::from_catalog(context.operation, &context.catalog)?;
-        let program = sealed_program(&self.contract, context);
-        let Some(observation) = self.backend.observe_postcondition(
-            &program,
-            transaction.postcondition(),
-            transaction
-                .ancestor_transaction()
-                .map(AncestorPolicyTransaction::postcondition),
-        )?
-        else {
-            return Ok(ZfsHelperOutcome::ObservationRequired {
-                phase,
-                mutation_digest: context.entry.mutation_digest(),
-            });
-        };
-        if phase == DurableStoragePhase::Prepared {
-            return Err(ZfsHelperError::PreparedPostconditionConflict);
+        let mut original = recovery_observation::PostOriginalV1::new();
+        match original.run(&mut self.backend, &self.contract, store, context, phase, None) {
+            Ok(outcome) => Ok(outcome),
+            Err(()) => Err(original.take_failure()),
         }
-        if observation.ancestor.as_ref()
-            != transaction
-                .ancestor_transaction()
-                .map(AncestorPolicyTransaction::postcondition)
-        {
-            return Err(ZfsHelperError::PostconditionMismatch);
-        }
-        let supplement = match context.catalog.plan() {
-            crate::CatalogPlanV1::Snapshot { .. } => self
-                .backend
-                .snapshot_metadata(context.entry.operation_id())?
-                .map(crate::snapshot_metadata::SnapshotCommitEvidenceV1::from_checked_record)
-                .map(crate::snapshot_metadata::CatalogCommitSupplementV1::Snapshot)
-                .ok_or(ZfsHelperError::PostconditionMismatch)?,
-            _ => crate::snapshot_metadata::CatalogCommitSupplementV1::None,
-        };
-        let result = store.commit_observed_with_supplement(
-            context.entry.operation_id(),
-            context.entry.mutation_digest(),
-            &context.catalog,
-            &observation.observed,
-            observation.object_guid,
-            observation.digest,
-            supplement,
-        )?;
-        Ok(ZfsHelperOutcome::Committed(result))
+    }
+}
+
+fn parse_atomic_snapshot_output_v1(
+    program: &crate::DormantAtomicDatasetSnapshotV1,
+    output: &ZfsProcessOutput,
+) -> Result<ObservedAtomicSnapshotGroupV1, ZfsHelperError> {
+    let mut interpretation = recovery_results::AtomicInterpretationOriginalV1::new();
+    match interpretation.run(program, output, false) {
+        Ok(observed) => Ok(observed),
+        Err(()) => Err(interpretation.take_failure()),
     }
 }
 
@@ -736,15 +1137,7 @@ fn persisted_context(
     store: &StorageTransactionStore,
     operation_id: [u8; 16],
 ) -> Result<PersistedZfsMutation, ZfsHelperError> {
-    let entry = store.current_recovery_entry(operation_id)?;
-    let catalog = store.recover_catalog(entry)?;
-    let operation = catalog.plan().operation();
-    ZfsTransaction::from_catalog(operation, &catalog)?;
-    Ok(PersistedZfsMutation {
-        entry,
-        catalog,
-        operation,
-    })
+    recovery_observation::context_ordinary(store, operation_id)
 }
 
 fn sealed_program<'a>(
@@ -772,6 +1165,10 @@ fn all_preconditions(transaction: &ZfsTransaction) -> Vec<ZfsPrecondition> {
 }
 
 fn validate_process_output(output: ZfsProcessOutput) -> Result<(), ZfsHelperError> {
+    validate_process_output_ref_v1(&output)
+}
+
+fn validate_process_output_ref_v1(output: &ZfsProcessOutput) -> Result<(), ZfsHelperError> {
     if output.timed_out
         || !output.success
         || output.stdout.len() > MAXIMUM_STDOUT_BYTES
@@ -796,7 +1193,7 @@ mod tests {
         WorkspaceSpacePolicyV1,
     };
 
-    struct FakeBackend {
+    pub(super) struct FakeBackend {
         preconditions_match: bool,
         precondition_observation_count: usize,
         execute_count: usize,
@@ -862,7 +1259,7 @@ mod tests {
         }
     }
 
-    fn fixture() -> (ResolvedCatalogCommitmentV1, StorageOperation) {
+    pub(super) fn fixture() -> (ResolvedCatalogCommitmentV1, StorageOperation) {
         fixture_named("tank/aos/project/work")
     }
 
@@ -896,7 +1293,7 @@ mod tests {
         )
     }
 
-    fn open_store(directory: &TempDir) -> StorageTransactionStore {
+    pub(super) fn open_store(directory: &TempDir) -> StorageTransactionStore {
         StorageTransactionStore::open_for_test(
             directory.path(),
             StorageStateKey::new([1; 16], [2; 32]).unwrap(),
@@ -905,7 +1302,7 @@ mod tests {
         .unwrap()
     }
 
-    fn backend(catalog: &ResolvedCatalogCommitmentV1) -> FakeBackend {
+    pub(super) fn backend(catalog: &ResolvedCatalogCommitmentV1) -> FakeBackend {
         FakeBackend {
             preconditions_match: true,
             precondition_observation_count: 0,
@@ -924,7 +1321,7 @@ mod tests {
         }
     }
 
-    fn prepare(
+    pub(super) fn prepare(
         store: &mut StorageTransactionStore,
         catalog: &ResolvedCatalogCommitmentV1,
     ) -> ObjectDigest {

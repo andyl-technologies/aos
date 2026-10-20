@@ -4,7 +4,7 @@
 //! original admission and intermediate complete remaining geometry are unresolved;
 //! it must never enter a Ready ledger or produce signing/effect/backend custody.
 
-use aos_sandbox::journal::JournalError;
+use aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1 as JournalError;
 
 use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
     NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
@@ -16,10 +16,10 @@ use aos_sandbox_protocol::domain_ledger::capacity_family::{
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox::{
-    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, JournalRecord,
-    SourceProviderHeldReadOnlyJournalAuthorityV1,
-};
+use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationPurposeV1;
+use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationRequestV1;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
+use aos_sandbox_source::provider_journal::SourceProviderHeldReadOnlyJournalAuthorityV1;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::{
     collect_bounded_records,
@@ -98,7 +98,7 @@ pub(crate) fn recover(
     )
     .map_err(crate::transaction::map_pure_ledger_error)?;
     for binding in obligations.ordinary_bindings() {
-        let request = aos_sandbox::journal::source_native_ordinary_capacity_request_v1(binding);
+        let request = aos_sandbox_ledger_replay::replay::source_original::union::source_native_ordinary_capacity_request_v1(binding);
         if !floor_ids.insert(floors.exact_legacy(request)?) {
             return Err(ProviderLedgerError::Equivocation);
         }
@@ -320,9 +320,10 @@ impl Floors {
 mod tests {
     //! Canonical floor DATA vectors, not a qualified mixed runtime fixture.
 
-    use aos_sandbox::{
-        GlobalCapacityReservationPurposeV1, Journal, JournalLimits, RecordNamespace,
-    };
+    use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationPurposeV1;
+    use aos_sandbox_source::provider_journal::SourceProviderJournalV1 as Journal;
+    use aos_sandbox_protocol::domain_ledger::transaction::JournalLimits;
+    use aos_sandbox_core::RecordNamespace;
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::*;

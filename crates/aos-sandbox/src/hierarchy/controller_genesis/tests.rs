@@ -8,6 +8,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt as _;
 
 use aos_sandbox_core::ProjectId;
+use aos_sandbox_ledger_replay::replay::controller_source_genesis as saved_records;
 
 use super::*;
 use crate::JournalLimits;
@@ -35,11 +36,11 @@ impl Fixture {
 
         controller
             .commit_controller_source_genesis_transition(
-                &records::acceptance_transaction(&acceptance).unwrap(),
+                &saved_records::acceptance_transaction(&acceptance).unwrap(),
                 Transition::Accept,
             )
             .unwrap();
-        let floor_ack = records::ack_bytes(
+        let floor_ack = saved_records::ack_bytes(
             acceptance.digest(),
             source_fixture::ack(&receipt).root_floor,
             receipt.digest(),
@@ -47,14 +48,14 @@ impl Fixture {
         .unwrap();
         controller
             .commit_controller_source_genesis_transition(
-                &records::ack_transaction(receipt.project(), &floor_ack).unwrap(),
+                &saved_records::ack_transaction(receipt.project(), &floor_ack).unwrap(),
                 Transition::FloorAck,
             )
             .unwrap();
         source_fixture::anchor_with_controller_floor(
             &mut source,
             &receipt,
-            records::ack_digest(&floor_ack),
+            saved_records::ack_digest(&floor_ack),
         );
         Self {
             controller_directory,
@@ -67,7 +68,7 @@ impl Fixture {
         }
     }
 
-    fn source_ack(&self) -> crate::journal::source_tree_genesis::SourceGenesisAckV1 {
+    fn source_ack(&self) -> aos_sandbox_ledger_replay::replay::source_tree_genesis::SourceGenesisAckV1 {
         let rows = self.source.source_tree_genesis_rows_v1().unwrap();
         assert!(rows.pending.is_none());
         assert_eq!(
@@ -79,7 +80,7 @@ impl Fixture {
 
     fn require_completion(&self) -> Result<(), SourceGenesisErrorV1> {
         let ack = self.source_ack();
-        assert_eq!(ack.controller_floor, records::ack_digest(&self.floor_ack));
+        assert_eq!(ack.controller_floor, saved_records::ack_digest(&self.floor_ack));
         require_completed_source_ack(
             &self.controller,
             &self.acceptance,
@@ -91,11 +92,11 @@ impl Fixture {
 
     fn complete(&mut self, source_ack: ObjectDigest) {
         let complete =
-            records::complete_bytes(&self.floor_ack, source_ack, self.source_ack().root_floor)
+            saved_records::complete_bytes(&self.floor_ack, source_ack, self.source_ack().root_floor)
                 .unwrap();
         self.controller
             .commit_controller_source_genesis_transition(
-                &records::complete_transaction(self.receipt.project(), &complete).unwrap(),
+                &saved_records::complete_transaction(self.receipt.project(), &complete).unwrap(),
                 Transition::Complete,
             )
             .unwrap();

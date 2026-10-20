@@ -290,30 +290,45 @@ impl MediaType {
     /// is checked separately.
     pub fn new(value: impl Into<String>) -> Result<Self, InvalidMediaType> {
         let value = value.into();
-        let slash_count = value.bytes().filter(|byte| *byte == b'/').count();
-        let valid_bytes = value.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(
-                    byte,
-                    b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-' | b'/'
-                )
-        });
-        let valid_parts = value
-            .split_once('/')
-            .is_some_and(|(kind, subtype)| !kind.is_empty() && !subtype.is_empty());
+        validate_media_type(&value)?;
+        Ok(Self(value))
+    }
 
-        if value.len() <= 255 && slash_count == 1 && valid_bytes && valid_parts {
-            Ok(Self(value))
-        } else {
-            Err(InvalidMediaType)
-        }
+    /// Validates a retained input before moving its original String into DATA.
+    ///
+    /// # Errors
+    /// Returns the ordinary syntax refusal while keeping an absent or invalid
+    /// input in the supplied destination. This creates no descriptor authority.
+    pub fn new_retaining_v1(value: &mut Option<String>) -> Result<Self, InvalidMediaType> {
+        validate_media_type(value.as_deref().ok_or(InvalidMediaType)?)?;
+        Ok(Self(value.take().ok_or(InvalidMediaType)?))
     }
 
     /// Returns the validated media type.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+fn validate_media_type(value: &str) -> Result<(), InvalidMediaType> {
+    let slash_count = value.bytes().filter(|byte| *byte == b'/').count();
+    let valid_bytes = value.bytes().all(|byte| {
+        byte.is_ascii_lowercase()
+            || byte.is_ascii_digit()
+            || matches!(
+                byte,
+                b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-' | b'/'
+            )
+    });
+    let valid_parts = value
+        .split_once('/')
+        .is_some_and(|(kind, subtype)| !kind.is_empty() && !subtype.is_empty());
+
+    if value.len() <= 255 && slash_count == 1 && valid_bytes && valid_parts {
+        Ok(())
+    } else {
+        Err(InvalidMediaType)
     }
 }
 
@@ -448,25 +463,29 @@ impl FeatureRef {
         minor: u32,
     ) -> Result<Self, InvalidFeatureNamespace> {
         let namespace = namespace.into();
-        let mut component_has_byte = false;
-        if namespace.is_empty() || namespace.len() > 255 {
-            return Err(InvalidFeatureNamespace);
-        }
-        for byte in namespace.bytes() {
-            match byte {
-                b'a'..=b'z' | b'0'..=b'9' => component_has_byte = true,
-                b'.' | b'_' | b'-' if component_has_byte => component_has_byte = false,
-                _ => return Err(InvalidFeatureNamespace),
-            }
-        }
-        if !component_has_byte {
-            return Err(InvalidFeatureNamespace);
-        }
+        validate_feature_namespace(&namespace)?;
         Ok(Self {
             namespace,
             major,
             minor,
         })
+    }
+
+    /// Consumes a retained namespace only after its existing syntax check succeeds.
+    ///
+    /// The actual input String remains in `namespace` on failure. This method
+    /// constructs comparison DATA and conveys no feature negotiation authority.
+    ///
+    /// # Errors
+    /// Returns [`InvalidFeatureNamespace`] for an absent or malformed namespace.
+    pub fn new_retaining_v1(
+        namespace: &mut Option<String>,
+        major: u32,
+        minor: u32,
+    ) -> Result<Self, InvalidFeatureNamespace> {
+        validate_feature_namespace(namespace.as_deref().ok_or(InvalidFeatureNamespace)?)?;
+        let namespace = namespace.take().ok_or(InvalidFeatureNamespace)?;
+        Ok(Self { namespace, major, minor })
     }
 
     /// Returns the registered feature namespace.
@@ -486,6 +505,24 @@ impl FeatureRef {
     pub const fn minor(&self) -> u32 {
         self.minor
     }
+}
+
+fn validate_feature_namespace(namespace: &str) -> Result<(), InvalidFeatureNamespace> {
+    let mut component_has_byte = false;
+    if namespace.is_empty() || namespace.len() > 255 {
+        return Err(InvalidFeatureNamespace);
+    }
+    for byte in namespace.bytes() {
+        match byte {
+            b'a'..=b'z' | b'0'..=b'9' => component_has_byte = true,
+            b'.' | b'_' | b'-' if component_has_byte => component_has_byte = false,
+            _ => return Err(InvalidFeatureNamespace),
+        }
+    }
+    if !component_has_byte {
+        return Err(InvalidFeatureNamespace);
+    }
+    Ok(())
 }
 
 /// Reports a malformed feature namespace.
@@ -931,5 +968,34 @@ mod tests {
 
         let oversized = vec![name(b"a"); RelativePath::MAX_COMPONENTS + 1];
         assert!(RelativePath::new(oversized).is_err());
+    }
+}
+
+#[cfg(test)]
+mod feature_retained_input_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_input_keeps_the_actual_string_allocation() {
+        let text = String::from("Invalid.Namespace");
+        let pointer = text.as_ptr();
+        let mut input = Some(text);
+
+        assert_eq!(FeatureRef::new_retaining_v1(&mut input, 1, 0), Err(InvalidFeatureNamespace));
+        assert_eq!(input.as_ref().unwrap().as_ptr(), pointer);
+        assert_eq!(input.as_deref(), Some("Invalid.Namespace"));
+    }
+
+    #[test]
+    fn valid_input_moves_the_actual_string_once() {
+        let text = String::from("aos.test-feature");
+        let pointer = text.as_ptr();
+        let mut input = Some(text);
+
+        let feature = FeatureRef::new_retaining_v1(&mut input, 1, 2).unwrap();
+
+        assert_eq!(feature.namespace().as_ptr(), pointer);
+        assert!(input.is_none());
+        assert_eq!(feature, FeatureRef::new("aos.test-feature", 1, 2).unwrap());
     }
 }

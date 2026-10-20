@@ -1,5 +1,31 @@
 //! Dormant lifecycle protected-journal ownership and cold replay.
 
+mod current_operation;
+mod retained_read;
+mod runtime_stop_residual;
+mod stop_source;
+mod stop_cleanup;
+pub(crate) use stop_source::stop_inventory_challenge_receiving_bytes_v5;
+
+pub(crate) use retained_read::LifecycleHistoricalReadOriginalV1;
+pub(crate) use retained_read::completed_stop;
+mod provisioning;
+pub(crate) use provisioning::{PreparedSourceLifecycleAdmissionV1, SourceLifecycleAdmissionCommitV1};
+mod recovery;
+mod provisioning_geometry;
+pub(crate) use provisioning_geometry::{
+    create_provisioning_admission_receiving_demand_v1,
+    create_provisioning_uncommitted_source_receiving_demand_v1,
+    stop_source_receiving_demand_v4,
+    stop_cleanup_completion_receiving_demand_v1,
+};
+pub(crate) use recovery::{LifecycleVerifierRecoveryOriginalV1,
+    retained_lifecycle_replay_receiving_demand_v1};
+
+pub(crate) use current_operation::{LifecycleCurrentOperationSelectionOriginalV1,
+    select_latest_operation_data_v1,
+    require_same_lifecycle_admission_v1};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox_core::{
@@ -56,6 +82,7 @@ use super::{
 #[must_use = "prepared lifecycle progress must be committed or deliberately discarded"]
 pub struct PreparedLifecycleProgressV1 {
     prepared: PreparedLifecycleJournalTransactionV1,
+    record: Option<LifecycleRecordDigestV1>,
 }
 
 /// Retains the exact transaction after an indeterminate lifecycle progress commit.
@@ -224,7 +251,7 @@ fn latest_applied_post_commit_step(
         .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)
 }
 
-const fn operation_record_kind(phase: super::LifecyclePhaseV1) -> LifecycleProtectedRecordKindV1 {
+pub(crate) const fn operation_record_kind(phase: super::LifecyclePhaseV1) -> LifecycleProtectedRecordKindV1 {
     match phase {
         super::LifecyclePhaseV1::Accepted => LifecycleProtectedRecordKindV1::Intent,
         super::LifecyclePhaseV1::ReadyToCommit
@@ -358,6 +385,18 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         })
     }
 
+    pub(crate) fn claim_original_start_source_v1(
+        journal_owner:&'journal mut ProtectedSourceDomainJournalOwnerV1,
+        original:&crate::controller_resource_reservation::StartSourceAdmissionAuthorizationV1<'_>,
+    )->Result<Self,LifecycleProtectedJournalErrorV1> {
+        original.require_current_v1()?;
+        original.require_source_prefix_v1(journal_owner.journal_ref_v1())?;
+        let (_,verified)=original.projection_v1()?;
+        let verifier=verified.clone();
+        let claimed=claim_lifecycle_protected_journal_v1(journal_owner.journal(),verifier.clone())?;
+        Ok(Self{journal:claimed,verifier})
+    }
+
     /// Replays the complete current lifecycle projection.
     ///
     /// # Errors
@@ -386,68 +425,13 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         &mut self,
         operation: LifecycleOperationV1,
     ) -> Result<LifecycleOperationAdmissionV1, LifecycleProtectedJournalErrorV1> {
-        if operation.phase() != super::LifecyclePhaseV1::Accepted
-            || operation.record_revision().get() != 1
-            || operation.predecessor_digest().is_some()
-        {
-            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-
-        let projection = self.journal.replay()?;
-        for envelope in projection.records().iter().filter(|envelope| {
-            matches!(
-                envelope.key().kind(),
-                LifecycleProtectedRecordKindV1::Intent
-                    | LifecycleProtectedRecordKindV1::Operation
-                    | LifecycleProtectedRecordKindV1::Effect
-            )
-        }) {
-            let reducer = decode_reducer_payload_with_validator::<LifecycleProtectedJournalSchemaV1>(
-                envelope.key(),
-                envelope.payload(),
-                &self.verifier,
-            )?;
-            let current = decode_operation_record_v1(reducer.body())
-                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-            if current.caller() != operation.caller()
-                || current.project() != operation.project()
-                || current.intent().method() != operation.intent().method()
-                || current.idempotency() != operation.idempotency()
-            {
-                continue;
+        match self.prepare_admission_with_source_selection_v1(operation, None)? {
+            PreparedSourceLifecycleAdmissionV1::Replay(key) => Ok(LifecycleOperationAdmissionV1::Replay(key)),
+            PreparedSourceLifecycleAdmissionV1::Prepared { key, prepared, .. } => {
+                let outcome = self.commit_effect_progress(PreparedLifecycleProgressV1 { prepared, record: None })?;
+                Ok(LifecycleOperationAdmissionV1::Admitted { key, outcome })
             }
-            if current.normalized_request() == operation.normalized_request()
-                && current.operation_id() == operation.operation_id()
-            {
-                return Ok(LifecycleOperationAdmissionV1::Replay(
-                    envelope.key().clone(),
-                ));
-            }
-            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
-
-        let subject = aos_sandbox_core::ResourceId::from_bytes(
-            super::protected_journal::lifecycle_journal_subject(operation.intent()),
-        );
-        let key = super::lifecycle_protected_key_v1(
-            LifecycleProtectedRecordKindV1::Intent,
-            operation.project(),
-            subject,
-            operation.operation_id(),
-        )?;
-        let envelope = lifecycle_reducer_envelope_v1(
-            key.clone(),
-            1,
-            None,
-            LifecycleReducerRecordV1::Operation(&operation),
-            &self.verifier,
-        )?;
-        let prepared = self
-            .journal
-            .plan(operation.operation_id().into_bytes(), vec![envelope])?;
-        let outcome = self.commit_effect_progress(PreparedLifecycleProgressV1 { prepared })?;
-
-        Ok(LifecycleOperationAdmissionV1::Admitted { key, outcome })
     }
 
     /// Reads one stable protected cancellation idempotency resolution.
@@ -719,7 +703,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         let prepared = self
             .journal
             .plan(cancellation_operation.into_bytes(), envelopes)?;
-        let commit = self.commit_effect_progress(PreparedLifecycleProgressV1 { prepared })?;
+        let commit = self.commit_effect_progress(PreparedLifecycleProgressV1 { prepared, record: None })?;
         Ok(LifecycleProtectedCancellationAdmissionV1::Admitted { resolution, commit })
     }
 
@@ -2139,6 +2123,20 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         current: LifecycleOperationV1,
         payload: LifecycleAuxiliaryPayloadV1,
     ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_auxiliary_append_with_gate_v1(transaction_id, atomic_join,
+            operation_lineage, value_lineage, current, payload, None)
+    }
+
+    fn prepare_auxiliary_append_with_gate_v1(
+        &self,
+        transaction_id: [u8; 16],
+        atomic_join: ResourceId,
+        operation_lineage: ResourceId,
+        value_lineage: ResourceId,
+        current: LifecycleOperationV1,
+        payload: LifecycleAuxiliaryPayloadV1,
+        gate: Option<crate::journal::CacheMutationGateV1<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
         if transaction_id == [0; 16]
             || atomic_join.as_bytes() == &[0; 16]
             || operation_lineage == value_lineage
@@ -2199,8 +2197,14 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             atomic_join,
             payload,
         )?;
+        let selected_stop = matches!(value_member.payload(), LifecycleAuxiliaryPayloadV1::StopDispatch(_));
+        let selected_stop_completion = matches!(value_member.payload(), LifecycleAuxiliaryPayloadV1::StopCompletion(_));
         let proposals = vec![operation_member, value_member];
-        let records = if selected_snapshot {
+        let records = if selected_stop_completion {
+            super::durable::bind_stop_completion_join_v1(proposals)
+        } else if selected_stop {
+            super::durable::bind_stop_dispatch_join_v1(proposals)
+        } else if selected_snapshot {
             super::durable::bind_snapshot_admitted_source_join_v2(proposals)
         } else {
             bind_lifecycle_atomic_join_v1(proposals)
@@ -2233,8 +2237,11 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
                 &self.verifier,
             )?);
         }
-        let prepared = self.journal.plan(transaction_id, envelopes)?;
-        Ok(PreparedLifecycleProgressV1 { prepared })
+        let prepared = match gate {
+            Some(gate) => self.journal.plan_with_cache_gate(transaction_id, envelopes, gate)?,
+            None => self.journal.plan(transaction_id, envelopes)?,
+        };
+        Ok(PreparedLifecycleProgressV1 { prepared, record: None })
     }
 
     fn auxiliary_proposal(
@@ -2337,11 +2344,32 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         transaction_id: [u8; 16],
         started_at: LifecycleTimeV1,
     ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_initial_lifecycle_progress_with_source_selection_v1(current_key, transaction_id, started_at, None)
+    }
+
+    pub(super) fn prepare_initial_lifecycle_progress_with_source_selection_v1(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        started_at: LifecycleTimeV1,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_initial_lifecycle_progress_with_stop_selection_v4(current_key, transaction_id, started_at, source, None)
+    }
+
+    pub(super) fn prepare_initial_lifecycle_progress_with_stop_selection_v4(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        started_at: LifecycleTimeV1,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+        stop: Option<&crate::controller_lifecycle_stop::source::StopSourceAuthorizationV4<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
         if transaction_id == [0; 16] {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
         let current = self
-            .current_operation(current_key)?
+            .current_operation_with_stop_selection_v4(current_key, stop)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         let operation = current.operation();
         if operation.phase() != LifecyclePhaseV1::Accepted
@@ -2396,7 +2424,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             )
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
 
-        self.prepare_operation_progress(current_key, transaction_id, successor)
+        self.prepare_operation_progress_with_stop_selection_v4(current_key, transaction_id, successor, source, stop)
     }
 
     /// Plans the durable boundary immediately before semantic commit.
@@ -2414,11 +2442,30 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         current_key: &LifecycleProtectedJournalKeyV1,
         transaction_id: [u8; 16],
     ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_semantic_commit_readiness_with_source_selection_v1(current_key, transaction_id, None)
+    }
+
+    pub(super) fn prepare_semantic_commit_readiness_with_source_selection_v1(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_semantic_commit_readiness_with_stop_selection_v4(current_key, transaction_id, source, None)
+    }
+
+    pub(super) fn prepare_semantic_commit_readiness_with_stop_selection_v4(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+        stop: Option<&crate::controller_lifecycle_stop::source::StopSourceAuthorizationV4<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
         if transaction_id == [0; 16] {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
         let current = self
-            .current_operation(current_key)?
+            .current_operation_with_stop_selection_v4(current_key, stop)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         let operation = current.operation();
         if operation.phase() != LifecyclePhaseV1::Prepared
@@ -2444,7 +2491,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             )
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
 
-        self.prepare_operation_progress(current_key, transaction_id, successor)
+        self.prepare_operation_progress_with_stop_selection_v4(current_key, transaction_id, successor, source, stop)
     }
 
     /// Plans the irreversible semantic-commit witness under protected custody.
@@ -2464,11 +2511,32 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         transaction_id: [u8; 16],
         semantic_commit: LifecycleMethodSemanticCommitV1,
     ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_semantic_commit_with_source_selection_v1(current_key, transaction_id, semantic_commit, None)
+    }
+
+    pub(super) fn prepare_semantic_commit_with_source_selection_v1(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        semantic_commit: LifecycleMethodSemanticCommitV1,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_semantic_commit_with_stop_selection_v4(current_key, transaction_id, semantic_commit, source, None)
+    }
+
+    pub(super) fn prepare_semantic_commit_with_stop_selection_v4(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        semantic_commit: LifecycleMethodSemanticCommitV1,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+        stop: Option<&crate::controller_lifecycle_stop::source::StopSourceAuthorizationV4<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
         if transaction_id == [0; 16] {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
         let current = self
-            .current_operation(current_key)?
+            .current_operation_with_stop_selection_v4(current_key, stop)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         let operation = current.operation();
         if operation.phase() != LifecyclePhaseV1::ReadyToCommit
@@ -2494,7 +2562,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             )
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
 
-        self.prepare_operation_progress(current_key, transaction_id, successor)
+        self.prepare_operation_progress_with_stop_selection_v4(current_key, transaction_id, successor, source, stop)
     }
 
     /// Releases the first post-commit effect or terminalizes an empty suffix.
@@ -2514,11 +2582,32 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         transaction_id: [u8; 16],
         started_at: LifecycleTimeV1,
     ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_postcommit_progress_with_source_selection_v1(current_key, transaction_id, started_at, None)
+    }
+
+    pub(super) fn prepare_postcommit_progress_with_source_selection_v1(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        started_at: LifecycleTimeV1,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_postcommit_progress_with_stop_selection_v4(current_key, transaction_id, started_at, source, None)
+    }
+
+    pub(super) fn prepare_postcommit_progress_with_stop_selection_v4(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        started_at: LifecycleTimeV1,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+        stop: Option<&crate::controller_lifecycle_stop::source::StopSourceAuthorizationV4<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
         if transaction_id == [0; 16] {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
         let current = self
-            .current_operation(current_key)?
+            .current_operation_with_stop_selection_v4(current_key, stop)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         let operation = current.operation();
         if operation.phase() != LifecyclePhaseV1::Committed
@@ -2575,7 +2664,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             )
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
 
-        self.prepare_operation_progress(current_key, transaction_id, successor)
+        self.prepare_operation_progress_with_stop_selection_v4(current_key, transaction_id, successor, source, stop)
     }
 
     /// Plans successful refinement of one reserved forward attempt.
@@ -2597,11 +2686,34 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         observation: LifecycleEffectObservationV1,
         observed_at: LifecycleTimeV1,
     ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_successful_effect_progress_with_source_selection_v1(current_key, transaction_id, observation, observed_at, None)
+    }
+
+    pub(super) fn prepare_successful_effect_progress_with_source_selection_v1(
+        &self, current_key: &LifecycleProtectedJournalKeyV1, transaction_id: [u8;16],
+        observation: LifecycleEffectObservationV1, observed_at: LifecycleTimeV1,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_successful_effect_progress_with_stop_selection_v5(
+            current_key, transaction_id, observation, observed_at, source, None)
+    }
+
+    pub(super) fn prepare_successful_effect_progress_with_stop_selection_v5(
+        &self, current_key: &LifecycleProtectedJournalKeyV1, transaction_id: [u8; 16],
+        observation: LifecycleEffectObservationV1, observed_at: LifecycleTimeV1,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+        stop: Option<&crate::controller_lifecycle_stop::source::StopSourceAuthorizationV4<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        if observation.capture_stop_residual_v4().is_some() {
+            return self.prepare_runtime_stop_residual_progress_with_stop_selection_v4(
+                current_key, transaction_id, observation, observed_at, source, stop,
+            );
+        }
         if transaction_id == [0; 16] {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
         let current = self
-            .current_operation(current_key)?
+            .current_operation_with_stop_selection_v4(current_key, stop)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         let operation = current.operation();
         let request = observation.request();
@@ -2692,7 +2804,24 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             )
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
 
-        self.prepare_effect_progress(current_key, transaction_id, observation, successor)
+        if let Some(original) = stop {
+            original.require_current_v4()?;
+            if source.is_some() || !effect_progress_is_exact(operation, current.record(), &successor, observation)? {
+                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+            return self.prepare_operation_progress_with_stop_selection_v4(
+                current_key, transaction_id, successor, None, Some(original));
+        }
+        match source {
+            None => self.prepare_effect_progress(current_key, transaction_id, observation, successor),
+            Some(original) => {
+                original.require_current_v1().map_err(LifecycleProtectedJournalErrorV1::from)?;
+                if !effect_progress_is_exact(operation, current.record(), &successor, observation)? {
+                    return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+                }
+                self.prepare_operation_progress_with_source_selection_v1(current_key, transaction_id, successor, Some(original))
+            }
+        }
     }
 
     /// Plans one canonical lifecycle successor across protected record families.
@@ -2719,11 +2848,32 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         transaction_id: [u8; 16],
         successor: LifecycleOperationV1,
     ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_operation_progress_with_source_selection_v1(current_key, transaction_id, successor, None)
+    }
+
+    pub(super) fn prepare_operation_progress_with_source_selection_v1(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        successor: LifecycleOperationV1,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_operation_progress_with_stop_selection_v4(current_key, transaction_id, successor, source, None)
+    }
+
+    pub(super) fn prepare_operation_progress_with_stop_selection_v4(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        successor: LifecycleOperationV1,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+        stop: Option<&crate::controller_lifecycle_stop::source::StopSourceAuthorizationV4<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
         if transaction_id == [0; 16] {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
         let (latest_key, latest) = self
-            .current_operation_by_id(successor.operation_id())?
+            .current_operation_by_id_with_stop_selection_v4(successor.operation_id(), stop)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         if &latest_key != current_key {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
@@ -2757,7 +2907,14 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             subject,
             successor.operation_id(),
         )?;
-        let projection = self.journal.replay()?;
+        let ordinary_projection;
+        let projection = if let Some(original) = stop {
+            original.require_current_v4()?;
+            original.projection_v4()?.0
+        } else {
+            ordinary_projection = self.journal.replay()?;
+            &ordinary_projection
+        };
         let previous = projection
             .records()
             .iter()
@@ -2768,15 +2925,22 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         if revision == u64::MAX {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
-        let envelope = lifecycle_reducer_envelope_v1(
+        let mut record = None;
+        let envelope = super::protected_journal::lifecycle_reducer_envelope_with_record_digest_v2(
             destination,
             revision,
             previous.map(|record| record.digest()),
             LifecycleReducerRecordV1::Operation(&successor),
-            &self.verifier,
+            &self.verifier, Some(&mut record),
         )?;
-        let prepared = self.journal.plan(transaction_id, vec![envelope])?;
-        Ok(PreparedLifecycleProgressV1 { prepared })
+        let prepared = match source {
+            Some(crate::controller_resource_reservation::SourceAppendBoundaryV1::Create(original)) =>
+                self.journal.plan_with_source_provisioning_v1(transaction_id, vec![envelope], original)?,
+            Some(crate::controller_resource_reservation::SourceAppendBoundaryV1::Start(original)) =>
+                self.journal.plan_with_start_source_v1(transaction_id, vec![envelope], original)?,
+            None => self.journal.plan(transaction_id, vec![envelope])?,
+        };
+        Ok(PreparedLifecycleProgressV1 { prepared, record })
     }
 
     /// Plans the sole atomic binding of an admitted operation's action plan.
@@ -2798,8 +2962,29 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         transaction_id: [u8; 16],
         steps: Vec<super::LifecycleStepV1>,
     ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_plan_binding_with_source_selection_v1(current_key, transaction_id, steps, None)
+    }
+
+    pub(super) fn prepare_plan_binding_with_source_selection_v1(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        steps: Vec<super::LifecycleStepV1>,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_plan_binding_with_stop_selection_v4(current_key, transaction_id, steps, source, None)
+    }
+
+    pub(super) fn prepare_plan_binding_with_stop_selection_v4(
+        &self,
+        current_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        steps: Vec<super::LifecycleStepV1>,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+        stop: Option<&crate::controller_lifecycle_stop::source::StopSourceAuthorizationV4<'_>>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
         let current = self
-            .current_operation(current_key)?
+            .current_operation_with_stop_selection_v4(current_key, stop)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         if current.operation().phase() != super::LifecyclePhaseV1::Accepted
             || !current
@@ -2830,7 +3015,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             )
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
 
-        self.prepare_operation_progress(current_key, transaction_id, successor)
+        self.prepare_operation_progress_with_stop_selection_v4(current_key, transaction_id, successor, source, stop)
     }
 
     /// Plans the atomic readmission of one exact durable Residual cursor.
@@ -2914,7 +3099,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             &self.verifier,
         )?;
         let prepared = self.journal.plan(transaction_id, vec![envelope])?;
-        Ok(PreparedLifecycleProgressV1 { prepared })
+        Ok(PreparedLifecycleProgressV1 { prepared, record: None })
     }
 
     /// Commits one exact lifecycle progress transaction with CAS and readback.
@@ -2970,7 +3155,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
                 Ok(LifecycleProgressRecoveryV1::Applied(applied))
             }
             LifecycleJournalRecoveryV1::Retry(prepared) => Ok(LifecycleProgressRecoveryV1::Retry(
-                PreparedLifecycleProgressV1 { prepared },
+                PreparedLifecycleProgressV1 { prepared, record: None },
             )),
             LifecycleJournalRecoveryV1::Diverged(pending) => {
                 Ok(LifecycleProgressRecoveryV1::Diverged(
@@ -3132,66 +3317,14 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         if operation_id.as_bytes() == &[0; 16] {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
-
         let projection = self.journal.replay()?;
-        let mut selected: Option<(
-            LifecycleProtectedJournalKeyV1,
-            LifecycleOperationV1,
-            LifecycleRecordDigestV1,
-        )> = None;
-        for envelope in projection.records().iter().filter(|envelope| {
-            matches!(
-                envelope.key().kind(),
-                LifecycleProtectedRecordKindV1::Intent
-                    | LifecycleProtectedRecordKindV1::Operation
-                    | LifecycleProtectedRecordKindV1::Effect
-            ) && envelope.key().identity()[32..48] == operation_id.as_bytes()[..]
-        }) {
-            let reducer = decode_reducer_payload_with_validator::<LifecycleProtectedJournalSchemaV1>(
-                envelope.key(),
-                envelope.payload(),
-                &self.verifier,
-            )?;
-            let operation = decode_operation_record_v1(reducer.body())
-                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-            if operation.operation_id() != operation_id
-                || !super::format::operation_record_matches_canonical_encoding(
-                    &operation,
-                    reducer.body(),
-                )
-                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
-            {
-                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
-            }
-            let record = super::format::record_digest(reducer.body())
-                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-
-            let Some((_, current, _)) = selected.as_ref() else {
-                selected = Some((envelope.key().clone(), operation, record));
-                continue;
-            };
-            if current.caller() != operation.caller()
-                || current.project() != operation.project()
-                || current.idempotency() != operation.idempotency()
-                || current.normalized_request() != operation.normalized_request()
-                || current.intent() != operation.intent()
-                || current.accepted_at() != operation.accepted_at()
-                || current.record_revision() == operation.record_revision()
-            {
-                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
-            }
-            if operation.record_revision() > current.record_revision() {
-                selected = Some((envelope.key().clone(), operation, record));
-            }
-        }
-
-        Ok(selected.map(|(key, operation, record)| {
+        Ok(current_operation::select_latest_operation_data_v1(
+            &projection, &self.verifier, operation_id,
+        )?.map(|(key, operation, record)| {
             (
                 key,
                 CurrentLifecycleOperationV1::from_protected_current(
-                    operation,
-                    record,
-                    projection.root(),
+                    operation, record, projection.root(),
                 ),
             )
         }))
@@ -3668,6 +3801,10 @@ fn auxiliary_payload_matches_operation(
         LifecycleAuxiliaryPayloadV1::BootInventory(inventory) => {
             inventory.operation_revision() == operation.record_revision()
         }
+        LifecycleAuxiliaryPayloadV1::StopDispatch(binding) =>
+            super::durable::require_stop_dispatch_current_v1(binding, operation).is_ok(),
+        LifecycleAuxiliaryPayloadV1::StopCompletion(binding) =>
+            super::durable::require_stop_completion_current_v1(binding, operation).is_ok(),
         LifecycleAuxiliaryPayloadV1::Operation(_)
         | LifecycleAuxiliaryPayloadV1::DeleteBatch(_)
         | LifecycleAuxiliaryPayloadV1::Cancellation(_) => false,
@@ -3679,38 +3816,22 @@ pub(crate) fn recover_lifecycle_journal_verifier_v1(
 ) -> Result<LifecycleJournalVerifierV1, LifecycleProtectedJournalErrorV1> {
     let candidates =
         protected_current_record_candidates_v1::<LifecycleProtectedJournalSchemaV1>(journal)?;
-    let authority = protected_lifecycle_authority(&candidates);
-    let provisional = super::LifecycleReplayVerificationV1::from_verified_authority(
-        authority,
-        Vec::new(),
-        Vec::new(),
-    )
-    .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-    let mut accepted_records = Vec::new();
-    for candidate in &candidates {
-        if candidate.key().kind() != LifecycleProtectedRecordKindV1::Auxiliary {
-            continue;
-        }
-        let record = super::decode_lifecycle_auxiliary_record_from_protected_envelope_v1(
-            candidate.body(),
-            &provisional,
-        )
-        .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-        accepted_records.push(record.complete_digest());
-    }
-    let mut accepted_checkpoints = candidates
-        .iter()
-        .filter(|candidate| candidate.key().kind() == LifecycleProtectedRecordKindV1::Checkpoint)
-        .map(ProtectedCurrentRecordCandidateV1::envelope_digest)
-        .collect::<Vec<_>>();
-    accepted_records.sort_unstable();
-    accepted_checkpoints.sort_unstable();
-    LifecycleJournalVerifierV1::from_verified_authority(
-        authority,
-        accepted_records,
-        accepted_checkpoints,
-    )
-    .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)
+    recover_lifecycle_verifier_from_candidates_v1(candidates)
+}
+
+// This is the same decoder/authority recipe over a saved view borrowed only
+// from the actual D Source scope. A view itself issues no journal authority.
+pub(crate) fn recover_saved_lifecycle_verifier_v1(
+    view: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerReadViewV1<'_>,
+) -> Result<LifecycleJournalVerifierV1, LifecycleProtectedJournalErrorV1> {
+    let candidates = aos_sandbox_protocol::domain_ledger::records::current_record_candidates_from_rows::<LifecycleProtectedJournalSchemaV1>(view.all_records())?;
+    recover_lifecycle_verifier_from_candidates_v1(candidates)
+}
+
+pub(crate) fn recover_lifecycle_verifier_from_candidates_v1(
+    candidates: Vec<ProtectedCurrentRecordCandidateV1<LifecycleProtectedJournalSchemaV1>>,
+) -> Result<LifecycleJournalVerifierV1, LifecycleProtectedJournalErrorV1> {
+    recovery::recover_from_candidates_v1(candidates)
 }
 
 fn protected_lifecycle_authority(
@@ -4331,3 +4452,11 @@ fn exact_reserved_successor(
             )
         )
 }
+
+pub(crate) use provisioning_geometry::create_provisioning_committed_source_receiving_demand_v1;
+
+
+#[cfg(test)]
+mod create_completion_tests;
+
+pub(crate) use provisioning_geometry::{start_provisioning_admission_receiving_demand_v1, start_provisioning_source_receiving_demand_v2};

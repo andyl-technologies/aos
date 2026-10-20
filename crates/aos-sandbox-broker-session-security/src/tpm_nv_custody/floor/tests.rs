@@ -1,6 +1,6 @@
 //! UNRUN canonical DATA vectors; no fixture admits a physical or journal owner.
 
-use aos_sandbox::{JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox::{JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use sha2::{Digest as _, Sha256};
 
 use super::*;
@@ -531,4 +531,91 @@ fn unrun_shared_sequence_geometry_preserves_original_error_boundaries() {
         successor_sequence(u64::MAX - 1, &transaction),
         Err(FloorErrorV1::Successor),
     );
+}
+
+
+#[test]
+fn retained_preparation_matches_the_existing_sidecar_recipe() {
+    let (_, _, intent, transaction) = broker_fixture();
+    let limits = JournalLimits::default();
+    let expected = store::BrokerSidecarStoreV1::fixture_preparation(intent, &transaction, limits);
+    let mut original = store::SidecarPreparationOriginalV2::new();
+
+    original.observe_once_v2(FloorIntentDataV1::Broker(intent), &transaction, limits).unwrap();
+
+    assert_eq!(original.completed_v2(), Some(&expected));
+    assert_eq!(original.take_completed_v2(), Some(expected));
+    assert!(original.take_completed_v2().is_none());
+    assert!(original.failure().is_none());
+}
+
+#[test]
+fn failed_preparation_keeps_the_actual_encoder_cause_after_reentry() {
+    let (_, _, intent, transaction) = broker_fixture();
+    let repeated = JournalTransaction::new(*transaction.id(), vec![
+        transaction.records()[0].clone(), transaction.records()[0].clone(),
+    ]).unwrap();
+    let mut original = store::SidecarPreparationOriginalV2::new();
+
+    assert!(original.observe_once_v2(FloorIntentDataV1::Broker(intent), &repeated,
+        JournalLimits::default()).is_err());
+
+    assert!(matches!(original.failure().unwrap().downcast_ref::<
+        aos_sandbox_protocol::domain_ledger::JournalTransactionDataError>(),
+        Some(aos_sandbox_protocol::domain_ledger::JournalTransactionDataError::DuplicateRecordKey)));
+    let first = original.failure().unwrap() as *const dyn std::error::Error;
+    assert!(original.observe_once_v2(FloorIntentDataV1::Broker(intent), &transaction,
+        JournalLimits::default()).is_err());
+    assert!(std::ptr::eq(first, original.failure().unwrap()));
+    assert!(original.take_completed_v2().is_none());
+}
+
+#[test]
+fn retained_intent_preserves_sequence_before_digest_and_exact_positive_bytes() {
+    let (profile, checkpoint, intent, transaction) = broker_fixture();
+    let mut before_sequence = digest::FloorTransactionDigestOriginalV1::new();
+
+    assert_eq!(FloorIntentDataV1::new_retaining_v2(FloorProfileDataV1::Broker(profile),
+        FloorCheckpointDataV1::Broker(checkpoint), checkpoint.cut(), &transaction,
+        &mut before_sequence), Err(FloorErrorV1::Successor));
+    assert!(before_sequence.failure().is_none());
+
+    let mut actual = digest::FloorTransactionDigestOriginalV1::new();
+    let retained = FloorIntentDataV1::new_retaining_v2(FloorProfileDataV1::Broker(profile),
+        FloorCheckpointDataV1::Broker(checkpoint), intent.target().cut(), &transaction,
+        &mut actual).unwrap();
+
+    assert_eq!(retained, FloorIntentDataV1::Broker(intent));
+    assert_eq!(retained.encode(), intent.encode());
+    assert!(actual.failure().is_none());
+}
+
+#[test]
+fn retained_finalization_matches_the_existing_sidecar_recipe_and_moves_once() {
+    let (_, _, intent, _) = broker_fixture();
+    let expected = store::BrokerSidecarStoreV1::fixture_finalization(intent);
+    let mut original = store::SidecarFinalizationOriginalV2::new();
+
+    original.observe_once_v2(FloorIntentDataV1::Broker(intent)).unwrap();
+
+    assert_eq!(original.completed_v2(), Some(&expected));
+    assert_eq!(original.take_completed_v2(), Some(expected));
+    assert!(original.take_completed_v2().is_none());
+    assert!(original.failure().is_none());
+}
+
+#[test]
+fn finalization_reentry_closes_borrow_and_transfer() {
+    let (_, _, intent, _) = broker_fixture();
+    let mut original = store::SidecarFinalizationOriginalV2::new();
+    original.observe_once_v2(FloorIntentDataV1::Broker(intent)).unwrap();
+    assert!(original.completed_v2().is_some());
+
+    assert_eq!(original.observe_once_v2(FloorIntentDataV1::Broker(intent)),
+        Err(FloorErrorV1::Unavailable));
+
+    assert!(original.completed_v2().is_none());
+    assert!(original.take_completed_v2().is_none());
+    assert!(matches!(original.failure().unwrap().downcast_ref::<FloorErrorV1>(),
+        Some(FloorErrorV1::Unavailable)));
 }

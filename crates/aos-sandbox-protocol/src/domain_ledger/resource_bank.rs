@@ -6,16 +6,47 @@
 //! every original descriptor, accepted identity and final crossing.
 //!
 //! ```text
-//! bank = AOSRSH01 heads + AOSRSC02..08 claims + AOSRSP01 preparation
+//! bank = AOSRSH01 heads + AOSRSC02..10 + AOSRSC12..13 claims + AOSRSP01 preparation
 //!        + AOSRSQ01..02 co-issuance + AOSRST01..02 terminal history
-//! image = AOSRSB01..06 closed full-vector image policy
+//!        + AOSRRI02 historical / AOSRRI03 finite-range recipient DATA
+//! image = AOSRSB01..11 closed full-vector image policy
 //! ```
+//!
+//! The Controller baseline B excludes its permanent subdivisions, including
+//! FirstGlobal P. A V11 image partitions B=N+R and explicitly declares a finite
+//! count K and per-recipient allowance A with checked K*A<=R in all dimensions.
+//! Initial receiving reserves R and spends within N; a genuine later recipient
+//! reserves B-A and spends within A on its own same-B ledger. Consumed ordinals
+//! never refund their allowances, including attempts that fail before ACK.
+//!
+//! Standing P remains charged by its original boot-lifetime claim, whether
+//! reserved or committed. Its CPU dimension is a rate reused only after actual
+//! prior-recipient death/reap/Empty and native closure; it is not charged again
+//! inside A. The image's native hard controls remain independently mandatory.
+//! Neither these comparison helpers nor historical recipient rows prove those
+//! native cuts or establish current receiving authority.
 
 mod account;
 mod bootstrap;
 mod codec;
+mod claim_encoding;
+mod create_use;
 mod q04;
 mod replay;
+mod recipient;
+mod operation_funding;
+pub use operation_funding::{OperationIntakeFundingDataV1, OPERATION_INTAKE_FUNDING_BYTES_V1};
+
+mod recovered_funding;
+pub use recovered_funding::{RecoveredOperationFundingDataV1, RecoveredOperationFundingPurposeV1,
+    RECOVERED_OPERATION_FUNDING_BYTES_V1, require_recovered_funding_pair_data_v1,
+    recovered_funding_pair_transaction_data_v1, validate_recovered_funding_transaction_v1,
+    validate_recovered_funding_transaction_v2, RecoveredLifecycleStopFundingDataV2,
+    RECOVERED_LIFECYCLE_STOP_SEED_BYTES_V2,
+    RecoveredHostStopCleanupFundingDataV1, RecoveredHostStopCleanupAssociationDataV1,
+    RecoveredStopSeedFundingDataV3,
+    RECOVERED_HOST_STOP_CLEANUP_SEED_BYTES_V1, HOST_STOP_CLEANUP_ASSOCIATION_BYTES_V1};
+mod service_origin;
 mod settlement;
 
 use std::collections::BTreeMap;
@@ -24,7 +55,7 @@ use aos_sandbox_core::{
     AccountingError, ObjectDigest, RecordNamespace, ResourceAccount, ResourceVector,
 };
 use aos_sandbox_journal::framing::FrameError;
-use aos_sandbox_policy::{PublisherPolicyDataError, RetainedPublisherCompilerOriginV3};
+use crate::policy_data::{PublisherPolicyDataError, RetainedPublisherCompilerOriginV3};
 
 use super::create_q04_history::Q04CutIdentityV1;
 use super::protected_names::ProtectedJournalNamesV1;
@@ -35,18 +66,37 @@ pub use account::{
     first_global_prefix_append_bytes, project_child, project_grant_claim,
     project_preparation_claim, require_grant_generation, reserve_head, settled_pair,
 };
-pub use bootstrap::{initial_enrollment_claims, prepare_enrollment_subdivisions};
+pub use bootstrap::{
+    delete_operation_intake_claim, execution_operation_intake_claim,
+    host_execution_prepare_claim, host_execution_accept_claim, initial_enrollment_claims, prepare_enrollment_subdivisions,
+};
 pub use codec::{
-    decode_image_policy, decode_pid1_delivery, IMAGE_POLICY_BYTES, HOST_IMAGE_POLICY_BYTES,
+    decode_image_policy, decode_component_image_policy, decode_pid1_delivery, IMAGE_POLICY_BYTES, HOST_IMAGE_POLICY_BYTES,
     FIRST_GLOBAL_IMAGE_POLICY_BYTES, NIX_INTAKE_IMAGE_POLICY_BYTES, Q04_INTAKE_IMAGE_POLICY_BYTES,
-    ROOT_IMAGE_POLICY_BYTES,
+    ROOT_IMAGE_POLICY_BYTES, CREATE_STORAGE_IMAGE_POLICY_BYTES, OPERATION_INTAKE_IMAGE_POLICY_BYTES, HOST_EXECUTION_IMAGE_POLICY_BYTES, CONTROLLER_RECOVERY_IMAGE_POLICY_BYTES, CONTROLLER_RECIPIENT_RANGE_IMAGE_POLICY_BYTES,
+    decode_controller_delivery_generation_v1, controller_recipient_range_commitment_v1,
 };
 pub use q04::{
     BANK_MEMBERS, inclusive_claim_for_cut, retained_use_claim_for_cut, sandbox_child,
-    require_input_history,
+    require_input_history, require_enrolled_q04_coissuance_v2,
 };
 pub use replay::{find_head, has_head, prior_initial_project_grant, validate};
+pub use recipient::{
+    RECIPIENT_INCARNATION_BYTES, RecipientIncarnation, RecipientSuccessorMutation,
+    RECIPIENT_RANGE_INCARNATION_BYTES, controller_recipient_for_invocation_v2,
+    recipient_incarnation, initial_recipient_precharge_v1, validate_recipient_transaction_v1,
+};
+pub use service_origin::{
+    FIXED_SERVICE_BUDGET_BYTES, FIXED_SERVICE_FINAL_TRANSFER_BYTES,
+    FIXED_SERVICE_ORIGIN_HEADER_BYTES, FIXED_SERVICE_USAGE_BYTES,
+};
 pub use settlement::{PhysicalHistory, transaction_digest};
+pub use create_use::{CREATE_STORAGE_USE_BINDING_BYTES_V1, CreateStorageUseBindingV1};
+
+/// Specifies the canonical complete account-head record width.
+pub const ACCOUNT_HEAD_BYTES_V1: usize = codec::HEAD_BYTES;
+/// Specifies the canonical complete resource-claim record width.
+pub const CLAIM_BYTES_V1: usize = codec::CLAIM_BYTES;
 
 /// Borrows complete historical bank rows without retaining a protected owner.
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
@@ -75,6 +125,9 @@ pub enum ResourceBankDataError {
     /// Existing framing retains its original cause.
     #[error(transparent)]
     Frame(#[from] FrameError),
+    /// Retains an actual bounded replay representation allocation failure.
+    #[error(transparent)]
+    Representation(#[from] std::collections::TryReserveError),
 }
 
 /// Distinguishes retained Policy decoding from its four fixed identity joins.
@@ -88,11 +141,12 @@ pub enum OriginIdentityDataError {
     IdentityMismatch,
 }
 
-/// Carries two inert byte widths sampled from actual Native types.
+/// Carries inert byte widths sampled from actual Native types.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeLayoutDemand {
     q04_attempt_bytes: usize,
     preparation_attempt_bytes: usize,
+    create_intake_attempt_bytes: usize,
 }
 
 impl NativeLayoutDemand {
@@ -104,7 +158,16 @@ impl NativeLayoutDemand {
         Self {
             q04_attempt_bytes,
             preparation_attempt_bytes,
+            create_intake_attempt_bytes: 0,
         }
+    }
+
+    /// Adds an inert width sampled from the actual Create intake owner.
+    ///
+    /// This value is layout DATA; it grants no original enrollment or capacity.
+    pub const fn with_create_intake(mut self, bytes: usize) -> Self {
+        self.create_intake_attempt_bytes = bytes;
+        self
     }
 }
 
@@ -124,7 +187,7 @@ pub struct EnrollmentIdentity {
 // The producer must additionally own the actual original image FD and epoch.
 /// Retains the complete closed image capacity and subdivision policy.
 ///
-/// The six image formats share one decoder and validation recipe. Native owners
+/// The image formats share one decoder and validation recipe. Native owners
 /// must independently bind the original image and producer before enrollment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImageBootstrapPolicy {
@@ -139,6 +202,14 @@ pub struct ImageBootstrapPolicy {
     nix_original_start_intake: Option<ResourceVector>,
     q04_original_intake: Option<ResourceVector>,
     root_receiving: Option<ResourceVector>,
+    create_continuation_intake: Option<ResourceVector>,
+    storage_receiving: Option<ResourceVector>,
+    delete_operation_intake: Option<ResourceVector>,
+    execution_operation_intake: Option<ResourceVector>,
+    host_execution_prepare: Option<ResourceVector>,
+    host_execution_accept: Option<ResourceVector>,
+    controller_recovery: Option<ResourceVector>,
+    controller_recovery_range: Option<(u64, ResourceVector)>,
 }
 
 // Both image-owned vectors are subdivisions of Components, not Node issuers.
@@ -149,7 +220,56 @@ struct HostComponentPolicy {
 }
 
 impl ImageBootstrapPolicy {
-    fn validate(self, layout: NativeLayoutDemand) -> Result<(), ResourceBankDataError> {
+    /// Derives the existing Controller baseline after its permanent subdivisions.
+    ///
+    /// # Errors
+    /// Rejects a missing subdivision or any checked subtraction failure.
+    pub fn controller_baseline_v1(self) -> Result<ResourceVector, ResourceBankDataError> {
+        let mut baseline = self.controller;
+        for subdivision in [self.first_global_prefix, self.nix_original_start_intake,
+            self.q04_original_intake, self.create_continuation_intake,
+            self.delete_operation_intake, self.execution_operation_intake]
+        {
+            baseline = baseline.checked_sub(subdivision.ok_or(ResourceBankDataError::EnrollmentUnavailable)?)?;
+        }
+        Ok(baseline)
+    }
+
+    /// Derives B, the normal envelope N, and the prepaid recovery reserve R.
+    ///
+    /// These are image comparison DATA, not a recovered receiving original.
+    /// Both precharges remain inside the same already recorded baseline B.
+    ///
+    /// # Errors
+    /// Rejects an older image, unavailable subdivisions, or R exceeding B.
+    pub fn controller_baseline_partition_v1(self)
+        -> Result<(ResourceVector, ResourceVector, ResourceVector), ResourceBankDataError>
+    {
+        let baseline = self.controller_baseline_v1()?;
+        let recovery = self.controller_recovery.ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
+        let normal = baseline.checked_sub(recovery)?;
+        for envelope in [normal, recovery] {
+            for dimension in [aos_sandbox_core::ResourceDimension::MemoryBytes,
+                aos_sandbox_core::ResourceDimension::Pids,
+                aos_sandbox_core::ResourceDimension::OpenFiles,
+                aos_sandbox_core::ResourceDimension::ConcurrentOperations]
+            {
+                if envelope.get(dimension) == 0 {
+                    return Err(ResourceBankDataError::EnrollmentUnavailable);
+                }
+            }
+        }
+        Ok((baseline, normal, recovery))
+    }
+
+    /// Returns the finite prepaid recipient count and each full-vector allowance.
+    ///
+    /// This image DATA does not issue an ordinal or authenticate a recipient.
+    pub const fn controller_recovery_range_v1(self) -> Option<(u64, ResourceVector)> {
+        self.controller_recovery_range
+    }
+
+    fn validate(self, layout: Option<NativeLayoutDemand>) -> Result<(), ResourceBankDataError> {
         if self.node == [0; 16] || self.epoch == [0; 16] {
             return Err(ResourceBankDataError::EnrollmentUnavailable);
         }
@@ -225,7 +345,9 @@ impl ImageBootstrapPolicy {
             }
         }
         if let Some(intake) = self.q04_original_intake {
-            intake.checked_sub(minimum_q04_failure_demand(layout)?)?;
+            if let Some(layout) = layout {
+                intake.checked_sub(minimum_q04_failure_demand(layout)?)?;
+            }
             let prefix = self
                 .first_global_prefix
                 .ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
@@ -266,6 +388,111 @@ impl ImageBootstrapPolicy {
             require_root_service_envelope(root)?;
         }
 
+        if self.create_continuation_intake.is_some() != self.storage_receiving.is_some() {
+            return Err(ResourceBankDataError::EnrollmentUnavailable);
+        }
+        if let Some(storage) = self.storage_receiving {
+            let host = self
+                .host
+                .ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
+            let root = self
+                .root_receiving
+                .ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
+            self.components
+                .checked_sub(host.service)?
+                .checked_sub(host.control)?
+                .checked_sub(root)?
+                .checked_sub(storage)?;
+            require_storage_service_envelope(storage)?;
+        }
+        if let Some(intake) = self.create_continuation_intake {
+            // J is disjoint from P/I/Q in the same already-paid Controller.
+            // It buys bounded capture only; it is never operation-use authority.
+            self.root_receiving
+                .ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
+            if let Some(layout) = layout {
+                intake.checked_sub(minimum_create_intake_failure_demand(layout)?)?;
+            }
+            let prefix = self.first_global_prefix
+                .ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
+            let nix = self.nix_original_start_intake
+                .ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
+            let q04 = self.q04_original_intake
+                .ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
+            self.controller.checked_sub(prefix)?
+                .checked_sub(nix)?
+                .checked_sub(q04)?
+                .checked_sub(intake)?;
+            for dimension in [
+                aos_sandbox_core::ResourceDimension::CpuMicrosPerPeriod,
+                aos_sandbox_core::ResourceDimension::MemoryBytes,
+                aos_sandbox_core::ResourceDimension::Pids,
+                aos_sandbox_core::ResourceDimension::OpenFiles,
+                aos_sandbox_core::ResourceDimension::ConcurrentOperations,
+            ] {
+                if intake.get(dimension) == 0 {
+                    return Err(ResourceBankDataError::EnrollmentUnavailable);
+                }
+            }
+            if intake.get(aos_sandbox_core::ResourceDimension::CpuMicrosPerPeriod)
+                < prefix.get(aos_sandbox_core::ResourceDimension::CpuMicrosPerPeriod)
+            {
+                return Err(ResourceBankDataError::EnrollmentUnavailable);
+            }
+        }
+
+        if self.host_execution_prepare.is_some() != self.host_execution_accept.is_some() {
+            return Err(ResourceBankDataError::EnrollmentUnavailable);
+        }
+        if let (Some(prepare), Some(accept)) = (self.host_execution_prepare, self.host_execution_accept) {
+            let host = self.host.ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
+            self.execution_operation_intake.ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
+            host.service.checked_sub(prepare)?.checked_sub(accept)?;
+            for interval in [prepare, accept] {
+                for dimension in [aos_sandbox_core::ResourceDimension::MemoryBytes,
+                    aos_sandbox_core::ResourceDimension::OpenFiles,
+                    aos_sandbox_core::ResourceDimension::ConcurrentOperations]
+                {
+                    if interval.get(dimension) == 0 {
+                        return Err(ResourceBankDataError::EnrollmentUnavailable);
+                    }
+                }
+            }
+        }
+
+        if self.delete_operation_intake.is_some() != self.execution_operation_intake.is_some() {
+            return Err(ResourceBankDataError::EnrollmentUnavailable);
+        }
+        if let (Some(delete), Some(execution)) = (self.delete_operation_intake, self.execution_operation_intake) {
+            let intake = delete.checked_add(execution)?;
+            // Both operation capacities remain disjoint from B/P/I/Q/J inside C.
+            self.storage_receiving.ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
+            let mut remaining = self.controller;
+            for amount in [self.first_global_prefix, self.nix_original_start_intake,
+                self.q04_original_intake, self.create_continuation_intake, Some(intake)]
+            {
+                remaining = remaining.checked_sub(amount.ok_or(ResourceBankDataError::EnrollmentUnavailable)?)?;
+            }
+            for interval in [delete, execution] {
+                for dimension in [aos_sandbox_core::ResourceDimension::MemoryBytes,
+                    aos_sandbox_core::ResourceDimension::OpenFiles,
+                    aos_sandbox_core::ResourceDimension::ConcurrentOperations]
+                {
+                    if interval.get(dimension) == 0 {
+                        return Err(ResourceBankDataError::EnrollmentUnavailable);
+                    }
+                }
+            }
+        }
+
+        if let Some((recipients, allowance)) = self.controller_recovery_range {
+            let (_, _, recovery) = self.controller_baseline_partition_v1()?;
+            require_recipient_range_v1(recipients, allowance, recovery)?;
+        }
+        if self.controller_recovery.is_some() {
+            self.host_execution_accept.ok_or(ResourceBankDataError::EnrollmentUnavailable)?;
+            self.controller_baseline_partition_v1()?;
+        }
         Ok(())
     }
 }
@@ -342,6 +569,20 @@ pub enum ClaimPurpose {
     Q04OriginalIntake,
     /// Distinct Root receiving subdivision.
     RootReceiving,
+    /// Once-paid original Create continuation capture subdivision.
+    CreateContinuationIntake,
+    /// Once-only Create Storage use within the exact completed Q04 child.
+    CreateStorageUse,
+    /// Whole original Storage startup and contacted-service subdivision.
+    StorageReceiving,
+    /// Permanent finite Controller Delete-operation intake capacity.
+    DeleteOperationIntake,
+    /// Permanent finite Controller execution-operation intake capacity.
+    ExecutionOperationIntake,
+    /// Permanent Host Prepare capacity within its same HostService grant.
+    HostExecutionPrepare,
+    /// Permanent Host Accept capacity within its same HostService grant.
+    HostExecutionAccept,
 }
 
 /// Retains the historical boot or sampled operation clock cut.
@@ -560,6 +801,30 @@ pub fn require_root_service_envelope(
     Ok(())
 }
 
+/// Checks the whole installed Storage service envelope's containment floor.
+///
+/// This includes startup and contacted retention inside the original Components
+/// grant. Actual operation/layout demand is checked by its genuine consumer.
+///
+/// # Errors
+/// Refuses an incomplete, unaligned, overflowing or undersized service vector.
+pub fn require_storage_service_envelope(
+    envelope: ResourceVector,
+) -> Result<(), ResourceBankDataError> {
+    use aos_sandbox_core::ResourceDimension as D;
+    let cpu = envelope.get(D::CpuMicrosPerPeriod);
+    let memory = envelope.get(D::MemoryBytes);
+    if cpu == 0 || cpu % 1000 != 0 || cpu.checked_mul(10).is_none()
+        || memory < 512 * 1024 * 1024 || memory % 4096 != 0
+        || envelope.get(D::Pids) < 32 || envelope.get(D::Pids) == u64::MAX
+        || envelope.get(D::OpenFiles) < 256 || envelope.get(D::OpenFiles) == u64::MAX
+        || envelope.get(D::ConcurrentOperations) == 0
+    {
+        return Err(ResourceBankDataError::EnrollmentUnavailable);
+    }
+    Ok(())
+}
+
 /// Compares complete retained Policy provenance with the four Q04 preimages.
 ///
 /// # Errors
@@ -606,6 +871,7 @@ pub struct AccountMutation<'a> {
     child: &'a Option<AccountHead>,
     preparation: &'a Option<PreparationBinding>,
     terminal: &'a Option<TerminalBinding>,
+    create_use: Option<&'a CreateStorageUseBindingV1>,
 }
 
 impl<'a> AccountMutation<'a> {
@@ -633,8 +899,36 @@ impl<'a> AccountMutation<'a> {
             child,
             preparation,
             terminal,
+            create_use: None,
         }
     }
+
+    /// Borrows the exact immutable Create use association as comparison DATA.
+    ///
+    /// The native Ready issuer still owns admission and the final crossing;
+    /// attaching this value does not permit a generic account append.
+    pub fn with_create_storage_use_v1(mut self, binding: &'a CreateStorageUseBindingV1) -> Self {
+        self.create_use = Some(binding);
+        self
+    }
+}
+
+/// Computes the fixed Create intake failure allowance from actual Native widths.
+///
+/// J retains the same closed negative observations as Q, with its own owner
+/// width and the complete largest accepted policy buffer. Successful capture is priced again
+/// before growth and is not authorized by this fixed negative allowance.
+///
+/// # Errors
+/// Rejects checked layout overflow or a payload beyond the fixed allowance.
+pub fn minimum_create_intake_failure_demand(
+    layout: NativeLayoutDemand,
+) -> Result<ResourceVector, ResourceBankDataError> {
+    let bytes = layout.create_intake_attempt_bytes
+        .checked_add(codec::CONTROLLER_RECIPIENT_RANGE_IMAGE_POLICY_BYTES - codec::Q04_INTAKE_IMAGE_POLICY_BYTES)
+        .and_then(|bytes| bytes.checked_add(128))
+        .ok_or(ResourceBankDataError::Conflict)?;
+    minimum_q04_failure_demand(NativeLayoutDemand::new(bytes, 0))
 }
 
 /// Borrows every passive enrollment row without original PID1 custody.
@@ -647,16 +941,25 @@ pub struct EnrollmentMutation<'a> {
     nix_intake: &'a Option<Claim>,
     q04_intake: &'a Option<Claim>,
     root_receiving: &'a Option<Claim>,
+    create_intake: &'a Option<Claim>,
+    storage_receiving: &'a Option<Claim>,
+    delete_operation_intake: Option<&'a Claim>,
+    execution_operation_intake: Option<&'a Claim>,
+    host_execution_prepare: Option<&'a Claim>,
+    host_execution_accept: Option<&'a Claim>,
+    recipient_precharge: Option<&'a RecipientIncarnation>,
 }
 
 impl<'a> EnrollmentMutation<'a> {
-    /// Borrows the eight existing fields without admission or account issuance.
+    /// Borrows the ten existing fields without admission or account issuance.
     pub fn new(
         parts: (
             &'a [u8; 16],
             &'a [AccountHead; 3],
             &'a [Claim; 2],
             &'a Option<(AccountHead, [Claim; 2])>,
+            &'a Option<Claim>,
+            &'a Option<Claim>,
             &'a Option<Claim>,
             &'a Option<Claim>,
             &'a Option<Claim>,
@@ -672,6 +975,8 @@ impl<'a> EnrollmentMutation<'a> {
             nix_intake,
             q04_intake,
             root_receiving,
+            create_intake,
+            storage_receiving,
         ) = parts;
         Self {
             transaction_id,
@@ -682,8 +987,57 @@ impl<'a> EnrollmentMutation<'a> {
             nix_intake,
             q04_intake,
             root_receiving,
+            create_intake,
+            storage_receiving,
+            delete_operation_intake: None,
+            execution_operation_intake: None,
+            host_execution_prepare: None,
+            host_execution_accept: None,
+            recipient_precharge: None,
         }
     }
+
+    /// Adds the same image's initial whole-normal-envelope precharge DATA.
+    #[must_use]
+    pub fn with_recipient_precharge_v1(mut self, row: Option<&'a RecipientIncarnation>) -> Self {
+        self.recipient_precharge = row;
+        self
+    }
+
+    /// Adds the image-selected Delete subdivision as passive enrollment DATA.
+    ///
+    /// The native enrollment producer derives this from the same measured
+    /// image. Neither this builder nor the returned transaction creates C.
+    #[must_use]
+    pub fn with_delete_operation_intake(mut self, claim: Option<&'a Claim>) -> Self {
+        self.delete_operation_intake = claim;
+        self
+    }
+
+    /// Adds the image-selected execution subdivision as passive enrollment DATA.
+    ///
+    /// The same native producer supplies this alongside the Delete declaration;
+    /// this method creates no original, account or operation permission.
+    #[must_use]
+    pub fn with_execution_operation_intake(mut self, claim: Option<&'a Claim>) -> Self {
+        self.execution_operation_intake = claim;
+        self
+    }
+
+    /// Adds the same image's reserved Host Prepare claim as historical DATA.
+    #[must_use]
+    pub fn with_host_execution_prepare(mut self, claim: Option<&'a Claim>) -> Self {
+        self.host_execution_prepare = claim;
+        self
+    }
+
+    /// Adds the paired reserved Host Accept claim as historical DATA.
+    #[must_use]
+    pub fn with_host_execution_accept(mut self, claim: Option<&'a Claim>) -> Self {
+        self.host_execution_accept = claim;
+        self
+    }
+
 }
 
 /// Borrows the complete historical co-issuance mutation without a current cut.
@@ -743,6 +1097,22 @@ pub struct BootstrapProvisions {
     pub q04_original_intake: Option<ResourceVector>,
     /// Optional Root receiving subdivision DATA.
     pub root_receiving: Option<ResourceVector>,
+    /// Optional original Create continuation capture subdivision DATA.
+    pub create_continuation_intake: Option<ResourceVector>,
+    /// Optional whole Storage startup and contacted-service subdivision DATA.
+    pub storage_receiving: Option<ResourceVector>,
+    /// Optional permanent Delete-operation capacity inside Controller.
+    pub delete_operation_intake: Option<ResourceVector>,
+    /// Optional permanent execution-operation capacity inside Controller.
+    pub execution_operation_intake: Option<ResourceVector>,
+    /// Optional permanent Host Prepare capacity inside HostService.
+    pub host_execution_prepare: Option<ResourceVector>,
+    /// Optional permanent Host Accept capacity inside HostService.
+    pub host_execution_accept: Option<ResourceVector>,
+    /// Optional recovery reserve inside the existing Controller baseline B.
+    pub controller_recovery: Option<ResourceVector>,
+    /// Optional finite recipient count and full allowance inside the same R.
+    pub controller_recovery_range: Option<(u64, ResourceVector)>,
 }
 
 /// Copies the finite historical AccountHead comparison fields.
@@ -855,13 +1225,50 @@ impl EnrollmentIdentity {
 }
 
 impl ImageBootstrapPolicy {
-    /// Returns the four optional image subdivision values in their original order.
+    /// Returns the prepaid Host service allocation as comparison DATA.
+    ///
+    /// A value issues no receiver, native scope, enrollment or additional
+    /// capacity. Purpose-specific callers must join the actual image original.
+    #[must_use]
+    pub const fn host_service_envelope_data_v1(self) -> Option<ResourceVector> {
+        match self.host {
+            Some(host) => Some(host.service),
+            None => None,
+        }
+    }
+
+    /// Returns the image's Node and resource-policy epoch as comparison DATA.
+    ///
+    /// Copying these coordinates cannot reconstruct the original image owner.
+    #[must_use]
+    pub const fn image_identity_data_v1(self) -> ([u8; 16], [u8; 16]) {
+        (self.node, self.epoch)
+    }
+
+    /// Returns the inclusive Controller image envelope as comparison DATA.
+    ///
+    /// Child P/I/Q/J slices partition this envelope. This value grants no
+    /// original enrollment, native containment, receiving loan or CPU authority.
+    #[must_use]
+    pub const fn controller_envelope(self) -> ResourceVector {
+        self.controller
+    }
+
+    /// Returns the five optional image subdivision values in their original order.
     pub const fn bootstrap_provisions(self) -> BootstrapProvisions {
         BootstrapProvisions {
             first_global_prefix: self.first_global_prefix,
             nix_original_start_intake: self.nix_original_start_intake,
             q04_original_intake: self.q04_original_intake,
             root_receiving: self.root_receiving,
+            create_continuation_intake: self.create_continuation_intake,
+            storage_receiving: self.storage_receiving,
+            delete_operation_intake: self.delete_operation_intake,
+            execution_operation_intake: self.execution_operation_intake,
+            host_execution_prepare: self.host_execution_prepare,
+            host_execution_accept: self.host_execution_accept,
+            controller_recovery: self.controller_recovery,
+            controller_recovery_range: self.controller_recovery_range,
         }
     }
 
@@ -918,6 +1325,15 @@ impl AccountHead {
         })
     }
 
+    /// Returns the original head's recorded baseline accounting DATA.
+    ///
+    /// This borrows no Native owner and issues no capacity or enrollment. A
+    /// genuine receiving caller must separately retain and validate its actual
+    /// original account/producer association before using this historical row.
+    pub const fn recorded_baseline(self) -> ResourceVector {
+        self.baseline
+    }
+
     /// Reads every account dimension as a finite historical ceiling.
     ///
     /// # Errors
@@ -929,6 +1345,17 @@ impl AccountHead {
 }
 
 impl Claim {
+    /// Returns the historical operation field retained by this claim.
+    ///
+    /// Boot-lifetime provisioning can carry a zero operation sentinel. A Q04
+    /// claim instead retains its accepted Create operation, distinct from a
+    /// referenced Spec publication. This provides no original, currentness or
+    /// resource grant.
+    #[must_use]
+    pub const fn operation(self) -> [u8; 16] {
+        self.operation
+    }
+
     /// Decodes a complete canonical historical claim.
     ///
     /// # Errors
@@ -1042,6 +1469,63 @@ impl InputAssociation {
 }
 
 impl CoissuanceBinding {
+    /// Returns the original inclusive grant as historical comparison data.
+    ///
+    /// This value creates no reservation or currentness proof. The actual
+    /// consumer must replay the same original binding and current bank rows.
+    #[must_use]
+    pub const fn inclusive_grant_v1(self) -> Claim {
+        self.grant
+    }
+
+    /// Derives one passive use claim with the original Q04 ancestry unchanged.
+    ///
+    /// This canonical DATA constructor creates no resource reservation, current
+    /// owner, native append permission or extension of the original clock cut.
+    /// The genuine Controller issuer must independently fund and admit the use.
+    ///
+    /// # Errors
+    /// Rejects noncanonical original DATA, zero or aliased claim identities,
+    /// zero resource amounts or an invalid inherited claim shape.
+    pub fn create_storage_use_claim_v1(
+        self,
+        id: [u8; 16],
+        amount: ResourceVector,
+    ) -> Result<Claim, ResourceBankDataError> {
+        create_use::inherited_claim(self, id, amount)
+    }
+
+    /// Decodes the complete canonical historical co-issuance as comparison data.
+    ///
+    /// The fixed-width decoder retains no writer, clock, signer or account.
+    ///
+    /// # Errors
+    /// Rejects malformed framing, nested claims, inconsistent associations or
+    /// noncanonical checksums through the existing bank format decoder.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ResourceBankDataError> {
+        q04::decode(bytes)
+    }
+
+    /// Returns the historical Q04 nonce for an exact original-record lookup.
+    ///
+    /// This copied identity grants no currentness or permission to append.
+    #[must_use]
+    pub const fn original_q04_nonce_data_v1(self) -> [u8; 16] {
+        self.original.nonce
+    }
+
+    /// Compares exact original Spec bytes with their historical size and digest.
+    ///
+    /// This checks byte association only. Core separately owns canonical Spec
+    /// decoding, while the actual consumer proves its held original current cut.
+    #[must_use]
+    pub fn matches_specification_bytes_v1(self, bytes: &[u8]) -> bool {
+        use sha2::{Digest as _, Sha256};
+
+        u64::try_from(bytes.len()).ok() == Some(self.specification_size)
+            && <[u8; 32]>::from(Sha256::digest(bytes)) == self.specification
+    }
+
     /// Compares complete original Q04 identity joins without issuing authority.
     ///
     /// This comparison DATA neither observes a writer nor renews its clock cut.
@@ -1148,6 +1632,36 @@ impl CoissuanceBinding {
 }
 
 impl TerminalBinding {
+    /// Decodes a canonical historical terminal without granting live custody.
+    ///
+    /// # Errors
+    /// Rejects malformed framing, historical coordinates, origin ordering or
+    /// checksum through the existing fixed terminal decoder.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ResourceBankDataError> {
+        settlement::decode(bytes)
+    }
+
+    /// Compares the exact recorded original and complete co-issuance commitment.
+    ///
+    /// Physical history, current claims and the genuine original remain the
+    /// actual Native consumer's responsibility; this operation observes no IO.
+    ///
+    /// # Errors
+    /// Rejects a different original claim, input-presence flag or complete
+    /// canonical co-issuance commitment through the shared terminal validator.
+    pub fn require_original_coissuance_data_v1(
+        self,
+        original: CoissuanceBinding,
+    ) -> Result<(), ResourceBankDataError> {
+        settlement::require_original(self, original)
+    }
+
+    /// Returns the recorded Root-final commitment as historical comparison data.
+    #[must_use]
+    pub const fn root_final_data_v1(self) -> [u8; 32] {
+        self.root_final
+    }
+
     /// Checks original returned positions and the exact preappend native head.
     ///
     /// These are passive comparisons. The Native caller must supply its actual
@@ -1272,6 +1786,16 @@ impl TerminalBinding {
     }
 }
 
+/// Borrows the exact recorded account head through the existing fixed-key lookup.
+///
+/// The slice is historical comparison DATA with the supplied state's lifetime.
+/// This lookup does not decode, normalize, observe a native writer or grant an
+/// account. Actual original consumers separately validate its identity and cut.
+#[must_use]
+pub fn head_bytes(state: &State, id: [u8; 16]) -> Option<&[u8]> {
+    replay::record_bytes(state, replay::HEAD_PREFIX, id)
+}
+
 /// Borrows the exact retained claim bytes from the supplied historical state.
 ///
 /// The returned slice shares the state lifetime. Absence returns `None`; this
@@ -1312,7 +1836,7 @@ mod physical_history_tests {
     use aos_sandbox_core::ResourceDimension;
 
     // This fixture contains historical DATA; it owns no original files or loans.
-    fn historical_coissuance(names: ProtectedJournalNamesV1) -> CoissuanceBinding {
+    pub(super) fn historical_coissuance(names: ProtectedJournalNamesV1) -> CoissuanceBinding {
         let identity = EnrollmentIdentity {
             node: [1; 16],
             epoch: [2; 16],
@@ -1377,6 +1901,40 @@ mod physical_history_tests {
             policy_binding: [25; 32],
             origin: None,
         }
+    }
+
+    #[test]
+    fn fixed_bank_data_borrows_no_original_and_rejects_changed_spec_or_terminal() {
+        let names = ProtectedJournalNamesV1::from_bytes(&[1; 48]).unwrap();
+        let mut original = historical_coissuance(names);
+        original.specification = Sha256::digest(b"spec").into();
+        original.specification_size = 4;
+        let encoded = q04::encode(original).unwrap();
+        let decoded = CoissuanceBinding::decode(encoded.as_ref()).unwrap();
+
+        assert_eq!(decoded.original_q04_nonce_data_v1(), original.original.nonce);
+        assert!(decoded.matches_specification_bytes_v1(b"spec"));
+        assert!(!decoded.matches_specification_bytes_v1(b"spEc"));
+        assert!(!decoded.matches_specification_bytes_v1(b"spec+"));
+        assert!(CoissuanceBinding::decode(&encoded.as_ref()[1..]).is_err());
+
+        let terminal = TerminalBinding::from_parts((
+            false, original.original.claim.id, original.commitment().unwrap(),
+            [30; 16], names, 9, 800, [31; 32],
+            std::array::from_fn(|index| (
+                [u8::try_from(index + 1).unwrap(); 16], [32; 32],
+                u64::try_from(index + 1).unwrap(), u64::try_from(index + 1).unwrap() * 100,
+            )),
+        ));
+        let bytes = settlement::encode(terminal).unwrap();
+        let terminal = TerminalBinding::decode(&bytes).unwrap();
+
+        terminal.require_original_coissuance_data_v1(decoded).unwrap();
+        assert_eq!(terminal.root_final_data_v1(), [31; 32]);
+        let mut changed = original;
+        changed.specification_record = [33; 32];
+        assert!(terminal.require_original_coissuance_data_v1(changed).is_err());
+        assert!(TerminalBinding::decode(&bytes[..bytes.len() - 1]).is_err());
     }
 
     #[test]
@@ -1567,4 +2125,48 @@ mod physical_history_tests {
             Err(ResourceBankDataError::CorruptLedger)
         ));
     }
+}
+
+/// Compares one exact expected canonical claim in borrowed historical state.
+///
+/// The existing key lookup and decoder remain the sole mechanical engine. This
+/// comparison neither validates the entire Bank nor binds an actual writer,
+/// enrollment, native original or operation loan.
+///
+/// # Errors
+/// Refuses an absent, malformed or different canonical claim.
+pub fn require_exact_claim_record_v1(state: &State, expected: Claim)
+    -> Result<(), ResourceBankDataError>
+{
+    let bytes = replay::record_bytes(state, replay::CLAIM_PREFIX, expected.id)
+        .ok_or(ResourceBankDataError::Conflict)?;
+    if codec::decode_claim(bytes)? != expected { return Err(ResourceBankDataError::Conflict); }
+    Ok(())
+}
+
+// A full allowance is irreversibly charged for every issued ordinal. This
+// componentwise product cannot turn unused or uncertain old work into credit.
+fn require_recipient_range_v1(recipients: u64, allowance: ResourceVector,
+    recovery: ResourceVector) -> Result<(), ResourceBankDataError>
+{
+    if recipients == 0 || allowance == ResourceVector::ZERO {
+        return Err(ResourceBankDataError::EnrollmentUnavailable);
+    }
+    for dimension in aos_sandbox_core::ResourceDimension::ALL {
+        let total = allowance.get(dimension).checked_mul(recipients)
+            .ok_or(ResourceBankDataError::Conflict)?;
+        if total > recovery.get(dimension) {
+            return Err(ResourceBankDataError::EnrollmentUnavailable);
+        }
+    }
+    for dimension in [aos_sandbox_core::ResourceDimension::MemoryBytes,
+        aos_sandbox_core::ResourceDimension::Pids,
+        aos_sandbox_core::ResourceDimension::OpenFiles,
+        aos_sandbox_core::ResourceDimension::ConcurrentOperations]
+    {
+        if allowance.get(dimension) == 0 {
+            return Err(ResourceBankDataError::EnrollmentUnavailable);
+        }
+    }
+    Ok(())
 }

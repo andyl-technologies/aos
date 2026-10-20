@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::journal::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::model::{NetworkKind, NetworkProfile, SandboxSpec};
 use aos_sandbox_core::{
     BrokerAssignment, CanonicalAssignmentManifestV1, DecodeLimits, NetworkEndpointId, NodeId,
@@ -39,6 +39,9 @@ use crate::catalog::{
 };
 use crate::policy::{NetworkIpPrefixV1, NetworkPolicyProgramV1, program_digest_from_commitments};
 
+mod startup;
+pub(crate) use startup::NetworkPreparationOpeningOriginalV4;
+
 const PREPARATION_JOURNAL_FILE: &str = "network-preparations.journal";
 const HEAD_KEY: &[u8] = b"aos.network.preparation.head.v1\0";
 const RECORD_KEY_PREFIX: &[u8] = b"aos.network.preparation.v1\0";
@@ -58,7 +61,7 @@ const MAXIMUM_RECORD_BYTES: usize = 256 * 1024;
 pub enum NetworkPreparationCatalogError {
     /// The protected journal failed validation, locking, or publication.
     #[error("network preparation journal failure: {0}")]
-    Journal(#[from] aos_sandbox::JournalError),
+    Journal(#[from] crate::journal::JournalError),
     /// A configured policy catalog is empty, noncanonical, or incomplete.
     #[error("network preparation policy catalog is invalid")]
     InvalidPolicy,
@@ -77,6 +80,9 @@ pub enum NetworkPreparationCatalogError {
     /// The append-only reservation epoch has no remaining slots.
     #[error("network preparation reservation epoch is exhausted")]
     ResourceExhausted,
+    /// The actual selected receiving or effect gate refused before publication.
+    #[error("network preparation selected receiving gate refused")]
+    Receiving,
     /// Network authority could not mint or authenticate the reservation.
     #[error("network preparation authority rejected the reservation")]
     Authority,
@@ -296,20 +302,9 @@ impl NetworkPreparationReservationV1 {
             .broker_assignment()
             .map_err(|_| NetworkPreparationCatalogError::InvalidCandidate)?;
         let manifest_model = manifest.manifest();
-        let sandbox_spec_bytes = encode_sandbox_spec(sandbox_spec);
-        let observed_spec = descriptor_for_bytes(
-            manifest_model.sandbox_spec().media_type().clone(),
-            &sandbox_spec_bytes,
-        );
-        if observed_spec != *manifest_model.sandbox_spec()
-            || manifest_model.sandbox_spec().media_type().as_str()
-                != sandbox_spec_media_type(sandbox_spec).as_str()
-            || sandbox_spec.environment() != manifest_model.environment()
-            || sandbox_spec.root_view() != manifest_model.root_view()
-            || sandbox_spec.network_profile().kind() == NetworkKind::Host
-        {
-            return Err(NetworkPreparationCatalogError::InvalidCandidate);
-        }
+        let sandbox_spec_bytes = aos_sandbox_protocol::semantics::network::preparation_content::canonical_network_preparation_specification_v2(
+            manifest, sandbox_spec,
+        ).map_err(|_| NetworkPreparationCatalogError::InvalidCandidate)?;
         Ok(Self {
             assignment,
             node: manifest_model.node(),
@@ -317,6 +312,40 @@ impl NetworkPreparationReservationV1 {
             sandbox_spec_bytes,
             network_profile: sandbox_spec.network_profile().clone(),
         })
+    }
+
+    /// Compares the same canonical operands against the received63 content reference.
+    pub(crate) fn require_content_reference_v4(&self,
+        reference: &aos_sandbox_protocol::semantics::network::preparation_content::NetworkPreparationContentReferenceV2,
+    ) -> Result<(), NetworkPreparationCatalogError> {
+        use aos_sandbox_protocol::semantics::network::preparation_content::NetworkPreparationContentV2;
+        let content = NetworkPreparationContentV2::new(&self.manifest_bytes, &self.sandbox_spec_bytes)
+            .map_err(|_| NetworkPreparationCatalogError::InvalidCandidate)?;
+        let bytes = content.encode().map_err(|_| NetworkPreparationCatalogError::InvalidCandidate)?;
+        reference.verify(&bytes).map_err(|_| NetworkPreparationCatalogError::InvalidCandidate)?;
+        Ok(())
+    }
+
+    pub(crate) fn materialization_receiving_demand_v4(&self)
+        -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError> {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        let overflow = || aos_sandbox_core::AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes };
+        let (core, core_names) = aos_sandbox_protocol::semantics::network::preparation_content::
+            network_preparation_models_receiving_obligations_v2(self.manifest_bytes.len(), self.sandbox_spec_bytes.len())
+            .ok_or_else(overflow)?;
+        let map_nodes = aos_sandbox_journal::geometry::conservative_btree_node_bytes_v1::<[u8; 32],
+            (PreparationRecordV1, NetworkNamespacePlanV1)>(1)
+            .and_then(|bytes| bytes.checked_mul(12)).ok_or_else(overflow)?;
+        let bytes = self.manifest_bytes.len().checked_add(self.sandbox_spec_bytes.len())
+            .and_then(|bytes| bytes.checked_mul(16))
+            .and_then(|bytes| bytes.checked_add(core))
+            .and_then(|bytes| bytes.checked_add(map_nodes))
+            .and_then(|bytes| bytes.checked_add(MAXIMUM_RECORD_BYTES.checked_mul(8)?))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PreparationRecordV1>().checked_mul(4)?))
+            .and_then(|bytes| u64::try_from(bytes).ok()).ok_or_else(overflow)?;
+        let names = u64::try_from(core_names.checked_add(12).ok_or_else(overflow)?)
+            .map_err(|_| overflow())?;
+        Ok(ResourceVector::ZERO.with(D::MemoryBytes, bytes).with(D::MetadataEntries, names))
     }
 
     /// Returns the exact assignment receiving the future namespace.
@@ -441,70 +470,8 @@ impl NetworkPreparationCatalogV1 {
         policy: NetworkPolicyCatalogV1,
         minimum_generation: u64,
     ) -> Result<Self, NetworkPreparationCatalogError> {
-        if policy.generation() < minimum_generation {
-            return Err(NetworkPreparationCatalogError::Rollback);
-        }
-
-        let mut head = None;
-        let mut records = BTreeMap::new();
-        let mut plans = BTreeMap::new();
-        for (key, value) in journal.records(RecordNamespace::NetworkResourceInventory) {
-            if key == HEAD_KEY {
-                if head.replace(decode_head(value)?).is_some() {
-                    return Err(NetworkPreparationCatalogError::CorruptRecord);
-                }
-                continue;
-            }
-            if key.starts_with(ALLOCATION_KEY_PREFIX) {
-                let handle = decode_allocation_key(key)?;
-                let plan = decode_allocation_record(value)?;
-                if plan.network_handle() != &handle || plans.insert(handle, plan).is_some() {
-                    return Err(NetworkPreparationCatalogError::CorruptRecord);
-                }
-                continue;
-            }
-            let handle = decode_record_key(key)?;
-            let record = decode_record(value)?;
-            if record.network_handle != handle || records.insert(handle, record).is_some() {
-                return Err(NetworkPreparationCatalogError::CorruptRecord);
-            }
-        }
-
-        let stored_generation = match &head {
-            None if records.is_empty() => policy.generation(),
-            None => return Err(NetworkPreparationCatalogError::CorruptRecord),
-            Some(head) if head.node != *policy.node().as_bytes() => {
-                return Err(NetworkPreparationCatalogError::Rollback);
-            }
-            Some(head) if head.generation > policy.generation() => {
-                return Err(NetworkPreparationCatalogError::Rollback);
-            }
-            Some(head) if head.generation == policy.generation() => {
-                if head.digest != *policy.digest().as_bytes() {
-                    return Err(NetworkPreparationCatalogError::Rollback);
-                }
-                head.generation
-            }
-            Some(head) => head.generation,
-        };
-        // Validate the recovered snapshot against its durable head before a
-        // trusted policy roll-forward can publish any new state.
-        validate_record_set(&records, policy.node(), stored_generation)?;
-        validate_plan_set(&records, &plans)?;
-
-        match head {
-            None => initialize_head(&mut journal, &policy)?,
-            Some(head) if head.generation < policy.generation() => {
-                advance_head(&mut journal, &policy)?;
-            }
-            Some(_) => {}
-        }
-        Ok(Self {
-            journal,
-            policy,
-            records,
-            plans,
-        })
+        let (records, plans) = recover_models_v4(&mut journal, &policy, minimum_generation)?;
+        Ok(Self { journal, policy, records, plans })
     }
 
     /// Returns the active protected policy generation.
@@ -530,10 +497,26 @@ impl NetworkPreparationCatalogV1 {
     /// Returns [`NetworkPreparationCatalogError`] when the portable profile is
     /// not configured, retained state conflicts, capacity is exhausted, or
     /// protected authority cannot mint/authenticate the handle.
-    pub fn reserve(
+    pub fn reserve(&mut self, reservation: NetworkPreparationReservationV1,
+        authority: &NetworkAuthorityV1) -> Result<NetworkPreparationCatalogOutcomeV1, NetworkPreparationCatalogError> {
+        self.reserve_engine_v4(reservation, authority, None, None)
+    }
+
+    /// Reserves through the same engine after its exact native append is paid.
+    pub(crate) fn reserve_guarded_v4(&mut self, reservation: NetworkPreparationReservationV1,
+        authority: &NetworkAuthorityV1,
+        semantic: &aos_sandbox_protocol::semantics::network::CanonicalNetworkSemanticsV1,
+        gate: &mut dyn FnMut(&Journal, &JournalTransaction) -> Result<(), NetworkPreparationCatalogError>,
+    ) -> Result<NetworkPreparationCatalogOutcomeV1, NetworkPreparationCatalogError> {
+        self.reserve_engine_v4(reservation, authority, Some(semantic), Some(gate))
+    }
+
+    fn reserve_engine_v4(
         &mut self,
         reservation: NetworkPreparationReservationV1,
         authority: &NetworkAuthorityV1,
+        semantic: Option<&aos_sandbox_protocol::semantics::network::CanonicalNetworkSemanticsV1>,
+        gate: Option<&mut dyn FnMut(&Journal, &JournalTransaction) -> Result<(), NetworkPreparationCatalogError>>,
     ) -> Result<NetworkPreparationCatalogOutcomeV1, NetworkPreparationCatalogError> {
         if reservation.node != self.policy.node() {
             return Err(NetworkPreparationCatalogError::InvalidCandidate);
@@ -549,6 +532,10 @@ impl NetworkPreparationCatalogV1 {
                 return Err(NetworkPreparationCatalogError::IdentityConflict);
             }
             let preparation = existing.authenticate(authority)?;
+            if let Some(semantic) = semantic {
+                crate::broker::validate_catalog(semantic, preparation.resolution())
+                    .map_err(|_| NetworkPreparationCatalogError::InvalidCandidate)?;
+            }
             return Ok(NetworkPreparationCatalogOutcomeV1::Replay(preparation));
         }
         if self.records.len() >= MAXIMUM_RESERVATIONS {
@@ -592,6 +579,10 @@ impl NetworkPreparationCatalogV1 {
             profile.endpoints().to_vec(),
         )
         .map_err(|_| NetworkPreparationCatalogError::InvalidCandidate)?;
+        if let Some(semantic) = semantic {
+            crate::broker::validate_catalog(semantic, &resolution)
+                .map_err(|_| NetworkPreparationCatalogError::InvalidCandidate)?;
+        }
         let mut record = PreparationRecordV1 {
             network_handle,
             assignment: AssignmentWire::from(reservation.assignment),
@@ -622,7 +613,8 @@ impl NetworkPreparationCatalogV1 {
                     allocation_bytes,
                 ),
             ],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(crate::journal::JournalError::from)?;
+        if let Some(gate) = gate { gate(&self.journal, &transaction)?; }
         self.journal.commit(&transaction)?;
         self.records.insert(network_handle, record);
         self.plans.insert(network_handle, plan);
@@ -724,10 +716,10 @@ impl NetworkPreparationCatalogV1 {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct CatalogHeadV1 {
-    node: [u8; 16],
-    generation: u64,
-    digest: [u8; 32],
+pub(crate) struct CatalogHeadV1 {
+    pub(crate) node: [u8; 16],
+    pub(crate) generation: u64,
+    pub(crate) digest: [u8; 32],
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1401,17 +1393,17 @@ fn publish_head(
             HEAD_KEY.to_vec(),
             encode_head(&head)?,
         )],
-    ).map_err(aos_sandbox::JournalError::from)?;
+    ).map_err(crate::journal::JournalError::from)?;
     journal.commit(&transaction)?;
     Ok(())
 }
 
-fn encode_head(head: &CatalogHeadV1) -> Result<Vec<u8>, NetworkPreparationCatalogError> {
+pub(crate) fn encode_head(head: &CatalogHeadV1) -> Result<Vec<u8>, NetworkPreparationCatalogError> {
     canonical_map::encode_head(head, RECORD_FORMAT_VERSION)
         .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)
 }
 
-fn decode_head(bytes: &[u8]) -> Result<CatalogHeadV1, NetworkPreparationCatalogError> {
+pub(crate) fn decode_head(bytes: &[u8]) -> Result<CatalogHeadV1, NetworkPreparationCatalogError> {
     let head: CatalogHeadV1 =
         canonical_map::decode_head(bytes, RECORD_FORMAT_VERSION, MAXIMUM_RECORD_BYTES)
             .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
@@ -2602,4 +2594,117 @@ mod tests {
             Err(NetworkPreparationCatalogError::CorruptRecord)
         ));
     }
+}
+
+/// Runs the sole canonical replay while the real startup retains its writer.
+fn recover_models_v4(journal: &mut Journal, policy: &NetworkPolicyCatalogV1,
+    minimum_generation: u64,
+) -> Result<(BTreeMap<[u8; 32], PreparationRecordV1>, BTreeMap<[u8; 32], NetworkNamespacePlanV1>), NetworkPreparationCatalogError> {
+        if policy.generation() < minimum_generation {
+            return Err(NetworkPreparationCatalogError::Rollback);
+        }
+
+        let mut head = None;
+        let mut records = BTreeMap::new();
+        let mut plans = BTreeMap::new();
+        for (key, value) in journal.records(RecordNamespace::NetworkResourceInventory) {
+            if key == HEAD_KEY {
+                if head.replace(decode_head(value)?).is_some() {
+                    return Err(NetworkPreparationCatalogError::CorruptRecord);
+                }
+                continue;
+            }
+            if key.starts_with(ALLOCATION_KEY_PREFIX) {
+                let handle = decode_allocation_key(key)?;
+                let plan = decode_allocation_record(value)?;
+                if plan.network_handle() != &handle || plans.insert(handle, plan).is_some() {
+                    return Err(NetworkPreparationCatalogError::CorruptRecord);
+                }
+                continue;
+            }
+            let handle = decode_record_key(key)?;
+            let record = decode_record(value)?;
+            if record.network_handle != handle || records.insert(handle, record).is_some() {
+                return Err(NetworkPreparationCatalogError::CorruptRecord);
+            }
+        }
+
+        let stored_generation = match &head {
+            None if records.is_empty() => policy.generation(),
+            None => return Err(NetworkPreparationCatalogError::CorruptRecord),
+            Some(head) if head.node != *policy.node().as_bytes() => {
+                return Err(NetworkPreparationCatalogError::Rollback);
+            }
+            Some(head) if head.generation > policy.generation() => {
+                return Err(NetworkPreparationCatalogError::Rollback);
+            }
+            Some(head) if head.generation == policy.generation() => {
+                if head.digest != *policy.digest().as_bytes() {
+                    return Err(NetworkPreparationCatalogError::Rollback);
+                }
+                head.generation
+            }
+            Some(head) => head.generation,
+        };
+        // Validate the recovered snapshot against its durable head before a
+        // trusted policy roll-forward can publish any new state.
+        validate_record_set(&records, policy.node(), stored_generation)?;
+        validate_plan_set(&records, &plans)?;
+
+        match head {
+            None => initialize_head(journal, policy)?,
+            Some(head) if head.generation < policy.generation() => {
+                advance_head(journal, policy)?;
+            }
+            Some(_) => {}
+        }
+        Ok((records, plans))
+}
+
+
+impl NetworkPreparationCatalogV1 {
+    // Only the private whole-service inventory callsite borrows this exact
+    // continuously held writer; the borrow creates no new claim or file.
+    pub(crate) fn inventory_journal_v2(&self) -> &Journal {
+        &self.journal
+    }
+
+    pub(crate) fn inventory_history_memory_v2(&self) -> Option<usize> {
+        // Existing maps stay in their already-paid owners. Only the sole
+        // canonical initialization-head decoder creates transient backing.
+        self.journal.get(RecordNamespace::NetworkResourceInventory, HEAD_KEY)
+            .map_or(Some(0), crate::service_original::journal::inventory_head_decode_memory_v2::<CatalogHeadV1>)
+    }
+}
+
+impl NetworkPreparationCatalogV1 {
+    pub(crate) fn inventory_policy_v2(&self) -> &NetworkPolicyCatalogV1 {
+        &self.policy
+    }
+
+    pub(crate) fn inventory_no_resource_history_v2(&self)
+        -> Result<bool, NetworkPreparationCatalogError>
+    {
+        self.journal.ensure_healthy()?;
+        if !self.records.is_empty() || !self.plans.is_empty()
+            || self.journal.all_records().any(|(namespace, key, _)| {
+                namespace != RecordNamespace::NetworkResourceInventory || key != HEAD_KEY
+            }) {
+            return Ok(false);
+        }
+        let head = decode_head(self.journal.get(RecordNamespace::NetworkResourceInventory, HEAD_KEY)
+            .ok_or(NetworkPreparationCatalogError::CorruptRecord)?)?;
+        if head.node != *self.policy.node().as_bytes()
+            || head.generation != self.policy.generation()
+            || head.digest != *self.policy.digest().as_bytes() {
+            return Err(NetworkPreparationCatalogError::Rollback);
+        }
+        Ok(true)
+    }
+}
+
+/// Checks the actual existing preparation/allocation keys without decoding values.
+pub(crate) fn journal_key_data_v1(namespace: RecordNamespace, key: &[u8]) -> bool {
+    namespace == RecordNamespace::NetworkResourceInventory
+        && (key == HEAD_KEY || decode_record_key(key).is_ok() || decode_allocation_key(key).is_ok())
 }

@@ -4,6 +4,8 @@
 //! samples time without advancing the clock journal: its normal update path
 //! drops and reopens that writer, which would break the claimed cut.
 
+use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+
 use aos_sandbox_protocol::cache_state::NodeCacheQuotaV1;
 
 use std::path::Path;
@@ -13,13 +15,15 @@ use std::sync::Arc;
 use aos_sandbox_core::ObjectDigest;
 
 use crate::journal::{
-    CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, Journal, ProtectedWriterNameWitness,
+    CACHE_POLICY_HOLD_JOURNAL,
+    Journal,
+    ProtectedWriterNameWitness,
 };
 #[cfg(test)]
 use crate::journal::{JournalError, JournalLimits, RecordNamespace, RecoveryReport};
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 #[cfg(target_os = "linux")]
-use crate::policy_compiler::RootV8SettledGrantV1;
+use aos_sandbox_broker::root_settlement::RootV8SettledGrantV1;
 
 #[cfg(test)]
 use super::root_read_only::ReadOnlyCacheClockV1;
@@ -103,7 +107,7 @@ impl Q04CachePrepareReadbackV1 {
 // Keep the ordinary allocation and selection order: quota collection, its
 // complete digest, then unique project selection. Prepare and terminal replay
 // share this DATA recipe rather than creating an artificial active hold.
-fn current_inventory_selection(
+pub(in crate::cache_residency) fn current_inventory_selection(
     project: aos_sandbox_core::ProjectId,
     inventories: &[crate::cache_residency::CacheRecoveryInventoryV1],
 ) -> Result<(

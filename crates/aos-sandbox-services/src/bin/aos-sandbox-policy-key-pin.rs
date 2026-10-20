@@ -3,6 +3,10 @@
 //! This offline administration tool reads only a public Ed25519 key. It never
 //! handles a signing seed and creates the output exclusively with mode 0600.
 
+use aos_sandbox_policy::controller_readback::{
+    PinnedControllerHoldSignerV1, encode_controller_hold_signer_credential_v1,
+};
+
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
@@ -10,8 +14,8 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use aos_sandbox::cache_residency::encode_cache_owner_readback_signer_credential_v1;
-use aos_sandbox::policy_compiler::encode_controller_hold_signer_credential_v1;
+use aos_sandbox_protocol::cache_owner_readback::encode_cache_owner_readback_signer_credential_v1;
+
 use aos_sandbox_policy::policy_signer_credential::{
     PolicySignerRoleV1, encode_policy_signer_credential_v1,
 };
@@ -95,7 +99,8 @@ fn encode_pin(
             encode_cache_owner_readback_signer_credential_v1(generation, verifying_key)?
         }
         PinRole::ControllerHold => {
-            encode_controller_hold_signer_credential_v1(generation, verifying_key)?
+            encode_controller_hold_signer_credential_v1(generation, verifying_key)
+                .map_err(aos_sandbox::policy_compiler::ControllerHoldReadbackErrorV1::from)?
         }
     })
 }
@@ -126,8 +131,8 @@ fn usage() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use aos_sandbox::cache_residency::PinnedCacheOwnerReadbackSignerV1;
-    use aos_sandbox::policy_compiler::PinnedControllerHoldSignerV1;
+    use aos_sandbox_protocol::cache_owner_readback::PinnedCacheOwnerReadbackSignerV1;
+
     use aos_sandbox_policy::policy_signer_credential::PinnedPolicySignerV1;
     use ed25519_dalek::SigningKey;
 
@@ -162,8 +167,9 @@ mod tests {
     fn controller_hold_pin_cli_encoder_is_role_distinct() {
         let key = SigningKey::from_bytes(&[14; 32]).verifying_key();
         let credential = encode_pin(PinRole::ControllerHold, 8, &key).expect("Controller pin");
-        let controller =
-            PinnedControllerHoldSignerV1::decode(&credential).expect("Controller role");
+        let controller = PinnedControllerHoldSignerV1::decode(&credential)
+            .map_err(aos_sandbox::policy_compiler::ControllerHoldReadbackErrorV1::from)
+            .expect("Controller role");
         assert_eq!(controller.generation(), 8);
         assert!(PinnedCacheOwnerReadbackSignerV1::decode(&credential).is_err());
         assert!(PinnedPolicySignerV1::decode(PolicySignerRoleV1::Project, &credential).is_err());

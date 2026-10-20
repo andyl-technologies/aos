@@ -32,7 +32,7 @@ use super::custody::{
 use super::planning::{self, AttachmentSourceError};
 use crate::BrokerDispatchAttemptV1;
 use crate::attachment_state::{self, DurableAttachmentDesiredStateV1};
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentNamespaceTarget, CurrentRuntimeScope};
 use crate::{Journal, JournalRecord, RecordNamespace};
 

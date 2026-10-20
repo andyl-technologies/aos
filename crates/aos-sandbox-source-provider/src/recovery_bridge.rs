@@ -26,7 +26,7 @@ pub struct ProviderRecoveryContinuationV1 {
     method: SourceProviderMethod,
     old_attempt_digest: ObjectDigest,
     old_session_binding: ObjectDigest,
-    journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    journal_snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
     pending_descriptor_was_never_authorized: bool,
 }
 

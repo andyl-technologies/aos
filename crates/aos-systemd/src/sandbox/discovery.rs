@@ -253,7 +253,7 @@ impl SystemdClient {
     }
 
     async fn collect_sandbox_discovery_pass(&self) -> Result<SandboxUnitDiscoverySnapshot> {
-        let listed = self.manager.list_units_by_patterns(&[], &[PATTERN]).await?;
+        let listed = collect_runtime_listing_v5(&self.manager, &[PATTERN]).await?;
         let mut retained_bytes = validate_listing_admission(&listed)?;
         let mut units = Vec::new();
         let mut conflicts = Vec::new();
@@ -362,6 +362,23 @@ impl SystemdClient {
         units.sort_by(|left, right| left.unit.cmp(&right.unit));
         conflicts.sort();
         Ok(SandboxUnitDiscoverySnapshot { units, conflicts })
+    }
+}
+
+// Both ordinary discovery and the paid retained absence observer use this
+// exact Manager decoder. The selected raw collector admits full bytes first;
+// it never truncates the array or treats an over-budget reply as empty.
+pub(crate) async fn collect_runtime_listing_v5(
+    manager: &crate::manager_proxy::ManagerProxy<'_>, patterns: &[&str],
+) -> Result<Vec<ListUnitsEntry>> {
+    Ok(manager.list_units_by_patterns(&[], patterns).await?)
+}
+
+pub(crate) fn require_empty_runtime_listing_v5(entries: &[ListUnitsEntry]) -> Result<()> {
+    if entries.is_empty() { Ok(()) } else {
+        // The caller keeps the WHOLE decoded listing and raw frame. Neither
+        // canonical known rows nor unknown/lookalike rows can prove absence.
+        Err(crate::Error::HostLaunchRetained("Host runtime discovery contains retained quarantine"))
     }
 }
 

@@ -11,20 +11,19 @@ use std::path::Path;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceVector};
 
-use super::genesis_profile::{
-    ControllerSourceGenesisAcceptanceRecordV1, SourceGenesisErrorV1, digest_at,
+use aos_sandbox_protocol::source_genesis_acceptance::ControllerSourceGenesisAcceptanceRecordV1;
+use super::genesis_profile::{SourceGenesisErrorV1, digest_at};
+use aos_sandbox_ledger_replay::genesis::{
+    SourceTreeGenesisReceiptV1,
 };
-use super::source_genesis::{
-    HeldSourceTreeGenesisObservationV1, SourceTreeGenesisReceiptV1, SourceTreeGenesisStateV1,
-};
+use super::source_genesis::{HeldSourceTreeGenesisObservationV1,  SourceTreeGenesisStateV1};
 use crate::journal::controller::production_journal_limits;
-use crate::journal::controller_source_genesis::{
-    self as records, ControllerSourceGenesisTransition as Transition,
-};
+use crate::journal::controller_source_genesis as records;
+use aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition as Transition;
 use crate::journal::{Journal, ProtectedJournalNamesV1};
 use crate::journal::controller_source_successor_issuance::PublicationCustodyV2;
 use crate::policy_compiler::{RootSourceGenesisFloorProofV1, SourceHierarchyFloorRecordV1};
-use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
+use crate::publisher_admin::policy::{PublisherPolicyLimits, PublisherPolicyStore};
 
 const CONTROLLER_ROOT: &str = "/var/lib/aos/sandboxd";
 const CONTROLLER_JOURNAL: &str = "controller.journal";
@@ -256,24 +255,24 @@ pub fn hold_controller_source_genesis_v1(
                 seed,
                 authorization,
             )?;
-        let accept = records::acceptance_transaction(&acceptance)?;
+        let accept = aos_sandbox_ledger_replay::replay::controller_source_genesis::acceptance_transaction(&acceptance).map_err(crate::journal::JournalError::from)?;
         // These are size-only prospective ACKs. No authorizing token or durable
         // state is created from their placeholder commitments.
-        let prospective_ack = records::ack_bytes(
+        let prospective_ack = aos_sandbox_ledger_replay::replay::controller_source_genesis::ack_bytes(
             acceptance.digest(),
             ObjectDigest::from_bytes([1; 32]),
             ObjectDigest::from_bytes([2; 32]),
-        )?;
-        let prospective_complete = records::complete_bytes(
+        ).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
+        let prospective_complete = aos_sandbox_ledger_replay::replay::controller_source_genesis::complete_bytes(
             &prospective_ack,
             ObjectDigest::from_bytes([3; 32]),
             ObjectDigest::from_bytes([1; 32]),
-        )?;
+        ).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
         journal.preflight_controller_source_genesis_transitions(
             &[
                 accept.clone(),
-                records::ack_transaction(project, &prospective_ack)?,
-                records::complete_transaction(project, &prospective_complete)?,
+                aos_sandbox_ledger_replay::replay::controller_source_genesis::ack_transaction(project, &prospective_ack).map_err(crate::journal::JournalError::from)?,
+                aos_sandbox_ledger_replay::replay::controller_source_genesis::complete_transaction(project, &prospective_complete).map_err(crate::journal::JournalError::from)?,
             ],
             &[
                 Transition::Accept,
@@ -307,7 +306,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
     #[cfg(target_os = "linux")]
     pub(crate) fn retained_project_successor_approval_v3(
         &self,
-    ) -> Result<Option<super::source_successor::SourceSuccessorApprovalDataV2>, SourceGenesisErrorV1> {
+    ) -> Result<Option<aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2>, SourceGenesisErrorV1> {
         self.recheck()?;
         let journal = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
         Ok(crate::journal::controller_source_successor_issuance::retained_project_v3(&journal, self.acceptance.project())?
@@ -317,7 +316,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
     #[cfg(target_os = "linux")]
     pub(crate) fn retain_project_successor_issuance_v3(
         &self,
-        packet: &super::source_successor::SourceSuccessorApprovalDataV2,
+        packet: &aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2,
         source: &super::source_genesis::HeldSourceProjectGenesisObservationV3<'_>,
         completed: &crate::policy_compiler::CompletedRootSourceProjectGenesisFloorV3<'_, '_>,
         phase: crate::journal::controller_source_successor_issuance::Transition,
@@ -375,7 +374,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn publish_project_successor_issuance_v3(
-        &self, packet: &super::source_successor::SourceSuccessorApprovalDataV2, custody: &mut PublicationCustodyV2,
+        &self, packet: &aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2, custody: &mut PublicationCustodyV2,
     ) -> Result<(), SourceGenesisErrorV1> {
         self.recheck()?;
         self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?.publish_project_successor_v3(packet, custody)?;
@@ -384,7 +383,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn recheck_project_successor_publication_v3(
-        &self, packet: &super::source_successor::SourceSuccessorApprovalDataV2, custody: &mut PublicationCustodyV2,
+        &self, packet: &aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2, custody: &mut PublicationCustodyV2,
     ) -> Result<(), SourceGenesisErrorV1> {
         self.recheck()?;
         self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?.recheck_project_successor_publication_v3(packet, custody)?;
@@ -433,12 +432,12 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
             let (bytes, prior, transaction) = if complete {
                 original.require_complete_source()?;
                 let ack = rows.ack.ok_or(SourceGenesisErrorV1::Stale)?;
-                let bytes = records::complete_bytes(&ack, original.ack_record_digest().ok_or(SourceGenesisErrorV1::Stale)?, original.floor().digest())?;
-                let transaction = records::complete_transaction(self.acceptance.project(), &bytes)?;
+                let bytes = aos_sandbox_ledger_replay::replay::controller_source_genesis::complete_bytes(&ack, original.ack_record_digest().ok_or(SourceGenesisErrorV1::Stale)?, original.floor().digest()).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
+                let transaction = aos_sandbox_ledger_replay::replay::controller_source_genesis::complete_transaction(self.acceptance.project(), &bytes).map_err(crate::journal::JournalError::from)?;
                 (bytes, rows.complete, transaction)
             } else {
-                let bytes = records::ack_bytes(self.acceptance.digest(), original.floor().digest(), original.floor().receipt_digest())?;
-                let transaction = records::ack_transaction(self.acceptance.project(), &bytes)?;
+                let bytes = aos_sandbox_ledger_replay::replay::controller_source_genesis::ack_bytes(self.acceptance.digest(), original.floor().digest(), original.floor().receipt_digest()).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
+                let transaction = aos_sandbox_ledger_replay::replay::controller_source_genesis::ack_transaction(self.acceptance.project(), &bytes).map_err(crate::journal::JournalError::from)?;
                 (bytes, rows.ack, transaction)
             };
             expected = Some(bytes);
@@ -606,11 +605,11 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
         self.recheck()?;
         let floor = proof.floor();
         require_floor(&self.acceptance, floor)?;
-        let ack = records::ack_bytes(
+        let ack = aos_sandbox_ledger_replay::replay::controller_source_genesis::ack_bytes(
             self.acceptance.digest(),
             floor.digest(),
             floor.receipt_digest(),
-        )?;
+        ).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
         {
             let mut journal = self
                 .journal
@@ -623,7 +622,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
                     return Err(SourceGenesisErrorV1::Conflict);
                 }
             } else {
-                let transaction = records::ack_transaction(self.acceptance.project(), &ack)?;
+                let transaction = aos_sandbox_ledger_replay::replay::controller_source_genesis::ack_transaction(self.acceptance.project(), &ack).map_err(crate::journal::JournalError::from)?;
                 require_controller(&journal, self.uid)?;
                 proof.recheck()?;
                 journal.commit_controller_source_genesis_transition(
@@ -654,7 +653,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
         let ack = records::rows(&journal, self.acceptance.project())?
             .and_then(|row| row.ack)
             .ok_or(SourceGenesisErrorV1::Stale)?;
-        Ok(records::ack_digest(&ack))
+        Ok(aos_sandbox_ledger_replay::replay::controller_source_genesis::ack_digest(&ack))
     }
 
     /// Validates the exact borrowed Controller join at the Source ACK boundary.
@@ -713,7 +712,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
             let row = records::rows(&journal, self.acceptance.project())?
                 .ok_or(SourceGenesisErrorV1::Stale)?;
             let ack = row.ack.ok_or(SourceGenesisErrorV1::Stale)?;
-            let complete = records::complete_bytes(&ack, source_ack, proof.floor().digest())?;
+            let complete = aos_sandbox_ledger_replay::replay::controller_source_genesis::complete_bytes(&ack, source_ack, proof.floor().digest()).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
             if let Some(prior) = row.complete {
                 if prior != complete {
                     return Err(SourceGenesisErrorV1::Conflict);
@@ -723,7 +722,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
                 source.recheck()?;
                 require_controller(&journal, self.uid)?;
                 journal.commit_controller_source_genesis_transition(
-                    &records::complete_transaction(self.acceptance.project(), &complete)?,
+                    &aos_sandbox_ledger_replay::replay::controller_source_genesis::complete_transaction(self.acceptance.project(), &complete).map_err(crate::journal::JournalError::from)?,
                     Transition::Complete,
                 )?;
             }
@@ -831,7 +830,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
     #[cfg(target_os = "linux")]
     pub(crate) fn retained_successor_approval_v2(
         &self,
-    ) -> Result<Option<super::source_successor::SourceSuccessorApprovalDataV2>, SourceGenesisErrorV1> {
+    ) -> Result<Option<aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2>, SourceGenesisErrorV1> {
         self.recheck()?;
         let journal = self.journal.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
         Ok(crate::journal::controller_source_successor_issuance::retained(&journal)?
@@ -841,7 +840,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
     #[cfg(target_os = "linux")]
     pub(crate) fn preflight_successor_issuance_v2(
         &self,
-        packet: &super::source_successor::SourceSuccessorApprovalDataV2,
+        packet: &aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2,
     ) -> Result<(), SourceGenesisErrorV1> {
         self.recheck()?;
         self.journal.try_borrow()
@@ -853,7 +852,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
     #[cfg(target_os = "linux")]
     pub(crate) fn save_successor_issuance_v2(
         &self,
-        packet: &super::source_successor::SourceSuccessorApprovalDataV2,
+        packet: &aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2,
     ) -> Result<(), SourceGenesisErrorV1> {
         self.recheck()?;
         self.journal.try_borrow_mut()
@@ -865,7 +864,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
     #[cfg(target_os = "linux")]
     pub(crate) fn publish_successor_issuance_v2(
         &self,
-        packet: &super::source_successor::SourceSuccessorApprovalDataV2,
+        packet: &aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2,
         custody: &mut PublicationCustodyV2,
     ) -> Result<(), SourceGenesisErrorV1> {
         self.recheck()?;
@@ -878,7 +877,7 @@ impl<'controller> HeldControllerSourceGenesisV1<'controller> {
     #[cfg(target_os = "linux")]
     pub(crate) fn complete_successor_delivery_v2(
         &self,
-        packet: &super::source_successor::SourceSuccessorApprovalDataV2,
+        packet: &aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2,
         custody: &mut PublicationCustodyV2,
     ) -> Result<(), SourceGenesisErrorV1> {
         self.recheck()?;
@@ -983,7 +982,7 @@ fn require_completed_source_ack(
         || receipt.auth_packet() != acceptance.auth_packet()
         || digest_at(&ack, 48) != floor
         || digest_at(&ack, 80) != receipt.digest()
-        || row.complete != Some(records::complete_bytes(&ack, source_ack, floor)?)
+        || row.complete != Some(aos_sandbox_ledger_replay::replay::controller_source_genesis::complete_bytes(&ack, source_ack, floor).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?)
     {
         return Err(SourceGenesisErrorV1::Stale);
     }

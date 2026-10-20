@@ -50,11 +50,15 @@ use aos_sandbox_protocol::cache_state::{
 use super::{CachePinV1, ImmutableAdmissionPlanV1};
 
 mod authority_session;
+#[cfg(target_os = "linux")]
+pub(in crate::cache_residency) use authority_session::CacheHeldSelectionV1;
 mod pin_effect;
 mod provisioning;
 pub(in crate::cache_residency) use authority_session::RetainedCacheAuthoritySessionV1;
 pub(crate) use provisioning::LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS;
 pub(in crate::cache_residency) use provisioning::ResidentPinAuthorityAppendV1;
+
+use aos_sandbox_protocol::cache_state::protected_replay as historical;
 
 use pin_effect::{
     CurrentPhysicalPinActionV1, CurrentPhysicalPinEffectV1, current_physical_pin_effect,
@@ -64,63 +68,23 @@ use super::protected_owner::project_usage::CacheProjectUsagePartitionV1;
 
 const PARTITION_DESCRIPTOR_MAGIC: &[u8; 8] = b"AOSCPP01";
 const PARTITION_DESCRIPTOR_BYTES: usize = 241;
-const EFFECT_OBSERVATION_AUTHORITY_KEY_PREFIX: &[u8] =
-    b"\0aos-cache-effect-observation-authority-v1\0";
-const EFFECT_OBSERVATION_AUTHORITY_BYTES: usize = 192;
+const EFFECT_OBSERVATION_AUTHORITY_KEY_PREFIX: &[u8] = historical::EFFECT_OBSERVATION_AUTHORITY_KEY_PREFIX;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CacheEffectObservationV1 {
-    transaction_id: [u8; 16],
-    transaction_digest: ObjectDigest,
-    evidence: ObjectDigest,
-    partition: ObjectDigest,
-}
+use historical::CacheEffectObservationDataV1 as CacheEffectObservationV1;
 
 fn encode_cache_effect_observation(observation: CacheEffectObservationV1) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(122);
-    bytes.extend_from_slice(b"AOSCRY01");
-    bytes.extend_from_slice(&1_u16.to_be_bytes());
-    bytes.extend_from_slice(&observation.transaction_id);
-    bytes.extend_from_slice(observation.transaction_digest.as_bytes());
-    bytes.extend_from_slice(observation.evidence.as_bytes());
-    bytes.extend_from_slice(observation.partition.as_bytes());
-    bytes
+    historical::encode_cache_effect_observation(observation)
 }
 
 fn decode_cache_effect_observation(
     identity: &[u8],
     bytes: &[u8],
 ) -> Option<CacheEffectObservationV1> {
-    if identity.len() != 16
-        || bytes.len() != 122
-        || &bytes[..8] != b"AOSCRY01"
-        || bytes[8..10] != 1_u16.to_be_bytes()
-        || identity != &bytes[10..26]
-    {
-        return None;
-    }
-    let observation = CacheEffectObservationV1 {
-        transaction_id: bytes[10..26].try_into().ok()?,
-        transaction_digest: ObjectDigest::from_bytes(bytes[26..58].try_into().ok()?),
-        evidence: ObjectDigest::from_bytes(bytes[58..90].try_into().ok()?),
-        partition: ObjectDigest::from_bytes(bytes[90..122].try_into().ok()?),
-    };
-    if observation.transaction_id == [0; 16]
-        || observation.transaction_digest.as_bytes() == &[0; 32]
-        || observation.evidence.as_bytes() == &[0; 32]
-        || observation.partition.as_bytes() == &[0; 32]
-        || encode_cache_effect_observation(observation) != bytes
-    {
-        return None;
-    }
-    Some(observation)
+    historical::decode_cache_effect_observation(identity, bytes)
 }
 
 fn cache_effect_observation_authority_key(transaction_id: [u8; 16]) -> Vec<u8> {
-    let mut key = Vec::with_capacity(EFFECT_OBSERVATION_AUTHORITY_KEY_PREFIX.len() + 16);
-    key.extend_from_slice(EFFECT_OBSERVATION_AUTHORITY_KEY_PREFIX);
-    key.extend_from_slice(&transaction_id);
-    key
+    historical::cache_effect_observation_authority_key(transaction_id)
 }
 
 fn encode_cache_effect_observation_authority(
@@ -130,53 +94,11 @@ fn encode_cache_effect_observation_authority(
     partition: ObjectDigest,
     evidence: ObjectDigest,
 ) -> Vec<u8> {
-    let mut bytes = vec![0_u8; EFFECT_OBSERVATION_AUTHORITY_BYTES];
-    bytes[..8].copy_from_slice(b"AOSCOA01");
-    bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    bytes[16..48].copy_from_slice(owner_scope.as_bytes());
-    bytes[48..64].copy_from_slice(&transaction_id);
-    bytes[64..96].copy_from_slice(transaction_digest.as_bytes());
-    bytes[96..128].copy_from_slice(partition.as_bytes());
-    bytes[128..160].copy_from_slice(evidence.as_bytes());
-    let digest = Sha256::new()
-        .chain_update(b"aos.sandbox.cache.effect-observation-authority.v1\0")
-        .chain_update(&bytes[..160])
-        .finalize();
-    bytes[160..192].copy_from_slice(&digest);
-    bytes
+    historical::encode_cache_effect_observation_authority(owner_scope, transaction_id, transaction_digest, partition, evidence)
 }
 
 /// Selects one closed cache-residency record family.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(u8)]
-pub enum CacheResidencyProtectedRecordKindV1 {
-    /// Stores the exact current capability and isolation-policy authority.
-    Authority = 1,
-    /// Stores node-global physical accounting.
-    GlobalAccounting = 2,
-    /// Stores project-attributed accounting under the global total.
-    ProjectAccounting = 3,
-    /// Stores disclosure-domain accounting under the project total.
-    DomainAccounting = 4,
-    /// Stores one capacity reservation generation.
-    Reservation = 5,
-    /// Stores one logical, source, kernel, or backing pin generation.
-    Pin = 6,
-    /// Stores a trusted scrub observation or quarantine decision.
-    Scrub = 7,
-    /// Stores a frozen eviction decision or reclamation observation.
-    Eviction = 8,
-    /// Stores immutable catalog reachability and backing identity.
-    Catalog = 9,
-    /// Stores a pre-effect admission, scrub, or unlink boundary.
-    Effect = 10,
-    /// Publishes the exact current cache projection.
-    Current = 11,
-    /// Publishes a replay join without granting compaction authority.
-    Checkpoint = 12,
-    /// Suppresses one cold effect after a trusted physical observation.
-    EffectObservation = 13,
-}
+pub use historical::CacheResidencyProtectedRecordKindV1;
 
 /// Defines the cache-residency protected-journal schema.
 #[doc(hidden)]
@@ -254,17 +176,8 @@ impl std::fmt::Debug for CacheResidencyReplayValidatorV1 {
     }
 }
 
-/// Owns the exact protected evidence needed to revalidate one cache partition.
-#[derive(Clone, Eq, PartialEq)]
-pub(crate) struct CacheResidencyReplayPartitionEvidenceV1 {
-    pub(crate) partition: PhysicalPartitionId,
-    pub(crate) purpose: CacheAuthorityPurposeV1,
-    pub(crate) scope: CacheAuthorityScopeV1,
-    pub(crate) record_key: Vec<u8>,
-    pub(crate) typed_checkpoint: Vec<u8>,
-    pub(crate) prior_typed_checkpoint: Option<Vec<u8>>,
-    pub(crate) floor: CacheHistoryFloorV1,
-}
+// Historical fields alone never manufacture the private replay validator.
+pub(crate) use aos_sandbox_protocol::cache_state::replay_envelope::CacheReplayPartitionEvidenceDataV1 as CacheResidencyReplayPartitionEvidenceV1;
 
 // The actual protected authority owns each validated original once. Short
 // verified sessions share immutable bytes and retain independent scope checks.
@@ -320,20 +233,9 @@ impl CacheResidencyReplayAuthorityV1 for CacheResidencyAuthoritySessionV1 {
             .get(&partition.digest())
             .ok_or(RecoveryError::AnchorMismatch)?;
         let evidence = &session.evidence;
-        if evidence.partition != partition
-            || evidence.purpose != CacheAuthorityPurposeV1::Replay
-            || evidence.scope != session.scope
-            || (!published_checkpoints.is_empty()
-                && (!published_checkpoints
-                    .iter()
-                    .any(|checkpoint| checkpoint == &evidence.typed_checkpoint)
-                    || published_checkpoints.iter().any(|checkpoint| {
-                        checkpoint != &evidence.typed_checkpoint
-                            && evidence.prior_typed_checkpoint.as_ref() != Some(checkpoint)
-                    })))
-        {
-            return Err(RecoveryError::AnchorMismatch);
-        }
+        aos_sandbox_protocol::cache_state::replay_evidence::validate_partition_session_history_data_v1(
+            evidence, partition, session.scope, published_checkpoints,
+        )?;
         CacheRecoveryInventoryV1::from_authority_session_selected(
             partition,
             &evidence.typed_checkpoint,
@@ -494,10 +396,26 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
         ) -> Result<T, CacheResidencyProtectedJournalErrorV1>,
     ) -> Result<T, CacheResidencyProtectedJournalErrorV1> {
         let now = self.current_time.current_unix_seconds()?;
-        let mut journal = self
-            .journal
-            .lock()
+        let mut journal = self.journal.lock()
             .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        self.while_authority_current_locked(&mut journal, now, requests, action)
+    }
+
+    // Ordinary and selected initial replay share this exact semantic/current
+    // engine. Its caller already holds this original authority writer Mutex.
+    fn while_authority_current_locked<T>(
+        &self,
+        journal: &mut Journal,
+        now: u64,
+        requests: &[(CacheAuthorityPurposeV1, Vec<u8>)],
+        action: impl FnOnce(
+            &CacheAuthorityOwner<'_, '_>,
+            &[super::VerifiedCacheCapabilityV1],
+            u64,
+            CacheResidencyReplayValidatorV1,
+            &dyn Fn() -> Result<u64, CacheResidencyProtectedJournalErrorV1>,
+        ) -> Result<T, CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<T, CacheResidencyProtectedJournalErrorV1> {
         let authority = journal
             .claim_protected_authority(RecordNamespace::DesiredState)
             .map_err(ProtectedDomainJournalErrorV1::from)?;
@@ -538,6 +456,44 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
         authority_session::validate_current(&owner, requests, &view, final_current)?;
         result
     }
+
+    #[cfg(target_os = "linux")]
+    pub(in crate::cache_residency) fn while_initializer_current_resident<T, P>(
+        &self,
+        state: &mut Journal,
+        receiving: &super::protected_owner::CacheConstructionReceivingV1<'_, '_, '_, '_, P>,
+        destination: &mut Option<Result<T, CacheResidencyProtectedJournalErrorV1>>,
+        postcheck: &mut Option<CacheResidencyProtectedJournalErrorV1>,
+        action: impl FnOnce(
+            &mut Journal,
+            &CacheAuthorityOwner<'_, '_>,
+            u64,
+            CacheResidencyReplayValidatorV1,
+        ) -> Result<T, CacheResidencyProtectedJournalErrorV1>,
+    ) {
+        let returned = (|| {
+            let now = self.current_time.current_unix_seconds()?;
+            let mut journal = self.journal.lock()
+                .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            // Pure bound derivation/accounting only: both actual writers stay
+            // unchanged through their semantic allocations. No bank/profile
+            // or filesystem IO enters under this authority Mutex.
+            receiving.require_initial_inventory_protected(&journal, state)?;
+            self.while_authority_current_locked(&mut journal, now, &[],
+                |owner, _capabilities, now, validator, _refresh| {
+                    *destination = Some(action(state, owner, now, validator));
+                    Ok(())
+                })
+        })();
+        if let Err(cause) = returned {
+            if destination.is_some() {
+                postcheck.get_or_insert(cause);
+            } else {
+                *destination = Some(Err(cause));
+            }
+        }
+    }
+
 }
 
 impl CacheResidencyReplayAuthorityV1 for ProtectedCacheResidencyReplayAuthorityV1 {
@@ -795,192 +751,70 @@ impl ProtectedDomainSchemaV1 for CacheResidencyProtectedJournalSchemaV1 {
     type Kind = CacheResidencyProtectedRecordKindV1;
     type ReplayValidator = CacheResidencyReplayValidatorV1;
 
-    const MAGIC: [u8; 8] = *b"AOSCRJ01";
-    const HASH_DOMAIN: &'static [u8] = b"aos.sandbox.cache-residency.protected-journal.v1\0";
-    const KEY_PREFIX: &'static [u8] = b"\0aos-cache-residency-v1\0";
-    const MAXIMUM_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+    const MAGIC: [u8; 8] = historical::CacheResidencyHistoricalSchemaDataV1::MAGIC;
+    const HASH_DOMAIN: &'static [u8] = historical::CacheResidencyHistoricalSchemaDataV1::HASH_DOMAIN;
+    const KEY_PREFIX: &'static [u8] = historical::CacheResidencyHistoricalSchemaDataV1::KEY_PREFIX;
+    const MAXIMUM_PAYLOAD_BYTES: usize = historical::CacheResidencyHistoricalSchemaDataV1::MAXIMUM_PAYLOAD_BYTES;
 
     fn kind_code(kind: Self::Kind) -> u8 {
-        kind as u8
+        historical::CacheResidencyHistoricalSchemaDataV1::kind_code(kind)
     }
 
     fn kind_from_code(code: u8) -> Option<Self::Kind> {
-        match code {
-            1 => Some(Self::Kind::Authority),
-            2 => Some(Self::Kind::GlobalAccounting),
-            3 => Some(Self::Kind::ProjectAccounting),
-            4 => Some(Self::Kind::DomainAccounting),
-            5 => Some(Self::Kind::Reservation),
-            6 => Some(Self::Kind::Pin),
-            7 => Some(Self::Kind::Scrub),
-            8 => Some(Self::Kind::Eviction),
-            9 => Some(Self::Kind::Catalog),
-            10 => Some(Self::Kind::Effect),
-            11 => Some(Self::Kind::Current),
-            12 => Some(Self::Kind::Checkpoint),
-            13 => Some(Self::Kind::EffectObservation),
-            _ => None,
-        }
+        historical::CacheResidencyHistoricalSchemaDataV1::kind_from_code(code)
     }
 
     fn namespace(kind: Self::Kind) -> RecordNamespace {
-        match kind {
-            Self::Kind::Effect => RecordNamespace::Effect,
-            Self::Kind::Current => RecordNamespace::AuthorityPublication,
-            Self::Kind::Checkpoint => RecordNamespace::RuntimeGeneration,
-            Self::Kind::EffectObservation => RecordNamespace::DesiredState,
-            _ => RecordNamespace::DesiredState,
-        }
+        historical::CacheResidencyHistoricalSchemaDataV1::namespace(kind)
     }
 
     fn order(kind: Self::Kind) -> u8 {
-        kind as u8
+        historical::CacheResidencyHistoricalSchemaDataV1::order(kind)
     }
 
     fn role(kind: Self::Kind) -> ProtectedRecordRoleV1 {
-        match kind {
-            Self::Kind::Effect => ProtectedRecordRoleV1::Effect,
-            Self::Kind::Current | Self::Kind::Checkpoint => ProtectedRecordRoleV1::Publication,
-            Self::Kind::EffectObservation => ProtectedRecordRoleV1::State,
-            _ => ProtectedRecordRoleV1::State,
-        }
+        historical::CacheResidencyHistoricalSchemaDataV1::role(kind)
     }
 
-    fn is_checkpoint(_kind: Self::Kind) -> bool {
-        false
+    fn is_checkpoint(kind: Self::Kind) -> bool {
+        historical::CacheResidencyHistoricalSchemaDataV1::is_checkpoint(kind)
     }
 
     fn family(kind: Self::Kind) -> u8 {
-        match kind {
-            Self::Kind::Authority => 1,
-            Self::Kind::GlobalAccounting
-            | Self::Kind::ProjectAccounting
-            | Self::Kind::DomainAccounting => 2,
-            Self::Kind::Reservation => 3,
-            Self::Kind::Pin => 4,
-            Self::Kind::Scrub => 5,
-            Self::Kind::Eviction => 6,
-            Self::Kind::Catalog => 7,
-            Self::Kind::Effect => 8,
-            Self::Kind::Current => 9,
-            Self::Kind::Checkpoint => 10,
-            Self::Kind::EffectObservation => 11,
-        }
-    }
-
-    fn decode_reducer_phase(
-        validator: &Self::ReplayValidator,
-        kind: Self::Kind,
-        identity: &[u8],
-        body: &[u8],
-    ) -> Option<ProtectedReducerPhaseV1> {
-        if kind == Self::Kind::EffectObservation {
-            return decode_cache_effect_observation(identity, body)
-                .map(|_| ProtectedReducerPhaseV1::Observed);
-        }
-        decode_cache_body(kind, identity, body, validator).map(|_| match kind {
-            Self::Kind::Effect => ProtectedReducerPhaseV1::Prepared,
-            Self::Kind::Scrub | Self::Kind::Eviction => ProtectedReducerPhaseV1::Observed,
-            Self::Kind::EffectObservation => ProtectedReducerPhaseV1::Observed,
-            _ => ProtectedReducerPhaseV1::Terminal,
-        })
+        historical::CacheResidencyHistoricalSchemaDataV1::family(kind)
     }
 
     fn validates_identity(kind: Self::Kind, identity: &[u8]) -> bool {
-        let expected_length = if kind == Self::Kind::EffectObservation {
-            16
-        } else if kind == Self::Kind::Checkpoint {
-            81
-        } else {
-            121
-        };
-        if identity.len() != expected_length
-            || (kind == Self::Kind::EffectObservation && identity == [0; 16])
-        {
-            return false;
-        }
-        if kind == Self::Kind::EffectObservation {
-            return true;
-        }
-        if identity[..32] == [0; 32]
-            || identity[49..81] == [0; 32]
-            || (expected_length == 121
-                && (identity[81..89] == [0; 8] || identity[89..121] == [0; 32]))
-        {
-            return false;
-        }
-        match kind {
-            Self::Kind::ProjectAccounting => identity[32] == 1 && identity[33..49] != [0; 16],
-            Self::Kind::DomainAccounting => identity[32] == 2 && identity[33..49] != [0; 16],
-            _ => identity[32] == 0 && identity[33..49] == [0; 16],
-        }
+        historical::CacheResidencyHistoricalSchemaDataV1::validates_identity(kind, identity)
     }
 
     fn semantic_tuple(kind: Self::Kind, identity: &[u8], body: &[u8]) -> Option<[u8; 32]> {
-        if kind == Self::Kind::EffectObservation {
-            return None;
-        }
-        let _ = (kind, body);
-        if identity.len() < 81 {
-            return None;
-        }
-        Some(
-            Sha256::new()
-                .chain_update(b"aos.sandbox.cache-residency.semantic-tuple.v1\0")
-                .chain_update(&identity[..49])
-                .finalize()
-                .into(),
+        historical::CacheResidencyHistoricalSchemaDataV1::semantic_tuple(kind, identity, body)
+    }
+
+    fn decode_reducer_phase(
+        validator: &Self::ReplayValidator, kind: Self::Kind,
+        identity: &[u8], body: &[u8],
+    ) -> Option<ProtectedReducerPhaseV1> {
+        historical::CacheResidencyHistoricalSchemaDataV1::decode_reducer_phase(
+            &validator.limits, kind, identity, body,
         )
     }
 }
 
 const fn cache_body_magic(kind: CacheResidencyProtectedRecordKindV1) -> [u8; 8] {
-    match kind {
-        CacheResidencyProtectedRecordKindV1::Authority => *b"AOSCRA01",
-        CacheResidencyProtectedRecordKindV1::GlobalAccounting => *b"AOSCRG01",
-        CacheResidencyProtectedRecordKindV1::ProjectAccounting => *b"AOSCRP01",
-        CacheResidencyProtectedRecordKindV1::DomainAccounting => *b"AOSCRD01",
-        CacheResidencyProtectedRecordKindV1::Reservation => *b"AOSCRR01",
-        CacheResidencyProtectedRecordKindV1::Pin => *b"AOSCRN01",
-        CacheResidencyProtectedRecordKindV1::Scrub => *b"AOSCRS01",
-        CacheResidencyProtectedRecordKindV1::Eviction => *b"AOSCRE01",
-        CacheResidencyProtectedRecordKindV1::Catalog => *b"AOSCRC01",
-        CacheResidencyProtectedRecordKindV1::Effect => *b"AOSCRX01",
-        CacheResidencyProtectedRecordKindV1::Current => *b"AOSCRU01",
-        CacheResidencyProtectedRecordKindV1::Checkpoint => *b"AOSCRT01",
-        CacheResidencyProtectedRecordKindV1::EffectObservation => *b"AOSCRY01",
-    }
+    historical::cache_body_magic(kind)
 }
 
 const fn cache_identity_length_matches(
     kind: CacheResidencyProtectedRecordKindV1,
     length: usize,
 ) -> bool {
-    match kind {
-        CacheResidencyProtectedRecordKindV1::EffectObservation => length == 16,
-        CacheResidencyProtectedRecordKindV1::Checkpoint => length == 81,
-        _ => length == 121,
-    }
+    historical::cache_identity_length_matches(kind, length)
 }
 
 /// Classifies one cache transaction without reducing its exact payloads to flags.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CacheResidencyTransactionKindV1 {
-    /// Reserves capacity before any immutable destination work can escape.
-    Admission,
-    /// Changes a pin while updating all three accounting scopes atomically.
-    PinChange,
-    /// Commits a scrub or quarantine result after rechecking current pins.
-    Scrub,
-    /// Commits an eviction decision before releasing unlink authority.
-    EvictionPrepare,
-    /// Credits reclaimed bytes only after durable reclamation evidence.
-    EvictionFinalize,
-    /// Reconstructs an exact interrupted transition without broadening it.
-    Recovery,
-    /// Publishes a replay join for a future globally validated floor.
-    Checkpoint,
-}
+pub use historical::CacheResidencyTransactionKindV1;
 
 /// Canonical cache shared-journal key.
 pub type CacheResidencyProtectedJournalKeyV1 =
@@ -1242,6 +1076,9 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
             &self.validator,
         )?;
         let inner = match gate {
+            CacheMutationGateV1::SourceProvisioning(_) | CacheMutationGateV1::StopCleanupSource(_) => {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+            }
             CacheMutationGateV1::Ordinary => self.inner.plan(transaction_id, successors)?,
             CacheMutationGateV1::Retained(gate) => {
                 self.inner
@@ -1803,7 +1640,7 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
                 return false;
             }
             decode_atomic_object_record(plan.partition, &body[descriptor_end..], limits)
-                .is_ok_and(|payload| payload.plan == *plan && payload.reservation == *reservation)
+                .is_ok_and(|payload| &payload.plan == plan.historical_data_v1() && payload.reservation == *reservation)
         })
     }
 }
@@ -2059,7 +1896,7 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
                 return false;
             }
             decode_atomic_object_record(plan.partition, &body[descriptor_end..], limits)
-                .is_ok_and(|payload| payload.eviction_plan.as_ref() == Some(&plan))
+                .is_ok_and(|payload| payload.eviction_plan.as_ref() == Some(plan.historical_data_v1()))
         });
         if self.kind != CacheResidencyTransactionKindV1::EvictionPrepare || !exact_plan {
             return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority);
@@ -2197,240 +2034,7 @@ fn validate_cache_transition(
     successors: &[CacheResidencyProtectedJournalEnvelopeV1],
     validator: &CacheResidencyReplayValidatorV1,
 ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
-    if transition == CacheResidencyTransactionKindV1::Recovery {
-        return if successors.len() == 1
-            && successors[0].key().kind() == CacheResidencyProtectedRecordKindV1::EffectObservation
-            && successors[0].revision() == 1
-            && successors[0].predecessor().is_none()
-        {
-            Ok(())
-        } else {
-            Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)
-        };
-    }
-    let Some(first) = successors.first() else {
-        return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-    };
-    let partition = first.key().identity().get(..32);
-    if partition.is_none()
-        || successors.iter().any(|successor| {
-            successor.key().identity().get(..32) != partition
-                || validate_cache_key(successor.key()).is_err()
-                || (!matches!(
-                    successor.key().kind(),
-                    CacheResidencyProtectedRecordKindV1::Checkpoint
-                ) && (successor.revision() != 1 || successor.predecessor().is_some()))
-        })
-    {
-        return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-    }
-    if !matches!(
-        transition,
-        CacheResidencyTransactionKindV1::Checkpoint | CacheResidencyTransactionKindV1::Recovery
-    ) {
-        let mut operation = None;
-        let mut sequences = std::collections::BTreeSet::new();
-        let mut decoded = Vec::with_capacity(successors.len());
-        for successor in successors {
-            let reducer = decode_reducer_payload_with_validator::<
-                CacheResidencyProtectedJournalSchemaV1,
-            >(successor.key(), successor.payload(), validator)?;
-            let record = decode_cache_body(
-                successor.key().kind(),
-                successor.key().identity(),
-                reducer.body(),
-                validator,
-            )
-            .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?
-            .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-            if successor.key().identity()[..32] != *record.partition.as_bytes()
-                || successor.key().identity()[49..81] != *record.subject.as_bytes()
-                || operation.is_some_and(|current| current != record.operation)
-                || (transition != CacheResidencyTransactionKindV1::PinChange
-                    && !sequences.insert(record.sequence))
-            {
-                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-            }
-            operation = Some(record.operation);
-            decoded.push((successor.key().kind(), record));
-        }
-        decoded.sort_by_key(|(kind, _)| CacheResidencyProtectedJournalSchemaV1::order(*kind));
-        let shared = decoded
-            .first()
-            .map(|(_, record)| record)
-            .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        if transition == CacheResidencyTransactionKindV1::PinChange {
-            // Accounting and Current are aliases of the one atomic Pin event.
-            // They cannot invent quota changes or advance durable history.
-            if shared.kind != CacheRecordKindV1::Pin
-                || decoded.iter().any(|(_, record)| record != shared)
-            {
-                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-            }
-        } else if decoded.iter().any(|(kind, record)| {
-            matches!(
-                kind,
-                CacheResidencyProtectedRecordKindV1::GlobalAccounting
-                    | CacheResidencyProtectedRecordKindV1::ProjectAccounting
-                    | CacheResidencyProtectedRecordKindV1::DomainAccounting
-            ) && record.kind != CacheRecordKindV1::Quota
-        }) {
-            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-        } else if decoded.windows(2).any(|pair| {
-            pair[0].1.sequence.checked_add(1) != Some(pair[1].1.sequence)
-                || pair[0].1.operation != pair[1].1.operation
-        }) {
-            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-        if decoded.iter().skip(1).any(|(_, record)| {
-            record.plan != shared.plan
-                || record.model != shared.model
-                || record.payload != shared.payload
-                || record.catalog_projection != shared.catalog_projection
-                || record.reservation_projection != shared.reservation_projection
-                || record.pin_projection != shared.pin_projection
-                || record.progress_projection != shared.progress_projection
-        }) {
-            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-        let accounting = |kind| {
-            decoded
-                .iter()
-                .find(|(candidate, _)| *candidate == kind)
-                .map(|(_, record)| record)
-        };
-        if let (Some(global), Some(project), Some(domain)) = (
-            accounting(CacheResidencyProtectedRecordKindV1::GlobalAccounting),
-            accounting(CacheResidencyProtectedRecordKindV1::ProjectAccounting),
-            accounting(CacheResidencyProtectedRecordKindV1::DomainAccounting),
-        ) && transition != CacheResidencyTransactionKindV1::PinChange
-        {
-            if global.amount < project.amount
-                || project.amount < domain.amount
-                || global.model != project.model
-                || project.model != domain.model
-            {
-                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-            }
-        }
-    }
-    let has = |kind| successors.iter().any(|value| value.key().kind() == kind);
-    let count = |kind| {
-        successors
-            .iter()
-            .filter(|value| value.key().kind() == kind)
-            .count()
-    };
-    let only = |allowed: &[CacheResidencyProtectedRecordKindV1]| {
-        successors
-            .iter()
-            .all(|value| allowed.contains(&value.key().kind()))
-    };
-    use CacheResidencyProtectedRecordKindV1 as Record;
-    let valid = match transition {
-        CacheResidencyTransactionKindV1::Admission => {
-            successors.len() == 9
-                && count(Record::Authority) == 1
-                && count(Record::GlobalAccounting) == 1
-                && count(Record::ProjectAccounting) == 1
-                && count(Record::DomainAccounting) == 1
-                && count(Record::Reservation) == 1
-                && count(Record::Pin) == 1
-                && count(Record::Catalog) == 1
-                && count(Record::Effect) == 1
-                && count(Record::Current) == 1
-                && only(&[
-                    Record::Authority,
-                    Record::GlobalAccounting,
-                    Record::ProjectAccounting,
-                    Record::DomainAccounting,
-                    Record::Reservation,
-                    Record::Pin,
-                    Record::Catalog,
-                    Record::Effect,
-                    Record::Current,
-                ])
-        }
-        CacheResidencyTransactionKindV1::PinChange => {
-            successors.len() == 5
-                && count(Record::GlobalAccounting) == 1
-                && count(Record::ProjectAccounting) == 1
-                && count(Record::DomainAccounting) == 1
-                && count(Record::Pin) == 1
-                && count(Record::Current) == 1
-                && only(&[
-                    Record::GlobalAccounting,
-                    Record::ProjectAccounting,
-                    Record::DomainAccounting,
-                    Record::Pin,
-                    Record::Current,
-                ])
-        }
-        CacheResidencyTransactionKindV1::Scrub => {
-            successors.len() == 5
-                && count(Record::Authority) == 1
-                && count(Record::Pin) == 1
-                && count(Record::Scrub) == 1
-                && count(Record::Catalog) == 1
-                && count(Record::Current) == 1
-                && only(&[
-                    Record::Authority,
-                    Record::Pin,
-                    Record::Scrub,
-                    Record::Catalog,
-                    Record::Current,
-                ])
-        }
-        CacheResidencyTransactionKindV1::EvictionPrepare => {
-            successors.len() == 6
-                && count(Record::Authority) == 1
-                && count(Record::Pin) == 1
-                && count(Record::Eviction) == 1
-                && count(Record::Catalog) == 1
-                && count(Record::Effect) == 1
-                && count(Record::Current) == 1
-                && only(&[
-                    Record::Authority,
-                    Record::Pin,
-                    Record::Eviction,
-                    Record::Catalog,
-                    Record::Effect,
-                    Record::Current,
-                ])
-        }
-        CacheResidencyTransactionKindV1::EvictionFinalize => {
-            successors.len() == 8
-                && count(Record::GlobalAccounting) == 1
-                && count(Record::ProjectAccounting) == 1
-                && count(Record::DomainAccounting) == 1
-                && count(Record::Pin) == 1
-                && count(Record::Scrub) == 1
-                && count(Record::Eviction) == 1
-                && count(Record::Catalog) == 1
-                && count(Record::Current) == 1
-                && !has(Record::Effect)
-                && only(&[
-                    Record::GlobalAccounting,
-                    Record::ProjectAccounting,
-                    Record::DomainAccounting,
-                    Record::Pin,
-                    Record::Scrub,
-                    Record::Eviction,
-                    Record::Catalog,
-                    Record::Current,
-                ])
-        }
-        CacheResidencyTransactionKindV1::Recovery => {
-            successors.len() == 1 && has(Record::EffectObservation)
-        }
-        CacheResidencyTransactionKindV1::Checkpoint => {
-            successors.len() == 1 && has(Record::Checkpoint)
-        }
-    };
-    if !valid {
-        return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-    }
-    Ok(())
+    historical::validate_cache_transition(transition, successors, validator, validator.limits).map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 fn validate_cache_projection(
@@ -2446,91 +2050,9 @@ fn validate_cache_projection_selected(
     selection: CacheHistorySelectionV1<'_>,
 ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
     reconstruct_cache_history_selected(projection.records(), validator, selection)?;
-
-    let mut original_transactions = BTreeMap::<[u8; 16], Vec<(ObjectDigest, ObjectDigest)>>::new();
-    let mut observations = BTreeMap::<[u8; 16], CacheEffectObservationV1>::new();
-    for envelope in projection.records().iter().filter(|envelope| {
-        envelope.key().kind() == CacheResidencyProtectedRecordKindV1::EffectObservation
-    }) {
-        let reducer = decode_reducer_payload_with_validator::<
-            CacheResidencyProtectedJournalSchemaV1,
-        >(envelope.key(), envelope.payload(), validator)?;
-        let observation =
-            decode_cache_effect_observation(envelope.key().identity(), reducer.body())
-                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        if observations
-            .insert(observation.transaction_id, observation)
-            .is_some()
-        {
-            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-    }
-    let mut grouped_observations = BTreeMap::<[u8; 16], CacheEffectObservationV1>::new();
-    for transaction in projection.transactions() {
-        if transaction.phase() != ProtectedDomainReplayPhaseV1::Incomplete {
-            validate_cache_transition(
-                classify_replayed_cache_transaction(transaction.records())?,
-                transaction.records(),
-                validator,
-            )?;
-        }
-        if transaction.records().iter().any(|record| {
-            record.key().kind() == CacheResidencyProtectedRecordKindV1::EffectObservation
-        }) {
-            if transaction.records().len() != 1
-                || transaction.phase() != ProtectedDomainReplayPhaseV1::Observed
-            {
-                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-            }
-            let envelope = &transaction.records()[0];
-            let reducer = decode_reducer_payload_with_validator::<
-                CacheResidencyProtectedJournalSchemaV1,
-            >(envelope.key(), envelope.payload(), validator)?;
-            let observation =
-                decode_cache_effect_observation(envelope.key().identity(), reducer.body())
-                    .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-            if grouped_observations
-                .insert(observation.transaction_id, observation)
-                .is_some()
-            {
-                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-            }
-            continue;
-        }
-        if transaction.phase() != ProtectedDomainReplayPhaseV1::Prepared
-            || transaction
-                .records()
-                .iter()
-                .filter(|record| record.key().kind() == CacheResidencyProtectedRecordKindV1::Effect)
-                .count()
-                != 1
-        {
-            continue;
-        }
-        if let Some(partition) = cache_transaction_partition(transaction.records())? {
-            original_transactions
-                .entry(transaction.transaction_id())
-                .or_default()
-                .push((transaction.transaction_digest(), partition));
-        }
-    }
-    if grouped_observations != observations {
-        return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-    }
-    for (transaction_id, observation) in observations {
-        let matches = original_transactions
-            .get(&transaction_id)
-            .into_iter()
-            .flatten()
-            .filter(|(digest, partition)| {
-                *digest == observation.transaction_digest && *partition == observation.partition
-            })
-            .count();
-        if matches != 1 {
-            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-    }
-    Ok(())
+    historical::validate_projection_transaction_groups_data_v1(
+        projection, validator, validator.limits,
+    ).map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 fn validate_cache_history<'envelope>(
@@ -2637,76 +2159,11 @@ pub(super) fn reconstruct_cache_history_selected<'envelope>(
             return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
         }
     }
-    let mut records_by_partition = BTreeMap::<ObjectDigest, BTreeMap<u64, Vec<u8>>>::new();
-    let mut checkpoints_by_partition = BTreeMap::<ObjectDigest, Vec<Vec<u8>>>::new();
-    for envelope in envelopes {
-        validate_cache_key(envelope.key())?;
-        if envelope.key().kind() == CacheResidencyProtectedRecordKindV1::EffectObservation {
-            let reducer = decode_reducer_payload_with_validator::<
-                CacheResidencyProtectedJournalSchemaV1,
-            >(envelope.key(), envelope.payload(), validator)?;
-            decode_cache_effect_observation(envelope.key().identity(), reducer.body())
-                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-            continue;
-        }
-        let reducer = decode_reducer_payload_with_validator::<
-            CacheResidencyProtectedJournalSchemaV1,
-        >(envelope.key(), envelope.payload(), validator)?;
-        let descriptor_end = 8 + PARTITION_DESCRIPTOR_BYTES;
-        let partition = decode_partition_descriptor(
-            reducer
-                .body()
-                .get(8..descriptor_end)
-                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?,
-        )
-        .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let partition_digest = partition.digest();
-        if partitions
-            .insert(partition_digest, partition)
-            .is_some_and(|value| value != partition)
-        {
-            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-        if envelope.key().kind() == CacheResidencyProtectedRecordKindV1::Checkpoint {
-            checkpoints_by_partition
-                .entry(partition_digest)
-                .or_default()
-                .push(reducer.body()[descriptor_end..].to_vec());
-            continue;
-        }
-        let record = decode_cache_body(
-            envelope.key().kind(),
-            envelope.key().identity(),
-            reducer.body(),
-            validator,
-        )
-        .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?
-        .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let encoded_record = &reducer.body()[descriptor_end..];
-        let pin_alias = record.kind == CacheRecordKindV1::Pin
-            && matches!(
-                envelope.key().kind(),
-                CacheResidencyProtectedRecordKindV1::GlobalAccounting
-                    | CacheResidencyProtectedRecordKindV1::ProjectAccounting
-                    | CacheResidencyProtectedRecordKindV1::DomainAccounting
-                    | CacheResidencyProtectedRecordKindV1::Pin
-                    | CacheResidencyProtectedRecordKindV1::Current
-            );
-        match records_by_partition
-            .entry(partition_digest)
-            .or_default()
-            .entry(record.sequence)
-        {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(encoded_record.to_vec());
-            }
-            std::collections::btree_map::Entry::Occupied(entry)
-                if pin_alias && entry.get().as_slice() == encoded_record => {}
-            std::collections::btree_map::Entry::Occupied(_) => {
-                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-            }
-        }
-    }
+    let historical::CachePartitionHistoryDataV1 {
+        partitions, mut records_by_partition, mut checkpoints_by_partition,
+    } = historical::group_cache_history_data_v1(
+        envelopes, validator, validator.limits, partitions,
+    ).map_err(ProtectedDomainJournalErrorV1::from)?;
     let mut inventories = Vec::with_capacity(partitions.len());
     for (partition_digest, partition) in partitions {
         let checkpoints = checkpoints_by_partition
@@ -2733,15 +2190,9 @@ pub(super) fn reconstruct_cache_history_selected<'envelope>(
                 )
             }
         }.map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        if let Some(last) = records.last() {
-            let decoded = decode_atomic_object_record(partition, last, validator.limits)
-                .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-            if inventory.head_sequence != decoded.record.sequence
-                || inventory.head_digest != decoded.record.digest
-            {
-                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-            }
-        }
+        historical::validate_partition_history_tail_data_v1(
+            &inventory, &records, partition, validator.limits,
+        ).map_err(ProtectedDomainJournalErrorV1::from)?;
         if let CacheHistorySelectionV1::Project { partitions, .. } = &mut selection {
             let CacheRecoverySelectionV1::Project { result: Some((quota, usage)), .. } = observation else {
                 return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
@@ -2758,26 +2209,7 @@ pub(super) fn reconstruct_cache_history_selected<'envelope>(
 fn cache_transaction_partition(
     records: &[CacheResidencyProtectedJournalEnvelopeV1],
 ) -> Result<Option<ObjectDigest>, CacheResidencyProtectedJournalErrorV1> {
-    let mut partition = None;
-    for record in records {
-        if matches!(
-            record.key().kind(),
-            CacheResidencyProtectedRecordKindV1::Checkpoint
-                | CacheResidencyProtectedRecordKindV1::EffectObservation
-        ) {
-            continue;
-        }
-        let candidate = ObjectDigest::from_bytes(
-            record.key().identity()[..32]
-                .try_into()
-                .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?,
-        );
-        if partition.is_some_and(|retained| retained != candidate) {
-            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-        partition = Some(candidate);
-    }
-    Ok(partition)
+    historical::cache_transaction_partition(records).map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 fn decode_cache_body(
@@ -2786,50 +2218,7 @@ fn decode_cache_body(
     body: &[u8],
     validator: &CacheResidencyReplayValidatorV1,
 ) -> Option<Option<CacheDurableRecordV1>> {
-    if body.len() <= 8 + PARTITION_DESCRIPTOR_BYTES
-        || body[..8] != cache_body_magic(kind)
-        || !cache_identity_length_matches(kind, identity.len())
-    {
-        return None;
-    }
-    let descriptor_end = 8 + PARTITION_DESCRIPTOR_BYTES;
-    let partition = decode_partition_descriptor(&body[8..descriptor_end])?;
-    let limits = validator.limits;
-    if kind == CacheResidencyProtectedRecordKindV1::Checkpoint {
-        let checkpoint =
-            decode_typed_checkpoint(partition, &body[descriptor_end..], limits).ok()?;
-        if encode_typed_checkpoint(&checkpoint, partition, limits)
-            .ok()?
-            .as_slice()
-            != &body[descriptor_end..]
-            || identity[..32] != *partition.digest().as_bytes()
-            || identity[49..81] != *checkpoint.digest.as_bytes()
-        {
-            return None;
-        }
-        return Some(None);
-    }
-    let payload = decode_atomic_object_record(partition, &body[descriptor_end..], limits).ok()?;
-    if encode_atomic_object_record(&payload, limits)
-        .ok()?
-        .as_slice()
-        != &body[descriptor_end..]
-        || encode_partition_descriptor(partition).as_slice() != &body[8..descriptor_end]
-        || identity[..32] != *partition.digest().as_bytes()
-        || payload.record.partition != partition.digest()
-        || !cache_record_kind_matches(kind, payload.record.kind)
-        || identity[49..81] != *payload.record.subject.as_bytes()
-        || (identity.len() == 121
-            && (identity[81..89] != payload.record.sequence.to_be_bytes()
-                || identity[89..121] != *payload.record.digest.as_bytes()))
-        || (kind == CacheResidencyProtectedRecordKindV1::ProjectAccounting
-            && identity[33..49] != *payload.plan.project.as_bytes())
-        || (kind == CacheResidencyProtectedRecordKindV1::DomainAccounting
-            && identity[33..49] != *partition.disclosure().domain_id().as_bytes())
-    {
-        return None;
-    }
-    Some(Some(payload.record))
+    historical::decode_cache_body(kind, identity, body, validator.limits)
 }
 
 pub(crate) fn decode_cache_payload_for_lifecycle(
@@ -2871,164 +2260,28 @@ pub(crate) fn decode_cache_payload_for_lifecycle(
 pub(crate) fn encode_partition_descriptor(
     partition: PhysicalPartitionId,
 ) -> [u8; PARTITION_DESCRIPTOR_BYTES] {
-    let mut bytes = [0_u8; PARTITION_DESCRIPTOR_BYTES];
-    bytes[..8].copy_from_slice(PARTITION_DESCRIPTOR_MAGIC);
-    bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    bytes[16..32].copy_from_slice(partition.node().as_bytes());
-    let backing = partition.backing();
-    bytes[32..64].copy_from_slice(backing.root().as_bytes());
-    bytes[64..96].copy_from_slice(backing.dataset().as_bytes());
-    bytes[96..128].copy_from_slice(backing.pool().as_bytes());
-    bytes[128..160].copy_from_slice(backing.backend().as_bytes());
-    bytes[160] = match partition.disclosure().kind() {
-        CacheDomainKind::Private => 1,
-        CacheDomainKind::Project => 2,
-        CacheDomainKind::TrustDomain => 3,
-        CacheDomainKind::Public => 4,
-    };
-    bytes[161..177].copy_from_slice(partition.disclosure().domain_id().as_bytes());
-    bytes[177..209].copy_from_slice(partition.isolation_policy().as_bytes());
-    bytes[209..].copy_from_slice(partition.digest().as_bytes());
-    bytes
+    aos_sandbox_protocol::cache_state::replay_envelope::encode_partition_descriptor(partition)
 }
 
 pub(crate) fn decode_partition_descriptor(bytes: &[u8]) -> Option<PhysicalPartitionId> {
-    if bytes.len() != PARTITION_DESCRIPTOR_BYTES
-        || &bytes[..8] != PARTITION_DESCRIPTOR_MAGIC
-        || bytes[8..10] != 1_u16.to_be_bytes()
-        || bytes[10..16] != [0; 6]
-    {
-        return None;
-    }
-    let array =
-        |start: usize| -> Option<[u8; 32]> { bytes.get(start..start + 32)?.try_into().ok() };
-    let node = CacheNodeIdV1::from_bytes(bytes.get(16..32)?.try_into().ok()?).ok()?;
-    let backing = ProtectedBackingIdentityV1::new(
-        ObjectDigest::from_bytes(array(32)?),
-        ObjectDigest::from_bytes(array(64)?),
-        ObjectDigest::from_bytes(array(96)?),
-        ObjectDigest::from_bytes(array(128)?),
-    )
-    .ok()?;
-    let kind = match bytes[160] {
-        1 => CacheDomainKind::Private,
-        2 => CacheDomainKind::Project,
-        3 => CacheDomainKind::TrustDomain,
-        4 => CacheDomainKind::Public,
-        _ => return None,
-    };
-    let disclosure = CacheDomain::new(
-        kind,
-        CacheDomainId::from_bytes(bytes.get(161..177)?.try_into().ok()?),
-    );
-    let partition = PhysicalPartitionId::derive(
-        node,
-        backing,
-        disclosure,
-        ObjectDigest::from_bytes(array(177)?),
-    )
-    .ok()?;
-    if partition.digest().as_bytes() != bytes.get(209..241)? {
-        return None;
-    }
-    Some(partition)
+    aos_sandbox_protocol::cache_state::replay_envelope::decode_partition_descriptor(bytes)
 }
 
 fn cache_record_kind_matches(
     protected: CacheResidencyProtectedRecordKindV1,
     durable: CacheRecordKindV1,
 ) -> bool {
-    match protected {
-        CacheResidencyProtectedRecordKindV1::Authority => matches!(
-            durable,
-            CacheRecordKindV1::Domain | CacheRecordKindV1::ReadHandoff
-        ),
-        CacheResidencyProtectedRecordKindV1::GlobalAccounting
-        | CacheResidencyProtectedRecordKindV1::ProjectAccounting
-        | CacheResidencyProtectedRecordKindV1::DomainAccounting => {
-            matches!(durable, CacheRecordKindV1::Quota | CacheRecordKindV1::Pin)
-        }
-        CacheResidencyProtectedRecordKindV1::Reservation => {
-            durable == CacheRecordKindV1::Reservation
-        }
-        CacheResidencyProtectedRecordKindV1::Pin => durable == CacheRecordKindV1::Pin,
-        CacheResidencyProtectedRecordKindV1::Scrub => durable == CacheRecordKindV1::Scrub,
-        CacheResidencyProtectedRecordKindV1::Eviction => matches!(
-            durable,
-            CacheRecordKindV1::EvictionPlan | CacheRecordKindV1::EvictionProgress
-        ),
-        CacheResidencyProtectedRecordKindV1::Catalog => durable == CacheRecordKindV1::Catalog,
-        CacheResidencyProtectedRecordKindV1::Effect => matches!(
-            durable,
-            CacheRecordKindV1::Admission
-                | CacheRecordKindV1::EvictionPlan
-                | CacheRecordKindV1::ReadHandoff
-        ),
-        CacheResidencyProtectedRecordKindV1::Current => {
-            !matches!(durable, CacheRecordKindV1::Poison)
-        }
-        CacheResidencyProtectedRecordKindV1::Checkpoint => false,
-        CacheResidencyProtectedRecordKindV1::EffectObservation => false,
-    }
+    historical::cache_record_kind_matches(protected, durable)
 }
 
 fn classify_replayed_cache_transaction(
     records: &[CacheResidencyProtectedJournalEnvelopeV1],
 ) -> Result<CacheResidencyTransactionKindV1, CacheResidencyProtectedJournalErrorV1> {
-    use CacheResidencyProtectedRecordKindV1 as Record;
-    if records.len() == 1 && records[0].key().kind() == Record::Checkpoint {
-        return Ok(CacheResidencyTransactionKindV1::Checkpoint);
-    }
-    if records.len() == 1 && records[0].key().kind() == Record::EffectObservation {
-        return Ok(CacheResidencyTransactionKindV1::Recovery);
-    }
-    let has = |kind| records.iter().any(|record| record.key().kind() == kind);
-    if has(Record::Reservation) && has(Record::Effect) {
-        Ok(CacheResidencyTransactionKindV1::Admission)
-    } else if has(Record::Eviction) && has(Record::Effect) {
-        Ok(CacheResidencyTransactionKindV1::EvictionPrepare)
-    } else if has(Record::Eviction) && has(Record::Current) {
-        Ok(CacheResidencyTransactionKindV1::EvictionFinalize)
-    } else if has(Record::Scrub) {
-        Ok(CacheResidencyTransactionKindV1::Scrub)
-    } else if has(Record::Pin) && has(Record::Current) {
-        Ok(CacheResidencyTransactionKindV1::PinChange)
-    } else if has(Record::Authority) && has(Record::Current) {
-        Ok(CacheResidencyTransactionKindV1::Recovery)
-    } else {
-        Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)
-    }
+    historical::classify_replayed_cache_transaction(records).map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 fn validate_cache_key(
     key: &CacheResidencyProtectedJournalKeyV1,
 ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
-    let identity = key.identity();
-    if key.kind() == CacheResidencyProtectedRecordKindV1::EffectObservation {
-        return if identity.len() == 16 && identity != [0; 16] {
-            Ok(())
-        } else {
-            Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)
-        };
-    }
-    if !cache_identity_length_matches(key.kind(), identity.len())
-        || identity[..32] == [0; 32]
-        || identity[49..81] == [0; 32]
-        || (identity.len() == 121 && (identity[81..89] == [0; 8] || identity[89..121] == [0; 32]))
-    {
-        return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-    }
-    let valid_scope = match key.kind() {
-        CacheResidencyProtectedRecordKindV1::ProjectAccounting => {
-            identity[32] == 1 && identity[33..49] != [0; 16]
-        }
-        CacheResidencyProtectedRecordKindV1::DomainAccounting => {
-            identity[32] == 2 && identity[33..49] != [0; 16]
-        }
-        _ => identity[32] == 0 && identity[33..49] == [0; 16],
-    };
-    if !valid_scope {
-        return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-    }
-    Ok(())
+    historical::validate_cache_key(key).map_err(ProtectedDomainJournalErrorV1::from)
 }

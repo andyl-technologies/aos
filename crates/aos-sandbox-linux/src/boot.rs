@@ -118,6 +118,7 @@ pub struct RootOriginalKernelBootIdAttemptV1 {
     eof: Option<usize>,
     parsed: Option<Result<KernelBootId>>,
     entered: bool,
+    file_retired: bool,
     refusal: Option<OriginalBootRefusalV1>,
 }
 
@@ -134,6 +135,57 @@ enum OriginalBootRefusalV1 {
 }
 
 impl RootOriginalKernelBootIdAttemptV1 {
+    /// Maximum original descriptors retained by this fixed reader.
+    pub const MAXIMUM_RETAINED_FILES_V1: usize = 1;
+
+    /// Returns the dominant fixed reservoir and bounded parser diagnostic bytes.
+    #[must_use]
+    pub fn dominant_requested_bytes_v1() -> Option<usize> {
+        std::mem::size_of::<Self>().checked_add(128)
+    }
+
+    /// Reports the maximum bytes returned by the fixed original read loop.
+    #[must_use]
+    pub const fn maximum_requested_read_bytes_v2() -> usize {
+        ORIGINAL_BOOT_ID_BYTES
+    }
+
+    /// Reports the reader's resident namespace charge.
+    ///
+    /// Fixed input, result and control carriers use byte permits. The actual
+    /// procfs descriptor uses its separate descriptor permit; no map is added.
+    #[must_use]
+    pub const fn receiving_metadata_cells_v1() -> usize {
+        0
+    }
+
+    /// Retires only the actual file after complete canonical EOF observation.
+    ///
+    /// All bytes, read/filesystem/parser outcomes and the one-shot latch remain.
+    /// This closes a temporary input, never a resource refund or currentness
+    /// claim. A failed or partial original is never consumed by this method.
+    ///
+    /// # Errors
+    /// Retains a refusal for incomplete, failed or repeated disposal. The
+    /// original native/parser failure continues to precede that refusal.
+    pub fn retire_positive_file_once(&mut self) -> std::result::Result<(), &(dyn StdError + 'static)> {
+        if self.file_retired || self.failure().is_some() || self.eof.is_none()
+            || !matches!(self.parsed, Some(Ok(_))) || !matches!(self.open, Some(Ok(_)))
+        {
+            self.entered = true;
+            self.refusal.get_or_insert(OriginalBootRefusalV1::Unavailable);
+            return Err(self.failure().unwrap_or(&OriginalBootRefusalV1::Unavailable));
+        }
+        drop(self.open.take());
+        self.file_retired = true;
+        Ok(())
+    }
+
+    pub(crate) const fn native_cell_bound_v1() -> usize {
+        // Every fixed read slot plus original open, filesystem and parser slots.
+        ORIGINAL_BOOT_ID_BYTES + 3
+    }
+
     /// Installs vacant native slots and fixed input storage without IO.
     #[must_use]
     pub const fn new() -> Self {
@@ -146,6 +198,7 @@ impl RootOriginalKernelBootIdAttemptV1 {
             eof: None,
             parsed: None,
             entered: false,
+            file_retired: false,
             refusal: None,
         }
     }
@@ -299,6 +352,18 @@ mod tests {
             ]
         );
         assert_eq!(KernelBootId::from_bytes(parsed.into_bytes()).unwrap(), parsed);
+    }
+
+    #[test]
+    fn vacant_boot_reader_cannot_dispose_then_reenter_as_an_original() {
+        let mut attempt = RootOriginalKernelBootIdAttemptV1::new();
+
+        assert!(attempt.retire_positive_file_once().is_err());
+        assert!(attempt.failure().is_some());
+        assert!(attempt.observe_once().is_err());
+        assert!(!attempt.file_retired);
+        assert!(attempt.open.is_none());
+        assert_eq!(attempt.filled, 0);
     }
 
     #[test]

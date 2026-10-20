@@ -5,13 +5,12 @@
 
 use super::*;
 
-use crate::local_inventory::assignment::{
-    AssignmentEffectPlanV1, AssignmentObservationReducerV1, InvalidAssignmentModel,
-};
+use crate::local_inventory::assignment::AssignmentEffectPlanV1;
 use crate::local_inventory::carrier_authority::{
     AuthenticatedAssignmentCarrierContractV1, verify_assignment_contract_from_protected_channel,
 };
 use crate::local_inventory::journal::AssignmentEffectSemanticGrantV1;
+use aos_sandbox_core::InvalidAssignmentModel;
 
 /// Couples an assignment journal record to its authenticated carrier contract.
 ///
@@ -174,7 +173,7 @@ impl ProtectedAssignmentEffectHandoffV1 {
     /// Returns the exact typed assignment intent selected by the reducer plan.
     pub(in crate::local_inventory::store_authority) fn intent(
         &self,
-    ) -> &crate::local_inventory::assignment::AssignmentIntentV1 {
+    ) -> &aos_sandbox_core::AssignmentIntentV1 {
         self.semantic_grant.intent()
     }
 
@@ -213,7 +212,7 @@ impl ProtectedAssignmentEffectHandoffV1 {
 impl ProtectedAssignmentEffectReadyV1 {
     /// Returns the exact reducer-selected assignment intent.
     #[must_use]
-    pub fn intent(&self) -> &crate::local_inventory::assignment::AssignmentIntentV1 {
+    pub fn intent(&self) -> &aos_sandbox_core::AssignmentIntentV1 {
         self.handoff.intent()
     }
 
@@ -323,8 +322,7 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
             .ok_or(InvalidMultiNodeJournal::ProtectedStoreMismatch)?
             .intent()
             .clone();
-        let plan = AssignmentObservationReducerV1::new(intent.clone())
-            .issue_effect_plan(record.operation())?;
+        let plan = AssignmentEffectPlanV1::for_intent(record.operation(), intent.clone())?;
         let carrier = verify_assignment_contract_from_protected_channel(
             &session,
             &protected_expected.record,
@@ -381,8 +379,7 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
             .ok_or(InvalidMultiNodeJournal::InvalidRecoveryTransition)?
             .intent()
             .clone();
-        let plan = AssignmentObservationReducerV1::new(intent.clone())
-            .issue_effect_plan(record.operation())?;
+        let plan = AssignmentEffectPlanV1::for_intent(record.operation(), intent.clone())?;
         let reducers = replay_protected_store_semantics(
             &self.store.backend.history,
             self.store.backend.storage_domain_digest,

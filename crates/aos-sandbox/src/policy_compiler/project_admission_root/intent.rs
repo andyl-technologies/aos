@@ -19,6 +19,13 @@
 //! V3 has kind=1 and zero project-packet, project-input, deployment-packet;
 //! V1/V2 have kind=0. V3 can only reserve cancellation/history retirement.
 
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentInputsV1, verify_policy_deployment_head_v1,
+    verify_signed_project_policy_source_v2,
+};
+
+use aos_sandbox_policy::journal_keys::{HEAD_KEY, SIGNER_PINS_KEY};
+
 pub(super) mod negative;
 
 pub use negative::{
@@ -37,13 +44,10 @@ use crate::journal::{
 };
 
 use super::super::deployment_head::{
-    HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1,
+    PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, encode_policy_signer_pins_v1,
 };
 use super::super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
-use super::super::{
-    PolicyDeploymentHeadErrorV1, PolicyDeploymentInputsV1, verify_policy_deployment_head_v1,
-    verify_signed_project_policy_source_v2,
-};
+use super::super::PolicyDeploymentHeadErrorV1;
 use super::{
     RESERVATION_CANCELLATION_DOMAIN, RootProjectAdmissionStageV1,
     RootProjectReservationCancellationV1, STAGE_KEY, current_project_head_digests, digest,
@@ -828,13 +832,15 @@ pub fn prepare_fixed_root_project_admission_intent_v1(
         deployment_inputs,
         deployment_key,
         now_unix_seconds,
-    )?;
+    )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
     let project = verify_signed_project_policy_source_v2(
         project_packet,
         project_input,
         project_key,
         now_unix_seconds,
-    )?;
+    )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
     if project.head().project() != source.project()
         || project.head().deployment_signer_generation() != deployment_signer_generation
         || project.head().project_signer_generation() != project_signer_generation

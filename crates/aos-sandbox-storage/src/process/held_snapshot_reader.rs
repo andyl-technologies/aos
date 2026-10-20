@@ -693,9 +693,19 @@ fn fail_stop_unproved_setup<T>(
 /// request, unsupported snapshot tree, or incomplete bounded exchange.
 pub fn run_inherited_held_snapshot_reader() -> Result<(), ZfsWorkerError> {
     aos_sandbox_linux::process::disable_core_dumps()?;
+
+    super::worker_aggregate::with_worker_aggregate_v1(run_inherited_held_snapshot_reader_inner)
+}
+
+fn run_inherited_held_snapshot_reader_inner(
+    aggregate: Option<&mut super::worker_aggregate::WorkerAggregateV1>,
+) -> Result<(), ZfsWorkerError> {
     require_private_mount_namespace()?;
 
-    let storaged = open_cgroup_root()?.resolve(Path::new(STORAGED_CGROUP))?;
+    let storaged = match aggregate {
+        Some(original) => original.take_main()?,
+        None => open_cgroup_root()?.resolve(Path::new(STORAGED_CGROUP))?,
+    };
     let inherited: OwnedFd = rustix::io::dup(std::io::stdin().as_fd())?;
     let mut socket = SeqpacketSocket::from_owned(inherited)?;
     socket
@@ -930,7 +940,10 @@ fn digest_request(bytes: &[u8]) -> ObjectDigest {
 }
 
 fn encode_ready(cgroup: &str) -> Result<Vec<u8>, ZfsWorkerError> {
-    if !cgroup.starts_with(READER_CGROUP_PREFIX) || !cgroup.ends_with(READER_CGROUP_SUFFIX) {
+    if (!cgroup.starts_with(READER_CGROUP_PREFIX)
+        && super::worker_aggregate::selected_worker_instance(cgroup, READER_CGROUP_PREFIX).is_none())
+        || !cgroup.ends_with(READER_CGROUP_SUFFIX)
+    {
         return Err(ZfsWorkerError::PeerMismatch);
     }
     encode_ready_frame(cgroup, READY_MAGIC, VERSION)

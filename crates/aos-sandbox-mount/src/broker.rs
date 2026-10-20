@@ -13,8 +13,8 @@ use aos_proto::aos::sandbox::local::v1::{
     MountKernelObservation, MountLifecycle, MountOperationCorrelation, MountPublicationCorrelation,
     MountRecipe, MountResult, MountSourceConsistency, MountSourceProofClass, MountState,
 };
-use aos_sandbox::journal::{
-    CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord,
+use aos_sandbox_mount_native::{
+    CommitResult, IdempotencyKey, IdempotencyOutcome, MountJournalV1 as Journal, MountJournalErrorV1 as JournalError, JournalRecord,
     JournalTransaction, RecordNamespace,
 };
 use aos_sandbox_core::{
@@ -442,7 +442,7 @@ pub struct MountBroker<W> {
 /// This is neither a supplied-path recovery API nor a new startup authority.
 /// Unreturned lower recovery prefixes and allocation funding remain separate.
 pub struct SelectedMountBrokerStartupV2<W> {
-    startup: Option<aos_sandbox::mount_manager_startup::SelectedMountStartupV2>,
+    startup: Option<aos_sandbox_mount_native::mount_manager_startup::SelectedMountStartupV2>,
     authority: Option<MountAuthorityV1>,
     worker: Option<W>,
     journal: Option<Journal>,
@@ -457,7 +457,7 @@ pub struct SelectedMountBrokerStartupV2<W> {
 /// Borrows the actual selected recovery refusal without copying its cause.
 pub enum SelectedMountBrokerStartupFailureRefV2<'owner> {
     /// The genuine Core owner retains the failed kernel/image/protected join.
-    Startup(aos_sandbox::mount_manager_startup::SelectedMountStartupFailureRefV2<'owner>),
+    Startup(aos_sandbox_mount_native::mount_manager_startup::SelectedMountStartupFailureRefV2<'owner>),
     /// The original recovery recipe returned this exact Mount error.
     Recovery(&'owner MountError),
     /// A missing association or unwind ended the owner before returning a cause.
@@ -495,7 +495,7 @@ impl<W> SelectedMountBrokerStartupV2<W> {
         journal: Journal,
         worker: W,
         authority: MountAuthorityV1,
-        startup: aos_sandbox::mount_manager_startup::SelectedMountStartupV2,
+        startup: aos_sandbox_mount_native::mount_manager_startup::SelectedMountStartupV2,
     ) -> Self {
         Self {
             startup: Some(startup),
@@ -588,7 +588,7 @@ impl<W: MountWorker> SelectedMountBrokerStartupV2<W> {
     /// between take and the returned pair. Refusal restores the same originals.
     #[must_use]
     pub fn take_completed(&mut self) -> Option<(
-        MountBroker<W>, aos_sandbox::mount_manager_startup::SelectedMountStartupV2,
+        MountBroker<W>, aos_sandbox_mount_native::mount_manager_startup::SelectedMountStartupV2,
     )> {
         if self.ended || !matches!(self.result, Some(Ok(())))
             || self.completed.is_none() || self.startup.is_none()
@@ -625,8 +625,8 @@ impl<W: MountWorker> MountBroker<W> {
     /// Refuses ended startup or changed fixed names, capture, policy or images.
     pub fn recheck_selected_mount_startup(
         &mut self,
-        startup: &mut aos_sandbox::mount_manager_startup::SelectedMountStartupV2,
-    ) -> std::result::Result<(), aos_sandbox::mount_manager_startup::SelectedMountStartupEndedV2> {
+        startup: &mut aos_sandbox_mount_native::mount_manager_startup::SelectedMountStartupV2,
+    ) -> std::result::Result<(), aos_sandbox_mount_native::mount_manager_startup::SelectedMountStartupEndedV2> {
         startup.recheck_held_capture(&mut self.journal)
     }
 
@@ -1459,31 +1459,6 @@ impl<W: MountWorker> MountBroker<W> {
         boundary.finish(result)
     }
 
-    /// Lends the same runtime and actual Session before original-start progress.
-    ///
-    /// The failure boundary precedes health and attachment. Nested retained
-    /// producers preserve genuine Live, catalog and V5 append custody; initial
-    /// hello construction, legacy consuming calls and process loss are separate.
-    ///
-    /// # Errors
-    ///
-    /// Restores retained runtime and revokes actual Session on refusal or unwind.
-    pub(crate) fn with_original_native_source_owner_v5<R>(
-        &mut self,
-        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
-        operation: impl for<'journal> FnOnce(
-            &mut crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2<'journal>,
-            &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
-        ) -> Result<R>,
-    ) -> Result<R> {
-        self.with_original_inventory_source_owner_v6(session, |owner, session| {
-            // Stay inside the original restoration/revocation boundary. The
-            // Query entry remains available for genuine negative retirement.
-            owner.require_git_coverage_new_effect_v1()?;
-            operation(owner, session)
-        })
-    }
-
     /// Lends the sole protected Mount journal to the source-acquisition owner.
     ///
     /// The first borrow replays the complete source graph. Later borrows
@@ -1583,41 +1558,9 @@ impl<W: MountWorker> MountBroker<W> {
         let slots = self.destination_slots.as_ref().ok_or_else(|| {
             MountError::State("destination-slot ownership is not configured".to_owned())
         })?;
-        let attachment_anchors = slots
-            .attachment_anchors()?
-            .into_iter()
-            .map(|anchor| {
-                let handle = attachment_anchor_handle_v1(
-                    &anchor.sandbox_id,
-                    &anchor.incarnation_id,
-                    anchor.namespace_generation,
-                    &anchor.kernel_boot_id,
-                    anchor.identity.device,
-                    anchor.identity.inode,
-                    anchor.mount_id.get(),
-                );
-                AttachmentAnchorInventoryRecord {
-                    attachment_anchor_handle: handle.to_vec(),
-                    sandbox_id: anchor.sandbox_id.to_vec(),
-                    incarnation_id: anchor.incarnation_id.to_vec(),
-                    namespace_generation: anchor.namespace_generation,
-                    resource_kernel_boot_id: anchor.kernel_boot_id.to_vec(),
-                    directory_device: anchor.identity.device,
-                    directory_inode: anchor.identity.inode,
-                    unique_mount_id: anchor.mount_id.get(),
-                    ..Default::default()
-                }
-            })
-            .collect();
-        let response = InventoryDestinationSlotsResponse {
-            kernel_boot_id: self.kernel_boot_id.to_vec(),
-            journal_sequence: self.journal.snapshot_sequence(),
-            slots: slots.resources().map(destination_slot_record).collect(),
-            broker_instance_id: self.broker_instance_id.to_vec(),
-            attachment_anchors,
-            ..Default::default()
-        };
-        encode_destination_slot_inventory_response(response).map_err(Into::into)
+        let anchors = slots.attachment_anchors()?;
+        encode_held_destination_inventory_v4(slots, self.kernel_boot_id,
+            self.journal.snapshot_sequence(), self.broker_instance_id, anchors)
     }
 
     /// Admits and applies one signed destination-slot materialization or reap.
@@ -3603,7 +3546,65 @@ fn fuse_reservation_transaction_id(reservation: &FuseWorkerReservationV1) -> [u8
     transaction_id
 }
 
-fn destination_slot_record(resource: DestinationSlotResourceV1) -> DestinationSlotInventoryRecord {
+// The ordinary and image-enrolled paths encode the same complete physical
+// census. Their collectors and native lifetime owners remain distinct.
+pub(crate) fn encode_held_destination_inventory_v4(
+    slots: &DestinationSlotStoreV1,
+    kernel_boot_id: [u8; 16],
+    journal_sequence: u64,
+    broker_instance_id: [u8; 16],
+    anchors: impl IntoIterator<Item = crate::destination_slot::AttachmentAnchorInventoryV1>,
+) -> Result<Vec<u8>> {
+    encode_held_destination_inventory_with_absence_v2(slots, kernel_boot_id, journal_sequence,
+        broker_instance_id, anchors, None)
+}
+
+pub(crate) fn encode_held_destination_inventory_with_absence_v2(
+    slots: &DestinationSlotStoreV1,
+    kernel_boot_id: [u8; 16],
+    journal_sequence: u64,
+    broker_instance_id: [u8; 16],
+    anchors: impl IntoIterator<Item = crate::destination_slot::AttachmentAnchorInventoryV1>,
+    native_absence: Option<[u8; 96]>,
+) -> Result<Vec<u8>> {
+    let attachment_anchors = anchors.into_iter()
+        .map(|anchor| {
+            let handle = attachment_anchor_handle_v1(
+                &anchor.sandbox_id,
+                &anchor.incarnation_id,
+                anchor.namespace_generation,
+                &anchor.kernel_boot_id,
+                anchor.identity.device,
+                anchor.identity.inode,
+                anchor.mount_id.get(),
+            );
+            AttachmentAnchorInventoryRecord {
+                attachment_anchor_handle: handle.to_vec(),
+                sandbox_id: anchor.sandbox_id.to_vec(),
+                incarnation_id: anchor.incarnation_id.to_vec(),
+                namespace_generation: anchor.namespace_generation,
+                resource_kernel_boot_id: anchor.kernel_boot_id.to_vec(),
+                directory_device: anchor.identity.device,
+                directory_inode: anchor.identity.inode,
+                unique_mount_id: anchor.mount_id.get(),
+                ..Default::default()
+            }
+        })
+        .collect();
+    let response = InventoryDestinationSlotsResponse {
+        kernel_boot_id: kernel_boot_id.to_vec(),
+        journal_sequence,
+        slots: slots.resources().map(destination_slot_record).collect(),
+        broker_instance_id: broker_instance_id.to_vec(),
+        attachment_anchors,
+        namespace_anchors: slots.namespace_anchor_resources_v1(),
+        native_absence_v2: native_absence.map(Vec::from).unwrap_or_default(),
+        ..Default::default()
+    };
+    encode_destination_slot_inventory_response(response).map_err(Into::into)
+}
+
+pub(crate) fn destination_slot_record(resource: DestinationSlotResourceV1) -> DestinationSlotInventoryRecord {
     let binding = resource.binding();
     let descriptor = binding.sandbox_spec();
     let identity = resource.file_identity();
@@ -4118,7 +4119,7 @@ fn destination_slot_intent_transaction(request_id: [u8; 16]) -> [u8; 16] {
     )
 }
 
-fn destination_slot_transaction(domain: &[u8], identity: &[u8]) -> [u8; 16] {
+pub(crate) fn destination_slot_transaction(domain: &[u8], identity: &[u8]) -> [u8; 16] {
     let output = Sha256::new()
         .chain_update(domain)
         .chain_update(identity)
@@ -4154,7 +4155,7 @@ fn authority_refresh_transaction(
     id
 }
 
-fn validate_effect_matches(
+pub(crate) fn validate_effect_matches(
     effect: &MountEffectIntentV1,
     admission: &VerifiedMountAdmissionV1,
     transport_request_digest: [u8; 32],
@@ -4189,7 +4190,7 @@ mod tests {
         DestinationSlotAction, MountAttributes, ObserveMountScopeRequest,
         PrepareMountCatalogRequest, RequestHeader,
     };
-    use aos_sandbox::journal::JournalLimits;
+    use aos_sandbox_mount_native::JournalLimits;
     use aos_sandbox_core::format::{
         encode_broker_authorization_plan, encode_ownership_lease, encode_signature,
         encode_trust_policy,

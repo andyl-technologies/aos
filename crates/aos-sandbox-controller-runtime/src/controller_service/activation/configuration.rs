@@ -27,6 +27,7 @@ pub(in crate::controller_service) struct RuntimeConfiguration {
     pub(super) nix_storage_generation_prepare: bool,
     pub(super) nix_existing_outputs: bool,
     pub(super) issue_source_successor: bool,
+    pub(super) operator_recover_only: bool,
     pub(super) create_q04_policy_subgate: bool,
 }
 
@@ -65,6 +66,7 @@ impl RuntimeConfiguration {
         let mut nix_start_admission = false;
         let mut nix_storage_generation_prepare = false;
         let mut issue_source_successor = false;
+        let mut operator_recover_only = false;
         let mut create_q04_policy_subgate = false;
         for argument in arguments {
             match argument.as_str() {
@@ -78,6 +80,9 @@ impl RuntimeConfiguration {
                 }
                 "--issue-source-successor" if !issue_source_successor => {
                     issue_source_successor = true;
+                }
+                "--operator-recover-only" if !operator_recover_only => {
+                    operator_recover_only = true;
                 }
                 "--create-q04-policy-subgate" if !create_q04_policy_subgate => {
                     create_q04_policy_subgate = true;
@@ -109,6 +114,21 @@ impl RuntimeConfiguration {
                     ));
                 }
             }
+        }
+        if operator_recover_only
+            && (!public_api
+                || publisher_ingress
+                || nix_start_admission
+                || nix_storage_generation_prepare
+                || git_upload_bootstrap
+                || git_coverage
+                || git_read_inspection.is_some()
+                || issue_source_successor
+                || create_q04_policy_subgate)
+        {
+            return Err(ControllerRuntimeError::InvalidArguments(
+                "operator recovery requires public API and excludes ordinary startup purposes",
+            ));
         }
         if issue_source_successor
             && (public_api
@@ -165,6 +185,7 @@ impl RuntimeConfiguration {
             nix_storage_generation_prepare,
             nix_existing_outputs: false,
             issue_source_successor,
+            operator_recover_only,
             create_q04_policy_subgate,
         })
     }
@@ -206,6 +227,39 @@ mod tests {
     )]
 
     use super::*;
+
+    #[test]
+    fn recovery_only_requires_public_api_and_excludes_ordinary_startup() {
+        let arguments = [
+            "aos-sandboxd", "1001", "1002", "--operator-recover-only", "--public-api",
+        ];
+        let selected = RuntimeConfiguration::from_arguments(
+            arguments.into_iter().map(str::to_owned),
+        ).unwrap();
+
+        assert!(selected.operator_recover_only);
+        assert!(selected.public_api);
+
+        for conflicting in [
+            "--publisher-ingress",
+            "--nix-start-admission",
+            "--nix-storage-generation-prepare",
+            "--issue-source-successor",
+            "--create-q04-policy-subgate",
+            "--git-upload-bootstrap",
+            "--git-upload-coverage",
+            "--git-read-inspection=1003:1004",
+            "--operator-recover-only",
+        ] {
+            let arguments = arguments.into_iter().chain([conflicting]).map(str::to_owned);
+            assert!(RuntimeConfiguration::from_arguments(arguments).is_err());
+        }
+
+        assert!(RuntimeConfiguration::from_arguments(
+            ["aos-sandboxd", "1001", "1002", "--operator-recover-only"]
+                .into_iter().map(str::to_owned),
+        ).is_err());
+    }
 
     #[test]
     fn source_successor_issue_mode_is_exclusive_and_keeps_fixed_paths() {

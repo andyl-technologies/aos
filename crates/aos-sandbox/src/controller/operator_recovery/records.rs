@@ -497,6 +497,33 @@ pub(in crate::controller) fn validate_recovery_current(
     {
         return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
     }
+    validate_recovery_current_evidence_v1(request, current)
+}
+
+// The ordinary mask remains mandatory above. The new finality caller grants
+// no action from this comparison: it independently proves the exact Applying
+// Create/Applied prefix and later requires full native and Root conjunctions.
+pub(super) fn validate_create_finality_fence_v1(
+    request: &OperatorRecoveryRequestV1, current: &[u8],
+) -> Result<(), InvalidObservationClientAdapter> {
+    validate_closed_recovery_fence_v2(request, current)
+}
+
+pub(super) fn validate_closed_recovery_fence_v2(
+    request: &OperatorRecoveryRequestV1, current: &[u8],
+) -> Result<(), InvalidObservationClientAdapter> {
+    let head = decode_recovery_current(current)?;
+    if head.kind != 2
+        || request.action() != OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_RETRY as i32
+        || head.version.as_slice() != request.expected_resource_version() {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    validate_recovery_current_evidence_v1(request, current)
+}
+
+fn validate_recovery_current_evidence_v1(
+    request: &OperatorRecoveryRequestV1, current: &[u8],
+) -> Result<(), InvalidObservationClientAdapter> {
     let evidence = request.evidence();
     let expected = recovery_current_evidence(request.resource_id(), current);
     // Compare only the established evidence fields; unrelated protobuf DATA
@@ -575,4 +602,45 @@ pub(super) fn recovery_terminal_records(
     )?;
     let completed = encode_completed_recovery_reservation(issued, result)?;
     Ok((next_current, completed))
+}
+
+#[cfg(test)]
+mod finality_fence_tests {
+    use super::*;
+
+    fn request(current: &[u8]) -> aos_proto::aos::sandbox::v1::OperatorRecoveryRequest {
+        aos_proto::aos::sandbox::v1::OperatorRecoveryRequest {
+            resource_id: vec![1; 16],
+            expected_resource_version: vec![2; 32],
+            action: OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_RETRY.into(),
+            idempotency_key: b"finality-observation".to_vec(),
+            evidence: recovery_current_evidence([1; 16], current).into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn finality_fence_does_not_grant_the_ordinary_retry_action() {
+        let current = encode_recovery_current(2, 0, &[2; 32], 1, 7, (100, 0)).unwrap();
+        let request = OperatorRecoveryRequestV1::try_from(request(&current)).unwrap();
+
+        assert!(validate_create_finality_fence_v1(&request, &current).is_ok());
+        assert!(validate_recovery_current(&request, &current).is_err());
+    }
+
+    #[test]
+    fn finality_fence_requires_exact_current_version_and_evidence() {
+        let current = encode_recovery_current(2, 0, &[2; 32], 1, 7, (100, 0)).unwrap();
+        let mut stale = request(&current);
+        stale.expected_resource_version[0] ^= 1;
+        let stale = OperatorRecoveryRequestV1::try_from(stale).unwrap();
+        assert!(validate_create_finality_fence_v1(&stale, &current).is_err());
+
+        let mut changed = request(&current);
+        let mut evidence = changed.evidence.as_option().unwrap().clone();
+        evidence.sha256[0] ^= 1;
+        changed.evidence = evidence.into();
+        let changed = OperatorRecoveryRequestV1::try_from(changed).unwrap();
+        assert!(validate_create_finality_fence_v1(&changed, &current).is_err());
+    }
 }

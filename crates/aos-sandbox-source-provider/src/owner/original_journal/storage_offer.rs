@@ -7,7 +7,7 @@
 
 use std::os::fd::OwnedFd;
 
-use aos_sandbox::JournalRecord;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
 use aos_sandbox_source_provider_protocol::{
     SourceProviderDescriptorRole, StorageNativeAcquireReplyV3,
     StorageNativeAcquireVerificationV3, StorageZfsHoldReceiptV1,
@@ -499,7 +499,7 @@ impl FixedProviderOwnerV1 {
             before_floor.to_journal_record()?.key().to_vec()));
         records.push(after_floor.to_journal_record()?);
         producer.park(Append::StoragePrepared, JournalTransaction::new(*owner.id(), records)
-            .map_err(aos_sandbox::JournalError::from)?)?;
+            .map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?)?;
         held.session.current_projection()?;
         Ok(())
     }
@@ -526,7 +526,7 @@ pub(super) fn retain_projection(
     target: &mut Vec<(Vec<u8>, Vec<u8>)>,
     rows: &SourceCapacityStateV5,
     replacement: Option<(&[u8], &[u8])>,
-    limits: aos_sandbox::JournalLimits,
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
 ) -> Result<(), OriginalProducerErrorV5> {
     if !target.is_empty() {
         return Err(ProviderLedgerError::Equivocation.into());
@@ -583,8 +583,8 @@ mod tests {
         let mut before = Vec::new();
         let mut after = Vec::new();
 
-        retain_projection(&mut before, &rows, None, aos_sandbox::JournalLimits::default()).unwrap();
-        retain_projection(&mut after, &rows, Some((&[1], &[4, 5])), aos_sandbox::JournalLimits::default()).unwrap();
+        retain_projection(&mut before, &rows, None, aos_sandbox_protocol::domain_ledger::transaction::JournalLimits::default()).unwrap();
+        retain_projection(&mut after, &rows, Some((&[1], &[4, 5])), aos_sandbox_protocol::domain_ledger::transaction::JournalLimits::default()).unwrap();
 
         assert_eq!(before, vec![(vec![1], vec![2, 3])]);
         assert_eq!(after, vec![(vec![1], vec![4, 5])]);
@@ -593,9 +593,9 @@ mod tests {
 
     #[test]
     fn extent_refusal_precedes_projection_allocation() {
-        let limits = aos_sandbox::JournalLimits {
+        let limits = aos_sandbox_protocol::domain_ledger::transaction::JournalLimits {
             maximum_materialized_bytes: 2,
-            ..aos_sandbox::JournalLimits::default()
+            ..aos_sandbox_protocol::domain_ledger::transaction::JournalLimits::default()
         };
         let mut retained = Vec::new();
 
@@ -610,7 +610,7 @@ mod tests {
         let mut retained = vec![(vec![9], vec![8])];
 
         assert!(retain_projection(&mut retained, &rows(), None,
-            aos_sandbox::JournalLimits::default()).is_err());
+            aos_sandbox_protocol::domain_ledger::transaction::JournalLimits::default()).is_err());
 
         assert_eq!(retained, vec![(vec![9], vec![8])]);
     }

@@ -14,7 +14,13 @@ mod original_registration;
 mod registration;
 #[cfg(target_os = "linux")]
 mod socket;
+mod startup;
 mod stream;
+
+#[doc(hidden)]
+pub use credentials::ControllerStartupCredentialGeometryV1;
+#[doc(hidden)]
+pub use startup::PublicApiSessionStartupV1;
 
 use std::collections::BTreeMap;
 use std::sync::{
@@ -37,6 +43,10 @@ pub(crate) use handshake_custody::{
 };
 
 pub(crate) use credentials::{
+    ControllerInitialCredentialCustodyV1,
+    RootCurrentIssuerCredentialCustodyV1, RootCurrentOwnershipCredentialCustodyV1,
+    RootCurrentStorageManifestCustodyV1, RootCurrentBrokerPlanCredentialCustodyV1,
+    ROOT_OWNERSHIP_POLICY_MAXIMUM_BYTES_V1,
     ControllerNixGenerationOriginCredentialCustodyV1,
     ControllerQ04CredentialCustodyV1, ControllerQ04CredentialErrorV1,
     ControllerNixPublicCredentialCustodyV1, ControllerNixPublicCredentialErrorV1,
@@ -63,19 +73,7 @@ const SESSION_LIFETIME_NANOSECONDS: u64 = 300_000_000_000;
 const KEY_BINDING_DOMAIN: &[u8] = b"aos.sandbox.public-api.registered-certificate.v1\0";
 const EXPORTER_LABEL: &[u8] = b"EXPORTER-AOS-SANDBOX-PUBLIC-API-V1";
 
-/// Reports redacted public-session configuration, authentication, or currentness failure.
-#[derive(Debug, thiserror::Error)]
-pub enum PublicApiSessionError {
-    /// Protected credential provenance or the closed registration schema is invalid.
-    #[error("public API session credentials are invalid")]
-    Configuration,
-    /// TLS proof, registered identity, HTTP/2 negotiation, or handshake timing failed.
-    #[error("public API session authentication failed")]
-    Authentication,
-    /// The connection, certificate, credential snapshot, or bounded lifetime is no longer current.
-    #[error("public API session is no longer current")]
-    Stale,
-}
+pub use aos_sandbox_protocol::public_api_session_data::PublicApiSessionError;
 
 /// Retains concrete original-socket failures separately from generic TLS errors.
 #[cfg(target_os = "linux")]
@@ -310,6 +308,32 @@ struct PeerState {
     original: Option<socket::OriginalPublicSocketV1>,
 }
 
+/// Keeps one selected TLS currentness result beside its actual credential sink.
+///
+/// This private destination supplies neither a peer nor payment. Only the
+/// genuine C17 authorization scope enters it after its complete admission.
+pub(crate) struct PublicApiPeerRecheckV1 {
+    credentials: aos_sandbox_broker::systemd_credentials::PublicApiCredentialRecheckV1,
+    result: Option<Result<(), PublicApiSessionError>>,
+    repeated: bool,
+}
+
+impl PublicApiPeerRecheckV1 {
+    pub(crate) fn new() -> Self {
+        Self {
+            credentials: aos_sandbox_broker::systemd_credentials::PublicApiCredentialRecheckV1::new(),
+            result: None,
+            repeated: false,
+        }
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.credentials.failure()
+            .or_else(|| self.result.as_ref()?.as_ref().err().map(|cause| cause as _))
+            .or_else(|| self.repeated.then_some(&PublicApiSessionError::Stale as _))
+    }
+}
+
 impl PublicApiPeer {
     /// Samples the rechecked public TLS trust bundle and exact registered leaf.
     ///
@@ -389,6 +413,12 @@ impl PublicApiPeer {
         Ok(original.cookie())
     }
 
+    // Only the already-authorized Start compiler uses this passive projection.
+    // The common authorization engine has just checked this same TLS peer.
+    pub(crate) fn accepted_original_deadline_data_v1(&self) -> u64 {
+        self.0.deadline
+    }
+
     /// Returns the same authenticated peer's finite original BOOTTIME cutoff.
     ///
     /// # Errors
@@ -437,11 +467,52 @@ impl PublicApiPeer {
         result
     }
 
+    /// Measures the actual retained credential path without native work.
+    pub(crate) fn retained_recheck_demand_v1(&self)
+        -> Option<aos_sandbox_core::ResourceVector>
+    {
+        self.0.credentials.recheck_receiving_demand_v1()
+    }
+
+    /// Uses the ordinary currentness predicate with a prepaid native sink.
+    pub(crate) fn recheck_retaining_v1(
+        &self,
+        destination: &mut PublicApiPeerRecheckV1,
+    ) -> Result<(), PublicApiSessionError> {
+        if destination.result.is_some() || destination.repeated {
+            destination.repeated = true;
+            self.close();
+            return Err(PublicApiSessionError::Stale);
+        }
+        let result = self.recheck_current_inner(Some(&mut destination.credentials));
+        let returned = result.as_ref().map(|_| ()).map_err(|cause| match cause {
+            PublicApiSessionError::Configuration => PublicApiSessionError::Configuration,
+            PublicApiSessionError::Authentication => PublicApiSessionError::Authentication,
+            PublicApiSessionError::Stale => PublicApiSessionError::Stale,
+        });
+        destination.result = Some(result);
+        if returned.is_err() {
+            self.close();
+        }
+        returned
+    }
+
     fn recheck_current(&self) -> Result<(), PublicApiSessionError> {
+        self.recheck_current_inner(None)
+    }
+
+    fn recheck_current_inner(
+        &self,
+        destination: Option<&mut aos_sandbox_broker::systemd_credentials::PublicApiCredentialRecheckV1>,
+    ) -> Result<(), PublicApiSessionError> {
+
         if !self.0.active.load(Ordering::Acquire) || boottime()? >= self.0.deadline {
             return Err(PublicApiSessionError::Stale);
         }
-        self.0.credentials.recheck()?;
+        match destination {
+            Some(destination) => self.0.credentials.recheck_retaining_v1(destination)?,
+            None => self.0.credentials.recheck()?,
+        }
         let (leaf, intermediates) = self
             .0
             .chain

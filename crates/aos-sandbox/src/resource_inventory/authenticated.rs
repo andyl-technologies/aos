@@ -11,8 +11,9 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
 
 use super::{
     DurableNetworkResourceInventorySnapshotV1, DurableStorageResourceInventorySnapshotV1,
-    InventoryDomain, Journal, RecordedSnapshot, ResourceInventoryError, SnapshotHistory,
-    SnapshotRecord, ValidatedResourceInventory, controller_state_digest, persist_snapshot,
+    InventoryDomain, Journal, RecordedSnapshot, ResourceInventoryCommitRecipeV2,
+    ResourceInventoryError, SnapshotHistory, SnapshotRecord, ValidatedResourceInventory,
+    controller_state_digest,
 };
 
 /// Retains the protected controller state preceding a Storage inventory query.
@@ -69,10 +70,16 @@ fn begin_observation(
     })
 }
 
-fn complete_observation(
+fn complete_observation_with_commit_v2(
     journal: &mut Journal,
     fence: ObservationFence,
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    retained: &mut super::ResourceInventorySnapshotRetainedV2,
+    commit: impl FnMut(
+        &mut Journal,
+        &crate::JournalTransaction,
+        &ResourceInventoryCommitRecipeV2<'_>,
+    ) -> Result<crate::CommitResult, ResourceInventoryError>,
 ) -> Result<RecordedSnapshot, ResourceInventoryError> {
     fence.recheck(journal)?;
     if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
@@ -97,7 +104,9 @@ fn complete_observation(
         outcome.request().exact_body().to_vec(),
         body.clone(),
     )?;
-    persist_snapshot(journal, history, record, inventory)
+    super::persist_snapshot_retaining_with_commit_v2(
+        journal, history, record, inventory, retained, commit,
+    )
 }
 
 pub(crate) fn complete_storage_observation(
@@ -105,7 +114,28 @@ pub(crate) fn complete_storage_observation(
     fence: StorageInventoryObservationFenceV1,
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
 ) -> Result<DurableStorageResourceInventorySnapshotV1, ResourceInventoryError> {
-    let recorded = complete_observation(journal, fence.0, outcome)?;
+    complete_storage_observation_with_commit_v2(
+        journal,
+        fence,
+        outcome,
+        &mut super::ResourceInventorySnapshotRetainedV2::new(),
+        |journal, transaction, _recipe| journal.commit(transaction).map_err(Into::into),
+    )
+}
+
+pub(crate) fn complete_storage_observation_with_commit_v2(
+    journal: &mut Journal,
+    fence: StorageInventoryObservationFenceV1,
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    retained: &mut super::ResourceInventorySnapshotRetainedV2,
+    commit: impl FnMut(
+        &mut Journal,
+        &crate::JournalTransaction,
+        &ResourceInventoryCommitRecipeV2<'_>,
+    ) -> Result<crate::CommitResult, ResourceInventoryError>,
+) -> Result<DurableStorageResourceInventorySnapshotV1, ResourceInventoryError> {
+    let recorded =
+        complete_observation_with_commit_v2(journal, fence.0, outcome, retained, commit)?;
     let ValidatedResourceInventory::Storage(inventory) = recorded.inventory else {
         return Err(ResourceInventoryError::CorruptState);
     };
@@ -122,7 +152,28 @@ pub(crate) fn complete_network_observation(
     fence: NetworkInventoryObservationFenceV1,
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
 ) -> Result<DurableNetworkResourceInventorySnapshotV1, ResourceInventoryError> {
-    let recorded = complete_observation(journal, fence.0, outcome)?;
+    complete_network_observation_with_commit_v2(
+        journal,
+        fence,
+        outcome,
+        &mut super::ResourceInventorySnapshotRetainedV2::new(),
+        |journal, transaction, _recipe| journal.commit(transaction).map_err(Into::into),
+    )
+}
+
+pub(crate) fn complete_network_observation_with_commit_v2(
+    journal: &mut Journal,
+    fence: NetworkInventoryObservationFenceV1,
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    retained: &mut super::ResourceInventorySnapshotRetainedV2,
+    commit: impl FnMut(
+        &mut Journal,
+        &crate::JournalTransaction,
+        &ResourceInventoryCommitRecipeV2<'_>,
+    ) -> Result<crate::CommitResult, ResourceInventoryError>,
+) -> Result<DurableNetworkResourceInventorySnapshotV1, ResourceInventoryError> {
+    let recorded =
+        complete_observation_with_commit_v2(journal, fence.0, outcome, retained, commit)?;
     let ValidatedResourceInventory::Network(inventory) = recorded.inventory else {
         return Err(ResourceInventoryError::CorruptState);
     };

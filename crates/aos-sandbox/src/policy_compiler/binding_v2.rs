@@ -20,6 +20,18 @@
 //! AOSPBS02 | issue-epoch:u64 | root-nonce:16 | exact-root-source-cut:32 | SHA-256
 //! ```
 
+use aos_sandbox_policy::signed_inputs::{
+    SignedProjectPolicyHeadV2, verify_historical_policy_deployment_packet_v1,
+    verify_signed_project_policy_source_v2,
+};
+
+use aos_sandbox_policy::journal_keys::{HEAD_KEY, SIGNER_PINS_KEY, SOURCE_HOLD_PIN_KEY};
+
+use aos_sandbox_policy::controller_readback::encode_controller_hold_signer_credential_v1;
+
+use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
+use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+
 use std::{collections::BTreeSet, path::Path};
 
 use aos_sandbox_core::bounded_codec::BoundedReader;
@@ -27,16 +39,22 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
-use crate::cache_residency::{
-    CacheOwnerReadbackChallengeV1, PinnedCacheOwnerReadbackSignerV1,
+use crate::cache_residency::release_fixed_closed_policy_cache_hold_after_root_readback_v1;
+use aos_sandbox_protocol::cache_owner_readback::{
+    CacheOwnerReadbackChallengeV1,
+    PinnedCacheOwnerReadbackSignerV1,
     VerifiedClosedCacheOwnerReadbackV2,
-    release_fixed_closed_policy_cache_hold_after_root_readback_v1,
     verify_closed_cache_owner_readback_v2,
 };
 use crate::journal::{
-    CachePolicyHoldV1, ControllerPolicyHoldV1, Journal, JournalRecord, JournalTransaction,
-    ProtectedJournalAuthority, ProtectedJournalNamesV1, ProtectedJournalSnapshot, RecordNamespace,
-    SourceDomainPolicyHoldV1,
+    ControllerPolicyHoldV1,
+    Journal,
+    JournalRecord,
+    JournalTransaction,
+    ProtectedJournalAuthority,
+    ProtectedJournalNamesV1,
+    ProtectedJournalSnapshot,
+    RecordNamespace,
 };
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
@@ -44,8 +62,7 @@ use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use super::cache_journal_readback::read_fixed_policy_cache_hold_v1;
 use super::cache_readback_pin::CACHE_PIN_KEY;
 use super::deployment_head::{
-    HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, decode_policy_signer_pins_v1,
-    encode_policy_signer_pins_v1, verify_historical_packet,
+    PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, decode_policy_signer_pins_v1, encode_policy_signer_pins_v1,
 };
 use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 use super::protected_owner::{
@@ -53,15 +70,13 @@ use super::protected_owner::{
     PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
 use super::root_challenge_record::RootChallengeRecordCodec;
-use super::source_hold_pin::SOURCE_HOLD_PIN_KEY;
+
 use super::source_hold_readback::{
     PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackChallengeV1,
     verify_current_source_hold_readback_v1,
 };
 use super::source_hold_readback_v2::verify_source_hold_readback_with_names_v2;
-use super::{
-    PolicyCompilerJournalErrorV1, SignedProjectPolicyHeadV2, verify_signed_project_policy_source_v2,
-};
+use super::PolicyCompilerJournalErrorV1;
 
 mod ack_v8;
 
@@ -560,71 +575,9 @@ impl ClosedPolicyRootCacheCutV2 {
     }
 }
 
-/// Supplies root-derived CAS fields while the protected writer remains held.
-///
-/// A controller may use these bytes to construct a proposal, but the root
-/// session rechecks every field at commit. This value is not an authority
-/// token and cannot establish the other owners' current heads.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ClosedPolicyRootCasBaseV2 {
-    issuer_owner: [u8; 16],
-    predecessor: ObjectDigest,
-    next_generation: u64,
-    deployment_signer_generation: u64,
-    project_signer_generation: u64,
-}
-
-/// Retains one Root-issued base and challenge before other writers are acquired.
-///
-/// This token is authenticated by the Root socket but is not a CAS, owner-cut,
-/// publication, or effect authority. Root rechecks its protected stage and
-/// exact signed-source identity after acquiring its writer last.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StagedClosedPolicyRootBaseV2 {
-    base: ClosedPolicyRootCasBaseV2,
-    challenge: [u8; 16],
-    issue_epoch: u64,
-}
-
-impl StagedClosedPolicyRootBaseV2 {
-    /// Reconstructs an untrusted socket stage for later Root revalidation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a zero challenge or issuance epoch.
-    pub fn from_untrusted_remote_fields(
-        base: ClosedPolicyRootCasBaseV2,
-        challenge: [u8; 16],
-        issue_epoch: u64,
-    ) -> Result<Self, PolicyCompilerJournalErrorV1> {
-        if challenge == [0; 16] || issue_epoch == 0 {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        Ok(Self {
-            base,
-            challenge,
-            issue_epoch,
-        })
-    }
-
-    /// Returns the Root-supplied CAS base for nonauthorizing proposal construction.
-    #[must_use]
-    pub const fn base(self) -> ClosedPolicyRootCasBaseV2 {
-        self.base
-    }
-
-    /// Returns the Root-minted challenge bound to the protected stage.
-    #[must_use]
-    pub const fn challenge(self) -> [u8; 16] {
-        self.challenge
-    }
-
-    /// Returns the monotone Root stage issuance epoch.
-    #[must_use]
-    pub const fn issue_epoch(self) -> u64 {
-        self.issue_epoch
-    }
-}
+pub use aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::{
+    ClosedPolicyRootCasBaseV2, StagedClosedPolicyRootBaseV2,
+};
 
 /// Names one nonauthorizing challenge for both independent Q04 signer roles.
 ///
@@ -738,70 +691,7 @@ pub fn staged_closed_policy_signer_challenge_v2(
     })
 }
 
-impl ClosedPolicyRootCasBaseV2 {
-    /// Decodes root-supplied CAS fields without treating them as authority.
-    ///
-    /// The root session compares these fields to its protected journal when
-    /// committing the proposal. A caller cannot authorize a binding by
-    /// constructing this value.
-    ///
-    /// # Errors
-    ///
-    /// Rejects missing identities, generations, or an impossible predecessor.
-    pub fn from_untrusted_remote_fields(
-        issuer_owner: [u8; 16],
-        predecessor: ObjectDigest,
-        next_generation: u64,
-        deployment_signer_generation: u64,
-        project_signer_generation: u64,
-    ) -> Result<Self, PolicyCompilerJournalErrorV1> {
-        if issuer_owner == [0; 16]
-            || next_generation == 0
-            || deployment_signer_generation == 0
-            || project_signer_generation == 0
-            || (next_generation == 1) != (predecessor.as_bytes() == &[0; 32])
-        {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        Ok(Self {
-            issuer_owner,
-            predecessor,
-            next_generation,
-            deployment_signer_generation,
-            project_signer_generation,
-        })
-    }
 
-    /// Returns the root-derived controller owner commitment.
-    #[must_use]
-    pub const fn issuer_owner(self) -> [u8; 16] {
-        self.issuer_owner
-    }
-
-    /// Returns the exact current root predecessor commitment.
-    #[must_use]
-    pub const fn predecessor(self) -> ObjectDigest {
-        self.predecessor
-    }
-
-    /// Returns the required next root CAS and handoff epoch.
-    #[must_use]
-    pub const fn next_generation(self) -> u64 {
-        self.next_generation
-    }
-
-    /// Returns the root-pinned deployment signer generation.
-    #[must_use]
-    pub const fn deployment_signer_generation(self) -> u64 {
-        self.deployment_signer_generation
-    }
-
-    /// Returns the root-pinned project signer generation.
-    #[must_use]
-    pub const fn project_signer_generation(self) -> u64 {
-        self.project_signer_generation
-    }
-}
 
 impl ClosedPolicyRootCasObservationV2 {
     /// Reconstructs an inert observation from an exact protected replay reply.
@@ -1972,6 +1862,7 @@ pub fn with_fixed_explicit_closed_policy_binding_session_v2<R>(
         project_key,
         now_unix_seconds,
     )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
     .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     let head = verified.head();
     if head.deployment_signer_generation() != deployment_signer_generation
@@ -2127,6 +2018,7 @@ pub(super) fn q04_preview_stage_in_journal_v1(
         project_key,
         now_unix_seconds,
     )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
     .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     let head = verified.head();
     if head.deployment_signer_generation() != deployment_signer_generation
@@ -2348,7 +2240,8 @@ fn recover_committed_source_held_binding_in_journal_v2(
         .get(namespace, HEAD_KEY)
         .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
         .to_vec();
-    verify_historical_packet(&deployment, &deployment_key)
+    verify_historical_policy_deployment_packet_v1(&deployment, &deployment_key)
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     let project = journal
         .get(namespace, HEAD_KEY_V2)
@@ -2366,6 +2259,7 @@ fn recover_committed_source_held_binding_in_journal_v2(
             .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
     );
     let verified = verify_signed_project_policy_source_v2(&project, &input, &project_key, issued)
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     if verified.head().prerequisite_claims()[1].as_bytes() != Sha256::digest(&deployment).as_slice()
         || verified.head().deployment_signer_generation() != deployment_generation
@@ -2858,11 +2752,10 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     use super::*;
-    use crate::cache_residency::{
-        encode_cache_owner_readback_signer_credential_v1, sign_test_cache_owner_readback_v2,
-    };
+    use crate::cache_residency::sign_test_cache_owner_readback_v2;
+    use aos_sandbox_protocol::cache_owner_readback::encode_cache_owner_readback_signer_credential_v1;
     use crate::journal::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
-    use crate::policy_compiler::controller_hold_readback::encode_controller_hold_signer_credential_v1;
+
     use crate::policy_compiler::protected_owner::{
         ProtectedPolicyPublicationVerifierV1, policy_authority_journal_limits,
     };
@@ -3444,6 +3337,7 @@ mod tests {
                 &project_key.verifying_key(),
                 20,
             )
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .expect("complete signed V2 source");
             let old_input = retired_project_input(binding.project);
             let old_packet = signed_retired_project_packet(
@@ -4321,6 +4215,7 @@ mod tests {
                 .expect("Cache pin");
         let controller_pin =
             encode_controller_hold_signer_credential_v1(5, &controller_key.verifying_key())
+                .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
                 .expect("Controller pin");
         let mut root = open_test_root(directory.path());
         root.claim_protected_authority(RecordNamespace::DesiredState)
@@ -4341,7 +4236,7 @@ mod tests {
                         ),
                         JournalRecord::put(
                             RecordNamespace::DesiredState,
-                            super::super::controller_hold_pin::CONTROLLER_HOLD_PIN_KEY.to_vec(),
+                            aos_sandbox_policy::journal_keys::CONTROLLER_HOLD_PIN_KEY.to_vec(),
                             controller_pin.to_vec(),
                         ),
                     ],

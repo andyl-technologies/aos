@@ -7,7 +7,7 @@ use aos_sandbox_core::{
 
 use super::{CacheAuthorityScopeV1, CachePinId, CachePinV1, PinError};
 use aos_sandbox_protocol::cache_state::PhysicalPartitionId;
-use crate::production_operation_compiler::RecheckedCacheConsumerV1;
+use aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1;
 
 /// Reports a mismatch before protected Cache pin authority may be requested.
 #[derive(Debug, thiserror::Error)]
@@ -32,7 +32,7 @@ pub enum PublicLogicalPinAcquisitionErrorV1 {
 /// committed catalog entry in `partition`, acquire a current PinAcquire record,
 /// and recheck the desired consumer before the protected pin transaction.
 pub struct ValidatedPublicLogicalPinAcquisitionV1<'a, 'projection, 'index, 'bytes> {
-    consumer: &'a RecheckedCacheConsumerV1,
+    consumer: &'a CacheConsumerDataV1,
     source: &'a ValidatedViewSourceObject<'projection, 'index, 'bytes>,
     partition: PhysicalPartitionId,
 }
@@ -47,7 +47,7 @@ impl<'a, 'projection, 'index, 'bytes>
     /// Rejects a release-only consumer, stale or substituted source proof,
     /// a remote partition, or a mismatched attached runtime.
     pub fn new(
-        consumer: &'a RecheckedCacheConsumerV1,
+        consumer: &'a CacheConsumerDataV1,
         source: &'a ValidatedViewSourceObject<'projection, 'index, 'bytes>,
         partition: PhysicalPartitionId,
         controller_node: NodeId,
@@ -111,7 +111,7 @@ impl<'a, 'projection, 'index, 'bytes>
 
     /// Borrows the exact rechecked public consumer for commit-time validation.
     #[must_use]
-    pub const fn consumer(&self) -> &RecheckedCacheConsumerV1 {
+    pub const fn consumer(&self) -> &CacheConsumerDataV1 {
         self.consumer
     }
 

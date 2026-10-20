@@ -10,7 +10,7 @@ use super::producer::{
     OriginalProducerAppendV5 as Append, OriginalProducerClosureGuardV5,
     OriginalProducerErrorV5, owner_transaction_v5,
 };
-use aos_sandbox::JournalRecord;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
 use aos_sandbox_source_provider_protocol::{
     SourceExportLeaseV1, SourceProviderProofV1, digest_provider_proof,
     provider_resource_commitment_v1,
@@ -593,5 +593,5 @@ fn original_floor_transaction_v5(
     let mut records = owner.records().to_vec();
     records.push(JournalRecord::delete(RecordNamespace::GlobalCapacityReservation, before.to_journal_record()?.key().to_vec()));
     records.push(after.to_journal_record()?);
-    Ok(JournalTransaction::new(*owner.id(), records).map_err(aos_sandbox::JournalError::from)?)
+    Ok(JournalTransaction::new(*owner.id(), records).map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?)
 }

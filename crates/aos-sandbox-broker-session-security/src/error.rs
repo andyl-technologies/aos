@@ -54,6 +54,30 @@ pub enum BrokerSessionSecurityError {
     /// Revalidation detected any protected-state change.
     #[error("protected endpoint currentness check failed")]
     Currentness,
+    /// This same selected Session retained the actual native transaction error.
+    #[error("protected captured journal mutation retained its native failure")]
+    CapturedJournalMutation {
+        /// Actual transaction whose entered native return selected the cause.
+        transaction: [u8; 16],
+    },
+    /// The same selected Controller physical owner retained its first cause.
+    #[error("protected floor retained Controller physical operation failed")]
+    ControllerPhysicalFloor,
+    /// A selected floor writer comparison retained its precise native cause.
+    #[error("protected floor retained journal currentness observation failed")]
+    FloorRevalidation {
+        /// Fixed failed/owed observation slot in the originating journal owner.
+        observation: usize,
+    },
+    /// A selected endpoint observation retained its precise native cause.
+    ///
+    /// The index is comparison DATA within the same protected endpoint. It
+    /// conveys neither currentness nor permission to observe another endpoint.
+    #[error("protected endpoint retained currentness observation failed")]
+    EndpointRevalidation {
+        /// Fixed resident observation slot in the originating endpoint.
+        observation: usize,
+    },
     /// Kernel entropy acquisition failed its bounded policy.
     #[error("kernel entropy acquisition failed")]
     Entropy,

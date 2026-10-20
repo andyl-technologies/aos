@@ -35,7 +35,7 @@ use crate::mount_attempt::{
     CurrentMountInventoryReconciliationV1, MountAttemptError, MountAttemptInventoryObservationV1,
     MountAttemptInventoryStatusV1,
 };
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentNamespaceTarget, CurrentRuntimeScope, CurrentRuntimeScopeError};
 
 /// Explains why reconciliation cannot safely select an ordinary next step.

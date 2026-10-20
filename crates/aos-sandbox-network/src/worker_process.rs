@@ -19,7 +19,22 @@
 //! kernel postcondition and cannot be turned into a committed Network result
 //! until the separate observation worker has reproduced the complete state.
 
+pub(crate) mod cgroup_recipe;
+
+use cgroup_recipe::{WorkerCgroupPlacementV4, WorkerCgroupRoleV4};
+
+mod ready_original;
+mod negative_v2;
+pub(crate) use negative_v2::{NetworkWorkerFailureCauseV2, NetworkWorkerFailurePhaseV2, NetworkWorkerNegativeV2, NETWORK_WORKER_NEGATIVE_BYTES_V2};
+mod subject_original;
+mod birth_execution;
+pub(crate) use birth_execution::NetworkWorkerBirthExecutionOriginalV2;
+pub(crate) use subject_original::{NetworkWorkerSubjectOriginalV4, NetworkWorkerExecutionOriginalV4};
+pub(crate) use subject_original::validate_observer_local;
+
 use std::os::fd::OwnedFd;
+
+pub(crate) use ready_original::{NetworkWorkerReadyOriginalV4, NetworkWorkerReadyRefusalV4};
 use std::path::Path;
 
 use aos_sandbox_core::ObjectDigest;
@@ -30,19 +45,20 @@ use aos_sandbox_linux::seqpacket::{ConnectionPeerIdentity, KernelAuthorizedRecor
 
 use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
 
-const READY_MAGIC: &[u8; 8] = b"AOSNRDY1";
-const RESULT_MAGIC: &[u8; 8] = b"AOSNRES1";
-const ACK_MAGIC: &[u8; 8] = b"AOSNACK1";
-const WIRE_VERSION: u16 = 1;
+const READY_MAGIC: &[u8; 8] = b"AOSNRDY2";
+const RESULT_MAGIC: &[u8; 8] = b"AOSNRES2";
+const ACK_MAGIC: &[u8; 8] = b"AOSNACK2";
+const WIRE_VERSION: u16 = 2;
 const MUTATION_ROLE: u8 = 1;
 const SUCCESS_RESULT: u8 = 1;
 const READY_FIXED_BYTES: usize = 32;
 const RESULT_BYTES: usize = 128;
 const ACK_BYTES: usize = 10;
 const MAXIMUM_CGROUP_BYTES: usize = 512;
-const CONTROL_SLICE_CGROUP: &str = "aos.slice/aos-control.slice";
 const NETD_CGROUP_LEAF: &str = "aos-netd.service";
+#[cfg(test)]
 const WORKER_CGROUP_PREFIX: &str = "aos.slice/aos-control.slice/aos-sandbox-network-worker@";
+#[cfg(test)]
 const WORKER_CGROUP_SUFFIX: &str = ".service";
 
 /// Proves the socket connection was accepted by the current systemd manager.
@@ -50,19 +66,7 @@ pub(crate) fn validate_systemd_manager_peer(
     peer: &ConnectionPeerIdentity,
     manager: &RetainedCgroupAnchor,
 ) -> Result<(), NetworkWorkerProcessError> {
-    let credentials = peer.credentials();
-    let info = manager.verify_exact_membership(peer.pidfd())?;
-    if credentials.pid().get() != 1
-        || credentials.uid() != 0
-        || credentials.gid() != 0
-        || info.pid() != 1
-        || info.thread_group_id() != 1
-        || !peer.is_alive()?
-    {
-        return Err(NetworkWorkerProcessError::PeerMismatch);
-    }
-    manager.validate_current()?;
-    Ok(())
+    subject_original::validate_manager_local(peer, manager)
 }
 
 /// Reports a malformed worker record or a substituted process authority.
@@ -91,7 +95,26 @@ impl NetworkWorkerReadyV1 {
         cgroup: String,
         namespace: NamespaceIdentity,
     ) -> Result<Self, NetworkWorkerProcessError> {
-        validate_worker_cgroup(&cgroup)?;
+        Self::new_engine(cgroup, namespace, WorkerCgroupPlacementV4::Ordinary)
+    }
+
+    /// Constructs READY data for the fixed same-F aggregate placement.
+    ///
+    /// # Errors
+    /// Rejects another unit placement, invalid instance or zero namespace.
+    pub(crate) fn new_receiving_v4(
+        cgroup: String,
+        namespace: NamespaceIdentity,
+    ) -> Result<Self, NetworkWorkerProcessError> {
+        Self::new_engine(cgroup, namespace, WorkerCgroupPlacementV4::Receiving)
+    }
+
+    fn new_engine(
+        cgroup: String,
+        namespace: NamespaceIdentity,
+        placement: WorkerCgroupPlacementV4,
+    ) -> Result<Self, NetworkWorkerProcessError> {
+        placement.require_path(&cgroup, WorkerCgroupRoleV4::Preparation)?;
         if namespace.device == 0 || namespace.inode == 0 {
             return protocol("ready namespace identity is zero");
         }
@@ -100,7 +123,7 @@ impl NetworkWorkerReadyV1 {
     }
 
     pub(crate) fn encode(&self) -> Result<Vec<u8>, NetworkWorkerProcessError> {
-        validate_worker_cgroup(&self.cgroup)?;
+        cgroup_recipe::require_constructed_ready_path(&self.cgroup, WorkerCgroupRoleV4::Preparation)?;
         let cgroup = self.cgroup.as_bytes();
         let cgroup_length = u16::try_from(cgroup.len())
             .map_err(|_| NetworkWorkerProcessError::Protocol("ready cgroup is too long"))?;
@@ -125,6 +148,21 @@ impl NetworkWorkerReadyV1 {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, NetworkWorkerProcessError> {
+        Self::decode_engine(bytes, WorkerCgroupPlacementV4::Ordinary)
+    }
+
+    /// Decodes only the receiving placement in the existing canonical V1 wire.
+    ///
+    /// # Errors
+    /// Rejects malformed records and every ordinary or substituted unit path.
+    pub(crate) fn decode_receiving_v4(bytes: &[u8]) -> Result<Self, NetworkWorkerProcessError> {
+        Self::decode_engine(bytes, WorkerCgroupPlacementV4::Receiving)
+    }
+
+    fn decode_engine(
+        bytes: &[u8],
+        placement: WorkerCgroupPlacementV4,
+    ) -> Result<Self, NetworkWorkerProcessError> {
         if bytes.len() < READY_FIXED_BYTES || bytes.len() > READY_FIXED_BYTES + MAXIMUM_CGROUP_BYTES
         {
             return protocol("ready record has an invalid length");
@@ -154,7 +192,7 @@ impl NetworkWorkerReadyV1 {
             .to_owned();
         decoder.finish()?;
 
-        let ready = Self::new(cgroup, namespace)?;
+        let ready = Self::new_engine(cgroup, namespace, placement)?;
         if ready.encode()? != bytes {
             return protocol("ready record is not canonical");
         }
@@ -292,51 +330,6 @@ pub(crate) fn decode_acknowledgement(bytes: &[u8]) -> Result<(), NetworkWorkerPr
     }
 }
 
-/// Validates a READY subject and adopts its sole target namespace descriptor.
-pub(crate) fn validate_worker_ready(
-    ready: &NetworkWorkerReadyV1,
-    subject: &KernelAuthorizedRecordSubject,
-    descriptors: Vec<OwnedFd>,
-    worker_parent: &RetainedCgroupAnchor,
-    host_namespace: &NamespaceFd,
-) -> Result<(RetainedCgroupAnchor, NamespaceFd), NetworkWorkerProcessError> {
-    if descriptors.len() != 1 {
-        return protocol("READY requires exactly one namespace descriptor");
-    }
-    let credentials = subject.credentials();
-    if credentials.uid() != 0 || credentials.gid() != 0 {
-        return Err(NetworkWorkerProcessError::PeerMismatch);
-    }
-    let relative = Path::new(ready.cgroup())
-        .strip_prefix(CONTROL_SLICE_CGROUP)
-        .map_err(|_| NetworkWorkerProcessError::PeerMismatch)?;
-    let worker_cgroup = worker_parent.resolve_descendant(relative)?;
-    let info = worker_cgroup.verify_exact_membership(subject.pidfd())?;
-    if info.pid() != credentials.pid().get() || info.thread_group_id() != credentials.pid().get() {
-        return Err(NetworkWorkerProcessError::PeerMismatch);
-    }
-
-    let mut descriptors = descriptors;
-    let descriptor = descriptors
-        .pop()
-        .ok_or(NetworkWorkerProcessError::Protocol(
-            "READY namespace descriptor is absent",
-        ))?;
-    let target = NamespaceFd::from_owned(descriptor, NamespaceKind::Network)?;
-    let subject_namespace = subject.pidfd().namespace(NamespaceKind::Network)?;
-    if target.identity() != ready.namespace()
-        || target.identity() != subject_namespace.identity()
-        || target.identity() == host_namespace.identity()
-        || !subject.is_alive()?
-    {
-        return Err(NetworkWorkerProcessError::PeerMismatch);
-    }
-    worker_cgroup.verify_exact_membership(subject.pidfd())?;
-    worker_cgroup.validate_current()?;
-    worker_parent.validate_current()?;
-    Ok((worker_cgroup, target))
-}
-
 /// Proves the one request record and host descriptor name the live netd peer.
 pub(crate) fn validate_broker_request(
     peer: &ConnectionPeerIdentity,
@@ -405,33 +398,14 @@ pub(crate) fn validate_exact_worker_subject(
     subject: &KernelAuthorizedRecordSubject,
     worker_cgroup: &RetainedCgroupAnchor,
 ) -> Result<(), NetworkWorkerProcessError> {
-    let credentials = subject.credentials();
-    let info = worker_cgroup.verify_exact_membership(subject.pidfd())?;
-    if credentials.uid() != 0
-        || credentials.gid() != 0
-        || info.pid() != credentials.pid().get()
-        || info.thread_group_id() != credentials.pid().get()
-    {
-        return Err(NetworkWorkerProcessError::PeerMismatch);
-    }
-    worker_cgroup.validate_current()?;
-    Ok(())
+    subject_original::validate_result_local(subject, worker_cgroup)
 }
 
 pub(crate) fn validate_same_worker_execution(
     ready: &KernelAuthorizedRecordSubject,
     result: &KernelAuthorizedRecordSubject,
 ) -> Result<(), NetworkWorkerProcessError> {
-    if !ready.is_alive()?
-        || !result.is_alive()?
-        || ready.credentials() != result.credentials()
-        || ready.initial_info().pid() != result.initial_info().pid()
-        || ready.initial_info().thread_group_id() != result.initial_info().thread_group_id()
-        || ready.initial_info().cgroup_id() != result.initial_info().cgroup_id()
-    {
-        return Err(NetworkWorkerProcessError::PeerMismatch);
-    }
-    Ok(())
+    subject_original::validate_execution_local_v4(ready, result)
 }
 
 fn validate_same_execution(
@@ -450,17 +424,6 @@ fn validate_same_execution(
         return Err(NetworkWorkerProcessError::PeerMismatch);
     }
     Ok(())
-}
-
-fn validate_worker_cgroup(path: &str) -> Result<(), NetworkWorkerProcessError> {
-    let Some(instance) = path
-        .strip_prefix(WORKER_CGROUP_PREFIX)
-        .and_then(|value| value.strip_suffix(WORKER_CGROUP_SUFFIX))
-    else {
-        return Err(NetworkWorkerProcessError::PeerMismatch);
-    };
-    validate_systemd_socket_instance_fields(instance)
-        .map_err(|_| NetworkWorkerProcessError::PeerMismatch)
 }
 
 fn protocol<T>(message: &'static str) -> Result<T, NetworkWorkerProcessError> {
@@ -509,6 +472,36 @@ mod tests {
     }
 
     #[test]
+    fn receiving_ready_keeps_v2_geometry_but_requires_its_exact_expected_aggregate() {
+        let cgroup = "aoscomponents.slice/aoscomponents-network.slice/aos-sandbox-network-worker@0-984321-543_876-0.service".to_owned();
+        let namespace = NamespaceIdentity {
+            device: 23,
+            inode: 29,
+        };
+        let selected = NetworkWorkerReadyV1::new_receiving_v4(cgroup.clone(), namespace).unwrap();
+        let bytes = selected.encode().unwrap();
+
+        assert_eq!(&bytes[..8], READY_MAGIC);
+        assert_eq!(&bytes[8..10], &WIRE_VERSION.to_be_bytes());
+        assert_eq!(bytes.len(), READY_FIXED_BYTES + cgroup.len());
+        assert_eq!(
+            NetworkWorkerReadyV1::decode_receiving_v4(&bytes).unwrap(),
+            selected
+        );
+        assert!(NetworkWorkerReadyV1::decode(&bytes).is_err());
+        assert!(NetworkWorkerReadyV1::new(cgroup, namespace).is_err());
+        let ordinary = ready().encode().unwrap();
+        assert!(NetworkWorkerReadyV1::decode_receiving_v4(&ordinary).is_err());
+        assert_eq!(
+            NetworkWorkerReadyV1::decode(&ordinary)
+                .unwrap()
+                .encode()
+                .unwrap(),
+            ordinary
+        );
+    }
+
+    #[test]
     fn ready_result_and_ack_round_trip_canonically() {
         let ready = ready();
         assert_eq!(
@@ -522,6 +515,24 @@ mod tests {
             result
         );
         decode_acknowledgement(&acknowledgement()).unwrap();
+    }
+
+    #[test]
+    fn v2_worker_records_refuse_the_old_wire_without_a_fallback() {
+        let mut old_ready = ready().encode().unwrap();
+        old_ready[..8].copy_from_slice(b"AOSNRDY1");
+        old_ready[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(NetworkWorkerReadyV1::decode(&old_ready).is_err());
+
+        let mut old_result = result().encode();
+        old_result[..8].copy_from_slice(b"AOSNRES1");
+        old_result[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(NetworkWorkerResultV1::decode(&old_result).is_err());
+
+        let mut old_ack = acknowledgement();
+        old_ack[..8].copy_from_slice(b"AOSNACK1");
+        old_ack[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(decode_acknowledgement(&old_ack).is_err());
     }
 
     #[test]
@@ -680,7 +691,7 @@ mod tests {
 
     #[test]
     fn only_the_exact_reserved_worker_cgroup_language_is_accepted() {
-        assert!(validate_worker_cgroup(ready().cgroup()).is_ok());
+        assert!(WorkerCgroupPlacementV4::Ordinary.require_path(ready().cgroup(), WorkerCgroupRoleV4::Preparation).is_ok());
         for path in [
             "aos.slice/aos-control.slice/aos-sandbox-network-worker@.service",
             "aos.slice/aos-control.slice/aos-sandbox-network-worker@0-984321-543_876-0.scope",
@@ -694,7 +705,7 @@ mod tests {
             "aos.slice/aos-control.slice/aos-sandbox-network-worker@0-984321-543-0.service",
             "aos.slice/aos-control.slice/aos-sandbox-network-worker@0-984321-unknown.service",
         ] {
-            assert!(validate_worker_cgroup(path).is_err(), "{path}");
+            assert!(WorkerCgroupPlacementV4::Ordinary.require_path(path, WorkerCgroupRoleV4::Preparation).is_err(), "{path}");
         }
     }
 }

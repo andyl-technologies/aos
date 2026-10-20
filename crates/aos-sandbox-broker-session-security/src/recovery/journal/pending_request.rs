@@ -93,7 +93,7 @@ impl<'owner> ProtectedPendingBrokerRequestCutV1<'owner> {
         })
     }
 
-    /// Borrows only the original two fixed endpoints of pending Storage46.
+    /// Borrows the same fixed endpoints of pending logical output or Capture nomination.
     pub(super) fn capture_output_registration(
         journal: &'owner mut ProtectedBrokerSessionJournalV1,
         request: &'owner AuthenticatedBrokerMethodRequestV1,
@@ -112,7 +112,8 @@ impl<'owner> ProtectedPendingBrokerRequestCutV1<'owner> {
             || transcript.protocol() != BrokerSessionProtocolV1::Storage
             || !matches!(request.method(),
                 BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
-                | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT)
+                | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+                | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1)
             || !transcript.negotiated_methods().contains(&request.method())
         {
             return Err(BrokerSessionSecurityError::Currentness);

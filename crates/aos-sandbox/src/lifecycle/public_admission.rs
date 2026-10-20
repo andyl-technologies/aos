@@ -6,6 +6,14 @@
 //! request's already-validated predecessor version or the protected current
 //! runtime assignment; they are never inferred from a successor projection.
 
+#[cfg(target_os = "linux")]
+mod delete_candidate;
+#[cfg(target_os = "linux")]
+pub(crate) use delete_candidate::{
+    DeleteCandidateOperationErrorV2, authorized_delete_operation_data_v2,
+    delete_candidate_projection_generation_data_v2,
+};
+
 use aos_proto::aos::sandbox::v1::MutationContext;
 use aos_sandbox_core::{
     DesiredGeneration, ExecutionId, NodeId, OperationId, ProjectId, ResourceId, Revision,
@@ -105,6 +113,38 @@ pub fn lifecycle_desired_state_semantic_commit_v1(
     operation: &LifecycleOperationV1,
     committed_at: LifecycleTimeV1,
 ) -> Result<LifecycleMethodSemanticCommitV1, LifecyclePublicMutationAdmissionErrorV1> {
+    lifecycle_desired_state_semantic_commit_with_facts_v1(
+        journal, operation, committed_at, Vec::new(), Vec::new(),
+        LifecycleSemanticEvidenceV1::default(),
+    )
+}
+
+// The actual first Start builder has one target write and preserved logical
+// assignment, with no read/reservation rows. The existing Source record invoice
+// separately prices prepared/replayed copies; these are the additional builder
+// model, fixed fact vectors and its exact canonical digest-encoding temporary.
+pub(crate) fn start_semantic_commit_receiving_demand_v2(journal: &Journal)
+    -> Option<aos_sandbox_core::ResourceVector> {
+    let projections = aos_sandbox_protocol::public_api::projection::operation_list_receiving_bytes_v3(
+        journal.records(crate::RecordNamespace::DesiredState))?;
+    let fixed = std::mem::size_of::<LifecycleMethodSemanticCommitV1>()
+        .checked_add(std::mem::size_of::<LifecycleCommittedResourceV1>())?
+        .checked_add(std::mem::size_of::<super::LifecycleAssignmentCommitFactV1>())?
+        .checked_add(super::semantic_format::start_semantic_fact_encoded_length_v2().ok()?)?;
+    Some(aos_sandbox_core::ResourceVector::ZERO.with(aos_sandbox_core::ResourceDimension::MemoryBytes,
+        u64::try_from(projections.checked_add(fixed)?).ok()?))
+}
+
+// Only specialized Native callers supply actual method facts. This shared
+// recipe remains pure comparison DATA; it cannot write Source or public state.
+pub(crate) fn lifecycle_desired_state_semantic_commit_with_facts_v1(
+    journal: &Journal,
+    operation: &LifecycleOperationV1,
+    committed_at: LifecycleTimeV1,
+    assignments: Vec<super::LifecycleAssignmentCommitFactV1>,
+    reservations: Vec<super::LifecycleReservationCommitFactV1>,
+    evidence: LifecycleSemanticEvidenceV1,
+) -> Result<LifecycleMethodSemanticCommitV1, LifecyclePublicMutationAdmissionErrorV1> {
     let target = semantic_target(operation.intent());
     let projections =
         PublicProjectionStoreV1::new(journal).list_operation(operation.operation_id())?;
@@ -179,8 +219,8 @@ pub fn lifecycle_desired_state_semantic_commit_v1(
         cas,
         reads,
         resources: vec![write],
-        assignments: Vec::new(),
-        reservations: Vec::new(),
+        assignments,
+        reservations,
     };
     let sequence = journal.snapshot_sequence();
     let journal_commit = LifecycleJournalCommitDigestV1::commit(
@@ -195,7 +235,7 @@ pub fn lifecycle_desired_state_semantic_commit_v1(
     LifecycleMethodSemanticCommitV1::new(
         witness,
         facts,
-        LifecycleSemanticEvidenceV1::default(),
+        evidence,
         operation.intent(),
         operation.expectations(),
     )
@@ -679,8 +719,14 @@ fn current_target_fence(
 fn current_expectation(
     projection: PublicProjectionRecordV1,
 ) -> Result<ResourceExpectationV1, LifecyclePublicMutationAdmissionErrorV1> {
+    current_expectation_data_v2(&projection)
+}
+
+fn current_expectation_data_v2(
+    projection: &PublicProjectionRecordV1,
+) -> Result<ResourceExpectationV1, LifecyclePublicMutationAdmissionErrorV1> {
     let resource = projection_resource(projection.resource())?;
-    let generation = projection_generation(&projection)?;
+    let generation = projection_generation(projection)?;
     let state = LifecycleResourceStateDigestV1::from_stored(projection.revision())?;
     Ok(ResourceExpectationV1::present(
         resource,

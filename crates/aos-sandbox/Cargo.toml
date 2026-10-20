@@ -6,20 +6,21 @@ license.workspace = true
 
 [features]
 # Selects protected remote contracts and orchestration explicitly.
-# Local lease issuance and snapshot inventory remain available without it.
+# The local issuer is a separate protected crate; snapshot inventory remains local.
 multi-node = ["dep:aos-sandbox-coordinator-protocol"]
 # Compiles private fixed-helper mechanics without installing an authority caller.
 git-helper-mechanics = []
 # Run explicitly in the AOS kernel-test VM, outside the package-build sandbox.
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 # Enables a private-directory protected-journal opener for dependent crate tests.
-test-fixtures = ["aos-sandbox-journal/test-fixtures"]
+test-fixtures = ["aos-sandbox-journal/test-fixtures", "aos-sandbox-broker/test-fixtures"]
 # Only the isolated KVM fixture can prepare an inert Cache hold and empty manifest.
 cache-physical-join-vm-fixture = []
 # Only a debug VM probe can seed nonauthorizing original-Effect history.
 project-negative-recovery-vm-fixture = []
 
 [dependencies]
+aos-sandbox-ownership-protocol.workspace = true
 aos-filesystem-view-core.workspace = true
 aos-proto.workspace = true
 aos-sandbox-coordinator-protocol = { workspace = true, optional = true }
@@ -30,17 +31,19 @@ aos-sandbox-broker.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-journal = { workspace = true, features = ["protected-unix"] }
 aos-sandbox-policy.workspace = true
-aos-sandbox-ownership-protocol.workspace = true
-aos-sandbox-ownership.workspace = true
 aos-sandbox-protocol.workspace = true
+aos-sandbox-publisher.workspace = true
+aos-sandbox-ledger-replay.workspace = true
+aos-sandbox-source.workspace = true
 aos-sandbox-source-provider-ledger.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 axum.workspace = true
+blake3.workspace = true
 buffa.workspace = true
 connectrpc.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 futures.workspace = true
-rustix = { workspace = true, features = ["event", "fs", "net", "process", "rand", "time"] }
+rustix = { workspace = true, features = ["event", "fs", "net", "param", "process", "rand", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -62,6 +65,9 @@ rustls-pemfile.workspace = true
 tokio-rustls.workspace = true
 
 [dev-dependencies]
+aos-sandbox-broker = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-ledger-replay = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-ownership = { workspace = true, features = ["test-fixtures"] }
 aos-sandbox-journal = { workspace = true, features = ["test-fixtures"] }
 aos-sandbox-protocol = { workspace = true, features = ["test-fixtures"] }
 hex.workspace = true

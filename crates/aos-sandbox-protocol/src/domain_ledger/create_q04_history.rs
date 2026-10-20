@@ -16,6 +16,9 @@
 //! AOSQ4J01 | version=1 | historical publication response | checksum
 //! ```
 
+/// Shares the lower-clear frame digest and exact recipe DATA errors.
+pub mod recipes;
+
 use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use sha2::{Digest as _, Sha256};
@@ -58,6 +61,12 @@ pub const DECISION_BYTES: usize = 384;
 pub const MAXIMUM_CLAIM_BYTES: usize = 1024 * 1024;
 /// The established maximum payload size of one transfer chunk.
 pub const CLAIM_CHUNK_BYTES: usize = 3072;
+/// Bounds the canonical original Claim index.
+pub const CLAIM_INDEX_BYTES: usize = 96;
+/// Bounds the canonical Claim or Preview chunk prefix.
+pub const CLAIM_CHUNK_PREFIX_BYTES: usize = 96;
+/// Bounds the canonical Preview or Prehold index.
+pub const PREVIEW_INDEX_BYTES: usize = 48;
 /// The canonical historical prehold-publication response width.
 pub const PREHOLD_RESPONSE_BYTES: usize = 504;
 const IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.create-q04.cut-identity.v1\0";
@@ -1026,3 +1035,96 @@ pub fn chunk_count(total: usize, maximum: usize) -> Result<u16, Q04HistoryDataEr
         / CLAIM_CHUNK_BYTES;
     u16::try_from(count).map_err(|_| Q04HistoryDataErrorV1::Bounds)
 }
+
+/// Bounded transfer and untrusted Preview comparison DATA.
+pub mod transfer;
+
+/// Reconstructs the historical consumed subgate without issuing an effect grant.
+///
+/// # Errors
+///
+/// Rejects malformed identity or decision fields and a changed subgate relation.
+pub fn root_consumed_gate_record_v1(
+    identity: &Q04CutIdentityV1,
+    decision: &Q04RootDecisionV1,
+) -> Result<Q04EffectSubgateV1, ProtectedHistoryDataErrorV1> {
+    let mut body = [0; GATE_BYTES];
+    body[16..48].copy_from_slice(identity.digest().as_bytes());
+    body[48..80].copy_from_slice(identity.binding().as_bytes());
+    body[80..96].copy_from_slice(&identity.publication_id());
+    body[96..128].copy_from_slice(identity.policy_current().as_bytes());
+    body[128..160].copy_from_slice(decision.digest().as_bytes());
+    body[160..176].copy_from_slice(&identity.stage_id());
+    body[176..184].copy_from_slice(&identity.accepted_generation().to_be_bytes());
+    body[184] = 1;
+    body[224..256].copy_from_slice(identity.gen1_floor().as_bytes());
+    let gate = Q04EffectSubgateV1::from_body(body)?;
+    gate.require_identity(identity, decision)?;
+    Ok(gate)
+}
+
+/// Compares a cut with original clock and authenticated-stream context DATA.
+///
+/// All inputs are comparison DATA. A successful comparison creates no native
+/// origin, currentness, prehold, stream or Cache mutation continuation.
+#[must_use]
+pub fn matches_original_q04_cut_context_data_v1(
+    identity: &Q04CutIdentityV1,
+    original: aos_sandbox_core::RawPairedClockSample,
+    nonce: [u8; 16],
+    metadata: &[u8; 32],
+    response: &Q04PreholdPublicationDataV1,
+) -> bool {
+    let cut = identity.bytes();
+    let reply = response.bytes();
+    identity.nonce() == nonce
+        && cut[112..128] == original.host_boot_id()
+        && cut[128..136] == original.boottime_nanoseconds().to_be_bytes()
+        && cut[112..128] == metadata[..16]
+        && cut[144..160] == metadata[16..32]
+        && cut[168..200] == reply[128..160]
+        && cut[296..328] == reply[288..320]
+        && cut[328..392] == reply[320..384]
+        && cut[392..424] == reply[64..96]
+        && cut[520..584] == reply[160..224]
+        && cut[616..648] == reply[256..288]
+}
+
+/// Compares one Root phase with its complete original acknowledgement context.
+///
+/// Historical comparison does not supply the stream, clock or phase authority.
+/// The caller independently retains the actual original that produced the DATA.
+///
+/// # Errors
+/// Preserves a malformed native transaction recipe or historical predecessor.
+pub fn matches_original_q04_root_phase_data_v1(
+    phase: &Q04PhaseRecordV1,
+    expected_phase: u8,
+    identity: &Q04CutIdentityV1,
+    decision: &Q04RootDecisionV1,
+    gate: &Q04EffectSubgateV1,
+    acknowledgement: ObjectDigest,
+    prior: Option<&Q04PhaseRecordV1>,
+) -> Result<bool, ProtectedHistoryDataErrorV1> {
+    if phase.phase() != expected_phase
+        || phase.bytes()[96..128] != *decision.digest().as_bytes()
+        || phase.bytes()[128..160] != *gate.digest().as_bytes()
+        || phase.acknowledgement() != acknowledgement
+        || phase.native_transaction_id() != Q04TransactionOwnerV1::Root.transaction_id(
+            identity, phase.phase(), ObjectDigest::from_bytes(fixed(phase.bytes(), 64)),
+        )?
+    {
+        return Ok(false);
+    }
+    if let Some(prior) = prior { phase.require_successor(prior)?; }
+    Ok(true)
+}
+
+/// Bounds refreshed Source replies in the closed original Q04 programme.
+///
+/// The initial Source reply is additional. This is wire-programme geometry,
+/// independent of the separate Source native transaction frame counts.
+pub const Q04_ORIGINAL_SOURCE_REFRESH_COUNT_V1: usize = 11;
+
+/// Selects the existing closed Q04 query on the original Root endpoint.
+pub const Q04_ORIGINAL_QUERY_MAGIC_V1: &[u8; 8] = b"AOSSGQ04";

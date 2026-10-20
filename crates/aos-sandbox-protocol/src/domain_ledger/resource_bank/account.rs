@@ -37,7 +37,7 @@ pub fn reserve_head(
         || claim.tree_revision != before.tree_revision
         || !matches!(
             (before.kind, claim.purpose),
-            (AccountKind::Sandbox, ClaimPurpose::Snapshot)
+            (AccountKind::Sandbox, ClaimPurpose::Snapshot | ClaimPurpose::CreateStorageUse)
                 | (AccountKind::Project, ClaimPurpose::ProjectPreparation)
         )
     {
@@ -71,11 +71,21 @@ pub fn settled_pair(
     {
         return Err(ResourceBankDataError::Conflict);
     }
+    // Whole-service and exclusive operation capacities remain reserved.
+    // Finishing one flight never refunds or releases their permanent backing.
+    if matches!(previous_claim.purpose, ClaimPurpose::StorageReceiving
+        | ClaimPurpose::DeleteOperationIntake | ClaimPurpose::ExecutionOperationIntake
+                | ClaimPurpose::HostExecutionPrepare | ClaimPurpose::HostExecutionAccept)
+    {
+        return Err(ResourceBankDataError::Conflict);
+    }
     if matches!(
         previous_claim.purpose,
         ClaimPurpose::ControllerFirstGlobalPrefix
             | ClaimPurpose::NixOriginalStartIntake
             | ClaimPurpose::Q04OriginalIntake
+            | ClaimPurpose::CreateContinuationIntake
+            | ClaimPurpose::CreateStorageUse
     ) && !committed
     {
         return Err(ResourceBankDataError::Conflict);
@@ -308,6 +318,13 @@ impl AccountMutation<'_> {
                 settlement::encode(binding)?.to_vec(),
             ));
         }
+        if let Some(binding) = self.create_use.filter(|_| self.previous_claim.is_none()) {
+            records.push(JournalRecord::put(
+                RecordNamespace::ControllerResourceReservation,
+                replay::key(super::create_use::PREFIX, binding.claim_id()).to_vec(),
+                binding.encode()?.to_vec(),
+            ));
+        }
         Ok(JournalTransaction::new(*self.transaction_id, records)
             .map_err(ResourceBankDataError::Transaction)?)
     }
@@ -328,6 +345,7 @@ impl AccountMutation<'_> {
                 != 2 + usize::from(self.child.is_some())
                     + usize::from(self.preparation.is_some())
                     + usize::from(self.terminal.is_some())
+                    + usize::from(self.create_use.is_some() && self.previous_claim.is_none())
         {
             return Err(ResourceBankDataError::Conflict);
         }
@@ -384,6 +402,7 @@ impl AccountMutation<'_> {
             ClaimPurpose::ControllerFirstGlobalPrefix
                 | ClaimPurpose::NixOriginalStartIntake
                 | ClaimPurpose::Q04OriginalIntake
+                | ClaimPurpose::CreateContinuationIntake
         ) && encoded_transaction_append_bytes(transaction)?
             != first_global_prefix_append_bytes()?
         {
@@ -451,6 +470,20 @@ impl AccountMutation<'_> {
                 settlement::require_predecessor(state, binding, self)?;
             }
             (ClaimPurpose::Q04Preparation, _) | (_, Some(_)) => {
+                return Err(ResourceBankDataError::Conflict);
+            }
+            (_, None) => {}
+        }
+        match (self.claim.purpose, self.create_use) {
+            (ClaimPurpose::CreateStorageUse, Some(binding)) => {
+                binding.require_transition(state, self)?;
+                if self.previous_claim.is_none() && !matches_record(
+                    &records[2], super::create_use::PREFIX, binding.claim_id(), &binding.encode()?,
+                ) {
+                    return Err(ResourceBankDataError::Conflict);
+                }
+            }
+            (ClaimPurpose::CreateStorageUse, None) | (_, Some(_)) => {
                 return Err(ResourceBankDataError::Conflict);
             }
             (_, None) => {}

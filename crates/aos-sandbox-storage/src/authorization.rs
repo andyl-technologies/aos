@@ -5,6 +5,12 @@
 //! the shared broker verifier, then seals its pending fence/effect records for
 //! atomic persistence beside the storage transaction intent.
 
+mod capture;
+pub(crate) use capture::{VerifiedCaptureReserveOngoingAdmissionV3, VerifiedCaptureQueryOngoingAdmissionV3};
+
+mod initial_configuration;
+pub(crate) use initial_configuration::StorageProtectedConfigurationConversionV1;
+
 use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{ApplyStorageRequest, BrokerMethod};
@@ -39,6 +45,30 @@ use sha2::{Digest as _, Sha256};
 use crate::StorageStateKey;
 use crate::workspace_pin::{WorkspacePinActionV1, WorkspacePinAttemptV1};
 use crate::workspace_repair::StorageWorkspacePinRepairIntentV1;
+
+/// Counts the existing bounded Core plan/lease materialization before decode.
+///
+/// Both Prepare and Apply use this same passive recipe. Its finite declared
+/// grant-vector capacity covers early/truncated input, while actual artifact
+/// bytes cover their canonical/borrowed/validated copies. No new authority or
+/// namespace entry is created by these pure parser models.
+pub(crate) fn receiving_authorization_memory_v1(
+    artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+) -> Result<u64, aos_sandbox_core::AccountingError> {
+    use crate::receiving_demand::{add, count, multiply};
+    let artifact_bytes = [artifacts.broker_plan(), artifacts.broker_plan_signature(),
+        artifacts.ownership_lease(), artifacts.ownership_lease_signature()]
+        .into_iter().try_fold(0, |bytes, artifact| add(bytes, count(artifact.len())?))?;
+    let cells = count(aos_sandbox_core::broker_authorization::MAX_BROKER_PLAN_GRANTS)?;
+    let cell = count(std::mem::size_of::<aos_sandbox_core::BrokerGrant>()
+        + std::mem::size_of::<aos_sandbox_core::FeatureRef>())?;
+    let models = count(std::mem::size_of::<aos_sandbox_core::BrokerAuthorizationPlan>()
+        + std::mem::size_of::<aos_sandbox_core::OwnershipLease>()
+        + std::mem::size_of::<aos_sandbox_core::model::Signature>()
+        + std::mem::size_of::<aos_sandbox_core::model::KeyReference>())?;
+    add(add(multiply(artifact_bytes, 16)?, multiply(multiply(cells, cell)?, 16)?)?,
+        multiply(models, 16)?)
+}
 
 const PIN_RECEIPT_DOMAIN: [u8; 16] = *b"AOSSTGPINRECV001";
 const PREPARATION_RECORD_DOMAIN: [u8; 16] = *b"AOSSTGPREPV10001";
@@ -307,11 +337,17 @@ pub(crate) struct VerifiedStoragePreparationAdmissionV1 {
     request_id: [u8; 16],
 }
 
-/// Borrows only the real verified selected Prepare for a final clock restriction.
+#[derive(Clone, Copy)]
+enum StoragePreparationInputV1<'original> {
+    Nix(&'original aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1),
+    Ordinary(&'original CanonicalStoragePreparationSemanticsV1),
+}
+
+/// Borrows the real verified Prepare for a final clock restriction.
 pub(crate) struct StoragePreparationNativeAdmissionV1<'original> {
     authority: &'original StorageAuthorityV1,
     admission: &'original VerifiedStoragePreparationAdmissionV1,
-    selected: &'original aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1,
+    input: StoragePreparationInputV1<'original>,
 }
 
 impl StoragePreparationNativeAdmissionV1<'_> {
@@ -319,9 +355,14 @@ impl StoragePreparationNativeAdmissionV1<'_> {
         &'transaction self,
         transaction: &'transaction aos_sandbox::JournalTransaction,
     ) -> Result<aos_sandbox_broker::StoragePrepareNativeClockLoanV1<'transaction>, StorageAdmissionError> {
-        self.authority.0.borrow_nix_storage_prepare_native_clock(
-            &self.admission.admission, self.selected, transaction,
-        )
+        match self.input {
+            StoragePreparationInputV1::Nix(selected) => self.authority.0.borrow_nix_storage_prepare_native_clock(
+                &self.admission.admission, selected, transaction,
+            ),
+            StoragePreparationInputV1::Ordinary(preparation) => self.authority.0.borrow_ordinary_storage_prepare_native_clock(
+                &self.admission.admission, preparation, transaction,
+            ),
+        }
     }
 }
 
@@ -536,6 +577,12 @@ impl StorageAuthorityV1 {
         path: impl AsRef<Path>,
     ) -> Result<Self, StorageAuthorityConfigError> {
         BrokerAuthority::from_protected_directory(path, BrokerDomain::Storage).map(Self)
+    }
+
+    // This crate-private borrow reaches the SAME already enrolled verifier.
+    // It cannot construct or replace anchors, a local admission or an effect.
+    pub(crate) fn root_export_authority_v2(&self) -> &BrokerAuthority {
+        &self.0
     }
 
     pub(crate) fn admit(
@@ -1029,7 +1076,17 @@ impl StorageAuthorityV1 {
         admission: &'original VerifiedStoragePreparationAdmissionV1,
         selected: &'original aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1,
     ) -> StoragePreparationNativeAdmissionV1<'original> {
-        StoragePreparationNativeAdmissionV1 { authority: self, admission, selected }
+        StoragePreparationNativeAdmissionV1 { authority: self, admission, input: StoragePreparationInputV1::Nix(selected) }
+    }
+
+    pub(crate) fn borrow_ordinary_preparation_native_admission<'original>(
+        &'original self,
+        admission: &'original VerifiedStoragePreparationAdmissionV1,
+        preparation: &'original CanonicalStoragePreparationSemanticsV1,
+    ) -> StoragePreparationNativeAdmissionV1<'original> {
+        StoragePreparationNativeAdmissionV1 {
+            authority: self, admission, input: StoragePreparationInputV1::Ordinary(preparation),
+        }
     }
 
     pub(crate) fn check_preparation_before_effect<F>(

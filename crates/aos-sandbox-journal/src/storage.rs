@@ -18,6 +18,11 @@ use std::os::unix::fs::FileExt as _;
 
 use crate::framing::{FrameError, append_and_sync};
 
+#[cfg(all(unix, feature = "protected-unix"))]
+mod readonly_cursor;
+#[cfg(all(unix, feature = "protected-unix"))]
+pub use readonly_cursor::{JournalReadIdentityDataV1, ReadOnlyCapturedFileCursorV1};
+
 /// Retains supplied native files and permanent append uncertainty.
 ///
 /// This owner does not establish that either file has been locked, protected,
@@ -94,19 +99,52 @@ impl NativeJournalStorage {
     /// for overflow or a resulting length above `maximum`. Metadata failure
     /// precedes classification of an overflowing frame-byte sum.
     pub fn expected_append_length(
+        &self, frames: &[Vec<u8>], maximum: u64,
+    ) -> Result<u64, FrameError> {
+        self.expected_append_length_engine(frames, maximum, None)
+    }
+
+    /// Retains actual successful metadata before a later expected-length refusal.
+    ///
+    /// Metadata errors move unchanged into the returned FrameError; a successful
+    /// Metadata is kept beside that outer whole outcome rather than dropped.
+    /// The empty destination belongs to the prearmed original stage.
+    ///
+    /// # Errors
+    /// Preserves the ordinary metadata/arithmetic/configured-bound order.
+    pub fn expected_append_length_retaining_v1(
+        &self, frames: &[Vec<u8>], maximum: u64,
+        metadata: &mut Option<std::fs::Metadata>,
+    ) -> Result<u64, FrameError> {
+        if metadata.is_some() {
+            return Err(FrameError::MissingRetainedPayload);
+        }
+        self.expected_append_length_engine(frames, maximum, Some(metadata))
+    }
+
+    fn expected_append_length_engine(
         &self,
         frames: &[Vec<u8>],
         maximum: u64,
+        metadata_original: Option<&mut Option<std::fs::Metadata>>,
     ) -> Result<u64, FrameError> {
         let additional_bytes = frames
             .iter()
             .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64));
-        let expected_length = self
-            .file
-            .metadata()?
-            .len()
-            .checked_add(additional_bytes.ok_or(FrameError::JournalTooLarge)?)
-            .ok_or(FrameError::JournalTooLarge)?;
+        let metadata = self.file.metadata()?;
+        let expected_length = (|| {
+            metadata.len()
+                .checked_add(additional_bytes.ok_or(FrameError::JournalTooLarge)?)
+                .ok_or(FrameError::JournalTooLarge)
+        })();
+        if let Some(original) = metadata_original {
+            *original = Some(metadata);
+        } else {
+            // The old temporary Metadata drops at the end of the checked
+            // expression, before the later configured maximum comparison.
+            drop(metadata);
+        }
+        let expected_length = expected_length?;
         if expected_length > maximum {
             return Err(FrameError::JournalTooLarge);
         }

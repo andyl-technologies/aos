@@ -381,6 +381,48 @@ impl NetworkKernelPlanV1 {
     }
 }
 
+/// Measures the bounded compile/decode plane before protected policy is resolved.
+///
+/// The existing policy and allocation remain held by the catalog. Compilation
+/// converts address/route vectors, creates the first canonical bytes, and then
+/// independently decodes and re-encodes them. The returned expectation owns its
+/// decoded endpoint/flow vectors, copied addresses/routes and interface names.
+/// These are sequential vectors and byte buffers, with no named map entries.
+pub(crate) fn compilation_receiving_demand_v4()
+    -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>
+{
+    use aos_sandbox_core::{AccountingError, ResourceDimension as D, ResourceVector};
+    use std::mem::{align_of, size_of};
+
+    let overflow = || AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes };
+    let flows = MAXIMUM_ENDPOINTS.checked_mul(MAXIMUM_FLOWS_PER_ENDPOINT).ok_or_else(overflow)?;
+    let vectors = MAXIMUM_ADDRESS_PAIRS.checked_mul(size_of::<wire::KernelAddressPair>())
+        .and_then(|bytes| bytes.checked_add(MAXIMUM_ROUTES.checked_mul(size_of::<wire::KernelRoute>())?))
+        .and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|bytes| bytes.checked_add(MAXIMUM_ADDRESS_PAIRS.checked_mul(size_of::<crate::ExpectedAddressPairV1>())?))
+        .and_then(|bytes| bytes.checked_add(MAXIMUM_ROUTES.checked_mul(size_of::<crate::ExpectedRouteV1>())?))
+        .and_then(|bytes| bytes.checked_add(MAXIMUM_ENDPOINTS.checked_mul(size_of::<NetworkEndpointPolicyV1>())?))
+        .and_then(|bytes| bytes.checked_add(flows.checked_mul(size_of::<NetworkFlowPolicyV1>())?))
+        .ok_or_else(overflow)?;
+
+    // The initial encoding, canonical comparison and final owned bytes can be
+    // co-live. Names are two fixed 16-byte fields; digest encoders use at most
+    // one 18-byte address/prefix buffer and one 24-byte flow buffer at a time.
+    let backing = MAXIMUM_PLAN_BYTES.checked_mul(3)
+        .and_then(|bytes| bytes.checked_add(vectors))
+        .and_then(|bytes| bytes.checked_add(2 * 16 + 18 + 24))
+        .ok_or_else(overflow)?;
+    let frames = size_of::<NetworkKernelPlanV1>().checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(size_of::<wire::DecodedNamespace>().checked_mul(2)?))
+        .and_then(|bytes| bytes.checked_add(size_of::<crate::NetworkKernelExpectationV1>()))
+        .and_then(|bytes| bytes.checked_add(size_of::<NetworkPolicyProgramV1>()))
+        .and_then(|bytes| bytes.checked_add(align_of::<NetworkKernelPlanV1>()))
+        .ok_or_else(overflow)?;
+    let bytes = backing.checked_add(frames)
+        .and_then(|bytes| u64::try_from(bytes).ok()).ok_or_else(overflow)?;
+    Ok(ResourceVector::ZERO.with(D::MemoryBytes, bytes))
+}
+
 fn expected_address_pair(pair: wire::KernelAddressPair) -> crate::ExpectedAddressPairV1 {
     crate::ExpectedAddressPairV1 {
         host: expected_address(pair.host),
@@ -563,6 +605,43 @@ mod tests {
                 .collect(),
             digest: namespace.digest(),
         }
+    }
+
+    #[test]
+    fn compile_receiving_covers_maximum_policy_tail_without_named_field_fees() {
+        let flows = (0..super::MAXIMUM_FLOWS_PER_ENDPOINT).map(|index| {
+            NetworkFlowPolicyV1::new(
+                NetworkFlowDirectionV1::Egress,
+                NetworkTransportProtocolV1::Tcp,
+                NetworkIpPrefixV1::ipv4([198, 51, 100, index as u8], 32).unwrap(),
+                Some(NetworkPortRangeV1::new(443, 443).unwrap()),
+            ).unwrap()
+        }).collect::<Vec<_>>();
+        let endpoints = (1..=super::MAXIMUM_ENDPOINTS).map(|index| {
+            let mut id = [0; 16];
+            id[14..].copy_from_slice(&(index as u16).to_be_bytes());
+            NetworkEndpointPolicyV1::new(NetworkEndpointId::from_bytes(id), flows.clone()).unwrap()
+        }).collect();
+        let policy = NetworkPolicyProgramV1::new(NetworkKind::Outbound,
+            ObjectDigest::from_bytes([0x55; 32]), Some(ObjectDigest::from_bytes([0x66; 32])), endpoints).unwrap();
+        let allocation = NetworkAllocationPolicyV1::veth(1_500, [0x02, 0xaa, 0xbb],
+            vec![NetworkAddressPoolV1::new(NetworkIpPrefixV1::ipv4([192, 0, 0, 0], 17).unwrap()).unwrap()],
+            Vec::new()).unwrap();
+        let namespace = NetworkNamespacePlanV1::derive([0x77; 32], 1,
+            ObjectDigest::from_bytes([0x88; 32]), &policy, &allocation).unwrap();
+
+        let plan = NetworkKernelPlanV1::compile(assignment(), &namespace, &policy).unwrap();
+        let demand = super::compilation_receiving_demand_v4().unwrap();
+        let owned_policy = plan.observation_expectation().policy();
+        let policy_bytes = owned_policy.endpoints().len() * std::mem::size_of::<NetworkEndpointPolicyV1>()
+            + owned_policy.endpoints().iter().map(|endpoint|
+                endpoint.flows().len() * std::mem::size_of::<NetworkFlowPolicyV1>()).sum::<usize>();
+        let live_bytes = plan.as_bytes().len() * 3 + policy_bytes;
+
+        assert_eq!(NetworkKernelPlanV1::decode(plan.as_bytes()).unwrap(), plan);
+        assert!(demand.get(aos_sandbox_core::ResourceDimension::MemoryBytes) >= live_bytes as u64);
+        assert_eq!(demand.get(aos_sandbox_core::ResourceDimension::MetadataEntries), 0);
+        assert_eq!(demand.get(aos_sandbox_core::ResourceDimension::OpenFiles), 0);
     }
 
     #[test]

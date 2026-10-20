@@ -104,6 +104,28 @@ pub struct NetworkLifecycleWorkerDispatchV1 {
 }
 
 impl NetworkLifecycleWorkerDispatchV1 {
+    /// Measures the exact canonical output without allocation, encoding or IO.
+    ///
+    /// This is passive sizing DATA for the genuine parent's complete receiving
+    /// and frame quote. It does not authenticate a dispatch or lend an effect.
+    pub(crate) fn encoded_length_data_v2(&self) -> Option<usize> {
+        self.context.validate().ok()?;
+        if self.request_id == [0; 16] || self.effect_digest.as_bytes() == &[0; 32] {
+            return None;
+        }
+        let catalog = crate::catalog::authenticated_resolution_encoded_length_data_v2(
+            &self.catalog.resolution)?;
+        let lengths = [
+            self.request_body.len(), self.kernel_plan.as_bytes().len(), catalog,
+            self.catalog.sealed.len(), CONTEXT_BYTES, self.current_fence.len(),
+            self.operation_fence.len(), self.effect.len(), self.dispatch.len(),
+        ];
+        let total = lengths.into_iter().try_fold(REQUEST_HEADER_BYTES,
+            |total, bytes| total.checked_add(bytes))?;
+        validate_lengths(lengths, total).ok()?;
+        Some(total)
+    }
+
     /// Returns the untrusted durable request identifier.
     #[must_use]
     pub const fn request_id(&self) -> [u8; 16] {

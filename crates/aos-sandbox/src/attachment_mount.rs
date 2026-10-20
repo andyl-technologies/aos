@@ -55,7 +55,7 @@ use crate::mount_preparation::{
     PreparedCurrentMountDispatchV1, PreparedCurrentMountReleaseDispatchV1,
     PreparedCurrentMountReleaseV1,
 };
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentNamespaceTarget, CurrentRuntimeScope, CurrentRuntimeScopeError};
 use crate::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, Journal};
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;

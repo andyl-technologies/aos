@@ -316,7 +316,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     pub fn consume_sent_provider_outcome(
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
-        catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        catalog_journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     ) -> Result<()> {
         self.require_no_original_native_flight()?;
         let sent = self
@@ -405,7 +405,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     pub fn recover_cold_provider_outcome(
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
-        catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        catalog_journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     ) -> Result<()> {
         self.require_no_original_native_flight()?;
         if self.runtime.pending_provider.is_some() {
@@ -510,7 +510,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     pub fn recover_persisted_cold_provider_outcome(
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
-        catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        catalog_journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         historical: aos_sandbox_source_provider::FixedProviderHistoricalOutcomeV1,
     ) -> Result<()> {
         self.require_no_original_native_flight()?;

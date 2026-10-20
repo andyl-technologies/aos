@@ -16,11 +16,13 @@ pub(super) use store::{
 };
 
 pub(crate) use store::{
-    BrokerSidecarStoreV1, CHECKPOINT_KEY, FinalSuffixPreflightV1, INTENT_KEY,
+    StorageFinalSuffixPreflightV2,
+    BrokerFloorReadOriginalV1, BrokerSidecarStoreV1, CHECKPOINT_KEY, FinalSuffixPreflightV1, INTENT_KEY,
     StoredBrokerFloorV1, StoredFloorDataV1, StoredFloorDataViewV1, TRANSACTION_KEY, sidecar_limits,
 };
 
 pub(crate) use digest::{
+    FloorHeadCutOriginalV3, FloorHeadTransactionOriginalV3,
     broker_cut_from_records_v1, broker_transaction_digest_v1, hash_parts,
     sidecar_sequence_v1, successor_sequence,
     online_cut_from_records_v1, online_transaction_digest_v1,
@@ -102,6 +104,15 @@ pub(crate) enum FloorRecoveryV1 {
 /// Reports the original redacted Broker floor failure categories.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum FloorErrorV1 {
+    /// The actual selected Controller physical owner retained its first cause.
+    #[error("TPM floor retained Controller physical operation failed")]
+    RetainedControllerPhysical,
+    /// A selected native writer comparison retained its original failure.
+    #[error("TPM floor retained journal currentness observation failed")]
+    RetainedJournalCurrentness {
+        /// Fixed failed/owed observation slot in the original Security owner.
+        observation: usize,
+    },
     /// The fixed framing, fields or arithmetic are noncanonical.
     #[error("TPM floor encoding is noncanonical")]
     Encoding,

@@ -156,14 +156,14 @@ fn strict_after_append_readback_keeps_pending_and_exact_domain_error() {
     let mut prepared = plan(&adapter, &mut gate);
     let digest = prepared.transaction_digest();
     // Private DATA corruption after genuine plan: no production constructor.
-    prepared.after[0].push(0);
+    prepared.data.after[0].push(0);
     match adapter.commit_strict_with_retained_cache_gate_v1(prepared, &mut gate) {
         Err(RetainedCommitFailureV1::AfterAppendReadback {
             pending,
             cause: ProtectedDomainJournalErrorV1::CompareAndSwapFailed,
         }) => {
             assert_eq!(pending.prepared.transaction_digest(), digest);
-            assert_eq!(pending.prepared.after[0].last(), Some(&0));
+            assert_eq!(pending.prepared.data.after[0].last(), Some(&0));
         }
         _ => panic!("postappend readback error is pending, not Prepared or Applied"),
     }
@@ -178,14 +178,14 @@ fn strict_after_append_sealing_keeps_pending_without_fake_applied() {
     let mut prepared = plan(&adapter, &mut gate);
     let digest = prepared.transaction_digest();
     // The actual transaction remains canonical; only local test metadata fails.
-    prepared.roles.clear();
+    prepared.data.roles.clear();
     match adapter.commit_strict_with_retained_cache_gate_v1(prepared, &mut gate) {
         Err(RetainedCommitFailureV1::AfterAppendSealing {
             pending,
             cause: ProtectedDomainJournalErrorV1::NonCanonicalRecord,
         }) => {
             assert_eq!(pending.prepared.transaction_digest(), digest);
-            assert!(pending.prepared.roles.is_empty());
+            assert!(pending.prepared.data.roles.is_empty());
         }
         _ => panic!("sealing cannot discard pending or fabricate Applied"),
     }
@@ -201,9 +201,9 @@ fn ordinary_readback_and_sealing_errors_keep_existing_distinct_diagnostics() {
         let mut prepared = plan(&adapter, &mut gate);
         drop(gate);
         if sealing {
-            prepared.roles.clear();
+            prepared.data.roles.clear();
         } else {
-            prepared.after[0].push(0);
+            prepared.data.after[0].push(0);
         }
         match (sealing, adapter.commit(prepared)) {
             (
@@ -217,4 +217,67 @@ fn ordinary_readback_and_sealing_errors_keep_existing_distinct_diagnostics() {
             _ => panic!("ordinary error classification must remain unchanged"),
         }
     }
+}
+
+#[test]
+fn common_prepared_data_compares_real_before_and_after_without_refreshing_snapshot() {
+    use aos_sandbox_broker::domain_transaction_custody::transaction_state::compare_recovery_images_v1;
+
+    let (_root, mut state, authority) = fixture();
+    let mut gate = Journal::retain_cache_read_mutation_gate_v1(&state, &authority).unwrap();
+    let mut adapter =
+        ProtectedDomainJournalV1::<StateData>::claim_with_validator(&mut state, ()).unwrap();
+    let prepared = plan(&adapter, &mut gate);
+    let original_sequence = prepared.snapshot.sequence;
+    let original_bytes = prepared.data.transaction.records()[0].value().unwrap().as_ptr();
+
+    let before = compare_recovery_images_v1(
+        adapter.journal.historical_read_view_v1(), &prepared.data,
+    );
+    assert!(before.before);
+    assert!(!before.after);
+    adapter.journal.commit_with_retained_cache_gate_v1(
+        &prepared.data.transaction, &mut gate,
+    ).unwrap();
+    let after = compare_recovery_images_v1(
+        adapter.journal.historical_read_view_v1(), &prepared.data,
+    );
+
+    assert!(!after.before);
+    assert!(after.after);
+    assert_eq!(prepared.snapshot.sequence, original_sequence);
+    assert_eq!(prepared.data.transaction.records()[0].value().unwrap().as_ptr(), original_bytes);
+    assert!(matches!(adapter.validate_snapshot(&prepared.snapshot),
+        Err(ProtectedDomainJournalErrorV1::StaleAuthority)));
+}
+
+#[test]
+fn common_cold_candidate_matches_actual_private_postcommit_after_real_commit() {
+    use aos_sandbox_broker::domain_transaction_custody::transaction_state::{
+        current_postcommit_candidate_v1, postcommit_rows_match_v1,
+    };
+
+    let (_root, mut state, authority) = fixture();
+    let mut gate = Journal::retain_cache_read_mutation_gate_v1(&state, &authority).unwrap();
+    let mut adapter =
+        ProtectedDomainJournalV1::<StateData>::claim_with_validator(&mut state, ()).unwrap();
+    let prepared = plan(&adapter, &mut gate);
+    let transaction_id = prepared.transaction_id();
+    let digest = prepared.transaction_digest();
+    let applied = match adapter.commit_strict_with_retained_cache_gate_v1(prepared, &mut gate) {
+        Ok(DomainCommitOutcomeV1::Applied(applied)) => applied,
+        _ => panic!("real protected commit must complete before candidate comparison"),
+    };
+
+    let candidate = current_postcommit_candidate_v1::<StateData>(
+        adapter.journal.historical_read_view_v1(), transaction_id, &(), None,
+    ).unwrap().unwrap();
+    let (transaction, candidate_digest, _, records) = candidate.into_parts();
+    let current = adapter.recover_current_postcommit(transaction_id).unwrap();
+
+    assert_eq!(candidate_digest, digest);
+    assert_eq!(applied.transaction_digest(), digest);
+    assert_eq!(transaction.phase(), ProtectedDomainReplayPhaseV1::Terminal);
+    assert!(postcommit_rows_match_v1(adapter.journal.historical_read_view_v1(), &records));
+    assert!(matches!(current, Some(ReplayedDomainPostcommitV1::Terminal(_))));
 }

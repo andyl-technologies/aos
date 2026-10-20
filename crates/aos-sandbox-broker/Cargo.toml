@@ -4,17 +4,28 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[features]
+# Enables only existing debug fixture path comparisons for dependent tests.
+test-fixtures = ["aos-sandbox-journal/test-fixtures"]
+
 [dependencies]
 aos-sandbox-core.workspace = true
+aos-sandbox-journal = { workspace = true, features = ["protected-unix"] }
+aos-sandbox-linux.workspace = true
 aos-sandbox-protocol.workspace = true
+aos-systemd.workspace = true
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 hmac.workspace = true
-rustix = { workspace = true, features = ["fs", "time"] }
+rustix = { workspace = true, features = ["fs", "time", "event", "process", "param", "net", "rand"] }
 sha2.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-ed25519-dalek.workspace = true
+aos-sandbox-journal = { workspace = true, features = ["test-fixtures"] }
 hex.workspace = true
 tempfile.workspace = true
 

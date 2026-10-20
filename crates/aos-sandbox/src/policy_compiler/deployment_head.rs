@@ -29,13 +29,19 @@
 //! admission retains the original Source, Controller and Root writers;
 //! signed provenance alone grants no public Create or effect authority.
 
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentHeadV1, PolicyDeploymentInputProfileV2, PolicyDeploymentInputsV1,
+    SignedProjectPolicyHeadV1, decode_policy_deployment_sources_v1,
+    verify_historical_policy_deployment_packet_v1, verify_policy_deployment_head_v1,
+};
+
+use aos_sandbox_policy::journal_keys::{HEAD_KEY, SIGNER_PINS_KEY};
+
 use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
 
 use std::path::Path;
 
-use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
-use serde::Deserialize;
-use serde_json::Value;
+use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_core::format::descriptor_for_bytes;
@@ -48,12 +54,18 @@ use crate::hierarchy::protected_journal::{
     HierarchyProtectedJournalErrorV1, HierarchyProtectedJournalOwnerV1,
 };
 use crate::journal::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
-use crate::publisher_policy::{
+use crate::publisher_admin::policy::{
     PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore, project_revocation_digest,
 };
 
-use aos_sandbox_policy::canonical_bytes;
+use aos_sandbox_protocol::policy_data::canonical_bytes;
 use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
+use aos_sandbox_policy::signed_inputs::{
+    DEPLOYMENT_INPUT_MAGICS as INPUT_MAGICS, DEPLOYMENT_MAGIC as MAGIC,
+    DEPLOYMENT_PACKET_BYTES as PACKET_BYTES, DEPLOYMENT_PAYLOAD_BYTES as PAYLOAD_BYTES,
+    DEPLOYMENT_SIGNING_DOMAIN as SIGNING_DOMAIN, decode_deployment_layer_data_v1,
+    verify_policy_deployment_profile_data_v2,
+};
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
@@ -68,7 +80,6 @@ use aos_sandbox_policy::{
 mod profile_v2;
 
 pub use profile_v2::{
-    PolicyDeploymentCatalogDeclarationsV2, PolicyDeploymentInputProfileV2,
     admit_fixed_policy_deployment_profile_v2, verify_current_policy_deployment_profile_v2,
 };
 
@@ -92,7 +103,8 @@ pub(super) fn admit_test_held_deployment_profile_v2(
     key: &VerifyingKey,
     now: i64,
 ) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
-    let verified = profile_v2::verify_signed_profile(packet, inputs, profile, key, now)?;
+    let verified = verify_policy_deployment_profile_data_v2(packet, inputs, profile, key, now)
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
     admit_deployment_head_in_journal(journal, packet, verified, key)
 }
 
@@ -103,19 +115,26 @@ pub(super) fn signed_test_deployment_input_fixture_v1(
     tests::signed_deployment_fixture(key)
 }
 
-const MAGIC: &[u8; 8] = b"AOSPDH01";
-const SIGNING_DOMAIN: &[u8] = b"aos.sandbox.policy-deployment-head.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-deployment-head-transaction.v1\0";
-pub(super) const HEAD_KEY: &[u8] = b"\0aos-policy-deployment-head-v1\0";
-const PAYLOAD_BYTES: usize = 160;
-const PACKET_BYTES: usize = PAYLOAD_BYTES + 64;
-const MAXIMUM_INPUT_BYTES: usize = 64 * 1024;
-const INPUT_MAGICS: [&str; 4] = ["AOSPNI01", "AOSPSI01", "AOSPBI01", "AOSPCI01"];
+
+// The two policy admissions use these actual private format widths. Owner-pin
+// admissions contribute their own exact keys and unchanged 80-byte credentials.
+pub(super) fn fixed_startup_policy_admission_shapes_v1() -> [aos_sandbox_journal::geometry::RecordShape; 2] {
+    use aos_sandbox_journal::geometry::RecordShape;
+
+    [
+        RecordShape {
+            key_bytes: SIGNER_PINS_KEY.len(),
+            value_bytes: Some(SIGNER_PINS_MAGIC.len() + 2 * 8 + 2 * 32 + 32),
+        },
+        RecordShape { key_bytes: HEAD_KEY.len(), value_bytes: Some(PACKET_BYTES) },
+    ]
+}
+
 const PROJECT_REVOCATION_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.policy-project-revocation-binding-transaction.v1\0";
 pub(super) const PROJECT_HEAD_KEY: &[u8] = b"\0aos-policy-project-head-v1\0";
 pub(super) const PROJECT_INPUT_KEY: &[u8] = b"\0aos-policy-project-input-v1\0";
-pub(super) const SIGNER_PINS_KEY: &[u8] = b"\0aos-policy-signer-pins-v1\0";
 const SIGNER_PINS_MAGIC: &[u8; 8] = b"AOSPKP01";
 const SIGNER_PINS_DOMAIN: &[u8] = b"aos.sandbox.policy-signer-pins.v1\0";
 const SIGNER_PINS_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-signer-pins-transaction.v1\0";
@@ -154,6 +173,20 @@ impl From<aos_sandbox_protocol::domain_ledger::root_project_history::RootProject
         match error {
             RootProjectHistoryDataErrorV1::InvalidHead => Self::InvalidHead,
             RootProjectHistoryDataErrorV1::Names(error) => Self::Journal(JournalError::from(error)),
+        }
+    }
+}
+
+impl From<aos_sandbox_policy::signed_inputs::SignedPolicyInputDataErrorV1>
+    for PolicyDeploymentHeadErrorV1
+{
+    fn from(error: aos_sandbox_policy::signed_inputs::SignedPolicyInputDataErrorV1) -> Self {
+        use aos_sandbox_policy::signed_inputs::SignedPolicyInputDataErrorV1;
+
+        match error {
+            SignedPolicyInputDataErrorV1::InvalidHead => Self::InvalidHead,
+            SignedPolicyInputDataErrorV1::InvalidSignature => Self::InvalidSignature,
+            SignedPolicyInputDataErrorV1::StaleHead => Self::StaleHead,
         }
     }
 }
@@ -202,6 +235,24 @@ pub(super) fn admit_policy_signer_pins_in_journal_v1(
     project_generation: u64,
     project_key: &VerifyingKey,
 ) -> Result<(), PolicyDeploymentHeadErrorV1> {
+    admit_policy_signer_pins_in_journal_v1_with_root_receiving(
+        journal,
+        deployment_generation,
+        deployment_key,
+        project_generation,
+        project_key,
+        None,
+    )
+}
+
+pub(super) fn admit_policy_signer_pins_in_journal_v1_with_root_receiving(
+    journal: &mut Journal,
+    deployment_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_generation: u64,
+    project_key: &VerifyingKey,
+    original: Option<&aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'_>>,
+) -> Result<(), PolicyDeploymentHeadErrorV1> {
     let encoded = encode_policy_signer_pins_v1(
         deployment_generation,
         deployment_key,
@@ -236,7 +287,10 @@ pub(super) fn admit_policy_signer_pins_in_journal_v1(
             encoded.clone(),
         )],
     )?;
-    authority.commit(&transaction)?;
+    match original {
+        Some(original) => authority.commit_root_credential_receiving_v1(&transaction, original)?,
+        None => authority.commit(&transaction)?,
+    };
     if authority.get(SIGNER_PINS_KEY)? != Some(encoded.as_slice()) {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
@@ -249,21 +303,11 @@ pub(super) fn encode_policy_signer_pins_v1(
     project_generation: u64,
     project_key: &VerifyingKey,
 ) -> Result<Vec<u8>, PolicyDeploymentHeadErrorV1> {
-    if deployment_generation == 0 || project_generation == 0 {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-    let mut encoded = Vec::with_capacity(120);
-    encoded.extend_from_slice(SIGNER_PINS_MAGIC);
-    encoded.extend_from_slice(&deployment_generation.to_be_bytes());
-    encoded.extend_from_slice(deployment_key.as_bytes());
-    encoded.extend_from_slice(&project_generation.to_be_bytes());
-    encoded.extend_from_slice(project_key.as_bytes());
-    let checksum = Sha256::new()
-        .chain_update(SIGNER_PINS_DOMAIN)
-        .chain_update(&encoded)
-        .finalize();
-    encoded.extend_from_slice(&checksum);
-    Ok(encoded)
+    aos_sandbox_ledger_replay::replay::root_genesis_pins::encode_policy_signer_pins_v1(deployment_generation, deployment_key, project_generation, project_key)
+        .map_err(|error| match error {
+            aos_sandbox_ledger_replay::replay::root_genesis_pins::PolicySignerPinsDataErrorV1::InvalidHead => PolicyDeploymentHeadErrorV1::InvalidHead,
+            aos_sandbox_ledger_replay::replay::root_genesis_pins::PolicySignerPinsDataErrorV1::StaleHead => PolicyDeploymentHeadErrorV1::StaleHead,
+        })
 }
 
 /// Decodes canonical role-pin data without establishing journal authority.
@@ -274,398 +318,11 @@ pub(super) fn encode_policy_signer_pins_v1(
 pub(super) fn decode_policy_signer_pins_v1(
     pins: &[u8],
 ) -> Result<(u64, VerifyingKey, u64, VerifyingKey), PolicyDeploymentHeadErrorV1> {
-    if pins.len() != 120 || &pins[..8] != SIGNER_PINS_MAGIC {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
-    let deployment_generation = read_u64(pins, 8)?;
-    let project_generation = read_u64(pins, 48)?;
-    let key_at = |offset: usize| {
-        let bytes = pins
-            .get(offset..offset + 32)
-            .and_then(|field| field.try_into().ok())
-            .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
-        VerifyingKey::from_bytes(bytes).map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)
-    };
-    let deployment = key_at(16)?;
-    let project = key_at(56)?;
-    if encode_policy_signer_pins_v1(
-        deployment_generation,
-        &deployment,
-        project_generation,
-        &project,
-    )?
-    .as_slice()
-        != pins
-    {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
-    Ok((
-        deployment_generation,
-        deployment,
-        project_generation,
-        project,
-    ))
-}
-
-/// Retains the four exact canonical deployment inputs bound by one signed head.
-pub struct PolicyDeploymentInputsV1<'a> {
-    /// Canonical node-policy input bytes.
-    pub node: &'a [u8],
-    /// Canonical site-policy input bytes.
-    pub site: &'a [u8],
-    /// Canonical backend-capability input bytes.
-    pub backend: &'a [u8],
-    /// Canonical endpoint and namespace-catalog input bytes.
-    pub catalogs: &'a [u8],
-}
-
-/// Reports one authenticated, current deployment-input head.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PolicyDeploymentHeadV1 {
-    generation: u64,
-    expires_at: i64,
-    packet_digest: ObjectDigest,
-    input_digests: [[u8; 32]; 4],
-}
-
-/// Retains constructor-validated node, site, backend, and empty catalogs.
-///
-/// V1 deliberately supports only finite or inherited hard limits. Grants,
-/// namespace rules, advisory actions, nonempty catalogs, and unlimited limits
-/// require separate authenticated source contracts and are rejected here.
-pub struct PolicyDeploymentSourcesV1 {
-    node: NodePolicyInputV1,
-    site: SitePolicyInputV1,
-    backend: BackendCapabilitiesV1,
-    endpoints: AuthenticatedEndpointCatalogV1,
-    destinations: AuthenticatedNamespaceCatalogV1,
-}
-
-/// Retains the common signed project-head commitments used by the V2 source.
-///
-/// The fields remain part of the explicit V2 signed source's base. A decoded
-/// head identifies provenance and does not authenticate public Create admission.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SignedProjectPolicyHeadV1 {
-    pub(super) project: ProjectId,
-    pub(super) generation: u64,
-    pub(super) packet_digest: ObjectDigest,
-    pub(super) input_digest: ObjectDigest,
-    pub(super) publisher_generation: u64,
-    pub(super) publisher_digest: ObjectDigest,
-    pub(super) prerequisites: [ObjectDigest; 4],
-    pub(super) expires_at: i64,
-}
-
-impl SignedProjectPolicyHeadV1 {
-    /// Returns the exact signed project identity.
-    #[must_use]
-    pub const fn project(self) -> ProjectId {
-        self.project
-    }
-
-    /// Returns the monotone project-source generation.
-    #[must_use]
-    pub const fn generation(self) -> u64 {
-        self.generation
-    }
-
-    /// Returns the exact signed packet commitment for protected currentness.
-    #[must_use]
-    pub const fn packet_digest(self) -> ObjectDigest {
-        self.packet_digest
-    }
-
-    /// Returns the digest of the exact canonical signed project-layer bytes.
-    #[must_use]
-    pub const fn input_digest(self) -> ObjectDigest {
-        self.input_digest
-    }
-
-    /// Returns the publisher generation that a later Create join must match.
-    #[must_use]
-    pub const fn publisher_generation(self) -> u64 {
-        self.publisher_generation
-    }
-
-    /// Returns the publisher descriptor digest a later Create join must match.
-    #[must_use]
-    pub const fn publisher_digest(self) -> ObjectDigest {
-        self.publisher_digest
-    }
-
-    /// Returns signed ancestry, compiler, cache, and revocation head claims.
-    ///
-    /// These are commitments only; a later issuer must prove each head is
-    /// independently current before using them as prerequisites.
-    #[must_use]
-    pub const fn prerequisite_claims(self) -> [ObjectDigest; 4] {
-        self.prerequisites
-    }
-
-    /// Returns the exclusive signed expiry in Unix seconds.
-    #[must_use]
-    pub const fn expires_at(self) -> i64 {
-        self.expires_at
-    }
-}
-
-impl PolicyDeploymentSourcesV1 {
-    /// Returns the signed, constructor-validated node policy input.
-    #[must_use]
-    pub const fn node(&self) -> &NodePolicyInputV1 {
-        &self.node
-    }
-
-    /// Returns the signed, constructor-validated site policy input.
-    #[must_use]
-    pub const fn site(&self) -> &SitePolicyInputV1 {
-        &self.site
-    }
-
-    /// Returns the signed, constructor-validated backend capabilities.
-    #[must_use]
-    pub const fn backend(&self) -> &BackendCapabilitiesV1 {
-        &self.backend
-    }
-
-    /// Returns the exact signed empty endpoint catalog.
-    #[must_use]
-    pub const fn endpoints(&self) -> &AuthenticatedEndpointCatalogV1 {
-        &self.endpoints
-    }
-
-    /// Returns the exact signed empty namespace-destination catalog.
-    #[must_use]
-    pub const fn destinations(&self) -> &AuthenticatedNamespaceCatalogV1 {
-        &self.destinations
-    }
-}
-
-struct SignedEmptyCatalogVerifier {
-    endpoint_bytes: Vec<u8>,
-    destination_bytes: Vec<u8>,
-}
-
-impl SignedEmptyCatalogVerifier {
-    fn matches(descriptor: &ObjectDescriptor, bytes: &[u8], expected: &[u8]) -> bool {
-        let Ok(media) = MediaType::new(PortableMediaType::Content.as_str()) else {
-            return false;
-        };
-
-        bytes == expected && descriptor == &descriptor_for_bytes(media, expected)
-    }
-}
-
-impl EndpointCatalogVerifierV1 for SignedEmptyCatalogVerifier {
-    fn verify(&self, descriptor: &ObjectDescriptor, canonical_bytes: &[u8]) -> bool {
-        Self::matches(descriptor, canonical_bytes, &self.endpoint_bytes)
-    }
-}
-
-impl NamespaceCatalogVerifierV1 for SignedEmptyCatalogVerifier {
-    fn verify(&self, descriptor: &ObjectDescriptor, canonical_bytes: &[u8]) -> bool {
-        Self::matches(descriptor, canonical_bytes, &self.destination_bytes)
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeploymentEnvelopeV1<T> {
-    generation: u64,
-    input: T,
-    magic: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct DeploymentLayerV1 {
-    pub(super) portable: Vec<DeploymentLimitV1>,
-    pub(super) accounting: Vec<DeploymentLimitV1>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct DeploymentLimitV1 {
-    kind: String,
-    amount: Option<u64>,
-    enforcement: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeploymentBackendV1 {
-    enforcement: Vec<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeploymentCatalogsV1 {
-    endpoints: Vec<Value>,
-    destinations: Vec<Value>,
-}
-
-impl PolicyDeploymentHeadV1 {
-    /// Returns the exact deployment head generation.
-    #[must_use]
-    pub const fn generation(self) -> u64 {
-        self.generation
-    }
-
-    /// Returns the exclusive signed expiry in Unix seconds.
-    #[must_use]
-    pub const fn expires_at(self) -> i64 {
-        self.expires_at
-    }
-
-    /// Returns the exact signed packet commitment for protected currentness.
-    #[must_use]
-    pub const fn packet_digest(self) -> ObjectDigest {
-        self.packet_digest
-    }
-
-    /// Returns the node, site, backend, and catalog input commitments in order.
-    #[must_use]
-    pub const fn input_digests(self) -> [[u8; 32]; 4] {
-        self.input_digests
-    }
-}
-
-/// Verifies a dedicated signature and exact canonical deployment inputs.
-///
-/// The deployment signer is provisioned separately from broker-plan and
-/// assignment keys. This check establishes source provenance, not compiler
-/// authority or current project ancestry.
-///
-/// # Errors
-///
-/// Returns [`PolicyDeploymentHeadErrorV1`] for malformed or noncanonical
-/// inputs, mismatched digests, an invalid signature, or an expired head.
-pub fn verify_policy_deployment_head_v1(
-    packet: &[u8],
-    inputs: &PolicyDeploymentInputsV1<'_>,
-    verifying_key: &VerifyingKey,
-    now_unix_seconds: i64,
-) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
-    let payload = packet
-        .get(..PAYLOAD_BYTES)
-        .filter(|_| packet.len() == PACKET_BYTES)
-        .ok_or(PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    if &payload[..8] != MAGIC {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-
-    let generation = read_u64(payload, 8)?;
-    let issued_at = read_i64(payload, 16)?;
-    let expires_at = read_i64(payload, 24)?;
-    if generation == 0
-        || issued_at >= expires_at
-        || issued_at > now_unix_seconds
-        || now_unix_seconds >= expires_at
-    {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-
-    let provided = [inputs.node, inputs.site, inputs.backend, inputs.catalogs];
-    let mut input_digests = [[0; 32]; 4];
-    for (index, input) in provided.into_iter().enumerate() {
-        validate_canonical_input(input, INPUT_MAGICS[index], generation)?;
-        let digest: [u8; 32] = Sha256::digest(input).into();
-        if payload[32 + index * 32..64 + index * 32] != digest {
-            return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-        }
-        input_digests[index] = digest;
-    }
-
-    verify_historical_packet(packet, verifying_key)?;
-
-    Ok(PolicyDeploymentHeadV1 {
-        generation,
-        expires_at,
-        packet_digest: ObjectDigest::from_bytes(Sha256::digest(packet).into()),
-        input_digests,
-    })
-}
-
-/// Decodes the signed deployment bytes into the bounded v1 typed source class.
-///
-/// The caller must first verify the exact packet and input commitments with
-/// [`verify_policy_deployment_head_v1`]. The fixed root owner also invokes this
-/// decoder before admitting a head, so it cannot durably bless an unsupported
-/// input shape.
-///
-/// # Errors
-///
-/// Returns [`PolicyDeploymentHeadErrorV1::InvalidHead`] for an unsupported
-/// feature, incomplete resource profile, mismatched generation, or malformed
-/// typed input.
-pub fn decode_policy_deployment_sources_v1(
-    inputs: &PolicyDeploymentInputsV1<'_>,
-    head: PolicyDeploymentHeadV1,
-) -> Result<PolicyDeploymentSourcesV1, PolicyDeploymentHeadErrorV1> {
-    let provided = [inputs.node, inputs.site, inputs.backend, inputs.catalogs];
-    if provided
-        .into_iter()
-        .zip(head.input_digests())
-        .any(|(bytes, digest)| Sha256::digest(bytes).as_slice() != digest)
-    {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-
-    let node: DeploymentEnvelopeV1<DeploymentLayerV1> =
-        decode_envelope(inputs.node, INPUT_MAGICS[0], head.generation)?;
-    let site: DeploymentEnvelopeV1<DeploymentLayerV1> =
-        decode_envelope(inputs.site, INPUT_MAGICS[1], head.generation)?;
-    let backend: DeploymentEnvelopeV1<DeploymentBackendV1> =
-        decode_envelope(inputs.backend, INPUT_MAGICS[2], head.generation)?;
-    let catalogs: DeploymentEnvelopeV1<DeploymentCatalogsV1> =
-        decode_envelope(inputs.catalogs, INPUT_MAGICS[3], head.generation)?;
-    if !catalogs.input.endpoints.is_empty() || !catalogs.input.destinations.is_empty() {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-
-    // The verified deployment packet commits the exact generation and canonical
-    // empty catalog input. V1 cannot issue nonempty endpoint or destination
-    // authority; the branded compiler catalogs must remain empty too.
-    let verifier = SignedEmptyCatalogVerifier {
-        endpoint_bytes: canonical_bytes(
-            b"aos.sandbox.endpoint-catalog.v2",
-            &Vec::<EndpointCatalogEntryV1>::new(),
-        )
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?,
-        destination_bytes: canonical_bytes(
-            b"aos.sandbox.namespace-destination-catalog.v2",
-            &Vec::<NamespaceDestinationV1>::new(),
-        )
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?,
-    };
-    let endpoints = AuthenticatedEndpointCatalogV1::authenticate(Vec::new(), &verifier)
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    let destinations = AuthenticatedNamespaceCatalogV1::authenticate(Vec::new(), &verifier)
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-
-    let node = NodePolicyInputV1::new(decode_layer(node.input)?)
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    let site = SitePolicyInputV1::new(decode_layer(site.input)?)
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    let enforcement = backend
-        .input
-        .enforcement
-        .iter()
-        .map(|name| decode_enforcement(name))
-        .collect::<Result<Vec<_>, _>>()?;
-    let enforcement = BackendEnforcementSetV1::new(enforcement)
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    let backend = BackendCapabilitiesV1::new(enforcement, Vec::new(), Vec::new())
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-
-    Ok(PolicyDeploymentSourcesV1 {
-        node,
-        site,
-        backend,
-        endpoints,
-        destinations,
-    })
+    aos_sandbox_ledger_replay::replay::root_genesis_pins::decode_policy_signer_pins_v1(pins)
+        .map_err(|error| match error {
+            aos_sandbox_ledger_replay::replay::root_genesis_pins::PolicySignerPinsDataErrorV1::InvalidHead => PolicyDeploymentHeadErrorV1::InvalidHead,
+            aos_sandbox_ledger_replay::replay::root_genesis_pins::PolicySignerPinsDataErrorV1::StaleHead => PolicyDeploymentHeadErrorV1::StaleHead,
+        })
 }
 
 /// Commits the verified head to the fixed root-owned policy authority journal.
@@ -686,8 +343,10 @@ pub fn admit_fixed_policy_deployment_head_v1(
     now_unix_seconds: i64,
 ) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
     let verified =
-        verify_policy_deployment_head_v1(packet, inputs, verifying_key, now_unix_seconds)?;
-    let _sources = decode_policy_deployment_sources_v1(inputs, verified)?;
+        verify_policy_deployment_head_v1(packet, inputs, verifying_key, now_unix_seconds)
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
+    let _sources = decode_policy_deployment_sources_v1(inputs, verified)
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
     let (mut journal, _) = Journal::open_protected_at(
         Path::new(PROTECTED_POLICY_ROOT),
         POLICY_AUTHORITY_JOURNAL,
@@ -702,6 +361,22 @@ pub(super) fn admit_deployment_head_in_journal(
     verified: PolicyDeploymentHeadV1,
     verifying_key: &VerifyingKey,
 ) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
+    admit_deployment_head_in_journal_with_root_receiving(
+        journal,
+        packet,
+        verified,
+        verifying_key,
+        None,
+    )
+}
+
+pub(super) fn admit_deployment_head_in_journal_with_root_receiving(
+    journal: &mut Journal,
+    packet: &[u8],
+    verified: PolicyDeploymentHeadV1,
+    verifying_key: &VerifyingKey,
+    original: Option<&aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'_>>,
+) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
     let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     super::binding_v2::ensure_root_binding_unheld(&authority)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
@@ -712,12 +387,13 @@ pub(super) fn admit_deployment_head_in_journal(
     }
     let predecessor_generation = existing
         .map(|current| {
-            verify_historical_packet(current, verifying_key)?;
+            verify_historical_policy_deployment_packet_v1(current, verifying_key)
+                .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
             read_u64(current, 8)
         })
         .transpose()?
         .unwrap_or(0);
-    if predecessor_generation.checked_add(1) != Some(verified.generation) {
+    if predecessor_generation.checked_add(1) != Some(verified.generation()) {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
 
@@ -736,7 +412,10 @@ pub(super) fn admit_deployment_head_in_journal(
             packet.to_vec(),
         )],
     )?;
-    authority.commit(&transaction)?;
+    match original {
+        Some(original) => authority.commit_root_credential_receiving_v1(&transaction, original)?,
+        None => authority.commit(&transaction)?,
+    };
     if authority.get(HEAD_KEY)? != Some(packet) {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
@@ -775,38 +454,38 @@ pub(super) fn bind_signed_project_to_controller_currentness(
     let mut publisher =
         PublisherPolicyStore::load(controller_journal, PublisherPolicyLimits::default())?;
     let current_policy = publisher
-        .current_policy(head.project)?
+        .current_policy(head.project())?
         .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
     let current_revocation = publisher
         .revocation_head(trusted_revocation_scope)?
         .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
     let current_cache_domain = publisher
-        .project_cache_domain_head(head.project)?
+        .project_cache_domain_head(head.project())?
         .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
     let revocation_digest = project_revocation_digest(
-        head.project,
+        head.project(),
         trusted_revocation_scope,
         current_revocation.generation,
     );
-    if current_policy.generation() != head.publisher_generation
-        || current_policy.descriptor().digest() != head.publisher_digest
+    if current_policy.generation() != head.publisher_generation()
+        || current_policy.descriptor().digest() != head.publisher_digest()
         || now_unix_seconds < current_policy.not_before()
         || now_unix_seconds >= current_policy.expires_at()
         || current_cache_domain.generation() != current_policy.generation()
         || current_cache_domain.policy_digest() != current_policy.descriptor().digest()
-        || head.prerequisites[2] != current_cache_domain.digest()
-        || head.prerequisites[3] != revocation_digest
+        || head.prerequisite_claims()[2] != current_cache_domain.digest()
+        || head.prerequisite_claims()[3] != revocation_digest
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
 
-    match publisher.project_revocation_head(head.project)? {
+    match publisher.project_revocation_head(head.project())? {
         Some(bound) if bound.scope() == trusted_revocation_scope => {}
         Some(_) => return Err(PolicyDeploymentHeadErrorV1::StaleHead),
         None => {
             let transaction_digest = Sha256::new()
                 .chain_update(PROJECT_REVOCATION_TRANSACTION_DOMAIN)
-                .chain_update(head.project.as_bytes())
+                .chain_update(head.project().as_bytes())
                 .chain_update(trusted_revocation_scope.as_bytes())
                 .finalize();
             let transaction_id: [u8; 16] = transaction_digest[..16]
@@ -814,13 +493,13 @@ pub(super) fn bind_signed_project_to_controller_currentness(
                 .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
             publisher.bind_project_revocation_scope_from_trusted_controller(
                 transaction_id,
-                head.project,
+                head.project(),
                 trusted_revocation_scope,
             )?;
         }
     }
     let bound = publisher
-        .project_revocation_head(head.project)?
+        .project_revocation_head(head.project())?
         .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
     if bound.generation() != current_revocation.generation || bound.digest() != revocation_digest {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
@@ -828,150 +507,12 @@ pub(super) fn bind_signed_project_to_controller_currentness(
     Ok(())
 }
 
-fn read_digest(packet: &[u8], offset: usize) -> Result<[u8; 32], PolicyDeploymentHeadErrorV1> {
-    packet
-        .get(offset..offset + 32)
-        .and_then(|part| part.try_into().ok())
-        .ok_or(PolicyDeploymentHeadErrorV1::InvalidHead)
-}
-
-fn decode_envelope<T: for<'de> Deserialize<'de>>(
-    bytes: &[u8],
-    magic: &str,
-    generation: u64,
-) -> Result<DeploymentEnvelopeV1<T>, PolicyDeploymentHeadErrorV1> {
-    let envelope: DeploymentEnvelopeV1<T> =
-        serde_json::from_slice(bytes).map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    if envelope.magic != magic || envelope.generation != generation {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-    Ok(envelope)
-}
-
-pub(super) fn decode_layer(
-    wire: DeploymentLayerV1,
-) -> Result<PolicyLayerV1, PolicyDeploymentHeadErrorV1> {
-    if wire.portable.len() != PORTABLE_LIMIT_DIMENSIONS.len()
-        || wire.accounting.len() != ResourceDimension::COUNT
-    {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-    let portable = wire
-        .portable
-        .into_iter()
-        .zip(PORTABLE_LIMIT_DIMENSIONS)
-        .map(|(limit, dimension)| decode_limit(limit, HardResourceKeyV1::Portable(dimension)))
-        .collect::<Result<Vec<_>, _>>()?;
-    let accounting = wire
-        .accounting
-        .into_iter()
-        .zip(ResourceDimension::ALL)
-        .map(|(limit, dimension)| decode_limit(limit, HardResourceKeyV1::Accounting(dimension)))
-        .collect::<Result<Vec<_>, _>>()?;
-    let resources = HardResourceProfileV1::new(portable, accounting)
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    PolicyLayerV1::new(
-        Vec::new(),
-        resources,
-        Vec::new(),
-        Vec::new(),
-        aos_sandbox_policy::CacheDomainInputV1::Inherit,
-        aos_sandbox_policy::RevocationInputV1::Inherit,
-    )
-    .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)
-}
-
-fn decode_limit(
-    wire: DeploymentLimitV1,
-    key: HardResourceKeyV1,
-) -> Result<HardLimitRequestV1, PolicyDeploymentHeadErrorV1> {
-    let (value, enforcement) = match (wire.kind.as_str(), wire.amount, wire.enforcement) {
-        ("inherit", None, None) => (HardLimitValueV1::Inherit, None),
-        ("bounded", Some(amount), Some(name)) => (
-            HardLimitValueV1::Bounded(amount),
-            Some(decode_enforcement(&name)?),
-        ),
-        _ => return Err(PolicyDeploymentHeadErrorV1::InvalidHead),
-    };
-    HardLimitRequestV1::new(key, value, enforcement)
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)
-}
-
-fn decode_enforcement(name: &str) -> Result<HardEnforcementV1, PolicyDeploymentHeadErrorV1> {
-    match name {
-        "cgroup-v2" => Ok(HardEnforcementV1::CgroupV2),
-        "broker-ledger" => Ok(HardEnforcementV1::BrokerLedger),
-        "zfs-quota" => Ok(HardEnforcementV1::ZfsQuota),
-        "node-bounded-shared-residency" => Ok(HardEnforcementV1::NodeBoundedSharedResidency),
-        "hard-isolated-residency" => Ok(HardEnforcementV1::HardIsolatedResidency),
-        "combined-file-descriptor" => Ok(HardEnforcementV1::CombinedFileDescriptor),
-        "combined-memory-accounting" => Ok(HardEnforcementV1::CombinedMemoryAccounting),
-        _ => Err(PolicyDeploymentHeadErrorV1::InvalidHead),
-    }
-}
-
-pub(super) fn verify_historical_packet(
-    packet: &[u8],
-    verifying_key: &VerifyingKey,
-) -> Result<(), PolicyDeploymentHeadErrorV1> {
-    if packet.len() != PACKET_BYTES || &packet[..8] != MAGIC {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-    let issued_at = read_i64(packet, 16)?;
-    let expires_at = read_i64(packet, 24)?;
-    if read_u64(packet, 8)? == 0 || issued_at >= expires_at {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-
-    let signature_bytes: [u8; 64] = packet[PAYLOAD_BYTES..]
-        .try_into()
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    let signature = Signature::from_bytes(&signature_bytes);
-    let mut signed = Vec::with_capacity(SIGNING_DOMAIN.len() + PAYLOAD_BYTES);
-    signed.extend_from_slice(SIGNING_DOMAIN);
-    signed.extend_from_slice(&packet[..PAYLOAD_BYTES]);
-    verifying_key
-        .verify(&signed, &signature)
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidSignature)
-}
-
-pub(super) fn validate_canonical_input(
-    bytes: &[u8],
-    expected_magic: &str,
-    generation: u64,
-) -> Result<(), PolicyDeploymentHeadErrorV1> {
-    if bytes.is_empty() || bytes.len() > MAXIMUM_INPUT_BYTES {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-    let value: Value =
-        serde_json::from_slice(bytes).map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    if value.get("magic").and_then(Value::as_str) != Some(expected_magic)
-        || value.get("generation").and_then(Value::as_u64) != Some(generation)
-        || value.get("input").and_then(Value::as_object).is_none()
-        || serde_json::to_vec(&value).map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?
-            != bytes
-    {
-        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
-    }
-    Ok(())
-}
-
 fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, PolicyDeploymentHeadErrorV1> {
-    Ok(u64::from_be_bytes(
-        bytes
-            .get(offset..offset + 8)
-            .and_then(|part| part.try_into().ok())
-            .ok_or(PolicyDeploymentHeadErrorV1::InvalidHead)?,
-    ))
-}
-
-fn read_i64(bytes: &[u8], offset: usize) -> Result<i64, PolicyDeploymentHeadErrorV1> {
-    Ok(i64::from_be_bytes(
-        bytes
-            .get(offset..offset + 8)
-            .and_then(|part| part.try_into().ok())
-            .ok_or(PolicyDeploymentHeadErrorV1::InvalidHead)?,
-    ))
+    aos_sandbox_ledger_replay::replay::root_genesis_pins::read_u64(bytes, offset)
+        .map_err(|error| match error {
+            aos_sandbox_ledger_replay::replay::root_genesis_pins::PolicySignerPinsDataErrorV1::InvalidHead => PolicyDeploymentHeadErrorV1::InvalidHead,
+            aos_sandbox_ledger_replay::replay::root_genesis_pins::PolicySignerPinsDataErrorV1::StaleHead => PolicyDeploymentHeadErrorV1::StaleHead,
+        })
 }
 
 #[cfg(test)]
@@ -990,14 +531,10 @@ pub(super) mod tests {
     use super::*;
     use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
     use crate::JournalLimits;
-    use crate::hierarchy::graph::SandboxTreeV1;
+    use aos_sandbox_ledger_replay::hierarchy::graph::SandboxTreeV1;
     use aos_sandbox_core::source_tree_model::TreeLimitsV1;
-    use crate::hierarchy::protected_journal::{
-        HierarchyProtectedJournalKeyV1, HierarchyProtectedRecordKindV1,
-        HierarchyProtectedReplayValidatorV1, HierarchyReducerRecordV1,
-        claim_hierarchy_protected_journal_v1, hierarchy_reducer_envelope_v1,
-        replay_project_ancestry_head_v1,
-    };
+    use crate::hierarchy::protected_journal::{claim_hierarchy_protected_journal_v1, hierarchy_reducer_envelope_v1, replay_project_ancestry_head_v1};
+    use aos_sandbox_ledger_replay::replay::hierarchy_records::{HierarchyProtectedJournalKeyV1, HierarchyProtectedRecordKindV1, HierarchyProtectedReplayValidatorV1, HierarchyReducerRecordV1};
     use crate::policy_compiler::project_source_v2::admit_signed_project_policy_source_with_journals_v2;
     use aos_sandbox_policy::{
         AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1,
@@ -1005,7 +542,8 @@ pub(super) mod tests {
         NamespaceCatalogVerifierV1, PolicyCompilerInputV1, PolicyCompilerLimitsV1, PolicyCompilerV1,
         ProjectPolicyInputV1, RequestPolicyInputV1, SandboxProjectRelationVerifierV1,
     };
-    use crate::publisher_policy::{PreparedPublisherPolicyRevisionV1, PublisherRevocationHeadV1};
+    use crate::publisher_admin::policy::{PublisherRevocationHeadV1};
+    use aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1;
 
     struct CompilerFixtureVerifier;
 
@@ -1495,9 +1033,11 @@ pub(super) mod tests {
             catalogs: &inputs[3],
         };
         let head = verify_policy_deployment_head_v1(&packet, &exact, &signer.verifying_key(), 20)
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .expect("signed deployment head");
-        let sources =
-            decode_policy_deployment_sources_v1(&exact, head).expect("signed empty catalogs");
+        let sources = decode_policy_deployment_sources_v1(&exact, head)
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+            .expect("signed empty catalogs");
         assert!(sources.endpoints().entries().is_empty());
         assert!(sources.destinations().entries().is_empty());
 
@@ -1509,7 +1049,11 @@ pub(super) mod tests {
             catalogs: &changed_catalog,
             ..exact
         };
-        assert!(decode_policy_deployment_sources_v1(&changed, head).is_err());
+        assert!(
+            decode_policy_deployment_sources_v1(&changed, head)
+                .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+                .is_err()
+        );
 
         let changed_node = deployment_input(
             "AOSPNI01",
@@ -1519,29 +1063,11 @@ pub(super) mod tests {
             node: &changed_node,
             ..exact
         };
-        assert!(decode_policy_deployment_sources_v1(&changed, head).is_err());
-    }
-
-    #[test]
-    fn signed_empty_catalog_verifier_rejects_descriptor_substitution() {
-        let expected = canonical_bytes(
-            b"aos.sandbox.endpoint-catalog.v2",
-            &Vec::<EndpointCatalogEntryV1>::new(),
-        )
-        .expect("empty catalog bytes");
-        let media = MediaType::new(PortableMediaType::Content.as_str()).expect("content media");
-        let exact = descriptor_for_bytes(media.clone(), &expected);
-        let changed = descriptor_for_bytes(media, b"changed");
-
-        assert!(SignedEmptyCatalogVerifier::matches(
-            &exact, &expected, &expected
-        ));
-        assert!(!SignedEmptyCatalogVerifier::matches(
-            &changed, &expected, &expected
-        ));
-        assert!(!SignedEmptyCatalogVerifier::matches(
-            &exact, b"changed", &expected
-        ));
+        assert!(
+            decode_policy_deployment_sources_v1(&changed, head)
+                .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+                .is_err()
+        );
     }
 
     /// Builds canonical input for supported V2 project tests.
@@ -1695,16 +1221,20 @@ pub(super) mod tests {
             &deployment_key.verifying_key(),
             20,
         )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .expect("current signed deployment head");
         let deployment = decode_policy_deployment_sources_v1(&deployment_inputs, deployment_head)
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .expect("typed deployment sources");
         let inherited_wire = serde_json::json!({
             "accounting": vec![serde_json::json!({"kind": "inherit"}); 22],
             "portable": vec![serde_json::json!({"kind": "inherit"}); 16],
         });
-        let inherited =
-            decode_layer(serde_json::from_value(inherited_wire).expect("inherited request source"))
-                .expect("typed inherited request");
+        let inherited = decode_deployment_layer_data_v1(
+            serde_json::from_value(inherited_wire).expect("inherited request source"),
+        )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+        .expect("typed inherited request");
         let verifier = CompilerFixtureVerifier;
         let sandbox = SandboxId::from_bytes([11; 16]);
         let compiler_input = PolicyCompilerInputV1::new(

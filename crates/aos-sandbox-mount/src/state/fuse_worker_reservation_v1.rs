@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox::journal::{Journal, JournalRecord, RecordNamespace};
+use aos_sandbox_mount_native::{MountJournalV1 as Journal, JournalRecord, RecordNamespace};
 use aos_sandbox_protocol::mount_source_consumption_state::{
     AssignmentBindingV1, ObjectDescriptorV1,
 };
@@ -325,7 +325,7 @@ fn state_error(message: impl Into<String>) -> MountError {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use aos_sandbox::journal::JournalTransaction;
+    use aos_sandbox_mount_native::JournalTransaction;
     use aos_sandbox_core::PortableMediaType;
 
     use super::*;

@@ -4,7 +4,8 @@
 //! never a mutable ProviderLedger or an effect closure. Pending and closed state
 //! cannot fall back to an old backend, signing, capacity or migration path.
 
-use aos_sandbox::{ProtectedJournalAuthority, ProtectedJournalSnapshot};
+use aos_sandbox_source::provider_journal::ProtectedJournalAuthority;
+use aos_sandbox_source::provider_journal::ProtectedJournalSnapshot;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     ACQUIRE_SOURCE_REQUEST_VERSION_V3, AcquireSourceRequestV1, SignedSourceProviderRequestV1,

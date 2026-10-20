@@ -1,6 +1,6 @@
 //! Runtime-only durable admission and replay authority brands.
 
-use aos_sandbox::ProtectedJournalSnapshot;
+use aos_sandbox_source::provider_journal::ProtectedJournalSnapshot;
 use aos_sandbox_core::ObjectDigest;
 
 use crate::ProviderRecoveryWorkV1;

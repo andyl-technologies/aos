@@ -253,6 +253,46 @@ pub fn require_input_history(
     }
 }
 
+/// Rechecks an exact co-issuance against the same fully validated enrolled bank.
+///
+/// This comparison DATA does not retain a native original or permit a commit.
+/// A native consumer must independently lend its actual current C map and
+/// enrollment, admit the complete replay model, and retain its Source/profile
+/// observations. The existing Q04 policy gate still checks all eight phases,
+/// the released hold and the consumed effect acknowledgement.
+///
+/// # Errors
+/// Rejects malformed or inconsistent bank history, another enrollment, an
+/// absent/ambiguous co-issuance, a foreign cut or failed original replay.
+pub fn require_enrolled_q04_coissuance_v2(
+    state: &replay::State,
+    identity: &Q04CutIdentityV1,
+    enrollment: super::EnrollmentIdentity,
+) -> Result<(), ResourceBankDataError> {
+    if replay::validate(state)? != Some(enrollment) {
+        return Err(ResourceBankDataError::CorruptLedger);
+    }
+    let mut selected = None;
+    for ((namespace, key), bytes) in state {
+        if *namespace != RecordNamespace::ControllerResourceReservation
+            || key.first() != Some(&PREFIX)
+        {
+            continue;
+        }
+        let binding = decode(bytes)?;
+        if !binding.original.matches_q04_cut(identity) {
+            continue;
+        }
+        if binding.original.claim.enrollment != enrollment
+            || selected.replace(binding).is_some()
+        {
+            return Err(ResourceBankDataError::CorruptLedger);
+        }
+    }
+    let binding = selected.ok_or(ResourceBankDataError::CorruptLedger)?;
+    require_replayed(state, binding)
+}
+
 pub(super) fn matches_origin_record(
     binding: Binding,
     record: &JournalRecord,
@@ -280,7 +320,7 @@ pub(super) fn matches_origin_bytes(
     {
         return Ok(false);
     }
-    let input = aos_sandbox_policy::RetainedPublisherCompilerOriginV3::from_record_bytes(bytes)
+    let input = crate::policy_data::RetainedPublisherCompilerOriginV3::from_record_bytes(bytes)
         .map_err(|_| ResourceBankDataError::CorruptLedger)?;
     Ok(input.project().into_bytes() == binding.grant.project
         && input.original_target().into_bytes() == binding.grant.sandbox

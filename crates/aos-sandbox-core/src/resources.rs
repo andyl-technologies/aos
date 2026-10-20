@@ -158,6 +158,20 @@ impl ResourceVector {
         self
     }
 
+    /// Takes the larger amount independently in every resource dimension.
+    ///
+    /// This combines complete representation bounds without adding the same
+    /// owner's earlier requirement twice. The result is accounting DATA; it
+    /// neither reserves its positive growth nor releases an earlier charge.
+    #[must_use]
+    pub fn componentwise_max(self, other: Self) -> Self {
+        let mut result = self;
+        for dimension in ResourceDimension::ALL {
+            result.0[dimension.index()] = self.get(dimension).max(other.get(dimension));
+        }
+        result
+    }
+
     /// Adds corresponding dimensions without permitting wraparound.
     ///
     /// # Errors
@@ -884,6 +898,25 @@ mod tests {
             .map(serde_json::from_str::<super::ResourceAccount>);
 
         assert!(matches!(decoded, Ok(Err(_))));
+    }
+
+    #[test]
+    fn complete_bound_growth_preserves_each_prior_dimension_without_adding_it_again() {
+        let previous = ResourceVector::ZERO
+            .with(ResourceDimension::MemoryBytes, 10)
+            .with(ResourceDimension::OpenFiles, 7)
+            .with(ResourceDimension::MetadataEntries, u64::MAX);
+        let requirement = ResourceVector::ZERO
+            .with(ResourceDimension::MemoryBytes, 8)
+            .with(ResourceDimension::OpenFiles, 9)
+            .with(ResourceDimension::MetadataEntries, 1);
+
+        let combined = previous.componentwise_max(requirement);
+        let growth = combined.checked_sub(previous).unwrap();
+
+        assert_eq!(combined, previous.with(ResourceDimension::OpenFiles, 9));
+        assert_eq!(growth, ResourceVector::ZERO.with(ResourceDimension::OpenFiles, 2));
+        assert_eq!(previous.checked_add(growth).unwrap(), combined);
     }
 
     #[test]

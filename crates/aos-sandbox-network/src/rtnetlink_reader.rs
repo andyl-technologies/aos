@@ -18,7 +18,6 @@
 //! semantic fields are rejected instead of being discarded.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
@@ -30,13 +29,17 @@ use crate::kernel_observation::{
     ObservedNetworkNamespaceV1, ObservedPolicyRuleV1, ObservedRouteProtocolV1,
     ObservedRouteScopeV1, ObservedRouteTypeV1, ObservedRouteV1,
 };
-use crate::kernel_reader::{NetworkKernelReaderError, PinnedArtifact, successful_helper_stdout};
+use crate::kernel_reader::{NetworkKernelReaderError, PinnedArtifact};
 
-const MAXIMUM_LINK_BYTES: usize = 64 * 1024;
-const MAXIMUM_ADDRESS_BYTES: usize = 64 * 1024;
-const MAXIMUM_NEIGHBOR_BYTES: usize = 64 * 1024;
-const MAXIMUM_ROUTE_BYTES: usize = 128 * 1024;
-const MAXIMUM_RULE_BYTES: usize = 16 * 1024;
+use crate::kernel_reader::observation_helpers_v2::{
+    ObservationHelperPortV2, ObservationRecipeV2, finish_read_group_v2,
+};
+
+pub(crate) const MAXIMUM_LINK_BYTES: usize = 64 * 1024;
+pub(crate) const MAXIMUM_ADDRESS_BYTES: usize = 64 * 1024;
+pub(crate) const MAXIMUM_NEIGHBOR_BYTES: usize = 64 * 1024;
+pub(crate) const MAXIMUM_ROUTE_BYTES: usize = 128 * 1024;
+pub(crate) const MAXIMUM_RULE_BYTES: usize = 16 * 1024;
 
 /// Carries the plan-selected host veth and its complete address inventory.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,47 +101,70 @@ impl FixedRtnetlinkObservationReader {
         &self,
         expectation: &NetworkKernelExpectationV1,
     ) -> Result<RtnetlinkLinkInventoryV1, NetworkKernelReaderError> {
-        let name = expectation
-            .veth()
-            .ok_or(NetworkKernelReaderError::InvalidRtnetlink(
-                "isolated plans do not have a host veth",
-            ))?
-            .host_name
-            .as_str();
-        validate_interface_name(name)?;
+        self.observe_host_veth_with_port_v2(expectation, &mut ObservationHelperPortV2::Local)
+    }
 
-        let link_json = self.run(
-            &["-j", "-details", "link", "show", "dev", name],
-            MAXIMUM_LINK_BYTES,
-        )?;
-        let address_json = self.run(
-            &["-j", "address", "show", "dev", name],
-            MAXIMUM_ADDRESS_BYTES,
-        )?;
-        let neighbor_json = self.run(
-            &["-j", "-6", "neighbor", "show", "dev", name],
-            MAXIMUM_NEIGHBOR_BYTES,
-        )?;
-        let links = decode_links(&link_json)?;
-        if links.len() != 1 || links[0].name != name || links[0].kind != "veth" {
-            return Err(NetworkKernelReaderError::InvalidRtnetlink(
-                "host link result is not the exact expected veth",
-            ));
-        }
-        let addresses = decode_addresses(&address_json, &links, ObservedNetworkNamespaceV1::Host)?;
-        let ipv6_neighbors =
-            decode_ipv6_neighbors(&neighbor_json, &links, ObservedNetworkNamespaceV1::Host)?;
-
-        Ok(RtnetlinkLinkInventoryV1 {
-            link: links
-                .into_iter()
-                .next()
+    pub(crate) fn observe_host_veth_with_port_v2(
+        &self,
+        expectation: &NetworkKernelExpectationV1,
+        port: &mut ObservationHelperPortV2<'_, '_, '_>,
+    ) -> Result<RtnetlinkLinkInventoryV1, NetworkKernelReaderError> {
+        let result = (|| {
+            let name = expectation
+                .veth()
                 .ok_or(NetworkKernelReaderError::InvalidRtnetlink(
-                    "host veth result is empty",
-                ))?,
-            addresses,
-            ipv6_neighbors,
-        })
+                    "isolated plans do not have a host veth",
+                ))?
+                .host_name
+                .as_str();
+            validate_interface_name(name)?;
+
+            let mut first_semantic = None;
+            let link_json = port.run(&self.ip, ObservationRecipeV2::Links(Some(name)))?;
+            let links = decode_links(&link_json).and_then(|links| {
+                if links.len() != 1 || links[0].name != name || links[0].kind != "veth" {
+                    Err(NetworkKernelReaderError::InvalidRtnetlink(
+                        "host link result is not the exact expected veth",
+                    ))
+                } else {
+                    Ok(links)
+                }
+            });
+            let links = park_command_semantics_v2(Some(links), &mut first_semantic, port)?;
+
+            let address_json = port.run(&self.ip, ObservationRecipeV2::Addresses(Some(name)))?;
+            let addresses = park_command_semantics_v2(
+                links.as_ref().map(|links| {
+                    decode_addresses(&address_json, links, ObservedNetworkNamespaceV1::Host)
+                }),
+                &mut first_semantic,
+                port,
+            )?;
+            let neighbor_json = port.run(&self.ip, ObservationRecipeV2::Neighbors(Some(name)))?;
+            let ipv6_neighbors = park_command_semantics_v2(
+                links.as_ref().map(|links| {
+                    decode_ipv6_neighbors(&neighbor_json, links, ObservedNetworkNamespaceV1::Host)
+                }),
+                &mut first_semantic,
+                port,
+            )?;
+
+            if let Some(cause) = first_semantic {
+                return Err(cause);
+            }
+            let links = links.ok_or(NetworkKernelReaderError::HelperFailed)?;
+            let addresses = addresses.ok_or(NetworkKernelReaderError::HelperFailed)?;
+            let ipv6_neighbors = ipv6_neighbors.ok_or(NetworkKernelReaderError::HelperFailed)?;
+
+            Ok(RtnetlinkLinkInventoryV1 {
+                link: links.into_iter().next().ok_or(
+                    NetworkKernelReaderError::InvalidRtnetlink("host veth result is empty"),
+                )?,
+                addresses,
+                ipv6_neighbors,
+            })
+        })();
+        finish_read_group_v2(result, port)
     }
 
     /// Proves that the plan-derived host veth is absent from a complete dump.
@@ -154,18 +180,29 @@ impl FixedRtnetlinkObservationReader {
         &self,
         expectation: &NetworkKernelExpectationV1,
     ) -> Result<(), NetworkKernelReaderError> {
-        let Some(veth) = expectation.veth() else {
-            return Ok(());
-        };
-        validate_interface_name(&veth.host_name)?;
-        let link_json = self.run(&["-j", "-details", "link", "show"], MAXIMUM_LINK_BYTES)?;
-        let links = decode_links(&link_json)?;
-        if links.iter().any(|link| link.name == veth.host_name) {
-            return Err(NetworkKernelReaderError::InvalidRtnetlink(
-                "plan-owned host veth is still present",
-            ));
-        }
-        Ok(())
+        self.observe_host_veth_absent_with_port_v2(expectation, &mut ObservationHelperPortV2::Local)
+    }
+
+    pub(crate) fn observe_host_veth_absent_with_port_v2(
+        &self,
+        expectation: &NetworkKernelExpectationV1,
+        port: &mut ObservationHelperPortV2<'_, '_, '_>,
+    ) -> Result<(), NetworkKernelReaderError> {
+        let result = (|| {
+            let Some(veth) = expectation.veth() else {
+                return Ok(());
+            };
+            validate_interface_name(&veth.host_name)?;
+            let link_json = port.run(&self.ip, ObservationRecipeV2::Links(None))?;
+            let links = decode_links(&link_json)?;
+            if links.iter().any(|link| link.name == veth.host_name) {
+                return Err(NetworkKernelReaderError::InvalidRtnetlink(
+                    "plan-owned host veth is still present",
+                ));
+            }
+            Ok(())
+        })();
+        finish_read_group_v2(result, port)
     }
 
     /// Reads every link, address, route table, and rule in the current namespace.
@@ -182,62 +219,186 @@ impl FixedRtnetlinkObservationReader {
     pub fn observe_sandbox(
         &self,
     ) -> Result<RtnetlinkNamespaceInventoryV1, NetworkKernelReaderError> {
-        let link_json = self.run(&["-j", "-details", "link", "show"], MAXIMUM_LINK_BYTES)?;
-        let address_json = self.run(&["-j", "address", "show"], MAXIMUM_ADDRESS_BYTES)?;
-        let neighbor_json = self.run(&["-j", "-6", "neighbor", "show"], MAXIMUM_NEIGHBOR_BYTES)?;
-        let routes_v4 = self.run(
-            &["-j", "-4", "route", "show", "table", "all"],
-            MAXIMUM_ROUTE_BYTES,
-        )?;
-        let routes_v6 = self.run(
-            &["-j", "-6", "route", "show", "table", "all"],
-            MAXIMUM_ROUTE_BYTES,
-        )?;
-        let rules_v4 = self.run(&["-j", "-4", "rule", "show"], MAXIMUM_RULE_BYTES)?;
-        let rules_v6 = self.run(&["-j", "-6", "rule", "show"], MAXIMUM_RULE_BYTES)?;
-
-        let mut links = decode_links(&link_json)?;
-        let addresses =
-            decode_addresses(&address_json, &links, ObservedNetworkNamespaceV1::Sandbox)?;
-        let ipv6_neighbors =
-            decode_ipv6_neighbors(&neighbor_json, &links, ObservedNetworkNamespaceV1::Sandbox)?;
-        let interface_indices = links
-            .iter()
-            .map(|link| (link.name.as_str(), link.ifindex))
-            .collect::<BTreeMap<_, _>>();
-        let mut routes = decode_routes(&routes_v4, ObservedIpFamilyV1::Ipv4, &interface_indices)?;
-        routes.extend(decode_routes(
-            &routes_v6,
-            ObservedIpFamilyV1::Ipv6,
-            &interface_indices,
-        )?);
-        let mut policy_rules = decode_rules(&rules_v4, ObservedIpFamilyV1::Ipv4)?;
-        policy_rules.extend(decode_rules(&rules_v6, ObservedIpFamilyV1::Ipv6)?);
-
-        links.sort_by_key(|link| link.ifindex);
-        routes.sort_unstable();
-        policy_rules.sort_unstable();
-        reject_duplicates(&links, "duplicate link")?;
-        reject_duplicates(&routes, "duplicate route")?;
-        reject_duplicates(&policy_rules, "duplicate policy rule")?;
-
-        Ok(RtnetlinkNamespaceInventoryV1 {
-            links,
-            addresses,
-            ipv6_neighbors,
-            routes,
-            policy_rules,
-        })
+        self.observe_sandbox_with_port_v2(&mut ObservationHelperPortV2::Local)
     }
 
-    fn run(
+    pub(crate) fn observe_sandbox_with_port_v2(
         &self,
-        arguments: &[&str],
-        maximum_stdout_bytes: usize,
-    ) -> Result<Vec<u8>, NetworkKernelReaderError> {
-        let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        successful_helper_stdout(self.ip.run(&arguments, maximum_stdout_bytes)?)
+        port: &mut ObservationHelperPortV2<'_, '_, '_>,
+    ) -> Result<RtnetlinkNamespaceInventoryV1, NetworkKernelReaderError> {
+        let result = (|| {
+            // Parse each command once and park its typed model/first cause
+            // before retiring that completed native helper. Dependent decoders
+            // are suppressed after an actual rejected link model. Native IO
+            // still precedes final semantic projection, preserving its priority.
+            let mut first_semantic = None;
+            let link_json = port.run(&self.ip, ObservationRecipeV2::Links(None))?;
+            let links = park_command_semantics_v2(
+                Some(decode_links(&link_json)),
+                &mut first_semantic,
+                port,
+            )?;
+
+            let address_json = port.run(&self.ip, ObservationRecipeV2::Addresses(None))?;
+            let addresses = park_command_semantics_v2(
+                links.as_ref().map(|links| {
+                    decode_addresses(&address_json, links, ObservedNetworkNamespaceV1::Sandbox)
+                }),
+                &mut first_semantic,
+                port,
+            )?;
+            let neighbor_json = port.run(&self.ip, ObservationRecipeV2::Neighbors(None))?;
+            let ipv6_neighbors = park_command_semantics_v2(
+                links.as_ref().map(|links| {
+                    decode_ipv6_neighbors(
+                        &neighbor_json,
+                        links,
+                        ObservedNetworkNamespaceV1::Sandbox,
+                    )
+                }),
+                &mut first_semantic,
+                port,
+            )?;
+
+            let interface_indices = links.as_ref().map(|links| {
+                links
+                    .iter()
+                    .map(|link| (link.name.as_str(), link.ifindex))
+                    .collect::<BTreeMap<_, _>>()
+            });
+            let routes_v4 = port.run(&self.ip, ObservationRecipeV2::Routes { ipv6: false })?;
+            let routes_v4 = park_command_semantics_v2(
+                interface_indices
+                    .as_ref()
+                    .map(|indices| decode_routes(&routes_v4, ObservedIpFamilyV1::Ipv4, indices)),
+                &mut first_semantic,
+                port,
+            )?;
+            let routes_v6 = port.run(&self.ip, ObservationRecipeV2::Routes { ipv6: true })?;
+            let routes_v6 = park_command_semantics_v2(
+                interface_indices
+                    .as_ref()
+                    .map(|indices| decode_routes(&routes_v6, ObservedIpFamilyV1::Ipv6, indices)),
+                &mut first_semantic,
+                port,
+            )?;
+            let rules_v4 = port.run(&self.ip, ObservationRecipeV2::Rules { ipv6: false })?;
+            let rules_v4 = park_command_semantics_v2(
+                Some(decode_rules(&rules_v4, ObservedIpFamilyV1::Ipv4)),
+                &mut first_semantic,
+                port,
+            )?;
+            let rules_v6 = port.run(&self.ip, ObservationRecipeV2::Rules { ipv6: true })?;
+            let rules_v6 = park_command_semantics_v2(
+                Some(decode_rules(&rules_v6, ObservedIpFamilyV1::Ipv6)),
+                &mut first_semantic,
+                port,
+            )?;
+            drop(interface_indices);
+
+            if let Some(cause) = first_semantic {
+                return Err(cause);
+            }
+            complete_sandbox_commands_v2(
+                links,
+                addresses,
+                ipv6_neighbors,
+                routes_v4,
+                routes_v6,
+                rules_v4,
+                rules_v6,
+            )
+        })();
+        finish_read_group_v2(result, port)
     }
+
+    pub(crate) fn from_original_v2(ip: PinnedArtifact) -> Self {
+        Self { ip }
+    }
+
+    pub(crate) fn original_ip_v2(&self) -> &PinnedArtifact {
+        &self.ip
+    }
+}
+
+// A completed positive native command can retire after its actual decoded
+// result, or an already-retained earlier semantic rejection, is parked. This
+// grants no successful group result. A disposal failure stops further commands
+// and preserves the earlier semantic body cause over its independently owed
+// cleanup cause; the native owner separately retains that disposal failure.
+fn park_command_semantics_v2<T>(
+    result: Option<Result<T, NetworkKernelReaderError>>,
+    first_semantic: &mut Option<NetworkKernelReaderError>,
+    port: &mut ObservationHelperPortV2<'_, '_, '_>,
+) -> Result<Option<T>, NetworkKernelReaderError> {
+    let value = match result {
+        Some(Ok(value)) => Some(value),
+        Some(Err(cause)) => {
+            first_semantic.get_or_insert(cause);
+            None
+        }
+        None if first_semantic.is_some() => None,
+        None => return Err(NetworkKernelReaderError::HelperFailed),
+    };
+    if let Err(native) = port.finish_group() {
+        return Err(match first_semantic.take() {
+            Some(semantic) => semantic,
+            None => native,
+        });
+    }
+    Ok(value)
+}
+
+type DecodedCommandV2<T> = Option<Vec<T>>;
+type CommandResultV2<T> = Option<Result<Vec<T>, NetworkKernelReaderError>>;
+
+// Projection remains after every native command. Earlier decoder failures keep
+// the same order, while skipped dependent decoders cannot invent a model.
+#[allow(clippy::too_many_arguments)]
+fn complete_sandbox_commands_v2(
+    links: DecodedCommandV2<ObservedLinkV1>,
+    addresses: DecodedCommandV2<ObservedAddressV1>,
+    ipv6_neighbors: DecodedCommandV2<ObservedIpv6NeighborV1>,
+    routes_v4: DecodedCommandV2<ObservedRouteV1>,
+    routes_v6: DecodedCommandV2<ObservedRouteV1>,
+    rules_v4: DecodedCommandV2<ObservedPolicyRuleV1>,
+    rules_v6: DecodedCommandV2<ObservedPolicyRuleV1>,
+) -> Result<RtnetlinkNamespaceInventoryV1, NetworkKernelReaderError> {
+    let mut links = links.ok_or(NetworkKernelReaderError::HelperFailed)?;
+    let addresses = addresses.ok_or(NetworkKernelReaderError::HelperFailed)?;
+    let ipv6_neighbors = ipv6_neighbors.ok_or(NetworkKernelReaderError::HelperFailed)?;
+    let mut routes = routes_v4.ok_or(NetworkKernelReaderError::HelperFailed)?;
+    routes.extend(routes_v6.ok_or(NetworkKernelReaderError::HelperFailed)?);
+    let mut policy_rules = rules_v4.ok_or(NetworkKernelReaderError::HelperFailed)?;
+    policy_rules.extend(rules_v6.ok_or(NetworkKernelReaderError::HelperFailed)?);
+
+    links.sort_by_key(|link| link.ifindex);
+    routes.sort_unstable();
+    policy_rules.sort_unstable();
+    reject_duplicates(&links, "duplicate link")?;
+    reject_duplicates(&routes, "duplicate route")?;
+    reject_duplicates(&policy_rules, "duplicate policy rule")?;
+
+    Ok(RtnetlinkNamespaceInventoryV1 {
+        links,
+        addresses,
+        ipv6_neighbors,
+        routes,
+        policy_rules,
+    })
+}
+
+/// Prices the actual seven staged typed-result carriers and borrowed index.
+pub(crate) fn deferred_command_result_headers_data_v2() -> Option<usize> {
+    use std::mem::size_of;
+    size_of::<(DecodedCommandV2<ObservedLinkV1>, CommandResultV2<ObservedLinkV1>)>()
+        .checked_add(size_of::<(DecodedCommandV2<ObservedAddressV1>, CommandResultV2<ObservedAddressV1>)>())?
+        .checked_add(size_of::<(DecodedCommandV2<ObservedIpv6NeighborV1>, CommandResultV2<ObservedIpv6NeighborV1>)>())?
+        .checked_add(size_of::<(DecodedCommandV2<ObservedRouteV1>, CommandResultV2<ObservedRouteV1>)>().checked_mul(2)?)?
+        .checked_add(size_of::<(DecodedCommandV2<ObservedPolicyRuleV1>, CommandResultV2<ObservedPolicyRuleV1>)>().checked_mul(2)?)?
+        .checked_add(size_of::<Option<BTreeMap<&str, u32>>>())?
+        .checked_add(size_of::<Option<NetworkKernelReaderError>>())?
+        .checked_mul(4)
 }
 
 fn validate_interface_name(name: &str) -> Result<(), NetworkKernelReaderError> {
@@ -1115,6 +1276,45 @@ mod tests {
         include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/rules-v4.json");
     const BASELINE_RULES_V6: &[u8] =
         include_bytes!("../tests/fixtures/rtnetlink-managed-dual-stack/rules-v6.json");
+
+    #[test]
+    fn staged_semantics_retains_the_first_real_decoder_error() {
+        let mut first = None;
+        let mut port = ObservationHelperPortV2::Local;
+
+        let links =
+            park_command_semantics_v2(Some(decode_links(b"[]")), &mut first, &mut port).unwrap();
+        let rules = park_command_semantics_v2(
+            Some(decode_rules(b"[{}]\n", ObservedIpFamilyV1::Ipv4)),
+            &mut first,
+            &mut port,
+        )
+        .unwrap();
+
+        assert!(links.is_none());
+        assert!(rules.is_none());
+        assert!(matches!(
+            first,
+            Some(NetworkKernelReaderError::InvalidRtnetlink(
+                "ip JSON is empty or lacks its final newline"
+            ))
+        ));
+    }
+
+    #[test]
+    fn a_missing_dependency_without_a_prior_rejection_cannot_supply_a_model() {
+        let mut first = None;
+        let mut port = ObservationHelperPortV2::Local;
+
+        let result =
+            park_command_semantics_v2::<Vec<ObservedAddressV1>>(None, &mut first, &mut port);
+
+        assert!(matches!(
+            result,
+            Err(NetworkKernelReaderError::HelperFailed)
+        ));
+        assert!(first.is_none());
+    }
 
     #[test]
     fn actual_managed_dual_stack_fixture_decodes_completely() {

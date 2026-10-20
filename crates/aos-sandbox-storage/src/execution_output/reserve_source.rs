@@ -61,6 +61,61 @@ pub(crate) struct VerifiedOriginalOutputReserveV1 {
 }
 
 impl ExecutionOutputLedgerV1 {
+    /// Prices the same atomic logical row and original marker before encoding.
+    pub(crate) fn original_reservation_receiving_demand_v1(&self)
+        -> Result<aos_sandbox_core::ResourceVector, aos_sandbox::journal::JournalAppendReceivingDemandErrorV1>
+    {
+        self.journal.append_receiving_demand_v1([
+            aos_sandbox_journal::geometry::RecordShape { key_bytes: 17, value_bytes: Some(super::RECORD_BYTES) },
+            aos_sandbox_journal::geometry::RecordShape { key_bytes: 17, value_bytes: Some(MARKER_BYTES) },
+        ].into_iter())
+    }
+
+    /// Builds only fresh Host45 request DATA from the actual historical marker.
+    ///
+    /// Current60 bindings stay in the surrounding authenticated nomination.
+    /// The historical46 ID and plan remain distinct and are never renewed.
+    /// A separate signed Host plan and actual Host Session are still mandatory.
+    pub(crate) fn capture_host_readback_body_v3(
+        &self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        header: aos_proto::aos::sandbox::local::v1::RequestHeader,
+    ) -> Result<Vec<u8>, ExecutionOutputLedgerErrorV1> {
+        if request.method() != BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1 {
+            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
+        }
+        let source = request.storage_execution_capture_source_ongoing_v2()
+            .ok_or(ExecutionOutputLedgerErrorV1::NotCurrent)?.original_source_v1();
+        let body = request.storage_execution_capture_original_output_request_v2()
+            .ok_or(ExecutionOutputLedgerErrorV1::NotCurrent)?;
+        self.journal.ensure_healthy()?;
+        let mut selected = None;
+        // Borrow the already materialized, bounded map. No second historical
+        // request parser or newly allocated index is needed to locate its one
+        // actual MAC-verified original marker for this execution/row.
+        for (location, bytes) in self.journal.records(NAMESPACE) {
+            if location.len() != 17 || location.first() != Some(&b'm') { continue; }
+            let marker = decode_marker(location, bytes, &self.key)?;
+            if marker.execution != *source.settlement().execution().as_bytes()
+                || marker.create != *source.settlement().create_operation().as_bytes()
+                || marker.record_digest != source.output_record_digest()
+            { continue; }
+            if selected.replace(marker).is_some() { return Err(ExecutionOutputLedgerErrorV1::Conflict); }
+        }
+        let marker = selected.ok_or(ExecutionOutputLedgerErrorV1::NotCurrent)?;
+        if self.original_row_digest(&marker)? != marker.record_digest {
+            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
+        }
+        let original = aos_sandbox::controller_storage_output_reserve_attempt::ControllerStorageOutputReserveAttemptV1::
+            from_captured_original_body_data_v3(body, marker.signed_source_digest)
+            .map_err(|_| ExecutionOutputLedgerErrorV1::NotCurrent)?;
+        if original.original_request_id() != marker.request_id
+            || original.execution() != source.settlement().execution()
+        { return Err(ExecutionOutputLedgerErrorV1::NotCurrent); }
+        original.captured_host_readback_body(header)
+            .map_err(|_| ExecutionOutputLedgerErrorV1::NotCurrent)
+    }
+
     /// Uses actual authenticated preimages only after configured Storage admission.
     /// The installed caller separately holds the genuine Host currentness loan.
     pub(crate) fn prepare_authenticated_original(

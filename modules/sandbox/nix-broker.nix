@@ -154,7 +154,7 @@ in {
       }
       {
         assertion = controllerService.enable && cfg.builderUid > 0 && cfg.builderGid > 0
-          && config.systemd.package == pkgs.systemd
+          && (import ./_fixed-systemd-profile.nix {inherit config pkgs;})
           && selinux.enable && selinux.bootMode == "immutable-stage0"
           && selinux.mode == "enforcing" && selinux.policy == "aos"
           && !config.aos.sandbox.nixOfflinePrepare.enable;

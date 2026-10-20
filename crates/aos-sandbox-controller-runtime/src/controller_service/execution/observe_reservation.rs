@@ -440,6 +440,7 @@ mod tests {
         receipt_bytes[..8].copy_from_slice(RECEIPT_MAGIC);
         let receipt = EffectReceipt::new(receipt_bytes.to_vec()).unwrap();
         let other_create = ControllerExecutionCompletionV1 {
+            capture_complete: None,
             receipt: receipt.clone(),
             phase: BackendExecutionPhaseV1::Authorized,
             observation_sequence: 2,
@@ -705,6 +706,7 @@ mod tests {
         let mut receipt = [4; RECEIPT_BYTES];
         receipt[..8].copy_from_slice(RECEIPT_MAGIC);
         let observe_completion = ControllerExecutionCompletionV1 {
+            capture_complete: None,
             receipt: EffectReceipt::new(receipt.to_vec()).unwrap(),
             phase: BackendExecutionPhaseV1::Exited,
             observation_sequence: 2,
@@ -740,3 +742,4 @@ mod tests {
         ));
     }
 }
+

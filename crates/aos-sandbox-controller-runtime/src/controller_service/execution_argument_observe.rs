@@ -1,14 +1,16 @@
-//! Controller-only signer for one Host runtime-argument observation.
+//! Controller signer for non-consuming Prepare and one-shot Accept.
 //!
 //! The authenticated session chooses the original request ID. The signer
-//! previews AOSCIA02 under current accepted-Create owners, signs its exact
-//! canonical bytes with the current Host-audience authorization template,
-//! then durably retains the same one-shot attempt before any request can be
-//! returned for transport. An existing attempt is query-only after restart.
+//! previews AOSCIA02 under current accepted-Create owners. Prepare signs that
+//! preview without consuming it. Accept preserves its original deadline and
+//! durably retains its distinct request before transport. Both grants use the
+//! same current Host-audience authorization engine. An existing accepted
+//! attempt is query-only after restart.
 //! This module neither sends to Host nor admits an ExecutionSpec.
 
 use aos_proto::aos::sandbox::local::v1::{
-    Audience, BrokerAuthorizationArtifactsV1, ObserveHostExecutionArgumentRequestV1,
+    Audience, BrokerAuthorizationArtifactsV1, BrokerMethod,
+    PrepareHostExecutionArgumentRequestV2, AcceptHostExecutionArgumentRequestV2,
     QueryHostExecutionArgumentRequestV1,
 };
 use aos_sandbox::controller_execution_argument_attempt::{
@@ -18,7 +20,7 @@ use aos_sandbox::controller_execution_argument_attempt::{
 };
 use aos_sandbox::environment::EnvironmentProtectedJournalOwnerV1;
 use aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1;
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{AuthorityPublicationStore, EffectFailure, Journal};
 use aos_sandbox_core::{
@@ -26,21 +28,28 @@ use aos_sandbox_core::{
     ProtocolVersion, RawPairedClockSample,
 };
 use aos_sandbox_protocol::semantics::{
-    host_execution_argument_observe_grant_v1, host_execution_argument_query_grant_v1,
+    host_execution_argument_prepare_grant_v2, host_execution_argument_accept_grant_v2,
+    host_execution_argument_query_grant_v1,
 };
+use aos_sandbox_protocol::host_execution_argument::preparation::HostArgumentPreparationV2;
 use buffa::Message as _;
 
 use crate::DormantBrokerRequestCoordinatesV1;
 use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
 
-/// Retains the exact signed plan, source, and original method-37 request body.
-pub(crate) struct SignedExecutionArgumentObserveV1 {
+/// Holds the exact versioned signed request before protected transport custody.
+pub(crate) struct SignedExecutionArgumentRequestV2 {
+    method: BrokerMethod,
     attempt: ControllerExecutionArgumentAttemptV1,
     body: Vec<u8>,
     authorization: BrokerAuthorizationArtifactsV1,
 }
 
-impl SignedExecutionArgumentObserveV1 {
+impl SignedExecutionArgumentRequestV2 {
+    pub(crate) const fn method(&self) -> BrokerMethod {
+        self.method
+    }
+
     pub(crate) const fn attempt(&self) -> &ControllerExecutionArgumentAttemptV1 {
         &self.attempt
     }
@@ -70,13 +79,22 @@ impl SignedExecutionArgumentQueryV1 {
     }
 }
 
-/// Signs and durably retains the sole fresh method-37 attempt.
+/// Selects a fixed phase of the same protected source/signature engine.
 ///
-/// Signing failure before the AOSCIA02 append does not consume the attempt.
-/// After append, the in-process broker exchange must retain the exact signed
-/// request; a later process must use read-only method 38, never sign again.
+/// A preparation is only response DATA here. The actual retained exchange
+/// must additionally join its completed Prepare and Accept to the same Session.
+pub(crate) enum ExecutionArgumentSigningPhaseV2<'a> {
+    Prepare,
+    Accept(&'a HostArgumentPreparationV2),
+}
+
+/// Signs Prepare without an append, or signs and retains the sole Accept.
+///
+/// Accept uses the first proposal's deadline even if the Session supplies a
+/// later request deadline. Failure after the append requires exact request
+/// recovery; neither phase can authorize a replacement Guest challenge.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn sign_current_host_execution_argument_observe_v1<T>(
+pub(crate) fn sign_current_host_execution_argument_v2<T>(
     controller: &mut Journal,
     assignment: &CurrentAssignmentTarget,
     environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
@@ -84,9 +102,10 @@ pub(crate) fn sign_current_host_execution_argument_observe_v1<T>(
     execution: ExecutionId,
     create_operation: OperationId,
     signer: &ControllerBrokerPlanSignerV1,
+    phase: ExecutionArgumentSigningPhaseV2<'_>,
     coordinates: DormantBrokerRequestCoordinatesV1,
     clock: &mut T,
-) -> Result<SignedExecutionArgumentObserveV1, EffectFailure>
+) -> Result<SignedExecutionArgumentRequestV2, EffectFailure>
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
@@ -98,6 +117,18 @@ where
             "Host argument session coordinates are incompatible",
         ));
     }
+    let original_deadline = match &phase {
+        ExecutionArgumentSigningPhaseV2::Prepare => coordinates.deadline_boottime_nanoseconds(),
+        ExecutionArgumentSigningPhaseV2::Accept(preparation) => {
+            let proposed = ControllerExecutionArgumentAttemptV1::decode_canonical(
+                preparation.proposed_source(),
+            ).map_err(|_| retryable("Host preparation source is invalid"))?;
+            if coordinates.deadline_boottime_nanoseconds() < proposed.deadline_boottime_nanoseconds() {
+                return Err(retryable("Host Accept deadline cannot contain the original flight"));
+            }
+            proposed.deadline_boottime_nanoseconds()
+        }
+    };
     let proposed = prepare_controller_execution_argument_attempt_v1(
         controller,
         assignment,
@@ -106,7 +137,7 @@ where
         execution,
         create_operation,
         coordinates.request_id(),
-        coordinates.deadline_boottime_nanoseconds(),
+        original_deadline,
         clock,
     )
     .map_err(|_| retryable("protected Host argument attempt is unavailable"))?;
@@ -139,12 +170,21 @@ where
     }
 
     let source = proposed.canonical_bytes();
-    let semantics = host_execution_argument_observe_grant_v1(
-        broker_assignment,
-        coordinates.request_id(),
-        &source,
-    )
-    .map_err(|_| retryable("Host argument semantics are invalid"))?;
+    let (method, semantics) = match &phase {
+        ExecutionArgumentSigningPhaseV2::Prepare => (
+            BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2,
+            host_execution_argument_prepare_grant_v2(
+                broker_assignment, coordinates.request_id(), &source,
+            ),
+        ),
+        ExecutionArgumentSigningPhaseV2::Accept(preparation) => (
+            BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2,
+            host_execution_argument_accept_grant_v2(
+                broker_assignment, coordinates.request_id(), &source, preparation,
+            ),
+        ),
+    };
+    let semantics = semantics.map_err(|_| retryable("Host argument semantics are invalid"))?;
     let template = current
         .templates()
         .iter()
@@ -200,28 +240,36 @@ where
         .sign_plan(plan, now)
         .map_err(|_| retryable("Host argument signature is unavailable"))?;
 
-    let attempt = retain_controller_execution_argument_attempt_v1(
-        controller,
-        assignment,
-        environment_owner,
-        parent,
-        execution,
-        create_operation,
-        coordinates.request_id(),
-        coordinates.deadline_boottime_nanoseconds(),
-        clock,
-    )
-    .map_err(|_| retryable("original Host argument attempt needs cold Query38"))?;
-    if attempt != proposed {
-        return Err(retryable("Host argument source changed before handoff"));
-    }
-    let body = ObserveHostExecutionArgumentRequestV1 {
-        header: Some(coordinates.request_header()).into(),
-        canonical_attempt: source.to_vec(),
-        ..Default::default()
-    }
-    .encode_to_vec();
-    Ok(SignedExecutionArgumentObserveV1 {
+    let (attempt, body) = match phase {
+        ExecutionArgumentSigningPhaseV2::Prepare => {
+            let body = PrepareHostExecutionArgumentRequestV2 {
+                header: Some(coordinates.request_header()).into(),
+                proposed_attempt: source.to_vec(),
+                ..Default::default()
+            }.encode_to_vec();
+            (proposed, body)
+        }
+        ExecutionArgumentSigningPhaseV2::Accept(preparation) => {
+            // This is the only one-shot Controller append. It follows genuine
+            // Host preparation and precedes any Accept transport preparation.
+            let attempt = retain_controller_execution_argument_attempt_v1(
+                controller, assignment, environment_owner, parent, execution,
+                create_operation, coordinates.request_id(), original_deadline, clock,
+            ).map_err(|_| retryable("original Host argument attempt needs cold Query38"))?;
+            if attempt != proposed {
+                return Err(retryable("Host argument source changed before handoff"));
+            }
+            let body = AcceptHostExecutionArgumentRequestV2 {
+                header: Some(coordinates.request_header()).into(),
+                canonical_attempt: source.to_vec(),
+                canonical_preparation: preparation.canonical_bytes().to_vec(),
+                ..Default::default()
+            }.encode_to_vec();
+            (attempt, body)
+        }
+    };
+    Ok(SignedExecutionArgumentRequestV2 {
+        method,
         attempt,
         body,
         authorization: BrokerAuthorizationArtifactsV1 {
@@ -234,7 +282,7 @@ where
     })
 }
 
-/// Signs a read-only Query38 for the sole original method-37 source.
+/// Signs a read-only Query38 for the sole original argument source.
 ///
 /// The original deadline may have expired. A query still requires the same
 /// protected output locator, current signed assignment and Host boot, a new

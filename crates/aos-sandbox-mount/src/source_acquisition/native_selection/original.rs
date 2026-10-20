@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use aos_sandbox::{
+use aos_sandbox_mount_native::{
     JournalTransaction, MountOriginalNativeJournalAuthorityV5, OriginalRootProtectedReadbackV5,
     PreparedOriginalRootAppendV5, ProtectedJournalAuthority,
 };
@@ -21,7 +21,7 @@ use aos_sandbox_source_provider_security::{
     SentMountProviderRequestV2,
 };
 
-use super::{PendingNativeProviderAcquireV3, reservation_coordinates};
+use super::reservation_coordinates;
 use crate::Result;
 use crate::source_acquisition::{
     SourceAcquisitionTableV2,
@@ -43,7 +43,7 @@ use release::OriginalRootReleaseFlightV1;
 // at the same body sites. No caller can substitute a predicate or authority.
 enum OriginalInstallDispositionV5<'slots> {
     Legacy,
-    Retained(&'slots mut [Option<std::result::Result<(), aos_sandbox::JournalError>>; 2]),
+    Retained(&'slots mut [Option<std::result::Result<(), aos_sandbox_mount_native::MountJournalErrorV1>>; 2]),
 }
 
 impl OriginalInstallDispositionV5<'_> {
@@ -308,7 +308,7 @@ impl OriginalNativeAcquireFlightV5 {
         native_index: &mut BTreeMap<[u8; 32], RootNativeHeldSidecarV2>,
         writer: &MountOriginalNativeJournalAuthorityV5<'_>,
         readback: &OriginalRootProtectedReadbackV5,
-        validations: &mut [Option<std::result::Result<(), aos_sandbox::JournalError>>; 2],
+        validations: &mut [Option<std::result::Result<(), aos_sandbox_mount_native::MountJournalErrorV1>>; 2],
     ) -> Result<()> {
         if validations.iter().any(Option::is_some) {
             return Err(state_error("original terminal installation slots occupied"));

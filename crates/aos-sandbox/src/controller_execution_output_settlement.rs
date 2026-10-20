@@ -33,7 +33,7 @@ use crate::controller_execution_preissue::{
     ControllerExecutionOutputAttemptErrorV1, ControllerExecutionOutputAttemptV1,
     load_controller_execution_output_attempt_v1,
 };
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentAssignmentTarget, CurrentRuntimeScopeError};
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
@@ -84,6 +84,15 @@ pub struct ProtectedControllerOutputSettlementV1 {
 }
 
 impl ProtectedControllerOutputSettlementV1 {
+    // This is the sole encoder's exact width (or bounded receipt width).
+    // It is passive requirement DATA, never an append or Native authority.
+    pub(crate) const fn receiving_record_shape_v1() -> aos_sandbox_journal::geometry::RecordShape {
+        aos_sandbox_journal::geometry::RecordShape {
+            key_bytes: 16,
+            value_bytes: Some(RECORD_BYTES),
+        }
+    }
+
     /// Borrows the original protected Host attempt frozen before its first send.
     #[must_use]
     pub const fn original_attempt(&self) -> &ControllerExecutionOutputAttemptV1 {
@@ -301,7 +310,40 @@ pub fn read_current_controller_output_settlement_v1<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
-    let attempt = current_attempt(controller, assignment, execution, create_operation, clock)?;
+    read_current_controller_output_settlement_inner_v4(controller, assignment, execution, create_operation, clock, None)
+}
+
+/// Reads the same settlement with the actual selected retained assignment checks.
+///
+/// # Errors
+/// Retains the existing clock/continuity/lease-verifier failure on `checks`;
+/// all original settlement/native association checks remain unchanged.
+pub fn read_current_controller_output_settlement_with_checks_v4<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    execution: ExecutionId,
+    create_operation: OperationId,
+    clock: &mut T,
+    checks: &mut crate::runtime_scope::ControllerCaptureAssignmentChecksV4,
+) -> Result<Option<ProtectedControllerOutputSettlementV1>, ControllerExecutionOutputSettlementErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    read_current_controller_output_settlement_inner_v4(controller, assignment, execution, create_operation, clock, Some(checks))
+}
+
+fn read_current_controller_output_settlement_inner_v4<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    execution: ExecutionId,
+    create_operation: OperationId,
+    clock: &mut T,
+    mut checks: Option<&mut crate::runtime_scope::ControllerCaptureAssignmentChecksV4>,
+) -> Result<Option<ProtectedControllerOutputSettlementV1>, ControllerExecutionOutputSettlementErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let attempt = current_attempt_inner_v4(controller, assignment, execution, create_operation, clock, checks.as_deref_mut())?;
     let Some(bytes) = controller.get(
         RecordNamespace::ControllerExecutionOutputSettlement,
         execution.as_bytes(),
@@ -315,7 +357,7 @@ where
     {
         return Err(ControllerExecutionOutputSettlementErrorV1::Mismatch);
     }
-    assignment.recheck(controller, clock)?;
+    recheck_capture_assignment_v4(assignment, controller, clock, checks.as_deref_mut())?;
     Ok(Some(ProtectedControllerOutputSettlementV1 {
         attempt,
         correlation_digest: record.correlation_digest,
@@ -336,8 +378,22 @@ fn current_attempt<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
+    current_attempt_inner_v4(controller, assignment, execution, create_operation, clock, None)
+}
+
+fn current_attempt_inner_v4<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    execution: ExecutionId,
+    create_operation: OperationId,
+    clock: &mut T,
+    mut checks: Option<&mut crate::runtime_scope::ControllerCaptureAssignmentChecksV4>,
+) -> Result<ControllerExecutionOutputAttemptV1, ControllerExecutionOutputSettlementErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
     controller.ensure_protected_authority()?;
-    assignment.recheck(controller, clock)?;
+    recheck_capture_assignment_v4(assignment, controller, clock, checks.as_deref_mut())?;
     let attempt = load_controller_execution_output_attempt_v1(controller, execution)?
         .ok_or(ControllerExecutionOutputSettlementErrorV1::Absent)?;
     let source = attempt.source();
@@ -355,8 +411,19 @@ where
     {
         return Err(ControllerExecutionOutputSettlementErrorV1::Mismatch);
     }
-    assignment.recheck(controller, clock)?;
+    recheck_capture_assignment_v4(assignment, controller, clock, checks.as_deref_mut())?;
     Ok(attempt)
+}
+
+fn recheck_capture_assignment_v4<T>(assignment: &CurrentAssignmentTarget, controller: &mut Journal,
+    clock: &mut T, checks: Option<&mut crate::runtime_scope::ControllerCaptureAssignmentChecksV4>)
+    -> Result<(), CurrentRuntimeScopeError>
+where T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>
+{
+    match checks {
+        Some(original) => original.recheck_v4(assignment, controller, clock),
+        None => assignment.recheck(controller, clock),
+    }
 }
 
 fn authenticated_committed_receipt(

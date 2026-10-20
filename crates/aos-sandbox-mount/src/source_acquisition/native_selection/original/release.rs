@@ -5,7 +5,7 @@
 //! parent; no manager-presence object, new endpoint or cleanup permit is made.
 
 use super::*;
-use aos_sandbox::{JournalError, MountManagerSourceInventoryError};
+use aos_sandbox_mount_native::{MountJournalErrorV1 as JournalError, MountManagerSourceInventoryError};
 use aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest;
 use aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1;
 use aos_sandbox_source_provider_security::{

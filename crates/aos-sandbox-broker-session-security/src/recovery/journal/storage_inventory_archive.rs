@@ -113,6 +113,18 @@ impl StorageInventoryArchiveV1 {
     }
 
     fn decode(key: &[u8], bytes: &[u8]) -> Result<Self, BrokerSessionSecurityError> {
+        Self::decode_engine_v3(key, bytes, None)
+    }
+
+    fn decode_schema_v3(journal: &mut ProtectedBrokerSessionJournalV1, key: &[u8], bytes: &[u8])
+        -> Result<Self, BrokerSessionSecurityError>
+    {
+        Self::decode_engine_v3(key, bytes, Some(journal))
+    }
+
+    fn decode_engine_v3(key: &[u8], bytes: &[u8], journal: Option<&mut ProtectedBrokerSessionJournalV1>)
+        -> Result<Self, BrokerSessionSecurityError>
+    {
         let (
             group_request_id,
             inventory_request_id,
@@ -120,10 +132,11 @@ impl StorageInventoryArchiveV1 {
             inventory_request_digest,
             history_bytes,
         ) = open_frame(key, bytes)?;
-        let history = StoredProtocolHistoryV1::decode(
-            &protocol_key(BrokerSessionProtocolV1::Storage),
-            history_bytes,
-        )?;
+        let key = protocol_key(BrokerSessionProtocolV1::Storage);
+        let history = match journal {
+            Some(journal) => journal.schema_decode_stored_v3(&key, history_bytes)?,
+            None => StoredProtocolHistoryV1::decode(&key, history_bytes)?,
+        };
         let archive = Self {
             group_request_id,
             inventory_request_id,
@@ -231,8 +244,14 @@ impl ProtectedBrokerSessionJournalV1 {
             super::MAXIMUM_STORAGE_INVENTORY_ARCHIVES,
         )?;
         for (key, value) in entries {
-            let archive = StorageInventoryArchiveV1::decode(&key, &value)?;
-            self.classify_storage_inventory_archive(&archive)?;
+            let scope = self.schema_scope_v3();
+            let result = (|| {
+                let archive = StorageInventoryArchiveV1::decode_schema_v3(self, &key, &value)?;
+                self.classify_storage_inventory_archive(&archive)?;
+                Ok(())
+            })();
+            self.schema_complete_scope_v3(scope, &result);
+            result?;
         }
         Ok(())
     }
@@ -245,6 +264,17 @@ impl ProtectedBrokerSessionJournalV1 {
     }
 
     pub(super) fn classify_storage_inventory_archive_inner(
+        &mut self,
+        archive: &StorageInventoryArchiveV1,
+        depth: usize,
+    ) -> Result<ArchivedStorageInventoryHeadV1, BrokerSessionSecurityError> {
+        let scope = self.schema_scope_v3();
+        let result = self.classify_storage_inventory_archive_engine_v3(archive, depth);
+        self.schema_complete_scope_v3(scope, &result);
+        result
+    }
+
+    fn classify_storage_inventory_archive_engine_v3(
         &mut self,
         archive: &StorageInventoryArchiveV1,
         depth: usize,
@@ -795,17 +825,14 @@ impl ProtectedBrokerSessionJournalV1 {
             inventory_request_id,
         )?;
         let bytes = {
-            let authority = self
-                .journal_mut()?
-                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let mut authority = self.schema_authority_v3()?;
             authority
                 .get(&key)
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?
                 .map(<[u8]>::to_vec)
         };
-        bytes
-            .map(|bytes| StorageInventoryArchiveV1::decode(&inventory_request_id, &bytes))
+        self.schema_retain_value_v3(bytes)?
+            .map(|bytes| StorageInventoryArchiveV1::decode_schema_v3(self, &inventory_request_id, &bytes))
             .transpose()
     }
 
@@ -887,11 +914,13 @@ impl StorageInventoryArchiveV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_sandbox_protocol::authenticated_session::stored_history::StoredBrokerSessionPurposeDataV2 as SessionPurpose;
     use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction};
 
     #[test]
     fn fresh_status_requires_the_immediate_archived_group_generation() {
         let group = StoredProtocolHistoryV1 {
+            purpose: SessionPurpose::Ordinary,
             protocol: BrokerSessionProtocolV1::Storage,
             endpoint: aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Broker,
             generation: 7,

@@ -18,6 +18,11 @@
 
 use std::collections::BTreeSet;
 
+mod capture;
+pub(crate) use capture::InventoryResponseCaptureV1;
+use aos_sandbox_core::retained::CaptureValueV1;
+use crate::capture::decode_message_v1;
+
 use aos_proto::aos::sandbox::local::v1::{
     InventoryStorageRequest, InventoryStorageResourcesResponse, RecoverStorageInventoryRequestV1,
     RecoverStorageInventoryResponseV1, StorageAtomicSnapshotCheckpoint,
@@ -28,6 +33,7 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_core::{DescriptorRole, ObjectDescriptor, ProtocolId, ProtocolVersion};
 use buffa::Message as _;
+use sha2::{Digest as _, Sha256};
 
 use crate::{
     MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, MINIMUM_HOST_IDENTITY_RANGE,
@@ -41,8 +47,9 @@ pub const MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS: usize = 16_384;
 const STORAGE_RESOURCE_INVENTORY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 
 /// Carries one complete validated Storage resource snapshot.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ValidatedStorageInventory {
+    encoded_response_digest: [u8; 32],
     kernel_boot_id: [u8; 16],
     broker_instance_id: [u8; 16],
     journal_sequence: u64,
@@ -51,7 +58,32 @@ pub struct ValidatedStorageInventory {
     operator_repair_commits: Vec<ValidatedStorageOperatorRepairCommitV1>,
 }
 
+// The added wire commitment is provenance DATA. Ordinary semantic inventory
+// equality preserves its existing field comparison, independent of wire order.
+impl PartialEq for ValidatedStorageInventory {
+    fn eq(&self, other: &Self) -> bool {
+        self.kernel_boot_id == other.kernel_boot_id
+            && self.broker_instance_id == other.broker_instance_id
+            && self.journal_sequence == other.journal_sequence
+            && self.catalog_generation == other.catalog_generation
+            && self.workspaces == other.workspaces
+            && self.operator_repair_commits == other.operator_repair_commits
+    }
+}
+
+impl Eq for ValidatedStorageInventory {}
+
 impl ValidatedStorageInventory {
+    /// Returns SHA-256 of the exact response bytes decoded by the sole validator.
+    ///
+    /// This immutable comparison value does not authenticate a Session or grant
+    /// native currentness. A genuine consumer separately joins the exact signed
+    /// terminal body and its actual native receiver before using this model.
+    #[must_use]
+    pub const fn encoded_response_digest_v1(&self) -> [u8; 32] {
+        self.encoded_response_digest
+    }
+
     /// Returns the current Linux boot identifier.
     #[must_use]
     pub const fn kernel_boot_id(&self) -> &[u8; 16] {
@@ -124,8 +156,8 @@ impl ValidatedStorageOperatorRepairCommitV1 {
     }
 }
 
-/// Carries one assignment-bound current workspace root.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Carries immutable creation identity and a separately authenticated current publication.
+#[derive(Clone, Debug)]
 pub struct ValidatedStorageWorkspace {
     workspace_handle: [u8; 32],
     fence: ValidatedAssignmentFence,
@@ -137,10 +169,29 @@ pub struct ValidatedStorageWorkspace {
     dataset_guid: u64,
     creation_operation_id: [u8; 16],
     guest_root_publication_proof: Option<GuestRootPublicationProofV1>,
+    current_guest_root_publication_v2: Option<crate::semantics::storage_guest_root::StorageGuestRootCurrentPublicationDataV2>,
     uid_range_start: u32,
     uid_range_size: u32,
     resource_digest: [u8; 32],
 }
+
+// Historical Create equality retains its exact creation/physical meaning.
+// Current assignment consumers compare the explicit V2 publication through
+// its shared typed relation and their actual new manifest/lease; Eq is no grant.
+impl PartialEq for ValidatedStorageWorkspace {
+    fn eq(&self, other: &Self) -> bool {
+        self.workspace_handle == other.workspace_handle && self.fence == other.fence
+            && self.root_image == other.root_image && self.resource_kernel_boot_id == other.resource_kernel_boot_id
+            && self.root_directory == other.root_directory && self.root_device == other.root_device
+            && self.root_inode == other.root_inode && self.dataset_guid == other.dataset_guid
+            && self.creation_operation_id == other.creation_operation_id
+            && self.guest_root_publication_proof == other.guest_root_publication_proof
+            && self.uid_range_start == other.uid_range_start && self.uid_range_size == other.uid_range_size
+            && self.resource_digest == other.resource_digest
+    }
+}
+
+impl Eq for ValidatedStorageWorkspace {}
 
 impl ValidatedStorageWorkspace {
     /// Returns the opaque workspace handle.
@@ -206,6 +257,16 @@ impl ValidatedStorageWorkspace {
         self.guest_root_publication_proof
     }
 
+    /// Borrows the current signed publication separately from its creation root.
+    ///
+    /// This remains comparison DATA; genuine signed Inventory/currentness and
+    /// the new Root/lease originals must establish its live provenance.
+    #[must_use]
+    pub const fn current_guest_root_publication_v2(&self)
+        -> Option<&crate::semantics::storage_guest_root::StorageGuestRootCurrentPublicationDataV2> {
+        self.current_guest_root_publication_v2.as_ref()
+    }
+
     /// Returns the first host identity mapped to guest identity zero.
     #[must_use]
     pub const fn uid_range_start(&self) -> u32 {
@@ -238,11 +299,24 @@ pub fn decode_storage_resource_inventory_request(
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedHeader, ProtocolValidationError> {
+    decode_storage_resource_inventory_request_engine(bytes, peer, policy, now_boottime_nanoseconds, None)
+}
+
+pub(crate) fn decode_storage_resource_inventory_request_engine(
+    bytes: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+    capture: Option<(&mut InventoryStorageRequest, &mut Option<Result<(), buffa::DecodeError>>)>,
+) -> Result<ValidatedHeader, ProtocolValidationError> {
     if bytes.len() > MAXIMUM_REQUEST_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
-    let request = InventoryStorageRequest::decode_from_slice(bytes)
-        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    let (raw, outcome) = match capture {
+        Some((raw, outcome)) => (Some(raw), Some(outcome)),
+        None => (None, None),
+    };
+    let request = crate::capture::decode_message_v1(bytes, raw, outcome)?;
     reject_unknown(&request.__buffa_unknown_fields)?;
     let header = validate_request_header(
         request
@@ -432,10 +506,42 @@ pub fn decode_storage_resource_inventory_response(
     bytes: &[u8],
     maximum_response_bytes: u32,
 ) -> Result<ValidatedStorageInventory, ProtocolValidationError> {
+    decode_storage_resource_inventory_response_with_model(bytes, maximum_response_bytes)
+        .map(|(validated, _)| validated)
+}
+
+/// Decodes one Storage snapshot and retains its same validated protobuf model.
+///
+/// This shares the complete existing bound and semantic validation with
+/// [`decode_storage_resource_inventory_response`]. The returned protobuf model
+/// is comparison DATA; it grants no authenticated Session or currentness.
+/// Canonical wire equality remains the caller's independent requirement.
+///
+/// # Errors
+/// Returns the same bound, protobuf, unknown-field, snapshot, workspace,
+/// lifecycle or operator-repair validation error as the snapshot-only adapter.
+pub fn decode_storage_resource_inventory_response_with_model(
+    bytes: &[u8],
+    maximum_response_bytes: u32,
+) -> Result<(ValidatedStorageInventory, InventoryStorageResourcesResponse), ProtocolValidationError> {
+    decode_inventory_response_engine(bytes, maximum_response_bytes, None)
+}
+
+fn decode_inventory_response_engine(
+    bytes: &[u8],
+    maximum_response_bytes: u32,
+    capture: Option<&mut InventoryResponseCaptureV1>,
+) -> Result<(ValidatedStorageInventory, InventoryStorageResourcesResponse), ProtocolValidationError> {
     validate_response_bounds(bytes, maximum_response_bytes)?;
 
-    let response = InventoryStorageResourcesResponse::decode_from_slice(bytes)
-        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    let (message, decode, workspace_capture, completed_workspaces, lifecycle, repairs) = match capture {
+        Some(capture) => (
+            Some(&mut capture.message), Some(&mut capture.decode), Some(&mut capture.workspaces),
+            Some(&mut capture.completed_workspaces), Some(&mut capture.lifecycle), Some(&mut capture.repairs),
+        ),
+        None => (None, None, None, None, None, None),
+    };
+    let response = decode_message_v1::<InventoryStorageResourcesResponse>(bytes, message, decode)?;
     reject_unknown(&response.__buffa_unknown_fields)?;
     if response.journal_sequence == 0 || response.catalog_generation == 0 {
         return Err(ProtocolValidationError::InvalidField(
@@ -452,22 +558,28 @@ pub fn decode_storage_resource_inventory_response(
     let kernel_boot_id = exact_nonzero::<16>(&response.kernel_boot_id, "kernel_boot_id")?;
     let broker_instance_id =
         exact_nonzero::<16>(&response.broker_instance_id, "broker_instance_id")?;
-    let workspaces = validate_workspaces(&response.workspaces, kernel_boot_id)?;
-    validate_lifecycle_inventory(&response)?;
-    let operator_repair_commits = validate_operator_repair_commits(&response)?;
+    let workspaces = CaptureValueV1::new(
+        validate_workspaces_engine(&response.workspaces, kernel_boot_id, workspace_capture)?,
+        completed_workspaces,
+    );
+    validate_lifecycle_inventory_engine(&response, lifecycle)?;
+    let operator_repair_commits = validate_operator_repair_commits_engine(&response, repairs)?;
 
-    Ok(ValidatedStorageInventory {
+    let validated = ValidatedStorageInventory {
+        encoded_response_digest: Sha256::digest(bytes).into(),
         kernel_boot_id,
         broker_instance_id,
         journal_sequence: response.journal_sequence,
         catalog_generation: response.catalog_generation,
-        workspaces,
+        workspaces: workspaces.take(),
         operator_repair_commits,
-    })
+    };
+    Ok((validated, response.take()))
 }
 
-fn validate_operator_repair_commits(
+fn validate_operator_repair_commits_engine(
     response: &InventoryStorageResourcesResponse,
+    capture: Option<&mut Vec<ValidatedStorageOperatorRepairCommitV1>>,
 ) -> Result<Vec<ValidatedStorageOperatorRepairCommitV1>, ProtocolValidationError> {
     if response.operator_repair_commits.len() > MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS {
         return Err(ProtocolValidationError::TooManyEntries {
@@ -490,11 +602,15 @@ fn validate_operator_repair_commits(
         ));
     }
 
-    response
-        .operator_repair_commits
-        .iter()
-        .map(validate_operator_repair_commit)
-        .collect()
+    match capture {
+        None => response.operator_repair_commits.iter().map(validate_operator_repair_commit).collect(),
+        Some(capture) => {
+            for record in &response.operator_repair_commits {
+                capture.push(validate_operator_repair_commit(record)?);
+            }
+            Ok(std::mem::take(capture))
+        }
+    }
 }
 
 fn validate_operator_repair_commit(
@@ -516,8 +632,9 @@ fn validate_operator_repair_commit(
     Ok(validated)
 }
 
-fn validate_lifecycle_inventory(
+fn validate_lifecycle_inventory_engine(
     response: &InventoryStorageResourcesResponse,
+    capture: Option<&mut capture::LifecycleCaptureV1>,
 ) -> Result<(), ProtocolValidationError> {
     let absent = response.lifecycle_source.is_empty()
         && response.lifecycle_resources.is_empty()
@@ -585,10 +702,10 @@ fn validate_lifecycle_inventory(
             "storage atomic checkpoint order",
         ));
     }
-    let mut request_ids = BTreeSet::new();
+    let mut request_ids = capture::CheckpointRequestsV1::new(capture);
     for checkpoint in &response.atomic_snapshot_checkpoints {
         validate_atomic_snapshot_checkpoint(checkpoint, response)?;
-        if !request_ids.insert(&checkpoint.request_id) {
+        if !request_ids.insert(&checkpoint.request_id)? {
             return Err(ProtocolValidationError::InvalidField(
                 "storage atomic checkpoint request",
             ));
@@ -681,38 +798,50 @@ fn lifecycle_transition_key(record: &StorageLifecycleTransitionRecord) -> (u32, 
     (record.kind, &record.resource_id, &record.identity)
 }
 
-fn validate_workspaces(
+fn validate_workspaces_engine(
     records: &[StorageWorkspaceInventoryRecord],
     kernel_boot_id: [u8; 16],
+    capture: Option<&mut capture::WorkspaceCollectionCaptureV1>,
 ) -> Result<Vec<ValidatedStorageWorkspace>, ProtocolValidationError> {
-    let mut workspaces = Vec::with_capacity(records.len());
-    let mut physical_pins = BTreeSet::new();
-    let mut dataset_guids = BTreeSet::new();
+    let (workspaces, physical, datasets, ranges, mut current, mut row) = match capture {
+        Some(capture) => (
+            Some(&mut capture.workspaces), Some(&mut capture.physical), Some(&mut capture.datasets),
+            Some(&mut capture.ranges), Some(&mut capture.current), Some(&mut capture.row),
+        ),
+        None => (None, None, None, None, None, None),
+    };
+    let mut workspaces = CaptureValueV1::new(Vec::with_capacity(records.len()), workspaces);
+    let mut physical_pins = CaptureValueV1::new(BTreeSet::new(), physical);
+    let mut dataset_guids = CaptureValueV1::new(BTreeSet::new(), datasets);
 
     for record in records {
-        let workspace = validate_workspace(record, kernel_boot_id)?;
+        let workspace = CaptureValueV1::new(
+            Some(validate_workspace_engine(record, kernel_boot_id, row.as_deref_mut())?),
+            current.as_deref_mut(),
+        );
+        let observed = workspace.as_ref().ok_or(ProtocolValidationError::InvalidField("workspace capture"))?;
         if workspaces
             .last()
             .is_some_and(|previous: &ValidatedStorageWorkspace| {
-                previous.workspace_handle >= workspace.workspace_handle
+                previous.workspace_handle >= observed.workspace_handle
             })
         {
             return Err(ProtocolValidationError::InvalidField(
                 "storage inventory workspace order",
             ));
         }
-        if !physical_pins.insert((workspace.root_device, workspace.root_inode))
-            || !dataset_guids.insert(workspace.dataset_guid)
+        if !physical_pins.insert((observed.root_device, observed.root_inode))
+            || !dataset_guids.insert(observed.dataset_guid)
         {
             return Err(ProtocolValidationError::InvalidField(
                 "storage inventory physical identity",
             ));
         }
 
-        workspaces.push(workspace);
+        workspaces.push(workspace.take().ok_or(ProtocolValidationError::InvalidField("workspace capture"))?);
     }
 
-    let mut ranges = workspaces
+    let mut ranges = CaptureValueV1::new(workspaces
         .iter()
         .map(|workspace| {
             (
@@ -720,7 +849,7 @@ fn validate_workspaces(
                 workspace.uid_range_start + workspace.uid_range_size,
             )
         })
-        .collect::<Vec<_>>();
+        .collect::<Vec<_>>(), ranges);
     ranges.sort_unstable();
     if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
         return Err(ProtocolValidationError::InvalidField(
@@ -728,22 +857,31 @@ fn validate_workspaces(
         ));
     }
 
-    Ok(workspaces)
+    Ok(workspaces.take())
 }
 
-fn validate_workspace(
+fn validate_workspace_engine(
     record: &StorageWorkspaceInventoryRecord,
     kernel_boot_id: [u8; 16],
+    capture: Option<&mut capture::WorkspaceRowCaptureV1>,
 ) -> Result<ValidatedStorageWorkspace, ProtocolValidationError> {
+    let (fence_slot, image_slot, descriptor, proof_slot, current_slot) = match capture {
+        Some(capture) => (
+            Some(&mut capture.fence), Some(&mut capture.root_image),
+            Some(&mut capture.descriptor), Some(&mut capture.proof), Some(&mut capture.current_publication),
+        ),
+        None => (None, None, None, None, None),
+    };
+
     reject_unknown(&record.__buffa_unknown_fields)?;
     let workspace_handle = exact_nonzero::<32>(
         &record.workspace_handle,
         "storage inventory workspace_handle",
     )?;
-    let fence = validate_fence(record.fence.as_option().ok_or(
+    let fence = CaptureValueV1::new(Some(validate_fence(record.fence.as_option().ok_or(
         ProtocolValidationError::MissingField("storage inventory fence"),
-    )?)?;
-    let root_image = validate_descriptor(
+    )?)?), fence_slot);
+    let root_image = CaptureValueV1::new(Some(crate::validate_descriptor_engine(
         record
             .root_image
             .as_option()
@@ -751,7 +889,8 @@ fn validate_workspace(
                 "storage inventory root_image",
             ))?,
         DescriptorRole::SandboxRootView,
-    )?;
+        descriptor,
+    )?), image_slot);
     let resource_kernel_boot_id = exact_nonzero::<16>(
         &record.resource_kernel_boot_id,
         "storage inventory resource_kernel_boot_id",
@@ -782,43 +921,63 @@ fn validate_workspace(
         "storage inventory creation_operation_id",
     )?;
     let guest_root_publication_proof = if record.guest_root_publication_proof.is_empty() {
-        None
+        CaptureValueV1::new(None, proof_slot)
     } else {
         let proof = GuestRootPublicationProofV1::decode(&record.guest_root_publication_proof)
             .map_err(|_| {
                 ProtocolValidationError::InvalidField("storage inventory guest root proof")
             })?;
-        if proof.sandbox != *fence.sandbox_id()
-            || proof.incarnation != *fence.incarnation_id()
-            || proof.assignment_epoch != fence.assignment_epoch()
-            || proof.assignment_digest != *fence.assignment_digest()
-            || proof.creation_operation != creation_operation_id
-            || proof.workspace_handle != workspace_handle
-            || proof.dataset_guid != record.dataset_guid
-            || proof.root_image_digest != *root_image.digest().as_bytes()
+        let proof = CaptureValueV1::new(Some(proof), proof_slot);
+        let observed = proof.as_ref().ok_or(ProtocolValidationError::InvalidField("guest root proof capture"))?;
+        let fence = fence.as_ref().ok_or(ProtocolValidationError::InvalidField("fence capture"))?;
+        let root_image = root_image.as_ref().ok_or(ProtocolValidationError::InvalidField("image capture"))?;
+        if observed.sandbox != *fence.sandbox_id()
+            || observed.incarnation != *fence.incarnation_id()
+            || observed.assignment_epoch != fence.assignment_epoch()
+            || observed.assignment_digest != *fence.assignment_digest()
+            || observed.creation_operation != creation_operation_id
+            || observed.workspace_handle != workspace_handle
+            || observed.dataset_guid != record.dataset_guid
+            || observed.root_image_digest != *root_image.digest().as_bytes()
         {
             return Err(ProtocolValidationError::InvalidField(
                 "storage inventory guest root binding",
             ));
         }
-        Some(proof)
+        proof
     };
 
-    Ok(ValidatedStorageWorkspace {
+    let current_publication = CaptureValueV1::new(
+        if record.current_guest_root_publication_v2.is_empty() { None } else {
+            Some(crate::semantics::storage_guest_root::StorageGuestRootCurrentPublicationDataV2::decode_v2(
+                &record.current_guest_root_publication_v2)?)
+        }, current_slot);
+
+    if let Some(current) = current_publication.as_ref() {
+        let creation = fence.as_ref().ok_or(ProtocolValidationError::InvalidField("fence capture"))?
+            .broker_assignment().map_err(|_| ProtocolValidationError::InvalidField("publication creation"))?;
+        let physical = *guest_root_publication_proof.as_ref()
+            .ok_or(ProtocolValidationError::InvalidField("publication physical proof"))?;
+        current.require_creation_data_v2(creation, physical, &resource_digest)?;
+    }
+
+    let workspace = ValidatedStorageWorkspace {
         workspace_handle,
-        fence,
-        root_image,
+        fence: fence.take().ok_or(ProtocolValidationError::InvalidField("fence capture"))?,
+        root_image: root_image.take().ok_or(ProtocolValidationError::InvalidField("image capture"))?,
         resource_kernel_boot_id,
         root_directory: format!("{WORKSPACE_PIN_PREFIX}{}", encode_hex(&workspace_handle)),
         root_device: record.root_device,
         root_inode: record.root_inode,
         dataset_guid: record.dataset_guid,
         creation_operation_id,
-        guest_root_publication_proof,
+        guest_root_publication_proof: guest_root_publication_proof.take(),
+        current_guest_root_publication_v2: current_publication.take(),
         uid_range_start: record.uid_range_start,
         uid_range_size: record.uid_range_size,
         resource_digest,
-    })
+    };
+    Ok(workspace)
 }
 
 fn validate_response_bounds(
@@ -906,7 +1065,7 @@ mod tests {
         ));
     }
 
-    fn workspace(handle: u8, range_start: u32) -> StorageWorkspaceInventoryRecord {
+    pub(super) fn workspace(handle: u8, range_start: u32) -> StorageWorkspaceInventoryRecord {
         StorageWorkspaceInventoryRecord {
             workspace_handle: vec![handle; 32],
             fence: Some(AssignmentFence {
@@ -937,7 +1096,7 @@ mod tests {
         }
     }
 
-    fn response(workspaces: Vec<StorageWorkspaceInventoryRecord>) -> Vec<u8> {
+    pub(super) fn response(workspaces: Vec<StorageWorkspaceInventoryRecord>) -> Vec<u8> {
         InventoryStorageResourcesResponse {
             kernel_boot_id: vec![9; 16],
             journal_sequence: 10,
@@ -994,6 +1153,22 @@ mod tests {
             decode_storage_resource_inventory_request(&request.encode_to_vec(), peer, policy, 1),
             Err(ProtocolValidationError::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn model_adapter_retains_complete_validation_and_original_wire_fields() {
+        let encoded = response(vec![workspace(1, 65_536)]);
+        let (validated, model) = decode_storage_resource_inventory_response_with_model(
+            &encoded, 65_536,
+        ).unwrap();
+
+        assert_eq!(model.encode_to_vec(), encoded);
+        assert_eq!(validated.journal_sequence(), model.journal_sequence);
+        assert_eq!(validated.catalog_generation(), model.catalog_generation);
+
+        let invalid = response(vec![workspace(1, 65_536), workspace(1, 65_536)]);
+        assert!(decode_storage_resource_inventory_response_with_model(&invalid, 65_536).is_err());
+        assert!(decode_storage_resource_inventory_response_with_model(&encoded, 4_096 - 1).is_err());
     }
 
     #[test]
@@ -1154,5 +1329,194 @@ mod tests {
         assert!(
             decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_err()
         );
+    }
+}
+
+/// Returns the encoded bound of the closed header-only Inventory request.
+///
+/// The fixed producer assigns only protocol major/minor, exact16-byte request
+/// ID, NodeController audience, original absolute cutoff and response maximum.
+/// InventoryStorageRequest wraps that header; BrokerRequestEnvelope adds only
+/// method, body and the existing fixed signed-request artifact. Each u32 field
+/// and every length prefix conservatively uses its complete five-byte varint.
+/// This is a representation bound, not a wire limit or a method/Session grant.
+#[must_use]
+pub const fn fixed_storage_inventory_request_packet_bound_v1() -> usize {
+    fixed_controller_inventory_request_packet_bound_v1()
+}
+
+/// Bounds the four fixed Controller header-only inventory packet layouts.
+///
+/// Host, Mount, Storage and Network use their existing one-header request
+/// messages and the same signed Broker envelope. This shares representation
+/// geometry only; a negotiated method, current Session and genuine operation
+/// owner remain mandatory before any request can be prepared or sent.
+#[must_use]
+pub const fn fixed_controller_inventory_request_packet_bound_v1() -> usize {
+    let scalar_u32 = 1 + 5;
+    let scalar_u64 = 1 + 10;
+    let request_id = 1 + 1 + 16;
+    let header = 3 * scalar_u32 + request_id + scalar_u64 + scalar_u32;
+    let body = 1 + 5 + header;
+    let authentication = 1 + 5 + aos_sandbox_broker_session_protocol::SIGNED_BROKER_REQUEST_BYTES;
+    scalar_u32 + 1 + 5 + body + authentication
+}
+
+#[cfg(test)]
+mod fixed_request_geometry_tests {
+    use super::*;
+    use super::tests::{response, workspace};
+    use buffa::Message as _;
+    use aos_proto::aos::sandbox::local::v1::{Audience, BrokerMethod, BrokerRequestEnvelope, RequestHeader};
+
+    #[test]
+    fn full_width_actual_encoders_fit_the_shared_inventory_recipe() {
+        use aos_proto::aos::sandbox::local::v1::{
+            InventoryMountsRequest, InventoryNetworksRequest, InventoryRuntimeRequest,
+        };
+
+        let header = RequestHeader {
+            protocol_major: u32::MAX,
+            protocol_minor: u32::MAX,
+            request_id: vec![255; 16],
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            deadline_boottime_nanoseconds: u64::MAX,
+            maximum_response_bytes: u32::MAX,
+            ..Default::default()
+        };
+        let packets = [
+            (BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+                InventoryRuntimeRequest { header: Some(header.clone()).into(), ..Default::default() }.encode_to_vec()),
+            (BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+                InventoryMountsRequest { header: Some(header.clone()).into(), ..Default::default() }.encode_to_vec()),
+            (BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+                InventoryStorageRequest { header: Some(header.clone()).into(), ..Default::default() }.encode_to_vec()),
+            (BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+                InventoryNetworksRequest { header: Some(header).into(), ..Default::default() }.encode_to_vec()),
+        ];
+
+        for (method, body) in packets {
+            // Artifact-width DATA only: no real signature or request grant.
+            let packet = BrokerRequestEnvelope {
+                method: method.into(),
+                body,
+                signed_session_request: vec![0; aos_sandbox_broker_session_protocol::SIGNED_BROKER_REQUEST_BYTES],
+                ..Default::default()
+            }.encode_to_vec();
+
+            assert!(packet.len() <= fixed_controller_inventory_request_packet_bound_v1());
+            assert!(packet.len() <= fixed_storage_inventory_request_packet_bound_v1());
+        }
+    }
+
+    #[test]
+    fn retained_decode_keeps_actual_partial_protobuf_and_first_error_after_reentry() {
+        let mut bytes = response(vec![workspace(1, 65_536)]);
+        bytes.push(0x80); // Unterminated actual protobuf tag after a complete row.
+        let mut original = InventoryResponseCaptureV1::default();
+
+        assert!(original.decode_once(&bytes, 65_536).is_err());
+
+        assert_eq!(original.message.workspaces.len(), 1);
+        assert_eq!(original.message.workspaces[0].workspace_handle, vec![1; 32]);
+        let first = original.decode.as_ref().unwrap().as_ref().unwrap_err() as *const buffa::DecodeError;
+        assert!(std::ptr::eq(
+            original.failure().unwrap().downcast_ref::<buffa::DecodeError>().unwrap(), first,
+        ));
+        assert!(original.decode_once(&response(Vec::new()), 65_536).is_err());
+        assert_eq!(original.message.workspaces.len(), 1);
+        assert!(std::ptr::eq(
+            original.failure().unwrap().downcast_ref::<buffa::DecodeError>().unwrap(), first,
+        ));
+    }
+
+    #[test]
+    fn retained_workspace_error_keeps_prior_rows_and_reached_descriptor() {
+        let mut invalid = workspace(2, 131_072);
+        invalid.uid_range_start = 0;
+        let bytes = response(vec![workspace(1, 65_536), invalid]);
+        let mut original = InventoryResponseCaptureV1::default();
+
+        let ordinary = decode_storage_resource_inventory_response(&bytes, 65_536).map(|_| ());
+        let retained = original.decode_once(&bytes, 65_536);
+        assert!(retained.is_err());
+        assert_eq!(retained, ordinary);
+
+        assert_eq!(original.workspaces.workspaces.len(), 1);
+        assert_eq!(original.workspaces.physical.len(), 1);
+        assert_eq!(original.workspaces.datasets.len(), 1);
+        assert!(original.workspaces.row.fence.is_some());
+        let descriptor = original.workspaces.row.root_image.as_ref().unwrap();
+        assert_eq!(descriptor.media_type().as_str(), "application/vnd.aos.sandbox.view.v1+cbor");
+        assert!(original.workspaces.ranges.is_empty());
+    }
+
+    #[test]
+    fn retained_order_and_overlap_refusals_keep_actual_row_and_sorted_ranges() {
+        let mut order = InventoryResponseCaptureV1::default();
+        let bytes = response(vec![workspace(2, 65_536), workspace(1, 131_072)]);
+        assert!(order.decode_once(&bytes, 65_536).is_err());
+        assert_eq!(order.workspaces.workspaces.len(), 1);
+        assert_eq!(order.workspaces.current.as_ref().unwrap().workspace_handle(), &[1; 32]);
+        assert!(!order.workspaces.current.as_ref().unwrap().root_directory().is_empty());
+
+        let mut overlap = InventoryResponseCaptureV1::default();
+        let bytes = response(vec![workspace(1, 65_536), workspace(2, 98_304)]);
+        assert!(overlap.decode_once(&bytes, 65_536).is_err());
+        assert_eq!(overlap.workspaces.workspaces.len(), 2);
+        assert_eq!(overlap.workspaces.ranges.len(), 2);
+        assert!(overlap.workspaces.ranges[0].1 > overlap.workspaces.ranges[1].0);
+    }
+
+    #[test]
+    fn invalid_media_type_keeps_actual_allocated_input_and_core_cause() {
+        let mut row = workspace(1, 65_536);
+        row.root_image.get_or_insert_default().media_type = "Invalid/TYPE".to_owned();
+        let mut original = InventoryResponseCaptureV1::default();
+
+        assert!(original.decode_once(&response(vec![row]), 65_536).is_err());
+
+        assert_eq!(original.workspaces.row.descriptor.input.as_deref(), Some("Invalid/TYPE"));
+        assert!(original.failure().unwrap()
+            .downcast_ref::<aos_sandbox_core::selector::InvalidMediaType>().is_some());
+        assert!(original.workspaces.row.root_image.is_none());
+    }
+}
+
+#[cfg(test)]
+mod encoded_response_tests {
+    use super::*;
+
+    #[test]
+    fn wire_commitment_tracks_actual_bytes_while_semantic_equality_is_unchanged() {
+        let canonical = super::tests::response(Vec::new());
+        // The same known fields in another legal protobuf order. No unknown
+        // field or synthetic parsed model bypasses the actual decoder.
+        let mut reordered = vec![0x10, 10, 0x18, 11, 0x0a, 16];
+        reordered.extend_from_slice(&[9; 16]);
+        reordered.extend_from_slice(&[0x2a, 16]);
+        reordered.extend_from_slice(&[12; 16]);
+        assert_ne!(canonical, reordered);
+
+        let first = decode_storage_resource_inventory_response(&canonical, MINIMUM_RESPONSE_BYTES).unwrap();
+        let second = decode_storage_resource_inventory_response(&reordered, MINIMUM_RESPONSE_BYTES).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first.encoded_response_digest_v1(), <[u8; 32]>::from(Sha256::digest(&canonical)));
+        assert_eq!(second.encoded_response_digest_v1(), <[u8; 32]>::from(Sha256::digest(&reordered)));
+        assert_ne!(first.encoded_response_digest_v1(), second.encoded_response_digest_v1());
+    }
+
+    #[test]
+    fn ordinary_and_retained_decoders_keep_the_same_exact_wire_identity() {
+        let encoded = super::tests::response(Vec::new());
+        let ordinary = decode_storage_resource_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES).unwrap();
+        let mut retained = InventoryResponseCaptureV1::default();
+
+        retained.decode_once(&encoded, MINIMUM_RESPONSE_BYTES).unwrap();
+
+        let (captured, _) = retained.value().unwrap();
+        assert_eq!(ordinary, *captured);
+        assert_eq!(ordinary.encoded_response_digest_v1(), captured.encoded_response_digest_v1());
     }
 }

@@ -10,8 +10,8 @@ use crate::{
 };
 
 use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
-use super::tree::{decode_feature, encode_feature, encode_slice, exact_bytes, semantics};
-use super::trust::{decode_key_reference, encode_key_reference};
+use super::tree::{encode_feature, encode_slice, exact_bytes, semantics};
+use super::trust::encode_key_reference;
 
 /// Encodes a broker authorization plan in exact portable v1 CBOR.
 #[must_use]
@@ -46,6 +46,18 @@ pub fn decode_broker_authorization_plan(
     bytes: &[u8],
     limits: DecodeLimits,
 ) -> Result<BrokerAuthorizationPlan, CanonicalCborError> {
+    decode_plan_engine(bytes, limits)
+        .map_err(super::decode_attempt::DecodeFailure::into_canonical)
+}
+
+pub(super) fn decode_plan_engine(
+    bytes: &[u8],
+    limits: DecodeLimits,
+) -> super::decode_attempt::DecodeResult<BrokerAuthorizationPlan> {
+    use super::decode_attempt::typed_semantics;
+    use super::tree::decode_feature_engine;
+    use super::trust::decode_key_reference_engine;
+
     let mut decoder = Decoder::new(bytes, limits)?;
     decoder.array(14)?;
     decoder.exact("broker authorization plan version", 1)?;
@@ -61,17 +73,18 @@ pub fn decode_broker_authorization_plan(
         return Err(CanonicalCborError::InvalidSemantics {
             object: "broker protocol",
             message: "protocol does not match audience".to_owned(),
-        });
+        }
+        .into());
     }
     let assignment = decode_assignment(&mut decoder)?;
     let node = NodeId::from_bytes(exact_bytes::<16>(&mut decoder, 16)?);
-    let ownership_authority = decode_key_reference(&mut decoder)?;
+    let ownership_authority = decode_key_reference_engine(&mut decoder)?;
     let grants = decoder.bounded_vec(1_024, decode_grant)?;
     let policy_commitment = ObjectDigest::from_bytes(exact_bytes::<32>(&mut decoder, 32)?);
     let revocation_scope = RevocationScopeId::from_bytes(exact_bytes::<16>(&mut decoder, 16)?);
     let issued_seconds = decoder.signed()?;
     let expires_seconds = decoder.signed()?;
-    let required_features = decoder.bounded_vec(64, decode_feature)?;
+    let required_features = decoder.bounded_vec(64, decode_feature_engine)?;
     decoder.finish()?;
 
     BrokerAuthorizationPlan::new(
@@ -88,7 +101,7 @@ pub fn decode_broker_authorization_plan(
         expires_seconds,
         required_features,
     )
-    .map_err(|error| semantics("broker authorization plan", error))
+    .map_err(|cause| typed_semantics("broker authorization plan", cause))
 }
 
 fn encode_assignment(encoder: &mut Encoder, assignment: BrokerAssignment) {
@@ -785,4 +798,122 @@ mod tests {
             Err(CanonicalCborError::InvalidSemantics { .. })
         ));
     }
+
+    #[test]
+    fn retained_plan_late_duplicate_keeps_exact_constructor_refusal() {
+        use super::super::authorization_capture::{
+            BrokerAuthorizationPlanDecodeCaptureV1, decode_broker_authorization_plan_retaining_v1,
+        };
+        let original = plan();
+        let mut encoded = encode_broker_authorization_plan(&original);
+        let mut encoder = Encoder::new();
+        encode_grant(&mut encoder, &original.grants()[0]);
+        let grant = encoder.finish();
+        let start = encoded
+            .windows(grant.len())
+            .position(|bytes| bytes == grant)
+            .unwrap();
+        assert_eq!(encoded[start - 1], 0x81);
+        encoded[start - 1] = 0x82;
+        encoded.splice(start..start, grant);
+        let mut capture = BrokerAuthorizationPlanDecodeCaptureV1::new();
+
+        let retained = decode_broker_authorization_plan_retaining_v1(
+            &encoded,
+            DecodeLimits::default(),
+            &mut capture,
+        )
+        .unwrap_err();
+        let ordinary = decode_broker_authorization_plan(&encoded, DecodeLimits::default()).unwrap_err();
+
+        assert_eq!(retained, ordinary);
+        let cause = capture
+            .cause()
+            .unwrap()
+            .downcast_ref::<InvalidBrokerAuthorizationPlan>()
+            .unwrap();
+        assert_eq!(*cause, InvalidBrokerAuthorizationPlan::GrantsNotCanonical);
+        let original = cause as *const _;
+        assert!(
+            decode_broker_authorization_plan_retaining_v1(&[], DecodeLimits::default(), &mut capture)
+                .is_err()
+        );
+        assert_eq!(
+            capture
+                .cause()
+                .unwrap()
+                .downcast_ref::<InvalidBrokerAuthorizationPlan>()
+                .unwrap() as *const _,
+            original
+        );
+        assert!(capture.model().is_none());
+    }
+
+    #[test]
+    fn canonical_schema_invalid_feature_array_preserves_refusal_without_partial_model() {
+        use super::super::authorization_capture::{
+            BrokerAuthorizationPlanDecodeCaptureV1, decode_broker_authorization_plan_retaining_v1,
+        };
+        let original = plan();
+        let mut encoded = encode_broker_authorization_plan(&original);
+        let mut feature_encoder = Encoder::new();
+        encode_slice(
+            &mut feature_encoder,
+            original.required_features(),
+            encode_feature,
+        );
+        let suffix = feature_encoder.finish();
+        assert!(encoded.ends_with(&suffix));
+        encoded.truncate(encoded.len() - suffix.len());
+        let mut invalid = Encoder::new();
+        invalid.array(64);
+        for _ in 0..64 {
+            invalid.unsigned(0);
+        }
+        encoded.extend(invalid.finish());
+        assert!(Decoder::new(&encoded, DecodeLimits::default()).is_ok());
+        let mut capture = BrokerAuthorizationPlanDecodeCaptureV1::new();
+
+        assert!(
+            decode_broker_authorization_plan_retaining_v1(
+                &encoded,
+                DecodeLimits::default(),
+                &mut capture
+            )
+            .is_err()
+        );
+
+        assert!(capture.model().is_none());
+        assert_eq!(
+            capture.failure(),
+            Some(&decode_broker_authorization_plan(&encoded, DecodeLimits::default()).unwrap_err())
+        );
+        assert!(capture.failure().is_some());
+    }
+
+    #[test]
+    fn truncated_announced_feature_array_never_enters_schema_growth() {
+        use super::super::authorization_capture::{
+            BrokerAuthorizationPlanDecodeCaptureV1, decode_broker_authorization_plan_retaining_v1,
+        };
+        let mut encoded = encode_broker_authorization_plan(&plan());
+        encoded.pop();
+        let mut capture = BrokerAuthorizationPlanDecodeCaptureV1::new();
+
+        assert!(
+            decode_broker_authorization_plan_retaining_v1(
+                &encoded,
+                DecodeLimits::default(),
+                &mut capture
+            )
+            .is_err()
+        );
+
+        assert!(capture.model().is_none());
+        assert_eq!(
+            capture.failure(),
+            Some(&decode_broker_authorization_plan(&encoded, DecodeLimits::default()).unwrap_err())
+        );
+    }
+
 }

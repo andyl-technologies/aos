@@ -19,6 +19,9 @@ use super::{
 use crate::domain_ledger::transaction::JournalTransaction;
 use aos_sandbox_core::RecordNamespace;
 
+mod receiving;
+pub use receiving::CanonicalCapacityReadCaptureV1;
+
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 type LegacyData = (GlobalCapacityReservationRequestV1, [u8; 16], [u8; 32]);
 
@@ -261,16 +264,34 @@ fn canonical_reservation_rows<'rows>(
 ) -> Result<Vec<CanonicalCapacityFamily>, CapacityDataError> {
     let mut families = Vec::new();
     let mut identities = BTreeSet::new();
+    canonical_reservation_rows_into(rows, &mut families, &mut identities, None)?;
+    Ok(families)
+}
+
+// The sole row decoder keeps the ordinary local owners at the same loop/error
+// boundary. Selected callers instead supply their already-resident owners.
+fn canonical_reservation_rows_into<'rows>(
+    rows: impl IntoIterator<Item = (&'rows [u8], &'rows [u8])>,
+    families: &mut Vec<CanonicalCapacityFamily>,
+    identities: &mut BTreeSet<[u8; 32]>,
+    mut current: Option<&mut Option<CanonicalCapacityFamily>>,
+) -> Result<(), CapacityDataError> {
     for (key, value) in rows {
-        let family = CanonicalCapacityFamily::decode(key, value)?;
-        if !identities.insert(family.identity()) {
+        let mut ordinary_family = None;
+        let family = match current.as_deref_mut() {
+            Some(original) => original,
+            None => &mut ordinary_family,
+        };
+        *family = Some(CanonicalCapacityFamily::decode(key, value)?);
+        let identity = family.as_ref().ok_or(CapacityDataError::ProtectedBoundary)?.identity();
+        if !identities.insert(identity) {
             return Err(CapacityDataError::MalformedRecord(
                 "duplicate global capacity reservation",
             ));
         }
-        families.push(family);
+        families.push(family.take().ok_or(CapacityDataError::ProtectedBoundary)?);
     }
-    Ok(families)
+    Ok(())
 }
 
 /// Projects every canonical family before any purpose-specific mutation.

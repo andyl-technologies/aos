@@ -243,9 +243,18 @@ pub(super) fn encode_descriptor<E: CborSink>(encoder: &mut E, descriptor: &Objec
 pub(super) fn decode_descriptor(
     decoder: &mut Decoder<'_>,
 ) -> Result<ObjectDescriptor, CanonicalCborError> {
+    decode_descriptor_engine(decoder)
+        .map_err(super::decode_attempt::DecodeFailure::into_canonical)
+}
+
+pub(super) fn decode_descriptor_engine(
+    decoder: &mut Decoder<'_>,
+) -> super::decode_attempt::DecodeResult<ObjectDescriptor> {
+    use super::decode_attempt::typed_semantics;
+
     decoder.array(4)?;
     let media_type = MediaType::new(decoder.text(255)?.to_owned())
-        .map_err(|error| semantics("descriptor media type", error))?;
+        .map_err(|cause| typed_semantics("descriptor media type", cause))?;
     decoder.exact("descriptor digest algorithm", 1)?;
     let digest = exact_bytes::<32>(decoder, 32)?;
     let encoded_size = decoder.unsigned()?;
@@ -260,9 +269,17 @@ pub(super) fn decode_descriptor_for_role(
     decoder: &mut Decoder<'_>,
     role: DescriptorRole,
 ) -> Result<ObjectDescriptor, CanonicalCborError> {
-    let descriptor = decode_descriptor(decoder)?;
+    decode_descriptor_for_role_engine(decoder, role)
+        .map_err(super::decode_attempt::DecodeFailure::into_canonical)
+}
+
+pub(super) fn decode_descriptor_for_role_engine(
+    decoder: &mut Decoder<'_>,
+    role: DescriptorRole,
+) -> super::decode_attempt::DecodeResult<ObjectDescriptor> {
+    let descriptor = decode_descriptor_engine(decoder)?;
     validate_descriptor_role(role, &descriptor)
-        .map_err(|error| semantics("descriptor role", error))?;
+        .map_err(|cause| super::decode_attempt::typed_semantics("descriptor role", cause))?;
     Ok(descriptor)
 }
 
@@ -284,13 +301,23 @@ pub(super) fn encode_feature<E: CborSink>(encoder: &mut E, feature: &FeatureRef)
 }
 
 pub(super) fn decode_feature(decoder: &mut Decoder<'_>) -> Result<FeatureRef, CanonicalCborError> {
+    decode_feature_engine(decoder)
+        .map_err(super::decode_attempt::DecodeFailure::into_canonical)
+}
+
+pub(super) fn decode_feature_engine(
+    decoder: &mut Decoder<'_>,
+) -> super::decode_attempt::DecodeResult<FeatureRef> {
+    use super::decode_attempt::typed_semantics;
+
     decoder.array(3)?;
     let namespace = decoder.text(255)?.to_owned();
     let major = unsigned_u32(decoder, "feature major")?;
     let minor = unsigned_u32(decoder, "feature minor")?;
-    let feature =
-        FeatureRef::new(namespace, major, minor).map_err(|error| semantics("feature", error))?;
-    validate_features(std::slice::from_ref(&feature))?;
+    let feature = FeatureRef::new(namespace, major, minor)
+        .map_err(|cause| typed_semantics("feature", cause))?;
+    validate_required_features(std::slice::from_ref(&feature))
+        .map_err(|cause| typed_semantics("required feature", cause))?;
     Ok(feature)
 }
 

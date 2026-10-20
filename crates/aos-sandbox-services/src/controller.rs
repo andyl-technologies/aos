@@ -45,6 +45,12 @@ impl ControllerServerAssembly for ControllerAssembly {
         public_api::PublicListenerStartupV1::new()
     }
 
+    fn public_receiving_credential_geometry() -> Option<
+        aos_sandbox::public_api_session::ControllerStartupCredentialGeometryV1,
+    > {
+        aos_sandbox::public_api_session::PublicApiSessionStartupV1::credential_geometry()
+    }
+
     fn bind_socket(
         path: &std::path::Path,
         uid: u32,
@@ -73,11 +79,12 @@ impl ControllerServerAssembly for ControllerAssembly {
 
     fn bind_public_retained(
         uid: u32,
+        credentials: Option<&mut aos_sandbox::ControllerPublicTlsReceivingV1>,
         partial: &mut Self::PublicStartup,
         destination: &mut Option<Option<Self::PublicListener>>,
         terminal: &dyn ControllerServerTerminal,
     ) {
-        public_api::bind_retained(uid, partial, destination, terminal);
+        public_api::bind_retained(uid, credentials, partial, destination, terminal);
     }
 
     fn git_read_acceptor(
@@ -140,4 +147,90 @@ fn controller_applications(
     );
 
     (public_application, application)
+}
+
+#[cfg(test)]
+mod runtime_fit_tests {
+    use super::ControllerAssembly;
+    use aos_sandbox_controller_runtime::controller_service::assembly::installed_startup_shapes_v1;
+
+    #[test]
+    fn installed_assembly_reports_every_startup_flag_combination() {
+        for public_api in [false, true] {
+            for cache_bundle in [false, true] {
+                for publisher in [false, true] {
+                    let (fixed, credentials) = installed_startup_shapes_v1::<ControllerAssembly>(
+                        public_api, cache_bundle, publisher,
+                    );
+                    let parent_bytes = fixed.parent_bytes;
+                    let worker_bytes = fixed.worker_bytes;
+                    let public_startup_bytes = std::mem::size_of::<<ControllerAssembly as
+                        aos_sandbox_controller_runtime::controller_service::assembly::
+                        ControllerServerAssembly>::PublicStartup>();
+                    let fixed = fixed.requested_counts_v1().expect("actual fixed shape arithmetic");
+                    let credentials = credentials.requested_counts_v1()
+                        .expect("actual credential suppliers and arithmetic");
+                    let memory = fixed.memory_bytes.checked_add(credentials.memory_bytes).unwrap();
+                    let files = fixed.open_files.checked_add(credentials.open_files).unwrap();
+                    let metadata = fixed.metadata_entries.checked_add(credentials.metadata_entries).unwrap();
+                    // Main and one serial property observer are existing
+                    // original/scope tasks, outside this fixed additional row.
+                    let role_tasks = fixed.pids.checked_add(2).unwrap();
+                    println!(
+                        "RFC21_RUNTIME_FIT public={} bundle={} publisher={} parent={} worker={} public_startup={} fixed_memory={} credential_memory={} total_memory={} fixed_files={} credential_files={} total_files={} role_tasks={} fixed_metadata={} credential_metadata={} total_metadata={} fits_no_nix_hard={} fits_online_nix_hard={}",
+                        public_api, cache_bundle, publisher, parent_bytes, worker_bytes,
+                        public_startup_bytes, fixed.memory_bytes, credentials.memory_bytes, memory,
+                        fixed.open_files, credentials.open_files, files, role_tasks,
+                        fixed.metadata_entries, credentials.metadata_entries, metadata,
+                        memory <= 512 * 1024 * 1024 && files <= 128 && role_tasks <= 8,
+                        memory <= 4 * 1024 * 1024 * 1024 && files <= 16384 && role_tasks <= 8,
+                    );
+                    // These are comparison shapes, not installed profile receipts.
+                    // An actual artifact's measured runtime-file count can be
+                    // supplied explicitly; otherwise print named schema probes.
+                    let measured_files = std::env::var("AOS_RFC21_PROFILE_RUNTIME_FILES")
+                        .ok().map(|value| value.parse::<usize>().expect("measured profile runtime-file count"));
+                    let file_counts: Vec<usize> = measured_files.map_or_else(
+                        || vec![0, 32, 512], |count| vec![count],
+                    );
+                    for runtime_files in file_counts {
+                        let (actual_fixed, actual_credentials) = installed_startup_shapes_v1::<ControllerAssembly>(
+                            public_api, cache_bundle, publisher,
+                        );
+                        let envelope = aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1::
+                            startup_envelope_requested_counts_for_runtime_files_v1(
+                                runtime_files, actual_fixed, actual_credentials,
+                            ).expect("actual closed startup envelope arithmetic");
+                        println!(
+                            "RFC21_STARTUP_ENVELOPE public={} bundle={} publisher={} measured_count={} runtime_files={} memory={} files={} metadata={} tasks={} subset_no_nix_fit={} other_B_owners_included=false",
+                            public_api, cache_bundle, publisher, measured_files.is_some(), runtime_files,
+                            envelope.memory_bytes, envelope.open_files, envelope.metadata_entries,
+                            envelope.pids, envelope.memory_bytes <= 512 * 1024 * 1024
+                                && envelope.open_files <= 128 && envelope.pids <= 8,
+                        );
+
+                    }
+                    if publisher {
+                        let operation = aos_sandbox::ControllerPublisherReceivingV1::
+                            operation_requested_counts_v1().expect("actual Publisher operation arithmetic");
+                        let with_operation_memory = memory.checked_add(operation.memory_bytes).unwrap();
+                        let with_operation_files = files.checked_add(operation.open_files).unwrap();
+                        println!(
+                            "RFC21_PUBLISHER_OPERATION public={} bundle={} memory={} files={} metadata={} network={} log={} output={} concurrent={} runtime_plus_operation_memory={} runtime_plus_operation_files={} fits_no_nix_subset={}",
+                            public_api, cache_bundle, operation.memory_bytes, operation.open_files,
+                            operation.metadata_entries, operation.network_bytes, operation.log_bytes,
+                            operation.output_bytes, operation.concurrent_operations,
+                            with_operation_memory, with_operation_files,
+                            with_operation_memory <= 512 * 1024 * 1024 && with_operation_files <= 128,
+                        );
+                    }
+                    // This checks only the actual Runtime cohort's arithmetic.
+                    // Other B owners/resident P/I/Q/J/native providers must be
+                    // added using their real policy receipt before whole fit.
+                    assert_ne!(memory, 0);
+                    assert_ne!(files, 0);
+                }
+            }
+        }
+    }
 }

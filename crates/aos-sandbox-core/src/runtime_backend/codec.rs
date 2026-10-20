@@ -36,13 +36,41 @@ const ADMISSION_MAGIC: &[u8; 8] = b"AOSREA01";
 const EFFECT_MAGIC: &[u8; 8] = b"AOSREF01";
 const MAX_DURABLE_RECORD_BYTES: usize = 32 * 1_048_576;
 
+// Every variable field is length-prefixed once. Fixed field widths are the
+// same canonical IDs and counters written by the two encoders below.
+const RUNTIME_CURRENTNESS_BYTES_V5: usize = 3 * 16 + 3 * 8 + 32;
+const ADMISSION_FIXED_BYTES_V5: usize = 8 + 4 + 16 + 32 + RUNTIME_CURRENTNESS_BYTES_V5
+    + 2 * 32 + 16 + 16 + 32 + 8 + 4 * 32 + 8 + 2 * 32;
+const EFFECT_FIXED_BYTES_V5: usize = 8 + 4 + 1 + 4 + 8 + 16 + 32 + 1 + 1 + 8 + 2 * 32;
+const COMPLETION_FIXED_BYTES_V5: usize = 1 + 8 + 4 + 32;
+
+/// Supplies the canonical effect width before its existing encoder allocates.
+///
+/// Returns `None` for arithmetic overflow or nested portable width limits.
+/// This passive bound supplies no admission, operation or completion proof.
+#[must_use]
+pub fn durable_execution_effect_encoded_width_v5(
+    specification_bytes: usize, completion_bytes: Option<usize>,
+) -> Option<usize> {
+    if specification_bytes > 16 * 1_048_576
+        || completion_bytes.is_some_and(|bytes| bytes > 15 * 1_048_576)
+    { return None; }
+    let admission = ADMISSION_FIXED_BYTES_V5.checked_add(specification_bytes)?;
+    let effect = EFFECT_FIXED_BYTES_V5.checked_add(admission)?;
+    let effect = match completion_bytes {
+        Some(bytes) => effect.checked_add(COMPLETION_FIXED_BYTES_V5)?.checked_add(bytes)?,
+        None => effect,
+    };
+    (effect <= MAX_DURABLE_RECORD_BYTES).then_some(effect)
+}
+
 /// Encodes one exact durable execution admission record.
 #[must_use]
 pub fn encode_durable_execution_admission_v1(admission: &AdmittedExecutionV1) -> Vec<u8> {
     let currentness = admission.currentness();
     let runtime = currentness.runtime();
     let probe = currentness.backend_probe();
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(ADMISSION_FIXED_BYTES_V5.saturating_add(admission.specification_bytes().len()));
     bytes.extend_from_slice(ADMISSION_MAGIC);
     put_bytes(&mut bytes, admission.specification_bytes());
     bytes.extend_from_slice(admission.idempotency().operation().as_bytes());
@@ -137,7 +165,9 @@ pub fn decode_durable_execution_admission_v1(
 pub fn encode_durable_execution_effect_v1(effect: &DurableExecutionEffectV1) -> Vec<u8> {
     let admission = encode_durable_execution_admission_v1(effect.admission());
     let issue = effect.issue();
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(durable_execution_effect_encoded_width_v5(
+        effect.admission().specification_bytes().len(), effect.completion().map(|value| value.result_bytes().len()))
+        .unwrap_or(0));
     bytes.extend_from_slice(EFFECT_MAGIC);
     put_bytes(&mut bytes, &admission);
     bytes.push(issue.operation().code());

@@ -446,21 +446,7 @@ pub(super) fn policy_state_journal_limits() -> JournalLimits {
 }
 
 pub(super) fn policy_authority_journal_limits() -> JournalLimits {
-    JournalLimits {
-        maximum_journal_bytes: 64 * 1024 * 1024,
-        maximum_record_bytes: 4 * 1024,
-        maximum_key_bytes: 128,
-        maximum_records_per_transaction: 256,
-        maximum_transaction_bytes: 2 * 1024 * 1024,
-        maximum_transactions: 262_144,
-        maximum_materialized_bytes: 8 * 1024 * 1024,
-        // Each binding may retain its proof and one V8 predecessor settlement.
-        // Fixed custody, three Q04 ACK/challenge pairs, held proof, and
-        // Cache settlements fill the rest.
-        maximum_materialized_records: 3 * MAXIMUM_POLICY_BINDINGS
-            + 19
-            + super::cache_root_settlement::SETTLEMENT_ARCHIVE_WINDOW as usize,
-    }
+    aos_sandbox_broker::receiving::root_authority_journal_limits_data_v1()
 }
 
 #[cfg(test)]

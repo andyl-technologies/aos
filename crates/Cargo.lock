@@ -852,16 +852,20 @@ dependencies = [
  "aos-sandbox-core",
  "aos-sandbox-guest-root-tree",
  "aos-sandbox-journal",
+ "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
  "aos-sandbox-ownership",
  "aos-sandbox-ownership-protocol",
  "aos-sandbox-policy",
  "aos-sandbox-protocol",
+ "aos-sandbox-publisher",
+ "aos-sandbox-source",
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
  "aos-systemd",
  "axum",
  "base64 0.22.1",
+ "blake3",
  "buffa",
  "bytes",
  "connectrpc",
@@ -905,14 +909,20 @@ name = "aos-sandbox-broker"
 version = "0.1.0"
 dependencies = [
  "aos-sandbox-core",
+ "aos-sandbox-journal",
+ "aos-sandbox-linux",
  "aos-sandbox-protocol",
+ "aos-systemd",
  "ed25519-dalek",
  "hex",
  "hmac 0.12.1",
  "rustix 1.1.4",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "zeroize",
 ]
 
@@ -942,8 +952,10 @@ dependencies = [
  "aos-sandbox-core",
  "aos-sandbox-host",
  "aos-sandbox-journal",
+ "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
  "aos-sandbox-mount",
+ "aos-sandbox-mount-native",
  "aos-sandbox-network",
  "aos-sandbox-ownership-protocol",
  "aos-sandbox-policy",
@@ -951,7 +963,6 @@ dependencies = [
  "aos-sandbox-source-provider",
  "aos-sandbox-source-provider-protocol",
  "aos-sandbox-source-provider-security",
- "aos-sandbox-source-signer",
  "aos-sandbox-storage",
  "aos-systemd",
  "async-trait",
@@ -979,9 +990,13 @@ dependencies = [
 name = "aos-sandbox-cache-signer"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox",
+ "aos-sandbox-broker",
  "aos-sandbox-core",
+ "aos-sandbox-journal",
+ "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
+ "aos-sandbox-protocol",
+ "aos-systemd",
  "ed25519-dalek",
  "rustix 1.1.4",
  "tempfile",
@@ -1022,13 +1037,19 @@ dependencies = [
  "aos-proto",
  "aos-sandbox",
  "aos-sandbox-agent",
+ "aos-sandbox-broker",
  "aos-sandbox-broker-session-protocol",
  "aos-sandbox-broker-session-security",
  "aos-sandbox-core",
+ "aos-sandbox-journal",
+ "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
  "aos-sandbox-mount",
+ "aos-sandbox-mount-native",
  "aos-sandbox-ownership-protocol",
+ "aos-sandbox-policy",
  "aos-sandbox-protocol",
+ "aos-sandbox-publisher",
  "aos-sandbox-source-provider-protocol",
  "aos-systemd",
  "axum",
@@ -1064,6 +1085,7 @@ name = "aos-sandbox-coordinator-protocol"
 version = "0.1.0"
 dependencies = [
  "aos-proto",
+ "aos-sandbox-core",
  "buffa",
  "buffa-codegen",
  "connectrpc",
@@ -1072,6 +1094,7 @@ dependencies = [
  "http-body 1.0.1",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -1139,6 +1162,7 @@ dependencies = [
 name = "aos-sandbox-guest-root-tree"
 version = "0.1.0"
 dependencies = [
+ "aos-sandbox-core",
  "aos-sandbox-linux",
  "rustix 1.1.4",
  "sha2 0.10.9",
@@ -1157,6 +1181,7 @@ dependencies = [
  "aos-sandbox-core",
  "aos-sandbox-guardian",
  "aos-sandbox-guest-root-realization",
+ "aos-sandbox-journal",
  "aos-sandbox-linux",
  "aos-sandbox-protocol",
  "aos-systemd",
@@ -1182,6 +1207,7 @@ dependencies = [
  "aos-sandbox-linux",
  "rustix 1.1.4",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -1194,6 +1220,24 @@ dependencies = [
  "ed25519-dalek",
  "libc",
  "rustix 1.1.4",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-ledger-replay"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox-broker",
+ "aos-sandbox-core",
+ "aos-sandbox-journal",
+ "aos-sandbox-protocol",
+ "aos-sandbox-source-provider-ledger",
+ "aos-sandbox-source-provider-protocol",
+ "buffa",
+ "ed25519-dalek",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
@@ -1219,8 +1263,11 @@ dependencies = [
  "aos-sandbox",
  "aos-sandbox-broker",
  "aos-sandbox-core",
+ "aos-sandbox-journal",
  "aos-sandbox-linux",
+ "aos-sandbox-mount-native",
  "aos-sandbox-protocol",
+ "aos-sandbox-source",
  "aos-sandbox-source-provider",
  "aos-sandbox-source-provider-protocol",
  "aos-sandbox-source-provider-security",
@@ -1238,6 +1285,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-mount-native"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox-broker",
+ "aos-sandbox-core",
+ "aos-sandbox-journal",
+ "aos-sandbox-ledger-replay",
+ "aos-sandbox-linux",
+ "aos-sandbox-protocol",
+ "aos-sandbox-source-provider-protocol",
+ "aos-systemd",
+ "buffa",
+ "ed25519-dalek",
+ "rand 0.9.4",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "aos-sandbox-network"
 version = "0.1.0"
 dependencies = [
@@ -1245,6 +1314,8 @@ dependencies = [
  "aos-sandbox",
  "aos-sandbox-broker",
  "aos-sandbox-core",
+ "aos-sandbox-journal",
+ "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
  "aos-sandbox-protocol",
  "aos-systemd",
@@ -1293,11 +1364,17 @@ dependencies = [
 name = "aos-sandbox-ownership"
 version = "0.1.0"
 dependencies = [
+ "aos-sandbox-broker",
  "aos-sandbox-core",
+ "aos-sandbox-journal",
+ "aos-sandbox-linux",
  "aos-sandbox-ownership-protocol",
+ "aos-sandbox-protocol",
  "ed25519-dalek",
+ "rustix 1.1.4",
  "sha2 0.10.9",
  "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]
@@ -1305,6 +1382,7 @@ name = "aos-sandbox-ownership-protocol"
 version = "0.1.0"
 dependencies = [
  "aos-sandbox-core",
+ "ed25519-dalek",
  "hmac 0.12.1",
  "sha2 0.10.9",
  "thiserror 2.0.18",
@@ -1316,6 +1394,7 @@ name = "aos-sandbox-policy"
 version = "0.1.0"
 dependencies = [
  "aos-sandbox-core",
+ "aos-sandbox-protocol",
  "ed25519-dalek",
  "serde",
  "serde_json",
@@ -1333,7 +1412,6 @@ dependencies = [
  "aos-sandbox-core",
  "aos-sandbox-journal",
  "aos-sandbox-ownership-protocol",
- "aos-sandbox-policy",
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
  "buffa",
@@ -1346,14 +1424,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-publisher"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-protocol",
+ "rand 0.9.4",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-sandbox-service-journal-probe"
 version = "0.0.0"
 dependencies = [
  "aos-sandbox",
+ "aos-sandbox-broker",
  "aos-sandbox-broker-session-security",
  "aos-sandbox-core",
  "aos-sandbox-linux",
+ "aos-sandbox-policy",
  "aos-sandbox-protocol",
+ "aos-sandbox-source",
  "aos-sandbox-source-provider",
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
@@ -1370,14 +1465,18 @@ version = "0.1.0"
 dependencies = [
  "aos-proto",
  "aos-sandbox",
+ "aos-sandbox-broker",
  "aos-sandbox-broker-session-security",
  "aos-sandbox-cache-signer",
  "aos-sandbox-controller-runtime",
  "aos-sandbox-core",
  "aos-sandbox-host",
+ "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
  "aos-sandbox-mount",
+ "aos-sandbox-mount-native",
  "aos-sandbox-network",
+ "aos-sandbox-ownership",
  "aos-sandbox-policy",
  "aos-sandbox-protocol",
  "aos-sandbox-source-provider",
@@ -1403,13 +1502,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-source"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox-broker",
+ "aos-sandbox-core",
+ "aos-sandbox-journal",
+ "aos-sandbox-ledger-replay",
+ "aos-sandbox-linux",
+ "aos-sandbox-protocol",
+ "aos-sandbox-source-provider-ledger",
+ "aos-sandbox-source-provider-protocol",
+ "buffa",
+ "ed25519-dalek",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-sandbox-source-provider"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox",
+ "aos-sandbox-broker",
  "aos-sandbox-core",
+ "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
  "aos-sandbox-protocol",
+ "aos-sandbox-source",
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
  "aos-sandbox-source-provider-security",
@@ -1424,8 +1548,9 @@ dependencies = [
 name = "aos-sandbox-source-provider-ledger"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox",
  "aos-sandbox-core",
+ "aos-sandbox-protocol",
+ "aos-sandbox-source",
  "aos-sandbox-source-provider-protocol",
  "ed25519-dalek",
  "sha2 0.10.9",
@@ -1447,10 +1572,13 @@ dependencies = [
 name = "aos-sandbox-source-provider-security"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox",
+ "aos-sandbox-broker",
  "aos-sandbox-core",
+ "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
+ "aos-sandbox-mount-native",
  "aos-sandbox-protocol",
+ "aos-sandbox-source",
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
  "ed25519-dalek",
@@ -1467,9 +1595,12 @@ dependencies = [
 name = "aos-sandbox-source-signer"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox",
+ "aos-sandbox-broker",
  "aos-sandbox-core",
+ "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
+ "aos-sandbox-protocol",
+ "aos-sandbox-source",
  "ed25519-dalek",
  "rustix 1.1.4",
  "tempfile",

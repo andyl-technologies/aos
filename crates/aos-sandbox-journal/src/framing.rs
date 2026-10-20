@@ -413,6 +413,22 @@ mod tests {
     }
 
     #[test]
+    fn four_byte_incomplete_tail_retains_the_reached_original_header() {
+        let mut input = Cursor::new(b"tail");
+        let mut scratch = None;
+
+        let frame = read_frame_retained(&mut input, 0, 0, Some(&mut scratch)).unwrap();
+
+        assert!(frame.is_none());
+        assert_eq!(input.position(), 4);
+        let retained = scratch.as_ref().unwrap();
+        assert_eq!(retained.header_filled, 4);
+        assert_eq!(&retained.header[..4], b"tail");
+        assert!(retained.payload.is_none());
+        assert_eq!(retained.payload_filled, 0);
+    }
+
+    #[test]
     fn partial_frames_retain_original_header_and_payload_scratch() {
         let payload = b"payload";
         let encoded = encode_frame(FrameKind::Record, 9, [3; 16], payload).unwrap();

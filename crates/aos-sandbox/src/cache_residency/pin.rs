@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
-use aos_sandbox_core::bounded_codec::checked_byte_region;
 use aos_sandbox_core::{
     AttachmentId, IncarnationId, ObjectDescriptor, ObjectDigest, ProjectId, SandboxId, ViewId,
 };
@@ -23,40 +22,61 @@ use super::domain::{
     VerifiedCacheCapabilityV1,
 };
 
-pub(crate) const PIN_FLOOR_BYTES: usize = 136;
+use aos_sandbox_protocol::cache_state::pin_data::{self, CachePinDataV1, PinDrainEvidenceDataV1, pin_subject_fields};
+pub use aos_sandbox_protocol::cache_state::pin_data::{CachePinId, CachePinKindV1, PinDrainOutcomeV1};
+pub(crate) use aos_sandbox_protocol::cache_state::pin_data::valid_logical_renewal;
+use aos_sandbox_protocol::cache_state::pin_ledger::{self, logical_consumer_key};
+use aos_sandbox_protocol::cache_state::pin_floor::PinCompactionFloorDataV1;
+pub(crate) use aos_sandbox_protocol::cache_state::pin_floor::PIN_FLOOR_BYTES;
 
-/// Identifies one durable pin obligation.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct CachePinId([u8; 16]);
+/// Retains a Native historical floor issued by its protected decoding or compaction path.
+///
+/// Historical DATA cannot construct the Native floor wrapper.
+///
+/// ```compile_fail
+/// fn issue(data: aos_sandbox_protocol::cache_state::pin_floor::PinCompactionFloorDataV1) {
+///     let _ = aos_sandbox::cache_residency::pin::PinCompactionFloorV1(data);
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PinCompactionFloorV1(PinCompactionFloorDataV1);
 
-impl CachePinId {
-    /// Constructs a nonzero pin identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PinError::InvalidPin`] for the zero sentinel.
-    pub fn from_bytes(bytes: [u8; 16]) -> Result<Self, PinError> {
-        if bytes == [0; 16] {
-            return Err(PinError::InvalidPin);
-        }
-        Ok(Self(bytes))
-    }
+impl std::ops::Deref for PinCompactionFloorV1 {
+    type Target = PinCompactionFloorDataV1;
 
-    /// Borrows the identity bytes.
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 16] {
+    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-/// Fences a protected compacted pin-tombstone prefix against identity reuse.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PinCompactionFloorV1 {
-    pin: CachePinId,
-    partition: ObjectDigest,
-    checkpoint: ObjectDigest,
-    generation: u64,
-    digest: ObjectDigest,
+impl PinCompactionFloorV1 {
+    pub(crate) const fn from_parsed_history_data_v1(data: PinCompactionFloorDataV1) -> Self {
+        Self(data)
+    }
+
+    /// Returns the greatest compacted pin identity.
+    #[must_use]
+    pub const fn pin(self) -> CachePinId {
+        self.0.pin
+    }
+
+    /// Returns the protected checkpoint anchoring compaction.
+    #[must_use]
+    pub const fn checkpoint(self) -> ObjectDigest {
+        self.0.checkpoint
+    }
+}
+
+/// Encodes a protected historical pin floor using its canonical DATA codec.
+///
+/// # Errors
+///
+/// Returns [`PinError::InvalidFloor`] for an inconsistent floor commitment.
+pub fn encode_pin_compaction_floor(
+    floor: PinCompactionFloorV1,
+) -> Result<[u8; PIN_FLOOR_BYTES], PinError> {
+    aos_sandbox_protocol::cache_state::pin_floor::encode_pin_compaction_floor(floor.0)
+        .map_err(PinError::from)
 }
 
 /// Proves that one retained release prefix is absent from the locked owner.
@@ -86,49 +106,6 @@ impl<'snapshot> CachePinCompactionPhysicalProofV1<'snapshot> {
     }
 }
 
-impl PinCompactionFloorV1 {
-    /// Returns the greatest compacted pin identity.
-    #[must_use]
-    pub const fn pin(self) -> CachePinId {
-        self.pin
-    }
-
-    /// Returns the protected checkpoint anchoring compaction.
-    #[must_use]
-    pub const fn checkpoint(self) -> ObjectDigest {
-        self.checkpoint
-    }
-}
-
-/// Encodes a protected pin-compaction floor into its canonical fixed format.
-///
-/// # Errors
-///
-/// Returns [`PinError::InvalidFloor`] for an inconsistent recovered floor.
-pub fn encode_pin_compaction_floor(
-    floor: PinCompactionFloorV1,
-) -> Result<[u8; PIN_FLOOR_BYTES], PinError> {
-    if floor.digest
-        != pin_compaction_floor_digest(
-            floor.pin,
-            floor.partition,
-            floor.checkpoint,
-            floor.generation,
-        )
-    {
-        return Err(PinError::InvalidFloor);
-    }
-    let mut bytes = [0_u8; PIN_FLOOR_BYTES];
-    bytes[0..8].copy_from_slice(b"AOSPFL01");
-    bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    bytes[16..32].copy_from_slice(floor.pin.as_bytes());
-    bytes[32..64].copy_from_slice(floor.partition.as_bytes());
-    bytes[64..96].copy_from_slice(floor.checkpoint.as_bytes());
-    bytes[96..104].copy_from_slice(&floor.generation.to_be_bytes());
-    bytes[104..136].copy_from_slice(floor.digest.as_bytes());
-    Ok(bytes)
-}
-
 /// Recovers a pin floor only under its exact current protected capability.
 ///
 /// # Errors
@@ -153,94 +130,38 @@ pub fn decode_pin_compaction_floor(
     Ok(floor)
 }
 
-pub(crate) fn decode_pin_compaction_floor_persisted(
-    partition: PhysicalPartitionId,
-    bytes: &[u8],
-) -> Result<PinCompactionFloorV1, PinError> {
-    if bytes.len() != PIN_FLOOR_BYTES
-        || &bytes[0..8] != b"AOSPFL01"
-        || bytes[8..10] != 1_u16.to_be_bytes()
-        || bytes[10..16] != [0; 6]
-    {
-        return Err(PinError::InvalidFloor);
-    }
-    let pin = CachePinId::from_bytes(read_pin_array(bytes, 16)?)?;
-    let floor = PinCompactionFloorV1 {
-        pin,
-        partition: ObjectDigest::from_bytes(read_pin_array(bytes, 32)?),
-        checkpoint: ObjectDigest::from_bytes(read_pin_array(bytes, 64)?),
-        generation: u64::from_be_bytes(read_pin_array(bytes, 96)?),
-        digest: ObjectDigest::from_bytes(read_pin_array(bytes, 104)?),
-    };
-    if floor.partition != partition.digest()
-        || floor.checkpoint.as_bytes() == &[0; 32]
-        || floor.digest
-            != pin_compaction_floor_digest(
-                floor.pin,
-                floor.partition,
-                floor.checkpoint,
-                floor.generation,
-            )
-    {
-        return Err(PinError::InvalidFloor);
-    }
-    Ok(floor)
-}
-
-/// Selects one semantically distinct correctness obligation.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[repr(u8)]
-pub enum CachePinKindV1 {
-    /// An authorized view or attached runtime logically depends on the object.
-    LogicalLease = 1,
-    /// The authoritative source revision must remain retrievable.
-    SourceRetention = 2,
-    /// The kernel may retain an open, mapping, lookup, or passthrough reference.
-    KernelReference = 3,
-    /// A backing registration remains installed outside ordinary process FDs.
-    BackingRegistration = 4,
-}
-
-/// Binds a pin to its complete consumer and object identity.
+/// Retains a verifier-issued pin around its canonical historical fields.
+///
+/// Historical DATA cannot issue the Native wrapper.
+///
+/// ```compile_fail
+/// fn issue(data: aos_sandbox_protocol::cache_state::pin_data::CachePinDataV1) {
+///     let _ = aos_sandbox::cache_residency::pin::CachePinV1(data);
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CachePinV1 {
-    /// Stable idempotent pin identity.
-    pub(crate) id: CachePinId,
-    /// Exact physical partition.
-    pub(crate) partition: PhysicalPartitionId,
-    /// Complete immutable object descriptor within that partition.
-    pub(crate) object: ObjectDescriptor,
-    /// Project charged for this dependency.
-    pub(crate) project: ProjectId,
-    /// Logical view holding the dependency.
-    pub(crate) view: ViewId,
-    /// Attachment holding the dependency, if one exists.
-    pub(crate) attachment: Option<AttachmentId>,
-    /// Sandbox consumer, if one exists.
-    pub(crate) sandbox: Option<SandboxId>,
-    /// Exact consumer incarnation for runtime-bound pins.
-    pub(crate) incarnation: Option<IncarnationId>,
-    /// Closed pin class.
-    pub(crate) kind: CachePinKindV1,
-    /// Monotone assignment epoch, or zero for assignment-independent source retention.
-    pub(crate) assignment_epoch: u64,
-    /// Authority expiry for new use; kernel/backing obligations ignore it for release.
-    pub(crate) lease_valid_until: u64,
-    /// Digest of independently established authority or kernel evidence.
-    pub(crate) evidence: ObjectDigest,
-    authority_scope: CacheAuthorityScopeV1,
+pub struct CachePinV1(CachePinDataV1);
+
+impl std::ops::Deref for CachePinV1 {
+    type Target = CachePinDataV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
-/// Retains a released pin tombstone and exact drain evidence.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReleasedCachePinV1 {
-    /// Complete historical pin binding.
-    pub pin: CachePinV1,
-    /// Exact authority-bound evidence that permitted release.
-    pub drain: PinDrainEvidenceV1,
-}
+/// Retains a released Native pin and its exact drain proof.
+pub type ReleasedCachePinV1 = pin_ledger::ReleasedCachePinDataV1<CachePinV1, PinDrainEvidenceV1>;
 
 impl CachePinV1 {
+    pub(crate) fn from_parsed_history_data_v1(data: CachePinDataV1) -> Self {
+        Self(data)
+    }
+
+    pub(crate) const fn historical_data_v1(&self) -> &CachePinDataV1 {
+        &self.0
+    }
+
     // The authority issuer uses this same subject binding before the pin
     // exists; `from_verified` independently checks it against the capability.
     #[allow(clippy::too_many_arguments)]
@@ -256,87 +177,68 @@ impl CachePinV1 {
         assignment_epoch: u64,
         lease_valid_until: u64,
     ) -> Result<CacheAuthorityScopeV1, PinError> {
-        let subject = pin_subject_fields(
-            id,
-            partition,
-            object,
-            project,
-            view,
-            attachment,
-            sandbox,
-            incarnation,
-            CachePinKindV1::LogicalLease,
-            assignment_epoch,
-            lease_valid_until,
-        );
-        CacheAuthorityScopeV1::new(
-            partition,
-            subject,
-            None,
-            subject,
-            partition.backing().root(),
-            assignment_epoch.max(1),
-            lease_valid_until,
-        )
-        .map_err(PinError::from)
+        CachePinDataV1::logical_acquisition_scope(
+            id, partition, object, project, view, attachment, sandbox,
+            incarnation, assignment_epoch, lease_valid_until,
+        ).map_err(PinError::from)
     }
 
     pub(crate) const fn authority_binding(&self) -> (CacheAuthorityScopeV1, ObjectDigest) {
-        (self.authority_scope, self.evidence)
+        (self.0.authority_scope, self.0.evidence)
     }
 
     /// Returns the durable identity retained across logical lease renewals.
     #[must_use]
     pub const fn id(&self) -> CachePinId {
-        self.id
+        self.0.id
     }
 
     /// Returns the physical cache partition retaining this obligation.
     #[must_use]
     pub const fn partition(&self) -> PhysicalPartitionId {
-        self.partition
+        self.0.partition
     }
 
     /// Borrows the exact immutable object retained by this obligation.
     #[must_use]
     pub const fn object(&self) -> &ObjectDescriptor {
-        &self.object
+        &self.0.object
     }
 
     /// Returns the consumer project.
     #[must_use]
     pub const fn project(&self) -> ProjectId {
-        self.project
+        self.0.project
     }
 
     /// Returns the consumer view.
     #[must_use]
     pub const fn view(&self) -> ViewId {
-        self.view
+        self.0.view
     }
 
     /// Returns the consuming attachment, when the pin is attachment-scoped.
     #[must_use]
     pub const fn attachment(&self) -> Option<AttachmentId> {
-        self.attachment
+        self.0.attachment
     }
 
     /// Returns the obligation class.
     #[must_use]
     pub const fn kind(&self) -> CachePinKindV1 {
-        self.kind
+        self.0.kind
     }
 
     /// Returns the exact acquisition evidence required by a later release.
     #[must_use]
     pub const fn evidence(&self) -> ObjectDigest {
-        self.evidence
+        self.0.evidence
     }
 
     /// Returns the deadline after which this lease permits no new use.
     #[must_use]
     pub const fn lease_valid_until(&self) -> u64 {
-        self.lease_valid_until
+        self.0.lease_valid_until
     }
 
     pub(crate) fn logical_drain_scope(
@@ -364,44 +266,10 @@ impl CachePinV1 {
         lease_valid_until: u64,
         evidence: ObjectDigest,
     ) -> Result<Self, PinError> {
-        let subject = pin_subject_fields(
-            id,
-            partition,
-            &object,
-            project,
-            view,
-            attachment,
-            sandbox,
-            incarnation,
-            kind,
-            assignment_epoch,
-            lease_valid_until,
-        );
-        let authority_scope = CacheAuthorityScopeV1::new(
-            partition,
-            subject,
-            None,
-            subject,
-            partition.backing().root(),
-            assignment_epoch.max(1),
-            lease_valid_until,
-        )?;
-        Self {
-            id,
-            partition,
-            object,
-            project,
-            view,
-            attachment,
-            sandbox,
-            incarnation,
-            kind,
-            assignment_epoch,
-            lease_valid_until,
-            evidence,
-            authority_scope,
-        }
-        .validate()
+        Ok(Self(CachePinDataV1::recover_historical(
+            id, partition, object, project, view, attachment, sandbox,
+            incarnation, kind, assignment_epoch, lease_valid_until, evidence,
+        )?))
     }
 
     /// Issues one exact pin from current protected assignment/source authority.
@@ -439,7 +307,7 @@ impl CachePinV1 {
             assignment_epoch,
             lease_valid_until,
         );
-        let authority_scope = CacheAuthorityScopeV1::new(
+        let authority_scope = crate::cache_residency::domain::new_cache_authority_scope_v1(
             partition,
             subject,
             None,
@@ -454,7 +322,7 @@ impl CachePinV1 {
             authority_scope,
             now,
         )?;
-        Self {
+        Self(CachePinDataV1 {
             id,
             partition,
             object,
@@ -468,7 +336,7 @@ impl CachePinV1 {
             lease_valid_until,
             evidence: capability.record_digest(),
             authority_scope,
-        }
+        })
         .validate()
     }
 
@@ -479,37 +347,7 @@ impl CachePinV1 {
     /// Returns [`PinError::InvalidPin`] for missing identity, evidence, or
     /// required consumer/assignment bindings.
     pub fn validate(self) -> Result<Self, PinError> {
-        let view_only_logical = self.kind == CachePinKindV1::LogicalLease
-            && self.attachment.is_none()
-            && self.sandbox.is_none()
-            && self.incarnation.is_none()
-            && self.assignment_epoch == 0;
-        let attached_runtime = matches!(
-            self.kind,
-            CachePinKindV1::LogicalLease
-                | CachePinKindV1::KernelReference
-                | CachePinKindV1::BackingRegistration
-        ) && self.attachment.is_some()
-            && self.sandbox.is_some()
-            && self.incarnation.is_some()
-            && self.assignment_epoch != 0;
-        let source_retention = self.kind == CachePinKindV1::SourceRetention
-            && self.attachment.is_none()
-            && self.sandbox.is_none()
-            && self.incarnation.is_none()
-            && self.assignment_epoch == 0;
-        if validate_object_descriptor(&self.object).is_err()
-            || self.project.as_bytes() == &[0; 16]
-            || self.view.as_bytes() == &[0; 16]
-            || self.evidence.as_bytes() == &[0; 32]
-            || self.lease_valid_until == 0
-            || !(view_only_logical || attached_runtime || source_retention)
-            || pin_acquisition_scope(&self).is_err()
-            || pin_acquisition_scope(&self).is_ok_and(|scope| scope != self.authority_scope)
-        {
-            return Err(PinError::InvalidPin);
-        }
-        Ok(self)
+        Ok(Self(self.0.validate()?))
     }
 
     pub(crate) fn validate_current(
@@ -518,43 +356,19 @@ impl CachePinV1 {
         capability: &VerifiedCacheCapabilityV1,
         now: u64,
     ) -> Result<(), PinError> {
-        let expected = pin_acquisition_scope(self)?;
-        if expected != self.authority_scope || capability.record_digest() != self.evidence {
-            return Err(PinError::EvidenceMismatch);
-        }
-        owner.validate_for_effect_at(
-            capability,
-            CacheAuthorityPurposeV1::PinAcquire,
-            expected,
-            now,
-        )?;
-        Ok(())
+        require_pin_current_data_v1(&self.0, owner, capability, now)
     }
 
     /// Returns whether lease time still permits a new logical use.
     #[must_use]
     pub const fn permits_new_use(&self, now: u64) -> bool {
-        self.lease_valid_until > now
+        self.0.lease_valid_until > now
     }
 }
 
-/// Materializes exact pin obligations without collapsing pin classes.
+/// Holds the actual protected pin projection with its verifier-issued rows.
 #[derive(Clone, Debug)]
-pub struct CachePinLedgerV1 {
-    maximum_records: usize,
-    pins: BTreeMap<CachePinId, CachePinV1>,
-    logical_consumers: BTreeMap<LogicalPinConsumerKeyV1, CachePinId>,
-    released: BTreeMap<CachePinId, ReleasedCachePinV1>,
-    compacted_through: Option<PinCompactionFloorV1>,
-}
-
-type LogicalPinConsumerKeyV1 = (
-    ObjectDigest,
-    ObjectDigest,
-    ProjectId,
-    ViewId,
-    Option<AttachmentId>,
-);
+pub struct CachePinLedgerV1(pin_ledger::CachePinLedgerDataV1<CachePinV1, PinDrainEvidenceV1, PinCompactionFloorV1>);
 
 impl CachePinLedgerV1 {
     /// Constructs an empty bounded pin ledger.
@@ -563,16 +377,7 @@ impl CachePinLedgerV1 {
     ///
     /// Returns [`PinError::Capacity`] for zero or excessive retention bounds.
     pub fn new(maximum_records: usize) -> Result<Self, PinError> {
-        if maximum_records == 0 || maximum_records > 1_000_000 {
-            return Err(PinError::Capacity);
-        }
-        Ok(Self {
-            maximum_records,
-            pins: BTreeMap::new(),
-            logical_consumers: BTreeMap::new(),
-            released: BTreeMap::new(),
-            compacted_through: None,
-        })
+        Ok(Self(pin_ledger::CachePinLedgerDataV1::new(maximum_records)?))
     }
 
     /// Replays a complete pin set with exact identity uniqueness.
@@ -586,47 +391,9 @@ impl CachePinLedgerV1 {
         pins: impl IntoIterator<Item = CachePinV1>,
         released: impl IntoIterator<Item = ReleasedCachePinV1>,
     ) -> Result<Self, PinError> {
-        let mut ledger = Self::new(maximum_records)?;
-        ledger.compacted_through = compacted_through;
-        for pin in pins {
-            let pin = pin.validate()?;
-            if ledger
-                .compacted_through
-                .is_some_and(|floor| pin.id <= floor.pin)
-            {
-                return Err(PinError::Conflict);
-            }
-            if ledger.pins.len() + ledger.released.len() >= ledger.maximum_records {
-                return Err(PinError::Capacity);
-            }
-            if let Some(key) = logical_consumer_key(&pin)
-                && ledger.logical_consumers.insert(key, pin.id).is_some()
-            {
-                return Err(PinError::Conflict);
-            }
-            if ledger.pins.insert(pin.id, pin).is_some() {
-                return Err(PinError::Conflict);
-            }
-        }
-        for tombstone in released {
-            validate_release(&tombstone.pin, tombstone.drain)?;
-            if ledger
-                .compacted_through
-                .is_some_and(|floor| tombstone.pin.id <= floor.pin)
-            {
-                return Err(PinError::Conflict);
-            }
-            if ledger.pins.len() + ledger.released.len() >= ledger.maximum_records {
-                return Err(PinError::Capacity);
-            }
-            if ledger.pins.contains_key(&tombstone.pin.id)
-                || ledger.released.contains_key(&tombstone.pin.id)
-            {
-                return Err(PinError::Conflict);
-            }
-            ledger.released.insert(tombstone.pin.id, tombstone);
-        }
-        Ok(ledger)
+        Ok(Self(pin_ledger::CachePinLedgerDataV1::replay(
+            maximum_records, compacted_through, pins, released,
+        )?))
     }
 
     /// Inserts one pin, treating exact replay as idempotent.
@@ -643,37 +410,37 @@ impl CachePinLedgerV1 {
     ) -> Result<(), PinError> {
         let pin = pin.validate()?;
         pin.validate_current(owner, capability, now)?;
-        if self
+        if self.0
             .compacted_through
             .is_some_and(|floor| pin.id <= floor.pin)
         {
             return Err(PinError::Conflict);
         }
-        if self.released.contains_key(&pin.id) {
+        if self.0.released.contains_key(&pin.id) {
             return Err(PinError::Conflict);
         }
         let logical_key = logical_consumer_key(&pin);
         if logical_key.as_ref().is_some_and(|key| {
-            self.logical_consumers
+            self.0.logical_consumers
                 .get(key)
                 .is_some_and(|id| *id != pin.id)
         }) {
             return Err(PinError::Conflict);
         }
-        if let Some(existing) = self.pins.get(&pin.id) {
+        if let Some(existing) = self.0.pins.get(&pin.id) {
             return if existing == &pin {
                 Ok(())
             } else {
                 Err(PinError::Conflict)
             };
         }
-        if self.pins.len() + self.released.len() >= self.maximum_records {
+        if self.0.pins.len() + self.0.released.len() >= self.0.maximum_records {
             return Err(PinError::Capacity);
         }
         if let Some(key) = logical_key {
-            self.logical_consumers.insert(key, pin.id);
+            self.0.logical_consumers.insert(key, pin.id);
         }
-        self.pins.insert(pin.id, pin);
+        self.0.pins.insert(pin.id, pin);
         Ok(())
     }
 
@@ -707,7 +474,7 @@ impl CachePinLedgerV1 {
         if !valid_logical_renewal(existing, &renewed) {
             return Err(PinError::Conflict);
         }
-        self.pins.insert(renewed.id, renewed);
+        self.0.pins.insert(renewed.id, renewed);
         Ok(())
     }
 
@@ -726,7 +493,7 @@ impl CachePinLedgerV1 {
         drain: PinDrainEvidenceV1,
         now: u64,
     ) -> Result<ReleasedCachePinV1, PinError> {
-        if let Some(released) = self.released.get(&id) {
+        if let Some(released) = self.0.released.get(&id) {
             drain.validate_current(owner, capability, &released.pin, now)?;
             return if released.pin.evidence == expected_evidence && released.drain == drain {
                 Ok(released.clone())
@@ -734,7 +501,7 @@ impl CachePinLedgerV1 {
                 Err(PinError::Conflict)
             };
         }
-        let pin = self.pins.get(&id).ok_or(PinError::Absent)?;
+        let pin = self.0.pins.get(&id).ok_or(PinError::Absent)?;
         drain.validate_current(owner, capability, pin, now)?;
         if pin.evidence != expected_evidence
             || drain.pin != id
@@ -751,16 +518,16 @@ impl CachePinLedgerV1 {
         }
         validate_release(pin, drain)?;
         if let Some(key) = logical_consumer_key(pin)
-            && self.logical_consumers.get(&key) != Some(&id)
+            && self.0.logical_consumers.get(&key) != Some(&id)
         {
             return Err(PinError::Conflict);
         }
-        let pin = self.pins.remove(&id).ok_or(PinError::Absent)?;
+        let pin = self.0.pins.remove(&id).ok_or(PinError::Absent)?;
         if let Some(key) = logical_consumer_key(&pin) {
-            self.logical_consumers.remove(&key);
+            self.0.logical_consumers.remove(&key);
         }
         let released = ReleasedCachePinV1 { pin, drain };
-        self.released.insert(id, released.clone());
+        self.0.released.insert(id, released.clone());
         Ok(released)
     }
 
@@ -787,17 +554,17 @@ impl CachePinLedgerV1 {
         valid_until: u64,
         now: u64,
     ) -> Result<PinCompactionFloorV1, PinError> {
-        if self
+        if self.0
             .compacted_through
             .is_some_and(|current| floor <= current.pin)
-            || self.pins.keys().any(|id| *id <= floor)
-            || self
+            || self.0.pins.keys().any(|id| *id <= floor)
+            || self.0
                 .released
                 .range(..=floor)
                 .any(|(_, released)| released.pin.partition != partition)
             || physical_absence.partition != partition
             || physical_absence.floor != floor
-            || !self
+            || !self.0
                 .released
                 .range(..=floor)
                 .map(|(id, _)| *id)
@@ -808,15 +575,15 @@ impl CachePinLedgerV1 {
         }
         let scope = pin_compaction_scope(partition, floor, checkpoint, generation, valid_until)?;
         owner.validate_for_effect_at(capability, CacheAuthorityPurposeV1::Replay, scope, now)?;
-        self.released.retain(|id, _| *id > floor);
-        let floor = PinCompactionFloorV1 {
+        self.0.released.retain(|id, _| *id > floor);
+        let floor = PinCompactionFloorV1(PinCompactionFloorDataV1 {
             pin: floor,
             partition: partition.digest(),
             checkpoint,
             generation,
-            digest: pin_compaction_floor_digest(floor, partition.digest(), checkpoint, generation),
-        };
-        self.compacted_through = Some(floor);
+            digest: aos_sandbox_protocol::cache_state::pin_floor::pin_compaction_floor_digest(floor, partition.digest(), checkpoint, generation),
+        });
+        self.0.compacted_through = Some(floor);
         Ok(floor)
     }
 
@@ -827,17 +594,13 @@ impl CachePinLedgerV1 {
         partition: PhysicalPartitionId,
         object: &ObjectDescriptor,
     ) -> bool {
-        self.pins.values().any(|pin| {
-            pin.partition == partition
-                && &pin.object == object
-                && pin.kind != CachePinKindV1::SourceRetention
-        })
+        self.0.blocks_eviction(partition, object)
     }
 
     /// Returns one retained pin without treating it as current authority.
     #[must_use]
     pub fn pin(&self, id: CachePinId) -> Option<&CachePinV1> {
-        self.pins.get(&id)
+        self.0.pin(id)
     }
 
     /// Finds the sole active logical pin for an exact consumer and object.
@@ -853,24 +616,7 @@ impl CachePinLedgerV1 {
         view: ViewId,
         attachment: Option<AttachmentId>,
     ) -> Option<&CachePinV1> {
-        let key = (
-            partition.digest(),
-            object_descriptor_commitment(object),
-            project,
-            view,
-            attachment,
-        );
-        self.logical_consumers
-            .get(&key)
-            .and_then(|id| self.pins.get(id))
-            .filter(|pin| {
-                pin.partition == partition
-                    && &pin.object == object
-                    && pin.project == project
-                    && pin.view == view
-                    && pin.attachment == attachment
-                    && pin.kind == CachePinKindV1::LogicalLease
-            })
+        self.0.logical_consumer_pin(partition, object, project, view, attachment)
     }
 
     /// Selects the next unused identity above every retained or compacted pin.
@@ -882,22 +628,11 @@ impl CachePinLedgerV1 {
     ///
     /// Returns [`PinError::Capacity`] if the 128-bit identity space is exhausted.
     pub fn next_pin_id(&self) -> Result<CachePinId, PinError> {
-        let greatest = [
-            self.pins.last_key_value().map(|(id, _)| *id),
-            self.released.last_key_value().map(|(id, _)| *id),
-            self.compacted_through.map(|floor| floor.pin),
-        ]
-        .into_iter()
-        .flatten()
-        .max();
-        let next = greatest.map_or(Some(1), |id| {
-            u128::from_be_bytes(*id.as_bytes()).checked_add(1)
-        });
-        CachePinId::from_bytes(next.ok_or(PinError::Capacity)?.to_be_bytes())
+        self.0.next_pin_id().map_err(PinError::from)
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &CachePinV1> {
-        self.pins.values()
+        self.0.values()
     }
 
     /// Computes pin-class usage for atomic quota validation.
@@ -908,59 +643,45 @@ impl CachePinLedgerV1 {
     pub fn usage(
         &self,
     ) -> Result<(BTreeMap<[u8; 16], CacheUsageV1>, CacheUsageV1), AccountingError> {
-        let mut projects = BTreeMap::<[u8; 16], CacheUsageV1>::new();
-        let mut node = CacheUsageV1::default();
-        for pin in self.pins.values() {
-            let project = projects.entry(*pin.project.as_bytes()).or_default();
-            match pin.kind {
-                CachePinKindV1::LogicalLease => {
-                    increment(&mut project.logical_pins)?;
-                    increment(&mut node.logical_pins)?;
-                }
-                CachePinKindV1::SourceRetention => {
-                    increment(&mut project.source_retentions)?;
-                    increment(&mut node.source_retentions)?;
-                }
-                CachePinKindV1::KernelReference => {
-                    increment(&mut project.kernel_references)?;
-                    increment(&mut node.kernel_references)?;
-                }
-                CachePinKindV1::BackingRegistration => {
-                    increment(&mut project.backing_registrations)?;
-                    increment(&mut node.backing_registrations)?;
-                }
-            }
-        }
-        Ok((projects, node))
+        self.0.usage()
     }
 }
 
-/// Selects the exact proven drain outcome.
+/// Retains verifier-issued drain evidence around its historical fields.
+///
+/// Historical DATA cannot issue the Native drain wrapper.
+///
+/// ```compile_fail
+/// fn issue(data: aos_sandbox_protocol::cache_state::pin_data::PinDrainEvidenceDataV1) {
+///     let _ = aos_sandbox::cache_residency::pin::PinDrainEvidenceV1(data);
+/// }
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum PinDrainOutcomeV1 {
-    /// No kernel-like reference was ever installed.
-    NeverInstalled = 1,
-    /// Consumer absence and all open/mapping/lookup/backing references were proved.
-    ConsumerAbsentAndReferencesClosed = 2,
-}
+pub struct PinDrainEvidenceV1(PinDrainEvidenceDataV1);
 
-/// Carries opaque authority-bound evidence for one pin release.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PinDrainEvidenceV1 {
-    pin: CachePinId,
-    outcome: PinDrainOutcomeV1,
-    digest: ObjectDigest,
-    authority_scope: CacheAuthorityScopeV1,
+impl std::ops::Deref for PinDrainEvidenceV1 {
+    type Target = PinDrainEvidenceDataV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl PinDrainEvidenceV1 {
+    pub(crate) const fn from_parsed_history_data_v1(data: PinDrainEvidenceDataV1) -> Self {
+        Self(data)
+    }
+
+    pub(crate) const fn historical_data_v1(self) -> PinDrainEvidenceDataV1 {
+        self.0
+    }
+
     pub(crate) const fn authority_binding(self) -> (CacheAuthorityScopeV1, ObjectDigest) {
-        (self.authority_scope, self.digest)
+        (self.0.authority_scope, self.0.digest)
     }
 
     pub(crate) const fn valid_until(self) -> u64 {
-        self.authority_scope.valid_until()
+        self.0.authority_scope.valid_until()
     }
 
     pub(crate) fn recover_historical(
@@ -969,31 +690,21 @@ impl PinDrainEvidenceV1 {
         digest: ObjectDigest,
         valid_until: u64,
     ) -> Result<Self, PinError> {
-        let authority_scope = pin_drain_scope(pin, outcome, valid_until)?;
-        let evidence = Self {
-            pin: pin.id,
-            outcome,
-            digest,
-            authority_scope,
-        };
-        evidence.validate_replay(pin)?;
-        Ok(evidence)
+        Ok(Self(PinDrainEvidenceDataV1::recover_historical(
+            pin, outcome, digest, valid_until,
+        )?))
     }
 
     pub(crate) const fn digest(self) -> ObjectDigest {
-        self.digest
+        self.0.digest
     }
 
     pub(crate) const fn outcome(self) -> PinDrainOutcomeV1 {
-        self.outcome
+        self.0.outcome
     }
 
     pub(crate) fn validate_replay(self, pin: &CachePinV1) -> Result<(), PinError> {
-        let expected = pin_drain_scope(pin, self.outcome, self.authority_scope.valid_until())?;
-        if expected != self.authority_scope || self.pin != pin.id {
-            return Err(PinError::EvidenceMismatch);
-        }
-        validate_release(pin, self)
+        self.0.validate_replay(pin).map_err(PinError::from)
     }
 
     /// Issues drain evidence from one exact current protected observation.
@@ -1016,12 +727,12 @@ impl PinDrainEvidenceV1 {
             authority_scope,
             now,
         )?;
-        Ok(Self {
+        Ok(Self(PinDrainEvidenceDataV1 {
             pin: pin.id,
             outcome,
             digest: capability.record_digest(),
             authority_scope,
-        })
+        }))
     }
 
     fn validate_current(
@@ -1031,17 +742,7 @@ impl PinDrainEvidenceV1 {
         pin: &CachePinV1,
         now: u64,
     ) -> Result<(), PinError> {
-        let expected = pin_drain_scope(pin, self.outcome, self.authority_scope.valid_until())?;
-        if self.authority_scope != expected || self.digest != capability.record_digest() {
-            return Err(PinError::EvidenceMismatch);
-        }
-        owner.validate_for_effect_at(
-            capability,
-            CacheAuthorityPurposeV1::PinDrain,
-            expected,
-            now,
-        )?;
-        Ok(())
+        require_pin_drain_current_data_v1(self.0, owner, capability, pin, now)
     }
 }
 
@@ -1074,30 +775,6 @@ pub enum PinError {
     Authority(#[from] CacheAuthorityError),
 }
 
-fn pin_drain_scope(
-    pin: &CachePinV1,
-    outcome: PinDrainOutcomeV1,
-    valid_until: u64,
-) -> Result<CacheAuthorityScopeV1, PinError> {
-    let mut hasher = sha2::Sha256::new();
-    use sha2::Digest as _;
-    hasher.update(b"aos.sandbox.cache.pin-drain-subject.v1\0");
-    hasher.update(pin_subject(pin).as_bytes());
-    hasher.update(pin.evidence.as_bytes());
-    hasher.update([outcome as u8]);
-    let subject = ObjectDigest::from_bytes(hasher.finalize().into());
-    CacheAuthorityScopeV1::new(
-        pin.partition,
-        subject,
-        None,
-        pin.evidence,
-        pin.partition.backing().root(),
-        pin.assignment_epoch.max(1),
-        valid_until,
-    )
-    .map_err(PinError::from)
-}
-
 fn pin_compaction_scope(
     partition: PhysicalPartitionId,
     floor: CachePinId,
@@ -1111,7 +788,7 @@ fn pin_compaction_scope(
     hasher.update(floor.as_bytes());
     hasher.update(checkpoint.as_bytes());
     let subject = ObjectDigest::from_bytes(hasher.finalize().into());
-    Ok(CacheAuthorityScopeV1::new(
+    Ok(crate::cache_residency::domain::new_cache_authority_scope_v1(
         partition,
         subject,
         None,
@@ -1122,131 +799,113 @@ fn pin_compaction_scope(
     )?)
 }
 
-fn pin_compaction_floor_digest(
-    pin: CachePinId,
-    partition: ObjectDigest,
-    checkpoint: ObjectDigest,
-    generation: u64,
-) -> ObjectDigest {
-    let mut hasher = sha2::Sha256::new();
-    use sha2::Digest as _;
-    hasher.update(b"aos.sandbox.cache.pin-compaction-floor.v1\0");
-    hasher.update(pin.as_bytes());
-    hasher.update(partition.as_bytes());
-    hasher.update(checkpoint.as_bytes());
-    hasher.update(generation.to_be_bytes());
-    ObjectDigest::from_bytes(hasher.finalize().into())
-}
-
-fn read_pin_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], PinError> {
-    let (value, _) = checked_byte_region(bytes, offset, N).map_err(|_| PinError::InvalidFloor)?;
-    value.try_into().map_err(|_| PinError::InvalidFloor)
-}
-
-fn increment(value: &mut u64) -> Result<(), AccountingError> {
-    *value = value.checked_add(1).ok_or(AccountingError::Overflow)?;
-    Ok(())
-}
-
 fn pin_acquisition_scope(pin: &CachePinV1) -> Result<CacheAuthorityScopeV1, PinError> {
-    let subject = pin_subject(pin);
-    CacheAuthorityScopeV1::new(
-        pin.partition,
-        subject,
-        None,
-        subject,
-        pin.partition.backing().root(),
-        pin.assignment_epoch.max(1),
-        pin.lease_valid_until,
-    )
-    .map_err(PinError::from)
+    pin_data::pin_acquisition_scope(pin).map_err(PinError::from)
 }
 
-fn pin_subject(pin: &CachePinV1) -> ObjectDigest {
-    pin_subject_fields(
-        pin.id,
-        pin.partition,
-        &pin.object,
-        pin.project,
-        pin.view,
-        pin.attachment,
-        pin.sandbox,
-        pin.incarnation,
-        pin.kind,
-        pin.assignment_epoch,
-        pin.lease_valid_until,
-    )
-}
-
-fn logical_consumer_key(pin: &CachePinV1) -> Option<LogicalPinConsumerKeyV1> {
-    (pin.kind == CachePinKindV1::LogicalLease).then(|| {
-        (
-            pin.partition.digest(),
-            object_descriptor_commitment(&pin.object),
-            pin.project,
-            pin.view,
-            pin.attachment,
-        )
-    })
-}
-
-pub(crate) fn valid_logical_renewal(previous: &CachePinV1, renewed: &CachePinV1) -> bool {
-    previous.kind == CachePinKindV1::LogicalLease
-        && renewed.kind == CachePinKindV1::LogicalLease
-        && previous.id == renewed.id
-        && previous.partition == renewed.partition
-        && previous.object == renewed.object
-        && previous.project == renewed.project
-        && previous.view == renewed.view
-        && previous.attachment == renewed.attachment
-        && previous.sandbox == renewed.sandbox
-        && previous.incarnation == renewed.incarnation
-        && previous.assignment_epoch == renewed.assignment_epoch
-        && previous.lease_valid_until <= renewed.lease_valid_until
-}
-
-#[allow(clippy::too_many_arguments)]
-fn pin_subject_fields(
-    id: CachePinId,
-    partition: PhysicalPartitionId,
-    object: &ObjectDescriptor,
-    project: ProjectId,
-    view: ViewId,
-    attachment: Option<AttachmentId>,
-    sandbox: Option<SandboxId>,
-    incarnation: Option<IncarnationId>,
-    kind: CachePinKindV1,
-    assignment_epoch: u64,
-    lease_valid_until: u64,
-) -> ObjectDigest {
-    let mut hasher = sha2::Sha256::new();
-    use sha2::Digest as _;
-    hasher.update(b"aos.sandbox.cache.pin-subject.v1\0");
-    hasher.update(id.as_bytes());
-    hasher.update(partition.digest().as_bytes());
-    hasher.update(object_descriptor_commitment(object).as_bytes());
-    hasher.update(project.as_bytes());
-    hasher.update(view.as_bytes());
-    hasher.update(attachment.map_or([0; 16], |value| value.into_bytes()));
-    hasher.update(sandbox.map_or([0; 16], |value| value.into_bytes()));
-    hasher.update(incarnation.map_or([0; 16], |value| value.into_bytes()));
-    hasher.update([kind as u8]);
-    hasher.update(assignment_epoch.to_be_bytes());
-    hasher.update(lease_valid_until.to_be_bytes());
-    ObjectDigest::from_bytes(hasher.finalize().into())
+fn pin_drain_scope(
+    pin: &CachePinV1,
+    outcome: PinDrainOutcomeV1,
+    valid_until: u64,
+) -> Result<CacheAuthorityScopeV1, PinError> {
+    pin_data::pin_drain_scope(pin, outcome, valid_until).map_err(PinError::from)
 }
 
 fn validate_release(pin: &CachePinV1, drain: PinDrainEvidenceV1) -> Result<(), PinError> {
-    pin.clone().validate()?;
-    if drain.pin != pin.id || drain.digest.as_bytes() == &[0; 32] {
+    pin_data::validate_release(pin, drain.0).map_err(PinError::from)
+}
+
+impl From<pin_data::PinDataErrorV1> for PinError {
+    fn from(error: pin_data::PinDataErrorV1) -> Self {
+        match error {
+            pin_data::PinDataErrorV1::InvalidPin => Self::InvalidPin,
+            pin_data::PinDataErrorV1::Conflict => Self::Conflict,
+            pin_data::PinDataErrorV1::Capacity => Self::Capacity,
+            pin_data::PinDataErrorV1::InvalidFloor => Self::InvalidFloor,
+            pin_data::PinDataErrorV1::EvidenceMismatch => Self::EvidenceMismatch,
+            pin_data::PinDataErrorV1::DrainNotProved => Self::DrainNotProved,
+            pin_data::PinDataErrorV1::Authority(error) => Self::Authority(error.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod historical_representation_tests {
+    use super::*;
+
+    #[test]
+    fn native_pin_wrappers_preserve_inline_size_and_alignment() {
+        assert_eq!(std::mem::size_of::<CachePinV1>(), std::mem::size_of::<CachePinDataV1>());
+        assert_eq!(std::mem::align_of::<CachePinV1>(), std::mem::align_of::<CachePinDataV1>());
+        assert_eq!(std::mem::size_of::<PinDrainEvidenceV1>(), std::mem::size_of::<PinDrainEvidenceDataV1>());
+        assert_eq!(std::mem::align_of::<PinDrainEvidenceV1>(), std::mem::align_of::<PinDrainEvidenceDataV1>());
+        assert_eq!(std::mem::size_of::<CachePinLedgerV1>(), std::mem::size_of::<pin_ledger::CachePinLedgerDataV1<CachePinV1, PinDrainEvidenceV1, PinCompactionFloorV1>>());
+        assert_eq!(std::mem::align_of::<CachePinLedgerV1>(), std::mem::align_of::<pin_ledger::CachePinLedgerDataV1<CachePinV1, PinDrainEvidenceV1, PinCompactionFloorV1>>());
+    }
+}
+
+impl std::borrow::Borrow<CachePinDataV1> for CachePinV1 {
+    fn borrow(&self) -> &CachePinDataV1 {
+        &self.0
+    }
+}
+
+impl std::borrow::Borrow<PinDrainEvidenceDataV1> for PinDrainEvidenceV1 {
+    fn borrow(&self) -> &PinDrainEvidenceDataV1 {
+        &self.0
+    }
+}
+
+pub(crate) fn decode_pin_compaction_floor_persisted(
+    partition: PhysicalPartitionId,
+    bytes: &[u8],
+) -> Result<PinCompactionFloorV1, PinError> {
+    Ok(PinCompactionFloorV1(
+        aos_sandbox_protocol::cache_state::pin_floor::decode_pin_compaction_floor_persisted(partition, bytes)?,
+    ))
+}
+
+impl std::borrow::Borrow<PinCompactionFloorDataV1> for PinCompactionFloorV1 {
+    fn borrow(&self) -> &PinCompactionFloorDataV1 {
+        &self.0
+    }
+}
+
+pub(crate) fn require_pin_current_data_v1(
+    pin: &CachePinDataV1,
+    owner: &CacheAuthorityOwner<'_, '_>,
+    capability: &VerifiedCacheCapabilityV1,
+    now: u64,
+) -> Result<(), PinError> {
+    let expected = pin_data::pin_acquisition_scope(pin).map_err(PinError::from)?;
+    if expected != pin.authority_scope || capability.record_digest() != pin.evidence {
         return Err(PinError::EvidenceMismatch);
     }
-    if matches!(
-        pin.kind,
-        CachePinKindV1::KernelReference | CachePinKindV1::BackingRegistration
-    ) && drain.outcome != PinDrainOutcomeV1::ConsumerAbsentAndReferencesClosed
-    {
-        return Err(PinError::DrainNotProved);
+    owner.validate_for_effect_at(
+        capability,
+        CacheAuthorityPurposeV1::PinAcquire,
+        expected,
+        now,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn require_pin_drain_current_data_v1(
+    drain: PinDrainEvidenceDataV1,
+    owner: &CacheAuthorityOwner<'_, '_>,
+    capability: &VerifiedCacheCapabilityV1,
+    pin: &CachePinDataV1,
+    now: u64,
+) -> Result<(), PinError> {
+    let expected = pin_data::pin_drain_scope(pin, drain.outcome, drain.authority_scope.valid_until()).map_err(PinError::from)?;
+    if drain.authority_scope != expected || drain.digest != capability.record_digest() {
+        return Err(PinError::EvidenceMismatch);
     }
+    owner.validate_for_effect_at(
+        capability,
+        CacheAuthorityPurposeV1::PinDrain,
+        expected,
+        now,
+    )?;
     Ok(())
 }

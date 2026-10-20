@@ -42,12 +42,12 @@ impl NativeFixture {
         &self,
         reader: &mut R,
         length: u64,
-    ) -> Result<ReplayState, JournalError> {
+    ) -> Result<ObservedReplayStateV1, JournalError> {
         let mut observer = HistoryAuditV1::from_bindings(
             &self.rows, &self.signed.exact, &self.signed.genesis,
             self.signed.signer.verifying_key(),
         )?;
-        let replayed = replay_observed(reader, MAIN_LIMITS, Some(&mut observer))?;
+        let replayed = replay_fixture_observed_v1(reader, MAIN_LIMITS, None, Some(super::super::DeploymentHistoryObserverV1::Main(&mut observer)))?;
         observer.finish(&replayed)?;
         if replayed.durable_end != length {
             return Err(JournalError::StaleAuthoritySnapshot);
@@ -55,7 +55,7 @@ impl NativeFixture {
         Ok(replayed)
     }
 
-    fn audit_bytes(&self, bytes: &[u8]) -> Result<ReplayState, JournalError> {
+    fn audit_bytes(&self, bytes: &[u8]) -> Result<ObservedReplayStateV1, JournalError> {
         let mut file = tempfile::tempfile()?;
         file.write_all(bytes)?;
         self.audit(&mut file, bytes.len() as u64)
@@ -74,10 +74,10 @@ fn native_bytes(transactions: &[JournalTransaction]) -> Vec<u8> {
     bytes
 }
 
-fn normal_replay(bytes: &[u8]) -> ReplayState {
+fn normal_replay(bytes: &[u8]) -> ObservedReplayStateV1 {
     let mut file = tempfile::tempfile().unwrap();
     file.write_all(bytes).unwrap();
-    replay_observed(&mut file, MAIN_LIMITS, None).unwrap()
+    replay_fixture_observed_v1(&mut file, MAIN_LIMITS, None, None).unwrap()
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn unrun_original_genesis_and_every_exact_phase_prefix_pass_same_native_parser()
         let replayed = prefix.audit_bytes(&bytes).unwrap();
         assert_eq!(replayed.next_sequence, 1 + count as u64 * 3);
         assert_eq!(replayed.committed_transactions, count);
-        assert_eq!(replayed.state, prefix.rows);
+        assert_eq!(replayed.native.state_data_v1(), &prefix.rows);
     }
 }
 
@@ -108,7 +108,7 @@ fn unrun_wrong_native_uuid_and_reordered_same_map_history_refuse() {
     wrong_uuid[1] = JournalTransaction::new([90; 16], wrong_uuid[1].records().to_vec()).unwrap();
     let wrong_uuid = native_bytes(&wrong_uuid);
     let replayed = normal_replay(&wrong_uuid);
-    assert_eq!(replayed.state, original.state);
+    assert_eq!(replayed.native.state_data_v1(), original.native.state_data_v1());
     assert_eq!(replayed.next_sequence, original.next_sequence);
     assert!(fixture.audit_bytes(&wrong_uuid).is_err());
 
@@ -116,7 +116,7 @@ fn unrun_wrong_native_uuid_and_reordered_same_map_history_refuse() {
     reordered.swap(1, 2);
     let reordered = native_bytes(&reordered);
     let replayed = normal_replay(&reordered);
-    assert_eq!(replayed.state, original.state);
+    assert_eq!(replayed.native.state_data_v1(), original.native.state_data_v1());
     assert_eq!(replayed.next_sequence, original.next_sequence);
     assert!(fixture.audit_bytes(&reordered).is_err());
 
@@ -131,7 +131,7 @@ fn unrun_overwrite_delete_batch_foreign_and_extra_native_transactions_refuse() {
     let mut overwritten = fixture.transactions.clone();
     overwritten.push(JournalTransaction::new([92; 16], overwritten[1].records().to_vec()).unwrap());
     let bytes = native_bytes(&overwritten);
-    assert_eq!(normal_replay(&bytes).state, fixture.rows);
+    assert_eq!(normal_replay(&bytes).native.state_data_v1(), &fixture.rows);
     assert!(fixture.audit_bytes(&bytes).is_err());
 
     let mut deleted = fixture.transactions.clone();
@@ -172,7 +172,7 @@ fn unrun_actual_native_compactor_preserves_map_but_both_histories_refuse() {
         file.read_to_end(&mut compacted).unwrap();
 
         let replayed = normal_replay(&compacted);
-        assert_eq!(replayed.state, original.state);
+        assert_eq!(replayed.native.state_data_v1(), original.native.state_data_v1());
         assert_eq!(replayed.next_sequence, original.next_sequence);
         assert!(fixture.audit_bytes(&compacted).is_err());
     }
@@ -204,18 +204,26 @@ fn unrun_complete_physical_cut_and_original_snapshot_equality_are_required() {
     let bytes = fixture.bytes();
     let mut incomplete = bytes.clone();
     incomplete.push(b'A');
-    assert_eq!(normal_replay(&incomplete).state, fixture.rows);
+    assert_eq!(normal_replay(&incomplete).native.state_data_v1(), &fixture.rows);
     assert!(fixture.audit_bytes(&incomplete).is_err());
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("inert.journal");
     std::fs::write(&path, &bytes).unwrap();
     let (journal, _) = Journal::open(&path, MAIN_LIMITS).unwrap();
-    let mut replayed = normal_replay(&bytes);
+    let replayed = normal_replay(&bytes);
     assert!(journal.require_deployment_replayed_snapshot(&replayed, bytes.len() as u64).is_ok());
     assert!(journal.require_deployment_replayed_snapshot(&replayed, bytes.len() as u64 + 1).is_err());
-    replayed.state.get_mut(&(NAMESPACE, GENESIS_KEY.to_vec())).unwrap()[0] ^= 1;
-    assert!(journal.require_deployment_replayed_snapshot(&replayed, bytes.len() as u64).is_err());
+    let mut changed = fixture.transactions.clone();
+    let mut changed_genesis = changed[0].records()[0].value().unwrap().to_vec();
+    changed_genesis[0] ^= 1;
+    changed[0] = JournalTransaction::new(
+        *changed[0].id(),
+        vec![JournalRecord::put(NAMESPACE, GENESIS_KEY.to_vec(), changed_genesis)],
+    ).unwrap();
+    let changed = normal_replay(&native_bytes(&changed));
+
+    assert!(journal.require_deployment_replayed_snapshot(&changed, bytes.len() as u64).is_err());
 }
 
 #[test]
@@ -256,8 +264,7 @@ fn unrun_actual_unrelated_protected_opener_captures_other_and_keeps_compaction()
         Journal::open_protected_at_uid(directory.path(), MAIN_NAME, MAIN_LIMITS, uid).unwrap();
     assert!(
         journal
-            .protected
-            .as_ref()
+            .native.protected_view()
             .unwrap()
             .original_compaction_selection()
             == &OriginalCompactionSelectionV1::Other
@@ -317,7 +324,7 @@ fn unrun_read_at_cursor_borrows_the_original_file_identity() {
 }
 
 #[test]
-fn unrun_unobserved_facade_preserves_original_engine_replay_results() {
+fn unrun_fixture_and_actual_ordinary_opening_preserve_full_replay_results() {
     let transaction = JournalTransaction::new(
         [97; 16],
         vec![JournalRecord::put(
@@ -331,21 +338,24 @@ fn unrun_unobserved_facade_preserves_original_engine_replay_results() {
     let mut file = tempfile::tempfile().unwrap();
     file.write_all(&bytes).unwrap();
 
-    let original = super::super::replay(&mut file, MAIN_LIMITS).unwrap();
-    let observed = replay_observed(&mut file, MAIN_LIMITS, None).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("ordinary.journal");
+    std::fs::write(&path, &bytes).unwrap();
+    let (original, report) = Journal::open(&path, MAIN_LIMITS).unwrap();
+    let observed = replay_fixture_observed_v1(&mut file, MAIN_LIMITS, None, None).unwrap();
 
-    assert_eq!(observed.state, original.state);
-    assert_eq!(observed.durable_end, original.durable_end);
-    assert_eq!(observed.next_sequence, original.next_sequence);
+    assert_eq!(observed.native.state_data_v1(), original.native.state());
+    assert_eq!(observed.durable_end, bytes.len() as u64);
+    assert_eq!(observed.next_sequence, original.native.next_sequence());
     assert_eq!(
         observed.committed_transactions,
-        original.committed_transactions,
+        original.native.committed_transactions(),
     );
-    assert_eq!(observed.committed_records, original.committed_records);
-    assert_eq!(observed.transaction_ids, original.transaction_ids);
-    assert_eq!(observed.committed_namespaces, original.committed_namespaces);
-    assert_eq!(observed.materialized_bytes, original.materialized_bytes);
-    assert_eq!(observed.idempotency, original.idempotency);
+    assert_eq!(observed.committed_records, report.committed_records);
+    assert_eq!(observed.native.transaction_ids_data_v1(), original.native.transaction_ids());
+    assert_eq!(observed.native.committed_namespaces_data_v1(), original.native.committed_namespaces());
+    assert_eq!(observed.native.materialized_bytes_data_v1(), original.native.materialized_bytes());
+    assert_eq!(observed.native.idempotency_data_v1(), original.native.idempotency());
     assert_eq!(
         observed.source_history_compacted,
         original.source_history_compacted,
@@ -392,8 +402,7 @@ fn unrun_readonly_and_existing_openers_capture_actual_unrelated_origin() {
     assert!(
         readonly
             .journal
-            .protected
-            .as_ref()
+            .native.protected_view()
             .unwrap()
             .original_compaction_selection()
             == &OriginalCompactionSelectionV1::Other
@@ -407,8 +416,7 @@ fn unrun_readonly_and_existing_openers_capture_actual_unrelated_origin() {
             .unwrap();
     assert!(
         existing
-            .protected
-            .as_ref()
+            .native.protected_view()
             .unwrap()
             .original_compaction_selection()
             == &OriginalCompactionSelectionV1::Other

@@ -17,7 +17,7 @@ use aos_sandbox::journal::{
 };
 use aos_sandbox::normal_root::OfflineNixHardwareOriginV5;
 use aos_sandbox_linux::process::{FixedNixOfflineSessionOwnerV1, FixedProcessCaptureV1};
-use aos_sandbox_linux::seqpacket::{NixOfflineSeqpacketPairV5, ReceivedRecord};
+use aos_sandbox_linux::seqpacket::{RecordSubjectSeqpacketPairOriginalV2, ReceivedRecord};
 use zeroize::Zeroizing;
 
 use crate::tpm_nv_custody::physical::{NixOfflineExchangeErrorV5, NixOfflineExchangeV5};
@@ -31,7 +31,7 @@ type Run<'resources> = FixedNixOfflineSessionOwnerV1<
 
 struct PhaseResourcesV5 {
     launch: NixOfflineHelperLaunchV5,
-    pair: NixOfflineSeqpacketPairV5,
+    pair: RecordSubjectSeqpacketPairOriginalV2,
     capture: FixedProcessCaptureV1,
     endpoint: Option<OwnedFd>,
     control: Option<OwnedFd>,
@@ -56,7 +56,7 @@ impl NixOfflineHardwareResourcesV5 {
         Self {
             phases: std::array::from_fn(|_| PhaseResourcesV5 {
                 launch: NixOfflineHelperLaunchV5::new(),
-                pair: NixOfflineSeqpacketPairV5::new(),
+                pair: RecordSubjectSeqpacketPairOriginalV2::new(),
                 capture: FixedProcessCaptureV1::new(),
                 endpoint: None,
                 control: None,

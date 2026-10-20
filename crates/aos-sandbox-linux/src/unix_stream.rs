@@ -24,8 +24,23 @@ use crate::pidfd::{PidFd, PidFdInfo};
 use crate::{Error, Result, uapi};
 
 mod subject;
+mod admission;
+mod currentness;
 
-pub use subject::UnixStreamSubjectChunk;
+pub use currentness::UnixStreamOriginalCurrentnessV1;
+
+pub use admission::{RetainedUnixStreamAdmissionErrorV1, RetainedUnixStreamAdmissionOriginalV1};
+mod eof;
+
+pub use eof::UnixStreamSubjectEofReadbackV1;
+mod listener;
+
+pub use listener::RetainedSubjectStreamListenerReadbackV1;
+mod read_buffer;
+
+pub use read_buffer::{RetainedSubjectStreamReadV1, SubjectStreamReadErrorV1};
+
+pub use subject::{SubjectStreamReceiveGeometryV1, UnixStreamSubjectChunk};
 
 /// Owns a redacted failed strict stream receive and its lower partial custody.
 pub type RetainedUnixStreamSubjectReceiveErrorV1 = crate::seqpacket::RetainedSeqpacketReceiveErrorV1;
@@ -86,36 +101,9 @@ impl RetainedUnixStream {
     /// socket, unavailable peer credentials or pidfd, inconsistent peer
     /// identity, malformed cookie, or descriptor-flag failure.
     pub fn from_owned(fd: OwnedFd) -> Result<Self> {
-        uapi::validate_connected_unix_stream(fd.as_fd())?;
-        uapi::ensure_cloexec(fd.as_fd())?;
-
-        let socket_cookie = nonzero_socket_cookie(uapi::socket_cookie(fd.as_fd())?)?;
-        let credentials = UnixStreamPeerCredentials::from_raw(uapi::peer_credentials(fd.as_fd())?)?;
-        let pidfd = PidFd::from_owned(uapi::peer_pidfd(fd.as_fd())?)?;
-        let initial_info = pidfd.info()?;
-        let final_cookie = nonzero_socket_cookie(uapi::socket_cookie(fd.as_fd())?)?;
-
-        if initial_info.pid() != credentials.pid().get() {
-            return Err(peer_identity_error(
-                "SO_PEERCRED and SO_PEERPIDFD identify different processes",
-            ));
-        }
-        if final_cookie != socket_cookie {
-            return Err(peer_identity_error(
-                "SO_COOKIE changed during Unix stream peer capture",
-            ));
-        }
-
-        Ok(Self {
-            fd,
-            peer: UnixStreamPeerIdentity {
-                credentials,
-                pidfd,
-                initial_info,
-            },
-            socket_cookie,
-            subject_state: subject::StreamSubjectState::Dormant,
-        })
+        let mut attempt = admission::StreamAdmissionV1::new(fd);
+        attempt.capture_once()?;
+        Ok(attempt.into_stream())
     }
 
     /// Borrows the retained connected stream.
@@ -144,16 +132,22 @@ impl RetainedUnixStream {
     /// Rejects changed socket identity or creator credentials, process exit,
     /// unavailable peer metadata, or inconsistent pidfd observations.
     pub fn revalidate_original(&self) -> Result<()> {
-        let credentials =
-            UnixStreamPeerCredentials::from_raw(uapi::peer_credentials(self.as_fd())?)?;
-        if nonzero_socket_cookie(uapi::socket_cookie(self.as_fd())?)? != self.socket_cookie
-            || credentials != self.peer.credentials
-            || self.peer.pidfd.info()?.pid() != credentials.pid().get()
-            || !self.peer.is_alive()?
-        {
-            return Err(peer_identity_error(
-                "original stream or live creator changed",
-            ));
+        currentness::observe_ordinary(self)
+    }
+
+    /// Compares another held descriptor with this exact connected endpoint.
+    ///
+    /// This checks the actual nonzero kernel socket cookie and original peer;
+    /// matching paths, descriptor numbers or Rust object addresses do not join
+    /// endpoints. It supplies correlation DATA and creates no authority.
+    ///
+    /// # Errors
+    /// Rejects changed original peer, wrong socket kind or a different cookie.
+    pub fn require_same_endpoint_v1(&self, candidate: BorrowedFd<'_>) -> Result<()> {
+        self.revalidate_original()?;
+        uapi::validate_connected_unix_stream(candidate)?;
+        if nonzero_socket_cookie(uapi::socket_cookie(candidate)?)? != self.socket_cookie {
+            return Err(peer_identity_error("different original Unix stream endpoint"));
         }
         Ok(())
     }
@@ -407,6 +401,18 @@ mod tests {
             stream.socket_cookie.get()
         );
         assert!(std::ptr::eq(duplicate.peer(), stream.peer()));
+    }
+
+    #[test]
+    fn endpoint_join_requires_the_same_actual_kernel_socket() {
+        let (original, opposite) = stream_pair();
+        let duplicate = original.duplicate().expect("duplicate actual endpoint");
+        let (other, _other_peer) = stream_pair();
+
+        assert!(original.require_same_endpoint_v1(duplicate.as_fd()).is_ok());
+        assert!(original.require_same_endpoint_v1(opposite.as_fd()).is_err());
+        assert!(original.require_same_endpoint_v1(other.as_fd()).is_err());
+        assert!(original.revalidate_original().is_ok());
     }
 
     #[test]

@@ -19,7 +19,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
 
 use aos_sandbox_broker_session_security::controller_composition::sample_ownership_clock;
 use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
-use aos_sandbox::tpm_nv_custody::entropy::{KernelEntropy, nonzero_random};
+use aos_sandbox_broker::bounded_entropy::{KernelEntropy, nonzero_random};
 
 use super::{ProductionController, SharedControllerBrokerSessions};
 

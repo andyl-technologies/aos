@@ -150,7 +150,7 @@ impl<'a> ProviderLedgerV1<'a> {
                     catalog_bytes,
                 ),
             ],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?;
         let preflight = journal.preflight_transactions(std::slice::from_ref(&transaction))?;
         journal.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
         journal.commit(&transaction)?;
@@ -263,7 +263,7 @@ impl<'a> ProviderLedgerV1<'a> {
         session: &mut CurrentProviderIngressSessionV1,
     ) -> Result<
         (
-            aos_sandbox::ProtectedJournalSnapshot,
+            aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
             aos_sandbox_source_provider_security::CurrentProviderSessionProjectionV1,
         ),
         ProviderLedgerError,

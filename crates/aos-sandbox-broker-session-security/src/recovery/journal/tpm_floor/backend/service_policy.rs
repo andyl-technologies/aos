@@ -44,13 +44,30 @@ const UNIT_PROPERTIES: &[&str] = &["FragmentPath", "DropInPaths", "Transient", "
 
 pub(crate) struct RetainedFloorServicePolicyV1 {
     endpoint: FloorEndpointV1,
-    parent: PidFd,
+    anchors: FloorServiceAnchorsV1,
     parent_identity: PidFdProcessIdentity,
-    cgroup: RetainedCgroupAnchor,
     invocation: Vec<u8>,
-    fragment: MeasuredFileV1,
-    manager: MeasuredFileV1,
     launch_image: crate::production_startup::Pid1LaunchImageV1,
+}
+
+// Ordinary and incomplete selected captures keep their original owned pins.
+// Only a complete selected native comparison replaces those duplicates with
+// the exact profile Arc already held by this service's launch image.
+enum FloorServiceAnchorsV1 {
+    Owned {
+        parent: PidFd,
+        cgroup: RetainedCgroupAnchor,
+        fragment: MeasuredFileV1,
+        manager: MeasuredFileV1,
+    },
+    Shared(aos_sandbox::normal_root::ControllerSharedStartupProfileV1),
+}
+
+struct FloorServiceAnchorBorrowV1<'held> {
+    parent: &'held PidFd,
+    cgroup: &'held RetainedCgroupAnchor,
+    fragment: &'held MeasuredFileV1,
+    manager: &'held MeasuredFileV1,
 }
 
 struct PolicyObservationV1 {
@@ -59,94 +76,222 @@ struct PolicyObservationV1 {
     invocation: Vec<u8>,
 }
 
+// One native opening schedule; dispositions change only where actual
+// returned owners/results reside. Ordinary retains its exact lexical values.
+macro_rules! service_open_step {
+    (Ordinary, endpoint $original:ident, $endpoint:ident, $image:ident) => {
+        $image.require_endpoint(fixed_endpoint($endpoint))
+            .map_err(|_| FloorErrorV1::Provisioning)?;
+    };
+    (Retained, endpoint $original:ident, $endpoint:ident, $image:ident) => {
+        $original.capture_endpoint($image)?;
+    };
+    (Ordinary, manager $original:ident, $manager:ident, $image:ident) => {
+        let $manager = open_original_pid1_image($image)?;
+    };
+    (Retained, manager $original:ident, $manager:ident, $image:ident) => {
+        $original.capture_manager($image)?;
+    };
+    (Ordinary, parent $original:ident, $parent:ident) => {
+        let $parent = PidFd::open(NonZeroU32::new(std::process::id())
+            .ok_or(FloorErrorV1::Unavailable)?)
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+    };
+    (Retained, parent $original:ident, $parent:ident) => {
+        $original.capture_parent()?;
+    };
+    (Ordinary, info $original:ident, $parent:ident, $info:ident) => {
+        let $info = $parent.info().map_err(|_| FloorErrorV1::Unavailable)?;
+        require_original_manager_parent($info)?;
+    };
+    (Retained, info $original:ident, $parent:ident, $info:ident) => {
+        $original.capture_info()?;
+    };
+    (Ordinary, identity $original:ident, $parent:ident, $identity:ident) => {
+        let $identity = $parent.process_identity().map_err(|_| FloorErrorV1::Unavailable)?;
+    };
+    (Retained, identity $original:ident, $parent:ident, $identity:ident) => {
+        $original.capture_identity()?;
+    };
+    (Ordinary, observed $original:ident, $observed:ident, $endpoint:ident, $image:ident) => {
+        let $observed = observe($endpoint, $image)?;
+    };
+    (Retained, observed $original:ident, $observed:ident, $endpoint:ident, $image:ident) => {
+        $original.capture_policy($image)?;
+    };
+    (Ordinary, cgroup $original:ident, $observed:ident, $root:ident, $relative:ident, $cgroup:ident) => {
+        let $root = CgroupV2Root::from_owned(open(
+            "/sys/fs/cgroup",
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ).map_err(|_| FloorErrorV1::Unavailable)?)
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+        let $relative = $observed.control_group.strip_prefix('/')
+            .ok_or(FloorErrorV1::Provisioning)?;
+        let $cgroup = $root.resolve(Path::new($relative))
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+    };
+    (Retained, cgroup $original:ident, $observed:ident, $root:ident, $relative:ident, $cgroup:ident) => {
+        $original.capture_cgroup()?;
+    };
+    (Ordinary, membership $original:ident, $cgroup:ident, $parent:ident) => {
+        $cgroup.verify_exact_membership(&$parent).map_err(|_| FloorErrorV1::Unavailable)?;
+    };
+    (Retained, membership $original:ident, $cgroup:ident, $parent:ident) => {
+        $original.capture_membership()?;
+    };
+    (Ordinary, complete $original:ident, $endpoint:ident, $parent:ident, $identity:ident,
+        $cgroup:ident, $observed:ident, $manager:ident, $image:ident) => {{
+        let mut retained = Self {
+            endpoint: $endpoint, parent_identity: $identity,
+            anchors: FloorServiceAnchorsV1::Owned {
+                parent: $parent, cgroup: $cgroup,
+                fragment: MeasuredFileV1::observe_fragment($observed.fragment)?, manager: $manager,
+            },
+            invocation: $observed.invocation, launch_image: $image.clone(),
+        };
+        retained.revalidate()?;
+        Ok(retained)
+    }};
+    (Retained, complete $original:ident, $endpoint:ident, $parent:ident, $identity:ident,
+        $cgroup:ident, $observed:ident, $manager:ident, $image:ident) => {{
+        $original.capture_fragment()?;
+        $original.assemble($image)?;
+        $original.capture_initial_currentness()?;
+        $original.take_constructed_service()
+    }};
+}
+
+macro_rules! service_open_recipe {
+    ($mode:ident, $original:ident, $endpoint:ident, $image:ident) => {{
+        service_open_step!($mode, endpoint $original, $endpoint, $image);
+        service_open_step!($mode, manager $original, manager, $image);
+        service_open_step!($mode, parent $original, parent);
+        service_open_step!($mode, info $original, parent, info);
+        service_open_step!($mode, identity $original, parent, parent_identity);
+        service_open_step!($mode, observed $original, observed, $endpoint, $image);
+        service_open_step!($mode, cgroup $original, observed, root, relative, cgroup);
+        service_open_step!($mode, membership $original, cgroup, parent);
+        service_open_step!($mode, complete $original, $endpoint, parent, parent_identity,
+            cgroup, observed, manager, $image)
+    }};
+}
+
+fn require_original_manager_parent(info: aos_sandbox_linux::pidfd::PidFdInfo)
+    -> Result<(), FloorErrorV1>
+{
+    if info.parent_pid() != 1 || info.pid() != std::process::id() {
+        return Err(FloorErrorV1::Provisioning);
+    }
+    Ok(())
+}
+
 impl RetainedFloorServicePolicyV1 {
+    fn anchors(&self) -> Result<FloorServiceAnchorBorrowV1<'_>, FloorErrorV1> {
+        match &self.anchors {
+            FloorServiceAnchorsV1::Owned { parent, cgroup, fragment, manager } => {
+                Ok(FloorServiceAnchorBorrowV1 { parent, cgroup, fragment, manager })
+            }
+            FloorServiceAnchorsV1::Shared(profile) => {
+                let anchors = profile.floor_service_anchors_v1().ok_or(FloorErrorV1::Provisioning)?;
+                Ok(FloorServiceAnchorBorrowV1 {
+                    parent: anchors.process(), cgroup: anchors.cgroup(),
+                    fragment: anchors.fragment(), manager: anchors.manager(),
+                })
+            }
+        }
+    }
+
     pub(crate) fn open(
         endpoint: FloorEndpointV1,
         launch_image: &crate::production_startup::Pid1LaunchImageV1,
     ) -> Result<Self, FloorErrorV1> {
-        launch_image
-            .require_endpoint(fixed_endpoint(endpoint))
-            .map_err(|_| FloorErrorV1::Provisioning)?;
-        let manager = open_original_pid1_image(launch_image)?;
-        let parent =
-            PidFd::open(NonZeroU32::new(std::process::id()).ok_or(FloorErrorV1::Unavailable)?)
-                .map_err(|_| FloorErrorV1::Unavailable)?;
-        let info = parent.info().map_err(|_| FloorErrorV1::Unavailable)?;
-        if info.parent_pid() != 1 || info.pid() != std::process::id() {
-            return Err(FloorErrorV1::Provisioning);
+        Self::open_observed(endpoint, launch_image, None)
+    }
+
+    fn open_observed(
+        endpoint: FloorEndpointV1,
+        launch_image: &crate::production_startup::Pid1LaunchImageV1,
+        original: Option<&mut FloorServiceAcquisitionOriginalV1>,
+    ) -> Result<Self, FloorErrorV1> {
+        match original {
+            None => service_open_recipe!(Ordinary, original, endpoint, launch_image),
+            Some(original) => service_open_recipe!(Retained, original, endpoint, launch_image),
         }
-        let parent_identity = parent
-            .process_identity()
-            .map_err(|_| FloorErrorV1::Unavailable)?;
-        let observed = observe(endpoint, launch_image)?;
-        let root = CgroupV2Root::from_owned(
-            open(
-                "/sys/fs/cgroup",
-                OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .map_err(|_| FloorErrorV1::Unavailable)?,
-        )
-        .map_err(|_| FloorErrorV1::Unavailable)?;
-        let relative = observed
-            .control_group
-            .strip_prefix('/')
-            .ok_or(FloorErrorV1::Provisioning)?;
-        let cgroup = root
-            .resolve(Path::new(relative))
-            .map_err(|_| FloorErrorV1::Unavailable)?;
-        cgroup
-            .verify_exact_membership(&parent)
-            .map_err(|_| FloorErrorV1::Unavailable)?;
-        let mut retained = Self {
-            endpoint,
-            parent,
-            parent_identity,
-            cgroup,
-            invocation: observed.invocation,
-            fragment: MeasuredFileV1::observe_fragment(observed.fragment)?,
-            manager,
-            launch_image: launch_image.clone(),
-        };
-        retained.revalidate()?;
-        Ok(retained)
     }
 
     pub(crate) fn revalidate(&mut self) -> Result<(), FloorErrorV1> {
-        self.manager.revalidate()?;
-        self.fragment.revalidate()?;
-        let observed = observe(self.endpoint, &self.launch_image)?;
-        if observed.fragment != self.fragment.path()
-            || observed.invocation != self.invocation
-            || self
-                .parent
-                .process_identity()
-                .map_err(|_| FloorErrorV1::Unavailable)?
+        self.revalidate_observed(&mut None)
+    }
+
+    fn revalidate_observed(
+        &mut self,
+        original: &mut Option<&mut FloorServiceCurrentnessOriginalV1>,
+    ) -> Result<(), FloorErrorV1> {
+        let anchors = self.anchors()?;
+        currentness::image(anchors.manager, original.as_deref_mut()
+            .map(|original| (&mut original.manager[0], &mut original.manager_results[0])))?;
+        currentness::image(anchors.fragment, original.as_deref_mut()
+            .map(|original| (&mut original.fragment[0], &mut original.fragment_results[0])))?;
+
+        // The ordinary observation keeps its old lexical owner through the
+        // remaining native checks; selected DATA stays on its resident sink.
+        let local_observed = match original.as_deref_mut() {
+            None => Some(observe(self.endpoint, &self.launch_image)?),
+            Some(original) => {
+                original.policy_result = Some(original.policy.observe_with_deadline(
+                    self.endpoint, &self.launch_image, original.deadline,
+                ));
+                match original.policy_result {
+                    Some(Ok(())) => {}
+                    Some(Err(cause)) => return Err(cause),
+                    None => return Err(FloorErrorV1::Unavailable),
+                }
+                original.observed = original.policy.take_completed_once();
+                None
+            }
+        };
+        let observed = match original.as_deref() {
+            Some(original) => original.observed.as_ref(),
+            None => local_observed.as_ref(),
+        }.ok_or(FloorErrorV1::Unavailable)?;
+        let changed_names = observed.fragment != anchors.fragment.path()
+            || observed.invocation != self.invocation;
+        let binding = if changed_names
+            || currentness::identity(anchors.parent, original.as_deref_mut())?
                 != self.parent_identity
-            || self
-                .parent
-                .info()
-                .map_err(|_| FloorErrorV1::Unavailable)?
-                .parent_pid()
-                != 1
+            || currentness::info(anchors.parent, original.as_deref_mut())?.parent_pid() != 1
         {
-            return Err(FloorErrorV1::Provisioning);
+            Err(FloorErrorV1::Provisioning)
+        } else {
+            Ok(())
+        };
+        if let Some(original) = original.as_deref_mut() {
+            original.binding = Some(binding);
         }
-        self.cgroup
-            .verify_exact_membership(&self.parent)
-            .map_err(|_| FloorErrorV1::Unavailable)?;
-        self.fragment.revalidate()?;
-        self.manager.revalidate().map_err(Into::into)
+        binding?;
+        currentness::membership(anchors.cgroup, anchors.parent, original.as_deref_mut()
+            .map(|original| (&mut original.membership, &mut original.membership_result)))?;
+        currentness::image(anchors.fragment, original.as_deref_mut()
+            .map(|original| (&mut original.fragment[1], &mut original.fragment_results[1])))?;
+        currentness::image(anchors.manager, original.as_deref_mut()
+            .map(|original| (&mut original.manager[1], &mut original.manager_results[1])))
     }
 
     pub(crate) fn require_child(&self, child: &PidFd) -> Result<(), FloorErrorV1> {
-        self.cgroup
-            .verify_exact_membership(&self.parent)
-            .map_err(|_| FloorErrorV1::Unavailable)?;
-        self.cgroup
-            .verify_exact_membership(child)
-            .map_err(|_| FloorErrorV1::Unavailable)?;
-        Ok(())
+        self.require_child_observed(child, &mut None)
+    }
+
+    fn require_child_observed(
+        &self,
+        child: &PidFd,
+        original: &mut Option<&mut FloorServiceCurrentnessOriginalV1>,
+    ) -> Result<(), FloorErrorV1> {
+        let anchors = self.anchors()?;
+        currentness::membership(anchors.cgroup, anchors.parent, original.as_deref_mut()
+            .map(|original| (&mut original.child_membership[0], &mut original.child_results[0])))?;
+        currentness::membership(anchors.cgroup, child, original.as_deref_mut()
+            .map(|original| (&mut original.child_membership[1], &mut original.child_results[1])))
     }
 }
 
@@ -216,12 +361,77 @@ fn decode_policy(
 }
 
 /// Checks effective property shape; only the retained live observation is custody.
-fn decode_policy_claims(
-    service: &[OwnedValue],
-    unit: &[OwnedValue],
-    endpoint: FloorEndpointV1,
-    expected_profile: Option<&Path>,
-) -> Result<PolicyObservationV1, FloorErrorV1> {
+// Both dispositions use these exact shape predicates and conversion order.
+// Ordinary keeps its original lexical owners. Selected parks actual clone and
+// conversion failures before the next decoder or independent native post.
+macro_rules! policy_claim_step {
+    (Ordinary, strings $name:ident) => {
+        let $name = |value: &OwnedValue, expected: &str| {
+            <&str>::try_from(value).is_ok_and(|value| value == expected)
+        };
+    };
+    (Retained, strings $name:ident) => {};
+    (Ordinary, string_is $capture:ident, $function:ident, $value:ident, $index:literal, $expected:literal) => {
+        $function($value, $expected)
+    };
+    (Retained, string_is $capture:ident, $function:ident, $value:ident, $index:literal, $expected:literal) => {
+        $capture.string_is($value, $index, $expected)
+    };
+    (Ordinary, scalar $capture:ident, $value:ident, $slot:ident, $type:ident) => {
+        $type::try_from($value).ok()
+    };
+    (Retained, scalar $capture:ident, $value:ident, $slot:ident, $type:ident) => {{
+        $capture.$slot = Some($type::try_from($value));
+        $capture.$slot.as_ref().and_then(|result| result.as_ref().ok()).copied()
+    }};
+    (Ordinary, string $capture:ident, $value:ident, $slot:ident) => {
+        <&str>::try_from($value).map_err(|_| FloorErrorV1::Provisioning)?
+    };
+    (Retained, string $capture:ident, $value:ident, $slot:ident) => {
+        $capture.$slot($value)?
+    };
+
+    (Ordinary, drop_ins $capture:ident, $value:ident) => {
+        Vec::<String>::try_from($value.try_clone().map_err(|_| FloorErrorV1::Provisioning)?)
+            .map_err(|_| FloorErrorV1::Provisioning)?
+    };
+    (Ordinary, invocation $capture:ident, $value:ident) => {
+        Vec::<u8>::try_from($value.try_clone().map_err(|_| FloorErrorV1::Provisioning)?)
+            .map_err(|_| FloorErrorV1::Provisioning)?
+    };
+    (Ordinary, finish_invocation $capture:ident, $value:ident) => { $value };
+    (Ordinary, cgroup $capture:ident, $endpoint:ident) => {
+        format!("/aos.slice/aos-control.slice/{}", unit_name($endpoint))
+    };
+    (Ordinary, drop_ins_empty $value:ident) => { $value.is_empty() };
+    (Retained, drop_ins_empty $value:ident) => { $value };
+    (Ordinary, invocation_invalid $capture:ident, $value:ident) => {
+        $value.len() != 16 || $value.iter().all(|byte| *byte == 0)
+    };
+    (Retained, invocation_invalid $capture:ident, $value:ident) => {
+        $value != 16 || $capture.invocation_is_zero()
+    };
+    (Retained, drop_ins $capture:ident, $value:ident) => {
+        $capture.capture_drop_ins($value)?
+    };
+    (Retained, invocation $capture:ident, $value:ident) => {
+        $capture.capture_invocation($value)?
+    };
+    (Retained, finish_invocation $capture:ident, $value:ident) => {
+        $capture.take_invocation()?
+    };
+    (Retained, cgroup $capture:ident, $endpoint:ident) => {
+        $capture.expected_cgroup($endpoint)?
+    };
+}
+
+macro_rules! policy_claim_recipe {
+    ($mode:ident, $capture:ident, $service:ident, $unit:ident,
+        $endpoint:ident, $expected_profile:ident) => {{
+        let service = $service;
+        let unit = $unit;
+        let endpoint = $endpoint;
+        let expected_profile = $expected_profile;
     let [
         exit_type,
         kill_mode,
@@ -239,47 +449,52 @@ fn decode_policy_claims(
     let [fragment, drop_ins, transient, invocation] = unit else {
         return Err(FloorErrorV1::Provisioning);
     };
-    let string_is = |value: &OwnedValue, expected: &str| {
-        <&str>::try_from(value).is_ok_and(|value| value == expected)
-    };
-    let drop_ins = Vec::<String>::try_from(
-        drop_ins
-            .try_clone()
-            .map_err(|_| FloorErrorV1::Provisioning)?,
-    )
-    .map_err(|_| FloorErrorV1::Provisioning)?;
-    let invocation = Vec::<u8>::try_from(
-        invocation
-            .try_clone()
-            .map_err(|_| FloorErrorV1::Provisioning)?,
-    )
-    .map_err(|_| FloorErrorV1::Provisioning)?;
-    let cgroup = <&str>::try_from(cgroup).map_err(|_| FloorErrorV1::Provisioning)?;
-    let expected_cgroup = format!("/aos.slice/aos-control.slice/{}", unit_name(endpoint));
-    if !string_is(exit_type, "cgroup")
-        || !string_is(kill_mode, "control-group")
-        || u64::try_from(timeout).ok() != Some(u64::MAX)
-        || bool::try_from(transient).ok() != Some(false)
-        || !drop_ins.is_empty()
-        || invocation.len() != 16
-        || invocation.iter().all(|byte| *byte == 0)
+    policy_claim_step!($mode, strings string_is);
+    let drop_ins = policy_claim_step!($mode, drop_ins $capture, drop_ins);
+    let invocation = policy_claim_step!($mode, invocation $capture, invocation);
+    let cgroup = policy_claim_step!($mode, string $capture, cgroup, cgroup);
+    let expected_cgroup = policy_claim_step!($mode, cgroup $capture, endpoint);
+    if !policy_claim_step!($mode, string_is $capture, string_is, exit_type, 0, "cgroup")
+        || !policy_claim_step!($mode, string_is $capture, string_is, kill_mode, 1, "control-group")
+        || policy_claim_step!($mode, scalar $capture, timeout, timeout, u64) != Some(u64::MAX)
+        || policy_claim_step!($mode, scalar $capture, transient, transient, bool) != Some(false)
+        || !policy_claim_step!($mode, drop_ins_empty drop_ins)
+        || policy_claim_step!($mode, invocation_invalid $capture, invocation)
         || cgroup != expected_cgroup
         || !has_exact_launch_fd_properties(open_files, extra_fds, endpoint, expected_profile)
-        || u32::try_from(store_maximum).ok() != Some(0)
-        || u32::try_from(stored_fds).ok() != Some(0)
+        || policy_claim_step!($mode, scalar $capture, store_maximum, store_maximum, u32) != Some(0)
+        || policy_claim_step!($mode, scalar $capture, stored_fds, stored_fds, u32) != Some(0)
         || !has_exact_owner_context(selinux_context, endpoint)
     {
         return Err(FloorErrorV1::Provisioning);
     }
-    let fragment = <&str>::try_from(fragment).map_err(|_| FloorErrorV1::Provisioning)?;
+    let fragment = policy_claim_step!($mode, string $capture, fragment, fragment);
     if fragment.len() > 4096 || !fragment.starts_with('/') {
         return Err(FloorErrorV1::Provisioning);
     }
     Ok(PolicyObservationV1 {
         fragment: PathBuf::from(fragment),
         control_group: cgroup.to_owned(),
-        invocation,
+        invocation: policy_claim_step!($mode, finish_invocation $capture, invocation),
     })
+    }};
+}
+
+mod readback;
+mod currentness;
+mod acquisition;
+pub(crate) use acquisition::FloorServiceAcquisitionOriginalV1;
+pub(crate) use readback::FloorServicePolicyReadbackV1;
+pub(crate) use currentness::FloorServiceCurrentnessOriginalV1;
+
+fn decode_policy_claims(
+    service: &[OwnedValue],
+    unit: &[OwnedValue],
+    endpoint: FloorEndpointV1,
+    expected_profile: Option<&Path>,
+) -> Result<PolicyObservationV1, FloorErrorV1> {
+    policy_claim_recipe!(Ordinary, unused, service, unit, endpoint, expected_profile)
+
 }
 
 fn has_exact_owner_context(value: &OwnedValue, endpoint: FloorEndpointV1) -> bool {

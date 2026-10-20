@@ -12,6 +12,27 @@
 
 use crate::framing::{COMMIT_PAYLOAD_BYTES, EncodedFrameLayout, FrameError, HEADER_BYTES};
 
+/// Bounds full standard-library B-tree node backing for actual key/value types.
+///
+/// One node includes all eleven key/value slots, twelve edges, its parent/index/
+/// length header and conservative alignment padding. A real owner supplies its
+/// actual node upper bound; this function neither prices key/value heap payloads
+/// nor grants memory. Any allocated empty root must be included by that owner.
+/// The pinned Rust 1.98.1 clone of an empty map allocates no root; a nonempty
+/// clone or fresh insert-only index has at most one node per logical entry.
+///
+/// Returns `None` on arithmetic overflow. Allocator and kernel overhead remain
+/// subject to the genuine owner's independently admitted physical backstops.
+#[must_use]
+pub fn conservative_btree_node_bytes_v1<K, V>(node_bound: usize) -> Option<usize> {
+    let slot = std::mem::size_of::<K>().checked_add(std::mem::size_of::<V>())?
+        .checked_add(std::mem::align_of::<K>())?
+        .checked_add(std::mem::align_of::<V>())?;
+    let node = slot.checked_mul(11)?
+        .checked_add(16_usize.checked_mul(std::mem::size_of::<usize>())?)?;
+    node_bound.checked_mul(node)
+}
+
 /// Specifies the canonical preparation wrapper's fixed header width.
 pub const PREPARED_HEADER_BYTES: usize = 32;
 
@@ -103,6 +124,29 @@ pub fn encoded_transaction_append_bytes(
     total
         .and_then(|bytes| bytes.checked_add(commit.frame_bytes as u64))
         .ok_or(FrameError::JournalTooLarge)
+}
+
+/// Measures the exact prepared-record wrapper without allocating payloads.
+///
+/// The count and each payload length use the preparation format's u32 fields.
+/// This is passive geometry; it validates no namespace or journal transition.
+///
+/// # Errors
+/// Rejects unrepresentable record/count fields or checked byte overflow.
+pub fn encoded_prepared_bytes(
+    records: impl ExactSizeIterator<Item = RecordShape>,
+) -> Result<usize, FrameError> {
+    u32::try_from(records.len())
+        .map_err(|_| FrameError::LimitExceeded("prepared record count"))?;
+    let mut bytes = PREPARED_HEADER_BYTES;
+    for record in records {
+        let layout = EncodedRecordLayout::new(record.key_bytes, record.value_bytes)?;
+        u32::try_from(layout.payload_bytes)
+            .map_err(|_| FrameError::LimitExceeded("prepared record bytes"))?;
+        bytes = bytes.checked_add(4).and_then(|bytes| bytes.checked_add(layout.payload_bytes))
+            .ok_or(FrameError::LimitExceeded("prepared transaction bytes"))?;
+    }
+    Ok(bytes)
 }
 
 /// Carries the existing eight native bounds as nonauthorizing geometry DATA.

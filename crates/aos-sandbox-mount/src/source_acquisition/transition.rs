@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use aos_sandbox::journal::{JournalTransaction, ProtectedJournalAuthority};
+use aos_sandbox_mount_native::{JournalTransaction, ProtectedJournalAuthority};
 
 use super::SourceAcquisitionTableV2;
 use super::format::{MutationTagV2, put_record, seal_record, state_error, transaction_id};

@@ -6,6 +6,8 @@
 //! own pending markers. No owner row is deleted and no Create or Apply authority
 //! follows from the clear.
 
+use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
+
 use std::path::Path;
 
 use aos_sandbox_core::{OperationId, SandboxId};
@@ -13,11 +15,12 @@ use aos_sandbox_core::{OperationId, SandboxId};
 use crate::Journal;
 use crate::cache_residency::{CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1};
 use crate::journal::controller::production_journal_limits;
-use crate::journal::SourceDomainPolicyHoldV1;
+
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
-use super::{CurrentCreatePolicySourceErrorV1, RootV8SettledGrantV1};
+use super::CurrentCreatePolicySourceErrorV1;
+use aos_sandbox_broker::root_settlement::RootV8SettledGrantV1;
 
 /// Clears Cache's pending V8 marker before Source's under retained owner custody.
 ///
@@ -92,8 +95,14 @@ fn require_settled_owner_cut(
         || released_controller.epoch() != grant.epoch()
         || settlement.binding() != grant.predecessor()
         || settlement.epoch() != grant.epoch()
-        || settlement.record_digest()? != grant.settlement()
-        || settlement.controller_released_digest() != released_controller.record_digest()?
+        || settlement
+            .record_digest()
+            .map_err(crate::journal::JournalError::from)?
+            != grant.settlement()
+        || settlement.controller_released_digest()
+            != released_controller
+                .record_digest()
+                .map_err(crate::journal::JournalError::from)?
         || settlement.root_release_marker_digest() != grant.release_marker()
         || settlement.cache_released_digest() != grant.cache_released()
         || settlement.source_released_digest() != grant.source_released()
@@ -102,7 +111,7 @@ fn require_settled_owner_cut(
         || released_source.sandbox() != sandbox
         || released_source.binding() != grant.predecessor()
         || released_source.epoch() != grant.epoch()
-        || released_source.record_digest()? != grant.source_released()
+        || released_source.record_digest().map_err(crate::journal::JournalError::from)? != grant.source_released()
     {
         return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
     }

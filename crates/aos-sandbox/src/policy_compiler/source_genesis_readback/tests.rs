@@ -5,8 +5,10 @@ use crate::JournalLimits;
 use crate::hierarchy::source_genesis::tests as fixture;
 use crate::journal::source_tree_genesis::SourceGenesisTransitionV1;
 use crate::journal::{JournalRecord, JournalTransaction, RecordNamespace};
-use crate::policy_compiler::source_hold_readback::encode_source_hold_readback_signer_credential_v1;
-use crate::policy_compiler::source_signer_readback::sign_genesis_readback_from_view;
+use crate::policy_compiler::source_hold_readback::{
+    SourceHoldReadbackErrorV1, encode_source_hold_readback_signer_credential_v1,
+};
+use aos_sandbox_source::signer_comparison::sign_genesis_readback_from_comparison;
 
 fn signer(key: &SigningKey) -> PinnedSourceHoldReadbackSignerV1 {
     PinnedSourceHoldReadbackSignerV1::decode(
@@ -65,7 +67,7 @@ fn source_genesis_exact_pending_recovery_keeps_original_nonce_and_fresh_correlat
                 SourceTreeGenesisChallengeV1::new(fresh_nonce, Some(receipt.intent_digest()))
                     .unwrap();
             let mut reader = fixture::reader(directory.path(), JournalLimits::default());
-            let packet = sign_genesis_readback_from_view(
+            let packet = sign_genesis_readback_from_comparison(
                 &mut reader,
                 Some(receipt.project()),
                 challenge,
@@ -130,7 +132,7 @@ fn source_genesis_pending_recovery_rejects_rebound_original_nonce_and_context() 
         }
         for (index, context) in contexts.iter().enumerate() {
             let mut reader = fixture::reader(directory.path(), JournalLimits::default());
-            let result = sign_genesis_readback_from_view(
+            let result = sign_genesis_readback_from_comparison(
                 &mut reader,
                 Some(receipt.project()),
                 challenge,
@@ -142,7 +144,7 @@ fn source_genesis_pending_recovery_rejects_rebound_original_nonce_and_context() 
         }
         let mut reader = fixture::reader(directory.path(), JournalLimits::default());
         assert!(
-            sign_genesis_readback_from_view(
+            sign_genesis_readback_from_comparison(
                 &mut reader,
                 Some(receipt.project()),
                 challenge,
@@ -174,7 +176,7 @@ fn source_genesis_global_empty_rejects_every_unrelated_source_row() {
         journal.commit(&transaction).unwrap();
         let mut reader = fixture::reader(directory.path(), JournalLimits::default());
         let empty = SourceTreeGenesisChallengeV1::new([58; 16], None).unwrap();
-        assert!(sign_genesis_readback_from_view(&mut reader, None, empty, None, 3, &key).is_err());
+        assert!(sign_genesis_readback_from_comparison(&mut reader, None, empty, None, 3, &key).is_err());
     }
 }
 
@@ -200,7 +202,7 @@ fn source_genesis_anchored_context_requires_exact_ack_role_commitment() {
         SourceTreeGenesisChallengeV1::new([59; 16], Some(receipt.intent_digest())).unwrap();
     let mut reader = fixture::reader(directory.path(), JournalLimits::default());
     assert!(
-        sign_genesis_readback_from_view(
+        sign_genesis_readback_from_comparison(
             &mut reader,
             Some(receipt.project()),
             challenge,
@@ -215,7 +217,7 @@ fn source_genesis_anchored_context_requires_exact_ack_role_commitment() {
     bytes[24] ^= 1;
     let rebound = SourceTreeGenesisIntentContextV1::decode(&bytes).unwrap();
     assert!(
-        sign_genesis_readback_from_view(
+        sign_genesis_readback_from_comparison(
             &mut reader,
             Some(receipt.project()),
             challenge,
@@ -254,23 +256,13 @@ fn source_genesis_intent_context_rejects_noncanonical_data_and_foreign_fixed_uid
     let mut changed = bytes;
     changed[16] ^= 1;
     let foreign = SourceTreeGenesisIntentContextV1::decode(&changed).unwrap();
-    let challenge =
-        SourceTreeGenesisChallengeV1::new([60; 16], Some(ObjectDigest::from_bytes([61; 32])))
-            .unwrap();
-    // The real entry checks privileged UID configuration before opening any
-    // fixed mount or attempting to treat the context as original custody.
+    // The selected Source request uses this same canonical UID comparison
+    // before native opening; decoded context DATA cannot replace its owner.
     assert!(matches!(
-        crate::policy_compiler::source_signer_readback::sign_fixed_source_tree_genesis_readback_v2(
-            context.source_uid(),
-            Some(context.project()),
-            challenge,
-            Some(&foreign),
-            3,
-            &SigningKey::from_bytes(&[20; 32]),
+        aos_sandbox_source::signer_comparison::require_original_source_uid_data_v1(
+            context.source_uid(), &foreign,
         ),
-        Err(
-            crate::policy_compiler::source_signer_readback::SourceSignerReadbackErrorV1::Signing(_)
-        )
+        Err(SourceHoldReadbackErrorV1::NonCanonical),
     ));
 }
 
@@ -282,7 +274,7 @@ fn source_genesis_readback_actual_empty_prepared_anchored_are_distinct() {
     let pin = signer(&key);
     let empty = SourceTreeGenesisChallengeV1::new([21; 16], None).unwrap();
     let mut reader = fixture::reader(directory.path(), JournalLimits::default());
-    let packet = sign_genesis_readback_from_view(&mut reader, None, empty, None, 3, &key).unwrap();
+    let packet = sign_genesis_readback_from_comparison(&mut reader, None, empty, None, 3, &key).unwrap();
     reader.check_named_currentness_at_uid_for_test().unwrap();
     let verified = verify_source_tree_genesis_readback_v1(&packet, &pin, empty).unwrap();
     assert_eq!(verified.state(), SourceTreeGenesisStateV1::Empty);
@@ -295,8 +287,8 @@ fn source_genesis_readback_actual_empty_prepared_anchored_are_distinct() {
     let challenge =
         SourceTreeGenesisChallengeV1::new([11; 16], Some(receipt.intent_digest())).unwrap();
     let mut reader = fixture::reader(directory.path(), JournalLimits::default());
-    assert!(sign_genesis_readback_from_view(&mut reader, None, empty, None, 3, &key).is_err());
-    let packet = sign_genesis_readback_from_view(
+    assert!(sign_genesis_readback_from_comparison(&mut reader, None, empty, None, 3, &key).is_err());
+    let packet = sign_genesis_readback_from_comparison(
         &mut reader,
         Some(receipt.project()),
         challenge,
@@ -327,7 +319,7 @@ fn source_genesis_readback_actual_empty_prepared_anchored_are_distinct() {
     );
     let mut reader = fixture::reader(directory.path(), JournalLimits::default());
     let fresh = SourceTreeGenesisChallengeV1::new([22; 16], Some(receipt.intent_digest())).unwrap();
-    let packet = sign_genesis_readback_from_view(
+    let packet = sign_genesis_readback_from_comparison(
         &mut reader,
         Some(receipt.project()),
         fresh,
@@ -369,9 +361,9 @@ fn source_genesis_readback_rejects_legacy_unreceipted_tree_and_foreign_project()
     let empty = SourceTreeGenesisChallengeV1::new([21; 16], None).unwrap();
     let challenge =
         SourceTreeGenesisChallengeV1::new([11; 16], Some(receipt.intent_digest())).unwrap();
-    assert!(sign_genesis_readback_from_view(&mut reader, None, empty, None, 3, &key).is_err());
+    assert!(sign_genesis_readback_from_comparison(&mut reader, None, empty, None, 3, &key).is_err());
     assert!(
-        sign_genesis_readback_from_view(
+        sign_genesis_readback_from_comparison(
             &mut reader,
             Some(receipt.project()),
             challenge,
@@ -390,7 +382,7 @@ fn source_genesis_readback_rejects_legacy_unreceipted_tree_and_foreign_project()
     let mut reader = fixture::reader(directory.path(), JournalLimits::default());
     let foreign = aos_sandbox_core::ProjectId::from_bytes([24; 16]);
     assert!(
-        sign_genesis_readback_from_view(
+        sign_genesis_readback_from_comparison(
             &mut reader,
             Some(foreign),
             challenge,
@@ -404,7 +396,7 @@ fn source_genesis_readback_rejects_legacy_unreceipted_tree_and_foreign_project()
         SourceTreeGenesisChallengeV1::new([25; 16], Some(ObjectDigest::from_bytes([25; 32])))
             .unwrap();
     assert!(
-        sign_genesis_readback_from_view(
+        sign_genesis_readback_from_comparison(
             &mut reader,
             Some(receipt.project()),
             stale,
@@ -432,7 +424,7 @@ fn source_genesis_readback_signature_correlation_names_and_phase_padding_fail_cl
     let pin = signer(&key);
     let challenge =
         SourceTreeGenesisChallengeV1::new([11; 16], Some(receipt.intent_digest())).unwrap();
-    let packet = sign_genesis_readback_from_view(
+    let packet = sign_genesis_readback_from_comparison(
         &mut reader,
         Some(receipt.project()),
         challenge,

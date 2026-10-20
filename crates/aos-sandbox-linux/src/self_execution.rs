@@ -12,7 +12,10 @@
 use std::num::NonZeroU32;
 
 use crate::boot::KernelBootId;
-use crate::pidfd::{PidFd, PidFdCredentials, PidFdInfo, PidFdProcessIdentity};
+use crate::pidfd::{CurrentSelfPidFdCustodyV1, PidFd, PidFdCredentials, PidFdInfo, PidFdProcessIdentity};
+
+mod observations;
+pub use observations::SelfExecutionObservationV1;
 
 /// A redacted refusal to capture or revalidate the current process.
 ///
@@ -21,6 +24,36 @@ use crate::pidfd::{PidFd, PidFdCredentials, PidFdInfo, PidFdProcessIdentity};
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("retained process execution observation refused")]
 pub struct SelfExecutionObservationError;
+
+/// Retains the selected self-process capture's actual failed native prefixes.
+///
+/// This exposes neither the descriptor nor a retry. Its display preserves the
+/// redacted observation classification, while its source borrows the actual
+/// first cause. Dropping it disposes custody without proving process death or
+/// releasing an upper resource obligation.
+pub struct RetainedSelfExecutionCaptureError {
+    capture: Box<SelectedSelfCaptureV1>,
+}
+
+impl std::fmt::Debug for RetainedSelfExecutionCaptureError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RetainedSelfExecutionCaptureError")
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for RetainedSelfExecutionCaptureError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&SelfExecutionObservationError, formatter)
+    }
+}
+
+impl std::error::Error for RetainedSelfExecutionCaptureError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.capture.failure())
+    }
+}
 
 /// Retains the current process's pidfd and stable execution baseline.
 ///
@@ -39,11 +72,66 @@ pub struct SelfExecutionObservationError;
 /// # Ok::<(), aos_sandbox_linux::self_execution::SelfExecutionObservationError>(())
 /// ```
 pub struct RetainedSelfExecutionGuard {
-    pidfd: PidFd,
+    original: SelfExecutionOriginalV1,
     baseline: ExecutionBaseline,
 }
 
+enum SelfExecutionOriginalV1 {
+    Ordinary(PidFd),
+    Selected(Box<SelectedSelfCaptureV1>),
+}
+
+struct SelectedSelfCaptureV1 {
+    process: CurrentSelfPidFdCustodyV1,
+    capture: Option<crate::Result<PidFdProcessIdentity>>,
+    observation: SelfExecutionObservationV1,
+}
+
+impl SelectedSelfCaptureV1 {
+    fn new() -> Self {
+        Self {
+            process: CurrentSelfPidFdCustodyV1::new(),
+            capture: None,
+            observation: SelfExecutionObservationV1::new(),
+        }
+    }
+
+    fn failure(&self) -> &(dyn std::error::Error + 'static) {
+        self.capture.as_ref().and_then(|result| result.as_ref().err())
+            .map(|cause| cause as &dyn std::error::Error)
+            .or_else(|| self.observation.failure())
+            .unwrap_or(&SelfExecutionObservationError)
+    }
+}
+
 impl RetainedSelfExecutionGuard {
+    /// Bounds selected capture's additional heap and fixed native scratch.
+    ///
+    /// The actual inline guard/error layout is counted separately. The bound
+    /// covers the retained initial stat owner and one complete baseline probe.
+    #[must_use]
+    pub const fn selected_capture_heap_bytes_v1() -> usize {
+        // Box::new may reach an additional construction temporary. Charge it
+        // explicitly rather than assuming placement optimization or stack slack.
+        2 * std::mem::size_of::<SelectedSelfCaptureV1>()
+            + crate::pidfd::PidFdProcObservationsV1::stat_receiving_footprint_v1().0
+            + SelfExecutionObservationV1::receiving_heap_bytes_v1()
+    }
+
+    /// Bounds selected capture's actual retained file-descriptor peak.
+    #[must_use]
+    pub const fn selected_capture_opened_file_bound_v1() -> usize {
+        // Same current-self pidfd/stat originals plus the baseline probe files.
+        2 + SelfExecutionObservationV1::opened_file_bound_v1()
+    }
+
+    /// Bounds selected capture's additional native/representation cells.
+    #[must_use]
+    pub const fn selected_capture_metadata_cell_bound_v1() -> usize {
+        crate::pidfd::PidFdProcObservationsV1::stat_receiving_footprint_v1().1
+            + SelfExecutionObservationV1::metadata_cell_bound_v1() + 4
+    }
+
     /// Captures and validates the current process through one newly opened pidfd.
     ///
     /// # Errors
@@ -54,7 +142,60 @@ impl RetainedSelfExecutionGuard {
     pub fn capture() -> Result<Self, SelfExecutionObservationError> {
         let mut source = KernelObservationSource;
         let (pidfd, baseline) = capture_with(&mut source)?;
-        Ok(Self { pidfd, baseline })
+        Ok(Self {
+            original: SelfExecutionOriginalV1::Ordinary(pidfd),
+            baseline,
+        })
+    }
+
+    /// Captures the same process while retaining any acquired pidfd on refusal.
+    ///
+    /// # Errors
+    /// Returns an owning [`RetainedSelfExecutionCaptureError`] for a failed
+    /// native capture, bounded original procfs read or unchanged execution
+    /// comparison. This selected route additionally requires the original
+    /// boot/stat descriptors to be procfs. A negative owner cannot be extracted,
+    /// repaired or used to create a complete execution guard.
+    pub fn capture_retaining() -> Result<Self, RetainedSelfExecutionCaptureError> {
+        // The selected caller prices this actual private carrier before entry.
+        // Ordinary guards retain their compact original representation.
+        let mut capture = Box::new(SelectedSelfCaptureV1::new());
+        capture.capture = Some(capture.process.capture_current());
+        if !matches!(capture.capture, Some(Ok(_))) {
+            return Err(RetainedSelfExecutionCaptureError { capture });
+        }
+        let original = match capture.process.pidfd() {
+            Ok(original) => original,
+            Err(_) => std::process::abort(),
+        };
+        match capture.observation.observe_baseline_once(original) {
+            Ok(baseline) => {
+                capture.observation.dispose_positive_originals();
+                Ok(Self {
+                    original: SelfExecutionOriginalV1::Selected(capture),
+                    baseline,
+                })
+            }
+            Err(_) => Err(RetainedSelfExecutionCaptureError { capture }),
+        }
+    }
+
+    /// Returns the process ID held by this actual completed capture.
+    #[doc(hidden)]
+    pub const fn captured_process_id_v1(&self) -> u32 {
+        self.baseline.process_id
+    }
+
+    /// Reports the surviving native roster of a completed selected capture.
+    ///
+    /// The selected original owns its same current-self pidfd and initial
+    /// proc-stat descriptor. Ordinary captures provide no selected residency.
+    #[doc(hidden)]
+    pub fn selected_retained_open_file_count_v1(&self) -> Option<usize> {
+        match &self.original {
+            SelfExecutionOriginalV1::Selected(original) => original.process.completed_stat_native_file_count_v1(),
+            SelfExecutionOriginalV1::Ordinary(_) => None,
+        }
     }
 
     /// Returns the boot identity pinned by the complete capture sandwich.
@@ -78,7 +219,33 @@ impl RetainedSelfExecutionGuard {
     /// longer alive, or its stable execution baseline has changed.
     pub fn validate_current(&self) -> Result<(), SelfExecutionObservationError> {
         let mut source = KernelObservationSource;
-        validate_with(&mut source, &self.pidfd, self.baseline)
+        let original = self.original_pidfd()?;
+        validate_with(&mut source, original, self.baseline)
+    }
+
+    /// Observes the same original while retaining acquired native prefixes.
+    ///
+    /// The destination owns both fixed boot-ID reads, the proc-stat descriptor
+    /// and partial bytes, actual information/liveness Results, and unchanged
+    /// baseline comparison. No received or caller-selected descriptor is used.
+    ///
+    /// # Errors
+    /// Returns the existing redacted refusal for repeated/incomplete observation,
+    /// failed native operations or changed execution facts. The caller retains
+    /// the destination, whose failure accessor borrows the actual first cause.
+    pub fn validate_current_retaining(
+        &self,
+        destination: &mut SelfExecutionObservationV1,
+    ) -> Result<(), SelfExecutionObservationError> {
+        destination.validate_once(self.original_pidfd()?, self.baseline)
+    }
+
+    fn original_pidfd(&self) -> Result<&PidFd, SelfExecutionObservationError> {
+        match &self.original {
+            SelfExecutionOriginalV1::Ordinary(original) => Ok(original),
+            SelfExecutionOriginalV1::Selected(original) => original.process.pidfd()
+                .map_err(|_| SelfExecutionObservationError),
+        }
     }
 }
 

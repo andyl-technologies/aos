@@ -32,31 +32,57 @@
 //! [`dispatch_template`] owns immutable template DATA, digests and deadline framing.
 //! [`publication`] owns complete canonical history and structural recovery; accepted
 //! Native publication identities, Journal selection and activation remain upper.
+//! [`policy_data`] owns canonical publisher revisions, provenance and compiler
+//! commitment bytes; typed compilation remains in `aos-sandbox-policy`.
 
 pub mod authenticated_session;
 pub mod authorization_artifact;
 pub mod cache_state;
 pub mod canonical_map;
+pub mod policy_data;
+mod capture;
 pub mod domain_ledger;
+pub mod root_settlement;
+pub mod root_policy_completion;
 pub mod fencing;
 pub mod fuse_worker_preparation;
 pub mod git_project_coverage;
 pub mod host_argument_source;
 pub mod host_attach_gate;
 pub mod host_canary_job;
+/// Shares inert portable Host resource projection and implemented feature DATA.
+pub mod host_resource_projection;
 pub mod host_catalog;
 pub mod host_catalog_snapshot;
 pub mod host_consumer_cgroup;
+pub mod execution_spec_attempt;
+/// Owns portable operation-specific execution completion evidence DATA.
+pub mod execution_evidence;
+/// Owns historical Controller argument receipt codec DATA.
+pub mod execution_argument_receipt;
 pub mod host_execution;
 pub mod host_execution_argument;
+pub mod execution_availability;
+pub mod host_execution_availability;
+pub mod storage_execution_availability;
 pub mod host_execution_no_apply;
 pub mod host_fuse_worker_session;
 pub mod host_observation;
+pub mod host_stopped_namespace;
+/// Owns canonical fresh Stop-only recovery comparison subjects.
+pub mod host_stop_cleanup;
+pub mod host_stop_cleanup_candidate;
+pub mod host_launch_cleanup_candidate;
+pub mod host_cleanup_lineage;
+pub mod host_inventory_absence;
+pub mod host_recovered_namespace;
 pub mod host_output;
 pub mod host_storage_output_readback;
 pub mod inventory;
 pub mod mount_catalog;
 pub mod mount_destination_slot;
+pub mod fixed_service_inventory_absence;
+pub mod mount_attachment_anchor;
 pub mod mount_fuse_reserve_intent;
 pub mod mount_manager_startup;
 mod mount_result;
@@ -81,6 +107,13 @@ mod source_realization;
 pub mod storage_atomic_snapshot;
 pub mod storage_capture_candidate;
 pub mod storage_capture_grant;
+pub mod storage_capture_lifetime;
+/// Contains canonical complete physical Capture result DATA.
+pub mod storage_capture_result;
+/// Contains original authenticated Capture admission anchor DATA.
+pub mod controller_capture_admission;
+/// Defines the closed held physical Capture session wire.
+pub mod storage_capture_session;
 pub mod storage_existing_output;
 pub mod storage_held_output_session;
 pub mod storage_inventory;
@@ -175,7 +208,7 @@ pub use storage_inventory::{
     ValidatedStorageInventoryRecoveryRequestV1, ValidatedStorageInventoryRecoveryResponseV1,
     ValidatedStorageWorkspace, decode_storage_inventory_recovery_request_v1,
     decode_storage_inventory_recovery_response_v1, decode_storage_resource_inventory_request,
-    decode_storage_resource_inventory_response,
+    decode_storage_resource_inventory_response, decode_storage_resource_inventory_response_with_model,
 };
 pub use terminal_commit::{
     BROKER_TERMINAL_COMMIT_VERIFIER_BYTES, BrokerTerminalCommitBindingV1,
@@ -185,7 +218,11 @@ pub use terminal_commit::{
 mod runtime_template;
 pub use runtime_template::{
     ValidatedGuardianArmCompanionV1, ValidatedRuntimeTemplateV1, decode_host_guardian_companion_v1,
-    decode_runtime_template_v1, encode_host_guardian_companion_v1,
+    decode_runtime_template_v1, decode_live_host_runtime_data_v1,
+    LiveHostRuntimeEnvelopeDataV2, decode_live_host_runtime_envelope_data_v2,
+    decode_canonical_live_host_stop_envelope_data_v4,
+    decode_canonical_live_host_stop_cleanup_envelope_data_v1,
+    encode_host_guardian_companion_v1,
 };
 
 pub use session::{
@@ -194,10 +231,12 @@ pub use session::{
     ValidatedBrokerResponseEnvelope, ValidatedDescriptorDisposition, ValidatedDescriptorEntry,
     ValidatedRuntimeEffectStatus, decode_query_runtime_effect_response, decode_request_envelope,
     decode_response_envelope, decode_server_hello, encode_authorized_request_envelope,
+    encode_authorized_request_envelope_with_bindings_v1,
     encode_error_response_envelope, encode_success_response_envelope,
     encode_unauthed_request_envelope, encode_unauthed_request_envelope_with_descriptors,
     failed_server_hello, negotiate_client_hello, validate_request_descriptor_roles,
     validate_runtime_effect_receipt_for_apply,
+    runtime_stop_residual_for_apply_v4, runtime_stop_residual_for_decoded_apply_v4,
 };
 pub use source_binding::{SourceBindingError, SourceRealizationBindingV1};
 
@@ -408,6 +447,8 @@ pub struct ValidatedRuntimePlan {
     attachment_handles: Vec<[u8; OPAQUE_HANDLE_BYTES]>,
     required_features: Vec<FeatureRef>,
     attachment_anchor_handle: [u8; OPAQUE_HANDLE_BYTES],
+    current_guest_root_publication_v2:
+        Option<semantics::storage_guest_root::StorageGuestRootCurrentPublicationDataV2>,
 }
 
 impl ValidatedRuntimePlan {
@@ -464,6 +505,18 @@ impl ValidatedRuntimePlan {
     pub const fn attachment_anchor_handle(&self) -> &[u8; OPAQUE_HANDLE_BYTES] {
         &self.attachment_anchor_handle
     }
+
+    /// Borrows signed current-publication DATA beside immutable creation proof.
+    ///
+    /// Canonical Host semantics bind the complete record. Its native producer
+    /// and Storage export independently compare the protected current record.
+    #[must_use]
+    pub const fn current_guest_root_publication_v2(&self)
+        -> Option<&semantics::storage_guest_root::StorageGuestRootCurrentPublicationDataV2>
+    {
+        self.current_guest_root_publication_v2.as_ref()
+    }
+
 }
 
 /// Carries a host-broker request only after all nested fields are validated.
@@ -474,6 +527,7 @@ pub struct ValidatedRuntimeRequest {
     action: RuntimeAction,
     launch_plan: Option<ValidatedRuntimePlan>,
     guardian_arm: Option<ValidatedGuardianArmCompanionV1>,
+    host_stop_cleanup: Option<host_stop_cleanup::HostStopCleanupSubjectDataV1>,
 }
 
 impl ValidatedRuntimeRequest {
@@ -505,6 +559,12 @@ impl ValidatedRuntimeRequest {
     #[must_use]
     pub const fn guardian_arm(&self) -> Option<&ValidatedGuardianArmCompanionV1> {
         self.guardian_arm.as_ref()
+    }
+
+    /// Borrows the finite cleanup subject, present only on its fresh Stop.
+    #[must_use]
+    pub const fn host_stop_cleanup_v1(&self) -> Option<&host_stop_cleanup::HostStopCleanupSubjectDataV1> {
+        self.host_stop_cleanup.as_ref()
     }
 }
 
@@ -824,7 +884,53 @@ pub fn decode_runtime_request(
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedRuntimeRequest, ProtocolValidationError> {
-    if bytes.len() > MAXIMUM_REQUEST_BYTES {
+    decode_runtime_request_engine_v4(bytes, peer, policy, now_boottime_nanoseconds,
+        runtime_template::RuntimeWirePurposeV1::Ordinary)
+}
+
+/// Decodes the canonical fixed-shape live Stop on the ordinary Host recipe.
+///
+/// The closed bound is checked before protobuf allocation. The same decoder
+/// validates the real peer, cutoff, header and nested runtime body; this port
+/// adds no authority and cannot accept a Launch or another action.
+///
+/// # Errors
+/// Rejects excessive or noncanonical Stop bytes and every ordinary live Host
+/// request refusal, including a stale deadline or mismatched peer.
+pub fn decode_canonical_capture_stop_request_v4(
+    bytes: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+) -> Result<ValidatedRuntimeRequest, ProtocolValidationError> {
+    decode_runtime_request_engine_v4(bytes, peer, policy, now_boottime_nanoseconds,
+        runtime_template::RuntimeWirePurposeV1::CaptureStop)
+}
+
+/// Decodes only the finite canonical fresh Host Stop cleanup request.
+///
+/// This validates framing and the real peer/deadline; current signed grant,
+/// paid cleanup receiving and fresh native target ownership remain separate.
+///
+/// # Errors
+/// Refuses excessive bytes before allocation, absent/invalid cleanup subject,
+/// ordinary Stop/other actions and every shared live Host request refusal.
+pub fn decode_canonical_host_stop_cleanup_request_v1(bytes: &[u8],
+    peer: PeerCredentials, policy: PeerPolicy, now_boottime_nanoseconds: u64,
+) -> Result<ValidatedRuntimeRequest, ProtocolValidationError> {
+    decode_runtime_request_engine_v4(bytes, peer, policy, now_boottime_nanoseconds,
+        runtime_template::RuntimeWirePurposeV1::RecoveryCleanup)
+}
+
+fn decode_runtime_request_engine_v4(
+    bytes: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+    purpose: runtime_template::RuntimeWirePurposeV1,
+) -> Result<ValidatedRuntimeRequest, ProtocolValidationError> {
+    let maximum = purpose.maximum_bytes_v1();
+    if bytes.len() > maximum {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
     let request = ApplyRuntimeRequest::decode_from_slice(bytes)
@@ -843,6 +949,8 @@ pub fn decode_runtime_request(
         now_boottime_nanoseconds,
     )?;
     let template = runtime_template::validate_live_runtime_body(&request)?;
+    purpose.require_canonical_v1(&request, &template, bytes)?;
+
 
     Ok(ValidatedRuntimeRequest {
         header,
@@ -850,6 +958,7 @@ pub fn decode_runtime_request(
         action: template.action,
         launch_plan: template.launch_plan,
         guardian_arm: template.guardian_arm,
+        host_stop_cleanup: template.host_stop_cleanup,
     })
 }
 
@@ -893,6 +1002,7 @@ pub fn decode_historical_runtime_request_v1(
         return Err(ProtocolValidationError::DeadlineExpired);
     }
     let template = runtime_template::validate_live_runtime_body(&request)?;
+    runtime_template::RuntimeWirePurposeV1::Ordinary.require_canonical_v1(&request, &template, bytes)?;
 
     Ok(ValidatedRuntimeRequest {
         header,
@@ -900,6 +1010,7 @@ pub fn decode_historical_runtime_request_v1(
         action: template.action,
         launch_plan: template.launch_plan,
         guardian_arm: template.guardian_arm,
+        host_stop_cleanup: template.host_stop_cleanup,
     })
 }
 
@@ -1088,6 +1199,9 @@ pub fn decode_grandfathered_runtime_request_replay_v1(
         return Err(ProtocolValidationError::DeadlineExpired);
     }
     let template = runtime_template::validate_live_runtime_body(&request)?;
+    if template.host_stop_cleanup_v1().is_some() {
+        return Err(ProtocolValidationError::InvalidField("noncanonical fresh cleanup"));
+    }
 
     Ok(ValidatedRuntimeRequest {
         header,
@@ -1095,6 +1209,7 @@ pub fn decode_grandfathered_runtime_request_replay_v1(
         action: template.action,
         launch_plan: template.launch_plan,
         guardian_arm: template.guardian_arm,
+        host_stop_cleanup: template.host_stop_cleanup,
     })
 }
 
@@ -1461,15 +1576,38 @@ fn validate_request_header_shape(
         return Err(ProtocolValidationError::UnknownFields);
     }
     validate_peer_audience(peer, policy, header.audience.as_known())?;
+    validate_request_header_intrinsic_data_v2(header, policy.audience, protocol)
+}
+
+// The same intrinsic header DATA fold is used after actual native peer checks
+// and by pure canonical-plan comparison. Neither path constructs peer evidence.
+fn validate_request_header_intrinsic_data_v2(
+    header: &RequestHeader, audience: Audience, protocol: ProtocolId,
+) -> Result<ValidatedHeader, ProtocolValidationError> {
     let protocol_version = validate_header_protocol(header, protocol)?;
     let request_id = exact_nonzero::<16>(&header.request_id, "header.request_id")?;
     Ok(ValidatedHeader {
         protocol_version,
-        audience: policy.audience,
+        audience,
         request_id,
         deadline_boottime_nanoseconds: header.deadline_boottime_nanoseconds,
         maximum_response_bytes: header.maximum_response_bytes,
     })
+}
+
+pub(crate) fn validate_request_header_data_v2(
+    header: &RequestHeader, audience: Audience, protocol: ProtocolId, now: u64,
+) -> Result<ValidatedHeader, ProtocolValidationError> {
+    if !header.__buffa_unknown_fields.is_empty() {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+    if header.audience.as_known() != Some(audience) || audience == Audience::AUDIENCE_UNSPECIFIED {
+        return Err(ProtocolValidationError::AudienceMismatch);
+    }
+    let validated = validate_request_header_intrinsic_data_v2(header, audience, protocol)?;
+    validate_request_deadline(&validated, now)?;
+    validate_request_response_bound(&validated)?;
+    Ok(validated)
 }
 
 pub(crate) fn validate_request_deadline(
@@ -1594,6 +1732,13 @@ fn validate_runtime_plan(
         )?
     };
 
+    let current_guest_root_publication_v2 = if plan.current_guest_root_publication_v2.is_empty() {
+        None
+    } else {
+        Some(semantics::storage_guest_root::StorageGuestRootCurrentPublicationDataV2::
+            decode_v2(&plan.current_guest_root_publication_v2)?)
+    };
+
     Ok(ValidatedRuntimePlan {
         root_image,
         workspace_handle,
@@ -1604,6 +1749,7 @@ fn validate_runtime_plan(
         attachment_handles,
         required_features,
         attachment_anchor_handle,
+        current_guest_root_publication_v2,
     })
 }
 
@@ -1716,19 +1862,58 @@ pub(crate) fn validate_descriptor(
     descriptor: &Descriptor,
     role: DescriptorRole,
 ) -> Result<ObjectDescriptor, ProtocolValidationError> {
+    validate_descriptor_engine(descriptor, role, None)
+}
+
+pub(crate) fn validate_descriptor_engine(
+    descriptor: &Descriptor,
+    role: DescriptorRole,
+    capture: Option<&mut capture::DescriptorCaptureV1>,
+) -> Result<ObjectDescriptor, ProtocolValidationError> {
+    use aos_sandbox_core::retained::CaptureValueV1;
+    let (input, syntax, role_result, media_slot, descriptor_slot) = match capture {
+        Some(capture) => (Some(&mut capture.input), Some(&mut capture.syntax), Some(&mut capture.role),
+            Some(&mut capture.media_type), Some(&mut capture.descriptor)),
+        None => (None, None, None, None, None),
+    };
+
     if !descriptor.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
-    let media_type = MediaType::new(descriptor.media_type.clone())
-        .map_err(|error| ProtocolValidationError::InvalidDescriptor(error.to_string()))?;
+    let media_type = match input {
+        Some(input) => {
+            *input = Some(descriptor.media_type.clone());
+            let syntax = syntax.ok_or(ProtocolValidationError::InvalidField("descriptor syntax capture"))?;
+            *syntax = Some(MediaType::new_retaining_v1(input));
+            if let Some(Err(error)) = syntax.as_ref() {
+                return Err(ProtocolValidationError::InvalidDescriptor(error.to_string()));
+            }
+            syntax.take().ok_or(ProtocolValidationError::InvalidField("descriptor syntax capture"))?
+        }
+        None => MediaType::new(descriptor.media_type.clone()),
+    }.map_err(|error| ProtocolValidationError::InvalidDescriptor(error.to_string()))?;
+    let media_type = CaptureValueV1::new(Some(media_type), media_slot);
     let digest = ObjectDigest::from_bytes(exact_nonzero::<32>(
         &descriptor.sha256,
         "descriptor.sha256",
     )?);
-    let descriptor = ObjectDescriptor::new(media_type, digest, descriptor.encoded_size);
-    validate_descriptor_role(role, &descriptor)
-        .map_err(|error| ProtocolValidationError::InvalidDescriptor(error.to_string()))?;
-    Ok(descriptor)
+    let descriptor = ObjectDescriptor::new(
+        media_type.take().ok_or(ProtocolValidationError::InvalidField("descriptor media type"))?,
+        digest, descriptor.encoded_size,
+    );
+    let descriptor = CaptureValueV1::new(Some(descriptor), descriptor_slot);
+    let validated_role = validate_descriptor_role(role,
+        descriptor.as_ref().ok_or(ProtocolValidationError::InvalidField("descriptor"))?);
+    match role_result {
+        Some(destination) => {
+            *destination = Some(validated_role);
+            if let Some(Err(error)) = destination.as_ref() {
+                return Err(ProtocolValidationError::InvalidDescriptor(error.to_string()));
+            }
+        }
+        None => { validated_role.map_err(|error| ProtocolValidationError::InvalidDescriptor(error.to_string()))?; }
+    }
+    descriptor.take().ok_or(ProtocolValidationError::InvalidField("descriptor"))
 }
 
 pub(crate) fn exact_nonzero<const N: usize>(
@@ -1964,6 +2149,36 @@ mod tests {
     }
 
     #[test]
+    fn live_host_data_shares_full_body_checks_without_live_request_authority() {
+        let request = valid_runtime_request();
+        let bytes = request.encode_to_vec();
+
+        let envelope = decode_live_host_runtime_envelope_data_v2(&bytes).unwrap();
+        let data = decode_live_host_runtime_data_v1(&bytes).unwrap();
+        assert_eq!(envelope.template_v1(), &data);
+        assert_eq!(envelope.request_id_v1().as_slice(), request.header.as_option().unwrap().request_id);
+        assert_eq!(envelope.deadline_boottime_nanoseconds_v1(),
+            request.header.as_option().unwrap().deadline_boottime_nanoseconds);
+        assert_eq!(envelope.maximum_response_bytes_v1(),
+            request.header.as_option().unwrap().maximum_response_bytes);
+        let live = decode_runtime_request(&bytes, peer(), policy(), 100).unwrap();
+
+        assert_eq!(data.action(), live.action());
+        assert_eq!(data.fence(), live.fence());
+        assert_eq!(data.launch_plan(), live.launch_plan());
+        assert_eq!(data.guardian_arm(), live.guardian_arm());
+        assert!(decode_runtime_template_v1(&bytes).is_err());
+
+        let mut zero_deadline = request.clone();
+        zero_deadline.header.get_or_insert_default().deadline_boottime_nanoseconds = 0;
+        assert!(decode_live_host_runtime_data_v1(&zero_deadline.encode_to_vec()).is_err());
+
+        let mut missing_guardian = request;
+        missing_guardian.guardian_arm = None.into();
+        assert!(decode_live_host_runtime_data_v1(&missing_guardian.encode_to_vec()).is_err());
+    }
+
+    #[test]
     fn guardian_companion_encoder_enforces_live_header_and_unknown_field_bounds() {
         let (broker_plan, broker_plan_signature) = guardian_plan_pair();
         let mut request = valid_runtime_request();
@@ -2064,6 +2279,43 @@ mod tests {
                 bytes: OPAQUE_HANDLE_BYTES,
             })
         ));
+    }
+
+    #[test]
+    fn retained_stop_decoder_preserves_ordinary_peer_and_deadline_law() {
+        let mut request = valid_runtime_request();
+        request.action = RuntimeAction::RUNTIME_ACTION_STOP.into();
+        request.launch_plan = None.into();
+        request.guardian_arm = None.into();
+        let bytes = request.encode_to_vec();
+        let ordinary = decode_runtime_request(&bytes, peer(), policy(), 100).unwrap();
+        let selected = decode_canonical_capture_stop_request_v4(&bytes, peer(), policy(), 100).unwrap();
+
+        assert_eq!(ordinary.header().request_id(), selected.header().request_id());
+        assert_eq!(ordinary.fence(), selected.fence());
+        assert_eq!(ordinary.action(), selected.action());
+        assert_eq!(decode_canonical_capture_stop_request_v4(&bytes, peer(), policy(), 101).unwrap_err(),
+            decode_runtime_request(&bytes, peer(), policy(), 101).unwrap_err());
+        let mut wrong_peer = peer();
+        wrong_peer.uid = 0;
+        assert_eq!(decode_canonical_capture_stop_request_v4(&bytes, wrong_peer, policy(), 100).unwrap_err(),
+            decode_runtime_request(&bytes, wrong_peer, policy(), 100).unwrap_err());
+    }
+
+    #[test]
+    fn retained_stop_decoder_refuses_noncanonical_action_and_other_live_actions() {
+        let mut request = valid_runtime_request();
+        request.action = RuntimeAction::RUNTIME_ACTION_FREEZE.into();
+        request.launch_plan = None.into();
+        request.guardian_arm = None.into();
+        let bytes = request.encode_to_vec();
+        assert!(decode_runtime_request(&bytes, peer(), policy(), 100).is_ok());
+        assert!(decode_canonical_capture_stop_request_v4(&bytes, peer(), policy(), 100).is_err());
+
+        request.action = RuntimeAction::RUNTIME_ACTION_STOP.into();
+        let mut bytes = request.encode_to_vec();
+        bytes.extend_from_slice(&[0x18, 0x02]);
+        assert!(decode_canonical_capture_stop_request_v4(&bytes, peer(), policy(), 100).is_err());
     }
 
     fn valid_runtime_request() -> ApplyRuntimeRequest {
@@ -2886,3 +3138,39 @@ mod tests {
 
 pub mod publication;
 pub mod dispatch_template;
+
+// Passive fixed-producer geometry; no request/signing authority is exported.
+pub use storage_inventory::fixed_storage_inventory_request_packet_bound_v1;
+pub use storage_inventory::fixed_controller_inventory_request_packet_bound_v1;
+
+/// Defines nonauthorizing lookup and scope DATA for local holder channels.
+pub mod local_holder_session;
+
+/// Classifies nonauthorizing redacted session and credential failures.
+pub mod public_api_session_data;
+/// Defines the existing fixed Source proposal wire widths.
+pub mod source_seed_layout;
+
+/// Encodes and compares public role verifier credential DATA without key custody.
+pub mod role_credential;
+
+/// Defines signed Cache readback DATA and raw codecs without native custody.
+pub mod cache_owner_readback;
+
+/// Shares canonical signed nonauthorizing initial Source seed DATA.
+pub mod controller_source_seed;
+
+/// Shares canonical immutable Source-genesis acceptance DATA, never native admission.
+pub mod source_genesis_acceptance;
+
+/// Shares nonauthorizing configured Publisher session identities.
+pub mod publisher_session;
+
+/// Shares canonical administrative Publisher signature and public-key DATA.
+pub mod publisher_project_authorization;
+
+/// Fixed nonauthorizing Source genesis record and packet widths.
+pub mod source_genesis_geometry;
+
+/// Bounded Source genesis, successor and Q04 framing DATA.
+pub mod source_genesis_wire;

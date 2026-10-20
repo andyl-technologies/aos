@@ -32,6 +32,8 @@ use aos_sandbox_core::runtime_backend::{
 use aos_sandbox_core::{ExecutionId, ObjectDigest, ObservationSequence, OperationId};
 use aos_sandbox_protocol::host_execution_no_apply::{
     HostExecutionNoApplyRecordFieldsV1, HostExecutionNoApplyRecordV1,
+    HostExecutionNoApplyRecordV2, BeforeArgumentNoApplySourceDataV2,
+    ClosedBeforeArgumentNoApplyRecordV2, ClosedBeforeArgumentNoApplyRecordFieldsV2,
 };
 use aos_sandbox_protocol::host_storage_output_readback::ValidatedHostStorageOutputReadbackRequestV1;
 use sha2::{Digest as _, Sha256};
@@ -64,10 +66,13 @@ use super::route_record::{
     ProtectedAgentRoutePeerV1, ProtectedAgentRouteRecordV1, ROUTE_KEY_PREFIX, route_key,
 };
 
+mod capture_terminal;
 mod output_budget;
 mod output_correlation;
 mod settlement_admission;
 mod settlement_store;
+mod before_argument;
+pub(super) use before_argument::HostBeforeArgumentNoApplyIdentityV2;
 
 use crate::journal::host_execution_fence::KEY as HOST_FENCE_KEY;
 use output_budget::{OutputBudget, decode_output_claim, reserve_output_bytes};
@@ -86,6 +91,12 @@ const NO_APPLY_KEY_PREFIX: u8 = b'n';
 const SEQUENCE_KEY_PREFIX: u8 = b's';
 const TERMINAL_KEY_PREFIX: u8 = b't';
 const AGENT_OUTCOME_KEY_PREFIX: u8 = b'u';
+
+pub(in crate::runtime_execution) const EFFECT_KEY_BYTES_V5: usize = 1 + 16;
+pub(in crate::runtime_execution) const SEQUENCE_KEY_BYTES_V5: usize = 1 + 32;
+pub(in crate::runtime_execution) const SEQUENCE_VALUE_BYTES_V5: usize = 8 + 16 + 32;
+pub(in crate::runtime_execution) const TERMINAL_VALUE_BYTES_V5: usize = 32 + 16 + 32 + 32;
+
 const STORE_MARKER_KEY: &[u8] = crate::journal::host_execution_fence::RUNTIME_OWNER_MARKER_KEY;
 const ADMISSION_AUTHORITY_KEY: &[u8] = b"runtime-execution-admission-authority-v1";
 const ADMISSION_AUTHORITY_MAGIC: &[u8; 8] = b"AOSRAA01";
@@ -94,6 +105,70 @@ const OUTPUT_FORMAT_MAGIC: &[u8; 8] = b"AOSROV02";
 const TERMINAL_CAPACITY_RECORDS: u32 = 3;
 const TERMINAL_CAPACITY_BYTES: u64 = 16 * 1_048_576;
 const MAXIMUM_RUNTIME_EXECUTION_RECORDS: usize = 262_144;
+
+// The actual full replay owns these concrete map value types. The largest
+// complete node covers every primary/secondary index; heap payloads and all
+// thirty-two possible simultaneous index planes are priced by the caller.
+pub(super) fn claim_replay_geometry_v2(
+    journal: &Journal,
+) -> Option<super::owner::claim_receiving::ReplayGeometry> {
+    use aos_sandbox_journal::geometry::conservative_btree_node_bytes_v1 as node;
+    let node_bytes = [
+        node::<Vec<u8>, Vec<u8>>(1)?,
+        node::<ExecutionId, HostOutputCorrelationV1>(1)?,
+        node::<ExecutionId, ArgumentObservationRecordV1>(1)?,
+        node::<[u8; 16], AdmittedExecutionV1>(1)?,
+        node::<[u8; 16], DurableExecutionEffectV1>(1)?,
+        node::<[u8; 16], HostExecutionNoApplyRecordV1>(1)?,
+        node::<[u8; 16], ClosedBeforeArgumentNoApplyRecordV2>(1)?,
+        node::<[u8; 16], [Option<HostSettlementRecordV1>; 3]>(1)?,
+        node::<[u8; 16], HostSettlementAdmissionWitnessV1>(1)?,
+        node::<[u8; 16], ProtectedAgentRouteRecordV1>(1)?,
+        node::<[u8; 16], HostAgentOutcomeRecordV1>(1)?,
+        node::<[u8; 32], RuntimeSequenceHeadV1>(1)?,
+        node::<[u8; 32], Vec<&DurableExecutionEffectV1>>(1)?,
+        node::<[u8; 32], ()>(1)?,
+    ]
+    .into_iter()
+    .max()?;
+    let mut shape = super::owner::claim_receiving::ReplayGeometry {
+        rows: 0,
+        encoded: 0,
+        node_bytes,
+        dynamic: false,
+    };
+    for ((namespace, key), value) in journal.historical_read_view_v1().materialized_state_v1() {
+        shape.rows = shape.rows.checked_add(1)?;
+        shape.encoded = shape
+            .encoded
+            .checked_add(key.len())?
+            .checked_add(value.len())?;
+        if *namespace == RecordNamespace::Effect
+            && matches!(
+                key.first().copied(),
+                Some(
+                    ADMISSION_KEY_PREFIX
+                        | EFFECT_KEY_PREFIX
+                        | ROUTE_KEY_PREFIX
+                        | AGENT_OUTCOME_KEY_PREFIX
+                        | ARGUMENT_KEY_PREFIX
+                )
+            )
+        {
+            shape.dynamic = true;
+        }
+    }
+    Some(shape)
+}
+
+pub(super) const fn claim_owner_key_bytes_v2() -> usize {
+    STORE_MARKER_KEY.len()
+}
+
+pub(super) const fn claim_authority_key_bytes_v2() -> usize {
+    ADMISSION_AUTHORITY_KEY.len()
+}
+
 
 /// Carries identities already checked against the sealed original Host handoff.
 #[derive(Clone)]
@@ -336,6 +411,7 @@ pub(crate) struct JournalRuntimeExecutionStoreV1<'journal> {
     freshly_issued: BTreeSet<[u8; 16]>,
     live_dispatches: BTreeSet<[u8; 16]>,
     authorized_completions: BTreeSet<ObjectDigest>,
+    capture_terminal_append_uncertain: bool,
 }
 
 impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
@@ -388,6 +464,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             freshly_issued: BTreeSet::new(),
             live_dispatches: BTreeSet::new(),
             authorized_completions: BTreeSet::new(),
+            capture_terminal_append_uncertain: false,
         })
     }
 
@@ -416,6 +493,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             freshly_issued: BTreeSet::new(),
             live_dispatches: BTreeSet::new(),
             authorized_completions: BTreeSet::new(),
+            capture_terminal_append_uncertain: false,
         })
     }
 
@@ -480,8 +558,12 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         let Some(bytes) = self.authority.get(&no_apply_key(execution))? else {
             return Ok(None);
         };
-        let record = HostExecutionNoApplyRecordV1::decode_canonical(bytes)
-            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+        let record = match HostExecutionNoApplyRecordV2::decode_canonical(bytes)
+            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)? {
+            HostExecutionNoApplyRecordV2::AfterArgument(record) => record,
+            HostExecutionNoApplyRecordV2::ClosedV2BeforeArgument(_) =>
+                return Err(JournalRuntimeExecutionError::RecordConflict),
+        };
         let fields = record.fields();
         if fields.execution_id != *execution.as_bytes()
             || fields.execution_store_binding != *self.store_binding.as_bytes()
@@ -1893,11 +1975,28 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         &self,
         admission: &AdmittedExecutionV1,
     ) -> Result<bool, JournalRuntimeExecutionError> {
+        self.terminal_effect_for_admission_v5(admission).map(|effect| effect.is_some())
+    }
+
+    pub(crate) fn terminal_execution_effect_data_v5(&self, execution: ExecutionId,
+        runtime: ObjectDigest) -> Result<Option<DurableExecutionEffectV1>, JournalRuntimeExecutionError> {
+        let Some(admission) = self.load_admission(execution)? else { return Ok(None); };
+        if admission.currentness().runtime().handle() != runtime {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+        self.terminal_effect_for_admission_v5(&admission)
+    }
+
+    fn terminal_effect_for_admission_v5(
+        &self,
+        admission: &AdmittedExecutionV1,
+    ) -> Result<Option<DurableExecutionEffectV1>, JournalRuntimeExecutionError> {
         let Some(marker) = self.authority.get(&terminal_key(admission.execution()))? else {
-            return Ok(false);
+            return Ok(None);
         };
-        if marker.len() != 112
-            || marker.get(..32) != Some(admission.admission_commitment().as_bytes().as_slice())
+        let decoded = capture_terminal::decode_marker(marker)?;
+        let marker = decoded.original_bytes_v3();
+        if marker.get(..32) != Some(admission.admission_commitment().as_bytes().as_slice())
         {
             return Err(JournalRuntimeExecutionError::CorruptRecord);
         }
@@ -1934,7 +2033,10 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         {
             return Err(JournalRuntimeExecutionError::CorruptRecord);
         }
-        Ok(true)
+        if let Some(complete) = decoded.capture_complete_v3() {
+            self.validate_capture_terminal_result_v3(&effect, complete)?;
+        }
+        Ok(Some(effect))
     }
 
     fn effect_replay(
@@ -1970,7 +2072,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         if issue.sequence().get() != expected_sequence {
             return Err(EffectCommitError::SequenceConflict);
         }
-        let mut value = Vec::with_capacity(56);
+        let mut value = Vec::with_capacity(SEQUENCE_VALUE_BYTES_V5);
         value.extend_from_slice(&issue.sequence().get().to_be_bytes());
         value.extend_from_slice(issue.idempotency().operation().as_bytes());
         value.extend_from_slice(effect_issue_anchor(admission, issue).as_bytes());
@@ -1994,10 +2096,42 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         &self,
         runtime_handle: ObjectDigest,
     ) -> Result<u64, EffectCommitError> {
+        match self.complete_sequence_predecessor_v5(runtime_handle)? {
+            None => Ok(1),
+            Some(previous) => previous.issue().sequence().get().checked_add(1)
+                .ok_or(EffectCommitError::SequenceConflict),
+        }
+    }
+
+    pub(crate) fn latest_effect_data_v3(
+        &self,
+        runtime_handle: ObjectDigest,
+    ) -> Result<Option<DurableExecutionEffectV1>, JournalRuntimeExecutionError> {
+        self.sequence_predecessor_data_v3(runtime_handle).map_err(Into::into)
+    }
+
+    // Both allocation and monitor readback use this same existing 56-byte
+    // global sequence row and canonical durable-effect decoder. A pending,
+    // foreign, mismatched or corrupt predecessor never supplies a next child.
+    fn complete_sequence_predecessor_v5(
+        &self,
+        runtime_handle: ObjectDigest,
+    ) -> Result<Option<DurableExecutionEffectV1>, EffectCommitError> {
+        let previous = self.sequence_predecessor_data_v3(runtime_handle)?;
+        if previous.as_ref().is_some_and(|effect| effect.phase() != EffectPhaseV1::Complete) {
+            return Err(EffectCommitError::CorruptRecord);
+        }
+        Ok(previous)
+    }
+
+    // Historical reads preserve Pending/Issued/Indeterminate as uncertainty;
+    // allocation above still requires actual Complete before choosing next.
+    fn sequence_predecessor_data_v3(&self, runtime_handle: ObjectDigest)
+        -> Result<Option<DurableExecutionEffectV1>, EffectCommitError> {
         let key = sequence_key(runtime_handle);
         let previous = self.authority.get(&key).map_err(map_effect_journal_error)?;
-        let expected_sequence = match previous {
-            None => 1,
+        match previous {
+            None => Ok(None),
             Some(bytes) if bytes.len() == 56 => {
                 let previous_sequence = u64::from_be_bytes(
                     bytes[..8]
@@ -2019,8 +2153,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
                     .ok_or(EffectCommitError::CorruptRecord)?;
                 let previous_effect = decode_durable_execution_effect_v1(previous_effect)
                     .map_err(|_| EffectCommitError::CorruptRecord)?;
-                if previous_effect.phase() != EffectPhaseV1::Complete
-                    || effect_issue_anchor(previous_effect.admission(), previous_effect.issue())
+                if effect_issue_anchor(previous_effect.admission(), previous_effect.issue())
                         != previous_issue_anchor
                     || previous_effect.issue().sequence().get() != previous_sequence
                     || previous_effect.admission().currentness().runtime().handle()
@@ -2030,13 +2163,10 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
                 {
                     return Err(EffectCommitError::CorruptRecord);
                 }
-                previous_sequence
-                    .checked_add(1)
-                    .ok_or(EffectCommitError::SequenceConflict)?
+                Ok(Some(previous_effect))
             }
-            Some(_) => return Err(EffectCommitError::CorruptRecord),
-        };
-        Ok(expected_sequence)
+            Some(_) => Err(EffectCommitError::CorruptRecord),
+        }
     }
 }
 
@@ -2199,6 +2329,8 @@ impl ExecutionEffectStore for JournalRuntimeExecutionStoreV1<'_> {
     }
 }
 
+pub(super) const fn admission_key_prefix_v5() -> u8 { ADMISSION_KEY_PREFIX }
+
 fn admission_key(execution: ExecutionId) -> Vec<u8> {
     let mut key = Vec::with_capacity(17);
     key.push(ADMISSION_KEY_PREFIX);
@@ -2235,6 +2367,19 @@ fn owned_key(key: &[u8]) -> bool {
 
 fn output_record_key(key: &[u8]) -> bool {
     key == OUTPUT_MARKER_KEY || matches!(key, [CLAIM_KEY_PREFIX, ..] if key.len() == 17)
+}
+
+pub(in crate::runtime_execution) fn host_output_reservation_record_shapes_v2()
+    -> [aos_sandbox_journal::geometry::RecordShape; 4] {
+    use aos_sandbox_journal::geometry::RecordShape;
+    [
+        RecordShape { key_bytes: OUTPUT_FORMAT_KEY.len(), value_bytes: Some(
+            output_format_bytes(ObjectDigest::from_bytes([0; 32])).len()) },
+        RecordShape { key_bytes: OUTPUT_MARKER_KEY.len(), value_bytes: Some(
+            marker_bytes(ObjectDigest::from_bytes([0; 32]), 0).len()) },
+        RecordShape { key_bytes: 17, value_bytes: Some(crate::execution_output_reservation::CLAIM_BYTES) },
+        RecordShape { key_bytes: 17, value_bytes: Some(HostOutputCorrelationV1::encoded_bytes_v2()) },
+    ]
 }
 
 fn output_format_bytes(store_binding: ObjectDigest) -> [u8; 40] {
@@ -2285,6 +2430,7 @@ fn validate_runtime_execution_replay(
     let mut resources = BTreeMap::new();
     let mut effects = BTreeMap::new();
     let mut no_apply = BTreeMap::new();
+    let mut before_argument_no_apply = BTreeMap::new();
     let mut no_apply_settlement = BTreeMap::<[u8; 16], [Option<HostSettlementRecordV1>; 3]>::new();
     let mut settlement_admission = BTreeMap::<[u8; 16], HostSettlementAdmissionWitnessV1>::new();
     let mut host_fence = None;
@@ -2310,7 +2456,7 @@ fn validate_runtime_execution_replay(
         }
         if key == HOST_FENCE_KEY {
             if host_fence
-                .replace(HostExecutionFenceV1::decode(value)?)
+                .replace(HostExecutionFenceV1::decode(value).map_err(JournalError::from)?)
                 .is_some()
             {
                 return Err(JournalRuntimeExecutionError::CorruptRecord);
@@ -2430,15 +2576,29 @@ fn validate_runtime_execution_replay(
                 }
             }
             Some(NO_APPLY_KEY_PREFIX) if key.len() == 17 => {
-                let record = HostExecutionNoApplyRecordV1::decode_canonical(value)
-                    .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
-                let fields = record.fields();
-                if fields.execution_id.as_slice() != suffix
-                    || fields.execution_store_binding != *store_binding.as_bytes()
-                    || fields.commit_sequence > protected_sequence
-                    || no_apply.insert(fields.execution_id, record).is_some()
-                {
-                    return Err(JournalRuntimeExecutionError::CorruptRecord);
+                match HostExecutionNoApplyRecordV2::decode_canonical(value)
+                    .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)? {
+                    HostExecutionNoApplyRecordV2::AfterArgument(record) => {
+                        let fields = record.fields();
+                        if fields.execution_id.as_slice() != suffix
+                            || fields.execution_store_binding != *store_binding.as_bytes()
+                            || fields.commit_sequence > protected_sequence
+                            || no_apply.insert(fields.execution_id, record).is_some()
+                        {
+                            return Err(JournalRuntimeExecutionError::CorruptRecord);
+                        }
+                    }
+                    HostExecutionNoApplyRecordV2::ClosedV2BeforeArgument(record) => {
+                        let fields = record.fields();
+                        let source = fields.source.fields();
+                        if source.execution.as_slice() != suffix
+                            || fields.execution_store != *store_binding.as_bytes()
+                            || fields.commit_sequence > protected_sequence
+                            || before_argument_no_apply.insert(source.execution, record).is_some()
+                        {
+                            return Err(JournalRuntimeExecutionError::CorruptRecord);
+                        }
+                    }
                 }
             }
             Some(LEASE_KEY_PREFIX) if key.len() == 18 => {
@@ -2502,7 +2662,7 @@ fn validate_runtime_execution_replay(
                     .try_into()
                     .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
                 if execution == [0; 16]
-                    || value.len() != 112
+                    || capture_terminal::decode_marker(value).is_err()
                     || terminals.insert(execution, value.to_vec()).is_some()
                 {
                     return Err(JournalRuntimeExecutionError::CorruptRecord);
@@ -2574,6 +2734,22 @@ fn validate_runtime_execution_replay(
             || correlation.assignment_digest.as_bytes() != &fields.assignment_digest
             || correlation.host_boot_id != fields.host_boot_id
             || fields.commit_sequence <= correlation.original_journal_sequence
+        {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+    }
+    for (execution, record) in &before_argument_no_apply {
+        let fields = record.fields();
+        let source = fields.source.fields();
+        if admissions.contains_key(execution) || terminals.contains_key(execution)
+            || effects.values().any(|effect| effect.admission().execution().as_bytes() == execution)
+            || no_apply.contains_key(execution)
+            || host_output_correlations.get(&ExecutionId::from_bytes(*execution)).is_some_and(|correlation| {
+                correlation.create_operation.as_bytes() != &source.create_operation
+                    || correlation.assignment_digest.as_bytes() != &source.assignment_digest
+                    || correlation.host_boot_id != source.host_boot
+                    || correlation.original_journal_sequence >= fields.commit_sequence
+            })
         {
             return Err(JournalRuntimeExecutionError::CorruptRecord);
         }
@@ -2853,6 +3029,8 @@ fn validate_runtime_execution_replay(
         let resource = resources
             .get(execution)
             .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        let decoded = capture_terminal::decode_marker(marker)?;
+        let marker = decoded.original_bytes_v3();
         if marker.get(..32) != Some(admission.admission_commitment().as_bytes().as_slice())
             || marker.get(32..48) != Some(operation.as_slice())
             || marker.get(48..80) != Some(effect.record_commitment().as_bytes().as_slice())
@@ -2861,6 +3039,23 @@ fn validate_runtime_execution_replay(
             || effect.admission() != admission
         {
             return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+    }
+    // Compaction and cold replay retain the same terminal key. An extension
+    // must join its original Complete and protected output correlation too.
+    for (execution, marker) in &terminals {
+        let decoded = capture_terminal::decode_marker(marker)?;
+        if let Some(complete) = decoded.capture_complete_v3() {
+            let operation = terminal_effect_by_execution.get(execution)
+                .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+            let effect = effects.get(operation)
+                .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+            let correlation = host_output_correlations.get(&ExecutionId::from_bytes(*execution))
+                .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+            let claim = provisional_claims.get(&claim_key(ExecutionId::from_bytes(*execution)))
+                .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+            let claim = decode_claim(claim)?;
+            capture_terminal::validate_result(effect, complete, correlation, &claim)?;
         }
     }
     authority.validate_global_capacity_reservation_set_v1(&current_reservations)?;
@@ -3094,21 +3289,21 @@ fn decode_admission_authority(
 }
 
 fn effect_key(operation: &[u8; 16]) -> Vec<u8> {
-    let mut key = Vec::with_capacity(17);
+    let mut key = Vec::with_capacity(EFFECT_KEY_BYTES_V5);
     key.push(EFFECT_KEY_PREFIX);
     key.extend_from_slice(operation);
     key
 }
 
 fn no_apply_key(execution: ExecutionId) -> Vec<u8> {
-    let mut key = Vec::with_capacity(17);
+    let mut key = Vec::with_capacity(EFFECT_KEY_BYTES_V5);
     key.push(NO_APPLY_KEY_PREFIX);
     key.extend_from_slice(execution.as_bytes());
     key
 }
 
 fn terminal_key(execution: ExecutionId) -> Vec<u8> {
-    let mut key = Vec::with_capacity(17);
+    let mut key = Vec::with_capacity(EFFECT_KEY_BYTES_V5);
     key.push(TERMINAL_KEY_PREFIX);
     key.extend_from_slice(execution.as_bytes());
     key
@@ -3119,7 +3314,7 @@ fn terminal_marker_value(
     effect: &DurableExecutionEffectV1,
     capacity_reservation: [u8; 32],
 ) -> Vec<u8> {
-    let mut value = Vec::with_capacity(112);
+    let mut value = Vec::with_capacity(TERMINAL_VALUE_BYTES_V5);
     value.extend_from_slice(admission.admission_commitment().as_bytes());
     value.extend_from_slice(effect.issue().idempotency().operation().as_bytes());
     value.extend_from_slice(effect.record_commitment().as_bytes());
@@ -3151,7 +3346,7 @@ fn effect_issue_anchor(
 }
 
 fn sequence_key(runtime_handle: ObjectDigest) -> Vec<u8> {
-    let mut key = Vec::with_capacity(33);
+    let mut key = Vec::with_capacity(SEQUENCE_KEY_BYTES_V5);
     key.push(SEQUENCE_KEY_PREFIX);
     key.extend_from_slice(runtime_handle.as_bytes());
     key
@@ -3249,6 +3444,12 @@ fn map_effect_journal_error(error: JournalError) -> EffectCommitError {
 /// Reports protected execution-journal, evidence, or dispatch failure.
 #[derive(Debug, thiserror::Error)]
 pub enum JournalRuntimeExecutionError {
+    /// A Capture marker append may be durable; only cold exact readback may resolve it.
+    #[error("Capture terminal marker durability is unknown: {0}")]
+    CaptureTerminalOutcomeUnknown(#[source] JournalError),
+    /// Capture marker commit/readback is incomplete and cannot be retried live.
+    #[error("Capture terminal marker requires protected cold readback")]
+    CaptureTerminalReadbackUnknown,
     /// A Host no-Apply append may have committed; cold Query40 is required.
     #[error("Host no-Apply outcome is unknown; reopen protected custody")]
     NoApplyOutcomeUnknown,

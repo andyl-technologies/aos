@@ -13,64 +13,51 @@ use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_protocol::cache_state::{
     BackingObjectIdentityV1, CacheReservationId, CatalogEntryV1, CatalogError, CatalogPresenceV1,
-    PhysicalPartitionId, hash_descriptor_fields_u16_v1, object_descriptor_commitment,
-    validate_object_descriptor,
+    PhysicalPartitionId, object_descriptor_commitment,
 };
 
 use super::admission::{AdmissionError, CacheAdmissionStateV1};
+use aos_sandbox_protocol::cache_state::eviction_data::{
+    self, FrozenEvictionPlanDataV1, EvictionProgressDataV1,
+    eviction_plan_digest, eviction_candidate_binding,
+};
+pub use aos_sandbox_protocol::cache_state::eviction_data::{EvictionCandidateV1, EvictionCandidateStateV1};
 use super::domain::{
     CacheAuthorityError, CacheAuthorityOwner, CacheAuthorityPurposeV1, CacheAuthorityScopeV1,
     VerifiedCacheCapabilityV1,
 };
 
-/// Captures one bounded advisory eviction candidate.
+/// Retains a verifier-issued frozen eviction plan and its historical DATA.
+///
+/// Historical DATA cannot construct this Native wrapper.
+///
+/// ```compile_fail
+/// fn issue(data: aos_sandbox_protocol::cache_state::eviction_data::FrozenEvictionPlanDataV1) {
+///     let _ = aos_sandbox::cache_residency::eviction::FrozenEvictionPlanV1(data);
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EvictionCandidateV1 {
-    /// Complete immutable object descriptor.
-    pub descriptor: ObjectDescriptor,
-    /// Catalog generation digest frozen during selection.
-    pub catalog_digest: ObjectDigest,
-    /// Opaque backing identity to re-observe before effects.
-    pub backing: BackingObjectIdentityV1,
-    /// Exact protected root custody generation.
-    pub root_custody: ObjectDigest,
-    /// Deterministic canonical-name commitment.
-    pub canonical_name: ObjectDigest,
-    /// Physical bytes expected to become reclaimable.
-    pub physical_bytes: u64,
-    /// Reachability state frozen before the deleting transition.
-    pub original_presence: CatalogPresenceV1,
-    /// Last-use generation used only for deterministic ordering.
-    pub last_use_generation: u64,
-    /// Fair-share pressure class, lower values evict first.
-    pub pressure_class: u32,
-}
+pub struct FrozenEvictionPlanV1(FrozenEvictionPlanDataV1);
 
-/// Stores one immutable, bounded candidate set.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FrozenEvictionPlanV1 {
-    /// Idempotent eviction operation.
-    pub(crate) operation: OperationId,
-    /// Physical partition that selection may affect.
-    pub(crate) partition: PhysicalPartitionId,
-    /// Catalog generation observed before selection.
-    pub(crate) catalog_generation: u64,
-    /// Current authority permitting eviction within this partition.
-    pub(crate) authority_digest: ObjectDigest,
-    pub(crate) authority_scope: CacheAuthorityScopeV1,
-    /// Reservation whose reserve-to-low-water gate this plan satisfies.
-    pub(crate) target_reservation: Option<CacheReservationId>,
-    /// Low-water byte target for the transaction.
-    pub(crate) target_reclaim_bytes: u64,
-    /// Ordered exact candidate set.
-    pub(crate) candidates: Vec<EvictionCandidateV1>,
-    /// Digest of the complete frozen plan.
-    pub(crate) digest: ObjectDigest,
+impl std::ops::Deref for FrozenEvictionPlanV1 {
+    type Target = FrozenEvictionPlanDataV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl FrozenEvictionPlanV1 {
+    pub(crate) const fn historical_data_v1(&self) -> &FrozenEvictionPlanDataV1 {
+        &self.0
+    }
+
+    pub(crate) fn into_historical_data_v1(self) -> FrozenEvictionPlanDataV1 {
+        self.0
+    }
+
     pub(crate) const fn authority_binding(&self) -> (CacheAuthorityScopeV1, ObjectDigest) {
-        (self.authority_scope, self.authority_digest)
+        (self.0.authority_scope, self.0.authority_digest)
     }
 
     pub(crate) fn recover_historical(
@@ -83,58 +70,20 @@ impl FrozenEvictionPlanV1 {
         candidates: Vec<EvictionCandidateV1>,
         valid_until: u64,
     ) -> Result<Self, EvictionError> {
-        let planned_bytes = validate_frozen_candidates(&candidates)?;
-        let authority_plan = eviction_candidate_binding(
-            operation,
-            partition,
-            catalog_generation,
-            target_reservation,
-            target_reclaim_bytes,
-            &candidates,
-        );
-        let authority_scope = CacheAuthorityScopeV1::new(
-            partition,
-            authority_plan,
-            Some(operation),
-            authority_plan,
-            partition.backing().root(),
-            catalog_generation,
-            valid_until,
-        )?;
-        let mut plan = Self {
-            operation,
-            partition,
-            catalog_generation,
-            authority_digest,
-            authority_scope,
-            target_reservation,
-            target_reclaim_bytes,
-            candidates,
-            digest: ObjectDigest::from_bytes([0; 32]),
-        };
-        plan.digest = eviction_plan_digest(&plan);
-        if operation.as_bytes() == &[0; 16]
-            || authority_digest.as_bytes() == &[0; 32]
-            || target_reclaim_bytes == 0
-            || planned_bytes < target_reclaim_bytes
-        {
-            return Err(EvictionError::InvalidPlan);
-        }
-        Ok(plan)
+        Ok(Self(FrozenEvictionPlanDataV1::recover_historical(
+            operation, partition, catalog_generation, authority_digest,
+            target_reservation, target_reclaim_bytes, candidates, valid_until,
+        )?))
     }
 
     /// Returns the canonical frozen candidate-set commitment.
     #[must_use]
     pub const fn digest(&self) -> ObjectDigest {
-        self.digest
+        self.0.digest
     }
 
     pub(crate) fn contains_candidate(&self, candidate: &EvictionCandidateV1) -> bool {
-        self.candidates
-            .binary_search_by(|retained| compare_candidates(retained, candidate))
-            .ok()
-            .and_then(|index| self.candidates.get(index))
-            .is_some_and(|retained| retained == candidate)
+        self.0.contains_candidate(candidate)
     }
 
     /// Freezes an already-filtered candidate set under fixed bounds.
@@ -243,7 +192,7 @@ impl FrozenEvictionPlanV1 {
             target_reclaim_bytes,
             &frozen,
         );
-        let authority_scope = CacheAuthorityScopeV1::new(
+        let authority_scope = crate::cache_residency::domain::new_cache_authority_scope_v1(
             partition,
             authority_plan,
             Some(operation),
@@ -258,7 +207,7 @@ impl FrozenEvictionPlanV1 {
             authority_scope,
             now,
         )?;
-        let mut plan = Self {
+        let mut plan = FrozenEvictionPlanDataV1 {
             operation,
             partition,
             catalog_generation,
@@ -270,7 +219,7 @@ impl FrozenEvictionPlanV1 {
             digest: ObjectDigest::from_bytes([0; 32]),
         };
         plan.digest = eviction_plan_digest(&plan);
-        Ok(plan)
+        Ok(Self(plan))
     }
 
     fn validate_current(
@@ -279,59 +228,39 @@ impl FrozenEvictionPlanV1 {
         capability: &VerifiedCacheCapabilityV1,
         now: u64,
     ) -> Result<(), EvictionError> {
-        owner.validate_for_effect_at(
-            capability,
-            CacheAuthorityPurposeV1::Eviction,
-            self.authority_scope,
-            now,
-        )?;
-        if capability.record_digest() != self.authority_digest {
-            return Err(EvictionError::InvalidPlan);
-        }
-        Ok(())
+        require_frozen_plan_current_data_v1(&self.0, owner, capability, now)
     }
 }
 
-/// Selects one candidate's durable two-phase state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum EvictionCandidateStateV1 {
-    /// Frozen but not yet rechecked for a deleting rename.
-    Selected = 1,
-    /// A raced pin made the candidate ineligible before rename.
-    RestoredBeforeEffect = 2,
-    /// The catalog and canonical name are in deleting state.
-    Deleting = 3,
-    /// Unlink may have happened; no bytes may be credited.
-    UnlinkAmbiguous = 4,
-    /// Filesystem reports removal but reclamation is not yet proved.
-    RemovedAwaitingReclaim = 5,
-    /// Backing storage independently proved the bytes reclaimable.
-    Reclaimed = 6,
-    /// A pre-unlink pin race restored committed catalog reachability.
-    RestoredAfterRename = 7,
-    /// Validation contradiction quarantined the backing instead of deleting it.
-    Quarantined = 8,
-}
-
-/// Tracks one frozen candidate through exact effects and recovery.
+/// Retains Native eviction progress whose effect gates remain upper.
+///
+/// Historical DATA cannot construct this Native wrapper.
+///
+/// ```compile_fail
+/// fn issue(data: aos_sandbox_protocol::cache_state::eviction_data::EvictionProgressDataV1) {
+///     let _ = aos_sandbox::cache_residency::eviction::EvictionProgressV1(data);
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EvictionProgressV1 {
-    /// Frozen operation digest.
-    pub(crate) plan_digest: ObjectDigest,
-    /// Exact candidate.
-    pub(crate) candidate: EvictionCandidateV1,
-    /// Current closed state.
-    pub(crate) state: EvictionCandidateStateV1,
-    /// Latest catalog digest after a rename/restore/quarantine.
-    pub(crate) current_catalog_digest: ObjectDigest,
-    /// Opaque digest of the latest trusted observation.
-    pub(crate) evidence: Option<ObjectDigest>,
-    /// Bytes proved reclaimable, zero until terminal reclamation.
-    pub(crate) reclaimed_bytes: u64,
+pub struct EvictionProgressV1(EvictionProgressDataV1);
+
+impl std::ops::Deref for EvictionProgressV1 {
+    type Target = EvictionProgressDataV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl EvictionProgressV1 {
+    pub(crate) const fn historical_data_v1(&self) -> &EvictionProgressDataV1 {
+        &self.0
+    }
+
+    pub(crate) fn into_historical_data_v1(self) -> EvictionProgressDataV1 {
+        self.0
+    }
+
     pub(crate) fn recover_historical(
         plan: &FrozenEvictionPlanV1,
         candidate: EvictionCandidateV1,
@@ -340,44 +269,21 @@ impl EvictionProgressV1 {
         evidence: Option<ObjectDigest>,
         reclaimed_bytes: u64,
     ) -> Result<Self, EvictionError> {
-        if !plan.contains_candidate(&candidate) || current_catalog_digest.as_bytes() == &[0; 32] {
-            return Err(EvictionError::InvalidTransition);
-        }
-        let needs_evidence = matches!(
-            state,
-            EvictionCandidateStateV1::UnlinkAmbiguous
-                | EvictionCandidateStateV1::RemovedAwaitingReclaim
-                | EvictionCandidateStateV1::Reclaimed
-                | EvictionCandidateStateV1::Quarantined
-        );
-        if needs_evidence != evidence.is_some()
-            || evidence.is_some_and(|digest| digest.as_bytes() == &[0; 32])
-            || (state == EvictionCandidateStateV1::Reclaimed
-                && reclaimed_bytes != candidate.physical_bytes)
-            || (state != EvictionCandidateStateV1::Reclaimed && reclaimed_bytes != 0)
-        {
-            return Err(EvictionError::InvalidTransition);
-        }
-        Ok(Self {
-            plan_digest: plan.digest,
-            candidate,
-            state,
-            current_catalog_digest,
-            evidence,
-            reclaimed_bytes,
-        })
+        Ok(Self(EvictionProgressDataV1::recover_historical(
+            plan, candidate, state, current_catalog_digest, evidence, reclaimed_bytes,
+        )?))
     }
 
     /// Returns the closed current candidate state.
     #[must_use]
     pub const fn state(&self) -> EvictionCandidateStateV1 {
-        self.state
+        self.0.state
     }
 
     /// Returns exact physically observed reclaimed allocated bytes.
     #[must_use]
     pub const fn reclaimed_bytes(&self) -> u64 {
-        self.reclaimed_bytes
+        self.0.reclaimed_bytes
     }
 
     /// Starts progress for an exact member of a frozen plan.
@@ -389,20 +295,7 @@ impl EvictionProgressV1 {
         plan: &FrozenEvictionPlanV1,
         descriptor: &ObjectDescriptor,
     ) -> Result<Self, EvictionError> {
-        let candidate = plan
-            .candidates
-            .iter()
-            .find(|candidate| &candidate.descriptor == descriptor)
-            .ok_or(EvictionError::CandidateNotFrozen)?
-            .clone();
-        Ok(Self {
-            plan_digest: plan.digest,
-            current_catalog_digest: candidate.catalog_digest,
-            candidate,
-            state: EvictionCandidateStateV1::Selected,
-            evidence: None,
-            reclaimed_bytes: 0,
-        })
+        Ok(Self(EvictionProgressDataV1::selected(plan, descriptor)?))
     }
 
     /// Rechecks current pins and atomically moves an eligible entry to deleting.
@@ -441,13 +334,13 @@ impl EvictionProgressV1 {
             .pins()
             .blocks_eviction(entry.partition, &self.candidate.descriptor)
         {
-            self.state = EvictionCandidateStateV1::RestoredBeforeEffect;
+            self.0.state = EvictionCandidateStateV1::RestoredBeforeEffect;
             return Ok(());
         }
         let deleting = entry.transition(CatalogPresenceV1::Deleting)?;
         state.replace_catalog_entry(entry.digest, deleting.clone())?;
-        self.current_catalog_digest = deleting.digest;
-        self.state = EvictionCandidateStateV1::Deleting;
+        self.0.current_catalog_digest = deleting.digest;
+        self.0.state = EvictionCandidateStateV1::Deleting;
         Ok(())
     }
 
@@ -491,8 +384,8 @@ impl EvictionProgressV1 {
         {
             let restored = entry.transition(self.candidate.original_presence)?;
             state.replace_catalog_entry(entry.digest, restored.clone())?;
-            self.current_catalog_digest = restored.digest;
-            self.state = EvictionCandidateStateV1::RestoredAfterRename;
+            self.0.current_catalog_digest = restored.digest;
+            self.0.state = EvictionCandidateStateV1::RestoredAfterRename;
             return Ok(UnlinkAdmissionV1::DeniedAndRestored);
         }
         Ok(UnlinkAdmissionV1::Authorized(AuthorizedUnlinkV1 {
@@ -544,10 +437,10 @@ impl EvictionProgressV1 {
             }
             let quarantined = entry.transition(CatalogPresenceV1::Quarantined)?;
             state.replace_catalog_entry(entry.digest, quarantined.clone())?;
-            self.current_catalog_digest = quarantined.digest;
+            self.0.current_catalog_digest = quarantined.digest;
         }
-        self.evidence = Some(observation.evidence);
-        self.state = match observation.outcome {
+        self.0.evidence = Some(observation.evidence);
+        self.0.state = match observation.outcome {
             UnlinkOutcomeV1::RemovedOrAlreadyAbsent => {
                 EvictionCandidateStateV1::RemovedAwaitingReclaim
             }
@@ -595,7 +488,7 @@ impl EvictionProgressV1 {
         }
         match observation.outcome {
             UnlinkOutcomeV1::RemovedOrAlreadyAbsent => {
-                self.state = EvictionCandidateStateV1::RemovedAwaitingReclaim;
+                self.0.state = EvictionCandidateStateV1::RemovedAwaitingReclaim;
             }
             UnlinkOutcomeV1::Ambiguous => {}
             UnlinkOutcomeV1::StillPresentExact => {
@@ -609,7 +502,7 @@ impl EvictionProgressV1 {
                 {
                     return Err(EvictionError::InvalidRetryAuthority);
                 }
-                self.state = EvictionCandidateStateV1::Deleting;
+                self.0.state = EvictionCandidateStateV1::Deleting;
             }
             UnlinkOutcomeV1::IdentityMismatch => {
                 let entry = state
@@ -623,11 +516,11 @@ impl EvictionProgressV1 {
                 }
                 let quarantined = entry.transition(CatalogPresenceV1::Quarantined)?;
                 state.replace_catalog_entry(entry.digest, quarantined.clone())?;
-                self.current_catalog_digest = quarantined.digest;
-                self.state = EvictionCandidateStateV1::Quarantined;
+                self.0.current_catalog_digest = quarantined.digest;
+                self.0.state = EvictionCandidateStateV1::Quarantined;
             }
         }
-        self.evidence = Some(observation.evidence);
+        self.0.evidence = Some(observation.evidence);
         Ok(())
     }
 
@@ -665,10 +558,10 @@ impl EvictionProgressV1 {
         if physically_reclaimed != evidence.reclaimable_bytes {
             return Err(EvictionError::ObservationMismatch);
         }
-        self.current_catalog_digest = catalog_digest;
-        self.state = EvictionCandidateStateV1::Reclaimed;
-        self.evidence = Some(evidence.digest);
-        self.reclaimed_bytes = evidence.reclaimable_bytes;
+        self.0.current_catalog_digest = catalog_digest;
+        self.0.state = EvictionCandidateStateV1::Reclaimed;
+        self.0.evidence = Some(evidence.digest);
+        self.0.reclaimed_bytes = evidence.reclaimable_bytes;
         Ok(())
     }
 }
@@ -818,8 +711,8 @@ impl EvictionRetryAuthorityV1 {
         self,
         owner: &CacheAuthorityOwner<'_, '_>,
         capability: &VerifiedCacheCapabilityV1,
-        plan: &FrozenEvictionPlanV1,
-        progress: &EvictionProgressV1,
+        plan: &FrozenEvictionPlanDataV1,
+        progress: &EvictionProgressDataV1,
         now: u64,
     ) -> Result<(), EvictionError> {
         if progress.state != EvictionCandidateStateV1::UnlinkAmbiguous
@@ -847,8 +740,8 @@ impl EvictionRetryAuthorityV1 {
     pub(crate) fn matches_observation_and_successor(
         self,
         observation: &UnlinkObservationV1,
-        previous: &EvictionProgressV1,
-        next: &EvictionProgressV1,
+        previous: &EvictionProgressDataV1,
+        next: &EvictionProgressDataV1,
         catalog: Option<&CatalogEntryV1>,
     ) -> bool {
         observation.outcome == UnlinkOutcomeV1::StillPresentExact
@@ -898,8 +791,8 @@ impl UnlinkObservationV1 {
 
     pub(crate) fn matches_successor(
         &self,
-        previous: &EvictionProgressV1,
-        next: &EvictionProgressV1,
+        previous: &EvictionProgressDataV1,
+        next: &EvictionProgressDataV1,
         catalog: Option<&CatalogEntryV1>,
     ) -> bool {
         if self.plan_digest != previous.plan_digest
@@ -994,8 +887,8 @@ impl UnlinkObservationV1 {
         &self,
         owner: &CacheAuthorityOwner<'_, '_>,
         capability: &VerifiedCacheCapabilityV1,
-        plan: &FrozenEvictionPlanV1,
-        progress: &EvictionProgressV1,
+        plan: &FrozenEvictionPlanDataV1,
+        progress: &EvictionProgressDataV1,
         now: u64,
     ) -> Result<(), EvictionError> {
         let scope = eviction_effect_scope(
@@ -1040,8 +933,8 @@ impl ReclamationEvidenceV1 {
 
     pub(crate) fn matches_successor(
         self,
-        previous: &EvictionProgressV1,
-        next: &EvictionProgressV1,
+        previous: &EvictionProgressDataV1,
+        next: &EvictionProgressDataV1,
         catalog: Option<&CatalogEntryV1>,
     ) -> bool {
         self.plan_digest == previous.plan_digest
@@ -1105,8 +998,8 @@ impl ReclamationEvidenceV1 {
         self,
         owner: &CacheAuthorityOwner<'_, '_>,
         capability: &VerifiedCacheCapabilityV1,
-        plan: &FrozenEvictionPlanV1,
-        progress: &EvictionProgressV1,
+        plan: &FrozenEvictionPlanDataV1,
+        progress: &EvictionProgressDataV1,
         now: u64,
     ) -> Result<(), EvictionError> {
         let scope = eviction_effect_scope(
@@ -1185,124 +1078,9 @@ pub enum EvictionError {
     InvalidWatermarkOrder,
 }
 
-fn eviction_plan_digest(plan: &FrozenEvictionPlanV1) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(b"aos.sandbox.cache.eviction-plan.v1\0");
-    hasher.update(plan.operation.as_bytes());
-    hasher.update(plan.partition.digest().as_bytes());
-    hasher.update(plan.catalog_generation.to_be_bytes());
-    hasher.update(plan.authority_digest.as_bytes());
-    hasher.update(plan.authority_scope.subject().as_bytes());
-    hasher.update(plan.authority_scope.plan().as_bytes());
-    hasher.update(plan.authority_scope.generation().to_be_bytes());
-    hasher.update(plan.authority_scope.valid_until().to_be_bytes());
-    hasher.update(
-        plan.target_reservation
-            .map_or([0; 16], |reservation| *reservation.as_bytes()),
-    );
-    hasher.update(plan.target_reclaim_bytes.to_be_bytes());
-    hasher.update((plan.candidates.len() as u32).to_be_bytes());
-    for candidate in &plan.candidates {
-        hash_descriptor_fields_u16_v1(&mut hasher, &candidate.descriptor);
-        hasher.update(candidate.catalog_digest.as_bytes());
-        hasher.update(candidate.backing.as_bytes());
-        hasher.update(candidate.root_custody.as_bytes());
-        hasher.update(candidate.canonical_name.as_bytes());
-        hasher.update(candidate.physical_bytes.to_be_bytes());
-        hasher.update([candidate.original_presence as u8]);
-        hasher.update(candidate.last_use_generation.to_be_bytes());
-        hasher.update(candidate.pressure_class.to_be_bytes());
-    }
-    ObjectDigest::from_bytes(hasher.finalize().into())
-}
-
-fn validate_frozen_candidates(candidates: &[EvictionCandidateV1]) -> Result<u64, EvictionError> {
-    if candidates.is_empty() || candidates.len() > 65_536 {
-        return Err(EvictionError::CandidateLimit);
-    }
-    let mut identities = BTreeSet::new();
-    let mut previous_order = None;
-    let mut planned_bytes = 0_u64;
-    for candidate in candidates {
-        let order = (
-            candidate.pressure_class,
-            candidate.last_use_generation,
-            candidate.descriptor.clone(),
-        );
-        if validate_eviction_candidate(candidate).is_err()
-            || !identities.insert(candidate.descriptor.clone())
-            || previous_order
-                .as_ref()
-                .is_some_and(|previous| previous >= &order)
-        {
-            return Err(EvictionError::InvalidPlan);
-        }
-        planned_bytes = planned_bytes
-            .checked_add(candidate.physical_bytes)
-            .ok_or(EvictionError::Overflow)?;
-        previous_order = Some(order);
-    }
-    Ok(planned_bytes)
-}
-
-pub(crate) fn validate_eviction_candidate(
-    candidate: &EvictionCandidateV1,
-) -> Result<(), EvictionError> {
-    if validate_object_descriptor(&candidate.descriptor).is_err()
-        || candidate.catalog_digest.as_bytes() == &[0; 32]
-        || candidate.root_custody.as_bytes() == &[0; 32]
-        || candidate.canonical_name.as_bytes() == &[0; 32]
-        || candidate.physical_bytes == 0
-        || candidate.last_use_generation == 0
-        || !matches!(
-            candidate.original_presence,
-            CatalogPresenceV1::Committed | CatalogPresenceV1::Quarantined
-        )
-    {
-        return Err(EvictionError::InvalidPlan);
-    }
-    Ok(())
-}
-
-fn compare_candidates(
-    left: &EvictionCandidateV1,
-    right: &EvictionCandidateV1,
-) -> std::cmp::Ordering {
-    left.pressure_class
-        .cmp(&right.pressure_class)
-        .then_with(|| left.last_use_generation.cmp(&right.last_use_generation))
-        .then_with(|| left.descriptor.cmp(&right.descriptor))
-}
-
-fn eviction_candidate_binding(
-    operation: OperationId,
-    partition: PhysicalPartitionId,
-    catalog_generation: u64,
-    target_reservation: Option<CacheReservationId>,
-    target_reclaim_bytes: u64,
-    candidates: &[EvictionCandidateV1],
-) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(b"aos.sandbox.cache.eviction-candidate-binding.v1\0");
-    hasher.update(operation.as_bytes());
-    hasher.update(partition.digest().as_bytes());
-    hasher.update(catalog_generation.to_be_bytes());
-    hasher.update(target_reservation.map_or([0; 16], |reservation| *reservation.as_bytes()));
-    hasher.update(target_reclaim_bytes.to_be_bytes());
-    hasher.update((candidates.len() as u32).to_be_bytes());
-    for candidate in candidates {
-        hasher.update(object_descriptor_commitment(&candidate.descriptor).as_bytes());
-        hasher.update(candidate.catalog_digest.as_bytes());
-        hasher.update(candidate.backing.as_bytes());
-        hasher.update(candidate.physical_bytes.to_be_bytes());
-        hasher.update([candidate.original_presence as u8]);
-    }
-    ObjectDigest::from_bytes(hasher.finalize().into())
-}
-
 fn eviction_effect_scope(
-    plan: &FrozenEvictionPlanV1,
-    progress: &EvictionProgressV1,
+    plan: &FrozenEvictionPlanDataV1,
+    progress: &EvictionProgressDataV1,
     subject: ObjectDigest,
     generation: u64,
     valid_until: u64,
@@ -1310,7 +1088,7 @@ fn eviction_effect_scope(
     if progress.plan_digest != plan.digest {
         return Err(EvictionError::InvalidPlan);
     }
-    Ok(CacheAuthorityScopeV1::new(
+    Ok(crate::cache_residency::domain::new_cache_authority_scope_v1(
         plan.partition,
         subject,
         Some(plan.operation),
@@ -1322,7 +1100,7 @@ fn eviction_effect_scope(
 }
 
 fn retry_subject(
-    progress: &EvictionProgressV1,
+    progress: &EvictionProgressDataV1,
     old_attempt_fence: ObjectDigest,
     observation: ObjectDigest,
 ) -> ObjectDigest {
@@ -1335,7 +1113,7 @@ fn retry_subject(
     ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
-fn unlink_subject(progress: &EvictionProgressV1, outcome: UnlinkOutcomeV1) -> ObjectDigest {
+fn unlink_subject(progress: &EvictionProgressDataV1, outcome: UnlinkOutcomeV1) -> ObjectDigest {
     let mut hasher = Sha256::new();
     hasher.update(b"aos.sandbox.cache.unlink-observation-subject.v1\0");
     hasher.update(object_descriptor_commitment(&progress.candidate.descriptor).as_bytes());
@@ -1345,7 +1123,7 @@ fn unlink_subject(progress: &EvictionProgressV1, outcome: UnlinkOutcomeV1) -> Ob
     ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
-fn reclamation_subject(progress: &EvictionProgressV1, bytes: u64) -> ObjectDigest {
+fn reclamation_subject(progress: &EvictionProgressDataV1, bytes: u64) -> ObjectDigest {
     let mut hasher = Sha256::new();
     hasher.update(b"aos.sandbox.cache.reclamation-observation-subject.v1\0");
     hasher.update(object_descriptor_commitment(&progress.candidate.descriptor).as_bytes());
@@ -1364,4 +1142,53 @@ fn retry_authority_digest(authority: &EvictionRetryAuthorityV1) -> ObjectDigest 
     hasher.update(authority.old_attempt_fence.as_bytes());
     hasher.update(authority.observation.as_bytes());
     ObjectDigest::from_bytes(hasher.finalize().into())
+}
+
+pub(crate) fn validate_eviction_candidate(candidate: &EvictionCandidateV1) -> Result<(), EvictionError> {
+    eviction_data::validate_eviction_candidate(candidate).map_err(EvictionError::from)
+}
+
+impl From<eviction_data::EvictionDataErrorV1> for EvictionError {
+    fn from(error: eviction_data::EvictionDataErrorV1) -> Self {
+        use eviction_data::EvictionDataErrorV1;
+        match error {
+            EvictionDataErrorV1::InvalidPlan => Self::InvalidPlan,
+            EvictionDataErrorV1::CandidateLimit => Self::CandidateLimit,
+            EvictionDataErrorV1::Overflow => Self::Overflow,
+            EvictionDataErrorV1::InvalidTransition => Self::InvalidTransition,
+            EvictionDataErrorV1::CandidateNotFrozen => Self::CandidateNotFrozen,
+            EvictionDataErrorV1::Authority(error) => Self::Authority(error.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod historical_representation_tests {
+    use super::*;
+
+    #[test]
+    fn native_eviction_wrappers_preserve_inline_representation() {
+        assert_eq!(std::mem::size_of::<FrozenEvictionPlanV1>(), std::mem::size_of::<FrozenEvictionPlanDataV1>());
+        assert_eq!(std::mem::align_of::<FrozenEvictionPlanV1>(), std::mem::align_of::<FrozenEvictionPlanDataV1>());
+        assert_eq!(std::mem::size_of::<EvictionProgressV1>(), std::mem::size_of::<EvictionProgressDataV1>());
+        assert_eq!(std::mem::align_of::<EvictionProgressV1>(), std::mem::align_of::<EvictionProgressDataV1>());
+    }
+}
+
+pub(crate) fn require_frozen_plan_current_data_v1(
+    plan: &FrozenEvictionPlanDataV1,
+    owner: &CacheAuthorityOwner<'_, '_>,
+    capability: &VerifiedCacheCapabilityV1,
+    now: u64,
+) -> Result<(), EvictionError> {
+    owner.validate_for_effect_at(
+        capability,
+        CacheAuthorityPurposeV1::Eviction,
+        plan.authority_scope,
+        now,
+    )?;
+    if capability.record_digest() != plan.authority_digest {
+        return Err(EvictionError::InvalidPlan);
+    }
+    Ok(())
 }

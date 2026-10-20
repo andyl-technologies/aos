@@ -11,6 +11,7 @@ use aos_sandbox_core::{
     ObjectDigest, PrincipalId, ProjectId, ResourceDimension, ResourceVector, SandboxId,
 };
 use aos_sandbox_policy::*;
+use aos_sandbox_protocol::policy_data::RetainedPublisherCompilerOriginV3;
 use aos_sandbox_protocol::domain_ledger::create_q04_history::{Q04CutIdentityV1, Q04PhaseRecordV1};
 use aos_sandbox_protocol::domain_ledger::effect_history::{
     EffectLedgerRecord, EffectState, encode_q04_effect,
@@ -155,10 +156,20 @@ fn compiler_origin() -> RetainedPublisherCompilerOriginV3 {
     retain_publisher_compiler_derivation_v3(&input, &candidate).unwrap()
 }
 
+#[derive(Clone, Copy)]
+enum FixtureImage {
+    Q04,
+    CreateIntake,
+}
+
 fn canonical_image_and_delivery(
     clock: aos_sandbox_core::RawPairedClockSample,
+    selected: FixtureImage,
 ) -> (bank::ImageBootstrapPolicy, bank::EnrollmentIdentity) {
-    let mut image = Vec::from(*b"AOSRSB05");
+    let mut image = Vec::from(match selected {
+        FixtureImage::Q04 => *b"AOSRSB05",
+        FixtureImage::CreateIntake => *b"AOSRSB07",
+    });
     image.extend_from_slice(&[10; 16]);
     image.extend_from_slice(&[11; 16]);
     let amounts = [
@@ -175,6 +186,18 @@ fn canonical_image_and_delivery(
     for amount in amounts {
         for _ in ResourceDimension::ALL {
             image.extend_from_slice(&amount.to_be_bytes());
+        }
+    }
+    if matches!(selected, FixtureImage::CreateIntake) {
+        let root = ResourceVector::new([1 << 40; ResourceDimension::COUNT])
+            .with(ResourceDimension::CpuMicrosPerPeriod, 1_000_000);
+        let intake = ResourceVector::new([1 << 40; ResourceDimension::COUNT]);
+        let storage = ResourceVector::new([1 << 40; ResourceDimension::COUNT])
+            .with(ResourceDimension::CpuMicrosPerPeriod, 1_000_000);
+        for vector in [root, intake, storage] {
+            for dimension in ResourceDimension::ALL {
+                image.extend_from_slice(&vector.get(dimension).to_be_bytes());
+            }
         }
     }
     image.extend_from_slice(&Sha256::digest(&image));
@@ -346,6 +369,17 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_for_image(FixtureImage::Q04)
+}
+
+fn fixture_for_image(selected: FixtureImage) -> Fixture {
+    fixture_with_create_operation(selected, None)
+}
+
+fn fixture_with_create_operation(
+    selected: FixtureImage,
+    accepted: Option<aos_sandbox_core::OperationId>,
+) -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let mut journal = reopen(&directory);
@@ -353,10 +387,10 @@ fn fixture() -> Fixture {
     let (specification, _) = crate::sandbox_spec_state::commit(&mut journal, publication).unwrap();
     let clock = crate::policy_compiler::observe_root_first_source_successor_clock_v2(None).unwrap();
     let origin = compiler_origin();
-    let identity = cut_identity(clock, &origin, specification.operation_id());
-    let (policy, enrollment) = canonical_image_and_delivery(clock);
+    let identity = cut_identity(clock, &origin, accepted.unwrap_or(specification.operation_id()));
+    let (policy, enrollment) = canonical_image_and_delivery(clock, selected);
 
-    let (heads, host, prefix, nix, intake, root) = bank::prepare_enrollment_subdivisions(
+    let (heads, host, prefix, nix, intake, root, create, storage) = bank::prepare_enrollment_subdivisions(
         enrollment,
         policy,
         bank::NativeLayoutDemand::new(1, 1),
@@ -364,7 +398,7 @@ fn fixture() -> Fixture {
     .unwrap();
     let claims = bank::initial_enrollment_claims(enrollment, policy, &heads);
     let enrollment_transaction = bank::EnrollmentMutation::new((
-        &[31; 16], &heads, &claims, &host, &prefix, &nix, &intake, &root,
+        &[31; 16], &heads, &claims, &host, &prefix, &nix, &intake, &root, &create, &storage,
     ))
     .transaction()
     .unwrap();
@@ -914,4 +948,148 @@ fn changed_terminal_bank_member_is_rejected_before_crossing_or_native_growth() {
         fs::read(directory.path().join("controller.journal")).unwrap(),
         before_bytes
     );
+}
+
+
+#[test]
+fn canonical_j_data_cannot_select_an_ordinary_native_transition() {
+    let Fixture {
+        directory, mut journal, original, native, posts, terminal,
+    } = fixture_for_image(FixtureImage::CreateIntake);
+    let mut returned = ReturnedAppend::new();
+    returned.append_q04_terminal_into(&mut journal, Ok(terminal), Q04TerminalOriginalsV1 {
+        original: &original, native: &native, posts: &posts,
+    });
+    returned.require_committed().unwrap();
+    let identity = original.binding.native_fields().original_claim.native_fields().enrollment;
+    let id = identity.account_id(b"controller-create-continuation-intake-v1");
+    let state = journal.controller_resource_state_v1().unwrap();
+    let claim = bank::Claim::decode(bank::claim_bytes(state, id).unwrap()).unwrap();
+    let before = bank::find_head(state, claim.native_fields().account).unwrap();
+    let mut account = AccountTransition::settle(before, claim, true).unwrap();
+    account.original_clock = Some(original.original_clock);
+    let transaction = account.transaction().unwrap();
+    let crossing = OnceCell::new();
+    let transition = Transition {
+        original: TransitionOriginal::Account(&account),
+        crossing: Some(NativeCrossing {
+            original: original.original_clock,
+            deadline: original.original_clock.boottime_nanoseconds(),
+            result: &crossing,
+        }),
+    };
+    let next = journal.snapshot_sequence();
+    let bytes = fs::read(directory.path().join("controller.journal")).unwrap();
+
+    assert_eq!(transaction.records().len(), 2);
+    account.require_current(journal.controller_resource_state_v1().unwrap(), &transaction).unwrap();
+    assert!(transition.require_current(journal.controller_resource_state_v1().unwrap(), &transaction).is_err());
+    assert!(journal.commit_controller_resource_transition_v1(&transaction, &transition).is_err());
+    assert!(crossing.get().is_none());
+    assert_eq!(journal.snapshot_sequence(), next);
+    assert_eq!(fs::read(directory.path().join("controller.journal")).unwrap(), bytes);
+}
+
+#[test]
+fn create_preappend_position_requires_the_actual_terminal_to_remain_last() {
+    let Fixture {
+        directory, mut journal, original, native, posts, terminal,
+    } = fixture_for_image(FixtureImage::CreateIntake);
+    let mut returned = ReturnedAppend::new();
+    returned.append_q04_terminal_into(&mut journal, Ok(terminal), Q04TerminalOriginalsV1 {
+        original: &original, native: &native, posts: &posts,
+    });
+    returned.require_committed().unwrap();
+    let names = journal.protected_writer_physical_names_v1().unwrap();
+    let terminal = returned.transaction.as_ref().unwrap().as_ref().unwrap();
+    let native = returned.native.as_ref().unwrap().as_ref().unwrap();
+
+    journal.require_create_intake_preappend_position_v1(names, terminal, native).unwrap();
+    assert!(journal.require_create_intake_preappend_position_v1(names, terminal, &CommitResult {
+        commit_sequence: native.commit_sequence,
+        durable_bytes: native.durable_bytes + 1,
+    }).is_err());
+    assert!(journal.require_create_intake_preappend_position_v1(names, terminal, &CommitResult {
+        commit_sequence: native.commit_sequence + 1,
+        durable_bytes: native.durable_bytes,
+    }).is_err());
+
+    let intervening = JournalTransaction::new([99; 16], vec![JournalRecord::put(
+        RecordNamespace::DesiredState, b"unrelated-native-fixture".to_vec(), vec![1],
+    )]).unwrap();
+    let (journal, result) = seed(&directory, journal, &intervening);
+    result.unwrap();
+
+    assert!(journal.require_create_intake_preappend_position_v1(names, terminal, native).is_err());
+}
+
+#[test]
+fn create_lane_keeps_accepted_operation_distinct_from_spec_publication() {
+    let accepted = aos_sandbox_core::OperationId::from_bytes([251; 16]);
+    let Fixture {
+        directory: _directory, mut journal, original, native, posts, terminal,
+    } = fixture_with_create_operation(FixtureImage::CreateIntake, Some(accepted));
+    let publication = original.specification.operation_id();
+    assert_ne!(accepted, publication);
+    assert_eq!(original.binding.native_fields().original_claim.operation(),
+        accepted.into_bytes());
+    original.require_readback(&journal).unwrap();
+    let lane = original.create_continuation_lane(accepted.into_bytes()).unwrap();
+
+    assert_ne!(lane, [0; 16]);
+    assert_eq!(original.create_continuation_lane(accepted.into_bytes()).unwrap(), lane);
+    assert!(original.create_continuation_lane(publication.into_bytes()).is_err());
+
+    let mut returned = ReturnedAppend::new();
+    returned.append_q04_terminal_into(&mut journal, Ok(terminal), Q04TerminalOriginalsV1 {
+        original: &original, native: &native, posts: &posts,
+    });
+    returned.require_committed().unwrap();
+    journal.require_controller_resource_history_v1().unwrap();
+    original.require_readback(&journal).unwrap();
+
+    assert_eq!(original.specification.operation_id(), publication);
+    assert_eq!(original.create_continuation_lane(accepted.into_bytes()).unwrap(), lane);
+    assert!(original.create_continuation_lane(publication.into_bytes()).is_err());
+}
+
+#[test]
+fn cleared_q04_history_never_allows_ordinary_controller_or_source_history_writes() {
+    use aos_sandbox_protocol::domain_ledger::create_storage_history::{
+        KeyV1, LatestHeadV1, OwnerV1, PhaseV1, RecordCoordinatesV1, RecordEnvelopeV1,
+    };
+
+    let Fixture { directory, mut journal, original, native, posts, terminal } =
+        fixture_for_image(FixtureImage::CreateIntake);
+    let mut returned = ReturnedAppend::new();
+    returned.append_q04_terminal_into(&mut journal, Ok(terminal), Q04TerminalOriginalsV1 {
+        original: &original, native: &native, posts: &posts,
+    });
+    returned.require_committed().unwrap();
+    let next = journal.snapshot_sequence();
+    let bytes = fs::read(directory.path().join("controller.journal")).unwrap();
+
+    // These are canonical envelope DATA, not genuine post-J role loans. Both
+    // selectors must remain blocked at the ordinary Native boundary even on
+    // the real cleared eight-phase framing seeded by the existing fixture.
+    for owner in [OwnerV1::Controller, OwnerV1::Source] {
+        let key = KeyV1::new([91; 16], owner, 1).unwrap();
+        let latest = KeyV1::new([91; 16], owner, 0).unwrap();
+        let phase = PhaseV1::new(owner, 1).unwrap();
+        let mut record = vec![0; 140 + 1];
+        let checksum = RecordEnvelopeV1::encode_into(RecordCoordinatesV1 {
+            key, phase, predecessor: [0; 32], correlation: [92; 32],
+        }, &[1], &mut record).unwrap();
+        let transaction = JournalTransaction::new([93; 16], vec![
+            JournalRecord::put(RecordNamespace::CreateStorageHistory, key.encode().to_vec(), record),
+            JournalRecord::put(RecordNamespace::CreateStorageHistory, latest.encode().to_vec(),
+                LatestHeadV1::new(1, checksum).unwrap().encode().to_vec()),
+        ]).unwrap();
+
+        assert!(matches!(journal.preflight_transactions(std::slice::from_ref(&transaction)),
+            Err(JournalError::ProtectedBoundary)));
+        assert!(matches!(journal.commit(&transaction), Err(JournalError::ProtectedBoundary)));
+        assert_eq!(journal.snapshot_sequence(), next);
+        assert_eq!(fs::read(directory.path().join("controller.journal")).unwrap(), bytes);
+    }
 }

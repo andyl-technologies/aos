@@ -8,6 +8,8 @@ delivery exceptions grant no owner state access or preparation authority.
 import view_policy
 
 
+ENVIRONMENT_PROVISION = False
+
 OWNERS = ("controller", "storage", "policy_authority")
 HELPERS = ("controller", "storage")
 OWNER_DOMAINS = tuple(f"aos_sandbox_{role}_t" for role in OWNERS)
@@ -93,6 +95,11 @@ STORAGE_CREDENTIAL_NAMES = (
     *(RUNTIME_CREDENTIAL_NAMES[:3] if RUNTIME_DOMAINS else ()),
 )
 
+ROOT_NO_APPLY_SIGNING_CREDENTIAL = "aos_sandbox_root_noapply_signing_credential_t"
+ROOT_NO_APPLY_SIGNING_NAME = "root-noapply-floor-signing"
+HOST_NO_APPLY_CREDENTIAL = "aos_sandbox_host_noapply_credential_t"
+HOST_NO_APPLY_PUBLIC_NAME = "root-noapply-floor-public"
+
 CREDENTIAL_PID1_FILE_DELIVERY = (
     "create", "getattr", "open", "read", "setattr", "unlink", "write",
 )
@@ -115,12 +122,71 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         "init_t",
     )
     file_read = ("getattr", "open", "read")
+    # Query the same fixed PID 1/Agent receipt producer, including its complete
+    # memfd readback. These cells do not grant payload access to Owner memfds.
+    guest_owner = "aos_sandbox_guest_owner_t"
+    guest_payload = "aos_sandbox_payload_t"
+    positive.extend(accesses(guest_owner, guest_owner, "memfd_file",
+                             ("create", "getattr", "ioctl", "map", "open", "read", "write")))
+    for object_class in ("file", "memfd_file"):
+        negative.extend(accesses(guest_payload, guest_owner, object_class,
+                                 ("create", "setattr", "write")))
     file_mutate = (
         "append", "create", "link", "lock", "rename", "setattr", "unlink", "write"
     )
     dir_mutate = (
         "add_name", "create", "remove_name", "rename", "rmdir", "setattr", "write"
     )
+
+    root = "aos_sandbox_policy_authority_t"
+    host = "aos_sandbox_host_t"
+    for domain, credential in (
+        (root, ROOT_NO_APPLY_SIGNING_CREDENTIAL),
+        (host, HOST_NO_APPLY_CREDENTIAL),
+    ):
+        positive.extend(accesses(domain, credential, "file", file_read))
+        positive.extend(accesses(
+            "init_t", credential, "file", CREDENTIAL_PID1_FILE_DELIVERY,
+        ))
+        positive.append(Access(credential, "tmpfs_t", "filesystem", "associate"))
+        negative.extend(accesses(domain, credential, "file", (
+            *file_mutate, "map", "ioctl", "execute", "execute_no_trans",
+            "entrypoint", "relabelfrom", "relabelto",
+        )))
+        negative.extend(accesses("init_t", credential, "file", (
+            "append", "link", "lock", "rename", "ioctl", "map", "execute",
+            "execute_no_trans", "entrypoint", "relabelfrom", "relabelto",
+        )))
+        for other in all_roles:
+            if other not in (domain, "init_t"):
+                negative.extend(accesses(other, credential, "file", (
+                    *file_read, *file_mutate, "map", "ioctl",
+                )))
+
+    for target in ("root_t", "var_run_t", "tmpfs_t", "init_tmpfs_t", HOST_NO_APPLY_CREDENTIAL):
+        positive.extend(accesses(host, target, "dir", (*file_read, "search")))
+    positive.extend(accesses(
+        "init_t", HOST_NO_APPLY_CREDENTIAL, "dir", CREDENTIAL_PID1_DIR_DELIVERY,
+    ))
+    negative.extend(accesses(host, HOST_NO_APPLY_CREDENTIAL, "dir", (
+        *dir_mutate, "mounton", "relabelfrom", "relabelto",
+    )))
+    negative.extend(accesses(
+        "init_t", HOST_NO_APPLY_CREDENTIAL, "dir", ("rename", "rmdir", "relabelfrom"),
+    ))
+    for other in all_roles:
+        if other not in (host, "init_t"):
+            negative.extend(accesses(other, HOST_NO_APPLY_CREDENTIAL, "dir", (
+                *file_read, "search", *dir_mutate,
+            )))
+    transitions.extend((
+        Transition("init_t", HOST_NO_APPLY_CREDENTIAL, "file", "init_tmpfs_t",
+                   filename=Transition.UNNAMED),
+        Transition("init_t", HOST_NO_APPLY_CREDENTIAL, "file", HOST_NO_APPLY_CREDENTIAL,
+                   filename=HOST_NO_APPLY_PUBLIC_NAME),
+        Transition("init_t", "aos_sandbox_policy_authority_credential_t", "file",
+                   ROOT_NO_APPLY_SIGNING_CREDENTIAL, filename=ROOT_NO_APPLY_SIGNING_NAME),
+    ))
 
     for role, domain in zip(OWNERS, OWNER_DOMAINS):
         executable = f"aos_sandbox_{role}_exec_t"
@@ -522,7 +588,13 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     for other in all_roles:
         if other == root or other == "init_t":
             continue
-        negative.extend(accesses(other, root, "file", ("ioctl", "open", "read")))
+        # Source's existing PIDFD_GET_INFO base cell is paired with the sole
+        # 0xff0b selector in the shared checker; it gains no open/read custody.
+        file_permissions = (
+            ("open", "read") if other == "aos_sandbox_source_signer_t"
+            else ("ioctl", "open", "read")
+        )
+        negative.extend(accesses(other, root, "file", file_permissions))
         negative.append(Access(other, root, "fd", "use"))
         negative.extend(accesses(other, root, "unix_stream_socket", ("read", "write")))
         negative.append(Access(other, root, "process", "transition"))
@@ -654,6 +726,27 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     bank_positive, bank_negative = _resource_bank_matrix(Access, accesses)
     positive.extend(bank_positive)
     negative.extend(bank_negative)
+
+    if ENVIRONMENT_PROVISION:
+        root = "aos_sandbox_policy_authority_t"
+        artifact = "aos_environment_provision_t"
+        gcroot = "aos_environment_gcroot_t"
+        positive.extend(accesses(root, artifact, "dir", ("getattr", "open", "search")))
+        positive.extend(accesses(root, artifact, "file", file_read))
+        positive.extend(accesses(root, gcroot, "lnk_file", ("getattr", "read")))
+        positive.extend(accesses("init_t", artifact, "dir", ("getattr", "open", "read", "search")))
+        positive.extend(accesses("init_t", artifact, "file", file_read))
+        positive.extend(accesses("init_t", gcroot, "lnk_file", ("create", "getattr", "read", "relabelto", "rename", "setattr", "unlink")))
+        positive.extend(accesses("setfiles_t", gcroot, "lnk_file", ("getattr", "relabelto", "setattr")))
+        positive.extend(accesses("aos_sandbox_runtime_roots_t", "aos_sandbox_policy_authority_state_t", "dir",
+                                 ("add_name", "create", "getattr", "open", "search", "setattr", "write")))
+        for reader in ENFORCING:
+            negative.extend(accesses(reader, artifact, "file", (*file_mutate, "execute", "execute_no_trans", "entrypoint", "map")))
+            negative.extend(accesses(reader, artifact, "dir", dir_mutate))
+            negative.extend(accesses(reader, gcroot, "lnk_file", ("create", "rename", "setattr", "unlink", "relabelto", "relabelfrom")))
+            if reader != root:
+                negative.extend(accesses(reader, artifact, "file", ("open", "read")))
+                negative.extend(accesses(reader, gcroot, "lnk_file", ("getattr", "read")))
 
     view_positive, view_negative, view_transitions = view_policy.matrix(Access, Transition, accesses, all_roles)
     positive.extend(view_positive)

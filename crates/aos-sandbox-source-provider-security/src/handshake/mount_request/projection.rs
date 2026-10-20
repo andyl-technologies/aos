@@ -5,7 +5,7 @@ use super::*;
 pub(super) trait MountSourceAcquisitionJournalViewV2 {
     fn capture_snapshot(
         &self,
-    ) -> Result<aos_sandbox::ProtectedJournalSnapshot, SourceProviderSecurityError> {
+    ) -> Result<aos_sandbox_mount_native::ProtectedJournalSnapshot, SourceProviderSecurityError> {
         Err(SourceProviderSecurityError::SessionContinuity)
     }
     fn validated_state(
@@ -22,14 +22,14 @@ pub(super) trait MountSourceAcquisitionJournalViewV2 {
 
     fn validate_current_snapshot(
         &self,
-        snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+        snapshot: &aos_sandbox_mount_native::ProtectedJournalSnapshot,
     ) -> Result<(), SourceProviderSecurityError>;
 }
 
-impl MountSourceAcquisitionJournalViewV2 for aos_sandbox::ProtectedJournalAuthority<'_> {
+impl MountSourceAcquisitionJournalViewV2 for aos_sandbox_mount_native::ProtectedJournalAuthority<'_> {
     fn capture_snapshot(
         &self,
-    ) -> Result<aos_sandbox::ProtectedJournalSnapshot, SourceProviderSecurityError> {
+    ) -> Result<aos_sandbox_mount_native::ProtectedJournalSnapshot, SourceProviderSecurityError> {
         self.snapshot()
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)
     }
@@ -58,7 +58,7 @@ impl MountSourceAcquisitionJournalViewV2 for aos_sandbox::ProtectedJournalAuthor
 
     fn validate_current_snapshot(
         &self,
-        snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+        snapshot: &aos_sandbox_mount_native::ProtectedJournalSnapshot,
     ) -> Result<(), SourceProviderSecurityError> {
         self.validate_mount_source_acquisition_snapshot(snapshot)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)
@@ -66,7 +66,7 @@ impl MountSourceAcquisitionJournalViewV2 for aos_sandbox::ProtectedJournalAuthor
 }
 
 impl MountSourceAcquisitionJournalViewV2
-    for aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>
+    for aos_sandbox_mount_native::MountSourceConsumptionJournalAuthorityV1<'_>
 {
     fn validated_state(
         &self,
@@ -91,7 +91,7 @@ impl MountSourceAcquisitionJournalViewV2
 
     fn validate_current_snapshot(
         &self,
-        snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+        snapshot: &aos_sandbox_mount_native::ProtectedJournalSnapshot,
     ) -> Result<(), SourceProviderSecurityError> {
         self.validate_snapshot(snapshot)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)
@@ -99,11 +99,11 @@ impl MountSourceAcquisitionJournalViewV2
 }
 
 impl MountSourceAcquisitionJournalViewV2
-    for aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>
+    for aos_sandbox_mount_native::MountOriginalNativeJournalAuthorityV5<'_>
 {
     fn capture_snapshot(
         &self,
-    ) -> Result<aos_sandbox::ProtectedJournalSnapshot, SourceProviderSecurityError> {
+    ) -> Result<aos_sandbox_mount_native::ProtectedJournalSnapshot, SourceProviderSecurityError> {
         self.snapshot()
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)
     }
@@ -133,7 +133,7 @@ impl MountSourceAcquisitionJournalViewV2
 
     fn validate_current_snapshot(
         &self,
-        snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+        snapshot: &aos_sandbox_mount_native::ProtectedJournalSnapshot,
     ) -> Result<(), SourceProviderSecurityError> {
         self.validate_snapshot(snapshot)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)
@@ -150,11 +150,11 @@ pub(super) fn validated_mount_state(
 }
 
 impl MountSourceAcquisitionJournalViewV2
-    for aos_sandbox::MountOriginalInventoryJournalAuthorityV6<'_>
+    for aos_sandbox_mount_native::MountOriginalInventoryJournalAuthorityV6<'_>
 {
     fn capture_snapshot(
         &self,
-    ) -> Result<aos_sandbox::ProtectedJournalSnapshot, SourceProviderSecurityError> {
+    ) -> Result<aos_sandbox_mount_native::ProtectedJournalSnapshot, SourceProviderSecurityError> {
         self.snapshot()
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)
     }
@@ -183,7 +183,7 @@ impl MountSourceAcquisitionJournalViewV2
 
     fn validate_current_snapshot(
         &self,
-        snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+        snapshot: &aos_sandbox_mount_native::ProtectedJournalSnapshot,
     ) -> Result<(), SourceProviderSecurityError> {
         self.validate_snapshot(snapshot)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)

@@ -173,7 +173,7 @@ pub enum ProviderSourceProviderHandshakeStatusV1 {
 /// attempt. Each artifact purpose may be used at most once.
 pub struct ProviderOwnerSecurityFacadeV1<'session, 'journal, 'authority, 'authorization> {
     session: &'session mut CurrentProviderIngressSessionV1,
-    journal: &'journal aos_sandbox::ProtectedJournalAuthority<'authority>,
+    journal: &'journal aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'authority>,
     authorization: &'authorization super::ProviderOutcomeAuthorizationV1,
 }
 
@@ -233,8 +233,8 @@ impl AcquireReceiptFactsV1 {
 /// consumes the builder into an opaque committed outcome after exact
 /// preflight, protected commit, and postcommit currentness validation.
 pub struct ProviderCompletionBuilderV1 {
-    transaction: aos_sandbox::JournalTransaction,
-    preflight: aos_sandbox::ProtectedJournalPreflight,
+    transaction: aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction,
+    preflight: aos_sandbox_source::provider_journal::ProtectedJournalPreflight,
     transaction_commitment: aos_sandbox_core::ObjectDigest,
     artifact_commitment: aos_sandbox_core::ObjectDigest,
     reservation_commitment: aos_sandbox_core::ObjectDigest,
@@ -243,12 +243,12 @@ pub struct ProviderCompletionBuilderV1 {
     session_binding: aos_sandbox_core::ObjectDigest,
     response: Option<Vec<u8>>,
     // Constructed only by the exact native Pending/Unavailable status facade.
-    native_release_status_capacity: Option<aos_sandbox::GlobalCapacityReservationV1>,
+    native_release_status_capacity: Option<aos_sandbox_source::provider_journal::GlobalCapacityReservationV1>,
 }
 
 /// Carries one exact recovered response authorized for a single carrier handoff.
 pub struct RevalidatedProviderReplayV1 {
-    snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
     method: SourceProviderMethod,
     response_sequence: u64,
     session_binding: aos_sandbox_core::ObjectDigest,
@@ -263,21 +263,21 @@ enum RetainedArtifactUseV1 {
 }
 
 fn journal_retains_exact_artifact(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     response: &[u8],
 ) -> Result<bool, SourceProviderSecurityError> {
     journal_validates_retained_artifact(journal, response, RetainedArtifactUseV1::HistoricalLineage)
 }
 
 fn journal_retains_exportable_artifact(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     response: &[u8],
 ) -> Result<bool, SourceProviderSecurityError> {
     journal_validates_retained_artifact(journal, response, RetainedArtifactUseV1::Export)
 }
 
 fn journal_validates_retained_artifact(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     response: &[u8],
     artifact_use: RetainedArtifactUseV1,
 ) -> Result<bool, SourceProviderSecurityError> {
@@ -646,7 +646,7 @@ impl ProviderSourceProviderOwnerV1 {
     #[doc(hidden)]
     pub fn into_fixed_ledger_session(
         self,
-        journal: aos_sandbox::FixedSourceProviderJournalHandoffV1<'_, '_>,
+        journal: aos_sandbox_source::provider_journal::FixedSourceProviderJournalHandoffV1<'_, '_>,
     ) -> Result<CurrentProviderIngressSessionV1, SourceProviderSecurityError> {
         self.try_into_fixed_ledger_session(journal)
             .map_err(|(_, error)| error)
@@ -665,7 +665,7 @@ impl ProviderSourceProviderOwnerV1 {
     #[doc(hidden)]
     pub fn try_into_fixed_ledger_session(
         mut self,
-        journal: aos_sandbox::FixedSourceProviderJournalHandoffV1<'_, '_>,
+        journal: aos_sandbox_source::provider_journal::FixedSourceProviderJournalHandoffV1<'_, '_>,
     ) -> Result<CurrentProviderIngressSessionV1, (Self, SourceProviderSecurityError)> {
         let checked = journal
             .validate_current()
@@ -702,7 +702,7 @@ impl ProviderSourceProviderOwnerV1 {
     #[doc(hidden)]
     pub fn into_fixed_recovery_ledger_session(
         mut self,
-        journal: aos_sandbox::FixedSourceProviderJournalHandoffV1<'_, '_>,
+        journal: aos_sandbox_source::provider_journal::FixedSourceProviderJournalHandoffV1<'_, '_>,
     ) -> Result<
         (
             CurrentProviderIngressSessionV1,
@@ -1270,8 +1270,8 @@ impl ProviderHelloPreparedV1 {
 }
 
 fn validate_prospective_completion(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-    transaction: &aos_sandbox::JournalTransaction,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
+    transaction: &aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction,
 ) -> Result<(), SourceProviderSecurityError> {
     journal
         .validate_source_provider_authority()
@@ -1284,7 +1284,7 @@ fn validate_prospective_completion(
     .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
     let mut prospective = current.clone();
     for record in transaction.records() {
-        if record.namespace() != aos_sandbox::RecordNamespace::SourceProviderAuthority {
+        if record.namespace() != aos_sandbox_core::RecordNamespace::SourceProviderAuthority {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
         match record.value() {
@@ -1483,7 +1483,7 @@ fn authorization_authority_is_current(
 }
 
 fn validate_authorization_journal(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     authorization: &super::ProviderOutcomeAuthorizationV1,
 ) -> Result<(), SourceProviderSecurityError> {
     if authorization.reservation_commitment.as_bytes() == &[0; 32] {

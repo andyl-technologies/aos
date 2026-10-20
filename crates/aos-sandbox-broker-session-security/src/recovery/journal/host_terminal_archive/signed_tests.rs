@@ -49,6 +49,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     prepare_server_sent_authenticated_broker_method_outcome_v1,
 };
 use aos_sandbox_protocol::authenticated_session::historical_checkpoint::HistoricalSessionCheckpointV1;
+use aos_sandbox_protocol::authenticated_session::stored_history::StoredBrokerSessionPurposeDataV2 as SessionPurpose;
 use aos_sandbox_protocol::host_execution_no_apply::{
     HostExecutionNoApplyRecordFieldsV1, HostExecutionNoApplyRecordV1,
     decode_host_no_apply_settlement_request_v2, match_archived_host_no_apply_outcome_v2,
@@ -840,6 +841,7 @@ fn stored(
     }
     let history = BrokerSessionDurableHistoryV1::from_records(records).unwrap();
     StoredProtocolHistoryV1 {
+        purpose: SessionPurpose::Ordinary,
         protocol: BrokerSessionProtocolV1::Host,
         endpoint: BrokerSessionDurableEndpointV1::Client,
         generation,
@@ -889,10 +891,22 @@ fn open_test_journal(
     let (journal, _) =
         Journal::open_protected_at_uid(directory, "session.journal", limits, uid).unwrap();
     let mut owner = ProtectedBrokerSessionJournalV1 {
+        purpose: SessionPurpose::Ordinary,
+        floor_currentness: None,
+        floor_currentness_admission: None,
+        floor_currentness_binding: None,
+        client_retired_transcript: None,
+        controller_initial_open: None, storage_host_open: None,
+        floor_preparation: None,
         floor: super::super::tpm_floor::runtime::BrokerFloorV1::test_not_scoped(),
         #[cfg(feature = "online-nix")]
         online_schema: None,
         journal: Some(journal),
+        captured_native_failure: None,
+        floor_main: super::super::tpm_floor::StorageFloorMainArchiveV3::new(),
+        session_replays: Default::default(),
+        schema_original: None,
+        storage_receiving_open: None,
         directory: directory.to_path_buf(),
         name: "session.journal".to_owned(),
         limits,
@@ -1518,4 +1532,23 @@ fn signed_method48_response_requires_one_storage_host_session_and_exact_replay()
         )
         .is_err()
     );
+}
+
+#[test]
+fn captured_mutation_diagnostic_borrows_only_same_returned_transaction() {
+    let fixture = Fixture::new();
+    let directory = tempfile::tempdir().unwrap();
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let mut owner = open_test_journal(fixture.client(), directory.path());
+    let native = std::io::Error::from_raw_os_error(9);
+    owner.captured_native_failure = Some(([45; 16], aos_sandbox::JournalError::Io(native)));
+    let expected = owner.captured_native_failure.as_ref().unwrap().1.to_string();
+
+    let cause = owner.captured_mutation_failure_for_v1(&[45; 16]).unwrap();
+    let pointer = cause as *const dyn std::error::Error;
+    assert_eq!(cause.to_string(), expected);
+    assert!(matches!(cause.downcast_ref::<aos_sandbox::JournalError>(), Some(aos_sandbox::JournalError::Io(error))
+        if error.raw_os_error() == Some(9)));
+    assert!(owner.captured_mutation_failure_for_v1(&[46; 16]).is_none());
+    assert_eq!(owner.captured_mutation_failure_for_v1(&[45; 16]).unwrap() as *const dyn std::error::Error, pointer);
 }

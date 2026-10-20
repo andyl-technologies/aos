@@ -53,7 +53,7 @@ use crate::filesystem_view_state::{
 use crate::mount_observation_state::{
     CurrentMountFilesystemInventoryV1, MountFilesystemInventoryError,
 };
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::{
     CurrentNamespaceTarget, CurrentRuntimeScope, CurrentRuntimeScopeError, NamespaceTargetError,
 };

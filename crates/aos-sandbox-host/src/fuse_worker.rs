@@ -72,7 +72,7 @@ impl RetainedFuseWorkerHostLaunchV1 {
         cgroup_root: &CgroupV2Root,
         name: FuseWorkerUnitNameV1,
         original_roles: [OwnedFd; 4],
-        before_effect: &mut (dyn FnMut() -> Result<()> + Send),
+        before_effect: &mut dyn FnMut() -> Result<()>,
     ) -> Result<Self> {
         let boot = KernelBootId::current().map_err(kernel_error)?;
         if systemd

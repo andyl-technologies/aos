@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use aos_sandbox::journal::{JournalTransaction, ProtectedJournalAuthority};
+use aos_sandbox_mount_native::{JournalTransaction, ProtectedJournalAuthority};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::{
     MountSourcePhysicalProofV1, SourceRealizationBindingV1,
@@ -186,7 +186,7 @@ impl SourceAcquisitionTableV2 {
     pub(crate) fn recover_and_consume_provider_outcome_v2(
         &mut self,
         journal: &mut ProtectedJournalAuthority<'_>,
-        catalog_journal: Option<&ProtectedJournalAuthority<'_>>,
+        catalog_journal: Option<&aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         attempt_id: [u8; 32],
         captured: aos_sandbox_source_provider_security::CapturedMountProviderRecoveryOutcomeV2,
@@ -444,7 +444,7 @@ impl SourceAcquisitionTableV2 {
     pub(crate) fn consume_provider_outcome_v2(
         &mut self,
         journal: &mut ProtectedJournalAuthority<'_>,
-        catalog_journal: &ProtectedJournalAuthority<'_>,
+        catalog_journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         sent: &SentProviderQueryV2,
     ) -> Result<ConsumedProviderOutcomeV2> {

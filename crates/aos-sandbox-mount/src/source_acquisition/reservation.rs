@@ -8,7 +8,7 @@
 #[path = "tests/native_recovery_fixture.rs"]
 mod native_recovery_fixture;
 
-use aos_sandbox::journal::{ProtectedJournalAuthority, ProtectedJournalSnapshot};
+use aos_sandbox_mount_native::{ProtectedJournalAuthority, ProtectedJournalSnapshot};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::{
     LiveValidatedAcquireMountSourceRequest, decode_historical_acquire_mount_source_request,
@@ -165,7 +165,7 @@ impl SourceAcquisitionTableV2 {
     pub(crate) fn prepare_and_admit_acquire_v2(
         &mut self,
         journal: &mut ProtectedJournalAuthority<'_>,
-        catalog_journal: &ProtectedJournalAuthority<'_>,
+        catalog_journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         holder_authority_id: [u8; 16],
         provider_authority_id: [u8; 16],

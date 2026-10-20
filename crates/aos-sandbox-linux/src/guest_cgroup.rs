@@ -10,18 +10,39 @@
 //! signing domain. The two live descriptor pins and original FD4 parser are
 //! joined independently. A directory FD is not a read-only delegation.
 
-use std::num::NonZeroU32;
-use std::os::fd::{AsFd as _, OwnedFd};
-use std::path::Path;
+use std::os::fd::OwnedFd;
 
-use rustix::fs::{FileType, Mode, SealFlags, fcntl_get_seals, fstat, mkdirat};
-
-use crate::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use crate::guest_confinement::{require_guest_cgroup_object, require_guest_owner};
-use crate::immutable_file::SealedMemfdMapping;
-use crate::inherited_fd::duplicate_inherited_descriptor;
-use crate::pidfd::PidFd;
+use crate::cgroup::RetainedCgroupAnchor;
 use crate::{Error, Result};
+
+mod control;
+mod directory;
+mod topology;
+mod inherited;
+mod handoff;
+mod completion;
+mod agent_completion;
+mod agent_parent;
+mod ssh;
+pub use ssh::{GuestSshScopeOriginalV1, GuestSshStandingOriginalV1};
+pub use topology::{GuestRuntimeTopologyClosedV1, GuestRuntimeTopologyOriginalV1,
+    GUEST_PID1_STARTUP_CONTROL_BYTES_V1};
+pub use ssh::source::GuestSshBirthSourceOriginalV1;
+pub(crate) use ssh::source::GuestSshBirthSourceDataV1;
+
+fn require_owner_retaining(slot: &mut Option<Box<crate::guest_confinement::GuestOwnerOriginalV2>>)
+    -> Result<()>
+{
+    if slot.is_some() {
+        return Err(Error::invalid("Guest Owner original", "native predicate already entered"));
+    }
+    *slot = Some(Box::new(crate::guest_confinement::GuestOwnerOriginalV2::new()));
+    let original = slot.as_mut().ok_or_else(|| Error::invalid("Guest Owner original", "missing destination"))?;
+    original.capture_once_v2()?;
+    original.dispose_positive_once_v2()?;
+    drop(slot.take());
+    Ok(())
+}
 
 /// Names the fixed inherited directory role, reserved before startup duplicates.
 pub const GUEST_PAYLOAD_CGROUP_FD: i32 = 6;
@@ -50,54 +71,7 @@ impl GuestPayloadCgroupCustodyV1 {
     /// Rejects a foreign subject, unsealed/partial carrier, changed descriptor
     /// identity, non-cgroup2 root, wrong live self membership, or kernel error.
     pub fn from_inherited() -> Result<Self> {
-        require_guest_owner()?;
-        let payload = duplicate_inherited_descriptor(GUEST_PAYLOAD_CGROUP_FD)?;
-        let carrier = duplicate_inherited_descriptor(GUEST_CGROUP_CUSTODY_FD)?;
-        let provisioning = duplicate_inherited_descriptor(4)?;
-        let seals =
-            fcntl_get_seals(&provisioning).map_err(io("read original Guest provisioning seals"))?;
-        if !seals.contains(SealFlags::SEAL | SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE)
-        {
-            return Err(Error::invalid(
-                "Guest cgroup custody",
-                "original provisioning is not fully sealed",
-            ));
-        }
-        let credential = fstat(&provisioning).map_err(io("stat original Guest provisioning"))?;
-        let directory = fstat(&payload).map_err(io("stat Guest payload cgroup"))?;
-        let expected = [
-            credential.st_dev,
-            credential.st_ino,
-            credential.st_size as u64,
-            directory.st_dev,
-            directory.st_ino,
-        ];
-        SealedMemfdMapping::run(
-            carrier,
-            GUEST_CGROUP_CUSTODY_BYTES as u64,
-            GUEST_CGROUP_CUSTODY_BYTES as u64,
-            |bytes, _identity| require_carrier(bytes, expected),
-        )
-        .map_err(|_| Error::invalid("Guest cgroup carrier", "sealed carrier is unavailable"))??;
-        if FileType::from_raw_mode(credential.st_mode) != FileType::RegularFile
-            || credential.st_size != 258
-            || directory.st_uid != 0
-            || directory.st_mode & 0o022 != 0
-        {
-            return Err(Error::invalid(
-                "Guest cgroup custody",
-                "original descriptor profile differs",
-            ));
-        }
-        let payload = CgroupV2Root::from_owned(payload)?.resolve(Path::new("."))?;
-        require_guest_cgroup_object(payload.as_fd())?;
-        let pid = NonZeroU32::new(std::process::id())
-            .ok_or_else(|| Error::invalid("Guest owner", "PID is zero"))?;
-        payload.verify_exact_membership(&PidFd::open(pid)?)?;
-        Ok(Self {
-            payload,
-            provisioning,
-        })
+        inherited::GuestPayloadCgroupCustodyOriginalV2::ordinary()
     }
 
     /// Duplicates the same retained original provisioning inode for its existing parser.
@@ -120,28 +94,7 @@ impl GuestPayloadCgroupCustodyV1 {
     /// Rejects an inaccessible/deactivated payload root, unsafe descendant,
     /// unavailable write delegation, or kernel error.
     pub fn execution_root(&self) -> Result<RetainedCgroupAnchor> {
-        require_guest_owner()?;
-        self.payload.validate_active()?;
-        match mkdirat(
-            self.payload.as_fd(),
-            "aos-executions-v1",
-            Mode::from_raw_mode(0o700),
-        ) {
-            Ok(()) | Err(rustix::io::Errno::EXIST) => {}
-            Err(source) => return Err(io("create private Guest execution root")(source)),
-        }
-        let root = self
-            .payload
-            .resolve_descendant(Path::new("aos-executions-v1"))?;
-        let stat = fstat(root.as_fd()).map_err(io("stat private Guest execution root"))?;
-        require_guest_cgroup_object(root.as_fd())?;
-        if stat.st_uid != 0 || stat.st_gid != 0 || stat.st_mode & 0o777 != 0o700 {
-            return Err(Error::invalid(
-                "Guest execution root",
-                "private directory profile differs",
-            ));
-        }
-        Ok(root)
+        directory::DirectoryOriginalV1::ordinary_execution_root(&self.payload)
     }
 }
 

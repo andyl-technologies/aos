@@ -5,7 +5,7 @@
 //! same held writer; it cannot lend Ready, sign, send or run a backend. Native3
 //! intermediate associations remain unsupported.
 
-use aos_sandbox::ProtectedJournalSnapshot;
+use aos_sandbox_source::provider_journal::ProtectedJournalSnapshot;
 use aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1;
 
 use super::{

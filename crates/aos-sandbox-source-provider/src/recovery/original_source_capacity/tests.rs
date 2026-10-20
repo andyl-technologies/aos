@@ -4,7 +4,7 @@
 //! actual complete owner graphs. The five named full-comparator vectors below
 //! are intentionally non-`#[test]`: no configuration factory or authority exists.
 
-use aos_sandbox::journal::JournalError;
+use aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1 as JournalError;
 
 use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
     NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3,
@@ -40,14 +40,14 @@ fn shared_union_admission_refuses_floor_only_data_and_preserves_borrowed_transac
     let transaction = JournalTransaction::new([199; 16], vec![floor]).unwrap();
     let retained = transaction.clone();
 
-    assert!(aos_sandbox::journal::compare_source_original_admission_data_v5(
-        aos_sandbox::journal::SourceOriginalAdmissionInputV5 {
+    assert!(aos_sandbox_ledger_replay::replay::source_original::union::compare_source_original_admission_data_v5(
+        aos_sandbox_ledger_replay::replay::source_original::union::SourceOriginalAdmissionInputV5 {
             original_before: &before, original_applying: &transaction,
         },
-        aos_sandbox::JournalLimits::default(),
+        aos_sandbox_protocol::domain_ledger::transaction::JournalLimits::default(),
     ).is_err());
-    assert!(aos_sandbox::journal::compare_source_capacity_union_data_v5(
-        &before, None, &[], &[], aos_sandbox::JournalLimits::default(),
+    assert!(aos_sandbox_ledger_replay::replay::source_original::union::compare_source_capacity_union_data_v5(
+        &before, None, &[], &[], aos_sandbox_protocol::domain_ledger::transaction::JournalLimits::default(),
     ).is_err());
     assert_eq!(transaction, retained);
 }
@@ -58,13 +58,13 @@ fn shared_union_admission_refuses_floor_only_data_and_preserves_borrowed_transac
 fn authenticated_all_prefix_union_fixture_harness(
     before: &State,
     transaction: &JournalTransaction,
-    origins: &[aos_sandbox::journal::SourceOriginalAdmissionDataV5],
+    origins: &[aos_sandbox_ledger_replay::replay::source_original::union::SourceOriginalAdmissionDataV5],
     challenges: &[aos_sandbox_source_provider_ledger::ledger::source_capacity::OriginalSourceChallengeDataV5<'_>],
     configuration: &ProtectedProviderConfigurationV1,
 ) {
     let result = compare_authenticated_source_capacity_union_data_v5(
         before, Some(transaction), origins, challenges, configuration,
-        aos_sandbox::JournalLimits::default(),
+        aos_sandbox_protocol::domain_ledger::transaction::JournalLimits::default(),
     ).unwrap();
     assert!(result.comparison.requires_physical_owner_proofs());
     assert_eq!(result.configuration_origin, UnresolvedNativeProofV1::Unresolved);

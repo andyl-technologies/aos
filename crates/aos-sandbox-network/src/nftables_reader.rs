@@ -10,7 +10,6 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
@@ -25,12 +24,16 @@ use crate::kernel_observation::{
     ObservedNetworkNamespaceV1, ObservedNftAntiSpoofRuleV1, ObservedNftBaseChainV1,
     ObservedNftVerdictV1, ObservedNftablesPolicyV1,
 };
-use crate::kernel_reader::{NetworkKernelReaderError, PinnedArtifact, successful_helper_stdout};
+use crate::kernel_reader::{NetworkKernelReaderError, PinnedArtifact};
 use crate::policy::{
     NetworkFlowDirectionV1, NetworkIpPrefixV1, NetworkPortRangeV1, NetworkTransportProtocolV1,
 };
 
-const MAXIMUM_NFTABLES_OBSERVATION_BYTES: usize = 16 * 1024 * 1024;
+use crate::kernel_reader::observation_helpers_v2::{
+    ObservationAttestationV2, ObservationHelperPortV2, ObservationRecipeV2, finish_read_group_v2,
+};
+
+pub(crate) const MAXIMUM_NFTABLES_OBSERVATION_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_NFTABLES_OBJECTS: usize = 16_899;
 const MAXIMUM_JSON_NODES: usize = MAXIMUM_NFTABLES_OBJECTS * 64;
 const MAXIMUM_JSON_CONTAINER_ENTRIES: usize = MAXIMUM_NFTABLES_OBJECTS;
@@ -45,7 +48,14 @@ const FLOW_COMMENT_PREFIX: &str = "aos.sandbox.network.rule.v1 flow=";
 
 struct StrictValue(Value);
 
+#[derive(Clone, Copy)]
+struct ContainerBudget<'a> {
+    maps: &'a Cell<usize>,
+    arrays: &'a Cell<usize>,
+}
+
 struct StrictValueSeed<'a> {
+    containers: Option<ContainerBudget<'a>>,
     remaining_nodes: &'a Cell<usize>,
 }
 
@@ -64,11 +74,13 @@ impl<'de> DeserializeSeed<'de> for StrictValueSeed<'_> {
 
         deserializer.deserialize_any(StrictValueVisitor {
             remaining_nodes: self.remaining_nodes,
+            containers: self.containers,
         })
     }
 }
 
 struct StrictValueVisitor<'a> {
+    containers: Option<ContainerBudget<'a>>,
     remaining_nodes: &'a Cell<usize>,
 }
 
@@ -116,6 +128,7 @@ impl<'de> Visitor<'de> for StrictValueVisitor<'_> {
     {
         StrictValueSeed {
             remaining_nodes: self.remaining_nodes,
+            containers: self.containers,
         }
         .deserialize(deserializer)
     }
@@ -128,9 +141,13 @@ impl<'de> Visitor<'de> for StrictValueVisitor<'_> {
     where
         A: SeqAccess<'de>,
     {
+        if let Some(budget) = self.containers {
+            take_container::<A::Error>(budget.arrays)?;
+        }
         let mut values = Vec::new();
         while let Some(value) = sequence.next_element_seed(StrictValueSeed {
             remaining_nodes: self.remaining_nodes,
+            containers: self.containers,
         })? {
             if values.len() == MAXIMUM_JSON_CONTAINER_ENTRIES {
                 return Err(A::Error::custom(
@@ -146,6 +163,9 @@ impl<'de> Visitor<'de> for StrictValueVisitor<'_> {
     where
         A: MapAccess<'de>,
     {
+        if let Some(budget) = self.containers {
+            take_container::<A::Error>(budget.maps)?;
+        }
         let mut keys = BTreeSet::new();
         let mut values = Map::new();
         while let Some(key) = entries.next_key::<String>()? {
@@ -159,6 +179,7 @@ impl<'de> Visitor<'de> for StrictValueVisitor<'_> {
             }
             let value = entries.next_value_seed(StrictValueSeed {
                 remaining_nodes: self.remaining_nodes,
+                containers: self.containers,
             })?;
             values.insert(key, value.0);
         }
@@ -174,6 +195,20 @@ pub struct FixedNftablesObservationReader {
 }
 
 impl FixedNftablesObservationReader {
+    pub(crate) fn from_original_v2(
+        nft: PinnedArtifact,
+        enforcement_loader: PinnedArtifact,
+    ) -> Self {
+        Self {
+            nft,
+            enforcement_loader,
+        }
+    }
+
+    pub(crate) fn original_artifacts_v2(&self) -> (&PinnedArtifact, &PinnedArtifact) {
+        (&self.nft, &self.enforcement_loader)
+    }
+
     /// Resolves and retains immutable AOS `nft` and enforcement executables.
     ///
     /// # Errors
@@ -208,25 +243,32 @@ impl FixedNftablesObservationReader {
         &self,
         sandbox_links: &[ObservedLinkV1],
     ) -> Result<ObservedNftablesPolicyV1, NetworkKernelReaderError> {
-        self.enforcement_loader.validate_current()?;
-        let arguments = [
-            "--json",
-            "--handle",
-            "--numeric",
-            "--numeric-priority",
-            "list",
-            "table",
-            TABLE_FAMILY,
-            TABLE_NAME,
-        ]
-        .map(OsString::from);
-        let output = self
-            .nft
-            .run(&arguments, MAXIMUM_NFTABLES_OBSERVATION_BYTES)?;
-        let stdout = successful_helper_stdout(output)?;
-        self.enforcement_loader.validate_current()?;
+        self.observe_with_port_v2(sandbox_links, &mut ObservationHelperPortV2::Local)
+    }
 
-        decode_nftables_observation(&stdout, self.enforcement_loader.digest(), sandbox_links)
+    pub(crate) fn observe_with_port_v2(
+        &self,
+        sandbox_links: &[ObservedLinkV1],
+        port: &mut ObservationHelperPortV2<'_, '_, '_>,
+    ) -> Result<ObservedNftablesPolicyV1, NetworkKernelReaderError> {
+        let result = (|| {
+            let stdout = port.run_attested(
+                &self.nft,
+                (
+                    &self.enforcement_loader,
+                    ObservationAttestationV2::Enforcement,
+                ),
+                ObservationRecipeV2::NftPolicy,
+            )?;
+
+            decode_nftables_observation_with_layout(
+                &stdout,
+                self.enforcement_loader.digest(),
+                sandbox_links,
+                port.nft_layout_data_v2(false)?,
+            )
+        })();
+        finish_read_group_v2(result, port)
     }
 
     /// Proves that the fixed AOS policy table is absent from the namespace.
@@ -241,25 +283,43 @@ impl FixedNftablesObservationReader {
     /// changes, the fixed process fails, the complete JSON inventory is
     /// malformed, or `inet aos_sandbox` remains present.
     pub fn observe_table_absent(&self) -> Result<(), NetworkKernelReaderError> {
-        self.enforcement_loader.validate_current()?;
-        let arguments = ["--json", "--handle", "list", "tables"].map(OsString::from);
-        let output = self
-            .nft
-            .run(&arguments, MAXIMUM_NFTABLES_OBSERVATION_BYTES)?;
-        let stdout = successful_helper_stdout(output)?;
-        self.enforcement_loader.validate_current()?;
-        decode_table_absence(&stdout)
+        self.observe_table_absent_with_port_v2(&mut ObservationHelperPortV2::Local)
+    }
+
+    pub(crate) fn observe_table_absent_with_port_v2(
+        &self,
+        port: &mut ObservationHelperPortV2<'_, '_, '_>,
+    ) -> Result<(), NetworkKernelReaderError> {
+        let result = (|| {
+            let stdout = port.run_attested(
+                &self.nft,
+                (
+                    &self.enforcement_loader,
+                    ObservationAttestationV2::Enforcement,
+                ),
+                ObservationRecipeV2::NftTables,
+            )?;
+            decode_table_absence_with_layout(&stdout, port.nft_layout_data_v2(true)?)
+        })();
+        finish_read_group_v2(result, port)
     }
 }
 
 fn decode_table_absence(bytes: &[u8]) -> Result<(), NetworkKernelReaderError> {
+    decode_table_absence_with_layout(bytes, None)
+}
+
+fn decode_table_absence_with_layout(
+    bytes: &[u8],
+    layout: Option<crate::kernel_reader::observation_helpers_v2::ObservationJsonLayoutDataV2>,
+) -> Result<(), NetworkKernelReaderError> {
     if bytes.is_empty()
         || bytes.len() > MAXIMUM_NFTABLES_OBSERVATION_BYTES
         || !bytes.ends_with(b"\n")
     {
         return invalid("nft table inventory is empty, oversized, or unterminated");
     }
-    let document = decode_strict_json(bytes, MAXIMUM_JSON_NODES)?;
+    let document = decode_strict_json_with_layout(bytes, MAXIMUM_JSON_NODES, layout)?;
     let top = object(&document, "nft table inventory is not an object")?;
     reject_unknown_fields(
         top,
@@ -309,6 +369,15 @@ pub fn decode_nftables_observation(
     installed_artifact_digest: ObjectDigest,
     sandbox_links: &[ObservedLinkV1],
 ) -> Result<ObservedNftablesPolicyV1, NetworkKernelReaderError> {
+    decode_nftables_observation_with_layout(bytes, installed_artifact_digest, sandbox_links, None)
+}
+
+fn decode_nftables_observation_with_layout(
+    bytes: &[u8],
+    installed_artifact_digest: ObjectDigest,
+    sandbox_links: &[ObservedLinkV1],
+    layout: Option<crate::kernel_reader::observation_helpers_v2::ObservationJsonLayoutDataV2>,
+) -> Result<ObservedNftablesPolicyV1, NetworkKernelReaderError> {
     if installed_artifact_digest.as_bytes() == &[0; 32] {
         return invalid("installed enforcement artifact digest is zero");
     }
@@ -319,7 +388,7 @@ pub fn decode_nftables_observation(
         return invalid("nft JSON is empty, oversized, or lacks its final newline");
     }
 
-    let document = decode_strict_json(bytes, MAXIMUM_JSON_NODES)?;
+    let document = decode_strict_json_with_layout(bytes, MAXIMUM_JSON_NODES, layout)?;
     let top = object(&document, "nft JSON top level is not an object")?;
     reject_unknown_fields(
         top,
@@ -419,10 +488,35 @@ pub fn decode_nftables_observation(
 }
 
 fn decode_strict_json(bytes: &[u8], maximum_nodes: usize) -> Result<Value, serde_json::Error> {
-    let remaining_nodes = Cell::new(maximum_nodes);
+    decode_strict_json_with_layout(bytes, maximum_nodes, None)
+}
+
+fn take_container<E: de::Error>(remaining: &Cell<usize>) -> Result<(), E> {
+    let next = remaining
+        .get()
+        .checked_sub(1)
+        .ok_or_else(|| E::custom("JSON container exceeds the prepaid read geometry"))?;
+    remaining.set(next);
+    Ok(())
+}
+
+fn decode_strict_json_with_layout(
+    bytes: &[u8],
+    maximum_nodes: usize,
+    layout: Option<crate::kernel_reader::observation_helpers_v2::ObservationJsonLayoutDataV2>,
+) -> Result<Value, serde_json::Error> {
+    let remaining_nodes =
+        Cell::new(layout.map_or(maximum_nodes, |layout| layout.nodes.min(maximum_nodes)));
+    let maps = Cell::new(layout.map_or(0, |layout| layout.maps));
+    let arrays = Cell::new(layout.map_or(0, |layout| layout.arrays));
+    let containers = layout.map(|_| ContainerBudget {
+        maps: &maps,
+        arrays: &arrays,
+    });
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let document = StrictValueSeed {
         remaining_nodes: &remaining_nodes,
+        containers,
     }
     .deserialize(&mut deserializer)?
     .0;

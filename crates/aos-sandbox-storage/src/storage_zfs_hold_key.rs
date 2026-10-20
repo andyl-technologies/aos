@@ -45,6 +45,10 @@ use crate::runtime::StorageHeldSnapshotReadbackV1;
 use crate::runtime::StorageHeldSnapshotReadbackWithMountV1;
 use crate::service::StorageServiceError;
 
+mod startup;
+
+pub(crate) use startup::StorageZfsHoldKeyStartupV1;
+
 const CREDENTIAL_NAME: &str = "storage-zfs-hold-key-v1";
 const MAGIC: &[u8; 8] = b"AOSZHK01";
 const VERSION: u16 = 1;

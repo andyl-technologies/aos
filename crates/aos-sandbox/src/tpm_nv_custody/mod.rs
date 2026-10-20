@@ -11,9 +11,6 @@ use sha2::{Digest as _, Sha256};
 
 use crate::journal::RecordNamespace;
 
-#[doc(hidden)]
-pub mod entropy;
-
 mod role_binding;
 mod root;
 

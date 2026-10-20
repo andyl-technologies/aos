@@ -13,6 +13,7 @@
   sourceViewRequired ? false,
   cacheViewRequired ? false,
   cacheSignerViewRequired ? false,
+  environmentEvidenceRequired ? false,
   viewZfsState ? false,
   viewZfsSource ? "",
   expectedPolicy ? "${aos-selinux-kernel-policy-readback}/policy.33",
@@ -77,6 +78,7 @@ in
               -DAOS_SOURCE_VIEW_REQUIRED=${booleanFlag sourceViewRequired} \
               -DAOS_CACHE_VIEW_REQUIRED=${booleanFlag cacheViewRequired} \
               -DAOS_CACHE_SIGNER_VIEW_REQUIRED=${booleanFlag cacheSignerViewRequired} \
+              -DAOS_ENVIRONMENT_EVIDENCE_REQUIRED=${booleanFlag environmentEvidenceRequired} \
               -DAOS_VIEW_ZFS_STATE=${booleanFlag viewZfsState} \
               '-DAOS_VIEW_ZFS_SOURCE="${viewZfsSource}"' \
               -I ${./_aos-selinux-runtime-roots} \

@@ -910,7 +910,11 @@ async fn signed_method35_and_cold_query36_support_protected_method48_readback() 
         boottime,
     );
     let mut cold_host = HostBroker::open(
-        NoCatalog,
+        aos_sandbox_host::catalog::FileHostCatalog::new(
+            aos_sandbox_linux::path::BeneathRoot::from_owned(
+                std::fs::File::open(&state_path).unwrap().into(),
+            ).unwrap(),
+        ),
         FileHostStateStore::open_exclusive(&state_path).unwrap(),
         FreezeWorker,
         None,

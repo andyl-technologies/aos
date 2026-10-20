@@ -105,6 +105,37 @@ pub fn decode_snapshot(bytes: &[u8], limits: DecodeLimits) -> Result<Snapshot, C
     .map_err(|error| semantics("snapshot", error))
 }
 
+/// Bounds the actual portable Snapshot decoder's typed backing before entry.
+///
+/// Every element in each of the seven schema collections consumes at least one
+/// actual encoded byte and one decoder item. The shared collection/item limits
+/// further bound each distinct field layout. The byte payloads of media/feature
+/// strings and opaque versions are disjoint parts of the same encoded input;
+/// extra encoded planes cover those owned copies and decode_set's prior member.
+/// The existing canonical validator supplies its own bounded recursive frames.
+///
+/// This passive calculation performs no IO, decoding, allocation, namespace
+/// insertion or admission. The caller separately pays input/owner/native costs.
+#[must_use]
+pub fn snapshot_decode_receiving_bytes_v2(bytes: usize, limits: DecodeLimits) -> Option<usize> {
+    if bytes > limits.maximum_bytes { return None; }
+    let rows = bytes.min(limits.maximum_collection_items).min(limits.maximum_total_items);
+    let fields = std::mem::size_of::<SandboxId>()
+        .checked_add(std::mem::size_of::<crate::ObjectDescriptor>())?
+        .checked_add(std::mem::size_of::<StorageCheckpoint>())?
+        .checked_add(std::mem::size_of::<RetentionClaim>())?
+        .checked_add(std::mem::size_of::<AttachmentSnapshot>())?
+        .checked_add(std::mem::size_of::<ExternalDependency>())?
+        .checked_add(std::mem::size_of::<crate::FeatureRef>())?;
+    let models = rows.checked_mul(fields)?.checked_mul(3)?;
+    let fixed = std::mem::size_of::<Snapshot>().checked_mul(3)?
+        .checked_add(std::mem::size_of::<Result<Snapshot, CanonicalCborError>>().checked_mul(3)?)?;
+    let validation = super::cbor::validation_receiving_bytes_v1(bytes, limits)?;
+    fixed.checked_add(models)?
+        .checked_add(bytes.checked_mul(3)?)?
+        .checked_add(validation)
+}
+
 fn encode_receipt(encoder: &mut Encoder, receipt: Receipt) {
     encoder.array(2);
     encoder.unsigned(1);

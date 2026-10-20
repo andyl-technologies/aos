@@ -7,13 +7,13 @@ use super::*;
 
 enum FenceReadbackViewV1<'borrow, 'journal> {
     Legacy {
-        journal: &'borrow aos_sandbox::ProtectedJournalAuthority<'journal>,
-        snapshot: &'borrow aos_sandbox::ProtectedJournalSnapshot,
+        journal: &'borrow aos_sandbox_mount_native::ProtectedJournalAuthority<'journal>,
+        snapshot: &'borrow aos_sandbox_mount_native::ProtectedJournalSnapshot,
         graph: &'borrow aos_sandbox_protocol::mount_source_acquisition_state::SourceAcquisitionTableV2,
     },
     Original {
-        writer: &'borrow aos_sandbox::MountOriginalNativeJournalAuthorityV5<'journal>,
-        current: &'borrow aos_sandbox::OriginalRootProtectedReadbackV5,
+        writer: &'borrow aos_sandbox_mount_native::MountOriginalNativeJournalAuthorityV5<'journal>,
+        current: &'borrow aos_sandbox_mount_native::OriginalRootProtectedReadbackV5,
     },
 }
 
@@ -33,7 +33,7 @@ impl FenceReadbackViewV1<'_, '_> {
         }
     }
 
-    fn validate(&self) -> Result<(), aos_sandbox::JournalError> {
+    fn validate(&self) -> Result<(), aos_sandbox_mount_native::MountJournalErrorV1> {
         match self {
             Self::Legacy { journal, snapshot, .. } => journal.validate_mount_source_acquisition_snapshot(snapshot),
             Self::Original { writer, current } => writer.validate_readback(current),
@@ -55,7 +55,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// missing readback, non-Releasing owner or stale protected snapshot.
     pub fn seal_committed_native_export_fence_v1(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         attempt_id: [u8; 32],
         outcome: &mut VerifiedMountProviderOutcomeV2,
     ) -> Result<(), SourceProviderSecurityError> {
@@ -84,8 +84,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
 
     pub(super) fn seal_original_native_export_fence_v1(
         &mut self,
-        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
-        current: &aos_sandbox::OriginalRootProtectedReadbackV5,
+        writer: &aos_sandbox_mount_native::MountOriginalNativeJournalAuthorityV5<'_>,
+        current: &aos_sandbox_mount_native::OriginalRootProtectedReadbackV5,
         attempt: [u8; 32],
         outcome: &mut VerifiedMountProviderOutcomeV2,
     ) -> Result<(), SourceProviderSecurityError> {

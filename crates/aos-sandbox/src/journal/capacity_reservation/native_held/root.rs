@@ -104,9 +104,11 @@ pub fn root_native_capacity_append_v3(
                     .clone(),
                 Some(value.clone()),
             )
+            .map_err(JournalError::from)
         })
         .collect::<Result<Vec<_>, _>>()?;
     NativeHeldCapacityAppendV3::new(step, proposal.transaction_id, changes)
+        .map_err(JournalError::from)
 }
 
 /// Frames one native Root continuation or its actual final capacity deletion.

@@ -7,6 +7,11 @@
 //! Required opening parks each returned Journal before further validation;
 //! its shared-store field/drop order and test custody remain unchanged.
 
+mod controller_initial;
+mod storage_initial;
+pub(super) use storage_initial::StorageSidecarOpenOriginalV2;
+pub(super) use controller_initial::ControllerSidecarOpenOriginalV1;
+
 use std::path::{Path, PathBuf};
 
 use aos_sandbox::{
@@ -15,6 +20,7 @@ use aos_sandbox::{
 
 use super::super::{FloorErrorV1, FloorIntentV1, FloorProfileV1};
 use crate::recovery::journal::owner::JournalOwnerV1;
+use crate::recovery::journal::floor_revalidation::{self, FloorCurrentnessSharedV1};
 use crate::tpm_nv_custody::{
     BrokerSidecarStoreV1, CHECKPOINT_KEY as SHARED_CHECKPOINT_KEY, sidecar_limits,
     FloorIntentDataV1, FloorProfileDataV1, OnlineFloorProfileV1, StoredFloorDataV1,
@@ -23,7 +29,8 @@ pub(super) use crate::tpm_nv_custody::{
     FinalSuffixPreflightV1, StoredBrokerFloorV1 as StoredFloorV1,
 };
 
-pub(super) const NAME: &str = "session-floor.journal";
+pub(in crate::recovery::journal) use
+    aos_sandbox_protocol::domain_ledger::floor_sidecar_geometry::SIDECAR_NAME_V1 as NAME;
 pub(super) const CHECKPOINT_KEY: &[u8] = SHARED_CHECKPOINT_KEY;
 
 #[derive(Clone, Copy)]
@@ -56,6 +63,7 @@ pub(crate) struct BrokerSidecarCustodyV1 {
     main_limits: JournalLimits,
     custody: StoreCustodyV1,
     name: SidecarNameV1,
+    currentness: Option<FloorCurrentnessSharedV1>,
 }
 
 enum StoreCustodyV1 {
@@ -77,6 +85,7 @@ pub(super) struct BrokerSidecarOpenV1 {
     started: bool,
     complete: bool,
     name: SidecarNameV1,
+    currentness: Option<FloorCurrentnessSharedV1>,
 }
 
 #[derive(Debug)]
@@ -105,6 +114,19 @@ macro_rules! sidecar_open_step {
     (Retained, error $result:expr) => {
         $result.map_err(BrokerSidecarOpenErrorV1::Journal)?
     };
+    (Legacy, validate $original:ident, $owner:expr, $journal:expr, $directory:expr, $name:expr) => {
+        $owner.validate_held($journal, $directory, $name)
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+    };
+    (Retained, validate $original:ident, $owner:expr, $journal:expr, $directory:expr, $name:expr) => {
+        if let Some(currentness) = $original.currentness.as_ref() {
+            floor_revalidation::validate_rooted(Some(currentness), $owner, $journal, $directory, $name)
+                .map_err(BrokerSidecarOpenErrorV1::Floor)?;
+        } else {
+            $owner.validate_held($journal, $directory, $name)
+                .map_err(BrokerSidecarOpenErrorV1::Journal)?;
+        }
+    };
     (Legacy, stage $original:ident, $journal:ident) => {};
     (Retained, stage $original:ident, $journal:ident) => {
         $original.journal = Some($journal);
@@ -123,15 +145,23 @@ macro_rules! sidecar_open_recipe {
         let ($journal, _) = sidecar_open_step!($mode, error
             $owner.open_existing($directory, sidecar_open_step!($mode, name $original), $limits));
         sidecar_open_step!($mode, stage $original, $journal);
-        sidecar_open_step!($mode, error $owner.validate_held(
+        sidecar_open_step!($mode, validate $original, $owner,
             sidecar_open_step!($mode, journal $original, $journal),
-            $directory,
-            sidecar_open_step!($mode, name $original),
-        ));
+            $directory, sidecar_open_step!($mode, name $original));
     };
 }
 
 impl BrokerSidecarOpenV1 {
+    pub(super) fn inherit_currentness_archive_v1(
+        &mut self, archive: &FloorCurrentnessSharedV1,
+    ) -> Result<(), FloorErrorV1> {
+        if self.started || self.currentness.is_some() {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        self.currentness = Some(archive.clone());
+        Ok(())
+    }
+
     pub(super) fn prepare(
         owner: JournalOwnerV1,
         directory: &Path,
@@ -147,6 +177,7 @@ impl BrokerSidecarOpenV1 {
             started: false,
             complete: false,
             name: SidecarNameV1::Broker,
+            currentness: None,
         })
     }
 
@@ -169,6 +200,7 @@ impl BrokerSidecarOpenV1 {
             started: false,
             complete: false,
             name: SidecarNameV1::Online,
+            currentness: None,
         })
     }
 
@@ -202,6 +234,7 @@ impl BrokerSidecarOpenV1 {
                     directory,
                 },
                 name: self.name,
+                currentness: self.currentness.clone(),
             };
             *target = Some(FloorStoreV1 {
                 inner: BrokerSidecarStoreV1::from_broker(custody),
@@ -228,11 +261,12 @@ impl BrokerSidecarCustodyV1 {
                 directory: directory.to_path_buf(),
             },
             name: SidecarNameV1::Broker,
+            currentness: None,
         })
     }
 
     #[cfg(test)]
-    fn open_fixture(
+    pub(crate) fn open_fixture(
         directory: &Path,
         main_limits: JournalLimits,
         uid: u32,
@@ -252,10 +286,66 @@ impl BrokerSidecarCustodyV1 {
                 directory: directory.to_path_buf(),
             },
             name: SidecarNameV1::Broker,
+            currentness: None,
         })
     }
 
+    pub(crate) fn install_currentness_archive_v1(
+        &mut self, archive: FloorCurrentnessSharedV1,
+    ) -> Result<(), FloorErrorV1> {
+        if self.currentness.is_some() {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        self.currentness = Some(archive);
+        Ok(())
+    }
+
+    // This destination is owned by the actual typed floor read, not an outer
+    // recapture. The same fixed owner/location/name recipe retains every
+    // reached rooted/name prefix before any semantic or independent post.
+    pub(crate) fn validate_held_retaining_v1(
+        &self,
+        originals: &mut aos_sandbox::ProtectedJournalCurrentnessOriginalsV1,
+    ) -> Result<(), JournalError> {
+        match &self.custody {
+            StoreCustodyV1::Production { owner, directory } => owner.validate_held_retaining(
+                &self.journal, directory, self.name.as_str(), originals,
+            ),
+            #[cfg(test)]
+            StoreCustodyV1::Fixture { uid, directory } => {
+                // The fixture opener intentionally permits its private /tmp
+                // leaf. Reuse its exact existing path checker, then retain the
+                // same native name observations; production remains rooted.
+                self.journal.validate_held_protected_at_uid_for_test(
+                    directory, self.name.as_str(), *uid,
+                )?;
+                self.journal.validate_held_protected_names_retaining(originals)
+            }
+        }
+    }
+
+    /// Measures the same held capsule's rooted/name observation without IO.
+    pub(crate) fn held_receiving_demand_v2(&self)
+        -> Result<aos_sandbox_core::ResourceVector, JournalError>
+    {
+        let directory = match &self.custody {
+            StoreCustodyV1::Production { directory, .. } => directory,
+            #[cfg(test)]
+            StoreCustodyV1::Fixture { directory, .. } => directory,
+        };
+        aos_sandbox::ProtectedJournalCurrentnessOriginalsV1::fixed_demand_v1(
+            directory, self.name.as_str(),
+        )
+    }
+
     pub(crate) fn validate_held(&self) -> Result<(), FloorErrorV1> {
+        if let (Some(currentness), StoreCustodyV1::Production { owner, directory }) =
+            (self.currentness.as_ref(), &self.custody)
+        {
+            return floor_revalidation::validate_rooted(
+                Some(currentness), *owner, &self.journal, directory, self.name.as_str(),
+            );
+        }
         let result = self.compare_held_original();
         result.map_err(|_| FloorErrorV1::Unavailable)
     }
@@ -263,6 +353,11 @@ impl BrokerSidecarCustodyV1 {
     /// Returns the actual native cause only to the selected negative observer.
     #[cfg(feature = "online-nix")]
     pub(crate) fn validate_held_native(&self) -> Result<(), aos_sandbox::JournalError> {
+        // This legacy online projection cannot carry a Storage-indexed cause.
+        // Closed Storage arming rejects Online; refuse before IO on misuse.
+        if self.currentness.is_some() {
+            return Err(aos_sandbox::JournalError::ProtectedBoundary);
+        }
         self.compare_held_original()
     }
 
@@ -294,6 +389,16 @@ impl BrokerSidecarCustodyV1 {
 }
 
 impl FloorStoreV1 {
+    pub(super) fn original_controller_pair_journal_v1(&self) -> &Journal {
+        self.inner.original_broker_journal_v1()
+    }
+
+    pub(super) fn install_currentness_archive_v1(
+        &mut self, archive: FloorCurrentnessSharedV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.inner.install_currentness_archive_v1(archive)
+    }
+
     #[cfg(feature = "online-nix")]
     pub(super) fn check_online_suffix_capacity(
         &mut self,
@@ -304,8 +409,44 @@ impl FloorStoreV1 {
         self.inner.check_online_suffix_capacity(profile, prepared_widths, native_failure)
     }
 
+    pub(super) fn observe_read_retaining_v1(
+        &mut self,
+        original: &mut crate::tpm_nv_custody::BrokerFloorReadOriginalV1,
+        profile: FloorProfileV1,
+    ) -> Result<(), FloorErrorV1> {
+        original.observe_once(&mut self.inner, profile)
+    }
+
     pub(super) fn read_data(&mut self, profile: FloorProfileDataV1) -> Result<StoredFloorDataV1, FloorErrorV1> {
         self.inner.read_data(profile)
+    }
+
+    pub(super) fn read_storage_receiving_v2(&mut self, main: &Journal,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2,
+        profile: FloorProfileV1) -> Result<std::sync::Arc<StoredFloorDataV1>, FloorErrorV1>
+    {
+        self.inner.read_storage_receiving_v2(main, receiving, profile)
+    }
+
+    pub(super) fn begin_storage_read_programme_v2(&mut self, main: &Journal,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2)
+        -> Result<(), FloorErrorV1>
+    {
+        self.inner.begin_storage_read_programme_v2(main, receiving)
+    }
+
+    pub(super) fn finish_storage_read_programme_v2<T>(&mut self, result: Result<T, FloorErrorV1>)
+        -> Result<T, FloorErrorV1>
+    {
+        self.inner.finish_storage_read_programme_v2(result)
+    }
+
+    pub(super) fn storage_read_failure_v2(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.storage_read_failure_v2()
+    }
+
+    pub(super) fn require_storage_floor_programme_v3(&self) -> Result<(), FloorErrorV1> {
+        self.inner.require_storage_floor_programme_v3()
     }
 
     pub(super) fn require_same_data(&mut self, stored: &StoredFloorDataV1, profile: FloorProfileDataV1) -> Result<(), FloorErrorV1> {
@@ -314,6 +455,53 @@ impl FloorStoreV1 {
 
     pub(super) fn prepare_data(&mut self, profile: FloorProfileDataV1, old: &StoredFloorDataV1, intent: FloorIntentDataV1, transaction: &JournalTransaction) -> Result<(), FloorErrorV1> {
         self.inner.prepare_data(profile, old.view(), intent, transaction)
+    }
+
+    pub(super) fn new_storage_intent_receiving_v2(&mut self, main: &Journal,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2,
+        profile: FloorProfileV1, checkpoint: crate::tpm_nv_custody::FloorCheckpointDataV1,
+        target: crate::tpm_nv_custody::FloorCutV1, transaction: &JournalTransaction)
+        -> Result<FloorIntentDataV1, FloorErrorV1>
+    {
+        self.inner.new_storage_intent_receiving_v2(main, receiving, profile, checkpoint, target, transaction)
+    }
+
+    pub(super) fn require_transaction_storage_receiving_v2(&mut self, main: &Journal,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2,
+        intent: FloorIntentDataV1, transaction: &JournalTransaction) -> Result<(), FloorErrorV1>
+    {
+        self.inner.require_transaction_storage_receiving_v2(main, receiving, intent, transaction)
+    }
+
+    pub(super) fn prepare_storage_receiving_v2(&mut self, main: &Journal,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2,
+        profile: FloorProfileV1, old: &StoredFloorDataV1, intent: FloorIntentDataV1,
+        transaction: &JournalTransaction) -> Result<(), FloorErrorV1>
+    {
+        self.inner.prepare_storage_receiving_v2(main, receiving, profile, old.view(), intent, transaction)
+    }
+
+    pub(super) fn finalize_storage_receiving_v2(&mut self, main: &Journal,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2,
+        profile: FloorProfileV1, stored: &StoredFloorDataV1) -> Result<(), FloorErrorV1>
+    {
+        self.inner.finalize_storage_receiving_v2(main, receiving, profile, stored.view())
+    }
+
+    pub(super) fn preflight_final_storage_receiving_v2(&mut self, main: &Journal,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2,
+        profile: FloorProfileV1, stored: &StoredFloorDataV1)
+        -> Result<crate::tpm_nv_custody::StorageFinalSuffixPreflightV2, FloorErrorV1>
+    {
+        self.inner.preflight_final_storage_receiving_v2(main, receiving, profile, stored.view())
+    }
+
+    pub(super) fn validate_final_preflight_storage_receiving_v2(&mut self, main: &Journal,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2,
+        suffix: &crate::tpm_nv_custody::StorageFinalSuffixPreflightV2,
+        stored: &StoredFloorDataV1, profile: FloorProfileV1) -> Result<(), FloorErrorV1>
+    {
+        self.inner.validate_final_preflight_storage_receiving_v2(main, receiving, suffix, stored.view(), profile)
     }
 
     pub(super) fn preflight_final_data(&mut self, stored: &StoredFloorDataV1, profile: FloorProfileDataV1) -> Result<FinalSuffixPreflightV1, FloorErrorV1> {

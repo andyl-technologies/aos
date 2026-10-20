@@ -267,7 +267,11 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
 
-    use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
+    use aos_sandbox_source::provider_journal::SourceProviderJournalV1 as Journal;
+    use aos_sandbox_protocol::domain_ledger::transaction::JournalLimits;
+    use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
+    use aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction;
+    use aos_sandbox_core::RecordNamespace;
 
     use super::*;
     use crate::ledger::model::DecodedRecordV1;

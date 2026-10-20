@@ -29,7 +29,22 @@
     specialArgs = {inherit pkgs;};
     modules = [
       systemdOptions
-      ({lib, ...}: {
+      ({
+        config,
+        lib,
+        ...
+      }: let
+        resourceModule = import ../../modules/sandbox/controller-resource-bank.nix {inherit config lib pkgs;};
+        hostModule = import ../../modules/sandbox/host-broker.nix {inherit config lib pkgs;};
+        mountModule = import ../../modules/sandbox/mount-broker.nix {inherit config lib pkgs;};
+        cacheModule = import ../../modules/sandbox/cache-signer-service.nix {inherit config lib pkgs;};
+      in {
+        # This isolated fixture bypasses module discovery. Import the real
+        # nullable schemas used by Root without enabling their native roles.
+        options.aos.sandbox.resourceBank.policy = resourceModule.options.aos.sandbox.resourceBank.policy;
+        options.aos.sandbox.hostBroker.credentials = hostModule.options.aos.sandbox.hostBroker.credentials;
+        options.aos.sandbox.mountBroker.credentials = mountModule.options.aos.sandbox.mountBroker.credentials;
+        options.aos.sandbox.cacheSignerService.credentials = cacheModule.options.aos.sandbox.cacheSignerService.credentials;
         options.aos.sandbox.controller.uid = lib.mkOption {type = lib.types.int;};
         options.aos.sandbox.controller.gid = lib.mkOption {type = lib.types.int;};
 
@@ -124,6 +139,10 @@
       true)).success;
 in
   assert lib.all (check: check.assertion) evaluation.config.assertions;
+  assert evaluation.config.aos.sandbox.resourceBank.policy == null;
+  assert lib.all (value: value == null) (builtins.attrValues evaluation.config.aos.sandbox.hostBroker.credentials);
+  assert lib.all (value: value == null) (builtins.attrValues evaluation.config.aos.sandbox.mountBroker.credentials);
+  assert lib.all (value: value == null) (builtins.attrValues evaluation.config.aos.sandbox.cacheSignerService.credentials);
   assert recovery.wantedBy == ["multi-user.target"];
   assert recovery.after == ["local-fs.target"];
   assert recovery.unitConfig.RequiresMountsFor == ["/var/lib/aos/sandbox/policy-compiler"];

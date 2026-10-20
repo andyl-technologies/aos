@@ -84,7 +84,7 @@ impl JournalRuntimeExecutionStoreV1<'_> {
             pre_fence_cut: expected_cut,
             commit_sequence: predicted_commit_sequence(expected_epoch, 1)?,
         };
-        let bytes = fence.encode()?;
+        let bytes = fence.encode().map_err(JournalError::from)?;
         let transaction = JournalTransaction::new(
             transaction_id(
                 b"host-execution-fence",
@@ -121,7 +121,7 @@ impl JournalRuntimeExecutionStoreV1<'_> {
     ) -> Result<Option<HostExecutionFenceV1>, JournalRuntimeExecutionError> {
         self.authority
             .get(HOST_FENCE_KEY)?
-            .map(|bytes| HostExecutionFenceV1::decode(bytes).map_err(Into::into))
+            .map(|bytes| HostExecutionFenceV1::decode(bytes).map_err(JournalError::from).map_err(Into::into))
             .transpose()
     }
 }

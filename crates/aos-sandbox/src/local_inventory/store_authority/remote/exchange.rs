@@ -5,138 +5,81 @@
 
 use super::*;
 
+use crate::local_inventory::carrier_authority::{
+    ProtectedCoordinatorChannelOriginalV1, ProtectedCoordinatorRequestOriginalV1,
+};
+use aos_sandbox_coordinator_protocol::aos::sandbox::coordinator::v1 as coordinator_wire;
+use aos_sandbox_coordinator_protocol::session_binding::CanonicalCoordinatorHandshakeV1;
+
 impl ProtectedMultiNodeAuthorityOwnerV1 {
-    /// Authenticates a dormant transport against fixed protected trust state.
+    /// Authenticates exact canonical handshake DATA against fixed native trust.
     ///
-    /// The caller supplies only the peer's detached signature. The trust policy,
-    /// pinned key, and current time are loaded and observed by this owner.
+    /// The same protected clock and key remain the sole issuer. Canonical DATA
+    /// does not authenticate itself or supply its own trust policy/currentness.
     ///
     /// # Errors
     ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] when protected time, trust
-    /// state, the signature, or the exact handshake binding fails closed.
-    #[cfg(feature = "multi-node")]
-    pub fn authenticate_dormant_transport(
+    /// Returns the actual protected clock, signature, session or trust failure.
+    pub fn authenticate_coordinator_channel_once_v1(
         &mut self,
-        handshake: DormantTransportHandshakeV1,
+        handshake: CanonicalCoordinatorHandshakeV1,
         canonical_signature: &[u8],
-    ) -> Result<DormantAuthenticatedCoordinatorNodeTransportV1, ProtectedMultiNodeUpdateErrorV1>
+    ) -> Result<ProtectedCoordinatorChannelOriginalV1, ProtectedMultiNodeUpdateErrorV1> {
+        let current_unix_seconds = self.observe_current_time()?;
+        ProtectedCoordinatorChannelOriginalV1::authenticate_handshake_v1(
+            handshake,
+            canonical_signature,
+            &self.bootstrap.canonical_trust_policy,
+            &self.bootstrap.public_key,
+            current_unix_seconds,
+        )
+        .map_err(Into::into)
+    }
+
+    /// Borrows this actual owner and its exact fixed-trust channel for one turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original native clock or channel/trust affinity failure.
+    pub fn borrow_coordinator_channel_once_v1<'owner, 'channel>(
+        &'owner mut self,
+        channel: &'channel ProtectedCoordinatorChannelOriginalV1,
+    ) -> Result<ProtectedCoordinatorChannelScopeV1<'owner, 'channel>, ProtectedMultiNodeUpdateErrorV1>
     {
         let current_unix_seconds = self.observe_current_time()?;
-        handshake
-            .authenticate_with_protected_owner(
-                canonical_signature,
-                &self.bootstrap.canonical_trust_policy,
-                &self.bootstrap.public_key,
-                current_unix_seconds,
-            )
-            .map_err(Into::into)
-    }
-
-    /// Prepares a current generated request under protected time.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] when protected time or the
-    /// authenticated session/request semantics are invalid.
-    #[cfg(feature = "multi-node")]
-    pub fn prepare_dormant_exchange(
-        &mut self,
-        transport: &DormantAuthenticatedCoordinatorNodeTransportV1,
-        request: OperationId,
-        body: &NodeRequestBodyV1,
-    ) -> Result<DormantOutboundExchangeV1, ProtectedMultiNodeUpdateErrorV1> {
-        let current_unix_seconds = self.observe_current_time()?;
-        transport.validate_protected_owner(
+        channel.validate_protected_owner(
             &self.bootstrap.canonical_trust_policy,
             &self.bootstrap.public_key,
         )?;
-        transport
-            .prepare_exchange_at_protected_time(request, body, current_unix_seconds)
-            .map_err(Into::into)
+        if !channel.session_v1().is_current_at(current_unix_seconds) {
+            return Err(InvalidMultiNodeProtocol::SessionMismatch.into());
+        }
+        Ok(ProtectedCoordinatorChannelScopeV1 {
+            owner: self,
+            channel,
+            current_unix_seconds,
+        })
     }
 
-    /// Authenticates one inbound request with protected trust and time.
+    /// Consumes the singular channel into one actual native response turn.
     ///
     /// # Errors
     ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] unless the exact request is
-    /// signed by the fixed pin and current under the protected clock.
-    #[cfg(feature = "multi-node")]
-    pub fn accept_dormant_request(
-        &mut self,
-        transport: &DormantAuthenticatedCoordinatorNodeTransportV1,
-        request_bytes: &[u8],
-        canonical_signature: &[u8],
-    ) -> Result<NodeRequestEnvelopeV1, ProtectedMultiNodeUpdateErrorV1> {
+    /// Returns the original native clock or channel/trust affinity failure.
+    pub fn begin_coordinator_response_once_v1<'owner>(
+        &'owner mut self,
+        channel: ProtectedCoordinatorChannelOriginalV1,
+    ) -> Result<ProtectedCoordinatorResponseScopeV1<'owner>, ProtectedMultiNodeUpdateErrorV1> {
         let current_unix_seconds = self.observe_current_time()?;
-        transport.validate_protected_owner(
+        channel.validate_protected_owner(
             &self.bootstrap.canonical_trust_policy,
             &self.bootstrap.public_key,
         )?;
-        transport
-            .accept_request_with_protected_owner(
-                request_bytes,
-                canonical_signature,
-                &self.bootstrap.canonical_trust_policy,
-                &self.bootstrap.public_key,
-                current_unix_seconds,
-            )
-            .map_err(Into::into)
-    }
-
-    /// Prepares a typed response under protected currentness.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] when the request is stale or
-    /// the response is not its exact typed answer.
-    #[cfg(feature = "multi-node")]
-    pub fn prepare_dormant_response(
-        &mut self,
-        transport: &DormantAuthenticatedCoordinatorNodeTransportV1,
-        request: &NodeRequestEnvelopeV1,
-        body: &NodeResponseBodyV1,
-    ) -> Result<DormantOutboundResponseV1, ProtectedMultiNodeUpdateErrorV1> {
-        let current_unix_seconds = self.observe_current_time()?;
-        transport.validate_protected_owner(
-            &self.bootstrap.canonical_trust_policy,
-            &self.bootstrap.public_key,
-        )?;
-        transport
-            .prepare_response_at_protected_time(request, body, current_unix_seconds)
-            .map_err(Into::into)
-    }
-
-    /// Authenticates one exact response using only protected trust and time.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] unless the fixed pin signed
-    /// the canonical response and it exactly answers the retained request.
-    #[cfg(feature = "multi-node")]
-    pub fn accept_dormant_response(
-        &mut self,
-        transport: DormantAuthenticatedCoordinatorNodeTransportV1,
-        request: &DormantOutboundExchangeV1,
-        response_bytes: &[u8],
-        canonical_signature: &[u8],
-    ) -> Result<NodeResponseEnvelopeV1, ProtectedMultiNodeUpdateErrorV1> {
-        let current_unix_seconds = self.observe_current_time()?;
-        transport.validate_protected_owner(
-            &self.bootstrap.canonical_trust_policy,
-            &self.bootstrap.public_key,
-        )?;
-        transport
-            .accept_response_with_protected_owner(
-                request,
-                response_bytes,
-                canonical_signature,
-                &self.bootstrap.canonical_trust_policy,
-                &self.bootstrap.public_key,
-                current_unix_seconds,
-            )
-            .map_err(Into::into)
+        Ok(ProtectedCoordinatorResponseScopeV1 {
+            owner: self,
+            channel,
+            current_unix_seconds,
+        })
     }
 
     /// Issues one transport session from an exact protected expected row.
@@ -430,4 +373,118 @@ pub(in crate::local_inventory::store_authority) fn protected_outbound_operation(
         return Err(InvalidMultiNodeProtocol::Unspecified);
     }
     Ok(OperationId::from_bytes(operation))
+}
+
+/// Holds the genuine owner and channel borrows across one native transport turn.
+///
+/// Construction samples the actual protected clock and checks fixed trust.
+/// Request sealing consumes this turn; response encoding keeps its actual
+/// owner borrow resident until the Coordinator finishes the same operation.
+pub struct ProtectedCoordinatorChannelScopeV1<'owner, 'channel> {
+    owner: &'owner mut ProtectedMultiNodeAuthorityOwnerV1,
+    channel: &'channel ProtectedCoordinatorChannelOriginalV1,
+    current_unix_seconds: u64,
+}
+
+impl ProtectedCoordinatorChannelScopeV1<'_, '_> {
+    /// Borrows immutable DATA from the actual native-authenticated session.
+    #[must_use]
+    pub fn session_v1(&self) -> &AuthenticatedNodeSessionV1 {
+        self.channel.session_v1()
+    }
+
+    /// Projects the existing native session into canonical generated DATA.
+    ///
+    /// This is the same public wire content already carried by each generated
+    /// exchange. It reveals no grant constructor, key or native authority.
+    #[must_use]
+    pub fn session_binding_data_v1(&self) -> coordinator_wire::AuthenticatedSessionBinding {
+        self.channel.session_binding_data_v1()
+    }
+
+    /// Seals exact generated request bytes using the actual private parser.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original canonical, session, limit or semantic refusal.
+    pub fn seal_generated_request_once_v1(
+        self,
+        bytes: &[u8],
+    ) -> Result<
+        (
+            coordinator_wire::CoordinatorNodeRequest,
+            ProtectedCoordinatorRequestOriginalV1,
+        ),
+        InvalidMultiNodeProtocol,
+    > {
+        self.channel
+            .seal_generated_request_v1(bytes, self.current_unix_seconds)
+    }
+
+    /// Authenticates exact inbound bytes with the same native key and clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original signature, session, canonical or semantic refusal.
+    pub fn accept_generated_request_once_v1(
+        self,
+        bytes: &[u8],
+        canonical_signature: &[u8],
+    ) -> Result<NodeRequestEnvelopeV1, InvalidMultiNodeProtocol> {
+        self.channel.accept_request_with_protected_owner(
+            bytes,
+            canonical_signature,
+            &self.owner.bootstrap.canonical_trust_policy,
+            &self.owner.bootstrap.public_key,
+            self.current_unix_seconds,
+        )
+    }
+
+    /// Checks the exact current request/body relation before response growth.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original session, request correlation or body refusal.
+    pub fn require_response_body_v1(
+        &self,
+        request: &NodeRequestEnvelopeV1,
+        body: &NodeResponseBodyV1,
+    ) -> Result<(), InvalidMultiNodeProtocol> {
+        self.channel
+            .require_response_semantics_v1(request, body, self.current_unix_seconds)
+    }
+}
+
+/// Retains the actual owner borrow and consumes one singular native channel.
+///
+/// The resulting response evidence can only be constructed by the original
+/// private signature/session/parser grant chain, never by a DATA constructor.
+pub struct ProtectedCoordinatorResponseScopeV1<'owner> {
+    owner: &'owner mut ProtectedMultiNodeAuthorityOwnerV1,
+    channel: ProtectedCoordinatorChannelOriginalV1,
+    current_unix_seconds: u64,
+}
+
+impl ProtectedCoordinatorResponseScopeV1<'_> {
+    /// Authenticates and consumes the exact original request/response exchange.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original signature, size, correlation, canonical, semantic
+    /// or private grant refusal while preserving its actual typed cause.
+    pub fn accept_generated_response_once_v1(
+        self,
+        request: &ProtectedCoordinatorRequestOriginalV1,
+        bytes: &[u8],
+        canonical_signature: &[u8],
+    ) -> Result<NodeResponseEnvelopeV1, InvalidMultiNodeProtocol> {
+        self.channel.accept_response_with_protected_owner(
+            request,
+            bytes,
+            canonical_signature,
+            &self.owner.bootstrap.canonical_trust_policy,
+            &self.owner.bootstrap.public_key,
+            self.current_unix_seconds,
+        )
+    }
 }

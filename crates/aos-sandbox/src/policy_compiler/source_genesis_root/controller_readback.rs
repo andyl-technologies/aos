@@ -18,36 +18,32 @@
 //! before that Controller append for crash recovery. All four rejoin real held
 //! writers. These signatures are provenance, not a detached Root proof.
 
+use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
+use aos_sandbox_protocol::source_genesis_geometry::CONTROLLER_SOURCE_GENESIS_BODY_BYTES_V1 as BODY_BYTES;
+
 use aos_sandbox_core::ObjectDigest;
-use ed25519_dalek::{Signature, Signer as _, SigningKey};
+use ed25519_dalek::{Signer as _, SigningKey};
 
 use crate::hierarchy::controller_genesis::HeldControllerSourceGenesisV1;
-use crate::hierarchy::genesis_profile::{
-    ControllerSourceGenesisAcceptanceRecordV1, SourceGenesisErrorV1, hash, take,
-};
+use aos_sandbox_protocol::source_genesis_acceptance::ControllerSourceGenesisAcceptanceRecordV1;
+use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, hash, take};
 use crate::hierarchy::source_genesis::HeldSourceTreeGenesisObservationV1;
 use crate::hierarchy::source_genesis::SourceTreeGenesisStateV1;
 use crate::journal::ProtectedJournalNamesV1;
 
-use super::super::PinnedControllerHoldSignerV1;
 
-const MAGIC: &[u8; 8] = b"AOSSGR01";
-const DOMAIN: &[u8] = b"aos.sandbox.source-genesis.controller-held-readback.v1\0/var/lib/aos/sandboxd/controller.journal\0";
-const RESOURCE_DOMAIN_V2: &[u8] = b"aos.sandbox.source-genesis.controller-held-readback.v2\0/var/lib/aos/sandboxd/controller.journal\0";
-const BODY_BYTES: usize = 800;
-const PROJECT_MAGIC_V3: &[u8; 8] = b"AOSSGR03";
-const PROJECT_DOMAIN_V3: &[u8] = b"aos.sandbox.source-genesis.controller-mixed-readback.v3\0/var/lib/aos/sandboxd/controller.journal\0";
-const PROJECT_RESOURCE_MAGIC_V4: &[u8; 8] = b"AOSSGR04";
-const PROJECT_RESOURCE_DOMAIN_V4: &[u8] = b"aos.sandbox.source-genesis.controller-mixed-resource-readback.v4\0/var/lib/aos/sandboxd/controller.journal\0";
+
+use aos_sandbox_ledger_replay::source_signer_data::controller_genesis_readback::{
+    MAGIC, DOMAIN, RESOURCE_DOMAIN_V2, PROJECT_MAGIC_V3, PROJECT_DOMAIN_V3,
+    PROJECT_RESOURCE_MAGIC_V4, PROJECT_RESOURCE_DOMAIN_V4,
+};
 
 #[derive(Clone, Copy)]
 enum ControllerGenesisReadbackRecipeV3 { StrictV1, ProjectV3 }
-/// Bounds the existing Controller-purpose genesis readback signature packet.
-pub const CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1: usize = BODY_BYTES + 64;
-/// Bounds the distinct strict Controller signature retaining full SGC02 input.
-pub const CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2: usize = BODY_BYTES + 176 + 64;
-/// Bounds the existing Project-purpose readback with a complete SGC02 input.
-pub const CONTROLLER_PROJECT_RESOURCE_READBACK_BYTES_V4: usize = BODY_BYTES + 176 + 64;
+pub use aos_sandbox_protocol::source_genesis_geometry::{
+    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2,
+    CONTROLLER_PROJECT_RESOURCE_READBACK_BYTES_V4,
+};
 
 // Closed DATA framing keeps legacy signature storage allocation-free. Neither
 // variant can construct an original Root, Source or Controller owner loan.
@@ -533,15 +529,7 @@ fn capture_q04_readback(
     }
 }
 
-pub(super) struct VerifiedControllerSourceGenesisReadbackV1 {
-    pub(super) acceptance: ControllerSourceGenesisAcceptanceRecordV1,
-    pub(super) historical: bool,
-    pub(super) completed: bool,
-    pub(super) vacant: bool,
-    pub(super) source_instance: Option<[u8; 32]>,
-    pub(super) source_names: ProtectedJournalNamesV1,
-    pub(super) source_sequence: u64,
-}
+pub(super) use aos_sandbox_ledger_replay::source_signer_data::controller_genesis_readback::ControllerGenesisReadbackDataV1 as VerifiedControllerSourceGenesisReadbackV1;
 
 pub(super) fn verify(
     packet: &[u8],
@@ -564,63 +552,15 @@ fn verify_with_recipe(
     packet: &[u8], pin: &PinnedControllerHoldSignerV1, nonce: [u8; 16],
     controller_uid: u32, source_uid: u32, recipe: ControllerGenesisReadbackRecipeV3,
 ) -> Result<VerifiedControllerSourceGenesisReadbackV1, SourceGenesisErrorV1> {
-    let resource_version = packet.len() == CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2;
-    let (magic, version, domain) = match recipe {
-        ControllerGenesisReadbackRecipeV3::StrictV1 if resource_version =>
-            (b"AOSSGR02" as &[u8; 8], 2_u16, RESOURCE_DOMAIN_V2),
-        ControllerGenesisReadbackRecipeV3::StrictV1 => (MAGIC, 1_u16, DOMAIN),
-        ControllerGenesisReadbackRecipeV3::ProjectV3 if resource_version =>
-            (PROJECT_RESOURCE_MAGIC_V4, 4_u16, PROJECT_RESOURCE_DOMAIN_V4),
-        ControllerGenesisReadbackRecipeV3::ProjectV3 => (PROJECT_MAGIC_V3, 3_u16, PROJECT_DOMAIN_V3),
+    use aos_sandbox_ledger_replay::source_signer_data::controller_genesis_readback as canonical;
+
+    let recipe = match recipe {
+        ControllerGenesisReadbackRecipeV3::StrictV1 => canonical::ControllerGenesisReadbackRecipeV3::StrictV1,
+        ControllerGenesisReadbackRecipeV3::ProjectV3 => canonical::ControllerGenesisReadbackRecipeV3::ProjectV3,
     };
-    let packet_bytes = if resource_version { CONTROLLER_PROJECT_RESOURCE_READBACK_BYTES_V4 } else { CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1 };
-    if packet.len() != packet_bytes
-        || packet.get(..8) != Some(magic.as_slice())
-        || packet[8..10] != version.to_be_bytes()
-        || packet[10] > 3
-        || matches!(recipe, ControllerGenesisReadbackRecipeV3::ProjectV3) && packet[10] == 0
-        || packet[11..16] != [0; 5]
-        || nonce == [0; 16]
-        || controller_uid == 0
-        || source_uid == 0
-        || u64::from_be_bytes(take(packet, 16)?) != pin.generation()
-        || u32::from_be_bytes(take(packet, 24)?) != controller_uid
-        || u32::from_be_bytes(take(packet, 28)?) != source_uid
-        || u64::from_be_bytes(take(packet, 32)?) == 0
-        || u64::from_be_bytes(take(packet, 40)?) == 0
-        || take::<16>(packet, 48)? != nonce
-    {
-        return Err(SourceGenesisErrorV1::NonCanonical);
-    }
-    let body_bytes = packet_bytes - 64;
-    let names_offset = body_bytes - 128;
-    ProtectedJournalNamesV1::from_bytes(&packet[names_offset..names_offset + 48])
-        .map_err(crate::journal::JournalError::from)?;
-    let source_names =
-        ProtectedJournalNamesV1::from_bytes(&packet[names_offset + 48..names_offset + 96])
-            .map_err(crate::journal::JournalError::from)?;
-    let acceptance =
-        ControllerSourceGenesisAcceptanceRecordV1::from_record_bytes(&packet[64..names_offset])?;
-    let source_instance = take::<32>(packet, names_offset + 96)?;
-    if (packet[10] == 0) != (source_instance == [0; 32])
-        || acceptance.resource_envelope().is_some() != resource_version {
-        return Err(SourceGenesisErrorV1::NonCanonical);
-    }
-    pin.verifying_key()
-        .verify_strict(
-            &[domain, &packet[..body_bytes]].concat(),
-            &Signature::from_bytes(&take(packet, body_bytes)?),
-        )
-        .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-    Ok(VerifiedControllerSourceGenesisReadbackV1 {
-        acceptance,
-        historical: matches!(packet[10], 1 | 3),
-        completed: packet[10] == 3,
-        vacant: packet[10] == 2,
-        source_instance: (source_instance != [0; 32]).then_some(source_instance),
-        source_names,
-        source_sequence: u64::from_be_bytes(take(packet, 40)?),
-    })
+    canonical::verify_controller_source_genesis_readback_v1(
+        packet, pin.generation(), pin.verifying_key(), nonce, controller_uid, source_uid, recipe,
+    ).map_err(SourceGenesisErrorV1::from)
 }
 
 pub(super) fn packet_digest(packet: &[u8]) -> ObjectDigest {

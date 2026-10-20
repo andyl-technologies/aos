@@ -291,7 +291,7 @@ fn effect_decoder_accepts_only_known_versions_and_closed_flags() {
     })
     .unwrap();
 
-    for version in [0, CONTROLLER_Q04_EFFECT_VERSION + 1, u8::MAX] {
+    for version in [0, super::observe_completion::COMPLETED_OBSERVE_EFFECT_VERSION + 1, u8::MAX] {
         for canonical in [&generic, &authority] {
             let mut unknown_version = canonical.clone();
             unknown_version[0] = version;
@@ -411,4 +411,105 @@ fn authority_bound_plan() -> EffectPlan {
             digest,
         }),
     }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn completed_q04_fixture_v1() -> (EffectLedgerRecord,
+    crate::domain_ledger::create_q04_history::Q04EffectSubgateV1,
+) {
+    use aos_proto::aos::sandbox::v1::{CreateSandboxRequest, Duration, ObjectDescriptor};
+    use aos_sandbox_core::{PrincipalId, ProjectId};
+    use buffa::Message as _;
+    use crate::domain_ledger::create_q04_history::{GATE_BYTES, Q04EffectSubgateV1};
+    use crate::public_api::PublicOperationMethodV1;
+    use crate::public_api::method::PublicApiAuditMethodV1;
+    use crate::public_api::mutation::PublicMutationRequestV1;
+    use crate::public_api::public_mutation_context::PublicMutationContextV1;
+
+    let project = ProjectId::from_bytes([1; 16]);
+    let descriptor = |media_type: &str| ObjectDescriptor {
+        media_type: media_type.to_owned(),
+        sha256: vec![2; 32],
+        encoded_size: 1,
+        ..Default::default()
+    };
+    let request = CreateSandboxRequest {
+        project_id: project.as_bytes().to_vec(),
+        expected_project_resource_version: vec![3; 32],
+        specification: Some(descriptor("application/vnd.aos.sandbox.spec.v1+cbor")).into(),
+        requested_policy: Some(descriptor("application/vnd.aos.sandbox.policy.v1+cbor")).into(),
+        idempotency_key: b"create-terminal".to_vec(),
+        operation_timeout: Some(Duration { nanoseconds: 1, ..Default::default() }).into(),
+        ..Default::default()
+    };
+    let envelope = PublicMutationRequestV1::new(
+        PublicApiAuditMethodV1::CreateSandbox, &request.encode_to_vec(),
+    ).unwrap().encode();
+    let context = PublicMutationContextV1::new(
+        PrincipalId::from_bytes([4; 16]), project, 100, envelope,
+    ).unwrap();
+    let plan = EffectPlan::from_public_mutation_bytes(
+        PublicOperationMethodV1::CreateSandbox, context.encode().unwrap(),
+    ).unwrap();
+    let receipt = EffectReceipt::new([
+        b"AOSLIF01".as_slice(), &[5; 16], &[6; 32],
+    ].concat()).unwrap();
+    let record = EffectLedgerRecord::from_parts((
+        plan, EffectState::Applied { attempt: 1, receipt }, None, None,
+    ));
+    let mut body = [0; GATE_BYTES];
+    body[16..176].fill(7);
+    body[176..184].copy_from_slice(&1_u64.to_be_bytes());
+    body[184] = 4;
+    body[192..256].fill(8);
+    let final_gate = Q04EffectSubgateV1::from_body(body).unwrap();
+
+    (record, final_gate)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn completed_q04_preserves_its_final_companion_and_refuses_earlier_status() {
+    use crate::domain_ledger::create_q04_history::{GATE_BYTES, Q04EffectSubgateV1};
+
+    let (record, final_gate) = completed_q04_fixture_v1();
+    let mut body = *final_gate.bytes();
+    let encoded = encode_q04_effect(&record, &final_gate).unwrap();
+    let (decoded, gate) = decode_effect_with_q04(&encoded).unwrap();
+
+    assert_eq!(decoded, record);
+    assert_eq!(gate.unwrap().bytes(), final_gate.bytes());
+    assert_eq!(encoded[0], CONTROLLER_Q04_EFFECT_VERSION);
+
+    body[184] = 3;
+    let earlier = Q04EffectSubgateV1::from_body(body).unwrap();
+    assert!(encode_q04_effect(&record, &earlier).is_err());
+    let mut substituted = encoded;
+    let offset = substituted.len() - GATE_BYTES;
+    substituted[offset..].copy_from_slice(earlier.bytes());
+    assert!(decode_effect_with_q04(&substituted).is_err());
+}
+
+#[test]
+fn authority_effect_forecast_covers_real_encoder_at_request_limit_and_refuses_the_next_byte() {
+    for request_bytes in [1, MAXIMUM_REQUEST_BYTES] {
+        let mut plan = authority_bound_plan();
+        plan.request = vec![7; request_bytes];
+        let bound = authority_effect_record_bound_v1(&plan).unwrap();
+        let record = EffectLedgerRecord {
+            plan,
+            state: EffectState::Planned,
+            dispatch: None,
+            project_admission: None,
+        };
+
+        let encoded = encode_effect(&record).unwrap();
+
+        assert!(bound >= encoded.len());
+    }
+
+    let mut oversized = authority_bound_plan();
+    oversized.request = vec![7; MAXIMUM_REQUEST_BYTES + 1];
+
+    assert!(authority_effect_record_bound_v1(&oversized).is_err());
 }

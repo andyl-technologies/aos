@@ -1,15 +1,20 @@
-//! Optional coordinator placement and ordered-watch implementation.
+//! Optional fleet placement, reconciliation and remote workflow implementation.
 //!
-//! [`placement`] ranks validated node observations without reserving capacity
-//! or granting ownership. [`watch_service`] produces and consumes bounded,
-//! ordered history from protected bootstraps. On Linux, `lease_projection`
-//! projects an existing committed local lease without issuing or renewing it.
+//! [`placement`] ranks validated observations without granting ownership.
+//! [`reconciliation`] folds remote assignment observations. [`transport`] owns
+//! canonical packet exchanges over genuine native channel loans; [`draining`],
+//! [`transfer`] and [`watch_requests`] select and assemble the existing remote
+//! workflows. [`watch_service`] produces and consumes bounded ordered history.
 //!
-//! Selecting this crate enables the Domain's `multi-node` contracts. The local
-//! Domain has no dependency on this implementation. Protected transport and
-//! store orchestration remain Domain-owned; this crate starts no service.
+//! Selecting this crate enables the Domain's `multi-node` native contracts.
+//! The Domain has no dependency on this implementation. Fixed local openers,
+//! authenticated proof issuers, protected artifacts, publication and recovery
+//! retain their genuine native owners. This crate starts no service or worker.
 
-#[cfg(target_os = "linux")]
-pub mod lease_projection;
+pub mod draining;
 pub mod placement;
+pub mod reconciliation;
+pub mod transfer;
+pub mod transport;
+pub mod watch_requests;
 pub mod watch_service;

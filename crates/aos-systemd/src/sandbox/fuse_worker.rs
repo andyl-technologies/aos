@@ -252,7 +252,7 @@ impl SystemdClient {
     pub(crate) async fn start_fuse_worker_unit_guarded_v1<E>(
         &self,
         spec: &FuseWorkerUnitSpecV1,
-        before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
+        before_submission: &mut dyn FnMut() -> std::result::Result<(), E>,
     ) -> std::result::Result<JobOutcome, ExactStartError<E>> {
         let descriptors =
             super::exact_unit::prepare_then_guard(|| spec.descriptor_table(), before_submission)?;

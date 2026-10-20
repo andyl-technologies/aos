@@ -149,15 +149,29 @@ impl ControllerStorageOutputReserveAttemptV1 {
         let digest = aos_sandbox_protocol::storage_output_reserve::continuation::original_plan_digest_v1(
             request,
         ).map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
-        let attempt = Self::from_original_profile(
-            request.exact_body(), digest, OriginalOutputProfileV1::Captured,
-        )?;
+        let attempt = Self::from_captured_original_body_data_v3(request.exact_body(), digest)?;
         if attempt.original_request_id != request.request_id()
             || attempt.semantic_digest.as_bytes() != &request.semantic_commitment()
         {
             return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
         }
         Ok(attempt)
+    }
+
+    /// Reconstructs historical captured-attempt DATA with the sole inspector.
+    ///
+    /// Storage obtains the plan digest from its actual MAC-verified logical
+    /// marker. The caller retains and compares that real owner independently;
+    /// this passive constructor supplies no new request, grant or currentness.
+    ///
+    /// # Errors
+    /// Rejects malformed historical bodies, zero plan digest or invalid captured
+    /// source associations. The historical request deadline is not refreshed.
+    pub fn from_captured_original_body_data_v3(
+        body: &[u8],
+        signed_plan_digest: ObjectDigest,
+    ) -> Result<Self, ControllerStorageOutputReserveAttemptErrorV1> {
+        Self::from_original_profile(body, signed_plan_digest, OriginalOutputProfileV1::Captured)
     }
 
     /// Returns the execution that owns this sole Storage reserve attempt.

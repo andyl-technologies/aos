@@ -58,6 +58,21 @@ impl JournalOwnerV1 {
         }
     }
 
+    /// Runs the same owner-specific comparison into an already-paid passive sink.
+    pub(super) fn validate_held_retaining(
+        self,
+        journal: &Journal,
+        directory: &Path,
+        name: &str,
+        originals: &mut aos_sandbox::ProtectedJournalCurrentnessOriginalsV1,
+    ) -> Result<(), JournalError> {
+        let uid = match self {
+            Self::RootBroker => 0,
+            Self::ServiceClient(uid) => uid,
+        };
+        journal.validate_held_owned_at_for_uid_retaining(directory, name, uid, originals)
+    }
+
     /// Rechecks both fixed names and the full original root-to-service directory path.
     pub(super) fn validate_held(
         self,

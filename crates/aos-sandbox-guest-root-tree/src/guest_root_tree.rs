@@ -17,6 +17,11 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest as _, Sha256};
 
+mod template_receiving;
+
+pub use template_receiving::{compare_guest_root_template_receiving_v1, compare_guest_root_template_receiving_observed_v2};
+use template_receiving::TemplateTraversalV1;
+
 const DOMAIN: &[u8] = b"aos.sandbox.guest-root-tree.v1\0";
 const MAXIMUM_ENTRIES: usize = 250_000;
 const MAXIMUM_PATH_BYTES: usize = 4096;
@@ -36,7 +41,7 @@ pub fn compare_guest_root_template_v1(
     template: &Path,
     workspace: &Path,
 ) -> Result<[u8; 32], GuestRootTreeErrorV1> {
-    compare_guest_root_tree(template, workspace, true)
+    compare_guest_root_tree(template, workspace, true, TemplateTraversalV1::legacy())
 }
 
 /// Measures an offline build-user-owned template with the runtime tree algorithm.
@@ -52,14 +57,81 @@ pub fn compare_guest_root_template_v1(
 pub fn measure_offline_guest_root_template_v1(
     template: &Path,
 ) -> Result<[u8; 32], GuestRootTreeErrorV1> {
-    compare_guest_root_tree(template, template, false)
+    compare_guest_root_tree(template, template, false, TemplateTraversalV1::legacy())
+}
+
+/// Retains the measured shape of the same canonical template comparison.
+///
+/// This is physical comparison DATA. It supplies no root authority, exclusion,
+/// receiving original or permission to inspect another tree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuestRootTemplateComparisonDataV2 {
+    digest: [u8; 32],
+    entries: usize,
+    name_bytes: usize,
+    maximum_depth: usize,
+    maximum_relative_bytes: usize,
+}
+
+impl GuestRootTemplateComparisonDataV2 {
+    /// Returns the unchanged canonical complete-template digest.
+    #[must_use]
+    pub const fn digest_v2(&self) -> [u8; 32] { self.digest }
+
+    /// Prices the same bounded comparison's reached shape at two actual roots.
+    ///
+    /// The source enumeration finishes before recursively comparing names, so
+    /// one native DIR payload coexists with all retained parent-name buffers.
+    /// File hashing streams through the existing fixed64KiB buffers.
+    #[must_use]
+    pub fn receiving_demand_v2(&self, template_root_bytes: usize, workspace_root_bytes: usize)
+        -> Option<aos_sandbox_core::ResourceVector>
+    {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        let levels = self.maximum_depth.checked_add(1)?;
+        let names = self.name_bytes.checked_mul(4)?
+            .checked_add(self.entries.checked_mul(4 * std::mem::size_of::<std::ffi::OsString>())?)?;
+        let paths = template_root_bytes.checked_add(workspace_root_bytes)?
+            .checked_add(self.maximum_relative_bytes.checked_mul(3)?)?;
+        let frame = paths.checked_mul(4)?
+            .checked_add(6 * std::mem::size_of::<std::path::PathBuf>())?
+            .checked_add(4 * std::mem::size_of::<fs::Metadata>())?
+            .checked_add(2 * std::mem::size_of::<TreeHashState>())?;
+        let memory = names.checked_add(levels.checked_mul(frame)?)?
+            .checked_add((1 << 20) + 64 * 1024 + 2 * 64 * 1024)?;
+        Some(ResourceVector::ZERO
+            .with(D::MemoryBytes, u64::try_from(memory).ok()?)
+            .with(D::OpenFiles, 2)
+            .with(D::MetadataEntries, u64::try_from(self.entries.checked_mul(3)?.checked_add(2)?).ok()?))
+    }
+}
+
+/// Compares and measures once through the same complete physical traversal.
+///
+/// # Errors
+/// Returns the unchanged unsafe-tree, bounded-shape, allocation or IO refusal.
+pub fn compare_guest_root_template_observed_v2(template: &Path, workspace: &Path)
+    -> Result<GuestRootTemplateComparisonDataV2, GuestRootTreeErrorV1>
+{
+    compare_guest_root_tree_observed_v2(template, workspace, true, TemplateTraversalV1::legacy())
 }
 
 fn compare_guest_root_tree(
     template: &Path,
     workspace: &Path,
     require_root_ownership: bool,
+    traversal: TemplateTraversalV1<'_>,
 ) -> Result<[u8; 32], GuestRootTreeErrorV1> {
+    compare_guest_root_tree_observed_v2(template, workspace, require_root_ownership, traversal)
+        .map(|observed| observed.digest_v2())
+}
+
+fn compare_guest_root_tree_observed_v2(
+    template: &Path,
+    workspace: &Path,
+    require_root_ownership: bool,
+    mut traversal: TemplateTraversalV1<'_>,
+) -> Result<GuestRootTemplateComparisonDataV2, GuestRootTreeErrorV1> {
     if !template.is_absolute() || !workspace.is_absolute() {
         return Err(GuestRootTreeErrorV1::InvalidTree);
     }
@@ -74,7 +146,7 @@ fn compare_guest_root_tree(
 
     let mut state = TreeHashState {
         digest: Sha256::new(),
-        entries: 0,
+        entries: 0, name_bytes: 0, maximum_depth: 0, maximum_relative_bytes: 0,
     };
     state.digest.update(DOMAIN);
     compare_directory(
@@ -83,16 +155,23 @@ fn compare_guest_root_tree(
         Path::new(""),
         &mut state,
         require_root_ownership,
+        &mut traversal,
     )?;
     if state.entries == 0 {
         return Err(GuestRootTreeErrorV1::InvalidTree);
     }
-    Ok(state.digest.finalize().into())
+    Ok(GuestRootTemplateComparisonDataV2 {
+        digest: state.digest.finalize().into(), entries: state.entries, name_bytes: state.name_bytes,
+        maximum_depth: state.maximum_depth, maximum_relative_bytes: state.maximum_relative_bytes,
+    })
 }
 
 struct TreeHashState {
     digest: Sha256,
     entries: usize,
+    name_bytes: usize,
+    maximum_depth: usize,
+    maximum_relative_bytes: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -108,10 +187,15 @@ fn compare_directory(
     relative: &Path,
     state: &mut TreeHashState,
     require_root_ownership: bool,
+    traversal: &mut TemplateTraversalV1<'_>,
 ) -> Result<(), GuestRootTreeErrorV1> {
-    let mut names = fs::read_dir(template)?
-        .map(|entry| entry.map(|entry| entry.file_name()))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut names = Vec::new();
+    for entry in fs::read_dir(template)? {
+        let name = entry?.file_name();
+        traversal.schedule_name(template, workspace, relative, &name)?;
+        names.try_reserve(1)?;
+        names.push(name);
+    }
     names.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
 
     for name in names {
@@ -122,6 +206,10 @@ fn compare_directory(
             .ok_or(GuestRootTreeErrorV1::InvalidTree)?;
         let child_relative = relative.join(&name);
         let path_bytes = child_relative.as_os_str().as_bytes();
+        state.name_bytes = state.name_bytes.checked_add(name.as_bytes().len())
+            .ok_or(GuestRootTreeErrorV1::InvalidTree)?;
+        state.maximum_depth = state.maximum_depth.max(child_relative.components().count());
+        state.maximum_relative_bytes = state.maximum_relative_bytes.max(path_bytes.len());
         if path_bytes.is_empty() || path_bytes.len() > MAXIMUM_PATH_BYTES {
             return Err(GuestRootTreeErrorV1::InvalidTree);
         }
@@ -141,6 +229,7 @@ fn compare_directory(
                 &child_relative,
                 state,
                 require_root_ownership,
+                traversal,
             )?,
             EntryKind::Regular => {
                 let source_digest = hash_file(&source_path, source.len(), require_root_ownership)?;
@@ -406,7 +495,7 @@ impl CompleteGuestRootTreeCaptureV1 {
             relative_path: Vec::new(),
             hash: TreeHashState {
                 digest: Sha256::new(),
-                entries: 0,
+                entries: 0, name_bytes: 0, maximum_depth: 0, maximum_relative_bytes: 0,
             },
             mount: None,
             regular_bytes: 0,
@@ -871,6 +960,9 @@ fn require_complete_deadline(deadline: u64) -> Result<(), GuestRootTreeErrorV1> 
 /// Reports a physical guest-root mismatch or filesystem failure.
 #[derive(Debug, thiserror::Error)]
 pub enum GuestRootTreeErrorV1 {
+    /// The original ledger refused a reached dominant traversal obligation.
+    #[error("guest root comparison receiving interval is closed")]
+    Receiving,
     /// A bounded selected traversal could not reserve its resident storage.
     #[error("guest root traversal reservation failed: {0}")]
     Allocation(#[from] std::collections::TryReserveError),
@@ -893,6 +985,70 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use aos_sandbox_core::component_receiving::ComponentServiceReceivingLedgerV1;
+    use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+
+    #[test]
+    fn receiving_traversal_preserves_digest_and_refuses_growth_before_collection() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        for name in ["alpha", "beta", "gamma"] {
+            let path = root.join(name);
+            fs::write(&path, name.as_bytes()).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o500)).unwrap();
+        }
+        // Private offline fixture retains its existing build-user ownership
+        // scope; it constructs no PID1 or protected receiving authority.
+        let expected = measure_offline_guest_root_template_v1(&root).unwrap();
+        let mut paid = ComponentServiceReceivingLedgerV1::new(ResourceVector::ZERO
+            .with(D::MemoryBytes, 1_048_576).with(D::MetadataEntries, 3));
+
+        let observed = compare_guest_root_tree(&root, &root, false, TemplateTraversalV1 {
+            scheduled_entries: 0,
+            receiving: Some(&mut paid),
+        }).unwrap();
+
+        assert_eq!(observed, expected);
+        assert_eq!(paid.charged().get(D::MetadataEntries), 3);
+        assert!(paid.charged().get(D::MemoryBytes) > 0);
+
+        let mut refused = ComponentServiceReceivingLedgerV1::new(ResourceVector::ZERO
+            .with(D::MemoryBytes, 1_048_576).with(D::MetadataEntries, 1));
+        let result = compare_guest_root_tree(&root, &root, false, TemplateTraversalV1 {
+            scheduled_entries: 0,
+            receiving: Some(&mut refused),
+        });
+
+        assert!(matches!(result, Err(GuestRootTreeErrorV1::Receiving)));
+        assert_eq!(refused.charged().get(D::MetadataEntries), 1);
+        assert!(matches!(refused.failure(), Some(aos_sandbox_core::AccountingError::LimitExceeded {
+            dimension: D::MetadataEntries, limit: 1, attempted: 2,
+        })));
+        let cause = refused.failure().unwrap() as *const _;
+        assert!(refused.reserve(ResourceVector::ZERO).is_err());
+        assert_eq!(refused.failure().unwrap() as *const _, cause);
+    }
+
+    #[test]
+    fn collected_parent_names_count_toward_the_global_discovery_limit() {
+        let mut traversal = TemplateTraversalV1 {
+            scheduled_entries: MAXIMUM_ENTRIES - 1,
+            ..TemplateTraversalV1::legacy()
+        };
+        let root = Path::new("/immutable/root");
+        traversal.schedule_name(
+            root, root, Path::new(""), std::ffi::OsStr::new("pending"),
+        ).unwrap();
+
+        let result = traversal.schedule_name(
+            root, root, Path::new("nested"), std::ffi::OsStr::new("child"),
+        );
+
+        assert!(matches!(result, Err(GuestRootTreeErrorV1::InvalidTree)));
+        assert_eq!(traversal.scheduled_entries, MAXIMUM_ENTRIES);
+    }
 
     #[test]
     fn offline_digest_tracks_bytes_modes_and_links() {

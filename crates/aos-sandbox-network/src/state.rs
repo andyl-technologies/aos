@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::journal::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
 };
@@ -37,6 +37,21 @@ const EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.effect.v1\0";
 const RESULT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.result.v1\0";
 const MAXIMUM_OPERATIONS: usize = 256;
 const MAXIMUM_RECORD_BYTES: usize = 96 * 1024;
+
+/// Prices the one new creation record index before its first insertion.
+///
+/// Replacement transitions reuse this entry. Record payloads and exact native
+/// append geometry are separately admitted by the selected preissue owner.
+pub(crate) fn creation_record_receiving_demand_v4()
+    -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>
+{
+    use aos_sandbox_core::{AccountingError, ResourceDimension as D, ResourceVector};
+
+    let bytes = aos_sandbox_journal::geometry::conservative_btree_node_bytes_v1::<[u8; 16], DurableRecord>(1)
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes })?;
+    Ok(ResourceVector::ZERO.with(D::MemoryBytes, bytes).with(D::MetadataEntries, 1))
+}
 
 fn record_domain() -> Result<BrokerLocalRecordDomain, NetworkStateError> {
     BrokerLocalRecordDomain::new(*b"AOSNETSTATEV0001").map_err(|_| NetworkStateError::CorruptRecord)
@@ -375,9 +390,12 @@ pub enum NetworkStateError {
     /// The production state directory is not an exact protected root directory.
     #[error("network state directory is not protected")]
     UnprotectedDirectory,
+    /// The selected retained receiving/effect gate refused before native commit.
+    #[error("network selected journal receiving gate refused")]
+    Receiving,
     /// The shared journal failed validation or durable publication.
     #[error("network journal failure: {0}")]
-    Journal(#[from] aos_sandbox::JournalError),
+    Journal(#[from] crate::journal::JournalError),
     /// A sealed local record is malformed, unauthenticated, or misplaced.
     #[error("network transaction record is corrupt")]
     CorruptRecord,
@@ -421,6 +439,13 @@ pub(crate) struct DurableRecord {
     result: Option<CommittedNetworkResultV1>,
 }
 
+/// Prices the exact already-encoded transaction before the existing native commit.
+///
+/// The selected caller retains actual pricing, financial and effect-clock causes.
+/// This callback grants no permission and cannot mutate the journal it inspects.
+pub(crate) type NetworkStateCommitGateV4<'held> =
+    dyn FnMut(&Journal, &JournalTransaction) -> Result<(), NetworkStateError> + 'held;
+
 /// Owns the exclusive journal lock and its authenticated materialized view.
 pub struct NetworkStateStore {
     journal: Journal,
@@ -431,7 +456,31 @@ pub struct NetworkStateStore {
     fail_after_next_journal_commit: bool,
 }
 
+mod startup;
+pub(crate) use startup::{NetworkCreationStateOpeningOriginalV4, creation_journal_key_data_v1};
+
 impl NetworkStateStore {
+    /// Forecasts the still-owed custody and commit appends on this held writer.
+    ///
+    /// Each actual publish emits one request-id key and one sealed value,
+    /// bounded by the same native record limit. The two prefix forecasts are
+    /// summed because each later append retains its own representation debit.
+    pub(crate) fn preparation_suffix_receiving_demand_v2(&self)
+        -> Result<aos_sandbox_core::ResourceVector, crate::journal::JournalAppendReceivingDemandErrorV1>
+    {
+        use aos_sandbox_core::ResourceVector;
+        use aos_sandbox_journal::geometry::RecordShape;
+        let mut demand = ResourceVector::ZERO;
+        for prefix in 1..=2 {
+            let future = self.journal.append_sequence_receiving_demand_v1((0..prefix).map(|_| {
+                Ok(std::iter::once(RecordShape { key_bytes: 16,
+                    value_bytes: Some(MAXIMUM_RECORD_BYTES) }))
+            }))?;
+            demand = demand.checked_add(future)?;
+        }
+        Ok(demand)
+    }
+
     /// Opens and authenticates all state in an exact protected root directory.
     ///
     /// The directory must be root-owned mode 0700. Journal and lock files are
@@ -468,77 +517,7 @@ impl NetworkStateStore {
         authority: &NetworkAuthorityV1,
         minimum_generation: u64,
     ) -> Result<Self, NetworkStateError> {
-        let mut records = BTreeMap::new();
-        for (key, sealed) in journal.records(RecordNamespace::Operation) {
-            let request_id: [u8; 16] = key
-                .try_into()
-                .map_err(|_| NetworkStateError::CorruptRecord)?;
-            let payload = authority
-                .open_local(&request_id, record_domain()?, sealed)
-                .map_err(|_| NetworkStateError::CorruptRecord)?;
-            let record = decode_record(payload)?;
-            if record.request_id != request_id {
-                return Err(NetworkStateError::CorruptRecord);
-            }
-            validate_record_links(&journal, authority, &record)?;
-            if records.insert(request_id, record).is_some() {
-                return Err(NetworkStateError::CorruptRecord);
-            }
-        }
-        for (key, value) in journal.records(RecordNamespace::Effect) {
-            let request_id: [u8; 16] = key
-                .try_into()
-                .map_err(|_| NetworkStateError::AuthorityLink)?;
-            if records
-                .get(&request_id)
-                .is_none_or(|record| record.effect != value)
-            {
-                return Err(NetworkStateError::AuthorityLink);
-            }
-        }
-        for (key, value) in journal.records(RecordNamespace::DesiredState) {
-            let sandbox_id: [u8; 16] = key
-                .try_into()
-                .map_err(|_| NetworkStateError::AuthorityLink)?;
-            if !records
-                .values()
-                .any(|record| record.sandbox_id == sandbox_id && record.current_fence == value)
-            {
-                return Err(NetworkStateError::AuthorityLink);
-            }
-        }
-        if records.values().any(|record| {
-            journal
-                .get(RecordNamespace::DesiredState, &record.sandbox_id)
-                .is_none()
-        }) {
-            return Err(NetworkStateError::AuthorityLink);
-        }
-        for (key, value) in journal.records(RecordNamespace::AuthorityPublication) {
-            let request_id: [u8; 16] = key
-                .try_into()
-                .map_err(|_| NetworkStateError::AuthorityLink)?;
-            if records
-                .get(&request_id)
-                .and_then(|record| record.operation_fence.as_deref())
-                != Some(value)
-            {
-                return Err(NetworkStateError::AuthorityLink);
-            }
-        }
-        if records.len() > MAXIMUM_OPERATIONS
-            || records
-                .values()
-                .map(|record| record.catalog.binding().generation())
-                .max()
-                .unwrap_or(0)
-                < minimum_generation
-        {
-            return Err(NetworkStateError::Rollback);
-        }
-        validate_pending_uniqueness(&records)?;
-        validate_resource_uniqueness(&records)?;
-        validate_current_fence_heads(&journal, authority, &records)?;
+        let records = replay_records_v4(&journal, authority, minimum_generation)?;
         Ok(Self {
             journal,
             records,
@@ -658,7 +637,7 @@ impl NetworkStateStore {
         let transaction = JournalTransaction::new(
             test_transaction_id(b"mislink", &[7; 16], &[transaction_marker]),
             vec![JournalRecord::put(namespace, key.to_vec(), value)],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(crate::journal::JournalError::from)?;
         self.commit_journal(&transaction)
     }
 
@@ -719,7 +698,7 @@ impl NetworkStateStore {
                 request_id.to_vec(),
                 sealed_local,
             )],
-        ).map_err(aos_sandbox::JournalError::from)?)?;
+        ).map_err(crate::journal::JournalError::from)?)?;
         self.records.insert(request_id, record);
         Ok(())
     }
@@ -756,15 +735,26 @@ impl NetworkStateStore {
                 request_id.to_vec(),
                 sealed_local,
             )],
-        ).map_err(aos_sandbox::JournalError::from)?)?;
+        ).map_err(crate::journal::JournalError::from)?)?;
         self.records.insert(request_id, record);
         Ok(())
     }
 
-    pub(crate) fn begin_authorized(
+    pub(crate) fn begin_authorized(&mut self, authority: &NetworkAuthorityV1, record: DurableRecord) -> Result<NetworkBeginOutcome, NetworkStateError> {
+        self.begin_authorized_engine_v4(authority, record, None)
+    }
+
+    /// Runs the same transition with its actual exact-append receiving gate.
+    pub(crate) fn begin_authorized_guarded_v4(&mut self, authority: &NetworkAuthorityV1, record: DurableRecord,
+        gate: &mut NetworkStateCommitGateV4<'_>) -> Result<NetworkBeginOutcome, NetworkStateError> {
+        self.begin_authorized_engine_v4(authority, record, Some(gate))
+    }
+
+    pub(crate) fn begin_authorized_engine_v4(
         &mut self,
         authority: &NetworkAuthorityV1,
         record: DurableRecord,
+        gate: Option<&mut NetworkStateCommitGateV4<'_>>,
     ) -> Result<NetworkBeginOutcome, NetworkStateError> {
         self.ensure_authority_readable()?;
         if let Some(existing) = self.records.get(&record.request_id) {
@@ -854,8 +844,8 @@ impl NetworkStateStore {
                     sealed_local,
                 ),
             ],
-        ).map_err(aos_sandbox::JournalError::from)?;
-        self.commit_journal(&transaction)?;
+        ).map_err(crate::journal::JournalError::from)?;
+        self.commit_journal_engine_v4(&transaction, gate)?;
         let effect_digest = record.effect_digest;
         self.records.insert(record.request_id, record);
         Ok(NetworkBeginOutcome::Prepared { effect_digest })
@@ -974,14 +964,25 @@ impl NetworkStateStore {
     /// Returns [`NetworkStateError::InvalidTransition`] unless `prepared`
     /// remains the exact current Prepared row. A journal failure leaves the
     /// journal's own poison/reopen semantics in force.
-    pub(crate) fn abort_prepared_exact(
+    pub(crate) fn abort_prepared_exact(&mut self, authority: &NetworkAuthorityV1, prepared: PreparedNetworkDispatchV1) -> Result<(), NetworkStateError> {
+        self.abort_prepared_exact_engine_v4(authority, prepared, None)
+    }
+
+    /// Runs the same transition with its actual exact-append receiving gate.
+    pub(crate) fn abort_prepared_exact_guarded_v4(&mut self, authority: &NetworkAuthorityV1, prepared: PreparedNetworkDispatchV1,
+        gate: &mut NetworkStateCommitGateV4<'_>) -> Result<(), NetworkStateError> {
+        self.abort_prepared_exact_engine_v4(authority, prepared, Some(gate))
+    }
+
+    pub(crate) fn abort_prepared_exact_engine_v4(
         &mut self,
         authority: &NetworkAuthorityV1,
         prepared: PreparedNetworkDispatchV1,
+        gate: Option<&mut NetworkStateCommitGateV4<'_>>,
     ) -> Result<(), NetworkStateError> {
         let mut record = self.exact_prepared(authority, &prepared)?.clone();
         record.phase = DurableNetworkPhase::Aborted;
-        self.publish(authority, record, b"aborted")
+        self.publish_engine_v4(authority, record, b"aborted", gate)
     }
 
     /// Durably crosses the effect boundary for one fully prevalidated row.
@@ -990,14 +991,25 @@ impl NetworkStateStore {
     ///
     /// Returns [`NetworkStateError::InvalidTransition`] unless `prepared`
     /// remains the exact current Prepared operation.
-    pub(crate) fn mark_prevalidated_effect_ambiguous(
+    pub(crate) fn mark_prevalidated_effect_ambiguous(&mut self, authority: &NetworkAuthorityV1, prepared: PreparedNetworkDispatchV1) -> Result<(), NetworkStateError> {
+        self.mark_prevalidated_effect_ambiguous_engine_v4(authority, prepared, None)
+    }
+
+    /// Runs the same transition with its actual exact-append receiving gate.
+    pub(crate) fn mark_prevalidated_effect_ambiguous_guarded_v4(&mut self, authority: &NetworkAuthorityV1, prepared: PreparedNetworkDispatchV1,
+        gate: &mut NetworkStateCommitGateV4<'_>) -> Result<(), NetworkStateError> {
+        self.mark_prevalidated_effect_ambiguous_engine_v4(authority, prepared, Some(gate))
+    }
+
+    pub(crate) fn mark_prevalidated_effect_ambiguous_engine_v4(
         &mut self,
         authority: &NetworkAuthorityV1,
         prepared: PreparedNetworkDispatchV1,
+        gate: Option<&mut NetworkStateCommitGateV4<'_>>,
     ) -> Result<(), NetworkStateError> {
         let mut record = self.exact_prepared(authority, &prepared)?.clone();
         record.phase = DurableNetworkPhase::Ambiguous;
-        self.publish(authority, record, b"ambiguous")
+        self.publish_engine_v4(authority, record, b"ambiguous", gate)
     }
 
     /// Durably crosses the point after which a network effect may have run.
@@ -1031,7 +1043,17 @@ impl NetworkStateStore {
     /// namespace. It must commit before the descriptor is admitted to systemd's
     /// restart-retained store and before any effect frame is transferred.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn bind_namespace_custody(
+    pub(crate) fn bind_namespace_custody(&mut self, authority: &NetworkAuthorityV1, request_id: [u8; 16], effect_digest: ObjectDigest, network_handle: [u8; 32], kernel_boot_id: [u8; 16], namespace_device: u64, namespace_inode: u64, kernel_plan_digest: ObjectDigest) -> Result<NetworkNamespaceCustodyV1, NetworkStateError> {
+        self.bind_namespace_custody_engine_v4(authority, request_id, effect_digest, network_handle, kernel_boot_id, namespace_device, namespace_inode, kernel_plan_digest, None)
+    }
+
+    /// Runs the same transition with its actual exact-append receiving gate.
+    pub(crate) fn bind_namespace_custody_guarded_v4(&mut self, authority: &NetworkAuthorityV1, request_id: [u8; 16], effect_digest: ObjectDigest, network_handle: [u8; 32], kernel_boot_id: [u8; 16], namespace_device: u64, namespace_inode: u64, kernel_plan_digest: ObjectDigest,
+        gate: &mut NetworkStateCommitGateV4<'_>) -> Result<NetworkNamespaceCustodyV1, NetworkStateError> {
+        self.bind_namespace_custody_engine_v4(authority, request_id, effect_digest, network_handle, kernel_boot_id, namespace_device, namespace_inode, kernel_plan_digest, Some(gate))
+    }
+
+    pub(crate) fn bind_namespace_custody_engine_v4(
         &mut self,
         authority: &NetworkAuthorityV1,
         request_id: [u8; 16],
@@ -1041,6 +1063,7 @@ impl NetworkStateStore {
         namespace_device: u64,
         namespace_inode: u64,
         kernel_plan_digest: ObjectDigest,
+        gate: Option<&mut NetworkStateCommitGateV4<'_>>,
     ) -> Result<NetworkNamespaceCustodyV1, NetworkStateError> {
         let mut record = self.exact_current(request_id, effect_digest)?.clone();
         let custody = NetworkNamespaceCustodyV1 {
@@ -1079,7 +1102,7 @@ impl NetworkStateStore {
             return Err(NetworkStateError::InvalidTransition);
         }
         record.custody = Some(custody);
-        self.publish(authority, record, b"custody")?;
+        self.publish_engine_v4(authority, record, b"custody", gate)?;
         Ok(custody)
     }
 
@@ -1091,12 +1114,23 @@ impl NetworkStateStore {
     /// bound to the exact ambiguous request, transport, effect, catalog, and
     /// reserved handle. A physical namespace already committed to another
     /// request in the same boot is also rejected.
-    pub(crate) fn commit_verified(
+    pub(crate) fn commit_verified(&mut self, authority: &NetworkAuthorityV1, request_id: [u8; 16], effect_digest: ObjectDigest, verified: VerifiedNetworkResultV1) -> Result<CommittedNetworkResultV1, NetworkStateError> {
+        self.commit_verified_engine_v4(authority, request_id, effect_digest, verified, None)
+    }
+
+    /// Runs the same transition with its actual exact-append receiving gate.
+    pub(crate) fn commit_verified_guarded_v4(&mut self, authority: &NetworkAuthorityV1, request_id: [u8; 16], effect_digest: ObjectDigest, verified: VerifiedNetworkResultV1,
+        gate: &mut NetworkStateCommitGateV4<'_>) -> Result<CommittedNetworkResultV1, NetworkStateError> {
+        self.commit_verified_engine_v4(authority, request_id, effect_digest, verified, Some(gate))
+    }
+
+    pub(crate) fn commit_verified_engine_v4(
         &mut self,
         authority: &NetworkAuthorityV1,
         request_id: [u8; 16],
         effect_digest: ObjectDigest,
         verified: VerifiedNetworkResultV1,
+        gate: Option<&mut NetworkStateCommitGateV4<'_>>,
     ) -> Result<CommittedNetworkResultV1, NetworkStateError> {
         let mut record = self.exact_current(request_id, effect_digest)?.clone();
         if record.phase != DurableNetworkPhase::Ambiguous
@@ -1136,7 +1170,7 @@ impl NetworkStateStore {
         };
         record.phase = DurableNetworkPhase::Committed;
         record.result = Some(result);
-        self.publish(authority, record, b"committed")?;
+        self.publish_engine_v4(authority, record, b"committed", gate)?;
         Ok(result)
     }
 
@@ -1217,11 +1251,16 @@ impl NetworkStateStore {
         Ok(record)
     }
 
-    fn publish(
+    fn publish(&mut self, authority: &NetworkAuthorityV1, record: DurableRecord, transition: &'static [u8]) -> Result<(), NetworkStateError> {
+        self.publish_engine_v4(authority, record, transition, None)
+    }
+
+    fn publish_engine_v4(
         &mut self,
         authority: &NetworkAuthorityV1,
         record: DurableRecord,
         transition: &'static [u8],
+        gate: Option<&mut NetworkStateCommitGateV4<'_>>,
     ) -> Result<(), NetworkStateError> {
         let payload = encode_record(&record)?;
         let sealed_local = authority
@@ -1234,23 +1273,29 @@ impl NetworkStateStore {
                 record.request_id.to_vec(),
                 sealed_local,
             )],
-        ).map_err(aos_sandbox::JournalError::from)?;
-        self.commit_journal(&transaction)?;
+        ).map_err(crate::journal::JournalError::from)?;
+        self.commit_journal_engine_v4(&transaction, gate)?;
         self.records.insert(record.request_id, record);
         Ok(())
     }
 
-    fn commit_journal(
+    fn commit_journal(&mut self, transaction: &JournalTransaction) -> Result<(), NetworkStateError> {
+        self.commit_journal_engine_v4(transaction, None)
+    }
+
+    fn commit_journal_engine_v4(
         &mut self,
         transaction: &JournalTransaction,
+        gate: Option<&mut NetworkStateCommitGateV4<'_>>,
     ) -> Result<(), NetworkStateError> {
+        if let Some(gate) = gate { gate(&self.journal, transaction)?; }
         let result = self.journal.commit(transaction);
         #[cfg(test)]
         let result = result.and_then(|commit| {
             if std::mem::take(&mut self.fail_after_next_journal_commit) {
                 // Model an error returned after durable commit but before the
                 // caller updates its authenticated materialized view.
-                Err(aos_sandbox::JournalError::Io(std::io::Error::other(
+                Err(crate::journal::JournalError::Io(std::io::Error::other(
                     "injected failure after durable network journal commit",
                 )))
             } else {
@@ -1268,7 +1313,7 @@ impl NetworkStateStore {
 
     pub(crate) fn ensure_authority_readable(&self) -> Result<(), NetworkStateError> {
         if self.commit_failed {
-            Err(aos_sandbox::JournalError::Poisoned.into())
+            Err(crate::journal::JournalError::Poisoned.into())
         } else {
             Ok(())
         }
@@ -2117,5 +2162,99 @@ mod tests {
                 Err(NetworkStateError::CorruptRecord)
             ));
         }
+    }
+}
+
+/// Replays the sole creation-state model while the caller retains its writer.
+fn replay_records_v4(
+    journal: &Journal,
+    authority: &NetworkAuthorityV1,
+    minimum_generation: u64,
+) -> Result<BTreeMap<[u8; 16], DurableRecord>, NetworkStateError> {
+        let mut records = BTreeMap::new();
+        for (key, sealed) in journal.records(RecordNamespace::Operation) {
+            let request_id: [u8; 16] = key
+                .try_into()
+                .map_err(|_| NetworkStateError::CorruptRecord)?;
+            let payload = authority
+                .open_local(&request_id, record_domain()?, sealed)
+                .map_err(|_| NetworkStateError::CorruptRecord)?;
+            let record = decode_record(payload)?;
+            if record.request_id != request_id {
+                return Err(NetworkStateError::CorruptRecord);
+            }
+            validate_record_links(journal, authority, &record)?;
+            if records.insert(request_id, record).is_some() {
+                return Err(NetworkStateError::CorruptRecord);
+            }
+        }
+        for (key, value) in journal.records(RecordNamespace::Effect) {
+            let request_id: [u8; 16] = key
+                .try_into()
+                .map_err(|_| NetworkStateError::AuthorityLink)?;
+            if records
+                .get(&request_id)
+                .is_none_or(|record| record.effect != value)
+            {
+                return Err(NetworkStateError::AuthorityLink);
+            }
+        }
+        for (key, value) in journal.records(RecordNamespace::DesiredState) {
+            let sandbox_id: [u8; 16] = key
+                .try_into()
+                .map_err(|_| NetworkStateError::AuthorityLink)?;
+            if !records
+                .values()
+                .any(|record| record.sandbox_id == sandbox_id && record.current_fence == value)
+            {
+                return Err(NetworkStateError::AuthorityLink);
+            }
+        }
+        if records.values().any(|record| {
+            journal
+                .get(RecordNamespace::DesiredState, &record.sandbox_id)
+                .is_none()
+        }) {
+            return Err(NetworkStateError::AuthorityLink);
+        }
+        for (key, value) in journal.records(RecordNamespace::AuthorityPublication) {
+            let request_id: [u8; 16] = key
+                .try_into()
+                .map_err(|_| NetworkStateError::AuthorityLink)?;
+            if records
+                .get(&request_id)
+                .and_then(|record| record.operation_fence.as_deref())
+                != Some(value)
+            {
+                return Err(NetworkStateError::AuthorityLink);
+            }
+        }
+        let head = startup::read_creation_head_v4(journal, authority)?;
+        if records.len() > MAXIMUM_OPERATIONS
+            || records
+                .values()
+                .map(|record| record.catalog.binding().generation())
+                .max()
+                .unwrap_or(0)
+                .max(head.as_ref().map_or(0, |head| head.generation))
+                < minimum_generation
+        {
+            return Err(NetworkStateError::Rollback);
+        }
+        validate_pending_uniqueness(&records)?;
+        validate_resource_uniqueness(&records)?;
+        validate_current_fence_heads(journal, authority, &records)?;
+    Ok(records)
+}
+
+impl NetworkStateStore {
+    // Only the private whole-service inventory callsite borrows this exact
+    // continuously held writer; the borrow creates no new claim or file.
+    pub(crate) fn inventory_journal_v2(&self) -> &Journal {
+        &self.journal
+    }
+
+    pub(crate) fn inventory_history_memory_v2(&self) -> Option<usize> {
+        startup::inventory_creation_head_memory_v2(&self.journal)
     }
 }

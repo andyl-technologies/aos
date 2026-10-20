@@ -48,11 +48,11 @@ impl CurrentProviderIngressSessionV1 {
     #[doc(hidden)]
     pub fn prepare_original_release_status_transaction_v1(
         &mut self,
-        writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
-        readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+        writer: &aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+        readback: &aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
         authorization: &super::ProviderOutcomeAuthorizationV1,
         finalized: &aos_sandbox_source_provider_ledger::FinalizedCompletionV1,
-    ) -> Result<aos_sandbox::JournalTransaction, super::OriginalNativeSigningErrorV5> {
+    ) -> Result<aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction, super::OriginalNativeSigningErrorV5> {
         self.revalidate()?;
         writer.validate_original_release_status_snapshot_v1(readback, &authorization.journal_snapshot)?;
         let acquisition = authorization.acquisition_id.ok_or(SourceProviderSecurityError::SessionContinuity)?;
@@ -73,13 +73,13 @@ impl CurrentProviderIngressSessionV1 {
             writer.derive_original_floor_transfer_v5(&transaction, acquisition)?;
         let old_floor = old_floor
             .to_journal_record()
-            .map_err(aos_sandbox::JournalError::from)?;
+            .map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?;
 
         // This own continuation spends Source5 once and settles the separate
         // status reservation. Canonical union order places every changed-old
         // DELETE before the exact successor PUT, retaining all cleanup debt.
         let mut deleted_floors = [
-            aos_sandbox::JournalRecord::delete(
+            aos_sandbox_protocol::domain_ledger::transaction::JournalRecord::delete(
                 old_floor.namespace(), old_floor.key().to_vec(),
             ),
             capacity.settlement_record(),
@@ -91,10 +91,10 @@ impl CurrentProviderIngressSessionV1 {
         records.push(
             next_floor
                 .to_journal_record()
-                .map_err(aos_sandbox::JournalError::from)?,
+                .map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?,
         );
-        Ok(aos_sandbox::JournalTransaction::new(*transaction.id(), records)
-            .map_err(aos_sandbox::JournalError::from)?)
+        Ok(aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction::new(*transaction.id(), records)
+            .map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?)
     }
 }
 
@@ -133,7 +133,7 @@ pub(super) fn encode_typed_response(
 }
 
 pub(super) fn completion_records_for_plan(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     authorization: &super::ProviderOutcomeAuthorizationV1,
     attempt_key: &[u8],
     response: &[u8],
@@ -149,7 +149,7 @@ pub(super) fn completion_records_for_plan(
 }
 
 pub(super) fn collect_bounded_current_records(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, SourceProviderSecurityError> {
     journal
         .validate_source_provider_authority()
@@ -183,7 +183,7 @@ pub(super) fn collect_bounded_current_records(
 
 fn prepare_finalized_builder(
     session: &mut CurrentProviderIngressSessionV1,
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     authorization: &super::ProviderOutcomeAuthorizationV1,
     finalized: aos_sandbox_source_provider_ledger::FinalizedCompletionV1,
 ) -> Result<ProviderCompletionBuilderV1, SourceProviderSecurityError> {
@@ -199,7 +199,7 @@ fn prepare_finalized_builder(
 fn protected_completion_transaction_v1(
     purpose: &[u8],
     mutations: Vec<(Vec<u8>, Option<Vec<u8>>)>,
-) -> Result<(aos_sandbox::JournalTransaction, [u8; 32]), super::OriginalNativeSigningErrorV5> {
+) -> Result<(aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction, [u8; 32]), super::OriginalNativeSigningErrorV5> {
     use sha2::{Digest as _, Sha256};
 
     if purpose.is_empty()
@@ -249,28 +249,28 @@ fn protected_completion_transaction_v1(
     let records = mutations
         .into_iter()
         .map(|(key, value)| match value {
-            Some(value) => aos_sandbox::JournalRecord::put(
-                aos_sandbox::RecordNamespace::SourceProviderAuthority,
+            Some(value) => aos_sandbox_protocol::domain_ledger::transaction::JournalRecord::put(
+                aos_sandbox_core::RecordNamespace::SourceProviderAuthority,
                 key,
                 value,
             ),
-            None => aos_sandbox::JournalRecord::delete(
-                aos_sandbox::RecordNamespace::SourceProviderAuthority,
+            None => aos_sandbox_protocol::domain_ledger::transaction::JournalRecord::delete(
+                aos_sandbox_core::RecordNamespace::SourceProviderAuthority,
                 key,
             ),
         })
         .collect();
-    let transaction = aos_sandbox::JournalTransaction::new(transaction_id, records)
-        .map_err(aos_sandbox::JournalError::from)?;
+    let transaction = aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction::new(transaction_id, records)
+        .map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?;
     Ok((transaction, transaction_digest))
 }
 
 pub(super) fn prepare_finalized_builder_with_native_status_capacity(
     session: &mut CurrentProviderIngressSessionV1,
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     authorization: &super::ProviderOutcomeAuthorizationV1,
     finalized: aos_sandbox_source_provider_ledger::FinalizedCompletionV1,
-    native_release_status_capacity: Option<aos_sandbox::GlobalCapacityReservationV1>,
+    native_release_status_capacity: Option<aos_sandbox_source::provider_journal::GlobalCapacityReservationV1>,
 ) -> Result<ProviderCompletionBuilderV1, SourceProviderSecurityError> {
     let response = finalized.response().map(ToOwned::to_owned);
     let method = if response.is_some() {
@@ -302,7 +302,7 @@ pub(super) fn prepare_finalized_builder_with_native_status_capacity(
         }
         let mut records = transaction.records().to_vec();
         records.push(reservation.settlement_record());
-        transaction = aos_sandbox::JournalTransaction::new(transaction_id, records)
+        transaction = aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction::new(transaction_id, records)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
     }
     let transactions = std::slice::from_ref(&transaction);
@@ -789,7 +789,7 @@ impl ProviderCompletionBuilderV1 {
     /// retention validation fails.
     pub fn commit(
         self,
-        journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         session: &mut CurrentProviderIngressSessionV1,
     ) -> Result<super::CommittedProviderOutcomeV1, SourceProviderSecurityError> {
         let transactions = std::slice::from_ref(&self.transaction);

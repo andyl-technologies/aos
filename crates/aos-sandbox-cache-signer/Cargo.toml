@@ -9,9 +9,13 @@ autobins = false
 default = []
 
 [dependencies]
-aos-sandbox.workspace = true
+aos-sandbox-ledger-replay.workspace = true
+aos-systemd.workspace = true
+aos-sandbox-broker.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
+aos-sandbox-journal.workspace = true
+aos-sandbox-protocol.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 rustix = { workspace = true, features = ["event", "fs", "net", "process", "rand", "time"] }
 thiserror.workspace = true

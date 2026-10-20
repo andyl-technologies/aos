@@ -12,17 +12,20 @@
 //!                     | public[32] | ed25519-seed[32]
 //! ```
 
-use std::fs::File;
-use std::io::Read as _;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use rustix::fs::{FileType, Mode, OFlags, ResolveFlags, fstat, openat, openat2};
 use zeroize::Zeroizing;
 
 use crate::operator_recovery::StorageOperatorRecoveryOwnerV1;
 use crate::service::StorageServiceError;
+
+mod initial_read;
+mod startup;
+
+pub(crate) use initial_read::InitialStorageCredentialBatchV1;
+pub(crate) use startup::StorageOperatorCredentialStartupV1;
 
 const CONTROLLER_NAME: &str = "operator-recovery-controller-public-key-v1";
 const OWNER_NAME: &str = "operator-recovery-storage-owner-key-v1";
@@ -181,27 +184,7 @@ impl StorageOperatorRecoveryCredentialsV1 {
 }
 
 pub(crate) fn open_directory(path: &Path) -> Result<(OwnedFd, FileIdentity), StorageServiceError> {
-    if !path.is_absolute() {
-        return Err(invalid("operator credential directory is not absolute"));
-    }
-    let fd = openat2(
-        rustix::fs::CWD,
-        path,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-        ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-    )
-    .map_err(|_| invalid("operator credential directory is unsafe"))?;
-    let stat = fstat(&fd).map_err(|_| invalid("operator credential directory is unavailable"))?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::Directory
-        || stat.st_uid != 0
-        || stat.st_mode & 0o077 != 0
-    {
-        return Err(invalid(
-            "operator credential directory protection is invalid",
-        ));
-    }
-    Ok((fd, identity(&stat)))
+    initial_read::open_directory_local(path)
 }
 
 pub(crate) fn read_credential(
@@ -209,35 +192,7 @@ pub(crate) fn read_credential(
     name: &'static str,
     length: usize,
 ) -> Result<PinnedCredential, StorageServiceError> {
-    let fd = openat(
-        directory,
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|_| invalid("operator credential is absent"))?;
-    let before = fstat(&fd).map_err(|_| invalid("operator credential metadata is unavailable"))?;
-    if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
-        || before.st_uid != 0
-        || before.st_mode & 0o077 != 0
-        || before.st_nlink != 1
-        || before.st_size != length as i64
-    {
-        return Err(invalid("operator credential protection is invalid"));
-    }
-    let mut file = File::from(fd);
-    let mut bytes = Zeroizing::new(vec![0; length]);
-    file.read_exact(&mut bytes)
-        .map_err(|_| invalid("operator credential read failed"))?;
-    let after = fstat(&file).map_err(|_| invalid("operator credential changed"))?;
-    if identity(&before) != identity(&after) {
-        return Err(invalid("operator credential changed"));
-    }
-    Ok(PinnedCredential {
-        name,
-        identity: identity(&after),
-        bytes,
-    })
+    initial_read::read_credential_local(directory, name, length)
 }
 
 fn identity(stat: &rustix::fs::Stat) -> FileIdentity {

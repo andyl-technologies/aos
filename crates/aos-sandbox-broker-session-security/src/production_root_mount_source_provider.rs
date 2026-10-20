@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use aos_sandbox::MountSourceConsumptionJournalAuthorityV1;
+use aos_sandbox_mount_native::MountSourceConsumptionJournalAuthorityV1;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;

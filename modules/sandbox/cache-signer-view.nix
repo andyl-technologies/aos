@@ -12,6 +12,8 @@
   objectSource = "/var/lib/aos/sandbox/cache-residency-objects";
   journalView = "/run/aos/sandbox-cache-signer-journals";
   objectView = "/run/aos/sandbox-cache-signer-objects";
+  controllerSource = "/var/lib/aos/sandboxd/cache-residency-authority";
+  controllerView = "/run/aos/sandbox-cache-signer-controller-journal";
   otherUsers = builtins.attrValues (lib.filterAttrs (name: _: name != "aos-cache-signer") config.aos.users.users);
   otherGroups = builtins.attrValues (lib.filterAttrs (name: _: name != "aos-cache-signer") config.aos.users.groups);
   prepareViews = preparer.writeScript "aos-sandbox-cache-signer-views" ''
@@ -80,7 +82,33 @@
       fi
     done
 
-    for view in ${journalView} ${objectView}; do
+    # Keep the Controller parent private. Only this fixed child is mapped;
+    # neither the signer nor Root gains traversal through sandboxd itself.
+    for directory in /var/lib/aos/sandboxd ${controllerSource}; do
+      test ! -L "$directory"
+      if ! test -e "$directory"; then
+        ${preparer.coreutils}/mkdir --mode=0700 "$directory"
+        ${preparer.coreutils}/chown "$controller_uid:$controller_gid" "$directory"
+      fi
+      test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a' "$directory")" = \
+        "directory:$controller_uid:$controller_gid:700"
+    done
+    for entry in ${controllerSource}/* ${controllerSource}/.[!.]* ${controllerSource}/..?*; do
+      if ! test -e "$entry" && ! test -L "$entry"; then
+        continue
+      fi
+      case "$entry" in
+        ${controllerSource}/bootstrap-v1.journal|\
+        ${controllerSource}/bootstrap-v1.journal.lock|\
+        ${controllerSource}/bootstrap-v1.journal.compact.tmp) ;;
+        *) exit 1 ;;
+      esac
+      test ! -L "$entry"
+      test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a:%h' "$entry")" = \
+        "regular file:$controller_uid:$controller_gid:600:1"
+    done
+
+    for view in ${journalView} ${objectView} ${controllerView}; do
       test ! -L "$view"
       if ! test -e "$view"; then
         ${preparer.coreutils}/mkdir --mode=0700 "$view"
@@ -104,7 +132,14 @@
       ${objectSource} ${objectView}
     trap '${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${objectView}; ${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${journalView}' EXIT
 
-    for pair in '${journalSource}:${journalView}' '${objectSource}:${objectView}'; do
+    ${preparer.utilLinux}/mount --internal-only --no-mtab --bind \
+      --map-users "$controller_uid:$signer_uid:1" \
+      --map-groups "$controller_gid:$signer_gid:1" \
+      --options ro,nosuid,nodev,noexec,nosymfollow \
+      ${controllerSource} ${controllerView}
+    trap '${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${controllerView}; ${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${objectView}; ${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${journalView}' EXIT
+
+    for pair in '${journalSource}:${journalView}' '${objectSource}:${objectView}' '${controllerSource}:${controllerView}'; do
       source="''${pair%%:*}"
       view="''${pair#*:}"
       test "$(${preparer.coreutils}/stat --format='%d:%i' "$source")" = \
@@ -123,6 +158,7 @@
   '';
   stopViews = preparer.writeScript "aos-sandbox-cache-signer-views-stop" ''
     status=0
+    ${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${controllerView} || status=1
     ${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${objectView} || status=1
     ${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${journalView} || status=1
     exit "$status"
@@ -144,7 +180,7 @@ in {
       default = stopViews;
       description = "Exact immutable checked Cache view teardown entrypoint.";
     };
-    enable = lib.mkEnableOption "the read-only idmapped Cache signer journal and object views";
+    enable = lib.mkEnableOption "the read-only idmapped Cache signer journal, object and Controller Bootstrap views";
 
     uid = lib.mkOption {
       type = lib.types.int;
@@ -196,7 +232,7 @@ in {
       before = ["aos-sandboxd.service" "aos-sandbox-policy-authorityd.service"];
       unitConfig = {
         BindsTo = ["aos-sandbox-cache-journal-view.service"];
-        RequiresMountsFor = ["/var/lib/aos/sandbox"];
+        RequiresMountsFor = ["/var/lib/aos/sandbox" "/var/lib/aos/sandboxd"];
       };
       serviceConfig =
         preparer.serviceConfig

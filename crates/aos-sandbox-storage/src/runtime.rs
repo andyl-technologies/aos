@@ -18,6 +18,18 @@
 //! settlement. Its terminal-only observation never materializes catalog rows.
 
 mod native_acquire;
+mod daemon_prefix;
+mod startup_assembly;
+mod transaction_recovery;
+mod startup_reconciliation;
+mod inventory_catalog;
+mod guest_root_publication;
+mod guest_root_health;
+mod root_mount_export;
+mod root_export_original;
+mod bootstrap_open;
+use startup_assembly::StorageRuntimeAssemblyV1;
+use daemon_prefix::{DaemonPrefixProfileV1, StorageDaemonPrefixV1};
 pub(crate) mod capture_candidate;
 #[cfg(target_os = "linux")]
 pub(crate) mod git_coverage;
@@ -25,6 +37,7 @@ pub(crate) mod original_held_settlement;
 pub(crate) mod original_held_measurement;
 mod operator_terminal_hold;
 mod native_readback;
+mod original_output;
 mod repair_worker_drain;
 mod operator_startup;
 mod canary_export_held;
@@ -75,7 +88,7 @@ use crate::broker::{
 use crate::guest_root_inventory::{
     ProtectedGuestRootTemplateV1, attach_guest_root_publication_readback_v1,
 };
-use crate::guest_root_worker::SystemdGuestRootPublisherClientV1;
+use crate::pin_worker_runtime::SystemdGuestRootPublisherClientV1;
 use crate::helper::{
     StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome, ZfsProcessBackend,
 };
@@ -180,6 +193,10 @@ pub(crate) fn guest_root_inventory_cutoff(
 /// Reports protected Storage runtime construction or recovery failure.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageRuntimeError {
+    /// The actual contacted receiving original or its retained shape is closed.
+    #[error("the original Storage receiving interval is closed")]
+    Receiving,
+
     /// Protected authority configuration was rejected.
     #[error("protected Storage authority configuration was rejected: {0}")]
     Configuration(#[from] crate::StorageAuthorityConfigError),
@@ -303,6 +320,37 @@ enum OriginalNativeConstructionPhaseV1 {
     Failed,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum OriginalStartupProfileV1<'key> {
+    Ordinary,
+    Held(&'key crate::storage_zfs_hold_key::StorageZfsHoldKeyV1),
+}
+
+impl OriginalStartupProfileV1<'_> {
+    fn receiving_profile(self) -> DaemonPrefixProfileV1 {
+        match self {
+            Self::Ordinary => DaemonPrefixProfileV1::Ordinary,
+            Self::Held(_) => DaemonPrefixProfileV1::HeldNative,
+        }
+    }
+}
+
+// The selected daemon's actual executor stays in its outer resident slot until
+// every earlier startup check and fixed Snapshot owner has succeeded.
+enum StorageStartupExecutorV1<'owner> {
+    Legacy(&'owner mut Option<SystemdZfsExecutor>),
+    Receiving(&'owner mut Option<SystemdZfsExecutor>),
+}
+
+impl StorageStartupExecutorV1<'_> {
+    fn take(&mut self) -> Option<SystemdZfsExecutor> {
+        match self {
+            Self::Legacy(executor) => executor.take(),
+            Self::Receiving(executor) => executor.take(),
+        }
+    }
+}
+
 enum OriginalNativeConstructionCauseV1 {
     Startup(crate::activation::StorageOriginalWorkerStartupCauseV3),
     Native(crate::native_issuance::StorageNativeIssuanceErrorV1),
@@ -329,8 +377,20 @@ impl OriginalNativeConstructionCauseV1 {
 /// writer or converts absence into admission. An armed destructor aborts before
 /// these originals can be discarded. Lower pre-return custody remains separate.
 pub struct StorageOriginalNativeConstructionV1 {
+    daemon_prefix: StorageDaemonPrefixV1,
+    assembly: Option<StorageRuntimeAssemblyV1>,
+    template_open: crate::guest_root_inventory::ProtectedGuestRootTemplateOpenV1,
+    selected_template: Option<ProtectedGuestRootTemplateV1>,
+    startup_configuration_demand: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>>,
+    catalog_observer_demand: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>>,
+    snapshot_metadata: crate::helper::StorageSnapshotMetadataStartupV1,
+    snapshot_capture_result: Option<Result<(), ()>>,
+    snapshot_current_result: Option<Result<(), StorageOriginalNativeConstructionClosedV1>>,
+    startup_reconciliation: Option<Result<StorageRuntimeReadiness, StorageRuntimeError>>,
+    startup_reconciliation_post: Option<Result<(), crate::activation::StorageOriginalWorkerStartupCauseV3>>,
     phase: OriginalNativeConstructionPhaseV1,
     startup: Option<crate::activation::StorageOriginalWorkerStartupV3>,
+    legacy_executor: Option<SystemdZfsExecutor>,
     native_writer: Option<aos_sandbox::Journal>,
     native_trust: Option<crate::live_export_request_trust::StorageLiveExportRequestTrustV1>,
     native_ledger: Option<StorageNativeIssuanceLedgerV1>,
@@ -374,7 +434,19 @@ impl StorageOriginalNativeConstructionV1 {
     pub fn begin(startup: crate::activation::StorageOriginalWorkerStartupV3) -> Self {
         Self {
             phase: OriginalNativeConstructionPhaseV1::Captured,
+            daemon_prefix: StorageDaemonPrefixV1::new(),
+            assembly: Some(StorageRuntimeAssemblyV1::new()),
+            template_open: crate::guest_root_inventory::ProtectedGuestRootTemplateOpenV1::new(),
+            selected_template: None,
+            startup_configuration_demand: None,
+            catalog_observer_demand: None,
+            snapshot_metadata: crate::helper::StorageSnapshotMetadataStartupV1::new(),
+            snapshot_capture_result: None,
+            snapshot_current_result: None,
+            startup_reconciliation: None,
+            startup_reconciliation_post: None,
             startup: Some(startup),
+            legacy_executor: None,
             native_writer: None,
             native_trust: None,
             native_ledger: None,
@@ -385,6 +457,13 @@ impl StorageOriginalNativeConstructionV1 {
         }
     }
 
+    /// Reports whether this actual startup owns the distinct service envelope.
+    #[must_use]
+    pub fn has_storage_service_receiving_original_v1(&self) -> bool {
+        self.startup.as_ref().is_some_and(|startup|
+            startup.has_storage_service_receiving_original_v1())
+    }
+
     /// Returns a nonauthorizing unwind fence for this already-held owner.
     pub fn unwind_fence(&self) -> StorageOriginalNativeUnwindFenceV1 {
         StorageOriginalNativeUnwindFenceV1 { _private: () }
@@ -392,9 +471,110 @@ impl StorageOriginalNativeConstructionV1 {
 
     /// Borrows the first concrete failure without cloning or formatting its cause.
     pub fn first_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.first_cause.as_ref().map(OriginalNativeConstructionCauseV1::source)
+        let receiving_failure = || self.startup.as_ref()
+            .and_then(|startup| startup.storage_receiving_failure_v1());
+        let template_failure = self.template_open.failure().map(|cause| {
+            let receiving_marker = cause.is::<aos_sandbox::StorageReceivingClosedV1>()
+                || matches!(
+                    cause.downcast_ref::<crate::guest_root_inventory::GuestRootInventoryErrorV1>(),
+                    Some(crate::guest_root_inventory::GuestRootInventoryErrorV1::Receiving),
+                );
+            if receiving_marker {
+                receiving_failure().unwrap_or(cause)
+            } else {
+                cause
+            }
+        });
+
+        self.daemon_prefix.failure()
+            .map(|cause| if cause.is::<aos_sandbox::StorageReceivingClosedV1>() {
+                receiving_failure().unwrap_or(cause)
+            } else {
+                cause
+            })
+            .or_else(|| self.assembly.as_ref().and_then(|assembly| {
+                assembly.configuration_before.as_ref().and_then(|result| result.as_ref().err())
+                    .map(|cause| cause as &dyn std::error::Error)
+                    .or_else(|| assembly.broker_configuration_open.failure())
+                    .or_else(|| assembly.configuration_capture.as_ref().and_then(|result| result.as_ref().err())
+                        .map(|cause| cause as &dyn std::error::Error))
+                    .or_else(|| assembly.configuration_conversion.failure())
+                    .or_else(|| assembly.configuration_conversion_result.as_ref().and_then(|result| result.as_ref().err())
+                        .map(|cause| cause as &dyn std::error::Error))
+                    .or_else(|| assembly.configuration_post.as_ref().and_then(|result| result.as_ref().err())
+                        .map(|cause| cause as &dyn std::error::Error))
+                    .or_else(|| assembly.bootstrap_before.as_ref().and_then(|result| result.as_ref().err())
+                        .map(|cause| cause as &dyn std::error::Error))
+                    .or_else(|| assembly.bootstrap_open.failure())
+                    .or_else(|| assembly.bootstrap_capture.as_ref().and_then(|result| result.as_ref().err())
+                        .map(|cause| cause as &dyn std::error::Error))
+                    .or_else(|| assembly.bootstrap_post.as_ref().and_then(|result| result.as_ref().err())
+                        .map(|cause| cause as &dyn std::error::Error))
+                    .or_else(|| assembly.state_startup.failure())
+                    .or_else(|| assembly.initial_pin_failure_v1())
+            })
+                .map(|cause| if cause.is::<aos_sandbox::StorageReceivingClosedV1>() {
+                    receiving_failure().unwrap_or(cause)
+                } else { cause }))
+            .or_else(|| self.assembly.as_ref().and_then(|assembly| {
+                assembly.coordinator.as_ref().and_then(StorageAdmissionCoordinator::startup_mutation_primary_failure_v1)
+                    .or_else(|| assembly.startup_mutation_entry.as_ref()
+                        .and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error))
+                    .or_else(|| assembly.resolver_configuration.as_ref()
+                        .and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error))
+                    .or_else(|| assembly.startup_authority.as_ref()
+                        .and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error))
+                    .or_else(|| assembly.startup_retirement.as_ref()
+                        .and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error))
+                    .or_else(|| assembly.coordinator.as_ref()
+                        .and_then(StorageAdmissionCoordinator::startup_mutation_post_failure_v1))
+                    .or_else(|| assembly.workspace_plan.as_ref()
+                        .and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error))
+                    .or_else(|| assembly.workspace_startup.failure())
+                    .or_else(|| assembly.issuance_startup.failure())
+                    .or_else(|| assembly.trust_startup.failure())
+            }).map(|cause| if cause.is::<aos_sandbox::StorageReceivingClosedV1>() {
+                receiving_failure().unwrap_or(cause)
+            } else { cause }))
+            .or_else(|| self.runtime.as_ref().and_then(Self::runtime_startup_failure_v1))
+            .or_else(|| self.startup_reconciliation.as_ref()
+                .and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error))
+            .or_else(|| self.startup_reconciliation_post.as_ref()
+                .and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error))
+            .or_else(|| self.snapshot_metadata.failure())
+            .or(template_failure)
+            .or_else(|| self.startup_configuration_demand.as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(|cause| cause as &dyn std::error::Error))
+            .or_else(|| self.catalog_observer_demand.as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(|cause| cause as &dyn std::error::Error))
+            .or_else(receiving_failure)
+            .or_else(|| self.first_cause.as_ref().map(OriginalNativeConstructionCauseV1::source))
             .or_else(|| self.composition.as_ref().and_then(|composition|
                 composition.runtime().original_held_first_cause()))
+    }
+
+    fn runtime_startup_failure_v1(runtime: &StorageBrokerRuntime) -> Option<&(dyn std::error::Error + 'static)> {
+        runtime.startup_reconciliation.operator_policy_error.as_ref().map(|cause| {
+            runtime.resolver_policy_directory_original.failure()
+                .or_else(|| runtime.resolver_policy_read_original.failure())
+                .unwrap_or(cause as &dyn std::error::Error)
+        }).or_else(|| runtime.startup_reconciliation.failure(&runtime.coordinator, &runtime.helper))
+            .map(|cause| {
+                if cause.is::<aos_sandbox::StorageReceivingClosedV1>()
+                    || matches!(cause.downcast_ref::<StorageRuntimeError>(), Some(StorageRuntimeError::Receiving))
+                {
+                    runtime.original_worker_startup.as_ref()
+                        .and_then(crate::activation::StorageOriginalWorkerStartupV3::storage_receiving_failure_v1)
+                        .unwrap_or(cause)
+                } else { cause }
+            })
+            .or_else(|| runtime.coordinator.startup_mutation_failure_v1())
+            .or_else(|| runtime.workspaces.as_ref()
+                .and_then(ValidatedPendingStorageWorkspaceCatalogV1::startup_native_failure_v1))
+            .or_else(|| runtime.receiving_inventory_worker_failure_v1())
+            .or_else(|| runtime.original_held_first_cause())
     }
 
     /// Permanently closes the owner around a returned installed-caller failure.
@@ -411,6 +591,80 @@ impl StorageOriginalNativeConstructionV1 {
     /// Permanently closes a resident negative without replacing its real cause.
     pub fn close_resident(&mut self) {
         self.phase = OriginalNativeConstructionPhaseV1::Failed;
+    }
+
+    /// Loads the actual selected package before later construction effects.
+    ///
+    /// The actual receiving original joins argv9 and lends its SAME ledger to
+    /// the shared scanner. Supported nonresource original callers retain their
+    /// existing protected-template scope. Both keep the actual load on this
+    /// already resident outer owner until the complete positive transfer.
+    ///
+    /// # Errors
+    /// Refuses reentry or any original, template or accounting failure. Its
+    /// original cause remains on this owner and the genuine Native original.
+    pub fn observe_guest_root_template_once_v1(
+        &mut self,
+        package: &Path,
+    ) -> Result<(), StorageOriginalNativeConstructionClosedV1> {
+        if self.phase != OriginalNativeConstructionPhaseV1::Captured {
+            self.phase = OriginalNativeConstructionPhaseV1::Failed;
+            return Err(StorageOriginalNativeConstructionClosedV1);
+        }
+        let _crossing = self.unwind_fence();
+        let result = (|| {
+            let startup = self.startup.as_mut().ok_or(StorageOriginalNativeConstructionClosedV1)?;
+            if startup.has_storage_service_receiving_original_v1() {
+                let mut receiving = startup.borrow_storage_prepare_receiving_v1()
+                    .map_err(|_| StorageOriginalNativeConstructionClosedV1)?;
+                self.template_open.open_receiving_once_v1(&mut receiving, package)
+                    .map_err(|_| StorageOriginalNativeConstructionClosedV1)?;
+            } else {
+                self.template_open.open_legacy_once_v1(package)
+                    .map_err(|_| StorageOriginalNativeConstructionClosedV1)?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.phase = OriginalNativeConstructionPhaseV1::Failed;
+        }
+        result
+    }
+
+    /// Borrows the actual observed template while later daemon gates run.
+    ///
+    /// # Errors
+    /// Refuses absent positive observation, transfer or a closed construction.
+    pub fn observed_guest_root_template_v1(
+        &self,
+    ) -> Result<&ProtectedGuestRootTemplateV1, StorageOriginalNativeConstructionClosedV1> {
+        if self.phase != OriginalNativeConstructionPhaseV1::Captured {
+            return Err(StorageOriginalNativeConstructionClosedV1);
+        }
+        self.template_open.template().ok_or(StorageOriginalNativeConstructionClosedV1)
+    }
+
+    /// Moves the actually observed template after intervening gates succeeded.
+    ///
+    /// The attempt keeps its actual template through a later executor refusal.
+    /// Runtime construction immediately parks it again before fallible startup.
+    ///
+    /// # Errors
+    /// Refuses absent positive observation, reentry or a failed construction.
+    pub fn take_observed_guest_root_template_once_v1(
+        &mut self,
+    ) -> Result<ProtectedGuestRootTemplateV1, StorageOriginalNativeConstructionClosedV1> {
+        if self.phase != OriginalNativeConstructionPhaseV1::Captured {
+            self.phase = OriginalNativeConstructionPhaseV1::Failed;
+            return Err(StorageOriginalNativeConstructionClosedV1);
+        }
+        match self.template_open.take_template_once_v1() {
+            Some(template) => Ok(template),
+            None => {
+                self.phase = OriginalNativeConstructionPhaseV1::Failed;
+                Err(StorageOriginalNativeConstructionClosedV1)
+            }
+        }
     }
 
     /// Constructs the same selected runtime once, retaining every returned native cut.
@@ -434,33 +688,131 @@ impl StorageOriginalNativeConstructionV1 {
         operator_credentials: Option<&crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1>,
         template: ProtectedGuestRootTemplateV1,
     ) -> Result<(), StorageOriginalNativeConstructionClosedV1> {
+        if self.legacy_executor.is_some() {
+            return Err(StorageOriginalNativeConstructionClosedV1);
+        }
+        let _crossing = self.unwind_fence();
+        let mut executor = Some(executor);
+        let outcome = self.open_for_once_v1(authority_directory, bootstrap_directory, state_directory,
+            resolver_policy_directory, identity_pool, zfs_executable,
+            StorageStartupExecutorV1::Legacy(&mut executor), OriginalStartupProfileV1::Held(key),
+            operator_credentials, template);
+        self.legacy_executor = executor;
+        outcome
+    }
+
+    /// Opens the measured ordinary receiver using its actual resident executor.
+    ///
+    /// # Errors
+    /// Retains first startup/native failures and refuses absent prefix payment.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_observed_ordinary_once_v1(
+        &mut self, authority_directory: &Path, bootstrap_directory: &Path,
+        state_directory: &Path, resolver_policy_directory: Option<&Path>,
+        identity_pool: StorageIdentityPoolV1, zfs_executable: PathBuf,
+        executor: &mut Option<SystemdZfsExecutor>,
+        operator_credentials: Option<&crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1>,
+        template: ProtectedGuestRootTemplateV1,
+    ) -> Result<(), StorageOriginalNativeConstructionClosedV1> {
+        self.open_for_once_v1(authority_directory, bootstrap_directory, state_directory,
+            resolver_policy_directory, identity_pool, zfs_executable,
+            StorageStartupExecutorV1::Receiving(executor), OriginalStartupProfileV1::Ordinary,
+            operator_credentials, template)
+    }
+
+    /// Opens the measured held receiver using its actual resident executor/key.
+    ///
+    /// # Errors
+    /// Retains first startup/native failures and refuses a different paid profile.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_observed_held_once_v1(
+        &mut self, authority_directory: &Path, bootstrap_directory: &Path,
+        state_directory: &Path, resolver_policy_directory: Option<&Path>,
+        identity_pool: StorageIdentityPoolV1, zfs_executable: PathBuf,
+        executor: &mut Option<SystemdZfsExecutor>,
+        key: &crate::storage_zfs_hold_key::StorageZfsHoldKeyV1,
+        operator_credentials: Option<&crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1>,
+        template: ProtectedGuestRootTemplateV1,
+    ) -> Result<(), StorageOriginalNativeConstructionClosedV1> {
+        self.open_for_once_v1(authority_directory, bootstrap_directory, state_directory,
+            resolver_policy_directory, identity_pool, zfs_executable,
+            StorageStartupExecutorV1::Receiving(executor), OriginalStartupProfileV1::Held(key),
+            operator_credentials, template)
+    }
+
+    fn open_for_once_v1(
+        &mut self,
+        authority_directory: &Path,
+        bootstrap_directory: &Path,
+        state_directory: &Path,
+        resolver_policy_directory: Option<&Path>,
+        identity_pool: StorageIdentityPoolV1,
+        zfs_executable: PathBuf,
+        executor: StorageStartupExecutorV1<'_>,
+        profile: OriginalStartupProfileV1<'_>,
+        operator_credentials: Option<&crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1>,
+        template: ProtectedGuestRootTemplateV1,
+    ) -> Result<(), StorageOriginalNativeConstructionClosedV1> {
         if self.phase != OriginalNativeConstructionPhaseV1::Captured {
             self.phase = OriginalNativeConstructionPhaseV1::Failed;
             return Err(StorageOriginalNativeConstructionClosedV1);
         }
         self.phase = OriginalNativeConstructionPhaseV1::Opening;
+        self.selected_template = Some(template);
         let _crossing = self.unwind_fence();
         let result = (|| {
+            if matches!(&executor, StorageStartupExecutorV1::Receiving(slot) if slot.is_none()) {
+                return Err(StorageRuntimeError::Receiving);
+            }
             self.startup.as_mut().ok_or(StorageRuntimeError::Recovery)?
                 .recheck().map_err(|cause| {
                     self.first_cause = Some(OriginalNativeConstructionCauseV1::Startup(cause));
                     StorageRuntimeError::Recovery
                 })?;
+            if self.has_storage_service_receiving_original_v1() {
+                if !self.daemon_prefix.matches(profile.receiving_profile()) {
+                    return Err(StorageRuntimeError::Receiving);
+                }
+                self.require_daemon_prefix_paid_current_v1()
+                    .map_err(|_| StorageRuntimeError::Receiving)?;
+                if state_directory != Path::new("/var/lib/aos/sandbox-storage") {
+                    return Err(StorageRuntimeError::Receiving);
+                }
+                let template = self.selected_template.as_ref().ok_or(StorageRuntimeError::Receiving)?;
+                let mut receiving = self.startup.as_mut().ok_or(StorageRuntimeError::Receiving)?
+                    .borrow_storage_prepare_receiving_v1().map_err(|_| StorageRuntimeError::Receiving)?;
+                receiving.require_storage_authority_directory_v1(authority_directory)
+                    .map_err(|_| StorageRuntimeError::Receiving)?;
+                receiving.require_storage_startup_directories_v1(bootstrap_directory, resolver_policy_directory)
+                    .map_err(|_| StorageRuntimeError::Receiving)?;
+                receiving.require_guest_root_template_v1(template.root(), template.root_tree_digest())
+                    .map_err(|_| StorageRuntimeError::Receiving)?;
+            }
             let selection = match operator_credentials {
                 Some(credentials) => operator_startup::OperatorStartupSelectionV4::Existing(credentials),
                 None => operator_startup::OperatorStartupSelectionV4::Ordinary,
             };
+            let mut assembly = self.assembly.take().ok_or(StorageRuntimeError::Receiving)?;
+            // Declared after the actual assembly: unwind aborts before any of
+            // these retained native owners can be destroyed as closure locals.
+            let _assembly_crossing = self.unwind_fence();
             let outcome = StorageBrokerRuntime::open_root_owned_selected_native_v4(
                 authority_directory, bootstrap_directory, state_directory,
                 resolver_policy_directory, identity_pool, zfs_executable, executor,
-                StorageApplyConstructionV1::DormantProtectedWorker, selection, Some((&mut *self, key)),
-            )?;
+                StorageApplyConstructionV1::DormantProtectedWorker, selection,
+                &mut assembly, Some((&mut *self, profile)),
+            );
+            self.assembly = Some(assembly);
+            let outcome = outcome?;
             let StorageStartupOutcomeV4::Runtime(runtime, owner) = outcome else {
                 return Err(StorageRuntimeError::Recovery);
             };
             self.operator_owner = owner;
             self.composition = Some(crate::DormantStorageApplyCompositionV1::from_runtime(runtime)
-                .with_guest_root_template(template));
+                .with_guest_root_template(match self.selected_template.take() {
+                    Some(template) => template,
+                    None => std::process::abort(),
+                }));
             Ok(())
         })();
         match result {
@@ -488,28 +840,64 @@ impl StorageOriginalNativeConstructionV1 {
         &mut Option<crate::operator_recovery::StorageOperatorRecoveryOwnerV1>,
         StorageOriginalNativeTrustLoanV1<'_>,
     ), StorageOriginalNativeConstructionClosedV1> {
-        if self.phase != OriginalNativeConstructionPhaseV1::Ready
-            || self.first_cause.is_some()
-            || self.composition.as_ref().is_some_and(|composition|
-                composition.runtime().requires_reopen())
+        let (composition, owner, trust, _service) = self.ready_service_parts_v1()?;
+        Ok((composition, owner, trust))
+    }
+
+    /// Lends the completed ordinary owner without weakening native interests.
+    ///
+    /// # Errors
+    /// Refuses a partial/failed construction or held profile with required Trust.
+    pub fn ordinary_ready_parts_v1(&mut self) -> Result<(
+        &mut crate::DormantStorageApplyCompositionV1,
+        &mut Option<crate::operator_recovery::StorageOperatorRecoveryOwnerV1>,
+    ), StorageOriginalNativeConstructionClosedV1> {
+        let (composition, owner, _service) = self.ordinary_ready_service_parts_v1()?;
+        Ok((composition, owner))
+    }
+
+    /// Lends the completed held composition and its genuine service destination.
+    ///
+    /// # Errors
+    /// Refuses failed/partial owners or a missing required Trust writer.
+    pub fn ready_service_parts_v1(&mut self) -> Result<(
+        &mut crate::DormantStorageApplyCompositionV1,
+        &mut Option<crate::operator_recovery::StorageOperatorRecoveryOwnerV1>,
+        StorageOriginalNativeTrustLoanV1<'_>,
+        StorageOriginalServiceSlotV1<'_>,
+    ), StorageOriginalNativeConstructionClosedV1> {
+        if self.phase != OriginalNativeConstructionPhaseV1::Ready || self.first_cause.is_some()
+            || self.startup.is_some()
+            || self.composition.as_ref().is_some_and(|composition| composition.runtime().requires_reopen())
         {
             self.phase = OriginalNativeConstructionPhaseV1::Failed;
             return Err(StorageOriginalNativeConstructionClosedV1);
         }
-        match self.composition.as_mut() {
-            Some(composition) => match self.native_trust.as_ref() {
-                Some(owner) => Ok((composition, &mut self.operator_owner,
-                    StorageOriginalNativeTrustLoanV1 { owner })),
-                None => {
-                    self.phase = OriginalNativeConstructionPhaseV1::Failed;
-                    Err(StorageOriginalNativeConstructionClosedV1)
-                }
-            },
-            None => {
-                self.phase = OriginalNativeConstructionPhaseV1::Failed;
-                Err(StorageOriginalNativeConstructionClosedV1)
-            }
+        let composition = self.composition.as_mut().ok_or(StorageOriginalNativeConstructionClosedV1)?;
+        let owner = self.native_trust.as_ref().ok_or(StorageOriginalNativeConstructionClosedV1)?;
+        Ok((composition, &mut self.operator_owner, StorageOriginalNativeTrustLoanV1 { owner },
+            StorageOriginalServiceSlotV1 { startup: &mut self.startup }))
+    }
+
+    /// Lends the completed ordinary composition and its genuine destination.
+    ///
+    /// # Errors
+    /// Refuses failed/partial owners, occupied destination or a held Trust route.
+    pub fn ordinary_ready_service_parts_v1(&mut self) -> Result<(
+        &mut crate::DormantStorageApplyCompositionV1,
+        &mut Option<crate::operator_recovery::StorageOperatorRecoveryOwnerV1>,
+        StorageOriginalServiceSlotV1<'_>,
+    ), StorageOriginalNativeConstructionClosedV1> {
+        if self.phase != OriginalNativeConstructionPhaseV1::Ready || self.first_cause.is_some()
+            || self.native_trust.is_some() || self.startup.is_some()
+            || self.composition.as_ref().is_some_and(|composition| composition.runtime().requires_reopen())
+        {
+            self.phase = OriginalNativeConstructionPhaseV1::Failed;
+            return Err(StorageOriginalNativeConstructionClosedV1);
         }
+        let composition = self.composition.as_mut().ok_or(StorageOriginalNativeConstructionClosedV1)?;
+        Ok((composition, &mut self.operator_owner,
+            StorageOriginalServiceSlotV1 { startup: &mut self.startup }))
     }
 
     pub(crate) fn require_native_open(&mut self) -> Result<(), crate::native_issuance::StorageNativeIssuanceErrorV1> {
@@ -735,6 +1123,16 @@ fn operator_sidecar_failure(
 
 /// Owns the sole Storage coordinator and fixed worker helper.
 pub struct StorageBrokerRuntime {
+    // Negative effect/health reservoirs abort before ordinary Runtime fields
+    // can release their entered failed native prefixes.
+    guest_root_publication: Option<Box<guest_root_publication::GuestRootPublicationOriginalV2>>,
+    guest_root_health: Option<Box<guest_root_health::GuestRootStartupHealthOriginalV2>>,
+    guest_root_health_demand: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>>,
+    guest_root_health_payment: Option<Result<(), aos_sandbox::StorageReceivingClosedV1>>,
+    guest_root_publication_demand: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>>,
+    guest_root_publication_payment: Option<Result<(), aos_sandbox::StorageReceivingClosedV1>>,
+    root_export_original: Option<Box<root_export_original::RootExportOriginalV2>>,
+    root_export_geometry: Option<Result<root_export_original::RootExportRepresentationV2, aos_sandbox_core::AccountingError>>,
     coordinator: StorageAdmissionCoordinator,
     workspaces: Option<ValidatedPendingStorageWorkspaceCatalogV1>,
     configuration_binding: ObjectDigest,
@@ -743,6 +1141,14 @@ pub struct StorageBrokerRuntime {
     native_issuance: Option<StorageNativeIssuanceLedgerV1>,
     native_escrow: native_acquire::StorageNativeEscrowV2,
     original_worker_startup: Option<crate::activation::StorageOriginalWorkerStartupV3>,
+    original_service_lent: bool,
+    startup_reconciliation: startup_reconciliation::StartupReconciliationOriginalV1,
+    receiving_inventory_demand: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>>,
+    receiving_prepare_demand: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>>,
+    receiving_prepare_result: Option<Result<StorageCatalogPreparationOutcomeV1, StorageRuntimeError>>,
+    receiving_prepare_clocks: [Option<Result<RawPairedClockSample, aos_sandbox::hierarchy::genesis_profile::SourceGenesisErrorV1>>; 2],
+    receiving_prepare_policy_read: crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1,
+    receiving_inventory_catalog: Option<Box<inventory_catalog::InventoryCatalogOriginalV1>>,
     original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3,
     #[cfg(target_os = "linux")]
     git_coverage: Option<git_coverage::StorageGitCoverageV1>,
@@ -756,6 +1162,8 @@ pub struct StorageBrokerRuntime {
     readiness: StorageRuntimeReadiness,
     apply_readiness: StorageApplyReadiness,
     resolver_policies: Option<ProtectedStorageResolverPolicyDirectoryV1>,
+    resolver_policy_directory_original: crate::resolver::protected_catalog::ResolverPolicyDirectoryOriginalV1,
+    resolver_policy_read_original: crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1,
     prepare_readiness: StoragePrepareReadiness,
     worker_dispatch: RepairWorkerDispatchGate,
     operator_startup: Option<operator_startup::DeferredOperatorStartupV4>,
@@ -764,7 +1172,137 @@ pub struct StorageBrokerRuntime {
     canary_export: canary_export_held::CanaryExportHeldV1,
 }
 
+/// Borrows the parent destination for one original service interval.
+///
+/// The constructor is private to a completed original Construction. The same
+/// startup owner moves out of Runtime before I/O and stays in the parent slot
+/// through all failures. Positive handback moves it into the same Runtime; this
+/// exposes neither an account nor a constructor for receiving authority.
+#[must_use]
+pub struct StorageOriginalServiceSlotV1<'owner> {
+    startup: &'owner mut Option<crate::activation::StorageOriginalWorkerStartupV3>,
+}
+
+impl Drop for StorageOriginalServiceSlotV1<'_> {
+    fn drop(&mut self) {
+        if self.startup.is_some() {
+            // A failure or unwind cannot destroy the same genuine original.
+            std::process::abort();
+        }
+    }
+}
+
+impl StorageOriginalServiceSlotV1<'_> {
+    /// Moves the same original into its resident parent destination before I/O.
+    ///
+    /// # Errors
+    /// Refuses an occupied destination, a loaned/legacy Runtime, incomplete
+    /// disposal or actual original currentness failure. No owner drops on Err.
+    pub fn lend_original_v1(
+        &mut self,
+        composition: &mut crate::DormantStorageApplyCompositionV1,
+    ) -> Result<(), StorageRuntimeError> {
+        let runtime = composition.runtime_mut_for_service_handoff_v1();
+        if self.startup.is_some() || runtime.original_service_lent {
+            return Err(StorageRuntimeError::Receiving);
+        }
+        let startup = runtime.original_worker_startup.as_mut().ok_or(StorageRuntimeError::Receiving)?;
+        startup.require_service_handoff_v1().map_err(|_| StorageRuntimeError::Receiving)?;
+        startup.recheck().map_err(|_| StorageRuntimeError::Receiving)?;
+        *self.startup = runtime.original_worker_startup.take();
+        runtime.original_service_lent = true;
+        Ok(())
+    }
+
+    /// Borrows only the actual original already moved into this parent slot.
+    ///
+    /// # Errors
+    /// Refuses an absent or failed receiving original; no replacement is built.
+    pub fn borrow_receiving_v1(&mut self)
+        -> Result<aos_sandbox::StoragePrepareReceivingLoanV1<'_>, aos_sandbox::StorageReceivingClosedV1>
+    {
+        self.startup.as_mut().ok_or(aos_sandbox::StorageReceivingClosedV1)?
+            .borrow_storage_prepare_receiving_v1()
+    }
+
+    /// Borrows the retained original cause while the actual owner is lent.
+    #[must_use]
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.startup.as_ref().and_then(
+            crate::activation::StorageOriginalWorkerStartupV3::storage_receiving_failure_v1,
+        )
+    }
+
+    /// Borrows the actual original cause before or after its owning move.
+    #[must_use]
+    pub fn failure_with_composition<'owner>(
+        &'owner self,
+        composition: &'owner crate::DormantStorageApplyCompositionV1,
+    ) -> Option<&'owner (dyn std::error::Error + 'static)> {
+        self.failure().or_else(|| composition.runtime().original_worker_startup.as_ref()
+            .and_then(crate::activation::StorageOriginalWorkerStartupV3::storage_receiving_failure_v1))
+    }
+
+    /// Returns the same owner after real positive disposal and pure parking.
+    ///
+    /// This is an infallible owning handoff, with no late observation or new
+    /// admission. Calling it without the actual positive boundary aborts while
+    /// both the Runtime and original remain resident.
+    pub fn return_after_positive_v1(&mut self, composition: &mut crate::DormantStorageApplyCompositionV1) {
+        let runtime = composition.runtime_mut_for_service_handoff_v1();
+        if !runtime.original_service_lent || runtime.original_worker_startup.is_some()
+            || !self.startup.as_ref().is_some_and(|startup| startup.require_service_handoff_v1().is_ok())
+        {
+            std::process::abort();
+        }
+        runtime.original_worker_startup = self.startup.take();
+        runtime.original_service_lent = false;
+    }
+}
+
+/// Holds one checked Runtime reconciliation and its actual Native Sent token.
+///
+/// The caller keeps its remaining Session/request/response owners through all
+/// fallible posts, then disposes those positive carriers before completion.
+/// The same State/Workspace journals and domain effects remain resident.
+#[must_use]
+pub struct StorageRuntimeLifecycleDisposalV1<'runtime, 'phase, 'cut, 'original> {
+    runtime: &'runtime mut StorageBrokerRuntime,
+    native: aos_sandbox::StorageLifecyclePositiveDisposalV1<'phase, 'cut, 'original>,
+}
+
+impl StorageRuntimeLifecycleDisposalV1<'_, '_, '_, '_> {
+    /// Disposes checked upper carriers before completing their Native operation.
+    ///
+    /// No I/O, allocation, fallible check or authority decision follows the
+    /// first actual disposal. Persistent journal/history accounting is kept.
+    pub fn complete_after_disposal_v1(self) {
+        self.runtime.startup_reconciliation.transactions.complete_positive_disposal();
+        self.runtime.helper.complete_recovery_disposition_v1();
+        self.runtime.coordinator.complete_recovery_disposition_v1();
+        self.runtime.startup_reconciliation = startup_reconciliation::StartupReconciliationOriginalV1::new();
+        if let Some(mut publication) = self.runtime.guest_root_publication.take() {
+            publication.dispose_after_positive_posts_v2();
+            drop(publication);
+        }
+        self.runtime.guest_root_publication_demand = None;
+        self.runtime.guest_root_publication_payment = None;
+        self.native.complete_after_disposal_v1();
+    }
+}
+
 impl StorageBrokerRuntime {
+    pub(crate) fn recheck_execution_output_receiving_v1(
+        &mut self,
+        output: &mut crate::execution_output_credential::StorageExecutionOutputCustodyV1,
+    ) -> Result<(), StorageRuntimeError> {
+        let startup = self.original_worker_startup.as_mut().ok_or(StorageRuntimeError::Receiving)?;
+        let mut receiving = startup.borrow_storage_prepare_receiving_v1()
+            .map_err(|_| StorageRuntimeError::Receiving)?;
+        output.recheck_receiving_v1(&mut receiving).map_err(|_| StorageRuntimeError::Receiving)
+    }
+
+
     fn require_git_coverage_new_admission_v1(&self) -> Result<(), StorageRuntimeError> {
         #[cfg(target_os = "linux")]
         if self.git_coverage.is_some() || self.coordinator.git_coverage_denies_new_v1() {
@@ -848,7 +1386,7 @@ impl StorageBrokerRuntime {
             StorageOriginalWorkerStartupCauseV3, StorageOriginalWorkerStartupErrorV3,
         };
 
-        if self.original_worker_startup.is_some() {
+        if self.original_worker_startup.is_some() || self.original_service_lent {
             return Err(StorageOriginalWorkerStartupErrorV3::retain_closed(
                 StorageOriginalWorkerStartupCauseV3::Closed,
                 startup,
@@ -1080,166 +1618,6 @@ impl StorageBrokerRuntime {
         };
         held.verify_mount()?;
         Ok(held)
-    }
-
-    /// Holds configured Storage admission around the original atomic output write.
-    /// The pending Session owns `attempt`; no borrowed owner is stored in it.
-    pub(crate) fn register_original_execution_output(
-        &mut self,
-        output: &mut crate::execution_output_credential::StorageExecutionOutputCustodyV1,
-        attempt: &mut crate::execution_output_credential::OriginalExecutionOutputRegistrationV1,
-        host_terminal: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
-    ) {
-        if attempt.started {
-            return;
-        }
-        attempt.started = true;
-
-        let mut boundary = OriginalOutputRegistrationBoundaryV1 { attempt };
-        self.register_original_execution_output_inner(output, &mut *boundary.attempt, Some(host_terminal));
-    }
-
-    /// Reads an original occupied marker under the same configured admission.
-    pub(crate) fn query_original_execution_output(
-        &mut self,
-        output: &mut crate::execution_output_credential::StorageExecutionOutputCustodyV1,
-        attempt: &mut crate::execution_output_credential::OriginalExecutionOutputRegistrationV1,
-    ) {
-        if attempt.started { return; }
-        attempt.started = true;
-        let mut boundary = OriginalOutputRegistrationBoundaryV1 { attempt };
-        self.register_original_execution_output_inner(output, &mut *boundary.attempt, None);
-    }
-
-    fn register_original_execution_output_inner(
-        &mut self,
-        output: &mut crate::execution_output_credential::StorageExecutionOutputCustodyV1,
-        attempt: &mut crate::execution_output_credential::OriginalExecutionOutputRegistrationV1,
-        host_terminal: Option<&aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1>,
-    ) {
-        use crate::execution_output_credential::OriginalOutputRegistrationErrorV1 as Error;
-        let state_root = Path::new("/var/lib/aos/sandbox-storage");
-
-        // Prearming is irreversible even if a lower observer panics. The
-        // caller's resident Session/attempt survives its unwind fence.
-        if self.readiness != StorageRuntimeReadiness::Ready
-            || self.held_reader_state_directory.as_deref() != Some(state_root)
-            || attempt.request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
-            || !matches!((attempt.request.method(), host_terminal.is_some()),
-                (BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT, true)
-                | (BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT, false))
-        {
-            attempt.first_cause = Some(Error::NotCurrent);
-            return;
-        }
-
-        attempt.initial_custody = Some(output.recheck(state_root));
-        if attempt.failure().is_some() {
-            return;
-        }
-        attempt.initial_clock = Some(trusted_paired_clock_sample());
-        let Some(Ok(clock)) = &attempt.initial_clock else {
-            return;
-        };
-        let clock = *clock;
-        attempt.initial_cut = Some(self.coordinator.authenticate_output_registration(
-            &attempt.request, &clock,
-        ));
-        let Some(Ok(initial)) = &attempt.initial_cut else {
-            return;
-        };
-        if clock.host_boot_id() != initial.records.host_locator().host_boot_id() {
-            attempt.first_cause = Some(Error::NotCurrent);
-            return;
-        }
-        let dispatch = match self.worker_dispatch.enter() {
-            Ok(dispatch) => dispatch,
-            Err(_) => {
-                attempt.first_cause = Some(Error::NotCurrent);
-                return;
-            }
-        };
-
-        // Canonical Host comparison and repeated signature/cut validation may
-        // be lengthy. Their complete results precede the final clock read.
-        if let Some(host_terminal) = host_terminal {
-            output.prepare_original(attempt, host_terminal, clock.boottime_nanoseconds());
-        }
-        if attempt.failure().is_none() {
-            attempt.crossing_clock = Some(trusted_paired_clock_sample());
-            if let Some(Ok(crossing_clock)) = &attempt.crossing_clock {
-                attempt.crossing_cut = Some(self.coordinator.authenticate_output_registration(
-                    &attempt.request, &crossing_clock,
-                ));
-                if let (Some(Ok(initial)), Some(Ok(crossing))) =
-                    (&attempt.initial_cut, &attempt.crossing_cut)
-                {
-                    if !initial.matches(crossing) {
-                        attempt.first_cause = Some(Error::NotCurrent);
-                    }
-                }
-            }
-        }
-        if attempt.failure().is_none() {
-            attempt.entry_clock = Some(trusted_paired_clock_sample());
-            if let (Some(Ok(cut)), Some(Ok(entry_clock))) =
-                (&attempt.initial_cut, &attempt.entry_clock)
-            {
-                attempt.entry_clock_check = Some(
-                    self.coordinator.check_output_registration_clock(cut, entry_clock),
-                );
-            }
-            if attempt.failure().is_none() && host_terminal.is_some() {
-                // Security retains its genuine exclusive Host currentness
-                // loan through this call and the subsequent bookends.
-                output.register_original(attempt);
-            }
-        }
-
-        // Later failures never replace a prior parser, admission or commit
-        // result. Every observer's whole Result remains request-resident.
-        attempt.final_custody = Some(output.recheck(state_root));
-        attempt.final_clock = Some(trusted_paired_clock_sample());
-        if let Some(Ok(final_clock)) = &attempt.final_clock {
-            attempt.final_cut = Some(self.coordinator.authenticate_output_registration(
-                &attempt.request, &final_clock,
-            ));
-            if let (Some(Ok(initial)), Some(Ok(successor))) =
-                (&attempt.initial_cut, &attempt.final_cut)
-            {
-                if (!initial.matches(successor) || final_clock.host_boot_id() != clock.host_boot_id())
-                    && attempt.postcheck_debt().is_none()
-                {
-                    attempt.postcheck_debt = Some(Error::NotCurrent);
-                }
-            }
-        }
-        drop(dispatch);
-        if attempt.failure().is_some() || attempt.postcheck_debt().is_some() {
-            return;
-        }
-        if let Err(error) = output.read_original_registration(attempt) {
-            if attempt.failure().is_none() {
-                attempt.first_cause = Some(error);
-            }
-        }
-        attempt.response_custody = Some(output.recheck(state_root));
-        attempt.response_clock = Some(trusted_paired_clock_sample());
-        if let Some(Ok(response_clock)) = &attempt.response_clock {
-            attempt.response_cut = Some(self.coordinator.authenticate_output_registration(
-                &attempt.request, &response_clock,
-            ));
-            if let (Some(Ok(initial)), Some(Ok(successor))) =
-                (&attempt.initial_cut, &attempt.response_cut)
-            {
-                if (!initial.matches(successor) || response_clock.host_boot_id() != clock.host_boot_id())
-                    && attempt.postcheck_debt().is_none()
-                {
-                    attempt.postcheck_debt = Some(Error::NotCurrent);
-                }
-            }
-        }
-        attempt.completed = attempt.failure().is_none() && attempt.postcheck_debt().is_none();
     }
 
     pub(crate) fn prepare_lifecycle_atomic_snapshot(
@@ -1620,10 +1998,13 @@ impl StorageBrokerRuntime {
         apply_construction: StorageApplyConstructionV1,
         selection: operator_startup::OperatorStartupSelectionV4<'_>,
     ) -> Result<StorageStartupOutcomeV4, StorageRuntimeError> {
+        let mut executor = Some(executor);
+        let mut assembly = StorageRuntimeAssemblyV1::new();
         Self::open_root_owned_selected_native_v4(
             authority_directory, bootstrap_directory, state_directory,
-            resolver_policy_directory, identity_pool, zfs_executable, executor,
-            apply_construction, selection, None,
+            resolver_policy_directory, identity_pool, zfs_executable,
+            StorageStartupExecutorV1::Legacy(&mut executor),
+            apply_construction, selection, &mut assembly, None,
         )
     }
 
@@ -1635,24 +2016,108 @@ impl StorageBrokerRuntime {
         resolver_policy_directory: Option<&Path>,
         identity_pool: StorageIdentityPoolV1,
         zfs_executable: PathBuf,
-        executor: SystemdZfsExecutor,
+        mut executor: StorageStartupExecutorV1<'_>,
         apply_construction: StorageApplyConstructionV1,
         selection: operator_startup::OperatorStartupSelectionV4<'_>,
-        mut original: Option<(&mut StorageOriginalNativeConstructionV1, &crate::storage_zfs_hold_key::StorageZfsHoldKeyV1)>,
+        assembly: &mut StorageRuntimeAssemblyV1,
+        mut original: Option<(&mut StorageOriginalNativeConstructionV1, OriginalStartupProfileV1<'_>)>,
     ) -> Result<StorageStartupOutcomeV4, StorageRuntimeError> {
         let operator_credentials = selection.credentials();
         // Retain the host mount namespace before constructing any subsystem
         // that may later acquire a namespace-scoped helper.
-        let pin_custody = WorkspacePinHostCustody::retain_initial_root_owned()
-            .map_err(|_| StorageRuntimeError::WorkspacePinScope)?;
-        let protected_configuration =
-            StorageProtectedConfigurationV1::from_protected_directory(authority_directory)?;
+        assembly.pin_custody = Some(WorkspacePinHostCustody::retain_initial_root_owned()
+            .map_err(|_| StorageRuntimeError::WorkspacePinScope)?);
+        let selected_receiver = original.as_ref().is_some_and(|(attempt, _)|
+            attempt.has_storage_service_receiving_original_v1());
+        let protected_configuration = if selected_receiver {
+            let attempt = original.as_mut().map(|(attempt, _)| &mut **attempt)
+                .ok_or(StorageRuntimeError::Receiving)?;
+            let startup = attempt.startup.as_mut().ok_or(StorageRuntimeError::Receiving)?;
+            assembly.configuration_before = Some(startup.borrow_storage_prepare_receiving_v1()
+                .and_then(|mut receiving| receiving.require_startup_current_v1()));
+            if !matches!(assembly.configuration_before, Some(Ok(()))) {
+                return Err(StorageRuntimeError::Receiving);
+            }
+            // The actual argv6 join and updated Broker9FD receiving demand
+            // were admitted by the original prefix before this first read.
+            assembly.configuration_capture = Some(
+                assembly.broker_configuration_open.capture_storage_once(authority_directory),
+            );
+            if matches!(assembly.configuration_capture, Some(Ok(()))) {
+                assembly.broker_configuration = assembly.broker_configuration_open.take_configuration_once();
+                assembly.configuration_conversion_result = Some(
+                    assembly.configuration_conversion.capture_once_v1(&mut assembly.broker_configuration),
+                );
+            }
+            // Actual public pins and all split authority/secret parts stay
+            // resident through this independent post even on conversion Err.
+            assembly.configuration_post = Some(startup.borrow_storage_prepare_receiving_v1()
+                .and_then(|mut receiving| receiving.require_startup_current_v1()));
+            if !matches!(assembly.configuration_capture, Some(Ok(())))
+                || !matches!(assembly.configuration_conversion_result, Some(Ok(())))
+                || !matches!(assembly.configuration_post, Some(Ok(())))
+            {
+                return Err(StorageRuntimeError::Receiving);
+            }
+            assembly.configuration_conversion.take_configuration_once_v1()
+                .ok_or(StorageRuntimeError::Receiving)?
+        } else {
+            StorageProtectedConfigurationV1::from_protected_directory(authority_directory)?
+        };
         let configuration_binding =
             runtime_configuration_binding(protected_configuration.public_binding(), identity_pool);
         let authority_binding = protected_configuration.public_binding();
         let (authority, state_key, _) = protected_configuration.into_parts();
-        let bootstrap = ProtectedStorageBootstrap::open_root_owned(bootstrap_directory)?;
-        let transactions = match operator_credentials {
+        assembly.authority = Some(authority);
+        assembly.state_key = Some(state_key);
+        if selected_receiver {
+            assembly.configuration_conversion.dispose_positive_pins_v1();
+            // The actual original already joined argv7 and paid the full
+            // configuration prefix before entering this shared startup engine.
+            let attempt = original.as_mut().map(|(attempt, _)| &mut **attempt)
+                .ok_or(StorageRuntimeError::Receiving)?;
+            let startup = attempt.startup.as_mut().ok_or(StorageRuntimeError::Receiving)?;
+            assembly.bootstrap_before = Some(startup.borrow_storage_prepare_receiving_v1()
+                .and_then(|mut receiving| receiving.require_startup_current_v1()));
+            if !matches!(assembly.bootstrap_before, Some(Ok(()))) {
+                return Err(StorageRuntimeError::Receiving);
+            }
+            assembly.bootstrap_capture = Some(
+                assembly.bootstrap_open.capture_once_v1(bootstrap_directory, 0),
+            );
+            // Run the independent original post even after a read/decode error;
+            // the actual earlier prefix failure remains resident and first.
+            assembly.bootstrap_post = Some(startup.borrow_storage_prepare_receiving_v1()
+                .and_then(|mut receiving| receiving.require_startup_current_v1()));
+            if !matches!(assembly.bootstrap_capture, Some(Ok(()))) {
+                return Err(StorageRuntimeError::Bootstrap);
+            }
+            if !matches!(assembly.bootstrap_post, Some(Ok(()))) {
+                return Err(StorageRuntimeError::Receiving);
+            }
+            assembly.bootstrap = assembly.bootstrap_open.take_success_v1();
+        } else {
+            assembly.bootstrap = Some(ProtectedStorageBootstrap::open_root_owned(bootstrap_directory)?);
+        }
+        let bootstrap = assembly.bootstrap.as_ref().ok_or(StorageRuntimeError::Receiving)?;
+        if selected_receiver {
+            let attempt = original.as_mut().map(|(attempt, _)| &mut **attempt)
+                .ok_or(StorageRuntimeError::Receiving)?;
+            let mut receiving = attempt.startup.as_mut().ok_or(StorageRuntimeError::Receiving)?
+                .borrow_storage_prepare_receiving_v1().map_err(|_| StorageRuntimeError::Receiving)?;
+            assembly.state_startup.open_once_v1(
+                &mut receiving,
+                if operator_credentials.is_some() {
+                    aos_sandbox::journal::CapturedJournalOpenModeV1::ExistingOnly
+                } else {
+                    aos_sandbox::journal::CapturedJournalOpenModeV1::CreateAndRepair
+                },
+                &mut assembly.state_key, bootstrap.minimum_generation, configuration_binding,
+                bootstrap.genesis_generation, &bootstrap.catalogs,
+            )?;
+        } else {
+            let state_key = assembly.state_key.take().ok_or(StorageRuntimeError::Receiving)?;
+            assembly.transactions = Some(match operator_credentials {
             Some(_) => StorageTransactionStore::open_existing_root_owned_runtime(
                 state_directory,
                 state_key,
@@ -1669,51 +2134,153 @@ impl StorageBrokerRuntime {
                 bootstrap.genesis_generation,
                 &bootstrap.catalogs,
             )?,
-        };
+            });
+        }
         let contract = ZfsHelperContract::new(zfs_executable)?;
-        let pin_executor = SystemdWorkspacePinExecutor::new(
+        assembly.pin_executor = Some(SystemdWorkspacePinExecutor::new(
             PathBuf::from(WORKSPACE_PIN_WORKER_SOCKET),
             open_cgroup_root()?,
-        )?;
-        let pin_observer = SystemdWorkspacePinObserver::new(
+        )?);
+        assembly.pin_observer = Some(SystemdWorkspacePinObserver::new(
             PathBuf::from(WORKSPACE_PIN_OBSERVER_SOCKET),
             open_cgroup_root()?,
-        )?;
-        let mut pin_io = SystemdWorkspacePinRuntimeIo::new(pin_custody, pin_executor, pin_observer);
+        )?);
+        assembly.pin_io = Some(SystemdWorkspacePinRuntimeIo::new(
+            assembly.pin_custody.take().ok_or(StorageRuntimeError::Receiving)?,
+            assembly.pin_executor.take().ok_or(StorageRuntimeError::Receiving)?,
+            assembly.pin_observer.take().ok_or(StorageRuntimeError::Receiving)?,
+        ));
+        let pin_io = assembly.pin_io.as_mut().ok_or(StorageRuntimeError::Receiving)?;
         // The transaction journal lock is already held. Prove the complete
         // reserved pin-worker cgroup scope empty before opening or observing
         // workspace state and before generic mutation recovery.
-        pin_io.recover_quiescence()?;
-        let mut guest_root_publisher = SystemdGuestRootPublisherClientV1::new(
-            PathBuf::from(GUEST_ROOT_PUBLISHER_SOCKET),
-            open_cgroup_root()?,
-        )?;
-        guest_root_publisher.recover_quiescence()?;
+        if selected_receiver {
+            let attempt = original.as_mut().map(|(attempt, _)| &mut **attempt)
+                .ok_or(StorageRuntimeError::Receiving)?;
+            let mut receiving = attempt.startup.as_mut().ok_or(StorageRuntimeError::Receiving)?
+                .borrow_storage_prepare_receiving_v1()
+                .map_err(|_| StorageRuntimeError::Receiving)?;
+            let transactions = assembly.state_startup.store()
+                .ok_or(StorageRuntimeError::Receiving)?;
+            let borrowed = receiving.borrow_initial_pin_quiescence_once_v1(
+                transactions.recovery_encoding_journal_v1(),
+            );
+            let mut stage = match borrowed {
+                Ok(stage) => {
+                    assembly.initial_pin_borrow = Some(Ok(()));
+                    stage
+                }
+                Err(cause) => {
+                    assembly.initial_pin_borrow = Some(Err(cause));
+                    return Err(StorageRuntimeError::Receiving);
+                }
+            };
+            assembly.initial_pin_scan = Some(pin_io.recover_initial_quiescence_receiving_v1(
+                &mut stage,
+            ));
+            if !matches!(assembly.initial_pin_scan, Some(Ok(()))) {
+                // The same guard parks all raw scan/native/post owners before
+                // projecting this error; the whole IO result remains resident.
+                drop(stage);
+                return Err(StorageRuntimeError::Receiving);
+            }
+            assembly.initial_pin_disposal = Some(stage.complete_after_quiescence_v1());
+            if !matches!(assembly.initial_pin_disposal, Some(Ok(()))) {
+                return Err(StorageRuntimeError::Receiving);
+            }
+        } else {
+            pin_io.recover_quiescence()?;
+        }
+        if !selected_receiver {
+            assembly.guest_root_publisher = Some(SystemdGuestRootPublisherClientV1::new(
+                PathBuf::from(GUEST_ROOT_PUBLISHER_SOCKET), open_cgroup_root()?,
+            )?);
+            assembly.guest_root_publisher.as_mut().ok_or(StorageRuntimeError::Receiving)?
+                .recover_quiescence()?;
+        }
+        // The selected initial scan already completed the same closed roster,
+        // including GuestRoot31; it must not enter another unpriced observer.
+        let transactions = if selected_receiver {
+            assembly.state_startup.store()
+        } else {
+            assembly.transactions.as_ref()
+        }.ok_or(StorageRuntimeError::Receiving)?;
 
         // This runs after both cgroup scans and before any startup observer.
-        reject_held_repair_guard_after_quiescence(&transactions)?;
+        reject_held_repair_guard_after_quiescence(transactions)?;
 
         transactions.validate_runtime_restart(
             configuration_binding,
             bootstrap.genesis_generation,
             &bootstrap.catalogs,
         )?;
-        let mut coordinator = StorageAdmissionCoordinator::new(authority, transactions);
+        let transactions = if selected_receiver {
+            let attempt = original.as_mut().map(|(attempt, _)| &mut **attempt)
+                .ok_or(StorageRuntimeError::Receiving)?;
+            let mut receiving = attempt.startup.as_mut().ok_or(StorageRuntimeError::Receiving)?
+                .borrow_storage_prepare_receiving_v1().map_err(|_| StorageRuntimeError::Receiving)?;
+            assembly.state_startup.settle_native_once_v1(&mut receiving)?;
+            assembly.state_startup.take_store_once_v1()
+        } else {
+            assembly.transactions.take()
+        }.ok_or(StorageRuntimeError::Receiving)?;
+        assembly.coordinator = Some(StorageAdmissionCoordinator::new(
+            assembly.authority.take().ok_or(StorageRuntimeError::Receiving)?, transactions,
+        ));
+        let coordinator = assembly.coordinator.as_mut().ok_or(StorageRuntimeError::Receiving)?;
         // Existing records must authenticate against the preexisting floor;
         // a current policy publication cannot heal missing rollback evidence.
         coordinator
             .authenticate_catalog_preparations()
             .map_err(StorageRuntimeError::Admission)?;
-        let (resolver_policies, prepare_readiness) = if operator_credentials.is_some() {
-            // The actual sidecar is not held yet; policy admission can write.
-            (None, StoragePrepareReadiness::Unconfigured)
+        // Keep the actual mutable receiving loan continuously through the
+        // interval. A refused work reservation must not require reborrowing a
+        // now-closed ordinary admission merely to perform its prepaid post.
+        let mut retirement_receiving = if selected_receiver {
+            let attempt = original.as_mut().map(|(attempt, _)| &mut **attempt)
+                .ok_or(StorageRuntimeError::Receiving)?;
+            Some(attempt.startup.as_mut().ok_or(StorageRuntimeError::Receiving)?
+                .borrow_storage_prepare_receiving_v1().map_err(|_| StorageRuntimeError::Receiving)?)
         } else {
-            configure_resolver_policy(
-                &mut coordinator,
-                resolver_policy_directory,
-                authority_binding,
-            )?
+            None
         };
+        if let Some(receiving) = retirement_receiving.as_mut() {
+            assembly.startup_mutation_entry = Some(coordinator.prepare_startup_mutations_v1(receiving));
+            if !matches!(assembly.startup_mutation_entry, Some(Ok(()))) {
+                assembly.startup_mutation_posts = Some(coordinator.finish_startup_mutations_v1(receiving));
+                return Err(StorageRuntimeError::Receiving);
+            }
+        }
+        assembly.resolver_configuration = Some(if operator_credentials.is_some() {
+            // The actual sidecar is not held yet; policy admission can write.
+            Ok((None, StoragePrepareReadiness::Unconfigured))
+        } else {
+            configure_resolver_policy_with_originals_v1(
+                coordinator, resolver_policy_directory, authority_binding,
+                selected_receiver.then_some((
+                    &mut assembly.resolver_policy_directory_original,
+                    &mut assembly.resolver_policy_read_original,
+                )),
+                None,
+            )
+        });
+        if matches!(assembly.resolver_configuration, Some(Err(_))) {
+            if selected_receiver {
+                let receiving = retirement_receiving.as_mut().ok_or(StorageRuntimeError::Receiving)?;
+                assembly.startup_mutation_posts = Some(coordinator.finish_startup_mutations_v1(receiving));
+                // Preserve the actual error in the resident assembly. This
+                // outer status is only a projection; first_cause borrows it.
+                return Err(StorageRuntimeError::Recovery);
+            }
+            let Some(Err(cause)) = assembly.resolver_configuration.take() else {
+                std::process::abort();
+            };
+            return Err(cause);
+        }
+        let Some(Ok((policies, prepare_readiness))) = assembly.resolver_configuration.take() else {
+            std::process::abort();
+        };
+        assembly.resolver_policies = policies;
         // Historical repair authority must authenticate before either ordinary
         // effect histories or the workspace inventory becomes an input.
         // Keep both exclusive journals for the runtime lifetime. Acquiring the
@@ -1722,8 +2289,54 @@ impl StorageBrokerRuntime {
             trusted_paired_clock_sample()
                 .map_err(|_| crate::StorageAdmissionError::VerificationFailed)
         };
-        let workspaces = if operator_credentials.is_some() {
-            authenticate_startup_authority(&coordinator)?;
+        if selected_receiver {
+            assembly.startup_authority = Some(authenticate_startup_authority(coordinator));
+            if matches!(assembly.startup_authority, Some(Ok(()))) && operator_credentials.is_none() {
+                assembly.startup_retirement = Some(
+                    coordinator.retire_inactive_prepared_at_startup(&mut startup_clock),
+                );
+            }
+            // The real retirement Result stays parked while both independent
+            // posts run, even after an authenticated retirement/native error.
+            let mut receiving = retirement_receiving.take().ok_or(StorageRuntimeError::Receiving)?;
+            assembly.startup_mutation_posts = Some(coordinator.finish_startup_mutations_v1(&mut receiving));
+            if !matches!(assembly.startup_authority, Some(Ok(()))) {
+                return Err(StorageRuntimeError::Recovery);
+            }
+            if matches!(assembly.startup_retirement, Some(Err(_))) {
+                return Err(if coordinator.transaction_journal_requires_reopen() {
+                    StorageRuntimeError::ReopenRequired
+                } else {
+                    StorageRuntimeError::Recovery
+                });
+            }
+            if !matches!(assembly.startup_mutation_posts, Some(Ok(()))) {
+                return Err(StorageRuntimeError::Receiving);
+            }
+            authenticate_startup_authority(coordinator)?;
+            assembly.workspace_plan = Some(coordinator.workspace_catalog_activation_plan());
+            let Some(Ok(_)) = assembly.workspace_plan.as_ref() else {
+                return Err(StorageRuntimeError::Recovery);
+            };
+            let Some(Ok((plan, physical))) = assembly.workspace_plan.take() else {
+                std::process::abort();
+            };
+            assembly.selected_workspace_plan = Some(plan);
+            assembly.physical_workspace_plan = physical;
+            assembly.workspace_startup.open_once_v1(
+                &mut receiving,
+                if operator_credentials.is_some() {
+                    aos_sandbox::journal::CapturedJournalOpenModeV1::ExistingOnly
+                } else {
+                    aos_sandbox::journal::CapturedJournalOpenModeV1::CreateAndRepair
+                },
+                identity_pool,
+                &mut assembly.selected_workspace_plan,
+            )?;
+            assembly.workspaces = assembly.workspace_startup.take_validated_once_v1();
+        } else {
+        assembly.workspaces = Some(if operator_credentials.is_some() {
+            authenticate_startup_authority(coordinator)?;
             let pending = PendingStorageWorkspaceCatalogV1::open_existing_root_owned(
                 state_directory,
                 identity_pool,
@@ -1732,34 +2345,90 @@ impl StorageBrokerRuntime {
             pending.validate_plan(plan)?
         } else {
             open_validated_workspace_catalog_after_startup(
-                &mut coordinator,
+                coordinator,
                 &mut startup_clock,
                 || {
                     PendingStorageWorkspaceCatalogV1::open_root_owned(state_directory, identity_pool)
                         .map_err(Into::into)
                 },
             )?
-        };
+        });
+        }
+        drop(retirement_receiving);
+        let workspaces = assembly.workspaces.as_ref().ok_or(StorageRuntimeError::Receiving)?;
         // Preserve one lifetime writer order: primary transaction, workspace,
         // then separate native issuance. Neither acceptance nor ReleaseHold
         // may observe a separately reopened/unheld consumer-interest snapshot.
-        let mut native_issuance = if let Some((attempt, key)) = original.as_mut() {
-            let _crossing = attempt.unwind_fence();
-            let result = StorageNativeIssuanceLedgerV1::park_original_held_writer(
-                attempt, state_directory, authority_directory, key,
-            ).and_then(|()| {
-                attempt.native_ledger.as_mut()
-                    .ok_or(crate::native_issuance::StorageNativeIssuanceErrorV1::Conflict)?
-                    .validate_original_held_cold(&coordinator,
-                        attempt.native_trust.as_ref()
-                            .ok_or(crate::native_issuance::StorageNativeIssuanceErrorV1::Conflict)?, key)
-            });
-            if let Err(cause) = result {
-                attempt.phase = OriginalNativeConstructionPhaseV1::Failed;
-                if attempt.first_cause.is_none() {
-                    attempt.first_cause = Some(OriginalNativeConstructionCauseV1::Native(cause));
+        if selected_receiver {
+            let (attempt, profile) = original.as_mut().ok_or(StorageRuntimeError::Receiving)?;
+            attempt.require_native_open().map_err(|_| StorageRuntimeError::Recovery)?;
+            let startup = attempt.startup.as_mut().ok_or(StorageRuntimeError::Receiving)?;
+            let mut receiving = startup.borrow_storage_prepare_receiving_v1()
+                .map_err(|_| StorageRuntimeError::Receiving)?;
+            assembly.issuance_startup.open_once_v1(
+                &mut receiving,
+                if operator_credentials.is_some() {
+                    aos_sandbox::journal::CapturedJournalOpenModeV1::ExistingOnly
+                } else {
+                    aos_sandbox::journal::CapturedJournalOpenModeV1::CreateAndRepair
+                },
+                state_directory,
+                profile,
+                coordinator,
+            ).map_err(|_| StorageRuntimeError::Recovery)?;
+            attempt.native_ledger = assembly.issuance_startup.take_owner_once_v1();
+            if let OriginalStartupProfileV1::Held(key) = profile {
+                assembly.trust_startup.open_once_v1(&mut receiving, authority_directory)
+                    .map_err(|_| StorageRuntimeError::Recovery)?;
+                assembly.trust_startup.settle_native_once_v1(&mut receiving)
+                    .map_err(|_| StorageRuntimeError::Recovery)?;
+                attempt.native_trust = assembly.trust_startup.take_trust_once_v1();
+                // The same normal owners remain parked on Construction before
+                // this independently required Trust/key/current-interest join.
+                let ledger = attempt.native_ledger.as_mut().ok_or(StorageRuntimeError::Recovery)?;
+                let trust = attempt.native_trust.as_ref().ok_or(StorageRuntimeError::Recovery)?;
+                if let Err(cause) = ledger.validate_original_held_cold(coordinator, trust, key) {
+                    attempt.first_cause.get_or_insert(OriginalNativeConstructionCauseV1::Native(cause));
+                    return Err(StorageRuntimeError::Recovery);
                 }
-                return Err(StorageRuntimeError::Recovery);
+            }
+        } else {
+        assembly.native_issuance = if let Some((attempt, profile)) = original.as_mut() {
+            match profile {
+                OriginalStartupProfileV1::Held(key) => {
+                    let _crossing = attempt.unwind_fence();
+                    let result = StorageNativeIssuanceLedgerV1::park_original_held_writer(
+                        attempt, state_directory, authority_directory, key,
+                    ).and_then(|()| {
+                        attempt.native_ledger.as_mut()
+                            .ok_or(crate::native_issuance::StorageNativeIssuanceErrorV1::Conflict)?
+                            .validate_original_held_cold(coordinator,
+                                attempt.native_trust.as_ref()
+                                    .ok_or(crate::native_issuance::StorageNativeIssuanceErrorV1::Conflict)?, key)
+                    });
+                    if let Err(cause) = result {
+                        attempt.phase = OriginalNativeConstructionPhaseV1::Failed;
+                        if attempt.first_cause.is_none() {
+                            attempt.first_cause = Some(OriginalNativeConstructionCauseV1::Native(cause));
+                        }
+                        return Err(StorageRuntimeError::Recovery);
+                    }
+                }
+                OriginalStartupProfileV1::Ordinary => {
+                    attempt.require_native_open().map_err(|_| StorageRuntimeError::Recovery)?;
+                    attempt.native_ledger = Some(match operator_credentials {
+                        Some(_) => StorageNativeIssuanceLedgerV1::open_existing_root_owned(state_directory),
+                        None => StorageNativeIssuanceLedgerV1::open_root_owned(state_directory),
+                    }.map_err(|cause| {
+                        attempt.first_cause = Some(OriginalNativeConstructionCauseV1::Native(cause));
+                        StorageRuntimeError::Recovery
+                    })?);
+                    attempt.native_ledger.as_mut().ok_or(StorageRuntimeError::Recovery)?
+                        .validate_active_holds(coordinator).map_err(|cause| {
+                            attempt.first_cause = Some(OriginalNativeConstructionCauseV1::Native(cause));
+                            StorageRuntimeError::Recovery
+                        })?;
+                }
             }
             None
         } else {
@@ -1767,33 +2436,35 @@ impl StorageBrokerRuntime {
                 Some(_) => StorageNativeIssuanceLedgerV1::open_existing_root_owned(state_directory),
                 None => StorageNativeIssuanceLedgerV1::open_root_owned(state_directory),
             }.map_err(|_| StorageRuntimeError::Recovery)?;
-            native_issuance.validate_active_holds(&coordinator)
+            native_issuance.validate_active_holds(coordinator)
                 .map_err(|_| StorageRuntimeError::Recovery)?;
             Some(native_issuance)
         };
+
+        }
 
         if let operator_startup::OperatorStartupSelectionV4::ProvisionEmpty(credentials) = selection {
             // All lower writers and physical roots remain held. Provisioning
             // exits before random runtime IDs, backend construction, or any
             // ordinary startup/policy/recovery mutation.
             operator_startup::provision_empty_operator_sidecar_v4(
-                &coordinator,
-                &workspaces,
-                native_issuance.as_mut().ok_or(StorageRuntimeError::Recovery)?,
-                &pin_io,
+                coordinator,
+                workspaces,
+                assembly.native_issuance.as_mut().ok_or(StorageRuntimeError::Recovery)?,
+                pin_io,
                 state_directory,
                 credentials,
             )?;
             // Match the runtime's primary/workspace/native field-drop order;
             // the fourth writer has already been checked and released.
-            drop(coordinator);
-            drop(workspaces);
-            drop(native_issuance);
+            drop(assembly.coordinator.take());
+            drop(assembly.workspaces.take());
+            drop(assembly.native_issuance.take());
             return Ok(StorageStartupOutcomeV4::OperatorProvisioned);
         }
 
         // The fourth writer is acquired only after all three lower cuts authenticate.
-        let mut operator_owner = match operator_credentials {
+        assembly.operator_owner = match operator_credentials {
             Some(credentials) => {
                 let owner = credentials.open_existing_owner(state_directory).map_err(|cause| {
                     if let Some((attempt, _)) = original.as_mut() {
@@ -1809,11 +2480,11 @@ impl StorageBrokerRuntime {
         };
         // The returned fourth writer parks before its first capture/readback.
         if let Some((attempt, _)) = original.as_mut() {
-            attempt.operator_owner = operator_owner.take();
+            attempt.operator_owner = assembly.operator_owner.take();
         }
         let operator_owner_loan = match original.as_mut() {
             Some((attempt, _)) => attempt.operator_owner.as_mut(),
-            None => operator_owner.as_mut(),
+            None => assembly.operator_owner.as_mut(),
         };
         let operator_startup = match operator_owner_loan {
             Some(owner) => Some(operator_startup::DeferredOperatorStartupV4::capture(
@@ -1825,32 +2496,65 @@ impl StorageBrokerRuntime {
         };
         let broker_instance_id = random_challenge()?;
 
+        // Every fallible presence check precedes the actual positive executor/
+        // Snapshot handoff. The following checked moves cannot discard a
+        // previously moved writer because a later Option is unexpectedly empty.
+        if assembly.coordinator.is_none() || assembly.workspaces.is_none()
+            || assembly.pin_io.is_none()
+        {
+            return Err(StorageRuntimeError::Receiving);
+        }
         let (backend, apply_readiness) = match apply_construction {
             StorageApplyConstructionV1::Closed => (
-                SystemdZfsProcessBackend::new(executor),
+                SystemdZfsProcessBackend::new(executor.take().ok_or(StorageRuntimeError::Receiving)?),
                 StorageApplyReadiness::WorkspaceBackendUnavailable,
             ),
-            StorageApplyConstructionV1::DormantProtectedWorker => (
-                SystemdZfsProcessBackend::with_protected_snapshot_metadata(executor)
-                    .map_err(|_| StorageRuntimeError::Recovery)?,
-                StorageApplyReadiness::ProtectedWorkerReady,
-            ),
+            StorageApplyConstructionV1::DormantProtectedWorker => {
+                let backend = if let Some((attempt, _)) = original.as_mut()
+                    .filter(|(attempt, _)| attempt.has_storage_service_receiving_original_v1())
+                {
+                    attempt.snapshot_capture_result = Some(attempt.snapshot_metadata.capture_once());
+                    attempt.snapshot_current_result = Some(attempt.require_daemon_prefix_paid_current_v1());
+                    if !matches!(attempt.snapshot_capture_result, Some(Ok(())))
+                        || !matches!(attempt.snapshot_current_result, Some(Ok(())))
+                    {
+                        return Err(StorageRuntimeError::Recovery);
+                    }
+                    let handoff = attempt.snapshot_metadata.prepare_backend_once()
+                        .map_err(|_| StorageRuntimeError::Recovery)?;
+                    let executor = executor.take().ok_or(StorageRuntimeError::Receiving)?;
+                    handoff.complete(executor)
+                } else {
+                    SystemdZfsProcessBackend::with_protected_snapshot_metadata(
+                        executor.take().ok_or(StorageRuntimeError::Receiving)?,
+                    ).map_err(|_| StorageRuntimeError::Recovery)?
+                };
+                (backend, StorageApplyReadiness::ProtectedWorkerReady)
+            }
         };
         let mut runtime = Self {
-            coordinator,
-            workspaces: Some(workspaces),
+            coordinator: assembly.take_coordinator(),
+            workspaces: Some(assembly.take_workspaces()),
             configuration_binding,
             broker_instance_id,
             held_reader_state_directory: Some(state_directory.to_path_buf()),
             native_issuance: match original.as_mut() {
                 Some((attempt, _)) => attempt.native_ledger.take(),
-                None => native_issuance.take(),
+                None => assembly.native_issuance.take(),
             },
             native_escrow: native_acquire::StorageNativeEscrowV2::default(),
+            original_service_lent: false,
             original_worker_startup: match original.as_mut() {
                 Some((attempt, _)) => attempt.startup.take(),
                 None => None,
             },
+            receiving_inventory_demand: None,
+            receiving_prepare_demand: None,
+            receiving_prepare_result: None,
+            receiving_prepare_clocks: [None, None],
+            receiving_prepare_policy_read: crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1::new(),
+            receiving_inventory_catalog: None,
+            startup_reconciliation: startup_reconciliation::StartupReconciliationOriginalV1::new(),
             original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3::default(),
             #[cfg(target_os = "linux")]
             git_coverage: None,
@@ -1859,25 +2563,57 @@ impl StorageBrokerRuntime {
             #[cfg(test)]
             native_readback_fixture_uid: None,
             pin_contract: contract.clone(),
-            pin_io: Box::new(pin_io),
+            pin_io: Box::new(assembly.take_pin_io()),
             helper: StorageMutationHelper::new(
                 contract,
                 Box::new(backend) as Box<dyn ZfsProcessBackend + Send>,
             ),
             readiness: StorageRuntimeReadiness::RecoveryPending { operations: 1 },
             apply_readiness,
-            resolver_policies,
+            resolver_policies: assembly.resolver_policies.take(),
+            resolver_policy_directory_original: std::mem::replace(
+                &mut assembly.resolver_policy_directory_original,
+                crate::resolver::protected_catalog::ResolverPolicyDirectoryOriginalV1::new(),
+            ),
+            resolver_policy_read_original: std::mem::replace(
+                &mut assembly.resolver_policy_read_original,
+                crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1::new(),
+            ),
             prepare_readiness,
             worker_dispatch: RepairWorkerDispatchGate::new(),
             operator_startup,
             #[cfg(test)]
             fail_repair_completion_commit_for_test: false,
+            guest_root_publication: None,
+            guest_root_health: None, guest_root_health_demand: None, guest_root_health_payment: None,
+            guest_root_publication_demand: None,
+            guest_root_publication_payment: None,
+            root_export_original: None,
+            root_export_geometry: None,
             canary_export: canary_export_held::CanaryExportHeldV1::new(),
         };
-        if let Some((attempt, key)) = original.as_mut() {
+        if let Some((attempt, profile)) = original.as_mut() {
             attempt.runtime = Some(runtime);
             let _crossing = attempt.unwind_fence();
             let runtime = attempt.runtime.as_mut().ok_or(StorageRuntimeError::Recovery)?;
+            if selected_receiver {
+                attempt.startup_reconciliation = Some(if let Some(owner) = attempt.operator_owner.as_mut() {
+                    runtime.finish_operator_construction_v4(owner).map(|()| runtime.readiness)
+                } else {
+                    runtime.reconcile_initial_receiving_v1()
+                });
+                // Keep the entire reconciliation Result and normal Runtime
+                // resident while the independent same-original post runs.
+                attempt.startup_reconciliation_post = Some(runtime.original_worker_startup.as_mut()
+                    .ok_or(StorageRuntimeError::Recovery)?.recheck());
+                let Some(Ok(readiness)) = attempt.startup_reconciliation.as_ref() else {
+                    return Err(StorageRuntimeError::Recovery);
+                };
+                if !matches!(attempt.startup_reconciliation_post, Some(Ok(()))) {
+                    return Err(StorageRuntimeError::Recovery);
+                }
+                runtime.readiness = *readiness;
+            } else {
             if let Some(owner) = attempt.operator_owner.as_mut() {
                 runtime.finish_operator_construction_v4(owner)?;
             } else {
@@ -1888,10 +2624,16 @@ impl StorageBrokerRuntime {
                     attempt.first_cause = Some(OriginalNativeConstructionCauseV1::Startup(cause));
                     StorageRuntimeError::Recovery
                 })?;
-            key.recheck().map_err(|cause| {
-                attempt.first_cause = Some(OriginalNativeConstructionCauseV1::Service(cause));
-                StorageRuntimeError::Recovery
-            })?;
+            }
+            if let OriginalStartupProfileV1::Held(key) = profile {
+                key.recheck().map_err(|cause| {
+                    attempt.first_cause = Some(OriginalNativeConstructionCauseV1::Service(cause));
+                    StorageRuntimeError::Recovery
+                })?;
+            }
+            if selected_receiver && !runtime.has_deferred_operator_debt_v4() {
+                runtime.complete_initial_reconciliation_disposal_v1()?;
+            }
             // All checks precede these infallible checked moves. The caller
             // immediately parks the same composition; the fence stays armed.
             let runtime = match attempt.runtime.take() {
@@ -1899,13 +2641,13 @@ impl StorageBrokerRuntime {
                 None => std::process::abort(),
             };
             return Ok(StorageStartupOutcomeV4::Runtime(runtime, attempt.operator_owner.take()));
-        } else if let Some(owner) = operator_owner.as_mut() {
+        } else if let Some(owner) = assembly.operator_owner.as_mut() {
             runtime.finish_operator_construction_v4(owner)?;
         } else {
             runtime.readiness = runtime.reconcile_startup()?;
         }
 
-        Ok(StorageStartupOutcomeV4::Runtime(runtime, operator_owner))
+        Ok(StorageStartupOutcomeV4::Runtime(runtime, assembly.operator_owner.take()))
     }
 
     #[cfg(test)]
@@ -1948,6 +2690,7 @@ impl StorageBrokerRuntime {
             native_issuance: None,
             native_escrow: native_acquire::StorageNativeEscrowV2::default(),
             original_worker_startup: None,
+            original_service_lent: false,
             original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3::default(),
             #[cfg(target_os = "linux")]
             git_coverage: None,
@@ -1959,11 +2702,26 @@ impl StorageBrokerRuntime {
             readiness: StorageRuntimeReadiness::RecoveryPending { operations: 1 },
             apply_readiness: StorageApplyReadiness::WorkspaceBackendUnavailable,
             resolver_policies: None,
+            resolver_policy_directory_original: crate::resolver::protected_catalog::ResolverPolicyDirectoryOriginalV1::new(),
+            resolver_policy_read_original: crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1::new(),
             prepare_readiness: StoragePrepareReadiness::Unconfigured,
             worker_dispatch: RepairWorkerDispatchGate::new(),
             operator_startup: None,
             fail_repair_completion_commit_for_test: false,
+            guest_root_publication: None,
+            guest_root_health: None, guest_root_health_demand: None, guest_root_health_payment: None,
+            guest_root_publication_demand: None,
+            guest_root_publication_payment: None,
+            root_export_original: None,
+            root_export_geometry: None,
             canary_export: canary_export_held::CanaryExportHeldV1::new(),
+            receiving_inventory_demand: None,
+            receiving_prepare_demand: None,
+            receiving_prepare_result: None,
+            receiving_prepare_clocks: [None, None],
+            receiving_prepare_policy_read: crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1::new(),
+            receiving_inventory_catalog: None,
+            startup_reconciliation: startup_reconciliation::StartupReconciliationOriginalV1::new(),
         };
         runtime.readiness = runtime.reconcile_startup()?;
 
@@ -2003,6 +2761,7 @@ impl StorageBrokerRuntime {
             native_issuance: None,
             native_escrow: native_acquire::StorageNativeEscrowV2::default(),
             original_worker_startup: None,
+            original_service_lent: false,
             original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3::default(),
             #[cfg(target_os = "linux")]
             git_coverage: None,
@@ -2014,11 +2773,26 @@ impl StorageBrokerRuntime {
             readiness: StorageRuntimeReadiness::RecoveryPending { operations: 1 },
             apply_readiness: StorageApplyReadiness::WorkspaceBackendUnavailable,
             resolver_policies: None,
+            resolver_policy_directory_original: crate::resolver::protected_catalog::ResolverPolicyDirectoryOriginalV1::new(),
+            resolver_policy_read_original: crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1::new(),
             prepare_readiness: StoragePrepareReadiness::Unconfigured,
             worker_dispatch: RepairWorkerDispatchGate::new(),
             operator_startup: None,
             fail_repair_completion_commit_for_test: false,
+            guest_root_publication: None,
+            guest_root_health: None, guest_root_health_demand: None, guest_root_health_payment: None,
+            guest_root_publication_demand: None,
+            guest_root_publication_payment: None,
+            root_export_original: None,
+            root_export_geometry: None,
             canary_export: canary_export_held::CanaryExportHeldV1::new(),
+            receiving_inventory_demand: None,
+            receiving_prepare_demand: None,
+            receiving_prepare_result: None,
+            receiving_prepare_clocks: [None, None],
+            receiving_prepare_policy_read: crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1::new(),
+            receiving_inventory_catalog: None,
+            startup_reconciliation: startup_reconciliation::StartupReconciliationOriginalV1::new(),
         };
         runtime.readiness = runtime.reconcile_startup()?;
         Ok(runtime)
@@ -2245,58 +3019,9 @@ impl StorageBrokerRuntime {
         template: &ProtectedGuestRootTemplateV1,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<OwnedFd, StorageRuntimeError> {
-        let _dispatch = self
-            .worker_dispatch
-            .enter()
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        let now = boottime_now_nanoseconds()?;
-        let cutoff = guest_root_inventory_cutoff(now, deadline_boottime_nanoseconds)?;
-        let before = self.inventory_resources(deadline_boottime_nanoseconds, cutoff)?;
-        let before = attach_guest_root_publication_readback_v1(&before, template)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        let before = decode_storage_resource_inventory_response(&before, MAXIMUM_RESPONSE_BYTES)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        if !before.workspaces().iter().any(|row| {
-            row.workspace_handle() == &expected_proof.workspace_handle
-                && row.guest_root_publication_proof() == Some(expected_proof)
-        }) {
-            return Err(StorageRuntimeError::Recovery);
-        }
-
-        let validated = self
-            .workspaces
-            .as_ref()
-            .ok_or(StorageRuntimeError::Recovery)?;
-        let (plan, physical) = self.coordinator.workspace_catalog_activation_plan()?;
-        let physical = physical.ok_or(StorageRuntimeError::Recovery)?;
-        let request = self
-            .catalog_observation_request(
-                validated,
-                &plan,
-                &physical,
-                catalog_observation_nonce()?,
-                deadline_boottime_nanoseconds,
-            )?
-            .with_root_export(expected_proof)?;
-        let encoded = encode_request(&request)?;
-        let (_, mount) = self
-            .pin_io
-            .export_catalog_root(&encoded, &request, cutoff)?;
-
-        let now = boottime_now_nanoseconds()?;
-        let cutoff = guest_root_inventory_cutoff(now, deadline_boottime_nanoseconds)?;
-        let after = self.inventory_resources(deadline_boottime_nanoseconds, cutoff)?;
-        let after = attach_guest_root_publication_readback_v1(&after, template)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        let after = decode_storage_resource_inventory_response(&after, MAXIMUM_RESPONSE_BYTES)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        if !after.workspaces().iter().any(|row| {
-            row.workspace_handle() == &expected_proof.workspace_handle
-                && row.guest_root_publication_proof() == Some(expected_proof)
-        }) {
-            return Err(StorageRuntimeError::Recovery);
-        }
-        Ok(mount)
+        root_mount_export::export_ordinary_v2(
+            self, expected_proof, template, deadline_boottime_nanoseconds,
+        )
     }
 
     pub(crate) fn live_export_origin_mount_id(
@@ -2396,112 +3121,66 @@ impl StorageBrokerRuntime {
         Ok(mount)
     }
 
-    /// Publishes one populated guest root under a distinct durable signed effect.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless the current physical workspace, signed method-31
-    /// plan, satisfied pin, protected template, one-shot worker, and fresh
-    /// post-effect complete-tree readback all agree. An uncertain dispatch
-    /// leaves the runtime closed for observation-only recovery.
-    #[allow(clippy::too_many_arguments)]
-    pub fn populate_guest_root(
+    /// Debits actual owned Inventory source geometry before worker/model growth.
+    pub(crate) fn reserve_inventory_receiving_v1(
         &mut self,
-        request_body: &[u8],
-        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
-        protocol_version: ProtocolVersion,
-        peer: PeerCredentials,
-        policy: PeerPolicy,
-        template: &ProtectedGuestRootTemplateV1,
-    ) -> Result<GuestRootPublicationProofV1, StorageRuntimeError> {
-        self.require_git_coverage_new_admission_v1()?;
-        let _dispatch = self
-            .worker_dispatch
-            .enter()
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        let clock = trusted_paired_clock_sample()?;
-        let semantics = CanonicalStorageGuestRootSemanticsV1::decode(
-            request_body,
-            peer,
-            policy,
-            clock.boottime_nanoseconds(),
-        )
-        .map_err(|_| StorageRuntimeError::Recovery)?;
-        if semantics.header().protocol_version() != protocol_version || !self.is_inventory_ready() {
-            return Err(StorageRuntimeError::Recovery);
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<(), StorageRuntimeError> {
+        if self.receiving_inventory_demand.is_some() {
+            return Err(StorageRuntimeError::Receiving);
         }
-        let request_deadline = semantics.header().deadline_boottime_nanoseconds();
-        let cutoff = guest_root_inventory_cutoff(clock.boottime_nanoseconds(), request_deadline)?;
-        let inventory_bytes = self.inventory_resources(request_deadline, cutoff)?;
-        let inventory =
-            decode_storage_resource_inventory_response(&inventory_bytes, MAXIMUM_RESPONSE_BYTES)
-                .map_err(|_| StorageRuntimeError::Recovery)?;
-        let workspace = inventory
-            .workspaces()
-            .iter()
-            .find(|workspace| {
-                workspace.workspace_handle() == &semantics.workspace_handle()
-                    && workspace.creation_operation_id() == &semantics.creation_operation_id()
-            })
-            .ok_or(StorageRuntimeError::Recovery)?;
-        let expected_proof = template.expected_proof(workspace);
+        let demand = self.inventory_retention_demand_v1();
+        // The real whole arithmetic result precedes the actual original debit.
+        self.receiving_inventory_demand = Some(demand);
+        let Some(Ok(demand)) = self.receiving_inventory_demand.as_ref() else {
+            return Err(StorageRuntimeError::Receiving);
+        };
+        receiving.reserve_inventory_retention_once_v1(*demand)
+            .map_err(|_| StorageRuntimeError::Receiving)
+    }
 
-        // A prior marker is an observation, never a fresh mutation grant.
-        let before = attach_guest_root_publication_readback_v1(&inventory_bytes, template)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        let before = decode_storage_resource_inventory_response(&before, MAXIMUM_RESPONSE_BYTES)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        if before.workspaces().iter().any(|row| {
-            row.workspace_handle() == &semantics.workspace_handle()
-                && row.guest_root_publication_proof().is_some()
-        }) {
-            return Err(StorageRuntimeError::Recovery);
+    /// Counts actual retained workspace rows through the existing shape suppliers.
+    fn inventory_workspace_rows_v2(&self) -> Result<u64, aos_sandbox_core::AccountingError> {
+        let mut geometry = self.coordinator.receiving_inventory_geometry_v1()?;
+        if let Some(workspaces) = self.workspaces.as_ref() {
+            geometry.include(workspaces.receiving_inventory_geometry_v1()?)?;
         }
+        Ok(geometry.workspace_rows)
+    }
 
-        // A prior timed-out attempt may have left template-named partial
-        // files. Prove its whole systemd unit gone before a new signed effect
-        // can repair them; the old AOSGRA01 is never redispatched.
-        let mut publisher = SystemdGuestRootPublisherClientV1::new(
-            PathBuf::from(GUEST_ROOT_PUBLISHER_SOCKET),
-            open_cgroup_root()?,
-        )?;
-        publisher.recover_quiescence()?;
-
-        let admitted = self.coordinator.begin_guest_root_publication(
-            &semantics,
-            request_body,
-            artifacts,
-            protocol_version,
-            peer,
-            policy,
-            &clock,
-            workspace,
-            expected_proof,
-        );
-        let (worker_request, effect_deadline) =
-            self.finish_live_transaction_mutation(admitted, StorageRuntimeError::Admission)?;
-        let publication = (|| {
-            let proof = publisher.publish(&worker_request, expected_proof, effect_deadline)?;
-            let now = boottime_now_nanoseconds()?;
-            let cutoff = guest_root_inventory_cutoff(now, request_deadline)?;
-            let inventory_bytes = self.inventory_resources(request_deadline, cutoff)?;
-            let readback = attach_guest_root_publication_readback_v1(&inventory_bytes, template)
-                .map_err(|_| StorageRuntimeError::Recovery)?;
-            let inventory =
-                decode_storage_resource_inventory_response(&readback, MAXIMUM_RESPONSE_BYTES)
-                    .map_err(|_| StorageRuntimeError::Recovery)?;
-            if !inventory.workspaces().iter().any(|row| {
-                row.workspace_handle() == &semantics.workspace_handle()
-                    && row.guest_root_publication_proof() == Some(proof)
-            }) {
-                return Err(StorageRuntimeError::Recovery);
-            }
-            Ok(proof)
-        })();
-        if publication.is_err() {
-            self.latch_recovery_required();
+    fn inventory_retention_demand_v1(&self)
+        -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>
+    {
+        let mut geometry = self.coordinator.receiving_inventory_geometry_v1()?;
+        if let Some(workspaces) = self.workspaces.as_ref() {
+            geometry.include(workspaces.receiving_inventory_geometry_v1()?)?;
         }
-        publication
+        geometry.retained_model_demand_v1()?
+            .checked_add(inventory_catalog::InventoryCatalogOriginalV1::fixed_demand_v1()?)?
+            .checked_add(crate::guest_root_inventory::marker_readback_retained_demand_v1(
+                geometry.workspace_rows,
+            )?)
+    }
+
+    pub(crate) fn retain_refused_inventory_body_v1(&mut self, body: Vec<u8>) {
+        if let Some(original) = self.receiving_inventory_catalog.as_mut() {
+            original.retain_refused_body(body);
+        }
+    }
+
+    /// Borrows the actual pre-Inventory arithmetic failure retained on this owner.
+    pub(crate) fn receiving_inventory_demand_failure_v1(&self)
+        -> Option<&aos_sandbox_core::AccountingError>
+    {
+        self.receiving_inventory_demand.as_ref().and_then(|result| result.as_ref().err())
+    }
+
+    pub(crate) fn receiving_inventory_worker_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        self.receiving_inventory_catalog.as_ref()
+            .and_then(|original| original.failure())
+            .or_else(|| self.pin_io.catalog_observation_failure_v1())
     }
 
     /// Encodes the complete lifecycle inventory for authenticated broker readback.
@@ -2526,36 +3205,14 @@ impl StorageBrokerRuntime {
         &self,
         inventory: Vec<u8>,
     ) -> Result<Vec<u8>, StorageRuntimeError> {
-        let inventory = crate::lifecycle_inventory::attach_complete_lifecycle_inventory(
-            &self.coordinator,
-            &inventory,
-        )
-        .map_err(|_| StorageRuntimeError::Recovery)?;
-        // Repair commits are valid only on the completed V3 lifecycle source.
-        let commits = self
-            .coordinator
-            .operator_recovery_satisfied_workspace_pin_commits()
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        let mut response = InventoryStorageResourcesResponse::decode_from_slice(&inventory)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        response.operator_repair_commits = commits
-            .into_iter()
-            .map(
-                |(operation_id, workspace_handle, request_digest, effect_commit_digest)| {
-                    StorageOperatorRepairCommitRecordV1 {
-                        operation_id: operation_id.to_vec(),
-                        workspace_handle: workspace_handle.to_vec(),
-                        request_digest: request_digest.to_vec(),
-                        effect_commit_digest: effect_commit_digest.to_vec(),
-                        ..Default::default()
-                    }
-                },
-            )
-            .collect();
-        let inventory = response.encode_to_vec();
-        decode_storage_resource_inventory_response(&inventory, MAXIMUM_RESPONSE_BYTES)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        Ok(inventory)
+        self.complete_inventory_from_workspace_bytes_borrowed(&inventory)
+    }
+
+    fn complete_inventory_from_workspace_bytes_borrowed(
+        &self,
+        inventory: &[u8],
+    ) -> Result<Vec<u8>, StorageRuntimeError> {
+        inventory_catalog::complete_lifecycle_body_v1(&self.coordinator, inventory)
     }
 
     fn inventory_from_validated(
@@ -2570,106 +3227,11 @@ impl StorageBrokerRuntime {
             StorageRuntimeError,
         ),
     > {
-        let (plan, physical_plan) = match self.coordinator.workspace_catalog_activation_plan() {
-            Ok(composition) => composition,
-            Err(error) => return Err((Some(validated), error.into())),
-        };
-        let Some(physical_plan) = physical_plan else {
-            return Err((Some(validated), StorageRuntimeError::Recovery));
-        };
-        let nonce = match catalog_observation_nonce() {
-            Ok(nonce) => nonce,
-            Err(error) => return Err((Some(validated), error.into())),
-        };
-        let request = match self.catalog_observation_request(
-            &validated,
-            &plan,
-            &physical_plan,
-            nonce,
-            activation_deadline_boottime_nanoseconds,
-        ) {
-            Ok(request) => request,
-            Err(error) => return Err((Some(validated), error)),
-        };
-        let (candidate, fresh) = match prepare_catalog_candidate_before_observation(
+        self.inventory_from_validated_shared_v1(
             validated,
-            physical_plan,
-            request,
-            |request_bytes, request| {
-                self.pin_io
-                    .observe_catalog(request_bytes, request, worker_cutoff_boottime_nanoseconds)
-                    .map_err(Into::into)
-            },
-        ) {
-            Ok(prepared) => prepared,
-            Err((validated, error)) => return Err((Some(validated), error)),
-        };
-
-        let original_request = candidate.request();
-        let nonce = original_request.nonce();
-        let bindings = original_request.bindings();
-        let deadline = original_request.deadline_boottime_nanoseconds();
-        let (recomposed_plan, recomposed_physical_plan) =
-            match self.coordinator.workspace_catalog_activation_plan() {
-                Ok(composition) => composition,
-                Err(error) => return Err((Some(candidate.into_validated()), error.into())),
-            };
-        let Some(recomposed_physical_plan) = recomposed_physical_plan else {
-            return Err((
-                Some(candidate.into_validated()),
-                StorageRuntimeError::Recovery,
-            ));
-        };
-        let custody = match self.pin_io.catalog_binding() {
-            Ok(custody) => custody,
-            Err(_) => {
-                return Err((
-                    Some(candidate.into_validated()),
-                    StorageRuntimeError::WorkspacePinScope,
-                ));
-            }
-        };
-        let recomposed_request = match WorkspaceCatalogObservationRequestV1::new(
-            nonce,
-            deadline,
-            bindings,
-            custody,
-            recomposed_physical_plan.roots().to_vec(),
-            recomposed_physical_plan.allowed_objects().to_vec(),
-            recomposed_physical_plan.targets().to_vec(),
-        ) {
-            Ok(request) => request,
-            Err(error) => return Err((Some(candidate.into_validated()), error.into())),
-        };
-        let now = match boottime_now_nanoseconds() {
-            Ok(now) => now,
-            Err(error) => return Err((Some(candidate.into_validated()), error.into())),
-        };
-        let promotion = if self.has_deferred_operator_debt_v4() {
-            candidate.activate_operator_terminal_readonly_v4(
-                recomposed_plan,
-                recomposed_physical_plan,
-                recomposed_request,
-                fresh,
-                now,
-            )
-        } else {
-            candidate.activate(
-                recomposed_plan,
-                recomposed_physical_plan,
-                recomposed_request,
-                fresh,
-                now,
-            )
-        };
-        let activated = match promotion {
-            Ok(activated) => activated,
-            Err(failure) => {
-                let (validated, error) = failure.into_parts();
-                return Err((validated, error.into()));
-            }
-        };
-        Ok(activated.into_inventory())
+            activation_deadline_boottime_nanoseconds,
+            worker_cutoff_boottime_nanoseconds,
+        )
     }
 
     fn catalog_observation_request(
@@ -2680,37 +3242,10 @@ impl StorageBrokerRuntime {
         nonce: [u8; 32],
         deadline_boottime_nanoseconds: u64,
     ) -> Result<WorkspaceCatalogObservationRequestV1, StorageRuntimeError> {
-        let snapshot = validated.snapshot();
-        let catalog_generation = snapshot.catalog_generation().unwrap_or(1);
-        let identity_pool = snapshot.identity_pool();
-        let bindings = WorkspaceCatalogObservationBindingsV1::new(
-            self.configuration_binding,
-            self.broker_instance_id,
-            plan.transaction_sequence(),
-            plan.transaction_snapshot_digest(),
-            plan.plan_digest(),
-            plan.physical_head().0,
-            plan.physical_head().1,
-            snapshot.journal_sequence(),
-            snapshot.digest(),
-            catalog_generation,
-            identity_pool.range_start(),
-            identity_pool.range_size(),
-        )?;
-        let custody = self
-            .pin_io
-            .catalog_binding()
-            .map_err(|_| StorageRuntimeError::WorkspacePinScope)?;
-        WorkspaceCatalogObservationRequestV1::new(
-            nonce,
-            deadline_boottime_nanoseconds,
-            bindings,
-            custody,
-            physical_plan.roots().to_vec(),
-            physical_plan.allowed_objects().to_vec(),
-            physical_plan.targets().to_vec(),
+        build_catalog_observation_request(
+            self.configuration_binding, self.broker_instance_id, self.pin_io.as_ref(),
+            validated, plan, physical_plan, nonce, deadline_boottime_nanoseconds,
         )
-        .map_err(Into::into)
     }
 
     /// Resolves and retains one non-authorizing production catalog preparation.
@@ -2757,6 +3292,117 @@ impl StorageBrokerRuntime {
             trusted_clock,
         );
         self.finish_live_transaction_mutation(result, StorageRuntimeError::Admission)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_catalog_state_receiving_v1<F>(
+        &mut self,
+        request_body: &[u8],
+        expected_request_id: [u8; 16],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageRuntimeError>
+    where F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        self.reserve_lifecycle_preparation_models_v1(request_body, artifacts, receiving)?;
+        self.require_git_coverage_new_admission_v1()?;
+        if !self.is_prepare_ready() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let resolver_policies = self.resolver_policies.as_ref().ok_or(StorageRuntimeError::Recovery)?;
+        let result = self.coordinator.prepare_catalog_state_from_protected_policy_v1(
+            request_body, expected_request_id, artifacts, resolver_policies,
+            protocol_version, peer, policy, trusted_clock, receiving,
+            &mut self.startup_reconciliation.prepare_policy_read,
+        );
+        let result = self.finish_live_transaction_mutation(result, StorageRuntimeError::Admission);
+        self.startup_reconciliation.preparation_complete = result.is_ok();
+        result
+    }
+
+    /// Retains ordinary Prepare through the same actual paid Storage original.
+    ///
+    /// # Errors
+    /// Preserves Prepare readiness, protected policy/resolver and authority
+    /// failures, and closes runtime gates after actual Native uncertainty.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_catalog_receiving_v1(
+        &mut self,
+        request_body: &[u8],
+        expected_request_id: [u8; 16],
+        protected_boot_id: [u8; 16],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageRuntimeError>
+    {
+        receiving.require_prepare_retention_v1().map_err(|_| StorageRuntimeError::Receiving)?;
+        if self.receiving_prepare_demand.is_some() || self.receiving_prepare_result.is_some() {
+            return Err(StorageRuntimeError::Receiving);
+        }
+        let demand = self.coordinator.receiving_inventory_geometry_v1()
+            .and_then(|geometry| geometry.retained_model_demand_v1())
+            .and_then(|state| ProtectedStorageResolverPolicyDirectoryV1::receiving_demand_v1()
+                .and_then(|policy| state.checked_add(policy)))
+            .and_then(|current| crate::catalog_preparation::receiving_preparation_demand_v1(request_body.len(), artifacts)
+                .and_then(|prepare| current.checked_add(prepare)));
+        self.receiving_prepare_demand = Some(demand);
+        let Some(Ok(demand)) = self.receiving_prepare_demand.as_ref() else {
+            return Err(StorageRuntimeError::Receiving);
+        };
+        receiving.reserve_catalog_retention_once_v1(*demand)
+            .map_err(|_| StorageRuntimeError::Receiving)?;
+        let result = (|| {
+            self.require_git_coverage_new_admission_v1()?;
+            if !self.is_prepare_ready() {
+                return Err(StorageRuntimeError::Recovery);
+            }
+            let resolver_policies = self.resolver_policies.as_ref()
+                .ok_or(StorageRuntimeError::Recovery)?;
+            let clocks = &mut self.receiving_prepare_clocks;
+            let mut next = 0;
+            let mut trusted_clock = || {
+                let Some(slot) = clocks.get_mut(next) else {
+                    return Err(StorageAdmissionError::FenceRejected);
+                };
+                next += 1;
+                *slot = Some(aos_sandbox::policy_compiler::observe_root_first_source_successor_clock_v2(None));
+                match slot.as_ref() {
+                    Some(Ok(sample)) if sample.host_boot_id() == protected_boot_id => Ok(*sample),
+                    _ => Err(StorageAdmissionError::FenceRejected),
+                }
+            };
+            let result = self.coordinator.prepare_catalog_receiving_from_protected_policy(
+                request_body, expected_request_id, artifacts, resolver_policies, protocol_version,
+                peer, policy, &mut trusted_clock, receiving, &mut self.receiving_prepare_policy_read,
+            );
+            self.finish_live_transaction_mutation(result, StorageRuntimeError::Admission)
+        })();
+        // Park the complete actual admission/resolution/native Result before
+        // projecting status through the selected Session execution boundary.
+        self.receiving_prepare_result = Some(result);
+        match self.receiving_prepare_result.as_ref() {
+            Some(Ok(outcome)) => Ok(outcome.clone()),
+            _ => Err(StorageRuntimeError::Receiving),
+        }
+    }
+
+    pub(crate) fn receiving_prepare_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.receiving_prepare_demand.as_ref().and_then(|result| result.as_ref().err())
+            .map(|cause| cause as &dyn std::error::Error)
+            .or_else(|| self.receiving_prepare_clocks.iter().find_map(|slot|
+                slot.as_ref().and_then(|result| result.as_ref().err())
+                    .map(|cause| cause as &dyn std::error::Error)))
+            .or_else(|| self.receiving_prepare_policy_read.failure())
+            .or_else(|| self.coordinator.receiving_preparation_append_failure_v1())
+            .or_else(|| self.receiving_prepare_result.as_ref().and_then(|result| result.as_ref().err())
+                .map(|cause| cause as &dyn std::error::Error))
     }
 
     /// Retains one selected Nix generation Prepare in its original reservoir.
@@ -2881,6 +3527,28 @@ impl StorageBrokerRuntime {
             trusted_clock,
             None,
             None,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn repair_workspace_pin_state_receiving_v1<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+        cutoff: u64,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<WorkspacePinRepairExecutionOutcomeV1, StorageRuntimeError>
+    where F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        self.repair_workspace_pin_inner(
+            request_body, artifacts, protocol_version, peer, policy,
+            trusted_clock, None, None, Some(receiving), Some(cutoff),
         )
     }
 
@@ -3009,6 +3677,8 @@ impl StorageBrokerRuntime {
             trusted_clock,
             Some((&mut *owner, signed_intent)),
             Some(expected_attestation_digest),
+            None,
+            None,
         )?;
         let effect_id = owner
             .effect_id_for_request(signed_intent, request_body)
@@ -3066,10 +3736,31 @@ impl StorageBrokerRuntime {
             &[u8],
         )>,
         expected_attestation_digest: Option<[u8; 32]>,
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+        worker_cutoff: Option<u64>,
     ) -> Result<WorkspacePinRepairExecutionOutcomeV1, StorageRuntimeError>
     where
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
+        let selected = receiving.is_some();
+        if selected {
+            let demand = self.coordinator.receiving_inventory_geometry_v1()
+                .and_then(|shape| shape.retained_model_demand_v1());
+            let demand = match demand {
+                Ok(demand) => demand,
+                Err(cause) => {
+                    self.startup_reconciliation.arithmetic = Some(cause);
+                    return Err(StorageRuntimeError::Receiving);
+                }
+            };
+            self.startup_reconciliation.capacity = Some(receiving.as_deref_mut()
+                .ok_or(StorageRuntimeError::Receiving)?.reserve_inventory_readback_v1(
+                    self.coordinator.recovery_encoding_journal_v1(), demand,
+                ));
+            if !matches!(self.startup_reconciliation.capacity, Some(Ok(()))) {
+                return Err(StorageRuntimeError::Receiving);
+            }
+        }
         if !self.is_repair_ready() {
             return Err(StorageRuntimeError::Recovery);
         }
@@ -3105,10 +3796,8 @@ impl StorageBrokerRuntime {
         }
 
         self.require_git_coverage_new_admission_v1()?;
-        let current_host_scope = self
-            .pin_io
-            .host_scope()
-            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let host_scope = self.pin_io.host_scope();
+        let current_host_scope = self.startup_reconciliation.worker_result_v1(host_scope, selected)?;
         let retained = match (operator_owner.as_mut(), expected_attestation_digest) {
             (Some((owner, intent)), Some(expected)) => {
                 let packet = owner
@@ -3155,13 +3844,25 @@ impl StorageBrokerRuntime {
                 ),
         }
         .map_err(|_| StorageRuntimeError::Recovery)?;
-        let observation_request = observation_dispatch
-            .request_bytes()
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        let fresh_observation = self
-            .pin_io
-            .observe_repair_admission(&observation_request, observation_dispatch.probe())
-            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let request = match receiving.as_deref_mut() {
+            Some(receiving) => observation_dispatch.request_bytes_receiving_v1(receiving),
+            None => observation_dispatch.request_bytes(),
+        };
+        let observation_request = self.startup_reconciliation.operation_result_v1(request, selected)?;
+        let observation = match receiving.as_deref_mut() {
+            Some(receiving) => {
+                startup_reconciliation::reserve_pin_result_v1(receiving)?;
+                let cutoff = worker_cutoff.ok_or(StorageRuntimeError::Receiving)?;
+                let mut stage = crate::process::receiving_stage::StoragePhysicalWorkerStageV1::state(
+                    receiving, self.coordinator.recovery_encoding_journal_v1(),
+                );
+                self.pin_io.observe_repair_admission_receiving_v1(
+                    &observation_request, observation_dispatch.probe(), cutoff, &mut stage,
+                )
+            }
+            None => self.pin_io.observe_repair_admission(&observation_request, observation_dispatch.probe()),
+        };
+        let fresh_observation = self.startup_reconciliation.worker_result_v1(observation, selected)?;
         if let Some((owner, signed_intent)) = operator_owner {
             if expected_attestation_digest.is_none() {
                 return Err(StorageRuntimeError::Recovery);
@@ -3170,31 +3871,65 @@ impl StorageBrokerRuntime {
                 .sign_reserved_probe_attestation_v1(signed_intent, observation_dispatch.probe())
                 .map_err(operator_sidecar_failure)?;
         }
-        let result = self.coordinator.begin_workspace_pin_repair(
-            observation_dispatch,
-            fresh_observation,
-            request_body,
-            artifacts,
-            protocol_version,
-            peer,
-            policy,
-            &self.pin_contract,
-            trusted_clock,
-        );
-        let admitted =
-            self.finish_live_transaction_mutation(result, |_| StorageRuntimeError::Recovery)?;
+        let result = match receiving.as_deref_mut() {
+            Some(receiving) => self.coordinator.begin_workspace_pin_repair_receiving_v1(
+                observation_dispatch,
+                fresh_observation,
+                request_body,
+                artifacts,
+                protocol_version,
+                peer,
+                policy,
+                &self.pin_contract,
+                trusted_clock,
+                receiving,
+            ),
+            None => self.coordinator.begin_workspace_pin_repair(
+                observation_dispatch,
+                fresh_observation,
+                request_body,
+                artifacts,
+                protocol_version,
+                peer,
+                policy,
+                &self.pin_contract,
+                trusted_clock,
+            ),
+        };
+        let result = match result {
+            Ok(admitted) => Ok(admitted),
+            Err(cause) if selected => {
+                self.startup_reconciliation.operation_error = Some(cause);
+                Err(StorageRuntimeError::Receiving)
+            }
+            Err(_) => Err(StorageRuntimeError::Recovery),
+        };
+        let admitted = self.finish_live_transaction_mutation(result, |cause| cause)?;
         let AuthorizedWorkspacePinRepairAttemptV1::Dispatch(dispatch) = admitted else {
             return Ok(WorkspacePinRepairExecutionOutcomeV1::ObservationRequired);
         };
 
-        let worker_request = dispatch
-            .worker_request_bytes()
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        let result = match self.pin_io.execute(&worker_request, dispatch.attempt()) {
+        let request = match receiving.as_deref_mut() {
+            Some(receiving) => dispatch.worker_request_bytes_receiving_v1(receiving),
+            None => dispatch.worker_request_bytes(),
+        };
+        let worker_request = self.startup_reconciliation.operation_result_v1(request, selected)?;
+        let execution = match receiving.as_deref_mut() {
+            Some(receiving) => {
+                startup_reconciliation::reserve_pin_result_v1(receiving)?;
+                let cutoff = worker_cutoff.ok_or(StorageRuntimeError::Receiving)?;
+                let mut stage = crate::process::receiving_stage::StoragePhysicalWorkerStageV1::state(
+                    receiving, self.coordinator.recovery_encoding_journal_v1(),
+                );
+                self.pin_io.execute_receiving_v1(&worker_request, dispatch.attempt(), cutoff, &mut stage)
+            }
+            None => self.pin_io.execute(&worker_request, dispatch.attempt()),
+        };
+        let result = match self.startup_reconciliation.worker_result_v1(execution, selected) {
             Ok(result) => result,
-            Err(_) => {
+            Err(cause) => {
                 self.latch_recovery_required();
-                return Err(StorageRuntimeError::Recovery);
+                return Err(cause);
             }
         };
         // The worker may have changed the pin. From this point until every
@@ -3205,12 +3940,16 @@ impl StorageBrokerRuntime {
         if std::mem::take(&mut self.fail_repair_completion_commit_for_test) {
             self.coordinator.fail_after_next_journal_commit_for_test();
         }
-        let disposition = match self
-            .coordinator
-            .complete_workspace_pin_repair_execution(dispatch.attempt(), &result)
-        {
+        let completed = match receiving.as_deref_mut() {
+            Some(receiving) => self.coordinator.complete_workspace_pin_repair_execution_receiving_v1(
+                dispatch.attempt(), &result, receiving,
+            ),
+            None => self.coordinator.complete_workspace_pin_repair_execution(dispatch.attempt(), &result),
+        };
+        let disposition = match completed {
             Ok(disposition) => disposition,
-            Err(_) => {
+            Err(cause) => {
+                if selected { self.startup_reconciliation.operation_error = Some(cause); }
                 return Err(StorageRuntimeError::ReopenRequired);
             }
         };
@@ -3220,7 +3959,10 @@ impl StorageBrokerRuntime {
             self.latch_recovery_required();
             return Err(StorageRuntimeError::Recovery);
         }
-        let reconciliation = self.reconcile_startup();
+        let reconciliation = match receiving {
+            Some(receiving) => self.reconcile_entered_state_v1(receiving),
+            None => self.reconcile_startup(),
+        };
         finish_reopen_required_reconciliation(&mut self.readiness, reconciliation)?;
         Ok(WorkspacePinRepairExecutionOutcomeV1::Satisfied)
     }
@@ -3252,6 +3994,27 @@ impl StorageBrokerRuntime {
         manifest: &CanonicalAssignmentManifestV1,
         sandbox_spec: &SandboxSpec,
     ) -> Result<StorageAdmissionOutcome, StorageRuntimeError> {
+        self.admit_workspace_apply_intent_inner_v1(request_body, artifacts, catalog,
+            protocol_version, peer, policy, current_clock, manifest, sandbox_spec, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_workspace_apply_intent_inner_v1(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        manifest: &CanonicalAssignmentManifestV1,
+        sandbox_spec: &SandboxSpec,
+        receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<StorageAdmissionOutcome, StorageRuntimeError> {
+        if self.original_service_lent && receiving.is_none() {
+            return Err(StorageRuntimeError::Receiving);
+        }
         self.require_git_coverage_new_admission_v1()?;
         if self.apply_readiness == StorageApplyReadiness::WorkspaceBackendUnavailable
             || protocol_version != ProtocolVersion::new(1, 0)
@@ -3332,18 +4095,16 @@ impl StorageBrokerRuntime {
             retained_range,
             identity_range_size,
         )?;
-        let result = self.coordinator.admit_workspace_apply_intent(
-            request_body,
-            artifacts,
-            catalog,
-            protocol_version,
-            peer,
-            policy,
-            current_clock,
-            identity_range_start,
-            manifest,
-            sandbox_spec,
-        );
+        let result = match receiving {
+            Some(receiving) => self.coordinator.admit_apply_intent_receiving_v1(
+                request_body, artifacts, catalog, protocol_version, peer, policy, current_clock,
+                Some((identity_range_start, manifest, sandbox_spec)), receiving,
+            ),
+            None => self.coordinator.admit_workspace_apply_intent(
+                request_body, artifacts, catalog, protocol_version, peer, policy, current_clock,
+                identity_range_start, manifest, sandbox_spec,
+            ),
+        };
         self.finish_live_transaction_mutation(result, StorageRuntimeError::Admission)
     }
 
@@ -3379,6 +4140,7 @@ impl StorageBrokerRuntime {
             policy,
             current_clock,
             None,
+            None,
         )
         .map(|(_, operation_id, operation, outcome)| (operation_id, operation, outcome))
     }
@@ -3411,7 +4173,26 @@ impl StorageBrokerRuntime {
             policy,
             current_clock,
             Some(authenticated_request_id),
+            None,
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_authenticated_signed_apply_receiving_v1(
+        &mut self,
+        request_body: &[u8],
+        authenticated_request_id: &[u8; 16],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<([u8; 16], [u8; 16], StorageOperation, StorageAdmissionOutcome), StorageRuntimeError> {
+        receiving.require_models_current_v1(self.coordinator.recovery_encoding_journal_v1())
+            .map_err(|_| StorageRuntimeError::Receiving)?;
+        self.admit_signed_apply_intent_inner(request_body, artifacts, protocol_version,
+            peer, policy, current_clock, Some(authenticated_request_id), Some(receiving))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3424,7 +4205,11 @@ impl StorageBrokerRuntime {
         policy: PeerPolicy,
         current_clock: &RawPairedClockSample,
         authenticated_request_id: Option<&[u8; 16]>,
+        receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
     ) -> Result<([u8; 16], [u8; 16], StorageOperation, StorageAdmissionOutcome), StorageRuntimeError> {
+        if self.original_service_lent && receiving.is_none() {
+            return Err(StorageRuntimeError::Receiving);
+        }
         self.require_git_coverage_new_admission_v1()?;
         if self.apply_readiness == StorageApplyReadiness::WorkspaceBackendUnavailable
             || protocol_version != ProtocolVersion::new(1, 0)
@@ -3469,7 +4254,7 @@ impl StorageBrokerRuntime {
                 let manifest = metadata.manifest().clone();
                 let sandbox_spec = metadata.sandbox_spec().clone();
                 return self
-                    .admit_workspace_apply_intent(
+                    .admit_workspace_apply_intent_inner_v1(
                         request_body,
                         artifacts,
                         &catalog,
@@ -3479,18 +4264,19 @@ impl StorageBrokerRuntime {
                         current_clock,
                         &manifest,
                         &sandbox_spec,
+                        receiving,
                     )
                     .map(|outcome| (request_id, operation_id, operation, outcome));
             }
-            StorageApplyAdmissionRoute::Generic => self.coordinator.admit_apply_intent(
-                request_body,
-                artifacts,
-                &catalog,
-                protocol_version,
-                peer,
-                policy,
-                current_clock,
-            ),
+            StorageApplyAdmissionRoute::Generic => match receiving {
+                Some(receiving) => self.coordinator.admit_apply_intent_receiving_v1(
+                    request_body, artifacts, &catalog, protocol_version, peer, policy,
+                    current_clock, None, receiving,
+                ),
+                None => self.coordinator.admit_apply_intent(
+                    request_body, artifacts, &catalog, protocol_version, peer, policy, current_clock,
+                ),
+            },
         };
         let outcome =
             self.finish_live_transaction_mutation(result, StorageRuntimeError::Admission)?;
@@ -3523,6 +4309,50 @@ impl StorageBrokerRuntime {
     where
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
+        self.execute_admitted_inner_v1(operation_id, trusted_clock, None)
+    }
+
+    pub(crate) fn lifecycle_apply_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.startup_reconciliation.failure_with_guest_root_v2(
+            &self.coordinator, &self.helper, self.guest_root_publication_failure_v2(),
+        ).map(|cause| match cause.downcast_ref::<ZfsWorkerError>()
+                .and_then(ZfsWorkerError::physical_native_refusal_v1)
+            {
+                Some(marker) => marker as &dyn std::error::Error,
+                None => cause,
+            })
+    }
+
+    pub(crate) fn lifecycle_state_journal_v1(&self) -> &aos_sandbox::Journal {
+        self.coordinator.recovery_encoding_journal_v1()
+    }
+
+    pub(crate) fn execute_admitted_receiving_v1<F>(
+        &mut self,
+        operation_id: [u8; 16],
+        trusted_clock: &mut F,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<StorageRuntimeMutationOutcome, StorageRuntimeError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        receiving.require_models_current_v1(self.coordinator.recovery_encoding_journal_v1())
+            .map_err(|_| StorageRuntimeError::Receiving)?;
+        self.execute_admitted_inner_v1(operation_id, trusted_clock, Some(receiving))
+    }
+
+    fn execute_admitted_inner_v1<F>(
+        &mut self,
+        operation_id: [u8; 16],
+        trusted_clock: &mut F,
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<StorageRuntimeMutationOutcome, StorageRuntimeError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        if self.original_service_lent && receiving.is_none() {
+            return Err(StorageRuntimeError::Receiving);
+        }
         let _dispatch = self
             .worker_dispatch
             .enter()
@@ -3530,10 +4360,16 @@ impl StorageBrokerRuntime {
         if !self.operation_permits_apply(operation_id)? {
             return Err(StorageRuntimeError::Recovery);
         }
-        let prepared = self
-            .coordinator
-            .preobserve(&mut self.helper, operation_id)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let prepared = match receiving.as_deref_mut() {
+            Some(receiving) => {
+                let result = self.coordinator.preobserve_receiving_v1(
+                    &mut self.helper, operation_id, receiving,
+                );
+                self.startup_reconciliation.operation_result_v1(result, true)?
+            }
+            None => self.coordinator.preobserve(&mut self.helper, operation_id)
+                .map_err(|_| StorageRuntimeError::Recovery)?,
+        };
         let mutation_digest = prepared.entry().mutation_digest();
         let creates_workspace = matches!(
             prepared.catalog().plan(),
@@ -3556,15 +4392,19 @@ impl StorageBrokerRuntime {
         self.latch_recovery_required();
         let committed = match removal {
             WorkspaceRemovePinRequirementV1::Required(expected_pin) => {
-                let result = self
-                    .coordinator
-                    .execute_workspace_remove_and_destroy_with_io(
-                        self.pin_io.as_mut(),
-                        &self.pin_contract,
-                        prepared,
-                        expected_pin,
-                        trusted_clock,
-                    );
+                let result = match receiving.as_deref_mut() {
+                    Some(receiving) => self.coordinator.execute_workspace_remove_and_destroy_with_io_receiving_v1(
+                        self.pin_io.as_mut(), &self.pin_contract, prepared, expected_pin, trusted_clock,
+                        receiving, &mut self.startup_reconciliation.pin_remove_result,
+                    ),
+                    None => self.coordinator.execute_workspace_remove_and_destroy_with_io(
+                        self.pin_io.as_mut(), &self.pin_contract, prepared, expected_pin, trusted_clock,
+                    ),
+                };
+                let result = match receiving.as_ref() {
+                    Some(_) => self.startup_reconciliation.operation_result_v1(result, true),
+                    None => result.map_err(|_| StorageRuntimeError::Recovery),
+                };
                 let (pin_outcome, committed) = self
                     .finish_live_transaction_mutation(result, |_| StorageRuntimeError::Recovery)?;
                 match pin_outcome {
@@ -3576,7 +4416,7 @@ impl StorageBrokerRuntime {
                         });
                     }
                     WorkspacePinExecutionOutcomeV1::Aborted { mutation_digest } => {
-                        return self.finish_aborted_mutation(mutation_digest);
+                        return self.finish_aborted_mutation_inner_v1(mutation_digest, receiving.as_deref_mut());
                     }
                 }
                 committed.ok_or(StorageRuntimeError::Recovery)?
@@ -3585,14 +4425,20 @@ impl StorageBrokerRuntime {
                 return Err(StorageRuntimeError::Recovery);
             }
             WorkspaceRemovePinRequirementV1::NotWorkspace => {
-                let execution = self
-                    .coordinator
-                    .execute_preobserved(&mut self.helper, prepared, trusted_clock)
-                    .map_err(|_| StorageRuntimeError::Recovery);
+                let execution = match receiving.as_deref_mut() {
+                    Some(receiving) => self.coordinator.execute_preobserved_receiving_v1(
+                        &mut self.helper, prepared, trusted_clock, receiving,
+                    ),
+                    None => self.coordinator.execute_preobserved(&mut self.helper, prepared, trusted_clock),
+                };
+                let execution = match receiving.as_ref() {
+                    Some(_) => self.startup_reconciliation.operation_result_v1(execution, true),
+                    None => execution.map_err(|_| StorageRuntimeError::Recovery),
+                };
                 match self.finish_live_transaction_mutation(execution, |error| error)? {
                     ZfsHelperOutcome::Committed(committed) => committed,
                     ZfsHelperOutcome::Aborted { mutation_digest } => {
-                        return self.finish_aborted_mutation(mutation_digest);
+                        return self.finish_aborted_mutation_inner_v1(mutation_digest, receiving.as_deref_mut());
                     }
                     ZfsHelperOutcome::ObservationRequired {
                         phase,
@@ -3608,12 +4454,19 @@ impl StorageBrokerRuntime {
         };
 
         if creates_workspace {
-            let result = self.coordinator.execute_workspace_pin_ensure_with_io(
-                self.pin_io.as_mut(),
-                &self.pin_contract,
-                committed,
-                trusted_clock,
-            );
+            let result = match receiving.as_deref_mut() {
+                Some(receiving) => self.coordinator.execute_workspace_pin_ensure_with_io_receiving_v1(
+                    self.pin_io.as_mut(), &self.pin_contract, committed, trusted_clock, receiving,
+                    &mut self.startup_reconciliation.pin_ensure_result,
+                ),
+                None => self.coordinator.execute_workspace_pin_ensure_with_io(
+                    self.pin_io.as_mut(), &self.pin_contract, committed, trusted_clock,
+                ),
+            };
+            let result = match receiving.as_ref() {
+                Some(_) => self.startup_reconciliation.operation_result_v1(result, true),
+                None => result.map_err(|_| StorageRuntimeError::Recovery),
+            };
             let pin_outcome =
                 self.finish_live_transaction_mutation(result, |_| StorageRuntimeError::Recovery)?;
             match pin_outcome {
@@ -3630,7 +4483,10 @@ impl StorageBrokerRuntime {
             }
         }
 
-        let readiness = self.reconcile_startup()?;
+        let readiness = match receiving {
+            Some(receiving) => self.reconcile_entered_state_v1(receiving)?,
+            None => self.reconcile_startup()?,
+        };
         self.readiness = readiness;
         if !self.readiness.permits_catalog_methods() {
             return Ok(StorageRuntimeMutationOutcome::ObservationRequired {
@@ -3671,129 +4527,6 @@ impl StorageBrokerRuntime {
         )
     }
 
-    fn reconcile_startup(&mut self) -> Result<StorageRuntimeReadiness, StorageRuntimeError> {
-        let _dispatch = self
-            .worker_dispatch
-            .enter()
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        if let Some(issuance) = &mut self.native_issuance {
-            issuance
-                .validate_active_holds(&self.coordinator)
-                .map_err(|_| StorageRuntimeError::Recovery)?;
-            // Recovery must not publish a pending ReleaseHold around an active
-            // interest, even when observation reports that the effect already
-            // happened. Cleanup/recovery remains closed until both owners can
-            // settle the exact original acceptance; journal replay is no bypass.
-            for entry in self
-                .coordinator
-                .recovery_entries()
-                .map_err(|_| StorageRuntimeError::Recovery)?
-            {
-                if !matches!(
-                    entry.phase(),
-                    DurableStoragePhase::Committed | DurableStoragePhase::Aborted
-                ) {
-                    let catalog = self
-                        .coordinator
-                        .recovery_catalog_for_native_interest(entry)
-                        .map_err(|_| StorageRuntimeError::Recovery)?;
-                    issuance
-                        .check_release(catalog.plan())
-                        .map_err(|_| StorageRuntimeError::Recovery)?;
-                }
-            }
-        }
-        let mut pending = reconcile_transaction_recovery(&mut self.coordinator, &mut self.helper)?;
-        for dispatch in self
-            .coordinator
-            .workspace_pin_observation_dispatches()
-            .map_err(|_| StorageRuntimeError::Recovery)?
-        {
-            let request = dispatch
-                .request_bytes(&self.pin_contract)
-                .map_err(|_| StorageRuntimeError::Recovery)?;
-            let result = self
-                .pin_io
-                .observe(&request, dispatch.attempt())
-                .map_err(|_| StorageRuntimeError::Recovery)?;
-            match self
-                .coordinator
-                .complete_workspace_pin_observation(dispatch.attempt(), &result)
-                .map_err(|_| StorageRuntimeError::Recovery)?
-            {
-                crate::workspace_pin::WorkspacePinRecoveryDispositionV1::CompletePublication
-                | crate::workspace_pin::WorkspacePinRecoveryDispositionV1::CompleteRetirement => {}
-                _ => pending += 1,
-            }
-        }
-        let current_host_scope = self
-            .pin_io
-            .host_scope()
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-        for dispatch in self
-            .coordinator
-            .workspace_pin_repair_observation_dispatches(&self.pin_contract, current_host_scope)
-            .map_err(|_| StorageRuntimeError::Recovery)?
-        {
-            let request = dispatch
-                .request_bytes()
-                .map_err(|_| StorageRuntimeError::Recovery)?;
-            let result = self
-                .pin_io
-                .observe_repair(
-                    &request,
-                    dispatch.attempt().attempt_id(),
-                    dispatch.probe().digest(),
-                )
-                .map_err(|_| StorageRuntimeError::Recovery)?;
-            match self
-                .coordinator
-                .complete_workspace_pin_repair_observation(dispatch, result)
-                .map_err(|_| StorageRuntimeError::Recovery)?
-            {
-                crate::workspace_pin::WorkspacePinRecoveryDispositionV1::CompletePublication => {}
-                crate::workspace_pin::WorkspacePinRecoveryDispositionV1::AwaitFreshRepair => {
-                    pending += 1;
-                }
-                _ => return Err(StorageRuntimeError::Recovery),
-            }
-        }
-        let (workspace_plan, physical_plan) =
-            self.coordinator.workspace_catalog_activation_plan()?;
-        self.workspaces
-            .as_mut()
-            .ok_or(StorageRuntimeError::Recovery)?
-            .revalidate_plan(workspace_plan)?;
-        if let Some(readiness) = pending_startup_readiness(pending, physical_plan.is_some()) {
-            return Ok(readiness);
-        }
-
-        let now = boottime_now_nanoseconds()?;
-        let activation_deadline = now
-            .checked_add(STARTUP_CATALOG_OBSERVATION_NANOSECONDS)
-            .ok_or(StorageRuntimeError::Recovery)?;
-        let worker_cutoff = now
-            .checked_add(STARTUP_CATALOG_WORKER_NANOSECONDS)
-            .ok_or(StorageRuntimeError::Recovery)?;
-        let validated = self
-            .workspaces
-            .take()
-            .ok_or(StorageRuntimeError::Recovery)?;
-        match self.inventory_from_validated(validated, activation_deadline, worker_cutoff) {
-            Ok((validated, _)) => {
-                self.workspaces = Some(validated);
-                Ok(StorageRuntimeReadiness::Ready)
-            }
-            Err((Some(validated), error)) => {
-                self.workspaces = Some(validated);
-                Err(error)
-            }
-            Err((None, _)) => {
-                self.latch_reopen_required();
-                Err(StorageRuntimeError::ReopenRequired)
-            }
-        }
-    }
 
     fn latch_recovery_required(&mut self) {
         let operations = match self.readiness {
@@ -3807,7 +4540,18 @@ impl StorageBrokerRuntime {
         &mut self,
         mutation_digest: ObjectDigest,
     ) -> Result<StorageRuntimeMutationOutcome, StorageRuntimeError> {
-        let readiness = self.reconcile_startup()?;
+        self.finish_aborted_mutation_inner_v1(mutation_digest, None)
+    }
+
+    fn finish_aborted_mutation_inner_v1(
+        &mut self,
+        mutation_digest: ObjectDigest,
+        receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<StorageRuntimeMutationOutcome, StorageRuntimeError> {
+        let readiness = match receiving {
+            Some(receiving) => self.reconcile_entered_state_v1(receiving)?,
+            None => self.reconcile_startup()?,
+        };
         self.readiness = readiness;
         Ok(StorageRuntimeMutationOutcome::Aborted { mutation_digest })
     }
@@ -3899,7 +4643,7 @@ pub(crate) fn trusted_paired_clock_sample() -> Result<RawPairedClockSample, Stor
 
 // Kept private so only the fixed kernel adapter can provide production samples;
 // injected readers exercise its exact ordering and failure paths in unit tests.
-fn paired_clock_sample_from_kernel_readers(
+pub(crate) fn paired_clock_sample_from_kernel_readers(
     mut boot_identity: impl FnMut() -> Result<[u8; 16], StorageRuntimeError>,
     boottime: impl FnOnce() -> Result<u64, StorageRuntimeError>,
     wall_seconds: impl FnOnce() -> i64,
@@ -3932,6 +4676,7 @@ fn finish_reopen_required_reconciliation(
     }
 }
 
+#[cfg(test)]
 fn prepare_catalog_candidate_before_observation<T>(
     validated: ValidatedPendingStorageWorkspaceCatalogV1,
     physical_plan: AuthenticatedWorkspaceCatalogPhysicalPlanV1,
@@ -3965,6 +4710,48 @@ fn prepare_catalog_candidate_before_observation<T>(
     }
 }
 
+fn build_catalog_observation_request(
+    configuration_binding: ObjectDigest,
+    broker_instance_id: [u8; 16],
+    pin_io: &dyn WorkspacePinRuntimeIo,
+    validated: &ValidatedPendingStorageWorkspaceCatalogV1,
+    plan: &crate::workspace_catalog::StorageWorkspaceCatalogPlanV1,
+    physical_plan: &AuthenticatedWorkspaceCatalogPhysicalPlanV1,
+    nonce: [u8; 32],
+    deadline_boottime_nanoseconds: u64,
+) -> Result<WorkspaceCatalogObservationRequestV1, StorageRuntimeError> {
+    let snapshot = validated.snapshot();
+    let catalog_generation = snapshot.catalog_generation().unwrap_or(1);
+    let identity_pool = snapshot.identity_pool();
+    let bindings = WorkspaceCatalogObservationBindingsV1::new(
+        configuration_binding,
+        broker_instance_id,
+        plan.transaction_sequence(),
+        plan.transaction_snapshot_digest(),
+        plan.plan_digest(),
+        plan.physical_head().0,
+        plan.physical_head().1,
+        snapshot.journal_sequence(),
+        snapshot.digest(),
+        catalog_generation,
+        identity_pool.range_start(),
+        identity_pool.range_size(),
+    )?;
+    let custody = pin_io
+        .catalog_binding()
+        .map_err(|_| StorageRuntimeError::WorkspacePinScope)?;
+    WorkspaceCatalogObservationRequestV1::new(
+        nonce,
+        deadline_boottime_nanoseconds,
+        bindings,
+        custody,
+        physical_plan.roots().to_vec(),
+        physical_plan.allowed_objects().to_vec(),
+        physical_plan.targets().to_vec(),
+    )
+    .map_err(Into::into)
+}
+
 pub(crate) fn authenticate_startup_authority(
     coordinator: &StorageAdmissionCoordinator,
 ) -> Result<(), StorageRuntimeError> {
@@ -3990,24 +4777,43 @@ fn configure_resolver_policy(
     ),
     StorageRuntimeError,
 > {
+    configure_resolver_policy_with_originals_v1(coordinator, policy_directory, authority_binding, None, None)
+}
+
+fn configure_resolver_policy_with_originals_v1(
+    coordinator: &mut StorageAdmissionCoordinator,
+    policy_directory: Option<&Path>,
+    authority_binding: ObjectDigest,
+    mut originals: Option<(
+        &mut crate::resolver::protected_catalog::ResolverPolicyDirectoryOriginalV1,
+        &mut crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1,
+    )>,
+    mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+) -> Result<(Option<ProtectedStorageResolverPolicyDirectoryV1>, StoragePrepareReadiness), StorageRuntimeError> {
     let Some(policy_directory) = policy_directory else {
         return Ok((None, StoragePrepareReadiness::Unconfigured));
     };
-    let protected = match ProtectedStorageResolverPolicyDirectoryV1::open_root_owned(
-        policy_directory,
-        authority_binding,
-    ) {
+    let opened = match originals.as_mut() {
+        Some((directory, _)) => ProtectedStorageResolverPolicyDirectoryV1::open_root_owned_retaining_v1(
+            policy_directory, authority_binding, directory,
+        ),
+        None => ProtectedStorageResolverPolicyDirectoryV1::open_root_owned(policy_directory, authority_binding),
+    };
+    let protected = match opened {
         Ok(protected) => protected,
         Err(_) => return Ok((None, StoragePrepareReadiness::PolicyInvalid)),
     };
-    classify_resolver_policy_publication(protected, |binding| {
-        coordinator.admit_trusted_resolver_policy(binding)
-    })
+    classify_resolver_policy_publication_with_original_v1(protected, |binding| {
+        match receiving.as_deref_mut() {
+            Some(receiving) => coordinator.admit_recovery_resolver_policy_v1(binding, receiving),
+            None => coordinator.admit_trusted_resolver_policy(binding),
+        }
+    }, originals.map(|(_, reader)| reader))
 }
 
 fn classify_resolver_policy_publication<F>(
     protected: ProtectedStorageResolverPolicyDirectoryV1,
-    mut admit: F,
+    admit: F,
 ) -> Result<
     (
         Option<ProtectedStorageResolverPolicyDirectoryV1>,
@@ -4021,7 +4827,23 @@ where
     )
         -> Result<crate::state::StorageResolverPolicyAdmissionOutcomeV1, StorageBrokerError>,
 {
-    let binding = match protected.load().and_then(|catalog| catalog.binding()) {
+    classify_resolver_policy_publication_with_original_v1(protected, admit, None)
+}
+
+fn classify_resolver_policy_publication_with_original_v1<F>(
+    protected: ProtectedStorageResolverPolicyDirectoryV1,
+    mut admit: F,
+    original: Option<&mut crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1>,
+) -> Result<(Option<ProtectedStorageResolverPolicyDirectoryV1>, StoragePrepareReadiness), StorageRuntimeError>
+where
+    F: FnMut(crate::resolver::protected_catalog::StorageResolverPolicyCatalogBindingV1)
+        -> Result<crate::state::StorageResolverPolicyAdmissionOutcomeV1, StorageBrokerError>,
+{
+    let loaded = match original {
+        Some(original) => protected.load_retaining_v1(original),
+        None => protected.load(),
+    };
+    let binding = match loaded.and_then(|catalog| catalog.binding()) {
         Ok(binding) => binding,
         Err(_) => return Ok((Some(protected), StoragePrepareReadiness::PolicyInvalid)),
     };
@@ -4087,64 +4909,8 @@ pub(crate) fn reconcile_transaction_recovery<B: crate::helper::ZfsProcessBackend
     coordinator: &mut StorageAdmissionCoordinator,
     helper: &mut StorageMutationHelper<B>,
 ) -> Result<usize, StorageRuntimeError> {
-    let entries = coordinator
-        .recovery_entries()
-        .map_err(|_| StorageRuntimeError::Recovery)?;
-    let mut pending = 0;
-
-    for entry in entries {
-        if matches!(
-            entry.phase(),
-            DurableStoragePhase::Committed | DurableStoragePhase::Aborted
-        ) {
-            continue;
-        }
-        match coordinator
-            .reconcile_recovery(helper, entry)
-            .map_err(|_| StorageRuntimeError::Recovery)?
-        {
-            ZfsHelperOutcome::Committed(_) => {}
-            ZfsHelperOutcome::Aborted { .. } => return Err(StorageRuntimeError::Recovery),
-            ZfsHelperOutcome::ObservationRequired { .. } => pending += 1,
-        }
-    }
-
-    for record in coordinator
-        .atomic_dataset_snapshot_inventory()
-        .map_err(|_| StorageRuntimeError::Recovery)?
-    {
-        match record.phase() {
-            crate::state::AtomicDatasetSnapshotPhaseV1::Prepared => pending += 1,
-            crate::state::AtomicDatasetSnapshotPhaseV1::Committed => {}
-            crate::state::AtomicDatasetSnapshotPhaseV1::Ambiguous => {
-                let program = record.program();
-                let evidence = match helper.atomic_snapshot_once(program, false) {
-                    Ok(evidence) => evidence,
-                    Err(_) => {
-                        pending += 1;
-                        continue;
-                    }
-                };
-                let committed = if program.format_version() == 1 {
-                    coordinator.commit_atomic_dataset_snapshot(
-                        program.operation(),
-                        program.commitment(),
-                        evidence.digest(),
-                    )
-                } else {
-                    coordinator.commit_atomic_dataset_snapshot_with_evidence(
-                        program.operation(),
-                        program.commitment(),
-                        evidence.digest(),
-                        evidence.member_guids(),
-                    )
-                };
-                committed.map_err(|_| StorageRuntimeError::Recovery)?;
-            }
-        }
-    }
-
-    Ok(pending)
+    let mut original = transaction_recovery::TransactionRecoveryOriginalV1::new();
+    original.run(coordinator, helper, None)
 }
 
 /// Classifies whether startup recovery must remain pending.
@@ -4288,6 +5054,15 @@ impl From<ZfsHelperOutcome> for StorageRuntimeMutationOutcome {
     }
 }
 
+// These are the actual fixed Runtime owners, distinct from each contacted
+// worker's prepaid receipt peak: four manager/worker-parent cgroup pairs,
+// the initial host namespace and pin-root pair, and Snapshot metadata directory.
+// The genuine construction debits this set before creating its Runtime owners.
+fn storage_runtime_fixed_receiving_demand_v1() -> aos_sandbox_core::ResourceVector {
+    use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+    ResourceVector::ZERO.with(D::OpenFiles, 11)
+}
+
 struct ProtectedStorageBootstrap {
     minimum_generation: u64,
     genesis_generation: u64,
@@ -4295,6 +5070,30 @@ struct ProtectedStorageBootstrap {
 }
 
 impl ProtectedStorageBootstrap {
+    /// Prices the unchanged binary bootstrap limits before its first read.
+    fn receiving_demand_v1()
+        -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>
+    {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        // Catalogs use the strict16KiB typed binary codec, not an arbitrary
+        // JSON/union model. The header may claim256 catalogs before their
+        // bodies arrive. Price those actual carriers independently of bytes.
+        let cell = (std::mem::size_of::<ResolvedCatalogCommitmentV1>()
+            + std::mem::size_of::<crate::ResolvedSnapshot>() + 8 * 255) as u64;
+        let models = cell.checked_mul(MAXIMUM_BOOTSTRAP_CATALOGS as u64)
+            .and_then(|value| value.checked_mul(32))
+            .ok_or(aos_sandbox_core::AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes })?;
+        // Includes full bounded read/growth even on changed or truncated files,
+        // typed/canonical catalog copies, and the separately retained8-byte floor.
+        let memory = models.checked_add((16 * MAXIMUM_BOOTSTRAP_BYTES) as u64)
+            .and_then(|value| value.checked_add(std::mem::size_of::<bootstrap_open::ProtectedStorageBootstrapOpenV1>() as u64
+                + std::mem::size_of::<Self>() as u64 + 64 * 1024))
+            .ok_or(aos_sandbox_core::AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes })?;
+        Ok(ResourceVector::ZERO.with(D::MemoryBytes, memory)
+            .with(D::MetadataEntries, 32 * MAXIMUM_BOOTSTRAP_CATALOGS as u64)
+            .with(D::OpenFiles, 4))
+    }
+
     fn open_root_owned(directory: &Path) -> Result<Self, StorageRuntimeError> {
         Self::open_with_owner(directory, 0)
     }
@@ -4308,18 +5107,7 @@ impl ProtectedStorageBootstrap {
         .map_err(|_| StorageRuntimeError::Bootstrap)?;
         validate_directory(&directory, expected_uid)?;
         let minimum_bytes = read_protected(&directory, MINIMUM_GENERATION_FILE, 8, expected_uid)?;
-        if minimum_bytes.len() != 8 {
-            return Err(StorageRuntimeError::Bootstrap);
-        }
-        let minimum_generation = u64::from_be_bytes(
-            minimum_bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| StorageRuntimeError::Bootstrap)?,
-        );
-        if minimum_generation == 0 {
-            return Err(StorageRuntimeError::Bootstrap);
-        }
+        let minimum_generation = decode_bootstrap_minimum_v1(&minimum_bytes)?;
         let bytes = read_protected(
             &directory,
             BOOTSTRAP_FILE,
@@ -4337,6 +5125,13 @@ impl ProtectedStorageBootstrap {
 
 fn validate_directory(directory: &OwnedFd, expected_uid: u32) -> Result<(), StorageRuntimeError> {
     let metadata = fstat(directory).map_err(|_| StorageRuntimeError::Bootstrap)?;
+    validate_bootstrap_directory_metadata_v1(&metadata, expected_uid)
+}
+
+fn validate_bootstrap_directory_metadata_v1(
+    metadata: &rustix::fs::Stat,
+    expected_uid: u32,
+) -> Result<(), StorageRuntimeError> {
     if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
         || metadata.st_uid != expected_uid
         || !matches!(metadata.st_mode & 0o7777, 0o500 | 0o700)
@@ -4352,34 +5147,24 @@ fn read_protected(
     maximum_bytes: usize,
     expected_uid: u32,
 ) -> Result<Vec<u8>, StorageRuntimeError> {
-    let fd = openat(
-        directory,
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map_err(|_| StorageRuntimeError::Bootstrap)?;
-    let metadata = fstat(&fd).map_err(|_| StorageRuntimeError::Bootstrap)?;
-    let declared_size =
-        usize::try_from(metadata.st_size).map_err(|_| StorageRuntimeError::Bootstrap)?;
-    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
-        || metadata.st_uid != expected_uid
-        || metadata.st_nlink != 1
-        || !matches!(metadata.st_mode & 0o7777, 0o400 | 0o600)
-        || declared_size == 0
-        || declared_size > maximum_bytes
-    {
+    let mut read = bootstrap_open::ProtectedBootstrapFileReadV1::new();
+    read.read_once_v1(directory, name, maximum_bytes, expected_uid)?;
+    read.dispose_positive_file_v1();
+    read.require_length_v1(maximum_bytes)?;
+    Ok(std::mem::take(&mut read.bytes))
+}
+
+fn decode_bootstrap_minimum_v1(minimum_bytes: &[u8]) -> Result<u64, StorageRuntimeError> {
+    if minimum_bytes.len() != 8 {
         return Err(StorageRuntimeError::Bootstrap);
     }
-    let mut bytes = Vec::with_capacity(declared_size);
-    std::fs::File::from(fd)
-        .take((maximum_bytes + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| StorageRuntimeError::Bootstrap)?;
-    if bytes.len() != declared_size || bytes.len() > maximum_bytes {
+    let minimum_generation = u64::from_be_bytes(
+        minimum_bytes.try_into().map_err(|_| StorageRuntimeError::Bootstrap)?,
+    );
+    if minimum_generation == 0 {
         return Err(StorageRuntimeError::Bootstrap);
     }
-    Ok(bytes)
+    Ok(minimum_generation)
 }
 
 fn decode_bootstrap(
@@ -4955,6 +5740,63 @@ mod tests {
     }
 
     #[test]
+    fn selected_bootstrap_keeps_native_reads_after_decode_refusal() {
+        let temporary = TempDir::new().unwrap();
+        let directory = temporary.path().join("bootstrap");
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let expected_uid = fs::metadata(&directory).unwrap().uid();
+        let minimum_path = directory.join(MINIMUM_GENERATION_FILE);
+        fs::write(&minimum_path, 5_u64.to_be_bytes()).unwrap();
+        fs::set_permissions(&minimum_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let bootstrap_path = directory.join(BOOTSTRAP_FILE);
+        fs::write(&bootstrap_path, b"malformed canonical bootstrap").unwrap();
+        fs::set_permissions(&bootstrap_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut selected = bootstrap_open::ProtectedStorageBootstrapOpenV1::new();
+
+        assert!(matches!(selected.capture_once_v1(&directory, expected_uid),
+            Err(StorageRuntimeError::Bootstrap)));
+        assert_eq!(selected.retained_file_count_v1(), 3);
+        let first = selected.failure().unwrap().downcast_ref::<StorageRuntimeError>()
+            .unwrap() as *const StorageRuntimeError;
+        assert!(selected.take_success_v1().is_none());
+
+        fs::write(&bootstrap_path, encode_bootstrap(6, &[catalog(7)])).unwrap();
+        assert!(selected.capture_once_v1(&directory, expected_uid).is_err());
+        assert_eq!(selected.retained_file_count_v1(), 3);
+        assert_eq!(selected.failure().unwrap().downcast_ref::<StorageRuntimeError>()
+            .unwrap() as *const StorageRuntimeError, first);
+        assert!(selected.take_success_v1().is_none());
+        assert!(ProtectedStorageBootstrap::open_with_owner(&directory, expected_uid).is_ok());
+    }
+
+    #[test]
+    fn selected_bootstrap_handoff_keeps_originals_and_matches_ordinary_decoder() {
+        let temporary = TempDir::new().unwrap();
+        let directory = temporary.path().join("bootstrap");
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let expected_uid = fs::metadata(&directory).unwrap().uid();
+        let minimum_path = directory.join(MINIMUM_GENERATION_FILE);
+        fs::write(&minimum_path, 5_u64.to_be_bytes()).unwrap();
+        fs::set_permissions(&minimum_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let bootstrap_path = directory.join(BOOTSTRAP_FILE);
+        fs::write(&bootstrap_path, encode_bootstrap(6, &[catalog(7)])).unwrap();
+        fs::set_permissions(&bootstrap_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut selected = bootstrap_open::ProtectedStorageBootstrapOpenV1::new();
+
+        selected.capture_once_v1(&directory, expected_uid).unwrap();
+        let owner = selected.take_success_v1().unwrap();
+        let ordinary = ProtectedStorageBootstrap::open_with_owner(&directory, expected_uid).unwrap();
+        assert_eq!(owner.minimum_generation, ordinary.minimum_generation);
+        assert_eq!(owner.genesis_generation, ordinary.genesis_generation);
+        assert_eq!(owner.catalogs, ordinary.catalogs);
+        assert_eq!(selected.retained_file_count_v1(), 3);
+        assert!(selected.failure().is_none());
+        assert!(selected.take_success_v1().is_none());
+    }
+
+    #[test]
     fn repair_authority_precedes_workspace_inventory_and_failure_stops_open() {
         let order = RefCell::new(Vec::new());
         let inventory = authenticate_before_workspace_inventory(
@@ -5180,3 +6022,6 @@ mod tests {
         ));
     }
 }
+
+pub(crate) mod capture_query;
+pub(crate) mod original_capture;

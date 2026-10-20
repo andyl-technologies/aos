@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 
@@ -83,12 +84,48 @@ def normalize_unit(unit: bytes, profile_path: str) -> bytes:
     return b"".join(replacement if line == original else line for line in lines)
 
 
+def require_configured_identities(identities: object, cache_signer_gid: object) -> None:
+    """Checks exact configured integers and the optional signer's UID/GID pair."""
+
+    def uint32(value: object) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 0xFFFFFFFF
+
+    if not isinstance(identities, list) or len(identities) != 4 or not all(map(uint32, identities)):
+        raise ValueError("configured identities are not four exact uint32 values")
+    if identities[0] == 0 or identities[1] == 0:
+        raise ValueError("normal Root Controller identity cannot be root")
+    if not uint32(cache_signer_gid) or (identities[2] == 0) != (cache_signer_gid == 0):
+        raise ValueError("Cache signer UID and GID must both be enabled or both be zero")
+
+
+def require_environment_provision_binding(root: Path, unit: bytes) -> None:
+    """Requires canonical selected-package DATA and one exact read-only unit pin."""
+    if (len(root.parts) != 4 or root.parts[:3] != ("/", "nix", "store")
+            or re.fullmatch(r"[0-9abcdfghijklmnpqrsvwxyz]{32}-aos-environment-provision-1", root.name) is None):
+        raise ValueError("Environment provision is not its canonical immutable package root")
+    binding = f"ReadOnlyPaths={root}\n".encode()
+    if unit.splitlines(keepends=True).count(binding) != 1:
+        raise ValueError("Environment provision differs from the selected Root binding")
+
+
+def environment_provision_pin(root: Path, unit: bytes) -> dict:
+    """Pins the actual selected rooted artifact and its exact unit binding."""
+    root = root.resolve(strict=True)
+    require_environment_provision_binding(root, unit)
+    instruction = root / "instruction-v1"
+    if instruction.is_symlink() or not instruction.is_file():
+        raise ValueError("Environment instruction must be a fixed regular package file")
+    return {"root": str(root), "instruction": pin(instruction)}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("attrs", "helpers", "executable", "pid1", "canonical-policy",
                  "source-policy", "effective-matrix", "unit-contract", "identities",
                  "patchelf", "readelf", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--cache-signer-gid", type=int, required=True)
+    parser.add_argument("--environment-provision-root", type=Path)
     args = parser.parse_args()
     helpers = load_runtime_helpers(args.helpers)
     paths = helpers.graph_paths(args.attrs, "normalRootRuntimeClosure")
@@ -110,23 +147,23 @@ def main() -> None:
     if args.effective_matrix.stat().st_size == 0:
         raise ValueError("actual effective-policy checker output is empty")
     identities = json.loads(args.identities.read_text())
-    if len(identities) != 4 or any(not isinstance(value, int) or isinstance(value, bool)
-                                  or not 0 <= value <= 0xFFFFFFFF for value in identities):
-        raise ValueError("configured identities are not four exact uint32 values")
-    if identities[0] == 0 or identities[1] == 0:
-        raise ValueError("normal Root Controller identity cannot be root")
+    require_configured_identities(identities, args.cache_signer_gid)
     unit = args.unit_contract.read_bytes()
     expected = f"OpenFile={PROFILE_PLACEHOLDER}:aos-normal-root-profile:read-only\n".encode()
     if unit.splitlines(keepends=True).count(expected) != 1 or len(unit) > 64 * 1024:
         raise ValueError("normalized unit contract is absent or oversized")
 
-    profile = {"format": "AOS_NORMAL_ROOT_STARTUP_1", "unit": UNIT, "context": CONTEXT,
-               "identities": identities, "executable": pin(args.executable),
+    profile = {"format": "AOS_NORMAL_ROOT_STARTUP_2", "unit": UNIT, "context": CONTEXT,
+               "identities": identities, "cache_signer_gid": args.cache_signer_gid,
+               "executable": pin(args.executable),
                "pid1": pin(args.pid1), "loader": pin(loader), "runtime_files": files,
                "closure_roots": [str(path) for path in paths],
                "canonical_policy": canonical_pin, "source_policy": source_pin,
                "effective_matrix": pin(args.effective_matrix),
                "unit_sha256": list(hashlib.sha256(unit).digest())}
+    if args.environment_provision_root is not None:
+        profile["format"] = "AOS_NORMAL_ROOT_STARTUP_3"
+        profile["environment_provision"] = environment_provision_pin(args.environment_provision_root, unit)
     data = json.dumps(profile, sort_keys=True, separators=(",", ":")).encode() + b"\n"
     if len(data) > MAXIMUM_PROFILE_BYTES:
         raise ValueError("normal Root startup profile exceeds its exact bound")

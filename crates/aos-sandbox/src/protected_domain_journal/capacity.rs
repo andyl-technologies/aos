@@ -35,21 +35,21 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
     ) -> Result<PreparedCapacityReservedDomainTransactionV1<S>, ProtectedDomainJournalErrorV1> {
         self.validate_snapshot(&prepared.snapshot)?;
         validate_expected_values(self.journal, &prepared, false)?;
-        if request.owner_digest != *prepared.digest.as_bytes()
+        if request.owner_digest != *prepared.data.digest.as_bytes()
             || !capacity_request_binds_schema::<S>(&request)
         {
             return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
         }
-        validate_capacity_domain_shape(&prepared.transaction, request.purpose)?;
+        validate_capacity_domain_shape(&prepared.data.transaction, request.purpose)?;
 
-        let transaction_id = *prepared.transaction.id();
+        let transaction_id = *prepared.data.transaction.id();
         let authority = self
             .journal
             .claim_global_capacity_reservation_authority(request.purpose)?;
         let reservation =
             authority.prepare_global_capacity_reservation_v1(request, transaction_id)?;
         let reservation_id = reservation.reservation_id();
-        let combined = capacity_admission_transaction(&prepared.transaction, reservation.record())?;
+        let combined = capacity_admission_transaction(&prepared.data.transaction, reservation.record())?;
         let preflight =
             authority.preflight_global_capacity_reservation_v1(&reservation, &combined)?;
 
@@ -75,17 +75,17 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
     ) -> Result<DomainCapacityAdmissionCommitOutcomeV1<S>, ProtectedDomainJournalErrorV1> {
         self.validate_snapshot(&prepared.prepared.snapshot)?;
         validate_expected_values(self.journal, &prepared.prepared, false)?;
-        if prepared.request.owner_digest != *prepared.prepared.digest.as_bytes()
+        if prepared.request.owner_digest != *prepared.prepared.data.digest.as_bytes()
             || !capacity_request_binds_schema::<S>(&prepared.request)
             || prepared.reservation_id != prepared.reservation.reservation_id()
             || capacity_admission_transaction(
-                &prepared.prepared.transaction,
+                &prepared.prepared.data.transaction,
                 prepared.reservation.record(),
             )? != prepared.combined
         {
             return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
         }
-        validate_capacity_domain_shape(&prepared.prepared.transaction, prepared.request.purpose)?;
+        validate_capacity_domain_shape(&prepared.prepared.data.transaction, prepared.request.purpose)?;
 
         let PreparedCapacityReservedDomainTransactionV1 {
             prepared: domain,
@@ -116,7 +116,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
             }
         };
         if validate_expected_values(self.journal, &domain, true).is_err()
-            || !reservation.matches_request(&request, *domain.transaction.id())
+            || !reservation.matches_request(&request, *domain.data.transaction.id())
             || reservation.reservation_id() != reservation_id
         {
             return Ok(DomainCapacityAdmissionCommitOutcomeV1::OutcomeUnknown {
@@ -129,7 +129,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
                 cause: JournalError::AuthorityPreflightMismatch,
             });
         }
-        let admission_transaction_id = *domain.transaction.id();
+        let admission_transaction_id = *domain.data.transaction.id();
         let domain = self.applied(domain)?;
         Ok(DomainCapacityAdmissionCommitOutcomeV1::Applied {
             domain,
@@ -161,7 +161,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         } = pending;
         let before = values_match(self.journal, &prepared, false);
         let after = values_match(self.journal, &prepared, true);
-        let admission_transaction_id = *prepared.transaction.id();
+        let admission_transaction_id = *prepared.data.transaction.id();
         if !validate_domain_capacity_lineage_v1::<S>(
             &request,
             admission_transaction_id,
@@ -210,7 +210,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
                 let reservation = authority
                     .prepare_global_capacity_reservation_v1(request, admission_transaction_id)?;
                 if reservation.reservation_id() != reservation_id
-                    || capacity_admission_transaction(&prepared.transaction, reservation.record())?
+                    || capacity_admission_transaction(&prepared.data.transaction, reservation.record())?
                         != combined
                 {
                     return Ok(DomainCapacityAdmissionRecoveryV1::Diverged(
@@ -385,7 +385,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         self.validate_snapshot(&prepared.snapshot)?;
         validate_expected_values(self.journal, &prepared, false)?;
         let phases = postcommit_records(&prepared, &self.validator)?;
-        if aggregate_semantic_phases(&phases.iter().map(|record| record.phase).collect::<Vec<_>>())
+        if aggregate_semantic_phases(&phases.iter().map(|record| record.phase()).collect::<Vec<_>>())
             != ProtectedReducerPhaseV1::Terminal
             || !reservation
                 .reservation
@@ -398,8 +398,8 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
             .iter()
             .map(|record| {
                 decode_reducer_payload_with_validator::<S>(
-                    record.envelope.key(),
-                    record.envelope.payload(),
+                    record.envelope().key(),
+                    record.envelope().payload(),
                     &self.validator,
                 )
                 .map_err(ProtectedDomainJournalErrorV1::from)
@@ -410,8 +410,8 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
             .zip(&decoded)
             .map(|(record, payload)| {
                 ProtectedCapacitySettlementMemberV1::from_unvalidated_data(
-                    record.envelope.key().kind(),
-                    record.envelope.key().identity(),
+                    record.envelope().key().kind(),
+                    record.envelope().key().identity(),
                     payload.body(),
                 )
             })
@@ -423,10 +423,10 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         ) {
             return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
         }
-        validate_capacity_domain_shape(&prepared.transaction, reservation.request.purpose)?;
+        validate_capacity_domain_shape(&prepared.data.transaction, reservation.request.purpose)?;
 
         let combined = capacity_settlement_transaction(
-            &prepared.transaction,
+            &prepared.data.transaction,
             reservation.reservation.settlement_record(),
         )?;
         let preflight = {
@@ -549,7 +549,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
                 reservation_id,
             )?;
             if capacity_settlement_transaction(
-                &prepared.transaction,
+                &prepared.data.transaction,
                 reservation.reservation.settlement_record(),
             )? == combined
             {
@@ -586,58 +586,25 @@ pub(super) fn capacity_admission_transaction(
     domain: &JournalTransaction,
     reservation: &JournalRecord,
 ) -> Result<JournalTransaction, JournalError> {
-    if reservation.namespace() != RecordNamespace::GlobalCapacityReservation
-        || domain
-            .records()
-            .iter()
-            .any(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
-    {
-        return Err(JournalError::InvalidTransaction);
-    }
-    let mut records = domain.records().to_vec();
-    records.push(reservation.clone());
-    JournalTransaction::new(*domain.id(), records).map_err(JournalError::from)
+    aos_sandbox_broker::domain_transaction_custody::capacity::capacity_admission_transaction(
+        domain, reservation,
+    ).map_err(JournalError::from)
 }
 
 pub(super) fn validate_capacity_domain_shape(
     transaction: &JournalTransaction,
     purpose: GlobalCapacityReservationPurposeV1,
 ) -> Result<(), JournalError> {
-    let mut publisher_authority = false;
-    let mut publication = false;
-    let mut effect = false;
-    for record in transaction.records() {
-        match record.namespace() {
-            RecordNamespace::PublisherAuthority => publisher_authority = true,
-            RecordNamespace::AuthorityPublication => publication = true,
-            RecordNamespace::Effect => effect = true,
-            _ => return Err(JournalError::ForeignAuthorityNamespace),
-        }
-    }
-    let closed = match purpose {
-        GlobalCapacityReservationPurposeV1::PublisherCompletion => {
-            publisher_authority && publication
-        }
-        GlobalCapacityReservationPurposeV1::RuntimeExecution => {
-            effect && !publisher_authority && !publication
-        }
-        GlobalCapacityReservationPurposeV1::RootProjectAdmission
-        | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
-        | GlobalCapacityReservationPurposeV1::ControllerProjectAdmission
-        | GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor
-        | GlobalCapacityReservationPurposeV1::ControllerConsumerResource
-        | GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor
-        | GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck
-        | GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete => false,
-    };
-    closed
-        .then_some(())
-        .ok_or(JournalError::ForeignAuthorityNamespace)
+    aos_sandbox_broker::domain_transaction_custody::capacity::validate_capacity_domain_shape(
+        transaction, purpose,
+    ).map_err(JournalError::from)
 }
 
 pub(super) fn capacity_settlement_transaction(
     domain: &JournalTransaction,
     settlement: JournalRecord,
 ) -> Result<JournalTransaction, JournalError> {
-    capacity_admission_transaction(domain, &settlement)
+    aos_sandbox_broker::domain_transaction_custody::capacity::capacity_settlement_transaction(
+        domain, settlement,
+    ).map_err(JournalError::from)
 }

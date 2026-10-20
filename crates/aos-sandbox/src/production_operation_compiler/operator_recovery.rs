@@ -24,6 +24,12 @@ use crate::{
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan};
 
 mod successor;
+mod stop_cleanup;
+mod execution_no_apply;
+
+pub(crate) use stop_cleanup::{StopRecoveryTargetDataV1, require_stop_recovery_target_v1};
+pub(crate) use execution_no_apply::{ExecutionNoApplyRecoveryTargetDataV1,
+    require_execution_no_apply_recovery_target_v1};
 
 pub(crate) use successor::repair_sandbox_successor_projection_v1;
 
@@ -780,4 +786,47 @@ mod tests {
         );
         assert!(reauthorized.get());
     }
+}
+
+
+pub(crate) fn require_create_recovery_target_v1(
+    journal: &Journal, project: ProjectId, request: &OperatorRecoveryRequestV1,
+) -> Result<OperationId, OperationCompilationError> {
+    if request.action() != OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_RETRY as i32 {
+        return Err(OperationCompilationError::Rejected);
+    }
+    let target = resolve_recovery_target(journal, project, request.resource_id())?;
+    if target.resource_kind != ResourceKind::Operation
+        || !target.current.validates_create_finality_fence_v1(request) {
+        return Err(OperationCompilationError::Rejected);
+    }
+    let operation = OperationId::from_bytes(request.resource_id());
+    let row = journal.get(crate::RecordNamespace::Operation, operation.as_bytes())
+        .ok_or(OperationCompilationError::Rejected)?;
+    let record = aos_sandbox_protocol::domain_ledger::operation::decode_operation(row)
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    if record.state() != aos_sandbox_protocol::domain_ledger::public_operation::OperationState::Applying
+        || record.effect_count() != 1 || record.public_operation().is_none_or(|public|
+        public.method() != PublicOperationMethodV1::CreateSandbox)
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
+    let history = journal.controller_q04_history_v1()
+        .map_err(|_| OperationCompilationError::Rejected)?
+        .ok_or(OperationCompilationError::Rejected)?;
+    if history.identity.operation() != operation {
+        return Err(OperationCompilationError::Rejected);
+    }
+    // This is a distinct metadata-finality entrance. Ordinary Retry's checked
+    // action mask remains unchanged and cannot redispatch this Applied effect.
+    let raw = journal.get(crate::RecordNamespace::Effect,
+        &aos_sandbox_protocol::domain_ledger::operation::effect_key(operation, 0))
+        .ok_or(OperationCompilationError::Rejected)?;
+    let effect = aos_sandbox_protocol::domain_ledger::effect_history::decode_effect(raw)
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    if !matches!(effect.state(), aos_sandbox_protocol::domain_ledger::effect_history::EffectState::Applied { .. })
+        || effect.plan().public_mutation_method() != Some(PublicOperationMethodV1::CreateSandbox) {
+        return Err(OperationCompilationError::Rejected);
+    }
+    Ok(operation)
 }

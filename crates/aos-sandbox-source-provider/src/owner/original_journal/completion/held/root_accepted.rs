@@ -38,7 +38,7 @@ pub(super) struct OriginalSourceRootDispositionV5 {
     phase7: Option<SourceNativeHeldCompletionRecordV1>,
     before: Vec<(Vec<u8>, Vec<u8>)>,
     after: Vec<(Vec<u8>, Vec<u8>)>,
-    transaction: Option<aos_sandbox::JournalTransaction>,
+    transaction: Option<aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction>,
     actions: [Option<Result<(), OriginalProducerErrorV5>>; 3],
     first: Option<RootDispositionFirstFailureV5>,
     boundary: Option<OriginalProducerErrorV5>,

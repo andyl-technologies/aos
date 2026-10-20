@@ -30,12 +30,11 @@
 //! their digest. Earlier PR-only AOSMSL01 records are refused unchanged.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::mem::MaybeUninit;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
-use aos_sandbox::journal::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_mount_native::{MountJournalV1 as Journal, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::model::SandboxSpec;
 use aos_sandbox_core::{
     AttachmentSlotId, DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest, OperationId,
@@ -49,6 +48,17 @@ use aos_sandbox_protocol::ValidatedAssignmentFence;
 use sha2::{Digest as _, Sha256};
 
 use crate::{MountError, Result};
+
+mod namespace_anchor;
+mod inventory_absence;
+pub(crate) use inventory_absence::{MountInventoryRootAbsenceOriginalV2, SELECTED_CATALOG_V2};
+use namespace_anchor::NamespaceAnchorTableV1;
+pub use namespace_anchor::{MountAttachmentAnchorOriginalV4, MountAttachmentAnchorPhysicalShapeDataV1,
+    MountAttachmentAnchorInventoryOriginalV4, MountAttachmentAnchorInventoryShapeDataV4,
+    DestinationSlotStartupOriginalV4};
+use aos_sandbox_protocol::mount_attachment_anchor::{
+    ValidatedAttachmentAnchorResourceV1, decode_attachment_anchor_resource_v1,
+};
 
 const MAGIC: &[u8; 8] = b"AOSMSL02";
 const DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.v2\0";
@@ -517,6 +527,7 @@ pub struct DestinationSlotStoreV1 {
     kernel_boot_id: [u8; 16],
     records: BTreeMap<SlotKey, Record>,
     pins: BTreeMap<SlotKey, ResolvedPath>,
+    namespace_anchors: NamespaceAnchorTableV1,
     git_coverage_census: Option<Box<GitCoverageEmptyCensusV1>>,
 }
 
@@ -528,7 +539,7 @@ pub struct DestinationSlotStoreV1 {
 struct GitCoverageEmptyCensusV1 {
     root_metadata: Option<std::result::Result<rustix::fs::Stat, rustix::io::Errno>>,
     read_handle: Option<std::result::Result<OwnedFd, rustix::io::Errno>>,
-    buffer: [MaybeUninit<u8>; 4096],
+    entries: aos_sandbox_linux::path::EmptyDirectoryEntriesOriginalV2,
     first: Option<GitCoverageCensusCauseV1>,
     final_bookend: Option<GitCoverageCensusCauseV1>,
     closed: bool,
@@ -542,9 +553,17 @@ enum GitCoverageCensusCauseV1 {
     Linux(#[from] aos_sandbox_linux::Error),
     #[error("destination coverage census refused: {0}")]
     Refused(&'static str),
+    #[error(transparent)]
+    Directory(#[from] aos_sandbox_linux::path::EmptyDirectoryClosedV2),
 }
 
 impl DestinationSlotStoreV1 {
+    // This is the boot identity of the actual retained startup reader, not a
+    // new observation or a caller-provided native binding.
+    pub(crate) const fn retained_kernel_boot_id_v4(&self) -> [u8; 16] {
+        self.kernel_boot_id
+    }
+
     /// Opens the private anchor root and recovers all durable slot resources.
     ///
     /// Same-boot ready records must reproduce their exact directory and mount
@@ -559,51 +578,10 @@ impl DestinationSlotStoreV1 {
     /// equivocate operation identities, or disagree with same-boot filesystem
     /// state.
     pub fn recover(path: impl AsRef<Path>, expected_owner: u32, journal: &Journal) -> Result<Self> {
-        let path = path.as_ref();
-        let metadata = std::fs::symlink_metadata(path)
-            .map_err(|error| MountError::State(error.to_string()))?;
-        if !metadata.file_type().is_dir()
-            || metadata.uid() != expected_owner
-            || metadata.permissions().mode() & 0o077 != 0
-        {
-            return Err(corrupt(
-                "destination-slot root is not an exact private directory",
-            ));
-        }
-        let descriptor: OwnedFd = rustix::fs::open(
-            path,
-            rustix::fs::OFlags::PATH
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(kernel_error)?;
-        let descriptor_metadata = rustix::fs::fstat(&descriptor).map_err(kernel_error)?;
-        if descriptor_metadata.st_uid != expected_owner
-            || descriptor_metadata.st_mode & 0o7777 != PARENT_DIRECTORY_MODE
-            || descriptor_metadata.st_dev != metadata.dev()
-            || descriptor_metadata.st_ino != metadata.ino()
-        {
-            return Err(corrupt(
-                "destination-slot root changed while its descriptor was opened",
-            ));
-        }
-        let root = BeneathRoot::from_owned(descriptor).map_err(linux_error)?;
-        let anchor_mount_id = MountId::from_fd(root.as_fd()).map_err(linux_error)?;
-        let kernel_boot_id = KernelBootId::current().map_err(linux_error)?.into_bytes();
-        let records = load_records(journal)?;
-        let mut value = Self {
-            root,
-            root_owner: expected_owner,
-            anchor_mount_id,
-            kernel_boot_id,
-            records,
-            pins: BTreeMap::new(),
-            git_coverage_census: None,
-        };
-        value.recover_pins()?;
-        Ok(value)
+        let mut original = DestinationSlotStartupOriginalV4::default();
+        original.open_once_v4(path.as_ref(), expected_owner, journal)?;
+        original.take_completed_once_v4()
+            .ok_or_else(|| corrupt("completed destination Store original is absent"))
     }
 
     /// Materializes or resumes one exact destination-slot directory.
@@ -636,6 +614,7 @@ impl DestinationSlotStoreV1 {
     {
         request.binding.validate()?;
         let key = request.binding.key();
+        self.namespace_anchors.require_slot_namespace_v4(&key)?;
         let outcome = match self.records.get(&key) {
             Some(current) if current.matches_materialization(request) => match current.phase {
                 DestinationSlotResourcePhaseV1::Materializing => {
@@ -736,6 +715,7 @@ impl DestinationSlotStoreV1 {
     {
         request.binding.validate()?;
         let key = request.binding.key();
+        self.namespace_anchors.require_slot_namespace_v4(&key)?;
         let current = self
             .records
             .get(&key)
@@ -991,7 +971,7 @@ impl DestinationSlotStoreV1 {
             self.git_coverage_census = Some(Box::new(GitCoverageEmptyCensusV1 {
                 root_metadata: None,
                 read_handle: None,
-                buffer: [MaybeUninit::uninit(); 4096],
+                entries: Default::default(),
                 first: None,
                 final_bookend: None,
                 closed: false,
@@ -1004,6 +984,9 @@ impl DestinationSlotStoreV1 {
             return Err(conflict("destination coverage census is permanently fenced"));
         }
         census.closed = true;
+        // Only a previous positive census reaches this next observation. The
+        // failed/abandoned branch above retains its original entries forever.
+        census.entries = Default::default();
 
         let result = (|| -> std::result::Result<(), GitCoverageCensusCauseV1> {
             if !self.records.is_empty() || !self.pins.is_empty() {
@@ -1057,30 +1040,8 @@ impl DestinationSlotStoreV1 {
             )?;
             rustix::fs::seek(handle, rustix::fs::SeekFrom::Start(0))?;
 
-            // An empty directory has at most '.' and '..', followed by EOF.
-            // No recursive inventory, growth or unbounded collection occurs.
-            let mut directory = rustix::fs::RawDir::new(handle, &mut census.buffer);
-            let mut dot = false;
-            let mut parent = false;
-            for _ in 0..3 {
-                match directory.next() {
-                    None if dot && parent => return Ok(()),
-                    None => {
-                        return Err(GitCoverageCensusCauseV1::Refused("dot entries absent"));
-                    }
-                    Some(Err(error)) => return Err(error.into()),
-                    Some(Ok(entry)) => match entry.file_name().to_bytes() {
-                        b"." if !dot => dot = true,
-                        b".." if !parent => parent = true,
-                        _ => {
-                            return Err(GitCoverageCensusCauseV1::Refused(
-                                "unknown physical child or repeated dot entry",
-                            ));
-                        }
-                    },
-                }
-            }
-            Err(GitCoverageCensusCauseV1::Refused("directory did not reach bounded EOF"))
+            census.entries.capture_once_v2(handle.as_fd())?;
+            Ok(())
         })();
         if let Err(error) = result {
             census.first = Some(error);
@@ -1118,65 +1079,10 @@ impl DestinationSlotStoreV1 {
 
     /// Revalidates and reports every current anchor containing a Ready slot.
     pub(crate) fn attachment_anchors(&self) -> Result<Vec<AttachmentAnchorInventoryV1>> {
-        let mut anchors: BTreeMap<_, AttachmentAnchorInventoryV1> = BTreeMap::new();
-
-        for (slot_key, record) in &self.records {
-            if record.phase != DestinationSlotResourcePhaseV1::Ready
-                || record.kernel_boot_id != self.kernel_boot_id
-            {
-                continue;
-            }
-            self.verify_ready_pin(slot_key, record)?;
-
-            let key = (
-                record.binding.sandbox_id,
-                record.binding.incarnation_id,
-                record.binding.namespace_generation,
-            );
-            if let Some(anchor) = anchors.get(&key) {
-                if anchor.identity.device != record.slot_device
-                    || anchor.mount_id.get() != record.anchor_mount_id
-                {
-                    return Err(corrupt(
-                        "ready destination slots disagree about their attachment anchor",
-                    ));
-                }
-                continue;
-            }
-
-            let resolved = self
-                .root
-                .resolve(
-                    &record.binding.anchor_relative_path(),
-                    ResolveOptions::directory(),
-                )
-                .map_err(linux_error)?;
-            self.verify_directory(&resolved, ANCHOR_DIRECTORY_MODE)?;
-            let identity = resolved.identity();
-            let mount_id = MountId::from_fd(resolved.as_fd()).map_err(linux_error)?;
-            if identity.device != record.slot_device
-                || mount_id.get() != record.anchor_mount_id
-                || mount_id != self.anchor_mount_id
-            {
-                return Err(corrupt(
-                    "attachment anchor does not reproduce its ready slot identity",
-                ));
-            }
-
-            anchors.insert(
-                key,
-                AttachmentAnchorInventoryV1 {
-                    sandbox_id: record.binding.sandbox_id,
-                    incarnation_id: record.binding.incarnation_id,
-                    namespace_generation: record.binding.namespace_generation,
-                    kernel_boot_id: self.kernel_boot_id,
-                    identity,
-                    mount_id,
-                },
-            );
-        }
-
-        Ok(anchors.into_values().collect())
+        let mut original = MountAttachmentAnchorInventoryOriginalV4::default();
+        original.collect_once_v4(self)?;
+        original.take_completed_once_v4()
+            .ok_or_else(|| corrupt("completed attachment inventory lost its rows"))
     }
 
     #[cfg(test)]
@@ -1208,52 +1114,6 @@ impl DestinationSlotStoreV1 {
         commit_record(journal, &record)?;
         self.records.insert(key, record.clone());
         Ok(ObjectDigest::from_bytes(record.digest))
-    }
-
-    fn recover_pins(&mut self) -> Result<()> {
-        for (key, record) in &self.records {
-            if record.kernel_boot_id != self.kernel_boot_id {
-                if self
-                    .resolve_optional_path(&record.binding.catalog_relative_path())?
-                    .is_some()
-                {
-                    return Err(corrupt(
-                        "stale-boot destination-slot path unexpectedly exists",
-                    ));
-                }
-                continue;
-            }
-            let path = record.binding.catalog_relative_path();
-            let resolved = self.resolve_optional_path(&path)?;
-            match (record.phase, resolved) {
-                (DestinationSlotResourcePhaseV1::Ready, Some(pin)) => {
-                    self.verify_physical_record(record, &pin)?;
-                    self.pins.insert(*key, pin);
-                }
-                (DestinationSlotResourcePhaseV1::Ready, None) => {
-                    return Err(corrupt("same-boot ready destination slot is absent"));
-                }
-                (DestinationSlotResourcePhaseV1::Materializing, Some(pin))
-                | (DestinationSlotResourcePhaseV1::Reaping, Some(pin)) => {
-                    if record.phase == DestinationSlotResourcePhaseV1::Reaping {
-                        self.verify_physical_record(record, &pin)?;
-                        self.pins.insert(*key, pin);
-                    } else {
-                        self.verify_new_directory(&pin)?;
-                    }
-                }
-                (DestinationSlotResourcePhaseV1::Released, Some(_)) => {
-                    return Err(corrupt("released destination-slot directory still exists"));
-                }
-                (
-                    DestinationSlotResourcePhaseV1::Materializing
-                    | DestinationSlotResourcePhaseV1::Reaping
-                    | DestinationSlotResourcePhaseV1::Released,
-                    None,
-                ) => {}
-            }
-        }
-        Ok(())
     }
 
     fn materialize_directory(&self, binding: &DestinationSlotBindingV1) -> Result<ResolvedPath> {
@@ -1301,15 +1161,10 @@ impl DestinationSlotStoreV1 {
         name: &str,
         mode: u32,
     ) -> Result<BeneathRoot> {
-        match rustix::fs::mkdirat(parent.as_fd(), name, rustix::fs::Mode::from_raw_mode(mode)) {
-            Ok(()) | Err(rustix::io::Errno::EXIST) => {}
-            Err(error) => return Err(kernel_error(error)),
-        }
-        let child = parent
-            .resolve(Path::new(name), ResolveOptions::directory())
-            .map_err(linux_error)?;
-        self.verify_directory(&child, mode)?;
-        BeneathRoot::from_resolved(child).map_err(linux_error)
+        let mut original = namespace_anchor::DirectoryParentOriginalV1::default();
+        original.enter_once_v1(&parent, name, mode, self.root_owner)?;
+        original.take_root_once_v1()
+            .ok_or_else(|| corrupt("completed parent original lost its directory"))
     }
 
     fn remove_directory(&self, record: &Record) -> Result<()> {
@@ -1320,11 +1175,7 @@ impl DestinationSlotStoreV1 {
 
         let parent = self.resolve_anchor_parent(&record.binding)?;
         let slot_name = payload_slot_component(record.binding.slot_id.as_bytes());
-        match rustix::fs::unlinkat(
-            parent.as_fd(),
-            slot_name.as_str(),
-            rustix::fs::AtFlags::REMOVEDIR,
-        ) {
+        match namespace_anchor::unlink_empty_directory_v1(parent.as_fd(), slot_name.as_str()) {
             Ok(()) | Err(rustix::io::Errno::NOENT) => {}
             Err(error) => return Err(kernel_error(error)),
         }
@@ -1399,7 +1250,9 @@ impl DestinationSlotStoreV1 {
     }
 
     fn require_capacity(&self) -> Result<()> {
-        if self.records.len() >= MAXIMUM_SLOT_RESOURCES {
+        if self.records.len().checked_add(self.namespace_anchors.len_v1())
+            .is_none_or(|count| count >= MAXIMUM_SLOT_RESOURCES)
+        {
             Err(invalid("destination-slot resource capacity is exhausted"))
         } else {
             Ok(())
@@ -1411,7 +1264,7 @@ impl DestinationSlotStoreV1 {
             record.materialize_operation == operation_id
                 || record.rematerialize_operation == Some(operation_id)
                 || record.reap_operation == Some(operation_id)
-        }) {
+        }) || self.namespace_anchors.uses_operation_v1(operation_id) {
             Err(conflict("destination-slot operation identity was reused"))
         } else {
             Ok(())
@@ -1849,33 +1702,89 @@ impl Record {
     }
 }
 
-fn load_records(journal: &Journal) -> Result<BTreeMap<SlotKey, Record>> {
-    let mut records = BTreeMap::new();
-    let mut operations = BTreeSet::new();
-    for (key_bytes, value) in journal.records(RecordNamespace::MountDestinationSlot) {
-        if records.len() >= MAXIMUM_SLOT_RESOURCES || key_bytes.len() != 56 {
-            return Err(corrupt(
-                "destination-slot resource namespace exceeds its bound",
-            ));
+type SlotResourceTablesV1 = (
+    BTreeMap<SlotKey, Record>,
+    BTreeMap<[u8; 40], ValidatedAttachmentAnchorResourceV1>,
+);
+
+#[derive(Default)]
+struct DestinationResourceReplayOriginalV4 {
+    entered: bool,
+    slots: BTreeMap<SlotKey, Record>,
+    anchors: BTreeMap<[u8; 40], ValidatedAttachmentAnchorResourceV1>,
+    operations: BTreeSet<OperationId>,
+    result: Option<Result<()>>,
+    closed: Option<MountError>,
+}
+
+impl DestinationResourceReplayOriginalV4 {
+    fn load_once_v4(&mut self, journal: &Journal) -> Result<()> {
+        if self.entered {
+            self.closed.get_or_insert_with(|| conflict("destination replay already entered"));
+            return Err(conflict("destination replay remains closed"));
         }
-        let record = Record::decode(value)?;
-        let key = record.binding.key();
-        if key.encode() != key_bytes
-            || !operations.insert(record.materialize_operation)
-            || record
-                .rematerialize_operation
-                .is_some_and(|operation| !operations.insert(operation))
-            || record
-                .reap_operation
-                .is_some_and(|operation| !operations.insert(operation))
-            || records.insert(key, record).is_some()
-        {
-            return Err(corrupt(
-                "destination-slot resource namespace is not canonical",
-            ));
-        }
+        self.entered = true;
+        self.result = Some((|| {
+            for (key_bytes, value) in journal.records(RecordNamespace::MountDestinationSlot) {
+                if self.slots.len().checked_add(self.anchors.len())
+                    .is_none_or(|count| count >= MAXIMUM_SLOT_RESOURCES)
+                {
+                    return Err(corrupt("destination resource namespace exceeds its bound"));
+                }
+                match key_bytes.len() {
+                    56 => {
+                        let record = Record::decode(value)?;
+                        let key = record.binding.key();
+                        if key.encode() != key_bytes
+                            || !self.operations.insert(record.materialize_operation)
+                            || record.rematerialize_operation.is_some_and(|id| !self.operations.insert(id))
+                            || record.reap_operation.is_some_and(|id| !self.operations.insert(id))
+                            || self.slots.insert(key, record).is_some()
+                        {
+                            return Err(corrupt("destination slot namespace is not canonical"));
+                        }
+                    }
+                    40 => {
+                        let record = decode_attachment_anchor_resource_v1(value)?;
+                        let key = record.key_v1();
+                        if key.as_slice() != key_bytes
+                            || !self.operations.insert(OperationId::from_bytes(record.materialization_v1().0))
+                            || record.reap_v1().is_some_and(|value|
+                                !self.operations.insert(OperationId::from_bytes(value.0)))
+                            || self.anchors.insert(key, record).is_some()
+                        {
+                            return Err(corrupt("namespace anchor identity is not canonical"));
+                        }
+                    }
+                    _ => return Err(corrupt("unknown destination resource key grammar")),
+                }
+            }
+            // A no-slot namespace cannot coexist with a slot-owned namespace, including
+            // a retained tombstone. Both claims name the same physical parent.
+            for slot in self.slots.keys() {
+                let mut namespace = [0; 40];
+                namespace[..16].copy_from_slice(&slot.sandbox_id);
+                namespace[16..32].copy_from_slice(&slot.incarnation_id);
+                namespace[32..].copy_from_slice(&slot.namespace_generation.to_be_bytes());
+                if self.anchors.contains_key(&namespace) {
+                    return Err(corrupt("slot and no-slot namespace ownership alias"));
+                }
+            }
+            Ok(())
+
+        })());
+        if matches!(self.result, Some(Ok(()))) { Ok(()) }
+        else { Err(conflict("destination replay retained a refusal")) }
     }
-    Ok(records)
+
+    fn take_completed_once_v4(&mut self) -> Option<SlotResourceTablesV1> {
+        if !matches!(self.result, Some(Ok(()))) || self.closed.is_some() { return None; }
+        Some((std::mem::take(&mut self.slots), std::mem::take(&mut self.anchors)))
+    }
+
+    fn failure_v4(&self) -> Option<&MountError> {
+        self.result.as_ref().and_then(|result| result.as_ref().err()).or(self.closed.as_ref())
+    }
 }
 
 fn commit_record(journal: &mut Journal, record: &Record) -> Result<()> {
@@ -1942,17 +1851,8 @@ pub(crate) fn payload_slot_relative_path(slot_id: &[u8; 16]) -> PathBuf {
 }
 
 fn sync_directory(directory: &BeneathRoot) -> Result<()> {
-    let descriptor = rustix::fs::openat(
-        directory.as_fd(),
-        ".",
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::DIRECTORY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(kernel_error)?;
-    rustix::fs::fsync(&descriptor).map_err(kernel_error)
+    let mut original = namespace_anchor::DirectorySyncOriginalV1::default();
+    original.enter_once_v1(directory)
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -2008,7 +1908,7 @@ mod tests {
         ApplyMountRequest, AssignmentFence, Audience, Descriptor, MountAction, MountAttributes,
         MountSourceConsistency, RequestHeader,
     };
-    use aos_sandbox::journal::JournalLimits;
+    use aos_sandbox_mount_native::JournalLimits;
     use aos_sandbox_core::model::{
         IdentityProfile, Limit, LimitDimension, LimitValue, NetworkKind, NetworkProfile,
         ResourceProfile, UnmappableIdentityPolicy,
@@ -2105,6 +2005,75 @@ mod tests {
                 expected,
             )
             .unwrap()
+        }
+    }
+
+    #[test]
+    fn no_slot_namespace_excludes_ordinary_slot_writes_in_every_phase() {
+        use aos_proto::aos::sandbox::local::v1::{ApplyAttachmentAnchorRequestV1,
+            AttachmentAnchorActionV1};
+        use aos_sandbox_protocol::mount_attachment_anchor::{decode_attachment_anchor_request_v1,
+            encode_attachment_anchor_resource_v1};
+        use std::cell::Cell;
+
+        for phase in 0..4 {
+            let mut fixture = Fixture::new();
+            let specification = sandbox_spec(Vec::new());
+            let specification_bytes = encode_sandbox_spec(&specification);
+            let descriptor = sandbox_spec_descriptor_for(&specification, &specification_bytes).unwrap();
+            let mut wire = ApplyAttachmentAnchorRequestV1 {
+                header: Some(RequestHeader { protocol_major: 2, protocol_minor: 0,
+                    request_id: vec![90; 16], audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                    deadline_boottime_nanoseconds: 100, maximum_response_bytes: 1 << 20,
+                    ..Default::default() }).into(),
+                fence: ApplyMountRequest::decode_from_slice(&mount_request()).unwrap().fence,
+                action: AttachmentAnchorActionV1::ATTACHMENT_ANCHOR_ACTION_V1_MATERIALIZE.into(),
+                namespace_generation: fixture.binding.namespace_generation,
+                sandbox_spec: Some(Descriptor { media_type: descriptor.media_type().as_str().to_owned(),
+                    sha256: descriptor.digest().as_bytes().to_vec(), encoded_size: descriptor.encoded_size(),
+                    ..Default::default() }).into(),
+                sandbox_spec_bytes: specification_bytes,
+                ..Default::default()
+            };
+            let decode = |wire: &ApplyAttachmentAnchorRequestV1| decode_attachment_anchor_request_v1(
+                &wire.encode_to_vec(), PeerCredentials { uid: 811, gid: 811, pid: Some(42) },
+                PeerPolicy { uid: 811, gid: Some(811), audience: Audience::AUDIENCE_NODE_CONTROLLER }, 1).unwrap();
+            let intent = ValidatedAttachmentAnchorResourceV1::materializing_v1(
+                &decode(&wire), &wire.encode_to_vec(), fixture.store.kernel_boot_id).unwrap();
+            let identity = fixture.store.root.identity();
+            let ready = intent.ready_v1((identity.device, identity.inode,
+                fixture.store.anchor_mount_id.get())).unwrap();
+            wire.action = AttachmentAnchorActionV1::ATTACHMENT_ANCHOR_ACTION_V1_REAP.into();
+            wire.header.as_option_mut().unwrap().request_id = vec![92; 16];
+            wire.resource_fence = wire.fence.clone();
+            wire.expected_resource_digest = ready.resource_digest().to_vec();
+            let reaping = ready.reaping_v1(&decode(&wire), &wire.encode_to_vec()).unwrap();
+            let released = reaping.released_v1().unwrap();
+            let namespace = [intent, ready, reaping, released].into_iter().nth(phase).unwrap();
+            let transaction = JournalTransaction::new([94; 16], vec![JournalRecord::put(
+                RecordNamespace::MountDestinationSlot, namespace.key_v1().to_vec(),
+                encode_attachment_anchor_resource_v1(&namespace))]).unwrap();
+            fixture.journal.commit(&transaction).unwrap();
+            fixture.store.namespace_anchors = NamespaceAnchorTableV1::new(
+                BTreeMap::from([(namespace.key_v1(), namespace)]));
+            let before: Vec<_> = fixture.journal.records(RecordNamespace::MountDestinationSlot)
+                .map(|(key, value)| (key.to_vec(), value.to_vec())).collect();
+            let called = Cell::new(false);
+
+            let error = fixture.store.materialize_guarded(&mut fixture.journal,
+                &fixture.materialization, || { called.set(true); Ok(()) }).unwrap_err();
+            assert!(error.to_string().contains("owned by a no-slot anchor"));
+            let rematerialize = DestinationSlotRematerializationV1::new(fixture.binding.clone(),
+                OperationId::from_bytes([96; 16]), ObjectDigest::from_bytes([97; 32]),
+                ObjectDigest::from_bytes([98; 32])).unwrap();
+            let error = fixture.store.rematerialize_guarded(&mut fixture.journal, &rematerialize,
+                |_| { called.set(true); Ok(true) }, || { called.set(true); Ok(()) }).unwrap_err();
+            assert!(error.to_string().contains("owned by a no-slot anchor"));
+
+            assert!(!called.get());
+            assert!(!fixture.directory.path().join(fixture.binding.catalog_relative_path()).exists());
+            assert_eq!(before, fixture.journal.records(RecordNamespace::MountDestinationSlot)
+                .map(|(key, value)| (key.to_vec(), value.to_vec())).collect::<Vec<_>>());
         }
     }
 

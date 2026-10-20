@@ -8,6 +8,10 @@
   buildPackages ? null,
   firmwarePackages ? null,
   targetPackages ? null,
+  # Per-system selection stays inside the dependency fixed point.
+  systemdKernel ? null,
+  # Kernel builders must not depend on their own Systemd layout consumer.
+  kernelPackages ? null,
   sharedGoCacheDir ? null,
   sharedBazelCacheDir ? null,
   sharedRustTargetDir ? null,
@@ -1451,6 +1455,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # This explicit structural inventory preserves lazy package enumeration:
   # probing every value with tryEval would execute unrelated IFDs.
   packageFactories = [
+    "aos-environment-provision"
     "aos-uki"
     "dbus-conf"
     "aos-nix-online-store-reader"
@@ -1737,21 +1742,51 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         enableIntrospection = true;
         gobject-introspection = self.gobject-introspection;
       };
-      linux = callPackage ./kernel/linux.nix {inherit linuxSource;};
+      linux =
+        if kernelPackages == null
+        then callPackage ./kernel/linux.nix {inherit linuxSource;}
+        else kernelPackages.linux;
       # Build a kernel variant with extra kconfig appended. Use this — not
       # `linux.override { extraConfig = …; }` — for deployment kernels:
       # `extraConfig` is a linux.nix function arg consumed before
       # mkDerivation, so the inherited `.override` hook can't reach it
       # (silent no-op). callPackage threads it directly. (RFC-0006 lockdown.)
       linuxWith = extraConfig:
-        callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;};
+        if kernelPackages == null
+        then callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;}
+        else kernelPackages.linuxWith extraConfig;
+
+      # Every library and program resolves this same Systemd. Selecting only
+      # the module's PID 1 package would leave a second libsystemd in its closure.
+      # The conditional is lazy: enumerating packages never forces system config.
+      systemd = callPackage ./system/systemd.nix (
+        lib.optionalAttrs (systemdKernel != null) {
+          kernelCloneLayout = systemdKernel.dev;
+        }
+      );
+
+      aos-sandbox-agent = callPackage ./tools/aos-sandbox-agent.nix (
+        lib.optionalAttrs (systemdKernel != null) {
+          kernelCloneLayout = systemdKernel.dev;
+        }
+      );
+
+      aos-sandbox-hostd = callPackage ./tools/aos-sandbox-hostd.nix (
+        lib.optionalAttrs (systemdKernel != null) {
+          kernelCloneLayout = systemdKernel.dev;
+        }
+      );
+
       # Fixture kernels may deliberately omit facilities required by deployed
       # systems. Keep that exception explicit and unavailable through linuxWith.
       linuxFixtureWith = extraConfig:
-        callPackage ./kernel/linux.nix {
-          inherit linuxSource extraConfig;
-          enforceRequiredConfig = false;
-        };
+        if kernelPackages == null
+        then
+          callPackage ./kernel/linux.nix {
+            inherit linuxSource extraConfig;
+            enforceRequiredConfig = false;
+          }
+        else kernelPackages.linuxFixtureWith extraConfig;
       # The immutable SELinux gate needs negative subjects whose loaded and
       # expected policy bytes differ. Keep that construction explicit so the
       # deployed package remains the no-argument discovered derivation.
@@ -1761,6 +1796,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         callPackage ./security/aos-selinux-runtime-roots.nix arguments;
       aosSelinuxProductionPolicyWith = arguments:
         callPackage ./security/aos-selinux-production-policy.nix arguments;
+      aosEnvironmentProvisionWith = arguments:
+        (callPackage ./security/aos-environment-provision.nix {}) arguments;
       aosNormalRootStartupProfileWith = arguments:
         callPackage ./security/_aos-normal-root-profile.nix arguments;
       aosNixOfflineStartupProfileWith = arguments:

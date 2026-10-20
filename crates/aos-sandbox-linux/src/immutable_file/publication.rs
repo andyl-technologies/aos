@@ -15,6 +15,8 @@
 
 mod naming;
 mod observation;
+mod retained_recheck;
+pub use retained_recheck::PublicationRootRecheckOriginalsV1;
 
 pub use naming::{
     AfterRenameFailure, AmbiguousNamedSealedFile, BeforeRenameFailure, DurablyNamedSealedFile,
@@ -814,31 +816,9 @@ impl FsVerityPublicationRoot {
 }
 
 fn open_protected_absolute_directory(path: &Path) -> Result<OwnedFd, PublicationRootError> {
-    let relative = path
-        .strip_prefix(Path::new("/"))
-        .map_err(|_| PublicationRootError::AdmissionRace)?;
-    if relative.as_os_str().is_empty() || relative.as_os_str().as_bytes().len() > 4096 {
-        return Err(PublicationRootError::AdmissionRace);
-    }
-    let path = CString::new(relative.as_os_str().as_bytes())
-        .map_err(|_| PublicationRootError::AdmissionRace)?;
-    let root: OwnedFd = File::open("/")
-        .map_err(|source| PublicationRootError::Linux(io_error("open root directory", source)))?
-        .into();
-    let flags = u64::try_from(
-        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NOCTTY,
-    )
-    .map_err(|_| PublicationRootError::AdmissionRace)?;
-    uapi::openat2(
-        root.as_fd(),
-        &path,
-        &OpenHow {
-            flags,
-            mode: 0,
-            resolve: RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
-        },
-    )
-    .map_err(PublicationRootError::Linux)
+    let mut original = retained_recheck::AbsoluteDirectoryOriginalsV1::default();
+    original.capture_once(path);
+    original.into_result()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

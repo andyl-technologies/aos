@@ -1,4 +1,4 @@
-//! Adds a closed final clock restriction to the original Nix Storage Prepare.
+//! Adds a closed final clock restriction to the actual Storage Prepare owner.
 //!
 //! This loan borrows authenticated admission and the exact sealed transaction.
 //! It grants no journal authority: Native must still apply every ordinary guard.
@@ -16,7 +16,32 @@ use super::{
 
 const PREPARATION_DOMAIN: [u8; 16] = *b"AOSSTGPREPV10001";
 
-/// Borrows the exact admitted selected Prepare solely to restrict its append.
+enum PreparationInputV1<'original> {
+    Nix(&'original CanonicalNixGenerationPreparationV1),
+    Ordinary(
+        &'original aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1,
+    ),
+}
+
+impl PreparationInputV1<'_> {
+    fn preparation(
+        &self,
+    ) -> &aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1 {
+        match self {
+            Self::Nix(selected) => selected.prepare(),
+            Self::Ordinary(preparation) => preparation,
+        }
+    }
+
+    fn commitment(&self) -> aos_sandbox_core::BrokerArgumentCommitment {
+        match self {
+            Self::Nix(selected) => selected.argument_commitment(),
+            Self::Ordinary(preparation) => preparation.argument_commitment(),
+        }
+    }
+}
+
+/// Borrows an exact admitted Prepare solely to restrict its append.
 ///
 /// This is neither a transferable grant nor a generic clock callback. Native
 /// observes the clock itself while these original authority objects stay held.
@@ -24,7 +49,7 @@ const PREPARATION_DOMAIN: [u8; 16] = *b"AOSSTGPREPV10001";
 pub struct StoragePrepareNativeClockLoanV1<'original> {
     authority: &'original BrokerAuthority,
     admission: &'original VerifiedBrokerAdmission,
-    selected: &'original CanonicalNixGenerationPreparationV1,
+    input: PreparationInputV1<'original>,
     transaction: &'original JournalTransaction,
 }
 
@@ -43,15 +68,44 @@ impl BrokerAuthority {
         selected: &'original CanonicalNixGenerationPreparationV1,
         transaction: &'original JournalTransaction,
     ) -> Result<StoragePrepareNativeClockLoanV1<'original>, BrokerAdmissionError> {
+        self.borrow_storage_prepare_native_clock_for_v1(
+            admission, PreparationInputV1::Nix(selected), transaction,
+        )
+    }
+
+    /// Borrows a final clock restriction for the actual ordinary Prepare admission.
+    ///
+    /// The same verifier, effect, fence and exact four sealed members remain
+    /// borrowed. This supplies no journal authority and no Nix prefix identity.
+    ///
+    /// # Errors
+    /// Rejects a mismatched purpose, admitted request/fence or sealed transaction.
+    pub fn borrow_ordinary_storage_prepare_native_clock<'original>(
+        &'original self,
+        admission: &'original VerifiedBrokerAdmission,
+        preparation: &'original aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1,
+        transaction: &'original JournalTransaction,
+    ) -> Result<StoragePrepareNativeClockLoanV1<'original>, BrokerAdmissionError> {
+        self.borrow_storage_prepare_native_clock_for_v1(
+            admission, PreparationInputV1::Ordinary(preparation), transaction,
+        )
+    }
+
+    fn borrow_storage_prepare_native_clock_for_v1<'original>(
+        &'original self,
+        admission: &'original VerifiedBrokerAdmission,
+        input: PreparationInputV1<'original>,
+        transaction: &'original JournalTransaction,
+    ) -> Result<StoragePrepareNativeClockLoanV1<'original>, BrokerAdmissionError> {
         let effect = &admission.effect;
-        let preparation = selected.prepare();
+        let preparation = input.preparation();
         let assignment = admission.fence.assignment();
         if self.domain != BrokerDomain::Storage
             || effect.status() != BrokerEffectStatusV1::Pending
             || effect.verb() != BrokerVerb::StoragePrepareCatalog
             || effect.target() != BrokerGrantTarget::Assignment
             || effect.request_id() != preparation.header().request_id()
-            || effect.request_digest() != selected.argument_commitment().digest()
+            || effect.request_digest() != input.commitment().digest()
             || effect.plan_digest() != admission.fence.plan_digest()
             || effect.lease_digest() != admission.fence.local_lease_record().lease_digest()
             || assignment.sandbox().as_bytes() != preparation.fence().sandbox_id()
@@ -59,10 +113,11 @@ impl BrokerAuthority {
             || assignment.epoch().get() != preparation.fence().assignment_epoch()
             || assignment.desired_generation().get() != preparation.fence().desired_generation()
             || assignment.digest().as_bytes() != preparation.fence().assignment_digest()
-            || admission.fence.node().as_bytes() != &selected.origin().node
-            || effect.host_boot_id() != &selected.prefix().host_boot_id
-            || effect.request_deadline_boottime_nanoseconds()
-                != selected.prefix().deadline_boottime_nanoseconds
+            || matches!(&input, PreparationInputV1::Nix(selected)
+                if admission.fence.node().as_bytes() != &selected.origin().node
+                    || effect.host_boot_id() != &selected.prefix().host_boot_id
+                    || effect.request_deadline_boottime_nanoseconds()
+                        != selected.prefix().deadline_boottime_nanoseconds)
         {
             return Err(BrokerAdmissionError::RequestMismatch);
         }
@@ -137,7 +192,7 @@ impl BrokerAuthority {
         Ok(StoragePrepareNativeClockLoanV1 {
             authority: self,
             admission,
-            selected,
+            input,
             transaction,
         })
     }
@@ -150,7 +205,7 @@ impl StoragePrepareNativeClockLoanV1<'_> {
         self.transaction
     }
 
-    /// Compares a Native-observed pair with both original clock restrictions.
+    /// Compares a Native-observed pair with the actual original restrictions.
     ///
     /// The sample is untrusted DATA here. The specific Native entrypoint must
     /// obtain it directly from its fixed kernel adapter at the append frontier.
@@ -158,7 +213,8 @@ impl StoragePrepareNativeClockLoanV1<'_> {
     ///
     /// # Errors
     /// Rejects changed provenance/boot, either clock rolling back or diverging,
-    /// the original Nix prefix expiry, or the earlier plan/lease/request expiry.
+    /// the selected Nix prefix expiry when applicable, or the earlier actual
+    /// plan/lease/request expiry.
     pub fn require_native_clock(
         &self,
         current: RawPairedClockSample,
@@ -176,9 +232,9 @@ impl StoragePrepareNativeClockLoanV1<'_> {
         original
             .validate_later_sample(current)
             .map_err(|_| BrokerAdmissionError::FenceRejected)?;
-        if current.host_boot_id() != self.selected.prefix().host_boot_id
-            || current.boottime_nanoseconds()
-                >= self.selected.prefix().deadline_boottime_nanoseconds
+        if matches!(&self.input, PreparationInputV1::Nix(selected)
+            if current.host_boot_id() != selected.prefix().host_boot_id
+                || current.boottime_nanoseconds() >= selected.prefix().deadline_boottime_nanoseconds)
         {
             return Err(BrokerAdmissionError::FenceRejected);
         }

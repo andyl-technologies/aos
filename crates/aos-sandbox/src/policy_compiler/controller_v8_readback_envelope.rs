@@ -10,13 +10,16 @@
 //! domain here. Its caller retains responsibility for journal currentness and
 //! canonical decoding of the record after envelope verification.
 
+use aos_sandbox_policy::controller_readback::{
+    PinnedControllerHoldSignerV1, encode_controller_hold_signer_credential_v1,
+};
+
 use ed25519_dalek::{Signature, Signer as _, SigningKey};
 
 use super::binding_v2::ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1;
 use super::controller_effect_ack_readback::{
     ControllerEffectAckChallengeV1, ControllerEffectAckReadbackErrorV1,
 };
-use super::controller_hold_readback::PinnedControllerHoldSignerV1;
 
 /// Bounds the common signed packet header.
 pub(super) const HEADER_BYTES: usize = 84;
@@ -150,13 +153,15 @@ mod tests {
     use super::*;
     use aos_sandbox_core::ObjectDigest;
 
-    use crate::policy_compiler::controller_hold_readback::encode_controller_hold_signer_credential_v1;
-
     #[test]
     fn v8_receipt_envelopes_reject_cross_protocol_packets() {
         let key = SigningKey::from_bytes(&[1; 32]);
-        let pin = encode_controller_hold_signer_credential_v1(2, &key.verifying_key()).unwrap();
-        let signer = PinnedControllerHoldSignerV1::decode(&pin).unwrap();
+        let pin = encode_controller_hold_signer_credential_v1(2, &key.verifying_key())
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+            .unwrap();
+        let signer = PinnedControllerHoldSignerV1::decode(&pin)
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+            .unwrap();
         let challenge =
             ControllerEffectAckChallengeV1::new([3; 16], ObjectDigest::from_bytes([4; 32]))
                 .unwrap();

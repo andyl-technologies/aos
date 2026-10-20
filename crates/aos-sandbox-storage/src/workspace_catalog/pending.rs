@@ -408,6 +408,97 @@ impl StorageWorkspaceCatalogPlanV1 {
     }
 }
 
+// The ordinary adapter and staged consumer share this exact decoder. Only
+// actual Journal custody moves after a complete positive structural result.
+struct LoadedPendingWorkspaceV1 {
+    head: Option<CatalogHeadV1>,
+    records: std::collections::BTreeMap<[u8; 32], WorkspaceRecordV1>,
+    snapshot: StorageWorkspaceCatalogSnapshotV1,
+}
+
+impl LoadedPendingWorkspaceV1 {
+    fn load(
+        journal: &Journal,
+        recovery: &RecoveryReport,
+        identity_pool: StorageIdentityPoolV1,
+    ) -> Result<Self, StorageWorkspaceCatalogError> {
+        let mut head = None;
+        let mut records = std::collections::BTreeMap::new();
+        for (namespace, key, value) in journal.all_records() {
+            if namespace != RecordNamespace::StorageResourceInventory {
+                return Err(StorageWorkspaceCatalogError::CorruptRecord);
+            }
+            if key == HEAD_KEY {
+                if head.replace(decode_head(value)?).is_some() {
+                    return Err(StorageWorkspaceCatalogError::CorruptRecord);
+                }
+                continue;
+            }
+            if !key.starts_with(RECORD_KEY_PREFIX) {
+                return Err(StorageWorkspaceCatalogError::CorruptRecord);
+            }
+            let handle = decode_record_key(key)?;
+            let record = decode_record(value)?;
+            if record.workspace_handle != handle || records.insert(handle, record).is_some() {
+                return Err(StorageWorkspaceCatalogError::CorruptRecord);
+            }
+        }
+
+        match &head {
+            Some(head) => {
+                let expected_generation = records
+                    .values()
+                    .map(|record| record.catalog_generation)
+                    .max()
+                    .unwrap_or(1);
+                if head.identity_pool != IdentityPoolWire::from(identity_pool)
+                    || head.generation != expected_generation
+                    || head.generation == 0
+                {
+                    return Err(StorageWorkspaceCatalogError::CorruptRecord);
+                }
+            }
+            None => {
+                if !records.is_empty()
+                    || recovery.committed_transactions != 0
+                    || recovery.committed_records != 0
+                    || journal.snapshot_sequence() != 1
+                {
+                    return Err(StorageWorkspaceCatalogError::CorruptRecord);
+                }
+            }
+        }
+        validate_record_set(&records, identity_pool)?;
+
+        let snapshot = snapshot_binding(&journal, identity_pool, head.as_ref())?;
+        Ok(Self { head, records, snapshot })
+    }
+
+    fn into_pending(
+        self,
+        journal: Journal,
+        recovery: RecoveryReport,
+        identity_pool: StorageIdentityPoolV1,
+    ) -> PendingStorageWorkspaceCatalogV1 {
+        PendingStorageWorkspaceCatalogV1 {
+            journal,
+            identity_pool,
+            head: self.head,
+            records: self.records,
+            snapshot: self.snapshot,
+            recovery: recovery.into(),
+            startup_native_batch: None,
+            startup_materialization_failed: false,
+            startup_materialization_error: None,
+            startup_materialization_names: None,
+            startup_materialization_health: None,
+            startup_materialization_names_originals: aos_sandbox::journal::ProtectedJournalCurrentnessOriginalsV1::new(),
+            #[cfg(test)]
+            fail_after_next_materialization_commit: false,
+        }
+    }
+}
+
 /// Owns structurally valid workspace-catalog custody without physical authority.
 pub(crate) struct PendingStorageWorkspaceCatalogV1 {
     journal: Journal,
@@ -416,6 +507,12 @@ pub(crate) struct PendingStorageWorkspaceCatalogV1 {
     records: std::collections::BTreeMap<[u8; 32], WorkspaceRecordV1>,
     snapshot: StorageWorkspaceCatalogSnapshotV1,
     recovery: StorageWorkspaceCatalogRecoveryV1,
+    startup_native_batch: Option<crate::native_commit_batch::StorageNativeCommitBatchV1>,
+    startup_materialization_failed: bool,
+    startup_materialization_error: Option<StorageWorkspaceCatalogError>,
+    startup_materialization_names: Option<Result<(), aos_sandbox::JournalError>>,
+    startup_materialization_health: Option<Result<(), aos_sandbox::JournalError>>,
+    startup_materialization_names_originals: aos_sandbox::journal::ProtectedJournalCurrentnessOriginalsV1,
     #[cfg(test)]
     fail_after_next_materialization_commit: bool,
 }
@@ -554,65 +651,8 @@ impl PendingStorageWorkspaceCatalogV1 {
         recovery: RecoveryReport,
         identity_pool: StorageIdentityPoolV1,
     ) -> Result<Self, StorageWorkspaceCatalogError> {
-        let mut head = None;
-        let mut records = std::collections::BTreeMap::new();
-        for (namespace, key, value) in journal.all_records() {
-            if namespace != RecordNamespace::StorageResourceInventory {
-                return Err(StorageWorkspaceCatalogError::CorruptRecord);
-            }
-            if key == HEAD_KEY {
-                if head.replace(decode_head(value)?).is_some() {
-                    return Err(StorageWorkspaceCatalogError::CorruptRecord);
-                }
-                continue;
-            }
-            if !key.starts_with(RECORD_KEY_PREFIX) {
-                return Err(StorageWorkspaceCatalogError::CorruptRecord);
-            }
-            let handle = decode_record_key(key)?;
-            let record = decode_record(value)?;
-            if record.workspace_handle != handle || records.insert(handle, record).is_some() {
-                return Err(StorageWorkspaceCatalogError::CorruptRecord);
-            }
-        }
-
-        match &head {
-            Some(head) => {
-                let expected_generation = records
-                    .values()
-                    .map(|record| record.catalog_generation)
-                    .max()
-                    .unwrap_or(1);
-                if head.identity_pool != IdentityPoolWire::from(identity_pool)
-                    || head.generation != expected_generation
-                    || head.generation == 0
-                {
-                    return Err(StorageWorkspaceCatalogError::CorruptRecord);
-                }
-            }
-            None => {
-                if !records.is_empty()
-                    || recovery.committed_transactions != 0
-                    || recovery.committed_records != 0
-                    || journal.snapshot_sequence() != 1
-                {
-                    return Err(StorageWorkspaceCatalogError::CorruptRecord);
-                }
-            }
-        }
-        validate_record_set(&records, identity_pool)?;
-
-        let snapshot = snapshot_binding(&journal, identity_pool, head.as_ref())?;
-        Ok(Self {
-            journal,
-            identity_pool,
-            head,
-            records,
-            snapshot,
-            recovery: recovery.into(),
-            #[cfg(test)]
-            fail_after_next_materialization_commit: false,
-        })
+        let loaded = LoadedPendingWorkspaceV1::load(&journal, &recovery, identity_pool)?;
+        Ok(loaded.into_pending(journal, recovery, identity_pool))
     }
 
     /// Returns the complete recovered catalog snapshot binding.
@@ -647,10 +687,18 @@ impl PendingStorageWorkspaceCatalogV1 {
     }
 }
 
+// New same-Actor staged owner; no caller path, file or funding constructor.
+mod startup;
+pub(crate) use startup::StorageWorkspaceStartupV1;
+
 fn validate_plan_against_pending(
     pending: &PendingStorageWorkspaceCatalogV1,
     plan: &StorageWorkspaceCatalogPlanV1,
 ) -> Result<(), StorageWorkspaceCatalogError> {
+    if pending.startup_materialization_failed {
+        return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+    }
+
     let pool_end = pending.identity_pool.end()?;
     let mut planned_handles = BTreeSet::new();
     for row in &plan.rows {
@@ -842,6 +890,18 @@ fn same_root_stat(left: &rustix::fs::Stat, right: &rustix::fs::Stat) -> bool {
 }
 
 impl ValidatedPendingStorageWorkspaceCatalogV1 {
+    /// Borrows the actual retained catalog geometry before new observation work.
+    pub(crate) fn receiving_inventory_geometry_v1(&self)
+        -> Result<crate::receiving_demand::StorageInventoryGeometryV1, aos_sandbox_core::AccountingError>
+    {
+        let mut geometry = crate::receiving_demand::StorageInventoryGeometryV1::default();
+        geometry.include_journal(&self.pending.journal)?;
+        geometry.workspace_rows = crate::receiving_demand::count(self.pending.records.len())?;
+        geometry.namespace_entries = crate::receiving_demand::count(self.pending.records.len())?;
+        geometry.worker_rows = crate::receiving_demand::count(self.plan.rows.len())?;
+        Ok(geometry)
+    }
+
     /// Compares the genuine unused workspace history and fixed physical root.
     ///
     /// A current empty map cannot erase old allocations. The same parser must
@@ -1004,6 +1064,25 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
         self.pending.snapshot
     }
 
+    pub(super) fn has_startup_native_custody_v1(&self) -> bool {
+        self.pending.startup_native_batch.is_some()
+    }
+
+    pub(crate) fn startup_materialization_failed_v1(&self) -> bool {
+        self.pending.startup_materialization_failed
+    }
+
+    pub(crate) fn startup_native_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.pending.startup_native_batch.as_ref().and_then(|batch| batch.failure())
+            .or_else(|| self.pending.startup_materialization_error.as_ref()
+                .map(|cause| cause as &dyn std::error::Error))
+            .or_else(|| self.pending.startup_materialization_health.as_ref()
+                .and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error))
+            .or_else(|| self.pending.startup_materialization_names_originals.failure())
+            .or_else(|| self.pending.startup_materialization_names.as_ref()
+                .and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error))
+    }
+
     /// Returns whether journal opening recovered an incomplete tail.
     pub(crate) const fn recovery(&self) -> StorageWorkspaceCatalogRecoveryV1 {
         self.pending.recovery
@@ -1044,6 +1123,79 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
     /// fails. A commit error consumes custody because journal durability may be
     /// ambiguous; callers must reopen and recover rather than retrying it.
     pub(super) fn materialize_terminal(mut self) -> Result<Self, StorageWorkspaceCatalogError> {
+        self.materialize_terminal_inner_v1(None)?;
+        Ok(self)
+    }
+
+    pub(super) fn materialize_terminal_retaining_v1(
+        self,
+    ) -> Result<Self, (Self, StorageWorkspaceCatalogError)> {
+        self.materialize_terminal_with_receiving_v1(None)
+    }
+
+    pub(super) fn materialize_terminal_state_receiving_v1(
+        self,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+        state: &Journal,
+    ) -> Result<Self, (Self, StorageWorkspaceCatalogError)> {
+        self.materialize_terminal_with_receiving_v1(Some((receiving, state)))
+    }
+
+    fn materialize_terminal_with_receiving_v1(
+        mut self,
+        receiving: Option<(&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>, &Journal)>,
+    ) -> Result<Self, (Self, StorageWorkspaceCatalogError)> {
+        if self.pending.startup_materialization_failed {
+            return Err((self, StorageWorkspaceCatalogError::InvalidCandidate));
+        }
+        let result = self.materialize_terminal_inner_v1(receiving);
+        // Owed after a refused preflight or domain validation too. Each entered
+        // actual append already retains its own independent immediate names.
+        self.pending.startup_materialization_health = Some(self.pending.journal.ensure_healthy());
+        self.pending.startup_materialization_names = Some(self.pending.journal
+            .observe_held_names_post_retaining_v1(&mut self.pending.startup_materialization_names_originals));
+        if let Err(error) = result {
+            self.pending.startup_materialization_error = Some(error);
+        }
+        if self.pending.startup_materialization_error.is_some()
+            || !matches!(self.pending.startup_materialization_health, Some(Ok(())))
+            || !matches!(self.pending.startup_materialization_names, Some(Ok(())))
+        {
+            self.pending.startup_materialization_failed = true;
+            Err((self, StorageWorkspaceCatalogError::InvalidCandidate))
+        } else {
+            self.pending.startup_materialization_names_originals.settle_positive_once_v1();
+            // This actual positive local sample is disposed now. A later
+            // paid materialization uses the same fixed resident peak; no
+            // traffic allowance, journal bytes or financial debt is refunded.
+            drop(std::mem::replace(
+                &mut self.pending.startup_materialization_names_originals,
+                aos_sandbox::journal::ProtectedJournalCurrentnessOriginalsV1::new(),
+            ));
+            Ok(self)
+        }
+    }
+
+    fn materialize_terminal_inner_v1(
+        &mut self,
+        mut receiving: Option<(&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>, &Journal)>,
+    ) -> Result<(), StorageWorkspaceCatalogError> {
+        if self.pending.startup_materialization_failed {
+            return Err(StorageWorkspaceCatalogError::InvalidCandidate);
+        }
+
+        if let Some((receiving, state)) = receiving.as_mut() {
+            let bytes = self.materialization_capacity_v1()?;
+            receiving.reserve_workspace_capacity_v1(state, &self.pending.journal, bytes)
+                .map_err(StorageWorkspaceCatalogError::Receiving)?;
+            let slots = self.plan.rows.len().checked_add(1)
+                .ok_or(StorageWorkspaceCatalogError::InvalidCandidate)?;
+            self.pending.startup_native_batch.as_mut()
+                .ok_or(StorageWorkspaceCatalogError::InvalidCandidate)?
+                .ensure_available_v1(slots)
+                .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?;
+        }
+
         let mut generation = self.pending.head.as_ref().map_or(1, |head| head.generation);
         let mut projected_records = self.pending.records.clone();
         let mut transactions = Vec::new();
@@ -1058,7 +1210,7 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
                 vec![JournalRecord::put(
                     RecordNamespace::StorageResourceInventory,
                     HEAD_KEY.to_vec(),
-                    encode_head(&head)?,
+                    encode_materialization_head_v1(&head, &self.pending.journal, receiving.as_mut())?,
                 )],
             ).map_err(aos_sandbox::JournalError::from)?);
         }
@@ -1083,12 +1235,12 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
                     JournalRecord::put(
                         RecordNamespace::StorageResourceInventory,
                         HEAD_KEY.to_vec(),
-                        encode_head(&head)?,
+                        encode_materialization_head_v1(&head, &self.pending.journal, receiving.as_mut())?,
                     ),
                     JournalRecord::put(
                         RecordNamespace::StorageResourceInventory,
                         record_key(&record.workspace_handle),
-                        encode_record(&record)?,
+                        encode_materialization_record_v1(&record, &self.pending.journal, receiving.as_mut())?,
                     ),
                 ],
             ).map_err(aos_sandbox::JournalError::from)?);
@@ -1096,9 +1248,18 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
         }
 
         validate_record_set(&projected_records, self.pending.identity_pool)?;
+        if let Some((receiving, state)) = receiving.as_mut() {
+            receiving.reserve_workspace_appends_v1(state, &self.pending.journal, &transactions)
+                .map_err(StorageWorkspaceCatalogError::Receiving)?;
+        }
         self.pending.journal.preflight_transactions(&transactions)?;
         for transaction in &transactions {
-            self.pending.journal.commit(transaction)?;
+            if let Some(batch) = self.pending.startup_native_batch.as_mut() {
+                batch.commit_once_v1(&mut self.pending.journal, transaction)
+                    .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?;
+            } else {
+                self.pending.journal.commit(transaction)?;
+            }
             #[cfg(test)]
             if std::mem::take(&mut self.pending.fail_after_next_materialization_commit) {
                 // Model an error returned after a complete transaction became
@@ -1125,7 +1286,44 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
             return Err(StorageWorkspaceCatalogError::InvalidCandidate);
         }
 
-        Ok(self)
+        Ok(())
+    }
+
+    fn materialization_capacity_v1(&self) -> Result<usize, StorageWorkspaceCatalogError> {
+        let invalid = || StorageWorkspaceCatalogError::InvalidCandidate;
+        let rows = self.pending.records.len().checked_add(self.plan.rows.len()).ok_or_else(invalid)?;
+        let nodes = aos_sandbox_journal::geometry::conservative_btree_node_bytes_v1::<
+            [u8; 32], WorkspaceRecordV1,
+        >(rows.checked_add(1).ok_or_else(invalid)?).ok_or_else(invalid)?;
+        let slots = self.plan.rows.len().checked_add(1).ok_or_else(invalid)?;
+        let batch = self.pending.startup_native_batch.as_ref().ok_or_else(invalid)?
+            .slot_capacity_bytes_v1(slots).ok_or_else(invalid)?;
+        let mut bytes = nodes.checked_add(batch).ok_or_else(invalid)?;
+        // Existing rows have one media string; the other fields are fixed
+        // private layouts. The durable bytes cover those actual heap strings.
+        for (_, key, value) in self.pending.journal.all_records() {
+            bytes = bytes.checked_add(key.len()).and_then(|n| n.checked_add(value.len()))
+                .ok_or_else(invalid)?;
+        }
+        for row in &self.plan.rows {
+            let media = match &row.policy {
+                StorageWorkspaceCatalogRowPolicyV1::MustBeAbsent => 0,
+                StorageWorkspaceCatalogRowPolicyV1::MayRetainExactActive(creation)
+                | StorageWorkspaceCatalogRowPolicyV1::MustConvergeActive(creation)
+                | StorageWorkspaceCatalogRowPolicyV1::MustConvergeRetired { creation, .. } =>
+                    creation.root_image.media_type().as_str().len(),
+            };
+            let row_bytes = std::mem::size_of::<WorkspaceRecordV1>()
+                .checked_mul(128).and_then(|n| media.checked_mul(6).and_then(|m| n.checked_add(m)))
+                .ok_or_else(invalid)?;
+            bytes = bytes.checked_add(row_bytes).ok_or_else(invalid)?;
+        }
+        let transaction = std::mem::size_of::<JournalTransaction>()
+            .checked_add(2 * std::mem::size_of::<JournalRecord>())
+            .and_then(|n| n.checked_add(HEAD_KEY.len() + RECORD_KEY_PREFIX.len() + 32))
+            .ok_or_else(invalid)?;
+        bytes.checked_add(slots.checked_mul(transaction).ok_or_else(invalid)?)
+            .ok_or_else(invalid)
     }
 
     #[cfg(test)]
@@ -1140,7 +1338,8 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
 
     /// Reports whether every durable row already equals its terminal policy.
     pub(crate) fn is_terminally_materialized(&self) -> bool {
-        self.is_initialized()
+        !self.pending.startup_materialization_failed
+            && self.is_initialized()
             && self.pending.records.len() == self.plan.rows.len()
             && self.plan.rows.iter().all(|row| {
                 let Some(record) = self.pending.records.get(&row.workspace_handle) else {
@@ -1338,6 +1537,33 @@ impl FramedDigest {
         } else {
             Ok(digest)
         }
+    }
+}
+
+
+fn encode_materialization_head_v1(
+    head: &CatalogHeadV1,
+    workspace: &Journal,
+    receiving: Option<&mut (&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>, &Journal)>,
+) -> Result<Vec<u8>, StorageWorkspaceCatalogError> {
+    match receiving {
+        Some((receiving, state)) => receiving.encode_workspace_head_v1(
+            state, workspace, head, super::RECORD_FORMAT_VERSION,
+        ).map_err(StorageWorkspaceCatalogError::Receiving),
+        None => encode_head(head),
+    }
+}
+
+fn encode_materialization_record_v1(
+    record: &WorkspaceRecordV1,
+    workspace: &Journal,
+    receiving: Option<&mut (&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>, &Journal)>,
+) -> Result<Vec<u8>, StorageWorkspaceCatalogError> {
+    match receiving {
+        Some((receiving, state)) => receiving.encode_workspace_record_v1(
+            state, workspace, record, super::RECORD_FORMAT_VERSION, super::MAXIMUM_RECORD_BYTES,
+        ).map_err(StorageWorkspaceCatalogError::Receiving),
+        None => encode_record(record),
     }
 }
 
@@ -2162,4 +2388,46 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn retained_materialization_keeps_real_writer_and_native_result_after_late_fault() {
+        let directory = TempDir::new().unwrap();
+        let identity_pool = pool(3);
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        // tempfile uses ambient directory permissions unless explicitly set;
+        // the real protected writer requires this final directory to be0700.
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        // The retained name post requires an actual protected writer. The
+        // generic open_for_test adapter deliberately supplies no such custody.
+        let owner = std::fs::metadata(directory.path()).unwrap().uid();
+        let (journal, recovery) = Journal::open_protected_at_uid(
+            directory.path(), WORKSPACE_JOURNAL_FILE, workspace_journal_limits(), owner,
+        ).unwrap();
+        let pending = PendingStorageWorkspaceCatalogV1::recover(journal, recovery, identity_pool)
+            .unwrap();
+        let mut validated = pending.validate_plan(plan(Vec::new())).unwrap();
+        // Result-reservoir mechanics only. Production attaches this batch
+        // after the real staged receiving/init debit, never from fixture DATA.
+        let mut batch = crate::native_commit_batch::StorageNativeCommitBatchV1::new();
+        batch.prepare_once_v1(1).unwrap();
+        validated.pending.startup_native_batch = Some(batch);
+        validated.fail_after_next_materialization_commit_for_test();
+
+        let (mut retained, _) = validated.materialize_terminal_retaining_v1().err().unwrap();
+        let durable = std::fs::read(directory.path().join(WORKSPACE_JOURNAL_FILE)).unwrap();
+        let original = retained.pending.startup_native_batch.as_ref().unwrap()
+            .native_result_v1(0).unwrap().as_ref().unwrap();
+        let actual_position = *original;
+        assert_eq!(actual_position.durable_bytes as usize, durable.len());
+        assert!(matches!(retained.startup_native_failure_v1().unwrap()
+            .downcast_ref::<StorageWorkspaceCatalogError>(), Some(StorageWorkspaceCatalogError::Journal(_))));
+        assert!(!retained.is_terminally_materialized());
+        assert!(retained.revalidate_plan(plan(Vec::new())).is_err());
+        assert_eq!(std::fs::read(directory.path().join(WORKSPACE_JOURNAL_FILE)).unwrap(), durable);
+        assert_eq!(retained.pending.startup_native_batch.as_ref().unwrap()
+            .native_result_v1(0).unwrap().as_ref().unwrap(), &actual_position);
+    }
+
 }

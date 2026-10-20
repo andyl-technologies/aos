@@ -5,6 +5,8 @@
 //! same resident fields; this partition does not create an independent Cache
 //! crate or detach any Root, writer, credential, or physical-owner borrow.
 
+use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+
 use super::*;
 
 #[derive(Default)]
@@ -28,7 +30,7 @@ pub(super) struct Q04ResidentCacheProgressV1 {
     >; 3],
     signed: Option<
         Result<
-            [u8; super::super::super::CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+            [u8; aos_sandbox_protocol::cache_owner_readback::CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
             crate::policy_compiler::create_q04::CreateQ04ErrorV1,
         >,
     >,
@@ -36,6 +38,9 @@ pub(super) struct Q04ResidentCacheProgressV1 {
     first: Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
     postcheck: Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
     started: bool,
+    // Set only after the genuine original Root/Native terminal checks succeed.
+    // Complete-looking historical rows or a new initializer cannot set it.
+    cleared_original_complete: bool,
 }
 
 // This short construction fence is created after the actual clock guard. It
@@ -75,6 +80,40 @@ impl Drop for Q04CacheLoanAssemblyFenceV1<'_> {
 
 #[cfg(target_os = "linux")]
 impl Q04ResidentCacheProgressV1 {
+    /// Borrows completed original progression and returns only its cut DATA.
+    ///
+    /// This checks the actual retained Native and terminal owners. It grants
+    /// no fresh Q04, Cache, append, receiving, or currentness authority.
+    pub(super) fn identity_after_original_clearance(
+        &self,
+        original_hold: Option<Option<CachePolicyHoldV1>>,
+    ) -> Result<crate::policy_compiler::create_q04::Q04CutIdentityV1,
+        crate::policy_compiler::create_q04::CreateQ04ErrorV1>
+    {
+        use crate::policy_compiler::create_q04::{CreateQ04ErrorV1, Q04CutIdentityV1};
+
+        if !self.started || !self.cleared_original_complete || self.failure().is_some()
+            || self.commits.iter().any(|result| !matches!(result, Some(Ok(_))))
+            || self.readbacks.iter().any(|result| !matches!(result, Some(Ok(_))))
+            || !matches!(self.signed, Some(Ok(_)))
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let terminal = self.readbacks[2].as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        if terminal.hold().is_held() || original_hold != Some(Some(terminal.hold())) {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let cut = self.cut.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        Q04CutIdentityV1::decode(cut).map_err(Into::into)
+    }
+
+    // This passive state view lets sibling pricing refuse reentry without
+    // exposing mutable progress or reconstructing a Q04 stage.
+    pub(super) const fn has_started(&self) -> bool {
+        self.started
+    }
+
     pub(super) fn failure(&self) -> Option<&crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
         self.first
             .as_ref()
@@ -653,7 +692,21 @@ impl<'owner> OriginalQ04CacheOwnerCutV1<'owner> {
                 .cache_signer()
                 .ok_or(CreateQ04ErrorV1::ChangedCut)?;
             let snapshot = self.physical.held_snapshot()?;
-            snapshot.sign_original_q04_readback_v2(readback, challenge, generation, signer, root)
+            use ed25519_dalek::Signer as _;
+
+            let mut packet = snapshot
+                .prepare_held_readback_data_v2(readback, challenge, generation)
+                .map_err(q04_readback_preparation_error_v1)?;
+            let preimage = aos_sandbox_protocol::cache_owner_readback::cache_owner_readback_signing_preimage_data_v2(
+                &packet[..aos_sandbox_protocol::cache_owner_readback::CLOSED_CACHE_OWNER_READBACK_BODY_BYTES_V2],
+            );
+            root.require_signing_boundary()?;
+            let signature = signer.sign(&preimage);
+            drop(preimage);
+            aos_sandbox_protocol::cache_owner_readback::cache_owner_readback_signature_data_v2(
+                &mut packet, &signature,
+            );
+            Ok(packet)
         })());
 
         let checked = (|| {
@@ -677,7 +730,7 @@ impl<'owner> OriginalQ04CacheOwnerCutV1<'owner> {
     pub(crate) fn signed_held_readback(
         &self,
     ) -> Result<
-        &[u8; super::super::super::CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+        &[u8; aos_sandbox_protocol::cache_owner_readback::CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
         crate::policy_compiler::create_q04::CreateQ04ErrorV1,
     > {
         if self.finished || self.progress.failure().is_some() {
@@ -742,6 +795,7 @@ impl<'owner> OriginalQ04CacheOwnerCutV1<'owner> {
         // Return the already initialized originals only after their exact
         // original terminal cut. This neither grants mutation nor clears the
         // durable Q04 release history, other debt, or any physical owner.
+        self.progress.cleared_original_complete = true;
         *self.complete = true;
         self.finished = true;
         Ok(())
@@ -792,7 +846,7 @@ impl Drop for OriginalQ04CacheOwnerCutV1<'_> {
 
 impl CacheResidentInitializationV1 {
     #[cfg(target_os = "linux")]
-    pub(crate) fn begin_original_q04<'original>(
+    pub(super) fn begin_original_q04<'original>(
         &'original mut self,
         owner: &'original mut CacheResidencyProtectedOwnerV1,
         physical: &'original super::super::super::DormantCacheOwnerV1,
@@ -869,5 +923,63 @@ impl CacheResidentInitializationV1 {
             first_failure: &mut self.first_failure,
             finished: false,
         })
+    }
+}
+
+// Physical preparation preserves the original Q04 physical error lane; the
+// canonical body/packet checks keep their separate original packet lane.
+fn q04_readback_preparation_error_v1(
+    cause: crate::cache_residency::CacheOwnerReadbackErrorV1,
+) -> crate::policy_compiler::create_q04::CreateQ04ErrorV1 {
+    use crate::cache_residency::CacheOwnerReadbackErrorV1;
+    use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+    match cause {
+        CacheOwnerReadbackErrorV1::Owner(cause) => CreateQ04ErrorV1::CachePhysical(cause),
+        cause => CreateQ04ErrorV1::CachePacket(cause),
+    }
+}
+
+#[cfg(test)]
+mod readback_preparation_error_tests {
+    use super::q04_readback_preparation_error_v1;
+    use crate::cache_residency::{CacheOwnerErrorV1, CacheOwnerReadbackErrorV1};
+    use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+    #[test]
+    fn physical_preparation_keeps_its_original_error_lane_and_io_object() {
+        let original = std::io::Error::other(std::io::Error::from_raw_os_error(9));
+        let retained = original.get_ref().unwrap() as *const _;
+
+        let actual = q04_readback_preparation_error_v1(CacheOwnerReadbackErrorV1::Owner(
+            CacheOwnerErrorV1::Io(original),
+        ));
+
+        let CreateQ04ErrorV1::CachePhysical(CacheOwnerErrorV1::Io(actual)) = actual else {
+            panic!("physical preparation was reclassified as a packet error");
+        };
+        assert!(std::ptr::addr_eq(retained, actual.get_ref().unwrap() as *const _));
+        assert_eq!(
+            actual.get_ref().unwrap().downcast_ref::<std::io::Error>().unwrap().raw_os_error(),
+            Some(9),
+        );
+    }
+
+    #[test]
+    fn canonical_preparation_keeps_the_original_packet_error_lane() {
+        for cause in [
+            CacheOwnerReadbackErrorV1::NonCanonical,
+            CacheOwnerReadbackErrorV1::Stale,
+            CacheOwnerReadbackErrorV1::Signature,
+        ] {
+            let expected = std::mem::discriminant(&cause);
+
+            let actual = q04_readback_preparation_error_v1(cause);
+
+            let CreateQ04ErrorV1::CachePacket(actual) = actual else {
+                panic!("packet preparation was reclassified as physical custody");
+            };
+            assert_eq!(std::mem::discriminant(&actual), expected);
+        }
     }
 }

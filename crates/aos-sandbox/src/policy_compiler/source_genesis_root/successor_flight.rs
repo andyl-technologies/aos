@@ -5,15 +5,23 @@
 //! Prepared, Anchored or Completed. Persisted admission identity never follows
 //! a new recovery flight's observation nonce or custody deadline.
 
+use aos_sandbox_protocol::source_genesis_wire::{
+    RootFirstSourceSuccessorFrameKindV2 as Phase,
+    FirstSuccessorWireRecipeV3,
+    decode_root_first_source_successor_frame_v2,
+    decode_root_project_source_successor_frame_v3,
+};
+
+use crate::hierarchy::genesis_profile::project_source_genesis_wire_error_v1;
+
 use aos_sandbox_core::ObjectDigest;
 
 use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, take};
 
 use super::flight::OriginalRootGenesisFlightV1;
 use super::successor_consumer::{HeldControllerFirstSourceSuccessorV2, HeldControllerProjectSuccessorV3, ControllerSuccessorOwnerViewV3};
-use super::successor_records::{RootFirstSourceSuccessorFloorV2, RootFirstSourceSuccessorIntentV2};
-use super::wire::{RootFirstSourceSuccessorFrameKindV2 as Phase, FirstSuccessorWireRecipeV3,
-    decode_root_first_source_successor_frame_v2, decode_root_project_source_successor_frame_v3};
+use aos_sandbox_ledger_replay::replay::phase_records::{RootFirstSourceSuccessorFloorV2, RootFirstSourceSuccessorIntentV2};
+
 
 pub(super) struct OriginalRootFirstSourceSuccessorFlightV2<'flight> {
     origin: &'flight OriginalRootGenesisFlightV1<'flight>,
@@ -53,8 +61,8 @@ impl<'flight> OriginalRootFirstSourceSuccessorFlightV2<'flight> {
 
     fn decode<'frame>(&self, frame: &'frame [u8], phase: Phase) -> Result<&'frame [u8], SourceGenesisErrorV1> {
         match self.recipe {
-            FirstSuccessorWireRecipeV3::StrictV2 => decode_root_first_source_successor_frame_v2(frame, phase, self.nonce()),
-            FirstSuccessorWireRecipeV3::MixedV3 => decode_root_project_source_successor_frame_v3(frame, phase, self.nonce()),
+            FirstSuccessorWireRecipeV3::StrictV2 => decode_root_first_source_successor_frame_v2(frame, phase, self.nonce()).map_err(project_source_genesis_wire_error_v1),
+            FirstSuccessorWireRecipeV3::MixedV3 => decode_root_project_source_successor_frame_v3(frame, phase, self.nonce()).map_err(project_source_genesis_wire_error_v1),
         }
     }
 
@@ -65,7 +73,7 @@ impl<'flight> OriginalRootFirstSourceSuccessorFlightV2<'flight> {
         controller.recheck()?;
         let record = RootFirstSourceSuccessorIntentV2::decode(
             self.decode(frame, Phase::Prepared)?,
-        )?;
+        ).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
         if record.approval_packet() != controller.packet() || record.begin() != controller.begin().digest()
             || record.source_uid() != self.source_uid()? || record.source_uid() != controller.source_uid()
             || record.source_names() != controller.begin().source_names()
@@ -86,7 +94,7 @@ impl<'flight> OriginalRootFirstSourceSuccessorFlightV2<'flight> {
         prepared.recheck()?;
         let floor = RootFirstSourceSuccessorFloorV2::decode(
             self.decode(frame, Phase::Anchored)?,
-        )?;
+        ).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
         super::successor_owner::require_receipt_intent(floor.receipt(), prepared.record())?;
         if floor.roles() != prepared.record().roles() || floor.approval() != prepared.record().approval()
             || floor.predecessor_floor() != prepared.record().predecessor_floor()

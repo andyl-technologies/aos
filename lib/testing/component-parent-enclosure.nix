@@ -43,6 +43,10 @@
             auditModule = import ../../modules/security/audit.nix {inherit config lib pkgs;};
             journalModule = import ../../modules/base/journald.nix {inherit config lib pkgs;};
             systemdModule = import ../../modules/systemd/system.nix {inherit config lib pkgs provenance;};
+            mountModule = import ../../modules/sandbox/mount-broker.nix {inherit config lib pkgs;};
+            networkModule = import ../../modules/sandbox/network-broker.nix {inherit config lib pkgs;};
+            publisherModule = import ../../modules/sandbox/runtime-deployment-publisher.nix {inherit config lib pkgs;};
+            hostModule = import ../../modules/sandbox/host-broker.nix {inherit config lib pkgs;};
           in {
             # Use actual receiving schemas without materializing their effects.
             options.aos.security.audit.bounds = auditModule.options.aos.security.audit.bounds;
@@ -50,9 +54,11 @@
             options.aos.journald = journalModule.options.aos.journald;
             options.systemd.services = systemdModule.options.systemd.services;
             options.systemd.slices = systemdModule.options.systemd.slices;
+            options.systemd.sockets = systemdModule.options.systemd.sockets;
             options.aos.sandbox =
               lib.genAttrs [
                 "sourceSignerService"
+                "ownershipAuthority"
                 "sourceSignerView"
                 "cacheSignerService"
                 "cacheSignerView"
@@ -62,7 +68,19 @@
                   type = lib.types.bool;
                   default = false;
                 };
-              });
+              }) // {
+                # This fixture bypasses Dendritic discovery. Reuse the real
+                # schemas for every newer role read by the enclosure module;
+                # missing production declarations must not become `or false`.
+                mountBroker.enable = mountModule.options.aos.sandbox.mountBroker.enable;
+                networkBroker.enable = networkModule.options.aos.sandbox.networkBroker.enable;
+                runtimeDeploymentPublisher = {
+                  inherit (publisherModule.options.aos.sandbox.runtimeDeploymentPublisher) enable bootPreparation;
+                };
+                hostBroker = {
+                  inherit (hostModule.options.aos.sandbox.hostBroker) componentControl executionReceiving;
+                };
+              };
             options.environment.etc = lib.mkOption {
               type = lib.types.attrs;
               default = {};
@@ -92,6 +110,12 @@
     }
   ];
   selected = evaluate profile [];
+  mountSelected = evaluate (profile // {mountReceiving = profile.fixedServices;}) [
+    {aos.sandbox.mountBroker.enable = true;}
+  ];
+  networkSelected = evaluate (profile // {networkReceiving = profile.fixedServices;}) [
+    {aos.sandbox.networkBroker.enable = true;}
+  ];
   invalid = evaluate (profile // {audit = auditBounds // {numLogs = 1;};}) [];
   invalidBounds = builtins.tryEval (builtins.deepSeq invalid.aos.security.audit.bounds true);
   boundsData = value: builtins.removeAttrs value ["_module"];
@@ -105,6 +129,12 @@
     TasksMax = 1;
   };
   expectedService = expectedSlice // {LimitNOFILE = 1;};
+  expectedSocket = {
+    PassCredentials = true;
+    PassPIDFD = true;
+    PassSecurity = false;
+    PassSubjectBeforeListen = true;
+  };
   independentSlice = {
     CPUQuota = "2%";
     MemoryMax = 8192;
@@ -154,4 +184,17 @@ in
     runtimeMaxFileSize = 1;
   }
   && selected.fixture.ownership == expectedOwnership
+  && !disabled.aos.sandbox.mountBroker.enable
+  && !disabled.aos.sandbox.networkBroker.enable
+  && !disabled.aos.sandbox.runtimeDeploymentPublisher.enable
+  && !disabled.aos.sandbox.runtimeDeploymentPublisher.bootPreparation
+  && disabled.aos.sandbox.hostBroker.executionReceiving == null
+  && disabled.systemd.sockets == {}
+  && builtins.attrNames mountSelected.systemd.services
+  == ["aos-journald-runtime-prep" "aos-sandbox-mountd" "audit-rules" "auditd" "systemd-journald"]
+  && project (builtins.attrNames expectedSocket) mountSelected.systemd.sockets.aos-sandbox-mountd.socketConfig == expectedSocket
+  && builtins.attrNames networkSelected.systemd.services
+  == ["aos-journald-runtime-prep" "aos-netd" "audit-rules" "auditd" "systemd-journald"]
+  && project sliceFields networkSelected.systemd.slices.aoscomponents-network.sliceConfig == expectedSlice
+  && project (builtins.attrNames expectedSocket) networkSelected.systemd.sockets.aos-netd.socketConfig == expectedSocket
   && !invalidBounds.success

@@ -20,7 +20,7 @@ use crate::mount_attempt::completion::CompletionHistory;
 use crate::mount_attempt::{
     History as AttemptHistory, MountAttemptError, Record, decode_attempt_body,
 };
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::CurrentNamespaceTarget;
 
 /// Classifies what a complete Mount inventory proves about one exact attempt.

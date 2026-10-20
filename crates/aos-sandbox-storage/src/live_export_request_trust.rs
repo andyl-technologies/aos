@@ -12,9 +12,7 @@
 //! requires exactly one generation step; rollback and same-generation key
 //! equivocation fail closed. Keys supplied with a request are never trusted.
 
-use std::fs::File;
 use std::os::fd::{AsFd as _, OwnedFd};
-use std::os::unix::fs::FileExt as _;
 use std::path::{Path, PathBuf};
 
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
@@ -27,7 +25,10 @@ use ed25519_dalek::VerifyingKey;
 use rustix::fs::{FileType, Mode, OFlags};
 use sha2::{Digest as _, Sha256};
 
-use crate::live_export_key::{open_protected_directory, same_stable_file_metadata};
+use crate::live_export_key::open_protected_directory;
+use crate::live_export_key::initial_read::{
+    ProtectedExportDirectoryOriginalV1, ProtectedExportFileOriginalV1,
+};
 
 const TRUST_FILE: &str = "storage-live-export-request-trust-v1";
 const JOURNAL_FILE: &str = "storage-live-export-request-trust.journal";
@@ -440,26 +441,61 @@ impl StorageLiveExportRequestTrustV1 {
     }
 
     pub(crate) fn validate_current(&self) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
-        let current_directory = self.reopen_directory()?;
-        let identity = rustix::fs::fstat(&current_directory)
-            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+        self.validate_current_with_originals(None)
+    }
+
+    fn validate_current_with_originals(
+        &self,
+        mut originals: Option<&mut TrustCurrentOriginalV1>,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        // Keep ordinary fresh-directory custody through the entire method, as
+        // before. The selected destination retains the same native recipe.
+        let mut ordinary_directory = None;
+        let identity = if let Some(originals) = originals.as_deref_mut() {
+            originals.directory.capture_once(&self.directory_path, self.expected_owner)
+                .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+            let directory = originals.directory.descriptor()
+                .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+            originals.identity = Some(rustix::fs::fstat(directory));
+            *originals.identity.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?
+        } else {
+            ordinary_directory = Some(self.reopen_directory()?);
+            rustix::fs::fstat(ordinary_directory.as_ref()
+                .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?)
+                .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?
+        };
         if (identity.st_dev, identity.st_ino) != (self.directory_device, self.directory_inode) {
             return Err(StorageLiveExportRequestTrustErrorV1::Custody);
         }
-        self.journal
-            .validate_held_protected_names()
-            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
-        let (bytes, device, inode) = read_trust(&self.directory, self.expected_owner)?;
+        if let Some(originals) = originals.as_deref_mut() {
+            originals.names = Some(self.journal.validate_held_protected_names_retaining(
+                &mut originals.names_originals,
+            ));
+            originals.names.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+        } else {
+            self.journal.validate_held_protected_names()
+                .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+        }
+        let (bytes, device, inode) = if let Some(originals) = originals.as_deref_mut() {
+            originals.file.capture_once(self.directory.as_fd(), TRUST_FILE, self.expected_owner)
+                .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+            originals.file.record().map(|(bytes, device, inode)| (*bytes, device, inode))
+                .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?
+        } else {
+            read_trust(&self.directory, self.expected_owner)?
+        };
         if (device, inode) != (self.file_device, self.file_inode)
             || bytes != self.bytes
             || parse_trust(&bytes)? != self.record
-            || self
-                .journal
-                .get(RecordNamespace::AuthorityPublication, JOURNAL_HEAD_KEY)
+            || self.journal.get(RecordNamespace::AuthorityPublication, JOURNAL_HEAD_KEY)
                 != Some(self.bytes.as_slice())
         {
             return Err(StorageLiveExportRequestTrustErrorV1::Custody);
         }
+        // Explicitly keep the ordinary directory until the old success boundary.
+        drop(ordinary_directory);
         Ok(())
     }
 
@@ -543,39 +579,11 @@ fn read_trust(
     directory: &OwnedFd,
     expected_owner: u32,
 ) -> Result<([u8; RECORD_BYTES], u64, u64), StorageLiveExportRequestTrustErrorV1> {
-    let descriptor = rustix::fs::openat(
-        directory.as_fd(),
-        TRUST_FILE,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
-    let before = rustix::fs::fstat(&descriptor)
+    let mut original = ProtectedExportFileOriginalV1::<RECORD_BYTES>::new();
+    original.capture_once(directory.as_fd(), TRUST_FILE, expected_owner)
         .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
-    if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
-        || before.st_uid != expected_owner
-        || before.st_mode & 0o777 != 0o600
-        || before.st_nlink != 1
-        || before.st_size != RECORD_BYTES as i64
-        || before.st_dev == 0
-        || before.st_ino == 0
-    {
-        return Err(StorageLiveExportRequestTrustErrorV1::Custody);
-    }
-
-    let file = File::from(descriptor);
-    let mut bytes = [0; RECORD_BYTES];
-    let mut repeated = [0; RECORD_BYTES];
-    file.read_exact_at(&mut bytes, 0)
-        .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
-    file.read_exact_at(&mut repeated, 0)
-        .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
-    let after =
-        rustix::fs::fstat(&file).map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
-    if !same_stable_file_metadata(&before, &after) || bytes != repeated {
-        return Err(StorageLiveExportRequestTrustErrorV1::Custody);
-    }
-    Ok((bytes, before.st_dev, before.st_ino))
+    original.record().map(|(bytes, device, inode)| (*bytes, device, inode))
+        .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)
 }
 
 fn parse_trust(
@@ -650,68 +658,591 @@ fn field<const N: usize>(
         .map_err(|_| StorageLiveExportRequestTrustErrorV1::InvalidRecord)
 }
 
+/// Retains the selected Trust opening and every reached initialization result.
+///
+/// The actual Construction keeps this attempt on failure. Only a complete
+/// positive result can move its Journal into the ordinary Trust owner.
+pub(crate) struct StorageLiveExportRequestTrustOpenV1 {
+    native: Option<aos_sandbox::journal::StorageRequestTrustCapturedJournalOpenV1>,
+    opened: Option<(Journal, aos_sandbox::RecoveryReport)>,
+    directory: ProtectedExportDirectoryOriginalV1,
+    identity: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
+    file: ProtectedExportFileOriginalV1<RECORD_BYTES>,
+    directory_post: ProtectedExportDirectoryOriginalV1,
+    directory_post_identity: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
+    current_originals: TrustCurrentOriginalV1,
+    read: Option<Result<([u8; RECORD_BYTES], u64, u64), StorageLiveExportRequestTrustErrorV1>>,
+    record: Option<Result<TrustRecordV1, StorageLiveExportRequestTrustErrorV1>>,
+    fixed_demand: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>>,
+    schema_demand: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>>,
+    initialization_demand: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>>,
+    receiving: Option<Result<(), aos_sandbox::StorageReceivingClosedV1>>,
+    directory_current: Option<Result<(), StorageLiveExportRequestTrustErrorV1>>,
+    writer_directory: Option<Result<
+        aos_sandbox_journal::protected_storage::OriginalFileMetadataV1, aos_sandbox::JournalError,
+    >>,
+    head: TrustHeadReconciliationV1,
+    current: Option<Result<(), StorageLiveExportRequestTrustErrorV1>>,
+    result: Option<Result<(), StorageLiveExportRequestTrustErrorV1>>,
+    ready: Option<StorageLiveExportRequestTrustV1>,
+    attempted: bool,
+    taken: bool,
+    closed: Option<StorageLiveExportRequestTrustErrorV1>,
+}
+
+impl StorageLiveExportRequestTrustOpenV1 {
+    /// Creates empty custody without a path, descriptor or receiving grant.
+    pub(crate) fn new() -> Self {
+        Self {
+            native: Some(aos_sandbox::journal::StorageRequestTrustCapturedJournalOpenV1::new()),
+            opened: None,
+            directory: ProtectedExportDirectoryOriginalV1::new(),
+            identity: None,
+            file: ProtectedExportFileOriginalV1::new(),
+            directory_post: ProtectedExportDirectoryOriginalV1::new(),
+            directory_post_identity: None,
+            current_originals: TrustCurrentOriginalV1::new(),
+            read: None,
+            record: None,
+            fixed_demand: None,
+            schema_demand: None,
+            initialization_demand: None,
+            receiving: None,
+            directory_current: None,
+            writer_directory: None,
+            head: TrustHeadReconciliationV1::new(),
+            current: None,
+            result: None,
+            ready: None,
+            attempted: false,
+            taken: false,
+            closed: None,
+        }
+    }
+
+    /// Opens only the same original Storage authority directory once.
+    ///
+    /// # Errors
+    /// Retains original receiving, native, schema and initialization failures.
+    /// A refusal never falls back to the ordinary unpriced opener.
+    pub(crate) fn open_once_v1(
+        &mut self,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+        directory_path: &Path,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        if self.attempted {
+            self.closed.get_or_insert(StorageLiveExportRequestTrustErrorV1::Custody);
+            return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+        }
+        self.attempted = true;
+        self.result = Some(self.open_selected(receiving, directory_path));
+        self.result
+            .as_ref()
+            .copied()
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?
+    }
+
+    fn open_selected(
+        &mut self,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+        directory_path: &Path,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        use aos_sandbox::journal::CapturedJournalOpenModeV1;
+
+        self.fixed_demand = Some(Self::fixed_demand(directory_path));
+        let fixed = *self.fixed_demand.as_ref().and_then(|value| value.as_ref().ok())
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+        self.receiving = Some(receiving.require_storage_authority_directory_v1(directory_path));
+        require_receiving(self.receiving.as_ref())?;
+        self.receiving = Some(receiving.reserve_trust_configuration_once_v1(fixed));
+        require_receiving(self.receiving.as_ref())?;
+
+        // Preserve the old fixed-file/parse-before-Journal preparation order.
+        // This record has no repeated or unbounded semantic carrier.
+        self.directory.capture_once(directory_path, 0)
+            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+        let directory = self.directory.descriptor()
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+        self.identity = Some(rustix::fs::fstat(directory));
+        let identity = self.identity.as_ref().and_then(|value| value.as_ref().ok())
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+        let directory_identity = (identity.st_dev, identity.st_ino);
+        self.file.capture_once(directory.as_fd(), TRUST_FILE, 0)
+            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+        self.read = Some(self.file.record().map(|(bytes, device, inode)| (*bytes, device, inode))
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody));
+        let (bytes, file_device, file_inode) = *self.read.as_ref()
+            .and_then(|value| value.as_ref().ok())
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+        self.record = Some(parse_trust(&bytes));
+        let generation = self.record.as_ref().and_then(|value| value.as_ref().ok())
+            .ok_or(StorageLiveExportRequestTrustErrorV1::InvalidRecord)?.generation;
+
+        // End the complete borrowed Result reservoir with its actual guard
+        // before later independent currentness borrows the same receiving loan.
+        {
+            let native = self.native.as_mut().ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+            let borrowed = receiving.borrow_trust_startup_once_v1(native);
+            let mut guard = match borrowed {
+                Ok(guard) => guard,
+                Err(error) => {
+                    self.receiving = Some(Err(error));
+                    return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+                }
+            };
+            self.receiving = Some(guard.prepare_once_v1(
+                journal_limits(), CapturedJournalOpenModeV1::CreateAndRepair,
+            ));
+            require_receiving(self.receiving.as_ref())?;
+            let extent = guard.captured_extent_v1().copied()
+                .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+
+            // Both results are parked while this same prefix is still borrowable.
+            // Native replay/semantic demand is paid separately inside the guard.
+            self.schema_demand = Some(trust_schema_demand(&extent));
+            self.initialization_demand = Some(trust_initialization_demand(&extent));
+            let schema = *self.schema_demand.as_ref().and_then(|value| value.as_ref().ok())
+                .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+            let initialization = *self.initialization_demand.as_ref()
+                .and_then(|value| value.as_ref().ok())
+                .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+            self.receiving = Some(guard.reserve_schema_once_v1(schema));
+            require_receiving(self.receiving.as_ref())?;
+            self.receiving = Some(guard.replay_once_v1());
+            require_receiving(self.receiving.as_ref())?;
+            self.receiving = Some(guard.reserve_initialization_once_v1(initialization));
+            require_receiving(self.receiving.as_ref())?;
+            match guard.take_opened_once_v1() {
+                Ok(opened) => self.opened = Some(opened),
+                Err(error) => {
+                    self.receiving = Some(Err(error));
+                    return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+                }
+            }
+            drop(guard);
+        }
+
+        // Join the earlier Trust-file directory to the Native writer's current
+        // named directory before initialization. Its own append names still
+        // perform their independent final check.
+        self.directory_current = Some(require_original_trust_directory(
+            directory_path, directory_identity, &mut self.directory_post,
+            &mut self.directory_post_identity,
+        ));
+        self.directory_current.as_ref().copied()
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)??;
+        let journal = &mut self.opened.as_mut()
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?.0;
+        // Compare the two actual held owners directly. A pathname can move
+        // A-to-B-to-A between independent observations; matching fresh paths alone
+        // cannot join the initial Trust File to this Native Journal directory.
+        require_same_trust_writer_directory(journal, directory_identity, &mut self.writer_directory)?;
+        let initialized = self.head.run_once(journal, &bytes, generation, true);
+        self.receiving = Some(receiving.require_storage_authority_directory_v1(directory_path));
+        initialized?;
+        require_receiving(self.receiving.as_ref())?;
+
+        let directory = self.directory.take_descriptor()
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+        let record = self.record.take().and_then(Result::ok)
+            .ok_or(StorageLiveExportRequestTrustErrorV1::InvalidRecord)?;
+        let (journal, _) = self.opened.take()
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+        self.ready = Some(StorageLiveExportRequestTrustV1 {
+            journal,
+            directory,
+            directory_path: directory_path.to_path_buf(),
+            directory_device: directory_identity.0,
+            directory_inode: directory_identity.1,
+            file_device,
+            file_inode,
+            bytes,
+            record,
+            expected_owner: 0,
+            #[cfg(test)]
+            synthetic_directory: false,
+        });
+        self.current = Some(self.ready.as_ref()
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?
+            .validate_current_with_originals(Some(&mut self.current_originals)));
+        self.receiving = Some(receiving.require_storage_authority_directory_v1(directory_path));
+        self.current.as_ref().copied()
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)??;
+        require_receiving(self.receiving.as_ref())
+    }
+
+    /// Disposes only this same completed facade after the real Trust posts.
+    pub(crate) fn settle_native_once_v1(
+        &mut self,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        if self.taken || self.closed.is_some() || !matches!(self.result, Some(Ok(()))) {
+            return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+        }
+        let native = self.native.take().ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+        if let Err(native) = receiving.settle_trust_native_opening_once_v1(native) {
+            self.native = Some(native);
+            self.closed = Some(StorageLiveExportRequestTrustErrorV1::Custody);
+            return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+        }
+        self.directory.settle_positive();
+        self.file.settle_positive();
+        self.directory_post.settle_positive();
+        self.current_originals.settle_positive();
+        Ok(())
+    }
+
+    /// Moves only the complete same-original positive Trust owner once.
+    pub(crate) fn take_trust_once_v1(&mut self) -> Option<StorageLiveExportRequestTrustV1> {
+        if self.taken || self.closed.is_some() || self.native.is_some()
+            || !matches!(self.result, Some(Ok(())))
+        {
+            return None;
+        }
+        self.taken = true;
+        self.ready.take()
+    }
+
+    /// Borrows the original first cause while all later reached debt stays held.
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.fixed_demand.as_ref().and_then(|value| value.as_ref().err())
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            .or_else(|| self.directory.failure())
+            .or_else(|| self.identity.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.file.failure())
+            .or_else(|| self.read.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.record.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.native.as_ref().and_then(|native| native.failure()))
+            .or_else(|| self.schema_demand.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.initialization_demand.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.directory_post.failure())
+            .or_else(|| self.directory_post_identity.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.directory_current.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.writer_directory.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.head.failure())
+            .or_else(|| self.current_originals.failure())
+            .or_else(|| self.current.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.receiving.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.result.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.closed.as_ref()
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+    }
+
+    fn fixed_demand(directory: &Path)
+        -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>
+    {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        use crate::receiving_demand::{add, count, multiply};
+
+        let ancestors = count(directory.ancestors().count())?;
+        let paths = multiply(count(directory.as_os_str().len())?, 4)?;
+        let step = count(ProtectedExportDirectoryOriginalV1::step_memory_bytes())?;
+        let carriers = multiply(ancestors, add(multiply(6, step)?,
+            multiply(6, count(std::mem::size_of::<&Path>())?)?)?)?;
+        let crypto = multiply(8, count(std::mem::size_of::<TrustRecordV1>()
+            + std::mem::size_of::<VerifyingKey>())?)?;
+        let memory = add(count(std::mem::size_of::<Self>())?, add(paths, add(carriers, crypto)?)?)?;
+        Ok(ResourceVector::ZERO
+            .with(D::MemoryBytes, add(memory, 64 * 1024)?)
+            .with(D::OpenFiles, add(multiply(3, ancestors)?, 4)?)
+            .with(D::MetadataEntries, add(multiply(9, ancestors)?, 26)?))
+    }
+}
+
+fn require_receiving(
+    result: Option<&Result<(), aos_sandbox::StorageReceivingClosedV1>>,
+) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+    if matches!(result, Some(Ok(()))) {
+        Ok(())
+    } else {
+        Err(StorageLiveExportRequestTrustErrorV1::Custody)
+    }
+}
+
+fn trust_schema_demand(
+    extent: &aos_sandbox::journal::ProtectedJournalPreopenReplayExtentV1,
+) -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError> {
+    use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+    use crate::receiving_demand::{add, count, multiply};
+
+    // The actual supplied limits admit one materialized record. The selected
+    // head has exactly 312 bytes; no protobuf/JSON model is decoded here.
+    let previous = extent.native_bytes.min(count(RECORD_BYTES)?);
+    let models = multiply(4, count(std::mem::size_of::<TrustRecordV1>())?)?;
+    let records = multiply(16, count(std::mem::size_of::<(&[u8], &[u8])>())?)?;
+    Ok(ResourceVector::ZERO
+        .with(D::MemoryBytes, add(multiply(previous, 4)?, add(models, records)?)?)
+        .with(D::MetadataEntries, 4))
+}
+
+fn trust_initialization_demand(
+    extent: &aos_sandbox::journal::ProtectedJournalPreopenReplayExtentV1,
+) -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError> {
+    use aos_sandbox_core::{AccountingError, ResourceDimension as D, ResourceVector};
+    use aos_sandbox_journal::geometry::{RecordShape, encoded_transaction_append_bytes};
+    use crate::receiving_demand::{add, count, multiply};
+
+    // Measure lengths only. A pretend transaction must not allocate before
+    // the real receiving debit. Reconciliation can append at most this head.
+    let append = encoded_transaction_append_bytes([RecordShape {
+        key_bytes: JOURNAL_HEAD_KEY.len(),
+        value_bytes: Some(RECORD_BYTES),
+    }].into_iter()).map_err(|_| AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes })?;
+    let cells = count(std::mem::size_of::<JournalRecord>()
+        + std::mem::size_of::<JournalTransaction>())?;
+    let memory = add(multiply(extent.native_bytes, 16)?,
+        add(multiply(append, 16)?, add(multiply(cells, 8)?, 64 * 1024)?)?)?;
+    Ok(ResourceVector::ZERO.with(D::MemoryBytes, memory)
+        .with(D::StorageBytes, append).with(D::MetadataEntries, 32))
+}
+
+fn require_original_trust_directory(
+    directory_path: &Path,
+    expected: (u64, u64),
+    original: &mut ProtectedExportDirectoryOriginalV1,
+    identity: &mut Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
+) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+    original.capture_once(directory_path, 0)
+        .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+    let directory = original.descriptor().ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+    *identity = Some(rustix::fs::fstat(directory));
+    let identity = identity.as_ref().and_then(|result| result.as_ref().ok())
+        .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+    if (identity.st_dev, identity.st_ino) != expected {
+        return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+    }
+    Ok(())
+}
+
+fn require_same_trust_writer_directory(
+    journal: &Journal,
+    expected: (u64, u64),
+    original: &mut Option<Result<
+        aos_sandbox_journal::protected_storage::OriginalFileMetadataV1, aos_sandbox::JournalError,
+    >>,
+) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+    if original.is_some() {
+        return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+    }
+    *original = Some(journal.observe_held_protected_directory_metadata_v1());
+    let actual = original.as_ref().and_then(|result| result.as_ref().ok())
+        .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+    if (actual.0, actual.1) != expected {
+        return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+    }
+    Ok(())
+}
+
+struct TrustCurrentOriginalV1 {
+    directory: ProtectedExportDirectoryOriginalV1,
+    identity: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
+    names_originals: aos_sandbox::journal::ProtectedJournalCurrentnessOriginalsV1,
+    names: Option<Result<(), aos_sandbox::JournalError>>,
+    file: ProtectedExportFileOriginalV1<RECORD_BYTES>,
+}
+
+impl TrustCurrentOriginalV1 {
+    fn new() -> Self {
+        Self {
+            directory: ProtectedExportDirectoryOriginalV1::new(),
+            identity: None,
+            names_originals: aos_sandbox::journal::ProtectedJournalCurrentnessOriginalsV1::new(),
+            names: None,
+            file: ProtectedExportFileOriginalV1::new(),
+        }
+    }
+
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.directory.failure()
+            .or_else(|| self.identity.as_ref().and_then(|result| result.as_ref().err())
+                .map(|cause| cause as &dyn std::error::Error))
+            .or_else(|| self.names_originals.failure())
+            .or_else(|| self.names.as_ref().and_then(|result| result.as_ref().err())
+                .map(|cause| cause as &dyn std::error::Error))
+            .or_else(|| self.file.failure())
+    }
+
+    fn settle_positive(&mut self) {
+        self.directory.settle_positive();
+        self.names_originals.settle_positive_once_v1();
+        self.file.settle_positive();
+    }
+}
+
+// One initializer serves the ordinary short-lived sink and the selected
+// retained attempt. The selected path keeps actual append/readback debt.
+struct TrustHeadReconciliationV1 {
+    before_error: Option<aos_sandbox::JournalError>,
+    transaction: Option<Result<JournalTransaction,
+        aos_sandbox_protocol::domain_ledger::JournalTransactionDataError>>,
+    native: Option<Result<aos_sandbox::CommitResult, aos_sandbox::JournalError>>,
+    readback: Option<Result<bool, aos_sandbox::JournalError>>,
+    result: Option<Result<(), StorageLiveExportRequestTrustErrorV1>>,
+}
+
+impl TrustHeadReconciliationV1 {
+    fn new() -> Self {
+        Self {
+            before_error: None,
+            transaction: None,
+            native: None,
+            readback: None,
+            result: None,
+        }
+    }
+
+    fn run_once(
+        &mut self,
+        journal: &mut Journal,
+        bytes: &[u8; RECORD_BYTES],
+        generation: u64,
+        readback_after_native_failure: bool,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        if self.result.is_some() {
+            return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+        }
+        self.result = Some(self.reconcile(journal, bytes, generation, readback_after_native_failure));
+        self.result.as_ref().copied()
+            .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?
+    }
+
+    fn reconcile(
+        &mut self,
+        journal: &mut Journal,
+        bytes: &[u8; RECORD_BYTES],
+        generation: u64,
+        readback_after_native_failure: bool,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        let mut authority = match journal.claim_protected_authority(RecordNamespace::AuthorityPublication) {
+            Ok(authority) => authority,
+            Err(error) => {
+                if readback_after_native_failure {
+                    self.before_error = Some(error);
+                }
+                return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+            }
+        };
+        let previous = match authority.get(JOURNAL_HEAD_KEY) {
+            Ok(previous) => previous.map(ToOwned::to_owned),
+            Err(error) => {
+                if readback_after_native_failure {
+                    self.before_error = Some(error);
+                }
+                return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+            }
+        };
+        let needs_commit = match previous {
+            None => {
+                let empty = match authority.is_materialized_empty() {
+                    Ok(empty) => empty,
+                    Err(error) => {
+                        if readback_after_native_failure {
+                            self.before_error = Some(error);
+                        }
+                        return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+                    }
+                };
+                if !empty || generation != 1 {
+                    return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+                }
+                true
+            }
+            Some(previous) if previous == bytes => false,
+            Some(previous) => {
+                let previous: [u8; RECORD_BYTES] = previous
+                    .try_into()
+                    .map_err(|_| StorageLiveExportRequestTrustErrorV1::InvalidRecord)?;
+                validate_transition(&previous, generation)?;
+                true
+            }
+        };
+        if needs_commit {
+            let hash = Sha256::new()
+                .chain_update(JOURNAL_DOMAIN)
+                .chain_update(bytes)
+                .finalize();
+            let transaction_id: [u8; 16] = hash[..16]
+                .try_into()
+                .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+            self.transaction = Some(JournalTransaction::new(
+                transaction_id,
+                vec![JournalRecord::put(
+                    RecordNamespace::AuthorityPublication,
+                    JOURNAL_HEAD_KEY.to_vec(),
+                    bytes.to_vec(),
+                )],
+            ));
+            if !readback_after_native_failure
+                && self.transaction.as_ref().is_some_and(Result::is_err)
+            {
+                drop(self.transaction.take());
+                return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+            }
+            let transaction = self.transaction.as_ref().and_then(|value| value.as_ref().ok())
+                .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?;
+            self.native = Some(authority.commit(transaction));
+            if !readback_after_native_failure {
+                // The ordinary sink keeps its former short-lived transaction
+                // and coarse error projection before the readback frontier.
+                let result = self.native.take()
+                    .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?
+                    .map(|_| ())
+                    .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody);
+                drop(self.transaction.take());
+                result?;
+            }
+        }
+
+        // In the selected attempt this is independent even after append error.
+        // The earlier whole native result remains the first cause.
+        self.readback = Some(authority.records().map(|records| {
+            records.collect::<Vec<_>>() == vec![(JOURNAL_HEAD_KEY, bytes.as_slice())]
+        }));
+        if !readback_after_native_failure {
+            let exact = self.readback.take()
+                .ok_or(StorageLiveExportRequestTrustErrorV1::Custody)?
+                .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+            return if exact { Ok(()) } else { Err(StorageLiveExportRequestTrustErrorV1::Custody) };
+        }
+        if self.native.as_ref().is_some_and(Result::is_err)
+            || !matches!(self.readback, Some(Ok(true)))
+        {
+            return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+        }
+        Ok(())
+    }
+
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.before_error.as_ref()
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            .or_else(|| self.transaction.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.native.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.readback.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+            .or_else(|| self.result.as_ref().and_then(|value| value.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
+    }
+}
+
 fn reconcile_head(
     journal: &mut Journal,
     bytes: &[u8; RECORD_BYTES],
     generation: u64,
 ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
-    let mut authority = journal
-        .claim_protected_authority(RecordNamespace::AuthorityPublication)
-        .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
-    let previous = authority
-        .get(JOURNAL_HEAD_KEY)
-        .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?
-        .map(ToOwned::to_owned);
-    let needs_commit = match previous {
-        None => {
-            if !authority
-                .is_materialized_empty()
-                .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?
-                || generation != 1
-            {
-                return Err(StorageLiveExportRequestTrustErrorV1::Custody);
-            }
-            true
-        }
-        Some(previous) if previous == bytes => false,
-        Some(previous) => {
-            let previous: [u8; RECORD_BYTES] = previous
-                .try_into()
-                .map_err(|_| StorageLiveExportRequestTrustErrorV1::InvalidRecord)?;
-            validate_transition(&previous, generation)?;
-            true
-        }
-    };
-    if needs_commit {
-        let hash = Sha256::new()
-            .chain_update(JOURNAL_DOMAIN)
-            .chain_update(bytes)
-            .finalize();
-        let transaction_id: [u8; 16] = hash[..16]
-            .try_into()
-            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
-        let transaction = JournalTransaction::new(
-            transaction_id,
-            vec![JournalRecord::put(
-                RecordNamespace::AuthorityPublication,
-                JOURNAL_HEAD_KEY.to_vec(),
-                bytes.to_vec(),
-            )],
-        )
-        .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
-        authority
-            .commit(&transaction)
-            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
-    }
-    if authority
-        .records()
-        .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?
-        .collect::<Vec<_>>()
-        != vec![(JOURNAL_HEAD_KEY, bytes.as_slice())]
-    {
-        return Err(StorageLiveExportRequestTrustErrorV1::Custody);
-    }
-    Ok(())
+    TrustHeadReconciliationV1::new().run_once(journal, bytes, generation, false)
 }
 
 fn validate_transition(
@@ -897,5 +1428,34 @@ mod tests {
             reopened.get(RecordNamespace::AuthorityPublication, JOURNAL_HEAD_KEY),
             Some(bytes.as_slice())
         );
+    }
+}
+
+#[cfg(test)]
+mod held_directory_join_tests {
+    use super::*;
+
+    #[test]
+    fn distinct_actual_trust_and_journal_directories_cannot_join() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let trust = StorageLiveExportRequestTrustV1::native_fixture_for_test(first.path());
+        let other = StorageLiveExportRequestTrustV1::native_fixture_for_test(second.path());
+        let expected = (trust.directory_device, trust.directory_inode);
+        let mut rejected = None;
+        let before = std::fs::read(second.path().join(JOURNAL_FILE)).unwrap();
+
+        assert!(require_same_trust_writer_directory(&other.journal, expected, &mut rejected).is_err());
+        let observed = rejected.as_ref().unwrap().as_ref().unwrap();
+        assert_ne!((observed.0, observed.1), expected);
+        assert_eq!(std::fs::read(second.path().join(JOURNAL_FILE)).unwrap(), before);
+
+        let mut matched = None;
+        require_same_trust_writer_directory(&trust.journal, expected, &mut matched).unwrap();
+        let original = matched.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!((original.0, original.1), expected);
+        assert!(require_same_trust_writer_directory(&other.journal, expected, &mut matched).is_err());
+        assert_eq!((matched.as_ref().unwrap().as_ref().unwrap().0,
+            matched.as_ref().unwrap().as_ref().unwrap().1), expected);
     }
 }

@@ -28,22 +28,25 @@ use super::{
     NodeWatchEventBodyV1, NodeWatchEventV1, ResyncInventoryV1, RollingVersionWindowV1,
 };
 use crate::local_inventory::assignment::{
-    AssignmentIntentV1, AssignmentObservationReasonV1, NodeAssignmentObservationV1,
-    SelectedCapabilityBindingV1, SnapshotTransferChunkV1, SnapshotTransferIdentityV1,
-    SnapshotTransferManifestV1, SnapshotTransferVersionV1,
+    AssignmentObservationReasonV1, NodeAssignmentObservationV1,
 };
-#[cfg(feature = "multi-node")]
-use crate::local_inventory::assignment::{
-    SnapshotDependencyRangeV1, SnapshotTransferChunkRequestV1, SnapshotTransferResumeV1,
+use crate::local_inventory::draining::{DrainAssignmentObservationV1, DrainObservationV1};
+use aos_sandbox_core::{AssignmentIntentV1, SelectedCapabilityBindingV1};
+use aos_sandbox_core::{
+    DrainAssignmentPlanV1, DrainAssignmentProgressV1, DrainAssignmentStrategyV1,
+    DrainBlockReasonV1, DrainDirectiveV1, DrainPhaseV1, NodeDrainModeV1,
 };
-use crate::local_inventory::capability::{
+use aos_sandbox_core::{
     NodeAdmissionStateV1, NodeBootId, NodeBootLineageV1, NodeCapabilityFactV1,
     NodeCapabilitySnapshotV1, NodeProbeEvidenceV1, NodeProtocolOfferV1, NodeProtocolV1,
 };
-use crate::local_inventory::draining::{
-    DrainAssignmentObservationV1, DrainAssignmentPlanV1, DrainAssignmentProgressV1,
-    DrainAssignmentStrategyV1, DrainBlockReasonV1, DrainDirectiveV1, DrainObservationV1,
-    DrainPhaseV1, NodeDrainModeV1,
+#[cfg(feature = "multi-node")]
+use aos_sandbox_core::{
+    SnapshotDependencyRangeV1, SnapshotTransferChunkRequestV1, SnapshotTransferResumeV1,
+};
+use aos_sandbox_core::{
+    SnapshotTransferChunkV1, SnapshotTransferIdentityV1, SnapshotTransferManifestV1,
+    SnapshotTransferVersionV1,
 };
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -343,7 +346,9 @@ pub(in crate::local_inventory) struct CapabilityWire {
     sequence: ObservationSequence,
 }
 
-pub(in crate::local_inventory) fn capability_wire(value: &NodeCapabilitySnapshotV1) -> CapabilityWire {
+pub(in crate::local_inventory) fn capability_wire(
+    value: &NodeCapabilitySnapshotV1,
+) -> CapabilityWire {
     let probe = value.probe_evidence();
     CapabilityWire {
         admission: match value.admission() {
@@ -1468,9 +1473,9 @@ fn pb_capability(value: CapabilityWire) -> protobuf::CapabilitySnapshot {
 fn wire_capability(
     value: protobuf::CapabilitySnapshot,
 ) -> Result<CapabilityWire, InvalidMultiNodeProtocol> {
-    if value.facts.len() > crate::local_inventory::MAX_NODE_CAPABILITY_FACTS
-        || value.features.len() > crate::local_inventory::MAX_NODE_FEATURES
-        || value.protocols.len() > crate::local_inventory::MAX_NODE_PROTOCOL_OFFERS
+    if value.facts.len() > aos_sandbox_core::MAX_NODE_CAPABILITY_FACTS
+        || value.features.len() > aos_sandbox_core::MAX_NODE_FEATURES
+        || value.protocols.len() > aos_sandbox_core::MAX_NODE_PROTOCOL_OFFERS
     {
         return Err(invalid());
     }
@@ -1784,9 +1789,9 @@ fn pb_manifest(value: ManifestWire) -> protobuf::SnapshotManifest {
 fn wire_manifest(
     value: protobuf::SnapshotManifest,
 ) -> Result<ManifestWire, InvalidMultiNodeProtocol> {
-    if value.chunks.len() > crate::local_inventory::MAX_SNAPSHOT_TRANSFER_CHUNKS
-        || value.dependencies.len() > crate::local_inventory::MAX_SNAPSHOT_TRANSFER_DEPENDENCIES
-        || value.required_features.len() > crate::local_inventory::MAX_NODE_FEATURES
+    if value.chunks.len() > aos_sandbox_core::MAX_SNAPSHOT_TRANSFER_CHUNKS
+        || value.dependencies.len() > aos_sandbox_core::MAX_SNAPSHOT_TRANSFER_DEPENDENCIES
+        || value.required_features.len() > aos_sandbox_core::MAX_NODE_FEATURES
     {
         return Err(invalid());
     }
@@ -1865,7 +1870,7 @@ fn pb_drain_directive(value: DrainDirectiveWire) -> protobuf::DrainDirective {
 fn wire_drain_directive(
     value: protobuf::DrainDirective,
 ) -> Result<DrainDirectiveWire, InvalidMultiNodeProtocol> {
-    if value.assignments.len() > crate::local_inventory::MAX_DRAIN_ASSIGNMENTS {
+    if value.assignments.len() > aos_sandbox_core::MAX_DRAIN_ASSIGNMENTS {
         return Err(invalid());
     }
     Ok(DrainDirectiveWire {
@@ -1993,7 +1998,7 @@ fn pb_drain_observation(value: DrainObservationWire) -> protobuf::DrainObservati
 fn wire_drain_observation(
     value: protobuf::DrainObservation,
 ) -> Result<DrainObservationWire, InvalidMultiNodeProtocol> {
-    if value.assignments.len() > crate::local_inventory::MAX_DRAIN_ASSIGNMENTS {
+    if value.assignments.len() > aos_sandbox_core::MAX_DRAIN_ASSIGNMENTS {
         return Err(invalid());
     }
     Ok(DrainObservationWire {
@@ -2293,7 +2298,7 @@ pub(super) fn protobuf_request_model(
         (CanonicalNodeFrameKindV1::WatchRequest, Body::WatchRequest(value)) => {
             let maximum_events = u16::try_from(value.maximum_events).map_err(|_| invalid())?;
             if maximum_events == 0
-                || usize::from(maximum_events) > crate::local_inventory::MAX_WATCH_EVENTS
+                || usize::from(maximum_events) > aos_sandbox_core::MAX_WATCH_EVENTS
             {
                 return Err(invalid());
             }
@@ -2403,7 +2408,7 @@ pub(super) fn protobuf_response(
             index,
             bytes,
         } => {
-            if bytes.is_empty() || bytes.len() > crate::local_inventory::MAX_NODE_RESPONSE_BYTES as usize
+            if bytes.is_empty() || bytes.len() > aos_sandbox_core::MAX_NODE_RESPONSE_BYTES as usize
             {
                 return Err(invalid());
             }
@@ -2420,7 +2425,7 @@ pub(super) fn protobuf_response(
             offset,
             bytes,
         } => {
-            if bytes.is_empty() || bytes.len() > crate::local_inventory::MAX_NODE_RESPONSE_BYTES as usize
+            if bytes.is_empty() || bytes.len() > aos_sandbox_core::MAX_NODE_RESPONSE_BYTES as usize
             {
                 return Err(invalid());
             }
@@ -2433,7 +2438,7 @@ pub(super) fn protobuf_response(
             }))
         }
         NodeResponseBodyV1::WatchBatch { events, cursor_gap } => {
-            if events.len() > crate::local_inventory::MAX_WATCH_EVENTS {
+            if events.len() > aos_sandbox_core::MAX_WATCH_EVENTS {
                 return Err(invalid());
             }
             Body::WatchResponse(Box::new(protobuf::WatchResponse {
@@ -2465,7 +2470,7 @@ fn protobuf_inventory_model(
     value: protobuf::AssignmentInventory,
     context: AuthenticatedEvidenceContextV1,
 ) -> Result<ResyncInventoryV1, InvalidMultiNodeProtocol> {
-    if value.assignments.len() > crate::local_inventory::MAX_RESYNC_ASSIGNMENTS {
+    if value.assignments.len() > aos_sandbox_core::MAX_RESYNC_ASSIGNMENTS {
         return Err(invalid());
     }
     ResyncInventoryV1::new(
@@ -2523,7 +2528,7 @@ pub(super) fn protobuf_response_model(
         },
         (CanonicalNodeFrameKindV1::SnapshotChunkResponse, Body::SnapshotChunkResponse(value)) => {
             if value.data.is_empty()
-                || value.data.len() > crate::local_inventory::MAX_NODE_RESPONSE_BYTES as usize
+                || value.data.len() > aos_sandbox_core::MAX_NODE_RESPONSE_BYTES as usize
             {
                 return Err(invalid());
             }
@@ -2538,7 +2543,7 @@ pub(super) fn protobuf_response_model(
             Body::SnapshotDependencyResponse(value),
         ) => {
             if value.data.is_empty()
-                || value.data.len() > crate::local_inventory::MAX_NODE_RESPONSE_BYTES as usize
+                || value.data.len() > aos_sandbox_core::MAX_NODE_RESPONSE_BYTES as usize
             {
                 return Err(invalid());
             }
@@ -2550,7 +2555,7 @@ pub(super) fn protobuf_response_model(
             }
         }
         (CanonicalNodeFrameKindV1::WatchResponse, Body::WatchResponse(value)) => {
-            if value.events.len() > crate::local_inventory::MAX_WATCH_EVENTS {
+            if value.events.len() > aos_sandbox_core::MAX_WATCH_EVENTS {
                 return Err(invalid());
             }
             NodeResponseBodyV1::WatchBatch {

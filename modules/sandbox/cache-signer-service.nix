@@ -11,6 +11,14 @@
   policy = config.aos.sandbox.policyAuthority;
   controllerService = config.aos.sandbox.controllerService;
   signerServiceHardening = import ./_signer-service-hardening.nix;
+  parent = config.aos.sandbox.resourceBank.parentEnclosure;
+  protectedOrigin = parent != null;
+  expectedExecStart = "${cfg.package}/bin/aos-sandbox-cache-signerd ${toString controller.uid} ${toString controller.gid} ${toString views.uid} ${toString views.gid}";
+  service = config.systemd.services.aos-sandbox-cache-signerd;
+  socket = config.systemd.sockets.aos-sandbox-cache-signerd.socketConfig;
+  rootProfileFiles = lib.optional (policy._normalStartupProfile != null)
+    "${policy._normalStartupProfile}/profile.json:aos-cache-root-profile:read-only";
+  profileMatches = import ./_fixed-signer-profile.nix;
 in {
   options.aos.sandbox.cacheSignerService = {
     enable = lib.mkEnableOption "the separate, nonauthorizing Cache-only readback signer";
@@ -46,12 +54,33 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
+        assertion = protectedOrigin && parent.cacheSignerReceiving != null && parent.cacheSignerSender != null;
+        message = "installed Cache signer requires its genuine Parent and distinct explicit Cache receiving/sender F/M slices";
+      }
+      {
+        assertion = policy._normalStartupProfile != null
+          && (service.serviceConfig.OpenFile or []) == rootProfileFiles
+          && builtins.all (name: (socket.${name} or false) == true)
+            ["PassCredentials" "PassPIDFD" "PassSecurity" "PassSubjectBeforeListen"];
+        message = "installed Cache signer requires its exact image-delivered Root profile and all PID1 pre-listen subject options";
+      }
+      {
+        assertion = !protectedOrigin || profileMatches {
+          inherit config lib pkgs;
+          package = cfg.package;
+          unit = service;
+          identity = "aos-cache-signer";
+          expectedExec = expectedExecStart;
+        };
+        message = "protected Cache signer requires the immutable selected image and its exact single signer role without helper commands or namespaces";
+      }
+      {
         assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || cfg.package == pkgs.aos-sandboxd;
         message = "confined Cache signer requires the exact evaluated policy-labelled AOS executable";
       }
       {
         assertion = views.enable && controllerService.enable && policy.enable;
-        message = "Cache signer service requires its two read-only views, Controller, and policy authority";
+        message = "Cache signer service requires its three read-only views, Controller, and policy authority";
       }
       {
         assertion = cfg.credentials.seed != null && cfg.credentials.publicKey != null && cfg.credentials.memoryCeiling != null;
@@ -94,6 +123,10 @@ in {
         SocketGroup = "aos-sandboxd";
         SocketMode = "0660";
         RemoveOnStop = true;
+        PassSubjectBeforeListen = true;
+        PassCredentials = true;
+        PassPIDFD = true;
+        PassSecurity = true;
       };
     };
 
@@ -107,10 +140,15 @@ in {
         // {
           SELinuxContext = lib.mkIf (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") "system_u:system_r:aos_sandbox_cache_signer_t";
           ProcSubset = "all";
+          PrivateUsers = lib.mkIf protectedOrigin false;
+          PrivatePIDs = lib.mkIf protectedOrigin false;
+          PrivateBPF = lib.mkIf protectedOrigin false;
+          DynamicUser = lib.mkIf protectedOrigin false;
           Type = "simple";
           Sockets = ["aos-sandbox-cache-signerd.socket"];
           StandardInput = "socket";
-          ExecStart = "${cfg.package}/bin/aos-sandbox-cache-signerd ${toString controller.uid} ${toString controller.gid} ${toString views.uid} ${toString views.gid}";
+          OpenFile = rootProfileFiles;
+          ExecStart = expectedExecStart;
           LoadCredential =
             lib.optionals (cfg.credentials.seed != null) ["cache-signer-v2-seed:/run/credentials/@system/${cfg.credentials.seed}"]
             ++ lib.optionals (cfg.credentials.publicKey != null) ["cache-owner-readback-public-key:/run/credentials/@system/${cfg.credentials.publicKey}"]

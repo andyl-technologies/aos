@@ -5,6 +5,13 @@
 //! paths, open one literal child without following its final symlink, and read
 //! an already admitted descriptor at fixed offsets.
 
+pub mod positional_hash;
+mod readiness_atomic_write;
+pub use readiness_atomic_write::{ReadinessAtomicWriteClosedV2, ReadinessAtomicWriteOriginalV2,
+    ReadinessAtomicWritePurposeV2, ReadinessAtomicWriteShapeDataV2};
+mod retained_fixed_read;
+pub use retained_fixed_read::{FixedProtectedReadClosedV3, FixedProtectedReadOriginalV3};
+
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;

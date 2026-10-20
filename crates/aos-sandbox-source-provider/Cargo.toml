@@ -5,7 +5,9 @@ edition = "2024"
 license.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aos-sandbox.workspace = true
+aos-sandbox-broker.workspace = true
+aos-sandbox-source.workspace = true
+aos-sandbox-ledger-replay.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
 aos-sandbox-protocol.workspace = true
@@ -18,7 +20,7 @@ thiserror.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "rand", "time"] }
 
 [dev-dependencies]
-aos-sandbox = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-source = { workspace = true, features = ["test-fixtures"] }
 tempfile.workspace = true
 
 [lints]

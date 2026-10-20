@@ -61,7 +61,7 @@ impl<C: HostCatalog, S: HostStateStore + Sync, W: HostWorker + Sync> HostBroker<
         &mut self,
         original: &AuthenticatedBrokerMethodRequestV1,
         roles: [OwnedFd; 4],
-        pending_guard: &mut (dyn FnMut() -> Result<()> + Send),
+        pending_guard: &mut dyn FnMut() -> Result<()>,
     ) -> Result<OriginalHostFuseWorkerReplyV1> {
         let mut transport = |action: TransportAction<'_>| match action {
             TransportAction::CheckCurrentness => {
@@ -387,6 +387,19 @@ impl RendezvousStep {
 #[cfg(test)]
 mod transport_tests {
     use super::*;
+
+    #[test]
+    fn current_owner_check_accepts_a_local_non_send_callback() {
+        let checks = std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = checks.clone();
+        let mut transport = move |_action: TransportAction<'_>| {
+            observed.set(observed.get() + 1);
+            Ok(TransportProgress::Checked)
+        };
+
+        assert!(check_original_transport(&mut transport).is_ok());
+        assert_eq!(checks.get(), 1);
+    }
 
     #[test]
     fn a_send_result_never_substitutes_for_current_owner_readback() {

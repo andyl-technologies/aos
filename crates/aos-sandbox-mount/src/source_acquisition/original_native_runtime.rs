@@ -56,75 +56,6 @@ impl Drop for OriginalRuntimeBoundaryV5<'_, '_, '_> {
 }
 
 impl FixedMountSourceAcquisitionOwnerV2<'_> {
-    /// Parks the real admission before any catalog, signature, or journal work.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn begin_original_native_acquire_v5(
-        &mut self,
-        live: LiveValidatedAcquireMountSourceRequest,
-        request: Vec<u8>,
-        plan: [u8; 32],
-        lease: [u8; 32],
-        publication: Vec<u8>,
-        catalog: Vec<u8>,
-        selection: Option<Vec<u8>>,
-        deadline: i64,
-    ) -> core::result::Result<(), (crate::MountError, LiveValidatedAcquireMountSourceRequest)> {
-        if let Err(error) = self.require_original_start_slot_v5() {
-            return Err((error, live));
-        }
-        self.runtime.pending_original_native = Some(OriginalNativeAcquireFlightV5::new(
-            live,
-            request,
-            plan,
-            lease,
-            publication,
-            catalog,
-            selection,
-            deadline,
-        ));
-        Ok(())
-    }
-
-    /// Moves genuine Live directly from its caller's slot into the retained flight.
-    ///
-    /// The caller uses the original entry boundary, which already borrows the
-    /// actual Session before broker health and attachment. This method has no
-    /// fallible operation after taking Live and does not manufacture admission.
-    ///
-    /// # Errors
-    ///
-    /// Preserves Live for an occupied runtime or missing admission slot.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn begin_original_native_acquire_retaining_v5(
-        &mut self,
-        live: &mut Option<LiveValidatedAcquireMountSourceRequest>,
-        request: Vec<u8>,
-        plan: [u8; 32],
-        lease: [u8; 32],
-        publication: Vec<u8>,
-        catalog: Vec<u8>,
-        selection: Option<Vec<u8>>,
-        deadline: i64,
-    ) -> Result<()> {
-        self.require_original_start_slot_v5()?;
-        if live.is_none() {
-            return Err(state_error("original Live admission slot is empty"));
-        }
-        self.runtime.pending_original_native = live.take().map(|live| {
-            OriginalNativeAcquireFlightV5::new(
-                live,
-                request,
-                plan,
-                lease,
-                publication,
-                catalog,
-                selection,
-                deadline,
-            )
-        });
-        Ok(())
-    }
-
     fn require_original_start_slot_v5(&self) -> Result<()> {
         if self.runtime.pending_original_native.is_some()
             || self.runtime.pending_provider.is_some()
@@ -183,32 +114,14 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         }
     }
 
-    /// Advances one owned original stage, retaining the flight on every error.
-    pub(crate) fn advance_original_native_acquire_v5(
-        &mut self,
-        session: &mut CurrentRootMountSourceProviderSessionV1,
-    ) -> Result<bool> {
-        self.advance_original_native_acquire_recipe_v5(session, None)
-    }
-
     /// Advances the same recipe under the genuine reopened domain-effect loan.
     pub(crate) fn advance_signed_original_native_acquire_v5(
         &mut self,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         effect: &mut crate::broker::OriginalMountSignedEffectLoanV1<'_>,
     ) -> Result<bool> {
-        self.advance_original_native_acquire_recipe_v5(session, Some(effect))
-    }
-
-    fn advance_original_native_acquire_recipe_v5(
-        &mut self,
-        session: &mut CurrentRootMountSourceProviderSessionV1,
-        mut effect: Option<&mut crate::broker::OriginalMountSignedEffectLoanV1<'_>>,
-    ) -> Result<bool> {
         OriginalRuntimeBoundaryV5::new(self, session).run(|owner, session| {
-            if let Some(effect) = effect.as_mut() {
-                effect.check_before_original_effect()?;
-            }
+            effect.check_before_original_effect()?;
             owner.require_no_original_inventory_v6(session)?;
             let flight = owner
                 .runtime
@@ -223,9 +136,7 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
                 authority.with_authority(|journal| {
                     flight.advance_catalog(&mut owner.runtime.table, journal, session)
                 })?;
-                if let Some(effect) = effect.as_mut() {
-                    effect.check_before_original_effect()?;
-                }
+                effect.check_before_original_effect()?;
                 return Ok(false);
             }
             let mut writer = owner
@@ -248,98 +159,8 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
                     owner.runtime.pending_provider = Some(sent);
                 }
             }
-            if let Some(effect) = effect.as_mut() {
-                effect.check_before_original_effect()?;
-            }
+            effect.check_before_original_effect()?;
             Ok(finished)
-        })
-    }
-
-    /// Advances the same first-record dispatch through Pending or stored Root4.
-    ///
-    /// A positive result ends at actual phase5 readback. It does not authorize
-    /// Root4 wire delivery, an ACK, manager handoff, settlement or Drain.
-    ///
-    /// # Errors
-    ///
-    /// Keeps the original flight, received packets and append attempts resident
-    /// while revoking effects on writer, currentness or continuation failure.
-    pub(crate) fn advance_original_native_pending_v5(
-        &mut self,
-        session: &mut CurrentRootMountSourceProviderSessionV1,
-    ) -> Result<bool> {
-        OriginalRuntimeBoundaryV5::new(self, session).run(|owner, session| {
-            owner.require_no_original_inventory_v6(session)?;
-            let flight = owner
-                .runtime
-                .pending_original_native
-                .as_mut()
-                .ok_or_else(|| state_error("original Pending runtime owner is absent"))?;
-            let sent = owner
-                .runtime
-                .pending_provider
-                .as_ref()
-                .ok_or_else(|| state_error("original Pending actual sent custody is absent"))?;
-            let mut writer = owner
-                .protected
-                .root_original_native_authority_v5()
-                .map_err(|error| state_error(&error.to_string()))?;
-            flight.advance_pending(
-                &mut owner.runtime.table,
-                &mut owner.runtime.original_native_sidecars,
-                &mut writer,
-                session,
-                sent,
-            )
-        })
-    }
-
-    /// Advances only original8 through retained signing, storage and local send.
-    ///
-    /// # Errors
-    ///
-    /// Retains the original flight and Sent owner on writer/currentness/effect
-    /// failure. Successful local send keeps the same owner gate and native2 debt.
-    pub(crate) fn advance_original_native_root_closed_v5(
-        &mut self,
-        session: &mut CurrentRootMountSourceProviderSessionV1,
-    ) -> Result<bool> {
-        OriginalRuntimeBoundaryV5::new(self, session).run(|owner, session| {
-            owner.require_no_original_inventory_v6(session)?;
-            let result = (|| {
-                let flight = owner
-                    .runtime
-                    .pending_original_native
-                    .as_mut()
-                    .ok_or_else(|| state_error("original8 runtime owner is absent"))?;
-                let sent = owner
-                    .runtime
-                    .pending_provider
-                    .as_ref()
-                    .ok_or_else(|| state_error("original8 actual Sent custody is absent"))?;
-                let mut writer = owner
-                    .protected
-                    .root_original_native_authority_v5()
-                    .map_err(|error| state_error(&error.to_string()))?;
-                flight.advance_root_closed(
-                    &mut owner.runtime.table,
-                    &mut owner.runtime.original_native_sidecars,
-                    &mut writer,
-                    session,
-                    sent,
-                )
-            })();
-
-            // Missing Sent custody and writer-opening failures occur before the
-            // flight's stage wrapper. They must revoke the same retained effects.
-            if result.is_err() {
-                if let Some(flight) = owner.runtime.pending_original_native.as_mut() {
-                    flight.stop_root_closed();
-                }
-                session.invalidate_native_acquire_commit_v3();
-            }
-
-            result
         })
     }
 

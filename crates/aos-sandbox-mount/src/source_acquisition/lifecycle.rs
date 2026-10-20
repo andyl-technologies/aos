@@ -4,8 +4,8 @@
 //! public scalar constructor, so journal shape alone cannot claim PID 1
 //! descriptor custody, manager readback, or an atomic source-pin/Create effect.
 
-use aos_sandbox::journal::{JournalRecord, JournalTransaction, RecordNamespace};
-use aos_sandbox::mount_manager_startup::{
+use aos_sandbox_mount_native::{JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_mount_native::mount_manager_startup::{
     LostMountSourceCustodyV1, StartupManagerSourcePresenceV1, TerminalMountSourceAbsenceV1,
 };
 use aos_sandbox_broker::BrokerEffectStatusV1;
@@ -190,7 +190,7 @@ impl SourceAcquisitionTableV2 {
     /// acquisition or its Complete Acquire lineage.
     pub(crate) fn prepare_lost_source_cleanup_v2(
         &self,
-        journal: &aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         loss: LostMountSourceCustodyV1,
     ) -> Result<aos_sandbox_source_provider_security::PreparedMountSourceReleaseV2> {
@@ -209,7 +209,7 @@ impl SourceAcquisitionTableV2 {
 
     pub(super) fn retain_source_root_postcommit(
         &mut self,
-        journal: &aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         outcome: SourceRootPostcommitOutcomeV2,
     ) -> SourceAcquisitionPostcommitOutcomeV2 {
         match outcome {
@@ -237,7 +237,7 @@ impl SourceAcquisitionTableV2 {
 
     fn retain_negative_custody_postcommit(
         &mut self,
-        journal: &aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         outcome: NegativeCustodyPostcommitOutcomeV2,
     ) -> SourceAcquisitionNegativeCustodyOutcomeV2 {
         match outcome {
@@ -265,7 +265,7 @@ impl SourceAcquisitionTableV2 {
 
     fn synchronize_after_uncertain_postcommit(
         &mut self,
-        journal: &aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
     ) -> bool {
         let Ok(records) = journal.records() else {
             return false;
@@ -283,7 +283,7 @@ impl SourceAcquisitionTableV2 {
 
     fn synchronize_after_uncertain_consumption(
         &mut self,
-        journal: &aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>,
+        journal: &aos_sandbox_mount_native::MountSourceConsumptionJournalAuthorityV1<'_>,
     ) -> bool {
         let Ok(records) = journal.records() else {
             return false;
@@ -301,7 +301,7 @@ impl SourceAcquisitionTableV2 {
 
     fn retain_source_consumption_postcommit(
         &mut self,
-        journal: &aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>,
+        journal: &aos_sandbox_mount_native::MountSourceConsumptionJournalAuthorityV1<'_>,
         outcome: SourceRootPostcommitOutcomeV2,
         transaction: JournalTransaction,
         predecessor_record: Vec<u8>,
@@ -338,7 +338,7 @@ impl SourceAcquisitionTableV2 {
     #[doc(hidden)]
     pub(crate) fn reseal_source_root_postcommit_v2(
         &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         recovery: SourceAcquisitionPostcommitRecoveryV2,
     ) -> SourceAcquisitionPostcommitOutcomeV2 {
@@ -379,7 +379,7 @@ impl SourceAcquisitionTableV2 {
     #[doc(hidden)]
     pub(crate) fn reseal_source_consumption_postcommit_v2(
         &mut self,
-        journal: &mut aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>,
+        journal: &mut aos_sandbox_mount_native::MountSourceConsumptionJournalAuthorityV1<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         recovery: SourceAcquisitionConsumptionRecoveryV2,
     ) -> SourceAcquisitionConsumptionOutcomeV2 {
@@ -459,7 +459,7 @@ impl SourceAcquisitionTableV2 {
     #[doc(hidden)]
     pub(crate) fn reseal_negative_custody_postcommit_v2(
         &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         recovery: SourceAcquisitionNegativeCustodyRecoveryV2,
     ) -> SourceAcquisitionNegativeCustodyOutcomeV2 {
@@ -491,7 +491,7 @@ impl SourceAcquisitionTableV2 {
     #[doc(hidden)]
     pub(crate) fn record_descriptor_custody_v2(
         &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         acquisition_id: [u8; 32],
         expected_revision: u64,
@@ -584,7 +584,7 @@ impl SourceAcquisitionTableV2 {
     #[doc(hidden)]
     pub(crate) fn record_startup_descriptor_custody_v2(
         &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         manager_presence: StartupManagerSourcePresenceV1,
     ) -> Result<SourceAcquisitionPostcommitOutcomeV2> {
@@ -615,7 +615,7 @@ impl SourceAcquisitionTableV2 {
     #[doc(hidden)]
     pub(crate) fn adopt_startup_retained_source_v2(
         &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         manager_presence: StartupManagerSourcePresenceV1,
     ) -> Result<SourceAcquisitionPostcommitOutcomeV2> {
@@ -653,7 +653,7 @@ impl SourceAcquisitionTableV2 {
 
     fn record_prepared_descriptor_custody_v2(
         &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         acquisition_id: [u8; 32],
         expected_revision: u64,
@@ -676,7 +676,7 @@ impl SourceAcquisitionTableV2 {
         expected_revision: u64,
         expected_digest: [u8; 32],
         prepared: &PreparedMountSourceRootCustodyV2,
-    ) -> Result<aos_sandbox::JournalTransaction> {
+    ) -> Result<aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction> {
         let current = self.current_for_cas(acquisition_id, expected_revision, expected_digest)?;
         let evidence = current
             .evidence
@@ -728,7 +728,7 @@ impl SourceAcquisitionTableV2 {
     #[doc(hidden)]
     pub(crate) fn activate_custodied_source_v2(
         &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         acquisition_id: [u8; 32],
         expected_revision: u64,
@@ -775,7 +775,7 @@ impl SourceAcquisitionTableV2 {
     #[doc(hidden)]
     pub(crate) fn consume_active_source_v2(
         &mut self,
-        journal: &mut aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>,
+        journal: &mut aos_sandbox_mount_native::MountSourceConsumptionJournalAuthorityV1<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         authority: &MountAuthorityV1,
         acquisition_id: [u8; 32],
@@ -974,7 +974,7 @@ impl SourceAcquisitionTableV2 {
     #[doc(hidden)]
     pub(crate) fn finish_release_v2(
         &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         acquisition_id: [u8; 32],
         expected_revision: u64,
@@ -1072,7 +1072,7 @@ impl SourceAcquisitionTableV2 {
     #[doc(hidden)]
     pub(crate) fn finish_lost_release_v2(
         &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         acquisition_id: [u8; 32],
         expected_revision: u64,
@@ -1141,7 +1141,7 @@ impl SourceAcquisitionTableV2 {
     #[doc(hidden)]
     pub(crate) fn recover_and_finish_release_absence_v2(
         &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         absence: TerminalMountSourceAbsenceV1,
     ) -> Result<SourceAcquisitionNegativeCustodyOutcomeV2> {
@@ -1212,7 +1212,7 @@ impl SourceAcquisitionTableV2 {
     #[doc(hidden)]
     pub(crate) fn fault_acquisition_v2(
         &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         acquisition_id: [u8; 32],
         expected_revision: u64,
         expected_digest: [u8; 32],
@@ -1271,7 +1271,7 @@ impl SourceAcquisitionTableV2 {
 
     fn commit_row_only(
         &mut self,
-        journal: &mut aos_sandbox::journal::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         tag: MutationTagV2,
         next: SourceAcquisitionRowV2,
     ) -> Result<()> {

@@ -11,6 +11,9 @@
 //! authenticated payload-scope handle lineage. Older V1 bodies omit those
 //! optional fields; absence never reconstructs an old handle from a request.
 //! JSON is an internal node-local format, not a portable or wire contract.
+//! Composite Stop may retain canonical namespace association DATA under its
+//! existing execution MAC. An omitted association preserves old bytes and
+//! cannot authorize restart reconciliation; old readers reject the new field.
 //! Unknown fields, checksum failures, overlong bodies, duplicate identities,
 //! and invalid pending/completed records fail closed during startup.
 
@@ -44,15 +47,29 @@ use crate::storage_existing_output::ExistingOutputObservationV1;
 use crate::worker::HostRuntimeIdentity;
 use crate::{HostError, Result};
 
-mod existing_output;
 mod canary_capacity;
+mod existing_output;
+mod read_capture;
+#[doc(hidden)]
+pub use read_capture::HostStateReadAttemptV2;
+pub(crate) mod write_capture;
+#[doc(hidden)]
+pub use write_capture::HostStateWriteAttemptV2;
+mod argument_preparation;
+pub(crate) mod execution_origin;
 mod fuse_worker_launch;
+pub(crate) mod historical_execution;
+mod historical_namespace;
+mod cleanup_chain;
+pub(crate) use cleanup_chain::{CleanupParentDataV1, VerifiedCleanupChainsV1};
+pub(crate) use historical_namespace::HistoricalNamespaceCandidateV7;
 mod no_apply_handoff;
+mod query_receiving;
 mod scope_handle;
 pub(crate) mod transition;
 
-use existing_output::DurableExistingOutputObservation;
 pub use canary_capacity::HostProductionStateStoreV1;
+use existing_output::DurableExistingOutputObservation;
 use fuse_worker_launch::DurableFuseWorkerLaunchV1;
 pub(crate) use no_apply_handoff::host_execution_receipt_digest;
 use scope_handle::DurableScopeHandle;
@@ -132,6 +149,7 @@ pub struct HostState {
     scope_handles: BTreeMap<[u8; 16], DurableScopeHandle>,
     existing_output_observations: BTreeMap<[u8; 16], DurableExistingOutputObservation>,
     fuse_worker_launches: BTreeMap<[u8; 16], DurableFuseWorkerLaunchV1>,
+    execution_origins: Vec<execution_origin::DurableExecutionOriginV2>,
 }
 
 /// Exact Host-authenticated identity of one descriptor-bearing scope replay.
@@ -217,7 +235,7 @@ struct RequestRecord {
     receipt: Option<Vec<u8>>,
 }
 
-#[derive(Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct StateWire {
     fences: Vec<DurableFence>,
@@ -233,6 +251,39 @@ struct StateWire {
     // Empty tables preserve legacy snapshot bytes. Nonempty rows have their
     // own closed version and location MAC; old readers reject the new field.
     fuse_worker_launches: Vec<DurableFuseWorkerLaunchV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    execution_origins: Vec<execution_origin::DurableExecutionOriginV2>,
+}
+
+impl Serialize for StateWire {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serialize_state_wire_v2(serializer, &self.fences, &self.requests,
+            &self.observation_sequences, &self.scope_replays, &self.scope_handles,
+            &self.existing_output_observations, &self.fuse_worker_launches, &self.execution_origins,
+            [!self.scope_replays.is_empty(), !self.scope_handles.is_empty(),
+                !self.existing_output_observations.is_empty(), !self.fuse_worker_launches.is_empty(),
+                !self.execution_origins.is_empty()])
+    }
+}
+
+// Both ownership dispositions use this sole field order/omission recipe. The
+// ordinary adapter still constructs and drops its original owned StateWire.
+fn serialize_state_wire_v2<S: serde::Serializer>(serializer: S,
+    fences: &impl Serialize, requests: &impl Serialize, observations: &impl Serialize,
+    replays: &impl Serialize, handles: &impl Serialize, outputs: &impl Serialize,
+    launches: &impl Serialize, origins: &impl Serialize, optional: [bool; 5],
+) -> std::result::Result<S::Ok, S::Error> {
+    use serde::ser::SerializeStruct as _;
+    let mut wire = serializer.serialize_struct("StateWire", 3 + optional.iter().filter(|present| **present).count())?;
+    wire.serialize_field("fences", fences)?;
+    wire.serialize_field("requests", requests)?;
+    wire.serialize_field("observation_sequences", observations)?;
+    if optional[0] { wire.serialize_field("scope_replays", replays)?; }
+    if optional[1] { wire.serialize_field("scope_handles", handles)?; }
+    if optional[2] { wire.serialize_field("existing_output_observations", outputs)?; }
+    if optional[3] { wire.serialize_field("fuse_worker_launches", launches)?; }
+    if optional[4] { wire.serialize_field("execution_origins", origins)?; }
+    wire.end()
 }
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -354,6 +405,8 @@ impl HostState {
             stop.execution_authentication.fill(255);
             stop.receipt = Some(vec![255; 4096]);
             stop.execution = DurableExecution::CompositeStop(CompositeStopRecord {
+                namespace_history_v6: None,
+                cleanup_parent_v1: None,
                 target: CompositeStopTarget::GuardianComposite {
                     source_launch_request_id: job.request_ids[0],
                     incarnation_id: *job.launch.fence().incarnation_id(),
@@ -481,6 +534,7 @@ impl HostState {
             || self.scope_replays != baseline.scope_replays
             || self.scope_handles != baseline.scope_handles
             || self.existing_output_observations != baseline.existing_output_observations
+            || self.execution_origins != baseline.execution_origins
             || self.fuse_worker_launches != baseline.fuse_worker_launches
         {
             return false;
@@ -580,6 +634,12 @@ impl HostState {
     /// detected without a separately authenticated set root, but after a
     /// newer fence exists replay of that older Apply is stale and rejected.
     pub(crate) fn validate_authenticated(&self, authority: &HostAuthorityV1) -> Result<()> {
+        self.validate_authenticated_cleanup_chains_v1(authority).map(|_| ())
+    }
+
+    fn validate_authenticated_cleanup_chains_v1(&self, authority: &HostAuthorityV1)
+        -> Result<VerifiedCleanupChainsV1> {
+        self.validate_execution_origins_v2(authority)?;
         self.validate_unique_retained_incarnations()?;
         self.validate_execution_links()?;
 
@@ -589,8 +649,10 @@ impl HostState {
             validate_base_execution_fence(authority, durable, &opened)?;
         }
 
-        let mut pending_sandboxes = BTreeSet::new();
         for (request_id, request) in &self.requests {
+            // A valid MAC does not establish the execution/receipt grammar.
+            // In-memory state must satisfy the same checks as decoded rows.
+            validate_request(request)?;
             if request.request_id != *request_id || request.fence.witness_request_id != *request_id
             {
                 return Err(HostError::State(
@@ -598,6 +660,16 @@ impl HostState {
                 ));
             }
             let effect = authority.open_effect(request_id, &request.effect)?;
+            if let DurableExecution::CompositeStop(stop) = &request.execution
+                && let Some(link) = stop.cleanup_parent_v1.as_ref()
+            {
+                let subject = link.subject_v1()?;
+                if effect.host_boot_id() != subject.current_boot_v1()
+                    || effect.request_deadline_boottime_nanoseconds() > subject.original_cutoff_v1()
+                {
+                    return Err(HostError::Fence("cleanup effect differs from its fresh signed subject"));
+                }
+            }
             if effect.request_id() != request_id
                 || effect.transport_request_digest().as_bytes() != &request.request_digest
                 || action_verb(request.action) != Some(effect.verb())
@@ -644,13 +716,17 @@ impl HostState {
             })?;
             request.fence.validate_successor(current)?;
 
-            if effect.status() == aos_sandbox_broker::BrokerEffectStatusV1::Pending
+        }
+        // No ancestor exception is considered until every record/MAC and the
+        // complete finite chain have been checked. Unrelated Pending rows keep
+        // exactly their original unique-current rule.
+        let chains = self.validate_cleanup_chains_v1()?;
+        let mut pending_sandboxes = BTreeSet::new();
+        for (request_id, request) in &self.requests {
+            if request.receipt.is_none() && !chains.is_superseded_v1(request_id)
                 && (!pending_sandboxes.insert(request.fence.sandbox_id)
-                    || request.fence != *current)
-            {
-                return Err(HostError::State(
-                    "pending request is not the unique current sandbox transition".to_owned(),
-                ));
+                    || self.fences.get(&request.fence.sandbox_id) != Some(&request.fence)) {
+                return Err(HostError::State("pending request is not the unique current sandbox transition".to_owned()));
             }
         }
         if self.fences.values().any(|current| {
@@ -696,7 +772,7 @@ impl HostState {
             }
             self.replay_existing_output_observation(*request_id, authority)?;
         }
-        Ok(())
+        Ok(chains)
     }
 
     /// Retains one exact Storage exchange beneath its current Host reserve.
@@ -798,6 +874,7 @@ impl HostState {
         authority: &HostAuthorityV1,
     ) -> Result<Admission> {
         self.require_request_not_worker_escrow(&request_id)?;
+        self.require_not_superseded_cleanup_v1(&request_id)?;
         if sealed_fence.is_empty()
             || sealed_effect.is_empty()
             || sealed_fence.len() > MAXIMUM_STATE_BYTES
@@ -813,6 +890,13 @@ impl HostState {
                 return Err(HostError::Fence(
                     "request ID was reused with different bytes",
                 ));
+            }
+            // A retained negative cannot refresh its original signed D/fence.
+            // This precedes the ordinary Pending authorization replacement.
+            if record.execution.guardian_attempt().is_some_and(|attempt| matches!(
+                attempt.phase, transition::GuardianLaunchPhase::CompensatedRetainedV1 { .. }
+            )) {
+                return Err(HostError::AgentLaunchQuarantined);
             }
             let result = match &record.receipt {
                 Some(receipt) => Admission::Complete(receipt.clone()),
@@ -839,8 +923,10 @@ impl HostState {
                 "durable host request table reached its fixed bound".to_owned(),
             ));
         }
+        let chains = self.validate_authenticated_cleanup_chains_v1(authority)?;
         if self.requests.values().any(|request| {
             request.receipt.is_none() && request.fence.sandbox_id == *fence.sandbox_id()
+                && !chains.is_superseded_v1(&request.request_id)
         }) {
             return Err(HostError::Fence(
                 "sandbox already has a different pending host transition",
@@ -1174,6 +1260,8 @@ impl HostState {
             | HostAction::ReserveExecutionOutput
             | HostAction::QueryExecutionOutput
             | HostAction::ObserveExecutionArgument
+            | HostAction::PrepareExecutionArgumentV2
+            | HostAction::AcceptExecutionArgumentV2
             | HostAction::QueryExecutionArgument
             | HostAction::TerminalNoApply
             | HostAction::QueryNoApply => return Ok(GuardianLineage::Shadowed),
@@ -1273,7 +1361,22 @@ impl HostState {
         sealed_effect: Vec<u8>,
         authority: &HostAuthorityV1,
     ) -> Result<Admission> {
+        self.admit_specialized_execution_engine_v1(action,fence,request_id,request_digest,
+            execution,sealed_fence,admitted,sealed_effect,authority,None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_specialized_execution_engine_v1(
+        &mut self, action: HostAction, fence: &ValidatedAssignmentFence,
+        request_id: [u8;16], request_digest: [u8;32], execution: DurableExecution,
+        sealed_fence: Vec<u8>, admitted: &VerifiedBrokerAdmission, sealed_effect: Vec<u8>,
+        authority: &HostAuthorityV1, cleanup: Option<cleanup_chain::CleanupAdmissionV1<'_, '_>>,
+    ) -> Result<Admission> {
+        if cleanup.is_none() && matches!(&execution,DurableExecution::CompositeStop(stop)
+            if stop.cleanup_parent_v1.is_some())
+        { return Err(HostError::Fence("ordinary Stop cannot adopt cleanup ancestry")); }
         self.require_request_not_worker_escrow(&request_id)?;
+        self.require_not_superseded_cleanup_v1(&request_id)?;
         let kind = match action {
             HostAction::Launch => "Guardian",
             HostAction::Stop => "composite Stop",
@@ -1310,8 +1413,44 @@ impl HostState {
                 "durable host request table reached its fixed bound".to_owned(),
             ));
         }
+        let chains = self.validate_authenticated_cleanup_chains_v1(authority)?;
+        let fresh_parent = match cleanup {
+            Some(cleanup) => {
+                let candidate = self.historical_namespace_candidate_v7(authority)?;
+                cleanup.ownership.require_current_target_v1(&candidate,cleanup.request)?;
+                let DurableExecution::CompositeStop(stop) = &execution else {
+                    return Err(HostError::Fence("fresh cleanup must retain exact Stop execution"));
+                };
+                let link = stop
+                    .cleanup_parent_v1
+                    .as_ref()
+                    .ok_or(HostError::Fence("fresh cleanup parent is absent"))?;
+                let parent = link.parent_id_v1();
+                if chains.is_superseded_v1(&parent)
+                    || self.fences.get(fence.sandbox_id()).is_none_or(|current| {
+                        current.witness_request_id != parent
+                            && !candidate
+                                .launch_only_scope_v1()
+                                .is_some_and(|scope| scope.launch_v1().0 == parent)
+                    })
+                {
+                    return Err(HostError::Fence(
+                        "fresh cleanup parent is not the current authenticated leaf",
+                    ));
+                }
+                Some(parent)
+            }
+            None => {
+                if matches!(&execution,DurableExecution::CompositeStop(stop) if stop.cleanup_parent_v1.is_some()) {
+                    return Err(HostError::Fence("ordinary Stop cannot adopt cleanup ancestry"));
+                }
+                None
+            }
+        };
         if self.requests.values().any(|request| {
             request.receipt.is_none() && request.fence.sandbox_id == *fence.sandbox_id()
+                && !chains.is_superseded_v1(&request.request_id)
+                && Some(request.request_id) != fresh_parent
         }) {
             return Err(HostError::Fence(
                 "sandbox already has a different pending host transition",
@@ -1402,6 +1541,7 @@ impl HostState {
         phase: transition::CompositeStopPhase,
         authority: &HostAuthorityV1,
     ) -> Result<()> {
+        self.require_not_superseded_cleanup_v1(request_id)?;
         let request = self.requests.get(request_id).ok_or_else(|| {
             HostError::State("composite Stop phase update lost its request".to_owned())
         })?;
@@ -1571,6 +1711,7 @@ impl HostState {
         sealed_effect: Vec<u8>,
         receipt: Vec<u8>,
     ) -> Result<()> {
+        self.require_not_superseded_cleanup_v1(&request_id)?;
         if receipt.is_empty() || receipt.len() > MAXIMUM_RECEIPT_BYTES {
             return Err(HostError::State(
                 "host replay receipt is empty or exceeds one MiB".to_owned(),
@@ -1723,6 +1864,19 @@ impl HostState {
         self.fences
             .get(identity.sandbox_id())
             .is_some_and(|fence| fence.runtime_identity() == *identity)
+    }
+
+    // This sufficient empty route cannot omit any current/historical runtime,
+    // output, worker or scope association. Classifying retained history belongs
+    // to the separate reconciliation route, never to an empty native listing.
+    pub(crate) fn native_inventory_state_empty_v5(&self) -> bool {
+        self.fences.is_empty()
+            && self.requests.is_empty()
+            && self.observation_sequences.is_empty()
+            && self.scope_replays.is_empty()
+            && self.scope_handles.is_empty()
+            && self.existing_output_observations.is_empty()
+            && self.fuse_worker_launches.is_empty()
     }
 
     pub(crate) fn runtime_inventory(&self) -> Vec<HostRuntimeIdentity> {
@@ -2027,6 +2181,14 @@ impl HostState {
         Ok(locator)
     }
 
+    pub(crate) fn protected_snapshot_digest_v2(&self) -> Result<[u8; 32]> {
+        use sha2::{Digest as _, Sha256};
+        let encoded = self.encode()?;
+        Ok(Sha256::new().chain_update(b"aos.sandbox.host.protected-state-cut.v2\0")
+            .chain_update((encoded.len() as u64).to_be_bytes())
+            .chain_update(&encoded).finalize().into())
+    }
+
     fn encode(&self) -> Result<Vec<u8>> {
         let wire = StateWire {
             fences: self.fences.values().cloned().collect(),
@@ -2047,6 +2209,7 @@ impl HostState {
                 .cloned()
                 .collect(),
             fuse_worker_launches: self.fuse_worker_launches.values().cloned().collect(),
+            execution_origins: self.execution_origins.clone(),
         };
         serde_json::to_vec(&wire).map_err(|error| HostError::State(error.to_string()))
     }
@@ -2075,6 +2238,8 @@ impl HostState {
             ));
         }
         let mut state = Self::default();
+        execution_origin::validate_rows_v2(&wire.execution_origins)?;
+        state.execution_origins = wire.execution_origins;
         for launch in wire.fuse_worker_launches {
             launch.validate_shape()?;
             if state
@@ -2394,6 +2559,8 @@ fn action_verb(action: u8) -> Option<aos_sandbox_core::BrokerVerb> {
         12 => Some(aos_sandbox_core::BrokerVerb::HostQueryExecutionArgument),
         13 => Some(aos_sandbox_core::BrokerVerb::HostTerminalNoApply),
         14 => Some(aos_sandbox_core::BrokerVerb::HostQueryNoApply),
+        15 => Some(aos_sandbox_core::BrokerVerb::HostPrepareExecutionArgumentV2),
+        16 => Some(aos_sandbox_core::BrokerVerb::HostAcceptExecutionArgumentV2),
         _ => None,
     }
 }
@@ -2504,6 +2671,8 @@ fn host_verb_code(verb: BrokerVerb) -> Option<u8> {
         BrokerVerb::HostQueryExecutionArgument => Some(12),
         BrokerVerb::HostTerminalNoApply => Some(13),
         BrokerVerb::HostQueryNoApply => Some(14),
+        BrokerVerb::HostPrepareExecutionArgumentV2 => Some(15),
+        BrokerVerb::HostAcceptExecutionArgumentV2 => Some(16),
         _ => None,
     }
 }
@@ -2776,6 +2945,17 @@ pub trait HostStateStore {
     /// failures. Missing state initializes an empty broker.
     fn load(&self) -> Result<HostState>;
 
+    /// Loads through the same reader while retaining its actual native prefix.
+    ///
+    /// The selected caller must prepay before constructing this destination.
+    /// Unsupported stores refuse before IO and cannot fall back to ordinary load.
+    ///
+    /// # Errors
+    /// Rejects unsupported, repeated, failed or stale native reads.
+    fn load_retaining_v2(&self, capture: &mut HostStateReadAttemptV2) -> Result<HostState> {
+        capture.refuse_unsupported_v2()
+    }
+
     /// Atomically commits one complete replacement snapshot.
     ///
     /// # Errors
@@ -2783,6 +2963,18 @@ pub trait HostStateStore {
     /// Returns an error unless file contents and the containing directory are
     /// durably synchronized.
     fn commit(&self, state: &HostState) -> Result<()>;
+
+    /// Commits through the same writer while retaining its actual native prefix.
+    ///
+    /// This DATA destination grants no receiving or execution permission. The
+    /// genuine selected Host caller must prepay before constructing or using it.
+    /// Unadapted stores refuse before IO instead of taking an ordinary fallback.
+    ///
+    /// # Errors
+    /// Refuses unsupported, repeated, failed or ambiguous selected writes.
+    fn commit_retaining_v2(&self, _state: &HostState, capture: &mut HostStateWriteAttemptV2) -> Result<()> {
+        capture.refuse_unsupported()
+    }
 }
 
 /// Requires the complete authenticated snapshot to remain physically current.
@@ -2877,9 +3069,25 @@ impl FileHostStateStore {
     }
 
     fn ensure_named_root(&self) -> Result<()> {
+        self.ensure_named_root_into(None)
+    }
+
+    fn ensure_named_root_into(&self, retained: Option<&mut canary_capacity::NativeStateReadbackV1>)
+        -> Result<()>
+    {
+        // Existing ordinary/Canary callers keep their returned-error contract.
+        // Only the new explicit native disposition parks these root IO causes.
+        let mut retained = retained.filter(|owner| owner.retains_root_causes_v2());
         let named = fs::symlink_metadata(&self.directory)
-            .map_err(|error| HostError::State(error.to_string()))?;
-        let held = rustix::fs::fstat(self.directory_fd.as_ref()).map_err(host_state_io)?;
+            .map_err(|error| match retained.as_deref_mut() {
+                None => HostError::State(error.to_string()),
+                Some(owner) => owner.io(error),
+            })?;
+        let held = rustix::fs::fstat(self.directory_fd.as_ref())
+            .map_err(|error| match retained.as_deref_mut() {
+                None => host_state_io(error),
+                Some(owner) => owner.native(error),
+            })?;
         if !named.file_type().is_dir()
             || named.dev() != held.st_dev
             || named.ino() != held.st_ino
@@ -2902,7 +3110,7 @@ impl FileHostStateStore {
         bytes: &[u8],
         mut retained: Option<&mut canary_capacity::NativeStateReadbackV1>,
     ) -> Result<()> {
-        self.ensure_named_root()?;
+        self.ensure_named_root_into(retained.as_deref_mut())?;
         let root = self.directory_fd.as_ref();
         if retained.is_none() {
             match rustix::fs::unlinkat(root, "state.next", rustix::fs::AtFlags::empty()) {
@@ -2946,7 +3154,7 @@ impl FileHostStateStore {
             }
         };
         let result = written
-            .and_then(|()| self.ensure_named_root())
+            .and_then(|()| self.ensure_named_root_into(retained.as_deref_mut()))
             .and_then(|()| {
                 rustix::fs::renameat(root, "state.next", root, "state.bin")
                     .map_err(|error| match retained.as_deref_mut() {
@@ -2959,7 +3167,7 @@ impl FileHostStateStore {
                     None => host_state_io(error),
                     Some(owner) => owner.native(error),
                 }))
-            .and_then(|()| self.ensure_named_root());
+            .and_then(|()| self.ensure_named_root_into(retained.as_deref_mut()));
         if result.is_err() && retained.is_none() {
             let _ = rustix::fs::unlinkat(root, "state.next", rustix::fs::AtFlags::empty());
         }
@@ -2968,6 +3176,10 @@ impl FileHostStateStore {
 }
 
 impl HostStateStore for FileHostStateStore {
+    fn load_retaining_v2(&self, capture: &mut HostStateReadAttemptV2) -> Result<HostState> {
+        capture.load_once_v2(self)
+    }
+
     fn load(&self) -> Result<HostState> {
         let mut readback = canary_capacity::NativeStateReadbackV1::local();
         self.load_into(&mut readback)
@@ -2977,12 +3189,24 @@ impl HostStateStore for FileHostStateStore {
         let bytes = encode_envelope(state)?;
         self.write_atomic(&bytes)
     }
+
+    fn commit_retaining_v2(&self, state: &HostState, capture: &mut HostStateWriteAttemptV2) -> Result<()> {
+        capture.commit_once(self, state)
+    }
 }
 
 impl FileHostStateStore {
+    fn ensure_readback_root_v2(&self, readback: &mut canary_capacity::NativeStateReadbackV1) -> Result<()> {
+        if readback.retains_root_causes_v2() {
+            self.ensure_named_root_into(Some(readback))
+        } else {
+            self.ensure_named_root()
+        }
+    }
+
     fn load_into(&self, readback: &mut canary_capacity::NativeStateReadbackV1) -> Result<HostState> {
         readback.require_empty_destination()?;
-        self.ensure_named_root()?;
+        self.ensure_readback_root_v2(readback)?;
         let descriptor = match rustix::fs::openat(
             self.directory_fd.as_ref(),
             "state.bin",
@@ -2994,7 +3218,7 @@ impl FileHostStateStore {
         ) {
             Ok(descriptor) => descriptor,
             Err(rustix::io::Errno::NOENT) => {
-                self.ensure_named_root()?;
+                self.ensure_readback_root_v2(readback)?;
                 return Ok(HostState::default());
             }
             Err(error) => return Err(readback.native(error)),
@@ -3042,13 +3266,16 @@ impl FileHostStateStore {
                 "HostState snapshot name changed during readback".to_owned(),
             ));
         }
-        self.ensure_named_root()?;
+        self.ensure_readback_root_v2(readback)?;
         decode_envelope(readback.bytes())
     }
 }
 
 fn encode_envelope(state: &HostState) -> Result<Vec<u8>> {
-        let body = state.encode()?;
+        envelope_body_v2(state.encode()?)
+}
+
+fn envelope_body_v2(body: Vec<u8>) -> Result<Vec<u8>> {
         if body.len() > MAXIMUM_STATE_BYTES {
             return Err(HostError::State(
                 "encoded host state exceeds sixteen MiB".to_owned(),
@@ -3108,6 +3335,8 @@ fn decode_envelope(bytes: &[u8]) -> Result<HostState> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+
+    mod retained_compensation;
 
     use aos_proto::aos::sandbox::local::v1::{
         ApplyRuntimeRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerMethod,
@@ -3172,6 +3401,112 @@ mod tests {
             &bytes,
         );
         (bytes, descriptor)
+    }
+
+    fn execution_origin_binding() -> super::execution_origin::ExecutionOriginBindingV2 {
+        super::execution_origin::ExecutionOriginBindingV2 {
+            node: [1; 16], epoch: [2; 16], boot: [3; 16], producer: [4; 16],
+            manifest: [5; 32], account: [6; 16], prepare_claim: [7; 16],
+            accept_claim: [8; 16], recipient: [9; 16], profile: [10; 32],
+        }
+    }
+
+    #[test]
+    fn execution_origin_is_omitted_from_old_bytes_and_cold_redelivery_cannot_rearm_it() {
+        let authority = authority();
+        let mut state = HostState::default();
+        let old = state.encode().unwrap();
+        assert!(!std::str::from_utf8(&old).unwrap().contains("execution_origins"));
+        let binding = execution_origin_binding();
+
+        state.spend_execution_origin_v2(binding, &authority).unwrap();
+        let encoded = state.encode().unwrap();
+        let mut reopened = HostState::decode(&encoded).unwrap();
+        reopened.validate_authenticated(&authority).unwrap();
+
+        let mut redelivery = binding;
+        redelivery.recipient = [11; 16];
+        redelivery.profile = [12; 32];
+        assert!(reopened.spend_execution_origin_v2(redelivery, &authority).is_err());
+        assert_eq!(reopened.encode().unwrap(), encoded);
+
+        let mut restarted_producer = binding;
+        restarted_producer.boot = [13; 16];
+        restarted_producer.producer = [14; 16];
+        restarted_producer.manifest = [15; 32];
+        assert!(reopened.spend_execution_origin_v2(restarted_producer, &authority).is_err());
+
+        let mut new_enrollment = restarted_producer;
+        new_enrollment.epoch = [16; 16];
+        new_enrollment.account = [17; 16];
+        new_enrollment.prepare_claim = [18; 16];
+        new_enrollment.accept_claim = [19; 16];
+        reopened.spend_execution_origin_v2(new_enrollment, &authority).unwrap();
+        reopened.validate_authenticated(&authority).unwrap();
+        assert_eq!(reopened.execution_origins.len(), 2);
+    }
+
+    #[test]
+    fn execution_origin_native_write_reopens_the_exact_authenticated_row() {
+        let authority = authority();
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let store = FileHostStateStore::open_exclusive(root.path()).unwrap();
+        let mut state = HostState::default();
+        let binding = execution_origin_binding();
+        state.spend_execution_origin_v2(binding, &authority).unwrap();
+        let mut write = HostStateWriteAttemptV2::new();
+
+        write.commit_execution_origin_once_v2(&store, &state, binding).unwrap();
+        assert_eq!(write.committed_origin_v2().unwrap().binding_v2(), binding);
+        let mut reopened = store.load().unwrap();
+        reopened.validate_authenticated(&authority).unwrap();
+        assert_eq!(reopened, state);
+        assert!(reopened.spend_execution_origin_v2(binding, &authority).is_err());
+        assert_eq!(std::fs::read(root.path().join("state.bin")).unwrap(), encode_envelope(&state).unwrap());
+    }
+
+    #[test]
+    fn selected_origin_writer_preserves_existing_guardian_snapshot_bytes() {
+        let fixture = AdmissionFixture::new();
+        let authority = fixture.authority();
+        let request = runtime_request();
+        let mut state = authenticated_guardian_state(&fixture, &authority, &request);
+        let binding = execution_origin_binding();
+        state.spend_execution_origin_v2(binding, &authority).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let store = FileHostStateStore::open_exclusive(root.path()).unwrap();
+        let mut write = HostStateWriteAttemptV2::new();
+
+        write.commit_execution_origin_once_v2(&store, &state, binding).unwrap();
+
+        assert_eq!(std::fs::read(root.path().join("state.bin")).unwrap(), encode_envelope(&state).unwrap());
+        let reopened = store.load().unwrap();
+        reopened.validate_authenticated(&authority).unwrap();
+        assert_eq!(reopened, state);
+    }
+
+    #[test]
+    fn execution_origin_unknown_native_write_keeps_the_prefix_and_cannot_seal() {
+        let authority = authority();
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let store = FileHostStateStore::open_exclusive(root.path()).unwrap();
+        std::fs::write(root.path().join("state.next"), b"unknown earlier commit").unwrap();
+        let mut state = HostState::default();
+        let binding = execution_origin_binding();
+        state.spend_execution_origin_v2(binding, &authority).unwrap();
+        let mut write = HostStateWriteAttemptV2::new();
+
+        assert!(write.commit_execution_origin_once_v2(&store, &state, binding).is_err());
+        let original_error = write.failure().unwrap() as *const dyn std::error::Error;
+        assert!(write.committed_origin_v2().is_err());
+        assert!(write.commit_execution_origin_once_v2(&store, &state, binding).is_err());
+        assert!(std::ptr::eq(write.failure().unwrap(), original_error));
+        assert!(state.spend_execution_origin_v2(binding, &authority).is_err());
+        assert_eq!(std::fs::read(root.path().join("state.next")).unwrap(), b"unknown earlier commit");
+        assert!(!root.path().join("state.bin").exists());
     }
 
     fn authority() -> HostAuthorityV1 {
@@ -3986,6 +4321,7 @@ mod tests {
                     1_000,
                     &test_clock(),
                     &prior_base,
+                    None,
                 )
                 .unwrap();
             let advanced_base = authority
@@ -4004,6 +4340,8 @@ mod tests {
                 execution_id: *execution_id.as_bytes(),
                 source_commitment: *source.as_bytes(),
                 semantic_commitment: *semantics.commitment().digest().as_bytes(),
+                argument_preparation: None,
+                historical_read_binding_v5: None,
             };
             let body_digest: [u8; 32] = Sha256::digest(body).into();
             state
@@ -4076,6 +4414,8 @@ mod tests {
             execution_id: [6; 16],
             source_commitment: [7; 32],
             semantic_commitment: [8; 32],
+            argument_preparation: None,
+            historical_read_binding_v5: None,
         });
         let mut state = HostState::default();
         state.requests.insert(request.request_id, request);
@@ -4372,6 +4712,486 @@ mod tests {
                 authority,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn launch_only_history_requires_its_mac_scope_and_roots_only_one_dispatched_child() {
+        let fixture = AdmissionFixture::new();
+        let authority = fixture.authority();
+        let launch_bytes = guardian_request(103);
+        let launch = decode_runtime_request(
+            &launch_bytes,
+            test_peer(),
+            test_policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let mut state = HostState::default();
+        append_completed_guardian(&mut state, &fixture, &authority, &launch_bytes);
+        let scope =
+            aos_sandbox_protocol::host_stopped_namespace::HostLaunchNamespaceDataV1::from_data_v1(
+                [10; 16],
+                *launch.fence(),
+                [110; 32],
+                ([103; 16], [2; 32], [3; 32]),
+            )
+            .unwrap();
+        let record = state.requests.get_mut(&[103; 16]).unwrap();
+        let DurableExecution::GuardianLaunch(original) = &mut record.execution else {
+            unreachable!()
+        };
+        let transition::GuardianLaunchPhase::Complete { worker_proof, .. } = &mut original.phase
+        else {
+            unreachable!()
+        };
+        worker_proof.host_boot_id = *scope.boot_v1();
+        original.launch_namespace_history_v1 = Some(scope.encode_v1().to_vec());
+        let effect = authority
+            .open_effect(&record.request_id, &record.effect)
+            .unwrap();
+        let fence = authority
+            .open_fence(&record.fence.sandbox_id, &record.fence.authorization)
+            .unwrap();
+        let digest = record
+            .execution
+            .authentication_digest(
+                execution_context(record).unwrap(),
+                stable_authority_digest(&effect, &fence).unwrap(),
+            )
+            .unwrap();
+        record.execution_authentication = authority
+            .seal_execution_record(&record.request_id, &digest)
+            .unwrap();
+        let state = HostState::decode(&state.encode().unwrap()).unwrap();
+
+        let candidate = state.historical_namespace_candidate_v7(&authority).unwrap();
+
+        assert_eq!(candidate.launch_only_scope_v1(), Some(&scope));
+        assert!(candidate.stopped_scope_v1().is_err());
+        assert!(candidate.absent_phase_v7(1).is_err());
+        assert!(!state.requests.contains_key(&[104; 16]));
+        let subject = aos_sandbox_protocol::host_stop_cleanup::HostStopCleanupSubjectDataV1::from_dispatched_data_v2(
+            scope, ([104; 16], [4; 32], [5; 32]), [106; 16], [109; 16],
+            [107; 32], [108; 16], [111; 32], 1000,
+        ).unwrap();
+        candidate.require_cleanup_subject_v2(&subject).unwrap();
+        let pending_subject =
+            aos_sandbox_protocol::host_stop_cleanup::HostStopCleanupSubjectDataV1::from_data_v1(
+                *subject.historical_scope_v1(),
+                [106; 16],
+                [109; 16],
+                [107; 32],
+                [108; 16],
+                [111; 32],
+                1000,
+            )
+            .unwrap();
+        assert!(
+            candidate
+                .require_cleanup_subject_v2(&pending_subject)
+                .is_err()
+        );
+
+        // Admit a real fresh Stop effect/fence with the existing authority
+        // fixture, then authenticate its closed cleanup relation. This checks
+        // the actual execution validator and full MAC traversal; the unrelated
+        // structural specimens below cannot establish either grant.
+        let mut authenticated = state.clone();
+        let GuardianLineage::Complete(lineage) = authenticated
+            .completed_guardian_lineage(&[104; 16], &[105; 16], &authority)
+            .unwrap()
+        else {
+            panic!("missing completed Launch fixture");
+        };
+        // A fresh cleanup generation preserves the protected old assignment;
+        // changing its digest would name a different cleanup-chain target.
+        let fresh_request = lifecycle_request(
+            109,
+            RuntimeAction::RUNTIME_ACTION_STOP,
+            [105; 16],
+            1,
+            2,
+            *scope.fence_v1().assignment_digest(),
+        );
+        append_guardian_composite_stop(
+            &mut authenticated,
+            &fixture,
+            &authority,
+            &fresh_request,
+            lineage,
+            lineage.payload_invocation,
+            lineage.guardian_invocation,
+        );
+        let actual_subject = aos_sandbox_protocol::host_stop_cleanup::HostStopCleanupSubjectDataV1::from_dispatched_data_v2(
+            scope, ([104; 16], [4; 32], [5; 32]), [106; 16], [109; 16],
+            [107; 32], test_clock().host_boot_id(), [111; 32], 1000,
+        ).unwrap();
+        let parent = authenticated.requests[&[103; 16]].clone();
+        let child = authenticated.requests.get_mut(&[109; 16]).unwrap();
+        let DurableExecution::CompositeStop(stop) = &mut child.execution else {
+            panic!("missing genuine fresh Stop fixture");
+        };
+        stop.namespace_history_v6 = Some(actual_subject.historical_scope_v1().encode_v4().to_vec());
+        stop.cleanup_parent_v1 = Some(CleanupParentDataV1::dispatched_fixture_v1(
+            &parent,
+            actual_subject,
+        ));
+        let context = execution_context(child).unwrap();
+        assert!(child.execution.validate(context));
+        let mut missing_link = child.execution.clone();
+        let DurableExecution::CompositeStop(stop) = &mut missing_link else {
+            unreachable!()
+        };
+        stop.cleanup_parent_v1 = None;
+        assert!(
+            !missing_link.validate(context),
+            "ordinary Stop keeps exact Stop-ID equality"
+        );
+        let effect = authority
+            .open_effect(&child.request_id, &child.effect)
+            .unwrap();
+        let fence = authority
+            .open_fence(&child.fence.sandbox_id, &child.fence.authorization)
+            .unwrap();
+        let digest = child
+            .execution
+            .authentication_digest(context, stable_authority_digest(&effect, &fence).unwrap())
+            .unwrap();
+        child.execution_authentication = authority
+            .seal_execution_record(&child.request_id, &digest)
+            .unwrap();
+
+        authenticated.validate_authenticated(&authority).unwrap();
+        let reopened = HostState::decode(&authenticated.encode().unwrap()).unwrap();
+        reopened.validate_authenticated(&authority).unwrap();
+        assert_eq!(
+            reopened
+                .historical_namespace_candidate_v7(&authority)
+                .unwrap()
+                .dispatched_observation_scope_v1(),
+            Some(scope)
+        );
+
+        // These child specimens exercise structural ancestry only. Their old
+        // Launch effect/MAC is not a Stop grant and full authentication refuses.
+        let mut structural = state.clone();
+        let parent = state.requests[&[103; 16]].clone();
+        let mut child = parent.clone();
+        child.request_id = [109; 16];
+        child.fence.witness_request_id = child.request_id;
+        child.fence.desired_generation += 1;
+        child.action = HostAction::Stop.code();
+        child.receipt = None;
+        child.execution = DurableExecution::CompositeStop(transition::CompositeStopRecord {
+            target: candidate.fresh_launch_stop_target_v1().unwrap(),
+            phase: transition::CompositeStopPhase::StopAuthorized,
+            namespace_history_v6: Some(subject.historical_scope_v1().encode_v4().to_vec()),
+            cleanup_parent_v1: Some(CleanupParentDataV1::dispatched_fixture_v1(&parent, subject)),
+        });
+        structural.requests.insert(child.request_id, child.clone());
+        let chains = structural.validate_cleanup_chains_v1().unwrap();
+        assert!(chains.is_superseded_v1(&parent.request_id));
+        assert_ne!(chains.commitment_v1(&child.request_id).unwrap(), [0; 32]);
+        assert!(
+            structural
+                .validate_authenticated_cleanup_chains_v1(&authority)
+                .is_err()
+        );
+        let sibling_subject = aos_sandbox_protocol::host_stop_cleanup::HostStopCleanupSubjectDataV1::from_dispatched_data_v2(
+            scope, ([104; 16], [4; 32], [5; 32]), [106; 16], [112; 16],
+            [107; 32], [108; 16], [111; 32], 1000,
+        ).unwrap();
+        child.request_id = [112; 16];
+        child.fence.witness_request_id = child.request_id;
+        let DurableExecution::CompositeStop(stop) = &mut child.execution else {
+            unreachable!()
+        };
+        stop.cleanup_parent_v1 = Some(CleanupParentDataV1::dispatched_fixture_v1(
+            &parent,
+            sibling_subject,
+        ));
+        structural.requests.insert(child.request_id, child);
+        assert!(structural.validate_cleanup_chains_v1().is_err());
+        assert_eq!(state.requests[&parent.request_id], parent);
+        let mut tampered = state;
+        let DurableExecution::GuardianLaunch(record) =
+            &mut tampered.requests.get_mut(&[103; 16]).unwrap().execution
+        else {
+            unreachable!()
+        };
+        record.launch_namespace_history_v1.as_mut().unwrap()[104] ^= 1;
+        assert!(
+            tampered
+                .historical_namespace_candidate_v7(&authority)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn restarted_stopped_history_keeps_old_resource_fence_and_requires_its_original_association() {
+        let fixture = AdmissionFixture::new();
+        let authority = fixture.authority();
+        let launch_bytes = guardian_request(103);
+        let launch = decode_runtime_request(
+            &launch_bytes,
+            test_peer(),
+            test_policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let mut state = HostState::default();
+        append_completed_guardian(&mut state, &fixture, &authority, &launch_bytes);
+        // The older generic fixture uses an arbitrary worker boot. This case
+        // joins and reauthenticates the proof before selecting its lineage.
+        let record = state.requests.get_mut(&[103; 16]).unwrap();
+        let DurableExecution::GuardianLaunch(original) = &mut record.execution else {
+            panic!("missing Launch");
+        };
+        let transition::GuardianLaunchPhase::Complete { worker_proof, .. } = &mut original.phase
+        else {
+            panic!("incomplete Launch");
+        };
+        worker_proof.host_boot_id = test_clock().host_boot_id();
+        let effect = authority
+            .open_effect(&record.request_id, &record.effect)
+            .unwrap();
+        let fence = authority
+            .open_fence(&record.fence.sandbox_id, &record.fence.authorization)
+            .unwrap();
+        let digest = record
+            .execution
+            .authentication_digest(
+                execution_context(record).unwrap(),
+                stable_authority_digest(&effect, &fence).unwrap(),
+            )
+            .unwrap();
+        record.execution_authentication = authority
+            .seal_execution_record(&record.request_id, &digest)
+            .unwrap();
+        let GuardianLineage::Complete(lineage) = state
+            .completed_guardian_lineage(&[104; 16], &[105; 16], &authority)
+            .unwrap()
+        else {
+            panic!("missing actual test lineage");
+        };
+        let stop_bytes = lifecycle_request(
+            104,
+            RuntimeAction::RUNTIME_ACTION_STOP,
+            [105; 16],
+            1,
+            2,
+            [107; 32],
+        );
+        append_guardian_composite_stop(
+            &mut state,
+            &fixture,
+            &authority,
+            &stop_bytes,
+            lineage,
+            lineage.payload_invocation,
+            lineage.guardian_invocation,
+        );
+        let scope =
+            aos_sandbox_protocol::host_stopped_namespace::HostStoppedNamespaceDataV4::from_data_v4(
+                [50; 16],
+                *launch.fence(),
+                [110; 32],
+                ([103; 16], [2; 32], [3; 32]),
+                ([104; 16], [4; 32], [5; 32]),
+            )
+            .unwrap();
+        // Interrupted specimens retain the genuinely sealed Pending intent
+        // from before completion, not a Complete effect with its receipt erased.
+        let pending_effect = state.requests[&[104; 16]].effect.clone();
+        {
+            let record = state.requests.get_mut(&[104; 16]).unwrap();
+            record
+                .execution
+                .bind_resident_namespace_history_v6(scope)
+                .unwrap();
+            assert!(record.execution.set_composite_stop_phase(
+                transition::CompositeStopPhase::Complete {
+                    observation_sequence: 2
+                }
+            ));
+            let effect = authority
+                .open_effect(&record.request_id, &record.effect)
+                .unwrap()
+                .complete(vec![104])
+                .unwrap();
+            let fence = authority
+                .open_fence(&record.fence.sandbox_id, &record.fence.authorization)
+                .unwrap();
+            record.effect = authority.seal_effect(&record.request_id, &effect).unwrap();
+            record.receipt = Some(vec![104]);
+            let digest = record
+                .execution
+                .authentication_digest(
+                    execution_context(record).unwrap(),
+                    stable_authority_digest(&effect, &fence).unwrap(),
+                )
+                .unwrap();
+            record.execution_authentication = authority
+                .seal_execution_record(&record.request_id, &digest)
+                .unwrap();
+        }
+
+        let reopened = HostState::decode(&state.encode().unwrap()).unwrap();
+        let recovered = reopened
+            .historical_namespace_candidate_v7(&authority)
+            .unwrap();
+
+        assert_eq!(recovered.stopped_scope_v1().unwrap(), &scope);
+        let mut absent_stop = DurableExecution::composite_stop_fixture();
+        assert!(
+            absent_stop
+                .bind_resident_namespace_history_v6(scope)
+                .is_err()
+        );
+        assert_eq!(
+            recovered
+                .stopped_scope_v1()
+                .unwrap()
+                .fence_v4()
+                .desired_generation(),
+            1
+        );
+        assert_eq!(
+            reopened.fences.get(&[104; 16]).unwrap().desired_generation,
+            2
+        );
+        assert_eq!(recovered.stopped_scope_v1().unwrap().boot_v4(), &[50; 16]);
+
+        for phase in [
+            transition::CompositeStopPhase::StopEffectIssued {
+                progress: transition::StopProgress::PayloadPending,
+            },
+            transition::CompositeStopPhase::StopEffectIssued {
+                progress: transition::StopProgress::GuardianPending,
+            },
+            transition::CompositeStopPhase::StopEffectIssued {
+                progress: transition::StopProgress::PayloadAwaitingAbsence,
+            },
+            transition::CompositeStopPhase::StopEffectIssued {
+                progress: transition::StopProgress::GuardianAwaitingAbsence,
+            },
+            transition::CompositeStopPhase::StopAuthorized,
+        ] {
+            let mut interrupted = reopened.clone();
+            let record = interrupted.requests.get_mut(&[104; 16]).unwrap();
+            let DurableExecution::CompositeStop(stop) = &mut record.execution else { panic!("missing Stop"); };
+            stop.phase = phase.clone();
+            record.receipt = None;
+            record.effect = pending_effect.clone();
+            let effect = authority.open_effect(&record.request_id, &record.effect).unwrap();
+            let fence = authority.open_fence(&record.fence.sandbox_id, &record.fence.authorization).unwrap();
+            let digest = record.execution.authentication_digest(execution_context(record).unwrap(),
+                stable_authority_digest(&effect, &fence).unwrap()).unwrap();
+            record.execution_authentication = authority.seal_execution_record(&record.request_id, &digest).unwrap();
+            interrupted.validate_authenticated(&authority).unwrap();
+            let saved = interrupted.encode().unwrap();
+
+            let candidate = interrupted.historical_namespace_candidate_v7(&authority);
+
+            let candidate = candidate.unwrap();
+            assert_eq!(candidate.stopped_scope_v1().unwrap(), &scope);
+            assert!(candidate.absent_phase_v7(19).is_ok());
+            assert!(candidate.absent_phase_v7(0).is_err());
+            if matches!(phase, transition::CompositeStopPhase::StopAuthorized) {
+                assert_eq!(candidate.absent_phase_v7(19).unwrap(),
+                    aos_sandbox_protocol::host_recovered_namespace::HostRecoveryStopPhaseDataV7::AuthorizedAbsent);
+            }
+            assert_eq!(interrupted.encode().unwrap(), saved);
+        }
+
+        let mut tampered = reopened.clone();
+        let DurableExecution::CompositeStop(stop) =
+            &mut tampered.requests.get_mut(&[104; 16]).unwrap().execution
+        else {
+            panic!("missing Stop");
+        };
+        stop.namespace_history_v6.as_mut().unwrap()[104] ^= 1;
+        assert!(
+            tampered
+                .historical_namespace_candidate_v7(&authority)
+                .is_err()
+        );
+
+        let mut wrong_resource_fence = state.clone();
+        let stop_request = decode_runtime_request(
+            &stop_bytes,
+            test_peer(),
+            test_policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let wrong_scope =
+            aos_sandbox_protocol::host_stopped_namespace::HostStoppedNamespaceDataV4::from_data_v4(
+                [50; 16],
+                *stop_request.fence(),
+                [110; 32],
+                scope.launch_v4(),
+                scope.stop_v4(),
+            )
+            .unwrap();
+        let record = wrong_resource_fence.requests.get_mut(&[104; 16]).unwrap();
+        let DurableExecution::CompositeStop(stop) = &mut record.execution else {
+            panic!("missing Stop");
+        };
+        stop.namespace_history_v6 = Some(wrong_scope.encode_v4().to_vec());
+        let effect = authority
+            .open_effect(&record.request_id, &record.effect)
+            .unwrap();
+        let fence = authority
+            .open_fence(&record.fence.sandbox_id, &record.fence.authorization)
+            .unwrap();
+        let digest = record
+            .execution
+            .authentication_digest(
+                execution_context(record).unwrap(),
+                stable_authority_digest(&effect, &fence).unwrap(),
+            )
+            .unwrap();
+        record.execution_authentication = authority
+            .seal_execution_record(&record.request_id, &digest)
+            .unwrap();
+        wrong_resource_fence
+            .validate_authenticated(&authority)
+            .unwrap();
+        assert!(
+            wrong_resource_fence
+                .historical_namespace_candidate_v7(&authority)
+                .is_err()
+        );
+
+        let mut legacy = reopened;
+        let record = legacy.requests.get_mut(&[104; 16]).unwrap();
+        let DurableExecution::CompositeStop(stop) = &mut record.execution else {
+            panic!("missing Stop");
+        };
+        stop.namespace_history_v6 = None;
+        let effect = authority
+            .open_effect(&record.request_id, &record.effect)
+            .unwrap();
+        let fence = authority
+            .open_fence(&record.fence.sandbox_id, &record.fence.authorization)
+            .unwrap();
+        let digest = record
+            .execution
+            .authentication_digest(
+                execution_context(record).unwrap(),
+                stable_authority_digest(&effect, &fence).unwrap(),
+            )
+            .unwrap();
+        record.execution_authentication = authority
+            .seal_execution_record(&record.request_id, &digest)
+            .unwrap();
+        legacy.validate_authenticated(&authority).unwrap();
+        assert!(
+            legacy
+                .historical_namespace_candidate_v7(&authority)
+                .is_err()
+        );
     }
 
     fn replace_outer_authorization(
@@ -5314,6 +6134,8 @@ mod tests {
                 execution_id: query.execution,
                 source_commitment: [23; 32],
                 semantic_commitment: [24; 32],
+                argument_preparation: None,
+                historical_read_binding_v5: None,
             }),
             execution_authentication: vec![1],
             effect: vec![1],
@@ -5354,6 +6176,177 @@ mod tests {
         let mut wrong_request = request;
         wrong_request.action = HostAction::ApplyExecution.code();
         assert!(observation.validate_request(&wrong_request).is_err());
+    }
+
+
+    #[test]
+    fn prepared_argument_requires_the_same_completed_native_response_after_reopen() {
+        let fixture = AdmissionFixture::new();
+        let authority = fixture.authority();
+        let mut base_request = ApplyRuntimeRequest::decode_from_slice(&runtime_request()).unwrap();
+        base_request.action = RuntimeAction::RUNTIME_ACTION_FREEZE.into();
+        base_request.launch_plan = None.into();
+        base_request.guardian_arm = None.into();
+        let base_bytes = base_request.encode_to_vec();
+        let decoded = decode_runtime_request(
+            &base_bytes,
+            test_peer(),
+            test_policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes(*decoded.fence().sandbox_id()),
+            IncarnationId::from_bytes(*decoded.fence().incarnation_id()),
+            AssignmentEpoch::new(decoded.fence().assignment_epoch()),
+            DesiredGeneration::new(decoded.fence().desired_generation()),
+            ObjectDigest::from_bytes(*decoded.fence().assignment_digest()),
+        )
+        .unwrap();
+        let base = admitted_records(&fixture, &authority, &base_bytes, 1, 300, None);
+        let base_request_id = *decoded.header().request_id();
+        let base_digest: [u8; 32] = Sha256::digest(&base_bytes).into();
+        let mut state = HostState::default();
+        state
+            .admit(
+                decoded.fence(),
+                base_request_id,
+                base_digest,
+                HostAction::Freeze.code(),
+                authority
+                    .seal_fence(decoded.fence().sandbox_id(), &base.fence)
+                    .unwrap(),
+                &base,
+                authority
+                    .seal_effect(&base_request_id, &base.effect)
+                    .unwrap(),
+                &authority,
+            )
+            .unwrap();
+        state
+            .complete(
+                base_request_id,
+                base_digest,
+                authority
+                    .seal_effect(&base_request_id, &base.effect.complete(vec![1]).unwrap())
+                    .unwrap(),
+                vec![1],
+            )
+            .unwrap();
+
+        // Only the real sealed HostState receipt join is under test. This
+        // fixture does not claim an admitted Controller operation or live Agent.
+        let mut source_bytes = [0; 336];
+        source_bytes[..8].copy_from_slice(b"AOSCIA02");
+        source_bytes[8..40].fill(1);
+        source_bytes[40..56].copy_from_slice(&[7; 16]);
+        source_bytes[56..184].fill(2);
+        source_bytes[184..216].copy_from_slice(assignment.digest().as_bytes());
+        source_bytes[216..248].fill(3);
+        source_bytes[248..264].copy_from_slice(&[50; 16]);
+        source_bytes[264..296].fill(4);
+        source_bytes[296..304].copy_from_slice(&1_000_u64.to_be_bytes());
+        let checksum: [u8; 32] = Sha256::new()
+            .chain_update(b"aos.sandbox.controller-argument-attempt.v1\0")
+            .chain_update(&source_bytes[..304])
+            .finalize()
+            .into();
+        source_bytes[304..].copy_from_slice(&checksum);
+        let source = ControllerExecutionArgumentAttemptV1::decode_canonical(&source_bytes).unwrap();
+        let runtime_handle = ObjectDigest::from_bytes([16; 32]);
+
+
+        use aos_sandbox_protocol::host_execution_argument::preparation::HostArgumentPreparationV2;
+        use aos_sandbox_protocol::semantics::host_execution_argument_prepare_grant_v2;
+
+        let session = [12; 32];
+        let agent = [13; 32];
+        let signed_request = [14; 32];
+        let cut = ObjectDigest::from_bytes([15; 32]);
+        let preparation = HostArgumentPreparationV2::from_observed_fields(
+            &source_bytes, session, agent, *runtime_handle.as_bytes(),
+            signed_request, *cut.as_bytes(), 9,
+        ).unwrap();
+        let mut accepted_bytes = source_bytes;
+        accepted_bytes[40..56].fill(8);
+        let checksum: [u8; 32] = Sha256::new()
+            .chain_update(b"aos.sandbox.controller-argument-attempt.v1\0")
+            .chain_update(&accepted_bytes[..304]).finalize().into();
+        accepted_bytes[304..].copy_from_slice(&checksum);
+        let accepted = ControllerExecutionArgumentAttemptV1::decode_canonical(&accepted_bytes).unwrap();
+        let semantics = host_execution_argument_prepare_grant_v2(
+            assignment, source.request_id(), &source_bytes,
+        ).unwrap();
+        let grant = BrokerGrant::new(
+            semantics.verb(), semantics.target(), semantics.commitment(),
+            source_bytes.len() as u32, 0,
+        ).unwrap();
+        let artifacts = fixture.artifacts_for_grant(assignment, grant, 2, 300);
+        let prior = state.prior_authorization(assignment.sandbox().as_bytes()).unwrap().to_vec();
+        let admitted = authority.admit_argument(
+            &artifacts, assignment, source.request_id(), &source_bytes,
+            semantics, 1_000, &test_clock(), &prior,
+        ).unwrap();
+        let advanced = authority.advance_base_execution_fence(
+            assignment.sandbox().as_bytes(), &prior, &admitted,
+        ).unwrap();
+        let body_digest: [u8; 32] = Sha256::digest(source_bytes).into();
+        state.admit_execution_handoff(
+            assignment, source.request_id(), body_digest,
+            HostAction::PrepareExecutionArgumentV2,
+            HostExecutionHandoffRecord {
+                runtime_witness_request_id: base_request_id,
+                runtime_handle: *runtime_handle.as_bytes(),
+                session_binding: session,
+                signed_request_digest: signed_request,
+                operation_id: *source.create_operation().as_bytes(),
+                execution_id: *source.execution().as_bytes(),
+                source_commitment: *source.record_digest().as_bytes(),
+                semantic_commitment: *semantics.commitment().digest().as_bytes(),
+                argument_preparation: None,
+                historical_read_binding_v5: None,
+            },
+            authority.seal_fence(assignment.sandbox().as_bytes(), &admitted.fence).unwrap(),
+            advanced, &admitted,
+            authority.seal_effect(&source.request_id(), &admitted.effect).unwrap(), &authority,
+        ).unwrap();
+
+        // A valid preparation checksum and pending authenticated admission
+        // cannot replace the actual completed response.
+        assert!(state.require_completed_argument_preparation_v2(
+            &authority, &preparation, &accepted, assignment,
+            session, agent, runtime_handle, cut, 9,
+        ).is_err());
+        let receipt = host_execution_receipt_digest(
+            source.request_id(), preparation.canonical_bytes(),
+        ).to_vec();
+        let completed = admitted.effect.complete(receipt.clone()).unwrap();
+        state.complete(
+            source.request_id(), body_digest,
+            authority.seal_effect(&source.request_id(), &completed).unwrap(), receipt,
+        ).unwrap();
+        let reopened = HostState::decode(&state.encode().unwrap()).unwrap();
+        reopened.require_completed_argument_preparation_v2(
+            &authority, &preparation, &accepted, assignment,
+            session, agent, runtime_handle, cut, 9,
+        ).unwrap();
+
+        let changed_agent = HostArgumentPreparationV2::from_observed_fields(
+            &source_bytes, session, [16; 32], *runtime_handle.as_bytes(),
+            signed_request, *cut.as_bytes(), 9,
+        ).unwrap();
+        assert!(reopened.require_completed_argument_preparation_v2(
+            &authority, &changed_agent, &accepted, assignment,
+            session, [16; 32], runtime_handle, cut, 9,
+        ).is_err());
+        assert!(reopened.require_completed_argument_preparation_v2(
+            &authority, &preparation, &accepted, assignment,
+            [17; 32], agent, runtime_handle, cut, 9,
+        ).is_err());
+        assert!(reopened.require_completed_argument_preparation_v2(
+            &authority, &preparation, &accepted, assignment,
+            session, agent, runtime_handle, cut, 10,
+        ).is_err());
     }
 
     #[test]
@@ -5537,6 +6530,8 @@ mod tests {
                 execution_id: *source.execution().as_bytes(),
                 source_commitment: *source.record_digest().as_bytes(),
                 semantic_commitment: *semantics.commitment().digest().as_bytes(),
+                argument_preparation: None,
+                historical_read_binding_v5: None,
             };
 
             assert_eq!(

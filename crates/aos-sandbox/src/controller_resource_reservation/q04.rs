@@ -13,7 +13,6 @@
 
 use std::cell::OnceCell;
 
-use aos_sandbox_core::model::LimitValue;
 use aos_sandbox_core::RawPairedClockSample;
 
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
@@ -74,27 +73,9 @@ impl Q04ResourceTransferV1 {
         let specification = crate::sandbox_spec_state::get(journal, ledger.specification())
             .map_err(|error| q04_resource_error(ResourceReservationErrorV1::Specification(Box::new(error))))?
             .ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        let requested = specification.spec().resource_profile().limits();
-        let resolved = candidate.hard_resources().core_profile().limits();
-        if requested.len() != 16 || resolved.len() != 16 {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        for (index, (requested, resolved)) in requested.iter().zip(resolved).enumerate() {
-            let LimitValue::Bounded(actual) = resolved.value() else {
-                return Err(CreateQ04ErrorV1::ChangedCut);
-            };
-            if requested.dimension() as usize != index
-                || requested.dimension() != resolved.dimension()
-                || requested.enforcement() != resolved.enforcement()
-                || match requested.value() {
-                    LimitValue::Inherited => false,
-                    LimitValue::Bounded(limit) => actual > limit,
-                    LimitValue::Unlimited(_) => true,
-                }
-            {
-                return Err(CreateQ04ErrorV1::ChangedCut);
-            }
-        }
+        aos_sandbox_policy::require_specification_resource_profile_v1(
+            specification.spec().resource_profile(), candidate.hard_resources().core_profile(),
+        ).map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
         let amount = crate::policy_compiler::create_q04::candidate_capacity(candidate)?;
         let demand = root.original_input_demand(amount)?;
         let retained_use = demand.retained();
@@ -160,6 +141,71 @@ impl Q04ResourceTransferV1 {
         transfer.require_predecessor(state).map_err(q04_resource_error)?;
         root_loan.recheck()?;
         Ok(transfer)
+    }
+
+    // AOSPCO03 remains the exact already-held compiler proposal, not a fresh
+    // currentness permit. Its existing format owner performs any later decode.
+    pub(super) fn create_storage_input_origin_bytes_v1(&self) -> &[u8] {
+        &self.input_origin
+    }
+
+    // This association uses the original retained Spec and co-issuance owner.
+    // It identifies one charged lane; it grants no fresh policy or effect use.
+    pub(super) fn create_continuation_lane(
+        &self,
+        operation: [u8; 16],
+    ) -> Result<[u8; 16], ResourceReservationErrorV1> {
+        use sha2::{Digest as _, Sha256};
+
+        if self.binding.native_fields().original_claim.operation() != operation
+            || self.crossing_failure().is_some()
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        let mut hash = Sha256::new();
+        hash.update(b"aos.sandbox.create-storage.lane.v1\0");
+        hash.update(operation);
+        hash.update(self.child.native_fields().id);
+        // Spec publication is an earlier operation referenced by this Create.
+        // Its provenance remains distinct from the accepted claim operation.
+        hash.update(self.specification.operation_id().as_bytes());
+        hash.update(self.specification.request_digest().as_bytes());
+        hash.update(self.specification.record_digest().as_bytes());
+        hash.update(self.binding.commitment()?);
+        hash.update([15]);
+        let digest = hash.finalize();
+        let mut lane = [0; 16];
+        lane.copy_from_slice(&digest[..16]);
+        if lane == [0; 16] {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok(lane)
+    }
+
+    // Borrows the actual retained first Q04 transaction's canonical coissuance.
+    // This is original comparison DATA; it neither opens nor reconstructs a bank.
+    pub(super) fn create_storage_original_components_v1(
+        &self,
+        commitment: [u8; 32],
+    ) -> Result<(&crate::sandbox_spec_state::DurableSandboxSpecV1, &[u8]), ResourceReservationErrorV1> {
+        let transaction = self.transaction.get().ok_or(ResourceReservationErrorV1::Conflict)?;
+        let coissuance = transaction.records().iter().filter_map(|record| record.value())
+            .find(|value| value.starts_with(b"AOSRSQ01") || value.starts_with(b"AOSRSQ02"))
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        use sha2::{Digest as _, Sha256};
+        if <[u8; 32]>::from(Sha256::digest(coissuance)) != commitment {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok((&self.specification, coissuance))
+    }
+
+    pub(super) fn assignment_proposal_inputs_v1(
+        &self,
+    ) -> Result<(&crate::sandbox_spec_state::DurableSandboxSpecV1, aos_sandbox_core::ResourceVector), ResourceReservationErrorV1> {
+        if self.crossing_failure().is_some() || self.transaction.get().is_none() {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok((&self.specification, self.child.finite_ceilings()?))
     }
 
     pub(crate) fn append_records(&self, records: &mut Vec<JournalRecord>) -> Result<(), CreateQ04ErrorV1> {

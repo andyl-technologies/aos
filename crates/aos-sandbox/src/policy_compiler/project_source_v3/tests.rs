@@ -4,6 +4,12 @@
 //! exercise actual owner writes/replay; they do not qualify installed fixed
 //! Root custody, Source genesis/floor, or positive Create/worker authority.
 
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentCatalogDeclarationsV2, PolicyDeploymentInputProfileV2,
+    PolicyDeploymentInputsV1, decode_policy_deployment_sources_v1,
+    verify_policy_deployment_head_v1,
+};
+
 use std::fs;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
@@ -27,10 +33,7 @@ use crate::policy_compiler::deployment_head::{
     admit_policy_signer_pins_in_journal_v1, admit_test_held_deployment_profile_v2,
     signed_test_deployment_input_fixture_v1, verify_test_held_deployment_profile_v2,
 };
-use crate::policy_compiler::{
-    PolicyDeploymentCatalogDeclarationsV2, compile_publisher_policy_revision_v2,
-    decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
-};
+use crate::policy_compiler::compile_publisher_policy_revision_v2;
 use aos_sandbox_policy::{
     AdvisoryActionV1, AdvisoryDegradationV1, AdvisoryKindV1, AuthenticatedCacheDomainV1,
     AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1,
@@ -40,9 +43,8 @@ use aos_sandbox_policy::{
     NamespaceSourceClassV1, PolicyCompilerLimitsV1, PolicyLayerV1, RevocationInputV1,
     SandboxProjectRelationVerifierV1,
 };
-use crate::publisher_policy::{
-    PreparedPublisherPolicyRevisionV1, PublisherPolicyError, PublisherRevocationHeadV1,
-};
+use crate::publisher_admin::policy::{PublisherPolicyError, PublisherRevocationHeadV1};
+use aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1;
 use crate::reconciler::{
     EffectFailure, EffectObservation, OperationPlan, PublicMutationEffectV1,
     PublicOperationAdmissionV1, PublicOperationAuthorizationV1, Reconciler,
@@ -93,9 +95,11 @@ pub(in crate::policy_compiler) fn original_input(
     let key = SigningKey::from_bytes(&[21; 32]);
     let (packet, bytes) = signed_test_deployment_input_fixture_v1(&key);
     let head = verify_policy_deployment_head_v1(&packet, &views(&bytes), &key.verifying_key(), 20)
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .expect("reused complete legacy limit fixture");
-    let legacy =
-        decode_policy_deployment_sources_v1(&views(&bytes), head).expect("typed limit fixture");
+    let legacy = decode_policy_deployment_sources_v1(&views(&bytes), head)
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+        .expect("typed limit fixture");
     let domain = AuthenticatedCacheDomainV1::authenticate(
         CacheDomain::new(
             CacheDomainKind::Project,
@@ -144,8 +148,11 @@ fn profile(input: &PolicyCompilerInputV1) -> PolicyDeploymentInputProfileV2 {
         input.node().clone(),
         input.site().clone(),
         input.backend().clone(),
-        PolicyDeploymentCatalogDeclarationsV2::new(Vec::new(), Vec::new()).expect("declarations"),
+        PolicyDeploymentCatalogDeclarationsV2::new(Vec::new(), Vec::new())
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+            .expect("declarations"),
     )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
     .expect("typed deployment profile")
 }
 
@@ -408,11 +415,12 @@ fn project_v3_real_compiler_publisher_record_and_cold_exact_derivation() {
         .expect("cold current head")
         .expect("current revision");
     assert_eq!(&revision, prepared.revision());
-    revision
-        .compiler_origin()
-        .expect("V2 provenance")
-        .verify_original_derivation(&input)
-        .expect("actual cold recompile");
+
+    aos_sandbox_policy::verify_publisher_compiler_derivation_v3(
+        revision.compiler_origin().expect("V2 provenance"),
+        &input,
+    )
+    .expect("actual cold recompile");
     assert_eq!(cold.snapshot_sequence(), sequence);
     let mut store = PublisherPolicyStore::load(&mut cold, PublisherPolicyLimits::default())
         .expect("same exact protected publisher");
@@ -424,11 +432,11 @@ fn project_v3_real_compiler_publisher_record_and_cold_exact_derivation() {
     assert_eq!(cold.snapshot_sequence(), sequence);
     let changed_target = original_input(SandboxId::from_bytes([12; 16]), None);
     assert!(
-        revision
-            .compiler_origin()
-            .expect("origin")
-            .verify_original_derivation(&changed_target)
-            .is_err()
+        aos_sandbox_policy::verify_publisher_compiler_derivation_v3(
+            revision.compiler_origin().expect("origin"),
+            &changed_target,
+        )
+        .is_err()
     );
 }
 
@@ -772,7 +780,8 @@ fn project_v3_six_layer_fields_are_exact_not_recovered_from_equal_output() {
     )
     .expect("typed narrower request");
     let changed = original_input(input.sandbox(), Some(changed_grants));
-    assert!(origin.verify_original_derivation(&changed).is_err());
+    assert!(
+        aos_sandbox_policy::verify_publisher_compiler_derivation_v3(&origin, &changed).is_err());
     assert_ne!(
         origin.request_input_bytes(),
         changed.request().canonical_bytes()
@@ -873,7 +882,8 @@ fn project_v3_six_layer_fields_are_exact_not_recovered_from_equal_output() {
             origin.request_input_bytes(),
             changed.request().canonical_bytes()
         );
-        assert!(origin.verify_original_derivation(&changed).is_err());
+        assert!(
+            aos_sandbox_policy::verify_publisher_compiler_derivation_v3(&origin, &changed).is_err());
     }
     assert!(
         HardResourceProfileV1::new(
@@ -897,12 +907,14 @@ fn project_v3_six_layer_fields_are_exact_not_recovered_from_equal_output() {
     untrusted_input[268] ^= 1;
     let untrusted_input = RetainedPublisherCompilerOriginV3::from_record_bytes(&untrusted_input)
         .expect("raw input bytes are retained DATA, never decoded into authenticated models");
-    assert!(untrusted_input.verify_original_derivation(&input).is_err());
+    assert!(
+        aos_sandbox_policy::verify_publisher_compiler_derivation_v3(&untrusted_input, &input).is_err());
     for offset in [40, 72, 104, 136, 168, 200, 232] {
         let mut changed = retained.clone();
         changed[offset] ^= 1;
         if let Ok(changed) = RetainedPublisherCompilerOriginV3::from_record_bytes(&changed) {
-            assert!(changed.verify_original_derivation(&input).is_err());
+            assert!(
+                aos_sandbox_policy::verify_publisher_compiler_derivation_v3(&changed, &input).is_err());
         }
     }
     assert!(
@@ -932,7 +944,8 @@ fn project_v3_full_outputs_generation_and_role_rotation_do_not_rebind_original()
             let mut substituted = encoded.clone();
             substituted[offset] ^= 1;
             match RetainedPublisherCompilerOriginV3::from_record_bytes(&substituted) {
-                Ok(changed) => assert!(changed.verify_original_derivation(&input).is_err()),
+                Ok(changed) => assert!(
+                    aos_sandbox_policy::verify_publisher_compiler_derivation_v3(&changed, &input).is_err()),
                 Err(_) => {}
             }
         }
@@ -940,14 +953,21 @@ fn project_v3_full_outputs_generation_and_role_rotation_do_not_rebind_original()
     }
     let candidate = aos_sandbox_policy::PolicyCompilerV1::compile(input.clone())
         .expect("fresh actual candidate");
-    origin
-        .compare_compiled_derivation(&input, &candidate)
-        .expect("compile-once exact comparison");
+
+    aos_sandbox_policy::compare_publisher_compiler_derivation_v3(
+        &origin,
+        &input,
+        &candidate
+    )
+    .expect("compile-once exact comparison");
     let wrong_target = original_input(SandboxId::from_bytes([33; 16]), None);
     assert!(
-        origin
-            .compare_compiled_derivation(&wrong_target, &candidate)
-            .is_err()
+        aos_sandbox_policy::compare_publisher_compiler_derivation_v3(
+            &origin,
+            &wrong_target,
+            &candidate
+        )
+        .is_err()
     );
     let association = ProjectPolicyAssociationV3::from_compiled_revision(&prepared, &input, 1)
         .expect("typed association");
@@ -999,4 +1019,60 @@ fn project_v3_full_outputs_generation_and_role_rotation_do_not_rebind_original()
         )
         .is_err()
     );
+}
+
+#[test]
+fn lower_origin_codec_preserves_bytes_without_adopting_typed_derivation() {
+    let input = original_input(SandboxId::from_bytes([2; 16]), None);
+    let prepared = prepared(&input);
+    let origin = prepared
+        .revision()
+        .compiler_origin()
+        .expect("compiler provenance");
+    let encoded = origin.to_record_bytes().expect("bounded origin");
+    let candidate =
+        aos_sandbox_policy::PolicyCompilerV1::compile_retained(&input).expect("actual candidate");
+
+    let mut expected = b"AOSPCO03".to_vec();
+    expected.extend_from_slice(origin.project().as_bytes());
+    expected.extend_from_slice(origin.original_target().as_bytes());
+    expected.extend_from_slice(origin.normalized_input().as_bytes());
+    expected.extend_from_slice(origin.candidate().as_bytes());
+    for plan in candidate.commitment_plan_digests() {
+        expected.extend_from_slice(plan.as_bytes());
+    }
+    for field in [
+        origin.original_input_bytes(),
+        origin.project_input_bytes(),
+        origin.request_input_bytes(),
+        origin.output_bytes()[0],
+        origin.output_bytes()[1],
+        origin.output_bytes()[2],
+        origin.output_bytes()[3],
+    ] {
+        expected.extend_from_slice(&u32::try_from(field.len()).unwrap().to_be_bytes());
+        expected.extend_from_slice(field);
+    }
+
+    assert_eq!(encoded, expected);
+    assert_eq!(
+        RetainedPublisherCompilerOriginV3::from_record_bytes(&encoded).unwrap(),
+        *origin
+    );
+    aos_sandbox_policy::verify_publisher_compiler_derivation_v3(origin, &input).unwrap();
+
+    let mut substituted_target = encoded.clone();
+    substituted_target[24..40].fill(77);
+    let untrusted = RetainedPublisherCompilerOriginV3::from_record_bytes(&substituted_target)
+        .expect("target is consistency DATA, not typed provenance");
+    assert!(
+        aos_sandbox_policy::verify_publisher_compiler_derivation_v3(&untrusted, &input).is_err()
+    );
+
+    let mut wrong_candidate = encoded.clone();
+    wrong_candidate[72] ^= 1;
+    assert!(RetainedPublisherCompilerOriginV3::from_record_bytes(&wrong_candidate).is_err());
+    let mut trailing = encoded;
+    trailing.push(0);
+    assert!(RetainedPublisherCompilerOriginV3::from_record_bytes(&trailing).is_err());
 }

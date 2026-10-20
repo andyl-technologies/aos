@@ -11,7 +11,10 @@
 //! ```
 
 use std::collections::BTreeSet;
-use std::io::{self, Write};
+use aos_sandbox_protocol::policy_data::{
+    MAXIMUM_CANONICAL_OBJECT_BYTES, PolicyCanonicalDataErrorV1, canonical_bytes,
+    canonical_payload_size_v1, compiled_policy_candidate_digest_v1, digest,
+};
 
 use aos_sandbox_core::format::{descriptor_for_bytes, encode_optimization, encode_policy};
 use aos_sandbox_core::model::{
@@ -21,7 +24,6 @@ use aos_sandbox_core::{
     Grant, MediaType, ObjectDescriptor, ObjectDigest, PortableMediaType, ProjectId, SandboxId,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 
 use super::advisory::{
     AdvisoryActionV1, AdvisoryPlanV1, PortableAdvisoryProgramV1, canonicalize_advisory_actions,
@@ -43,8 +45,6 @@ pub const MAXIMUM_NAMESPACE_RULES_PER_LAYER: usize = 1_024;
 pub const MAXIMUM_ADVISORY_RULES_PER_LAYER: usize = 1_024;
 /// Maximum frozen bytes for one normalized layer.
 pub const MAXIMUM_POLICY_LAYER_BYTES: usize = 8 * 1024 * 1024;
-/// Maximum bytes accepted by any internal canonical object encoder.
-pub const MAXIMUM_CANONICAL_OBJECT_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum complete explanation entries per stage.
 pub const MAXIMUM_EXPLANATION_ENTRIES_PER_STAGE: usize = 8_192;
 /// Maximum normalization work charged to one policy layer.
@@ -113,7 +113,8 @@ impl AuthenticatedSandboxProjectRelationV1 {
         let bytes = canonical_bytes(
             b"aos.sandbox.sandbox-project-relation.v1",
             &(sandbox, project),
-        )?;
+        )
+        .map_err(crate::PolicyModelError::from)?;
         let descriptor = descriptor_for_bytes(media_type(PortableMediaType::Content)?, &bytes);
         if !verifier.verify(sandbox, project, &descriptor, &bytes) {
             return Err(PolicyModelError::SandboxProjectAuthenticationFailed);
@@ -230,7 +231,8 @@ impl AuthenticatedCacheDomainV1 {
         {
             return Err(PolicyModelError::InvalidCacheDomainBinding);
         }
-        let bytes = canonical_bytes(b"aos.sandbox.cache-domain-binding.v2", &(domain, binding))?;
+        let bytes = canonical_bytes(b"aos.sandbox.cache-domain-binding.v2", &(domain, binding))
+            .map_err(crate::PolicyModelError::from)?;
         let descriptor = descriptor_for_bytes(media_type(PortableMediaType::Content)?, &bytes);
         if !verifier.verify(&descriptor, &bytes) {
             return Err(PolicyModelError::CacheDomainAuthenticationFailed);
@@ -252,7 +254,8 @@ impl AuthenticatedCacheDomainV1 {
             return Err(PolicyModelError::InvalidCacheDomainBinding);
         }
         let binding = CacheDomainBindingV1::Public;
-        let bytes = canonical_bytes(b"aos.sandbox.cache-domain-binding.v2", &(domain, binding))?;
+        let bytes = canonical_bytes(b"aos.sandbox.cache-domain-binding.v2", &(domain, binding))
+            .map_err(crate::PolicyModelError::from)?;
         let descriptor = descriptor_for_bytes(media_type(PortableMediaType::Content)?, &bytes);
         Ok(Self {
             domain,
@@ -358,7 +361,9 @@ impl PolicyLayerV1 {
             cache_domain,
             revocation,
         };
-        if canonical_bytes(b"aos.sandbox.policy-layer.v2", &layer)?.len()
+        if canonical_bytes(b"aos.sandbox.policy-layer.v2", &layer)
+            .map_err(crate::PolicyModelError::from)?
+            .len()
             > MAXIMUM_POLICY_LAYER_BYTES
         {
             return Err(PolicyModelError::PolicyLayerTooLarge);
@@ -412,7 +417,7 @@ fn freeze<C>(
     layer: PolicyLayerV1,
     wrap: impl FnOnce(ObjectDigest) -> C,
 ) -> Result<FrozenLayerV1<C>, PolicyModelError> {
-    let bytes = canonical_bytes(domain, &value)?;
+    let bytes = canonical_bytes(domain, &value).map_err(crate::PolicyModelError::from)?;
     if bytes.len() > MAXIMUM_POLICY_LAYER_BYTES {
         return Err(PolicyModelError::PolicyLayerTooLarge);
     }
@@ -640,7 +645,8 @@ impl BackendCapabilitiesV1 {
         let bytes = canonical_bytes(
             b"aos.sandbox.backend-capabilities.v2",
             &(&enforcement, &namespace, &advisory),
-        )?;
+        )
+        .map_err(crate::PolicyModelError::from)?;
         let descriptor = descriptor_for_bytes(media_type(PortableMediaType::Content)?, &bytes);
         Ok(Self {
             enforcement,
@@ -1053,7 +1059,9 @@ pub enum InputSourceV1 {
 pub struct RedactedSubjectV1(ObjectDigest);
 impl RedactedSubjectV1 {
     pub(crate) fn for_value<T: Serialize>(value: &T) -> Result<Self, PolicyModelError> {
-        digest(b"aos.sandbox.policy-explanation.subject.v2", value).map(Self)
+        digest(b"aos.sandbox.policy-explanation.subject.v2", value)
+            .map_err(crate::PolicyModelError::from)
+            .map(Self)
     }
     /// Returns the subject digest.
     #[must_use]
@@ -1167,8 +1175,10 @@ impl PlanExplanationV1 {
         {
             return Err(PolicyModelError::IncompleteExplanation);
         }
-        let commitment =
-            ExplanationCommitmentV1::new(digest(b"aos.sandbox.policy-explanation.v2", &stages)?);
+        let commitment = ExplanationCommitmentV1::new(
+            digest(b"aos.sandbox.policy-explanation.v2", &stages)
+                .map_err(crate::PolicyModelError::from)?,
+        );
         Ok(Self { commitment, stages })
     }
     /// Returns the commitment.
@@ -1296,90 +1306,6 @@ pub struct CompiledPolicyCandidateV1 {
     explanation: PlanExplanationV1,
 }
 
-/// Retains the five plan commitments in the existing candidate hash preimage.
-///
-/// These digests describe a compiled candidate; they do not authenticate its
-/// inputs, the plans' semantics, publication currentness, or runtime authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CompiledPolicyCandidatePreimageV1 {
-    authority: AuthorityPlanCommitmentV1,
-    namespace: NamespacePlanCommitmentV1,
-    hard: HardResourcePlanCommitmentV1,
-    advisory: AdvisoryPlanCommitmentV1,
-    explanation: ExplanationCommitmentV1,
-}
-
-impl CompiledPolicyCandidatePreimageV1 {
-    /// Reconstitutes purpose-specific commitment values without authority.
-    fn from_digests(digests: [ObjectDigest; 5]) -> Self {
-        Self {
-            authority: AuthorityPlanCommitmentV1::new(digests[0]),
-            namespace: NamespacePlanCommitmentV1::new(digests[1]),
-            hard: HardResourcePlanCommitmentV1::new(digests[2]),
-            advisory: AdvisoryPlanCommitmentV1::new(digests[3]),
-            explanation: ExplanationCommitmentV1::new(digests[4]),
-        }
-    }
-
-    /// Returns the five digests in the Candidate V3 wire order.
-    fn digests(self) -> [ObjectDigest; 5] {
-        [
-            self.authority.digest(),
-            self.namespace.digest(),
-            self.hard.digest(),
-            self.advisory.digest(),
-            self.explanation.digest(),
-        ]
-    }
-
-    /// Computes the unchanged candidate identity over all nine tuple members.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PolicyModelError`] if canonical serialization exceeds its
-    /// bound or fails. Matching this digest establishes byte consistency only.
-    fn commitment(
-        self,
-        outputs: [&ObjectDescriptor; 4],
-    ) -> Result<CompiledPolicyCommitmentV1, PolicyModelError> {
-        Ok(CompiledPolicyCommitmentV1::new(digest(
-            b"aos.sandbox.compiled-policy-candidate.v2",
-            &(
-                self.authority,
-                self.namespace,
-                self.hard,
-                self.advisory,
-                outputs[0],
-                outputs[1],
-                outputs[2],
-                outputs[3],
-                self.explanation,
-            ),
-        )?))
-    }
-}
-
-/// Computes the existing candidate digest from consistency DATA only.
-///
-/// The five plan digests are authority, namespace, hard resources, advisory
-/// and explanation. The four descriptors are policy, optimization, namespace
-/// graph and advisory program. The unchanged nine-member tuple puts the four
-/// descriptors before explanation. Matching this digest authenticates neither
-/// the supplied DATA nor protected publication or runtime authority.
-///
-/// # Errors
-///
-/// Returns [`PolicyModelError`] if canonical serialization exceeds its bound
-/// or fails.
-pub fn compiled_policy_candidate_digest_v1(
-    plans: [ObjectDigest; 5],
-    outputs: [&ObjectDescriptor; 4],
-) -> Result<ObjectDigest, PolicyModelError> {
-    Ok(CompiledPolicyCandidatePreimageV1::from_digests(plans)
-        .commitment(outputs)?
-        .digest())
-}
-
 impl CompiledPolicyCandidateV1 {
     pub(crate) fn new(
         authority: AuthorityPlanV1,
@@ -1389,19 +1315,25 @@ impl CompiledPolicyCandidateV1 {
         portable: PortablePolicyOutputV1,
         explanation: PlanExplanationV1,
     ) -> Result<Self, PolicyModelError> {
-        let preimage = CompiledPolicyCandidatePreimageV1 {
-            authority: authority.commitment(),
-            namespace: namespace.commitment(),
-            hard: hard.commitment(),
-            advisory: advisory.commitment(),
-            explanation: explanation.commitment(),
-        };
-        let commitment = preimage.commitment([
-            portable.policy_descriptor(),
-            portable.optimization_descriptor(),
-            portable.namespace_graph_descriptor(),
-            portable.advisory_program_descriptor(),
-        ])?;
+        let plans = [
+            authority.commitment().digest(),
+            namespace.commitment().digest(),
+            hard.commitment().digest(),
+            advisory.commitment().digest(),
+            explanation.commitment().digest(),
+        ];
+        let commitment = CompiledPolicyCommitmentV1::new(
+            compiled_policy_candidate_digest_v1(
+                plans,
+                [
+                    portable.policy_descriptor(),
+                    portable.optimization_descriptor(),
+                    portable.namespace_graph_descriptor(),
+                    portable.advisory_program_descriptor(),
+                ],
+            )
+            .map_err(PolicyModelError::from)?,
+        );
         Ok(Self {
             status: CandidateAuthorityV1::NonAuthoritativeAncestry,
             commitment,
@@ -1421,17 +1353,13 @@ impl CompiledPolicyCandidateV1 {
     /// publication currentness or runtime authority.
     #[must_use]
     pub fn commitment_plan_digests(&self) -> [ObjectDigest; 5] {
-        self.commitment_preimage().digests()
-    }
-
-    fn commitment_preimage(&self) -> CompiledPolicyCandidatePreimageV1 {
-        CompiledPolicyCandidatePreimageV1 {
-            authority: self.authority.commitment(),
-            namespace: self.namespace.commitment(),
-            hard: self.hard.commitment(),
-            advisory: self.advisory.commitment(),
-            explanation: self.explanation.commitment(),
-        }
+        [
+            self.authority.commitment().digest(),
+            self.namespace.commitment().digest(),
+            self.hard.commitment().digest(),
+            self.advisory.commitment().digest(),
+            self.explanation.commitment().digest(),
+        ]
     }
 
     /// Returns the nonauthoritative status.
@@ -1556,6 +1484,15 @@ pub enum PolicyModelError {
     RegisteredMediaType,
 }
 
+impl From<PolicyCanonicalDataErrorV1> for PolicyModelError {
+    fn from(error: PolicyCanonicalDataErrorV1) -> Self {
+        match error {
+            PolicyCanonicalDataErrorV1::CanonicalEncoding => Self::CanonicalEncoding,
+            PolicyCanonicalDataErrorV1::CanonicalObjectTooLarge => Self::CanonicalObjectTooLarge,
+        }
+    }
+}
+
 fn preflight_layer(
     grants: &[Grant],
     resources: &HardResourceProfileV1,
@@ -1574,10 +1511,12 @@ fn preflight_layer(
         cache_domain,
         revocation,
     );
-    let payload_bytes = canonical_payload_size(&value).map_err(|error| match error {
-        PolicyModelError::CanonicalObjectTooLarge => PolicyModelError::PolicyLayerTooLarge,
-        other => other,
-    })?;
+    let payload_bytes = canonical_payload_size_v1(&value)
+        .map_err(PolicyModelError::from)
+        .map_err(|error| match error {
+            PolicyModelError::CanonicalObjectTooLarge => PolicyModelError::PolicyLayerTooLarge,
+            other => other,
+        })?;
     if payload_bytes > MAXIMUM_POLICY_LAYER_BYTES {
         return Err(PolicyModelError::PolicyLayerTooLarge);
     }
@@ -1615,184 +1554,6 @@ fn preflight_layer(
     Ok(())
 }
 
-/// Encodes bounded, domain-separated canonical consistency DATA.
-///
-/// The encoding grants no input provenance, publication currentness or effect
-/// authority, even when a caller serializes proof-shaped claims.
-///
-/// # Errors
-///
-/// Returns [`PolicyModelError`] if encoding fails or exceeds the existing
-/// canonical-object bound.
-pub fn canonical_bytes<T: Serialize>(
-    domain: &'static [u8],
-    value: &T,
-) -> Result<Vec<u8>, PolicyModelError> {
-    let mut writer = BoundedCanonicalWriter::new(MAXIMUM_CANONICAL_OBJECT_BYTES);
-    serde_json::to_writer(&mut writer, value).map_err(|_| {
-        if writer.exceeded {
-            PolicyModelError::CanonicalObjectTooLarge
-        } else {
-            PolicyModelError::CanonicalEncoding
-        }
-    })?;
-    let payload = writer.bytes;
-    let capacity = domain
-        .len()
-        .checked_add(payload.len())
-        .and_then(|length| length.checked_add(16))
-        .ok_or(PolicyModelError::CanonicalObjectTooLarge)?;
-    if capacity > MAXIMUM_CANONICAL_OBJECT_BYTES {
-        return Err(PolicyModelError::CanonicalObjectTooLarge);
-    }
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(capacity)
-        .map_err(|_| PolicyModelError::CanonicalObjectTooLarge)?;
-    bytes.extend_from_slice(
-        &u64::try_from(domain.len())
-            .map_err(|_| PolicyModelError::CanonicalObjectTooLarge)?
-            .to_be_bytes(),
-    );
-    bytes.extend_from_slice(domain);
-    bytes.extend_from_slice(
-        &u64::try_from(payload.len())
-            .map_err(|_| PolicyModelError::CanonicalObjectTooLarge)?
-            .to_be_bytes(),
-    );
-    bytes.extend_from_slice(&payload);
-    Ok(bytes)
-}
-
-fn canonical_payload_size<T: Serialize>(value: &T) -> Result<usize, PolicyModelError> {
-    let mut writer = CountingCanonicalWriter::new(MAXIMUM_CANONICAL_OBJECT_BYTES);
-    serde_json::to_writer(&mut writer, value).map_err(|_| {
-        if writer.exceeded {
-            PolicyModelError::CanonicalObjectTooLarge
-        } else {
-            PolicyModelError::CanonicalEncoding
-        }
-    })?;
-    Ok(writer.length)
-}
-
-struct CountingCanonicalWriter {
-    length: usize,
-    maximum: usize,
-    exceeded: bool,
-}
-impl CountingCanonicalWriter {
-    const fn new(maximum: usize) -> Self {
-        Self {
-            length: 0,
-            maximum,
-            exceeded: false,
-        }
-    }
-}
-impl Write for CountingCanonicalWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let length = self
-            .length
-            .checked_add(bytes.len())
-            .ok_or_else(|| io::Error::other("canonical byte count overflow"))?;
-        if length > self.maximum {
-            self.exceeded = true;
-            return Err(io::Error::other("canonical byte cap exceeded"));
-        }
-        self.length = length;
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-struct BoundedCanonicalWriter {
-    bytes: Vec<u8>,
-    maximum: usize,
-    exceeded: bool,
-}
-impl BoundedCanonicalWriter {
-    fn new(maximum: usize) -> Self {
-        Self {
-            bytes: Vec::new(),
-            maximum,
-            exceeded: false,
-        }
-    }
-}
-impl Write for BoundedCanonicalWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let length = self
-            .bytes
-            .len()
-            .checked_add(bytes.len())
-            .ok_or_else(|| io::Error::other("canonical byte count overflow"))?;
-        if length > self.maximum {
-            self.exceeded = true;
-            return Err(io::Error::other("canonical byte cap exceeded"));
-        }
-        self.bytes
-            .try_reserve(bytes.len())
-            .map_err(|_| io::Error::other("canonical allocation failed"))?;
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-/// Hashes bounded canonical DATA with the supplied existing domain separator.
-///
-/// A matching hash establishes byte consistency only, not authenticated input,
-/// protected publication currentness or runtime authority.
-///
-/// # Errors
-///
-/// Returns [`PolicyModelError`] if encoding fails or exceeds the existing
-/// canonical-object bound.
-pub fn digest<T: Serialize>(
-    domain: &'static [u8],
-    value: &T,
-) -> Result<ObjectDigest, PolicyModelError> {
-    let payload_length = canonical_payload_size(value)?;
-    let total_length = domain
-        .len()
-        .checked_add(payload_length)
-        .and_then(|length| length.checked_add(16))
-        .ok_or(PolicyModelError::CanonicalObjectTooLarge)?;
-    if total_length > MAXIMUM_CANONICAL_OBJECT_BYTES {
-        return Err(PolicyModelError::CanonicalObjectTooLarge);
-    }
-
-    let mut hasher = Sha256::new();
-    hasher.update(
-        u64::try_from(domain.len())
-            .map_err(|_| PolicyModelError::CanonicalObjectTooLarge)?
-            .to_be_bytes(),
-    );
-    hasher.update(domain);
-    hasher.update(
-        u64::try_from(payload_length)
-            .map_err(|_| PolicyModelError::CanonicalObjectTooLarge)?
-            .to_be_bytes(),
-    );
-    serde_json::to_writer(DigestCanonicalWriter(&mut hasher), value)
-        .map_err(|_| PolicyModelError::CanonicalEncoding)?;
-    Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
-}
-
-struct DigestCanonicalWriter<'a>(&'a mut Sha256);
-impl Write for DigestCanonicalWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.update(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
 fn media_type(kind: PortableMediaType) -> Result<MediaType, PolicyModelError> {
     MediaType::new(kind.as_str()).map_err(|_| PolicyModelError::RegisteredMediaType)
 }

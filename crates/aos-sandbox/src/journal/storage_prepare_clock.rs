@@ -12,6 +12,7 @@ use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 
 #[derive(Default)]
 struct RetainedClockResultsV1 {
+    kernel: Option<Box<crate::policy_compiler::RetainedKernelPairedClockAttemptV1>>,
     sample: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>,
     validation: Option<Result<(), BrokerAdmissionError>>,
 }
@@ -36,6 +37,7 @@ impl StoragePrepareNativeClockCaptureV1 {
     pub const fn new() -> Self {
         Self {
             retained: RetainedClockResultsV1 {
+                kernel: None,
                 sample: None,
                 validation: None,
             },
@@ -53,6 +55,25 @@ impl StoragePrepareNativeClockCaptureV1 {
     #[must_use]
     pub const fn retained_layout_bytes() -> usize {
         std::mem::size_of::<RetainedClockResultsV1>()
+    }
+
+    pub(crate) fn retaining_native_demand_v1()
+        -> Result<aos_sandbox_core::ResourceVector, JournalError>
+    {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        use crate::policy_compiler::RetainedKernelPairedClockAttemptV1 as Clock;
+        let bytes = Clock::dominant_requested_bytes_v1()
+            .and_then(|bytes| bytes.checked_mul(3))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(JournalError::JournalTooLarge)?;
+        Ok(ResourceVector::ZERO.with(D::MemoryBytes, bytes)
+            .with(D::OpenFiles, Clock::MAXIMUM_RETAINED_FILES_V1 as u64))
+    }
+
+    pub(crate) fn retain_native_source_v1(&mut self) {
+        // Only the same once-entered actual Native attempt selects this inert
+        // destination after its real caller has prepaid the fixed shape.
+        self.retained.kernel = Some(Box::new(crate::policy_compiler::RetainedKernelPairedClockAttemptV1::default()));
     }
 
     /// Borrows the exact kernel result without moving its original cause.
@@ -76,11 +97,10 @@ impl StoragePrepareNativeClockCaptureV1 {
     /// Borrows the earliest retained clock producer or validation failure.
     #[must_use]
     pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.retained
-            .sample
-            .as_ref()
-            .and_then(|result| result.as_ref().err())
-            .map(|error| error as &(dyn std::error::Error + 'static))
+        self.retained.kernel.as_ref().and_then(|original| original.failure())
+            .or_else(|| self.retained.sample.as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(|error| error as &(dyn std::error::Error + 'static)))
             .or_else(|| {
                 self.retained
                     .validation
@@ -139,11 +159,16 @@ impl StoragePrepareNativeClockCaptureV1 {
             return Err(JournalError::ProtectedBoundary);
         }
         #[cfg(any(test, feature = "test-fixtures"))]
-        let sample = self.fixture_sample.take().unwrap_or_else(|| {
-            crate::policy_compiler::observe_root_first_source_successor_clock_v2(None)
-        });
+        let fixture = self.fixture_sample.take();
         #[cfg(not(any(test, feature = "test-fixtures")))]
-        let sample = crate::policy_compiler::observe_root_first_source_successor_clock_v2(None);
+        let fixture: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>> = None;
+        let sample = match fixture {
+            Some(sample) => sample,
+            None => match self.retained.kernel.as_mut() {
+                Some(original) => original.observe_once(None),
+                None => crate::policy_compiler::observe_root_first_source_successor_clock_v2(None),
+            },
+        };
         self.retained.sample = Some(sample);
         let current = match self.retained.sample.as_ref() {
             Some(Ok(current)) => *current,
@@ -189,6 +214,7 @@ impl Journal {
             None,
             None,
             Some((&loan, capture)),
+            None,
         )
     }
 }

@@ -139,3 +139,11 @@ define_commitment!(
     "Commits the atomic journal transaction containing semantic commit.",
     b"aos.sandbox.lifecycle.journal-commit.v1\0"
 );
+
+impl LifecycleResourceStateDigestV1 {
+    // The existing nonzero comparison conversion is shared by the actual
+    // cross-module Create producer; it grants no resource or append authority.
+    pub(crate) fn from_assignment_digest_v1(digest: ObjectDigest) -> Result<Self, LifecycleModelError> {
+        Self::from_stored(digest)
+    }
+}

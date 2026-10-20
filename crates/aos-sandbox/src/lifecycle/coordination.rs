@@ -338,7 +338,26 @@ impl LifecycleSnapshotAdmittedSourceV2 {
         projection_root: ObjectDigest,
         transaction: LifecycleTransactionIdV1,
     ) -> Result<Self, LifecycleModelError> {
-        let length = Self::preflight_original(&original)?;
+        let mut original = Some(original);
+        Self::capture_from_decode_parts(
+            &mut original,
+            record,
+            projection_root,
+            transaction,
+        )
+    }
+
+    /// Preserves the actual decoder input graph until model validation succeeds.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn capture_from_decode_parts(
+        original_original: &mut Option<super::LifecycleOperationV1>,
+        record: LifecycleRecordDigestV1,
+        projection_root: ObjectDigest,
+        transaction: LifecycleTransactionIdV1,
+    ) -> Result<Self, LifecycleModelError> {
+        let original = original_original.as_ref().ok_or(LifecycleModelError::CorruptEncoding)?;
+
+        let length = Self::preflight_original(original)?;
         let super::LifecycleIntentV1::Snapshot {
             snapshot, fence, ..
         } = original.intent()
@@ -348,7 +367,7 @@ impl LifecycleSnapshotAdmittedSourceV2 {
         if record.digest().as_bytes() == &[0; 32] || projection_root.as_bytes() == &[0; 32] {
             return Err(LifecycleModelError::InvalidModel);
         }
-        let encoded = super::encode_operation_record_v1(&original)?;
+        let encoded = super::encode_operation_record_v1(original)?;
         if encoded.len() != length || super::format::record_digest(&encoded)? != record {
             return Err(LifecycleModelError::InvalidModel);
         }
@@ -363,7 +382,7 @@ impl LifecycleSnapshotAdmittedSourceV2 {
             return Err(LifecycleModelError::InvalidModel);
         }
         Ok(Self {
-            original,
+            original: original_original.take().ok_or(LifecycleModelError::CorruptEncoding)?,
             record,
             projection_root,
             commitment,
@@ -518,9 +537,45 @@ impl LifecycleCoordinationTransactionV1 {
         transaction: LifecycleTransactionIdV1,
         sandbox: SandboxId,
         live_fence: LiveRuntimeFenceV1,
-        dependencies: Vec<LifecycleResourceV1>,
-        dependency_edges: Vec<LifecycleDependencyEdgeV1>,
-        postorder: Vec<LifecycleResourceV1>,
+        mut dependencies: Vec<LifecycleResourceV1>,
+        mut dependency_edges: Vec<LifecycleDependencyEdgeV1>,
+        mut postorder: Vec<LifecycleResourceV1>,
+        dependency_snapshot: ObjectDigest,
+        manifest: LifecycleSnapshotManifestDigestV1,
+        retention_ledger: LifecycleRetentionLedgerDigestV1,
+        quiesce: Option<LifecycleQuiesceDigestV1>,
+        writer_fence: Option<LifecycleWriterFenceDigestV1>,
+        dataset_transaction: Option<LifecycleDatasetTransactionDigestV1>,
+        thaw_compensation: LifecycleThawCompensationDigestV1,
+        phase: LifecycleCoordinationPhaseV1,
+    ) -> Result<Self, LifecycleModelError> {
+        Self::from_stored_decode_parts(
+            transaction,
+            sandbox,
+            live_fence,
+            &mut dependencies,
+            &mut dependency_edges,
+            &mut postorder,
+            dependency_snapshot,
+            manifest,
+            retention_ledger,
+            quiesce,
+            writer_fence,
+            dataset_transaction,
+            thaw_compensation,
+            phase,
+        )
+    }
+
+    /// Validates the same model while retaining borrowed graph inputs on refusal.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_stored_decode_parts(
+        transaction: LifecycleTransactionIdV1,
+        sandbox: SandboxId,
+        live_fence: LiveRuntimeFenceV1,
+        dependencies: &mut Vec<LifecycleResourceV1>,
+        dependency_edges: &mut Vec<LifecycleDependencyEdgeV1>,
+        postorder: &mut Vec<LifecycleResourceV1>,
         dependency_snapshot: ObjectDigest,
         manifest: LifecycleSnapshotManifestDigestV1,
         retention_ledger: LifecycleRetentionLedgerDigestV1,
@@ -566,9 +621,9 @@ impl LifecycleCoordinationTransactionV1 {
             transaction,
             sandbox,
             live_fence,
-            dependencies,
-            dependency_edges,
-            postorder,
+            dependencies: std::mem::take(dependencies),
+            dependency_edges: std::mem::take(dependency_edges),
+            postorder: std::mem::take(postorder),
             dependency_snapshot,
             manifest,
             retention_ledger,
@@ -673,9 +728,19 @@ impl LifecycleCoordinationTransactionV1 {
         mut self,
         source: LifecycleSnapshotAdmittedSourceV2,
     ) -> Result<Self, LifecycleModelError> {
-        source.require_current(&self, source.original())?;
-        self.admitted_source = Some(source);
+        let mut source = Some(source);
+        self.with_admitted_source_from_decode_parts(&mut source)?;
         Ok(self)
+    }
+
+    pub(super) fn with_admitted_source_from_decode_parts(
+        &mut self,
+        source: &mut Option<LifecycleSnapshotAdmittedSourceV2>,
+    ) -> Result<(), LifecycleModelError> {
+        let value = source.as_ref().ok_or(LifecycleModelError::CorruptEncoding)?;
+        value.require_current(self, value.original())?;
+        self.admitted_source = source.take();
+        Ok(())
     }
 
     /// Constructs a monotone evidence refinement without authorizing an effect.
@@ -1011,7 +1076,21 @@ impl LifecycleRetentionLedgerV1 {
     pub fn new(
         revision: Revision,
         predecessor: Option<ObjectDigest>,
-        entries: Vec<LifecycleRetentionLedgerEntryV1>,
+        mut entries: Vec<LifecycleRetentionLedgerEntryV1>,
+    ) -> Result<Self, LifecycleModelError> {
+        Self::new_from_decode_parts(
+            revision,
+            predecessor,
+            &mut entries,
+        )
+    }
+
+    /// Validates the same model while retaining borrowed graph inputs on refusal.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_from_decode_parts(
+        revision: Revision,
+        predecessor: Option<ObjectDigest>,
+        entries: &mut Vec<LifecycleRetentionLedgerEntryV1>,
     ) -> Result<Self, LifecycleModelError> {
         if revision.get() == 0
             || revision.get() == u64::MAX
@@ -1024,7 +1103,7 @@ impl LifecycleRetentionLedgerV1 {
         Ok(Self {
             revision,
             predecessor,
-            entries,
+            entries: std::mem::take(entries),
         })
     }
 
@@ -1319,7 +1398,37 @@ impl LifecycleBootInventoryV1 {
         fence: LiveRuntimeFenceV1,
         host_boot: [u8; 16],
         domains: LifecycleBootInventoryDomainsV1,
-        resources: Vec<LifecycleResourceV1>,
+        mut resources: Vec<LifecycleResourceV1>,
+        inventory: LifecycleBootInventoryDigestV1,
+        observed_at: LifecycleTimeV1,
+    ) -> Result<Self, LifecycleModelError> {
+        Self::new_from_decode_parts(
+            operation,
+            operation_revision,
+            operation_record,
+            step,
+            step_result,
+            fence,
+            host_boot,
+            domains,
+            &mut resources,
+            inventory,
+            observed_at,
+        )
+    }
+
+    /// Validates the same model while retaining borrowed graph inputs on refusal.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_from_decode_parts(
+        operation: OperationId,
+        operation_revision: Revision,
+        operation_record: LifecycleRecordDigestV1,
+        step: u32,
+        step_result: LifecycleStepResultDigestV1,
+        fence: LiveRuntimeFenceV1,
+        host_boot: [u8; 16],
+        domains: LifecycleBootInventoryDomainsV1,
+        resources: &mut Vec<LifecycleResourceV1>,
         inventory: LifecycleBootInventoryDigestV1,
         observed_at: LifecycleTimeV1,
     ) -> Result<Self, LifecycleModelError> {
@@ -1343,7 +1452,7 @@ impl LifecycleBootInventoryV1 {
             fence,
             host_boot,
             domains,
-            resources,
+            resources: std::mem::take(resources),
             inventory,
             observed_at,
         })
@@ -1362,7 +1471,35 @@ impl LifecycleBootInventoryV1 {
         step_result: LifecycleStepResultDigestV1,
         fence: LiveRuntimeFenceV1,
         domains: LifecycleBootInventoryDomainsV1,
-        resources: Vec<LifecycleResourceV1>,
+        mut resources: Vec<LifecycleResourceV1>,
+        inventory: LifecycleBootInventoryDigestV1,
+        observed_at: LifecycleTimeV1,
+    ) -> Result<Self, LifecycleModelError> {
+        Self::from_legacy_decode_parts(
+            operation,
+            operation_revision,
+            operation_record,
+            step,
+            step_result,
+            fence,
+            domains,
+            &mut resources,
+            inventory,
+            observed_at,
+        )
+    }
+
+    /// Validates the same model while retaining borrowed graph inputs on refusal.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_legacy_decode_parts(
+        operation: OperationId,
+        operation_revision: Revision,
+        operation_record: LifecycleRecordDigestV1,
+        step: u32,
+        step_result: LifecycleStepResultDigestV1,
+        fence: LiveRuntimeFenceV1,
+        domains: LifecycleBootInventoryDomainsV1,
+        resources: &mut Vec<LifecycleResourceV1>,
         inventory: LifecycleBootInventoryDigestV1,
         observed_at: LifecycleTimeV1,
     ) -> Result<Self, LifecycleModelError> {
@@ -1384,7 +1521,7 @@ impl LifecycleBootInventoryV1 {
             fence,
             host_boot: [0; 16],
             domains,
-            resources,
+            resources: std::mem::take(resources),
             inventory,
             observed_at,
         })

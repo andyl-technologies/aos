@@ -29,6 +29,7 @@
 ##!   pkgs          — AOS package set
 ##!   lib           — AOS library
 ##!   kernel        — kernel derivation (provides /lib/modules/<ver>/)
+##!   systemd       — exact PID 1 package selected for the boot kernel
 ##!   loadModules — list of module names for /etc/modules-load.d/initrd.conf
 ##!   initrdUnits   — derivation whose output is the rendered
 ##!                   /etc/systemd/system directory (from generateUnits)
@@ -44,6 +45,7 @@
   pkgs,
   lib,
   kernel,
+  systemd,
   kernelModulePackages ? [],
   firmwarePackages ? [],
   loadModules,
@@ -79,7 +81,6 @@
     iproute2
     kmod
     less
-    systemd
     util-linux
     zstd
     ;

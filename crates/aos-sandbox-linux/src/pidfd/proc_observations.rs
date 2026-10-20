@@ -18,6 +18,20 @@ use super::identity::{MAXIMUM_PROC_STAT_BYTES, identity_from_stat, parse_proc_st
 use super::{NamespaceFd, NamespaceIdentity, NamespaceKind, PidFd, PidFdInfo, PidFdProcessIdentity};
 use crate::{Error, Result};
 
+mod context_readback;
+pub use context_readback::PidFdContextReadbackV1;
+
+mod retained;
+pub use retained::PidFdProcOriginalsV1;
+
+mod identity_readback;
+pub use identity_readback::PidFdIdentityReadbackV1;
+
+mod negative_context;
+mod negative_identity;
+pub use negative_context::PidFdNegativeContextOriginalV1;
+pub use negative_identity::PidFdNegativeIdentityOriginalV1;
+
 const PROCFS_MAGIC: u64 = 0x9fa0;
 const CONTEXT_BYTES: usize = 256;
 const READ_INTERRUPT_LIMIT: usize = 8;
@@ -210,7 +224,9 @@ impl HostCanaryLocalChildOriginalsV1 {
         self.require_same_child()?;
 
         for (slot, kind) in CANARY_CHILD_NAMESPACES.into_iter().enumerate() {
-            self.namespace_raw[slot] = Some(self.child()?.acquire_namespace_original(kind)?);
+            self.child.as_ref().ok_or_else(closed)?.acquire_namespace_retaining_v2(
+                kind, &mut self.namespace_raw[slot],
+            )?;
             let identity = NamespaceFd::validate_original_kind(
                 self.namespace_raw[slot].as_ref().ok_or_else(closed)?.as_fd(), kind,
             )?;
@@ -323,6 +339,23 @@ impl HostCanaryLocalChildOriginalsV1 {
     pub(crate) fn fence(&mut self) {
         self.closed = true;
     }
+
+    /// Bounds this exact local-child report's retained native/model source.
+    ///
+    /// Proc readers reserve their fixed bound plus one before reading; their
+    /// initial copy coexists with the current buffer. The parent separately
+    /// retains and pays its actual Child and normal startup topology.
+    #[must_use]
+    pub fn receiving_obligations_v1() -> Option<(usize, usize, usize)> {
+        let buffers = NIX_HELPER_MAPS_BYTES.checked_add(NIX_HELPER_STATUS_BYTES)?
+            .checked_add(MAXIMUM_PROC_STAT_BYTES)?.checked_add(CONTEXT_BYTES)?
+            .checked_add(4)?.checked_mul(4)?;
+        let bytes = std::mem::size_of::<Self>().checked_mul(2)?
+            .checked_add(std::mem::size_of::<PidFdProcObservationsV1>().checked_mul(2)?)?
+            .checked_add(buffers)?.checked_add(4 * 128 + 256)?;
+        // Actual pidfd + stat/context + exe/maps/status + four namespaces.
+        Some((bytes, 1 + 2 + 3 + 4, 2 + 3 + 4))
+    }
 }
 
 impl Default for HostCanaryLocalChildOriginalsV1 {
@@ -339,6 +372,7 @@ impl Default for HostCanaryLocalChildOriginalsV1 {
 /// bootstrap, package/image, mapping, cgroup, invocation, job and original D.
 /// No received bytes or namespace object is a launch or currentness authority.
 pub struct HostCanaryReceivedChildOriginalsV1 {
+    report_magic: [u8; 8],
     supervisor_record: Option<crate::seqpacket::descriptor_subject::ReceivedDescriptorRecord>,
     supervisor_payload: Vec<u8>,
     supervisor_subject: Option<crate::seqpacket::KernelAuthorizedRecordSubject>,
@@ -404,7 +438,21 @@ impl HostCanaryReceivedChildOriginalsV1 {
     /// Creates empty fixed resident slots without receiving or validating DATA.
     #[must_use]
     pub const fn new() -> Self {
+        Self::for_report_magic_v2(*b"AOSHCR01")
+    }
+
+    /// Creates inert normal component report destinations without authority.
+    ///
+    /// The actual Host Launch owner must separately bind its protected request,
+    /// inherited channel, source payer and immutable cutoff before capture.
+    #[must_use]
+    pub const fn component_startup_v2() -> Self {
+        Self::for_report_magic_v2(*b"AOSNHR01")
+    }
+
+    const fn for_report_magic_v2(report_magic: [u8; 8]) -> Self {
         Self {
+            report_magic,
             supervisor_record: None,
             supervisor_payload: Vec::new(),
             supervisor_subject: None,
@@ -456,6 +504,24 @@ impl HostCanaryReceivedChildOriginalsV1 {
         }
     }
 
+    /// Bounds the actual donated descriptor observer's dynamic byte planes.
+    ///
+    /// The caller separately pays incoming record envelopes and their donated
+    /// rights. This opens no names and supplies no process or component proof.
+    #[must_use]
+    pub fn component_receiving_bytes_v2() -> Option<usize> {
+        let stat = PidFdProcObservationsV1::stat_receiving_footprint_v1().0;
+        let bounded = NIX_HELPER_MAPS_BYTES.checked_add(1)?.checked_mul(3)?
+            .checked_add(NIX_HELPER_STATUS_BYTES.checked_add(1)?.checked_mul(2)?)?
+            .checked_add(CONTEXT_BYTES.checked_add(1)?.checked_mul(2)?)?;
+        // Each of the five map/status and two context readers has initial and
+        // current backing, with the shared growable read recipe's overlap.
+        std::mem::size_of::<Self>().checked_mul(2)?
+            .checked_add(stat.checked_mul(3)?)?
+            .checked_add(bounded.checked_mul(4)?)?
+            .checked_add(7 * 176)
+    }
+
     /// Parks the native supervisor's three fixed original-report roles once.
     ///
     /// The carrier and canonical stat observation are DATA. Authentic manager
@@ -494,7 +560,7 @@ impl HostCanaryReceivedChildOriginalsV1 {
         socket.require_host_canary_report_original_v1(record)?;
         let payload = record.payload();
         if payload.len() != 176 || record.descriptors().len() != 3
-            || &payload[..8] != b"AOSHCR01"
+            || payload[..8] != self.report_magic
             || payload[8..10] != 1_u16.to_be_bytes()
             || payload[10..12] != 1_u16.to_be_bytes()
             || payload[12..16] != 176_u32.to_be_bytes()
@@ -585,7 +651,7 @@ impl HostCanaryReceivedChildOriginalsV1 {
             socket.require_host_canary_report_original_v1(record)?;
             let payload = record.payload();
             if payload.len() != 176 || record.descriptors().len() != count
-                || &payload[..8] != b"AOSHCR01"
+                || payload[..8] != self.report_magic
                 || payload[8..10] != 1_u16.to_be_bytes()
                 || payload[10..12] != kind.to_be_bytes()
                 || payload[12..16] != 176_u32.to_be_bytes()
@@ -706,7 +772,7 @@ impl HostCanaryReceivedChildOriginalsV1 {
             socket.require_host_canary_report_original_v1(record)?;
             let payload = record.payload();
             if payload.len() != 176 || record.descriptors().len() != 5
-                || &payload[..8] != b"AOSHCR01"
+                || payload[..8] != self.report_magic
                 || payload[8..10] != 1_u16.to_be_bytes()
                 || payload[10..12] != expected_kind.to_be_bytes()
                 || payload[12..16] != 176_u32.to_be_bytes()
@@ -863,7 +929,7 @@ impl HostCanaryReceivedChildOriginalsV1 {
         socket.require_host_canary_report_original_v1(record)?;
         let payload = record.payload();
         if payload.len() != 176 || record.descriptors().len() != 1
-            || &payload[..8] != b"AOSHCR01"
+            || payload[..8] != self.report_magic
             || payload[8..10] != 1_u16.to_be_bytes()
             || payload[10..12] != 6_u16.to_be_bytes()
             || payload[12..16] != 176_u32.to_be_bytes()
@@ -1173,89 +1239,128 @@ impl ProcDescriptorV1 {
     }
 
     fn capture(&mut self, pid: u32, kind: ProcFileV1) -> Result<()> {
+        self.capture_observed(pid, kind, None)
+    }
+
+    fn capture_observed(
+        &mut self,
+        pid: u32,
+        kind: ProcFileV1,
+        mut originals: Option<&mut identity_readback::StatCaptureOriginalsV1>,
+    ) -> Result<()> {
         let path = format!("/proc/{pid}/{}", kind.suffix());
-        let descriptor = open(
-            path.as_str(),
+        let path = match originals.as_deref_mut() {
+            Some(originals) => {
+                originals.path = Some(path);
+                originals.path.as_deref().ok_or_else(closed)?
+            }
+            None => path.as_str(),
+        };
+        let opened = open(
+            path,
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
-        )
-        .map_err(|source| Error::Syscall {
-            operation: "open(original proc observation)",
-            source: source.into(),
-        })?;
-
-        // No fallible operation follows receipt before this actual owner slot.
-        self.file = Some(File::from(descriptor));
-        self.require_read_only_proc()?;
-
-        self.read(kind.maximum())?;
-        self.initial.try_reserve_exact(self.current.len()).map_err(|_| {
-            Error::invalid("proc observation", "bounded initial-byte allocation failed")
-        })?;
+        );
+        match opened {
+            Ok(descriptor) => {
+                // No fallible operation follows receipt before this actual slot.
+                self.file = Some(File::from(descriptor));
+                if let Some(originals) = originals.as_deref_mut() {
+                    originals.open = Some(Ok(()));
+                }
+            }
+            Err(source) => {
+                if let Some(originals) = originals.as_deref_mut() {
+                    originals.open = Some(Err(source));
+                }
+                return Err(Error::Syscall {
+                    operation: "open(original proc observation)", source: source.into(),
+                });
+            }
+        }
+        self.require_read_only_proc_observed(originals.as_deref_mut())?;
+        negative_identity::read_proc_bytes(
+            self.file.as_mut(), &mut self.current, kind.maximum(),
+            originals.as_deref_mut().map(|originals| &mut originals.read),
+        )?;
+        let allocation = self.initial.try_reserve_exact(self.current.len());
+        match originals.as_deref_mut() {
+            Some(originals) => {
+                originals.initial_allocation = Some(allocation);
+                if !matches!(originals.initial_allocation, Some(Ok(()))) {
+                    return Err(Error::invalid("proc observation", "bounded initial-byte allocation failed"));
+                }
+            }
+            None => allocation.map_err(|_| {
+                Error::invalid("proc observation", "bounded initial-byte allocation failed")
+            })?,
+        }
         self.initial.extend_from_slice(&self.current);
         Ok(())
     }
 
     fn require_read_only_proc(&self) -> Result<()> {
+        self.require_read_only_proc_observed(None)
+    }
+
+    fn require_read_only_proc_observed(
+        &self,
+        mut originals: Option<&mut identity_readback::StatCaptureOriginalsV1>,
+    ) -> Result<()> {
         let file = self.file.as_ref().ok_or_else(closed)?;
-        let filesystem = fstatfs(file).map_err(|source| Error::Syscall {
-            operation: "fstatfs(original proc observation)",
-            source: source.into(),
-        })?;
-        let flags = fcntl_getfl(file).map_err(|source| Error::Syscall {
-            operation: "fcntl(original proc observation)",
-            source: source.into(),
-        })?;
-        if filesystem.f_type as u64 != PROCFS_MAGIC
+        let filesystem = fstatfs(file);
+        let filesystem_type = match originals.as_deref_mut() {
+            Some(originals) => {
+                originals.filesystem = Some(filesystem);
+                match originals.filesystem.as_ref() {
+                    Some(Ok(filesystem)) => filesystem.f_type as u64,
+                    Some(Err(source)) => return Err(Error::Syscall {
+                        operation: "fstatfs(original proc observation)", source: (*source).into(),
+                    }),
+                    None => return Err(closed()),
+                }
+            }
+            None => filesystem.map_err(|source| Error::Syscall {
+                operation: "fstatfs(original proc observation)", source: source.into(),
+            })?.f_type as u64,
+        };
+        let flags = fcntl_getfl(file);
+        let flags = match originals.as_deref_mut() {
+            Some(originals) => {
+                originals.flags = Some(flags);
+                match originals.flags.as_ref() {
+                    Some(Ok(flags)) => *flags,
+                    Some(Err(source)) => return Err(Error::Syscall {
+                        operation: "fcntl(original proc observation)", source: (*source).into(),
+                    }),
+                    None => return Err(closed()),
+                }
+            }
+            None => flags.map_err(|source| Error::Syscall {
+                operation: "fcntl(original proc observation)", source: source.into(),
+            })?,
+        };
+        let binding = if filesystem_type != PROCFS_MAGIC
             || flags & OFlags::ACCMODE != OFlags::RDONLY
             || flags.contains(OFlags::PATH)
         {
-            return Err(Error::invalid("proc observation", "descriptor is not read-only procfs"));
+            Err(Error::invalid("proc observation", "descriptor is not read-only procfs"))
+        } else {
+            Ok(())
+        };
+        match originals {
+            Some(originals) => {
+                originals.binding = Some(binding);
+                identity_readback::unit(&originals.binding)
+            }
+            None => binding,
         }
-
-        Ok(())
     }
 
     fn read(&mut self, maximum: usize) -> Result<()> {
-        // The fixed extra byte distinguishes exact EOF from an oversized read.
-        // Failed partial bytes remain in current; successful earlier reads are
-        // not advertised as a complete observation history.
-        self.current.clear();
-        let bound = maximum.checked_add(1).ok_or_else(closed)?;
-        self.current.try_reserve_exact(bound).map_err(|_| {
-            Error::invalid("proc observation", "bounded read allocation failed")
-        })?;
-        let file = self.file.as_mut().ok_or_else(closed)?;
-        file.seek(SeekFrom::Start(0)).map_err(|source| Error::Syscall {
-            operation: "rewind(original proc observation)",
-            source,
-        })?;
-
-        let mut scratch = [0_u8; 256];
-        let mut interrupted = 0;
-        while self.current.len() < bound {
-            let available = (bound - self.current.len()).min(scratch.len());
-            let count = match file.read(&mut scratch[..available]) {
-                Ok(count) => count,
-                Err(source) if source.kind() == std::io::ErrorKind::Interrupted
-                    && interrupted < READ_INTERRUPT_LIMIT =>
-                {
-                    interrupted += 1;
-                    continue;
-                }
-                Err(source) => return Err(Error::Syscall {
-                    operation: "read(original proc observation)",
-                    source,
-                }),
-            };
-            if count == 0 {
-                return Ok(());
-            }
-            self.current.extend_from_slice(&scratch[..count]);
-            interrupted = 0;
-        }
-
-        Err(Error::invalid("proc observation", "record exceeds its fixed bound"))
+        negative_identity::read_proc_bytes(
+            self.file.as_mut(), &mut self.current, maximum, None,
+        )
     }
 }
 
@@ -1290,6 +1395,37 @@ impl PidFd {
 }
 
 impl PidFdProcObservationsV1 {
+    pub(super) fn completed_stat_native_file_count_v1(&self) -> Option<usize> {
+        if self.phase != ObservationPhaseV1::StatCaptured
+            || self.stat.file.is_none() || self.context.file.is_some()
+            || self.nix_helper.is_some() || self.original_identity.is_none()
+            || self.original_info.is_none()
+        { return None; }
+        Some(1)
+    }
+
+    /// Describes dominant heap and metadata cells for the fixed stat recipe.
+    ///
+    /// This supplies passive DATA, never observation, role, payer or custody.
+    /// The genuine caller prices the actual inline owner separately before IO.
+    pub const fn stat_receiving_footprint_v1() -> (usize, usize) {
+        let bound = MAXIMUM_PROC_STAT_BYTES + 1;
+        // Two raw Vec buffers plus the parser's reached borrowed-field table.
+        // Doubling dominates their actual capacity growth/floors; fixed scratch
+        // covers the native read chunk, path and bounded native/error carriers.
+        // This is a dominant permit, not an exact allocator-metadata proof.
+        let bytes = 4 * bound + 2 * bound * std::mem::size_of::<&[u8]>() + 4096;
+        let cells = 2 + bound + 32;
+        (bytes, cells)
+    }
+
+    /// Bounds the one original stat descriptor acquired by `capture_stat`.
+    ///
+    /// This passive count grants no observation, descriptor or receiving loan.
+    pub const fn stat_opened_file_bound_v1() -> usize {
+        1
+    }
+
     /// Parks fixed Nix helper status, executable and maps originals before HELLO.
     ///
     /// This selected DATA capture follows the ordinary stat/context capture on
@@ -1429,12 +1565,38 @@ impl PidFdProcObservationsV1 {
     }
 
     fn capture_stat_inner(&mut self, original: &PidFd) -> Result<PidFdProcessIdentity> {
-        let before = original.info()?;
+        self.capture_stat_inner_observed(original, None)
+    }
+
+    fn capture_stat_inner_observed(
+        &mut self,
+        original: &PidFd,
+        mut originals: Option<&mut identity_readback::IdentityOriginalsV1>,
+    ) -> Result<PidFdProcessIdentity> {
+        let before = identity_readback::observe_copy(
+            original.info(), originals.as_deref_mut().map(|originals| &mut originals.before),
+        )?;
         self.original_info = Some(before);
-        self.stat.capture(before.pid(), ProcFileV1::Stat)?;
-        let stat = parse_proc_stat(&self.stat.current)?;
-        let after = original.info()?;
-        let identity = identity_from_stat(original, before, stat, after)?;
+        self.stat.capture_observed(
+            before.pid(), ProcFileV1::Stat,
+            originals.as_deref_mut().map(|originals| &mut originals.stat),
+        )?;
+        let stat = identity_readback::observe_copy(
+            parse_proc_stat(&self.stat.current),
+            originals.as_deref_mut().map(|originals| &mut originals.parsed),
+        )?;
+        let after = identity_readback::observe_copy(
+            original.info(), originals.as_deref_mut().map(|originals| &mut originals.after),
+        )?;
+        let identity = match originals {
+            Some(originals) => {
+                originals.coordinates = Some(super::identity::require_stat_coordinates(before, stat, after));
+                identity_readback::unit(&originals.coordinates)?;
+                let alive = identity_readback::observe_copy(original.is_alive(), Some(&mut originals.alive))?;
+                super::identity::identity_with_liveness(before, stat, alive)?
+            }
+            None => identity_from_stat(original, before, stat, after)?,
+        };
         self.original_identity = Some(identity);
         Ok(identity)
     }
@@ -1452,9 +1614,18 @@ impl PidFdProcObservationsV1 {
     }
 
     fn capture_context_inner(&mut self, original: &PidFd) -> Result<()> {
-        let before = self.require_original_info(original)?;
-        self.context.capture(before.pid(), ProcFileV1::Context)?;
-        self.require_original_info(original)?;
+        self.capture_context_inner_observed(original, None)
+    }
+
+    fn capture_context_inner_observed(&mut self, original: &PidFd,
+        mut originals: Option<&mut PidFdProcOriginalsV1>) -> Result<()>
+    {
+        let before = self.require_original_info_observed(original,
+            originals.as_deref_mut().map(|originals| &mut originals.info[0]))?;
+        self.context.capture_observed(before.pid(), ProcFileV1::Context,
+            originals.as_deref_mut().map(|originals| &mut originals.context))?;
+        self.require_original_info_observed(original,
+            originals.as_deref_mut().map(|originals| &mut originals.info[1]))?;
         Ok(())
     }
 
@@ -1488,11 +1659,31 @@ impl PidFdProcObservationsV1 {
     }
 
     fn reread_identity_inner(&mut self, original: &PidFd) -> Result<PidFdProcessIdentity> {
-        let before = original.info()?;
-        self.stat.read(MAXIMUM_PROC_STAT_BYTES)?;
-        let stat = parse_proc_stat(&self.stat.current)?;
-        let after = original.info()?;
-        identity_from_stat(original, before, stat, after)
+        self.reread_identity_inner_observed(original, None)
+    }
+
+    fn reread_identity_inner_observed(
+        &mut self, original: &PidFd,
+        mut originals: Option<&mut identity_readback::IdentityOriginalsV1>,
+    ) -> Result<PidFdProcessIdentity> {
+        let before = identity_readback::observe_copy(original.info(),
+            originals.as_deref_mut().map(|originals| &mut originals.before))?;
+        negative_identity::read_proc_bytes(self.stat.file.as_mut(), &mut self.stat.current,
+            MAXIMUM_PROC_STAT_BYTES,
+            originals.as_deref_mut().map(|originals| &mut originals.stat.read))?;
+        let stat = identity_readback::observe_copy(parse_proc_stat(&self.stat.current),
+            originals.as_deref_mut().map(|originals| &mut originals.parsed))?;
+        let after = identity_readback::observe_copy(original.info(),
+            originals.as_deref_mut().map(|originals| &mut originals.after))?;
+        match originals {
+            Some(originals) => {
+                originals.coordinates = Some(super::identity::require_stat_coordinates(before, stat, after));
+                identity_readback::unit(&originals.coordinates)?;
+                let alive = identity_readback::observe_copy(original.is_alive(), Some(&mut originals.alive))?;
+                super::identity::identity_with_liveness(before, stat, alive)
+            }
+            None => identity_from_stat(original, before, stat, after),
+        }
     }
 
     pub(super) fn fence(&mut self) {
@@ -1512,18 +1703,37 @@ impl PidFdProcObservationsV1 {
     }
 
     fn observe_context_inner(&mut self, original: &PidFd) -> Result<()> {
-        self.require_original_info(original)?;
-        self.context.read(CONTEXT_BYTES)?;
-        self.require_original_info(original)?;
+        self.observe_context_inner_observed(original, None)
+    }
+
+    fn observe_context_inner_observed(&mut self, original: &PidFd,
+        mut originals: Option<&mut PidFdProcOriginalsV1>) -> Result<()>
+    {
+        self.require_original_info_observed(original,
+            originals.as_deref_mut().map(|originals| &mut originals.info[0]))?;
+        negative_identity::read_proc_bytes(self.context.file.as_mut(), &mut self.context.current,
+            CONTEXT_BYTES, originals.as_deref_mut().map(|originals| &mut originals.context.read))?;
+        self.require_original_info_observed(original,
+            originals.as_deref_mut().map(|originals| &mut originals.info[1]))?;
         Ok(())
     }
 
     fn require_original_info(&self, original: &PidFd) -> Result<PidFdInfo> {
-        let observed = original.info()?;
-        if Some(observed) != self.original_info || !original.is_alive()? {
-            return Err(Error::invalid("proc observation", "original process changed or exited"));
+        self.require_original_info_observed(original, None)
+    }
+
+    fn require_original_info_observed(&self, original: &PidFd,
+        originals: Option<&mut retained::InfoOriginalV1>) -> Result<PidFdInfo>
+    {
+        match originals {
+            Some(originals) => originals.observe_healthy(original, self.original_info),
+            None => {
+                let observed = original.info()?;
+                require_original_info_binding(observed, self.original_info)?;
+                require_original_liveness(original.is_alive()?)?;
+                Ok(observed)
+            }
         }
-        Ok(observed)
     }
 
     fn begin(&mut self, expected: ObservationPhaseV1) -> Result<ProcObservationOperationV1<'_>> {
@@ -1535,6 +1745,22 @@ impl PidFdProcObservationsV1 {
         self.phase = ObservationPhaseV1::Closed;
         Ok(ProcObservationOperationV1 { observations: self })
     }
+}
+
+// Both healthy and prearmed negative observations apply the same original
+// GET_INFO/liveness predicate. Only the genuine healthy owner can renew Ready.
+fn require_original_info_binding(observed: PidFdInfo, expected: Option<PidFdInfo>) -> Result<()> {
+    if Some(observed) != expected {
+        return Err(Error::invalid("proc observation", "original process changed or exited"));
+    }
+    Ok(())
+}
+
+fn require_original_liveness(alive: bool) -> Result<()> {
+    if !alive {
+        return Err(Error::invalid("proc observation", "original process changed or exited"));
+    }
+    Ok(())
 }
 
 struct ProcObservationOperationV1<'observation> {

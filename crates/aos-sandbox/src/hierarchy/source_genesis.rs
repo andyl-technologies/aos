@@ -16,10 +16,8 @@ use std::path::PathBuf;
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
-use crate::journal::source_tree_genesis::{
-    PENDING_KEY, SourceGenesisAckV1, SourceGenesisPendingV1, SourceGenesisRowsV1,
-    SourceGenesisTransitionV1, ack_key, receipt_key,
-};
+use aos_sandbox_ledger_replay::replay::source_tree_genesis::{SourceGenesisAckV1, SourceGenesisPendingV1, SourceGenesisRowsV1};
+use crate::journal::source_tree_genesis::{PENDING_KEY, SourceGenesisTransitionV1, ack_key, receipt_key};
 use crate::journal::{
     Journal, JournalError, JournalRecord, JournalTransaction, ProtectedJournalNamesV1, RecordNamespace,
 };
@@ -38,24 +36,13 @@ use super::tree_lineage::{
     source_tree_genesis_members_v1,
 };
 
-mod receipt;
-pub use receipt::{
-    SOURCE_TREE_GENESIS_RECEIPT_BYTES_V1, SOURCE_TREE_GENESIS_RECEIPT_BYTES_V2,
+use aos_sandbox_ledger_replay::genesis::{
+    SOURCE_TREE_GENESIS_RECEIPT_BYTES_V1,
+    SOURCE_TREE_GENESIS_RECEIPT_BYTES_V2,
     SourceTreeGenesisReceiptV1,
 };
 
-/// Distinguishes global absence, a vacant target and actual prepared/ACK data.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SourceTreeGenesisStateV1 {
-    /// No row exists anywhere in this Source writer.
-    Empty,
-    /// An absent target under actual existing-instance data, never signed Empty.
-    VacantProject,
-    /// An exact initial Tree remains fenced awaiting authenticated floor ACK.
-    Prepared,
-    /// The exact receipt has a local ACK; current Root authority is separate.
-    Anchored,
-}
+pub use aos_sandbox_ledger_replay::source_signer_data::source_genesis_readback::SourceTreeGenesisStateV1;
 
 /// Retains the actual named Source writer borrow and its typed genesis readback.
 ///
@@ -1219,35 +1206,18 @@ pub(crate) fn observe_retained_source_genesis_v1<'source>(
 }
 
 fn validate_rows_with_lineage(
-    journal: &Journal,
-    rows: SourceGenesisRowsV1,
+    journal: &Journal, rows: SourceGenesisRowsV1,
     heads: &std::collections::BTreeMap<ProjectId, super::tree_lineage::ClosedTreeLineageHeadV1>,
 ) -> Result<SourceGenesisRowsV1, SourceGenesisErrorV1> {
-    if heads.len() != rows.receipts.len()
-        || heads
-            .keys()
-            .any(|project| !rows.receipts.contains_key(project))
-    {
-        return Err(SourceGenesisErrorV1::Conflict);
-    }
-    for receipt in rows.receipts.values() {
-        let head = heads
-            .get(&receipt.project())
-            .ok_or(SourceGenesisErrorV1::Conflict)?;
-        let (tree_head, lineage_head, tree, lineage) = source_tree_genesis_members_v1(
-            journal,
-            head,
-            receipt.project(),
-            &receipt.seed_packet(),
-        )?;
-        if tree_head != receipt.tree_head()
-            || lineage_head != receipt.lineage_head()
-            || !receipt.matches_members(&tree, &lineage)
-        {
-            return Err(SourceGenesisErrorV1::Conflict);
-        }
-    }
-    Ok(rows)
+    use aos_sandbox_ledger_replay::source_readback_queries::SourceGenesisRowsReadbackErrorV1;
+
+    aos_sandbox_ledger_replay::source_readback_queries::validate_rows_with_lineage_v1(
+        journal.historical_read_view_v1().materialized_state_v1(), rows, heads,
+    ).map_err(|cause| match cause {
+        SourceGenesisRowsReadbackErrorV1::Conflict => SourceGenesisErrorV1::Conflict,
+        SourceGenesisRowsReadbackErrorV1::Hierarchy(cause) =>
+            SourceGenesisErrorV1::Hierarchy(cause.into()),
+    })
 }
 
 pub(crate) fn require_location(journal: &Journal, uid: u32) -> Result<(), SourceGenesisErrorV1> {

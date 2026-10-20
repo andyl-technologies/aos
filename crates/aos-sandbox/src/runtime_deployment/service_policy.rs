@@ -23,7 +23,6 @@ use super::{
 };
 
 const PROPERTY_TIMEOUT: Duration = Duration::from_secs(5);
-const PROFILE_PLACEHOLDER: &str = "@AOS_RUNTIME_DEPLOYMENT_PROFILE@";
 const SERVICE_PROPERTIES: &[&str] = &[
     "ExitType",
     "KillMode",
@@ -746,32 +745,9 @@ fn normalized_unit(
     bytes: &[u8],
     profile_path: &str,
 ) -> Result<Vec<u8>, RuntimeDeploymentStartupErrorV1> {
-    if bytes.is_empty() || bytes.len() > 64 * 1024 {
-        return Err(RuntimeDeploymentStartupErrorV1::Service);
-    }
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| RuntimeDeploymentStartupErrorV1::Service)?;
-    let actual = format!("OpenFile={profile_path}:{PROFILE_FD_NAME}:read-only\n");
-    let placeholder = format!("OpenFile={PROFILE_PLACEHOLDER}:{PROFILE_FD_NAME}:read-only\n");
-    if text
-        .split_inclusive('\n')
-        .filter(|line| *line == actual)
-        .count()
-        != 1
-    {
-        return Err(RuntimeDeploymentStartupErrorV1::Service);
-    }
-    Ok(text
-        .split_inclusive('\n')
-        .map(|line| {
-            if line == actual {
-                placeholder.as_str()
-            } else {
-                line
-            }
-        })
-        .collect::<String>()
-        .into_bytes())
+    aos_sandbox_broker::profile_data::runtime_deployment::normalize_publisher_unit_data_v1(
+        bytes, profile_path,
+    ).map_err(|_| RuntimeDeploymentStartupErrorV1::Service)
 }
 
 #[cfg(test)]

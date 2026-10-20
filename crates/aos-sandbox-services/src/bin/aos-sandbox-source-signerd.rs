@@ -4,7 +4,7 @@ use std::error::Error;
 use std::io;
 use std::process::ExitCode;
 
-use aos_sandbox_source_signer::source_signer_exchange::run_source_signer_service_v1;
+use aos_sandbox_source_signer::run_selected_source_signer_service_v1;
 
 fn main() -> ExitCode {
     match run() {
@@ -32,5 +32,5 @@ fn run() -> Result<(), Box<dyn Error>> {
     if arguments.next().is_some() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "extra signer argument").into());
     }
-    run_source_signer_service_v1(controller_uid, controller_gid, signer_uid, signer_gid)
+    run_selected_source_signer_service_v1(controller_uid, controller_gid, signer_uid, signer_gid)
 }

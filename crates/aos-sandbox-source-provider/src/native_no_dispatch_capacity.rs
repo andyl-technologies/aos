@@ -10,11 +10,11 @@
 
 use std::collections::BTreeSet;
 
-use aos_sandbox::{
-    GlobalCapacityReservationRecoveryBindingV1,
-    GlobalCapacityReservationRequestV1, JournalTransaction, ProtectedJournalAuthority,
-    RecordNamespace,
-};
+use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationRecoveryBindingV1;
+use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationRequestV1;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction;
+use aos_sandbox_source::provider_journal::ProtectedJournalAuthority;
+use aos_sandbox_core::RecordNamespace;
 use aos_sandbox_core::ObjectDigest;
 #[cfg(test)]
 use sha2::{Digest as _, Sha256};
@@ -31,14 +31,14 @@ use crate::transaction::prepare_mutations_validated;
 
 // Preserve unchanged private test fixture names through the shared policy.
 #[cfg(test)]
-const PURPOSE: aos_sandbox::GlobalCapacityReservationPurposeV1 =
-    aos_sandbox::GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal;
+const PURPOSE: aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationPurposeV1 =
+    aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal;
 #[cfg(test)]
-const TERMINAL_BYTES: u64 = aos_sandbox::journal::SOURCE_NATIVE_NO_DISPATCH_TERMINAL_BYTES_V1 as u64;
+const TERMINAL_BYTES: u64 = aos_sandbox_ledger_replay::replay::source_original::union::SOURCE_NATIVE_NO_DISPATCH_TERMINAL_BYTES_V1 as u64;
 #[cfg(test)]
-const DISPATCH_TERMINAL_RECORDS: u32 = aos_sandbox::journal::SOURCE_NATIVE_DISPATCH_TERMINAL_RECORDS_V1;
+const DISPATCH_TERMINAL_RECORDS: u32 = aos_sandbox_ledger_replay::replay::source_original::union::SOURCE_NATIVE_DISPATCH_TERMINAL_RECORDS_V1;
 #[cfg(test)]
-const DISPATCH_TERMINAL_BYTES: u64 = aos_sandbox::journal::SOURCE_NATIVE_DISPATCH_TERMINAL_BYTES_V1;
+const DISPATCH_TERMINAL_BYTES: u64 = aos_sandbox_ledger_replay::replay::source_original::union::SOURCE_NATIVE_DISPATCH_TERMINAL_BYTES_V1;
 
 fn request(
     acquisition: &AcquisitionRecordV1,
@@ -55,7 +55,7 @@ fn request(
         }
         _ => ProviderLedgerError::Equivocation,
     })?;
-    Ok(aos_sandbox::journal::source_native_ordinary_capacity_request_v1(&binding))
+    Ok(aos_sandbox_ledger_replay::replay::source_original::union::source_native_ordinary_capacity_request_v1(&binding))
 }
 
 fn binding(
@@ -81,7 +81,7 @@ fn exact_reservation(
     attempt: &AttemptRecordV1,
     session: &HolderSessionHeadRecordV1,
     native: Option<&crate::ledger::native_completion::NativeAcquireCompletionRecordV2>,
-) -> Result<aos_sandbox::GlobalCapacityReservationV1, ProviderLedgerError> {
+) -> Result<aos_sandbox_source::provider_journal::GlobalCapacityReservationV1, ProviderLedgerError> {
     let expected = request(acquisition, attempt, session, native)?;
     let reservation = journal.recover_unique_global_capacity_reservation_v1(&binding(expected))?;
     if reservation.request() != expected {
@@ -263,7 +263,7 @@ pub(crate) fn commit_reservation_checked(
     let mut combined = prepared.transaction.records().to_vec();
     combined.push(capacity.record().clone());
     let transaction = JournalTransaction::new(*prepared.transaction.id(), combined)
-        .map_err(aos_sandbox::JournalError::from)?;
+        .map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?;
     let preflight = ledger
         .journal
         .preflight_global_capacity_reservation_v1(&capacity, &transaction)?;
@@ -306,7 +306,7 @@ pub(crate) fn commit_terminal(
     let mut combined = prepared.transaction.records().to_vec();
     combined.push(reservation.settlement_record());
     let transaction = JournalTransaction::new(*prepared.transaction.id(), combined)
-        .map_err(aos_sandbox::JournalError::from)?;
+        .map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?;
     let preflight = ledger
         .journal
         .preflight_reserved_terminal_v1(&reservation, &transaction)?;

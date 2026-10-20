@@ -9,22 +9,19 @@
 
 use std::time::Duration;
 
-use aos_sandbox::ownership_service::OwnershipProtocolRequestHandler;
+use aos_sandbox_ownership_protocol::service::OwnershipProtocolRequestHandler;
 use aos_sandbox_core::model::KeyReference;
 use aos_sandbox_linux::seqpacket::SeqpacketSocket;
-use aos_sandbox_ownership_protocol::authenticated::{
-    OwnershipRecordAuthenticatorV1, OwnershipRecordDirectionV1,
-};
+use aos_sandbox_ownership_protocol::authority_records::AuthorityRecordStateV1;
 use aos_sandbox_ownership_protocol::carrier::{
-    MAXIMUM_OWNERSHIP_HELLO_BYTES, decode_client_hello_v1, decode_request_v1, encode_response_v1,
-    encode_server_hello_v1,
+    MAXIMUM_OWNERSHIP_HELLO_BYTES, decode_client_hello_v1,
 };
 use aos_sandbox_ownership_protocol::protocol::NegotiatedOwnershipSessionV1;
 use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipSessionTransportError;
 use zeroize::Zeroizing;
 
 use crate::entropy::{KernelEntropy, nonzero_random};
-use crate::ownership_authority_client::{METHODS, receive_record, send_record};
+use crate::ownership_authority_client::{receive_record, send_record};
 use crate::production_service::production_deadline_after;
 
 /// Reports an unavailable carrier or a fail-closed authentication failure.
@@ -50,12 +47,10 @@ impl From<OwnershipSessionTransportError> for LocalOwnershipAuthorityServerError
 /// One accepted, authenticated authority connection with ordered records.
 pub struct LocalOwnershipAuthorityServerV1 {
     socket: SeqpacketSocket,
-    session: NegotiatedOwnershipSessionV1,
-    authenticator: OwnershipRecordAuthenticatorV1,
+    records: AuthorityRecordStateV1,
     peer_uid: u32,
     peer_gid: u32,
     deadline: Duration,
-    next_sequence: u64,
 }
 
 impl LocalOwnershipAuthorityServerV1 {
@@ -96,30 +91,24 @@ impl LocalOwnershipAuthorityServerV1 {
             .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
         let nonce = nonzero_random::<32, _>(&mut KernelEntropy)
             .map_err(|_| LocalOwnershipAuthorityServerErrorV1::Unavailable)?;
-        let session =
-            NegotiatedOwnershipSessionV1::negotiate(&hello, nonce, authority, METHODS.to_vec())
-                .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
-        let authenticator = OwnershipRecordAuthenticatorV1::new(secret, &session)
-            .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
-        let server_record = encode_server_hello_v1(&hello, nonce, &session)
-            .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
+        let (records, server_record) = AuthorityRecordStateV1::negotiate(
+            &hello, nonce, authority, secret,
+        ).map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
         send_record(&mut socket, &server_record, until)?;
 
         Ok(Self {
             socket,
-            session,
-            authenticator,
+            records,
             peer_uid,
             peer_gid,
             deadline,
-            next_sequence: 1,
         })
     }
 
     /// Returns the exact negotiated semantic contract for this connection.
     #[must_use]
     pub const fn session(&self) -> &NegotiatedOwnershipSessionV1 {
-        &self.session
+        self.records.session()
     }
 
     /// Authenticates and dispatches one request to the durable authority.
@@ -154,51 +143,29 @@ impl LocalOwnershipAuthorityServerV1 {
     where
         H: OwnershipProtocolRequestHandler,
     {
-        if handler.authority() != self.session.authority() {
+        if handler.authority() != self.records.session().authority() {
             return Err(LocalOwnershipAuthorityServerErrorV1::IntegrityFailure);
         }
-        let next_sequence = self
-            .next_sequence
-            .checked_add(1)
-            .ok_or(LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
+        self.records.require_request_slot()
+            .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
         let until = production_deadline_after(self.deadline)
             .map_err(|_| LocalOwnershipAuthorityServerErrorV1::Unavailable)?;
         let frame = receive_record(
             &mut self.socket,
-            self.session.maximum_request_bytes() as usize,
+            self.records.session().maximum_request_bytes() as usize,
             self.peer_uid,
             self.peer_gid,
             until,
         )?;
-        let canonical = self
-            .authenticator
-            .open(
-                OwnershipRecordDirectionV1::ClientToAuthority,
-                self.next_sequence,
-                &frame,
-                self.session.maximum_request_bytes(),
-            )
+        let request = self.records.open_request(&frame)
             .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
-        let request = decode_request_v1(&self.session, canonical)
+        let response = handler.handle(self.records.session(), &request)
             .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
-
-        let response = handler
-            .handle(&self.session, &request)
-            .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
-        let canonical = encode_response_v1(&self.session, &request, &response)
-            .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
-        let frame = self
-            .authenticator
-            .seal(
-                OwnershipRecordDirectionV1::AuthorityToClient,
-                self.next_sequence,
-                &canonical,
-                self.session.maximum_response_bytes(),
-            )
+        let frame = self.records.encode_response(&request, &response)
             .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
         send_record(&mut self.socket, &frame, until)?;
-        self.next_sequence = next_sequence;
-        Ok(())
+        self.records.response_sent()
+            .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)
     }
 }
 
@@ -209,7 +176,7 @@ mod tests {
     use aos_sandbox_ownership_protocol::protocol::session_client::{
         OwnershipAuthoritySessionClient, UntrustedOwnershipResponsePartsV1,
     };
-    use aos_sandbox::ownership_service::OwnershipProtocolServiceError;
+    use aos_sandbox_ownership_protocol::service::OwnershipProtocolServiceError;
     use aos_sandbox_core::{
         ObjectDigest,
         model::{KeyUsage, StableKeyId},

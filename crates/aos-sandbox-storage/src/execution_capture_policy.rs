@@ -94,6 +94,20 @@ pub(crate) struct OriginalCapturePolicyReadV1 {
 }
 
 impl OriginalCapturePolicyReadV1 {
+    /// Prices one retained fixed capture-allocation policy read.
+    ///
+    /// The original includes the 144-byte input and decoded fixed policy.
+    /// The existing directory is borrowed; only the fixed file is opened.
+    pub(crate) fn receiving_demand_v3() -> Option<aos_sandbox_core::ResourceVector> {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        let memory = std::mem::size_of::<Self>()
+            .checked_add(std::mem::size_of::<CaptureAllocationV1>())?
+            .checked_add(std::mem::size_of::<Sha256>())?
+            .checked_add(1)?; // Independent hostile trailing-byte read.
+        Some(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(memory).ok()?)
+            .with(D::OpenFiles, 1).with(D::MetadataEntries, 1))
+    }
+
     pub(crate) const fn empty() -> Self {
         Self {
             directory: None,

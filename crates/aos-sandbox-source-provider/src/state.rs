@@ -2,7 +2,10 @@
 
 use std::collections::BTreeMap;
 
-use aos_sandbox::{JournalRecord, JournalTransaction, ProtectedJournalAuthority, RecordNamespace};
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction;
+use aos_sandbox_source::provider_journal::ProtectedJournalAuthority;
+use aos_sandbox_core::RecordNamespace;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     SourceProviderAuthorityTrustStateV1, SourceProviderAuthorityV1, SourceProviderKeyTrustStateV1,

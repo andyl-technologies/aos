@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[features]
+selected-kernel-clone-layout = ["aos-sandbox-linux/selected-kernel-clone-layout"]
+
 [[bin]]
 name = "aos-sandbox-guest-agent"
 path = "src/main.rs"

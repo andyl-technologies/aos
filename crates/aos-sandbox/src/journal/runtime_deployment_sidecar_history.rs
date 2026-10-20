@@ -18,7 +18,7 @@ use crate::runtime_deployment::{
 use super::runtime_deployment_history::ReadAtCursorV1;
 use super::{
     FileIdentity, Journal, JournalError, JournalLimits, JournalRecord,
-    JournalTransaction, ReplayState, replay_sidecar_observed,
+    JournalTransaction, ObservedReplayStateV1, replay_coordinator_observed_v1,
 };
 
 /// Carries exact native transaction DATA captured under a genuine held pair.
@@ -142,7 +142,7 @@ impl RetainedDeploymentNativeHistoryV1 {
         Ok(())
     }
 
-    pub(in crate::journal) fn finish(&self, replayed: &ReplayState) -> Result<(), JournalError> {
+    pub(in crate::journal) fn finish(&self, replayed: &ObservedReplayStateV1) -> Result<(), JournalError> {
         if self.transactions.is_empty()
             || self.transactions.len() != replayed.committed_transactions
             || self.committed_records != replayed.committed_records
@@ -175,7 +175,7 @@ impl SidecarHistoryAuditV1 {
         self.retained.observe(transaction, begin_sequence, commit_sequence)
     }
 
-    fn finish(self, replayed: &ReplayState) -> Result<RetainedDeploymentNativeHistoryV1, JournalError> {
+    fn finish(self, replayed: &ObservedReplayStateV1) -> Result<RetainedDeploymentNativeHistoryV1, JournalError> {
         self.retained.finish(replayed)?;
         Ok(self.retained)
     }
@@ -188,6 +188,19 @@ impl Journal {
         owner: &VerifiedDeploymentGenesisV1<'_>,
     ) -> Result<RetainedDeploymentNativeHistoryV1, JournalError> {
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
+        if let Some(mut receiving) = self.begin_boot_history_receiving_v1(owner, SIDECAR_NAME)? {
+            let result = (|| {
+                require_sidecar_capture_limits(self.native.limits())?;
+                let physical = receiving.before(self)?;
+                if physical.byte_len() > MAIN_LIMITS.maximum_journal_bytes
+                    || physical.byte_len() > self.native.limits().maximum_journal_bytes
+                {
+                    return Err(JournalError::JournalTooLarge);
+                }
+                self.replay_runtime_deployment_sidecar_at_v1(physical.byte_len())
+            })();
+            return receiving.finish(self, owner, result);
+        }
         require_sidecar_capture_limits(self.native.limits())?;
         self.require_protected_named_location(
             Path::new(MAIN_DIRECTORY_V1),
@@ -196,22 +209,14 @@ impl Journal {
             self.native.limits(),
         )?;
         let witness = self.protected_writer_name_witness()?;
-        let physical = FileIdentity::of::<crate::journal::JournalError>(self.native.file())?;
+        let physical = self.native.file_identity::<crate::journal::JournalError>()?;
         if physical.byte_len() > MAIN_LIMITS.maximum_journal_bytes
             || physical.byte_len() > self.native.limits().maximum_journal_bytes
         {
             return Err(JournalError::JournalTooLarge);
         }
 
-        let result = (|| {
-            let mut history = SidecarHistoryAuditV1::new(physical.byte_len())?;
-            let mut reader = ReadAtCursorV1::new(self.native.file(), physical.byte_len());
-            let replayed =
-                replay_sidecar_observed(&mut reader, self.native.limits(), &mut history)?;
-            let retained = history.finish(&replayed)?;
-            self.require_deployment_pair_replayed_snapshot_v1(&replayed, physical.byte_len())?;
-            Ok(retained)
-        })();
+        let result = self.replay_runtime_deployment_sidecar_at_v1(physical.byte_len());
 
         // These physical/origin bookends also run after a failed parse/copy.
         self.require_protected_named_location(
@@ -221,13 +226,25 @@ impl Journal {
             self.native.limits(),
         )?;
         self.validate_protected_writer_name_witness(&witness)?;
-        if FileIdentity::of::<crate::journal::JournalError>(self.native.file())? != physical {
+        if self.native.file_identity::<crate::journal::JournalError>()? != physical {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         owner
             .recheck()
             .map_err(|_| JournalError::ProtectedBoundary)?;
         result
+    }
+
+    fn replay_runtime_deployment_sidecar_at_v1(
+        &self,
+        physical_length: u64,
+    ) -> Result<RetainedDeploymentNativeHistoryV1, JournalError> {
+        let mut history = SidecarHistoryAuditV1::new(physical_length)?;
+        let reader = self.native.captured_reader(physical_length);
+        let replayed = replay_coordinator_observed_v1(reader, self.native.limits(), None, Some(super::DeploymentHistoryObserverV1::Sidecar(&mut history)))?;
+        let retained = history.finish(&replayed)?;
+        self.require_deployment_pair_replayed_snapshot_v1(&replayed, physical_length)?;
+        Ok(retained)
     }
 
     pub(crate) fn require_deployment_pair_independence_v1(
@@ -255,18 +272,18 @@ impl Journal {
     /// Compares original replay fields shared by main and sidecar, not row counts.
     pub(in crate::journal) fn require_deployment_pair_replayed_snapshot_v1(
         &self,
-        replayed: &ReplayState,
+        replayed: &ObservedReplayStateV1,
         physical_length: u64,
     ) -> Result<(), JournalError> {
         if replayed.durable_end != physical_length
             || replayed.next_sequence != self.native.next_sequence()
             || replayed.committed_transactions != self.native.committed_transactions()
-            || replayed.transaction_ids != *self.native.transaction_ids()
-            || replayed.committed_namespaces != *self.native.committed_namespaces()
-            || replayed.state != *self.native.state()
-            || replayed.materialized_bytes != self.native.materialized_bytes()
-            || replayed.idempotency != self.idempotency
-            || replayed.committed_namespaces.iter().any(|namespace| *namespace != NAMESPACE)
+            || replayed.native.transaction_ids_data_v1() != self.native.transaction_ids()
+            || replayed.native.committed_namespaces_data_v1() != self.native.committed_namespaces()
+            || replayed.native.state_data_v1() != self.native.state()
+            || replayed.native.materialized_bytes_data_v1() != self.native.materialized_bytes()
+            || replayed.native.idempotency_data_v1() != self.native.idempotency()
+            || replayed.native.committed_namespaces_data_v1().iter().any(|namespace| *namespace != NAMESPACE)
             || !replayed.source_challenge_history.is_empty()
             || !self.source_challenge_history.is_empty()
             || replayed.source_original_replay.has_dependencies()
@@ -376,7 +393,7 @@ pub(crate) fn observed_native_fixture_v1(
     require_sidecar_capture_limits(limits)?;
     let mut audit = SidecarHistoryAuditV1::new(physical.byte_len())?;
     let mut reader = ReadAtCursorV1::new(&file, physical.byte_len());
-    let replayed = replay_sidecar_observed(&mut reader, limits, &mut audit)?;
+    let replayed = super::ordinary_reread::replay_fixture_observed_v1(&mut reader, limits, None, Some(super::DeploymentHistoryObserverV1::Sidecar(&mut audit)))?;
     drop(reader);
     if file.stream_position()? != writer_position {
         return Err(JournalError::StaleAuthoritySnapshot);

@@ -22,6 +22,7 @@ fn strictly_increasing<T: Ord>(values: &[T]) -> bool {
 }
 
 pub use assignment::{
+    assignment_required_features_v1,
     AssignmentManifestV1, InvalidAssignmentManifest, MAX_ASSIGNMENT_REQUIRED_FEATURES,
     MAX_ASSIGNMENT_SOURCE_COMMITMENTS,
 };

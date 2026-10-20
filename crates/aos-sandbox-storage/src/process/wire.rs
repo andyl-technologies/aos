@@ -57,12 +57,26 @@ pub(super) fn encode_atomic_snapshot_request(
     contract: &ZfsHelperContract,
     program: &crate::DormantAtomicDatasetSnapshotV1,
 ) -> Result<Vec<u8>, ZfsWorkerError> {
+    let mut bytes = Vec::new();
+    encode_atomic_snapshot_request_retaining_v1(verb, contract, program, &mut bytes)?;
+    Ok(bytes)
+}
+
+// The caller supplies already-paid storage; every error leaves the actual
+// partially encoded wire in that owner. The ordinary adapter above disposes
+// it at the same returned-error boundary through this single encoder.
+pub(super) fn encode_atomic_snapshot_request_retaining_v1(
+    verb: AtomicSnapshotRequestVerbV1,
+    contract: &ZfsHelperContract,
+    program: &crate::DormantAtomicDatasetSnapshotV1,
+    bytes: &mut Vec<u8>,
+) -> Result<(), ZfsWorkerError> {
     let path = contract.executable().as_os_str().as_encoded_bytes();
     let path_length = u16::try_from(path.len())
         .map_err(|_| ZfsWorkerError::Protocol("executable path is too long"))?;
     let member_count = u16::try_from(program.member_count())
         .map_err(|_| ZfsWorkerError::Protocol("atomic snapshot has too many members"))?;
-    let mut bytes = Vec::with_capacity(128 + path.len() + program.member_count() * 192);
+    *bytes = Vec::with_capacity(128 + path.len() + program.member_count() * 192);
     bytes.extend_from_slice(ATOMIC_SNAPSHOT_REQUEST_MAGIC);
     bytes.extend_from_slice(&WIRE_VERSION.to_be_bytes());
     bytes.push(match verb {
@@ -76,16 +90,16 @@ pub(super) fn encode_atomic_snapshot_request(
     bytes.extend_from_slice(program.commitment().as_bytes());
     bytes.extend_from_slice(&member_count.to_be_bytes());
     for member in program.members() {
-        encode_text(&mut bytes, member.source_name())?;
+        encode_text(bytes, member.source_name())?;
         bytes.extend_from_slice(&member.source_guid().to_be_bytes());
-        encode_text(&mut bytes, member.destination_name())?;
+        encode_text(bytes, member.destination_name())?;
     }
     if bytes.len() > MAXIMUM_REQUEST_BYTES {
         return Err(ZfsWorkerError::Protocol(
             "atomic snapshot request exceeds byte ceiling",
         ));
     }
-    Ok(bytes)
+    Ok(())
 }
 
 pub(super) fn decode_atomic_snapshot_request(
@@ -230,13 +244,28 @@ pub(super) fn encode_request(
     operation: StorageOperation,
     catalog: &ResolvedCatalogCommitmentV1,
 ) -> Result<Vec<u8>, ZfsWorkerError> {
+    let mut bytes = Vec::new();
+    encode_request_retaining_v1(verb, contract, operation, catalog, &mut bytes)?;
+    Ok(bytes)
+}
+
+// The caller supplies already-paid storage; every error leaves the actual
+// partially encoded wire in that owner. The ordinary adapter above disposes
+// it at the same returned-error boundary through this single encoder.
+pub(super) fn encode_request_retaining_v1(
+    verb: WorkerRequestVerb,
+    contract: &ZfsHelperContract,
+    operation: StorageOperation,
+    catalog: &ResolvedCatalogCommitmentV1,
+    bytes: &mut Vec<u8>,
+) -> Result<(), ZfsWorkerError> {
     let path = contract.executable().as_os_str().as_encoded_bytes();
     let path_length = u16::try_from(path.len())
         .map_err(|_| ZfsWorkerError::Protocol("executable path is too long"))?;
     let catalog_length = u32::try_from(catalog.canonical_bytes().len())
         .map_err(|_| ZfsWorkerError::Protocol("catalog is too long"))?;
     let (code, storage, version, quota) = operation_fields(operation);
-    let mut bytes = Vec::with_capacity(96 + path.len() + catalog.canonical_bytes().len());
+    *bytes = Vec::with_capacity(96 + path.len() + catalog.canonical_bytes().len());
     bytes.extend_from_slice(REQUEST_MAGIC);
     bytes.extend_from_slice(&WIRE_VERSION.to_be_bytes());
     bytes.push(verb.code());
@@ -251,7 +280,7 @@ pub(super) fn encode_request(
     if bytes.len() > MAXIMUM_REQUEST_BYTES {
         return Err(ZfsWorkerError::Protocol("request exceeds byte ceiling"));
     }
-    Ok(bytes)
+    Ok(())
 }
 
 pub(super) fn decode_request(bytes: &[u8]) -> Result<WorkerRequest, ZfsWorkerError> {
@@ -310,6 +339,19 @@ pub(super) fn encode_mutation_response(
 pub(super) fn decode_mutation_response(
     bytes: &[u8],
 ) -> Result<WorkerProcessOutput, ZfsWorkerError> {
+    let mut output = WorkerProcessOutput {
+        stdout: Vec::new(), stderr: Vec::new(), success: false, timed_out: false,
+    };
+    decode_mutation_response_retaining_v1(bytes, &mut output)?;
+    Ok(output)
+}
+
+// A malformed stderr/trailing field keeps any already-decoded stdout in the
+// selected attempt. Ordinary decoding shares the exact field/error order.
+pub(super) fn decode_mutation_response_retaining_v1(
+    bytes: &[u8],
+    output: &mut WorkerProcessOutput,
+) -> Result<(), ZfsWorkerError> {
     let mut decoder = Decoder::new(bytes);
     if decoder.take(8)? != MUTATION_RESPONSE_MAGIC || decoder.u16()? != WIRE_VERSION {
         return Err(ZfsWorkerError::Protocol(
@@ -330,15 +372,12 @@ pub(super) fn decode_mutation_response(
     if stdout_length > super::MAXIMUM_STDOUT_BYTES || stderr_length > super::MAXIMUM_STDERR_BYTES {
         return Err(ZfsWorkerError::Protocol("response output exceeds ceiling"));
     }
-    let stdout = decoder.take(stdout_length)?.to_vec();
-    let stderr = decoder.take(stderr_length)?.to_vec();
+    output.stdout = decoder.take(stdout_length)?.to_vec();
+    output.stderr = decoder.take(stderr_length)?.to_vec();
     decoder.finish()?;
-    Ok(WorkerProcessOutput {
-        stdout,
-        stderr,
-        success,
-        timed_out,
-    })
+    output.success = success;
+    output.timed_out = timed_out;
+    Ok(())
 }
 
 pub(super) fn encode_observation_response(

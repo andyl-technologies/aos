@@ -9,6 +9,10 @@
 //! The distinct packet domain prevents a V1 qualified-held ACK from being
 //! mistaken for a V8 held-CAS receipt. This packet never grants release.
 
+use aos_sandbox_policy::controller_readback::{
+    PinnedControllerHoldSignerV1, encode_controller_hold_signer_credential_v1,
+};
+
 use std::path::Path;
 
 use ed25519_dalek::SigningKey;
@@ -19,7 +23,7 @@ use crate::journal::{ControllerPolicyV8EffectAckV1, Journal, RecordNamespace};
 use super::controller_effect_ack_readback::{
     ControllerEffectAckChallengeV1, ControllerEffectAckReadbackErrorV1,
 };
-use super::controller_hold_readback::PinnedControllerHoldSignerV1;
+
 use super::controller_v8_readback_envelope::{
     ControllerV8ReadbackProtocol, HEADER_BYTES, SIGNATURE_BYTES, sign_packet, verify_packet,
 };
@@ -170,15 +174,19 @@ pub(crate) fn sign_test_controller_v8_effect_ack_readback_v1(
 mod tests {
     use super::*;
     use crate::journal::{ControllerPolicyHoldV1, ControllerPolicyV8AttemptV1};
-    use crate::policy_compiler::controller_hold_readback::encode_controller_hold_signer_credential_v1;
+
     use aos_sandbox_core::ObjectDigest;
     use aos_sandbox_core::{OperationId, SandboxId};
 
     #[test]
     fn v8_signed_ack_rejects_v1_domain_and_substitution() {
         let key = SigningKey::from_bytes(&[1; 32]);
-        let pin = encode_controller_hold_signer_credential_v1(3, &key.verifying_key()).unwrap();
-        let signer = PinnedControllerHoldSignerV1::decode(&pin).unwrap();
+        let pin = encode_controller_hold_signer_credential_v1(3, &key.verifying_key())
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+            .unwrap();
+        let signer = PinnedControllerHoldSignerV1::decode(&pin)
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+            .unwrap();
         let hold = ControllerPolicyHoldV1::new(
             OperationId::from_bytes([2; 16]),
             SandboxId::from_bytes([3; 16]),
@@ -213,11 +221,15 @@ mod tests {
                     .is_err()
             );
         }
-        let rotated = encode_controller_hold_signer_credential_v1(4, &key.verifying_key()).unwrap();
+        let rotated = encode_controller_hold_signer_credential_v1(4, &key.verifying_key())
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+            .unwrap();
         assert!(
             verify_controller_v8_effect_ack_readback_v1(
                 &packet,
-                &PinnedControllerHoldSignerV1::decode(&rotated).unwrap(),
+                &PinnedControllerHoldSignerV1::decode(&rotated)
+                    .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+                    .unwrap(),
                 challenge,
                 14,
             )

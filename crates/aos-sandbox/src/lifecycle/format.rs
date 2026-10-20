@@ -20,7 +20,11 @@
 //! journal-commit:32 | committed-at:8
 //! ```
 //!
-//! Integers are big endian. Optional slots have a presence byte, reserved zero
+//! Start-only `AOSLIF05` version 5 adds a 136-byte canonical immutable native
+//! origin immediately before the digest; its numeric DATA suffix is little endian.
+//! Earlier format bodies and offsets remain literal.
+//!
+//! Integers in the established body are big endian. Optional slots have a presence byte, reserved zero
 //! bytes, and fixed zero-filled payload when absent. The final SHA-256 covers a
 //! purpose domain and all preceding bytes. Decode validates the exact total
 //! length before allocating either collection.
@@ -28,6 +32,9 @@
 //! Selected Delete groundwork uses `AOSLIF04` version 4 even before semantic
 //! commit. Its kind5 fact owns the separate batch/native DATA layout; the
 //! ordinary encoder still emits D3 and never infers D4 from Delete intent.
+
+pub(super) mod decode_original;
+pub use decode_original::LifecycleOperationDecodeOriginalV1;
 
 use super::attempt::{
     LifecycleAttemptStateV1, LifecycleEffectAttemptV1, LifecycleEffectDirectionV1,
@@ -77,6 +84,9 @@ const CURRENT_MAGIC: &[u8; 8] = b"AOSLIF03";
 const CURRENT_VERSION: u16 = 3;
 const DELETE_BATCH_MAGIC: &[u8; 8] = b"AOSLIF04";
 const DELETE_BATCH_VERSION: u16 = 4;
+const START_ORIGIN_MAGIC: &[u8; 8] = b"AOSLIF05";
+const START_ORIGIN_VERSION: u16 = 5;
+const START_ORIGIN_BYTES: usize = aos_sandbox_protocol::domain_ledger::operation::START_NATIVE_ORIGIN_BYTES;
 const INTENT_BYTES: usize = 260;
 const FIXED_BODY_BYTES: usize = 740;
 const EXPECTATION_BYTES: usize = 60;
@@ -89,7 +99,8 @@ const MAXIMUM_RECORD_BYTES: usize = FIXED_BODY_BYTES
     + MAXIMUM_SEMANTIC_FACT_BYTES
     + MAXIMUM_LIFECYCLE_EXPECTATIONS * EXPECTATION_BYTES
     + MAXIMUM_LIFECYCLE_STEPS * STEP_BYTES
-    + DIGEST_BYTES;
+    + DIGEST_BYTES
+    + START_ORIGIN_BYTES;
 
 /// Encodes one validated lifecycle snapshot in exact v1 form.
 ///
@@ -103,7 +114,10 @@ pub fn encode_operation_record_v1(
     if operation.has_delete_batch_layout() {
         return Err(LifecycleModelError::InvalidModel);
     }
-    encode_operation_record_with_format(operation, LifecycleOperationRecordFormatV1::Current)
+    let format = if operation.start_native_origin_v1().is_some() {
+        LifecycleOperationRecordFormatV1::StartOrigin
+    } else { LifecycleOperationRecordFormatV1::Current };
+    encode_operation_record_with_format(operation, format)
 }
 
 pub(super) fn encode_retained_operation_record(
@@ -122,6 +136,7 @@ enum LifecycleOperationRecordFormatV1 {
     HostBootWithoutCoordinationBindings,
     Current,
     DeleteBatch,
+    StartOrigin,
 }
 
 impl LifecycleOperationRecordFormatV1 {
@@ -131,6 +146,7 @@ impl LifecycleOperationRecordFormatV1 {
             Self::HostBootWithoutCoordinationBindings => HOST_BOOT_MAGIC,
             Self::Current => CURRENT_MAGIC,
             Self::DeleteBatch => DELETE_BATCH_MAGIC,
+            Self::StartOrigin => START_ORIGIN_MAGIC,
         }
     }
 
@@ -140,6 +156,7 @@ impl LifecycleOperationRecordFormatV1 {
             Self::HostBootWithoutCoordinationBindings => HOST_BOOT_VERSION,
             Self::Current => CURRENT_VERSION,
             Self::DeleteBatch => DELETE_BATCH_VERSION,
+            Self::StartOrigin => START_ORIGIN_VERSION,
         }
     }
 
@@ -149,7 +166,7 @@ impl LifecycleOperationRecordFormatV1 {
             Self::HostBootWithoutCoordinationBindings => {
                 LifecycleSemanticFactLayoutV1::HostBootWithoutCoordinationBindings
             }
-            Self::Current => LifecycleSemanticFactLayoutV1::Current,
+            Self::Current | Self::StartOrigin => LifecycleSemanticFactLayoutV1::Current,
             Self::DeleteBatch => LifecycleSemanticFactLayoutV1::DeleteBatch,
         }
     }
@@ -159,20 +176,55 @@ fn operation_record_encoded_length(
     operation: &LifecycleOperationV1,
     semantic_fact_length: usize,
 ) -> Result<usize, LifecycleModelError> {
-    FIXED_BODY_BYTES
-        .checked_add(semantic_fact_length)
-        .and_then(|total| {
-            total.checked_add(
-                operation
-                    .expectations()
-                    .len()
-                    .checked_mul(EXPECTATION_BYTES)?,
-            )
-        })
-        .and_then(|total| total.checked_add(operation.steps().len().checked_mul(STEP_BYTES)?))
+    operation_record_encoded_length_from_counts(
+        operation.expectations().len(), operation.steps().len(), semantic_fact_length,
+    )?.checked_add(if operation.start_native_origin_v1().is_some() { START_ORIGIN_BYTES } else { 0 })
+        .ok_or(LifecycleModelError::InvalidModel)
+}
+
+fn operation_record_encoded_length_from_counts(
+    expectations: usize, steps: usize, semantic_fact_length: usize,
+) -> Result<usize, LifecycleModelError> {
+    FIXED_BODY_BYTES.checked_add(semantic_fact_length)
+        .and_then(|total| total.checked_add(expectations.checked_mul(EXPECTATION_BYTES)?))
+        .and_then(|total| total.checked_add(steps.checked_mul(STEP_BYTES)?))
         .and_then(|total| total.checked_add(DIGEST_BYTES))
         .filter(|total| *total <= MAXIMUM_RECORD_BYTES)
         .ok_or(LifecycleModelError::InvalidModel)
+}
+
+// The actual public Create admission has one absent-Sandbox expectation and
+// one unbound Controller anchor, with no semantic fact or attempted effects.
+pub(super) fn create_accepted_record_encoded_length_v1() -> Result<usize, LifecycleModelError> {
+    operation_record_encoded_length_from_counts(1, 1, 0)
+}
+
+// Start uses the same one expectation and unbound Controller anchor, plus
+// the exact immutable first-native origin tail owned by this sole codec.
+pub(super) fn start_accepted_record_encoded_length_v1()->Result<usize,LifecycleModelError> {
+    operation_record_encoded_length_from_counts(1,1,0)?
+        .checked_add(START_ORIGIN_BYTES).ok_or(LifecycleModelError::InvalidModel)
+}
+
+// Stop's one fixed-width step already contains every bounded attempt slot.
+// Admission/binding/readiness therefore share a width; committed successors
+// add exactly the existing desired-state witness, including residual progress.
+pub(super) fn stop_source_record_encoded_length_v4(committed: bool)
+    -> Result<usize, LifecycleModelError>
+{
+    let semantic = if committed {
+        super::semantic_format::stop_semantic_fact_encoded_length_v4()?
+    } else {
+        0
+    };
+    operation_record_encoded_length_from_counts(1, 1, semantic)
+}
+
+// The actual Create CAS records one write, one real assignment, one real
+// reservation and Created-incarnation evidence through the same semantic codec.
+pub(super) fn create_committed_record_encoded_length_v1() -> Result<usize, LifecycleModelError> {
+    operation_record_encoded_length_from_counts(1, 1,
+        super::semantic_format::create_semantic_fact_encoded_length_v1()?)
 }
 
 /// Sizes only the original unbound Snapshot D3 record without allocating it.
@@ -199,12 +251,53 @@ pub(super) fn snapshot_admitted_record_encoded_length_v2(
     operation_record_encoded_length(operation, 0)
 }
 
+/// Sizes the initial selected Delete record before copying or encoding it.
+pub(super) fn delete_pending_record_encoded_length_v1(
+    operation: &LifecycleOperationV1,
+) -> Result<usize, LifecycleModelError> {
+    if !operation.has_delete_batch_layout()
+        || !matches!(operation.intent(), LifecycleIntentV1::DeleteSandbox { .. })
+        || operation.phase() != LifecyclePhaseV1::Accepted
+        || operation.record_revision().get() != 1
+        || operation.predecessor_digest().is_some()
+        || operation.forward_progress() != 0
+        || operation.compensation_progress() != 0
+        || operation.method_semantic_commit().is_some()
+        || operation.failure().is_some()
+        || operation.retry().is_some()
+        || operation.terminal_result().is_some()
+        || operation.finished_at().is_some()
+        || operation.steps().iter().any(|step| !step.forward_attempts().is_empty()
+            || !step.compensation_attempts().is_empty())
+    {
+        return Err(LifecycleModelError::InvalidModel);
+    }
+    operation_record_encoded_length(operation, 0)
+}
+
+// The fixed format verifies count-derived length before model allocation.
+// These reached counts dominate old operation/step/attempt/expectation models,
+// including PUTs later replaced. Encoded backing is priced separately.
+pub(super) fn delete_pending_model_bytes_v1(encoded: usize) -> Option<usize> {
+    let operations = encoded.checked_div(FIXED_BODY_BYTES + DIGEST_BYTES)?;
+    let expectations = encoded.checked_div(EXPECTATION_BYTES)?;
+    let steps = encoded.checked_div(STEP_BYTES)?;
+    let attempts = encoded.checked_div(ATTEMPT_BYTES)?;
+    operations.checked_mul(std::mem::size_of::<LifecycleOperationV1>())?
+        .checked_add(expectations.checked_mul(std::mem::size_of::<ResourceExpectationV1>())?)?
+        .checked_add(steps.checked_mul(std::mem::size_of::<LifecycleStepV1>())?)?
+        .checked_add(attempts.checked_mul(std::mem::size_of::<LifecycleEffectAttemptV1>())?)?
+        .checked_mul(32)
+}
+
 fn encode_operation_record_with_format(
     operation: &LifecycleOperationV1,
     format: LifecycleOperationRecordFormatV1,
 ) -> Result<Vec<u8>, LifecycleModelError> {
     if operation.has_delete_batch_layout()
         != (format == LifecycleOperationRecordFormatV1::DeleteBatch)
+        || operation.start_native_origin_v1().is_some()
+            != (format == LifecycleOperationRecordFormatV1::StartOrigin)
     {
         return Err(LifecycleModelError::InvalidModel);
     }
@@ -247,8 +340,21 @@ fn encode_operation_record_with_format(
     for step in operation.steps() {
         encode_step(&mut bytes, step);
     }
+    if let Some(origin) = operation.start_native_origin_v1() {
+        origin.encode_into_v1(&mut bytes);
+    }
     let digest = hash_record(&bytes);
     bytes.extend_from_slice(digest.digest().as_bytes());
+    if operation.has_delete_batch_layout() && operation.phase() == LifecyclePhaseV1::Terminal
+        && operation.terminal_result() == Some(LifecycleTerminalResultV1::Succeeded) {
+        // The Source readonly supplier and actual Domain producer share the
+        // same passive terminal framing contract; full model laws stay here.
+        let selected = aos_sandbox_protocol::domain_ledger::delete_root::source_current::
+            require_source_delete_terminal_operation_frame_v4(&bytes,
+                operation.project().as_bytes(), operation.operation_id().as_bytes())
+            .map_err(|_| LifecycleModelError::CorruptEncoding)?;
+        if &selected != digest.digest().as_bytes() { return Err(LifecycleModelError::CorruptEncoding); }
+    }
     debug_assert_eq!(bytes.len(), length);
     if bytes.len() != length {
         return Err(LifecycleModelError::InvalidModel);
@@ -265,6 +371,15 @@ fn encode_operation_record_with_format(
 pub fn decode_operation_record_v1(
     encoded: &[u8],
 ) -> Result<LifecycleOperationV1, LifecycleModelError> {
+    let mut original = LifecycleOperationDecodeOriginalV1::new();
+    original.decode_once(encoded)?;
+    original.take_completed_once().ok_or(LifecycleModelError::CorruptEncoding)
+}
+
+fn decode_operation_record_into(
+    encoded: &[u8],
+    original: &mut LifecycleOperationDecodeOriginalV1,
+) -> Result<(), LifecycleModelError> {
     if encoded.len() < FIXED_BODY_BYTES + DIGEST_BYTES || encoded.len() > MAXIMUM_RECORD_BYTES {
         return Err(LifecycleModelError::CorruptEncoding);
     }
@@ -300,6 +415,9 @@ pub fn decode_operation_record_v1(
         .and_then(|length| length.checked_add(expectation_bytes))
         .and_then(|length| length.checked_add(step_bytes))
         .ok_or(LifecycleModelError::CorruptEncoding)?;
+    let expected_length = expected_length.checked_add(
+        if format == LifecycleOperationRecordFormatV1::StartOrigin { START_ORIGIN_BYTES } else { 0 },
+    ).ok_or(LifecycleModelError::CorruptEncoding)?;
     if body.len() != expected_length {
         return Err(LifecycleModelError::CorruptEncoding);
     }
@@ -371,39 +489,53 @@ pub fn decode_operation_record_v1(
     {
         return Err(LifecycleModelError::CorruptEncoding);
     }
-    let semantic_fact = decode_semantic_fact_with_layout(
+    original.fact = super::semantic_format::decode_semantic_fact_into(
         take_slice(&mut bytes, semantic_fact_length)?,
         semantic_witness,
         format.semantic_layout(),
+        &mut original.semantic,
     )?;
 
-    let mut expectations = Vec::new();
-    expectations
+    original.expectations
         .try_reserve_exact(expectation_count)
         .map_err(|_| LifecycleModelError::Allocation)?;
     for _ in 0..expectation_count {
-        expectations.push(decode_expectation(&mut bytes)?);
+        original.expectations.push(decode_expectation(&mut bytes)?);
     }
-    let mut steps = Vec::new();
-    steps
+    original.steps
         .try_reserve_exact(step_count)
         .map_err(|_| LifecycleModelError::Allocation)?;
     for _ in 0..step_count {
-        steps.push(decode_step(&mut bytes)?);
+        let step = decode_step_into(&mut bytes, &mut original.forward, &mut original.compensation, &mut original.model_failure)?;
+        original.steps.push(step);
     }
+    let start_origin = if format == LifecycleOperationRecordFormatV1::StartOrigin {
+        Some(aos_sandbox_protocol::domain_ledger::operation::StartNativeOriginDataV1::decode_v1(
+            take_slice(&mut bytes, START_ORIGIN_BYTES)?,
+        ).map_err(|error| {
+            original.start_origin_failure.get_or_insert(error);
+            LifecycleModelError::CorruptEncoding
+        })?)
+    } else { None };
     if !bytes.is_empty() {
         return Err(LifecycleModelError::CorruptEncoding);
     }
 
-    let semantic_commit = match (semantic_witness, semantic_fact) {
+    original.commit = match (semantic_witness, original.fact.take()) {
         (Some(witness), Some((facts, evidence))) => Some(
-            LifecycleMethodSemanticCommitV1::new(witness, facts, evidence, &intent, &expectations)
-                .map_err(|_| LifecycleModelError::CorruptEncoding)?,
+            LifecycleMethodSemanticCommitV1::new_retaining_decode(
+                witness, facts, evidence, &intent, &original.expectations,
+                Some(&mut original.failed_commit),
+            )
+                .map_err(|error| {
+                original.model_failure.get_or_insert(error);
+                LifecycleModelError::CorruptEncoding
+            })?,
         ),
         (None, None) => None,
         _ => return Err(LifecycleModelError::CorruptEncoding),
     };
-    let operation = LifecycleOperationV1::new(
+    let operation = LifecycleOperationV1::new_from_decode_parts(
         operation_id,
         caller,
         project,
@@ -411,24 +543,40 @@ pub fn decode_operation_record_v1(
         intent,
         accepted_at,
         record_revision,
-        expectations,
-        steps,
+        &mut original.expectations,
+        &mut original.steps,
         phase,
         forward_progress,
         compensation_progress,
-        semantic_commit,
+        &mut original.commit,
         failure,
         retry,
         terminal_result,
         finished_at,
         predecessor_digest,
     )
-    .map_err(|_| LifecycleModelError::CorruptEncoding)?;
-    if matches!(format, LifecycleOperationRecordFormatV1::DeleteBatch) {
-        operation.select_delete_batch_layout().map_err(|_| LifecycleModelError::CorruptEncoding)
-    } else {
-        Ok(operation)
+    .map_err(|error| {
+                original.model_failure.get_or_insert(error);
+                LifecycleModelError::CorruptEncoding
+            })?;
+    original.operation = Some(operation);
+    if let Some(origin) = start_origin {
+        original.operation.as_mut().ok_or(LifecycleModelError::CorruptEncoding)?
+            .select_start_native_origin_retaining_v1(origin)
+            .map_err(|error| {
+                original.model_failure.get_or_insert(error);
+                LifecycleModelError::CorruptEncoding
+            })?;
     }
+    if matches!(format, LifecycleOperationRecordFormatV1::DeleteBatch) {
+        original.operation.as_mut().ok_or(LifecycleModelError::CorruptEncoding)?
+            .select_delete_batch_layout_retaining()
+            .map_err(|error| {
+                original.model_failure.get_or_insert(error);
+                LifecycleModelError::CorruptEncoding
+            })?;
+    }
+    Ok(())
 }
 
 fn operation_record_format(
@@ -446,6 +594,9 @@ fn operation_record_format(
         }
         (value, HOST_BOOT_VERSION) if value == HOST_BOOT_MAGIC => {
             Ok(LifecycleOperationRecordFormatV1::HostBootWithoutCoordinationBindings)
+        }
+        (value, START_ORIGIN_VERSION) if value == START_ORIGIN_MAGIC => {
+            Ok(LifecycleOperationRecordFormatV1::StartOrigin)
         }
         (value, CURRENT_VERSION) if value == CURRENT_MAGIC => {
             Ok(LifecycleOperationRecordFormatV1::Current)
@@ -1071,7 +1222,14 @@ fn encode_step(bytes: &mut Vec<u8>, step: &LifecycleStepV1) {
     encode_attempt_slots(bytes, step.compensation_attempts());
 }
 
-fn decode_step(bytes: &mut &[u8]) -> Result<LifecycleStepV1, LifecycleModelError> {
+
+
+fn decode_step_into(
+    bytes: &mut &[u8],
+    forward: &mut Vec<LifecycleEffectAttemptV1>,
+    compensation: &mut Vec<LifecycleEffectAttemptV1>,
+    model_failure: &mut Option<LifecycleModelError>,
+) -> Result<LifecycleStepV1, LifecycleModelError> {
     let index = u32::from_be_bytes(take(bytes)?);
     let class = decode_step_class(take::<1>(bytes)?[0])?;
     let domain = decode_step_domain(take::<1>(bytes)?[0])?;
@@ -1121,9 +1279,9 @@ fn decode_step(bytes: &mut &[u8]) -> Result<LifecycleStepV1, LifecycleModelError
     } else {
         return Err(LifecycleModelError::CorruptEncoding);
     };
-    let forward_attempts = decode_attempt_slots(bytes, forward_attempt_count)?;
-    let compensation_attempts = decode_attempt_slots(bytes, compensation_attempt_count)?;
-    LifecycleStepV1::new(
+    decode_attempt_slots_into(bytes, forward_attempt_count, forward)?;
+    decode_attempt_slots_into(bytes, compensation_attempt_count, compensation)?;
+    LifecycleStepV1::new_from_decode_parts(
         index,
         class,
         domain,
@@ -1134,15 +1292,18 @@ fn decode_step(bytes: &mut &[u8]) -> Result<LifecycleStepV1, LifecycleModelError
         compensation_body,
         compensation_plan,
         state,
-        forward_attempts,
-        compensation_attempts,
+        forward,
+        compensation,
         result,
         compensation_result,
         inventory,
         failure,
         retry,
     )
-    .map_err(|_| LifecycleModelError::CorruptEncoding)
+    .map_err(|error| {
+        model_failure.get_or_insert(error);
+        LifecycleModelError::CorruptEncoding
+    })
 }
 
 fn encode_attempt_slots(bytes: &mut Vec<u8>, attempts: &[LifecycleEffectAttemptV1]) {
@@ -1192,14 +1353,16 @@ fn encode_attempt_slots(bytes: &mut Vec<u8>, attempts: &[LifecycleEffectAttemptV
     }
 }
 
-fn decode_attempt_slots(
+
+
+fn decode_attempt_slots_into(
     bytes: &mut &[u8],
     count: usize,
-) -> Result<Vec<LifecycleEffectAttemptV1>, LifecycleModelError> {
+    attempts: &mut Vec<LifecycleEffectAttemptV1>,
+) -> Result<(), LifecycleModelError> {
     if count > MAXIMUM_LIFECYCLE_ATTEMPTS_PER_STEP {
         return Err(LifecycleModelError::CorruptEncoding);
     }
-    let mut attempts = Vec::new();
     attempts
         .try_reserve_exact(count)
         .map_err(|_| LifecycleModelError::Allocation)?;
@@ -1211,7 +1374,7 @@ fn decode_attempt_slots(
             return Err(LifecycleModelError::CorruptEncoding);
         }
     }
-    Ok(attempts)
+    Ok(())
 }
 
 fn decode_attempt(bytes: &mut &[u8]) -> Result<LifecycleEffectAttemptV1, LifecycleModelError> {
@@ -1600,4 +1763,11 @@ fn decode_failure_class(v: u8) -> Result<LifecycleFailureClassV1, LifecycleModel
         6 => Ok(LifecycleFailureClassV1::CorruptState),
         _ => Err(LifecycleModelError::CorruptEncoding),
     }
+}
+
+// Start progress uses the sole codec's original tail and semantic-fact recipe.
+pub(super) fn start_committed_record_encoded_length_v2() -> Result<usize, LifecycleModelError> {
+    operation_record_encoded_length_from_counts(1, 1,
+        super::semantic_format::start_semantic_fact_encoded_length_v2()?)?
+        .checked_add(START_ORIGIN_BYTES).ok_or(LifecycleModelError::InvalidModel)
 }

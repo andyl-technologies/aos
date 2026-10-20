@@ -1,0 +1,216 @@
+--- a/src/encoding.rs
++++ b/src/encoding.rs
+@@ -731,6 +731,51 @@
+     buf: &mut impl Buf,
+     ctx: crate::DecodeContext<'_>,
+ ) -> Result<crate::unknown_fields::UnknownField, DecodeError> {
++    decode_unknown_field_engine(tag, buf, ctx, None)
++}
++
++/// Merges one unknown field, retaining a failed group's materialized children.
++///
++/// With an ordinary context, this preserves the existing decode-then-push order.
++/// The optional context changes partial output ownership only, not wire validity
++/// or any parser budget. A partial group must never be used as successful DATA.
++///
++/// # Errors
++/// Returns the original unknown-field parser error, after parking any failed
++/// materialized group when partial-child retention is enabled.
++#[doc(hidden)]
++pub fn merge_unknown_field_retaining(
++    tag: Tag,
++    buf: &mut impl Buf,
++    ctx: crate::DecodeContext<'_>,
++    output: &mut crate::unknown_fields::UnknownFields,
++) -> Result<(), DecodeError> {
++    if !ctx.retains_partial_children() {
++        output.push(decode_unknown_field(tag, buf, ctx)?);
++        return Ok(());
++    }
++
++    let mut partial = None;
++    match decode_unknown_field_engine(tag, buf, ctx, Some(&mut partial)) {
++        Ok(field) => {
++            output.push(field);
++            Ok(())
++        }
++        Err(error) => {
++            if let Some(field) = partial {
++                output.push(field);
++            }
++            Err(error)
++        }
++    }
++}
++
++fn decode_unknown_field_engine(
++    tag: Tag,
++    buf: &mut impl Buf,
++    ctx: crate::DecodeContext<'_>,
++    partial: Option<&mut Option<crate::unknown_fields::UnknownField>>,
++) -> Result<crate::unknown_fields::UnknownField, DecodeError> {
+     use crate::unknown_fields::{UnknownField, UnknownFieldData, UnknownFields};
+ 
+     // Every decoded field occupies one `UnknownField` slot in its parent's
+@@ -766,17 +811,28 @@
+             let group_field_number = tag.field_number();
+             // Read nested fields until the matching EndGroup tag.
+             let mut nested = UnknownFields::new();
+-            loop {
+-                let nested_tag = Tag::decode(buf)?;
+-                if nested_tag.wire_type() == WireType::EndGroup {
+-                    // Per the protobuf spec the EndGroup tag must carry the same
+-                    // field number as the opening StartGroup tag.
+-                    if nested_tag.field_number() != group_field_number {
+-                        return Err(DecodeError::InvalidEndGroup(nested_tag.field_number()));
++            let result = (|| {
++                loop {
++                    let nested_tag = Tag::decode(buf)?;
++                    if nested_tag.wire_type() == WireType::EndGroup {
++                        // Preserve the original matching-EndGroup validation.
++                        if nested_tag.field_number() != group_field_number {
++                            return Err(DecodeError::InvalidEndGroup(nested_tag.field_number()));
++                        }
++                        break;
+                     }
+-                    break;
++                    merge_unknown_field_retaining(nested_tag, buf, ctx, &mut nested)?;
+                 }
+-                nested.push(decode_unknown_field(nested_tag, buf, ctx)?);
++                Ok(())
++            })();
++            if let Err(error) = result {
++                if let Some(partial) = partial {
++                    *partial = Some(UnknownField {
++                        number: tag.field_number(),
++                        data: UnknownFieldData::Group(nested),
++                    });
++                }
++                return Err(error);
+             }
+             UnknownFieldData::Group(nested)
+         }
+@@ -1630,3 +1686,52 @@
+         );
+     }
+ }
++
++#[cfg(test)]
++mod retained_unknown_group_tests {
++    use super::*;
++    use crate::{DecodeContext, UnknownFieldData, UnknownFields};
++
++    #[test]
++    fn malformed_nested_group_keeps_only_selected_partial_children() {
++        // Outer group 10, complete bytes child11, nested group12 containing a
++        // complete bytes child13 then a truncated varint child14.
++        let payload = [0x5a, 3, b'a', b'b', b'c', 0x63, 0x6a, 2, b'd', b'e', 0x70, 0x80];
++        let mut ordinary = UnknownFields::new();
++        let ordinary_limit = core::cell::Cell::new(crate::DEFAULT_UNKNOWN_FIELD_LIMIT);
++        let ordinary_ctx = DecodeContext::new(crate::RECURSION_LIMIT, &ordinary_limit);
++        let ordinary_error = merge_unknown_field_retaining(
++            Tag::new(10, WireType::StartGroup), &mut payload.as_slice(), ordinary_ctx,
++            &mut ordinary,
++        ).unwrap_err();
++
++        let mut retained = UnknownFields::new();
++        let retained_limit = core::cell::Cell::new(crate::DEFAULT_UNKNOWN_FIELD_LIMIT);
++        let retained_ctx = DecodeContext::new(crate::RECURSION_LIMIT, &retained_limit)
++            .with_partial_child_retention();
++        let retained_error = merge_unknown_field_retaining(
++            Tag::new(10, WireType::StartGroup), &mut payload.as_slice(), retained_ctx,
++            &mut retained,
++        ).unwrap_err();
++
++        assert_eq!(retained_error, ordinary_error);
++        assert_eq!(retained_limit.get(), ordinary_limit.get());
++        assert!(ordinary.is_empty());
++        let UnknownFieldData::Group(outer) = &retained.iter().next().unwrap().data else {
++            panic!("failed outer group was not retained");
++        };
++        assert_eq!(outer.len(), 2);
++        let UnknownFieldData::LengthDelimited(bytes) = &outer.iter().next().unwrap().data else {
++            panic!("first complete child was not retained");
++        };
++        assert_eq!(bytes, b"abc");
++        let UnknownFieldData::Group(inner) = &outer.iter().nth(1).unwrap().data else {
++            panic!("failed nested group was not retained");
++        };
++        assert_eq!(inner.len(), 1);
++        let UnknownFieldData::LengthDelimited(bytes) = &inner.iter().next().unwrap().data else {
++            panic!("completed inner child was not retained");
++        };
++        assert_eq!(bytes, b"de");
++    }
++}
+--- a/src/message.rs
++++ b/src/message.rs
+@@ -128,6 +128,7 @@
+     depth: u32,
+     unknown_fields_remaining: &'a core::cell::Cell<usize>,
+     element_memory_remaining: Option<&'a core::cell::Cell<usize>>,
++    retain_partial_children: bool,
+ }
+ 
+ impl<'a> DecodeContext<'a> {
+@@ -139,6 +140,7 @@
+             depth,
+             unknown_fields_remaining: unknown_field_limit,
+             element_memory_remaining: None,
++            retain_partial_children: false,
+         }
+     }
+ 
+@@ -161,6 +163,23 @@
+     ) -> Self {
+         self.element_memory_remaining = Some(element_memory_limit);
+         self
++    }
++
++    /// Retains a failed repeated or unknown-group child in its actual parent.
++    ///
++    /// This changes only the ownership of partial output on error. It does not
++    /// change parsing, recursion, unknown-field or element-memory budgets.
++    /// Generated decoders propagate this context through the existing merge.
++    #[must_use]
++    pub fn with_partial_child_retention(mut self) -> Self {
++        self.retain_partial_children = true;
++        self
++    }
++
++    /// Reports whether failed materialized children stay in the parent message.
++    #[must_use]
++    pub fn retains_partial_children(&self) -> bool {
++        self.retain_partial_children
+     }
+ 
+     /// The remaining recursion depth.
+@@ -954,6 +973,28 @@
+         self.merge(
+             &mut data,
+             DecodeContext::new(RECURSION_LIMIT, &limit).with_element_memory(&elem_budget),
++        )
++    }
++
++    /// Merges with default budgets while retaining failed repeated/group children.
++    ///
++    /// The receiver must remain with the caller on error. Partial children are
++    /// comparison output and must never be treated as a successfully decoded
++    /// message. Singular message fields already merge in place. This hook does
++    /// not retain a failed map-entry or a replaced oneof's previous variant;
++    /// callers requiring complete partial custody must exclude those shapes.
++    /// Ordinary [`Message::merge_from_slice`] behavior is unchanged.
++    ///
++    /// # Errors
++    /// Returns the same parser error as the ordinary default-budget merge.
++    fn merge_retaining_from_slice(&mut self, mut data: &[u8]) -> Result<(), DecodeError> {
++        let limit = core::cell::Cell::new(DEFAULT_UNKNOWN_FIELD_LIMIT);
++        let elem_budget = core::cell::Cell::new(DEFAULT_ELEMENT_MEMORY_LIMIT);
++        self.merge(
++            &mut data,
++            DecodeContext::new(RECURSION_LIMIT, &limit)
++                .with_element_memory(&elem_budget)
++                .with_partial_child_retention(),
+         )
+     }
+ 

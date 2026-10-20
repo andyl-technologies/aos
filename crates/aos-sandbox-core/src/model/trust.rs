@@ -44,10 +44,15 @@ impl StableKeyId {
     /// Returns [`InvalidTrustModel::InvalidStableKeyId`] for an empty value or
     /// one longer than 255 UTF-8 bytes.
     pub fn new(value: String) -> Result<Self, InvalidTrustModel> {
+        Self::validate_text(&value)?;
+        Ok(Self(value))
+    }
+
+    fn validate_text(value: &str) -> Result<(), InvalidTrustModel> {
         if value.is_empty() || value.len() > MAX_STABLE_KEY_ID_BYTES {
             Err(InvalidTrustModel::InvalidStableKeyId)
         } else {
-            Ok(Self(value))
+            Ok(())
         }
     }
 
@@ -326,12 +331,7 @@ impl SignatureStatement {
         expires_seconds: Option<i64>,
         verification_policy: ObjectDescriptor,
     ) -> Result<Self, InvalidTrustModel> {
-        if signer.usage() != purpose.required_usage() {
-            return Err(InvalidTrustModel::UsagePurposeMismatch);
-        }
-        if expires_seconds.is_some_and(|expiry| expiry <= issued_seconds) {
-            return Err(InvalidTrustModel::InvalidValidityInterval);
-        }
+        Self::validate_parts_v1(&signer, purpose, issued_seconds, expires_seconds)?;
         Ok(Self {
             subject,
             trust_scope,
@@ -341,6 +341,17 @@ impl SignatureStatement {
             expires_seconds,
             verification_policy,
         })
+    }
+
+    fn validate_parts_v1(signer: &KeyReference, purpose: SignaturePurpose,
+        issued_seconds: i64, expires_seconds: Option<i64>) -> Result<(), InvalidTrustModel> {
+        if signer.usage() != purpose.required_usage() {
+            return Err(InvalidTrustModel::UsagePurposeMismatch);
+        }
+        if expires_seconds.is_some_and(|expiry| expiry <= issued_seconds) {
+            return Err(InvalidTrustModel::InvalidValidityInterval);
+        }
+        Ok(())
     }
 
     /// Returns the exact signed subject descriptor.

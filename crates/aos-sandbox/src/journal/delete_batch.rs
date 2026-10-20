@@ -8,286 +8,10 @@ use super::*;
 use aos_sandbox_protocol::domain_ledger::controller_history_relation::validate_delete_batch_admission_records_v1;
 use aos_sandbox_protocol::domain_ledger::delete_batch::{self as codec, DeleteBatchViewV1};
 
-pub(super) fn has_dependencies(state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>) -> bool {
-    state.keys().any(|(namespace, key)| {
-        *namespace == RecordNamespace::DesiredState && codec::reserved_key(key)
-    })
-}
+aos_sandbox_ledger_replay::define_delete_replay_data_recipe_v1!();
 
-pub(super) fn selected(transaction: &JournalTransaction) -> bool {
-    transaction.records().iter().any(|record| {
-        record.namespace() == RecordNamespace::DesiredState && codec::reserved_key(record.key())
-    })
-}
-
-/// Checks selected payload headroom before the existing preview-map clone.
-pub(super) fn bound_preview(
-    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    transactions: &[JournalTransaction],
-    limits: JournalLimits,
-) -> Result<(), JournalError> {
-    bound_preview_view(state, &PreflightTransactionViewV1::Ordinary(transactions), limits)
-}
-
-/// Borrows the current closed preflight view without copying any transaction.
-pub(super) fn bound_preview_view(
-    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    transactions: &PreflightTransactionViewV1<'_>,
-    limits: JournalLimits,
-) -> Result<(), JournalError> {
-    if !has_dependencies(state)
-        && !(0..transactions.len()).any(|index| selected(transactions.transaction(index)))
-    {
-        return Ok(());
-    }
-
-    let current = state.iter().try_fold(0_usize, |total, ((_, key), value)| {
-        total.checked_add(key.len())
-            .and_then(|bytes| bytes.checked_add(value.len()))
-            .ok_or(JournalError::LimitExceeded("Delete preview payload"))
-    })?;
-    let additions = (0..transactions.len()).try_fold(0_usize, |total, index| {
-        let transaction = transactions.transaction(index);
-        transaction.records().iter().try_fold(total, |total, record| {
-            total.checked_add(record.key().len())
-                .and_then(|bytes| bytes.checked_add(record.value().map_or(0, <[u8]>::len)))
-                .ok_or(JournalError::LimitExceeded("Delete preview payload"))
-        })
-    })?;
-    let maximum = limits.maximum_materialized_bytes
-        .checked_add(limits.maximum_transaction_bytes)
-        .ok_or(JournalError::LimitExceeded("Delete preview payload"))?;
-    if current > limits.maximum_materialized_bytes
-        || current.checked_add(additions).is_none_or(|bytes| bytes > maximum)
-    {
-        return Err(JournalError::LimitExceeded("Delete preview payload"));
-    }
-    // This bounds current payload plus proposed retained copies. It excludes
-    // map nodes, decoded protobuf temporaries and allocator/kernel funding.
-    Ok(())
-}
-
-/// Validates the same real predecessor for append, preview and cold COMMIT.
-pub(super) fn validate(
-    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    transaction: &JournalTransaction,
-    before_sequence: u64,
-    limits: JournalLimits,
-) -> Result<(), JournalError> {
-    if !has_dependencies(state) && !selected(transaction) {
-        return Ok(());
-    }
-
-    preserve_pending_members(state, transaction)?;
-    if !selected(transaction) {
-        return Ok(());
-    }
-    validate_transaction(transaction, limits)?;
-    bound_preview(state, std::slice::from_ref(transaction), limits)?;
-
-    let first = transaction.records().first().ok_or_else(invalid)?;
-    if first.namespace() != RecordNamespace::DesiredState
-        || !first.key().starts_with(codec::BATCH_PREFIX)
-    {
-        return Err(invalid());
-    }
-    let batch = DeleteBatchViewV1::decode(first.value().ok_or_else(invalid)?)
-        .map_err(|_| invalid())?;
-    if first.key() != codec::batch_key(batch.project(), batch.operation())
-        || transaction.id() != &batch.transaction()
-        || batch.before_sequence() != before_sequence
-        || state.contains_key(&(RecordNamespace::DesiredState, first.key().to_vec()))
-    {
-        return Err(invalid());
-    }
-
-    #[cfg(target_os = "linux")]
-    validate_admission(state, transaction, batch)?;
-    #[cfg(not(target_os = "linux"))]
-    return Err(JournalError::UnsupportedProtectedOpen);
-    Ok(())
-}
-
-/// Preserves old Live preimages and every immutable pending dependency.
-fn preserve_pending_members(
-    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    transaction: &JournalTransaction,
-) -> Result<(), JournalError> {
-    for ((namespace, key), value) in state {
-        if *namespace != RecordNamespace::DesiredState {
-            continue;
-        }
-        if key.starts_with(codec::BATCH_PREFIX) {
-            let batch = DeleteBatchViewV1::decode(value).map_err(|_| invalid())?;
-            if key != &codec::batch_key(batch.project(), batch.operation()) {
-                return Err(invalid());
-            }
-            if transaction.records().iter().any(|record| {
-                (record.namespace() == RecordNamespace::Operation
-                    && record.key() == batch.operation().as_bytes())
-                    || (record.namespace() == RecordNamespace::DesiredState
-                        && (record.key() == key
-                            || batch.rows(0).any(|row| {
-                                record.key() == codec::row_key(row, 0)
-                            })))
-            }) {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        } else if key.starts_with(codec::TOMBSTONE_PREFIX) || key.starts_with(codec::HANDOFF_PREFIX) {
-            if transaction.records().iter().any(|record| {
-                record.namespace() == *namespace && record.key() == key
-            }) {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn validate_admission(
-    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    transaction: &JournalTransaction,
-    batch: DeleteBatchViewV1<'_>,
-) -> Result<(), JournalError> {
-    let records = transaction.records();
-    let local_start: usize = if records.get(4).is_some_and(|record| {
-        record.namespace() == RecordNamespace::OwnershipGate
-    }) {
-        5
-    } else {
-        4
-    };
-    let effects_start = local_start.checked_add(batch.count(0))
-        .and_then(|offset| offset.checked_add(batch.count(2)))
-        .and_then(|offset| offset.checked_add(1))
-        .ok_or_else(invalid)?;
-    if effects_start >= records.len() {
-        return Err(invalid());
-    }
-
-    // W compares the retained native projection, but PUTs only a pending
-    // overlay. Its predecessor remains untouched for audit and readback.
-    for row in batch.rows(0) {
-        require_projection(state, batch, row)?;
-    }
-    for row in batch.rows(1) {
-        let namespace = RecordNamespace::from_byte(row[17])?;
-        let key = codec::row_key(row, 1);
-        let actual = state.get(&(namespace, key.to_vec()));
-        if actual.is_some() != (row[20] == 1)
-            || actual.is_some_and(|value| codec::native_value_digest(value) != row[24..56])
-        {
-            return Err(conflict());
-        }
-    }
-
-    let mut offset = local_start;
-    for resource in batch.rows(4) {
-        let row = batch.rows(0)
-            .find(|row| &row[..17] == resource)
-            .ok_or_else(invalid)?;
-        let value = codec::tombstone(batch, row);
-        if codec::native_value_digest(&value) != row[68..100] {
-            return Err(invalid());
-        }
-        let key = codec::tombstone_key(batch.project(), resource);
-        if state.contains_key(&(RecordNamespace::DesiredState, key.clone())) {
-            return Err(conflict());
-        }
-        require_put(records.get(offset), &key, &value)?;
-        offset += 1;
-    }
-    for row in batch.rows(2) {
-        let key = codec::row_key(row, 2);
-        let before = codec::collection(batch.project(), row, false);
-        if state.get(&(RecordNamespace::DesiredState, key.to_vec())).map(Vec::as_slice) != Some(before.as_slice()) {
-            return Err(conflict());
-        }
-        require_put(records.get(offset), key, &codec::collection(batch.project(), row, true))?;
-        offset += 1;
-    }
-    let marker = records.get(offset).ok_or_else(invalid)?;
-    if marker.namespace() != RecordNamespace::DesiredState
-        || marker.key() != codec::handoff_key(batch.project(), batch.operation())
-    {
-        return Err(invalid());
-    }
-    codec::validate_handoff(marker.value().ok_or_else(invalid)?, batch).map_err(|_| invalid())?;
-    if state.contains_key(&(RecordNamespace::DesiredState, marker.key().to_vec())) {
-        return Err(conflict());
-    }
-
-    validate_delete_batch_admission_records_v1(
-        batch,
-        transaction,
-        local_start,
-        effects_start,
-    )
-    .map_err(|_| JournalError::MalformedTransaction("invalid Delete batch admission metadata"))
-}
-
-#[cfg(target_os = "linux")]
-fn require_projection(
-    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    batch: DeleteBatchViewV1<'_>,
-    row: &[u8],
-) -> Result<(), JournalError> {
-    use aos_sandbox_protocol::public_api::projection::{
-        PublicProjectionKindV1 as Kind, PublicProjectionRecordV1,
-        PublicProjectionResourceV1 as Resource, projection_key,
-    };
-    let kind = match row[0] {
-        1 => Kind::Sandbox,
-        2 => Kind::Execution,
-        3 => Kind::Snapshot,
-        4 => Kind::FilesystemView,
-        5 => Kind::Attachment,
-        _ => return Err(invalid()),
-    };
-    let identity: [u8; 16] = row[1..17].try_into().map_err(|_| invalid())?;
-    let key = codec::row_key(row, 0);
-    if key != projection_key(kind, identity) {
-        return Err(invalid());
-    }
-    let value = state.get(&(RecordNamespace::DesiredState, key.to_vec())).ok_or_else(conflict)?;
-    if codec::native_value_digest(value) != row[28..60] {
-        return Err(conflict());
-    }
-    let projection = PublicProjectionRecordV1::from_retained_record_bytes(kind, identity, value)
-        .map_err(|_| invalid())?;
-    let generation = match projection.resource() {
-        Resource::Sandbox(value) => value.desired.as_option().map(|desired| desired.generation),
-        Resource::Execution(value) => Some(value.desired_generation),
-        Resource::FilesystemView(value) => Some(value.desired_generation),
-        Resource::Attachment(value) => Some(value.desired_generation),
-        Resource::Snapshot(value) => Some(value.desired_generation),
-        _ => None,
-    };
-    if projection.project() != batch.project() || generation != Some(codec::raw64(&row[20..28])) {
-        return Err(conflict());
-    }
-    Ok(())
-}
-
-fn require_put(record: Option<&JournalRecord>, key: &[u8], value: &[u8]) -> Result<(), JournalError> {
-    let record = record.ok_or_else(invalid)?;
-    if record.namespace() != RecordNamespace::DesiredState
-        || record.key() != key
-        || record.value() != Some(value)
-    {
-        return Err(invalid());
-    }
-    Ok(())
-}
-
-fn invalid() -> JournalError {
-    JournalError::MalformedRecord("invalid Delete batch native recipe")
-}
-
-fn conflict() -> JournalError {
-    JournalError::MalformedTransaction("stale Delete batch member or collection")
-}
+#[cfg(all(test, target_os = "linux"))]
+mod companion_tests;
 
 /// Observes metadata only after the sole native parser validates COMMIT.
 #[cfg(target_os = "linux")]
@@ -298,6 +22,14 @@ pub(super) struct NativeObserverV1 {
 
 #[cfg(target_os = "linux")]
 impl NativeObserverV1 {
+    pub(super) const fn new(transaction: [u8; 16]) -> Self {
+        Self { transaction, proof: None }
+    }
+
+    pub(super) fn completed_proof_data_v1(&self) -> Option<&[u8; 64]> {
+        self.proof.as_ref()
+    }
+
     pub(super) fn observe(
         &mut self,
         transaction: &JournalTransaction,
@@ -311,12 +43,7 @@ impl NativeObserverV1 {
         if self.proof.is_some() || native_digest.len() != 32 || !selected(transaction) {
             return Err(invalid());
         }
-        let mut proof = [0; 64];
-        proof[..16].copy_from_slice(transaction.id());
-        proof[16..48].copy_from_slice(native_digest);
-        proof[48..56].copy_from_slice(&commit_sequence.to_be_bytes());
-        proof[56..64].copy_from_slice(&end_offset.to_be_bytes());
-        self.proof = Some(proof);
+        self.proof = Some(native_commit_data_v1(*transaction.id(), commit_sequence, end_offset, native_digest)?);
         Ok(())
     }
 }
@@ -365,29 +92,15 @@ impl Journal {
             }
             bound_preview(self.native.state(), &[], self.native.limits())?;
 
-            let mut observer = NativeObserverV1 {
-                transaction: batch.transaction(),
-                proof: None,
-            };
-            let mut reader = ReadAtCursorV1::new(self.native.file(), witness.file().byte_len());
-            let replayed = replay_original_observed(
-                &mut reader,
+            let mut observer = NativeObserverV1::new(batch.transaction());
+            let reader = self.native.captured_reader(witness.file().byte_len());
+            let replayed = replay_coordinator_observed_v1(
+                reader,
                 self.native.limits(),
                 None,
                 Some(DeploymentHistoryObserverV1::Delete(&mut observer)),
             )?;
-            if replayed.durable_end != witness.file().byte_len()
-                || replayed.next_sequence != self.native.next_sequence()
-                || replayed.committed_transactions != self.native.committed_transactions()
-                || replayed.transaction_ids != *self.native.transaction_ids()
-                || replayed.state != *self.native.state()
-                || replayed.idempotency != self.idempotency
-                || replayed.materialized_bytes != self.native.materialized_bytes()
-                || replayed.q04_lower_history_present != self.q04_lower_history_present
-                || replayed.source_history_compacted
-            {
-                return Err(invalid());
-            }
+            require_replay_matches_controller_v1(self, &replayed, witness.file().byte_len())?;
             observer.proof.ok_or_else(invalid)
         })();
 
@@ -475,4 +188,38 @@ mod tests {
         assert!(bound_preview(&state, std::slice::from_ref(&transaction), limits).is_err());
         assert!(bound_preview(&BTreeMap::new(), &[transaction], limits).is_ok());
     }
+}
+
+// One comparison recipe serves ordinary proof projection and the selected
+// retained C17 owner. It certifies neither authorization nor a Root relation.
+#[cfg(target_os = "linux")]
+pub(super) fn require_replay_matches_controller_v1(
+    journal: &Journal,
+    replayed: &ObservedReplayStateV1,
+    length: u64,
+) -> Result<(), JournalError> {
+    if replayed.durable_end != length
+        || replayed.next_sequence != journal.native.next_sequence()
+        || replayed.committed_transactions != journal.native.committed_transactions()
+        || replayed.native.transaction_ids_data_v1() != journal.native.transaction_ids()
+        || replayed.native.state_data_v1() != journal.native.state()
+        || replayed.native.idempotency_data_v1() != journal.native.idempotency()
+        || replayed.native.materialized_bytes_data_v1() != journal.native.materialized_bytes()
+        || replayed.q04_lower_history_present != journal.q04_lower_history_present
+        || replayed.source_history_compacted
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+// The parser supplies these exact native coordinates and digest. This helper
+// formats DATA only; neither caller can turn supplied bytes into an original.
+#[cfg(target_os = "linux")]
+pub(super) fn native_commit_data_v1(
+    transaction: [u8; 16], commit_sequence: u64, end_offset: u64, native_digest: &[u8],
+) -> Result<[u8; 64], JournalError> {
+    aos_sandbox_protocol::domain_ledger::delete_batch::encode_native_commit_data_v1(
+        transaction, commit_sequence, end_offset, native_digest,
+    ).map_err(|_| invalid())
 }

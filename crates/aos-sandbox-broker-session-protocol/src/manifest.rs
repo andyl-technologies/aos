@@ -19,6 +19,9 @@
 //! BrokerOutcome. Decoding establishes only canonical shape and cryptographic
 //! self-consistency; it does not establish protected provenance or authority.
 
+mod context_originals;
+pub use context_originals::BrokerSessionManifestContextOriginalsV1;
+
 use crate::{
     BROKER_SESSION_SIGNER_REFERENCE_BYTES, BrokerSessionKeyUsageV1, BrokerSessionProtocolV1,
     BrokerSessionSignerReferenceV1, ProtectedBrokerSessionKeyV1,
@@ -26,7 +29,6 @@ use crate::{
     supported_broker_session_version_v1,
 };
 use sha2::{Digest as _, Sha256};
-
 
 /// Reports a stable field class rejected by the pure manifest codec.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -570,6 +572,37 @@ impl BrokerSessionManifestV1 {
         client_process: [u8; 16],
         broker_process: [u8; 16],
     ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionManifestErrorV1> {
+        self.verification_context_engine(boot_id, client_process, broker_process, None)
+    }
+
+    /// Constructs the same passive context while retaining reached key/model results.
+    ///
+    /// The capture contains comparison DATA only; it establishes no key
+    /// provenance, endpoint, Session, currentness or receiving authority.
+    ///
+    /// # Errors
+    /// Retains malformed fixed keys, collection/context refusal and reentry.
+    #[doc(hidden)]
+    pub fn verification_context_retaining_v1(
+        &self,
+        boot_id: [u8; 16],
+        client_process: [u8; 16],
+        broker_process: [u8; 16],
+        originals: &mut BrokerSessionManifestContextOriginalsV1,
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionManifestErrorV1> {
+        self.verification_context_engine(boot_id, client_process, broker_process, Some(originals))
+    }
+
+    fn verification_context_engine(
+        &self,
+        boot_id: [u8; 16],
+        client_process: [u8; 16],
+        broker_process: [u8; 16],
+        originals: Option<&mut BrokerSessionManifestContextOriginalsV1>,
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionManifestErrorV1> {
+        if originals.as_ref().is_some_and(|originals| !originals.is_empty()) {
+            return Err(BrokerSessionManifestErrorV1::manifest("context capture reentry"));
+        }
         let keys = self.keys.each_ref().map(|pin| {
             ProtectedBrokerSessionKeyV1::new(
                 pin.signer.clone(),
@@ -580,13 +613,35 @@ impl BrokerSessionManifestV1 {
                 pin.superseded_by_key_generation,
             )
         });
-        let keys = keys
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| BrokerSessionManifestErrorV1::manifest("key set"))?
-            .try_into()
-            .map_err(|_| BrokerSessionManifestErrorV1::manifest("key set"))?;
+        let Some(originals) = originals else {
+            let keys = keys
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| BrokerSessionManifestErrorV1::manifest("key set"))?
+                .try_into()
+                .map_err(|_| BrokerSessionManifestErrorV1::manifest("key set"))?;
+            return self.context_from_keys(boot_id, client_process, broker_process, keys)
+                .map_err(|_| BrokerSessionManifestErrorV1::manifest("verification context"));
+        };
 
+        originals.retain_keys_once(keys)?;
+        let keys = originals.collect_keys_once()?;
+        originals.retain_context_once(self.context_from_keys(
+            boot_id,
+            client_process,
+            broker_process,
+            keys,
+        ))?;
+        originals.take_success_once()
+    }
+
+    fn context_from_keys(
+        &self,
+        boot_id: [u8; 16],
+        client_process: [u8; 16],
+        broker_process: [u8; 16],
+        keys: [ProtectedBrokerSessionKeyV1; 4],
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, crate::BrokerSessionValidationError> {
         ProtectedBrokerSessionVerificationContextV1::new(
             self.domain_id,
             self.route_id,
@@ -606,7 +661,6 @@ impl BrokerSessionManifestV1 {
             broker_process,
             keys,
         )
-        .map_err(|_| BrokerSessionManifestErrorV1::manifest("verification context"))
     }
 }
 

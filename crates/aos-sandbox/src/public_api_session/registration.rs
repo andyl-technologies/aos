@@ -57,6 +57,28 @@ pub(super) fn decode(
     Ok(peers)
 }
 
+// Prices the typed Vec/map even for a structurally valid table rejected later.
+// Each completed fingerprint alone consumes at least 65 JSON bytes: 32 digits,
+// 31 commas and brackets. Missing/malformed fields never push a Registration.
+pub(super) fn startup_representation_bound(encoded: usize) -> Option<(usize, usize)> {
+    let rows = encoded.checked_div(65)?.checked_add(4)?;
+    let vector = rows.checked_mul(3)?.checked_mul(std::mem::size_of::<Registration>())?;
+    let map_rows = rows.min(MAXIMUM_REGISTERED_PEERS);
+    // BTree nodes contain keys/values and links. Four carrier widths per row
+    // plus a complete small root allow sparse/split nodes without an exact
+    // private-allocator model. The decoded Vec can coexist with this map.
+    let cell = std::mem::size_of::<([u8; 32], Registration)>()
+        .checked_add(8 * std::mem::size_of::<usize>())?;
+    let map = map_rows.checked_mul(4)?.checked_add(16)?.checked_mul(cell)?;
+    let scratch = encoded.checked_mul(6)?;
+    let bytes = vector.checked_add(map)?.checked_add(scratch)?
+        .checked_add(std::mem::size_of::<RegistrationDocument>())?;
+    // The decoded registration rows coexist with the keyed certificate
+    // registry. Vec growth, sparse BTree nodes and headers remain bytes.
+    let entries = rows.checked_add(map_rows)?;
+    Some((bytes, entries))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

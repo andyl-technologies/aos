@@ -27,6 +27,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_broker::domain_transaction_custody::transaction_state::{
+    self, DomainRecoveryImageComparisonDataV1,
+};
 
 use crate::journal::{
     CacheMutationGateV1, GlobalCapacityReservationPurposeV1,
@@ -39,16 +42,15 @@ use crate::journal::{
 #[cfg(test)]
 use aos_sandbox_protocol::domain_ledger::records::encode_reducer_payload_with_validator;
 use aos_sandbox_protocol::domain_ledger::records::{
-    DURABLE_MEMBER_FIXED_BYTES, ENVELOPE_FIXED_BYTES, MAXIMUM_COLD_REPLAY_MEMBERS,
     ProtectedCurrentRecordCandidateV1, aggregate_semantic_phases, capacity_request_binds_schema,
-    decode_durable_member, decode_reducer_payload_with_validator, domain_transaction_set_digest,
-    encode_checkpoint_payload, encode_durable_member, reconstruct_transactions, reducer_phase,
-    replay_projection_records, transaction_digest, validate_domain_capacity_lineage_v1,
-    validate_successor,
+    decode_reducer_payload_with_validator,
+    encode_checkpoint_payload,
+    replay_projection_records, validate_domain_capacity_lineage_v1,
 };
 use aos_sandbox_protocol::domain_ledger::records::{
     ProtectedCapacitySettlementMemberV1, ProtectedDomainEnvelopeV1, ProtectedDomainKeyV1,
     ProtectedDomainProjectionV1, ProtectedDomainReplayPhaseV1, ProtectedDomainSchemaV1,
+    DomainPreparedTransactionDataV1, ResidentCanonicalPayloadBudgetDataV1,
     ProtectedRecordRoleV1, ProtectedReducerPhaseV1,
 };
 
@@ -60,20 +62,16 @@ use aos_sandbox_protocol::domain_ledger::{DomainLedgerDataError, JournalTransact
 /// The current Journal graph is independently bounded and is not charged once
 /// per leg. This does not measure decoded containers or allocator overhead.
 pub(crate) struct ResidentDomainPayloadBudgetV1 {
-    maximum: usize,
-    retained: usize,
+    data: ResidentCanonicalPayloadBudgetDataV1,
 }
 
 impl ResidentDomainPayloadBudgetV1 {
     pub(crate) const fn new(maximum: usize) -> Self {
-        Self {
-            maximum,
-            retained: 0,
-        }
+        Self { data: ResidentCanonicalPayloadBudgetDataV1::new(maximum) }
     }
 
     pub(crate) const fn retained(&self) -> usize {
-        self.retained
+        self.data.retained()
     }
 
     /// Reserves aggregate canonical bytes before retaining another member.
@@ -81,13 +79,7 @@ impl ResidentDomainPayloadBudgetV1 {
     /// # Errors
     /// Refuses overflow or exhaustion without changing the prior reservation.
     pub(crate) fn reserve(&mut self, bytes: usize) -> Result<(), ProtectedDomainJournalErrorV1> {
-        let retained = self
-            .retained
-            .checked_add(bytes)
-            .filter(|bytes| *bytes <= self.maximum)
-            .ok_or(JournalError::LimitExceeded("resident canonical payload bytes"))?;
-        self.retained = retained;
-        Ok(())
+        self.data.reserve(bytes).map_err(ProtectedDomainJournalErrorV1::from)
     }
 }
 
@@ -240,12 +232,7 @@ impl<S: ProtectedDomainSchemaV1> ProtectedDomainSnapshotV1<S> {
 #[must_use = "a prepared journal transaction must be committed or deliberately discarded"]
 pub struct PreparedDomainTransactionV1<S: ProtectedDomainSchemaV1> {
     snapshot: ProtectedDomainSnapshotV1<S>,
-    transaction: JournalTransaction,
-    before: Vec<Option<Vec<u8>>>,
-    after: Vec<Vec<u8>>,
-    roles: Vec<ProtectedRecordRoleV1>,
-    digest: ObjectDigest,
-    set_digest: ObjectDigest,
+    data: DomainPreparedTransactionDataV1,
 }
 
 impl<S: ProtectedDomainSchemaV1> PreparedDomainTransactionV1<S> {
@@ -254,19 +241,23 @@ impl<S: ProtectedDomainSchemaV1> PreparedDomainTransactionV1<S> {
     /// These records retain the existing framing and digest algorithm; they
     /// grant no commit, postcommit, live custody or publication authority.
     pub(crate) fn journal_records(&self) -> &[JournalRecord] {
-        self.transaction.records()
+        self.data.transaction.records()
+    }
+
+    pub(crate) fn journal_transaction_v1(&self) -> &JournalTransaction {
+        &self.data.transaction
     }
 
     /// Returns the stable transaction identifier bound into durable members.
     #[must_use]
     pub const fn transaction_id(&self) -> [u8; 16] {
-        *self.transaction.id()
+        *self.data.transaction.id()
     }
 
     /// Returns the exact canonical domain transaction commitment.
     #[must_use]
     pub const fn transaction_digest(&self) -> ObjectDigest {
-        self.digest
+        self.data.digest
     }
 }
 
@@ -391,52 +382,12 @@ pub(crate) enum ResidentDomainCommitFailureV1 {
     Sealing(#[source] ProtectedDomainJournalErrorV1),
 }
 
-/// Retains one exact typed envelope proven by postcommit readback.
-#[derive(Debug)]
-pub struct DomainPostcommitRecordV1<S: ProtectedDomainSchemaV1> {
-    namespace: RecordNamespace,
-    role: ProtectedRecordRoleV1,
-    phase: ProtectedReducerPhaseV1,
-    transaction_phase: ProtectedReducerPhaseV1,
-    envelope: ProtectedDomainEnvelopeV1<S>,
-    encoded: Vec<u8>,
-}
-
-impl<S: ProtectedDomainSchemaV1> DomainPostcommitRecordV1<S> {
-    /// Returns the fixed shared-journal namespace selected by the domain kind.
-    #[must_use]
-    pub const fn namespace(&self) -> RecordNamespace {
-        self.namespace
-    }
-
-    /// Returns the exact canonical envelope read back after durable commit.
-    #[must_use]
-    pub const fn envelope(&self) -> &ProtectedDomainEnvelopeV1<S> {
-        &self.envelope
-    }
-
-    /// Reports whether decoded terminal state may publish protected current state.
-    #[must_use]
-    pub fn is_publication(&self) -> bool {
-        matches!(self.role, ProtectedRecordRoleV1::Publication)
-            && self.phase == ProtectedReducerPhaseV1::Terminal
-            && self.transaction_phase == ProtectedReducerPhaseV1::Terminal
-    }
-
-    /// Reports whether decoded state still admits exactly one external effect.
-    #[must_use]
-    pub fn is_effect(&self) -> bool {
-        matches!(self.role, ProtectedRecordRoleV1::Effect)
-            && self.phase == ProtectedReducerPhaseV1::Prepared
-            && self.transaction_phase == ProtectedReducerPhaseV1::Prepared
-    }
-
-    /// Returns the phase decoded from the canonical reducer body.
-    #[must_use]
-    pub const fn phase(&self) -> ProtectedReducerPhaseV1 {
-        self.phase
-    }
-}
+/// Borrows canonical record DATA only through an independently admitted composite.
+///
+/// The record alone grants no effect. This module privately constructs the
+/// current transaction composite only after its real native role guards.
+pub use aos_sandbox_protocol::domain_ledger::records::DomainPostcommitRecordDataV1
+    as DomainPostcommitRecordV1;
 
 /// Reports a successful exact readback and any role-specific authority.
 #[must_use = "postcommit capabilities must be consumed or deliberately discarded"]
@@ -685,75 +636,14 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         mut budget: Option<&mut ResidentDomainPayloadBudgetV1>,
     ) -> Result<Option<ReplayedDomainPostcommitV1<S>>, ProtectedDomainJournalErrorV1> {
         let snapshot = self.snapshot()?;
-        let mut members = Vec::new();
-        for (namespace, key_bytes, value) in self.journal.all_records() {
-            if !key_bytes.starts_with(S::KEY_PREFIX) {
-                continue;
-            }
-            let key = ProtectedDomainKeyV1::<S>::decode(key_bytes)?;
-            if namespace != S::namespace(key.kind()) {
-                return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-            }
-            let member = decode_durable_member::<S>(key, value, &self.validator)?;
-            if member.transaction_id() == transaction_id {
-                if let Some(budget) = budget.as_deref_mut() {
-                    // One retained encoded member and its decoded envelope.
-                    // Reserve before keeping it beyond this bounded scan.
-                    let payload = member
-                        .encoded()
-                        .len()
-                        .checked_add(member.envelope().payload().len())
-                        .and_then(|bytes| bytes.checked_add(member.envelope().key().as_bytes().len()))
-                        .and_then(|bytes| bytes.checked_add(member.envelope().key().identity().len()))
-                        .ok_or(JournalError::LimitExceeded("resident canonical payload bytes"))?;
-                    budget.reserve(payload)?;
-                }
-                if members.len() >= MAXIMUM_COLD_REPLAY_MEMBERS {
-                    return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-                }
-                members.push(member);
-            }
-        }
-        if members.is_empty() {
+        let candidate = transaction_state::current_postcommit_candidate_v1::<S>(
+            self.journal.historical_read_view_v1(), transaction_id, &self.validator,
+            budget.as_deref_mut().map(|budget| &mut budget.data),
+        )?;
+        let Some(candidate) = candidate else {
             return Ok(None);
-        }
-        members.sort_by_key(|member| member.member_index());
-        let transactions = reconstruct_transactions::<S>(&members)?;
-        let transaction = transactions
-            .into_iter()
-            .next()
-            .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-        if transaction.transaction_id() != transaction_id
-            || transaction.phase() == ProtectedDomainReplayPhaseV1::Incomplete
-            || transaction.phase() == ProtectedDomainReplayPhaseV1::Observed
-            || transaction.phase() == ProtectedDomainReplayPhaseV1::Superseded
-        {
-            return Ok(None);
-        }
-        let transaction_digest = transaction.transaction_digest();
-        let set_digest = transaction.set_digest();
-        let mut records = Vec::with_capacity(members.len());
-        for member in members {
-            let namespace = S::namespace(member.envelope().key().kind());
-            let role = S::role(member.envelope().key().kind());
-            let phase = reducer_phase(member.envelope())?;
-            let transaction_phase = match transaction.phase() {
-                ProtectedDomainReplayPhaseV1::Prepared => ProtectedReducerPhaseV1::Prepared,
-                ProtectedDomainReplayPhaseV1::Observed => ProtectedReducerPhaseV1::Observed,
-                ProtectedDomainReplayPhaseV1::Terminal => ProtectedReducerPhaseV1::Terminal,
-                ProtectedDomainReplayPhaseV1::Superseded => ProtectedReducerPhaseV1::Superseded,
-                ProtectedDomainReplayPhaseV1::Incomplete => return Ok(None),
-            };
-            let (_, _, _, _, envelope, encoded) = member.into_parts();
-            records.push(DomainPostcommitRecordV1 {
-                namespace,
-                role,
-                phase,
-                transaction_phase,
-                envelope,
-                encoded,
-            });
-        }
+        };
+        let (transaction, transaction_digest, set_digest, records) = candidate.into_parts();
         let capability = DomainPostcommitCapabilityV1 {
             instance: Arc::clone(&self.instance),
             transaction: transaction_digest,
@@ -884,71 +774,51 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
     pub(crate) fn plan_with_cache_gate(
         &self,
         transaction_id: [u8; 16],
-        mut successors: Vec<ProtectedDomainEnvelopeV1<S>>,
+        successors: Vec<ProtectedDomainEnvelopeV1<S>>,
         mut gate: CacheMutationGateV1<'_>,
     ) -> Result<PreparedDomainTransactionV1<S>, ProtectedDomainJournalErrorV1> {
+        self.plan_with_source_selection_v1(transaction_id, successors, gate, None)
+    }
+
+    pub(crate) fn plan_with_source_provisioning_v1(
+        &self, transaction_id: [u8; 16], successors: Vec<ProtectedDomainEnvelopeV1<S>>,
+        original: &crate::controller_resource_reservation::SourceAdmissionAuthorizationV1<'_>,
+    ) -> Result<PreparedDomainTransactionV1<S>, ProtectedDomainJournalErrorV1> {
+        self.plan_with_source_selection_v1(transaction_id, successors,
+            CacheMutationGateV1::Ordinary, Some(crate::controller_resource_reservation::SourceAppendBoundaryV1::Create(original)))
+    }
+
+    pub(crate) fn plan_with_start_source_v1(
+        &self,transaction_id:[u8;16],successors:Vec<ProtectedDomainEnvelopeV1<S>>,
+        original:&crate::controller_resource_reservation::StartSourceAdmissionAuthorizationV1<'_>,
+    )->Result<PreparedDomainTransactionV1<S>,ProtectedDomainJournalErrorV1> {
+        self.plan_with_source_selection_v1(transaction_id,successors,CacheMutationGateV1::Ordinary,
+            Some(crate::controller_resource_reservation::SourceAppendBoundaryV1::Start(original)))
+    }
+
+    fn plan_with_source_selection_v1(
+        &self, transaction_id: [u8; 16], successors: Vec<ProtectedDomainEnvelopeV1<S>>,
+        mut gate: CacheMutationGateV1<'_>,
+        source: Option<crate::controller_resource_reservation::SourceAppendBoundaryV1<'_>>,
+    ) -> Result<PreparedDomainTransactionV1<S>, ProtectedDomainJournalErrorV1> {
         let snapshot = self.snapshot()?;
-        successors.sort_by(|left, right| {
-            (S::order(left.key().kind()), left.key().as_bytes())
-                .cmp(&(S::order(right.key().kind()), right.key().as_bytes()))
-        });
-        if successors.is_empty()
-            || successors.windows(2).any(|pair| pair[0].key() == pair[1].key())
-            || (successors.len() != 1
-                && successors
-                    .iter()
-                    .any(|successor| S::is_checkpoint(successor.key().kind())))
-        {
-            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
+        let members = aos_sandbox_broker::domain_transaction_custody::plan_members_v1::<S>(
+            self.journal.historical_read_view_v1(),
+            snapshot.sequence,
+            snapshot.root,
+            transaction_id,
+            successors,
+            &self.validator,
+        )?;
+        if let Some(original) = source {
+            let loan = self.journal.source_provisioning_loan_v1(original, members.transaction())?;
+            CacheMutationGateV1::SourceProvisioning(loan)
+                .preflight(self.journal, std::slice::from_ref(members.transaction()))?;
+        } else {
+            gate.preflight(self.journal, std::slice::from_ref(members.transaction()))?;
         }
-
-        let mut records = Vec::with_capacity(successors.len());
-        let mut before = Vec::with_capacity(successors.len());
-        let mut after = Vec::with_capacity(successors.len());
-        let mut roles = Vec::with_capacity(successors.len());
-        let member_count = u16::try_from(successors.len())
-            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-        let set_digest = domain_transaction_set_digest::<S>(transaction_id, &successors);
-        let mut checkpoint = false;
-        for (index, successor) in successors.into_iter().enumerate() {
-            if S::is_checkpoint(successor.key().kind()) {
-                if checkpoint || successor.payload() != encode_checkpoint_payload::<S>(snapshot.sequence, snapshot.root) {
-                    return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-                }
-                checkpoint = true;
-            }
-            let namespace = S::namespace(successor.key().kind());
-            let previous = self.journal.get(namespace, successor.key().as_bytes());
-            validate_successor(previous, &successor, &self.validator)?;
-            let member_index = u16::try_from(index)
-                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-            let durable = encode_durable_member(
-                transaction_id,
-                member_index,
-                member_count,
-                set_digest,
-                successor,
-            )?;
-            let key = durable.envelope().key().as_bytes().to_vec();
-            let (_, _, _, _, envelope, encoded) = durable.into_parts();
-
-            before.push(previous.map(<[u8]>::to_vec));
-            after.push(encoded.clone());
-            roles.push(S::role(envelope.key().kind()));
-            records.push(JournalRecord::put(namespace, key, encoded));
-        }
-        let transaction = JournalTransaction::new(transaction_id, records)?;
-        gate.preflight(self.journal, std::slice::from_ref(&transaction))?;
-        let digest = transaction_digest::<S>(&transaction);
-        Ok(PreparedDomainTransactionV1 {
-            snapshot,
-            transaction,
-            before,
-            after,
-            roles,
-            digest,
-            set_digest,
-        })
+        let data = members.into_prepared_data_v1();
+        Ok(PreparedDomainTransactionV1 { snapshot, data })
     }
 
     /// Reserves the resident prepared/readback payload before the planner copies it.
@@ -960,28 +830,9 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         successors: &[ProtectedDomainEnvelopeV1<S>],
         budget: &mut ResidentDomainPayloadBudgetV1,
     ) -> Result<(), ProtectedDomainJournalErrorV1> {
-        let bytes = successors.iter().try_fold(0_usize, |sum, successor| {
-            let key = successor.key().as_bytes();
-            let previous = self
-                .journal
-                .get(S::namespace(successor.key().kind()), key)
-                .map_or(0, <[u8]>::len);
-            // Prepared: two new durable values + one old value + one key.
-            // Postcommit: one encoded value + decoded payload + one key.
-            let durable = successor
-                .payload()
-                .len()
-                .checked_add(ENVELOPE_FIXED_BYTES)
-                .and_then(|bytes| bytes.checked_add(DURABLE_MEMBER_FIXED_BYTES));
-            durable
-                .and_then(|bytes| bytes.checked_mul(3))
-                .and_then(|bytes| bytes.checked_add(previous))
-                .and_then(|bytes| bytes.checked_add(successor.payload().len()))
-                .and_then(|bytes| key.len().checked_mul(2).and_then(|keys| bytes.checked_add(keys)))
-                .and_then(|bytes| bytes.checked_add(successor.key().identity().len()))
-                .and_then(|bytes| sum.checked_add(bytes))
-                .ok_or(JournalError::LimitExceeded("resident canonical payload bytes"))
-        })?;
+        let bytes = aos_sandbox_broker::domain_transaction_custody::members::resident_plan_payload_bytes_v1::<S>(
+            self.journal.historical_read_view_v1(), successors,
+        ).map_err(JournalError::from)?;
         budget.reserve(bytes)
     }
 
@@ -1077,7 +928,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         if let Err(cause) = before {
             return Err(RetainedCommitFailureV1::BeforeJournalAppend { prepared, cause });
         }
-        if let Err(cause) = gate.commit(self.journal, &prepared.transaction) {
+        if let Err(cause) = gate.commit(self.journal, &prepared.data.transaction) {
             return Ok(DomainCommitOutcomeV1::OutcomeUnknown {
                 pending: DomainOutcomeUnknownV1 { prepared },
                 cause,
@@ -1113,9 +964,48 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
     ) -> Result<(), ProtectedDomainJournalErrorV1> {
         self.validate_snapshot(&prepared.snapshot)?;
         validate_expected_values(self.journal, prepared, false)?;
-        gate.preflight(self.journal, std::slice::from_ref(&prepared.transaction))?;
+        gate.preflight(self.journal, std::slice::from_ref(&prepared.data.transaction))?;
         check(self.journal)?;
         Ok(())
+    }
+
+    pub(crate) fn commit_resident_source_prepared_v1(
+        &mut self, prepared: &PreparedDomainTransactionV1<S>,
+        original: &crate::controller_resource_reservation::SourceAdmissionAuthorizationV1<'_>,
+    ) -> Result<AppliedDomainTransactionV1<S>, ResidentDomainCommitFailureV1> {
+        let loan = self.journal.source_provisioning_loan_v1(
+            crate::controller_resource_reservation::SourceAppendBoundaryV1::Create(original), prepared.journal_transaction_v1())
+            .map_err(|cause| ResidentDomainCommitFailureV1::Before(cause.into()))?;
+        self.commit_resident_prepared(prepared, CacheMutationGateV1::SourceProvisioning(loan))
+    }
+
+    pub(crate) fn commit_resident_start_source_prepared_v1(
+        &mut self,prepared:&PreparedDomainTransactionV1<S>,
+        original:&crate::controller_resource_reservation::StartSourceAdmissionAuthorizationV1<'_>,
+    )->Result<AppliedDomainTransactionV1<S>,ResidentDomainCommitFailureV1> {
+        let loan=self.journal.source_provisioning_loan_v1(
+            crate::controller_resource_reservation::SourceAppendBoundaryV1::Start(original),
+            prepared.journal_transaction_v1())
+            .map_err(|cause|ResidentDomainCommitFailureV1::Before(cause.into()))?;
+        self.commit_resident_prepared(prepared,CacheMutationGateV1::SourceProvisioning(loan))
+    }
+
+    pub(crate) fn commit_resident_stop_cleanup_prepared_v1(
+        &mut self, prepared: &PreparedDomainTransactionV1<S>,
+        native: &mut aos_sandbox_broker::source_receiving::SourceProvisioningCurrentnessOriginalV1,
+        original: &crate::controller_lifecycle_stop::StopCleanupSourceAppendAuthorizationV1<'_>,
+    ) -> Result<AppliedDomainTransactionV1<S>, ResidentDomainCommitFailureV1> {
+        original.bind_prepared_source_once_v1(self.journal, native, prepared.journal_transaction_v1())
+            .map_err(|cause| ResidentDomainCommitFailureV1::Before(cause.into()))?;
+        self.commit_resident_prepared(prepared, CacheMutationGateV1::StopCleanupSource(original))
+    }
+
+    pub(crate) fn require_stop_cleanup_published_v1(
+        &self, prepared: &PreparedDomainTransactionV1<S>,
+        native: &mut aos_sandbox_broker::source_receiving::SourceProvisioningCurrentnessOriginalV1,
+        original: &crate::controller_lifecycle_stop::StopCleanupSourceAppendAuthorizationV1<'_>,
+    ) -> Result<(), JournalError> {
+        original.require_published_source_successor_once_v1(self.journal, native, prepared.journal_transaction_v1())
     }
 
     /// Appends while borrowing the resident Prepared instead of taking it.
@@ -1133,7 +1023,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
     ) -> Result<AppliedDomainTransactionV1<S>, ResidentDomainCommitFailureV1> {
         self.check_prepared_before_append(prepared, &mut gate, &mut |_| Ok(()))
             .map_err(ResidentDomainCommitFailureV1::Before)?;
-        gate.commit(self.journal, &prepared.transaction)
+        gate.commit(self.journal, &prepared.data.transaction)
             .map_err(ResidentDomainCommitFailureV1::Append)?;
         validate_expected_values(self.journal, prepared, true)
             .map_err(ResidentDomainCommitFailureV1::Readback)?;
@@ -1179,12 +1069,12 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         }
         if let Err(error) = self
             .journal
-            .preflight_transactions(std::slice::from_ref(&prepared.transaction))
+            .preflight_transactions(std::slice::from_ref(&prepared.data.transaction))
             .map_err(ProtectedDomainJournalErrorV1::from)
         {
             return DomainRetainedCommitV1::Retryable { prepared, error };
         }
-        if let Err(cause) = self.journal.commit(&prepared.transaction) {
+        if let Err(cause) = self.journal.commit(&prepared.data.transaction) {
             return DomainRetainedCommitV1::Outcome(DomainCommitOutcomeV1::OutcomeUnknown {
                 pending: DomainOutcomeUnknownV1 { prepared },
                 cause,
@@ -1219,8 +1109,10 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
     ) -> Result<DomainRecoveryV1<S>, ProtectedDomainJournalErrorV1> {
         self.replay()?;
         let prepared = pending.prepared;
-        let before = values_match(self.journal, &prepared, false);
-        let after = values_match(self.journal, &prepared, true);
+        let DomainRecoveryImageComparisonDataV1 { before, after } =
+            transaction_state::compare_recovery_images_v1(
+                self.journal.historical_read_view_v1(), &prepared.data,
+            );
         if after {
             return self.applied(prepared).map(DomainRecoveryV1::Applied);
         }
@@ -1228,7 +1120,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
             let mut prepared = prepared;
             prepared.snapshot = self.snapshot()?;
             self.journal
-                .preflight_transactions(std::slice::from_ref(&prepared.transaction))?;
+                .preflight_transactions(std::slice::from_ref(&prepared.data.transaction))?;
             return Ok(DomainRecoveryV1::Retry(prepared));
         }
         Ok(DomainRecoveryV1::Diverged(DomainOutcomeUnknownV1 {
@@ -1257,8 +1149,10 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
             return DomainRetainedRecoveryV1::Retryable { pending, error };
         }
         let prepared = pending.prepared;
-        let before = values_match(self.journal, &prepared, false);
-        let after = values_match(self.journal, &prepared, true);
+        let DomainRecoveryImageComparisonDataV1 { before, after } =
+            transaction_state::compare_recovery_images_v1(
+                self.journal.historical_read_view_v1(), &prepared.data,
+            );
         if after {
             return match self.applied_retaining(prepared) {
                 Ok(applied) => {
@@ -1289,7 +1183,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
                 };
             }
             if let Err(error) = gate
-                .preflight(self.journal, std::slice::from_ref(&prepared.transaction))
+                .preflight(self.journal, std::slice::from_ref(&prepared.data.transaction))
                 .map_err(ProtectedDomainJournalErrorV1::from)
             {
                 return DomainRetainedRecoveryV1::Retryable {
@@ -1333,15 +1227,15 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         let records = postcommit_records(prepared, &self.validator)?;
         let capability = Some(DomainPostcommitCapabilityV1 {
             instance: Arc::clone(&self.instance),
-            transaction: prepared.digest,
-            set_digest: prepared.set_digest,
+            transaction: prepared.data.digest,
+            set_digest: prepared.data.set_digest,
             sequence: snapshot.sequence,
             root: snapshot.root,
             records,
             marker: PhantomData,
         });
         Ok(AppliedDomainTransactionV1 {
-            transaction: prepared.digest,
+            transaction: prepared.data.digest,
             snapshot,
             capability,
         })
@@ -1367,15 +1261,15 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         };
         let capability = Some(DomainPostcommitCapabilityV1 {
             instance: Arc::clone(&self.instance),
-            transaction: prepared.digest,
-            set_digest: prepared.set_digest,
+            transaction: prepared.data.digest,
+            set_digest: prepared.data.set_digest,
             sequence: snapshot.sequence,
             root: snapshot.root,
             records,
             marker: PhantomData,
         });
         Ok(AppliedDomainTransactionV1 {
-            transaction: prepared.digest,
+            transaction: prepared.data.digest,
             snapshot,
             capability,
         })
@@ -1452,12 +1346,9 @@ impl<S: ProtectedDomainSchemaV1> DomainPostcommitCapabilityV1<S> {
         if !Arc::ptr_eq(&self.instance, &authority.instance)
             || self.sequence != current.sequence
             || self.root != current.root
-            || self.records.iter().any(|record| {
-                authority
-                    .journal
-                    .get(record.namespace, record.envelope.key().as_bytes())
-                    != Some(record.encoded.as_slice())
-            })
+            || !transaction_state::postcommit_rows_match_v1(
+                authority.journal.historical_read_view_v1(), &self.records,
+            )
         {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
         }
@@ -1492,51 +1383,9 @@ fn postcommit_records<S: ProtectedDomainSchemaV1>(
     prepared: &PreparedDomainTransactionV1<S>,
     validator: &S::ReplayValidator,
 ) -> Result<Vec<DomainPostcommitRecordV1<S>>, ProtectedDomainJournalErrorV1> {
-    if prepared.transaction.records().len() != prepared.roles.len()
-        || prepared.transaction.records().len() != prepared.after.len()
-    {
-        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-    }
-    let mut records = Vec::new();
-    for ((record, role), value) in prepared
-        .transaction
-        .records()
-        .iter()
-        .zip(&prepared.roles)
-        .zip(&prepared.after)
-    {
-        if record.value() != Some(value.as_slice()) {
-            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-        }
-        let key = ProtectedDomainKeyV1::<S>::decode(record.key())?;
-        if record.namespace() != S::namespace(key.kind()) {
-            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-        }
-        let durable = decode_durable_member::<S>(key, value, validator)?;
-        let namespace = record.namespace();
-        let role = *role;
-        let phase = reducer_phase(durable.envelope())?;
-        let (_, _, _, _, envelope, encoded) = durable.into_parts();
-        let postcommit = DomainPostcommitRecordV1 {
-            namespace,
-            role,
-            phase,
-            transaction_phase: ProtectedReducerPhaseV1::Observed,
-            envelope,
-            encoded,
-        };
-        records.push(postcommit);
-    }
-    let transaction_phase = aggregate_semantic_phases(
-        &records
-            .iter()
-            .map(|record| record.phase)
-            .collect::<Vec<_>>(),
-    );
-    for record in &mut records {
-        record.transaction_phase = transaction_phase;
-    }
-    Ok(records)
+    aos_sandbox_broker::domain_transaction_custody::members::postcommit_records_v1::<S>(
+        &prepared.data.transaction, &prepared.data.roles, &prepared.data.after, validator,
+    ).map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 fn validate_expected_values<S: ProtectedDomainSchemaV1>(
@@ -1554,21 +1403,9 @@ fn values_match<S: ProtectedDomainSchemaV1>(
     prepared: &PreparedDomainTransactionV1<S>,
     after: bool,
 ) -> bool {
-    let records = prepared.transaction.records();
-    if records.len() != prepared.before.len() || records.len() != prepared.after.len() {
-        return false;
-    }
-    records
-        .iter()
-        .zip(prepared.before.iter().zip(&prepared.after))
-        .all(|(record, (before, after_value))| {
-            let expected = if after {
-                Some(after_value.as_slice())
-            } else {
-                before.as_deref()
-            };
-            journal.get(record.namespace(), record.key()) == expected
-        })
+    transaction_state::prepared_image_matches_v1(
+        journal.historical_read_view_v1(), &prepared.data, after,
+    )
 }
 
 pub(crate) fn replay_projection<S: ProtectedDomainSchemaV1>(
@@ -1594,4 +1431,16 @@ pub(crate) fn protected_current_record_candidates_v1<S: ProtectedDomainSchemaV1>
 
     current_record_candidates_from_rows::<S>(journal.all_records())
         .map_err(ProtectedDomainJournalErrorV1::from)
+}
+
+
+impl<S: ProtectedDomainSchemaV1> AppliedDomainTransactionV1<S> {
+    // An actual positive owner first consumes its unused composite. Its Arc
+    // snapshot then retains only this private adapter allocation; no row or
+    // native owner is replaced with a reconstructed success value.
+    pub(crate) fn completed_resident_backing_bytes_v1(&self) -> Option<usize> {
+        if self.capability.is_some() { return None; }
+        std::mem::size_of::<AdapterInstanceV1>()
+            .checked_add(2 * std::mem::size_of::<usize>())
+    }
 }

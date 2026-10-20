@@ -136,11 +136,12 @@ pub enum OriginalHostFuseWorkerTransportProgressV1 {
 }
 
 /// Borrows the fixed original comparison transport throughout Host dispatch.
+/// The sealed callsite polls this callback inline on its local future while
+/// the same pending Journal remains borrowed; it never transfers the callback.
 #[doc(hidden)]
 pub type OriginalHostFuseWorkerTransportCallbackV1<'owner> = dyn for<'record> FnMut(
         OriginalHostFuseWorkerTransportActionV1<'record>,
     ) -> Result<OriginalHostFuseWorkerTransportProgressV1, HostError>
-    + Send
     + 'owner;
 
 /// Reports rejection at the dormant broker-session-to-Host boundary.
@@ -272,6 +273,25 @@ impl DormantHostBrokerObservationV1 {
 /// Defines the closed asynchronous Host call surface accepted by security.
 #[doc(hidden)]
 pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
+    /// Borrows the actual startup Control for financial-only cold cleanup entry.
+    ///
+    /// # Errors
+    /// Refuses a missing original; the concrete lender separately checks its
+    /// currentness and pays all native/body work before entering the cold engine.
+    fn borrow_control_cold_session_owner_v1(&mut self)
+        -> Result<crate::HostControlColdSessionOwnerV1, DormantHostBrokerCallErrorV1>;
+
+    /// Lends the actual installed catalog publication destination.
+    ///
+    /// # Errors
+    /// Refuses absent component Control or occupied/failed native custody.
+    fn borrow_catalog_publication_v2(&mut self)
+        -> Result<crate::catalog::HostCatalogPublicationCallsiteV2<'_>, DormantHostBrokerCallErrorV1>;
+
+    /// Borrows the selected native catalog cause without replacing its owner.
+    fn catalog_publication_failure_view_v2(&self)
+        -> crate::catalog::HostCatalogPublicationFailureViewV2<'_>;
+
     /// Admits purpose 56 and retains permanent escrow before fixed PID1 launch.
     ///
     /// The caller must hold the actual original pending session cut, consume
@@ -289,7 +309,7 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
         &'call mut self,
         request: &'call AuthenticatedBrokerMethodRequestV1,
         roles: [OwnedFd; 4],
-        pending_guard: &'call mut (dyn FnMut() -> Result<(), HostError> + Send),
+        pending_guard: &'call mut dyn FnMut() -> Result<(), HostError>,
     ) -> Pin<
         Box<
             dyn Future<
@@ -324,12 +344,130 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
     /// custody. The service must revalidate it against protected currentness.
     fn take_authenticated_agent_launch(&mut self) -> Option<HostAgentLiveSessionV1>;
 
+    /// Borrows the actual launch channel before any fallible upper adoption.
+    ///
+    /// The broker keeps ownership if validation fails. This read-only borrow
+    /// permits no exchange, descriptor extraction or replacement channel.
+    fn authenticated_agent_launch(&self) -> Option<&HostAgentLiveSessionV1>;
+
+    /// Borrows entered native custody solely to defer optional stale retirement.
+    ///
+    /// Partial and failed originals remain relevant; this is never a positive
+    /// readiness, currentness, request or effect proof.
+    fn retained_runtime_native_custody_v2(&self)
+        -> Option<crate::broker::HostRuntimeNativeCustodyViewV2<'_>>;
+
+    /// Borrows the first retained launch cause for installed diagnostics.
+    ///
+    /// # Errors
+    /// Rejects unavailable or poisoned intrinsic/capsule locks without IO.
+    fn launch_failure_view_v2(&self)
+        -> Result<Option<crate::broker::HostLaunchFailureViewV2<'_>>, DormantHostBrokerCallErrorV1>;
+
     /// Returns the verifier commitment pinned by protected Host configuration.
     ///
     /// # Errors
     ///
     /// Returns an error when the fixed credential is absent or no longer current.
     fn fixed_terminal_verifier_commitment(&self) -> Result<[u8; 32], DormantHostBrokerCallErrorV1>;
+
+    /// Executes the two fixed argument methods under the same original Host phase.
+    ///
+    /// The concrete Host owner pays before native/codec/State growth, retains
+    /// every reached native prefix and runs the independently owed original
+    /// post. The authenticated Session and same live Agent remain borrowed;
+    /// this returns no execution Apply permission or replacement original.
+    ///
+    /// # Errors
+    /// Refuses absent/spent financial originals, stale currentness, wrong
+    /// Session/Agent/preparation, native failure or unresolved commit ambiguity.
+    fn execute_prepared_argument<'call>(
+        &'call mut self,
+        request: &'call AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+        agent: &'call mut HostAgentLiveSessionV1,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, DormantHostBrokerCallErrorV1>> + 'call>>;
+
+    /// Executes preaccept or accepted binding on the same paid native receiver.
+    ///
+    /// # Errors
+    /// Retains financial/native/currentness causes and owed posts on refusal.
+    /// Canonical response DATA cannot reconstruct or replace this receiver.
+    fn execute_execution_availability<'call>(
+        &'call mut self, request: &'call AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16], deadline_boottime_nanoseconds: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, DormantHostBrokerCallErrorV1>> + 'call>>;
+
+    /// Reports resident availability solely to select its sealed native route.
+    ///
+    /// This passive selector grants no request, role or currentness permission.
+    fn has_execution_availability(&self) -> bool;
+
+    /// Joins an actual Sent closure or settlement outcome to the same native owner.
+    ///
+    /// This is invoked only while the real committed Sent owner is retained.
+    /// It creates no native owner, current lease or financial disposal token.
+    ///
+    /// # Errors
+    /// Refuses a changed authenticated outcome, native phase or durable marker.
+    fn retain_sent_execution_availability_response(
+        &mut self, request: &AuthenticatedBrokerMethodRequestV1,
+        outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<(), DormantHostBrokerCallErrorV1>;
+
+    /// Reports resident accepted custody solely for selecting its sealed route.
+    ///
+    /// This performs no IO and does not authorize a request or continuation.
+    fn has_accepted_execution(&self, request: &AuthenticatedBrokerMethodRequestV1) -> bool;
+
+    /// Closes an exact authenticated pending continuation on outer refusal.
+    ///
+    /// # Errors
+    /// Rejects unrelated/unauthenticated identities or retains the actual
+    /// predecessor's terminal/Ack failure. No primary operation is entered.
+    fn abort_pending_accepted_execution(&mut self,
+        request: &AuthenticatedBrokerMethodRequestV1) -> Result<(), DormantHostBrokerCallErrorV1>;
+
+    /// Attempts an independently owed Abort on the same actual fixed hold.
+    ///
+    /// # Errors
+    /// Rejects a foreign/unentered association or retains actual terminal/Ack
+    /// errors. This port cannot complete, refund or authorize an operation.
+    fn abort_accepted_execution(&mut self, request: [u8; 16], session: [u8; 32],
+        signed: [u8; 32]) -> Result<(), DormantHostBrokerCallErrorV1>;
+
+    /// Executes sealed admission or first Observe on the actual held59 owner.
+    ///
+    /// # Errors
+    /// Refuses absent live custody, changed Session, unpaid bounds, stale native
+    /// proof, Storage hold failure, Guest failure or any independently owed post.
+    fn execute_accepted_execution<'call>(
+        &'call mut self, request: &'call AuthenticatedBrokerMethodRequestV1,
+        descriptor: &'call OwnedFd, protected_boot_id: [u8; 16],
+        agent: &'call mut HostAgentLiveSessionV1, deadline: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, DormantHostBrokerCallErrorV1>> + 'call>>;
+
+    /// Reads QueryExecution27 through the same actual resident journal owner.
+    ///
+    /// # Errors
+    /// Refuses foreign/unpaid read scope, stale currentness, incompatible
+    /// original selectors or any held native/post/State ambiguity.
+    fn query_resident_execution<'call>(
+        &'call mut self, request: &'call AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16], deadline: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, DormantHostBrokerCallErrorV1>> + 'call>>;
+
+    /// Disposes a positive argument interval after authenticated response completion.
+    ///
+    /// This sealed resource-disposal port requires the exact original request
+    /// and actual resident native-positive stage. It creates no effect grant.
+    ///
+    /// # Errors
+    /// Refuses a different, absent, failed, aliased or already disposed interval.
+    fn retire_authenticated_argument(
+        &mut self, request: &AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<(), DormantHostBrokerCallErrorV1>;
 
     /// Reserves a signed execution grant in the shared durable Host fence.
     /// Apply carries sealed content for verification; Query carries none.
@@ -455,6 +593,72 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
                 > + 'call,
         >,
     >;
+
+    /// Executes Runtime Apply with its actual authenticated Session original.
+    ///
+    /// # Errors
+    /// Rejects mismatched transport, stale boot/clock, failed signed admission,
+    /// insufficient same-original capacity or any ambiguous native outcome.
+    fn consume_authenticated_runtime_v2<'call>(
+        &'call mut self,
+        request: &'call AuthenticatedBrokerMethodRequestV1,
+        retained_agent: Option<&'call HostAgentLiveSessionV1>,
+        artifacts: &'call ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        protected_boot_id: [u8; 16],
+    ) -> Pin<Box<dyn Future<Output = Result<DormantHostBrokerObservationV1,
+        DormantHostBrokerCallErrorV1>> + 'call>>;
+
+    /// Borrows a scheduling scalar from the same admitted execution resident.
+    ///
+    /// This performs no IO and grants no effect or new interval. The actual
+    /// monitor separately pays and rechecks its whole original permission.
+    fn resident_execution_monitor_due_data_v5(&self) -> Option<u64>;
+
+    /// Drives one finite same-original monitor interval without a new request.
+    ///
+    /// # Errors
+    /// Retains and reports original funding, currentness, native, clock, Agent
+    /// and durability failures. An absent Agent keeps the resident unknown.
+    fn monitor_resident_execution_once_v5<'call>(
+        &'call mut self, agent: Option<&'call mut HostAgentLiveSessionV1>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DormantHostBrokerCallErrorV1>> + 'call>>;
+
+    /// Moves only the same fully completed paid launch Agent.
+    ///
+    /// # Errors
+    /// Refuses incomplete/negative launch custody or a changed exact Agent;
+    /// ordinary profiles return `None` and keep their existing validation path.
+    fn take_paid_authenticated_agent_launch_v2(&mut self)
+        -> Result<Option<HostAgentLiveSessionV1>, DormantHostBrokerCallErrorV1>;
+
+    /// Disposes only the actual Agent of a fully authenticated terminal Stop.
+    ///
+    /// # Errors
+    /// Retains the moved Agent on its same paid parent if native association,
+    /// owed posts or the existing financial completion cannot be proven. The
+    /// sealed default preserves ordinary callers without moving any owner.
+    fn retire_authenticated_stopped_agent_v4(
+        &mut self,
+        _incoming: &mut Option<HostAgentLiveSessionV1>,
+    ) -> Result<bool, DormantHostBrokerCallErrorV1> {
+        Ok(false)
+    }
+
+    /// Closes a genuinely positive old Stop before a fresh Controller Session.
+    ///
+    /// Current Control pays both Source bookends and protected-history checks.
+    /// This neither renews the old request nor supplies a new absence answer.
+    ///
+    /// # Errors
+    /// Retains uncertain native custody, actual history/currentness failure and
+    /// every independently owed post. Ordinary profiles move no owner.
+    fn retire_completed_unsent_stopped_agent_v1<'call>(
+        &'call mut self,
+        _incoming: &'call mut Option<HostAgentLiveSessionV1>,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, DormantHostBrokerCallErrorV1>> + 'call>> {
+        Box::pin(async { Ok(false) })
+    }
 
     /// Executes one exact authenticated Host observation or inventory method.
     ///
@@ -637,13 +841,30 @@ where
 {
 }
 
-impl<Catalog, Store, Worker> DormantHostBrokerCallsiteV1
-    for DormantHostBrokerCompositionV1<'_, Catalog, Store, Worker>
+impl<Store, Worker> DormantHostBrokerCallsiteV1
+    for DormantHostBrokerCompositionV1<'_, crate::catalog::FileHostCatalog, Store, Worker>
 where
-    Catalog: HostCatalog,
     Store: HostStateStore + Sync,
     Worker: HostWorker + Sync,
 {
+    fn borrow_control_cold_session_owner_v1(&mut self)
+        -> Result<crate::HostControlColdSessionOwnerV1, DormantHostBrokerCallErrorV1>
+    {
+        self.broker.borrow_control_cold_session_owner_v1().map_err(Into::into)
+    }
+
+    fn borrow_catalog_publication_v2(&mut self)
+        -> Result<crate::catalog::HostCatalogPublicationCallsiteV2<'_>, DormantHostBrokerCallErrorV1>
+    {
+        self.broker.borrow_catalog_publication_v2().map_err(Into::into)
+    }
+
+    fn catalog_publication_failure_view_v2(&self)
+        -> crate::catalog::HostCatalogPublicationFailureViewV2<'_>
+    {
+        self.broker.catalog_publication_failure_view_v2()
+    }
+
     fn send_original_fuse_worker_comparison<'call>(
         &'call mut self,
         request: &'call AuthenticatedBrokerMethodRequestV1,
@@ -662,7 +883,7 @@ where
         &'call mut self,
         request: &'call AuthenticatedBrokerMethodRequestV1,
         roles: [OwnedFd; 4],
-        pending_guard: &'call mut (dyn FnMut() -> Result<(), HostError> + Send),
+        pending_guard: &'call mut dyn FnMut() -> Result<(), HostError>,
     ) -> Pin<
         Box<
             dyn Future<
@@ -689,10 +910,146 @@ where
         self.broker.take_authenticated_agent_launch()
     }
 
+    fn authenticated_agent_launch(&self) -> Option<&HostAgentLiveSessionV1> {
+        self.broker.authenticated_agent_launch()
+    }
+
+    fn retained_runtime_native_custody_v2(&self)
+        -> Option<crate::broker::HostRuntimeNativeCustodyViewV2<'_>>
+    {
+        self.broker.retained_runtime_native_custody_v2()
+    }
+
+    fn resident_execution_monitor_due_data_v5(&self) -> Option<u64> {
+        self.broker.resident_execution_monitor_due_data_v5()
+    }
+
+    fn monitor_resident_execution_once_v5<'call>(
+        &'call mut self, agent: Option<&'call mut HostAgentLiveSessionV1>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DormantHostBrokerCallErrorV1>> + 'call>> {
+        Box::pin(async move {
+            match agent {
+                Some(agent) => self.broker.monitor_resident_execution_once_v5(agent).await.map_err(Into::into),
+                None => {
+                    self.broker.retain_resident_monitor_unavailable_v5();
+                    Err(DormantHostBrokerCallErrorV1::Broker(HostError::Fence(
+                        "same execution resident has no live Agent")))
+                }
+            }
+        })
+    }
+
+    fn take_paid_authenticated_agent_launch_v2(&mut self)
+        -> Result<Option<HostAgentLiveSessionV1>, DormantHostBrokerCallErrorV1> {
+        self.broker.take_paid_authenticated_agent_launch_v2().map_err(Into::into)
+    }
+
+    fn retire_authenticated_stopped_agent_v4(
+        &mut self,
+        incoming: &mut Option<HostAgentLiveSessionV1>,
+    ) -> Result<bool, DormantHostBrokerCallErrorV1> {
+        self.broker.retire_authenticated_stopped_agent_v4(incoming).map_err(Into::into)
+    }
+
+    fn retire_completed_unsent_stopped_agent_v1<'call>(
+        &'call mut self,
+        incoming: &'call mut Option<HostAgentLiveSessionV1>,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, DormantHostBrokerCallErrorV1>> + 'call>> {
+        Box::pin(async move {
+            self.broker.retire_completed_unsent_stopped_agent_v1(incoming).await.map_err(Into::into)
+        })
+    }
+
+    fn launch_failure_view_v2(&self)
+        -> Result<Option<crate::broker::HostLaunchFailureViewV2<'_>>, DormantHostBrokerCallErrorV1>
+    {
+        self.broker.launch_failure_view_v2().map_err(Into::into)
+    }
+
     fn fixed_terminal_verifier_commitment(&self) -> Result<[u8; 32], DormantHostBrokerCallErrorV1> {
         self.broker
             .terminal_verifier_commitment()
             .map_err(DormantHostBrokerCallErrorV1::from)
+    }
+
+    fn execute_prepared_argument<'call>(
+        &'call mut self,
+        request: &'call AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+        agent: &'call mut HostAgentLiveSessionV1,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, DormantHostBrokerCallErrorV1>> + 'call>> {
+        Box::pin(async move {
+            self.broker.execute_argument_flight_v2(request, protected_boot_id, agent,
+                deadline_boottime_nanoseconds).await.map_err(Into::into)
+        })
+    }
+
+    fn has_accepted_execution(&self, request: &AuthenticatedBrokerMethodRequestV1) -> bool {
+        self.broker.has_accepted_execution_v2(request)
+    }
+
+    fn has_execution_availability(&self) -> bool {
+        self.broker.has_execution_availability_v2()
+    }
+
+    fn retain_sent_execution_availability_response(
+        &mut self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<(), DormantHostBrokerCallErrorV1> {
+        if request.method() == aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME {
+            return self.broker.retain_sent_stop_cleanup_response_v1(request,outcome).map_err(Into::into);
+        }
+        self.broker
+            .retain_sent_execution_availability_response_v2(request, outcome)
+            .map_err(Into::into)
+    }
+
+    fn execute_execution_availability<'call>(
+        &'call mut self, request: &'call AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16], deadline_boottime_nanoseconds: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, DormantHostBrokerCallErrorV1>> + 'call>> {
+        Box::pin(async move {
+            self.broker.execute_execution_availability_v2(request, protected_boot_id,
+                deadline_boottime_nanoseconds).await.map_err(Into::into)
+        })
+    }
+
+    fn abort_pending_accepted_execution(&mut self,
+        request: &AuthenticatedBrokerMethodRequestV1) -> Result<(), DormantHostBrokerCallErrorV1> {
+        self.broker.abort_pending_accepted_execution_v2(request).map_err(Into::into)
+    }
+
+    fn abort_accepted_execution(&mut self, request: [u8; 16], session: [u8; 32],
+        signed: [u8; 32]) -> Result<(), DormantHostBrokerCallErrorV1> {
+        self.broker.abort_accepted_execution_v2(request, session, signed).map_err(Into::into)
+    }
+
+    fn execute_accepted_execution<'call>(
+        &'call mut self, request: &'call AuthenticatedBrokerMethodRequestV1,
+        descriptor: &'call OwnedFd, protected_boot_id: [u8; 16],
+        agent: &'call mut HostAgentLiveSessionV1, deadline: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, DormantHostBrokerCallErrorV1>> + 'call>> {
+        Box::pin(async move {
+            self.broker.execute_accepted_execution_v2(request, descriptor,
+                protected_boot_id, agent, deadline).await.map_err(Into::into)
+        })
+    }
+
+    fn query_resident_execution<'call>(
+        &'call mut self, request: &'call AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16], deadline: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, DormantHostBrokerCallErrorV1>> + 'call>> {
+        Box::pin(async move {
+            self.broker.query_resident_execution_v3(request, protected_boot_id, deadline).await.map_err(Into::into)
+        })
+    }
+
+    fn retire_authenticated_argument(
+        &mut self, request: &AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<(), DormantHostBrokerCallErrorV1> {
+        self.broker.retire_authenticated_argument_v2(request).map_err(Into::into)
     }
 
     fn reserve_authenticated_execution(
@@ -859,54 +1216,21 @@ where
                 > + 'call,
         >,
     > {
-        Box::pin(async move {
-            let current_boot_id = KernelBootId::current()
-                .map_err(|_| DormantHostBrokerCallErrorV1::StaleKernel)?
-                .into_bytes();
-            if current_boot_id != protected_boot_id
-                || ObjectDigest::from_bytes(Sha256::digest(request_body).into())
-                    != request_body_digest
-            {
-                return Err(DormantHostBrokerCallErrorV1::StaleKernel);
-            }
+        self.consume_apply_engine_v2(request_body, request_id, request_body_digest,
+            artifacts, peer, policy, protocol_version, protected_boot_id, None, None)
+    }
 
-            let last_boottime = &mut self.last_boottime_nanoseconds;
-            let checked_clock = || {
-                let sample = crate::service::trusted_paired_clock_sample()?;
-                if sample.host_boot_id() != protected_boot_id
-                    || last_boottime.is_some_and(|floor| sample.boottime_nanoseconds() < floor)
-                {
-                    return Err(HostError::Fence(
-                        "broker-session kernel boot changed before Host effect",
-                    ));
-                }
-                *last_boottime = Some(sample.boottime_nanoseconds());
-                Ok(sample)
-            };
-            let response = self
-                .broker
-                .apply_runtime(
-                    request_body,
-                    artifacts,
-                    protocol_version,
-                    peer,
-                    policy,
-                    checked_clock,
-                )
-                .await?;
-            let mut digest = Sha256::new();
-            digest.update(b"aos-sandbox-host-broker-observation-v1\0");
-            digest.update(request_id);
-            digest.update(request_body_digest.as_bytes());
-            digest.update(Sha256::digest(&response));
-            Ok(DormantHostBrokerObservationV1 {
-                request_id,
-                response,
-                commitment: ObjectDigest::from_bytes(digest.finalize().into()),
-                descriptors: Vec::new(),
-                scope_replay_ticket: None,
-            })
-        })
+    fn consume_authenticated_runtime_v2<'call>(
+        &'call mut self, request: &'call AuthenticatedBrokerMethodRequestV1,
+        retained_agent: Option<&'call HostAgentLiveSessionV1>,
+        artifacts: &'call ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion, protected_boot_id: [u8; 16],
+    ) -> Pin<Box<dyn Future<Output = Result<DormantHostBrokerObservationV1,
+        DormantHostBrokerCallErrorV1>> + 'call>> {
+        self.consume_apply_engine_v2(request.exact_body(), request.request_id(),
+            ObjectDigest::from_bytes(Sha256::digest(request.exact_body()).into()),
+            artifacts, request.peer(), request.peer_policy(), protocol_version,
+            protected_boot_id, Some(request), retained_agent)
     }
 
     fn consume_authenticated_observation<'call>(
@@ -928,6 +1252,19 @@ where
         >,
     > {
         Box::pin(async move {
+            if method == BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
+                && artifacts.is_none() && self.broker.requires_native_inventory_entry_v5()
+            {
+                if ObjectDigest::from_bytes(Sha256::digest(request_body).into()) != request_body_digest {
+                    return Err(DormantHostBrokerCallErrorV1::StaleKernel);
+                }
+                let response = self.broker.inventory_runtime_received_native_v5(request_body,
+                    request_id, peer, policy, protocol_version, protected_boot_id,
+                    &mut self.last_boottime_nanoseconds).await?;
+                return Ok(seal_readonly_observation_v5(method, request_id,
+                    request_body_digest, response));
+            }
+
             let current_boot_id = KernelBootId::current()
                 .map_err(|_| DormantHostBrokerCallErrorV1::StaleKernel)?
                 .into_bytes();
@@ -982,7 +1319,7 @@ where
                         return Err(DormantHostBrokerCallErrorV1::StaleKernel);
                     }
                     self.broker
-                        .inventory_runtime(header.maximum_response_bytes())
+                        .inventory_runtime_authenticated_v4(&header)
                         .await?
                 }
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => {
@@ -1009,19 +1346,8 @@ where
                 _ => return Err(DormantHostBrokerCallErrorV1::StaleKernel),
             };
 
-            let mut digest = Sha256::new();
-            digest.update(b"aos-sandbox-host-broker-observation-v1\0");
-            digest.update((method as i32).to_be_bytes());
-            digest.update(request_id);
-            digest.update(request_body_digest.as_bytes());
-            digest.update(Sha256::digest(&response));
-            Ok(DormantHostBrokerObservationV1 {
-                request_id,
-                response,
-                commitment: ObjectDigest::from_bytes(digest.finalize().into()),
-                descriptors: Vec::new(),
-                scope_replay_ticket: None,
-            })
+            Ok(seal_readonly_observation_v5(method, request_id,
+                request_body_digest, response))
         })
     }
 
@@ -1511,5 +1837,92 @@ fn scope_replay_binding(
         protocol_major: protocol_version.major(),
         protocol_minor: protocol_version.minor(),
         protected_boot_id,
+    }
+}
+
+impl<Store, Worker> DormantHostBrokerCompositionV1<'_, crate::catalog::FileHostCatalog, Store, Worker>
+where Store: HostStateStore + Sync, Worker: HostWorker + Sync,
+{
+    fn consume_apply_engine_v2<'call>(
+        &'call mut self,
+        request_body: &'call [u8],
+        request_id: [u8; 16],
+        request_body_digest: ObjectDigest,
+        artifacts: &'call ValidatedUntrustedAuthorizationArtifacts,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protocol_version: ProtocolVersion,
+        protected_boot_id: [u8; 16],
+        authenticated: Option<&'call AuthenticatedBrokerMethodRequestV1>,
+        retained_agent: Option<&'call HostAgentLiveSessionV1>,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<DormantHostBrokerObservationV1, DormantHostBrokerCallErrorV1>,
+                > + 'call,
+        >,
+    > {
+        Box::pin(async move {
+            let current_boot_id = KernelBootId::current()
+                .map_err(|_| DormantHostBrokerCallErrorV1::StaleKernel)?
+                .into_bytes();
+            if current_boot_id != protected_boot_id
+                || ObjectDigest::from_bytes(Sha256::digest(request_body).into())
+                    != request_body_digest
+            {
+                return Err(DormantHostBrokerCallErrorV1::StaleKernel);
+            }
+
+            let last_boottime = &mut self.last_boottime_nanoseconds;
+            let checked_clock = || {
+                let sample = crate::service::trusted_paired_clock_sample()?;
+                if sample.host_boot_id() != protected_boot_id
+                    || last_boottime.is_some_and(|floor| sample.boottime_nanoseconds() < floor)
+                {
+                    return Err(HostError::Fence(
+                        "broker-session kernel boot changed before Host effect",
+                    ));
+                }
+                *last_boottime = Some(sample.boottime_nanoseconds());
+                Ok(sample)
+            };
+            let response = match authenticated {
+                Some(request) => self.broker.apply_runtime_authenticated_v2(
+                    request, retained_agent, artifacts, protocol_version, checked_clock).await?,
+                None => self.broker.apply_runtime(request_body, artifacts, protocol_version,
+                    peer, policy, checked_clock).await?,
+            };
+            let mut digest = Sha256::new();
+            digest.update(b"aos-sandbox-host-broker-observation-v1\0");
+            digest.update(request_id);
+            digest.update(request_body_digest.as_bytes());
+            digest.update(Sha256::digest(&response));
+            Ok(DormantHostBrokerObservationV1 {
+                request_id,
+                response,
+                commitment: ObjectDigest::from_bytes(digest.finalize().into()),
+                descriptors: Vec::new(),
+                scope_replay_ticket: None,
+            })
+        })
+    }
+}
+
+// Both readonly dispositions seal the same actual returned body. This pure
+// construction neither establishes discovery provenance nor grants a caller.
+fn seal_readonly_observation_v5(method: BrokerMethod, request_id: [u8; 16],
+    request_body_digest: ObjectDigest, response: Vec<u8>) -> DormantHostBrokerObservationV1 {
+    let mut digest = Sha256::new();
+    digest.update(b"aos-sandbox-host-broker-observation-v1\0");
+    digest.update((method as i32).to_be_bytes());
+    digest.update(request_id);
+    digest.update(request_body_digest.as_bytes());
+    digest.update(Sha256::digest(&response));
+    DormantHostBrokerObservationV1 {
+        request_id,
+        response,
+        commitment: ObjectDigest::from_bytes(digest.finalize().into()),
+        descriptors: Vec::new(),
+        scope_replay_ticket: None,
     }
 }

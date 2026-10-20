@@ -39,7 +39,7 @@ pub use capability::{
 pub use codec::{
     DurableExecutionCodecError, decode_durable_execution_admission_v1,
     decode_durable_execution_effect_v1, encode_durable_execution_admission_v1,
-    encode_durable_execution_effect_v1,
+    encode_durable_execution_effect_v1, durable_execution_effect_encoded_width_v5,
 };
 pub use execution_admission::{
     AdmissionCommitDispositionV1, AdmissionCommitError, AdmissionCurrentnessV1,

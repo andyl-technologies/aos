@@ -274,7 +274,7 @@ pub(super) fn require_original_complete_delivery_v5(
         return Err(SourceProviderSecurityError::SessionContinuity.into());
     };
     let bytes = readback.rows().get(&(
-        aos_sandbox::RecordNamespace::SourceProviderAuthority, attempt_key.to_vec(),
+        aos_sandbox_core::RecordNamespace::SourceProviderAuthority, attempt_key.to_vec(),
     ))
         .ok_or(SourceProviderSecurityError::SessionContinuity)?;
     let DecodedRecordV1::Attempt(attempt) = decode_record(attempt_key, bytes)

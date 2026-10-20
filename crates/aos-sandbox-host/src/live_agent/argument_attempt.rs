@@ -1,4 +1,4 @@
-//! Protected one-shot Host custody for Controller method-37 Guest observations.
+//! Protected one-shot Host custody for prepared Controller argument observations.
 //!
 //! The exact AOSCIA02 source and signed-plan digests are committed before any
 //! Guest send. Reopening an existing execution never mints or resends a nonce.
@@ -18,6 +18,10 @@
 //!          || exact-Guest-request || exact-signed-Guest-packet
 //!          || SHA256(domain || preceding)[32]
 //! ```
+
+mod opening;
+#[doc(hidden)]
+pub use opening::HostArgumentAttemptOpeningV2;
 
 use crate::state::transition::HostExecutionHandoffRecord;
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
@@ -47,7 +51,7 @@ use sha2::{Digest as _, Sha256};
 use std::time::Instant;
 
 use super::{
-    HostAgentLiveErrorV1, HostAgentLiveSessionV1, agent_runtime, receive_record, send_frame,
+    HostAgentLiveErrorV1, HostAgentLiveSessionV1, agent_runtime, send_frame,
 };
 
 const HOST_STATE_ROOT: &str = "/var/lib/aos/sandbox-host";
@@ -137,14 +141,23 @@ impl OriginalHostArgumentIntentV1 {
         handoff: &HostExecutionHandoffRecord,
         runtime_handle: ObjectDigest,
     ) -> Result<Self, HostArgumentAttemptErrorV1> {
-        let semantics = host_execution_argument_observe_grant_v1(
-            assignment,
-            source.request_id(),
-            &source.canonical_bytes(),
-        )
-        .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+        let semantics = match &handoff.argument_preparation {
+            Some(bytes) if effect.verb() == BrokerVerb::HostAcceptExecutionArgumentV2 => {
+                let preparation = aos_sandbox_protocol::host_execution_argument::preparation::HostArgumentPreparationV2::decode(bytes)
+                    .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+                aos_sandbox_protocol::semantics::host_execution_argument_accept_grant_v2(
+                    assignment, source.request_id(), &source.canonical_bytes(), &preparation,
+                ).map_err(|_| HostArgumentAttemptErrorV1::Binding)?
+            }
+            None if effect.verb() == BrokerVerb::HostObserveExecutionArgument => {
+                host_execution_argument_observe_grant_v1(
+                    assignment, source.request_id(), &source.canonical_bytes(),
+                ).map_err(|_| HostArgumentAttemptErrorV1::Binding)?
+            }
+            _ => return Err(HostArgumentAttemptErrorV1::Binding),
+        };
         if effect.request_id() != &source.request_id()
-            || effect.verb() != BrokerVerb::HostObserveExecutionArgument
+            || effect.verb() != semantics.verb()
             || effect.target() != BrokerGrantTarget::Assignment
             || effect.request_digest() != semantics.commitment().digest()
             || effect.host_boot_id() != &source.host_boot_id()
@@ -358,18 +371,148 @@ struct FreshPendingHostArgumentAttemptV1 {
     journal_instance: [u8; 16],
 }
 
-impl HostArgumentAttemptJournalV1 {
-    /// Opens the fixed Host attempt journal for an original pre-send append.
-    ///
-    /// # Errors
-    ///
-    /// Rejects an insecure or corrupt protected journal.
-    pub(crate) fn open_for_fresh_attempt() -> Result<Self, HostArgumentAttemptErrorV1> {
-        let (journal, _) =
-            Journal::open_protected_at(HOST_STATE_ROOT, JOURNAL_NAME, journal_limits())?;
-        Self::from_opened(journal)
+// This type has no cold, wire, caller-DTO or public constructor. Its only
+// creation site is the actual live one-shot send/receive + completed append.
+// The fifth native journal and raw received packet remain beside it in Opening.
+pub(crate) struct CompletedHostArgumentOriginalV2 {
+    journal_instance: [u8; 16],
+    request: GuestRuntimeArgumentObserveRequestV1,
+    verified: GuestRuntimeArgumentReadbackV1,
+    receipt: HostExecutionArgumentFreshReceiptV1,
+    controller_session: [u8; 32],
+}
+
+impl CompletedHostArgumentOriginalV2 {
+    pub(crate) fn require_specification_v2(
+        &self,
+        journal: &HostArgumentAttemptJournalV1,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        agent: &HostAgentLiveSessionV1,
+        fields: &aos_sandbox_protocol::execution_spec_attempt::ExecutionSpecAttemptFieldsV1<'_>,
+        controller_session: [u8; 32],
+        now: RawPairedClockSample,
+    ) -> Result<(), HostArgumentAttemptErrorV1> {
+        self.require_specification_engine_v3(journal, claim, agent, fields,
+            controller_session, now, None)
     }
 
+    pub(crate) fn require_capture_preparation_v5(
+        &self, journal: &HostArgumentAttemptJournalV1,
+        claim: &DormantRuntimeExecutionClaimV1<'_>, agent: &HostAgentLiveSessionV1,
+        content: &aos_sandbox_protocol::host_execution::admission_content::HostExecutionAdmissionContentV5<'_>,
+        controller_session: [u8; 32], now: RawPairedClockSample,
+    ) -> Result<(), HostArgumentAttemptErrorV1> {
+        let fields = aos_sandbox_protocol::execution_spec_attempt::ExecutionSpecAttemptFieldsV1::decode(
+            content.attempt_bytes()).map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+        self.require_specification_engine_v3(journal, claim, agent, &fields,
+            controller_session, now, Some((content, None)))
+    }
+
+    pub(crate) fn require_capture_specification_v5(
+        &self, journal: &HostArgumentAttemptJournalV1,
+        claim: &DormantRuntimeExecutionClaimV1<'_>, agent: &HostAgentLiveSessionV1,
+        content: &aos_sandbox_protocol::host_execution::admission_content::HostExecutionAdmissionContentV5<'_>,
+        pipes: &crate::storage_existing_output::capture::StorageCapturePipeLoanV2<'_>,
+        controller_session: [u8; 32], now: RawPairedClockSample,
+    ) -> Result<(), HostArgumentAttemptErrorV1> {
+        let fields = aos_sandbox_protocol::execution_spec_attempt::ExecutionSpecAttemptFieldsV1::decode(
+            content.attempt_bytes()).map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+        self.require_specification_engine_v3(journal, claim, agent, &fields,
+            controller_session, now, Some((content, Some(pipes))))
+    }
+
+    fn require_specification_engine_v3(
+        &self,
+        journal: &HostArgumentAttemptJournalV1,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        agent: &HostAgentLiveSessionV1,
+        fields: &aos_sandbox_protocol::execution_spec_attempt::ExecutionSpecAttemptFieldsV1<'_>,
+        controller_session: [u8; 32],
+        now: RawPairedClockSample,
+        capture: Option<(
+            &aos_sandbox_protocol::host_execution::admission_content::HostExecutionAdmissionContentV5<'_>,
+            Option<&crate::storage_existing_output::capture::StorageCapturePipeLoanV2<'_>>,
+        )>,
+    ) -> Result<(), HostArgumentAttemptErrorV1> {
+        agent.require_argument_session_current_v2(claim)?;
+        HostArgumentHistoricalVerifierV1::from_claim(claim)?.verify_request(&self.request)?;
+        let source = ControllerExecutionArgumentAttemptV1::decode_canonical(self.receipt.source())
+            .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+        validate_source(claim, &source, claim.host_output_for_argument_v1(&source)
+            .map_err(HostAgentLiveErrorV1::from)?, now)?;
+        let specification = fields.decoded_specification()
+            .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+        match (specification.io().output_mode(), capture) {
+            (aos_sandbox_core::ExecutionOutputModeV1::Stream, None) => {}
+            (aos_sandbox_core::ExecutionOutputModeV1::Capture { .. }, Some((content, pipes))) => {
+                let capture_source = content.capture_source_v2()
+                    .ok_or(HostArgumentAttemptErrorV1::Binding)?;
+                let original = capture_source.original_source_v1();
+                if let Some(pipes) = pipes {
+                    if pipes.borrowed_source_v1().canonical_bytes() != original.canonical_bytes() {
+                        return Err(HostArgumentAttemptErrorV1::Binding);
+                    }
+                    if pipes.borrowed_ongoing_source_v2().is_none_or(|actual|
+                        actual.canonical_bytes_v2() != capture_source.canonical_bytes_v2())
+                    { return Err(HostArgumentAttemptErrorV1::Binding); }
+                }
+                capture_source.lifetime_v2().require_specification_data_v2(
+                    &specification, fields.create_operation, fields.create_operation,
+                    fields.accepted_request_digest).map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+                let effect_cutoff = content.capture_attempt_v1().ok_or(HostArgumentAttemptErrorV1::Binding)?.effective_deadline_boottime_nanoseconds()
+                    .ok_or(HostArgumentAttemptErrorV1::Binding)?;
+                // The actual59 and short acquisition bounds must still hold
+                // before first issue, even when a distinct ongoing D is signed.
+                if original.host_boot_id() != source.host_boot_id()
+                    || now.boottime_nanoseconds() >= effect_cutoff
+                    || now.boottime_nanoseconds() >= original.original_deadline_boottime_nanoseconds()
+                    || now.boottime_nanoseconds() >= source.deadline_boottime_nanoseconds()
+                { return Err(HostArgumentAttemptErrorV1::Binding); }
+            }
+            _ => return Err(HostArgumentAttemptErrorV1::Binding),
+        }
+        let heads = fields.source_heads;
+        if journal.instance != self.journal_instance
+            || controller_session != self.controller_session
+            || self.request.session() != agent.session_binding()
+            || fields.execution != source.execution()
+            || fields.create_operation != source.create_operation()
+            || heads.assignment_digest != source.assignment_digest()
+            || heads.output_claim != source.output_claim_digest()
+            || heads.output_settlement != source.output_settlement_digest()
+            || heads.host_argument_custody != self.receipt.custody_digest()
+            || heads.host_argument_sequence != self.receipt.custody_sequence()
+            || specification.argument_envelope().runtime_evidence() != self.verified.evidence()
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        // Compare the SAME held native journal's actual current row, not a
+        // receipt supplied by the Controller or an expected sequence sentinel.
+        let key = record_key(source.execution());
+        let row = journal.journal.get(RecordNamespace::HostExecution, &key)
+            .ok_or(HostArgumentAttemptErrorV1::Binding)?;
+        let actual = HostArgumentAttemptRecordV1::decode(row)?;
+        if actual.phase != AttemptPhase::Complete
+            || actual.source != source
+            || actual.custody_sequence != self.receipt.custody_sequence()
+            || actual.session_binding != self.controller_session
+            || actual.canonical_request != self.receipt.canonical_request()
+            || actual.signed_packet != self.receipt.signed_packet()
+            || ObjectDigest::from_bytes(Sha256::digest(row).into()) != self.receipt.custody_digest()
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        claim.revalidate().map_err(HostAgentLiveErrorV1::from)?;
+        Ok(())
+    }
+
+    pub(crate) fn original_cutoff_v2(&self) -> Result<u64, HostArgumentAttemptErrorV1> {
+        Ok(ControllerExecutionArgumentAttemptV1::decode_canonical(self.receipt.source())
+            .map_err(|_| HostArgumentAttemptErrorV1::Binding)?.deadline_boottime_nanoseconds())
+    }
+}
+
+impl HostArgumentAttemptJournalV1 {
     /// Reopens only already provisioned Host custody for a historical query.
     ///
     /// A missing journal or lock cannot be interpreted as an original absent
@@ -385,15 +528,7 @@ impl HostArgumentAttemptJournalV1 {
     }
 
     fn from_opened(mut journal: Journal) -> Result<Self, HostArgumentAttemptErrorV1> {
-        let authority = journal.claim_protected_authority(RecordNamespace::HostExecution)?;
-        drop(authority);
-        let mut instance = [0; 16];
-        OsRng
-            .try_fill_bytes(&mut instance)
-            .map_err(|_| HostAgentLiveErrorV1::Entropy)?;
-        if instance == [0; 16] {
-            return Err(HostArgumentAttemptErrorV1::Binding);
-        }
+        let instance = argument_journal_instance(&mut journal)?;
         Ok(Self { journal, instance })
     }
 
@@ -573,23 +708,44 @@ impl HostArgumentAttemptJournalV1 {
 }
 
 impl HostAgentLiveSessionV1 {
+    /// Checks the same retained Agent/currentness before Prepare and Accept.
+    ///
+    /// This getter neither sends a Guest request nor creates a challenge.
+    /// The authenticated signed handshake, required feature and unpoisoned
+    /// same channel must all still match the protected Host claim.
+    pub(crate) fn require_argument_session_current_v2(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+    ) -> Result<(), HostArgumentAttemptErrorV1> {
+        if self.poisoned || !self.response.features()
+            .contains(AgentFeatureV1::RuntimeArgumentObservation)
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        self.validate_claim(claim)?;
+        Ok(())
+    }
+
     /// Performs the original Host-owned one-shot Guest argument observation.
     ///
-    /// This internal operation is deliberately not broker-dispatched yet. Its
-    /// caller must hold a pinned signed method-37 grant that matches `source`,
-    /// `plan_digest`, `semantic_digest`, `transport_request_digest`, and the
-    /// authenticated original session; the production hello excludes 37.
-    /// The Host AOSEOR02/AOSHOP01 pair and retained agent are checked here.
+    /// The caller holds the actual Accept reservation bound to the completed
+    /// Prepare response. The source, plan and transport digests and original
+    /// Controller Session must match. The Host AOSEOR02/AOSHOP01 pair, current
+    /// Effect cut and same live Agent are checked before the only nonce engine.
+    /// Production negotiation remains closed until its financial owner and
+    /// complete protected caller are connected.
     ///
     /// # Errors
     ///
     /// Rejects missing feature 7, stale Host owner/output, a repeated attempt,
     /// bad Guest signature, ambiguous journal custody, or channel failure.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn observe_execution_argument_once<F>(
+    pub(crate) fn observe_prepared_execution_argument_once_v2<F>(
         &mut self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
         source: &ControllerExecutionArgumentAttemptV1,
+        preparation: &aos_sandbox_protocol::host_execution_argument::preparation::HostArgumentPreparationV2,
+        opening: &mut HostArgumentAttemptOpeningV2,
         plan_digest: ObjectDigest,
         semantic_digest: ObjectDigest,
         transport_request_digest: ObjectDigest,
@@ -601,15 +757,19 @@ impl HostAgentLiveSessionV1 {
     where
         F: FnMut() -> Result<RawPairedClockSample, HostArgumentAttemptErrorV1>,
     {
-        if self.poisoned
-            || !self
-                .response
-                .features()
-                .contains(AgentFeatureV1::RuntimeArgumentObservation)
-        {
+        self.require_argument_session_current_v2(claim)?;
+        preparation.require_accept_source(&source.canonical_bytes())
+            .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+        let cut = claim.protected_host_settlement_cut_v1()
+            .map_err(HostAgentLiveErrorV1::from)?;
+        if !preparation.matches_observed(
+            &session_binding,
+            self.binding.digest().as_bytes(),
+            claim.currentness().runtime().handle().as_bytes(),
+            cut.digest().as_bytes(),
+        ) || preparation.host_effect_epoch() != cut.epoch() {
             return Err(HostArgumentAttemptErrorV1::Binding);
         }
-        self.validate_claim(claim)?;
         if claim
             .has_unsettled_host_agent_route()
             .map_err(HostAgentLiveErrorV1::from)?
@@ -620,7 +780,11 @@ impl HostAgentLiveSessionV1 {
             .host_output_for_argument_v1(source)
             .map_err(HostAgentLiveErrorV1::from)?;
         validate_source(claim, source, output, trusted_clock()?)?;
-        let mut journal = HostArgumentAttemptJournalV1::open_for_fresh_attempt()?;
+        let (journal, io) = opening.parts_once_v2()?;
+        io.response_mode = Some(super::execution_original::require_response_mode_v6(&self.socket));
+        if !matches!(io.response_mode, Some(Ok(()))) {
+            return Err(HostAgentLiveErrorV1::RecoveryRequired.into());
+        }
         let mut nonce = [0; 32];
         OsRng
             .try_fill_bytes(&mut nonce)
@@ -652,21 +816,31 @@ impl HostAgentLiveSessionV1 {
         // From this point a reply may be queued even if the call returns an
         // error. Never reuse this stop-and-wait session after ambiguity.
         self.poisoned = true;
-        send_frame(
+        io.sent = Some(send_frame(
             &mut self.socket,
             &pending.canonical_request,
             deadline,
             Some(source.deadline_boottime_nanoseconds()),
-        )?;
-        let packet = receive_record(
+        ));
+        if !io.sent.as_ref().is_some_and(Result::is_ok) {
+            return Err(HostAgentLiveErrorV1::RecoveryRequired.into());
+        }
+        io.received = Some(super::receive_record_into(
             &mut self.socket,
             MAXIMUM_PACKET_BYTES,
             deadline,
             Some(source.deadline_boottime_nanoseconds()),
-        )?;
+            super::AgentReceiveDispositionV1::Response {
+                record: &mut io.record, failure: &mut io.failure,
+            },
+        ));
+        if !io.received.as_ref().is_some_and(Result::is_ok) {
+            return Err(HostAgentLiveErrorV1::RecoveryRequired.into());
+        }
+        let packet = io.record.as_ref().ok_or(HostArgumentAttemptErrorV1::Binding)?.payload();
         self.validate_claim(claim)?;
-        let verified = verify_packet(claim, &request, &packet)?;
-        let (custody_digest, custody_sequence) = journal.complete(fresh_attempt, &packet)?;
+        let verified = verify_packet(claim, &request, packet)?;
+        let (custody_digest, custody_sequence) = journal.complete(fresh_attempt, packet)?;
         claim.revalidate().map_err(HostAgentLiveErrorV1::from)?;
         let output = claim
             .host_output_for_argument_v1(source)
@@ -678,9 +852,19 @@ impl HostAgentLiveSessionV1 {
             custody_digest,
             custody_sequence,
             &request,
-            &packet,
+            packet,
             &verified,
         )?;
+        // Move the actual verified challenge/result into the existing native
+        // destination before it can leave the live one-shot call. The returned
+        // receipt is comparison DATA; it cannot reconstruct this local owner.
+        io.completed = Some(CompletedHostArgumentOriginalV2 {
+            journal_instance: journal.instance,
+            request,
+            verified,
+            receipt: fresh.clone(),
+            controller_session: session_binding,
+        });
         self.poisoned = false;
         Ok(fresh)
     }
@@ -713,6 +897,17 @@ fn verify_packet(
     packet: &[u8],
 ) -> Result<GuestRuntimeArgumentReadbackV1, HostArgumentAttemptErrorV1> {
     HostArgumentHistoricalVerifierV1::from_claim(claim)?.verify_guest_packet(request, packet)
+}
+
+// Both the historical consuming adapter and retained original enter this one
+// namespace/entropy schedule. The latter keeps the Journal on every refusal.
+fn argument_journal_instance(journal: &mut Journal) -> Result<[u8; 16], HostArgumentAttemptErrorV1> {
+    let authority = journal.claim_protected_authority(RecordNamespace::HostExecution)?;
+    drop(authority);
+    let mut instance = [0; 16];
+    OsRng.try_fill_bytes(&mut instance).map_err(|_| HostAgentLiveErrorV1::Entropy)?;
+    if instance == [0; 16] { return Err(HostArgumentAttemptErrorV1::Binding); }
+    Ok(instance)
 }
 
 fn journal_limits() -> JournalLimits {

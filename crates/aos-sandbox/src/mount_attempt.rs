@@ -50,7 +50,7 @@ use crate::mount_preparation::{
     MountCatalogPreparationError, PreparedCurrentMountDispatchV1,
     PreparedCurrentMountReleaseDispatchV1,
 };
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::{
     CurrentRuntimeScopeError, DurableNamespaceTargetReferenceV1, NamespaceTargetError,
     validate_durable_reference_in_validated_namespace, validate_namespace_target_namespace,

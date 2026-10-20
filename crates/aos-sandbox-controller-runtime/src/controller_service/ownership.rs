@@ -9,17 +9,17 @@
 use std::path::Path;
 use std::time::Duration;
 
-use aos_sandbox::ownership_authority::OwnershipAuthorityVerifier;
-use aos_sandbox_core::format::decode_trust_policy;
-use aos_sandbox_core::{
-    DecodeLimits, KeyUsage, MediaType, OwnershipLeaseTrustAnchor, PortableMediaType,
-    SignaturePurpose, descriptor_for_bytes,
+use aos_sandbox_ownership_protocol::OwnershipAuthorityVerifier;
+use aos_sandbox_core::DecodeLimits;
+use aos_sandbox_ownership_protocol::trusted_policy::{
+    OwnershipTrustConfigurationErrorV1, verifier_from_protected_policy_v1,
 };
 use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipSessionTransportError;
 use zeroize::Zeroizing;
 
-use aos_sandbox_linux::credential::{
-    CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
+use aos_sandbox_linux::credential::CredentialOwnerPolicyV1;
+use super::credential_receiving::{
+    CredentialMetadataV1, CredentialSourceV1, OrdinaryCredentialSourceV1,
 };
 use aos_sandbox_broker_session_security::ownership_authority_client::LocalOwnershipAuthorityClientV1;
 
@@ -45,22 +45,37 @@ impl ControllerOwnershipConfigurationV1 {
     /// Loads the complete optional credential set from systemd's fixed names.
     pub(crate) fn from_process_credentials_optional()
     -> Result<Option<Self>, ControllerOwnershipCredentialErrorV1> {
-        let Some(directory) = std::env::var_os("CREDENTIALS_DIRECTORY") else {
+        Self::from_process_credentials_with_source(&mut OrdinaryCredentialSourceV1)
+    }
+
+    pub(super) fn from_process_credentials_with_source(
+        source: &mut impl CredentialSourceV1,
+    ) -> Result<Option<Self>, ControllerOwnershipCredentialErrorV1> {
+        let Some(directory) = source.process_directory() else {
             return Ok(None);
         };
+        source.directory(&directory);
         let directory = Path::new(&directory);
         if !directory.is_absolute() {
             return Err(ControllerOwnershipCredentialErrorV1);
         }
-        Self::from_directory(directory)
+        Self::from_directory_with_source(directory, source)
     }
 
+    #[cfg(test)]
     fn from_directory(
         directory: &Path,
     ) -> Result<Option<Self>, ControllerOwnershipCredentialErrorV1> {
-        let secret = read_credential(directory, SESSION_KEY_CREDENTIAL, 32)?;
-        let policy_bytes = read_credential(directory, POLICY_CREDENTIAL, MAXIMUM_POLICY_BYTES)?;
-        let public_key = read_credential(directory, PUBLIC_KEY_CREDENTIAL, 32)?;
+        Self::from_directory_with_source(directory, &mut OrdinaryCredentialSourceV1)
+    }
+
+    fn from_directory_with_source(
+        directory: &Path,
+        source: &mut impl CredentialSourceV1,
+    ) -> Result<Option<Self>, ControllerOwnershipCredentialErrorV1> {
+        let secret = read_credential_with_source(source, directory, SESSION_KEY_CREDENTIAL, 32)?;
+        let policy_bytes = read_credential_with_source(source, directory, POLICY_CREDENTIAL, MAXIMUM_POLICY_BYTES)?;
+        let public_key = read_credential_with_source(source, directory, PUBLIC_KEY_CREDENTIAL, 32)?;
         if secret.is_none() && policy_bytes.is_none() && public_key.is_none() {
             return Ok(None);
         }
@@ -73,42 +88,36 @@ impl ControllerOwnershipConfigurationV1 {
         let secret: [u8; 32] = secret
             .as_slice()
             .try_into()
-            .map_err(|_| ControllerOwnershipCredentialErrorV1)?;
+            .map_err(|cause| {
+                source.retain(cause);
+                ControllerOwnershipCredentialErrorV1
+            })?;
         if secret == [0; 32] {
             return Err(ControllerOwnershipCredentialErrorV1);
         }
         let public_key: [u8; 32] = public_key
             .as_slice()
             .try_into()
-            .map_err(|_| ControllerOwnershipCredentialErrorV1)?;
-        let policy = decode_trust_policy(&policy_bytes, DecodeLimits::default())
-            .map_err(|_| ControllerOwnershipCredentialErrorV1)?;
-        aos_sandbox_core::validate_required_features(policy.required_features())
-            .map_err(|_| ControllerOwnershipCredentialErrorV1)?;
-        let [authority] = policy.allowed_keys() else {
-            return Err(ControllerOwnershipCredentialErrorV1);
-        };
-        if policy.purpose() != SignaturePurpose::OwnershipLease
-            || authority.usage() != KeyUsage::OwnershipLease
-        {
-            return Err(ControllerOwnershipCredentialErrorV1);
-        }
-        let authority = authority.clone();
-        let media_type = MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
-            .map_err(|_| ControllerOwnershipCredentialErrorV1)?;
-        let descriptor = descriptor_for_bytes(media_type, &policy_bytes);
-        let anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
-            policy_bytes,
-            descriptor,
-            policy.trust_scope(),
-            authority.clone(),
-            public_key,
-            DecodeLimits::default(),
-        )
-        .map_err(|_| ControllerOwnershipCredentialErrorV1)?;
+            .map_err(|cause| {
+                source.retain(cause);
+                ControllerOwnershipCredentialErrorV1
+            })?;
+        let verifier = verifier_from_protected_policy_v1(policy_bytes, public_key, DecodeLimits::default())
+            .map_err(|cause| {
+                // Preserve each existing retained source's concrete decoder
+                // cause; ordinary readers keep their original drop behavior.
+                match cause {
+                    OwnershipTrustConfigurationErrorV1::Canonical(cause) => source.retain(cause),
+                    OwnershipTrustConfigurationErrorV1::Features(cause) => source.retain(cause),
+                    OwnershipTrustConfigurationErrorV1::MediaType(cause) => source.retain(cause),
+                    OwnershipTrustConfigurationErrorV1::Trust(cause) => source.retain(cause),
+                    OwnershipTrustConfigurationErrorV1::Binding => {},
+                }
+                ControllerOwnershipCredentialErrorV1
+            })?;
 
         Ok(Some(Self {
-            verifier: OwnershipAuthorityVerifier::new(anchor, authority),
+            verifier,
             secret: Zeroizing::new(secret),
         }))
     }
@@ -135,20 +144,28 @@ impl ControllerOwnershipConfigurationV1 {
     }
 }
 
+#[cfg(test)]
 fn read_credential(
     directory: &Path,
-    name: &str,
+    name: &'static str,
     maximum_bytes: usize,
 ) -> Result<Option<Vec<u8>>, ControllerOwnershipCredentialErrorV1> {
-    read_optional_bounded_role_credential_v1(
-        directory,
-        name,
-        1,
-        maximum_bytes,
-        true,
-        CredentialOwnerPolicyV1::RootOrCurrent,
-    )
-    .map_err(|_| ControllerOwnershipCredentialErrorV1)
+    read_credential_with_source(&mut OrdinaryCredentialSourceV1, directory, name, maximum_bytes)
+}
+
+fn read_credential_with_source(
+    source: &mut impl CredentialSourceV1,
+    directory: &Path,
+    name: &'static str,
+    maximum_bytes: usize,
+) -> Result<Option<Vec<u8>>, ControllerOwnershipCredentialErrorV1> {
+    source.read(
+        directory, name, 1, maximum_bytes,
+        CredentialMetadataV1::Protected {
+            private: true,
+            owner: CredentialOwnerPolicyV1::RootOrCurrent,
+        },
+    ).map_err(|_| ControllerOwnershipCredentialErrorV1)
 }
 
 #[cfg(test)]
@@ -174,6 +191,38 @@ mod tests {
             ControllerOwnershipConfigurationV1::from_directory(directory.path()),
             Err(ControllerOwnershipCredentialErrorV1),
         ));
+    }
+
+    #[test]
+    fn retained_malformed_policy_keeps_original_decoder_after_closed_reentry() {
+        use super::super::credential_receiving::CredentialAttemptV1;
+        use aos_sandbox_core::format::CanonicalCborError;
+
+        let directory = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            (SESSION_KEY_CREDENTIAL, vec![9; 32]),
+            (POLICY_CREDENTIAL, vec![0]),
+            (PUBLIC_KEY_CREDENTIAL, vec![7; 32]),
+        ] {
+            let path = directory.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert!(ControllerOwnershipConfigurationV1::from_directory(directory.path()).is_err());
+
+        let mut attempt = CredentialAttemptV1::new();
+        assert!(!attempt.capture_once(|source| {
+            ControllerOwnershipConfigurationV1::from_directory_with_source(directory.path(), source)
+        }));
+        let original = attempt.failure().unwrap();
+        assert!(original.downcast_ref::<CanonicalCborError>().is_some());
+        let original_address = std::ptr::from_ref(original).cast::<()>();
+
+        assert!(!attempt.capture_once(|_| {
+            panic!("closed retained construction must not reread or replace its first cause")
+        }));
+        assert!(attempt.take_completed().is_none());
+        assert_eq!(std::ptr::from_ref(attempt.failure().unwrap()).cast::<()>(), original_address);
     }
 
     #[test]

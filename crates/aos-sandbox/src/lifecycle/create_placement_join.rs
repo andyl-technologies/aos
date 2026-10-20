@@ -9,8 +9,9 @@ use aos_sandbox_core::{
     AssignmentEpoch, NodeId, ObjectDigest, OperationId, ProjectId, ResourceVector, SandboxId,
 };
 
-use crate::local_inventory::{CarrierValidatedCapabilityObservationV1, NodeAdmissionStateV1};
+use crate::local_inventory::CarrierValidatedCapabilityObservationV1;
 use crate::runtime_authority::{RuntimeAuthorityBindingV1, RuntimeAuthorityStateV1};
+use aos_sandbox_core::NodeAdmissionStateV1;
 
 use super::{CurrentLifecycleOperationV1, LifecycleIntentV1};
 

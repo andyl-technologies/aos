@@ -222,12 +222,42 @@ where
 pub(crate) fn encode_request(
     request: &WorkspacePinRepairWorkerRequestV1,
 ) -> Result<Vec<u8>, ZfsWorkerError> {
-    let inner = encode_pin_worker_request(
-        &ZfsHelperContract::new(request.pin_request.executable.clone())
-            .map_err(|_| ZfsWorkerError::Authority)?,
-        &request.pin_request.catalog,
-        &request.pin_request.authority,
-    )?;
+    encode_request_inner_v1(request, None)
+}
+
+pub(crate) fn encode_request_receiving_v1(
+    request: &WorkspacePinRepairWorkerRequestV1,
+    receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+) -> Result<Vec<u8>, ZfsWorkerError> {
+    encode_request_inner_v1(request, Some(receiving))
+}
+
+fn encode_request_inner_v1(
+    request: &WorkspacePinRepairWorkerRequestV1,
+    mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+) -> Result<Vec<u8>, ZfsWorkerError> {
+    let inner = {
+        let contract = ZfsHelperContract::new(request.pin_request.executable.clone())
+            .map_err(|_| ZfsWorkerError::Authority)?;
+        match receiving.as_deref_mut() {
+            Some(receiving) => crate::pin_worker::encode_request_receiving_v1(
+                &contract, &request.pin_request.catalog, &request.pin_request.authority, receiving,
+            ),
+            None => encode_pin_worker_request(
+                &contract, &request.pin_request.catalog, &request.pin_request.authority,
+            ),
+        }
+    }?;
+    if let Some(receiving) = receiving {
+        let bytes = [inner.len(), request.repair_intent_record.len(),
+            request.publication_intent_record.len()].into_iter()
+            .try_fold(24_usize, usize::checked_add)
+            .ok_or(ZfsWorkerError::Protocol("repair worker request length overflow"))?;
+        receiving.reserve_encoded_capacity_v1(bytes, 0).map_err(|_| {
+            ZfsWorkerError::PhysicalAdmission(crate::process::PhysicalWorkerAdmissionFailureV1
+                ::from_native_refusal_v1(aos_sandbox::StorageReceivingClosedV1))
+        })?;
+    }
     let mut bytes = Vec::with_capacity(
         24 + inner.len()
             + request.repair_intent_record.len()
@@ -355,6 +385,19 @@ mod tests {
             vec![7; 133],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn outer_wire_width_covers_actual_nested_request_and_both_records() {
+        let request = request();
+        let bytes = encode_request(&request).unwrap();
+        let contract = ZfsHelperContract::new(request.pin_request.executable.clone()).unwrap();
+        let inner = encode_pin_worker_request(
+            &contract, &request.pin_request.catalog, &request.pin_request.authority,
+        ).unwrap();
+
+        assert_eq!(bytes.len(), 24 + inner.len() + request.repair_intent_record.len()
+            + request.publication_intent_record.len());
     }
 
     #[test]

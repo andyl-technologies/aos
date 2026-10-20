@@ -21,7 +21,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// session, malformed response, or failed Provider signature.
     pub fn advance_pending_acquire_recovery_v1(
         &mut self,
-        journal: &aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>,
+        journal: &aos_sandbox_mount_native::MountSourceConsumptionJournalAuthorityV1<'_>,
         acquisition_id: ObjectDigest,
     ) -> Result<
         Option<super::super::AuthenticatedRootMountRecoveryObservationV2>,
@@ -125,8 +125,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// the snapshot, record, acquisition lineage, and terminal projection agree.
     pub fn recover_released_mount_source_root_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         acquisition_key: Vec<u8>,
         acquisition_record: Vec<u8>,
     ) -> Result<crate::ReleasedMountSourceRootV2, SourceProviderSecurityError> {
@@ -240,9 +240,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[allow(clippy::too_many_arguments)]
     pub fn recover_mount_provider_outcome_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        catalog_journal: Option<&aos_sandbox::ProtectedJournalAuthority<'_>>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        catalog_journal: Option<&aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         attempt_key: Vec<u8>,
         attempt_record: Vec<u8>,
         session_key: Vec<u8>,
@@ -731,8 +731,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// session ancestry, descriptor-negative state, or a successor mismatch.
     pub fn authorize_retained_mount_source_root_recovery_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         acquisition_key: Vec<u8>,
         acquisition_record: Vec<u8>,
     ) -> Result<RetainedRootRecoveryAuthorizationV2, SourceProviderSecurityError> {
@@ -821,7 +821,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[allow(clippy::too_many_arguments)]
     pub fn recover_retained_mount_source_root_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         authorization: RetainedRootRecoveryAuthorizationV2,
         recovered: RecoveredMountProviderOutcomeV2,
     ) -> Result<crate::RecoveredRetainedMountSourceRootV2, SourceProviderSecurityError> {
@@ -1161,8 +1161,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// the capability minted at startup.
     pub fn prepare_recovered_negative_custody_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        absence: aos_sandbox::mount_manager_startup::TerminalMountSourceAbsenceV1,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        absence: aos_sandbox_mount_native::mount_manager_startup::TerminalMountSourceAbsenceV1,
     ) -> Result<crate::PreparedReleasedMountSourceRootV2, SourceProviderSecurityError> {
         use aos_sandbox_protocol::mount_source_acquisition_state::{
             AcquisitionRecoveryV2, ProviderAttemptStateV2, ProviderMethodV2, ReleaseProofV2,

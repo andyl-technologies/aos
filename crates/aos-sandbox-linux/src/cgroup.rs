@@ -16,6 +16,50 @@
 //! kill primitive is explicitly mutating and requires an independent retained
 //! population observation before it establishes quiescence.
 
+mod network_worker_absence;
+pub use network_worker_absence::{NetworkWorkerCgroupAbsenceOriginalV4, NetworkWorkerCgroupAbsenceRefusalV4};
+
+mod host_inventory;
+pub use host_inventory::{HostRuntimeCgroupAbsenceOriginalV5, HostRuntimeCgroupAbsenceRefusalV5};
+
+mod network_worker_aggregate;
+pub use network_worker_aggregate::NetworkWorkerAggregateAssociationOriginalV4;
+
+mod active_original;
+pub use active_original::CgroupActiveOriginalV2;
+
+mod single_task;
+pub use single_task::CgroupSingleTaskObservationV1;
+
+mod population_observation;
+mod issued_quiescence;
+pub use issued_quiescence::{IssuedCgroupQuiescenceAttemptV2, IssuedCgroupQuiescenceRefusalV2};
+pub use population_observation::{CgroupPopulationObservationV1, CgroupPopulationObservationRefusalV1};
+use population_observation::read_population_state;
+
+mod network_birth_population;
+pub use network_birth_population::NetworkBirthPopulationDonationOriginalV2;
+mod network_child_control;
+pub use network_child_control::{NetworkChildControlDonationOriginalV2,
+    NetworkChildControlKindV2, NetworkChildControlValueV2};
+mod network_child_ancestry;
+pub use network_child_ancestry::NetworkChildAggregateAncestryOriginalV2;
+
+mod recovery_quiescence;
+pub use recovery_quiescence::{StorageWorkerRecoveryQuiescenceV1, StorageRecoveryQuiescenceErrorV1, quiesce_storage_worker_cgroup_v1};
+
+mod recovery_directory;
+pub use recovery_directory::{
+    StorageWorkerRecoveryDirectoryV1, StorageWorkerRecoveryDirectoryErrorV1,
+    StorageWorkerRecoveryDirectoryRefusalV1, read_storage_worker_recovery_names_v1,
+};
+
+mod storage_executor_startup;
+pub use storage_executor_startup::StorageExecutorInitialCgroupReadbackV1;
+
+mod limit_currentness;
+pub use limit_currentness::{CgroupLimitCurrentnessSampleV1, CpuLimitCurrentnessSampleV1};
+
 use std::fs::File;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::fs::FileExt as _;
@@ -27,6 +71,29 @@ use crate::path::{
 };
 use crate::pidfd::{PidFd, PidFdInfo};
 use crate::{Error, Result, uapi};
+
+mod control_readback;
+use control_readback::{
+    capture_limit_control_slot_v1, recheck_limit_control_slot_v1,
+    capture_limit_control_slot_with_native_disposition_v4,
+    recheck_limit_control_slot_with_native_disposition_v4,
+};
+
+mod runtime_pids;
+pub use runtime_pids::{
+    CgroupControllerReadbackV2,
+    PidsLimitReadbackV1, PidsLimitReadbackRefusalV1,
+    MemoryLimitReadbackV1, MemoryLimitReadbackRefusalV1,
+};
+
+mod membership_readback;
+mod runtime_scope_membership;
+mod storage_output_client;
+pub use storage_output_client::StorageOutputClientCgroupOriginalV2;
+pub use runtime_scope_membership::{
+    RuntimeScopeMembershipFilesDisposedV4, RuntimeScopeMembershipOriginalV1,
+};
+pub use membership_readback::{ExactCgroupMembershipReadbackV1, ExactCgroupMembershipRefusalV1};
 
 const CGROUP2_SUPER_MAGIC: libc::c_long = 0x6367_7270;
 const MAXIMUM_DESCENDANT_HINT_BYTES: usize = 4096;
@@ -81,6 +148,8 @@ struct LimitControlSlotV1 {
     opening: PendingRegularFileV1,
     bookend: PendingRegularFileV1,
     final_name: PendingRegularFileV1,
+    bookend_disposed: Option<crate::path::FileIdentity>,
+    final_name_disposed: Option<crate::path::FileIdentity>,
     absent: Option<Error>,
     absence_bookend: Option<Error>,
     final_absence: Option<Error>,
@@ -96,6 +165,8 @@ impl Default for LimitControlSlotV1 {
             opening: PendingRegularFileV1::default(),
             bookend: PendingRegularFileV1::default(),
             final_name: PendingRegularFileV1::default(),
+            bookend_disposed: None,
+            final_name_disposed: None,
             absent: None,
             absence_bookend: None,
             final_absence: None,
@@ -116,6 +187,11 @@ enum LimitReadbackPhaseV1 {
     Failed,
 }
 
+#[derive(Debug)]
+struct CgroupLimitFilesDisposedV4 {
+    opening_identities: [Option<crate::path::FileIdentity>; 7],
+}
+
 /// Retains fixed control-file descriptors, bounded bytes and the first error.
 ///
 /// This is observed DATA, not an enforcement or currentness capability. An
@@ -124,6 +200,11 @@ enum LimitReadbackPhaseV1 {
 #[derive(Debug)]
 pub struct CgroupLimitReadbackV1 {
     slots: [LimitControlSlotV1; 7],
+    active_probes: [PendingRegularFileV1; 4],
+    retain_active: bool,
+    native_disposed: Option<CgroupLimitFilesDisposedV4>,
+    initial_active_disposed: Option<[crate::path::FileIdentity; 2]>,
+    final_active_disposed: Option<[crate::path::FileIdentity; 2]>,
     phase: LimitReadbackPhaseV1,
     failure: Option<Error>,
 }
@@ -132,6 +213,11 @@ impl Default for CgroupLimitReadbackV1 {
     fn default() -> Self {
         Self {
             slots: std::array::from_fn(|_| LimitControlSlotV1::default()),
+            active_probes: std::array::from_fn(|_| PendingRegularFileV1::default()),
+            retain_active: false,
+            native_disposed: None,
+            initial_active_disposed: None,
+            final_active_disposed: None,
             phase: LimitReadbackPhaseV1::Fresh,
             failure: None,
         }
@@ -139,6 +225,177 @@ impl Default for CgroupLimitReadbackV1 {
 }
 
 impl CgroupLimitReadbackV1 {
+    /// Disposes successful verification names while retaining original OFDs.
+    ///
+    /// This releases only completed positive bookend/name handles. Initial and
+    /// final bytes, absence observations, phase and native Results remain on
+    /// this owner. It creates no new observation or authority. A failed or
+    /// interrupted original cannot dispose its partial acquisitions here.
+    ///
+    /// # Errors
+    /// Refuses an incomplete or failed final bookend before changing any slot.
+    pub fn settle_positive_named_verifications_v1(&mut self) -> Result<()> {
+        if self.phase != LimitReadbackPhaseV1::Current || self.failure.is_some() {
+            return Err(Error::invalid("cgroup named settlement", "final original is not positive"));
+        }
+        for slot in &mut self.slots {
+            drop(std::mem::take(&mut slot.bookend));
+            drop(std::mem::take(&mut slot.final_name));
+        }
+        if self.retain_active {
+            for probe in &mut self.active_probes { drop(std::mem::take(probe)); }
+        }
+        Ok(())
+    }
+
+
+    /// Reports whether the exact retained final control flight can retire.
+    ///
+    /// This is nonauthorizing point-in-time DATA. The upper caller must finish
+    /// its whole semantic conjunction before consuming the actual files.
+    #[must_use]
+    pub fn completed_files_are_disposable_v4(&self) -> bool {
+        self.retain_active && self.native_disposed.is_none()
+            && self.phase == LimitReadbackPhaseV1::Current && self.failure.is_none()
+            && self.slots.iter().all(|slot| {
+                slot.absent.is_some() || (slot.opening.file().is_ok()
+                    && slot.bookend_disposed.is_some() && slot.final_name_disposed.is_some())
+            })
+    }
+
+    /// Physically retires complete control files, retaining bytes and witnesses.
+    ///
+    /// # Errors
+    /// Refuses a partial, failed, ordinary or already disposed original. The
+    /// caller completes all comparisons and owed local posts before entry.
+    pub fn retire_completed_files_once_v4(&mut self) -> Result<()> {
+        if !self.completed_files_are_disposable_v4() {
+            return Err(Error::invalid("cgroup control file retirement", "original final flight is not positive"));
+        }
+        let identities = std::array::from_fn(|index| {
+            self.slots[index].opening.file().ok().map(|file| file.identity())
+        });
+        self.settle_positive_named_verifications_v1()?;
+        for slot in &mut self.slots {
+            drop(slot.opening.take_readable_file());
+        }
+        self.native_disposed = Some(CgroupLimitFilesDisposedV4 { opening_identities: identities });
+        Ok(())
+    }
+
+    /// Reports actual physical retirement on this exact completed original.
+    #[must_use]
+    pub fn native_files_are_disposed_v4(&self) -> bool {
+        self.native_disposed.as_ref().is_some_and(|proof| {
+            self.phase == LimitReadbackPhaseV1::Current && self.failure.is_none()
+                && self.slots.iter().zip(&proof.opening_identities).all(|(slot, identity)| {
+                    slot.opening.file().is_err() && (slot.absent.is_some() || identity.is_some())
+                })
+        })
+    }
+
+    /// Captures the same control recipe with retained boundary active probes.
+    ///
+    /// The existing `recheck` automatically retains its same final boundary
+    /// probes for this original. Ordinary `capture` keeps its original native
+    /// disposition. Only a whole positive final named settlement releases them.
+    ///
+    /// # Errors
+    /// Retains actual probe/control/native errors and refuses repeated capture.
+    pub fn capture_retaining_v2(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
+        if self.phase != LimitReadbackPhaseV1::Fresh {
+            return Err(Error::invalid("cgroup limit capture", "already attempted"));
+        }
+        self.retain_active = true;
+        self.capture(anchor)
+    }
+
+    /// Retires only the complete initial active probes after caller comparisons.
+    ///
+    /// # Errors
+    /// Refuses ordinary, partial, failed or repeated initial observations.
+    pub fn retire_initial_active_files_once_v4(&mut self) -> Result<()> {
+        if !self.retain_active || self.phase != LimitReadbackPhaseV1::Ready
+            || self.failure.is_some() || self.initial_active_disposed.is_some()
+        {
+            return Err(Error::invalid("initial control active retirement", "original capture is not positive"));
+        }
+        let identities = [self.active_probes[0].file()?.identity(), self.active_probes[1].file()?.identity()];
+        for probe in &mut self.active_probes[..2] {
+            drop(probe.take_readable_file());
+        }
+        self.initial_active_disposed = Some(identities);
+        Ok(())
+    }
+
+    /// Performs the same final recipe after exact initial-probe disposal.
+    ///
+    /// # Errors
+    /// Refuses absent actual initial disposal before native IO, or preserves
+    /// the existing final-recheck native/parser failure and reached prefix.
+    pub fn recheck_after_initial_disposal_v4(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
+        if self.initial_active_disposed.is_none() {
+            return Err(Error::invalid("segmented control bookend", "initial probes remain occupied"));
+        }
+        self.recheck(anchor)
+    }
+
+    /// Retires the complete final active probes without dropping control OFDs.
+    ///
+    /// # Errors
+    /// Refuses missing initial disposal, incomplete/failing final capture or
+    /// repeat retirement. The caller retains all original anchors separately.
+    pub fn retire_final_active_files_once_v4(&mut self) -> Result<()> {
+        if !self.retain_active || self.phase != LimitReadbackPhaseV1::Current
+            || self.failure.is_some() || self.initial_active_disposed.is_none()
+            || self.final_active_disposed.is_some()
+        {
+            return Err(Error::invalid("final control active retirement", "original final flight is not positive"));
+        }
+        let identities = [self.active_probes[2].file()?.identity(), self.active_probes[3].file()?.identity()];
+        for probe in &mut self.active_probes[2..] {
+            drop(probe.take_readable_file());
+        }
+        self.final_active_disposed = Some(identities);
+        Ok(())
+    }
+
+    /// Bounds the segmented initial/final active-file interval used by Host.
+    ///
+    /// Initial and final native entry are separated by an actual same-reader
+    /// physical-disposal gate. The old unsegmented supplier remains unchanged.
+    #[must_use]
+    pub fn segmented_active_receiving_obligations_v4() -> Option<(usize, usize, usize)> {
+        Some((std::mem::size_of::<Self>().checked_mul(2)?.checked_add(8 * 13)?, 2, 1))
+    }
+
+    /// Bounds the actual reader and four additional boundary probe descriptors.
+    ///
+    /// The seven existing control-file obligations remain separate. Repeated
+    /// probes name only the same one `cgroup.procs` entry, not four new rows.
+    #[must_use]
+    pub fn retained_active_receiving_obligations_v2() -> Option<(usize, usize, usize)> {
+        Some((std::mem::size_of::<Self>().checked_mul(2)?.checked_add(8 * 13)?, 4, 1))
+    }
+
+    /// Bounds the seven original control files and one named verification file.
+    ///
+    /// This additional supplier is for `capture_retaining_v2`: successful
+    /// per-control name comparisons close their exact named descriptor before
+    /// the next slot. A failed comparison keeps that descriptor and terminates
+    /// the reader. Original readable OFDs remain held through final recheck.
+    /// The four retained active probes have their separate existing supplier.
+    #[must_use]
+    pub fn retained_control_receiving_obligations_v4() -> Option<(usize, usize, usize)> {
+        let paths = CgroupLimitControlV1::ALL.iter().try_fold(0_usize, |bytes, control| {
+            bytes.checked_add(control.name().len().checked_add(1)?)
+        })?;
+        let bytes = std::mem::size_of::<Self>().checked_mul(2)?
+            .checked_add(paths.checked_mul(3)?)?
+            .checked_add(21 * 128)?;
+        Some((bytes, 7 + 1, 7))
+    }
+
     /// Captures one bounded observation through the actual retained anchor.
     ///
     /// # Errors
@@ -213,65 +470,31 @@ impl CgroupLimitReadbackV1 {
     }
 
     fn recheck_once(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
-        anchor.validate_current()?;
+        self.validate_boundary_active(anchor, 2)?;
         for control in CgroupLimitControlV1::ALL {
-            let slot = &mut self.slots[control as usize];
-            let path = Path::new(control.name());
-            if slot.absent.is_some() {
-                match anchor.root.open_regular_retaining(path, &mut slot.final_name) {
-                    Err(error) if is_missing(&error) => {
-                        slot.final_absence = Some(error);
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                    Ok(()) => return Err(Error::invalid("cgroup control", "absent file appeared")),
-                }
-            }
-            read_limit_record(
-                slot.opening.file()?.as_fd(), &mut slot.final_bytes, &mut slot.final_length,
+            recheck_limit_control_slot_with_native_disposition_v4(
+                anchor, control, &mut self.slots[control as usize], self.retain_active,
             )?;
-            if slot.bytes[..slot.length] != slot.final_bytes[..slot.final_length] {
-                return Err(Error::invalid("cgroup control", "same-OFD record changed"));
-            }
-            anchor.root.open_regular_retaining(path, &mut slot.final_name)?;
-            if slot.opening.file()?.identity() != slot.final_name.file()?.identity() {
-                return Err(Error::invalid("cgroup control", "final named identity changed"));
-            }
         }
-        anchor.validate_current()
+        self.validate_boundary_active(anchor, 3)
     }
 
     fn capture_once(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
-        anchor.validate_current()?;
+        self.validate_boundary_active(anchor, 0)?;
         for control in CgroupLimitControlV1::ALL {
-            let slot = &mut self.slots[control as usize];
-            let path = Path::new(control.name());
-            match anchor.root.open_regular_retaining(path, &mut slot.opening) {
-                Err(error @ Error::Syscall { .. }) if is_missing(&error) => {
-                    slot.absent = Some(error);
-                    match anchor.root.open_regular_retaining(path, &mut slot.bookend) {
-                        Err(error) if is_missing(&error) => {
-                            slot.absence_bookend = Some(error);
-                            continue;
-                        }
-                        Err(error) => return Err(error),
-                        Ok(()) => return Err(Error::invalid("cgroup control", "absent file appeared")),
-                    }
-                }
-                Err(error) => return Err(error),
-                Ok(()) => {}
-            }
-
-            // The same readable OFD supplies every byte, from offset zero. The
-            // sentinel and each returned prefix are resident before validation.
-            read_limit_record(slot.opening.file()?.as_fd(), &mut slot.bytes, &mut slot.length)?;
-            validate_limit_record(control, &slot.bytes[..slot.length])?;
-            anchor.root.open_regular_retaining(path, &mut slot.bookend)?;
-            if slot.opening.file()?.identity() != slot.bookend.file()?.identity() {
-                return Err(Error::invalid("cgroup control", "named identity changed"));
-            }
+            capture_limit_control_slot_with_native_disposition_v4(
+                anchor, control, &mut self.slots[control as usize], self.retain_active,
+            )?;
         }
-        anchor.validate_current()
+        self.validate_boundary_active(anchor, 1)
+    }
+
+    fn validate_boundary_active(&mut self, anchor: &RetainedCgroupAnchor, index: usize) -> Result<()> {
+        if self.retain_active {
+            anchor.validate_active_retaining(&mut self.active_probes[index])
+        } else {
+            anchor.validate_current()
+        }
     }
 }
 
@@ -285,9 +508,96 @@ pub struct FirstGlobalCpuReadbackV1 {
     attempted: bool,
     failure: Option<Error>,
     quota: Option<(u64, u64)>,
+    retained_active: Option<[CgroupActiveOriginalV2; 4]>,
+    initial_files_retired: Option<[crate::path::FileIdentity; 2]>,
 }
 
 impl FirstGlobalCpuReadbackV1 {
+    /// Closes a complete retained initial CPU proof after all owner comparisons.
+    ///
+    /// Native bytes, quota, named identities and once fences remain. This
+    /// transition is for an initial-only consumer; a later recheck refuses.
+    ///
+    /// # Errors
+    /// Refuses partial, failed, ordinary, rechecked or retired observations.
+    pub fn retire_positive_initial_files_once_v2(&mut self) -> Result<()> {
+        if !self.attempted || self.failure.is_some() || self.quota.is_none()
+            || self.initial_files_retired.is_some() || self.slot.final_length != 0 {
+            return Err(Error::invalid("initial CPU proof retirement", "original capture is not positive"));
+        }
+        let identities = [self.slot.opening.file()?.identity(), self.slot.bookend.file()?.identity()];
+        let probes = self.retained_active.as_mut().ok_or_else(|| {
+            Error::invalid("initial CPU proof retirement", "no retained initial probes")
+        })?;
+        probes[0].retire_positive_file_once_v2()?;
+        probes[1].retire_positive_file_once_v2()?;
+        drop(self.slot.opening.take_readable_file());
+        drop(self.slot.bookend.take_readable_file());
+        self.initial_files_retired = Some(identities);
+        Ok(())
+    }
+
+    /// Captures the same CPU recipe while retaining its reached active probes.
+    ///
+    /// The ordinary capture keeps its existing native disposition. This
+    /// original also retains both reached recheck probes on a later recheck;
+    /// no failed prefix or native cause is replaced by the returned marker.
+    ///
+    /// # Errors
+    /// Refuses reentry and retains actual active/control/record native errors.
+    pub fn capture_retaining_v2(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
+        if self.attempted || self.retained_active.is_some() {
+            return Err(Error::invalid("FirstGlobal cpu.max", "already attempted"));
+        }
+        self.retained_active = Some(std::array::from_fn(|_| CgroupActiveOriginalV2::new()));
+        self.capture(anchor)
+    }
+
+    /// Prices the complete retaining capture/recheck, beyond a donated input.
+    ///
+    /// Three control OFDs and four actual active probes remain held. Repeated
+    /// probes name the same cgroup.procs entry beside the fixed cpu.max name.
+    #[must_use]
+    pub fn retained_receiving_obligations_v2() -> Option<(usize, usize, usize)> {
+        let active = CgroupActiveOriginalV2::receiving_obligations_v2()?;
+        let bytes = std::mem::size_of::<Self>().checked_mul(2)?
+            .checked_add(active.0.checked_mul(4)?)?.checked_add(6 * 256)?;
+        Some((bytes, 3_usize.checked_add(active.1.checked_mul(4)?)?, 2))
+    }
+
+    /// Prices only the actual retaining initial CPU capture, without recheck.
+    #[must_use]
+    pub fn retained_initial_obligations_v2() -> Option<(usize, usize, usize)> {
+        let active = CgroupActiveOriginalV2::receiving_obligations_v2()?;
+        let bytes = std::mem::size_of::<Self>().checked_mul(2)?
+            .checked_add(active.0.checked_mul(2)?)?.checked_add(4 * 256)?;
+        Some((bytes, 2_usize.checked_add(active.1.checked_mul(2)?)?, 2))
+    }
+
+    fn active_boundary(&mut self, anchor: &RetainedCgroupAnchor, index: usize) -> Result<()> {
+        match self.retained_active.as_mut() {
+            Some(probes) => probes[index].capture_once_v2(anchor),
+            None => anchor.validate_current(),
+        }
+    }
+
+    /// Disposes positive CPU verification names, preserving the readable OFD.
+    ///
+    /// Initial/final bytes, parsed quota and native failure slots remain held.
+    /// Failed or incomplete readers retain every partial descriptor instead.
+    ///
+    /// # Errors
+    /// Refuses missing initial quota, a failed original or no final byte sample.
+    pub fn settle_positive_named_verifications_v1(&mut self) -> Result<()> {
+        if self.quota.is_none() || self.failure.is_some() || self.slot.final_length == 0 {
+            return Err(Error::invalid("cpu named settlement", "final original is not positive"));
+        }
+        drop(std::mem::take(&mut self.slot.bookend));
+        drop(std::mem::take(&mut self.slot.final_name));
+        Ok(())
+    }
+
+
     /// Captures the same original finite CPU quota and exact period once.
     ///
     /// # Errors
@@ -311,7 +621,7 @@ impl FirstGlobalCpuReadbackV1 {
     }
 
     fn capture_once(&mut self, anchor: &RetainedCgroupAnchor) -> Result<(u64, u64)> {
-        anchor.validate_current()?;
+        self.active_boundary(anchor, 0)?;
         let path = Path::new("cpu.max");
         anchor.root.open_regular_retaining(path, &mut self.slot.opening)?;
         read_limit_record(
@@ -335,7 +645,7 @@ impl FirstGlobalCpuReadbackV1 {
         if self.slot.opening.file()?.identity() != self.slot.bookend.file()?.identity() {
             return Err(Error::invalid("FirstGlobal cpu.max", "named identity changed"));
         }
-        anchor.validate_current()?;
+        self.active_boundary(anchor, 1)?;
         Ok((quota, period))
     }
 
@@ -348,7 +658,8 @@ impl FirstGlobalCpuReadbackV1 {
     /// Borrows the first authentic native or validation failure.
     #[must_use]
     pub fn failure(&self) -> Option<&Error> {
-        self.failure.as_ref()
+        self.retained_active.as_ref().and_then(|probes| probes.iter().find_map(|probe| probe.failure()))
+            .or(self.failure.as_ref())
     }
 
     /// Rechecks the original OFD and fresh named identity without replacing it.
@@ -356,11 +667,12 @@ impl FirstGlobalCpuReadbackV1 {
     /// # Errors
     /// Retains changed records, stale anchors and native read/open errors.
     pub fn recheck(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
-        if self.quota.is_none() || self.failure.is_some() || self.slot.final_length != 0 {
+        if self.quota.is_none() || self.failure.is_some() || self.slot.final_length != 0
+            || self.initial_files_retired.is_some() {
             return Err(Error::invalid("FirstGlobal cpu.max", "not ready for final bookend"));
         }
         let result = (|| {
-            anchor.validate_current()?;
+            self.active_boundary(anchor, 2)?;
             read_limit_record(
                 self.slot.opening.file()?.as_fd(),
                 &mut self.slot.final_bytes,
@@ -373,7 +685,7 @@ impl FirstGlobalCpuReadbackV1 {
             if self.slot.opening.file()?.identity() != self.slot.final_name.file()?.identity() {
                 return Err(Error::invalid("FirstGlobal cpu.max", "final named identity changed"));
             }
-            anchor.validate_current()
+            self.active_boundary(anchor, 3)
         })();
         match result {
             Ok(()) => Ok(()),
@@ -552,17 +864,91 @@ pub struct RetainedCgroupAnchor {
     kernel_id: u64,
 }
 
+/// Retains an owned cgroup root and the same `.` resolution through validation.
+///
+/// The existing root/active-file/child engine owns every reached FD. This
+/// supplies kernel identity DATA only; callers authenticate its actual Host,
+/// protocol descriptor role, assignment and purpose independently.
+#[derive(Debug, Default)]
+pub struct RuntimeScopeCgroupOriginalV1 {
+    original: InitialServiceCgroupCaptureV1,
+    result: Option<Result<()>>,
+    retired_probes: Option<[crate::path::FileIdentity; 4]>,
+}
+
+impl RuntimeScopeCgroupOriginalV1 {
+    /// Creates empty native destinations without opening or validating anything.
+    #[must_use]
+    pub fn new() -> Self { Self::default() }
+
+    /// Runs the same owned-root admission followed by exact `.` resolution.
+    ///
+    /// # Errors
+    /// Retains the original directory, active-file, cgroup or resolution error.
+    /// An interrupted or failed attempt cannot be repeated.
+    pub fn capture_once(&mut self, root: OwnedFd) -> Result<()> {
+        if self.result.is_some() { return Err(Error::invalid("runtime scope cgroup", "already attempted")); }
+        self.result = Some(self.original.capture_initial(root, InitialServiceCgroupV1::RuntimeScopeSameRoot));
+        if matches!(self.result, Some(Ok(()))) { Ok(()) }
+        else { Err(Error::invalid("runtime scope cgroup", "original admission failed")) }
+    }
+
+    /// Moves only the actual validated root and same-root anchor once.
+    ///
+    /// Probe originals remain resident beside the caller's full native window.
+    #[must_use]
+    pub fn take_completed_once(&mut self) -> Option<(CgroupV2Root, RetainedCgroupAnchor)> {
+        if !matches!(self.result, Some(Ok(()))) { return None; }
+        self.original.take_validated_pair()
+    }
+
+    /// Borrows the first actual native admission/resolution error.
+    #[must_use]
+    pub fn failure(&self) -> Option<&Error> {
+        self.result.as_ref()?.as_ref().err()
+    }
+
+    /// Retires four positive temporary probes after the actual pair moved.
+    ///
+    /// The caller retains both admitted directory objects. This original keeps
+    /// its native result and exact four probe identities without resetting its
+    /// entry fence or releasing any resource charge.
+    ///
+    /// # Errors
+    /// Refuses incomplete, failed, unmoved or previously retired originals.
+    pub fn retire_positive_probes_once_v2(&mut self) -> Result<()> {
+        if !matches!(self.result, Some(Ok(()))) || self.retired_probes.is_some()
+            || self.original.root.is_some() || self.original.child.anchor.is_some() {
+            return Err(Error::invalid("runtime cgroup probe retirement", "the original pair has not completed its move"));
+        }
+        let identities = [self.original.root_probe.file()?.identity(),
+            self.original.child.probes[0].file()?.identity(),
+            self.original.child.probes[1].file()?.identity(),
+            self.original.child.probes[2].file()?.identity()];
+        drop(self.original.root_probe.take_readable_file());
+        for probe in &mut self.original.child.probes { drop(probe.take_readable_file()); }
+        self.retired_probes = Some(identities);
+        Ok(())
+    }
+
+    /// Returns fixed byte, native-FD and two-name representation DATA.
+    #[must_use]
+    pub fn receiving_demand_v1() -> Option<(usize, usize, usize)> {
+        Some((std::mem::size_of::<Self>().checked_mul(2)?.checked_add(8192)?, 6, 2))
+    }
+}
+
 /// Retains initial hierarchy and fixed offline-provisioner cgroup observations.
 ///
 /// This move-only DATA reservoir parks a returned root duplicate and every
 /// returned child/probe before validation. It proves kernel object identity,
 /// not service provenance, privilege, startup admission, funding or currentness.
-/// Its only descendant is `system.slice/aos-sandbox-nix-floor-provision.service`.
+/// Its descendant is selected only by the private fixed service roles.
 /// It retains at most two directory descriptors and four active-file probes;
 /// transitions between candidate and validated slots never duplicate an FD.
 /// The external caller keeps the reservoir alive on error or caught unwind.
 #[derive(Debug, Default)]
-pub struct NixOfflineInitialCgroupReadbackV5 {
+struct InitialServiceCgroupCaptureV1 {
     attempted: bool,
     complete: bool,
     root_candidate: PendingBeneathRootV5,
@@ -579,13 +965,342 @@ struct InitialCgroupChildV5 {
     probes: [PendingRegularFileV1; 3],
 }
 
+/// Retains only the original Nix floor provisioner's fixed cgroup prefix.
+///
+/// All partial native objects stay in the same private capture engine used by
+/// other closed initial roles. This supplies identity DATA, never a service or
+/// resource original, and accepts no caller-selected descendant pathname.
+#[derive(Debug, Default)]
+pub struct NixOfflineInitialCgroupReadbackV5 {
+    original: InitialServiceCgroupCaptureV1,
+}
+
 impl NixOfflineInitialCgroupReadbackV5 {
-    /// Creates fixed empty slots without acquiring or admitting an object.
+    /// Creates empty capture slots without a native observation.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new() -> Self { Self::default() }
+
+    /// Captures the one fixed original floor provisioner and hierarchy root.
+    ///
+    /// # Errors
+    /// Retains the native partial acquisition and returns its original cause.
+    pub fn capture_provisioner(&mut self, root: OwnedFd) -> Result<()> {
+        self.original.capture_initial(root, InitialServiceCgroupV1::NixProvisioner)
     }
 
+    /// Moves only the fully validated pair once without a new observation.
+    #[must_use]
+    pub fn take_validated_pair(&mut self) -> Option<(CgroupV2Root, RetainedCgroupAnchor)> {
+        self.original.take_validated_pair()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum InitialServiceCgroupV1 {
+    NixProvisioner,
+    RuntimeScopeSameRoot,
+    RuntimeBootPreparation,
+    SourceSigner,
+    CacheSigner,
+    MountService,
+    NetworkService,
+    NetworkReceivingAggregate,
+    Ownership,
+    Controller,
+    Storage,
+    StorageReceivingAggregate,
+    StorageAggregateMain,
+    Root,
+    ControllerStartupHost,
+    HostPhase0Target,
+    ControllerStartupMount,
+    ControllerPublisher,
+    StorageManager,
+    StorageControl,
+}
+
+impl InitialServiceCgroupV1 {
+    fn relative(self) -> &'static Path {
+        Path::new(match self {
+            Self::NixProvisioner => "system.slice/aos-sandbox-nix-floor-provision.service",
+            Self::RuntimeScopeSameRoot => ".",
+            Self::RuntimeBootPreparation => "aos.slice/aos-control.slice/aos-sandbox-runtime-publisher.service",
+            Self::StorageManager => "init.scope",
+            Self::StorageControl => "aos.slice/aos-control.slice",
+            Self::SourceSigner => "aoscomponents.slice/aos-sandbox-source-signerd.service",
+            Self::CacheSigner => "aoscomponents.slice/aos-sandbox-cache-signerd.service",
+            Self::MountService => "aoscomponents.slice/aos-sandbox-mountd.service",
+            Self::NetworkService => "aoscomponents.slice/aoscomponents-network.slice/aos-netd.service",
+            Self::NetworkReceivingAggregate => "aoscomponents.slice/aoscomponents-network.slice",
+            Self::Ownership => "aoscomponents.slice/aos-sandbox-ownershipd.service",
+            Self::Controller => "aos.slice/aos-control.slice/aos-sandboxd.service",
+            Self::Storage => StorageCgroupLayoutV1::Ordinary.main_relative_v1(),
+            Self::StorageReceivingAggregate => StorageCgroupLayoutV1::ReceivingAggregate.worker_parent_relative_v1(),
+            Self::StorageAggregateMain => "aos-storaged.service",
+            Self::Root => "system.slice/aos-sandbox-policy-authorityd.service",
+            Self::HostPhase0Target => "system.slice/aos-sandbox-host-phase0-target.service",
+            Self::ControllerStartupHost => "system.slice/aos-sandbox-hostd.service",
+            Self::ControllerStartupMount => "aos.slice/aos-control.slice/aos-sandbox-mountd.service",
+            Self::ControllerPublisher => "aos.slice/aos-control.slice/aos-view-publisher.service",
+        })
+    }
+}
+
+// Fixed running roles retain the root-open Result before entering the same
+// original hierarchy/child/probe engine. They never accept an owned descriptor
+// or caller path; those are identity DATA, never a source of service payment.
+#[derive(Debug, Default)]
+struct FixedRunningServiceCgroupCaptureV1 {
+    original: InitialServiceCgroupCaptureV1,
+    root_open: Option<std::result::Result<OwnedFd, rustix::io::Errno>>,
+    capture: Option<Result<()>>,
+    closed: Option<Error>,
+    entered: bool,
+}
+
+impl FixedRunningServiceCgroupCaptureV1 {
+    fn capture_once(&mut self, role: InitialServiceCgroupV1) -> Result<()> {
+        if self.entered {
+            self.closed.get_or_insert_with(|| Error::invalid(
+                "fixed initial cgroup capture", "already attempted"));
+            return Err(Error::invalid("fixed initial cgroup capture", "original failure retained"));
+        }
+        self.entered = true;
+        self.root_open = Some(rustix::fs::open(
+            "/sys/fs/cgroup",
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        ));
+        let returned = self.root_open.take();
+        match returned {
+            Some(Ok(root)) => {
+                // The owning move goes straight into the existing pending
+                // original before its first directory/filesystem validation.
+                self.capture = Some(self.original.capture_initial(root, role));
+            }
+            returned => { self.root_open = returned; }
+        }
+        if matches!(self.capture, Some(Ok(()))) {
+            Ok(())
+        } else {
+            Err(Error::invalid("fixed initial cgroup capture", "original failure retained"))
+        }
+    }
+
+    fn take_validated_pair(&mut self) -> Option<(CgroupV2Root, RetainedCgroupAnchor)> {
+        if self.closed.is_some() || !matches!(self.capture, Some(Ok(()))) {
+            return None;
+        }
+        self.original.take_validated_pair()
+    }
+
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(Err(cause)) = &self.root_open { return Some(cause); }
+        if let Some(Err(cause)) = &self.capture { return Some(cause); }
+        self.closed.as_ref().map(|cause| cause as &(dyn std::error::Error + 'static))
+    }
+}
+
+macro_rules! fixed_running_initial_cgroup {
+    ($name:ident, $role:ident, $description:literal) => {
+        #[doc = $description]
+        ///
+        /// The fixed hierarchy, child and four active-file probes remain owned
+        /// on failure. At most six FDs are retained. This supplies kernel DATA;
+        /// PID1/service admission, process membership and funding stay external.
+        #[derive(Debug, Default)]
+        pub struct $name {
+            original: FixedRunningServiceCgroupCaptureV1,
+        }
+
+        impl $name {
+            /// Creates empty native slots without observing or opening anything.
+            #[must_use]
+            pub fn new() -> Self {
+                Self::default()
+            }
+
+            /// Opens only the compiled hierarchy and fixed running-service role.
+            ///
+            /// # Errors
+            /// Retains the whole root-open/capture Result and every partial
+            /// object. Reentry performs no native observation or acquisition.
+            pub fn capture_once(&mut self) -> Result<()> {
+                self.original.capture_once(InitialServiceCgroupV1::$role)
+            }
+
+            /// Moves the complete validated root/child pair once without IO.
+            ///
+            /// Failed, repeated, incomplete or previously transferred attempts
+            /// return `None`; no decoded marker constructs kernel objects.
+            #[must_use]
+            pub fn take_validated_pair(&mut self) -> Option<(CgroupV2Root, RetainedCgroupAnchor)> {
+                self.original.take_validated_pair()
+            }
+
+            /// Borrows the original first failure without another observation.
+            #[must_use]
+            pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.original.failure()
+            }
+        }
+    };
+}
+
+fixed_running_initial_cgroup!(
+    StorageRecoveryControlCgroupReadbackV1, StorageControl,
+    "Retains only the compiled ordinary Storage remnant-parent directory."
+);
+
+impl StorageRecoveryControlCgroupReadbackV1 {
+    /// Counts the fixed hierarchy, control-slice components and active names.
+    ///
+    /// The filesystem root and each hierarchy/control path component occur
+    /// once. Two cgroup.procs names cover the root and selected control parent;
+    /// repeated probes and native Result fields add no namespace entries.
+    #[must_use]
+    pub fn receiving_namespace_entries_v1() -> usize {
+        Path::new("/sys/fs/cgroup").components().count()
+            + InitialServiceCgroupV1::StorageControl.relative().components().count()
+            + 2
+    }
+}
+
+fixed_running_initial_cgroup!(
+    RuntimeBootPreparationInitialCgroupReadbackV1, RuntimeBootPreparation,
+    "Retains only the fixed BootPreparation publisher cgroup and native probes."
+);
+
+fixed_running_initial_cgroup!(
+    SourceSignerInitialCgroupReadbackV1, SourceSigner,
+    "Retains the fixed running Source signer hierarchy, child and native probes."
+);
+fixed_running_initial_cgroup!(
+    CacheSignerInitialCgroupReadbackV1, CacheSigner,
+    "Retains the fixed running Cache signer hierarchy, child and native probes."
+);
+fixed_running_initial_cgroup!(
+    MountInitialCgroupReadbackV4, MountService,
+    "Retains the fixed Parent04 Mount hierarchy, child and native probes."
+);
+fixed_running_initial_cgroup!(
+    NetworkInitialCgroupReadbackV4, NetworkService,
+    "Retains the fixed Parent04 Network hierarchy, child and native probes."
+);
+// The main retains its own independently authenticated cgroup identity. This
+// separate fixed capture supplies only the aggregate that must enclose main
+// and both enrolled one-shot helpers under that same receiving original.
+fixed_running_initial_cgroup!(
+    NetworkReceivingAggregateCgroupReadbackV4, NetworkReceivingAggregate,
+    "Retains the fixed Network aggregate hierarchy, directory and active probes."
+);
+
+impl NetworkReceivingAggregateCgroupReadbackV4 {
+    /// Bounds the actual fixed capture layout, pathname backing and native peak.
+    ///
+    /// The six descriptors are the hierarchy and aggregate directories plus
+    /// the same four active probes. Namespace entries name the hierarchy,
+    /// each aggregate path component and the two actual cgroup.procs lookups;
+    /// struct fields are not namespace entries. The hierarchy's root component
+    /// is included, matching the fixed Root reader's namespace convention.
+    /// This DATA supplies no service or worker grant.
+    #[must_use]
+    pub fn receiving_obligations_v4() -> Option<(usize, usize, usize)> {
+        let aggregate = InitialServiceCgroupV1::NetworkReceivingAggregate.relative();
+        let path_bytes = aggregate.as_os_str().as_encoded_bytes().len();
+        let backing = path_bytes.checked_add(1)?.checked_mul(2)?
+            .checked_add(2 * ("/sys/fs/cgroup".len() + 1))?
+            .checked_add(4 * ("cgroup.procs".len() + 1))?;
+        let names = Path::new("/sys/fs/cgroup").components().count()
+            .checked_add(aggregate.components().count())?
+            .checked_add(2)?;
+        Some((std::mem::size_of::<Self>().checked_mul(2)?.checked_add(backing)?, 6, names))
+    }
+}
+
+fixed_running_initial_cgroup!(
+    OwnershipInitialCgroupReadbackV1, Ownership,
+    "Retains the fixed running Ownership hierarchy, child and native probes."
+);
+fixed_running_initial_cgroup!(
+    ControllerInitialCgroupReadbackV1, Controller,
+    "Retains the fixed running Controller hierarchy, child and native probes."
+);
+fixed_running_initial_cgroup!(
+    StorageInitialCgroupReadbackV1, Storage,
+    "Retains the fixed running Storage hierarchy, child and native probes."
+);
+fixed_running_initial_cgroup!(
+    StorageReceivingAggregateCgroupReadbackV1, StorageReceivingAggregate,
+    "Retains the selected Storage aggregate hierarchy, child and native probes."
+);
+fixed_running_initial_cgroup!(
+    RootInitialCgroupReadbackV1, Root,
+    "Retains the fixed running Root hierarchy, child and native probes."
+);
+
+impl RootInitialCgroupReadbackV1 {
+    /// Bounds the fixed Root hierarchy, service path and active-file names.
+    ///
+    /// The hierarchy includes its filesystem root and three named components.
+    /// Each fixed Root role component and the two `cgroup.procs` entries are
+    /// counted once; repeated probes and retained identities add no names.
+    /// This performs no IO and grants no acquisition or namespace authority.
+    #[must_use]
+    pub fn receiving_namespace_entries_v1() -> usize {
+        Path::new("/sys/fs/cgroup").components().count()
+            + InitialServiceCgroupV1::Root.relative().components().count()
+            + 2
+    }
+}
+
+
+fixed_running_initial_cgroup!(
+    HostPhase0TargetCgroupReadbackV2, HostPhase0Target,
+    "Retains only the fixed Host phase-0 target cgroup and native probes."
+);
+
+impl HostPhase0TargetCgroupReadbackV2 {
+    /// Bounds the shared fixed capture, six FDs and actual path/active names.
+    ///
+    /// This passive layout neither selects a loaded unit's cgroup nor grants
+    /// process, service or receiving authority. Repeated probes reuse names.
+    #[must_use]
+    pub fn receiving_obligations_v2() -> Option<(usize, usize, usize)> {
+        let relative = InitialServiceCgroupV1::HostPhase0Target.relative();
+        let backing = relative.as_os_str().as_encoded_bytes().len()
+            .checked_add(1)?.checked_mul(2)?
+            .checked_add(2 * ("/sys/fs/cgroup".len() + 1))?
+            .checked_add(4 * ("cgroup.procs".len() + 1))?;
+        let names = Path::new("/sys/fs/cgroup").components().count()
+            .checked_add(relative.components().count())?.checked_add(2)?;
+        Some((std::mem::size_of::<Self>().checked_mul(2)?.checked_add(backing)?, 6, names))
+    }
+}
+
+
+// Selected Controller startup first compares the actual unique PID1 snapshot
+// ControlGroup with this compiled role. Host's main unit has no Slice override;
+// its inspector's control-slice setting must never select the Host recipe.
+fixed_running_initial_cgroup!(
+    ControllerStartupHostCgroupReadbackV1, ControllerStartupHost,
+    "Retains the selected Controller startup Host cgroup and native probes."
+);
+fixed_running_initial_cgroup!(
+    ControllerStartupMountCgroupReadbackV1, ControllerStartupMount,
+    "Retains the selected Controller startup Mount cgroup and native probes."
+);
+
+// The selected Publisher receiver first joins this exact PID1 ControlGroup
+// with the actual main PID and credential-pinned UID/GID. This facade supplies
+// only retained native DATA through the same shared capture engine.
+fixed_running_initial_cgroup!(
+    ControllerPublisherCgroupReadbackV1, ControllerPublisher,
+    "Retains the selected Controller Publisher cgroup and native probes."
+);
+
+impl InitialServiceCgroupCaptureV1 {
     /// Captures a returned hierarchy duplicate and the one fixed self cgroup.
     ///
     /// The first call parks the candidate before its directory checks. The
@@ -597,7 +1312,7 @@ impl NixOfflineInitialCgroupReadbackV5 {
     /// # Errors
     /// Returns the original directory, cgroup, resolution or kernel error.
     /// Refuses a repeated/interrupted capture without resampling its originals.
-    pub fn capture_provisioner(&mut self, original_root_candidate: OwnedFd) -> Result<()> {
+    fn capture_initial(&mut self, original_root_candidate: OwnedFd, role: InitialServiceCgroupV1) -> Result<()> {
         if self.attempted {
             self.complete = false;
             return Err(Error::invalid("initial cgroup capture", "already attempted"));
@@ -627,7 +1342,7 @@ impl NixOfflineInitialCgroupReadbackV5 {
                 Error::invalid("initial cgroup capture", "hierarchy root is absent")
             })?
             .anchor
-            .resolve_initial_provisioner_retaining(&mut self.child)?;
+            .resolve_initial_service_retaining(&mut self.child, role)?;
 
         self.complete = true;
         Ok(())
@@ -656,6 +1371,7 @@ impl NixOfflineInitialCgroupReadbackV5 {
 #[derive(Debug)]
 pub struct CgroupPopulationMonitor {
     events: File,
+    owner_kernel_id: u64,
 }
 
 /// Retains one fixed Nix runtime cgroup absence or stopped-population observation.
@@ -791,6 +1507,20 @@ pub enum CgroupPopulationState {
 }
 
 impl CgroupPopulationMonitor {
+    /// Compares this retained events original with its actual cgroup anchor.
+    ///
+    /// This passive join neither refreshes names nor proves empty population.
+    /// Both original descriptors remain owned by their existing typed holders.
+    ///
+    /// # Errors
+    /// Refuses a monitor opened from a different retained cgroup lifetime.
+    pub fn require_same_cgroup(&self, anchor: &RetainedCgroupAnchor) -> Result<()> {
+        if self.owner_kernel_id == 0 || self.owner_kernel_id != anchor.kernel_id {
+            return Err(Error::invalid("cgroup population original", "different retained cgroup"));
+        }
+        Ok(())
+    }
+
     /// Reports the population or authenticated retirement of the retained cgroup.
     ///
     /// Linux permits cgroup removal only after the cgroup has no live tasks or
@@ -811,43 +1541,6 @@ impl CgroupPopulationMonitor {
     }
 }
 
-fn read_population_state(events: &File) -> Result<CgroupPopulationState> {
-        let mut bytes = [0_u8; 4097];
-        let length = match events.read_at(&mut bytes, 0) {
-            Ok(length) => length,
-            Err(source) if source.raw_os_error() == Some(libc::ENODEV) => {
-                return Ok(CgroupPopulationState::Retired);
-            }
-            Err(source) => {
-                return Err(Error::Syscall {
-                    operation: "read cgroup.events",
-                    source,
-                });
-            }
-        };
-        if length == 0 || length == bytes.len() {
-            return Err(Error::MalformedKernelResponse {
-                object: "cgroup.events",
-                message: "population record is empty or oversized".to_owned(),
-            });
-        }
-        let text =
-            std::str::from_utf8(&bytes[..length]).map_err(|_| Error::MalformedKernelResponse {
-                object: "cgroup.events",
-                message: "population record is not UTF-8".to_owned(),
-            })?;
-        match text
-            .lines()
-            .find_map(|line| line.strip_prefix("populated "))
-        {
-            Some("0") => Ok(CgroupPopulationState::Empty),
-            Some("1") => Ok(CgroupPopulationState::Populated),
-            _ => Err(Error::MalformedKernelResponse {
-                object: "cgroup.events",
-                message: "population field is absent or invalid".to_owned(),
-            }),
-        }
-}
 
 macro_rules! active_reference_step {
     (Local, $anchor:ident, $pending:ident) => {
@@ -935,86 +1628,130 @@ macro_rules! resolve_child_recipe {
     }};
 }
 
-impl RetainedCgroupAnchor {
-    /// Resolves and retains one proper descendant cgroup beneath this anchor.
-    ///
-    /// The relative path is only a locator. Strict `openat2` resolution and
-    /// the returned descriptor establish the exact cgroup identity; callers
-    /// must separately authenticate any process claimed to belong to it.
-    ///
-    /// # Errors
-    ///
-    /// Rejects oversized, empty or dot-only hints, invalid/traversing paths,
-    /// failed strict resolution, a stale anchor or target, and kernel errors.
-    pub fn resolve_descendant(&self, relative_hint: &Path) -> Result<Self> {
-        if relative_hint.as_os_str().len() > MAXIMUM_DESCENDANT_HINT_BYTES
-            || !relative_hint
-                .components()
-                .any(|part| matches!(part, Component::Normal(_)))
-        {
-            return Err(Error::invalid(
-                "descendant cgroup hint",
-                "must name a proper descendant within the 4096-byte limit",
-            ));
+macro_rules! population_monitor_step {
+    (Local, active, $anchor:ident, $probe:ident) => {
+        $anchor.validate_active()?;
+    };
+    (Retained, active, $anchor:ident, $probe:ident) => {
+        $anchor.validate_active_retaining($probe)?;
+    };
+    (Local, events, $anchor:ident, $pending:ident, $events:ident) => {
+        let opened = $anchor.root.open_regular(Path::new("cgroup.events"))?;
+        let $events = File::from(opened.into_owned_fd());
+    };
+    (Retained, events, $anchor:ident, $pending:ident, $events:ident) => {
+        $anchor.root.open_regular_retaining(Path::new("cgroup.events"), $pending)?;
+        let Some($events) = $pending.take_readable_file() else { std::process::abort() };
+    };
+}
+
+macro_rules! population_monitor_recipe {
+    ($anchor:ident, $disposition:ident, $probe:ident, $pending:ident) => {{
+        population_monitor_step!($disposition, active, $anchor, $probe);
+        population_monitor_step!($disposition, events, $anchor, $pending, events);
+        Ok(CgroupPopulationMonitor { events, owner_kernel_id: $anchor.kernel_id })
+    }};
+}
+
+// Both dispositions keep the exact active/open/read/length/parse order. Only
+// the destination of each actual descriptor, bytes and returned error differs.
+macro_rules! freezer_step {
+    (Local, active, $anchor:ident, $original:ident) => { $anchor.validate_active()?; };
+    (Retained, active, $anchor:ident, $original:ident) => {
+        $original.active = Some($anchor.validate_active_retaining(&mut $original.probe));
+        if !matches!($original.active, Some(Ok(()))) { return Err(retained_native::closed()); }
+    };
+    (Local, open, $anchor:ident, $original:ident, $events:ident) => {
+        let $events = $anchor.root.open_regular(Path::new("cgroup.events"))?;
+    };
+    (Retained, open, $anchor:ident, $original:ident, $events:ident) => {
+        $original.opened = Some($anchor.root.open_regular_retaining(Path::new("cgroup.events"), &mut $original.events));
+        if !matches!($original.opened, Some(Ok(()))) { return Err(retained_native::closed()); }
+        $original.file = $original.events.take_readable_file();
+    };
+    (Local, buffer, $original:ident, $bytes:ident) => { let mut $bytes = [0_u8; 4097]; };
+    (Retained, buffer, $original:ident, $bytes:ident) => {};
+    (Local, limit, $original:ident, $bytes:ident) => { $bytes.len() };
+    (Retained, limit, $original:ident, $bytes:ident) => { $original.bytes.len() };
+    (Local, read, $original:ident, $events:ident, $bytes:ident) => {
+        File::from($events.into_owned_fd()).read_at(&mut $bytes, 0)
+            .map_err(|source| Error::Syscall { operation: "read cgroup.events", source })?
+    };
+    (Retained, read, $original:ident, $events:ident, $bytes:ident) => {{
+        $original.read = Some($original.file.as_ref().ok_or_else(retained_native::closed)?
+            .read_at(&mut $original.bytes, 0));
+        match $original.read.as_ref() {
+            Some(Ok(length)) => *length,
+            _ => return Err(retained_native::closed()),
         }
-        self.resolve_child(relative_hint)
-    }
+    }};
+    (Local, bytes, $original:ident, $bytes:ident, $length:ident) => { &$bytes[..$length] };
+    (Retained, bytes, $original:ident, $bytes:ident, $length:ident) => { &$original.bytes[..$length] };
+}
 
-    /// Opens a repeatable population monitor for this exact cgroup.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the retained cgroup is stale or its kernel events
-    /// file cannot be securely opened.
-    pub fn population_monitor(&self) -> Result<CgroupPopulationMonitor> {
-        self.validate_active()?;
-        let events = self.root.open_regular(Path::new("cgroup.events"))?;
-        Ok(CgroupPopulationMonitor {
-            events: File::from(events.into_owned_fd()),
-        })
-    }
-
-    /// Reads the kernel-confirmed freezer state of this exact cgroup.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the retained cgroup is stale, its bounded
-    /// `cgroup.events` record cannot be read, or the record omits a canonical
-    /// `frozen` field.
-    pub fn freezer_state(&self) -> Result<CgroupFreezerState> {
-        self.validate_active()?;
-        let events = self.root.open_regular(Path::new("cgroup.events"))?;
-        let mut bytes = [0_u8; 4097];
-        let length = File::from(events.into_owned_fd())
-            .read_at(&mut bytes, 0)
-            .map_err(|source| Error::Syscall {
-                operation: "read cgroup.events",
-                source,
-            })?;
-        if length == 0 || length == bytes.len() {
+macro_rules! freezer_recipe {
+    ($anchor:ident, $mode:ident, $original:ident) => {{
+        freezer_step!($mode, active, $anchor, $original);
+        freezer_step!($mode, open, $anchor, $original, events);
+        freezer_step!($mode, buffer, $original, bytes);
+        let length = freezer_step!($mode, read, $original, events, bytes);
+        if length == 0 || length == freezer_step!($mode, limit, $original, bytes) {
             return Err(Error::MalformedKernelResponse {
                 object: "cgroup.events",
                 message: "freezer record is empty or oversized".to_owned(),
             });
         }
-        parse_freezer_state(&bytes[..length])
-    }
+        parse_freezer_state(freezer_step!($mode, bytes, $original, bytes, length))
+    }};
+}
 
-    /// Requests a freezer transition for this exact cgroup subtree.
-    ///
-    /// Completion of the write does not prove that every task has reached the
-    /// requested state. Callers must observe [`Self::freezer_state`] until it
-    /// reports the requested value before treating the transition as complete.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the retained cgroup is stale, the freezer control
-    /// file is not an exact regular cgroup-v2 file, permission is denied, or
-    /// the kernel does not accept the complete control record.
-    pub fn request_freezer_state(&self, state: CgroupFreezerState) -> Result<()> {
-        self.validate_active()?;
-        let freezer = rustix::fs::openat(
-            self.root.as_fd(),
+// The consuming arm keeps the old control descriptor's lexical lifetime.
+// The retained arm parks the same open before its first validation or write.
+macro_rules! freezer_request_step {
+    (Local, active, $anchor:ident, $original:ident) => { $anchor.validate_active()? };
+    (Retained, active, $anchor:ident, $original:ident) => {{
+        $original.active = Some($anchor.validate_active_retaining(&mut $original.probe));
+        if !matches!($original.active, Some(Ok(()))) {
+            return Err(freezer_request::closed());
+        }
+    }};
+    (Local, open, $original:ident, $expression:expr) => { $expression? };
+    (Retained, open, $original:ident, $expression:expr) => {{
+        $original.opened = Some($expression);
+        match $original.opened.as_ref() {
+            Some(Ok(file)) => file,
+            _ => return Err(freezer_request::closed()),
+        }
+    }};
+    (Local, native, $original:ident, $field:ident, $expression:expr) => { $expression? };
+    (Retained, native, $original:ident, $field:ident, $expression:expr) => {{
+        $original.$field = Some($expression);
+        match $original.$field.as_ref() {
+            Some(Ok(value)) => *value,
+            _ => return Err(freezer_request::closed()),
+        }
+    }};
+    (Local, write, $original:ident, $gate:ident, $expression:expr) => { $expression };
+    (Retained, write, $original:ident, $gate:ident, $expression:expr) => {{
+        freezer_request::FreezerRequestOriginalV2::require_write_once_v2(
+            &mut $original.write_attempts, &mut $original.write_gate, &mut $gate,
+        )?;
+        // EINTR remains the original retry. It creates no new descriptor or
+        // owning buffer; the terminal result and actual control stay held.
+        $original.write = Some($expression);
+        match $original.write.as_ref() {
+            Some(Ok(written)) => Ok(*written),
+            Some(Err(error)) => Err(*error),
+            None => return Err(freezer_request::closed()),
+        }
+    }};
+}
+
+macro_rules! freezer_request_recipe {
+    ($anchor:ident, $state:ident, $mode:ident, $original:ident, $gate:ident) => {{
+        freezer_request_step!($mode, active, $anchor, $original);
+        let freezer = freezer_request_step!($mode, open, $original, rustix::fs::openat(
+            $anchor.root.as_fd(),
             Path::new("cgroup.freeze"),
             rustix::fs::OFlags::WRONLY
                 | rustix::fs::OFlags::CLOEXEC
@@ -1025,20 +1762,20 @@ impl RetainedCgroupAnchor {
         .map_err(|source| Error::Syscall {
             operation: "open cgroup.freeze",
             source: source.into(),
-        })?;
-        if uapi::filesystem_type(freezer.as_fd())? != CGROUP2_SUPER_MAGIC
-            || uapi::fstat(freezer.as_fd())?.st_mode & libc::S_IFMT != libc::S_IFREG
+        }));
+        if freezer_request_step!($mode, native, $original, filesystem, uapi::filesystem_type(freezer.as_fd())) != CGROUP2_SUPER_MAGIC
+            || freezer_request_step!($mode, native, $original, metadata, uapi::fstat(freezer.as_fd())).st_mode & libc::S_IFMT != libc::S_IFREG
         {
             return Err(Error::WrongDescriptorType {
                 expected: "cgroup-v2 freezer control",
             });
         }
-        let mut remaining: &[u8] = match state {
+        let mut remaining: &[u8] = match $state {
             CgroupFreezerState::Thawed => b"0\n",
             CgroupFreezerState::Frozen => b"1\n",
         };
         while !remaining.is_empty() {
-            match rustix::io::write(&freezer, remaining) {
+            match freezer_request_step!($mode, write, $original, $gate, rustix::io::write(&freezer, remaining)) {
                 Ok(0) => {
                     return Err(Error::MalformedKernelResponse {
                         object: "cgroup.freeze",
@@ -1056,6 +1793,65 @@ impl RetainedCgroupAnchor {
             }
         }
         Ok(())
+    }};
+}
+
+mod freezer_request;
+pub use freezer_request::FreezerRequestOriginalV2;
+
+mod retained_native;
+pub use retained_native::{CgroupRootOriginalV2, CgroupChildOriginalV2, FreezerReadOriginalV2};
+
+impl RetainedCgroupAnchor {
+    /// Resolves and retains one proper descendant cgroup beneath this anchor.
+    ///
+    /// The relative path is only a locator. Strict `openat2` resolution and
+    /// the returned descriptor establish the exact cgroup identity; callers
+    /// must separately authenticate any process claimed to belong to it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects oversized, empty or dot-only hints, invalid/traversing paths,
+    /// failed strict resolution, a stale anchor or target, and kernel errors.
+    pub fn resolve_descendant(&self, relative_hint: &Path) -> Result<Self> {
+        validate_descendant_hint(relative_hint)?;
+        self.resolve_child(relative_hint)
+    }
+
+    /// Opens a repeatable population monitor for this exact cgroup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the retained cgroup is stale or its kernel events
+    /// file cannot be securely opened.
+    pub fn population_monitor(&self) -> Result<CgroupPopulationMonitor> {
+        population_monitor_recipe!(self, Local, unused, unused)
+    }
+
+    /// Reads the kernel-confirmed freezer state of this exact cgroup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained cgroup is stale, its bounded
+    /// `cgroup.events` record cannot be read, or the record omits a canonical
+    /// `frozen` field.
+    pub fn freezer_state(&self) -> Result<CgroupFreezerState> {
+        freezer_recipe!(self, Local, unused)
+    }
+
+    /// Requests a freezer transition for this exact cgroup subtree.
+    ///
+    /// Completion of the write does not prove that every task has reached the
+    /// requested state. Callers must observe [`Self::freezer_state`] until it
+    /// reports the requested value before treating the transition as complete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained cgroup is stale, the freezer control
+    /// file is not an exact regular cgroup-v2 file, permission is denied, or
+    /// the kernel does not accept the complete control record.
+    pub fn request_freezer_state(&self, state: CgroupFreezerState) -> Result<()> {
+        freezer_request_recipe!(self, state, Local, unused, unused)
     }
 
     /// Sends `SIGKILL` to every task in this exact cgroup and its descendants.
@@ -1094,54 +1890,11 @@ impl RetainedCgroupAnchor {
         E: From<Error>,
     {
         let kill = self.open_kill_control().map_err(E::from)?;
-        let mut remaining: &[u8] = b"1\n";
-        while !remaining.is_empty() {
-            current()?;
-            match rustix::io::write(&kill, remaining) {
-                Ok(0) => {
-                    return Err(Error::MalformedKernelResponse {
-                        object: "cgroup.kill",
-                        message: "kernel accepted an incomplete kill record".to_owned(),
-                    }
-                    .into());
-                }
-                Ok(written) => remaining = &remaining[written..],
-                Err(rustix::io::Errno::INTR) => continue,
-                Err(source) => {
-                    return Err(Error::Syscall {
-                        operation: "write cgroup.kill",
-                        source: source.into(),
-                    }
-                    .into());
-                }
-            }
-        }
-        Ok(())
+        kill_attempt::write_control(&kill, &mut current, &mut kill_attempt::LocalWrite)
     }
 
     fn open_kill_control(&self) -> Result<OwnedFd> {
-        self.validate_active()?;
-        let kill = rustix::fs::openat(
-            self.root.as_fd(),
-            Path::new("cgroup.kill"),
-            rustix::fs::OFlags::WRONLY
-                | rustix::fs::OFlags::CLOEXEC
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::NONBLOCK,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|source| Error::Syscall {
-            operation: "open cgroup.kill",
-            source: source.into(),
-        })?;
-        if uapi::filesystem_type(kill.as_fd())? != CGROUP2_SUPER_MAGIC
-            || uapi::fstat(kill.as_fd())?.st_mode & libc::S_IFMT != libc::S_IFREG
-        {
-            return Err(Error::WrongDescriptorType {
-                expected: "cgroup-v2 kill control",
-            });
-        }
-        Ok(kill)
+        kill_attempt::open_local(self)
     }
 
     /// Reobserves the retained cgroup's filesystem identity and active kernfs file.
@@ -1195,16 +1948,7 @@ impl RetainedCgroupAnchor {
     /// Rejects an inaccessible/deactivated anchor, omitted cgroup information,
     /// different exact membership, process exit, or any kernel failure.
     pub fn verify_exact_membership(&self, process: &PidFd) -> Result<PidFdInfo> {
-        self.validate_active()?;
-        let info = process.info()?;
-        if info.cgroup_id() != Some(self.kernel_id) {
-            return Err(Error::invalid(
-                "exact cgroup membership",
-                "pidfd does not name this cgroup",
-            ));
-        }
-        self.validate_active()?;
-        recheck_process(process, info)
+        membership_readback::observe_exact(self, process, &mut membership_readback::LocalMembership)
     }
 
     /// Observes membership in a strictly resolved proper descendant cgroup.
@@ -1241,11 +1985,29 @@ impl RetainedCgroupAnchor {
         resolve_child_recipe!(self, relative, Local, unused)
     }
 
-    fn resolve_initial_provisioner_retaining(
+    fn population_monitor_retaining(
         &self,
+        probe: &mut PendingRegularFileV1,
+        pending: &mut PendingRegularFileV1,
+    ) -> Result<CgroupPopulationMonitor> {
+        population_monitor_recipe!(self, Retained, probe, pending)
+    }
+
+    fn resolve_worker_descendant_retaining(
+        &self,
+        relative: &Path,
         pending: &mut InitialCgroupChildV5,
     ) -> Result<()> {
-        let relative = Path::new("system.slice/aos-sandbox-nix-floor-provision.service");
+        validate_descendant_hint(relative)?;
+        resolve_child_recipe!(self, relative, Retained, pending)
+    }
+
+    fn resolve_initial_service_retaining(
+        &self,
+        pending: &mut InitialCgroupChildV5,
+        role: InitialServiceCgroupV1,
+    ) -> Result<()> {
+        let relative = role.relative();
         resolve_child_recipe!(self, relative, Retained, pending)
     }
 
@@ -1291,23 +2053,7 @@ fn parse_freezer_state(bytes: &[u8]) -> Result<CgroupFreezerState> {
 }
 
 fn recheck_process(process: &PidFd, before: PidFdInfo) -> Result<PidFdInfo> {
-    let after = process.info()?;
-    if after.pid() != before.pid()
-        || after.thread_group_id() != before.thread_group_id()
-        || after.cgroup_id() != before.cgroup_id()
-    {
-        return Err(Error::invalid(
-            "cgroup membership observation",
-            "process identity or membership changed during observation",
-        ));
-    }
-    if !process.is_alive()? {
-        return Err(Error::invalid(
-            "cgroup membership observation",
-            "pinned process exited",
-        ));
-    }
-    Ok(after)
+    membership_readback::recheck_process(process, before, &mut membership_readback::LocalMembership)
 }
 
 #[cfg(test)]
@@ -1359,34 +2105,60 @@ mod initial_cgroup_phase_tests {
         let mut original = NixOfflineInitialCgroupReadbackV5::new();
 
         assert!(original.take_validated_pair().is_none());
-        assert!(!original.attempted);
-        assert!(!original.complete);
+        assert!(!original.original.attempted);
+        assert!(!original.original.complete);
     }
 
     #[test]
     fn interrupted_initial_cgroup_remains_closed() {
-        let mut original = NixOfflineInitialCgroupReadbackV5 {
-            attempted: true,
-            ..NixOfflineInitialCgroupReadbackV5::default()
-        };
+        let mut original = NixOfflineInitialCgroupReadbackV5::default();
+        original.original.attempted = true;
 
         assert!(original.take_validated_pair().is_none());
-        assert!(original.attempted);
-        assert!(!original.complete);
+        assert!(original.original.attempted);
+        assert!(!original.original.complete);
     }
 
     #[test]
     fn completion_marker_alone_cannot_transfer_kernel_objects() {
-        let mut original = NixOfflineInitialCgroupReadbackV5 {
-            attempted: true,
-            complete: true,
-            ..NixOfflineInitialCgroupReadbackV5::default()
-        };
+        let mut original = NixOfflineInitialCgroupReadbackV5::default();
+        original.original.attempted = true;
+        original.original.complete = true;
 
         assert!(original.take_validated_pair().is_none());
-        assert!(original.root.is_none());
-        assert!(original.child.anchor.is_none());
+        assert!(original.original.root.is_none());
+        assert!(original.original.child.anchor.is_none());
     }
+
+    #[test]
+    fn failed_fixed_root_validation_retains_original_directory_through_reentry() {
+        use std::os::unix::fs::MetadataExt as _;
+        use super::{InitialServiceCgroupCaptureV1, InitialServiceCgroupV1};
+
+        let first = tempfile::tempdir().unwrap();
+        let replacement = tempfile::tempdir().unwrap();
+        let identity = first.path().metadata().unwrap();
+        let mut original = InitialServiceCgroupCaptureV1::default();
+        let cause = original.capture_initial(
+            std::fs::File::open(first.path()).unwrap().into(),
+            InitialServiceCgroupV1::Controller,
+        );
+
+        assert!(matches!(cause, Err(crate::Error::WrongDescriptorType { .. })));
+        assert!(original.take_validated_pair().is_none());
+        let retained = original.hierarchy_candidate.as_ref().unwrap();
+        let stat = rustix::fs::fstat(retained.as_fd()).unwrap();
+        assert_eq!((stat.st_dev, stat.st_ino), (identity.dev(), identity.ino()));
+
+        assert!(original.capture_initial(
+            std::fs::File::open(replacement.path()).unwrap().into(),
+            InitialServiceCgroupV1::Storage,
+        ).is_err());
+        let retained = original.hierarchy_candidate.as_ref().unwrap();
+        let stat = rustix::fs::fstat(retained.as_fd()).unwrap();
+        assert_eq!((stat.st_dev, stat.st_ino), (identity.dev(), identity.ino()));
+    }
+
 }
 
 #[cfg(test)]
@@ -1677,5 +2449,126 @@ mod tests {
             Some(libc::EBUSY),
             "{context}: {error}"
         );
+    }
+}
+
+#[cfg(test)]
+mod positive_named_settlement_tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_and_failed_native_readers_cannot_settle_partial_owners() {
+        let mut controls = CgroupLimitReadbackV1::default();
+        assert!(controls.settle_positive_named_verifications_v1().is_err());
+        controls.phase = LimitReadbackPhaseV1::Checking;
+        assert!(controls.settle_positive_named_verifications_v1().is_err());
+        controls.failure = Some(Error::invalid("actual read", "retained failure"));
+        let original = controls.failure().unwrap() as *const Error;
+        assert!(controls.settle_positive_named_verifications_v1().is_err());
+        assert_eq!(controls.failure().unwrap() as *const Error, original);
+
+        let mut cpu = FirstGlobalCpuReadbackV1::default();
+        assert!(cpu.settle_positive_named_verifications_v1().is_err());
+        cpu.failure = Some(Error::invalid("actual CPU read", "retained failure"));
+        let original = cpu.failure().unwrap() as *const Error;
+        assert!(cpu.settle_positive_named_verifications_v1().is_err());
+        assert_eq!(cpu.failure().unwrap() as *const Error, original);
+    }
+}
+
+fn validate_descendant_hint(relative_hint: &Path) -> Result<()> {
+    if relative_hint.as_os_str().len() > MAXIMUM_DESCENDANT_HINT_BYTES
+        || !relative_hint.components().any(|part| matches!(part, Component::Normal(_)))
+    {
+        return Err(Error::invalid(
+            "descendant cgroup hint",
+            "must name a proper descendant within the 4096-byte limit",
+        ));
+    }
+    Ok(())
+}
+
+mod worker_opening;
+pub use worker_opening::{WorkerCgroupOpeningRefusalV1, WorkerCgroupOpeningV1};
+
+mod population_monitor;
+pub use population_monitor::CgroupPopulationMonitorOriginalV3;
+
+mod worker_aggregate;
+pub use worker_aggregate::StorageWorkerAggregateReadbackV1;
+
+mod storage_layout;
+pub use storage_layout::StorageCgroupLayoutV1;
+
+mod kill_attempt;
+pub use kill_attempt::{CgroupKillAttemptV1, CgroupKillRefusalV1};
+
+#[cfg(test)]
+mod retained_limit_active_tests {
+    use super::*;
+
+    #[test]
+    fn complete_initial_boundary_probes_retire_before_the_next_native_interval() {
+        let descriptor = rustix::fs::open("/sys/fs/cgroup",
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty()).unwrap();
+        let root = CgroupV2Root::from_owned(descriptor).unwrap();
+        let mut reader = CgroupLimitReadbackV1::default();
+        // Like the existing boundary test, this isolates actual active probes
+        // from the host kernel's independently closed controller grammar.
+        reader.retain_active = true;
+        reader.validate_boundary_active(&root.anchor, 0).unwrap();
+        reader.validate_boundary_active(&root.anchor, 1).unwrap();
+        reader.phase = LimitReadbackPhaseV1::Ready;
+        let identities = [reader.active_probes[0].file().unwrap().identity(),
+            reader.active_probes[1].file().unwrap().identity()];
+
+        reader.retire_initial_active_files_once_v4().unwrap();
+
+        assert_eq!(reader.initial_active_disposed, Some(identities));
+        assert!(reader.active_probes[..2].iter().all(|probe| probe.file().is_err()));
+        assert!(uapi::fstat(root.anchor.as_fd()).is_ok());
+        assert!(reader.retire_initial_active_files_once_v4().is_err());
+        assert!(reader.final_active_disposed.is_none());
+        let mut fresh = CgroupLimitReadbackV1::default();
+        assert!(fresh.recheck_after_initial_disposal_v4(&root.anchor).is_err());
+        assert!(fresh.active_probes.iter().all(|probe| probe.file().is_err()));
+    }
+
+    #[test]
+    fn failed_final_anchor_keeps_actual_completed_initial_active_probes() {
+        let descriptor = rustix::fs::open("/sys/fs/cgroup",
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty()).unwrap();
+        let root = CgroupV2Root::from_owned(descriptor).unwrap();
+        let mut reader = CgroupLimitReadbackV1::default();
+        // This test isolates the boundary probes from the host's controller
+        // vocabulary. A newer kernel may advertise controllers outside this
+        // reader's closed control grammar before the final-anchor frontier.
+        reader.retain_active = true;
+        reader.validate_boundary_active(&root.anchor, 0).unwrap();
+        reader.validate_boundary_active(&root.anchor, 1).unwrap();
+        reader.phase = LimitReadbackPhaseV1::Ready;
+        assert!(reader.active_probes[..2].iter().all(|probe| probe.file().is_ok()));
+
+        let directory = tempfile::tempdir().unwrap();
+        let descriptor = rustix::fs::open(directory.path(),
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty()).unwrap();
+        let ordinary = BeneathRoot::from_owned(descriptor).unwrap();
+        let invalid = RetainedCgroupAnchor { kernel_id: ordinary.identity().inode, root: ordinary };
+        assert!(reader.recheck(&invalid).is_err());
+        let first = reader.failure().unwrap() as *const Error;
+
+        assert!(reader.settle_positive_named_verifications_v1().is_err());
+        assert!(!reader.completed_files_are_disposable_v4());
+        assert!(reader.retire_completed_files_once_v4().is_err());
+        assert!(!reader.native_files_are_disposed_v4());
+        assert_eq!(reader.failure().unwrap() as *const Error, first);
+        assert!(reader.active_probes[..2].iter().all(|probe|
+            probe.file().is_ok_and(|file| uapi::fstat(file.as_fd()).is_ok())));
+        assert!(reader.recheck(&root.anchor).is_err());
+        assert_eq!(reader.failure().unwrap() as *const Error, first);
     }
 }

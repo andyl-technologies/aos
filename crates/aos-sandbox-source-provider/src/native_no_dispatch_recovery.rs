@@ -4,7 +4,7 @@
 //! descriptor-free recovery observation. It cannot be reused for a future
 //! positive Storage or SourceRoot path.
 
-use aos_sandbox::ProtectedJournalSnapshot;
+use aos_sandbox_source::provider_journal::ProtectedJournalSnapshot;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     ACQUIRE_SOURCE_REQUEST_VERSION_V2, ACQUIRE_SOURCE_REQUEST_VERSION_V3,

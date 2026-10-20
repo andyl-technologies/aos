@@ -796,15 +796,15 @@ pub(in crate::local_inventory::store_authority) fn protected_snapshot_inbox_jour
 -> JournalLimits {
     JournalLimits {
         maximum_journal_bytes: 64 * 1024 * 1024,
-        maximum_record_bytes:
-            crate::local_inventory::assignment::MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES + 4 * 1024,
+        maximum_record_bytes: aos_sandbox_core::MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES
+            + 4 * 1024,
         maximum_key_bytes: 256,
         maximum_records_per_transaction: 1,
-        maximum_transaction_bytes:
-            crate::local_inventory::assignment::MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES + 8 * 1024,
+        maximum_transaction_bytes: aos_sandbox_core::MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES
+            + 8 * 1024,
         maximum_transactions: 1,
-        maximum_materialized_bytes:
-            crate::local_inventory::assignment::MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES + 4 * 1024,
+        maximum_materialized_bytes: aos_sandbox_core::MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES
+            + 4 * 1024,
         maximum_materialized_records: 1,
     }
 }
@@ -995,7 +995,7 @@ pub(in crate::local_inventory::store_authority) fn protected_snapshot_publicatio
 }
 
 pub(in crate::local_inventory::store_authority) fn protected_snapshot_restore_scope(
-    identity: crate::local_inventory::assignment::SnapshotTransferIdentityV1,
+    identity: aos_sandbox_core::SnapshotTransferIdentityV1,
     publication_digest: ObjectDigest,
 ) -> Result<RestoreScopeId, InvalidSnapshotTransfer> {
     let digest: [u8; 32] = Sha256::new()
@@ -1013,7 +1013,7 @@ pub(in crate::local_inventory::store_authority) fn protected_snapshot_restore_sc
 }
 
 pub(in crate::local_inventory::store_authority) fn protected_snapshot_restore_authorization_digest(
-    identity: crate::local_inventory::assignment::SnapshotTransferIdentityV1,
+    identity: aos_sandbox_core::SnapshotTransferIdentityV1,
     restore_scope: RestoreScopeId,
     publication: DurablePublicationProjectionV1,
     context: AuthenticatedEvidenceContextV1,
@@ -1293,34 +1293,6 @@ impl ProtectedSnapshotDestinationAuthorityOwnerV1 {
         })
     }
 
-    /// Builds the exact begin-or-resume request from destination durability.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] unless source and destination
-    /// owners retain one manifest and the source session is current.
-    pub fn prepare_snapshot_resume_request(
-        &mut self,
-        source: &mut ProtectedMultiNodeAuthorityOwnerV1,
-        session: &AuthenticatedNodeSessionV1,
-    ) -> Result<ProtectedOutboundNodeRequestV1, ProtectedMultiNodeUpdateErrorV1> {
-        let destination = self.inner.current_snapshot_projection()?;
-        let admitted = source.issue_current_snapshot_source_admission()?;
-        if admitted.manifest != *destination.manifest() {
-            return Err(InvalidSnapshotTransfer::RestoreAdmissionMismatch.into());
-        }
-        source
-            .prepare_outbound_request(
-                session,
-                NodeRequestBodyV1::BeginSnapshotTransfer {
-                    manifest: Box::new(destination.manifest().clone()),
-                    resume: Some(destination.resume()),
-                },
-                b"snapshot-destination-resume",
-            )
-            .map_err(Into::into)
-    }
-
     /// Verifies source acknowledgement of the destination's durable boundary.
     ///
     /// # Errors
@@ -1351,35 +1323,6 @@ impl ProtectedSnapshotDestinationAuthorityOwnerV1 {
             identity: *identity,
             resume: destination.resume(),
         })
-    }
-
-    /// Builds the next exact source request from destination replay.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] unless both owners retain the
-    /// same manifest and the source session is current for its protected role.
-    pub fn prepare_next_snapshot_chunk_request(
-        &mut self,
-        source: &mut ProtectedMultiNodeAuthorityOwnerV1,
-        session: &AuthenticatedNodeSessionV1,
-    ) -> Result<ProtectedOutboundNodeRequestV1, ProtectedMultiNodeUpdateErrorV1> {
-        let destination = self.inner.current_snapshot_projection()?;
-        let admitted = source.issue_current_snapshot_source_admission()?;
-        if admitted.manifest != *destination.manifest() {
-            return Err(InvalidSnapshotTransfer::RestoreAdmissionMismatch.into());
-        }
-        let request = SnapshotTransferChunkRequestV1::new(
-            destination.manifest(),
-            destination.resume().next_chunk(),
-        )?;
-        source
-            .prepare_outbound_request(
-                session,
-                NodeRequestBodyV1::FetchSnapshotChunk { request },
-                b"snapshot-destination-chunk",
-            )
-            .map_err(Into::into)
     }
 
     /// Commits source-authenticated bytes into destination-only storage.
@@ -1430,55 +1373,6 @@ impl ProtectedSnapshotDestinationAuthorityOwnerV1 {
                 ),
             ),
         }
-    }
-
-    /// Builds the next exact dependency request from destination replay.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] unless chunks are complete,
-    /// one dependency range remains, and both fixed owners retain one identity.
-    pub fn prepare_next_snapshot_dependency_request(
-        &mut self,
-        source: &mut ProtectedMultiNodeAuthorityOwnerV1,
-        session: &AuthenticatedNodeSessionV1,
-    ) -> Result<ProtectedOutboundNodeRequestV1, ProtectedMultiNodeUpdateErrorV1> {
-        let destination = self.inner.current_snapshot_projection()?;
-        let admitted = source.issue_current_snapshot_source_admission()?;
-        if admitted.manifest != *destination.manifest()
-            || destination.resume().next_chunk() as usize != destination.manifest().chunks().len()
-        {
-            return Err(InvalidSnapshotTransfer::RestoreAdmissionMismatch.into());
-        }
-        let (dependency_index, projection) = destination
-            .dependencies()
-            .iter()
-            .enumerate()
-            .find(|(_, dependency)| dependency.next_offset < dependency.descriptor.encoded_size())
-            .ok_or(InvalidSnapshotTransfer::DependenciesNotCanonical)?;
-        let remaining = projection
-            .descriptor
-            .encoded_size()
-            .checked_sub(projection.next_offset)
-            .ok_or(InvalidSnapshotTransfer::DependenciesNotCanonical)?;
-        let length = u32::try_from(remaining.min(u64::from(
-            crate::local_inventory::assignment::MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES,
-        )))
-        .map_err(|_| InvalidSnapshotTransfer::DependenciesNotCanonical)?;
-        let request = SnapshotDependencyRangeV1::new(
-            destination.manifest(),
-            u32::try_from(dependency_index)
-                .map_err(|_| InvalidSnapshotTransfer::DependenciesNotCanonical)?,
-            projection.next_offset,
-            length,
-        )?;
-        source
-            .prepare_outbound_request(
-                session,
-                NodeRequestBodyV1::FetchSnapshotDependency { request },
-                b"snapshot-destination-dependency",
-            )
-            .map_err(Into::into)
     }
 
     /// Commits a source-authenticated dependency range into destination storage.
@@ -1810,10 +1704,11 @@ impl ProtectedSnapshotDestinationAuthorityOwnerV1 {
             || assignment.intent().desired_generation() != identity.desired_generation()
             || assignment.intent().assignment_digest() != identity.assignment_digest()
             || assignment.intent().node() != identity.destination_node()
-            || !assignment
-                .intent()
-                .selected_capability_binding()
-                .matches_current(admission.destination_capability(), destination_time)
+            || !crate::local_inventory::assignment::selected_capability_matches_current_v1(
+                assignment.intent().selected_capability_binding(),
+                admission.destination_capability(),
+                destination_time,
+            )
         {
             return Err(InvalidSnapshotTransfer::RestoreAdmissionMismatch.into());
         }

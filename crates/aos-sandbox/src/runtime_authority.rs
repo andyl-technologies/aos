@@ -17,13 +17,10 @@
 //! use must also establish current cryptographic authority and a fresh Host
 //! payload-scope observation.
 
-use std::collections::BTreeMap;
-
 use aos_sandbox_core::{NodeId, ObjectDigest, OperationId, SandboxId};
 
 use crate::publication::{
-    AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1, current_in_validated_namespace,
-    validate_publication_namespace,
+    AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1,
 };
 use crate::{Journal, JournalError, JournalRecord, RecordNamespace};
 
@@ -51,27 +48,11 @@ pub use model::{
     RuntimeAuthorityStateV1,
 };
 
-const PENDING_PREFIX: &[u8] = b"pending/";
-const BINDING_PREFIX: &[u8] = b"binding/";
-const CURRENT_PREFIX: &[u8] = b"current/";
-const PENDING_KEY_BYTES: usize = PENDING_PREFIX.len() + 16;
-const BINDING_KEY_BYTES: usize = BINDING_PREFIX.len() + 16 + 8;
-const CURRENT_KEY_BYTES: usize = CURRENT_PREFIX.len() + 16;
-
-const PENDING_MAGIC: &[u8; 8] = b"AOSRAP01";
-const BINDING_MAGIC: &[u8; 8] = b"AOSRAB01";
-const HEAD_MAGIC: &[u8; 8] = b"AOSRAH01";
-const PENDING_VERSION: u16 = 1;
-const BINDING_VERSION: u16 = 1;
-const HEAD_VERSION: u16 = 1;
-const BINDING_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.runtime-authority-binding.v1\0";
-const INTENT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.runtime-authority-intent.v1\0";
-
-const MAXIMUM_RECORDS: usize = 1_000_000;
-const JOURNAL_RECORD_HEADER_BYTES: usize = 7;
-const MAXIMUM_RECORD_BYTES: usize =
-    16 * 1024 * 1024 - JOURNAL_RECORD_HEADER_BYTES - BINDING_KEY_BYTES;
-const MAXIMUM_MATERIALIZED_BYTES: usize = 512 * 1024 * 1024;
+use aos_sandbox_protocol::domain_ledger::runtime_authority_history as runtime_data;
+use runtime_data::CURRENT_PREFIX;
+use runtime_data::ledger_read as runtime_read;
+#[cfg(test)]
+use runtime_data::MAXIMUM_RECORD_BYTES;
 
 /// Reports invalid intents, compare-and-swap failures, or corrupt protected state.
 #[derive(Debug, thiserror::Error)]
@@ -109,6 +90,33 @@ pub enum RuntimeAuthorityError {
     /// Protected journal validation or access failed.
     #[error("runtime-authority journal failed: {0}")]
     Journal(#[from] JournalError),
+}
+
+impl From<runtime_data::RuntimeAuthorityDataErrorV1> for RuntimeAuthorityError {
+    fn from(error: runtime_data::RuntimeAuthorityDataErrorV1) -> Self {
+        use runtime_data::RuntimeAuthorityDataErrorV1 as D;
+        match error {
+            D::InvalidIntent => Self::InvalidIntent,
+            D::InvalidLimits => Self::InvalidLimits,
+            D::LimitExceeded(name) => Self::LimitExceeded(name),
+            D::CorruptState => Self::CorruptState,
+        }
+    }
+}
+
+impl From<runtime_read::RuntimeHistoryReadErrorV1> for RuntimeAuthorityError {
+    fn from(error: runtime_read::RuntimeHistoryReadErrorV1) -> Self {
+        use runtime_read::RuntimeHistoryReadErrorV1 as D;
+        match error {
+            D::InvalidIntent => Self::InvalidIntent,
+            D::InvalidLimits => Self::InvalidLimits,
+            D::LimitExceeded(bound) => Self::LimitExceeded(bound),
+            D::CorruptState => Self::CorruptState,
+            D::Continuity => Self::Continuity,
+            D::Poisoned => Self::Journal(JournalError::Poisoned),
+            D::ProtectedBoundary => Self::Journal(JournalError::ProtectedBoundary),
+        }
+    }
 }
 
 /// Provides exclusive access to fully validated runtime-authority state.
@@ -242,13 +250,13 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
         let sandbox = manifest.manifest().sandbox();
         let current = current_from_journal(self.journal, sandbox)?;
         let actual_revision = current.as_ref().map(RuntimeAuthorityBindingV1::revision);
-        if actual_revision != intent.expected_revision {
+        if actual_revision != intent.data.expected_revision {
             return Err(RuntimeAuthorityError::CompareAndSwap);
         }
-        if intent.state == RuntimeAuthorityStateV1::Revoked && current.is_none() {
+        if intent.data.state == RuntimeAuthorityStateV1::Revoked && current.is_none() {
             return Err(RuntimeAuthorityError::CompareAndSwap);
         }
-        if intent.state == RuntimeAuthorityStateV1::Revoked
+        if intent.data.state == RuntimeAuthorityStateV1::Revoked
             && current
                 .as_ref()
                 .is_some_and(|prior| prior.manifest() != &manifest)
@@ -260,15 +268,17 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
             .checked_add(1)
             .ok_or(RuntimeAuthorityError::CorruptState)?;
         let pending = RuntimeAuthorityPendingV1 {
-            operation,
-            request_digest,
-            state: intent.state,
-            holder: intent.holder,
-            expected_revision: intent.expected_revision,
-            revision,
-            predecessor_digest: current.as_ref().map(RuntimeAuthorityBindingV1::digest),
-            manifest,
-            source_draft_digest: draft.digest(),
+            data: runtime_data::RuntimeAuthorityPendingV1 {
+                operation,
+                request_digest,
+                state: intent.data.state,
+                holder: intent.data.holder,
+                expected_revision: intent.data.expected_revision,
+                revision,
+                predecessor_digest: current.as_ref().map(RuntimeAuthorityBindingV1::digest),
+                manifest,
+                source_draft_digest: draft.digest(),
+            },
         };
         let value = encode_pending(&pending)?;
         self.check_addition(&key, &value, 1)?;
@@ -301,10 +311,10 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
             return Ok(Vec::new());
         };
         let pending = decode_pending(bytes)?;
-        if pending.operation != operation
-            || pending.request_digest != request_digest
-            || pending.source_draft_digest != draft.digest()
-            || &pending.manifest != draft.manifest()
+        if pending.data.operation != operation
+            || pending.data.request_digest != request_digest
+            || pending.data.source_draft_digest != draft.digest()
+            || &pending.data.manifest != draft.manifest()
             || prepared.manifest() != draft.manifest()
             || prepared.source_draft_digest() != draft.digest()
         {
@@ -313,12 +323,12 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
 
         let sandbox = pending.sandbox();
         let current = current_from_journal(self.journal, sandbox)?;
-        if current.as_ref().map(RuntimeAuthorityBindingV1::revision) != pending.expected_revision
-            || current.as_ref().map(RuntimeAuthorityBindingV1::digest) != pending.predecessor_digest
+        if current.as_ref().map(RuntimeAuthorityBindingV1::revision) != pending.data.expected_revision
+            || current.as_ref().map(RuntimeAuthorityBindingV1::digest) != pending.data.predecessor_digest
         {
             return Err(RuntimeAuthorityError::CompareAndSwap);
         }
-        let binding_key = binding_key(sandbox, pending.revision);
+        let binding_key = binding_key(sandbox, pending.data.revision);
         if self
             .journal
             .get(RecordNamespace::RuntimeAuthority, &binding_key)
@@ -328,25 +338,27 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
         }
 
         let mut binding = RuntimeAuthorityBindingV1 {
-            operation,
-            request_digest,
-            state: pending.state,
-            holder: pending.holder,
-            revision: pending.revision,
-            predecessor_digest: pending.predecessor_digest,
-            manifest: pending.manifest,
-            source_draft_digest: prepared.source_draft_digest(),
-            publication_digest: prepared.digest(),
-            lease_generation: prepared.lease_generation(),
-            lease_digest: prepared.lease_digest(),
-            digest: ObjectDigest::from_bytes([0; 32]),
+            data: runtime_data::RuntimeAuthorityBindingV1 {
+                operation,
+                request_digest,
+                state: pending.data.state,
+                holder: pending.data.holder,
+                revision: pending.data.revision,
+                predecessor_digest: pending.data.predecessor_digest,
+                manifest: pending.data.manifest,
+                source_draft_digest: prepared.source_draft_digest(),
+                publication_digest: prepared.digest(),
+                lease_generation: prepared.lease_generation(),
+                lease_digest: prepared.lease_digest(),
+                digest: ObjectDigest::from_bytes([0; 32]),
+            },
         };
         let binding_bytes = encode_binding(&binding)?;
-        binding.digest = binding_digest(&binding_bytes);
+        binding.data.digest = binding_digest(&binding_bytes);
         let head = RuntimeAuthorityHeadV1 {
             sandbox,
-            revision: binding.revision,
-            binding_digest: binding.digest,
+            revision: binding.data.revision,
+            binding_digest: binding.data.digest,
         };
         let head_key = current_key(sandbox);
         let head_bytes = encode_head(head);
@@ -367,14 +379,14 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
         value: &[u8],
         added_records: usize,
     ) -> Result<(), RuntimeAuthorityError> {
-        if value.len() > self.limits.maximum_record_bytes {
+        if value.len() > self.limits.data.maximum_record_bytes() {
             return Err(RuntimeAuthorityError::LimitExceeded("record bytes"));
         }
         let records = self
             .records
             .checked_add(added_records)
             .ok_or(RuntimeAuthorityError::LimitExceeded("record count"))?;
-        if records > self.limits.maximum_records {
+        if records > self.limits.data.maximum_records() {
             return Err(RuntimeAuthorityError::LimitExceeded("record count"));
         }
         let bytes = self
@@ -382,7 +394,7 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
             .checked_add(key.len())
             .and_then(|size| size.checked_add(value.len()))
             .ok_or(RuntimeAuthorityError::LimitExceeded("materialized bytes"))?;
-        if bytes > self.limits.maximum_materialized_bytes {
+        if bytes > self.limits.data.maximum_materialized_bytes() {
             return Err(RuntimeAuthorityError::LimitExceeded("materialized bytes"));
         }
         Ok(())
@@ -395,8 +407,8 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
         head_key: &[u8],
         head_value: &[u8],
     ) -> Result<(), RuntimeAuthorityError> {
-        if binding_value.len() > self.limits.maximum_record_bytes
-            || head_value.len() > self.limits.maximum_record_bytes
+        if binding_value.len() > self.limits.data.maximum_record_bytes()
+            || head_value.len() > self.limits.data.maximum_record_bytes()
         {
             return Err(RuntimeAuthorityError::LimitExceeded("record bytes"));
         }
@@ -423,11 +435,11 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
         if self
             .records
             .checked_add(added_records)
-            .is_none_or(|records| records > self.limits.maximum_records)
+            .is_none_or(|records| records > self.limits.data.maximum_records())
         {
             return Err(RuntimeAuthorityError::LimitExceeded("record count"));
         }
-        if projected > self.limits.maximum_materialized_bytes {
+        if projected > self.limits.data.maximum_materialized_bytes() {
             return Err(RuntimeAuthorityError::LimitExceeded("materialized bytes"));
         }
         Ok(())
@@ -438,156 +450,36 @@ pub(crate) fn validate_namespace(
     journal: &Journal,
     limits: RuntimeAuthorityLimits,
 ) -> Result<(usize, usize), RuntimeAuthorityError> {
-    let mut records = 0_usize;
-    let mut materialized_bytes = 0_usize;
-    let mut bindings: BTreeMap<[u8; 16], BTreeMap<u64, RuntimeAuthorityBindingV1>> =
-        BTreeMap::new();
-    let mut heads: BTreeMap<[u8; 16], RuntimeAuthorityHeadV1> = BTreeMap::new();
-    let mut pending: BTreeMap<[u8; 16], RuntimeAuthorityPendingV1> = BTreeMap::new();
-
-    for (key, value) in journal.records(RecordNamespace::RuntimeAuthority) {
-        records = records
-            .checked_add(1)
-            .ok_or(RuntimeAuthorityError::LimitExceeded("record count"))?;
-        if records > limits.maximum_records || value.len() > limits.maximum_record_bytes {
-            return Err(RuntimeAuthorityError::LimitExceeded(
-                "record count or bytes",
-            ));
-        }
-        materialized_bytes = materialized_bytes
-            .checked_add(key.len())
-            .and_then(|bytes| bytes.checked_add(value.len()))
-            .ok_or(RuntimeAuthorityError::LimitExceeded("materialized bytes"))?;
-        if materialized_bytes > limits.maximum_materialized_bytes {
-            return Err(RuntimeAuthorityError::LimitExceeded("materialized bytes"));
-        }
-
-        if key.starts_with(PENDING_PREFIX) {
-            let operation = operation_from_pending_key(key)?;
-            let pending_record = decode_pending(value)?;
-            if pending_record.operation != operation {
-                return Err(RuntimeAuthorityError::CorruptState);
-            }
-            crate::reconciler::validate_runtime_authority_pending(journal, &pending_record)
-                .map_err(|_| RuntimeAuthorityError::CorruptState)?;
-            if pending
-                .insert(operation.into_bytes(), pending_record)
-                .is_some()
-            {
-                return Err(RuntimeAuthorityError::CorruptState);
-            }
-        } else if key.starts_with(BINDING_PREFIX) {
-            let (sandbox, revision) = binding_identity_from_key(key)?;
-            let binding = decode_binding(value)?;
-            if binding.sandbox() != sandbox || binding.revision != revision {
-                return Err(RuntimeAuthorityError::CorruptState);
-            }
-            crate::reconciler::validate_runtime_authority_binding(journal, &binding)
-                .map_err(|_| RuntimeAuthorityError::CorruptState)?;
-            if bindings
-                .entry(*sandbox.as_bytes())
-                .or_default()
-                .insert(revision, binding)
-                .is_some()
-            {
-                return Err(RuntimeAuthorityError::CorruptState);
-            }
-        } else if key.starts_with(CURRENT_PREFIX) {
-            let sandbox = sandbox_from_current_key(key)?;
-            let head = decode_head(value)?;
-            if head.sandbox != sandbox || heads.insert(*sandbox.as_bytes(), head).is_some() {
-                return Err(RuntimeAuthorityError::CorruptState);
-            }
-        } else {
-            return Err(RuntimeAuthorityError::CorruptState);
-        }
-    }
-
-    crate::reconciler::validate_runtime_authority_operations(journal)
-        .map_err(|_| RuntimeAuthorityError::CorruptState)?;
-    if !heads.is_empty() {
-        validate_publication_namespace(journal).map_err(|_| RuntimeAuthorityError::CorruptState)?;
-    }
-    validate_chains(journal, &pending, &bindings, &heads)?;
-    Ok((records, materialized_bytes))
+    scan_namespace(journal, limits, None).map(|(records, bytes, _)| (records, bytes))
 }
 
-fn validate_chains(
+// Pending intents and immutable historical bindings also prevent a fresh first
+// assignment. Looking only at current(sandbox) would miss both families.
+pub(crate) fn assignment_subject_present_v1(
     journal: &Journal,
-    pending: &BTreeMap<[u8; 16], RuntimeAuthorityPendingV1>,
-    bindings: &BTreeMap<[u8; 16], BTreeMap<u64, RuntimeAuthorityBindingV1>>,
-    heads: &BTreeMap<[u8; 16], RuntimeAuthorityHeadV1>,
-) -> Result<(), RuntimeAuthorityError> {
-    // Revocation stops the assignment whose holder is being removed, not a
-    // replacement assignment that happens to reuse the sandbox identity.
-    for intent in pending
-        .values()
-        .filter(|intent| intent.state == RuntimeAuthorityStateV1::Revoked)
-    {
-        let prior = intent
-            .expected_revision
-            .and_then(|revision| {
-                bindings
-                    .get(intent.sandbox().as_bytes())
-                    .and_then(|history| history.get(&revision))
-            })
-            .ok_or(RuntimeAuthorityError::CorruptState)?;
-        if Some(prior.digest) != intent.predecessor_digest || prior.manifest != intent.manifest {
-            return Err(RuntimeAuthorityError::CorruptState);
-        }
-    }
-    if bindings.len() != heads.len() || bindings.keys().any(|sandbox| !heads.contains_key(sandbox))
-    {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    for (sandbox_bytes, revisions) in bindings {
-        let head = heads
-            .get(sandbox_bytes)
-            .ok_or(RuntimeAuthorityError::CorruptState)?;
-        let expected_len =
-            usize::try_from(head.revision).map_err(|_| RuntimeAuthorityError::CorruptState)?;
-        if revisions.len() != expected_len {
-            return Err(RuntimeAuthorityError::CorruptState);
-        }
-        let mut predecessor = None;
-        for revision in 1..=head.revision {
-            let binding = revisions
-                .get(&revision)
-                .ok_or(RuntimeAuthorityError::CorruptState)?;
-            if binding.predecessor_digest != predecessor {
-                return Err(RuntimeAuthorityError::CorruptState);
-            }
-            let admitted = pending
-                .get(binding.operation.as_bytes())
-                .ok_or(RuntimeAuthorityError::CorruptState)?;
-            if !binding_matches_pending(binding, admitted) {
-                return Err(RuntimeAuthorityError::CorruptState);
-            }
-            predecessor = Some(binding.digest);
-        }
-        let current = revisions
-            .get(&head.revision)
-            .ok_or(RuntimeAuthorityError::CorruptState)?;
-        if current.digest != head.binding_digest {
-            return Err(RuntimeAuthorityError::CorruptState);
-        }
-        validate_current_publication(journal, current)?;
-    }
-    Ok(())
+    sandbox: SandboxId,
+) -> Result<bool, RuntimeAuthorityError> {
+    scan_namespace(journal, RuntimeAuthorityLimits::default(), Some(sandbox))
+        .map(|(_, _, present)| present)
 }
+
+fn scan_namespace(
+    journal: &Journal,
+    limits: RuntimeAuthorityLimits,
+    subject: Option<SandboxId>,
+) -> Result<(usize, usize, bool), RuntimeAuthorityError> {
+    journal
+        .runtime_history_read_v1()
+        .scan(limits.data, subject)
+        .map_err(RuntimeAuthorityError::from)
+}
+
 
 fn binding_matches_pending(
     binding: &RuntimeAuthorityBindingV1,
     pending: &RuntimeAuthorityPendingV1,
 ) -> bool {
-    binding.operation == pending.operation
-        && binding.request_digest == pending.request_digest
-        && binding.state == pending.state
-        && binding.holder == pending.holder
-        && binding.revision == pending.revision
-        && binding.predecessor_digest == pending.predecessor_digest
-        && binding.manifest == pending.manifest
-        && binding.source_draft_digest == pending.source_draft_digest
+    runtime_read::binding_matches_pending(&binding.data, &pending.data)
 }
 
 /// Validates an operation's exact intent commitment against its pending row.
@@ -600,15 +492,10 @@ pub(crate) fn validate_operation_intent(
     operation: OperationId,
     intent_digest: ObjectDigest,
 ) -> Result<(), RuntimeAuthorityError> {
-    journal.ensure_protected_authority()?;
-    let bytes = journal
-        .get(RecordNamespace::RuntimeAuthority, &pending_key(operation))
-        .ok_or(RuntimeAuthorityError::CorruptState)?;
-    let pending = decode_pending(bytes)?;
-    if pending.operation != operation || pending.intent_digest() != intent_digest {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    Ok(())
+    journal
+        .runtime_history_read_v1()
+        .validate_operation_intent(operation, intent_digest)
+        .map_err(RuntimeAuthorityError::from)
 }
 
 /// Requires an activated pending intent's exact immutable decision record.
@@ -623,67 +510,62 @@ pub(crate) fn validate_activated_pending(
     lease_generation: u64,
     lease_digest: ObjectDigest,
 ) -> Result<(), RuntimeAuthorityError> {
-    journal.ensure_protected_authority()?;
-    let bytes = journal
-        .get(
-            RecordNamespace::RuntimeAuthority,
-            &binding_key(pending.sandbox(), pending.revision),
+    journal
+        .runtime_history_read_v1()
+        .validate_activated_pending(
+            &pending.data, publication_digest, lease_generation, lease_digest,
         )
-        .ok_or(RuntimeAuthorityError::CorruptState)?;
-    let binding = decode_binding(bytes)?;
-    if !binding_matches_pending(&binding, pending)
-        || binding.publication_digest != publication_digest
-        || binding.lease_generation != lease_generation
-        || binding.lease_digest != lease_digest
-    {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    Ok(())
+        .map_err(RuntimeAuthorityError::from)
 }
 
-fn validate_current_publication(
-    journal: &Journal,
-    binding: &RuntimeAuthorityBindingV1,
-) -> Result<(), RuntimeAuthorityError> {
-    let current = current_in_validated_namespace(journal, binding.sandbox())
-        .map_err(|_| RuntimeAuthorityError::CorruptState)?
-        .ok_or(RuntimeAuthorityError::CorruptState)?;
-    if current.digest() != binding.publication_digest
-        || current.manifest() != &binding.manifest
-        || current.lease_generation() != binding.lease_generation
-        || current.lease_digest() != binding.lease_digest
-    {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    Ok(())
+
+/// Prices the complete current Runtime/publication structural selection together.
+///
+/// Actual foreign Effect/publication/assignment codecs and Runtime map nodes
+/// may coexist while the complete reader checks crosslinks. The held Journal
+/// remains borrowed; no writer, decoder or native authority is created here.
+#[must_use]
+pub(crate) fn current_publication_receiving_demand_v2(journal: &Journal)
+    -> Option<aos_sandbox_core::ResourceVector> {
+    use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+    let state = journal.historical_read_view_v1().materialized_state_v1();
+    let models = crate::cold_launch_publication::completion::controller_selector_model_bytes_v1(state)?;
+    let names = crate::cold_launch_publication::completion::controller_selector_namespace_entries_v1(state)?;
+    let maps = runtime_data::namespace_scan_map_receiving_demand_v2(state)?;
+    let fixed = std::mem::size_of::<RuntimeAuthorityBindingV1>().checked_mul(2)?
+        .checked_add(std::mem::size_of::<crate::publication::CurrentAuthorityPublicationV1>().checked_mul(2)?)?
+        .checked_add(std::mem::size_of::<aos_sandbox_protocol::domain_ledger::operation::OperationRecord>().checked_mul(2)?)?;
+    maps.checked_add(ResourceVector::ZERO.with(D::MemoryBytes,
+        u64::try_from(models.checked_add(fixed)?).ok()?)
+        .with(D::MetadataEntries, u64::try_from(names).ok()?)).ok()
+}
+
+/// Resolves current structural DATA after the same complete protected namespace check.
+///
+/// The caller retains the actual Journal and pays its historical model before
+/// this read. This lends no writer, native currentness or live execution grant.
+///
+/// # Errors
+/// Refuses unhealthy/nonprotected custody, configured bounds, malformed full
+/// history/cross-links or a current head inconsistent with its immutable row.
+pub(crate) fn current_readonly_v2(journal: &Journal, limits: RuntimeAuthorityLimits,
+    sandbox: SandboxId,
+) -> Result<Option<RuntimeAuthorityBindingV1>, RuntimeAuthorityError> {
+    journal.ensure_protected_authority()?;
+    validate_namespace(journal, limits)?;
+    journal.ensure_protected_authority()?;
+    current_from_journal(journal, sandbox)
 }
 
 fn current_from_journal(
     journal: &Journal,
     sandbox: SandboxId,
 ) -> Result<Option<RuntimeAuthorityBindingV1>, RuntimeAuthorityError> {
-    let Some(head_bytes) = journal.get(RecordNamespace::RuntimeAuthority, &current_key(sandbox))
-    else {
-        return Ok(None);
-    };
-    let head = decode_head(head_bytes)?;
-    if head.sandbox != sandbox {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    let binding_bytes = journal
-        .get(
-            RecordNamespace::RuntimeAuthority,
-            &binding_key(sandbox, head.revision),
-        )
-        .ok_or(RuntimeAuthorityError::CorruptState)?;
-    let binding = decode_binding(binding_bytes)?;
-    if binding.sandbox() != sandbox
-        || binding.revision != head.revision
-        || binding.digest != head.binding_digest
-    {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    Ok(Some(binding))
+    journal
+        .runtime_history_read_v1()
+        .current(sandbox)
+        .map(|binding| binding.map(|data| RuntimeAuthorityBindingV1 { data }))
+        .map_err(RuntimeAuthorityError::from)
 }
 
 /// Resolves an immutable revision after complete namespace validation.
@@ -695,18 +577,11 @@ pub(crate) fn binding_in_validated_namespace(
     sandbox: SandboxId,
     revision: u64,
 ) -> Result<RuntimeAuthorityBindingV1, RuntimeAuthorityError> {
-    journal.ensure_protected_authority()?;
-    let bytes = journal
-        .get(
-            RecordNamespace::RuntimeAuthority,
-            &binding_key(sandbox, revision),
-        )
-        .ok_or(RuntimeAuthorityError::CorruptState)?;
-    let binding = decode_binding(bytes)?;
-    if binding.sandbox() != sandbox || binding.revision() != revision {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    Ok(binding)
+    journal
+        .runtime_history_read_v1()
+        .binding(sandbox, revision)
+        .map(|data| RuntimeAuthorityBindingV1 { data })
+        .map_err(RuntimeAuthorityError::from)
 }
 
 /// Reuses the exact uninterrupted holder/assignment check after full replay.
@@ -720,26 +595,10 @@ pub(crate) fn validate_continuity_in_validated_namespace(
     origin: &RuntimeAuthorityBindingV1,
     current: &RuntimeAuthorityBindingV1,
 ) -> Result<(), RuntimeAuthorityError> {
-    if origin.revision() > current.revision() {
-        return Err(RuntimeAuthorityError::Continuity);
-    }
-    // Preserve the original Store::current health check and short-circuit order.
-    journal.ensure_protected_authority()?;
-    if current_from_journal(journal, origin.sandbox())?.as_ref() != Some(current)
-        || binding_in_validated_namespace(journal, origin.sandbox(), origin.revision())? != *origin
-    {
-        return Err(RuntimeAuthorityError::Continuity);
-    }
-    for revision in origin.revision()..=current.revision() {
-        let binding = binding_in_validated_namespace(journal, origin.sandbox(), revision)?;
-        if binding.state() != RuntimeAuthorityStateV1::Bound
-            || binding.holder() != origin.holder()
-            || binding.manifest() != origin.manifest()
-        {
-            return Err(RuntimeAuthorityError::Continuity);
-        }
-    }
-    Ok(())
+    journal
+        .runtime_history_read_v1()
+        .continuity(&origin.data, &current.data)
+        .map_err(RuntimeAuthorityError::from)
 }
 
 /// Reads only a fully validated exact current binding for a record cross-link.
@@ -821,94 +680,48 @@ pub(crate) fn binding_for_catalog_test(
     state: RuntimeAuthorityStateV1,
 ) -> RuntimeAuthorityBindingV1 {
     let mut binding = RuntimeAuthorityBindingV1 {
-        operation: OperationId::from_bytes([201; 16]),
-        request_digest: [202; 32],
-        state,
-        holder: (state == RuntimeAuthorityStateV1::Bound)
-            .then_some(aos_sandbox_core::PrincipalId::from_bytes([203; 16])),
-        revision: 1,
-        predecessor_digest: None,
-        manifest,
-        source_draft_digest: ObjectDigest::from_bytes([204; 32]),
-        publication_digest: ObjectDigest::from_bytes([205; 32]),
-        lease_generation: 1,
-        lease_digest: ObjectDigest::from_bytes([206; 32]),
-        digest: ObjectDigest::from_bytes([0; 32]),
+        data: runtime_data::RuntimeAuthorityBindingV1 {
+            operation: OperationId::from_bytes([201; 16]),
+            request_digest: [202; 32],
+            state,
+            holder: (state == RuntimeAuthorityStateV1::Bound)
+                .then_some(aos_sandbox_core::PrincipalId::from_bytes([203; 16])),
+            revision: 1,
+            predecessor_digest: None,
+            manifest,
+            source_draft_digest: ObjectDigest::from_bytes([204; 32]),
+            publication_digest: ObjectDigest::from_bytes([205; 32]),
+            lease_generation: 1,
+            lease_digest: ObjectDigest::from_bytes([206; 32]),
+            digest: ObjectDigest::from_bytes([0; 32]),
+        },
     };
     let encoded = encode_binding(&binding)
         .unwrap_or_else(|error| panic!("catalog test binding encoding failed: {error}"));
-    binding.digest = binding_digest(&encoded);
+    binding.data.digest = binding_digest(&encoded);
     binding
 }
 
 fn pending_key(operation: OperationId) -> Vec<u8> {
-    let mut key = Vec::with_capacity(PENDING_KEY_BYTES);
-    key.extend_from_slice(PENDING_PREFIX);
-    key.extend_from_slice(operation.as_bytes());
-    key
+    runtime_read::pending_key(operation)
 }
 
 fn operation_from_pending_key(key: &[u8]) -> Result<OperationId, RuntimeAuthorityError> {
-    if key.len() != PENDING_KEY_BYTES {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    let bytes: [u8; 16] = key[PENDING_PREFIX.len()..]
-        .try_into()
-        .map_err(|_| RuntimeAuthorityError::CorruptState)?;
-    if bytes == [0; 16] {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    Ok(OperationId::from_bytes(bytes))
+    runtime_read::operation_from_pending_key(key).map_err(RuntimeAuthorityError::from)
 }
 
 fn binding_key(sandbox: SandboxId, revision: u64) -> Vec<u8> {
-    let mut key = Vec::with_capacity(BINDING_KEY_BYTES);
-    key.extend_from_slice(BINDING_PREFIX);
-    key.extend_from_slice(sandbox.as_bytes());
-    key.extend_from_slice(&revision.to_be_bytes());
-    key
+    runtime_read::binding_key(sandbox, revision)
 }
 
 fn binding_identity_from_key(key: &[u8]) -> Result<(SandboxId, u64), RuntimeAuthorityError> {
-    if key.len() != BINDING_KEY_BYTES {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    let mut cursor = BINDING_PREFIX.len();
-    let sandbox = SandboxId::from_bytes(
-        key[cursor..cursor + 16]
-            .try_into()
-            .map_err(|_| RuntimeAuthorityError::CorruptState)?,
-    );
-    cursor += 16;
-    let revision = u64::from_be_bytes(
-        key[cursor..]
-            .try_into()
-            .map_err(|_| RuntimeAuthorityError::CorruptState)?,
-    );
-    if sandbox.as_bytes() == &[0; 16] || revision == 0 {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    Ok((sandbox, revision))
+    runtime_read::binding_identity_from_key(key).map_err(RuntimeAuthorityError::from)
 }
 
 fn current_key(sandbox: SandboxId) -> Vec<u8> {
-    let mut key = Vec::with_capacity(CURRENT_KEY_BYTES);
-    key.extend_from_slice(CURRENT_PREFIX);
-    key.extend_from_slice(sandbox.as_bytes());
-    key
+    runtime_read::current_key(sandbox)
 }
 
 fn sandbox_from_current_key(key: &[u8]) -> Result<SandboxId, RuntimeAuthorityError> {
-    if key.len() != CURRENT_KEY_BYTES {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    let sandbox = SandboxId::from_bytes(
-        key[CURRENT_PREFIX.len()..]
-            .try_into()
-            .map_err(|_| RuntimeAuthorityError::CorruptState)?,
-    );
-    if sandbox.as_bytes() == &[0; 16] {
-        return Err(RuntimeAuthorityError::CorruptState);
-    }
-    Ok(sandbox)
+    runtime_read::sandbox_from_current_key(key).map_err(RuntimeAuthorityError::from)
 }

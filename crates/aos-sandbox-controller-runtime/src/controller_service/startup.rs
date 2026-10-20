@@ -1,15 +1,17 @@
-//! Application-owned runtime failure custody above fixed startup admission.
+//! Application-owned Controller startup coordination and runtime failure custody.
 //!
-//! The lower continuation remains first so its armed Drop fence runs before
+//! The actual continuation remains first so its armed Drop fence runs before
 //! any upper failure field can release. It still owns every actual capture,
 //! profile/selector/launch admission and startup original. This private wrapper
-//! removes the reverse runtime-error dependency without moving those recipes or
-//! introducing a public startup/authority constructor.
+//! keeps the original recipes above transport without introducing a public
+//! startup or authority constructor.
 
 use std::ops::{Deref, DerefMut};
 
 use super::ControllerRuntimeError;
-use aos_sandbox_broker_session_security::controller_composition::ControllerStartupContinuationV1;
+
+mod continuation;
+use continuation::ControllerStartupContinuationV1;
 
 /// Retains the actual application cause separately from lower startup custody.
 pub(crate) struct ControllerRuntimeStartupV1 {
@@ -23,6 +25,22 @@ impl ControllerRuntimeStartupV1 {
             continuation: ControllerStartupContinuationV1::new(publisher, nix, issue),
             runtime_failure: None,
         }
+    }
+
+    /// Projects the actual same-opening first cause before negative termination.
+    ///
+    /// The opening stays in the caller's armed local frame. Borrowing its
+    /// original cause does not move a guard, replace native errors, or create
+    /// another opening; process exit retains that frame without destructors.
+    pub(crate) fn fail_resource_opening(
+        &mut self,
+        opening: &aos_sandbox::ControllerResourceBankOpeningV1,
+    ) -> ! {
+        if let Some(cause) = opening.failure() {
+            let original = ControllerRuntimeOpeningFailureRef(cause);
+            eprintln!("aos-sandboxd: {original:?}");
+        }
+        self.continuation.terminate_runtime_refusal()
     }
 
     /// Parks the original typed cause before the lower negative-only refusal.
@@ -58,9 +76,42 @@ impl std::fmt::Debug for ControllerRuntimeStartupFailureRef<'_> {
     }
 }
 
+// Keep diagnostic content coarse while the Error source borrows the exact
+// first native/comparison cause parked in the genuine original opening.
+struct ControllerRuntimeOpeningFailureRef<'attempt>(&'attempt (dyn std::error::Error + 'static));
+
+impl std::fmt::Debug for ControllerRuntimeOpeningFailureRef<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("resident original Runtime receiving refused")
+    }
+}
+
+impl std::fmt::Display for ControllerRuntimeOpeningFailureRef<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self, formatter)
+    }
+}
+
+impl std::error::Error for ControllerRuntimeOpeningFailureRef<'_> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_failure_view_borrows_exact_original_error() {
+        let cause = std::io::Error::from_raw_os_error(13);
+        let view = ControllerRuntimeOpeningFailureRef(&cause);
+
+        let source = std::error::Error::source(&view).expect("original native cause");
+        assert!(std::ptr::eq(source, &cause as &(dyn std::error::Error + 'static)));
+        assert_eq!(source.downcast_ref::<std::io::Error>()
+            .expect("same native error type").raw_os_error(), Some(13));
+    }
 
     #[test]
     fn runtime_failure_view_borrows_the_original_without_diagnostic_detail() {

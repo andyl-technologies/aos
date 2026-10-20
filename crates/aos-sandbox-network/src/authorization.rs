@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::ApplyNetworkRequest;
-use aos_sandbox::RecordNamespace;
+use aos_sandbox_core::RecordNamespace;
 use aos_sandbox_broker::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerAuthorityConfigError,
     BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectClockDispositionV1, BrokerEffectIntentV1,
@@ -45,6 +45,14 @@ pub type NetworkAdmissionError = BrokerAdmissionError;
 pub struct NetworkAuthorityV1(pub(crate) BrokerAuthority);
 
 impl NetworkAuthorityV1 {
+    pub(crate) fn from_captured_network_configuration_v4(
+        configuration: aos_sandbox_broker::ProtectedBrokerAuthorityConfiguration,
+    ) -> (Self, aos_sandbox_broker::ProtectedBrokerPublicCredentials) {
+        let (authority, credentials) = configuration.into_authority_and_public_credentials();
+        (Self(authority), credentials)
+    }
+
+
     /// Constructs authority from protected trust anchors.
     ///
     /// # Errors
@@ -144,27 +152,46 @@ impl NetworkAuthorityV1 {
         clock: &RawPairedClockSample,
         prior: Option<&[u8]>,
     ) -> Result<VerifiedBrokerAdmission, NetworkAdmissionError> {
-        let assignment = decode_assignment(body)?;
-        let admission = self.0.admit(
-            artifacts,
-            AdmissionRequest {
+        self.admit_engine_v4(artifacts, semantics, body, version, clock, prior, None)
+    }
+
+    pub(crate) fn admit_retaining_v4(&self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        semantics: &CanonicalNetworkSemanticsV1, body: &[u8], version: ProtocolVersion,
+        clock: &RawPairedClockSample, prior: Option<&[u8]>,
+        original: &mut aos_sandbox_broker::BrokerSignedAdmissionOriginalV4,
+    ) -> Result<VerifiedBrokerAdmission, NetworkAdmissionError> {
+        self.admit_engine_v4(artifacts, semantics, body, version, clock, prior, Some(original))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_engine_v4(&self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        semantics: &CanonicalNetworkSemanticsV1, body: &[u8], version: ProtocolVersion,
+        clock: &RawPairedClockSample, prior: Option<&[u8]>,
+        original: Option<&mut aos_sandbox_broker::BrokerSignedAdmissionOriginalV4>,
+    ) -> Result<VerifiedBrokerAdmission, NetworkAdmissionError> {
+        let assignment = semantics.fence().broker_assignment()
+            .map_err(|_| NetworkAdmissionError::RequestMismatch)?;
+        let request = AdmissionRequest {
                 audience: BrokerAudience::Network,
                 protocol: ProtocolId::NetworkBroker,
                 protocol_version: version,
                 assignment,
                 request_id: *semantics.header().request_id(),
                 request_body: body,
-                descriptor_count: 0,
+                descriptor_count: u16::from(semantics.preparation_content_reference_v2().is_some()),
                 verb: semantics.broker_verb(),
                 target: semantics.grant_target(),
                 argument_commitment: semantics.argument_commitment(),
                 request_deadline_boottime_nanoseconds: semantics
                     .header()
                     .deadline_boottime_nanoseconds(),
-            },
-            clock,
-            prior,
-        )?;
+            };
+        let admission = match original {
+            Some(original) => original.admit_once_v4(&self.0, artifacts, request, clock, prior),
+            None => self.0.admit(artifacts, request, clock, prior),
+        }?;
         if let Some((digest, generation)) = semantics.operation().ownership_lease() {
             let local = admission.fence.local_lease_record();
             if admission.effect.lease_digest().as_bytes() != digest

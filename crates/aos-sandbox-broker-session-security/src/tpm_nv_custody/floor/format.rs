@@ -22,10 +22,11 @@ use super::{FloorErrorV1, RecordPurposeDataV1};
 
 /// Retains the original fixed Broker profile width.
 pub(crate) const PROFILE_BYTES: usize = 112;
-/// Fixes both purpose-specific checkpoint body widths.
-pub(crate) const CHECKPOINT_BYTES: usize = 156;
-/// Fixes both purpose-specific intent widths.
-pub(crate) const INTENT_BYTES: usize = 12 + 2 * CHECKPOINT_BYTES;
+// Canonical widths are shared with the Native captured-sidecar supplier.
+// The actual codecs below remain the sole purpose-specific format validators.
+pub(crate) use aos_sandbox_protocol::domain_ledger::floor_sidecar_geometry::{
+    CHECKPOINT_BYTES_V1 as CHECKPOINT_BYTES, INTENT_BYTES_V1 as INTENT_BYTES,
+};
 /// Fixes the original defined SHA-256 extend public attributes.
 pub(crate) const NV_ATTRIBUTES_DEFINED: u32 = 0x0004_0044;
 /// Fixes the original written SHA-256 extend public attributes.
@@ -337,14 +338,29 @@ impl IntentBodyV1 {
         target_cut: FloorCutV1,
         transaction: &JournalTransaction,
     ) -> Result<Self, FloorErrorV1> {
+        Self::new_engine_v2(context, predecessor, target_cut, transaction, None)
+    }
+
+    // The optional destination changes custody only; sequence, digest and
+    // successor validation keep their original order and closed purpose.
+    fn new_engine_v2(
+        context: RecordScopeDataV1,
+        predecessor: CheckpointBodyV1,
+        target_cut: FloorCutV1,
+        transaction: &JournalTransaction,
+        retained: Option<&mut super::digest::FloorTransactionDigestOriginalV1>,
+    ) -> Result<Self, FloorErrorV1> {
         if successor_sequence(predecessor.cut.sequence, transaction)? != target_cut.sequence {
             return Err(FloorErrorV1::Successor);
         }
-        let transaction_digest = transaction_digest_v1(
-            context.purpose(),
-            context.transaction_scope(),
-            transaction,
-        )?;
+        let transaction_digest = match retained {
+            Some(original) => original.observe_once(
+                context.purpose(), context.transaction_scope(), transaction,
+            ),
+            None => transaction_digest_v1(
+                context.purpose(), context.transaction_scope(), transaction,
+            ),
+        }?;
         Self::from_digest(
             context.purpose(),
             context.scope(),
@@ -393,10 +409,19 @@ impl IntentBodyV1 {
         purpose: RecordPurposeDataV1,
         transaction: &JournalTransaction,
     ) -> Result<(), FloorErrorV1> {
+        self.require_transaction_engine_v1(purpose, transaction, None)
+    }
+
+    fn require_transaction_engine_v1(
+        self, purpose: RecordPurposeDataV1, transaction: &JournalTransaction,
+        original: Option<&mut super::digest::FloorTransactionDigestOriginalV1>,
+    ) -> Result<(), FloorErrorV1> {
         if successor_sequence(self.predecessor.cut.sequence, transaction)?
             != self.target.cut.sequence
-            || transaction_digest_v1(purpose, self.target.scope, transaction)?
-                != self.target.transaction_digest
+            || (match original {
+                Some(original) => original.observe_once(purpose, self.target.scope, transaction),
+                None => transaction_digest_v1(purpose, self.target.scope, transaction),
+            })? != self.target.transaction_digest
         {
             return Err(FloorErrorV1::Successor);
         }
@@ -1219,6 +1244,51 @@ impl FloorIntentDataV1 {
         }
     }
 
+    /// Builds the same closed intent while retaining its actual digest prefix.
+    ///
+    /// The caller admits the existing digest supplier before this DATA work.
+    /// No profile, transaction or digest capture creates mutation authority.
+    ///
+    /// # Errors
+    /// Preserves purpose matching, sequence-before-digest and successor errors.
+    pub(super) fn new_retaining_v2(
+        profile: FloorProfileDataV1,
+        predecessor: FloorCheckpointDataV1,
+        target: FloorCutV1,
+        transaction: &JournalTransaction,
+        retained: &mut super::digest::FloorTransactionDigestOriginalV1,
+    ) -> Result<Self, FloorErrorV1> {
+        match (profile, predecessor) {
+            (FloorProfileDataV1::Broker(profile), FloorCheckpointDataV1::Broker(predecessor)) => {
+                IntentBodyV1::new_engine_v2(
+                    RecordScopeDataV1::Broker(profile), predecessor.body, target,
+                    transaction, Some(retained),
+                ).map(|body| Self::Broker(FloorIntentV1 { body }))
+            }
+            (FloorProfileDataV1::Online(profile), FloorCheckpointDataV1::Online(predecessor)) => {
+                IntentBodyV1::new_engine_v2(
+                    RecordScopeDataV1::Online(profile), predecessor.body, target,
+                    transaction, Some(retained),
+                ).map(|body| Self::Online(OnlineFloorIntentV1 { body }))
+            }
+            _ => Err(FloorErrorV1::Provisioning),
+        }
+    }
+
+    /// Measures fixed successor and NV-chain scratch of the intent constructor.
+    ///
+    /// The transaction digest's owning key index is priced separately. These
+    /// checked terms cover the original by-value body/checkpoint/cut carriers,
+    /// their move destinations, checkpoint encodings and two nested NV hashes.
+    pub(super) fn construction_receiving_bytes_v2() -> Option<usize> {
+        std::mem::size_of::<IntentBodyV1>().checked_mul(2)?
+            .checked_add(std::mem::size_of::<CheckpointBodyV1>().checked_mul(2)?)?
+            .checked_add(std::mem::size_of::<FloorCutV1>().checked_mul(2)?)?
+            .checked_add(CHECKPOINT_BYTES.checked_mul(2)?)?
+            .checked_add(std::mem::size_of::<sha2::Sha256>().checked_mul(2)?)?
+            .checked_add(std::mem::size_of::<[u8; 32]>().checked_mul(3)?)
+    }
+
     pub(crate) fn decode(profile: FloorProfileDataV1, bytes: &[u8]) -> Result<Self, FloorErrorV1> {
         profile.intent(bytes)
     }
@@ -1241,6 +1311,18 @@ impl FloorIntentDataV1 {
         match self {
             Self::Broker(intent) => intent.encode(),
             Self::Online(intent) => intent.encode(),
+        }
+    }
+
+    pub(crate) fn require_transaction_retaining_v1(
+        self, transaction: &JournalTransaction,
+        original: &mut super::digest::FloorTransactionDigestOriginalV1,
+    ) -> Result<(), FloorErrorV1> {
+        match self {
+            Self::Broker(intent) => intent.body.require_transaction_engine_v1(
+                RecordPurposeDataV1::BrokerV1, transaction, Some(original)),
+            Self::Online(intent) => intent.body.require_transaction_engine_v1(
+                RecordPurposeDataV1::OnlineNixV1, transaction, Some(original)),
         }
     }
 

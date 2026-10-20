@@ -18,6 +18,7 @@ pub(super) struct ObservationValidity {
     initial: RawPairedClockSample,
     expires_wall_seconds: i64,
     deadline_boottime_nanoseconds: u64,
+    pub(super) capture: Option<super::capture_lifetime::AssignmentCaptureBoundsV2>,
 }
 
 impl ObservationValidity {
@@ -35,13 +36,17 @@ impl ObservationValidity {
         plan_expires: i64,
         maximum_seconds: u32,
     ) -> Result<Self, CurrentRuntimeScopeError> {
-        Self::from_bounds(
+        let mut validity = Self::from_bounds(
             initial,
             lease.authority_expires_seconds(),
             lease.maximum_clock_skew_seconds(),
             plan_expires,
             maximum_seconds,
-        )
+        )?;
+        validity.capture = Some(super::capture_lifetime::AssignmentCaptureBoundsV2::new(
+            initial, lease, Some(plan_expires),
+        ));
+        Ok(validity)
     }
 
     pub(super) fn for_lease(
@@ -49,13 +54,17 @@ impl ObservationValidity {
         lease: &SignedOwnershipLease,
         maximum_seconds: u32,
     ) -> Result<Self, CurrentRuntimeScopeError> {
-        Self::from_bounds(
+        let mut validity = Self::from_bounds(
             initial,
             lease.authority_expires_seconds(),
             lease.maximum_clock_skew_seconds(),
             i64::MAX,
             maximum_seconds,
-        )
+        )?;
+        validity.capture = Some(super::capture_lifetime::AssignmentCaptureBoundsV2::new(
+            initial, lease, None,
+        ));
+        Ok(validity)
     }
 
     fn from_bounds(
@@ -93,6 +102,7 @@ impl ObservationValidity {
             initial,
             expires_wall_seconds,
             deadline_boottime_nanoseconds,
+            capture: None,
         })
     }
 

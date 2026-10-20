@@ -27,8 +27,8 @@ use crate::cli_model::authorization_adapter::{
 };
 use crate::controller::ControllerProtectedClockV1;
 use crate::journal::controller::{ControllerJournalError, validate_controller_journal};
-use crate::publisher_authority::PublisherAuthorityLimits;
-use crate::publisher_policy::PublisherPolicyLimits;
+use crate::publisher_admin::capabilities::PublisherAuthorityLimits;
+use crate::publisher_admin::policy::PublisherPolicyLimits;
 use aos_sandbox_protocol::domain_ledger::effect_history::EffectPlan;
 use crate::runtime_scope::CurrentAssignmentTarget;
 use crate::controller_resource_reservation::{AcquisitionFailureV1, PaidNixStartOriginalsV1};
@@ -58,7 +58,7 @@ enum ContinuationFailureV2 {
     #[error("retained Controller node failed: {0}")]
     Controller(#[from] ControllerJournalError),
     #[error("protected paired clock failed: {0}")]
-    Clock(#[from] crate::ProtectedOwnershipClockError),
+    Clock(#[from] aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError),
     #[error("current protected grant failed: {0}")]
     Authorization(#[from] CliAuthorizationAdapterError),
     #[error("current assignment custody failed: {0}")]

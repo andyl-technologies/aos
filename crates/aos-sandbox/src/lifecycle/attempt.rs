@@ -341,7 +341,11 @@ impl LifecycleAttemptHistoryV1 {
                 && self.attempts[shared_length].can_refine(previous.attempts[shared_length]);
         }
         let Some(previous_last_index) = previous.attempts.len().checked_sub(1) else {
-            return false;
+            // The first reservation has no earlier failed attempt. Stable
+            // direction/commitments and the one-element growth were checked
+            // above; a completed observation cannot replace this admission.
+            return self.attempts.first().is_some_and(|attempt|
+                attempt.number() == 1 && attempt.state() == LifecycleAttemptStateV1::Reserved);
         };
         if self.attempts.get(..previous_last_index) != previous.attempts.get(..previous_last_index)
         {
@@ -402,5 +406,60 @@ pub fn resume_ambiguous_attempt_v1(
         Ok(LifecycleAmbiguousResumeV1(attempt))
     } else {
         Err(LifecycleModelError::InvalidModel)
+    }
+}
+
+#[cfg(test)]
+mod first_attempt_tests {
+    use super::*;
+
+    fn attempt(state: LifecycleAttemptStateV1) -> LifecycleEffectAttemptV1 {
+        let succeeded = state == LifecycleAttemptStateV1::Succeeded;
+        LifecycleEffectAttemptV1::new(
+            1, LifecycleEffectDirectionV1::Forward,
+            LifecycleStepRequestDigestV1::commit(b"request"),
+            LifecycleStepBodyDigestV1::commit(b"body"),
+            LifecycleStepPlanDigestV1::commit(b"plan"),
+            LifecycleStepAdmissionDigestV1::commit(b"admission"),
+            LifecycleTimeV1::new(10).unwrap(), state,
+            succeeded.then(|| LifecycleStepResultDigestV1::commit(b"result")),
+            None,
+            succeeded.then(|| LifecycleInventoryDigestV1::commit(b"inventory")),
+            None, succeeded.then(|| LifecycleTimeV1::new(11).unwrap()),
+        ).unwrap()
+    }
+
+    fn history(attempts: Vec<LifecycleEffectAttemptV1>) -> LifecycleAttemptHistoryV1 {
+        LifecycleAttemptHistoryV1::new(
+            LifecycleEffectDirectionV1::Forward,
+            LifecycleStepRequestDigestV1::commit(b"request"),
+            LifecycleStepBodyDigestV1::commit(b"body"),
+            LifecycleStepPlanDigestV1::commit(b"plan"), attempts,
+        ).unwrap()
+    }
+
+    #[test]
+    fn first_reservation_precedes_the_same_attempt_success() {
+        let empty = history(Vec::new());
+        let reserved = history(vec![attempt(LifecycleAttemptStateV1::Reserved)]);
+        let succeeded = history(vec![attempt(LifecycleAttemptStateV1::Succeeded)]);
+
+        assert!(reserved.can_follow(&empty));
+        assert!(succeeded.can_follow(&reserved));
+        assert!(!succeeded.can_follow(&empty));
+        assert!(!empty.can_follow(&reserved));
+    }
+
+    #[test]
+    fn first_reservation_cannot_change_the_logical_effect() {
+        let reserved = history(vec![attempt(LifecycleAttemptStateV1::Reserved)]);
+        let foreign = LifecycleAttemptHistoryV1::new(
+            LifecycleEffectDirectionV1::Forward,
+            LifecycleStepRequestDigestV1::commit(b"foreign request"),
+            LifecycleStepBodyDigestV1::commit(b"body"),
+            LifecycleStepPlanDigestV1::commit(b"plan"), Vec::new(),
+        ).unwrap();
+
+        assert!(!reserved.can_follow(&foreign));
     }
 }

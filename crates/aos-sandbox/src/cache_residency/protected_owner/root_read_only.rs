@@ -4,6 +4,8 @@
 //! obtains no writer lock, cannot advance the clock, and cannot use this
 //! observation to publish policy or hand off an effect.
 
+use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+
 use aos_sandbox_protocol::cache_state::NodeCacheQuotaV1;
 
 use std::fs;
@@ -16,8 +18,14 @@ use rustix::fs::{AtFlags, CWD, StatVfsMountFlags, StatxAttributes, StatxFlags, s
 #[cfg(target_os = "linux")]
 use crate::cache_residency::CacheOwnerLimitsV1;
 use crate::journal::{
-    CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, Journal, JournalError, JournalLimits,
-    ReadOnlyJournalNameWitness, ReadOnlyProtectedJournal, RecordNamespace, RecoveryReport,
+    CACHE_POLICY_HOLD_JOURNAL,
+    Journal,
+    JournalError,
+    JournalLimits,
+    ReadOnlyJournalNameWitness,
+    ReadOnlyProtectedJournal,
+    RecordNamespace,
+    RecoveryReport,
 };
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 #[cfg(target_os = "linux")]

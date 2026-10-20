@@ -12,11 +12,61 @@
 //!
 //! This module performs no listener or route registration.
 
+enum StorageApplyDispatchV1<'owner, 'cut, 'original> {
+    Ordinary(crate::DormantStorageBrokerEffectAdapterV1<'owner>),
+    Receiving {
+        storage: &'owner mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        receiving: &'owner mut aos_sandbox::StorageLifecycleSessionLoanV1<'cut, 'original>,
+        native_admission: &'owner mut Option<aos_sandbox::StorageReceivingClosedV1>,
+    },
+}
+
+enum StorageOperationDispatchV1<'owner, 'cut, 'original> {
+    Ordinary(crate::DormantStorageBrokerEffectAdapterV1<'owner>),
+    Lifecycle {
+        storage: &'owner mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        receiving: &'owner mut aos_sandbox::StorageLifecycleSessionLoanV1<'cut, 'original>,
+        native_admission: &'owner mut Option<aos_sandbox::StorageReceivingClosedV1>,
+    },
+}
+
+enum StorageInventoryDispatchV1<'owner, 'cut, 'original> {
+    Ordinary,
+    Prepare(&'owner mut aos_sandbox::StoragePrepareReceivingLoanV1<'original>),
+    Lifecycle {
+        receiving: &'owner mut aos_sandbox::StorageLifecycleSessionLoanV1<'cut, 'original>,
+        native_admission: &'owner mut Option<aos_sandbox::StorageReceivingClosedV1>,
+    },
+}
+
+enum StorageOutcomeReceivingV1<'owner, 'cut, 'original> {
+    Prepare(&'owner mut aos_sandbox::StoragePrepareReceivingLoanV1<'original>),
+    Lifecycle(&'owner mut aos_sandbox::StorageLifecycleSessionLoanV1<'cut, 'original>),
+}
+
+impl StorageOutcomeReceivingV1<'_, '_, '_> {
+    fn source_v3(&mut self) -> &mut dyn crate::recovery::StorageFloorFinancialSourceV2 {
+        match self {
+            Self::Prepare(source) => &mut **source,
+            Self::Lifecycle(source) => &mut **source,
+        }
+    }
+}
+
 mod consumer_cgroup_terminal;
 mod fuse_worker_preparation;
 mod host_catalog_publication;
 mod host_scope_terminal;
 mod host_worker_comparison;
+mod storage_client_continuation;
+mod storage_execution_availability;
+mod host_execution_availability;
+mod delete_inventory;
+pub use delete_inventory::OriginalDeleteInventoryClientV1;
+mod readiness;
+pub(crate) use readiness::HandshakeReadinessOriginalsV1;
+#[doc(hidden)]
+pub use storage_client_continuation::{OriginalStorageClientSessionTransitionV1, OriginalStorageClientTransitionClosedV1};
 
 pub use host_catalog_publication::{
     DormantBrokerPublicationExecutionFailureV1, DormantHostCatalogPublicationRecoveryProgressV1,
@@ -43,6 +93,10 @@ pub use host_scope_terminal::{
 pub(crate) use host_worker_comparison::{
     DormantOriginalHostWorkerComparisonV1, OriginalHostWorkerComparisonSendProgressV1,
     OriginalMountHostWorkerComparisonProgressV1,
+};
+
+use crate::handshake::output_registration_continuation::{
+    OriginalStorageCreatePreparationFlightV1, StoragePreparationClientProgressV1,
 };
 
 use std::os::fd::{BorrowedFd, OwnedFd};
@@ -105,6 +159,21 @@ pub enum DormantBrokerSessionHandshakeErrorV1 {
     /// Kernel peer or record-subject observations changed or did not agree.
     #[error("broker-session kernel peer evidence is invalid")]
     KernelEvidence,
+    /// An actual selected receive failed with its lower native custody retained.
+    #[error("selected Storage receive failed with native custody retained")]
+    RetainedReceive(#[source] aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1),
+    /// An actual selected send failed with its lower native custody retained.
+    #[error("selected Storage send failed with native custody retained")]
+    RetainedSend(#[source] aos_sandbox_linux::seqpacket::RetainedSeqpacketSendErrorV1),
+    /// The selected HELLO keeps its whole native send observation on refusal.
+    #[error("selected HELLO send failed with original custody retained")]
+    SelectedSend(#[source] handshake::RetainedStorageHandshakeSendFailureV1),
+    /// A parked selected record failed its original carrier comparison.
+    #[error("selected Storage original carrier comparison failed")]
+    RecordBinding(#[source] aos_sandbox_linux::seqpacket::RecordBindingError),
+    /// The selected handshake retains its actual failed raw reducer owner.
+    #[error("selected Storage handshake failed with original custody retained")]
+    StoragePreparation(#[source] Box<handshake::RetainedStoragePreparationHandshakeFailureV1>),
     /// The adopted socket failed outside the retryable interruption profile.
     #[error("broker-session handshake transport failed")]
     Transport,
@@ -125,14 +194,40 @@ impl From<handshake::DormantBrokerSessionHandshakeErrorV1>
             handshake::DormantBrokerSessionHandshakeErrorV1::RemoteInvalid => Self::RemoteInvalid,
             handshake::DormantBrokerSessionHandshakeErrorV1::KernelEvidence => Self::KernelEvidence,
             handshake::DormantBrokerSessionHandshakeErrorV1::Transport => Self::Transport,
+            handshake::DormantBrokerSessionHandshakeErrorV1::StoragePreparation(error) =>
+                Self::StoragePreparation(error),
+            handshake::DormantBrokerSessionHandshakeErrorV1::RetainedReceive(error) => Self::RetainedReceive(error),
+            handshake::DormantBrokerSessionHandshakeErrorV1::RetainedSend(error) => Self::RetainedSend(error),
+            handshake::DormantBrokerSessionHandshakeErrorV1::SelectedSend(error) => Self::SelectedSend(error),
+            handshake::DormantBrokerSessionHandshakeErrorV1::RecordBinding(error) => Self::RecordBinding(error),
         }
     }
 }
 
+mod deadline_observation;
+pub(crate) use deadline_observation::BrokerColdDeadlineObservationV1;
+
 pub(crate) fn remaining_handshake_nanoseconds(
     deadline_boottime_nanoseconds: u64,
 ) -> Result<u64, DormantBrokerSessionHandshakeErrorV1> {
+    remaining_handshake_nanoseconds_observed(deadline_boottime_nanoseconds, None)
+}
+
+fn remaining_handshake_nanoseconds_observed(
+    deadline_boottime_nanoseconds: u64,
+    original: Option<&mut Option<Timespec>>,
+) -> Result<u64, DormantBrokerSessionHandshakeErrorV1> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    if let Some(original) = original {
+        *original = Some(now);
+    }
+    remaining_handshake_nanoseconds_from_sample(now, deadline_boottime_nanoseconds)
+}
+
+fn remaining_handshake_nanoseconds_from_sample(
+    now: Timespec,
+    deadline_boottime_nanoseconds: u64,
+) -> Result<u64, DormantBrokerSessionHandshakeErrorV1> {
     let seconds =
         u64::try_from(now.tv_sec).map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)?;
     let nanoseconds =
@@ -233,24 +328,82 @@ pub fn wait_for_handshake_readiness(
     wants_write: bool,
     deadline_boottime_nanoseconds: u64,
 ) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
-    let remaining = remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
+    wait_for_handshake_readiness_inner(descriptor, wants_write, deadline_boottime_nanoseconds, None, None)
+}
+
+pub(crate) fn wait_for_handshake_readiness_retaining_v1(
+    descriptor: BorrowedFd<'_>,
+    wants_write: bool,
+    deadline_boottime_nanoseconds: u64,
+    native: &mut Option<Result<usize, rustix::io::Errno>>,
+) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+    wait_for_handshake_readiness_inner(descriptor, wants_write, deadline_boottime_nanoseconds, Some(native), None)
+}
+
+fn wait_for_handshake_readiness_inner(
+    descriptor: BorrowedFd<'_>,
+    wants_write: bool,
+    deadline_boottime_nanoseconds: u64,
+    native: Option<&mut Option<Result<usize, rustix::io::Errno>>>,
+    mut originals: Option<&mut HandshakeReadinessOriginalsV1>,
+) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    if let Some(originals) = originals.as_deref_mut() {
+        originals.clock = Some(now);
+    }
+    let remaining = remaining_handshake_nanoseconds_from_sample(now, deadline_boottime_nanoseconds)?;
+    if let Some(originals) = originals.as_deref_mut() {
+        originals.remaining = Some(remaining);
+    }
     let timeout = Timespec {
         tv_sec: i64::try_from(remaining / 1_000_000_000)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Deadline)?,
         tv_nsec: i64::try_from(remaining % 1_000_000_000)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Deadline)?,
     };
+    if let Some(originals) = originals.as_deref_mut() {
+        originals.timeout = Some(timeout);
+    }
     let readiness = if wants_write {
         PollFlags::OUT
     } else {
         PollFlags::IN
     };
-    let mut descriptors = [PollFd::from_borrowed_fd(descriptor, readiness)];
-
-    match poll(&mut descriptors, Some(&timeout)) {
+    let (observed, _) = sample_readiness_once_v5(descriptor, readiness, Some(&timeout));
+    if let Some(native) = native {
+        *native = Some(observed);
+    }
+    if let Some(originals) = originals {
+        originals.native = Some(observed);
+    }
+    match observed {
         Ok(0) => Err(DormantBrokerSessionHandshakeErrorV1::Deadline),
         Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
         Err(_) => Err(DormantBrokerSessionHandshakeErrorV1::Transport),
+    }
+}
+
+// One native poll recipe serves ordinary timed handshake waits and the
+// separately prepaid idle inventory wait. No wait authenticates a request.
+fn sample_readiness_once_v5(descriptor: BorrowedFd<'_>, readiness: PollFlags,
+    timeout: Option<&Timespec>,
+) -> (Result<usize, rustix::io::Errno>, PollFlags) {
+    let mut descriptors = [PollFd::from_borrowed_fd(descriptor, readiness)];
+    let observed = poll(&mut descriptors, timeout);
+    (observed, descriptors[0].revents())
+}
+
+pub(crate) fn wait_for_inventory_readiness_retaining_v5(
+    descriptor: BorrowedFd<'_>, native: &mut Option<Result<usize, rustix::io::Errno>>,
+    events: &mut Option<PollFlags>,
+) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+    let (observed, ready) = sample_readiness_once_v5(descriptor, PollFlags::IN, None);
+    *native = Some(observed);
+    *events = Some(ready);
+    match observed {
+        Ok(1) if ready.contains(PollFlags::IN)
+            && !ready.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL) => Ok(()),
+        _ => Err(DormantBrokerSessionHandshakeErrorV1::Transport),
     }
 }
 
@@ -358,6 +511,8 @@ impl DormantBrokerEndpointHandshakeV1 {
     }
 }
 
+use crate::recovery::HostExecutionSessionReceivingOriginalV1;
+
 /// Retains an authenticated adopted socket together with its fixed protected owner.
 ///
 /// No service is registered and no request is dispatched. The callback keeps
@@ -368,6 +523,47 @@ pub struct DormantAuthenticatedBrokerSessionV1(
     handshake::DormantAuthenticatedBrokerSessionV1,
     Vec<aos_sandbox_host::DormantHostScopeReplayTicketV1>,
 );
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Continuously borrows both original client Sessions under the same paid C18.
+    ///
+    /// The SDK original retains all request, transport and failure prefixes;
+    /// canonical observations do not supply readiness or a replacement owner.
+    ///
+    /// # Errors
+    /// Preserves changed fixed Session custody, repeated entry, and native or
+    /// financial admission failure in the actual SDK and lower scope originals.
+    pub fn borrow_execution_availability_client_once_v2<'turn>(
+        &'turn mut self, storage: &'turn mut Self,
+        scope: &'turn mut aos_sandbox::controller_execution_operation::ExecutionPublicAdmissionScopeV2,
+        controller: &'turn mut aos_sandbox::Journal,
+        original: &'turn mut crate::ExecutionAvailabilitySessionIoOriginalV2,
+    ) -> Result<crate::ExecutionAvailabilityClientSessionBorrowV2<'turn>, crate::controller_composition::OutputPreparationClosedV1> {
+        original.borrow_pair_v2(&mut self.0, &mut storage.0, scope, controller)
+    }
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Borrows the same Host Session and actual C18 for a closed NoApply continuation.
+    ///
+    /// The completed availability original is borrowed, never consumed as an
+    /// Apply disposal token. Every native and SDK prefix stays with its owner.
+    ///
+    /// # Errors
+    /// Retains missing availability, reentry, funding and native Session failure.
+    pub fn borrow_active_execution_no_apply_client_once_v2<'turn, 'source, 'original>(
+        &'turn mut self,
+        availability: &'turn crate::ExecutionAvailabilitySessionIoOriginalV2,
+        original: &'turn mut crate::HostExecutionNoApplySessionIoOriginalV2,
+        native: &'turn mut aos_sandbox::controller_execution_operation::ControllerExecutionNoApplyOriginalV2,
+        controller: &'turn mut aos_sandbox::Journal,
+        bank: &'turn aos_sandbox::ControllerResourceBankOpeningV1,
+        profile: &'turn aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+        receiving: &'turn mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'source, 'original>,
+    ) -> Result<crate::HostExecutionNoApplyClientSessionBorrowV2<'turn, 'source, 'original>, crate::controller_composition::OutputPreparationClosedV1> {
+        original.borrow_active_once_v2(&mut self.0, availability, native, controller, bank, profile, receiving)
+    }
+}
 
 /// Carries the verified transcript of the retained Storage broker socket.
 ///
@@ -395,6 +591,23 @@ pub struct DormantBrokerRequestCoordinatesV1 {
 }
 
 impl DormantBrokerRequestCoordinatesV1 {
+    /// Groups already-selected Session comparison DATA without admitting a request.
+    pub(crate) const fn from_session_data_v1(
+        request_id: [u8; 16],
+        deadline_boottime_nanoseconds: u64,
+        maximum_response_bytes: u32,
+        protocol_version: ProtocolVersion,
+        audience: Audience,
+    ) -> Self {
+        Self {
+            request_id,
+            deadline_boottime_nanoseconds,
+            maximum_response_bytes,
+            protocol_version,
+            audience,
+        }
+    }
+
     /// Returns the kernel-random request identifier selected by protected custody.
     #[must_use]
     pub const fn request_id(self) -> [u8; 16] {
@@ -444,6 +657,15 @@ impl DormantBrokerRequestCoordinatesV1 {
 pub struct DormantPreparedBrokerRequestV1(AuthenticatedBrokerMethodRequestV1);
 
 impl DormantPreparedBrokerRequestV1 {
+    /// Borrows the literal prepared Host request for its Source dispatch binding.
+    ///
+    /// This DATA borrow preserves protected request custody and cannot send,
+    /// recreate or authorize a request. Core checks the exact ordinary Stop.
+    #[must_use]
+    pub fn host_stop_dispatch_request_data_v1(&self) -> Option<&AuthenticatedBrokerMethodRequestV1> {
+        (self.0.method() == BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME).then_some(&self.0)
+    }
+
     /// Returns the signed deadline without releasing request custody.
     pub const fn deadline_boottime_nanoseconds(&self) -> u64 {
         self.0.deadline_boottime_nanoseconds()
@@ -458,6 +680,7 @@ pub struct DormantOutstandingBrokerRequestV1(AuthenticatedBrokerMethodRequestV1)
 #[derive(Default)]
 pub struct ExecutionPublicationReceiveCustodyV1 {
     pub(crate) packet: Option<Vec<u8>>,
+    pub(crate) raw: crate::handshake::ExecutionResponsePacketOriginalV1,
     pub(crate) decoded: Option<Result<
         aos_sandbox_broker_session_protocol::CanonicalBrokerResponseEnvelopeV1,
         aos_sandbox_broker_session_protocol::BrokerSessionProjectionError,
@@ -467,6 +690,12 @@ pub struct ExecutionPublicationReceiveCustodyV1 {
 }
 
 impl ExecutionPublicationReceiveCustodyV1 {
+    /// Borrows the first raw receive or subject-binding cause before decoding.
+    #[must_use]
+    pub fn raw_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.raw.failure()
+    }
+
     /// Borrows the original response decoder failure without releasing custody.
     pub fn decode_error(&self) -> Option<&aos_sandbox_broker_session_protocol::BrokerSessionProjectionError> {
         self.decoded.as_ref().and_then(|result| result.as_ref().err())
@@ -479,6 +708,16 @@ impl ExecutionPublicationReceiveCustodyV1 {
 }
 
 impl DormantOutstandingBrokerRequestV1 {
+    /// Borrows the actual pending Capture60 request for its Host readback.
+    ///
+    /// The request remains owned here; this comparison-only projection grants
+    /// neither a replacement request nor a physical Capture flight.
+    #[must_use]
+    pub fn capture_preparation_request_v3(&self) -> Option<&AuthenticatedBrokerMethodRequestV1> {
+        (self.0.method() == BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1)
+            .then_some(&self.0)
+    }
+
     /// Returns the original signed deadline for response readiness polling.
     pub const fn deadline_boottime_nanoseconds(&self) -> u64 {
         self.0.deadline_boottime_nanoseconds()
@@ -508,6 +747,10 @@ pub struct DormantReceivedBrokerRequestV1(AuthenticatedBrokerMethodRequestV1);
 pub struct DormantBrokerTerminalReplayV1(ProtectedBrokerOutcomeReplayV1);
 
 impl DormantBrokerTerminalReplayV1 {
+    pub(crate) fn into_retained_storage_terminal_v1(self) -> crate::recovery::RetainedStorageTerminalV1 {
+        self.0.into_retained_storage_terminal_v1()
+    }
+
     pub(crate) fn method(&self) -> BrokerMethod {
         self.0.method()
     }
@@ -631,6 +874,19 @@ impl crate::ProductionBrokerRequestEventV1 {
         method == BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
     }
 
+    /// Selects only the new physical Capture channel, never logical output.
+    pub(crate) fn is_storage_execution_capture_request_v1(&self) -> bool {
+        let method = match self {
+            Self::Request(request) => request.method(),
+            Self::InFlightReplay(unknown) => unknown.request.method(),
+            Self::TerminalReplay(replay) => replay.0.method(),
+            Self::DescriptorTerminalReplay(_) => return false,
+        };
+        matches!(method,
+            BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1
+            | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1)
+    }
+
     pub(crate) fn is_original_output_replay(&self) -> bool {
         let method = match self {
             Self::InFlightReplay(unknown) => unknown.request.method(),
@@ -727,6 +983,11 @@ impl<Domain> DormantBrokerExecutionFailureV1<Domain> {
 }
 
 impl ProtectedBrokerDomainResponseV1 {
+    /// Borrows the actual domain-produced body without copying or re-encoding.
+    pub(crate) fn body(&self) -> &[u8] {
+        &self.body
+    }
+
     pub(crate) fn from_observation(
         request: &AuthenticatedBrokerMethodRequestV1,
         body: Vec<u8>,
@@ -788,6 +1049,29 @@ mod empty_host_inventory_tests {
 }
 
 impl DormantReceivedBrokerRequestV1 {
+    pub(crate) fn authenticated_original_v2(&self) -> &AuthenticatedBrokerMethodRequestV1 {
+        &self.0
+    }
+
+    /// Borrows the exact signed physical request without issuing effect authority.
+    pub(crate) fn storage_execution_capture_original_v1(&self)
+        -> Option<&AuthenticatedBrokerMethodRequestV1>
+    {
+        if self.is_storage_execution_capture_request_v1() { Some(&self.0) } else { None }
+    }
+
+    /// Recognizes only server-admitted physical Capture requests.
+    pub(crate) fn is_storage_execution_capture_request_v1(&self) -> bool {
+        self.0.direction() == aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            && matches!(self.method(),
+                BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1
+                | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1)
+    }
+
+    pub(crate) const fn original_storage_prepare_deadline(&self) -> u64 {
+        self.0.deadline_boottime_nanoseconds()
+    }
+
     pub(crate) const fn original_capture_candidate_deadline(&self) -> u64 {
         self.0.deadline_boottime_nanoseconds()
     }
@@ -1306,6 +1590,47 @@ enum OriginalMountLiveDestinationV1<'slot> {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn captured_journal_failure_for_v1(&self, returned: &BrokerSessionSecurityError)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        self.0.captured_journal_failure_for_v1(returned)
+    }
+
+    pub(crate) fn require_initial_storage_socket_current_v1(
+        &self,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<(), aos_sandbox::StorageReceivingClosedV1> {
+        self.0.require_initial_storage_socket_current_v1(receiving)
+    }
+
+    pub(crate) fn from_retained_storage_inner_v1(inner: handshake::DormantAuthenticatedBrokerSessionV1) -> Self {
+        Self(inner, Vec::new())
+    }
+
+    pub(crate) fn dispose_initial_storage_hello_v1(
+        &mut self,
+        cold: handshake::RetainedStorageColdOpenV1,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+        prefix: handshake::StorageInitialSessionHandshakeV1,
+    ) -> Result<(), (handshake::RetainedStorageColdOpenV1, handshake::StorageInitialSessionHandshakeV1)> {
+        cold.dispose_initial_storage_hello_v1(&mut self.0, receiving, prefix)
+    }
+
+    pub(crate) fn storage_prepare_native_failure_v1(
+        &self,
+    ) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.storage_prepare_native_failure_v1()
+    }
+
+    /// Reports the exact signed two-method Create preparation profile.
+    ///
+    /// This inspects the already verified transcript. It does not authorize a
+    /// request, borrow a receiving loan, or change the advertised method set.
+    #[must_use]
+    pub fn is_original_storage_preparation_profile_v1(&self) -> bool {
+        self.0.is_original_storage_preparation_profile_v1()
+    }
+
     /// Shares the original request/current-clock/Live decoder without taking it.
     ///
     /// Each returned gate, clock and decoded owner is parked before the next
@@ -1794,13 +2119,22 @@ impl DormantAuthenticatedBrokerSessionV1 {
         ),
         DormantBrokerExecutionFailureV1<Domain>,
     > {
+        self.begin_execution_with_storage_receiving_v3(request, method_matches, None)
+    }
+
+    fn begin_execution_with_storage_receiving_v3<Domain>(&mut self,
+        request: DormantReceivedBrokerRequestV1,
+        method_matches: bool,
+        receiving: Option<&mut dyn crate::recovery::StorageFloorFinancialSourceV2>,
+    ) -> Result<(DormantReceivedBrokerRequestV1, ProtectedBrokerSessionVerificationContextV1),
+        DormantBrokerExecutionFailureV1<Domain>> {
         if !method_matches {
             return Err(DormantBrokerExecutionFailureV1::BeforeEffect {
                 error: BrokerSessionSecurityError::Currentness,
                 request,
             });
         }
-        let context = match self.0.reopen_broker_outcome(&request.0) {
+        let context = match self.0.reopen_broker_outcome_with_storage_receiving_v3(&request.0, receiving) {
             Ok((gate, context)) => {
                 drop(gate);
                 context
@@ -1830,6 +2164,68 @@ impl DormantAuthenticatedBrokerSessionV1 {
         request: DormantReceivedBrokerRequestV1,
         body: Vec<u8>,
     ) -> Result<ProtectedBrokerOutcomeCommitResultV1, DormantBrokerExecutionFailureV1<Domain>> {
+        self.finish_observed_success_with_storage_receiving_v1(request, body, None)
+    }
+
+    fn finish_observed_success_with_storage_receiving_v1<Domain>(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        body: Vec<u8>,
+        receiving: Option<&mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>>,
+    ) -> Result<ProtectedBrokerOutcomeCommitResultV1, DormantBrokerExecutionFailureV1<Domain>> {
+        self.finish_observed_success_with_storage_payer_v1(
+            request, body, receiving.map(StorageOutcomeReceivingV1::Prepare),
+        )
+    }
+
+    fn finish_observed_success_with_storage_payer_v1<Domain>(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        body: Vec<u8>,
+        receiving: Option<StorageOutcomeReceivingV1<'_, '_, '_>>,
+    ) -> Result<ProtectedBrokerOutcomeCommitResultV1, DormantBrokerExecutionFailureV1<Domain>> {
+        match receiving {
+            Some(StorageOutcomeReceivingV1::Lifecycle(receiving)) => {
+                if let Err(_) = self.0.arm_storage_operation_post_v1(receiving) {
+                    let observation = ProtectedBrokerDomainResponseV1::from_observation(&request.0, body).ok();
+                    return Err(DormantBrokerExecutionFailureV1::OutcomeUnknown {
+                        error: DormantBrokerExecutionErrorV1::Currentness(BrokerSessionSecurityError::Currentness),
+                        custody: DormantBrokerOutcomeUnknownV1 { request, observation },
+                    });
+                }
+                let result = self.finish_observed_success_storage_inner_v1(
+                    request, body, Some(StorageOutcomeReceivingV1::Lifecycle(receiving)),
+                ).map(|(committed, _request)| committed);
+                let post = self.0.finish_storage_operation_post_v1(receiving);
+                match result {
+                    Err(failure) => Err(failure),
+                    Ok(result) if post.is_ok() => Ok(result),
+                    Ok(result) => Ok(result),
+                }
+            }
+            other => self.finish_observed_success_storage_inner_v1(request, body, other)
+                .map(|(committed, _request)| committed),
+        }
+    }
+
+    // Host keeps its SAME received request through actual Committed/Sent.
+    // All outcomes still use the one generic Prepare/Lifecycle/ordinary engine.
+    fn finish_observed_success_retaining_request_v2<Domain>(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        body: Vec<u8>,
+    ) -> Result<(ProtectedBrokerOutcomeCommitResultV1, DormantReceivedBrokerRequestV1),
+        DormantBrokerExecutionFailureV1<Domain>>
+    {
+        self.finish_observed_success_storage_inner_v1(request, body, None)
+    }
+
+    fn finish_observed_success_storage_inner_v1<Domain>(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        body: Vec<u8>,
+        mut receiving: Option<StorageOutcomeReceivingV1<'_, '_, '_>>,
+    ) -> Result<(ProtectedBrokerOutcomeCommitResultV1, DormantReceivedBrokerRequestV1), DormantBrokerExecutionFailureV1<Domain>> {
         let observation = match ProtectedBrokerDomainResponseV1::from_observation(&request.0, body)
         {
             Ok(observation) => observation,
@@ -1843,7 +2239,47 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 });
             }
         };
-        if let Err(error) = self.0.reopen_broker_outcome(&request.0) {
+        if let Some(receiving) = receiving.as_mut() {
+            let current = match receiving {
+                StorageOutcomeReceivingV1::Prepare(receiving) => {
+                    let demand = self.storage_prepare_outcome_demand_v1(&request.0, &observation);
+                    let reserved = match demand {
+                        Ok(demand) => match request.method() {
+                            BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => receiving
+                                .reserve_inventory_outcome_once_v1(demand)
+                                .map_err(|_| BrokerSessionSecurityError::Currentness),
+                            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => receiving
+                                .reserve_prepare_outcome_once_v1(demand)
+                                .map_err(|_| BrokerSessionSecurityError::Currentness),
+                            _ => Err(BrokerSessionSecurityError::Currentness),
+                        },
+                        Err(error) => Err(error),
+                    };
+                    let current = match reserved {
+                        Ok(()) => receiving.require_prepare_retention_v1()
+                            .map_err(|_| BrokerSessionSecurityError::Currentness),
+                        Err(error) => Err(error),
+                    };
+                    current
+                }
+                StorageOutcomeReceivingV1::Lifecycle(receiving) => self.0.reserve_storage_lifecycle_outcome_v1(
+                    &request.0, &observation, receiving,
+                ),
+            };
+            if let Err(error) = current {
+                // The real observed response stays with uncertain request
+                // custody if the genuine receiving owner changed before CAS.
+                return Err(DormantBrokerExecutionFailureV1::OutcomeUnknown {
+                    error: DormantBrokerExecutionErrorV1::Currentness(error),
+                    custody: DormantBrokerOutcomeUnknownV1 {
+                        request,
+                        observation: Some(observation),
+                    },
+                });
+            }
+        }
+        if let Err(error) = self.0.reopen_broker_outcome_with_storage_receiving_v3(&request.0,
+            receiving.as_mut().map(|payer| payer.source_v3())) {
             return Err(DormantBrokerExecutionFailureV1::OutcomeUnknown {
                 error: DormantBrokerExecutionErrorV1::Currentness(error),
                 custody: DormantBrokerOutcomeUnknownV1 {
@@ -1852,11 +2288,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 },
             });
         }
-        match self.commit_authenticated_observation(
+        match self.commit_authenticated_observation_with_storage_receiving_v3(
             DormantReceivedBrokerRequestV1(request.0.clone()),
             observation.clone(),
+            receiving.as_mut().map(|payer| payer.source_v3()),
         ) {
-            Ok(result) => Ok(result),
+            Ok(result) => Ok((result, request)),
             Err(error) => Err(DormantBrokerExecutionFailureV1::OutcomeUnknown {
                 error: DormantBrokerExecutionErrorV1::Currentness(error),
                 custody: DormantBrokerOutcomeUnknownV1 {
@@ -1906,18 +2343,36 @@ impl DormantAuthenticatedBrokerSessionV1 {
         ProtectedBrokerOutcomeCommitResultV1,
         DormantBrokerExecutionFailureV1<aos_sandbox_host::DormantHostBrokerCallErrorV1>,
     > {
+        self.execute_host_apply_and_commit_retaining_v2(request, adapter, None).await
+            .map(|(committed, _)| committed)
+    }
+
+    /// Preserves the actual Host Runtime request through protected Sent.
+    ///
+    /// # Errors
+    /// Retains the same unknown/before-effect request on admission, native,
+    /// domain or terminal ambiguity; it creates no fresh Host permission.
+    pub async fn execute_host_apply_and_commit_retaining_v2(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        adapter: crate::DormantHostBrokerEffectAdapterV1<'_>,
+        retained_agent: Option<&aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
+    ) -> Result<
+        (ProtectedBrokerOutcomeCommitResultV1, DormantReceivedBrokerRequestV1),
+        DormantBrokerExecutionFailureV1<aos_sandbox_host::DormantHostBrokerCallErrorV1>,
+    > {
         let method_matches = request.0.method() == BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
             && adapter.matches_request(&request.0);
         let (request, context) = self.begin_execution(request, method_matches)?;
         let version = ProtocolVersion::new(context.protocol_major(), context.protocol_minor());
         let observation = match adapter
-            .execute_before_outcome(&request.0, version, context.boot_id())
+            .execute_before_outcome(&request.0, retained_agent, version, context.boot_id())
             .await
         {
             Ok(observation) => observation,
             Err(error) => return Err(Self::unknown_domain(request, error)),
         };
-        self.finish_observed_success(request, observation.response().to_vec())
+        self.finish_observed_success_retaining_request_v2(request, observation.response().to_vec())
     }
 
     /// Applies or reads one controller-authenticated Host execution intent.
@@ -1957,7 +2412,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
                     | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
-                    | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
                     | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
@@ -1976,6 +2430,118 @@ impl DormantAuthenticatedBrokerSessionV1 {
             Err(error) => return Err(Self::unknown_domain(request, error)),
         };
         self.finish_observed_success(request, body)
+    }
+
+    /// Reads a fresh QueryExecution27 scope using Host's actual held resident.
+    ///
+    /// The existing protected response pipeline owns CAS/readback, Sent and
+    /// final currentness before the sealed Host resource-disposal callback.
+    /// This cannot renew execution permission or reopen the held journals.
+    ///
+    /// # Errors
+    /// Retains the real received request and all native/financial originals on
+    /// method/scope mismatch, read refusal or authenticated outcome ambiguity.
+    pub async fn execute_host_resident_query_and_commit_v3(
+        &mut self, request: DormantReceivedBrokerRequestV1,
+        host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+        deadline: u64,
+    ) -> Result<(ProtectedBrokerOutcomeCommitResultV1, DormantReceivedBrokerRequestV1),
+        DormantBrokerExecutionFailureV1<crate::HostExecutionHandoffErrorV1>> {
+        let matches = request.0.method() == BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            && request.0.authorization().is_some()
+            && request.0.host_execution_query_data_v3().and_then(|query| query.monitor_v3()).is_some();
+        let (request, context) = self.begin_execution(request, matches)?;
+        let body = match host.query_resident_execution(&request.0, context.boot_id(), deadline).await {
+            Ok(body) => body,
+            Err(cause) => return Err(Self::unknown_domain(request, cause.into())),
+        };
+        self.finish_observed_success_retaining_request_v2(request, body)
+    }
+
+    /// Executes the existing Apply descriptor on Host's actual held59 owner.
+    ///
+    /// # Errors
+    /// Keeps the actual request and original Host debt on every refusal. Only
+    /// real protected outcome CAS/readback and Sent can complete the interval.
+    pub async fn execute_host_accepted_execution_and_commit_v2(
+        &mut self, request: DormantReceivedBrokerRequestV1,
+        descriptor: &std::os::fd::OwnedFd,
+        host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+        agent: Option<&mut aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
+        deadline: u64,
+    ) -> Result<(ProtectedBrokerOutcomeCommitResultV1, DormantReceivedBrokerRequestV1),
+        DormantBrokerExecutionFailureV1<crate::HostExecutionHandoffErrorV1>>
+    {
+        let matches = request.0.method() == BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+            && request.0.authorization().is_some();
+        let (request, context) = match self.begin_execution(request, matches) {
+            Ok(entered) => entered,
+            Err(failure) => {
+                let actual = match &failure {
+                    DormantBrokerExecutionFailureV1::BeforeEffect { request, .. } => &request.0,
+                    DormantBrokerExecutionFailureV1::OutcomeUnknown { custody, .. } => &custody.request.0,
+                };
+                let _ = host.abort_pending_accepted_execution(actual);
+                return Err(failure);
+            }
+        };
+        let Some(agent) = agent else {
+            let _ = host.abort_pending_accepted_execution(&request.0);
+            return Err(Self::unknown_domain(request, crate::HostExecutionHandoffErrorV1::RecoveryRequired));
+        };
+        let body = match host.execute_accepted_execution(&request.0, descriptor,
+            context.boot_id(), agent, deadline).await {
+            Ok(body) => body,
+            Err(error) => {
+                let _ = host.abort_accepted_execution(request.0.request_id(),
+                    request.0.session_binding(), request.0.signed_request_digest());
+                return Err(Self::unknown_domain(request, error.into()));
+            }
+        };
+        let result = self.finish_observed_success_retaining_request_v2(request, body);
+        if let Err(failure) = &result {
+            let original = match failure {
+                DormantBrokerExecutionFailureV1::BeforeEffect { request, .. } => &request.0,
+                DormantBrokerExecutionFailureV1::OutcomeUnknown { custody, .. } => &custody.request.0,
+            };
+            // Preserve the original Session failure and custody; the Host
+            // retains its independently owed terminal/Ack result separately.
+            let _ = host.abort_accepted_execution(original.request_id(),
+                original.session_binding(), original.signed_request_digest());
+        }
+        result
+    }
+
+    /// Executes the paid Host Prepare/Accept flight before its signed outcome.
+    ///
+    /// # Errors
+    /// Keeps the original received request on native/financial/currentness or
+    /// terminal ambiguity. No failed flight becomes an applied or terminal
+    /// success, and no one-shot method37 compatibility path is invoked.
+    pub async fn execute_host_argument_and_commit_v2(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+        agent: Option<&mut aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<(ProtectedBrokerOutcomeCommitResultV1, DormantReceivedBrokerRequestV1),
+        DormantBrokerExecutionFailureV1<crate::HostExecutionHandoffErrorV1>>
+    {
+        let method_matches = matches!(request.0.method(),
+            BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2
+                | BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2)
+            && request.0.authorization().is_some();
+        let (request, context) = self.begin_execution(request, method_matches)?;
+        let Some(agent) = agent else {
+            return Err(Self::unknown_domain(request, crate::HostExecutionHandoffErrorV1::RecoveryRequired));
+        };
+        let body = match host.execute_prepared_argument(&request.0, context.boot_id(), agent,
+            deadline_boottime_nanoseconds).await
+        {
+            Ok(body) => body,
+            Err(error) => return Err(Self::unknown_domain(request, error.into())),
+        };
+        self.finish_observed_success_retaining_request_v2(request, body)
     }
 
     /// Executes a Host observe, inventory, or effect query before signing it.
@@ -3345,6 +3911,45 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.finish_observed_success(request, observation.response().to_vec())
     }
 
+    fn begin_storage_lifecycle_execution_v1<Domain>(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        method_matches: bool,
+        receiving: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+        native_admission: &mut Option<aos_sandbox::StorageReceivingClosedV1>,
+    ) -> Result<(DormantReceivedBrokerRequestV1, ProtectedBrokerSessionVerificationContextV1),
+        DormantBrokerExecutionFailureV1<Domain>>
+    {
+        if let Err(cause) = self.0.arm_storage_request_post_v1(receiving) {
+            *native_admission = Some(cause);
+            return Err(DormantBrokerExecutionFailureV1::BeforeEffect {
+                error: BrokerSessionSecurityError::Currentness, request,
+            });
+        }
+        // The independent observation was armed before the actual
+        // Domain reservation can poison admission. It still executes
+        // directly on refusal, while this same request stays resident.
+        if let Err(cause) = self.0.reserve_storage_lifecycle_domain_v1(receiving) {
+            *native_admission = Some(cause);
+            let _post = self.0.finish_storage_operation_post_v1(receiving);
+            return Err(DormantBrokerExecutionFailureV1::BeforeEffect {
+                error: BrokerSessionSecurityError::Currentness, request,
+            });
+        }
+        let began = self.begin_execution_with_storage_receiving_v3(request, method_matches, Some(receiving));
+        let post = self.0.finish_storage_operation_post_v1(receiving);
+        match (began, post) {
+            (Err(failure), _) => return Err(failure),
+            (Ok((request, context)), Ok(())) => Ok((request, context)),
+            (Ok((request, _)), Err(cause)) => {
+                *native_admission = Some(cause);
+                return Err(DormantBrokerExecutionFailureV1::BeforeEffect {
+                    error: BrokerSessionSecurityError::Currentness, request,
+                });
+            }
+        }
+    }
+
     /// Executes Storage Apply before signing a committed physical result.
     ///
     /// # Errors
@@ -3359,58 +3964,103 @@ impl DormantAuthenticatedBrokerSessionV1 {
         ProtectedBrokerOutcomeCommitResultV1,
         DormantBrokerExecutionFailureV1<aos_sandbox_storage::DormantStorageBrokerCallErrorV1>,
     > {
-        let method_matches = request.0.method() == BrokerMethod::BROKER_METHOD_STORAGE_APPLY
-            && adapter.matches_request(&request.0);
-        let (request, context) = self.begin_execution(request, method_matches)?;
-        let version = ProtocolVersion::new(context.protocol_major(), context.protocol_minor());
-        let observation =
-            match adapter.execute_before_outcome(&request.0, version, context.boot_id()) {
-                Ok(observation) => observation,
-                Err(error) => return Err(Self::unknown_domain(request, error)),
-            };
-        let response = match observation.response() {
-            Ok(response) => response,
-            Err(error) => return Err(Self::unknown_domain(request, error)),
-        };
-        self.finish_observed_success(request, response)
+        self.execute_storage_apply_inner_v1(request, StorageApplyDispatchV1::Ordinary(adapter))
     }
 
-    /// Observes the original Storage candidate before the same BSA terminal.
-    pub(crate) fn execute_storage_capture_candidate_and_commit_v1(
+    pub(crate) fn execute_storage_apply_receiving_and_commit_v1(
         &mut self,
         request: DormantReceivedBrokerRequestV1,
         storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
-        output: &aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+        receiving: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+        native_admission: &mut Option<aos_sandbox::StorageReceivingClosedV1>,
     ) -> Result<
         ProtectedBrokerOutcomeCommitResultV1,
         DormantBrokerExecutionFailureV1<aos_sandbox_storage::DormantStorageBrokerCallErrorV1>,
     > {
-        let method_matches = request.method()
-            == BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
-            && request.authorization_artifacts().is_some();
-        let (request, context) = self.begin_execution(request, method_matches)?;
+        self.execute_storage_apply_inner_v1(request, StorageApplyDispatchV1::Receiving { storage, receiving, native_admission })
+    }
+
+    fn execute_storage_apply_inner_v1(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        mut dispatch: StorageApplyDispatchV1<'_, '_, '_>,
+    ) -> Result<
+        ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<aos_sandbox_storage::DormantStorageBrokerCallErrorV1>,
+    > {
+        let method_matches = request.0.method() == BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+            && match &dispatch {
+                StorageApplyDispatchV1::Ordinary(adapter) => adapter.matches_request(&request.0),
+                StorageApplyDispatchV1::Receiving { .. } => request.authorization_artifacts().is_some(),
+            };
+        let (request, context) = match &mut dispatch {
+            StorageApplyDispatchV1::Receiving { receiving, native_admission, .. } if method_matches => {
+                self.begin_storage_lifecycle_execution_v1(request, method_matches, receiving, native_admission)?
+            }
+            _ => self.begin_execution(request, method_matches)?,
+        };
         let version = ProtocolVersion::new(context.protocol_major(), context.protocol_minor());
-        let boot = match aos_sandbox_linux::boot::KernelBootId::from_bytes(context.boot_id()) {
-            Ok(boot) => boot,
-            Err(error) => {
-                let error = aos_sandbox_storage::StorageRuntimeError::from(
-                    aos_sandbox_storage::ZfsWorkerError::Linux(error),
-                );
-                return Err(Self::unknown_domain(request, error.into()));
+        let (response, receiving) = match dispatch {
+            StorageApplyDispatchV1::Ordinary(adapter) => {
+                let observation = match adapter.execute_before_outcome(&request.0, version, context.boot_id()) {
+                    Ok(observation) => observation,
+                    Err(error) => return Err(Self::unknown_domain(request, error)),
+                };
+                let response = match observation.response() {
+                    Ok(response) => response,
+                    Err(error) => return Err(Self::unknown_domain(request, error)),
+                };
+                (response, None)
+            }
+            StorageApplyDispatchV1::Receiving { storage, receiving, .. } => {
+                let response = match self.0.consume_storage_apply_receiving_v1(
+                    &request.0, version, context.boot_id(), storage, receiving,
+                ) {
+                    Ok(response) => response,
+                    Err(error) => return Err(Self::unknown_domain(request, error)),
+                };
+                (response, Some(StorageOutcomeReceivingV1::Lifecycle(receiving)))
             }
         };
-        let response = match storage.observe_original_capture_candidate_v1(
-            output, &request.0, version, boot,
+        self.finish_observed_success_with_storage_payer_v1(request, response, receiving)
+    }
+
+    pub(crate) fn execute_storage_prepare_receiving_and_commit_v1(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<
+        ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<aos_sandbox_storage::DormantStorageBrokerCallErrorV1>,
+    > {
+        let method_matches = request.method() == BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+            && request.authorization_artifacts().is_some();
+        let (request, context) = self.begin_execution_with_storage_receiving_v3(
+            request, method_matches, Some(receiving),
+        )?;
+        let Some(artifacts) = request.authorization_artifacts() else {
+            return Err(DormantBrokerExecutionFailureV1::BeforeEffect {
+                error: BrokerSessionSecurityError::Currentness,
+                request,
+            });
+        };
+        let version = ProtocolVersion::new(context.protocol_major(), context.protocol_minor());
+        let response = match storage.consume_authenticated_prepare_catalog_receiving_v1(
+            request.0.exact_body(),
+            request.0.request_id(),
+            aos_sandbox_core::ObjectDigest::from_bytes(Sha256::digest(request.0.exact_body()).into()),
+            artifacts,
+            request.0.peer(),
+            request.0.peer_policy(),
+            version,
+            context.boot_id(),
+            receiving,
         ) {
             Ok(response) => response,
             Err(error) => return Err(Self::unknown_domain(request, error)),
         };
-        // The actual source must still match immediately before the existing
-        // canonical signing/terminal-CAS engine; no caller fence is accepted.
-        if let Err(error) = storage.recheck_original_capture_candidate_v1(output, true) {
-            return Err(Self::unknown_domain(request, error));
-        }
-        self.finish_observed_success(request, response)
+        self.finish_observed_success_with_storage_receiving_v1(request, response, Some(receiving))
     }
 
     /// Executes Storage catalog preparation, repair, grouped snapshot, or
@@ -3429,25 +4079,73 @@ impl DormantAuthenticatedBrokerSessionV1 {
         ProtectedBrokerOutcomeCommitResultV1,
         DormantBrokerExecutionFailureV1<aos_sandbox_storage::DormantStorageBrokerCallErrorV1>,
     > {
-        let method_matches = matches!(
-            request.0.method(),
-            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
-                | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
-                | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
-                | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
-                | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
-        ) && adapter.matches_request(&request.0);
-        let (request, context) = self.begin_execution(request, method_matches)?;
-        let version = ProtocolVersion::new(context.protocol_major(), context.protocol_minor());
-        let response = match adapter.execute_operation_before_outcome(
-            &request.0,
-            version,
-            context.boot_id(),
-        ) {
-            Ok(response) => response,
-            Err(error) => return Err(Self::unknown_domain(request, error)),
+        self.execute_storage_operation_inner_v1(request, StorageOperationDispatchV1::Ordinary(adapter))
+    }
+
+    pub(crate) fn execute_storage_operation_lifecycle_and_commit_v1(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        receiving: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+        native_admission: &mut Option<aos_sandbox::StorageReceivingClosedV1>,
+    ) -> Result<ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<aos_sandbox_storage::DormantStorageBrokerCallErrorV1>>
+    {
+        self.execute_storage_operation_inner_v1(request,
+            StorageOperationDispatchV1::Lifecycle { storage, receiving, native_admission })
+    }
+
+    fn execute_storage_operation_inner_v1(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        mut dispatch: StorageOperationDispatchV1<'_, '_, '_>,
+    ) -> Result<ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<aos_sandbox_storage::DormantStorageBrokerCallErrorV1>>
+    {
+        let method_matches = match &dispatch {
+            StorageOperationDispatchV1::Ordinary(adapter) => matches!(
+                request.0.method(),
+                BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+                    | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
+                    | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
+                    | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+            ) && adapter.matches_request(&request.0),
+            StorageOperationDispatchV1::Lifecycle { .. } =>
+                matches!(request.0.method(),
+                    BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+                        | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
+                        | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT)
+                    && request.authorization_artifacts().is_some(),
         };
-        self.finish_observed_success(request, response)
+        let (request, context) = match &mut dispatch {
+            StorageOperationDispatchV1::Lifecycle { receiving, native_admission, .. }
+                if method_matches => self.begin_storage_lifecycle_execution_v1(
+                    request, method_matches, receiving, native_admission,
+                )?,
+            _ => self.begin_execution(request, method_matches)?,
+        };
+        let version = ProtocolVersion::new(context.protocol_major(), context.protocol_minor());
+        let (response, receiving) = match dispatch {
+            StorageOperationDispatchV1::Ordinary(adapter) => {
+                let response = match adapter.execute_operation_before_outcome(
+                    &request.0, version, context.boot_id(),
+                ) {
+                    Ok(response) => response,
+                    Err(error) => return Err(Self::unknown_domain(request, error)),
+                };
+                (response, None)
+            }
+            StorageOperationDispatchV1::Lifecycle { storage, receiving, .. } => {
+                let response = match self.0.consume_storage_operation_lifecycle_v1(
+                    &request.0, version, context.boot_id(), storage, receiving,
+                ) {
+                    Ok(response) => response,
+                    Err(error) => return Err(Self::unknown_domain(request, error)),
+                };
+                (response, Some(StorageOutcomeReceivingV1::Lifecycle(receiving)))
+            }
+        };
+        self.finish_observed_success_with_storage_payer_v1(request, response, receiving)
     }
 
     /// Signs a recovery-only decision from the old protected Storage session.
@@ -3494,10 +4192,55 @@ impl DormantAuthenticatedBrokerSessionV1 {
         ProtectedBrokerOutcomeCommitResultV1,
         DormantBrokerExecutionFailureV1<aos_sandbox_storage::StorageRuntimeError>,
     > {
+        self.execute_storage_inventory_with_storage_receiving_v1(request, storage, None)
+    }
+
+    pub(crate) fn execute_storage_inventory_with_storage_receiving_v1(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        receiving: Option<&mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>>,
+    ) -> Result<ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<aos_sandbox_storage::StorageRuntimeError>>
+    {
+        let dispatch = match receiving {
+            Some(receiving) => StorageInventoryDispatchV1::Prepare(receiving),
+            None => StorageInventoryDispatchV1::Ordinary,
+        };
+        self.execute_storage_inventory_inner_v1(request, storage, dispatch)
+    }
+
+    pub(crate) fn execute_storage_inventory_lifecycle_and_commit_v1(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        receiving: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+        native_admission: &mut Option<aos_sandbox::StorageReceivingClosedV1>,
+    ) -> Result<ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<aos_sandbox_storage::StorageRuntimeError>>
+    {
+        self.execute_storage_inventory_inner_v1(request, storage,
+            StorageInventoryDispatchV1::Lifecycle { receiving, native_admission })
+    }
+
+    fn execute_storage_inventory_inner_v1(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        mut dispatch: StorageInventoryDispatchV1<'_, '_, '_>,
+    ) -> Result<ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<aos_sandbox_storage::StorageRuntimeError>>
+    {
         let method_matches = request.0.method()
             == BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
             && request.0.authorization().is_none();
-        let (request, _) = self.begin_execution(request, method_matches)?;
+        let (request, _) = match &mut dispatch {
+            StorageInventoryDispatchV1::Lifecycle { receiving, native_admission } =>
+                self.begin_storage_lifecycle_execution_v1(request, method_matches, receiving, native_admission)?,
+            StorageInventoryDispatchV1::Prepare(receiving) =>
+                self.begin_execution_with_storage_receiving_v3(request, method_matches, Some(&mut **receiving))?,
+            _ => self.begin_execution(request, method_matches)?,
+        };
         let Some(worker_cutoff) = request
             .0
             .deadline_boottime_nanoseconds()
@@ -3508,43 +4251,23 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 request,
             });
         };
-        let response = match storage
-            .lifecycle_inventory_resources(request.0.deadline_boottime_nanoseconds(), worker_cutoff)
-        {
+        let (observed, receiving) = match dispatch {
+            StorageInventoryDispatchV1::Prepare(receiving) => (storage.lifecycle_inventory_resources_receiving_v1(
+                request.0.deadline_boottime_nanoseconds(), worker_cutoff, receiving,
+            ), Some(StorageOutcomeReceivingV1::Prepare(receiving))),
+            StorageInventoryDispatchV1::Lifecycle { receiving, .. } => (
+                self.0.consume_storage_inventory_receiving_v1(&request.0, worker_cutoff, storage, receiving),
+                Some(StorageOutcomeReceivingV1::Lifecycle(receiving)),
+            ),
+            StorageInventoryDispatchV1::Ordinary => (storage.lifecycle_inventory_resources(
+                request.0.deadline_boottime_nanoseconds(), worker_cutoff,
+            ), None),
+        };
+        let response = match observed {
             Ok(response) => response,
             Err(error) => return Err(Self::unknown_domain(request, error)),
         };
-        self.finish_observed_success(request, response)
-    }
-
-    /// Admits Network Apply and signs success only for a committed replay observation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a domain or protected-currentness error while Network work is
-    /// prepared, ambiguous, or otherwise lacks a committed physical result.
-    pub fn execute_network_apply_and_commit(
-        &mut self,
-        request: DormantReceivedBrokerRequestV1,
-        adapter: crate::DormantNetworkBrokerEffectAdapterV1<'_>,
-    ) -> Result<
-        ProtectedBrokerOutcomeCommitResultV1,
-        DormantBrokerExecutionFailureV1<aos_sandbox_network::DormantNetworkBrokerCallErrorV1>,
-    > {
-        let method_matches = request.0.method() == BrokerMethod::BROKER_METHOD_NETWORK_APPLY
-            && adapter.matches_request(&request.0);
-        let (request, context) = self.begin_execution(request, method_matches)?;
-        let version = ProtocolVersion::new(context.protocol_major(), context.protocol_minor());
-        let observation =
-            match adapter.execute_before_outcome(&request.0, version, context.boot_id()) {
-                Ok(observation) => observation,
-                Err(error) => return Err(Self::unknown_domain(request, error)),
-            };
-        let response = match observation.response() {
-            Ok(response) => response,
-            Err(error) => return Err(Self::unknown_domain(request, error)),
-        };
-        self.finish_observed_success(request, response)
+        self.finish_observed_success_with_storage_payer_v1(request, response, receiving)
     }
 
     /// Reads authoritative Network inventory before signing its exact body.
@@ -3590,6 +4313,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
         request: DormantReceivedBrokerRequestV1,
         observation: ProtectedBrokerDomainResponseV1,
     ) -> Result<ProtectedBrokerOutcomeCommitResultV1, BrokerSessionSecurityError> {
+        self.commit_authenticated_observation_with_storage_receiving_v3(request, observation, None)
+    }
+
+    fn commit_authenticated_observation_with_storage_receiving_v3(&mut self,
+        request: DormantReceivedBrokerRequestV1,
+        observation: ProtectedBrokerDomainResponseV1,
+        mut receiving: Option<&mut dyn crate::recovery::StorageFloorFinancialSourceV2>,
+    ) -> Result<ProtectedBrokerOutcomeCommitResultV1, BrokerSessionSecurityError> {
         if observation.method != request.0.method()
             || observation.request_id != request.0.request_id()
             || observation.signed_request_digest != request.0.signed_request_digest()
@@ -3602,8 +4333,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
             body: observation.body,
             ..Default::default()
         };
-        let pending = self.0.prepare_broker_outcome(&request.0, message)?;
-        Ok(self.0.commit_broker_outcome(pending))
+        let pending = self.0.prepare_broker_outcome_with_storage_receiving_v3(&request.0, message,
+            receiving.as_mut().map(|source| &mut **source as &mut dyn crate::recovery::StorageFloorFinancialSourceV2))?;
+        Ok(self.0.commit_outcome_with_storage_receiving_v3(pending, receiving))
     }
 
     /// Recovers an ambiguous client request installation without exposing bytes.
@@ -4119,6 +4851,125 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.0.send_original_nonadmitting_packet(committed, returned)
     }
 
+    pub(crate) fn borrow_prepared_session_retirement_v1<'cut, 'original>(
+        &self,
+        receiving: &'cut mut aos_sandbox::StoragePrepareReceivingLoanV1<'original>,
+    ) -> Result<aos_sandbox::StorageLifecycleSessionLoanV1<'cut, 'original>, aos_sandbox::StorageReceivingClosedV1> {
+        self.0.borrow_prepared_session_retirement_v1(receiving)
+    }
+
+    pub(crate) fn reserve_storage_lifecycle_replay_v1(
+        &self,
+        replay: &DormantBrokerTerminalReplayV1,
+        receiving: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+        native_error: &mut Option<aos_sandbox::StorageReceivingClosedV1>,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.reserve_storage_lifecycle_replay_v1(&replay.0, receiving, native_error)
+    }
+
+    pub(crate) fn compare_retained_storage_replay_v1(
+        &mut self,
+        replay: &DormantBrokerTerminalReplayV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.compare_retained_storage_replay_v1(&replay.0)
+    }
+
+    pub(crate) fn compare_retained_storage_terminal_owner_v1(
+        &mut self,
+        terminal: &crate::recovery::RetainedStorageTerminalV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.compare_retained_storage_terminal_owner_v1(terminal)
+    }
+
+    pub(crate) fn into_retained_storage_terminal_owner_v1(
+        self,
+        terminal: crate::recovery::RetainedStorageTerminalV1,
+    ) -> crate::recovery::ProtectedBrokerSessionOwnerV1 {
+        self.0.into_retained_storage_terminal_owner_v1(terminal)
+    }
+
+    pub(crate) fn compare_retained_storage_terminal_v1(
+        &mut self,
+        terminal: &ProtectedBrokerOutcomeCommittedAdvancementV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.compare_retained_storage_terminal_v1(terminal)
+    }
+
+    pub(crate) fn end_storage_session_transport_v1(&mut self) -> aos_sandbox_linux::seqpacket::StorageSeqpacketEndAttemptV1 {
+        self.0.end_storage_session_transport_v1()
+    }
+
+    pub(crate) fn require_storage_lifecycle_current_v1(
+        &self,
+        receiving: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+    ) -> Result<(), aos_sandbox::StorageReceivingClosedV1> {
+        self.0.require_storage_lifecycle_current_v1(receiving)
+    }
+
+    pub(crate) fn resume_storage_lifecycle_v1<'cut, 'original>(
+        &self,
+        receiving: &'cut mut aos_sandbox::StoragePrepareReceivingLoanV1<'original>,
+    ) -> Result<aos_sandbox::StorageLifecycleSessionLoanV1<'cut, 'original>, aos_sandbox::StorageReceivingClosedV1> {
+        self.0.resume_storage_lifecycle_v1(receiving)
+    }
+
+    pub(crate) fn begin_initial_storage_lifecycle_v1<'cut, 'original>(
+        &self,
+        receiving: &'cut mut aos_sandbox::StoragePrepareReceivingLoanV1<'original>,
+    ) -> Result<aos_sandbox::StorageLifecycleSessionLoanV1<'cut, 'original>, aos_sandbox::StorageReceivingClosedV1> {
+        self.0.begin_initial_storage_lifecycle_v1(receiving)
+    }
+
+    pub(crate) fn arm_storage_request_post_v1(
+        &self,
+        receiving: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+    ) -> Result<(), aos_sandbox::StorageReceivingClosedV1> {
+        self.0.arm_storage_request_post_v1(receiving)
+    }
+
+    pub(crate) fn arm_storage_operation_post_v1(
+        &self,
+        receiving: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+    ) -> Result<(), aos_sandbox::StorageReceivingClosedV1> {
+        self.0.arm_storage_operation_post_v1(receiving)
+    }
+
+    pub(crate) fn finish_storage_operation_post_v1(
+        &self,
+        receiving: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+    ) -> Result<(), aos_sandbox::StorageReceivingClosedV1> {
+        self.0.finish_storage_operation_post_v1(receiving)
+    }
+
+    pub(crate) fn prepare_storage_operation_disposal_v1<'phase, 'cut, 'original>(
+        &self,
+        receiving: &'phase mut aos_sandbox::StorageLifecycleSessionLoanV1<'cut, 'original>,
+        sent: aos_sandbox_linux::seqpacket::StorageSeqpacketSendAttemptV1,
+    ) -> Result<
+        aos_sandbox::StorageLifecyclePositiveDisposalV1<'phase, 'cut, 'original>,
+        aos_sandbox::StorageLifecycleDisposalErrorV1,
+    > {
+        self.0.prepare_storage_operation_disposal_v1(receiving, sent)
+    }
+
+    pub(crate) fn prepare_storage_transport_disposal_v1<'phase, 'cut, 'original>(
+        &self,
+        receiving: &'phase mut aos_sandbox::StorageLifecycleSessionLoanV1<'cut, 'original>,
+        ended: aos_sandbox_linux::seqpacket::StorageSeqpacketEndAttemptV1,
+    ) -> Result<
+        aos_sandbox::StorageLifecyclePositiveDisposalV1<'phase, 'cut, 'original>,
+        aos_sandbox::StorageLifecycleDisposalErrorV1,
+    > {
+        self.0.prepare_storage_transport_disposal_v1(receiving, ended)
+    }
+
+    pub(crate) fn into_retained_storage_owner_v1(
+        self,
+        terminal: crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
+    ) -> crate::recovery::ProtectedBrokerSessionOwnerV1 {
+        self.0.into_retained_storage_owner_v1(terminal)
+    }
+
     /// Sends only a terminal response already confirmed by protected readback.
     ///
     /// # Errors
@@ -4129,7 +4980,64 @@ impl DormantAuthenticatedBrokerSessionV1 {
         &mut self,
         committed: ProtectedBrokerOutcomeCommittedAdvancementV1,
     ) -> Result<DormantBrokerResponseSendProgressV1, DormantBrokerSessionHandshakeErrorV1> {
-        let committed = match self.0.revalidate_broker_committed(committed) {
+        self.send_authenticated_response_inner(committed, None, None)
+    }
+
+    pub(crate) fn send_authenticated_response_storage_v1(
+        &mut self,
+        committed: ProtectedBrokerOutcomeCommittedAdvancementV1,
+        returned: &mut Option<handshake::StorageResponseSendAttemptV1>,
+    ) -> Result<DormantBrokerResponseSendProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.send_authenticated_response_inner(committed, Some(returned), None)
+    }
+
+    pub(crate) fn send_storage_response_receiving_v3(&mut self,
+        committed: ProtectedBrokerOutcomeCommittedAdvancementV1,
+        returned: &mut Option<handshake::StorageResponseSendAttemptV1>,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2,
+    ) -> Result<DormantBrokerResponseSendProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.send_authenticated_response_inner(committed, Some(returned), Some(receiving))
+    }
+
+    pub(crate) fn compare_storage_terminal_receiving_v3(&mut self,
+        terminal: &ProtectedBrokerOutcomeCommittedAdvancementV1,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.compare_storage_terminal_receiving_v3(terminal, receiving)
+    }
+
+    pub(crate) fn dispose_storage_positive_replays_v3(&mut self) {
+        self.0.dispose_storage_positive_replays_v3();
+    }
+
+    pub(crate) fn recheck_storage_receiving_v3(&mut self,
+        receiving: Option<&mut dyn crate::recovery::StorageFloorFinancialSourceV2>,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.recheck_storage_receiving_v3(receiving)
+    }
+
+    pub(crate) fn compare_storage_terminal_owner_receiving_v3(&mut self,
+        terminal: &crate::recovery::RetainedStorageTerminalV1,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.compare_storage_terminal_owner_receiving_v3(terminal, receiving)
+    }
+
+    pub(crate) fn compare_storage_replay_receiving_v3(&mut self,
+        replay: &DormantBrokerTerminalReplayV1,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.compare_storage_replay_receiving_v3(&replay.0, receiving)
+    }
+
+    fn send_authenticated_response_inner(
+        &mut self,
+        committed: ProtectedBrokerOutcomeCommittedAdvancementV1,
+        returned: Option<&mut Option<handshake::StorageResponseSendAttemptV1>>,
+        mut receiving: Option<&mut dyn crate::recovery::StorageFloorFinancialSourceV2>,
+    ) -> Result<DormantBrokerResponseSendProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        let committed = match self.0.revalidate_storage_committed_receiving_v3(committed, receiving.as_mut()
+            .map(|source| &mut **source as &mut dyn crate::recovery::StorageFloorFinancialSourceV2)) {
             Ok(committed) => committed,
             Err((error, committed)) => {
                 return Ok(DormantBrokerResponseSendProgressV1::RecoveryRequired {
@@ -4138,8 +5046,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 });
             }
         };
-        let send = self.0.send_response_packet(committed.exact_packet());
-        let committed = match self.0.revalidate_broker_committed(committed) {
+        let send = match returned {
+            Some(returned) => self.0.send_storage_response_receiving_v3(committed.exact_packet(), returned,
+                receiving.as_mut().map(|source| &mut **source as &mut dyn crate::recovery::StorageFloorFinancialSourceV2)),
+            None => self.0.send_response_packet(committed.exact_packet()),
+        };
+        let committed = match self.0.revalidate_storage_committed_receiving_v3(committed, receiving) {
             Ok(committed) => committed,
             Err((error, committed)) => {
                 return Ok(DormantBrokerResponseSendProgressV1::RecoveryRequired {
@@ -4169,8 +5081,32 @@ impl DormantAuthenticatedBrokerSessionV1 {
     pub fn send_authenticated_terminal_replay(
         &mut self,
         replay: DormantBrokerTerminalReplayV1,
-    ) -> Result<DormantBrokerTerminalReplaySendProgressV1, DormantBrokerSessionHandshakeErrorV1>
-    {
+    ) -> Result<DormantBrokerTerminalReplaySendProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.send_authenticated_terminal_replay_inner(replay, None, None)
+    }
+
+    pub(crate) fn send_authenticated_terminal_replay_storage_v1(
+        &mut self,
+        replay: DormantBrokerTerminalReplayV1,
+        returned: &mut Option<handshake::StorageResponseSendAttemptV1>,
+    ) -> Result<DormantBrokerTerminalReplaySendProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.send_authenticated_terminal_replay_inner(replay, Some(returned), None)
+    }
+
+    pub(crate) fn send_storage_terminal_replay_receiving_v3(&mut self,
+        replay: DormantBrokerTerminalReplayV1,
+        returned: &mut Option<handshake::StorageResponseSendAttemptV1>,
+        receiving: &mut dyn crate::recovery::StorageFloorFinancialSourceV2,
+    ) -> Result<DormantBrokerTerminalReplaySendProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.send_authenticated_terminal_replay_inner(replay, Some(returned), Some(receiving))
+    }
+
+    fn send_authenticated_terminal_replay_inner(
+        &mut self,
+        replay: DormantBrokerTerminalReplayV1,
+        returned: Option<&mut Option<handshake::StorageResponseSendAttemptV1>>,
+        mut receiving: Option<&mut dyn crate::recovery::StorageFloorFinancialSourceV2>,
+    ) -> Result<DormantBrokerTerminalReplaySendProgressV1, DormantBrokerSessionHandshakeErrorV1> {
         let descriptor_roles = match replay.0.response_descriptor_roles() {
             Ok(descriptor_roles) => descriptor_roles,
             Err(error) => {
@@ -4189,7 +5125,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 ),
             );
         }
-        let replay = match self.0.revalidate_broker_replay(replay.0) {
+        let replay = match self.0.revalidate_storage_replay_receiving_v3(replay.0, receiving.as_mut()
+            .map(|source| &mut **source as &mut dyn crate::recovery::StorageFloorFinancialSourceV2)) {
             Ok(replay) => DormantBrokerTerminalReplayV1(replay),
             Err((error, replay)) => {
                 return Ok(
@@ -4200,8 +5137,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 );
             }
         };
-        let send = self.0.send_response_packet(replay.0.exact_packet());
-        let replay = match self.0.revalidate_broker_replay(replay.0) {
+        let send = match returned {
+            Some(returned) => self.0.send_storage_response_receiving_v3(replay.0.exact_packet(), returned,
+                receiving.as_mut().map(|source| &mut **source as &mut dyn crate::recovery::StorageFloorFinancialSourceV2)),
+            None => self.0.send_response_packet(replay.0.exact_packet()),
+        };
+        let replay = match self.0.revalidate_storage_replay_receiving_v3(replay.0, receiving) {
             Ok(replay) => DormantBrokerTerminalReplayV1(replay),
             Err((error, replay)) => {
                 return Ok(
@@ -4348,8 +5289,109 @@ impl DormantAuthenticatedBrokerSessionV1 {
         )
     }
 
+    /// Quotes only the actual same-Session adjacent Host Inventory stage.
+    ///
+    /// # Errors
+    /// Retains forecast refusal and rejects another protocol or negotiated method.
+    pub fn host_stop_inventory_demand_v5(&self,
+        original: &mut crate::HostExecutionSessionReceivingOriginalV1,
+    ) -> Result<aos_sandbox_core::ResourceVector, BrokerSessionSecurityError> {
+        self.0.host_stop_inventory_demand_v5(original)
+    }
+
+    /// Prepares only the adjacent Inventory under the exact signed Stop cutoff.
+    ///
+    /// Coordinates attenuate the actual Stop; they cannot extend its lifetime
+    /// or authorize another effect. The existing retained request engine owns
+    /// native checks, strict semantic decoding, signing and exact reservation.
+    ///
+    /// # Errors
+    /// Retains request/native refusal, rejecting foreign method, cutoff, Source
+    /// selector, negotiated coordinates or exact protected append ambiguity.
+    pub fn prepare_host_stop_inventory_retaining_v5(&mut self,
+        effect: &PreparedAuthorityEffectV1,
+        original: &mut crate::HostStopRequestPreparationOriginalV5,
+        build: impl FnOnce(DormantBrokerRequestCoordinatesV1) -> BrokerRequestEnvelope,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        let coordinates = self.0.host_stop_inventory_coordinates_v5(effect)?;
+        let envelope = build(coordinates);
+        let method = BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME;
+        if envelope.method.as_known() != Some(method) || !envelope.descriptors.is_empty()
+            || envelope.authorization.as_option().is_some()
+        { return Err(BrokerSessionSecurityError::Currentness); }
+        let (authenticated, initialize) = self.0.prepare_client_request_retaining_v1(
+            envelope, method, 0, coordinates.request_id(), coordinates.deadline_boottime_nanoseconds(),
+            coordinates.maximum_response_bytes(), &mut original.request)?;
+        self.reserve_exact_authenticated_request(authenticated, initialize)
+    }
+
+    /// Prepares explicit ongoing Capture under its first candidate acquisition cut.
+    ///
+    /// Historical46 is verified as exact signed DATA by the common request
+    /// decoder. Its completed delivery deadline is not an ongoing permit.
+    ///
+    /// # Errors
+    /// Refuses unavailable methods, expired candidate acquisition or any failure
+    /// of the existing authenticated request and native currentness engine.
+    pub fn prepare_storage_capture_reserve_ongoing_v3(
+        &mut self,
+        candidate: &aos_sandbox_protocol::storage_capture_candidate::ValidatedStorageCaptureCandidateV1,
+        build: impl FnOnce(DormantBrokerRequestCoordinatesV1)
+            -> Result<BrokerRequestEnvelope, BrokerSessionSecurityError>,
+        validate: impl FnOnce(&AuthenticatedBrokerMethodRequestV1) -> bool,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        self.prepare_authenticated_request_with_original_cut(
+            BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1,
+            build, validate, Some(candidate.expiry_boottime_nanoseconds()),
+        )
+    }
+
+    /// Prepares a fresh read-only Query61 under the actual current assignment cut.
+    ///
+    /// # Errors
+    /// Rejects unavailable methods/currentness or unchanged native preparation
+    /// failures. This method never enters Reserve or renews its original source.
+    pub fn prepare_storage_capture_query_v2(
+        &mut self,
+        assignment: &aos_sandbox::runtime_scope::CurrentAssignmentTarget,
+        build: impl FnOnce(DormantBrokerRequestCoordinatesV1)
+            -> Result<BrokerRequestEnvelope, BrokerSessionSecurityError>,
+        validate: impl FnOnce(&AuthenticatedBrokerMethodRequestV1) -> bool,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        self.prepare_authenticated_request_with_original_cut(
+            BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1,
+            build, validate, Some(assignment.deadline_boottime_nanoseconds()),
+        )
+    }
+
+    /// Prepares only Accept under the original nonrenewable proposal cutoff.
+    ///
+    /// This DATA restricts a request window. It does not establish a completed
+    /// Prepare or same-Session authority; the closed execution caller must
+    /// rejoin its actual predecessor owner before invoking this method.
+    ///
+    /// # Errors
+    /// Rejects malformed preparation DATA or any failure of the existing
+    /// negotiated request, signer, protected journal and currentness engine.
+    pub fn prepare_host_execution_argument_accept_v2(
+        &mut self,
+        preparation: &aos_sandbox_protocol::host_execution_argument::preparation::HostArgumentPreparationV2,
+        build: impl FnOnce(DormantBrokerRequestCoordinatesV1)
+            -> Result<BrokerRequestEnvelope, BrokerSessionSecurityError>,
+        validate: impl FnOnce(&AuthenticatedBrokerMethodRequestV1) -> bool,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        let source = preparation.proposed_source();
+        let mut deadline = [0; 8];
+        deadline.copy_from_slice(&source[296..304]);
+        self.prepare_authenticated_request_with_original_cut(
+            BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2,
+            build, validate, Some(u64::from_be_bytes(deadline)),
+        )
+    }
+
     // Ordinary callers retain their original coordinates. Only the closed
-    // coverage adapter supplies an earlier original flight cutoff; this never
+    // coverage and prepared execution adapters supply an earlier original
+    // flight cutoff; this never
     // renews the session's own request window or skips its admission engine.
     fn prepare_authenticated_request_with_original_cut(
         &mut self,
@@ -4433,11 +5475,45 @@ impl DormantAuthenticatedBrokerSessionV1 {
         effect: &PreparedAuthorityEffectV1,
         validate: impl FnOnce(&AuthenticatedBrokerMethodRequestV1) -> bool,
     ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        self.prepare_authority_effect_engine_v5(effect, validate, None)
+    }
+
+    /// Retains one genuine Stop preparation using the actual paid Source pair.
+    ///
+    /// The pair only attenuates Session limits. The canonical request and its
+    /// signed artifacts still pass the unchanged sole admission/signing engine.
+    ///
+    /// # Errors
+    /// Retains native/parser refusal and rejects a different method, request,
+    /// signed scope, negotiated limit, currentness or caller comparison.
+    pub fn prepare_host_stop_retaining_v5(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+        clock: aos_sandbox_core::RawPairedClockSample,
+        original: &mut crate::HostStopRequestPreparationOriginalV5,
+        validate: impl FnOnce(&AuthenticatedBrokerMethodRequestV1) -> bool,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        self.prepare_authority_effect_engine_v5(effect, validate, Some((clock, original)))
+    }
+
+    fn prepare_authority_effect_engine_v5(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+        validate: impl FnOnce(&AuthenticatedBrokerMethodRequestV1) -> bool,
+        retained: Option<(aos_sandbox_core::RawPairedClockSample,
+            &mut crate::HostStopRequestPreparationOriginalV5)>,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
         let request = effect.broker_request().map_err(|_| {
             BrokerSessionSecurityError::manifest("durable authority effect request")
         })?;
+        if retained.is_some() && request.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
         let (maximum_deadline, negotiated_response_bytes, protocol_version, audience) =
-            self.0.client_request_limits()?;
+            match retained.as_ref() {
+                Some((clock, _)) => self.0.host_stop_limits_data_v5(*clock)?,
+                None => self.0.client_request_limits()?,
+            };
         if request.deadline_boottime_nanoseconds() > maximum_deadline
             || request.maximum_response_bytes() > negotiated_response_bytes
             || request.protocol_version() != protocol_version
@@ -4454,14 +5530,13 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let maximum_response_bytes = request.maximum_response_bytes();
         let expected_body = effect.attempt().body();
         let envelope = request.into_envelope();
-        let (authenticated, initialize) = self.0.prepare_client_request(
-            envelope,
-            method,
-            0,
-            request_id,
-            deadline,
-            maximum_response_bytes,
-        )?;
+        let (authenticated, initialize) = match retained {
+            Some((_, original)) => self.0.prepare_client_request_retaining_v1(
+                envelope, method, 0, request_id, deadline, maximum_response_bytes,
+                &mut original.request),
+            None => self.0.prepare_client_request(envelope, method, 0, request_id,
+                deadline, maximum_response_bytes),
+        }?;
         if authenticated.exact_body() != expected_body {
             return Err(BrokerSessionSecurityError::manifest(
                 "durable authority effect body binding",
@@ -5139,7 +6214,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ) -> Result<DormantBrokerRequestSendProgressV1,
         (DormantPreparedBrokerRequestV1, DormantBrokerSessionHandshakeErrorV1)>
     {
-        if request.0.method() != BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION {
+        if !matches!(request.0.method(), BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2
+            | BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2
+            | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1
+            | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1)
+        {
             return Err((request, DormantBrokerSessionHandshakeErrorV1::RemoteInvalid));
         }
         match self.send_authenticated_request_borrowed(&request) {
@@ -5155,7 +6237,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
         &mut self,
         request: &DormantPreparedBrokerRequestV1,
     ) -> Result<bool, DormantBrokerSessionHandshakeErrorV1> {
-        if request.0.method() == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT {
+        if matches!(request.0.method(), BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+            | BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2)
+        {
             self.0.confirm_original_host_argument_archive(&request.0)?;
         }
         match self.0.send_request_packet(request.0.canonical_packet()) {
@@ -5198,8 +6282,20 @@ impl DormantAuthenticatedBrokerSessionV1 {
         (DormantOutstandingBrokerRequestV1, DormantBrokerSessionHandshakeErrorV1)>
     {
         if !matches!(outstanding.0.method(), BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
-            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION)
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            | BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2
+            | BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2
+            | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1
+            | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1)
         {
+            return Err((outstanding, DormantBrokerSessionHandshakeErrorV1::RemoteInvalid));
+        }
+        let Some(profile) = aos_sandbox_broker_session_protocol::authenticated_broker_method_profile_v1(outstanding.0.method()) else {
+            return Err((outstanding, DormantBrokerSessionHandshakeErrorV1::RemoteInvalid));
+        };
+        if !profile.success_response_descriptor_roles().is_empty() {
             return Err((outstanding, DormantBrokerSessionHandshakeErrorV1::RemoteInvalid));
         }
         match self.receive_authenticated_response_borrowed(&outstanding, Some(custody)) {
@@ -5218,7 +6314,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ) -> Result<Option<ProtectedBrokerOutcomeCommitResultV1>, DormantBrokerSessionHandshakeErrorV1> {
         let maximum = usize::try_from(outstanding.0.maximum_response_bytes())
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-        let packet = match self.0.receive_response_packet(maximum) {
+        let packet = match self.0.receive_response_packet_retaining_v1(
+            maximum, custody.as_deref_mut().map(|retained| &mut retained.raw),
+        ) {
             Ok(packet) => packet,
             Err(handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 return Ok(None);
@@ -5359,6 +6457,42 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.0.revalidate_broker_outcome(currentness)
     }
 
+    /// Arms one paid same-writer execution post before any selected growth.
+    ///
+    /// # Errors
+    /// Rejects another fixed endpoint, closed socket or already-used original.
+    pub fn arm_execution_client_post_v1(&self,
+        original: &mut crate::ExecutionClientPostOriginalV1) -> Result<(), BrokerSessionSecurityError>
+    {
+        self.0.arm_execution_client_post_v1(original)
+    }
+
+    /// Runs the prearmed independent after even after an earlier refusal.
+    ///
+    /// A reached complete terminal validator already owns its native after;
+    /// this call then finishes comparison without entering a duplicate probe.
+    ///
+    /// # Errors
+    /// Rejects changed custody or any original native or comparison failure.
+    pub fn finish_execution_client_post_v1(&mut self,
+        original: &mut crate::ExecutionClientPostOriginalV1) -> Result<(), BrokerSessionSecurityError>
+    {
+        self.0.finish_execution_client_post_v1(original)
+    }
+
+    /// Retains the same terminal and transfers its owed after to that validator.
+    ///
+    /// # Errors
+    /// Returns the original owner on changed custody or failed validation.
+    pub fn retain_execution_outcome_current_with_post_v1<'authority>(
+        &'authority mut self, owner: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        original: &mut crate::ExecutionClientPostOriginalV1,
+    ) -> Result<ProtectedBrokerOutcomeCurrentV1<'authority>,
+        (ProtectedBrokerOutcomeCurrentnessOwnerV1, BrokerSessionSecurityError)>
+    {
+        self.0.retain_execution_outcome_current_with_post_v1(owner, original)
+    }
+
     /// Loans the original execution terminal, returning failed ownership intact.
     ///
     /// # Errors
@@ -5420,6 +6554,51 @@ impl DormantAuthenticatedBrokerSessionV1 {
         deadline: u64,
     ) -> Option<crate::ProductionBrokerRequestEventV1> {
         receipt.receive_once(&mut self.0, deadline);
+        Self::take_original_storage_request_event_v1(receipt)
+    }
+
+    pub(crate) fn receive_original_storage_lifecycle_request_v1(
+        &mut self,
+        original: &mut crate::handshake::storage_lifecycle_request::StorageLifecycleRequestOriginalV1,
+        receiving: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+        deadline: u64,
+        terminal: Option<&crate::recovery::RetainedStorageTerminalV1>,
+    ) -> Option<crate::ProductionBrokerRequestEventV1> {
+        original.receive(&mut self.0, receiving, deadline, terminal);
+        Self::take_original_storage_request_event_v1(original.completed_receipt()?)
+    }
+
+    pub(crate) fn receive_original_storage_prepare_request_v1(
+        &mut self,
+        receipt: &mut crate::handshake::output_registration_continuation::OriginalOutputServerReceiptV1,
+        deadline: u64,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Option<crate::ProductionBrokerRequestEventV1> {
+        receipt.receive_storage_prepare_once_v1(&mut self.0, deadline, receiving);
+        Self::take_original_storage_request_event_v1(receipt)
+    }
+
+    pub(crate) fn receive_original_storage_prepare_replay_v1(
+        &mut self,
+        receipt: &mut crate::handshake::output_registration_continuation::OriginalOutputServerReceiptV1,
+        deadline: u64,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+        terminal: &ProtectedBrokerOutcomeCommittedAdvancementV1,
+    ) -> Option<crate::ProductionBrokerRequestEventV1> {
+        receipt.receive_storage_prepare_replay_once_v1(&mut self.0, deadline, receiving, terminal);
+        Self::take_original_storage_request_event_v1(receipt)
+    }
+
+    pub(crate) fn recheck_storage_prepare_replay_transport_v1(
+        &mut self,
+        receipt: &mut crate::handshake::output_registration_continuation::OriginalOutputServerReceiptV1,
+    ) -> bool {
+        receipt.recheck_replay_transport_v1(&mut self.0)
+    }
+
+    fn take_original_storage_request_event_v1(
+        receipt: &mut crate::handshake::output_registration_continuation::OriginalOutputServerReceiptV1,
+    ) -> Option<crate::ProductionBrokerRequestEventV1> {
         match receipt.into_admitted_original()? {
             crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1::New { request, .. } => {
                 Some(crate::ProductionBrokerRequestEventV1::Request(DormantReceivedBrokerRequestV1(request)))
@@ -5433,6 +6612,123 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 Some(crate::ProductionBrokerRequestEventV1::TerminalReplay(DormantBrokerTerminalReplayV1(replay)))
             }
         }
+    }
+
+    /// Lends one Host58/59 forecast from this same live Session and held writer.
+    ///
+    /// The genuine C18 caller prepays the fixed original, then checks the
+    /// returned complete demand before request/response growth. This performs
+    /// no signing, request allocation, payment, admission or Session advance.
+    ///
+    /// # Errors
+    /// Rejects a foreign method/endpoint, repeated original, unavailable held
+    /// writer, original metadata failure or checked representation overflow.
+    pub fn host_execution_argument_demand_v1(
+        &self,
+        method: BrokerMethod,
+        original: &mut HostExecutionSessionReceivingOriginalV1,
+    ) -> Result<aos_sandbox_core::ResourceVector, BrokerSessionSecurityError> {
+        self.0.host_execution_argument_demand_v1(method, original)
+    }
+
+    pub fn execution_output_demand_v1(
+        &self,
+        method: BrokerMethod,
+        original: &mut HostExecutionSessionReceivingOriginalV1,
+    ) -> Result<aos_sandbox_core::ResourceVector, BrokerSessionSecurityError> {
+        self.0.execution_output_demand_v1(method, original)
+    }
+
+    /// Borrows the existing Session transport ceiling at a retained paired sample.
+    ///
+    /// This comparison DATA grants no effect. The selected Stop must also
+    /// intersect its original signed plan, lease and actual Source association.
+    /// No clock is read and no receiving or request slot is acquired here.
+    ///
+    /// # Errors
+    /// Refuses another protocol, unnegotiated ApplyRuntime, invalid Session
+    /// context or checked transport-bound overflow.
+    pub fn host_stop_request_bound_data_v4(
+        &mut self,
+        clock: aos_sandbox_core::RawPairedClockSample,
+    ) -> Result<u64, BrokerSessionSecurityError> {
+        self.0.host_stop_request_bound_data_v4(clock)
+    }
+
+    /// Quotes a closed Stop from this same retained Host Client writer.
+    ///
+    /// The original retains the held metadata/append forecast and every error.
+    /// This returns requirement DATA only; the actual Stop owner must pay it
+    /// before model growth, and every signed effect check remains independent.
+    ///
+    /// # Errors
+    /// Refuses another protocol, missing ApplyRuntime negotiation, reused
+    /// forecast destinations, unhealthy writer or invalid checked geometry.
+    pub fn host_stop_demand_v4(
+        &self,
+        original: &mut HostExecutionSessionReceivingOriginalV1,
+    ) -> Result<aos_sandbox_core::ResourceVector, BrokerSessionSecurityError> {
+        self.0.host_stop_demand_v4(original)
+    }
+
+    /// Borrows the actual captured Host Client's complete historical DATA.
+    ///
+    /// This performs no IO, encoding, copying or currentness observation. The
+    /// caller retains its genuine completed outcome/currentness owners and
+    /// separately prepays any copied companion or historical replay models.
+    ///
+    /// # Errors
+    /// Rejects an unhealthy or uncaptured writer, a foreign endpoint, absent
+    /// history or a Session that did not negotiate the actual Apply method.
+    pub fn host_execution_history_data_v1(&self) -> Result<&[u8], BrokerSessionSecurityError> {
+        self.0.host_execution_history_data_v1()
+    }
+
+    /// Borrows exact protected Storage Client history from its existing writer.
+    ///
+    /// # Errors
+    /// Rejects another endpoint/protocol, absent original60 negotiation, an
+    /// unhealthy writer or an uncaptured native append owner. No IO occurs.
+    pub fn storage_capture_history_data_v2(&self) -> Result<&[u8], BrokerSessionSecurityError> {
+        self.0.storage_capture_history_data_v2()
+    }
+
+
+    /// Lends Authorize and first-Observe requirements from this same Session.
+    ///
+    /// The caller pays the fixed receiving original before this metadata read,
+    /// then checks the returned complete representation before materializing
+    /// content, descriptors or requests. This is requirement DATA only.
+    ///
+    /// # Errors
+    /// Refuses a foreign endpoint, unnegotiated Apply, repeated original,
+    /// native metadata failure or unrepresentable complete demand.
+    pub fn host_execution_authorize_observe_demand_v2(
+        &self,
+        original: &mut HostExecutionSessionReceivingOriginalV1,
+    ) -> Result<aos_sandbox_core::ResourceVector, BrokerSessionSecurityError> {
+        self.0.host_execution_authorize_observe_demand_v2(original)
+    }
+
+    pub(crate) fn storage_prepare_outcome_demand_v1(
+        &self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        observation: &ProtectedBrokerDomainResponseV1,
+    ) -> Result<aos_sandbox_core::ResourceVector, BrokerSessionSecurityError> {
+        self.0.storage_prepare_outcome_demand_v1(request, observation)
+    }
+
+    pub(crate) fn storage_prepare_replay_demand_v1(
+        &self,
+        terminal: &ProtectedBrokerOutcomeCommittedAdvancementV1,
+    ) -> Result<aos_sandbox_core::ResourceVector, BrokerSessionSecurityError> {
+        self.0.storage_prepare_replay_demand_v1(terminal)
+    }
+
+    pub(crate) fn storage_prepare_request_demand_v1(
+        &self,
+    ) -> Result<aos_sandbox_core::ResourceVector, BrokerSessionSecurityError> {
+        self.0.storage_prepare_request_demand_v1()
     }
 
     pub(crate) fn recheck_original_nix_generation_session(
@@ -5451,23 +6747,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         original_cutoff: u64,
         flight: &mut crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
     ) {
-        if flight.coordinates.is_some() { return; }
-        flight.coordinates = Some((|| {
-            if !matches!(method, BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT)
-                || original_cutoff == 0
-            {
-                return Err(BrokerSessionSecurityError::Currentness);
-            }
-            self.0.require_negotiated_client_method(method)?;
-            let (request_id, deadline, maximum_response_bytes, protocol_version, audience) = self.0.client_request_coordinates()?;
-            Ok(DormantBrokerRequestCoordinatesV1 {
-                request_id,
-                deadline_boottime_nanoseconds: deadline.min(original_cutoff),
-                maximum_response_bytes,
-                protocol_version,
-                audience,
-            })
-        })());
+        self.0.park_output_client_coordinates_v1(method, original_cutoff, flight);
     }
 
     /// Reports only the method list of the actual completed transcript.
@@ -5622,6 +6902,49 @@ impl DormantAuthenticatedBrokerSessionV1 {
         attempt: &mut aos_sandbox_storage::execution_output_credential::OriginalExecutionOutputRegistrationV1,
         checks: &mut [Option<Result<(), BrokerSessionSecurityError>>; 2],
     ) {
+        self.register_original_storage_output_with_host_inner_v1(committed, storage, output, StorageOutputDomainOperationV1::Logical(attempt), checks,
+            StorageOutputDomainReceivingV1::Ordinary);
+    }
+
+    /// Holds the same Host native/currentness witnesses across funded logical46.
+    pub(crate) fn register_original_storage_output_with_host_receiving_v1(
+        &mut self,
+        committed: &crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &mut aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+        attempt: &mut aos_sandbox_storage::execution_output_credential::OriginalExecutionOutputRegistrationV1,
+        checks: &mut [Option<Result<(), BrokerSessionSecurityError>>; 2],
+        lifecycle: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+        session: &aos_sandbox::Journal,
+        socket: &aos_sandbox_linux::seqpacket::SeqpacketSocket,
+    ) {
+        self.register_original_storage_output_with_host_inner_v1(committed, storage, output, StorageOutputDomainOperationV1::Logical(attempt), checks,
+            StorageOutputDomainReceivingV1::Lifecycle { lifecycle, session, socket });
+    }
+
+    pub(crate) fn finish_original_capture_with_host_receiving_v3(
+        &mut self, committed: &crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &mut aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        checks: &mut [Option<Result<(), BrokerSessionSecurityError>>; 2],
+        lifecycle: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+        session: &aos_sandbox::Journal, socket: &SeqpacketSocket,
+    ) {
+        self.register_original_storage_output_with_host_inner_v1(committed, storage, output,
+            StorageOutputDomainOperationV1::Capture(request), checks,
+            StorageOutputDomainReceivingV1::Lifecycle { lifecycle, session, socket });
+    }
+
+    fn register_original_storage_output_with_host_inner_v1(
+        &mut self,
+        committed: &crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &mut aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+        mut operation: StorageOutputDomainOperationV1<'_>,
+        checks: &mut [Option<Result<(), BrokerSessionSecurityError>>; 2],
+        mut receiving: StorageOutputDomainReceivingV1<'_, '_, '_>,
+    ) {
         let projection = committed.host_storage_output_originals_v1();
         let (outcome, currentness) = match projection {
             Ok(originals) => originals,
@@ -5635,7 +6958,17 @@ impl DormantAuthenticatedBrokerSessionV1 {
             handshake::OutputCurrentnessBoundaryV1::PostAction,
         );
         if witness_before && witness_after_check && matches!(&checks[0], Some(Ok(()))) {
-            storage.register_original_execution_output(output, attempt, outcome);
+            match (&mut receiving, &mut operation) {
+                (StorageOutputDomainReceivingV1::Ordinary, StorageOutputDomainOperationV1::Logical(attempt)) =>
+                    storage.register_original_execution_output(output, attempt, outcome),
+                (StorageOutputDomainReceivingV1::Lifecycle { lifecycle, session, socket }, StorageOutputDomainOperationV1::Logical(attempt)) =>
+                    storage.register_original_execution_output_receiving_v1(output, attempt, outcome, lifecycle, session, socket),
+                (StorageOutputDomainReceivingV1::Lifecycle { lifecycle, session, socket }, StorageOutputDomainOperationV1::Capture(request)) =>
+                    storage.finish_original_capture_with_host_ongoing_v3(request, outcome, output, lifecycle, session, socket),
+                (StorageOutputDomainReceivingV1::Ordinary, StorageOutputDomainOperationV1::Capture(_)) => {
+                    checks[0] = Some(Err(BrokerSessionSecurityError::Currentness));
+                }
+            }
         }
         // Keep the actual writer Result in its original attempt before BOTH
         // independent terminal checks, even when either earlier check failed.
@@ -5671,6 +7004,7 @@ enum ClientWitnessRetentionV1 {
 #[derive(Clone, Copy)]
 enum StorageHelloPurposeV1 {
     Ordinary,
+    Preparation,
     NixGeneration,
     OutputCapture,
 }
@@ -5719,6 +7053,26 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         self.connect_retained_storage_session_inner(
             deadline, slot, node, ClientWitnessRetentionV1::Legacy, coverage,
             StorageHelloPurposeV1::Ordinary,
+        )
+    }
+
+    /// Connects the closed Create Inventory/Prepare profile through its real cold slot.
+    ///
+    /// This signs the fixed two-method client requirement using the same
+    /// protected endpoint, context, original cutoff and retained journal flow.
+    ///
+    /// # Errors
+    /// Refuses another endpoint role, HELLO/context mismatch, expired original
+    /// cutoff, changed kernel/protected custody, or cold journal/floor failure.
+    pub fn connect_retained_storage_preparation_session_v1(
+        self,
+        deadline: handshake::OriginalBrokerColdDeadlineV1,
+        slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+        node: [u8; 16],
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.connect_retained_storage_session_inner(
+            deadline, slot, node, ClientWitnessRetentionV1::Legacy, None,
+            StorageHelloPurposeV1::Preparation,
         )
     }
 
@@ -5864,42 +7218,16 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
         purpose: StorageHelloPurposeV1,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
-        if slot.is_some()
-            || self.production_protocol()
-                != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
+        if slot.is_some() || self.production_protocol()
+            != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
         {
             return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
         }
         deadline.check()?;
-        let mut handshake = self.begin_production_broker_handshake_with_storage_purpose_v1(
+        let handshake = self.begin_production_broker_handshake_with_storage_purpose_v1(
             socket, coverage, purpose,
         )?.0;
-        loop {
-            deadline.check()?;
-            match handshake.advance_retaining_storage()? {
-                handshake::ColdBrokerHandshakeProgressV1::Pending(pending) => {
-                    wait_for_handshake_readiness(
-                        pending.as_fd()?,
-                        pending.wants_write(),
-                        deadline.value(),
-                    )?;
-                    handshake = pending;
-                }
-                handshake::ColdBrokerHandshakeProgressV1::Verified(verified) => {
-                    *slot = Some(handshake::RetainedStorageColdOpenV1::retain(
-                        verified, deadline,
-                    ));
-                    let session = slot
-                        .as_mut()
-                        .ok_or(DormantBrokerSessionHandshakeErrorV1::EndpointRole)?
-                        .finish(None)?;
-                    let session = DormantAuthenticatedBrokerSessionV1(session, Vec::new());
-                    *slot = None;
-                    return Ok(session);
-                }
-                handshake::ColdBrokerHandshakeProgressV1::Complete(_) => std::process::abort(),
-            }
-        }
+        complete_retained_storage_from_prepared_v1(handshake, deadline, slot, None, None)
     }
 
     /// Connects a fixed client endpoint and completes its production handshake.
@@ -6116,6 +7444,14 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         let maximum_response_bytes = u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
         let hello = match coverage {
+            None if matches!(purpose, StorageHelloPurposeV1::Preparation) => {
+                if protocol != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
+                    || audience != Audience::AUDIENCE_NODE_CONTROLLER
+                {
+                    return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+                }
+                aos_sandbox_broker_session_protocol::profile::storage_preparation_client_hello_v1()
+            }
             None if matches!(purpose, StorageHelloPurposeV1::OutputCapture) => {
                 if protocol != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
                     || audience != Audience::AUDIENCE_NODE_CONTROLLER
@@ -6262,4 +7598,958 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
             .map(DormantBrokerEndpointHandshakeV1)
             .map_err(Into::into)
     }
+}
+
+// The only selected Inventory builder derives its exact method and original
+// cutoff from the genuine Native borrower, then uses these actual Session
+// coordinates. This helper has no caller method, request ID or deadline source.
+pub(crate) fn original_create_storage_inventory_coordinates_v1(
+    session: &mut crate::handshake::DormantAuthenticatedBrokerSessionV1,
+    original_cutoff: u64,
+) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
+    if original_cutoff == 0 || !session.is_original_storage_preparation_profile_v1() {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    session.require_negotiated_client_method(BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES)?;
+    let (request_id, deadline, maximum_response_bytes, protocol_version, audience) =
+        session.client_request_coordinates()?;
+    // The authenticated response codec already rejects every larger packet.
+    // Match its existing actual ceiling before the retaining native receive;
+    // a broader generic header limit cannot create an unpaid malformed buffer.
+    let authenticated_maximum = u32::try_from(
+        aos_sandbox_broker_session_protocol::AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    let maximum_response_bytes = maximum_response_bytes.min(authenticated_maximum);
+    Ok(DormantBrokerRequestCoordinatesV1 {
+        request_id,
+        deadline_boottime_nanoseconds: deadline.min(original_cutoff),
+        maximum_response_bytes,
+        protocol_version,
+        audience,
+    })
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Prepares only the actual joined Create operation's signed Inventory.
+    ///
+    /// The actual Native borrower funds the fixed footprint and same Session
+    /// history before request construction. This entry accepts no method,
+    /// request identifier, envelope, caller deadline or Prepare permission.
+    #[doc(hidden)]
+    pub fn prepare_original_create_storage_inventory_once(
+        &mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageInventoryClientFlightV1,
+        original: &mut aos_sandbox::OriginalCreateStorageInventoryV1<'_, '_, '_>,
+    ) -> bool {
+        flight.prepare_once(&mut self.0, original)
+    }
+
+    /// Sends the exact original Inventory request through the retaining engine.
+    ///
+    /// Nonconsuming EAGAIN/EINTR remains Pending only after both actual upper and
+    /// Native posts and actual receipt disposal. Fatal or partial IO stays held.
+    #[doc(hidden)]
+    pub fn send_original_create_storage_inventory_once(
+        &mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageInventoryClientFlightV1,
+        original: &mut aos_sandbox::OriginalCreateStorageInventoryV1<'_, '_, '_>,
+    ) -> crate::handshake::output_registration_continuation::StoragePreparationClientProgressV1 {
+        flight.send_once(&mut self.0, original)
+    }
+
+    /// Waits for readiness of the actual retained pending Inventory direction.
+    ///
+    /// The same genuine operation supplies its original cutoff and both native
+    /// posts. Failed poll originals stay on the flight; successful originals
+    /// dispose before the exclusive pending phase becomes reusable.
+    #[doc(hidden)]
+    pub fn wait_original_create_storage_inventory_once(
+        &mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageInventoryClientFlightV1,
+        original: &mut aos_sandbox::OriginalCreateStorageInventoryV1<'_, '_, '_>,
+    ) -> bool {
+        flight.wait_once(&mut self.0, original)
+    }
+
+    /// Receives and commits the exact authenticated Inventory with paid decoding.
+    ///
+    /// The same real Session, peer, signed request, committed outcome, validated
+    /// model and predecessor owner remain resident. This grants no Prepare or B
+    /// acceptance; the later original stage must recheck its current cut.
+    #[doc(hidden)]
+    pub fn receive_original_create_storage_inventory_once(
+        &mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageInventoryClientFlightV1,
+        original: &mut aos_sandbox::OriginalCreateStorageInventoryV1<'_, '_, '_>,
+    ) -> crate::handshake::output_registration_continuation::StoragePreparationClientProgressV1 {
+        flight.receive_once(&mut self.0, original)
+    }
+
+    /// Borrows the chronological Inventory cause beside the same joined Ready.
+    ///
+    /// This preserves the concrete flight selector after its short Native loan
+    /// ends. A later abandonment marker cannot replace an earlier upper cause.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn original_create_storage_inventory_failure_with_ready<'a>(
+        &'a self,
+        flight: &'a crate::handshake::output_registration_continuation::OriginalStorageInventoryClientFlightV1,
+        ready: &'a aos_sandbox::OriginalCreateStorageReadyV1<'_, '_>,
+    ) -> Option<&'a (dyn std::error::Error + 'static)> {
+        flight.failure_with_native(&self.0, ready.inventory_original_failure_v1())
+    }
+
+    /// Borrows the actual chronological Inventory cause across both owners.
+    ///
+    /// The caller keeps this Session, flight and genuine borrower resident
+    /// through its service fence; no copied status substitutes for native debt.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn original_create_storage_inventory_failure<'a>(
+        &'a self,
+        flight: &'a crate::handshake::output_registration_continuation::OriginalStorageInventoryClientFlightV1,
+        original: &'a aos_sandbox::OriginalCreateStorageInventoryV1<'_, '_, '_>,
+    ) -> Option<&'a (dyn std::error::Error + 'static)> {
+        flight.failure_with_original(&self.0, original)
+    }
+}
+
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Encodes complete B beside this actual Session and completed Inventory.
+    ///
+    /// This purpose-fixed composition accepts no field list, account, budget,
+    /// method, deadline or verification context from the caller. Its successful
+    /// bytes remain proposal DATA for the real Root exchange.
+    ///
+    /// # Errors
+    /// Retains actual fixed-funding, native, endpoint/floor, authenticated
+    /// predecessor, allocation, framing and independent post failures on the
+    /// same flight and genuine original. The caller must retain them through
+    /// its failure fence while the held Source/Cache writers remain borrowed.
+    #[doc(hidden)]
+    pub fn encode_original_create_storage_ready_bundle_once(
+        &mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageReadyBundleFlightV1,
+        inventory: &crate::handshake::output_registration_continuation::OriginalStorageInventoryClientFlightV1,
+        original: &mut aos_sandbox::OriginalCreateStorageBundleV1<'_, '_, '_>,
+    ) -> Result<(), crate::handshake::output_registration_continuation::CreateStorageReadyBundleClosedV1> {
+        flight.encode_once(&mut self.0, inventory, original)
+    }
+
+    /// Borrows the chronological complete-B cause beside the same joined Ready.
+    ///
+    /// The exact B stage selector chooses its retained native or upper cause;
+    /// this does not open another borrower or perform a new currentness check.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn original_create_storage_ready_bundle_failure_with_ready<'a>(
+        &'a self,
+        flight: &'a crate::handshake::output_registration_continuation::OriginalStorageReadyBundleFlightV1,
+        ready: &'a aos_sandbox::OriginalCreateStorageReadyV1<'_, '_>,
+    ) -> Option<&'a (dyn std::error::Error + 'static)> {
+        flight.failure_with_native(&self.0, ready.bundle_original_failure_v1())
+    }
+
+    /// Borrows the actual chronological complete-B cause without moving custody.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn original_create_storage_ready_bundle_failure<'a>(
+        &'a self,
+        flight: &'a crate::handshake::output_registration_continuation::OriginalStorageReadyBundleFlightV1,
+        original: &'a aos_sandbox::OriginalCreateStorageBundleV1<'_, '_, '_>,
+    ) -> Option<&'a (dyn std::error::Error + 'static)> {
+        flight.failure_with_original(&self.0, original)
+    }
+}
+
+
+/// Drives the existing three-flight reducer from actual fully owned preparation.
+///
+/// Ordinary purposes retain their old polling/disposal behavior. The selected
+/// initial caller supplies its actual Native loan and native-poll Result slot;
+/// every failed/pending raw owner remains in the existing selected error type.
+pub(crate) fn complete_retained_storage_from_prepared_v1(
+    mut handshake: handshake::DormantBrokerEndpointHandshakeV1,
+    deadline: handshake::OriginalBrokerColdDeadlineV1,
+    slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+    mut receiving: Option<&mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>>,
+    mut retained_poll: Option<&mut Option<Result<usize, rustix::io::Errno>>>,
+) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+    loop {
+        if let Err(error) = deadline.check() {
+            return Err(handshake.retain_storage_preparation_failure_v1(error));
+        }
+        if let Some(receiving) = receiving.as_deref_mut() {
+            if handshake.require_initial_storage_hello_current_v1(receiving).is_err() {
+                return Err(handshake.retain_storage_preparation_failure_v1(
+                    BrokerSessionSecurityError::Currentness.into(),
+                ));
+            }
+        }
+        match handshake.advance_retaining_storage()? {
+            handshake::ColdBrokerHandshakeProgressV1::Pending(pending) => {
+                let readiness = (|| {
+                    match retained_poll.as_deref_mut() {
+                        Some(native) => wait_for_handshake_readiness_retaining_v1(
+                            pending.as_fd()?, pending.wants_write(), deadline.value(), native,
+                        ),
+                        None => wait_for_handshake_readiness(
+                            pending.as_fd()?, pending.wants_write(), deadline.value(),
+                        ),
+                    }
+                })();
+                if let Err(error) = readiness {
+                    return Err(pending.retain_storage_preparation_failure_v1(error));
+                }
+                handshake = pending;
+            }
+            handshake::ColdBrokerHandshakeProgressV1::Verified(verified) => {
+                *slot = Some(handshake::RetainedStorageColdOpenV1::retain(
+                    verified, deadline,
+                ));
+                let cold = slot.as_mut()
+                    .ok_or(DormantBrokerSessionHandshakeErrorV1::EndpointRole)?;
+                let session = match receiving.as_deref_mut() {
+                    Some(receiving) => cold.finish_storage_prepare_v1(receiving)?,
+                    None => cold.finish(None)?,
+                };
+                let session = DormantAuthenticatedBrokerSessionV1(session, Vec::new());
+                if receiving.is_none() {
+                    *slot = None;
+                }
+                return Ok(session);
+            }
+            handshake::ColdBrokerHandshakeProgressV1::Complete(_) => std::process::abort(),
+        }
+    }
+}
+
+/// Owns one original Controller boot Client acquisition under its genuine B.
+///
+/// The actual Runtime parks and enters its Native receiver before allocating
+/// this owner. It supplies no path, UID, node tuple, vector or replacement
+/// deadline. Failed captures and their independent posts remain resident.
+#[must_use = "retain the complete original on failure; move only a positive Session"]
+pub struct DormantControllerInitialSessionOpenV1(handshake::ControllerInitialSessionOpenV1);
+
+/// Continuously borrows the complete completed initial Session and same B.
+///
+/// Construction requires the actual successful native disposition, original
+/// transport and same endpoint/main/Storage native pair. This is custody only;
+/// it grants no currentness, new operation, transition or financial admission.
+#[doc(hidden)]
+pub struct DormantControllerInitialSessionCompletedBorrowV1<'held>(
+    handshake::ControllerInitialSessionCompletedBorrowV1<'held>,
+);
+
+impl DormantControllerInitialSessionCompletedBorrowV1<'_> {
+    /// Requires this same completed Session and all four new recovered roles.
+    ///
+    /// The actual capture's endpoint and main native custody are borrowed
+    /// internally. No journal, descriptor, account or replacement Session is
+    /// exposed, and no read-only recovery Session can satisfy the comparison.
+    ///
+    /// # Errors
+    /// Refuses unfinished native roles, changed C/Bank/profile or another
+    /// recovered receiver, endpoint, Session or native main journal.
+    #[doc(hidden)]
+    pub fn require_recovered_ordinary_context_v2(
+        &self,
+        context: &aos_sandbox_broker::controller_receiving::bank_launch::ControllerRecoveredOrdinarySessionsOriginalV2,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        controller: &aos_sandbox::Journal,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.require_recovered_ordinary_context_v2(context, bank, controller, profile)
+    }
+
+    /// Requires actual all-four recovered custody against the Node's same private C.
+    ///
+    /// # Errors
+    /// Refuses a changed native receiver, Session, context, Bank or profile.
+    #[doc(hidden)]
+    pub fn require_recovered_ordinary_context_with_node_v2<C, E>(
+        &mut self, node: &aos_sandbox::NodeController<C, E>,
+        context: &aos_sandbox_broker::controller_receiving::bank_launch::ControllerRecoveredOrdinarySessionsOriginalV2,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), BrokerSessionSecurityError>
+    where C: aos_sandbox::ActivatedOperationCompiler, E: aos_sandbox::SingleNodeEffectExecutor {
+        let (receiving, session) = self.reborrow_v1();
+        let native = session.completed_initial_native_borrow_for_maintenance_v2(receiving)?;
+        node.require_recovered_ordinary_session_for_maintenance_v2(&native, context, bank, profile)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)
+    }
+
+    pub(crate) fn reborrow_v1(&mut self)
+        -> (&aos_sandbox::ControllerInitialBrokerSessionReceivingV1,
+            &mut handshake::DormantAuthenticatedBrokerSessionV1)
+    {
+        self.0.reborrow_v1()
+    }
+}
+
+impl DormantControllerInitialSessionOpenV1 {
+    /// Describes the fixed concrete Security owners before original B admission.
+    ///
+    /// Returns `None` when checked representation geometry is unrepresentable.
+    #[must_use]
+    pub fn receiving_shape_v1(
+        role: aos_sandbox::ControllerInitialBrokerSessionRoleV1,
+    ) -> Option<aos_sandbox::ControllerInitialBrokerSessionShapeV1> {
+        handshake::ControllerInitialSessionOpenV1::receiving_shape_v1(role)
+    }
+
+    /// Parks a genuine fixed-paid receiver without observations or allocation.
+    ///
+    /// The Runtime calls the receiver's fixed entry while it is already in a
+    /// resident slot, then moves that same owner here. An unentered receiver
+    /// cannot borrow a capture loan or enter native work through this wrapper.
+    #[must_use]
+    pub fn new(
+        receiving: aos_sandbox::ControllerInitialBrokerSessionReceivingV1,
+        launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
+    ) -> Self {
+        Self(handshake::ControllerInitialSessionOpenV1::new(receiving, launch_image))
+    }
+
+    /// Advances only this original's fixed endpoint, HELLO and cold admission.
+    ///
+    /// # Errors
+    /// Retains the actual acquisition failure, first native causes and owed post.
+    pub fn open_once(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.0.open_once().map_err(|_| BrokerSessionSecurityError::Currentness)
+    }
+
+    /// Acquires the same fixed Mount/Storage Client for its actual Root account.
+    ///
+    /// This retains the established coverage HELLO roster and Root-bounded
+    /// cold cutoff through the same original capture; caller bytes or a cutoff
+    /// scalar cannot select this purpose.
+    ///
+    /// # Errors
+    /// Retains context, acquisition and independent original post failures.
+    pub fn open_git_coverage_once_v1(
+        &mut self,
+        account: &mut aos_sandbox::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.open_git_coverage_once_v1(account)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)
+    }
+
+    /// Moves the actual Session only after all observations and the original post.
+    #[must_use]
+    pub fn take_completed(&mut self) -> Option<DormantAuthenticatedBrokerSessionV1> {
+        self.0.take_completed().map(|session| DormantAuthenticatedBrokerSessionV1(session, Vec::new()))
+    }
+
+    /// Borrows the whole same completed Session for a closed native transition.
+    ///
+    /// The borrow retains every actual native survivor and permits only the
+    /// Security transition kernel to reborrow its Session mutably. No mutable
+    /// Journal, raw descriptor or replacement Session escapes this type.
+    ///
+    /// # Errors
+    /// Refuses unfinished, failed, replaced or still-ambiguous native custody.
+    #[doc(hidden)]
+    pub fn borrow_completed_session_v1<'held>(
+        &'held self,
+        session: &'held mut DormantAuthenticatedBrokerSessionV1,
+    ) -> Result<DormantControllerInitialSessionCompletedBorrowV1<'held>, BrokerSessionSecurityError> {
+        self.borrow_completed_kernel_session_v1(&mut session.0)
+    }
+
+    pub(crate) fn original_after_completed_preparation_v1<'capture>(
+        &'capture self,
+        rollover: &handshake::client_storage_continuation::CompletedStorageClientRolloverV1,
+        session: &mut handshake::DormantAuthenticatedBrokerSessionV1,
+    ) -> Result<&'capture aos_sandbox::ControllerInitialBrokerSessionReceivingV1, BrokerSessionSecurityError> {
+        self.0.original_after_completed_preparation_v1(rollover, session)
+    }
+
+    pub(crate) fn borrow_completed_preparation_kernel_session_v1<'held>(
+        &'held self,
+        rollover: &handshake::client_storage_continuation::CompletedStorageClientRolloverV1,
+        session: &'held mut handshake::DormantAuthenticatedBrokerSessionV1,
+    ) -> Result<DormantControllerInitialSessionCompletedBorrowV1<'held>, BrokerSessionSecurityError> {
+        self.0.borrow_completed_preparation_session_v1(rollover, session)
+            .map(DormantControllerInitialSessionCompletedBorrowV1)
+    }
+
+    // The retained transition owns the inner Session before any fallible work.
+    // It borrows the same completed capture through this private adapter rather
+    // than reconstructing a public Session or exposing its Journal.
+    pub(crate) fn borrow_completed_kernel_session_v1<'held>(
+        &'held self,
+        session: &'held mut handshake::DormantAuthenticatedBrokerSessionV1,
+    ) -> Result<DormantControllerInitialSessionCompletedBorrowV1<'held>, BrokerSessionSecurityError> {
+        self.0.borrow_completed_session_v1(session)
+            .map(DormantControllerInitialSessionCompletedBorrowV1)
+    }
+
+    /// Borrows the earliest actual retained cause without releasing its owners.
+    #[must_use]
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.failure()
+    }
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Reserves the genuine Create U and records its native C successor.
+    ///
+    /// The same Session and completed B remain held. The supplied public signer
+    /// inputs come from the installed Controller signer; no key, account or
+    /// resource vector is accepted here. This does not sign or dispatch Prepare.
+    #[doc(hidden)]
+    pub fn reserve_original_create_storage_use_once(&mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageCreatePreparationFlightV1,
+        ready: &mut aos_sandbox::OriginalCreateStorageReadyV1<'_, '_>,
+        bundle: &crate::handshake::output_registration_continuation::OriginalStorageReadyBundleFlightV1,
+        authority: &aos_sandbox_protocol::authorization_artifact::SigningAuthority,
+        scope: aos_sandbox_core::RevocationScopeId,
+    ) -> bool {
+        flight.reserve_use_once(&mut self.0, ready, bundle, authority, scope)
+    }
+
+    /// Borrows the actual first U acquisition cause while all originals stay held.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn original_create_storage_use_failure_with_ready<'a>(&'a self,
+        flight: &'a crate::handshake::output_registration_continuation::OriginalStorageCreatePreparationFlightV1,
+        ready: &'a aos_sandbox::OriginalCreateStorageReadyV1<'_, '_>,
+    ) -> Option<&'a (dyn std::error::Error + 'static)> {
+        flight.use_failure_with_ready(&self.0, ready)
+    }
+}
+
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Prepares Root's exact admitted Create plan under its genuine U loan.
+    ///
+    /// The complete actual Inventory predecessor, same Session and original
+    /// Root8 inputs remain resident. This returns unsigned DATA only; it reads
+    /// no key and cannot dispatch or complete Create.
+    #[doc(hidden)]
+    pub fn prepare_original_create_storage_signing_once(&mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageCreatePreparationFlightV1,
+        original: &mut aos_sandbox::OriginalCreateStorageUseSigningV1<'_, '_, '_>,
+        bundle: &crate::handshake::output_registration_continuation::OriginalStorageReadyBundleFlightV1,
+        inventory: &crate::handshake::output_registration_continuation::OriginalStorageInventoryClientFlightV1,
+        authority: &aos_sandbox_protocol::authorization_artifact::SigningAuthority,
+        scope: aos_sandbox_core::RevocationScopeId,
+    ) -> Option<aos_sandbox_protocol::authorization_artifact::BrokerPlanPreparation> {
+        flight.prepare_admitted_plan_once(&mut self.0, original, bundle, inventory, authority, scope)
+    }
+
+    /// Signs only the exact admitted Create preparation on its genuine U loan.
+    ///
+    /// The private Controller signer supplies the already-admitted mechanical
+    /// carrier. The flight retains its actual constructor/key/completion cause,
+    /// raw signature and signed plan through same-Session witness posts. The
+    /// caller still owes the long Native loan's independent full Root post.
+    #[doc(hidden)]
+    pub fn sign_original_create_storage_plan_once(&mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageCreatePreparationFlightV1,
+        original: &mut aos_sandbox::OriginalCreateStorageUseSigningV1<'_, '_, '_>,
+        carrier: Result<aos_sandbox_broker::prepared_plan_signing::PreparedBrokerPlanSigningV1,
+            Box<dyn std::error::Error + Send + Sync>>,
+    ) -> bool {
+        flight.sign_admitted_plan_once(&mut self.0, original, carrier)
+    }
+
+    /// Checks the actual signing flight after its native original post ended.
+    ///
+    /// This borrows the same Ready's completed native signing state. It does
+    /// not append Signed, dispatch Prepare, release originals or finish Create.
+    #[doc(hidden)]
+    pub fn finish_original_create_storage_signing_once(&mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageCreatePreparationFlightV1,
+        ready: &aos_sandbox::OriginalCreateStorageReadyV1<'_, '_>,
+    ) -> bool {
+        flight.finish_native_signing_once(ready)
+    }
+}
+
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Appends actual C6 Signed from this retained completed signing flight.
+    ///
+    /// The same completed B proposal, verified signed artifact, native U and
+    /// Root8 scope determine the exact record. This issues neither a Root11
+    /// binding nor Prepare dispatch and cannot complete the Create Effect.
+    #[doc(hidden)]
+    pub fn record_original_create_storage_signed_once(&mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageCreatePreparationFlightV1,
+        ready: &mut aos_sandbox::OriginalCreateStorageReadyV1<'_, '_>,
+        bundle: &crate::handshake::output_registration_continuation::OriginalStorageReadyBundleFlightV1,
+    ) -> bool {
+        flight.record_signed_once(ready, bundle)
+    }
+}
+
+// The sole selected Prepare caller uses its exact C6 header and stable request
+// identity. Session limits can refuse it; they never renew or rewrite it.
+pub(crate) fn original_create_storage_prepare_coordinates_v1(
+    session: &mut crate::handshake::DormantAuthenticatedBrokerSessionV1,
+    request_id: [u8; 16], cutoff: u64, header: &RequestHeader,
+) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
+    if !session.is_original_storage_preparation_profile_v1() || cutoff == 0 || request_id == [0; 16] {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    session.require_negotiated_client_method(BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG)?;
+    let (deadline, maximum_response_bytes, protocol_version, audience) = session.client_request_limits()?;
+    if header.request_id.as_slice() != request_id || header.deadline_boottime_nanoseconds != cutoff
+        || cutoff > deadline || header.maximum_response_bytes > maximum_response_bytes
+        || header.maximum_response_bytes == 0
+        || header.maximum_response_bytes as usize > aos_sandbox_broker_session_protocol::AUTHENTICATED_RESPONSE_MAXIMUM_BYTES
+        || header.protocol_major != u32::from(protocol_version.major())
+        || header.protocol_minor != u32::from(protocol_version.minor())
+        || header.audience.as_known() != Some(audience) {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    Ok(DormantBrokerRequestCoordinatesV1 { request_id,
+        deadline_boottime_nanoseconds: cutoff, maximum_response_bytes: header.maximum_response_bytes,
+        protocol_version, audience })
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Reserves the actual C6 Prepare request and records its native C8 readback.
+    ///
+    /// This fixed wrapper admits the same U, compares the retained Inventory
+    /// predecessor, and delegates the existing Session signer/CAS. Every entered
+    /// outcome runs the independently owed Native C8/Root after path.
+    ///
+    /// # Errors
+    /// Returns false while retaining the original admission, replay, envelope,
+    /// signed request/CAS, C8/native/cutoff or independently owed post failure.
+    #[doc(hidden)]
+    pub fn prepare_original_create_storage_request_once(&mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageCreatePreparationFlightV1,
+        ready: &mut aos_sandbox::OriginalCreateStorageReadyV1<'_, '_>,
+        bundle: &crate::handshake::output_registration_continuation::OriginalStorageReadyBundleFlightV1,
+        inventory: &crate::handshake::output_registration_continuation::OriginalStorageInventoryClientFlightV1,
+    ) -> bool {
+        flight.prepare_request_once(&mut self.0, ready, bundle, inventory)
+    }
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Sends only the actual same-U C8-reserved Create Prepare request.
+    ///
+    /// The flight and Ready retain every native/error result through all posts.
+    #[doc(hidden)]
+    pub fn send_original_create_storage_request_once(&mut self,
+        flight: &mut OriginalStorageCreatePreparationFlightV1,
+        ready: &mut aos_sandbox::OriginalCreateStorageReadyV1<'_, '_>,
+    ) -> StoragePreparationClientProgressV1 {
+        flight.send_request_once(&mut self.0, ready)
+    }
+
+    /// Waits only for the same actual Prepare flight's pending native turn.
+    #[doc(hidden)]
+    pub fn wait_original_create_storage_request_once(&mut self,
+        flight: &mut OriginalStorageCreatePreparationFlightV1,
+        ready: &mut aos_sandbox::OriginalCreateStorageReadyV1<'_, '_>,
+    ) -> bool {
+        flight.wait_request_once(&mut self.0, ready)
+    }
+
+    /// Authenticates and commits only that same actual Prepare request's result.
+    ///
+    /// Committed retains the complete signed terminal and original currentness;
+    /// it is not Create/Apply/U-settlement completion.
+    #[doc(hidden)]
+    pub fn receive_original_create_storage_request_once(&mut self,
+        flight: &mut OriginalStorageCreatePreparationFlightV1,
+        ready: &mut aos_sandbox::OriginalCreateStorageReadyV1<'_, '_>,
+    ) -> StoragePreparationClientProgressV1 {
+        flight.receive_request_once(&mut self.0, ready)
+    }
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Records C9 from the same actual committed Prepare terminal and U.
+    ///
+    /// Packet bytes remain borrowed from the retained flight. Every entered
+    /// native refusal runs the original prepaid Root post before returning.
+    ///
+    /// # Errors
+    /// Returns false while retaining the first Session, terminal/readback,
+    /// financial, C9 crossing or independently owed post failure.
+    #[doc(hidden)]
+    pub fn record_original_create_storage_outcome_once(&mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageCreatePreparationFlightV1,
+        ready: &mut aos_sandbox::OriginalCreateStorageReadyV1<'_, '_>,
+    ) -> bool {
+        flight.record_outcome_once(&mut self.0, ready)
+    }
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Transfers this flight's genuine C9 outcome and verifies Root5's reply.
+    ///
+    /// The actual authenticated request and outcome packets stay borrowed from
+    /// the same completed preparation flight. Native requires its own actual
+    /// C9 owner and returned U; this wrapper supplies no parsed authority.
+    #[doc(hidden)]
+    pub fn exchange_original_create_storage_outcome_once(&mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalStorageCreatePreparationFlightV1,
+        ready: &mut aos_sandbox::OriginalCreateStorageReadyV1<'_, '_>,
+    ) -> bool {
+        flight.exchange_outcome_once(ready)
+    }
+}
+
+// Only the genuine query original supplies the nonce/cutoff. This constructs
+// DATA after its native before; it samples no new entropy or clock itself.
+pub(crate) fn delete_inventory_coordinates_v1(
+    session: &crate::handshake::DormantAuthenticatedBrokerSessionV1,
+    original: &aos_sandbox::DeleteInventorySessionAppendOriginalV1<'_, '_, '_, '_, '_, '_>,
+) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
+    let (request_id, deadline_boottime_nanoseconds, maximum_response_bytes,
+        protocol_version, audience) = crate::handshake::delete_inventory_coordinates_v1(session, original)?;
+    Ok(DormantBrokerRequestCoordinatesV1 {
+        request_id, deadline_boottime_nanoseconds, maximum_response_bytes,
+        protocol_version, audience,
+    })
+}
+
+pub(crate) fn storage_provisioning_inventory_coordinates_v1(
+    session: &mut crate::handshake::DormantAuthenticatedBrokerSessionV1, cutoff: u64,
+) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
+    if !session.is_original_storage_lifecycle_profile_v2() || cutoff == 0 {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    session.require_negotiated_client_method(BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES)?;
+    let (request_id, deadline, maximum_response_bytes, protocol_version, audience) = session.client_request_coordinates()?;
+    Ok(DormantBrokerRequestCoordinatesV1 { request_id, deadline_boottime_nanoseconds: deadline.min(cutoff),
+        maximum_response_bytes: maximum_response_bytes.min(aos_sandbox_broker_session_protocol::AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32),
+        protocol_version, audience })
+}
+
+pub(crate) fn storage_provisioning_apply_coordinates_v1(
+    session: &mut crate::handshake::DormantAuthenticatedBrokerSessionV1,
+    request: &aos_sandbox::PreparedAuthorityBrokerRequestV1,
+) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
+    if !session.is_original_storage_lifecycle_profile_v2() {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    session.require_negotiated_client_method(BrokerMethod::BROKER_METHOD_STORAGE_APPLY)?;
+    let (deadline, maximum, protocol_version, audience) = session.client_request_limits()?;
+    if request.method() != BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+        || request.deadline_boottime_nanoseconds() > deadline || request.maximum_response_bytes() > maximum
+        || request.protocol_version() != protocol_version || request.audience() != audience {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    Ok(DormantBrokerRequestCoordinatesV1 { request_id: request.request_id(),
+        deadline_boottime_nanoseconds: request.deadline_boottime_nanoseconds(),
+        maximum_response_bytes: request.maximum_response_bytes(), protocol_version, audience })
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn run_storage_provisioning_apply_once_v1(&mut self,
+        receiving: &mut crate::controller_composition::StorageProvisioningSessionIoOriginalV1,
+        original: &mut aos_sandbox::CreateProvisioningStorageIoLoanV1<'_>, prepared: &aos_sandbox::PreparedAuthorityEffectV1,
+    ) -> Result<(), crate::handshake::output_registration_continuation::OutputPreparationClosedV1> {
+        receiving.run_once(&mut self.0, original, prepared, false)
+    }
+
+    pub(crate) fn run_storage_provisioning_inventory_once_v1(&mut self,
+        receiving: &mut crate::controller_composition::StorageProvisioningSessionIoOriginalV1,
+        original: &mut aos_sandbox::CreateProvisioningStorageIoLoanV1<'_>, prepared: &aos_sandbox::PreparedAuthorityEffectV1,
+    ) -> Result<(), crate::handshake::output_registration_continuation::OutputPreparationClosedV1> {
+        receiving.run_once(&mut self.0, original, prepared, true)
+    }
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn borrow_storage_provisioning_workspace_v1<'models>(&'models self,
+        receiving: &'models crate::controller_composition::StorageProvisioningSessionIoOriginalV1,
+        original: &mut aos_sandbox::CreateProvisioningStorageIoLoanV1<'_>, prepared: &aos_sandbox::PreparedAuthorityEffectV1,
+    ) -> Result<aos_sandbox::StorageProvisioningWorkspaceOriginalV1<'models>, aos_sandbox::ResourceReservationErrorV1> {
+        receiving.borrow_workspace_kernel_v1(&self.0, original, prepared)
+    }
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn borrow_storage_provisioning_source_workspace_v1<'models>(
+        &'models self,
+        receiving: &'models crate::controller_composition::StorageProvisioningSessionIoOriginalV1,
+        context: &mut aos_sandbox::CreateProvisioningSourceWorkspaceContextV1<'_>,
+    ) -> Result<aos_sandbox::StorageProvisioningWorkspaceOriginalV1<'models>, aos_sandbox::ResourceReservationErrorV1> {
+        receiving.borrow_source_workspace_kernel_v1(&self.0, context)
+    }
+}
+
+mod operator_recover;
+pub use operator_recover::{OperatorRecoverStorageSessionOpenV1, OperatorReconciliationSessionOpenV2, ExecutionNoApplySessionOpenV2, OperatorStopCleanupSessionOpenV1, OperatorStopCleanupSourceSessionOpenV1};
+
+mod operator_recover_inventory;
+pub use operator_recover_inventory::{OperatorRecoverStorageInventoryOriginalV1, OperatorReconciliationInventoryOriginalV2, ControllerCatalogMaintenanceInventoryOriginalV2, OperatorStopCleanupInventoryOriginalV1, OperatorStopCleanupSourceInventoryOriginalV1};
+pub(crate) use operator_recover_inventory::operator_recover_inventory_coordinates_v1;
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn borrow_storage_host_client_receiving_v1<'loan, 'cut, 'original>(
+        &'loan mut self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        lifecycle: &'loan mut aos_sandbox::StorageLifecycleSessionLoanV1<'cut, 'original>,
+    ) -> Result<crate::recovery::StorageHostClientReceivingV1<'loan, 'cut, 'original>, BrokerSessionSecurityError> {
+        self.0.borrow_storage_host_client_receiving_v1(request, lifecycle)
+    }
+
+    pub(crate) fn take_storage_host_opened_once_v1(
+        original: &mut crate::handshake::StorageHostSessionOpenV1,
+    ) -> Option<Self> {
+        original.take_completed_v1().map(|session| Self(session, Vec::new()))
+    }
+
+    pub(crate) fn storage_host_unmodified_prefix_bound_v1(&self)
+        -> Result<aos_sandbox::journal::ProtectedJournalPreopenReplayExtentV1, BrokerSessionSecurityError>
+    { self.0.storage_host_unmodified_prefix_bound_v1() }
+
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn storage_host_output_receiving_demand_v1(&self)
+        -> Result<aos_sandbox_core::ResourceVector, crate::handshake::StorageHostExchangeDemandErrorV1>
+    { self.0.storage_host_output_receiving_demand_v1() }
+}
+
+mod storage_capture_query;
+mod storage_logical_output;
+
+// Both variants hold the actual existing owners. The enum chooses no effect
+// from caller DATA and never replaces the same Host witnesses or after checks.
+enum StorageOutputDomainReceivingV1<'loan, 'cut, 'original> {
+    Ordinary,
+    Lifecycle {
+        lifecycle: &'loan mut aos_sandbox::StorageLifecycleSessionLoanV1<'cut, 'original>,
+        session: &'loan aos_sandbox::Journal,
+        socket: &'loan aos_sandbox_linux::seqpacket::SeqpacketSocket,
+    },
+}
+
+
+mod storage_capture_candidate;
+
+enum StorageOutputDomainOperationV1<'operation> {
+    Logical(&'operation mut aos_sandbox_storage::execution_output_credential::OriginalExecutionOutputRegistrationV1),
+    Capture(&'operation AuthenticatedBrokerMethodRequestV1),
+}
+
+pub(crate) fn start_resource_provisioning_coordinates_v2(
+    session: &mut crate::handshake::DormantAuthenticatedBrokerSessionV1,
+    header: &aos_sandbox_protocol::authorization_artifact::start_resource_plan::StartResourceRequestHeaderDataV2,
+    inventory: bool,
+) -> Result<crate::DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
+    session.start_resource_provisioning_coordinates_v2(header, inventory)
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn rejoin_storage_session_once_v2(&mut self,
+        destination: &mut crate::controller_composition::StartResourceProvisioningSessionIoOriginalV4,
+        original: &mut aos_sandbox::OriginalStartHostRootLoanV1<'_, '_>,
+        root: &aos_sandbox::normal_root::RootStartResourceCurrentTurnV2<'_>,
+        previous: &aos_sandbox::CreateProvisioningOriginalsV1,
+        controller: &aos_sandbox::Journal,
+    ) -> Result<(), aos_sandbox::ResourceReservationErrorV1> {
+        destination.rejoin_storage_inner_once_v2(&mut self.0, original, root, previous, controller)
+    }
+
+    pub(crate) fn prepare_storage_once_v2(&mut self,
+        destination: &mut crate::controller_composition::StartResourceProvisioningSessionIoOriginalV4,
+        original: &mut aos_sandbox::StartResourceProvisioningIoLoanV2<'_>,
+        prepared: &aos_sandbox::PreparedStartResourceRequestOriginalV2,
+    ) -> Result<(), crate::handshake::output_registration_continuation::OutputPreparationClosedV1> {
+        destination.prepare_storage_inner_once_v2(&mut self.0, original, prepared)
+    }
+
+    pub(crate) fn inventory_storage_once_v2(&mut self,
+        destination: &mut crate::controller_composition::StartResourceProvisioningSessionIoOriginalV4,
+        original: &mut aos_sandbox::StartResourceProvisioningIoLoanV2<'_>,
+        prepared: &aos_sandbox::PreparedStartResourceRequestOriginalV2,
+    ) -> Result<(), crate::handshake::output_registration_continuation::OutputPreparationClosedV1> {
+        destination.inventory_storage_inner_once_v2(&mut self.0, original, prepared)
+    }
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Describes the actual held Session's negotiated Delete26 receiving representation.
+    ///
+    /// The signed request bound is DATA from the genuine Root receipt. This
+    /// observes no native state, grants no loan and opens no Session or writer.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn delete_storage_preparation_shape_v3(&self, request_bound: usize)
+        -> Option<aos_sandbox::StorageProvisioningSessionIoShapeDataV1> {
+        self.0.delete_storage_preparation_shape_v3(request_bound)
+    }
+
+    pub(crate) fn retire_delete_storage_preparation_window_once_v3(&mut self,
+        flight: &mut crate::controller_composition::DeleteStoragePreparationSessionIoOriginalV3,
+        original: &mut aos_sandbox::OriginalDeleteStoragePreparationLoanV3<'_>,
+    ) -> Result<(), crate::handshake::output_registration_continuation::OutputPreparationClosedV1> {
+        flight.retire_inner_once_v3(&mut self.0, original)
+    }
+
+    pub(crate) fn run_delete_storage_preparation_once_v3(&mut self,
+        flight: &mut crate::controller_composition::DeleteStoragePreparationSessionIoOriginalV3,
+        original: &mut aos_sandbox::OriginalDeleteStoragePreparationLoanV3<'_>,
+        inventory: &crate::controller_composition::DeleteInventoryAnswerOriginalsV1,
+    ) -> Result<(), crate::handshake::output_registration_continuation::OutputPreparationClosedV1> {
+        flight.run_inner_once_v3(&mut self.0, original, inventory)
+    }
+
+    /// Describes the actual negotiated Apply7 flight without entering a native interval.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn delete_storage_apply_shape_v3(&self, request_bound: usize)
+        -> Option<aos_sandbox::StorageProvisioningSessionIoShapeDataV1> {
+        self.0.delete_storage_apply_shape_v3(request_bound)
+    }
+
+    pub(crate) fn retire_delete_storage_apply_window_once_v3(&mut self,
+        flight: &mut crate::controller_composition::DeleteStorageApplySessionIoOriginalV3,
+        original: &mut aos_sandbox::OriginalDeleteStorageApplyLoanV3<'_>,
+    ) -> Result<(), crate::handshake::output_registration_continuation::OutputPreparationClosedV1> {
+        flight.retire_inner_once_v3(&mut self.0, original)
+    }
+
+    pub(crate) fn run_delete_storage_apply_once_v3(&mut self,
+        flight: &mut crate::controller_composition::DeleteStorageApplySessionIoOriginalV3,
+        original: &mut aos_sandbox::OriginalDeleteStorageApplyLoanV3<'_>,
+        preparation: &crate::controller_composition::DeleteStoragePreparationSessionIoOriginalV3,
+    ) -> Result<(), crate::handshake::output_registration_continuation::OutputPreparationClosedV1> {
+        flight.run_inner_once_v3(&mut self.0, original, preparation)
+    }
+}
+
+// The private Session owner evaluates the unchanged signed26 predicate.
+pub(crate) fn delete_storage_preparation_coordinates_v3(
+    session: &mut crate::handshake::DormantAuthenticatedBrokerSessionV1,
+    header: &RequestHeader,
+) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
+    session.delete_storage_preparation_coordinates_v3(header)
+}
+
+mod catalog_maintenance;
+#[doc(hidden)]
+pub use catalog_maintenance::{ControllerCatalogMaintenanceCycleOriginalV2, ControllerCatalogMaintenanceColdCompletedV2, ControllerCatalogMaintenanceColdReceiptV2, ControllerCatalogMaintenanceRefreshCompletedV2, ControllerCatalogMaintenanceRefreshReceiptV2};
+
+#[cfg(test)]
+mod maintenance_readiness_tests {
+    use super::*;
+    use std::os::fd::AsFd as _;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn successive_inventory_waits_keep_the_same_socket_and_do_not_consume_packets() {
+        let (mut socket, mut peer) = UnixStream::pair().unwrap();
+        for byte in [7_u8, 9_u8] {
+            let mut sender = peer.try_clone().unwrap();
+            let thread = std::thread::spawn(move || sender.write_all(&[byte]).unwrap());
+            let mut native = None;
+            let mut events = None;
+
+            wait_for_inventory_readiness_retaining_v5(socket.as_fd(), &mut native, &mut events).unwrap();
+            thread.join().unwrap();
+            assert!(matches!(native, Some(Ok(1))));
+            assert!(events.unwrap().contains(PollFlags::IN));
+
+            let mut received = [0_u8];
+            socket.read_exact(&mut received).unwrap();
+            assert_eq!(received, [byte]);
+        }
+        // The same original connection still carries traffic after both waits.
+        peer.write_all(&[11]).unwrap();
+        let mut received = [0_u8];
+        socket.read_exact(&mut received).unwrap();
+        assert_eq!(received, [11]);
+    }
+
+    #[test]
+    fn closed_peer_keeps_actual_hangup_events_and_cannot_admit_an_inventory() {
+        let (socket, peer) = UnixStream::pair().unwrap();
+        drop(peer);
+        let mut native = None;
+        let mut events = None;
+
+        assert!(wait_for_inventory_readiness_retaining_v5(
+            socket.as_fd(), &mut native, &mut events).is_err());
+        assert!(matches!(native, Some(Ok(1))));
+        assert!(events.unwrap().contains(PollFlags::HUP));
+    }
+}
+
+pub(crate) fn delete_storage_apply_coordinates_v3(
+    session: &mut crate::handshake::DormantAuthenticatedBrokerSessionV1,
+    header: &RequestHeader,
+) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
+    session.delete_storage_apply_coordinates_v3(header)
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Describes the negotiated Network9 flight without entering a native interval.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn delete_network_apply_shape_v4(&self, request_bound: usize)
+        -> Option<aos_sandbox::StorageProvisioningSessionIoShapeDataV1> {
+        self.0.delete_network_apply_shape_v4(request_bound)
+    }
+
+    pub(crate) fn retire_delete_network_apply_window_once_v4(&mut self,
+        flight: &mut crate::controller_composition::DeleteNetworkApplySessionIoOriginalV4,
+        original: &mut aos_sandbox::OriginalDeleteNetworkApplyLoanV4<'_>,
+    ) -> Result<(), crate::handshake::output_registration_continuation::OutputPreparationClosedV1> {
+        flight.retire_inner_once_v4(&mut self.0, original)
+    }
+
+    pub(crate) fn run_delete_network_apply_once_v4(&mut self,
+        flight: &mut crate::controller_composition::DeleteNetworkApplySessionIoOriginalV4,
+        original: &mut aos_sandbox::OriginalDeleteNetworkApplyLoanV4<'_>,
+        inventory: &crate::controller_composition::DeleteInventoryAnswerOriginalsV1,
+    ) -> Result<(), crate::handshake::output_registration_continuation::OutputPreparationClosedV1> {
+        flight.run_inner_once_v4(&mut self.0, original, inventory)
+    }
+}
+
+pub(crate) fn delete_network_apply_coordinates_v4(
+    session: &mut crate::handshake::DormantAuthenticatedBrokerSessionV1,
+    header: &RequestHeader,
+) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
+    session.delete_network_apply_coordinates_v4(header)
+}
+
+impl DormantAuthenticatedBrokerSessionV1 {
+    /// Describes the negotiated Mount62 flight without entering a native interval.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn delete_mount_reap_shape_v4(&self, request_bound: usize)
+        -> Option<aos_sandbox::StorageProvisioningSessionIoShapeDataV1> {
+        self.0.delete_mount_reap_shape_v4(request_bound)
+    }
+
+    pub(crate) fn retire_delete_mount_reap_window_once_v4(&mut self,
+        flight: &mut crate::controller_composition::DeleteMountReapSessionIoOriginalV4,
+        original: &mut aos_sandbox::OriginalDeleteMountReapLoanV4<'_>,
+    ) -> Result<(), crate::handshake::output_registration_continuation::OutputPreparationClosedV1> {
+        flight.retire_inner_once_v4(&mut self.0, original)
+    }
+
+    pub(crate) fn run_delete_mount_reap_once_v4(&mut self,
+        flight: &mut crate::controller_composition::DeleteMountReapSessionIoOriginalV4,
+        original: &mut aos_sandbox::OriginalDeleteMountReapLoanV4<'_>,
+        inventory: &crate::controller_composition::DeleteInventoryAnswerOriginalsV1,
+    ) -> Result<(), crate::handshake::output_registration_continuation::OutputPreparationClosedV1> {
+        flight.run_inner_once_v4(&mut self.0, original, inventory)
+    }
+}
+
+pub(crate) fn delete_mount_reap_coordinates_v4(
+    session: &mut crate::handshake::DormantAuthenticatedBrokerSessionV1,
+    header: &RequestHeader,
+) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
+    session.delete_mount_reap_coordinates_v4(header)
 }

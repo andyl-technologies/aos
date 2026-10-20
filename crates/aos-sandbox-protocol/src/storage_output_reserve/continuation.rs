@@ -158,6 +158,31 @@ pub fn original_plan_digest_v1(
     Ok(descriptor_for_bytes(media_type, authorization.broker_plan()).digest())
 }
 
+/// Decodes the canonical historical Storage output registration body.
+///
+/// These bytes identify a retained logical row and original marker. The
+/// decoder grants no Storage hold, physical capture backing or Host effect.
+///
+/// # Errors
+/// Rejects oversized, noncanonical, unknown-field or wrong-width response DATA.
+pub fn decode_storage_output_registration_response_data_v1(
+    bytes: &[u8],
+) -> Result<StorageOutputRegistrationResponseV1, ProtocolValidationError> {
+    if bytes.is_empty() || bytes.len() > 1024 {
+        return Err(ProtocolValidationError::ResponseTooLarge);
+    }
+    let response = StorageOutputRegistrationResponseV1::decode_from_slice(bytes)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !response.__buffa_unknown_fields.is_empty() || response.encode_to_vec() != bytes {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+    if response.canonical_reservation.len() != 177
+        || response.canonical_original_marker.len() != 184 {
+        return Err(invalid());
+    }
+    Ok(response)
+}
+
 /// Validates exact returned logical records without verifying their Storage MAC.
 ///
 /// The authenticated terminal commits these bytes. Only Storage's local ledger
@@ -172,20 +197,10 @@ pub fn decode_registration_response_v1(
     original_request_id: [u8; 16],
     original_plan_digest: ObjectDigest,
 ) -> Result<StorageOutputRegistrationResponseV1, ProtocolValidationError> {
-    if bytes.is_empty() || bytes.len() > 1024 {
-        return Err(ProtocolValidationError::ResponseTooLarge);
-    }
-    let response = StorageOutputRegistrationResponseV1::decode_from_slice(bytes)
-        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
-    if !response.__buffa_unknown_fields.is_empty() || response.encode_to_vec() != bytes {
-        return Err(ProtocolValidationError::UnknownFields);
-    }
+    let response = decode_storage_output_registration_response_data_v1(bytes)?;
     let row = &response.canonical_reservation;
     let marker = &response.canonical_original_marker;
     let source = &records.attempt()[8..696];
-    if row.len() != 177 || marker.len() != 184 {
-        return Err(invalid());
-    }
     if row[..8] != *b"AOSEOR03"
         || row[8..24] != *records.host_locator().execution().as_bytes()
         || row[24..40] != *records.host_locator().create_operation().as_bytes()

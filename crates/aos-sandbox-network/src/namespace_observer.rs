@@ -7,6 +7,8 @@
 //! decoded link inventories. Namespace names, PIDs, caller-provided interface
 //! indexes, and caller-provided namespace IDs never participate in authority.
 
+use crate::kernel_reader::observation_helpers_v2::ObservationHelperPortV2;
+
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_core::model::NetworkKind;
 use aos_sandbox_linux::boot::KernelBootId;
@@ -394,71 +396,119 @@ pub(crate) fn observe_stable_expected_network_kernel(
     initial_host_namespace: &NamespaceFd,
     worker: &SingleThreadedProcess,
 ) -> Result<StableNetworkKernelObservationV1, NetworkNamespaceObserverError> {
-    worker.disable_core_dumps()?;
-    let boot_id = KernelBootId::current()?.into_bytes();
-    let expectation = plan.observation_expectation();
-    initial_host_namespace.validate_current_network()?;
-    validate_prepared_observation_authority(
-        plan.digest(),
+    observe_stable_expected_network_kernel_with_port_v2(
+        readers,
+        plan,
+        target_namespace,
         expected_plan_digest,
         expected_boot_id,
-        target_namespace.identity(),
-        boot_id,
-        initial_host_namespace.identity(),
-    )?;
+        expected_state,
+        initial_host_namespace,
+        worker,
+        &mut ObservationHelperPortV2::Local,
+    )
+}
 
-    let valid_reader_shape = matches!(
-        (expectation.kind(), expectation.veth(), readers.bpf),
-        (NetworkKind::Isolated, None, None)
-            | (
-                NetworkKind::Project | NetworkKind::Outbound | NetworkKind::Published,
-                Some(_),
-                Some(_),
-            )
-    );
-    if !valid_reader_shape {
-        return Err(NetworkNamespaceObserverError::UnsupportedPlan);
-    }
+/// Uses the same observation engine with its already-paid closed helper port.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn observe_stable_expected_network_kernel_with_port_v2(
+    readers: NetworkKernelObservationReaders<'_>,
+    plan: &NetworkKernelPlanV1,
+    target_namespace: &NamespaceFd,
+    expected_plan_digest: ObjectDigest,
+    expected_boot_id: [u8; 16],
+    expected_state: NetworkNamespaceObservedStateV1,
+    initial_host_namespace: &NamespaceFd,
+    worker: &SingleThreadedProcess,
+    port: &mut ObservationHelperPortV2<'_, '_, '_>,
+) -> Result<StableNetworkKernelObservationV1, NetworkNamespaceObserverError> {
+    port.require_boundary_once()?;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        worker.disable_core_dumps()?;
+        let boot_id = KernelBootId::current()?.into_bytes();
+        let expectation = plan.observation_expectation();
+        initial_host_namespace.validate_current_network()?;
+        validate_prepared_observation_authority(
+            plan.digest(),
+            expected_plan_digest,
+            expected_boot_id,
+            target_namespace.identity(),
+            boot_id,
+            initial_host_namespace.identity(),
+        )?;
 
-    let expected_lifecycle = expected_lifecycle(expectation, expected_state)?;
-    let authority = ObservationAuthority {
-        boot_id,
-        host: initial_host_namespace,
-        sandbox: target_namespace,
-        lifecycle: expected_state,
+        let valid_reader_shape = matches!(
+            (expectation.kind(), expectation.veth(), readers.bpf),
+            (NetworkKind::Isolated, None, None)
+                | (
+                    NetworkKind::Project | NetworkKind::Outbound | NetworkKind::Published,
+                    Some(_),
+                    Some(_),
+                )
+        );
+        if !valid_reader_shape {
+            return Err(NetworkNamespaceObserverError::UnsupportedPlan);
+        }
+
+        let expected_lifecycle = expected_lifecycle(expectation, expected_state)?;
+        let authority = ObservationAuthority {
+            boot_id,
+            host: initial_host_namespace,
+            sandbox: target_namespace,
+            lifecycle: expected_state,
+        };
+        let first = observe_complete_once_with_port_v2(
+            readers.rtnetlink,
+            readers.nftables,
+            readers.bpf,
+            expectation,
+            &expected_lifecycle,
+            authority,
+            worker,
+            port,
+        )?;
+        let second = observe_complete_once_with_port_v2(
+            readers.rtnetlink,
+            readers.nftables,
+            readers.bpf,
+            expectation,
+            &expected_lifecycle,
+            authority,
+            worker,
+            port,
+        )?;
+        let identity = target_namespace.identity();
+        let digest = expectation.validate_stable(
+            boot_id,
+            (identity.device, identity.inode),
+            expected_state.kind(),
+            &expected_lifecycle,
+            &first,
+            &second,
+        )?;
+
+        Ok(StableNetworkKernelObservationV1 {
+            observation: first,
+            digest,
+        })
+    }));
+    // The final current/native post remains owed after a decoder or restore
+    // refusal, and never replaces its earlier cause.
+    let after = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        port.require_boundary_once()
+    }));
+    let result = match result {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
     };
-    let first = observe_complete_once(
-        readers.rtnetlink,
-        readers.nftables,
-        readers.bpf,
-        expectation,
-        &expected_lifecycle,
-        authority,
-        worker,
-    )?;
-    let second = observe_complete_once(
-        readers.rtnetlink,
-        readers.nftables,
-        readers.bpf,
-        expectation,
-        &expected_lifecycle,
-        authority,
-        worker,
-    )?;
-    let identity = target_namespace.identity();
-    let digest = expectation.validate_stable(
-        boot_id,
-        (identity.device, identity.inode),
-        expected_state.kind(),
-        &expected_lifecycle,
-        &first,
-        &second,
-    )?;
-
-    Ok(StableNetworkKernelObservationV1 {
-        observation: first,
-        digest,
-    })
+    let after = match after {
+        Ok(after) => after,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    match result {
+        Err(cause) => Err(cause),
+        Ok(value) => after.map(|()| value).map_err(Into::into),
+    }
 }
 
 /// Observes two equal complete inventories after plan-owned kernel cleanup.
@@ -477,80 +527,151 @@ pub(crate) fn observe_stable_destroyed_network_kernel(
     initial_host_namespace: &NamespaceFd,
     worker: &SingleThreadedProcess,
 ) -> Result<ObjectDigest, NetworkNamespaceObserverError> {
-    worker.disable_core_dumps()?;
-    let boot_id = KernelBootId::current()?.into_bytes();
-    let expectation = plan.observation_expectation();
-    initial_host_namespace.validate_current_network()?;
-    validate_prepared_observation_authority(
-        plan.digest(),
+    observe_stable_destroyed_network_kernel_with_port_v2(
+        readers,
+        plan,
+        target_namespace,
         expected_plan_digest,
         expected_boot_id,
-        target_namespace.identity(),
-        boot_id,
-        initial_host_namespace.identity(),
-    )?;
-    let valid_reader_shape = matches!(
-        (expectation.kind(), expectation.veth(), readers.bpf),
-        (NetworkKind::Isolated, None, None)
-            | (
-                NetworkKind::Project | NetworkKind::Outbound | NetworkKind::Published,
-                Some(_),
-                Some(_),
-            )
-    );
-    if !valid_reader_shape {
-        return Err(NetworkNamespaceObserverError::UnsupportedPlan);
-    }
-
-    let authority = ObservationAuthority {
-        boot_id,
-        host: initial_host_namespace,
-        sandbox: target_namespace,
-        lifecycle: NetworkNamespaceObservedStateV1::absent(),
-    };
-    let first = observe_destroyed_once(readers, expectation, authority, worker)?;
-    let second = observe_destroyed_once(readers, expectation, authority, worker)?;
-    if first != second {
-        return Err(NetworkNamespaceObserverError::Changed);
-    }
-
-    let identity = target_namespace.identity();
-    let mut digest = Sha256::new();
-    digest.update(b"aos.sandbox.network.destroyed-kernel-observation.v1\0");
-    digest.update(boot_id);
-    digest.update(identity.device.to_be_bytes());
-    digest.update(identity.inode.to_be_bytes());
-    digest.update(plan.digest().as_bytes());
-    digest.update(expectation.network_handle());
-    Ok(ObjectDigest::from_bytes(digest.finalize().into()))
+        initial_host_namespace,
+        worker,
+        &mut ObservationHelperPortV2::Local,
+    )
 }
 
-fn observe_destroyed_once(
+/// Uses the same observation engine with its already-paid closed helper port.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn observe_stable_destroyed_network_kernel_with_port_v2(
+    readers: NetworkKernelObservationReaders<'_>,
+    plan: &NetworkKernelPlanV1,
+    target_namespace: &NamespaceFd,
+    expected_plan_digest: ObjectDigest,
+    expected_boot_id: [u8; 16],
+    initial_host_namespace: &NamespaceFd,
+    worker: &SingleThreadedProcess,
+    port: &mut ObservationHelperPortV2<'_, '_, '_>,
+) -> Result<ObjectDigest, NetworkNamespaceObserverError> {
+    port.require_boundary_once()?;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        worker.disable_core_dumps()?;
+        let boot_id = KernelBootId::current()?.into_bytes();
+        let expectation = plan.observation_expectation();
+        initial_host_namespace.validate_current_network()?;
+        validate_prepared_observation_authority(
+            plan.digest(),
+            expected_plan_digest,
+            expected_boot_id,
+            target_namespace.identity(),
+            boot_id,
+            initial_host_namespace.identity(),
+        )?;
+        let valid_reader_shape = matches!(
+            (expectation.kind(), expectation.veth(), readers.bpf),
+            (NetworkKind::Isolated, None, None)
+                | (
+                    NetworkKind::Project | NetworkKind::Outbound | NetworkKind::Published,
+                    Some(_),
+                    Some(_),
+                )
+        );
+        if !valid_reader_shape {
+            return Err(NetworkNamespaceObserverError::UnsupportedPlan);
+        }
+
+        let authority = ObservationAuthority {
+            boot_id,
+            host: initial_host_namespace,
+            sandbox: target_namespace,
+            lifecycle: NetworkNamespaceObservedStateV1::absent(),
+        };
+        let first =
+            observe_destroyed_once_with_port_v2(readers, expectation, authority, worker, port)?;
+        let second =
+            observe_destroyed_once_with_port_v2(readers, expectation, authority, worker, port)?;
+        if first != second {
+            return Err(NetworkNamespaceObserverError::Changed);
+        }
+
+        let identity = target_namespace.identity();
+        let mut digest = Sha256::new();
+        digest.update(b"aos.sandbox.network.destroyed-kernel-observation.v1\0");
+        digest.update(boot_id);
+        digest.update(identity.device.to_be_bytes());
+        digest.update(identity.inode.to_be_bytes());
+        digest.update(plan.digest().as_bytes());
+        digest.update(expectation.network_handle());
+        Ok(ObjectDigest::from_bytes(digest.finalize().into()))
+    }));
+    // The final current/native post remains owed after a decoder or restore
+    // refusal, and never replaces its earlier cause.
+    let after = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        port.require_boundary_once()
+    }));
+    let result = match result {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    let after = match after {
+        Ok(after) => after,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    match result {
+        Err(cause) => Err(cause),
+        Ok(value) => after.map(|()| value).map_err(Into::into),
+    }
+}
+
+fn observe_destroyed_once_with_port_v2(
     readers: NetworkKernelObservationReaders<'_>,
     expectation: &NetworkKernelExpectationV1,
     authority: ObservationAuthority<'_>,
     worker: &SingleThreadedProcess,
+    port: &mut ObservationHelperPortV2<'_, '_, '_>,
 ) -> Result<RtnetlinkNamespaceInventoryV1, NetworkNamespaceObserverError> {
     authority.validate_unchanged()?;
-    readers.rtnetlink.observe_host_veth_absent(expectation)?;
+    readers
+        .rtnetlink
+        .observe_host_veth_absent_with_port_v2(expectation, port)?;
     if let Some(bpf) = readers.bpf {
-        bpf.observe_absent(*expectation.network_handle())?;
+        bpf.observe_absent_with_port_v2(*expectation.network_handle(), port)?;
     }
 
+    port.require_boundary_once()?;
     authority.sandbox.enter(worker)?;
-    let sandbox_result = (|| {
+    let sandbox_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         authority.sandbox.validate_current_network()?;
-        let inventory = readers.rtnetlink.observe_sandbox()?;
+        let inventory = readers.rtnetlink.observe_sandbox_with_port_v2(port)?;
         validate_destroyed_namespace_inventory(&inventory)?;
-        readers.nftables.observe_table_absent()?;
+        readers.nftables.observe_table_absent_with_port_v2(port)?;
         Ok::<_, NetworkNamespaceObserverError>(inventory)
-    })();
+    }));
     let restored = authority
         .host
         .enter(worker)
         .and_then(|()| authority.host.validate_current_network());
     require_restored_host(restored.is_ok());
-    authority.validate_unchanged()?;
+    let authority_after = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        authority.validate_unchanged()
+    }));
+    let source_after = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        port.require_boundary_once()
+    }));
+    let sandbox_result = match sandbox_result {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    let authority_after = match authority_after {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    let source_after = match source_after {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    if port.is_local() || sandbox_result.is_ok() {
+        authority_after?;
+        source_after?;
+    }
     sandbox_result
 }
 
@@ -746,34 +867,78 @@ fn observe_complete_once(
     authority: ObservationAuthority<'_>,
     worker: &SingleThreadedProcess,
 ) -> Result<NetworkKernelObservationV1, NetworkNamespaceObserverError> {
+    observe_complete_once_with_port_v2(
+        rtnetlink,
+        nftables,
+        bpf,
+        expectation,
+        expected_lifecycle,
+        authority,
+        worker,
+        &mut ObservationHelperPortV2::Local,
+    )
+}
+
+fn observe_complete_once_with_port_v2(
+    rtnetlink: &FixedRtnetlinkObservationReader,
+    nftables: &FixedNftablesObservationReader,
+    bpf: Option<&FixedBpfObservationReader>,
+    expectation: &NetworkKernelExpectationV1,
+    expected_lifecycle: &ObservedLeaseStateV1,
+    authority: ObservationAuthority<'_>,
+    worker: &SingleThreadedProcess,
+    port: &mut ObservationHelperPortV2<'_, '_, '_>,
+) -> Result<NetworkKernelObservationV1, NetworkNamespaceObserverError> {
     authority.validate_unchanged()?;
 
     let (host_peer_namespace_id, host, lease_gate) = match bpf {
         Some(reader) => (
             Some(network_namespace_id(authority.sandbox)?),
-            Some(rtnetlink.observe_host_veth(expectation)?),
-            Some(reader.observe(*expectation.network_handle())?),
+            Some(rtnetlink.observe_host_veth_with_port_v2(expectation, port)?),
+            Some(reader.observe_with_port_v2(*expectation.network_handle(), port)?),
         ),
         None => (None, None, None),
     };
 
+    port.require_boundary_once()?;
     authority.sandbox.enter(worker)?;
-    let sandbox_result = (|| {
+    let sandbox_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         authority.sandbox.validate_current_network()?;
         let sandbox_peer_namespace_id = match host.as_ref() {
             Some(_) => Some(network_namespace_id(authority.host)?),
             None => None,
         };
-        let sandbox = rtnetlink.observe_sandbox()?;
-        let policy = nftables.observe(&sandbox.links)?;
+        let sandbox = rtnetlink.observe_sandbox_with_port_v2(port)?;
+        let policy = nftables.observe_with_port_v2(&sandbox.links, port)?;
         Ok::<_, NetworkNamespaceObserverError>((sandbox_peer_namespace_id, sandbox, policy))
-    })();
+    }));
     let restored = authority
         .host
         .enter(worker)
         .and_then(|()| authority.host.validate_current_network());
     require_restored_host(restored.is_ok());
-    authority.validate_unchanged()?;
+    let authority_after = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        authority.validate_unchanged()
+    }));
+    let source_after = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        port.require_boundary_once()
+    }));
+    let sandbox_result = match sandbox_result {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    let authority_after = match authority_after {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    let source_after = match source_after {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    if port.is_local() || sandbox_result.is_ok() {
+        authority_after?;
+        source_after?;
+    }
 
     let (sandbox_peer_namespace_id, sandbox, nftables) = sandbox_result?;
     let loopback = sandbox

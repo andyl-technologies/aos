@@ -27,6 +27,8 @@
 ##!   pkgs                 — AOS package set
 ##!   lib                  — AOS library
 ##!   system               — evaluated AOS system (provides toplevel + kernel)
+##!   systemd              — selected PID 1 package, explicitly supplied by image
+##!                          and VM assembly; standalone fixtures use pkgs.systemd
 ##!   pname                — derivation name prefix (default "aos-rootfs")
 ##!   label                — filesystem label (default "aos-root")
 ##!   shrinkToFit          — resize2fs -M + grow by `headroomMiB` (production
@@ -55,6 +57,7 @@
   pkgs,
   lib,
   system,
+  systemd ? pkgs.systemd,
   pname ? "aos-rootfs",
   label ? "aos-root",
   shrinkToFit ? true,
@@ -141,7 +144,7 @@
   # same output. Form their union before the strict reference-graph boundary.
   allClosures = lib.unique (
     map builtins.toString (
-      [toplevel kernel]
+      [toplevel kernel systemd]
       ++ lib.optionals rootHandoff [immutableStage0]
       ++ extraClosures
     )
@@ -228,7 +231,7 @@ in
       KERNEL = toString kernel;
       REGINFO = toString regInfo;
       SYSTEMD_PRESETS = toString system.config.system.build.systemdSystemPresets;
-      SYSTEMD = toString pkgs.systemd;
+      SYSTEMD = toString systemd;
       COREUTILS = toString pkgs.coreutils;
       # `$BASH` is a bash built-in pointing at the bash executable
       # currently running the script — setting it as a derivation env

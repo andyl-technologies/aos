@@ -499,22 +499,6 @@ pub(crate) fn validate_genesis_checkpoint(
     floor: CacheHistoryFloorV1,
     limits: CacheRecoveryLimitsV1,
 ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
-    let checkpoint = decode_typed_checkpoint(partition, typed_checkpoint, limits)
-        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    if checkpoint.checkpoint.sequence != 1
-        || floor.first_retained_sequence != 2
-        || floor.predecessor.as_bytes() != &[0; 32]
-        || !checkpoint.baselines.is_empty()
-        || !checkpoint.family_heads.is_empty()
-        || !checkpoint.global.watermarks.is_empty()
-        || !checkpoint.global.idempotency.is_empty()
-        || checkpoint.global.pin_floor.is_some()
-        || checkpoint.global.idempotency_floor.is_some()
-        || !checkpoint.global.handoffs.is_empty()
-        || !checkpoint.global.lookups.is_empty()
-        || checkpoint.global.poison.is_some()
-    {
-        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
-    }
-    Ok(())
+    aos_sandbox_protocol::cache_state::replay_evidence::validate_genesis_checkpoint(partition, typed_checkpoint, floor, limits)
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)
 }

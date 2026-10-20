@@ -16,6 +16,21 @@
 //! SHA-256(Root-project-stage-domain || preceding 304 bytes):32
 //! ```
 
+use aos_sandbox_policy::controller_project_readback::{
+    ControllerProjectAdmissionChallengeV1, verify_controller_project_admission_readback_v1,
+};
+
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentInputsV1, verify_policy_deployment_head_v1,
+    verify_signed_project_policy_source_v2,
+};
+
+use aos_sandbox_policy::journal_keys::{
+    CONTROLLER_HOLD_PIN_KEY, HEAD_KEY, SIGNER_PINS_KEY, SOURCE_HOLD_PIN_KEY,
+};
+
+use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
+
 use aos_sandbox_protocol::domain_ledger::root_project_history::RESERVATION_CANCELLATION_DOMAIN;
 pub use aos_sandbox_protocol::domain_ledger::root_project_history::{
     RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeV1,
@@ -62,20 +77,13 @@ use crate::journal::{
     SourceProjectAdmissionChallengeV1, SourceProjectAdmissionReservationV1,
 };
 
-use super::controller_hold_pin::CONTROLLER_HOLD_PIN_KEY;
-use super::controller_hold_readback::PinnedControllerHoldSignerV1;
-use super::controller_project_admission_readback::{
-    ControllerProjectAdmissionChallengeV1, verify_controller_project_admission_readback_v1,
-};
-use super::root_nonce::fresh_root_nonce;
-use super::deployment_head::{
-    HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1,
-};
+use aos_sandbox_broker::root_nonce::fresh_root_nonce;
+use super::deployment_head::{PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, encode_policy_signer_pins_v1};
 use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
-use super::source_hold_pin::SOURCE_HOLD_PIN_KEY;
+
 use super::source_hold_readback::{
     PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackChallengeV1,
 };
@@ -83,10 +91,7 @@ use super::source_project_admission_readback::{
     verify_source_project_admission_readback_v1, verify_source_project_reservation_readback_v1,
     verify_source_project_retirement_readback_v1,
 };
-use super::{
-    PolicyDeploymentHeadErrorV1, PolicyDeploymentInputsV1, verify_policy_deployment_head_v1,
-    verify_signed_project_policy_source_v2,
-};
+use super::PolicyDeploymentHeadErrorV1;
 
 const STAGE_KEY: &[u8] = b"\0aos-policy-project-admission-stage-v1\0";
 const STAGE_MAGIC: &[u8; 8] = b"AOSQPS01";
@@ -295,14 +300,17 @@ fn admit_root_project_source_from_owner_proofs_with_journal(
         deployment_inputs,
         deployment_key,
         now_unix_seconds,
-    )?;
+    )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
     let project = verify_signed_project_policy_source_v2(
         project_packet,
         project_input,
         project_key,
         now_unix_seconds,
-    )?;
+    )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
     let controller_signer = PinnedControllerHoldSignerV1::decode(controller_pin)
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
     let source_signer = PinnedSourceHoldReadbackSignerV1::decode(source_pin)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
@@ -386,7 +394,7 @@ fn admit_root_project_source_from_owner_proofs_with_journal(
         || controller.publisher_generation() != project.head().publisher_generation()
         || controller.publisher_digest() != project.head().publisher_digest()
         || controller.cache_domain_head() != project.head().prerequisite_claims()[2]
-        || crate::publisher_policy::project_revocation_digest(
+        || crate::publisher_admin::policy::project_revocation_digest(
             stage.project,
             controller.revocation_scope(),
             controller.revocation_generation(),
@@ -450,7 +458,8 @@ fn admit_root_project_source_from_owner_proofs_with_journal(
                     input,
                     project_key,
                     historical_time,
-                )?;
+                )
+                .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
                 if previous.head().project() != stage.project
                     || previous.head().deployment_signer_generation()
                         != deployment_signer_generation
@@ -875,13 +884,15 @@ pub fn stage_fixed_root_project_admission_v1(
         deployment_inputs,
         deployment_key,
         now_unix_seconds,
-    )?;
+    )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
     let project = verify_signed_project_policy_source_v2(
         project_packet,
         project_input,
         project_key,
         now_unix_seconds,
-    )?;
+    )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
     if project.head().deployment_signer_generation() != deployment_signer_generation
         || project.head().project_signer_generation() != project_signer_generation
         || project.head().prerequisite_claims()[1] != deployment.packet_digest()
@@ -1654,9 +1665,11 @@ mod tests {
             catalogs: &inputs[3],
         };
         verify_policy_deployment_head_v1(&deployment, &exact, &signing_key.verifying_key(), 20)
+            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .expect("deployment valid before expiry");
         assert!(
             verify_policy_deployment_head_v1(&deployment, &exact, &signing_key.verifying_key(), 30)
+                .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
                 .is_err(),
             "the signed deployment head itself expires before recovery"
         );

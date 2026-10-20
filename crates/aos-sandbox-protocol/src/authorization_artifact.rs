@@ -17,8 +17,32 @@
 //! completion establishes current publication authority or an effect permit.
 
 mod publisher;
+mod storage_prepare_shape;
+pub mod host_stop_cleanup_plan;
+mod storage_create_plan;
+mod storage_create_apply_plan;
+mod mount_attachment_anchor_plan;
+pub use mount_attachment_anchor_plan::{AttachmentAnchorPlanPreparationDataV1,
+    prepare_attachment_anchor_plan_v1, prepare_admitted_attachment_anchor_plan_v1};
+/// Shares exact unsigned Delete resource plans between independently admitted owners.
+pub mod delete_resource_plan;
+mod host_launch_plan;
+/// Shares unsigned Start resource plans between their real Root and Controller owners.
+pub mod start_resource_plan;
+
+pub use host_launch_plan::{
+    HostLaunchPlanPreparationDataV2, guardian_arm_plan_data_v1,
+    prepare_host_launch_plan_v2, prepare_admitted_host_launch_plan_v2,
+    start_host_launch_request_body_data_v2, start_host_launch_request_receiving_demand_v2,
+};
 
 pub use publisher::{PublisherPlanPreparation, SignedPublisherPlan};
+pub use storage_create_apply_plan::{prepare_storage_create_apply_plan_v1,
+    prepare_admitted_storage_create_apply_plan_v1};
+pub use storage_prepare_shape::{storage_create_prepare_request_shape_v1,
+    storage_create_apply_request_shape_v1};
+pub use storage_create_plan::{StorageCreatePlanPreparationDataV1, prepare_storage_create_plan_v1,
+    prepare_admitted_storage_create_plan_v1};
 
 use aos_sandbox_core::format::{
     decode_signature, decode_trust_policy, encode_broker_authorization_plan,
@@ -53,6 +77,14 @@ pub struct SigningAuthority {
 }
 
 impl SigningAuthority {
+    /// Returns the existing canonical public-policy decoder ceiling.
+    ///
+    /// This passive constant grants no key, policy generation or admission.
+    #[must_use]
+    pub const fn maximum_canonical_policy_bytes_v1() -> usize {
+        MAXIMUM_TRUST_POLICY_BYTES
+    }
+
     /// Constructs a validated, public-only authority generation.
     ///
     /// The canonical policy bytes are copied and pinned by their descriptor.
@@ -228,6 +260,15 @@ impl BrokerPlanPreparation {
     #[must_use]
     pub fn signing_request(&self) -> PreparedSigningRequest<'_> {
         self.artifact.signing_request()
+    }
+
+    /// Borrows the same immutable plan held by this signing preparation.
+    ///
+    /// This exposes comparison DATA without decoding another model or creating
+    /// a signature, lease, currentness proof or native admission.
+    #[must_use]
+    pub const fn plan_data_v1(&self) -> &BrokerAuthorizationPlan {
+        &self.plan
     }
 
     /// Returns the frozen canonical broker-plan bytes.
@@ -738,6 +779,96 @@ pub(crate) mod tests {
         )
         .unwrap_or_else(|error| panic!("test lease signing failed: {error}"));
         (plan, lease)
+    }
+
+    #[test]
+    fn storage_prepare_shape_is_time_independent_and_keeps_the_real_quartet() {
+        use buffa::Message as _;
+        use aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope;
+
+        let fixture = fixture();
+        let base = &fixture.preparation.broker_plan.plan;
+        let authority = authority("broker-controller", SignaturePurpose::BrokerAuthorization,
+            &fixture.broker_key, 10);
+        let storage_plan = |issued, expires| BrokerAuthorizationPlan::new(
+            BrokerAudience::Storage, ProtocolId::StorageBroker, ProtocolVersion::new(1, 0),
+            base.assignment(), base.node(), base.ownership_authority().clone(),
+            vec![BrokerGrant::new(BrokerVerb::StoragePrepareCatalog,
+                BrokerGrantTarget::Assignment, base.grants()[0].argument_commitment(),
+                3, 0).unwrap()], base.policy_commitment(), base.revocation_scope(),
+            issued, expires, Vec::new(),
+        ).unwrap();
+        let (_, lease_signature) = signatures(&fixture);
+        let lease_signature = encode_signature(&lease_signature);
+        let lease = fixture.preparation.ownership_lease_bytes();
+        let body = [1, 2, 3];
+
+        let first = storage_create_prepare_request_shape_v1(&storage_plan(0, 1),
+            &authority, &body, lease, &lease_signature).unwrap();
+        let later = storage_create_prepare_request_shape_v1(
+            &storage_plan(i64::MIN, i64::MAX), &authority, &body,
+            lease, &lease_signature).unwrap();
+
+        assert_eq!(first, later);
+        let envelope = BrokerRequestEnvelope::decode_from_slice(&first.1).unwrap();
+        let artifacts = envelope.authorization.as_option().unwrap();
+        assert_eq!(envelope.body, body);
+        assert_eq!(artifacts.ownership_lease, lease);
+        assert_eq!(artifacts.ownership_lease_signature, lease_signature);
+        assert_eq!(envelope.signed_session_request.len(),
+            aos_sandbox_broker_session_protocol::SIGNED_BROKER_REQUEST_BYTES);
+        assert!(envelope.signed_session_request.iter().all(|byte| *byte == 0));
+        assert!(storage_create_prepare_request_shape_v1(base, &authority,
+            &body, lease, &lease_signature).is_err());
+    }
+
+    #[test]
+    fn create_apply_shape_keeps_the_full_catalog_and_cannot_use_prepare_authority() {
+        use buffa::Message as _;
+        use aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope;
+        use crate::semantics::CatalogBindingV1;
+        use crate::authenticated_session::all_methods::
+            authenticated_semantic_bindings_from_envelope_v1;
+
+        let fixture = fixture();
+        let base = &fixture.preparation.broker_plan.plan;
+        let authority = authority("broker-controller", SignaturePurpose::BrokerAuthorization,
+            &fixture.broker_key, 10);
+        let plan_for = |verb| BrokerAuthorizationPlan::new(
+            BrokerAudience::Storage, ProtocolId::StorageBroker, ProtocolVersion::new(1, 0),
+            base.assignment(), base.node(), base.ownership_authority().clone(),
+            vec![BrokerGrant::new(verb, BrokerGrantTarget::Assignment,
+                base.grants()[0].argument_commitment(), 3, 0).unwrap()],
+            base.policy_commitment(), base.revocation_scope(), 100, 200, Vec::new(),
+        ).unwrap();
+        let (_, lease_signature) = signatures(&fixture);
+        let lease_signature = encode_signature(&lease_signature);
+        let lease = fixture.preparation.ownership_lease_bytes();
+        let catalog = CatalogBindingV1::from_publisher(9,
+            ObjectDigest::from_bytes([19; 32])).unwrap();
+        let body = [1, 2, 3];
+
+        let (_, bytes) = storage_create_apply_request_shape_v1(
+            &plan_for(BrokerVerb::StorageCreateWorkspace), &authority, &body,
+            catalog, lease, &lease_signature,
+        ).unwrap();
+        let envelope = BrokerRequestEnvelope::decode_from_slice(&bytes).unwrap();
+        assert!(authenticated_semantic_bindings_from_envelope_v1(
+            &envelope, aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+        ).is_ok());
+        let bindings = envelope.semantic_bindings.as_option().unwrap();
+        assert_eq!(bindings.storage_catalog_generation, 9);
+        assert_eq!(bindings.storage_catalog_digest.as_slice(), catalog.digest().as_bytes());
+        assert_eq!(envelope.body, body);
+        assert_eq!(envelope.authorization.as_option().unwrap().ownership_lease, lease);
+        assert!(storage_create_apply_request_shape_v1(
+            &plan_for(BrokerVerb::StoragePrepareCatalog), &authority, &body,
+            catalog, lease, &lease_signature,
+        ).is_err());
+        assert!(storage_create_prepare_request_shape_v1(
+            &plan_for(BrokerVerb::StorageCreateWorkspace), &authority, &body,
+            lease, &lease_signature,
+        ).is_err());
     }
 
     #[test]

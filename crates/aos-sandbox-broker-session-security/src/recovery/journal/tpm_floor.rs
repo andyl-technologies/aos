@@ -25,10 +25,13 @@
 //! ```
 
 mod backend;
+pub(crate) mod storage_receiving;
 mod durable;
+pub(in crate::recovery::journal) use durable::FLOOR_SIDECAR_NAME;
 pub(crate) use durable::BrokerSidecarCustodyV1;
 mod format;
 mod head;
+pub(super) use head::StorageFloorMainArchiveV3;
 mod provisioning;
 pub(super) mod runtime;
 
@@ -37,11 +40,19 @@ use crate::tpm_nv_custody::{FloorRecoveryV1, hash_parts, reconcile_floor_v1};
 pub(crate) use crate::tpm_nv_custody::FloorErrorV1;
 
 pub(crate) use format::FloorProfileV1;
-pub(crate) use provisioning::ModePinV1;
+pub(crate) use runtime::{ModePresenceOriginalV1, mode_presence_receiving_demand_v1};
+pub(crate) use provisioning::{
+    InitialModeOriginalV1, ModePinV1, ModeRevalidationOriginalV1,
+    mode_initial_receiving_demand_v1, mode_revalidation_receiving_demand_v1,
+};
+pub(in crate::recovery::journal) use provisioning::{
+    AbsentFloorNamesOriginalV1, CredentialReadCustodyV1,
+    ProvisionPinV1, ProvisionRevalidationOriginalV1, auxiliary_currentness_work_bytes_v1,
+};
 pub(crate) use backend::{
-    AuthenticatedNvObservationV1, BrokerPhysicalOpenV1, HelperObservationV1, HelperOperationV1,
+    AuthenticatedNvObservationV1, BrokerPhysicalOpenV1, OwnerConfinementOriginalV1, HelperExecutedImageOriginalV1, HelperImageAcquisitionOriginalV1, HelperImageRevalidationOriginalV1, HelperObservationV1, HelperOperationV1,
     LOCK_ACK_BYTES, MeasuredHelperImageV1, NV_ATTRIBUTES_WRITTEN, RESPONSE_BYTES,
-    RetainedFloorServicePolicyV1, decode_response_v2, encode_auth_v2, encode_hello_v2,
+    FloorServiceAcquisitionOriginalV1, FloorServiceCurrentnessOriginalV1, FloorServicePolicyReadbackV1, RetainedFloorServicePolicyV1, decode_response_v2, encode_auth_v2, encode_hello_v2,
     encode_request_v2, require_broker_floor_helper_v1, require_broker_floor_owner_v1,
     require_lock_ack_v2,
 };

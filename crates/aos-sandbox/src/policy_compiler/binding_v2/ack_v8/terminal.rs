@@ -8,6 +8,8 @@
 //! verified Controller's durable receipt under a fresh Root challenge and its
 //! own protected writer. Neither row grants owner release on its own.
 
+use aos_sandbox_policy::journal_keys::CONTROLLER_HOLD_PIN_KEY;
+
 use std::{io, path::Path};
 
 use aos_sandbox_core::ObjectDigest;
@@ -333,7 +335,7 @@ pub fn verify_fixed_closed_root_v8_terminal_v1(
         epoch,
         uid,
         credential,
-        super::super::super::root_nonce::fresh_root_nonce,
+        aos_sandbox_broker::root_nonce::fresh_root_nonce,
         exchange,
     )
 }

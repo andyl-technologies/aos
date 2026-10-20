@@ -117,6 +117,7 @@
     # `aos-test-agent` package instead.
     varProvisioning ? "baked",
   }: let
+    guestPackages = system.pkgs or pkgs;
     systemPackages = system.config.environment.systemPackages;
     bakeVar = varProvisioning == "baked";
     protectedVar = system.config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
@@ -131,7 +132,7 @@
       # Provides udev rules, tmpfiles.d, sysctl.d, and systemd's own
       # library-adjacent helpers that tools look up at /lib/... paths.
       # Don't stomp on /usr/lib/modules which the helper already wired.
-      for d in "${pkgs.systemd}/lib/"*; do
+      for d in "${guestPackages.systemd}/lib/"*; do
         n=$(basename "$d")
         [ -e "rootfs/usr/lib/$n" ] || ln -sfn "$d" "rootfs/usr/lib/$n"
       done
@@ -305,7 +306,7 @@
       # Pre-generate SSH host key so sshd starts without waiting on
       # sshd-keygen.service (the production path writes the same
       # /var/etc/ssh/ssh_host_ed25519_key on first boot).
-      ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
+      ${guestPackages.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
         -f var/etc/ssh/ssh_host_ed25519_key </dev/null
 
       # NOTE: we deliberately do NOT seed /var/etc/os-release here.
@@ -363,7 +364,9 @@
     '';
 
     rootfs = mkRootfs {
-      inherit pkgs lib system;
+      inherit lib system;
+      pkgs = guestPackages;
+      systemd = system.config.systemd.package;
       pname = "vm-disk-${name}-rootfs";
       label = "aos-root";
       firmwarePackages = system.config.aos.kernel.firmwarePackages;
@@ -387,10 +390,10 @@
       # second system toplevel for upgrade tests) are appended.
       extraClosures =
         [
-          pkgs.systemd
-          pkgs.coreutils
-          pkgs.bash
-          pkgs.socat
+          guestPackages.systemd
+          guestPackages.coreutils
+          guestPackages.bash
+          guestPackages.socat
         ]
         ++ extraClosures;
       # Symlink farm into /usr/bin, /usr/sbin, /usr/libexec. Ordering
@@ -398,25 +401,25 @@
       # coreutils' `env` / `ls` / etc. don't get shadowed.
       symlinkFarmPkgs =
         [
-          pkgs.coreutils
-          pkgs.systemd
-          pkgs.socat
+          guestPackages.coreutils
+          guestPackages.systemd
+          guestPackages.socat
         ]
         ++ systemPackages;
       inherit postPopulate;
     };
   in
-    pkgs.mkDerivation {
+    guestPackages.mkDerivation {
       pname = "vm-disk-${name}";
       version = "0";
       src = null;
 
       buildDeps = [
-        pkgs.e2fsprogs
-        pkgs.coreutils
-        pkgs.fakeroot
-        pkgs.buildPackages.jq
-        pkgs.buildPackages.util-linux
+        guestPackages.e2fsprogs
+        guestPackages.coreutils
+        guestPackages.fakeroot
+        guestPackages.buildPackages.jq
+        guestPackages.buildPackages.util-linux
       ];
 
       ROOT_IMG = "${rootfs}/root.img";
@@ -509,11 +512,11 @@
               ${lib.optionalString bakeVar ''echo "size=$SENTINEL_SECTORS, type=163BEA60-58C7-46E7-B69A-6846A5A688AF, name=aos-provenance-fallback-v1"''}
               ${lib.optionalString bakeVar ''echo "size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=var"''}
             } > ptable.sfdisk
-            ${pkgs.buildPackages.util-linux}/sbin/sfdisk disk.img < ptable.sfdisk
+            ${guestPackages.buildPackages.util-linux}/sbin/sfdisk disk.img < ptable.sfdisk
 
-            ${pkgs.buildPackages.util-linux}/sbin/sfdisk --json disk.img \
+            ${guestPackages.buildPackages.util-linux}/sbin/sfdisk --json disk.img \
               > partition-table.json
-            ${pkgs.buildPackages.jq}/bin/jq --exit-status \
+            ${guestPackages.buildPackages.jq}/bin/jq --exit-status \
               --arg rootType '${rootPartitionType}' \
               '
                 .partitiontable.partitions as $partitions

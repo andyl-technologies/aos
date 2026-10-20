@@ -18,7 +18,8 @@ impl LifecycleAuxiliaryHistoryV1 {
         record: &super::LifecycleAuxiliaryRecordV1,
     ) -> bool {
         match record.payload() {
-            LifecycleAuxiliaryPayloadV1::DeleteBatch(_) => true,
+            LifecycleAuxiliaryPayloadV1::DeleteBatch(_) | LifecycleAuxiliaryPayloadV1::StopDispatch(_)
+                | LifecycleAuxiliaryPayloadV1::StopCompletion(_) => true,
             LifecycleAuxiliaryPayloadV1::Operation(operation) if operation.has_delete_batch_layout() => true,
             LifecycleAuxiliaryPayloadV1::Operation(operation) => self
                 .operations

@@ -1,6 +1,6 @@
 //! Journal adapter for the shared pure `AOSMSA02` codec.
 
-use aos_sandbox::journal::{JournalRecord, RecordNamespace};
+use aos_sandbox_mount_native::{JournalRecord, RecordNamespace};
 use aos_sandbox_protocol::mount_source_acquisition_state::InventoryOwnerDerivationErrorV2;
 
 pub(super) use aos_sandbox_protocol::mount_source_acquisition_state::format::*;

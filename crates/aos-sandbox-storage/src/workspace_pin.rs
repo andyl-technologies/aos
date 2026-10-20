@@ -59,7 +59,8 @@ const ID_BYTES: usize = 16;
 const DIGEST_BYTES: usize = 32;
 const U64_BYTES: usize = 8;
 const U32_BYTES: usize = 4;
-const STRING_LENGTH_BYTES: usize = 2;
+const U16_BYTES: usize = 2;
+const STRING_LENGTH_BYTES: usize = U16_BYTES;
 const MINIMUM_STRING_CONTENT_BYTES: usize = 1;
 const PRESENCE_BYTES: usize = 1;
 const ROOT_POLICY_CANONICAL_BYTES: usize = 64;
@@ -164,22 +165,45 @@ impl WorkspaceRootPinProofV1 {
         root_inode: u64,
         root_attributes: PortableRootAttributesV1,
     ) -> Result<Self, StorageStateError> {
-        let proof = Self {
-            kernel_boot_id,
-            mount_namespace_device,
-            mount_namespace_inode,
-            mount_id,
-            mount_root,
-            mount_point,
-            filesystem_type,
-            superblock_source,
-            dataset_guid,
-            root_device,
-            root_inode,
-            root_attributes,
-        };
-        proof.validate()?;
-        Ok(proof)
+        let mut destination = None;
+        Self::capture_candidate_v1(
+            &mut destination, kernel_boot_id, mount_namespace_device,
+            mount_namespace_inode, mount_id, mount_root, mount_point,
+            filesystem_type, superblock_source, dataset_guid, root_device,
+            root_inode, root_attributes,
+        )?;
+        match destination {
+            Some(proof) => Ok(proof),
+            None => std::process::abort(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_candidate_v1(
+        destination: &mut Option<Self>,
+        kernel_boot_id: [u8; 16],
+        mount_namespace_device: u64,
+        mount_namespace_inode: u64,
+        mount_id: u64,
+        mount_root: String,
+        mount_point: String,
+        filesystem_type: String,
+        superblock_source: String,
+        dataset_guid: u64,
+        root_device: u64,
+        root_inode: u64,
+        root_attributes: PortableRootAttributesV1,
+    ) -> Result<(), StorageStateError> {
+        if destination.is_some() {
+            return Err(StorageStateError::InvalidValue);
+        }
+        *destination = Some(Self {
+            kernel_boot_id, mount_namespace_device, mount_namespace_inode,
+            mount_id, mount_root, mount_point, filesystem_type, superblock_source,
+            dataset_guid, root_device, root_inode, root_attributes,
+        });
+        let Some(proof) = destination.as_ref() else { std::process::abort() };
+        proof.validate()
     }
 
     pub(crate) fn validate(&self) -> Result<(), StorageStateError> {
@@ -778,14 +802,68 @@ pub(crate) fn attempt_record(
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<JournalRecord, StorageStateError> {
+    attempt_record_inner_v1(attempt, key_id, secret, None)
+}
+
+pub(crate) fn attempt_record_receiving_v1(
+    attempt: &WorkspacePinAttemptV1,
+    key_id: [u8; 16],
+    secret: &[u8; 32],
+    receiving: &mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>,
+) -> Result<JournalRecord, StorageStateError> {
+    attempt_record_inner_v1(attempt, key_id, secret, Some(receiving))
+}
+
+fn attempt_record_inner_v1(
+    attempt: &WorkspacePinAttemptV1,
+    key_id: [u8; 16],
+    secret: &[u8; 32],
+    receiving: Option<&mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>>,
+) -> Result<JournalRecord, StorageStateError> {
     if attempt.authority_receipt.is_empty() {
         return Err(StorageStateError::MissingAuthorityLink);
+    }
+    if let Some(receiving) = receiving {
+        receiving.reserve_owned_capacity_v1(attempt_encoding_bytes_v1(attempt), 0)?;
     }
     Ok(JournalRecord::put(
         RecordNamespace::StorageWorkspacePinAttempt,
         attempt.attempt_id().to_vec(),
         encode_attempt(attempt, key_id, secret)?,
     ))
+}
+
+// Count the exact actual binary fields before Vec growth; the original
+// writer below remains the only encoder and retains its validation order.
+pub(crate) fn attempt_encoding_bytes_v1(
+    attempt: &WorkspacePinAttemptV1,
+) -> Result<usize, aos_sandbox_core::AccountingError> {
+    let overflow = || aos_sandbox_core::AccountingError::ArithmeticOverflow {
+        dimension: aos_sandbox_core::ResourceDimension::MemoryBytes,
+    };
+    let mut bytes = (MINIMUM_ATTEMPT_BODY_BYTES + MAC_BYTES)
+        .checked_sub(2 * MINIMUM_STRING_CONTENT_BYTES)
+        .and_then(|bytes| bytes.checked_add(attempt.dataset_name.len()))
+        .and_then(|bytes| bytes.checked_add(attempt.authority_receipt.len()))
+        .ok_or_else(overflow)?;
+    for proof in [attempt.expected_pin.as_ref(), attempt.satisfied_pin.as_ref()]
+        .into_iter().flatten()
+    {
+        let names = [&proof.mount_root, &proof.mount_point,
+            &proof.filesystem_type, &proof.superblock_source]
+            .into_iter().try_fold(0_usize, |total, value| total.checked_add(value.len()))
+            .ok_or_else(overflow)?;
+        // Presence is already in the minimum. Actual proof is bootID16,
+        // six u64 coordinates, four u16-length strings, uid/gid u32 and mode u16.
+        bytes = bytes.checked_add(ID_BYTES + 6 * U64_BYTES
+            + 4 * STRING_LENGTH_BYTES + 2 * U32_BYTES + U16_BYTES)
+            .and_then(|bytes| bytes.checked_add(names)).ok_or_else(overflow)?;
+    }
+    // Existing writer starts at512 and doubles backing; Native's three-copy
+    // multiplier covers overlap. Include the actual record/key construction.
+    bytes.max(512).checked_add(ID_BYTES)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<JournalRecord>()))
+        .ok_or_else(overflow)
 }
 
 fn encode_attempt(
@@ -1221,6 +1299,8 @@ mod tests {
 
         for candidate in [&ensure, &ensure_satisfied, &remove, &remove_satisfied] {
             let encoded = encode_attempt(candidate, key_id, &secret).unwrap();
+            let peak = attempt_encoding_bytes_v1(candidate).unwrap();
+            assert_eq!(peak, encoded.len().max(512) + ID_BYTES + std::mem::size_of::<JournalRecord>());
             assert!(encoded.len() >= MINIMUM_ATTEMPT_BODY_BYTES + MAC_BYTES);
             assert_eq!(
                 decode_attempt(&encoded, key_id, &secret).unwrap(),

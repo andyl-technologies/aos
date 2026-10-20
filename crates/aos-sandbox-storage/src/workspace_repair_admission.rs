@@ -39,7 +39,6 @@ use sha2::{Digest as _, Sha256};
 
 use crate::pin_worker::{
     MAXIMUM_PIN_WORKER_REQUEST_BYTES, MAXIMUM_PIN_WORKER_RESULT_BYTES, WorkspacePinWorkerResultV1,
-    decode_result as decode_pin_worker_result, encode_result as encode_pin_worker_result,
 };
 use crate::root_policy::WorkspaceRootPolicyV1;
 use crate::worker_wire::{DecodeErrors, Decoder};
@@ -354,7 +353,14 @@ impl ValidatedWorkspacePinRepairAdmissionObservationV1 {
         probe: &WorkspacePinRepairAdmissionProbeV1,
         result: WorkspacePinRepairAdmissionResultV1,
     ) -> Result<Self, ZfsWorkerError> {
-        let observation = result.observation;
+        Self::from_retained_result_v1(probe, &result)
+    }
+
+    pub(crate) fn from_retained_result_v1(
+        probe: &WorkspacePinRepairAdmissionProbeV1,
+        result: &WorkspacePinRepairAdmissionResultV1,
+    ) -> Result<Self, ZfsWorkerError> {
+        let observation = &result.observation;
         if result.probe_digest != probe.digest()
             || observation.attempt_id() != probe.latest_attempt_id()
             || observation.dataset()
@@ -705,11 +711,38 @@ pub(crate) fn classify_predecessor(
 pub(crate) fn encode_request(
     request: &WorkspacePinRepairAdmissionRequestV1,
 ) -> Result<Vec<u8>, ZfsWorkerError> {
+    encode_request_inner_v1(request, None)
+}
+
+pub(crate) fn encode_request_receiving_v1(
+    request: &WorkspacePinRepairAdmissionRequestV1,
+    receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+) -> Result<Vec<u8>, ZfsWorkerError> {
+    encode_request_inner_v1(request, Some(receiving))
+}
+
+fn encode_request_inner_v1(
+    request: &WorkspacePinRepairAdmissionRequestV1,
+    receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+) -> Result<Vec<u8>, ZfsWorkerError> {
     request.validate()?;
     let executable = request.executable.as_os_str().as_bytes();
     let executable_length = u16::try_from(executable.len())
         .map_err(|_| ZfsWorkerError::Protocol("repair admission executable is too long"))?;
     let catalog = request.catalog.canonical_bytes();
+    if let Some(receiving) = receiving {
+        // Magic/version/reserved, challenge/path length, fixed identifiers and
+        // digests, policy bytes, predecessor marker and four u32 record lengths.
+        let bytes = [executable.len(), catalog.len(), request.latest_attempt_record.len(),
+            request.publication_intent_record.len(), request.predecessor_repair_intent_record.len(),
+            request.root_policy.canonical_bytes().len()].into_iter()
+            .try_fold(394_usize, usize::checked_add)
+            .ok_or(ZfsWorkerError::Protocol("repair admission request length overflow"))?;
+        receiving.reserve_encoded_capacity_v1(bytes, 0).map_err(|_| {
+            ZfsWorkerError::PhysicalAdmission(crate::process::PhysicalWorkerAdmissionFailureV1
+                ::from_native_refusal_v1(aos_sandbox::StorageReceivingClosedV1))
+        })?;
+    }
     let mut bytes = Vec::with_capacity(
         256 + executable.len()
             + catalog.len()
@@ -848,54 +881,62 @@ pub(crate) fn decode_request(
 pub(crate) fn encode_result(
     result: &WorkspacePinRepairAdmissionResultV1,
 ) -> Result<Vec<u8>, ZfsWorkerError> {
+    let mut observation = Vec::new();
+    let mut bytes = Vec::new();
+    encode_result_into_v1(result, &mut bytes, &mut observation)?;
+    Ok(bytes)
+}
+
+fn encode_result_into_v1(
+    result: &WorkspacePinRepairAdmissionResultV1,
+    bytes: &mut Vec<u8>,
+    observation: &mut Vec<u8>,
+) -> Result<(), ZfsWorkerError> {
     if result.probe_digest.as_bytes() == &[0; 32] {
         return Err(ZfsWorkerError::Protocol(
             "repair admission result probe is invalid",
         ));
     }
-    let observation = encode_pin_worker_result(&result.observation)?;
-    let mut bytes = Vec::with_capacity(48 + observation.len());
+    crate::pin_worker::encode_result_into_v1(&result.observation, observation)?;
+    *bytes = Vec::with_capacity(48 + observation.len());
     bytes.extend_from_slice(RESULT_MAGIC);
     bytes.extend_from_slice(&VERSION.to_be_bytes());
     bytes.extend_from_slice(&0_u16.to_be_bytes());
     bytes.extend_from_slice(result.probe_digest.as_bytes());
-    append_record(&mut bytes, &observation)?;
+    append_record(bytes, observation)?;
     if bytes.len() > MAXIMUM_PIN_WORKER_RESULT_BYTES {
         return Err(ZfsWorkerError::Protocol(
             "repair admission result exceeds byte ceiling",
         ));
     }
-    Ok(bytes)
+    Ok(())
 }
 
-pub(crate) fn decode_result(
-    bytes: &[u8],
-) -> Result<WorkspacePinRepairAdmissionResultV1, ZfsWorkerError> {
-    if bytes.len() > MAXIMUM_PIN_WORKER_RESULT_BYTES {
-        return Err(ZfsWorkerError::Protocol(
-            "repair admission result exceeds byte ceiling",
-        ));
+pub(crate) fn decode_result(bytes: &[u8]) -> Result<WorkspacePinRepairAdmissionResultV1, ZfsWorkerError> {
+    let mut original = crate::pin_worker::result_envelope::PinResultEnvelopeOriginalV1::<WorkspacePinRepairAdmissionResultV1>::new();
+    let _classified = original.capture_once(bytes);
+    original.into_ordinary_result_v1()
+}
+
+impl crate::pin_worker::result_envelope::PinResultEnvelopeV1 for WorkspacePinRepairAdmissionResultV1 {
+    const MAGIC: &'static [u8; 8] = crate::workspace_repair_admission::RESULT_MAGIC;
+    const VERSION: u16 = crate::workspace_repair_admission::VERSION;
+    const ERRORS: &'static DecodeErrors = &DECODE_ERRORS;
+    const CEILING_ERROR: &'static str = "repair admission result exceeds byte ceiling";
+    const HEADER_ERROR: &'static str = "repair admission result header is invalid";
+    const CANONICAL_ERROR: &'static str = "repair admission result is not canonical";
+
+    fn observation_bytes<'a>(decoder: &mut Decoder<'a>) -> Result<&'a [u8], ZfsWorkerError> {
+        record(decoder, MAXIMUM_PIN_WORKER_RESULT_BYTES)
     }
-    let mut decoder = Decoder::new(bytes, &DECODE_ERRORS);
-    if decoder.take(RESULT_MAGIC.len())? != RESULT_MAGIC
-        || decoder.u16()? != VERSION
-        || decoder.u16()? != 0
-    {
-        return Err(ZfsWorkerError::Protocol(
-            "repair admission result header is invalid",
-        ));
+
+    fn from_parts(digest: ObjectDigest, observation: WorkspacePinWorkerResultV1) -> Self {
+        Self::new(digest, observation)
     }
-    let probe_digest = ObjectDigest::from_bytes(decoder.array()?);
-    let observation =
-        decode_pin_worker_result(record(&mut decoder, MAXIMUM_PIN_WORKER_RESULT_BYTES)?)?;
-    decoder.finish()?;
-    let result = WorkspacePinRepairAdmissionResultV1::new(probe_digest, observation);
-    if encode_result(&result)? != bytes {
-        return Err(ZfsWorkerError::Protocol(
-            "repair admission result is not canonical",
-        ));
+
+    fn encode_into(&self, outer: &mut Vec<u8>, nested: &mut Vec<u8>) -> Result<(), ZfsWorkerError> {
+        encode_result_into_v1(self, outer, nested)
     }
-    Ok(result)
 }
 
 fn append_scope(bytes: &mut Vec<u8>, scope: WorkspacePinHostScopeV1) {
@@ -1125,6 +1166,28 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn admission_wire_width_covers_each_actual_predecessor_shape() {
+        for kind in [
+            WorkspacePinRepairPredecessorKindV1::Initial,
+            WorkspacePinRepairPredecessorKindV1::Repair,
+            WorkspacePinRepairPredecessorKindV1::MissingInitial,
+        ] {
+            let request = request(kind);
+            let bytes = encode_request(&request).unwrap();
+            // Cross the actual encoder, rather than assuming its old256-byte
+            // initial capacity bounds the later fixed fields and length tags.
+            let variable = request.executable.as_os_str().as_bytes().len()
+                + request.catalog.canonical_bytes().len()
+                + request.latest_attempt_record.len()
+                + request.publication_intent_record.len()
+                + request.predecessor_repair_intent_record.len()
+                + request.root_policy.canonical_bytes().len();
+
+            assert_eq!(bytes.len() - variable, 394);
+        }
     }
 
     #[test]

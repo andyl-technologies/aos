@@ -262,13 +262,15 @@ fn historical_dispatch_claims_rejoin_actual_original_effect_without_current_publ
     assert_eq!(claims.admission_revision, metadata.admission_revision());
     assert_eq!(claims.source_commitment, metadata.source_commitment());
     let key = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
-    let pin = crate::policy_compiler::PinnedControllerHoldSignerV1::decode(
-        &crate::policy_compiler::encode_controller_hold_signer_credential_v1(
+    let pin = aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1::decode(
+        &aos_sandbox_policy::controller_readback::encode_controller_hold_signer_credential_v1(
             4,
             &key.verifying_key(),
         )
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
         .unwrap(),
     )
+    .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
     .unwrap();
     let packet = sign_synthetic_controller_project_dispatch_v1(
         &claims,
@@ -503,21 +505,23 @@ fn dispatch_without_root_artifact_keeps_exact_flight_when_credentials_expire_or_
         retained.reservation()
     );
     assert!(
-        crate::policy_compiler::verify_policy_deployment_head_v1(
+        aos_sandbox_policy::signed_inputs::verify_policy_deployment_head_v1(
             &heads.deployment,
             &heads.deployment_inputs(),
             &deployment_key.verifying_key(),
             20,
         )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .is_ok()
     );
     assert!(
-        crate::policy_compiler::verify_signed_project_policy_source_v2(
+        aos_sandbox_policy::signed_inputs::verify_signed_project_policy_source_v2(
             &heads.project,
             &heads.project_input,
             &project_key.verifying_key(),
             20,
         )
+        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .is_ok()
     );
     let attempt = |deployment_key: &ed25519_dalek::SigningKey, now| {

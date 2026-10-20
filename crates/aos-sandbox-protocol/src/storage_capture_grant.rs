@@ -3,8 +3,12 @@
 //! A Controller-signed Storage-audience plan must eventually commit the exact
 //! source; this parser only fixes its bytes. Storage must independently cold-
 //! read AOSCIS01/AOSCIA01, authenticated Host AOSEOR02/AOSHOP01, AOSEOR03, and
-//! its own dataset policy before issuing a durable attempt. Neither method is
-//! registered for broker dispatch by this module.
+//! its own dataset policy before issuing a durable attempt. Reserve and Query
+//! accept only full AOSSCG02; AOSSCG01 is an embedded comparison fragment.
+//! Neither method is registered for broker dispatch by this module. Reserve also carries the
+//! canonical historical method-46 body for a fresh independent Host readback.
+//! The shared registration decoder crosslinks its records to AOSSCG01; those
+//! bytes alone do not establish currentness, a signature, or a physical owner.
 //!
 //! ```text
 //! AOSSCG01 | AOSCIS01[208] | AOSEOR03-digest[32] | AOSEOR02-digest[32]
@@ -34,7 +38,10 @@ use crate::{
     validate_request_header,
 };
 
-/// Exact versioned Storage capture source length.
+mod ongoing;
+pub use ongoing::{StorageCaptureGrantSourceV2, STORAGE_CAPTURE_GRANT_SOURCE_BYTES_V2};
+
+/// Width of the embedded acquisition comparison fragment inside Source944.
 pub const STORAGE_CAPTURE_GRANT_SOURCE_BYTES_V1: usize = 512;
 /// Exact AOSCIS01 settlement preimage length committed by this source.
 pub const CONTROLLER_OUTPUT_SETTLEMENT_BYTES_V1: usize = 208;
@@ -42,10 +49,9 @@ pub const CONTROLLER_OUTPUT_SETTLEMENT_BYTES_V1: usize = 208;
 const SOURCE_MAGIC: &[u8; 8] = b"AOSSCG01";
 const SETTLEMENT_MAGIC: &[u8; 8] = b"AOSCIS01";
 const SETTLEMENT_DOMAIN: &[u8] = b"aos.sandbox.controller-output-settlement.v1\0";
-const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-grant-source.v1\0";
-const ARGUMENT_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-grant-argument.v1\0";
 const MAXIMUM_REQUEST_BODY_BYTES: usize = 4 * 1_024;
-const MAXIMUM_RESPONSE_BODY_BYTES: usize = 1_024;
+/// Bounds the canonical physical Capture attempt response accepted by its decoder.
+pub const MAXIMUM_RESPONSE_BODY_BYTES: usize = 1_024;
 const STORAGE_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 
 /// Distinguishes the two non-dispatchable Storage capture wire meanings.
@@ -160,7 +166,9 @@ impl ControllerOutputSettlementPreimageV1 {
     }
 }
 
-/// Fixes all bytes a future signed Storage-audience reserve plan must commit.
+/// Retains the embedded acquisition comparison fragment of full Source944.
+///
+/// This fragment is not accepted as a standalone request or signed grant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageCaptureGrantSourceV1 {
     bytes: [u8; STORAGE_CAPTURE_GRANT_SOURCE_BYTES_V1],
@@ -169,13 +177,55 @@ pub struct StorageCaptureGrantSourceV1 {
 }
 
 impl StorageCaptureGrantSourceV1 {
+    fn from_candidate_data_v2(
+        query: &crate::storage_capture_candidate::StorageCaptureCandidateQueryV1,
+        candidate: &crate::storage_capture_candidate::ValidatedStorageCaptureCandidateV1,
+        original: &crate::storage_output_reserve::StorageOutputReserveRecordsV1,
+        request_id: [u8; 16], deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProtocolValidationError> {
+        let bytes = candidate.canonical_bytes();
+        let locator = original.host_locator();
+        let (admitted, stdout, stderr) = original.output_limits_v2();
+        if bytes[8..408] != *query.canonical_bytes()
+            || original.settlement() != query.settlement().canonical_bytes()
+            || original.assignment() != query.assignment()
+            || locator.claim_digest() != query.output_claim_digest()
+            || locator.execution() != query.settlement().execution()
+            || locator.create_operation() != query.settlement().create_operation()
+            || locator.host_boot_id() != query.host_boot_id()
+            || candidate.admitted_bytes() != admitted
+            || candidate.maximum_stdout_bytes() != stdout
+            || candidate.maximum_stderr_bytes() != stderr
+            || request_id == [0; 16] || request_id == query.request_id()
+            || request_id == locator.original_request_id()
+            || deadline_boottime_nanoseconds == 0
+            || deadline_boottime_nanoseconds > read_u64_fixed(&bytes[504..512])
+        {
+            return Err(invalid("Storage capture candidate/original source"));
+        }
+        let mut source = [0; STORAGE_CAPTURE_GRANT_SOURCE_BYTES_V1];
+        source[..8].copy_from_slice(SOURCE_MAGIC);
+        source[8..216].copy_from_slice(query.settlement().canonical_bytes());
+        source[216..248].copy_from_slice(candidate.output_record_digest().as_bytes());
+        source[248..280].copy_from_slice(query.output_claim_digest().as_bytes());
+        source[280..296].copy_from_slice(&locator.original_request_id());
+        source[296..376].copy_from_slice(&query.canonical_bytes()[248..328]);
+        source[376..392].copy_from_slice(&query.host_boot_id());
+        source[392..408].copy_from_slice(&bytes[544..560]);
+        source[408..440].copy_from_slice(&bytes[512..544]);
+        source[440..488].copy_from_slice(&bytes[560..608]);
+        source[488..496].copy_from_slice(&deadline_boottime_nanoseconds.to_be_bytes());
+        source[496..512].copy_from_slice(&request_id);
+        Self::from_canonical_bytes(&source)
+    }
+
     /// Parses one exact source without claiming it was signed or issued.
     ///
     /// # Errors
     ///
     /// Rejects malformed settlement, assignment, split, policy, boot,
     /// operation, deadline, or request identity fields.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ProtocolValidationError> {
+    pub(crate) fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ProtocolValidationError> {
         let bytes: [u8; STORAGE_CAPTURE_GRANT_SOURCE_BYTES_V1] = bytes
             .try_into()
             .map_err(|_| invalid("Storage capture source"))?;
@@ -266,7 +316,11 @@ impl StorageCaptureGrantSourceV1 {
         field_16(&self.bytes[280..296])
     }
 
-    /// Returns the original Storage reserve request identifier.
+    /// Returns the original physical Storage method-60 request identifier.
+    ///
+    /// This is distinct from the historical logical method-46 header ID in
+    /// the canonical original body. The complete signed method-60 transport
+    /// binds that body; this unchanged source commitment selects method60.
     #[must_use]
     pub fn original_reserve_request_id(&self) -> [u8; 16] {
         field_16(&self.bytes[496..512])
@@ -310,79 +364,29 @@ impl StorageCaptureGrantSourceV1 {
         read_u64_fixed(&self.bytes[488..496])
     }
 
-    /// Returns a domain-separated digest of every original source byte.
-    #[must_use]
-    pub fn source_digest(&self) -> ObjectDigest {
-        let mut digest = Sha256::new();
-        digest.update(SOURCE_DOMAIN);
-        digest.update(self.bytes);
-        ObjectDigest::from_bytes(digest.finalize().into())
-    }
+}
 
-    /// Returns the future plan's method-separated full-source commitment.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a missing, changed original reserve ID or reused query ID.
-    pub fn argument_commitment(
-        &self,
-        method: StorageCaptureGrantMethodV1,
-        request_id: [u8; 16],
-    ) -> Result<BrokerArgumentCommitment, ProtocolValidationError> {
+fn capture_argument_commitment_data_v2(method: StorageCaptureGrantMethodV1,
+    request_id: [u8; 16], original_request_id: [u8; 16], domain: &[u8], source: &[u8])
+    -> Result<BrokerArgumentCommitment, ProtocolValidationError>
+{
         if request_id == [0; 16]
             || (method == StorageCaptureGrantMethodV1::Reserve
-                && request_id != self.original_reserve_request_id())
+                && request_id != original_request_id)
             || (method == StorageCaptureGrantMethodV1::Query
-                && request_id == self.original_reserve_request_id())
+                && request_id == original_request_id)
         {
             return Err(invalid("Storage capture plan request ID"));
         }
-        let mut bytes = Vec::with_capacity(ARGUMENT_DOMAIN.len() + 1 + 16 + self.bytes.len());
-        bytes.extend_from_slice(ARGUMENT_DOMAIN);
+        let mut bytes = Vec::with_capacity(domain.len() + 1 + 16 + source.len());
+        bytes.extend_from_slice(domain);
         bytes.push(match method {
             StorageCaptureGrantMethodV1::Reserve => 1,
             StorageCaptureGrantMethodV1::Query => 2,
         });
         bytes.extend_from_slice(&request_id);
-        bytes.extend_from_slice(&self.bytes);
+        bytes.extend_from_slice(source);
         Ok(BrokerArgumentCommitment::for_canonical_bytes(&bytes))
-    }
-
-    /// Builds the exact nonauthorizing Storage grant semantics for one request.
-    ///
-    /// The Controller must still prove current protected and physical sources
-    /// before signing a plan, and Storage must verify that plan separately.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a missing or mismatched method-specific request identifier.
-    pub fn broker_grant(
-        &self,
-        method: StorageCaptureGrantMethodV1,
-        request_id: [u8; 16],
-    ) -> Result<BrokerGrant, ProtocolValidationError> {
-        let commitment = self.argument_commitment(method, request_id)?;
-        BrokerGrant::new(
-            method.broker_verb(),
-            BrokerGrantTarget::Assignment,
-            commitment,
-            MAXIMUM_REQUEST_BODY_BYTES as u32,
-            0,
-        )
-        .map_err(|_| invalid("Storage capture plan grant"))
-    }
-
-    /// Returns the exact response locator for the original source.
-    #[must_use]
-    pub fn locator(&self) -> StorageCaptureAttemptLocatorV1 {
-        StorageCaptureAttemptLocatorV1 {
-            execution: self.settlement.execution(),
-            create_operation: self.settlement.create_operation(),
-            original_reserve_request_id: self.original_reserve_request_id(),
-            source_digest: self.source_digest(),
-            output_record_digest: self.output_record_digest(),
-        }
-    }
 }
 
 /// Names the one original reserve source and AOSEOR03 record.
@@ -393,6 +397,7 @@ pub struct StorageCaptureAttemptLocatorV1 {
     original_reserve_request_id: [u8; 16],
     source_digest: ObjectDigest,
     output_record_digest: ObjectDigest,
+    original_deadline_boottime_nanoseconds: u64,
 }
 
 impl StorageCaptureAttemptLocatorV1 {
@@ -428,10 +433,12 @@ impl StorageCaptureAttemptLocatorV1 {
 }
 
 /// Retains a strictly parsed reserve request pending signature verification.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedStorageCaptureReserveRequestV1 {
     header: ValidatedHeader,
-    source: StorageCaptureGrantSourceV1,
+    ongoing: StorageCaptureGrantSourceV2,
+    original_body: Vec<u8>,
+    original_records: crate::storage_output_reserve::StorageOutputReserveRecordsV1,
 }
 
 impl ValidatedStorageCaptureReserveRequestV1 {
@@ -441,18 +448,45 @@ impl ValidatedStorageCaptureReserveRequestV1 {
         &self.header
     }
 
-    /// Returns the complete source whose signed plan must be verified.
+    /// Borrows the embedded acquisition coordinates as comparison DATA.
     #[must_use]
     pub const fn source(&self) -> &StorageCaptureGrantSourceV1 {
-        &self.source
+        self.ongoing.original_source_v1()
     }
+
+    /// Borrows the full signed Source944 comparison DATA.
+    #[must_use]
+    pub const fn ongoing_source_v2(&self) -> Option<&StorageCaptureGrantSourceV2> { Some(&self.ongoing) }
+
+    /// Builds canonical method-specific source semantics without admitting an effect.
+    ///
+    /// # Errors
+    /// Rejects an absent/reused request ID under the selected source version.
+    pub fn argument_commitment_data_v2(&self) -> Result<BrokerArgumentCommitment, ProtocolValidationError> {
+        self.ongoing.argument_commitment_v2(StorageCaptureGrantMethodV1::Reserve, *self.header.request_id())
+    }
+
+    /// Borrows the canonical historical method-46 request crosslinked to this source.
+    #[must_use]
+    pub fn canonical_original_storage_output_request_v2(&self) -> &[u8] {
+        &self.original_body
+    }
+
+    /// Borrows the original records decoded by the shared registration grammar.
+    #[must_use]
+    pub const fn original_output_records_v2(
+        &self,
+    ) -> &crate::storage_output_reserve::StorageOutputReserveRecordsV1 {
+        &self.original_records
+    }
+
 }
 
 /// Retains a strictly parsed cold query, never a fresh reserve permit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ValidatedStorageCaptureQueryRequestV1 {
     header: ValidatedHeader,
-    source: StorageCaptureGrantSourceV1,
+    ongoing: StorageCaptureGrantSourceV2,
 }
 
 impl ValidatedStorageCaptureQueryRequestV1 {
@@ -462,10 +496,22 @@ impl ValidatedStorageCaptureQueryRequestV1 {
         &self.header
     }
 
-    /// Returns the exact original reserve source.
+    /// Borrows the full signed Source944 comparison DATA.
+    #[must_use]
+    pub const fn ongoing_source_v2(&self) -> Option<&StorageCaptureGrantSourceV2> { Some(&self.ongoing) }
+
+    /// Builds canonical method-specific source semantics without admitting an effect.
+    ///
+    /// # Errors
+    /// Rejects an absent/reused request ID under the selected source version.
+    pub fn argument_commitment_data_v2(&self) -> Result<BrokerArgumentCommitment, ProtocolValidationError> {
+        self.ongoing.argument_commitment_v2(StorageCaptureGrantMethodV1::Query, *self.header.request_id())
+    }
+
+    /// Borrows the embedded acquisition coordinates as comparison DATA.
     #[must_use]
     pub const fn source(&self) -> &StorageCaptureGrantSourceV1 {
-        &self.source
+        self.ongoing.original_source_v1()
     }
 }
 
@@ -481,19 +527,42 @@ pub fn decode_storage_capture_reserve_request_v1(
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedStorageCaptureReserveRequestV1, ProtocolValidationError> {
-    let (header, source) = decode_request(
+    let (header, ongoing, original_body) = decode_request(
         body,
         peer,
         policy,
         now_boottime_nanoseconds,
         StorageCaptureGrantMethodV1::Reserve,
     )?;
+    let source = ongoing.original_source_v1();
     if source.original_reserve_request_id() != *header.request_id()
         || source.original_deadline_boottime_nanoseconds() != header.deadline_boottime_nanoseconds()
     {
         return Err(invalid("Storage capture original request"));
     }
-    Ok(ValidatedStorageCaptureReserveRequestV1 { header, source })
+    let original_body = original_body.ok_or_else(|| invalid("Storage capture original body"))?;
+    let original_records = crate::storage_output_reserve::capture_original_records_v2(
+        &original_body,
+        source.assignment(),
+    )?;
+    let locator = original_records.host_locator();
+    if original_records.settlement() != source.settlement().canonical_bytes()
+        || original_records.assignment() != source.assignment()
+        || locator.execution() != source.settlement().execution()
+        || locator.create_operation() != source.settlement().create_operation()
+        || locator.claim_digest() != source.output_claim_digest()
+        || locator.original_request_id() != source.original_host_request_id()
+        || locator.host_boot_id() != source.host_boot_id()
+        || original_records.output_limits_v2() != source.output_limits()
+    {
+        return Err(invalid("Storage capture original records"));
+    }
+    Ok(ValidatedStorageCaptureReserveRequestV1 {
+        header,
+        ongoing,
+        original_body,
+        original_records,
+    })
 }
 
 /// Parses a fresh read-only query of the original source.
@@ -509,17 +578,18 @@ pub fn decode_storage_capture_query_request_v1(
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedStorageCaptureQueryRequestV1, ProtocolValidationError> {
-    let (header, source) = decode_request(
+    let (header, ongoing, _) = decode_request(
         body,
         peer,
         policy,
         now_boottime_nanoseconds,
         StorageCaptureGrantMethodV1::Query,
     )?;
+    let source = ongoing.original_source_v1();
     if source.original_reserve_request_id() == *header.request_id() {
         return Err(invalid("Storage capture query request"));
     }
-    Ok(ValidatedStorageCaptureQueryRequestV1 { header, source })
+    Ok(ValidatedStorageCaptureQueryRequestV1 { header, ongoing })
 }
 
 fn decode_request(
@@ -528,18 +598,25 @@ fn decode_request(
     policy: PeerPolicy,
     now: u64,
     method: StorageCaptureGrantMethodV1,
-) -> Result<(ValidatedHeader, StorageCaptureGrantSourceV1), ProtocolValidationError> {
+) -> Result<
+    (ValidatedHeader, StorageCaptureGrantSourceV2, Option<Vec<u8>>),
+    ProtocolValidationError,
+> {
     if body.len() > MAXIMUM_REQUEST_BODY_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
-    let (header, source) = match method {
+    let (header, source, original_body) = match method {
         StorageCaptureGrantMethodV1::Reserve => {
             let request = ReserveStorageExecutionCaptureRequestV1::decode_from_slice(body)
                 .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
             if !request.__buffa_unknown_fields.is_empty() || request.encode_to_vec() != body {
                 return Err(ProtocolValidationError::UnknownFields);
             }
-            (request.header, request.canonical_grant_source)
+            (
+                request.header,
+                request.canonical_grant_source,
+                Some(request.canonical_original_storage_output_request),
+            )
         }
         StorageCaptureGrantMethodV1::Query => {
             let request = QueryStorageExecutionCaptureRequestV1::decode_from_slice(body)
@@ -547,7 +624,7 @@ fn decode_request(
             if !request.__buffa_unknown_fields.is_empty() || request.encode_to_vec() != body {
                 return Err(ProtocolValidationError::UnknownFields);
             }
-            (request.header, request.canonical_grant_source)
+            (request.header, request.canonical_grant_source, None)
         }
     };
     let header = validate_request_header(
@@ -562,8 +639,10 @@ fn decode_request(
     if header.protocol_version() != STORAGE_VERSION {
         return Err(ProtocolValidationError::MethodMismatch);
     }
-    let source = StorageCaptureGrantSourceV1::from_canonical_bytes(&source)?;
-    Ok((header, source))
+    // No deployed standalone Source512 format exists. Refuse it before any
+    // grant or outcome context can be formed; the full lifetime is mandatory.
+    let source = StorageCaptureGrantSourceV2::from_canonical_bytes_v2(&source)?;
+    Ok((header, source, original_body))
 }
 
 /// Distinguishes historical absence from a durable possible-effect fence.
@@ -582,6 +661,7 @@ pub struct ValidatedStorageCaptureAttemptV1 {
     locator: StorageCaptureAttemptLocatorV1,
     attempt: Option<[u8; 16]>,
     durable_attempt_digest: Option<ObjectDigest>,
+    effective_deadline_boottime_nanoseconds: Option<u64>,
 }
 
 impl ValidatedStorageCaptureAttemptV1 {
@@ -603,6 +683,15 @@ impl ValidatedStorageCaptureAttemptV1 {
         self.attempt
     }
 
+    /// Returns the original persisted native effect horizon, without renewal.
+    ///
+    /// The authenticated Storage producer derives it from the SAME admitted
+    /// plan, ownership lease and original source request. Absence has no horizon.
+    #[must_use]
+    pub const fn effective_deadline_boottime_nanoseconds(self) -> Option<u64> {
+        self.effective_deadline_boottime_nanoseconds
+    }
+
     /// Returns the protected Storage attempt record digest when committed.
     #[must_use]
     pub const fn durable_attempt_digest(self) -> Option<ObjectDigest> {
@@ -610,17 +699,54 @@ impl ValidatedStorageCaptureAttemptV1 {
     }
 }
 
-/// Decodes a structurally exact response after signed-session authentication.
+/// Retains a historical attempt and optional full durable Complete comparison DATA.
+///
+/// Authentication, native currentness and actual Source/C ownership remain with
+/// the caller. A cold completed record cannot authorize another Capture flight.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedStorageCaptureQueryResponseV2 {
+    attempt: ValidatedStorageCaptureAttemptV1,
+    complete: Option<crate::storage_capture_result::CaptureCompleteRecordDataV2>,
+}
+
+impl ValidatedStorageCaptureQueryResponseV2 {
+    /// Returns the original durable attempt association, never a retry permit.
+    #[must_use]
+    pub const fn attempt(&self) -> ValidatedStorageCaptureAttemptV1 { self.attempt }
+
+    /// Borrows the full complete record only when the canonical response has one.
+    #[must_use]
+    pub const fn complete_record(&self) -> Option<&crate::storage_capture_result::CaptureCompleteRecordDataV2> {
+        self.complete.as_ref()
+    }
+}
+
+/// Decodes a versioned ongoing admission response against the whole signed source.
 ///
 /// # Errors
+/// Rejects foreign source/attempt coordinates, invalid status or a persisted
+/// effect horizon beyond the original explicit execution lifetime.
+pub fn decode_storage_capture_attempt_response_ongoing_v2(body: &[u8],
+    source: &StorageCaptureGrantSourceV2, allow_absent: bool)
+    -> Result<ValidatedStorageCaptureAttemptV1, ProtocolValidationError>
+{
+    decode_capture_response_inner_v2(body, source.locator_v2(), allow_absent, None)
+        .map(|value| value.attempt)
+}
+
+/// Decodes the complete historical Query61 against its full ongoing source.
 ///
-/// Rejects malformed, unknown, foreign-locator, or partially present status
-/// fields. A committed fence never implies a physical output result.
-pub fn decode_storage_capture_attempt_response_v1(
-    body: &[u8],
-    locator: StorageCaptureAttemptLocatorV1,
-    allow_absent: bool,
-) -> Result<ValidatedStorageCaptureAttemptV1, ProtocolValidationError> {
+/// # Errors
+/// Rejects incomplete/foreign result DATA or an altered original effect horizon.
+pub fn decode_storage_capture_query_response_ongoing_v2(body: &[u8], source: &StorageCaptureGrantSourceV2)
+    -> Result<ValidatedStorageCaptureQueryResponseV2, ProtocolValidationError>
+{
+    decode_capture_response_inner_v2(body, source.locator_v2(), true, Some(source))
+}
+
+fn decode_capture_response_inner_v2(body: &[u8], locator: StorageCaptureAttemptLocatorV1,
+    allow_absent: bool, query_source: Option<&StorageCaptureGrantSourceV2>,
+) -> Result<ValidatedStorageCaptureQueryResponseV2, ProtocolValidationError> {
     if body.len() > MAXIMUM_RESPONSE_BODY_BYTES {
         return Err(ProtocolValidationError::ResponseTooLarge);
     }
@@ -637,13 +763,21 @@ pub fn decode_storage_capture_attempt_response_v1(
     {
         return Err(invalid("Storage capture locator"));
     }
+    let is_complete = response.status.as_known()
+        == Some(StorageExecutionCaptureAttemptStatusV1::STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_COMPLETE);
+    if !is_complete && !response.canonical_complete_result.is_empty() {
+        return Err(invalid("unexpected Storage capture complete result"));
+    }
     let (status, attempt, durable_attempt_digest) = match response.status.as_known() {
         Some(StorageExecutionCaptureAttemptStatusV1::STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_ABSENT)
-            if allow_absent && response.attempt_id.is_empty() && response.durable_attempt_digest.is_empty() =>
+            if allow_absent && response.attempt_id.is_empty() && response.durable_attempt_digest.is_empty()
+                && response.effective_deadline_boottime_nanoseconds == 0 =>
         {
             (StorageCaptureAttemptStatusV1::Absent, None, None)
         }
-        Some(StorageExecutionCaptureAttemptStatusV1::STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_EFFECT_POSSIBLE) => {
+        Some(StorageExecutionCaptureAttemptStatusV1::STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_EFFECT_POSSIBLE)
+        | Some(StorageExecutionCaptureAttemptStatusV1::STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_COMPLETE)
+            if !is_complete || query_source.is_some() => {
             (
                 StorageCaptureAttemptStatusV1::EffectPossible,
                 Some(exact_nonzero::<16>(&response.attempt_id, "attempt_id")?),
@@ -655,12 +789,26 @@ pub fn decode_storage_capture_attempt_response_v1(
         }
         _ => return Err(invalid("Storage capture attempt status")),
     };
-    Ok(ValidatedStorageCaptureAttemptV1 {
-        status,
-        locator,
-        attempt,
-        durable_attempt_digest,
-    })
+    let effective_deadline = match status {
+        StorageCaptureAttemptStatusV1::Absent => None,
+        StorageCaptureAttemptStatusV1::EffectPossible => {
+            let deadline = response.effective_deadline_boottime_nanoseconds;
+            if deadline == 0 || deadline > locator.original_deadline_boottime_nanoseconds {
+                return Err(invalid("Storage capture original effect deadline"));
+            }
+            Some(deadline)
+        }
+    };
+    let attempt = ValidatedStorageCaptureAttemptV1 { status, locator, attempt, durable_attempt_digest,
+        effective_deadline_boottime_nanoseconds: effective_deadline };
+    let complete = if is_complete {
+        let record = crate::storage_capture_result::CaptureCompleteRecordDataV2::decode(
+            &response.canonical_complete_result).map_err(|_| invalid("Storage capture complete result"))?;
+        record.verify_source_ongoing_v2(query_source.ok_or_else(|| invalid("Storage capture query source"))?, attempt)
+            .map_err(|_| invalid("Storage capture complete source"))?;
+        Some(record)
+    } else { None };
+    Ok(ValidatedStorageCaptureQueryResponseV2 { attempt, complete })
 }
 
 fn field_16(bytes: &[u8]) -> [u8; 16] {
@@ -694,52 +842,43 @@ fn invalid(field: &'static str) -> ProtocolValidationError {
 }
 
 #[cfg(test)]
-mod tests {
-    use aos_proto::aos::sandbox::local::v1::{Audience, BrokerMethod, RequestHeader};
-    use aos_sandbox_broker_session_protocol::{
-        BrokerSessionProtocolV1, authenticated_broker_methods_for_role_v1,
-    };
-    use buffa::Enumeration as _;
+pub(crate) mod tests {
+    use aos_proto::aos::sandbox::local::v1::{Audience, RequestHeader};
 
     use super::*;
 
-    fn source_bytes() -> [u8; STORAGE_CAPTURE_GRANT_SOURCE_BYTES_V1] {
+    pub(crate) fn source_bytes() -> [u8; STORAGE_CAPTURE_GRANT_SOURCE_BYTES_V1] {
+        let (request, assignment) = crate::storage_output_reserve::fixture::captured_fixture();
+        let records = crate::storage_output_reserve::StorageOutputReserveRecordsV1::from_canonical_captured_records(
+            &request.canonical_controller_attempt,
+            &request.canonical_controller_settlement,
+        ).unwrap();
         let mut source = [0; STORAGE_CAPTURE_GRANT_SOURCE_BYTES_V1];
         source[..8].copy_from_slice(SOURCE_MAGIC);
-        let settlement = &mut source[8..216];
-        settlement[..8].copy_from_slice(SETTLEMENT_MAGIC);
-        settlement[8..24].fill(1);
-        settlement[24..40].fill(2);
-        settlement[40..72].fill(3);
-        settlement[72..104].fill(4);
-        settlement[104..112].copy_from_slice(&5_u64.to_be_bytes());
-        settlement[112..144].fill(6);
-        settlement[144..176].fill(7);
-        let mut checksum = Sha256::new();
-        checksum.update(SETTLEMENT_DOMAIN);
-        checksum.update(&settlement[..176]);
-        settlement[176..208].copy_from_slice(&checksum.finalize());
-
+        source[8..216].copy_from_slice(records.settlement());
         source[216..248].fill(8);
-        source[248..280].fill(9);
-        source[280..296].fill(10);
-        source[296..312].fill(11);
-        source[312..328].fill(12);
-        source[328..336].copy_from_slice(&1_u64.to_be_bytes());
-        source[336..344].copy_from_slice(&2_u64.to_be_bytes());
-        source[344..376].fill(13);
-        source[376..392].fill(14);
+        source[248..280].copy_from_slice(records.host_locator().claim_digest().as_bytes());
+        source[280..296].copy_from_slice(&records.host_locator().original_request_id());
+        source[296..312].copy_from_slice(assignment.sandbox().as_bytes());
+        source[312..328].copy_from_slice(assignment.incarnation().as_bytes());
+        source[328..336].copy_from_slice(&assignment.epoch().get().to_be_bytes());
+        source[336..344].copy_from_slice(&assignment.desired_generation().get().to_be_bytes());
+        source[344..376].copy_from_slice(assignment.digest().as_bytes());
+        source[376..392].copy_from_slice(&records.host_locator().host_boot_id());
         source[392..408].fill(15);
         source[408..440].fill(16);
-        source[440..448].copy_from_slice(&100_u64.to_be_bytes());
-        source[448..456].copy_from_slice(&60_u64.to_be_bytes());
-        source[456..464].copy_from_slice(&40_u64.to_be_bytes());
-        source[464..472].copy_from_slice(&200_u64.to_be_bytes());
-        source[472..480].copy_from_slice(&20_u64.to_be_bytes());
-        source[480..488].copy_from_slice(&30_u64.to_be_bytes());
-        source[488..496].copy_from_slice(&100_u64.to_be_bytes());
+        for (offset, value) in [
+            (440, 100_u64), (448, 60), (456, 40), (464, 200),
+            (472, 20), (480, 30), (488, 100),
+        ] {
+            source[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+        }
         source[496..512].fill(17);
         source
+    }
+
+    pub(crate) fn original_body() -> Vec<u8> {
+        crate::storage_output_reserve::fixture::captured_fixture().0.encode_to_vec()
     }
 
     fn peer() -> (PeerCredentials, PeerPolicy) {
@@ -778,254 +917,151 @@ mod tests {
             output_record_digest: locator.output_record_digest().as_bytes().to_vec(),
             attempt_id: vec![18; 16],
             durable_attempt_digest: vec![19; 32],
+            effective_deadline_boottime_nanoseconds: locator.original_deadline_boottime_nanoseconds,
             ..Default::default()
         }
     }
 
-    #[test]
-    fn source_commits_complete_settlement_split_policy_and_method() {
-        let bytes = source_bytes();
-        let source = StorageCaptureGrantSourceV1::from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(
-            StorageCaptureGrantMethodV1::Reserve.broker_verb(),
-            BrokerVerb::StorageReserveExecutionCapture
-        );
-        assert_eq!(
-            StorageCaptureGrantMethodV1::Query.broker_verb(),
-            BrokerVerb::StorageQueryExecutionCapture
-        );
-        assert_eq!(
-            source.settlement().execution(),
-            ExecutionId::from_bytes([1; 16])
-        );
-        assert_eq!(source.settlement().original_host_journal_sequence(), 5);
-        assert_eq!(source.output_limits(), (100, 60, 40));
-        assert_eq!(source.space_policy(), (200, 20, 30));
-        assert_eq!(source.original_host_request_id(), [10; 16]);
-        let reserve_grant = source
-            .broker_grant(StorageCaptureGrantMethodV1::Reserve, [17; 16])
-            .unwrap();
-        let query_grant = source
-            .broker_grant(StorageCaptureGrantMethodV1::Query, [18; 16])
-            .unwrap();
-        assert_eq!(
-            reserve_grant.verb(),
-            BrokerVerb::StorageReserveExecutionCapture
-        );
-        assert_eq!(query_grant.verb(), BrokerVerb::StorageQueryExecutionCapture);
-        assert_eq!(reserve_grant.target(), BrokerGrantTarget::Assignment);
-        assert_eq!(reserve_grant.maximum_request_bytes(), 4 * 1_024);
-        assert_eq!(reserve_grant.maximum_descriptors(), 0);
-        assert_ne!(
-            reserve_grant.argument_commitment(),
-            query_grant.argument_commitment()
-        );
-        assert_eq!(
-            source.settlement().record_digest().as_bytes(),
-            &bytes[184..216]
-        );
-        assert_ne!(
-            source
-                .argument_commitment(StorageCaptureGrantMethodV1::Reserve, [17; 16])
-                .unwrap(),
-            source
-                .argument_commitment(StorageCaptureGrantMethodV1::Query, [18; 16])
-                .unwrap()
-        );
-        assert!(
-            source
-                .argument_commitment(StorageCaptureGrantMethodV1::Query, [17; 16])
-                .is_err()
-        );
-
-        let mut tampered = bytes;
-        tampered[8 + 72] ^= 1;
-        assert!(StorageCaptureGrantSourceV1::from_canonical_bytes(&tampered).is_err());
-        let mut split = bytes;
-        split[455] ^= 1;
-        assert!(StorageCaptureGrantSourceV1::from_canonical_bytes(&split).is_err());
-        let mut floor = bytes;
-        floor[480..488].fill(0);
-        assert!(StorageCaptureGrantSourceV1::from_canonical_bytes(&floor).is_err());
-        let mut zero_capture = bytes;
-        zero_capture[440..464].fill(0);
-        assert_eq!(
-            StorageCaptureGrantSourceV1::from_canonical_bytes(&zero_capture)
-                .unwrap()
-                .output_limits(),
-            (0, 0, 0)
-        );
-        assert!(StorageCaptureGrantSourceV1::from_canonical_bytes(&bytes[..511]).is_err());
-    }
-
-    #[test]
-    fn caller_supplied_settlement_is_data_not_storage_candidate_authority() {
-        let (peer, policy) = peer();
-        let request = ReserveStorageExecutionCaptureRequestV1 {
-            header: Some(header(17, 100)).into(),
-            canonical_grant_source: source_bytes().to_vec(),
-            ..Default::default()
-        };
-
-        // AOSCIS01 has a reproducible checksum, not a Controller signature.
-        let parsed =
-            decode_storage_capture_reserve_request_v1(&request.encode_to_vec(), peer, policy, 99)
-                .unwrap();
-        assert_eq!(
-            parsed.source().settlement().canonical_bytes()[..8],
-            *SETTLEMENT_MAGIC
-        );
-
-        // Candidate readback remains excluded from the production profile.
-        // Output reserve/query are existing authenticated methods requiring
-        // separately verified authority. A well-formed source grants no
-        // authority or effect; these assertions inspect taxonomy, not effects.
-        let candidate = BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE;
-        let output_reserve = BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT;
-        let output_query = BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT;
-        for method_number in 0..=u16::MAX {
-            let Some(method) = BrokerMethod::from_i32(i32::from(method_number)) else {
-                continue;
-            };
-            let name = method.proto_name();
-            if name.starts_with("BROKER_METHOD_STORAGE_")
-                && (name.contains("CAPTURE") || name.contains("EXECUTION_OUTPUT"))
-            {
-                assert!(
-                    method == candidate || method == output_reserve || method == output_query,
-                    "unexpected Storage capture method: {name}"
-                );
-            }
+    pub(crate) fn ongoing_source_data() -> StorageCaptureGrantSourceV2 {
+        use crate::storage_capture_lifetime::StorageCaptureExecutionLifetimeDataV2;
+        use aos_sandbox_core::{RawClockProvenance, RawPairedClockSample};
+        let original = StorageCaptureGrantSourceV1::from_canonical_bytes(&source_bytes()).unwrap();
+        let assignment = original.assignment();
+        let mut bytes = [1; 424];
+        bytes[..8].copy_from_slice(b"AOSCLF02");
+        bytes[8..24].copy_from_slice(original.settlement().execution().as_bytes());
+        bytes[24..40].copy_from_slice(original.settlement().create_operation().as_bytes());
+        bytes[40..56].copy_from_slice(original.settlement().create_operation().as_bytes());
+        bytes[120..136].copy_from_slice(assignment.sandbox().as_bytes());
+        bytes[136..152].copy_from_slice(assignment.incarnation().as_bytes());
+        bytes[152..160].copy_from_slice(&assignment.epoch().get().to_be_bytes());
+        bytes[160..168].copy_from_slice(&assignment.desired_generation().get().to_be_bytes());
+        bytes[168..200].copy_from_slice(assignment.digest().as_bytes());
+        bytes[232..240].copy_from_slice(&1_u64.to_be_bytes());
+        let clock = |boot| RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            original.host_boot_id(), 100, boot).unwrap();
+        let origin = clock(10);
+        for (offset, sample) in [(240, origin), (320, clock(20))] {
+            bytes[offset..offset+16].copy_from_slice(&sample.provenance().as_bytes());
+            bytes[offset+16..offset+32].copy_from_slice(&sample.host_boot_id());
+            bytes[offset+32..offset+40].copy_from_slice(&sample.wall_seconds().to_be_bytes());
+            bytes[offset+40..offset+48].copy_from_slice(&sample.boottime_nanoseconds().to_be_bytes());
         }
-        let advertised = authenticated_broker_methods_for_role_v1(
-            BrokerSessionProtocolV1::Storage,
-            Audience::AUDIENCE_NODE_CONTROLLER,
-        );
-        assert!(!advertised.contains(&candidate));
-        assert!(advertised.contains(&output_reserve));
-        assert!(advertised.contains(&output_query));
+        bytes[288..296].copy_from_slice(&900_i64.to_be_bytes());
+        bytes[296..304].copy_from_slice(&1000_i64.to_be_bytes());
+        bytes[304..312].copy_from_slice(&0_u64.to_be_bytes());
+        let root = origin.conservative_lease_expiry_deadline_data_v2(1000, 0).unwrap()
+            .min(origin.conservative_expiry_deadline_data_v1(900).unwrap());
+        bytes[312..320].copy_from_slice(&root.to_be_bytes());
+        bytes[368..376].copy_from_slice(&1000_u64.to_be_bytes());
+        bytes[376..384].copy_from_slice(&800_i64.to_be_bytes());
+        bytes[384..392].copy_from_slice(&1020_u64.to_be_bytes());
+        let digest = Sha256::new().chain_update(b"aos.sandbox.storage.capture-execution-lifetime.v2\0")
+            .chain_update(&bytes[..392]).finalize();
+        bytes[392..].copy_from_slice(&digest);
+        let lifetime = StorageCaptureExecutionLifetimeDataV2::from_canonical_bytes_v2(&bytes).unwrap();
+        StorageCaptureGrantSourceV2::from_original_data_v2(original, lifetime).unwrap()
     }
 
     #[test]
-    fn legacy_capture_carrier_is_rejected_by_captured_output_decoders() {
+    fn ongoing_acquisition_keeps_expired_logical_delivery_historical() {
+        let source = ongoing_source_data();
         let (peer, policy) = peer();
-        let request = ReserveStorageExecutionCaptureRequestV1 {
+        let (mut original, _) = crate::storage_output_reserve::fixture::captured_fixture();
+        original.header.get_or_insert_default().deadline_boottime_nanoseconds = 1;
+        let mut request = ReserveStorageExecutionCaptureRequestV1 {
             header: Some(header(17, 100)).into(),
-            canonical_grant_source: source_bytes().to_vec(),
+            canonical_grant_source: source.canonical_bytes_v2().to_vec(),
+            canonical_original_storage_output_request: original.encode_to_vec(),
             ..Default::default()
         };
-        let body = request.encode_to_vec();
+        let decoded = decode_storage_capture_reserve_request_v1(&request.encode_to_vec(), peer, policy, 99).unwrap();
+        assert_eq!(decoded.ongoing_source_v2(), Some(&source));
+        assert_eq!(decoded.source().original_deadline_boottime_nanoseconds(), 100);
+        assert_eq!(source.effective_execution_deadline_v2(), 1020);
 
-        assert!(decode_storage_capture_reserve_request_v1(&body, peer, policy, 99).is_ok());
-
-        // A valid legacy DATA carrier is not either captured-output request
-        // representation. Decoder rejection does not qualify dispatch effects.
-        assert!(
-            crate::storage_output_reserve::decode_captured_storage_output_reserve_request_v1(
-                &body, peer, policy, 99,
-            )
-            .is_err()
-        );
-        assert!(
-            crate::storage_output_reserve::decode_captured_storage_output_query_request_v1(
-                &body, peer, policy, 99,
-            )
-            .is_err()
-        );
+        request.canonical_grant_source = source.original_source_v1().canonical_bytes().to_vec();
+        assert!(decode_storage_capture_reserve_request_v1(&request.encode_to_vec(), peer, policy, 99).is_err());
     }
 
     #[test]
-    fn reserve_and_fresh_query_reject_noncanonical_or_reused_headers() {
+    fn ongoing_response_preserves_immutable_execution_bound() {
+        let source = ongoing_source_data();
+        let mut body = response(source.locator_v2());
+        body.effective_deadline_boottime_nanoseconds = 500;
+        let encoded = body.encode_to_vec();
+        let parsed = decode_storage_capture_attempt_response_ongoing_v2(&encoded, &source, false).unwrap();
+        assert_eq!(parsed.effective_deadline_boottime_nanoseconds(), Some(500));
+        assert_eq!(source.original_source_v1().original_deadline_boottime_nanoseconds(), 100);
+
+        body.effective_deadline_boottime_nanoseconds = 1021;
+        assert!(decode_storage_capture_attempt_response_ongoing_v2(&body.encode_to_vec(), &source, false).is_err());
+        assert_eq!(source.effective_execution_deadline_v2(), 1020);
+    }
+
+    #[test]
+    fn standalone_acquisition_source_is_refused_by_both_wire_methods() {
         let (peer, policy) = peer();
         let reserve = ReserveStorageExecutionCaptureRequestV1 {
             header: Some(header(17, 100)).into(),
             canonical_grant_source: source_bytes().to_vec(),
+            canonical_original_storage_output_request: original_body(),
             ..Default::default()
         };
-        let validated =
-            decode_storage_capture_reserve_request_v1(&reserve.encode_to_vec(), peer, policy, 99)
-                .unwrap();
-        assert_eq!(validated.source().original_reserve_request_id(), [17; 16]);
-
-        let mut changed = reserve.clone();
-        changed.header.get_or_insert_default().request_id = vec![21; 16];
-        assert!(
-            decode_storage_capture_reserve_request_v1(&changed.encode_to_vec(), peer, policy, 99)
-                .is_err()
-        );
-        changed = reserve.clone();
-        changed
-            .header
-            .get_or_insert_default()
-            .deadline_boottime_nanoseconds = 101;
-        assert!(
-            decode_storage_capture_reserve_request_v1(&changed.encode_to_vec(), peer, policy, 99)
-                .is_err()
-        );
-        let mut unknown = reserve.encode_to_vec();
-        unknown.extend_from_slice(&[0xa0, 0x06, 0x01]);
-        assert!(decode_storage_capture_reserve_request_v1(&unknown, peer, policy, 99).is_err());
-
         let query = QueryStorageExecutionCaptureRequestV1 {
-            header: Some(header(22, 201)).into(),
+            header: Some(header(18, 200)).into(),
             canonical_grant_source: source_bytes().to_vec(),
             ..Default::default()
         };
-        let validated =
-            decode_storage_capture_query_request_v1(&query.encode_to_vec(), peer, policy, 200)
-                .unwrap();
-        assert_eq!(
-            validated.source().original_deadline_boottime_nanoseconds(),
-            100
-        );
-        let mut replayed = query;
-        replayed.header.get_or_insert_default().request_id = vec![17; 16];
-        assert!(
-            decode_storage_capture_query_request_v1(&replayed.encode_to_vec(), peer, policy, 200)
-                .is_err()
-        );
+        assert!(decode_storage_capture_reserve_request_v1(&reserve.encode_to_vec(), peer, policy, 99).is_err());
+        assert!(decode_storage_capture_query_request_v1(&query.encode_to_vec(), peer, policy, 150).is_err());
     }
 
     #[test]
-    fn attempt_response_is_exact_and_never_physical_success() {
-        let source = StorageCaptureGrantSourceV1::from_canonical_bytes(&source_bytes()).unwrap();
-        let locator = source.locator();
-        let mut committed = response(locator);
-        let validated =
-            decode_storage_capture_attempt_response_v1(&committed.encode_to_vec(), locator, false)
-                .unwrap();
-        assert_eq!(
-            validated.status(),
-            StorageCaptureAttemptStatusV1::EffectPossible
-        );
-        assert_eq!(validated.attempt(), Some([18; 16]));
-
-        committed.attempt_id.clear();
-        assert!(
-            decode_storage_capture_attempt_response_v1(&committed.encode_to_vec(), locator, false)
-                .is_err()
-        );
-        committed = response(locator);
-        committed.grant_source_digest[0] ^= 1;
-        assert!(
-            decode_storage_capture_attempt_response_v1(&committed.encode_to_vec(), locator, false)
-                .is_err()
-        );
-        let mut absent = response(locator);
-        absent.status =
-            StorageExecutionCaptureAttemptStatusV1::STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_ABSENT
-                .into();
-        absent.attempt_id.clear();
-        absent.durable_attempt_digest.clear();
-        assert_eq!(
-            decode_storage_capture_attempt_response_v1(&absent.encode_to_vec(), locator, true)
-                .unwrap()
-                .status(),
-            StorageCaptureAttemptStatusV1::Absent
-        );
-        assert!(
-            decode_storage_capture_attempt_response_v1(&absent.encode_to_vec(), locator, false)
-                .is_err()
-        );
+    fn complete_query_requires_full_matching_source_and_both_streams() {
+        let source = ongoing_source_data();
+        let original = source.original_source_v1();
+        let mut complete = crate::storage_capture_result::tests::complete();
+        complete.source_digest = source.source_digest_v2();
+        complete.execution = *original.settlement().execution().as_bytes();
+        complete.create_operation = *original.settlement().create_operation().as_bytes();
+        complete.output_record_digest = original.output_record_digest();
+        complete.claim_digest = original.output_claim_digest();
+        complete.assignment_digest = original.assignment().digest();
+        complete.stdout.maximum_bytes = original.output_limits().1;
+        complete.stdout.truncated = false;
+        complete.stderr.maximum_bytes = original.output_limits().2;
+        let mut body = response(source.locator_v2());
+        complete.attempt.copy_from_slice(&body.attempt_id);
+        complete.durable_attempt_digest = ObjectDigest::from_bytes(body.durable_attempt_digest.as_slice().try_into().unwrap());
+        body.status = StorageExecutionCaptureAttemptStatusV1::STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_COMPLETE.into();
+        body.canonical_complete_result = complete.encode().unwrap().to_vec();
+        let encoded = body.encode_to_vec();
+        assert_eq!(decode_storage_capture_query_response_ongoing_v2(&encoded, &source).unwrap().complete_record(), Some(&complete));
+        assert!(decode_storage_capture_attempt_response_ongoing_v2(&encoded, &source, false).is_err());
+        complete.claim_digest = ObjectDigest::from_bytes([99;32]);
+        body.canonical_complete_result = complete.encode().unwrap().to_vec();
+        assert!(decode_storage_capture_query_response_ongoing_v2(&body.encode_to_vec(), &source).is_err());
     }
+
+    #[test]
+    fn full_source_rejects_changed_acquisition_and_lifetime_coordinates() {
+        let source = ongoing_source_data();
+        for offset in [8 + 40, 8 + 344, 520 + 200] {
+            let mut bytes = *source.canonical_bytes_v2();
+            bytes[offset] ^= 1;
+            assert!(StorageCaptureGrantSourceV2::from_canonical_bytes_v2(&bytes).is_err());
+        }
+        let mut bytes = *source.canonical_bytes_v2();
+        bytes[8 + 440..8 + 448].copy_from_slice(&101_u64.to_be_bytes());
+        assert!(StorageCaptureGrantSourceV2::from_canonical_bytes_v2(&bytes).is_err());
+        bytes = *source.canonical_bytes_v2();
+        bytes[8 + 464..8 + 472].copy_from_slice(&119_u64.to_be_bytes());
+        assert!(StorageCaptureGrantSourceV2::from_canonical_bytes_v2(&bytes).is_err());
+        bytes = *source.canonical_bytes_v2();
+        bytes[8 + 488..8 + 496].copy_from_slice(&20_u64.to_be_bytes());
+        assert!(StorageCaptureGrantSourceV2::from_canonical_bytes_v2(&bytes).is_err());
+    }
+
 }

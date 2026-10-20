@@ -284,7 +284,7 @@ fn append_selected(fixture: &mut NativeFixture) -> Result<(), crate::StorageStat
             fixture.sealed.operation_fence.clone(),
             fixture.sealed_preparation.clone(),
             fixture.policy,
-            Some((original, authority)),
+            Some(crate::state::StorageCatalogPreparationNativeV1::Nix(original, authority)),
         )
 }
 
@@ -545,4 +545,46 @@ fn production_capture_layout_fits_the_replaced_clock_reservoir() {
         retained <= previous,
         "new persistent clock slots require a real supplier adjustment"
     );
+}
+
+#[test]
+fn ordinary_prepare_clock_joins_real_signed_admission_and_exact_retained_members() {
+    // Real fixture plan/lease signatures and actual sealed journal members are
+    // used here. This tests a clock restriction, not genuine PID1 payment.
+    let mut production = production_preparation_fixture(7);
+    let semantics = CanonicalStoragePreparationSemanticsV1::decode(
+        &production.request, peer(), peer_policy(), clock().boottime_nanoseconds(),
+    ).unwrap();
+    let admission = production.broker.authority.admit_preparation(
+        &production.artifacts, &semantics, &production.request,
+        ProtocolVersion::new(1, 0), peer(), peer_policy(), &clock(), None,
+    ).unwrap();
+    production.broker.prepare_catalog_from_protected_policy(
+        &production.request, &production.artifacts, &production.policies,
+        ProtocolVersion::new(1, 0), peer(), peer_policy(), &mut || Ok(clock()),
+    ).unwrap();
+    let locations = [
+        (RecordNamespace::DesiredState, *semantics.fence().sandbox_id()),
+        (RecordNamespace::Effect, *semantics.header().request_id()),
+        (RecordNamespace::AuthorityPublication, semantics.operation_id()),
+        (RecordNamespace::StorageCatalogPreparation, semantics.operation_id()),
+    ];
+    let records: Vec<_> = locations.into_iter().map(|(namespace, key)| JournalRecord::put(
+        namespace, key.to_vec(), production.broker.transactions.authority_record(namespace, &key)
+            .unwrap().unwrap().to_vec(),
+    )).collect();
+    let transaction = JournalTransaction::new([90; 16], records.clone()).unwrap();
+    let original = production.broker.authority
+        .borrow_ordinary_preparation_native_admission(&admission, &semantics);
+    let loan = original.borrow_clock(&transaction).unwrap();
+
+    assert!(loan.require_native_clock(clock()).is_ok());
+    assert!(matches!(loan.require_native_clock(crossing_sample(
+        admission.effect_deadline_boottime_nanoseconds(),
+    )), Err(StorageAdmissionError::FenceRejected)));
+
+    let mut extra = records;
+    extra.push(JournalRecord::put(RecordNamespace::Operation, vec![1], vec![2]));
+    let extra = JournalTransaction::new([91; 16], extra).unwrap();
+    assert!(matches!(original.borrow_clock(&extra), Err(StorageAdmissionError::RequestMismatch)));
 }

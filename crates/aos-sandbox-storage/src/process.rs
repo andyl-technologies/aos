@@ -60,6 +60,26 @@ use crate::{
     ZfsTransactionError,
 };
 
+mod worker_entry;
+pub(crate) mod receiving_stage;
+mod physical_exchange;
+pub use physical_exchange::{PhysicalWorkerAdmissionFailureV1, PhysicalWorkerFailureV1};
+pub(crate) use physical_exchange::{CapturePhysicalPreparationOriginalV3, NativeCaptureCreatedReadbackV3};
+pub(crate) mod worker_aggregate;
+
+pub(crate) mod capture_create;
+pub(crate) mod capture_worker;
+
+mod capture_observation;
+mod candidate_preflight;
+pub(crate) use capture_observation::{
+    CaptureZfsObservationOriginalV3, observe_capture_zfs_retaining_v3,
+    observe_capture_zfs_in_scope_v3,
+};
+
+mod startup;
+pub(crate) use startup::StorageExecutorStartupV1;
+
 mod held_snapshot;
 mod held_snapshot_reader;
 pub(crate) mod original_cutoff;
@@ -102,6 +122,15 @@ const WORKER_CGROUP_SUFFIX: &str = ".service";
 /// Reports a fixed-worker setup, authentication, protocol, or execution error.
 #[derive(Debug, thiserror::Error)]
 pub enum ZfsWorkerError {
+    /// The actual Native stage refused before upper exchange allocation.
+    #[error(transparent)]
+    PhysicalAdmission(PhysicalWorkerAdmissionFailureV1),
+    /// The same paid physical attempt retains every reached transport owner.
+    #[error(transparent)]
+    Physical(Box<PhysicalWorkerFailureV1>),
+    /// The selected descriptor worker retains its original native/model flight.
+    #[error(transparent)]
+    DescriptorPhysical(Box<crate::pin_worker_runtime::PhysicalDescriptorWorkerFailureV1>),
     /// A new-version worker retains its actual originals and first typed cause.
     #[error(transparent)]
     OriginalWorker(#[from] Box<OriginalWorkerFailureV3>),
@@ -209,42 +238,130 @@ fn run_capture_zfs_observation_commands<const N: usize>(
     zfs: &ZfsHelperContract,
     commands: &[CaptureZfsReadbackCommandV1; N],
 ) -> Result<[Vec<u8>; N], ZfsWorkerError> {
-    let tools = PinnedCaptureZfsTools::new(
-        zfs,
-        "capture readback requires the fixed AOS zfs executable",
-    )?;
-    let deadline = Deadline::after(PROCESS_TIMEOUT);
+    run_capture_zfs_observation_commands_into(zfs, commands, None)
+}
+
+fn run_capture_zfs_observation_commands_into<const N: usize>(
+    zfs: &ZfsHelperContract,
+    commands: &[CaptureZfsReadbackCommandV1; N],
+    mut retained: Option<&mut capture_observation::CaptureZfsObservationOriginalV3>,
+) -> Result<[Vec<u8>; N], ZfsWorkerError> {
+    run_capture_zfs_observation_commands_with_scope_v3(zfs, commands, retained, None)
+}
+
+fn run_capture_zfs_observation_commands_with_scope_v3<const N: usize>(
+    zfs: &ZfsHelperContract,
+    commands: &[CaptureZfsReadbackCommandV1; N],
+    mut retained: Option<&mut capture_observation::CaptureZfsObservationOriginalV3>,
+    mut capture: Option<(&mut worker_aggregate::WorkerExecutionScopeV1<'_>, u64)>,
+) -> Result<[Vec<u8>; N], ZfsWorkerError> {
+    let tools = match retained.as_deref_mut() {
+        Some(original) => PinnedCaptureZfsTools::new_retaining_v3(
+            zfs, "capture readback requires the fixed AOS zfs executable",
+            &mut original.opening,
+        )?,
+        None => PinnedCaptureZfsTools::new(
+            zfs, "capture readback requires the fixed AOS zfs executable",
+        )?,
+    };
+    let deadline = match capture.as_ref() {
+        Some((_, cutoff)) => Deadline(Duration::from_nanos(*cutoff)),
+        None => Deadline::after(PROCESS_TIMEOUT),
+    };
     let mut outputs = Vec::with_capacity(commands.len());
 
-    for command in commands {
-        let (contract, pin) = tools.for_tool(command.tool);
-        pin.validate_current(contract)?;
-        let timeout = deadline.remaining().ok_or(ZfsWorkerError::Protocol(
-            "capture readback deadline elapsed",
-        ))?;
-        let arguments: Vec<OsString> = command.arguments.iter().map(OsString::from).collect();
-        let output = run_fixed_process(FixedProcessRequest {
-            executable: contract.executable(),
-            arguments: &arguments,
-            timeout,
-            maximum_stdout_bytes: MAXIMUM_MACHINE_OUTPUT_BYTES,
-            maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
-        })?;
-        match output {
-            FixedProcessOutcome::Completed(output)
-                if output.exit_code == Some(0)
-                    && output.signal.is_none()
-                    && output.stderr.is_empty() =>
-            {
-                outputs.push(output.stdout);
+    let result = (|| {
+        for command in commands {
+            let (contract, pin) = tools.for_tool(command.tool);
+            if let Some(original) = retained.as_deref_mut() {
+                let mut metadata = None;
+                let result = pin.validate_current_into_v3(contract, Some(&mut metadata));
+                original.tool_checks.push(metadata);
+                result?;
+            } else {
+                pin.validate_current(contract)?;
             }
-            _ => return Err(ZfsWorkerError::Protocol("capture ZFS readback failed")),
+            let timeout = deadline.remaining().ok_or(ZfsWorkerError::Protocol(
+                "capture readback deadline elapsed",
+            ))?;
+            let arguments: Vec<OsString> = command.arguments.iter().map(OsString::from).collect();
+            let output = if let Some((scope, _)) = capture.as_mut() {
+                let Some(original) = retained.as_deref_mut() else { return Err(ZfsWorkerError::Authority); };
+                original.arguments = arguments;
+                // The SAME scope owns the actual process/native result. Do not
+                // instantiate a duplicate Linux process owner in the observer.
+                scope.run_fixed_process_v1(FixedProcessRequest {
+                    executable: contract.executable(), arguments: &original.arguments,
+                    timeout: timeout.min(PROCESS_TIMEOUT),
+                    maximum_stdout_bytes: MAXIMUM_MACHINE_OUTPUT_BYTES,
+                    maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
+                })?
+            } else { match retained.as_deref_mut() {
+                Some(original) => {
+                    original.arguments = arguments;
+                    let request = FixedProcessRequest {
+                        executable: contract.executable(), arguments: &original.arguments, timeout,
+                        maximum_stdout_bytes: MAXIMUM_MACHINE_OUTPUT_BYTES,
+                        maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
+                    };
+                    let mut run = aos_sandbox_linux::process::FixedProcessRunOriginalV3::new();
+                    // The enclosing fixed worker must prepay this retained
+                    // representation before entering its first native child.
+                    let result = aos_sandbox_linux::process::run_fixed_process_retaining_v3(request, &mut run);
+                    original.runs.push(run);
+                    let run = original.runs.last_mut().ok_or(ZfsWorkerError::Protocol(
+                        "capture readback process is absent",
+                    ))?;
+                    if result.is_err() {
+                        return Err(ZfsWorkerError::Protocol("capture readback native process failed"));
+                    }
+                    match run.outcome() {
+                        Some(FixedProcessOutcome::Completed(_)) => {
+                            FixedProcessOutcome::Completed(run.take_completed_output_v3()
+                                .map_err(|_| ZfsWorkerError::Protocol("capture readback output is absent"))?)
+                        }
+                        _ => return Err(ZfsWorkerError::Protocol("capture ZFS readback failed")),
+                    }
+                }
+                None => run_fixed_process(FixedProcessRequest {
+                    executable: contract.executable(), arguments: &arguments, timeout,
+                    maximum_stdout_bytes: MAXIMUM_MACHINE_OUTPUT_BYTES,
+                    maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
+                })?,
+            }};
+            match output {
+                FixedProcessOutcome::Completed(output)
+                    if output.exit_code == Some(0)
+                        && output.signal.is_none()
+                        && output.stderr.is_empty() =>
+                {
+                    outputs.push(output.stdout);
+                }
+                output => {
+                    if let Some(original) = retained.as_deref_mut() { original.rejected_output = Some(output); }
+                    return Err(ZfsWorkerError::Protocol("capture ZFS readback failed"));
+                }
+            }
         }
-    }
 
-    tools.validate_current()?;
-    outputs
-        .try_into()
+        match retained.as_deref_mut() {
+            Some(original) => tools.validate_current_retaining_v3(&mut original.tool_checks)?,
+            None => tools.validate_current()?,
+        }
+        Ok(())
+    })();
+    if let Some(original) = retained {
+        original.opening.zpool = Some(tools.zpool);
+        original.opening.zfs_pin = Some(tools.zfs_pin);
+        original.opening.zpool_pin = Some(tools.zpool_pin);
+        if let Err(error) = result {
+            original.outputs = outputs;
+            return Err(error);
+        }
+    } else {
+        result?;
+    }
+    outputs.try_into()
         .map_err(|_| ZfsWorkerError::Protocol("capture ZFS observation is incomplete"))
 }
 
@@ -617,37 +734,51 @@ pub enum WorkerObservationOutcome {
 /// Returns an error for an invalid executable, inherited socket, storaged peer,
 /// request, transaction compilation, process launch, or response write.
 pub fn run_inherited_worker(configured_zfs: PathBuf) -> Result<(), ZfsWorkerError> {
-    // A stable service UID is required because systemd's DynamicUser path
-    // forces a seccomp rule incompatible with mandatory openat2 resolution.
-    // Disable dumpability before opening or parsing any privileged state so
-    // the serialized UID cannot become a ptrace or core-file authority path.
     aos_sandbox_linux::process::disable_core_dumps()?;
 
-    let contract = ZfsHelperContract::new(configured_zfs)
-        .map_err(|error| ZfsWorkerError::Executable(error.to_string()))?;
-    let _executable_pin = PinnedExecutable::open(&contract)?;
-    let cgroup_root = open_cgroup_root()?;
-    let storaged_cgroup = cgroup_root.resolve(Path::new(STORAGED_CGROUP))?;
-    let descriptor: OwnedFd = rustix::io::dup(std::io::stdin().as_fd())?;
-    let mut socket = SeqpacketSocket::from_owned(descriptor)?;
-    verify_storaged_peer(socket.peer(), &storaged_cgroup)?;
-    socket.enable_record_subjects()?;
+    let mut entry = worker_entry::WorkerEntryOriginalV3::new();
+    worker_aggregate::with_worker_aggregate_v1(|aggregate| {
+        let result = run_inherited_worker_inner(configured_zfs, aggregate, &mut entry);
+        entry.finish_body_v3(result)
+    })
+}
 
-    let deadline = Deadline::after(PROCESS_TIMEOUT);
-    let ready = encode_ready(&current_cgroup()?)?;
-    send_before(&mut socket, &ready, deadline)?;
-    let request = receive_before(&mut socket, MAXIMUM_REQUEST_BYTES, deadline)?;
-    verify_same_subject(socket.peer(), request.subject())?;
-    storaged_cgroup.verify_exact_membership(request.subject().pidfd())?;
-    if original_cutoff::OriginalWorkerPurposeV3::Observer.selects_introduction(request.payload()) {
-        return held_snapshot_reader::original::run_original_observer(
-            socket,
-            request,
-            storaged_cgroup,
-            contract,
-            _executable_pin,
-        );
+fn run_inherited_worker_inner(
+    configured_zfs: PathBuf,
+    mut aggregate: Option<&mut worker_aggregate::WorkerAggregateV1>,
+    entry: &mut worker_entry::WorkerEntryOriginalV3,
+) -> Result<(), ZfsWorkerError> {
+    entry.capture_once(configured_zfs, &mut aggregate)?;
+    let observer = entry.request.as_ref().is_some_and(|request|
+        original_cutoff::OriginalWorkerPurposeV3::Observer.selects_introduction(request.payload()));
+    if observer {
+        // The same originals move only into the existing retained observer,
+        // whose actual owner takes over the complete live native prefix.
+        if entry.socket.is_none() || entry.request.is_none() || entry.storaged.is_none()
+            || entry.contract.is_none() || entry.pin.is_none()
+        { return Err(worker_entry::retained()); }
+        let Some(socket) = entry.socket.take() else { std::process::abort(); };
+        let Some(request) = entry.request.take() else { std::process::abort(); };
+        let Some(storaged) = entry.storaged.take() else { std::process::abort(); };
+        let Some(contract) = entry.contract.take() else { std::process::abort(); };
+        let Some(pin) = entry.pin.take() else { std::process::abort(); };
+        return held_snapshot_reader::original::run_original_observer(socket, request, storaged, contract, pin);
     }
+    if entry.request.as_ref().is_some_and(|request| capture_worker::wire::selects_request(request.payload())) {
+        let original = aggregate.as_deref_mut().ok_or(ZfsWorkerError::Authority)?;
+        return capture_worker::run_authenticated_capture_v3(entry, original);
+    }
+    if entry.request.as_ref().is_some_and(|request| candidate_preflight::is_request(request.payload())) {
+        let Some(aggregate) = aggregate.as_deref_mut() else { return Err(ZfsWorkerError::Authority); };
+        return candidate_preflight::run_worker_v1(entry, aggregate);
+    }
+    let worker_entry::WorkerEntryOriginalV3 {
+        socket: Some(socket), request: Some(request), storaged: Some(storaged_cgroup),
+        contract: Some(contract), pin: Some(_executable_pin), ready_path: Some(ready_path),
+        deadline: Some(deadline), pin_checks, memberships, acknowledgement, selected, ..
+    } = entry else { return Err(worker_entry::retained()); };
+    let deadline = *deadline;
+    let selected = *selected;
     if is_atomic_snapshot_request(request.payload()) {
         let request = decode_atomic_snapshot_request(request.payload())?;
         if request.executable != *contract.executable() {
@@ -655,31 +786,46 @@ pub fn run_inherited_worker(configured_zfs: PathBuf) -> Result<(), ZfsWorkerErro
                 "broker and worker executable contracts differ".to_owned(),
             ));
         }
-        _executable_pin.validate_current(&contract)?;
-        let output = execute_atomic_snapshot(&contract, &request, deadline)?;
-        _executable_pin.validate_current(&contract)?;
-        send_before(&mut socket, &encode_mutation_response(&output)?, deadline)?;
-        let acknowledgement = receive_before(&mut socket, MAXIMUM_ACK_BYTES, deadline)?;
+        _executable_pin.validate_current_into_v3(contract,
+            selected.then_some(&mut pin_checks[0]))?;
+        let mut execution = aggregate.as_deref_mut()
+            .map(|original| original.borrow_execution_scope_v1(ready_path)).transpose()?;
+        let output = execute_atomic_snapshot(contract, &request, deadline, execution.as_mut())?;
+        _executable_pin.validate_current_into_v3(contract,
+            selected.then_some(&mut pin_checks[1]))?;
+        send_before(socket, &encode_mutation_response(&output)?, deadline)?;
+        let acknowledgement = worker_entry::receive_ack_into_v3(
+            socket, deadline, selected, acknowledgement,
+        )?;
         verify_same_subject(socket.peer(), acknowledgement.subject())?;
-        storaged_cgroup.verify_exact_membership(acknowledgement.subject().pidfd())?;
+        worker_entry::verify_membership_into_v3(storaged_cgroup, acknowledgement.subject().pidfd(),
+            selected.then_some(&mut memberships[2]))?;
         decode_ack(acknowledgement.payload())?;
+        if let Some(original) = execution.as_mut() {
+            original.complete_after_ack_v1();
+        }
         return Ok(());
     }
     if held_snapshot::is_request(request.payload()) {
         let request = held_snapshot::decode_request(request.payload())?;
-        if request.executable != contract {
+        if &request.executable != &*contract {
             return Err(ZfsWorkerError::Executable(
                 "broker and worker executable contracts differ".to_owned(),
             ));
         }
-        _executable_pin.validate_current(&contract)?;
+        _executable_pin.validate_current_into_v3(contract,
+            selected.then_some(&mut pin_checks[0]))?;
         let observation = held_snapshot::execute_request(&request, deadline)?;
-        _executable_pin.validate_current(&contract)?;
+        _executable_pin.validate_current_into_v3(contract,
+            selected.then_some(&mut pin_checks[1]))?;
         let response = held_snapshot::encode_response(request.digest, observation);
-        send_before(&mut socket, &response, deadline)?;
-        let acknowledgement = receive_before(&mut socket, MAXIMUM_ACK_BYTES, deadline)?;
+        send_before(socket, &response, deadline)?;
+        let acknowledgement = worker_entry::receive_ack_into_v3(
+            socket, deadline, selected, acknowledgement,
+        )?;
         verify_same_subject(socket.peer(), acknowledgement.subject())?;
-        storaged_cgroup.verify_exact_membership(acknowledgement.subject().pidfd())?;
+        worker_entry::verify_membership_into_v3(storaged_cgroup, acknowledgement.subject().pidfd(),
+            selected.then_some(&mut memberships[2]))?;
         decode_ack(acknowledgement.payload())?;
         return Ok(());
     }
@@ -690,33 +836,43 @@ pub fn run_inherited_worker(configured_zfs: PathBuf) -> Result<(), ZfsWorkerErro
             "broker and worker executable contracts differ".to_owned(),
         ));
     }
-    _executable_pin.validate_current(&contract)?;
+    _executable_pin.validate_current_into_v3(contract,
+        selected.then_some(&mut pin_checks[0]))?;
 
+    let mut execution = aggregate.as_deref_mut()
+        .map(|original| original.borrow_execution_scope_v1(ready_path)).transpose()?;
     let transaction = ZfsTransaction::from_catalog(request.operation, &request.catalog)?;
     let response = match request.verb {
         WorkerRequestVerb::Mutate => {
-            let output = execute_transaction(&contract, &transaction, deadline)?;
+            let output = execute_transaction(contract, &transaction, deadline, execution.as_mut())?;
             encode_mutation_response(&output)?
         }
         WorkerRequestVerb::ObservePreconditions => {
             let plan = ZfsObservationPlan::preconditions(&transaction)
                 .map_err(|_| ZfsWorkerError::Protocol("invalid ZFS observation plan"))?;
-            let observation = execute_observation(&contract, &plan, deadline)?;
+            let observation = execute_observation_in_scope_v1(contract, &plan, deadline, execution.as_mut())?;
             encode_observation_response(observation)?
         }
         WorkerRequestVerb::ObservePostcondition => {
             let plan = ZfsObservationPlan::postcondition(&transaction)
                 .map_err(|_| ZfsWorkerError::Protocol("invalid ZFS observation plan"))?;
-            let observation = execute_observation(&contract, &plan, deadline)?;
+            let observation = execute_observation_in_scope_v1(contract, &plan, deadline, execution.as_mut())?;
             encode_observation_response(observation)?
         }
     };
-    _executable_pin.validate_current(&contract)?;
-    send_before(&mut socket, &response, deadline)?;
-    let acknowledgement = receive_before(&mut socket, MAXIMUM_ACK_BYTES, deadline)?;
+    _executable_pin.validate_current_into_v3(contract,
+        selected.then_some(&mut pin_checks[1]))?;
+    send_before(socket, &response, deadline)?;
+    let acknowledgement = worker_entry::receive_ack_into_v3(
+        socket, deadline, selected, acknowledgement,
+    )?;
     verify_same_subject(socket.peer(), acknowledgement.subject())?;
-    storaged_cgroup.verify_exact_membership(acknowledgement.subject().pidfd())?;
+    worker_entry::verify_membership_into_v3(storaged_cgroup, acknowledgement.subject().pidfd(),
+            selected.then_some(&mut memberships[2]))?;
     decode_ack(acknowledgement.payload())?;
+    if let Some(original) = execution.as_mut() {
+        original.complete_after_ack_v1();
+    }
     Ok(())
 }
 
@@ -724,6 +880,7 @@ fn execute_atomic_snapshot(
     contract: &ZfsHelperContract,
     request: &AtomicSnapshotWorkerRequestV1,
     deadline: Deadline,
+    mut aggregate: Option<&mut worker_aggregate::WorkerExecutionScopeV1<'_>>,
 ) -> Result<WorkerProcessOutput, ZfsWorkerError> {
     if request.operation == [0; 16]
         || request.snapshot == [0; 16]
@@ -734,7 +891,7 @@ fn execute_atomic_snapshot(
         ));
     }
     if request.verb == AtomicSnapshotRequestVerbV1::Mutate {
-        require_atomic_snapshot_sources(contract, request, deadline)?;
+        require_atomic_snapshot_sources(contract, request, deadline, aggregate.as_deref_mut())?;
         let mut arguments = Vec::with_capacity(request.members.len() + 1);
         arguments.push("snapshot".into());
         arguments.extend(
@@ -743,18 +900,19 @@ fn execute_atomic_snapshot(
                 .iter()
                 .map(|member| OsString::from(&member.destination_name)),
         );
-        let output = execute_fixed_arguments(contract, &arguments, deadline)?;
+        let output = execute_fixed_arguments(contract, &arguments, deadline, aggregate.as_deref_mut())?;
         if !output.success || output.timed_out {
             return Ok(output);
         }
     }
-    observe_atomic_snapshot_group(contract, request, deadline)
+    observe_atomic_snapshot_group(contract, request, deadline, aggregate.as_deref_mut())
 }
 
 fn require_atomic_snapshot_sources(
     contract: &ZfsHelperContract,
     request: &AtomicSnapshotWorkerRequestV1,
     deadline: Deadline,
+    mut aggregate: Option<&mut worker_aggregate::WorkerExecutionScopeV1<'_>>,
 ) -> Result<(), ZfsWorkerError> {
     let mut arguments = vec![
         "list".into(),
@@ -769,7 +927,7 @@ fn require_atomic_snapshot_sources(
             .iter()
             .map(|member| OsString::from(&member.source_name)),
     );
-    let output = execute_fixed_arguments(contract, &arguments, deadline)?;
+    let output = execute_fixed_arguments(contract, &arguments, deadline, aggregate.as_deref_mut())?;
     if !output.success || output.timed_out || !output.stderr.is_empty() {
         return Err(ZfsWorkerError::Protocol(
             "atomic snapshot source observation failed",
@@ -808,6 +966,7 @@ fn observe_atomic_snapshot_group(
     contract: &ZfsHelperContract,
     request: &AtomicSnapshotWorkerRequestV1,
     deadline: Deadline,
+    mut aggregate: Option<&mut worker_aggregate::WorkerExecutionScopeV1<'_>>,
 ) -> Result<WorkerProcessOutput, ZfsWorkerError> {
     let mut arguments = vec![
         "list".into(),
@@ -822,7 +981,7 @@ fn observe_atomic_snapshot_group(
             .iter()
             .map(|member| OsString::from(&member.destination_name)),
     );
-    let output = execute_fixed_arguments(contract, &arguments, deadline)?;
+    let output = execute_fixed_arguments(contract, &arguments, deadline, aggregate.as_deref_mut())?;
     if !output.success || output.timed_out || !output.stderr.is_empty() {
         return Ok(output);
     }
@@ -890,10 +1049,21 @@ fn observe_atomic_snapshot_group(
     })
 }
 
+fn run_worker_fixed_process_v1(
+    request: FixedProcessRequest<'_>,
+    aggregate: Option<&mut worker_aggregate::WorkerExecutionScopeV1<'_>>,
+) -> Result<FixedProcessOutcome, aos_sandbox_linux::Error> {
+    match aggregate {
+        Some(original) => original.run_fixed_process_v1(request),
+        None => run_fixed_process(request),
+    }
+}
+
 fn execute_fixed_arguments(
     contract: &ZfsHelperContract,
     arguments: &[OsString],
     deadline: Deadline,
+    mut aggregate: Option<&mut worker_aggregate::WorkerExecutionScopeV1<'_>>,
 ) -> Result<WorkerProcessOutput, ZfsWorkerError> {
     let Some(timeout) = deadline.remaining() else {
         return Ok(WorkerProcessOutput {
@@ -903,13 +1073,13 @@ fn execute_fixed_arguments(
             timed_out: true,
         });
     };
-    match run_fixed_process(FixedProcessRequest {
+    match run_worker_fixed_process_v1(FixedProcessRequest {
         executable: contract.executable(),
         arguments,
         timeout,
         maximum_stdout_bytes: MAXIMUM_STDOUT_BYTES,
         maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
-    }) {
+    }, aggregate.as_deref_mut()) {
         Ok(FixedProcessOutcome::Completed(output)) => Ok(WorkerProcessOutput {
             success: output.exit_code == Some(0) && output.signal.is_none(),
             timed_out: false,
@@ -934,13 +1104,14 @@ pub(crate) fn execute_transaction_for(
     transaction: &ZfsTransaction,
     timeout: Duration,
 ) -> Result<WorkerProcessOutput, ZfsWorkerError> {
-    execute_transaction(contract, transaction, Deadline::after(timeout))
+    execute_transaction(contract, transaction, Deadline::after(timeout), None)
 }
 
 fn execute_transaction(
     contract: &ZfsHelperContract,
     transaction: &ZfsTransaction,
     deadline: Deadline,
+    mut aggregate: Option<&mut worker_aggregate::WorkerExecutionScopeV1<'_>>,
 ) -> Result<WorkerProcessOutput, ZfsWorkerError> {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -959,13 +1130,13 @@ fn execute_transaction(
                 timed_out: true,
             });
         };
-        let outcome = run_fixed_process(FixedProcessRequest {
+        let outcome = run_worker_fixed_process_v1(FixedProcessRequest {
             executable: contract.executable(),
             arguments,
             timeout,
             maximum_stdout_bytes: MAXIMUM_STDOUT_BYTES.saturating_sub(stdout.len()),
             maximum_stderr_bytes: MAXIMUM_STDERR_BYTES.saturating_sub(stderr.len()),
-        });
+        }, aggregate.as_deref_mut());
         match outcome {
             Ok(FixedProcessOutcome::Completed(output)) => {
                 stdout.extend(output.stdout);
@@ -1027,6 +1198,15 @@ fn execute_observation(
     plan: &ZfsObservationPlan,
     deadline: Deadline,
 ) -> Result<ZfsObservationResult, ZfsWorkerError> {
+    execute_observation_in_scope_v1(contract, plan, deadline, None)
+}
+
+fn execute_observation_in_scope_v1(
+    contract: &ZfsHelperContract,
+    plan: &ZfsObservationPlan,
+    deadline: Deadline,
+    mut aggregate: Option<&mut worker_aggregate::WorkerExecutionScopeV1<'_>>,
+) -> Result<ZfsObservationResult, ZfsWorkerError> {
     let mut evaluation = plan.evaluation();
     let mut output_bytes = 0_usize;
 
@@ -1034,13 +1214,13 @@ fn execute_observation(
         let Some(timeout) = deadline.remaining() else {
             return Err(ZfsWorkerError::Protocol("ZFS observation timed out"));
         };
-        let outcome = run_fixed_process(FixedProcessRequest {
+        let outcome = run_worker_fixed_process_v1(FixedProcessRequest {
             executable: contract.executable(),
             arguments: command.arguments(),
             timeout,
             maximum_stdout_bytes: MAXIMUM_STDOUT_BYTES.saturating_sub(output_bytes),
             maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
-        });
+        }, aggregate.as_deref_mut());
         let output = match outcome {
             Ok(FixedProcessOutcome::Completed(output))
                 if output.exit_code == Some(0)
@@ -1107,21 +1287,43 @@ impl<'a> PinnedCaptureZfsTools<'a> {
         zfs: &'a ZfsHelperContract,
         invalid_executable: &'static str,
     ) -> Result<Self, ZfsWorkerError> {
-        if zfs
-            .executable()
-            .file_name()
-            .is_none_or(|name| name != "zfs")
-        {
+        Self::new_with_retention_v3(zfs, invalid_executable, None)
+    }
+
+    fn new_retaining_v3(
+        zfs: &'a ZfsHelperContract,
+        invalid_executable: &'static str,
+        opening: &mut capture_observation::CaptureToolOpeningV3,
+    ) -> Result<Self, ZfsWorkerError> {
+        Self::new_with_retention_v3(zfs, invalid_executable, Some(opening))
+    }
+
+    fn new_with_retention_v3(
+        zfs: &'a ZfsHelperContract,
+        invalid_executable: &'static str,
+        retained: Option<&mut capture_observation::CaptureToolOpeningV3>,
+    ) -> Result<Self, ZfsWorkerError> {
+        let mut ordinary = capture_observation::CaptureToolOpeningV3::new();
+        let selected = retained.is_some();
+        let opening = retained.unwrap_or(&mut ordinary);
+        if zfs.executable().file_name().is_none_or(|name| name != "zfs") {
             return Err(ZfsWorkerError::Executable(invalid_executable.to_owned()));
         }
-        let zpool = ZfsHelperContract::new(zfs.executable().with_file_name("zpool"))?;
-        let zfs_pin = PinnedExecutable::open(zfs)?;
-        let zpool_pin = PinnedExecutable::open(&zpool)?;
+        opening.zpool = Some(ZfsHelperContract::new(zfs.executable().with_file_name("zpool"))?);
+        PinnedExecutable::capture_open_into_v3(
+            zfs, &mut opening.zfs_pin, selected.then_some(&mut opening.zfs_evidence),
+        )?;
+        let zpool = opening.zpool.as_ref().ok_or(ZfsWorkerError::Protocol(
+            "capture zpool executable contract is absent",
+        ))?;
+        PinnedExecutable::capture_open_into_v3(
+            zpool, &mut opening.zpool_pin, selected.then_some(&mut opening.zpool_evidence),
+        )?;
         Ok(Self {
             zfs,
-            zpool,
-            zfs_pin,
-            zpool_pin,
+            zpool: opening.zpool.take().ok_or(ZfsWorkerError::Protocol("capture zpool contract is absent"))?,
+            zfs_pin: opening.zfs_pin.take().ok_or(ZfsWorkerError::Protocol("capture zfs pin is absent"))?,
+            zpool_pin: opening.zpool_pin.take().ok_or(ZfsWorkerError::Protocol("capture zpool pin is absent"))?,
         })
     }
 
@@ -1139,6 +1341,19 @@ impl<'a> PinnedCaptureZfsTools<'a> {
         self.zfs_pin.validate_current(self.zfs)?;
         self.zpool_pin.validate_current(&self.zpool)
     }
+
+    fn validate_current_retaining_v3(
+        &self,
+        checks: &mut Vec<Option<std::fs::Metadata>>,
+    ) -> Result<(), ZfsWorkerError> {
+        for (contract, pin) in [(self.zfs, &self.zfs_pin), (&self.zpool, &self.zpool_pin)] {
+            let mut metadata = None;
+            let result = pin.validate_current_into_v3(contract, Some(&mut metadata));
+            checks.push(metadata);
+            result?;
+        }
+        Ok(())
+    }
 }
 
 impl PinnedExecutable {
@@ -1154,56 +1369,94 @@ impl PinnedExecutable {
         contract: &ZfsHelperContract,
         captured: &mut Option<Self>,
     ) -> Result<(), ZfsWorkerError> {
+        Self::capture_open_into_v3(contract, captured, None)
+    }
+
+    fn capture_open_into_v3(
+        contract: &ZfsHelperContract,
+        captured: &mut Option<Self>,
+        evidence: Option<&mut capture_observation::CaptureToolEvidenceV3>,
+    ) -> Result<(), ZfsWorkerError> {
+        Self::capture_open_path_into_v3(contract.executable(), captured, evidence)
+    }
+
+    fn capture_open_path_into_v3(
+        path: &Path,
+        captured: &mut Option<Self>,
+        evidence: Option<&mut capture_observation::CaptureToolEvidenceV3>,
+    ) -> Result<(), ZfsWorkerError> {
         if captured.is_some() {
             return Err(ZfsWorkerError::Protocol(
                 "fixed executable capture is occupied",
             ));
         }
-        let metadata = std::fs::symlink_metadata(contract.executable())?;
-        if !metadata.file_type().is_file()
-            || metadata.uid() != 0
-            || metadata.permissions().mode() & 0o222 != 0
-        {
-            return Err(ZfsWorkerError::Executable(
-                "must be a root-owned, non-writable regular store file".to_owned(),
-            ));
+        let mut named = None;
+        let mut opened = None;
+        let result = (|| {
+            named = Some(std::fs::symlink_metadata(path)?);
+            let metadata = named.as_ref().ok_or(ZfsWorkerError::Protocol("capture executable metadata is absent"))?;
+            if !metadata.file_type().is_file()
+                || metadata.uid() != 0
+                || metadata.permissions().mode() & 0o222 != 0
+            {
+                return Err(ZfsWorkerError::Executable(
+                    "must be a root-owned, non-writable regular store file".to_owned(),
+                ));
+            }
+            let file = File::open(path)?;
+            *captured = Some(Self {
+                _file: file,
+                device: 0,
+                inode: 0,
+            });
+            let pin = captured.as_mut().ok_or(ZfsWorkerError::Protocol(
+                "fixed executable capture is absent",
+            ))?;
+            opened = Some(pin._file.metadata()?);
+            let opened = opened.as_ref().ok_or(ZfsWorkerError::Protocol("capture opened metadata is absent"))?;
+            if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
+                return Err(ZfsWorkerError::Executable(
+                    "changed while its identity was pinned".to_owned(),
+                ));
+            }
+            pin.device = opened.dev();
+            pin.inode = opened.ino();
+            Ok(())
+        })();
+        if let Some(evidence) = evidence {
+            evidence.named = named;
+            evidence.opened = opened;
         }
-        let file = File::open(contract.executable())?;
-        *captured = Some(Self {
-            _file: file,
-            device: 0,
-            inode: 0,
-        });
-        let pin = captured.as_mut().ok_or(ZfsWorkerError::Protocol(
-            "fixed executable capture is absent",
-        ))?;
-        let opened = pin._file.metadata()?;
-        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
-            return Err(ZfsWorkerError::Executable(
-                "changed while its identity was pinned".to_owned(),
-            ));
-        }
-        pin.device = opened.dev();
-        pin.inode = opened.ino();
-        Ok(())
+        result
     }
 
     pub(crate) fn validate_current(
         &self,
         contract: &ZfsHelperContract,
     ) -> Result<(), ZfsWorkerError> {
+        self.validate_current_into_v3(contract, None)
+    }
+
+    fn validate_current_into_v3(
+        &self,
+        contract: &ZfsHelperContract,
+        retained: Option<&mut Option<std::fs::Metadata>>,
+    ) -> Result<(), ZfsWorkerError> {
         let metadata = std::fs::symlink_metadata(contract.executable())?;
-        if !metadata.file_type().is_file()
+        let result = if !metadata.file_type().is_file()
             || metadata.dev() != self.device
             || metadata.ino() != self.inode
             || metadata.uid() != 0
             || metadata.permissions().mode() & 0o222 != 0
         {
-            return Err(ZfsWorkerError::Executable(
+            Err(ZfsWorkerError::Executable(
                 "configured store executable identity changed".to_owned(),
-            ));
-        }
-        Ok(())
+            ))
+        } else {
+            Ok(())
+        };
+        if let Some(retained) = retained { *retained = Some(metadata); }
+        result
     }
 }
 
@@ -1271,15 +1524,24 @@ fn current_cgroup() -> Result<String, ZfsWorkerError> {
 }
 
 fn current_cgroup_path() -> Result<String, ZfsWorkerError> {
-    let mut file = File::open("/proc/self/cgroup")?;
-    let mut bytes = Vec::new();
+    current_cgroup_path_into_v3(None)
+}
+
+fn current_cgroup_path_into_v3(
+    retained: Option<(&mut Option<File>, &mut Vec<u8>)>,
+) -> Result<String, ZfsWorkerError> {
+    let mut ordinary_file = None;
+    let mut ordinary_bytes = Vec::new();
+    let (file, bytes) = retained.unwrap_or((&mut ordinary_file, &mut ordinary_bytes));
+    *file = Some(File::open("/proc/self/cgroup")?);
+    let Some(file) = file.as_mut() else { return Err(worker_entry::retained()); };
     file.by_ref()
         .take(u64::try_from(MAXIMUM_CGROUP_TEXT_BYTES + 1).unwrap_or(u64::MAX))
-        .read_to_end(&mut bytes)?;
+        .read_to_end(bytes)?;
     if bytes.len() > MAXIMUM_CGROUP_TEXT_BYTES {
         return Err(ZfsWorkerError::Protocol("worker cgroup text is oversized"));
     }
-    let text = std::str::from_utf8(&bytes)
+    let text = std::str::from_utf8(bytes)
         .map_err(|_| ZfsWorkerError::Protocol("worker cgroup text is not UTF-8"))?;
     let path = text
         .lines()
@@ -1295,7 +1557,34 @@ fn validate_worker_cgroup(path: &str) -> Result<(), ZfsWorkerError> {
     else {
         return Err(ZfsWorkerError::PeerMismatch);
     };
+    validate_worker_instance_v1(instance)
+}
+
+fn validate_selected_worker_cgroup_v1(path: &str) -> Result<(), ZfsWorkerError> {
+    let instance = worker_aggregate::selected_worker_instance(path, WORKER_CGROUP_PREFIX)
+        .and_then(|value| value.strip_suffix(WORKER_CGROUP_SUFFIX))
+        .ok_or(ZfsWorkerError::PeerMismatch)?;
+    validate_worker_instance_v1(instance)
+}
+
+fn validate_worker_instance_v1(instance: &str) -> Result<(), ZfsWorkerError> {
     if instance.is_empty() || instance.len() > 255 || instance.contains('/') {
+        return Err(ZfsWorkerError::PeerMismatch);
+    }
+    Ok(())
+}
+
+// Only the genuinely entered physical stage uses this DATA recipe. Ordinary
+// decode_ready keeps refusing the selected subtree before a request is sent.
+fn decode_selected_ready_v1(bytes: &[u8]) -> Result<&str, ZfsWorkerError> {
+    let cgroup = decode_ready_frame(bytes, READY_MAGIC, WIRE_VERSION)?;
+    validate_selected_worker_cgroup_v1(cgroup)?;
+    Ok(cgroup)
+}
+
+fn require_worker_credentials_v1(subject: &KernelAuthorizedRecordSubject) -> Result<(), ZfsWorkerError> {
+    let credentials = subject.credentials();
+    if credentials.uid() == 0 || credentials.gid() == 0 {
         return Err(ZfsWorkerError::PeerMismatch);
     }
     Ok(())
@@ -1306,10 +1595,8 @@ fn verify_worker_peer(
     parent: &RetainedCgroupAnchor,
     path: &Path,
 ) -> Result<RetainedCgroupAnchor, ZfsWorkerError> {
+    require_worker_credentials_v1(subject)?;
     let credentials = subject.credentials();
-    if credentials.uid() == 0 || credentials.gid() == 0 {
-        return Err(ZfsWorkerError::PeerMismatch);
-    }
     let relative = path
         .strip_prefix(CONTROL_SLICE_CGROUP)
         .map_err(|_| ZfsWorkerError::PeerMismatch)?;
@@ -1420,6 +1707,30 @@ fn capture_worker_cleanup(
     worker_cgroup: &RetainedCgroupAnchor,
     population: &CgroupPopulationMonitor,
 ) -> Result<(), ZfsWorkerError> {
+    capture_worker_cleanup_with_originals(report, subject, worker_cgroup, population, None)
+}
+
+fn capture_worker_cleanup_retaining_v1(
+    report: &mut WorkerCleanupReport,
+    subject: &KernelAuthorizedRecordSubject,
+    worker_cgroup: &RetainedCgroupAnchor,
+    population: &CgroupPopulationMonitor,
+    kill: &mut aos_sandbox_linux::cgroup::CgroupKillAttemptV1,
+    result: &mut Option<Result<(), aos_sandbox_linux::cgroup::CgroupKillRefusalV1>>,
+) -> Result<(), ZfsWorkerError> {
+    capture_worker_cleanup_with_originals(report, subject, worker_cgroup, population, Some((kill, result)))
+}
+
+fn capture_worker_cleanup_with_originals(
+    report: &mut WorkerCleanupReport,
+    subject: &KernelAuthorizedRecordSubject,
+    worker_cgroup: &RetainedCgroupAnchor,
+    population: &CgroupPopulationMonitor,
+    retained: Option<(
+        &mut aos_sandbox_linux::cgroup::CgroupKillAttemptV1,
+        &mut Option<Result<(), aos_sandbox_linux::cgroup::CgroupKillRefusalV1>>,
+    )>,
+) -> Result<(), ZfsWorkerError> {
     if report.initial_proof.is_some()
         || report.cancellation.is_some()
         || report.failure_recheck.is_some()
@@ -1433,7 +1744,20 @@ fn capture_worker_cleanup(
         return Ok(());
     }
 
-    report.cancellation = Some(worker_cgroup.kill_all());
+    report.cancellation = Some(match retained {
+        None => worker_cgroup.kill_all(),
+        Some((original, result)) => {
+            *result = Some(original.capture_once(worker_cgroup));
+            if matches!(result, Some(Ok(()))) {
+                Ok(())
+            } else {
+                // The complete actual active/open/fs/stat/write owner is kept
+                // separately. This marker only preserves the shared cleanup
+                // control flow; selected callers never use legacy projection.
+                Err(aos_sandbox_linux::Error::InvalidInput { field: "retained worker cancellation", message: "original cause retained".into() })
+            }
+        }
+    });
     if matches!(&report.cancellation, Some(Err(_))) {
         // Systemd can empty or remove the unit cgroup before this write.
         // Accept that race only when exact pidfd death plus the retained
@@ -1493,13 +1817,34 @@ fn wait_for_worker_quiescence(
 
 fn verify_systemd_activation_peer(
     peer: &ConnectionPeerIdentity,
-    expected: &aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
+    expected: &RetainedCgroupAnchor,
+) -> Result<(), ZfsWorkerError> {
+    verify_systemd_activation_peer_with_originals_v1(peer, expected, None)
+}
+
+fn verify_systemd_activation_peer_with_originals_v1(
+    peer: &ConnectionPeerIdentity,
+    expected: &RetainedCgroupAnchor,
+    retained: Option<(
+        &mut aos_sandbox_linux::cgroup::ExactCgroupMembershipReadbackV1,
+        &mut Option<Result<(), aos_sandbox_linux::cgroup::ExactCgroupMembershipRefusalV1>>,
+    )>,
 ) -> Result<(), ZfsWorkerError> {
     let credentials = peer.credentials();
     if credentials.pid().get() != 1 || credentials.uid() != 0 || credentials.gid() != 0 {
         return Err(ZfsWorkerError::PeerMismatch);
     }
-    let info = expected.verify_exact_membership(peer.pidfd())?;
+    let info = match retained {
+        None => expected.verify_exact_membership(peer.pidfd())?,
+        Some((original, result)) => {
+            *result = Some(original.capture_once(expected, peer.pidfd()));
+            if !matches!(result, Some(Ok(()))) {
+                return Err(ZfsWorkerError::Protocol("activation membership original retained"));
+            }
+            let Some(Ok(info)) = original.result() else { std::process::abort() };
+            *info
+        }
+    };
     if info.pid() != 1 || info.thread_group_id() != 1 {
         return Err(ZfsWorkerError::PeerMismatch);
     }
@@ -1510,11 +1855,28 @@ fn verify_storaged_peer(
     peer: &ConnectionPeerIdentity,
     expected: &aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
 ) -> Result<(), ZfsWorkerError> {
+    verify_storaged_peer_into_v3(peer, expected, None)
+}
+
+fn verify_storaged_peer_into_v3(
+    peer: &ConnectionPeerIdentity,
+    expected: &aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
+    original: Option<&mut aos_sandbox_linux::cgroup::ExactCgroupMembershipReadbackV1>,
+) -> Result<(), ZfsWorkerError> {
     let credentials = peer.credentials();
     if credentials.uid() != 0 || credentials.gid() != 0 {
         return Err(ZfsWorkerError::PeerMismatch);
     }
-    let info = expected.verify_exact_membership(peer.pidfd())?;
+    let info = match original {
+        None => expected.verify_exact_membership(peer.pidfd())?,
+        Some(original) => {
+            original.capture_once(expected, peer.pidfd()).map_err(|_| worker_entry::retained())?;
+            match original.result() {
+                Some(Ok(info)) => *info,
+                _ => return Err(worker_entry::retained()),
+            }
+        }
+    };
     if info.pid() != credentials.pid().get() || info.thread_group_id() != credentials.pid().get() {
         return Err(ZfsWorkerError::PeerMismatch);
     }
@@ -1663,6 +2025,11 @@ impl Deadline {
                 .checked_add(duration)
                 .unwrap_or(Duration::MAX),
         )
+    }
+
+    fn absolute_nanoseconds_v3(self) -> Result<u64, ZfsWorkerError> {
+        u64::try_from(self.0.as_nanos())
+            .map_err(|_| ZfsWorkerError::Protocol("worker deadline is invalid"))
     }
 
     fn remaining(self) -> Option<Duration> {

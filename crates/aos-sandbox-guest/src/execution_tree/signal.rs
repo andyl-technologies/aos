@@ -33,6 +33,20 @@ impl ExecutionTree {
         deadline: Instant,
         mut current: impl FnMut() -> Result<(), Error>,
     ) -> Result<(), Error> {
+        self.signal_engine(code, deadline, &mut current, None)
+    }
+
+    pub(crate) fn signal_with_lifetime_cut_v1(&self, code: u8, deadline: Instant,
+        mut current: impl FnMut() -> Result<(), Error>,
+        mut lifetime: impl FnMut() -> Result<(), Error>) -> Result<(), Error>
+    {
+        self.signal_engine(code, deadline, &mut current, Some(&mut lifetime))
+    }
+
+    fn signal_engine(&self, code: u8, deadline: Instant,
+        current: &mut impl FnMut() -> Result<(), Error>,
+        mut lifetime: Option<&mut dyn FnMut() -> Result<(), Error>>) -> Result<(), Error>
+    {
         if !(1..=64).contains(&code) {
             return Err(Error::InvalidRequest);
         }
@@ -108,6 +122,12 @@ impl ExecutionTree {
 
         // Cleanup is nonauthorizing and must still restore an owned request
         // when the effect's authority/deadline expires during delivery.
+        // An execution's original timeout is not an expiring control cleanup
+        // window. Once due, leave its own freeze request for the standing kill;
+        // never issue a later THAW merely because an earlier signal froze it.
+        if let Some(lifetime) = lifetime.as_mut() {
+            lifetime().map_err(|_| Error::AmbiguousEffect)?;
+        }
         let restored = self.restore_own_freezer_request(original);
         if restored.is_err() {
             return Err(Error::AmbiguousEffect);
@@ -273,7 +293,6 @@ mod tests {
     #[test]
     #[ignore = "requires enforcing Guest Owner, real FD4/6/7 and the distinct-session Tenant spec fixture"]
     fn actual_original_tree_signals_survive_leader_exit_and_restore_only_own_freezer() {
-        use std::io::Write as _;
         use std::process::{Command, Stdio};
 
         use aos_sandbox_core::{DecodeLimits, decode_execution_spec_v1};
@@ -292,7 +311,11 @@ mod tests {
             aos_sandbox_linux::guest_cgroup::GuestPayloadCgroupCustodyV1::from_inherited().unwrap();
         let root = payload.execution_root().unwrap();
         let ledger = crate::ledger::Ledger::open().unwrap();
+        let mut lifetime = aos_sandbox_linux::process::ExecutionChildLifetimeOriginalV1::new();
+        lifetime.start_once(decoded.timeout().nanoseconds()).unwrap();
+        let (origin, duration, cutoff) = lifetime.origin_data_v1().unwrap();
         let mut child = Command::new("/usr/libexec/aos-sandbox-guest-exec")
+            .args(["--lifetime-v1", &origin.to_string(), &duration.to_string(), &cutoff.to_string()])
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -302,7 +325,7 @@ mod tests {
         let tree =
             ExecutionTree::create(&root, decoded.execution().as_bytes(), child.id()).unwrap();
         let record = crate::ledger::ProcessRecord {
-            version: 2,
+            version: 3,
             runtime: [1; 32],
             operation: [2; 16],
             execution: *decoded.execution().as_bytes(),
@@ -317,6 +340,11 @@ mod tests {
             attach_io: None,
             cgroup: Some(tree.kernel_id()),
             cancel_on_disconnect: Some(false),
+            lifetime: Some(crate::ledger::ExecutionLifetimeRecordV1 { version: 1,
+                origin_boottime_nanoseconds: origin, timeout_nanoseconds: duration,
+                deadline_boottime_nanoseconds: cutoff,
+                specification_digest: *aos_sandbox_core::execution_spec_digest_v1(&decoded).as_bytes() }),
+            timed_out: false,
             canceled: false,
             terminal: None,
             terminal_waitstatus: None,
@@ -325,10 +353,8 @@ mod tests {
         let _held = barrier.lock().unwrap();
         ledger.write_process(decoded.execution(), &record).unwrap();
         let mut input = child.stdin.take().unwrap();
-        input
-            .write_all(&(specification.len() as u32).to_be_bytes())
-            .unwrap();
-        input.write_all(&specification).unwrap();
+        crate::process::write_specification(&mut input, &specification,
+            Instant::now() + Duration::from_secs(5), &record).unwrap();
         drop(input);
         let deadline = Instant::now() + Duration::from_secs(5);
         while tree.leader.is_alive().unwrap() || tree.member_ids().unwrap().len() < 2 {

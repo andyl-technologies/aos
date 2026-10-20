@@ -30,7 +30,10 @@
 //! node identity binding, fixed limits, and the original paid writer construction.
 
 use crate::journal::semantic_append::{AppendScope, PreflightScope};
+use aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1;
+use aos_sandbox_ledger_replay::replay::source_original::cache::SourceOriginalReplayDataV5;
 
+#[cfg(test)]
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -58,6 +61,10 @@ use aos_sandbox_journal::replay::{
     NativeReplayBookkeeping, NativeReplayCoordinates, NativeReplayError,
 };
 use aos_sandbox_journal::owner::{NativeJournal, NativeJournalState};
+use aos_sandbox_journal::storage::JournalReadIdentityDataV1;
+use aos_sandbox_protocol::domain_ledger::readonly::{
+    HistoricalLedgerReadViewV1, IdempotencyDecisionV1 as IdempotencyDecision,
+};
 use aos_sandbox_journal::transaction::{self, NativePendingTransaction};
 
 #[cfg(target_os = "linux")]
@@ -73,15 +80,145 @@ pub(crate) struct JournalShape {
 }
 
 mod delete_batch;
+mod new_use;
+#[cfg(target_os = "linux")]
+pub(crate) mod inventory_native;
+#[cfg(target_os = "linux")]
+pub(crate) mod delete_storage_preparation;
+mod runtime_history_read;
+#[cfg(target_os = "linux")]
+mod start_assignment_receiving;
+mod delete_resource_signing;
 mod semantic_append;
+pub use semantic_append::ProtectedJournalPreflightOriginalV2;
+
+#[cfg(target_os = "linux")]
+pub(crate) use semantic_append::delete::{
+    SourceDeleteSemanticScopeV1, DeletePlanningBaseCutsDataV2,
+    SourceDeleteMetadataRequestDataV2, SourceDeleteMetadataRequestErrorV2,
+    DeleteDependencyGraphDataV2, SourceDeleteGraphErrorV2,
+};
+#[cfg(target_os = "linux")]
+pub use semantic_append::delete::{DeleteInventorySessionAppendOriginalV1, DeleteInventorySessionAppendDisposalV1, DeleteInventoryIoDisposalV1, DeleteInventorySecurityShapeDataV1};
+pub(crate) use semantic_append::delete::{SourceDeletePendingFenceV1, DeleteSourceFrontierClockV3};
+pub(crate) use semantic_append::delete::SourceDeleteCompletionDisposalOriginalV4;
+#[cfg(target_os = "linux")]
+pub(crate) use semantic_append::delete::{SourceExecutionSemanticScopeV1, CompletedEnvironmentSourceAppendV1, QualifiedEnvironmentSourceViewV1};
+mod native_backing;
+pub use native_backing::JournalProtectedNativeResidencyV1;
+#[cfg(target_os = "linux")]
+mod source_construction;
+#[cfg(target_os = "linux")]
+pub(crate) use source_construction::SourceJournalConstructionOriginalsV1;
+mod native_append;
+#[cfg(target_os = "linux")]
+mod native_interval;
+#[cfg(target_os = "linux")]
+mod native_compaction;
+#[cfg(target_os = "linux")]
+pub(crate) mod root_construction;
+#[cfg(target_os = "linux")]
+pub(crate) use native_backing::ControllerCoordinatorSelectionV1;
+pub(crate) mod semantic_replay;
+mod semantic_remainder;
+mod ordinary_materialization;
+mod ordinary_semantics;
+mod ordinary_opening;
+mod ordinary_reread;
+use ordinary_reread::{ObservedReplayStateV1, replay_coordinator_observed_v1, replay_published_bytes_observed_v1};
+
+#[cfg(target_os = "linux")]
+mod network_session_replay;
+#[cfg(target_os = "linux")]
+pub use network_session_replay::NetworkSessionSemanticReplayOriginalV1;
+#[doc(hidden)]
+pub mod broker_session_receiving;
+pub(crate) mod create_storage_history;
+#[cfg(target_os = "linux")]
+mod readonly_receiving;
+#[cfg(target_os = "linux")]
+mod root_controller_readonly;
+#[cfg(target_os = "linux")]
+pub(crate) use root_controller_readonly::{
+    RootControllerReadonlyReceivingContextV1, root_controller_replay_fixed_controls_v1, ROOT_CONTROLLER_DIRECTORY_V1,
+    ROOT_CONTROLLER_JOURNAL_V1,
+};
+#[cfg(target_os = "linux")]
+mod root_controller_readonly_audit;
+#[cfg(target_os = "linux")]
+pub(crate) use root_controller_readonly_audit::{RootControllerReadonlyGeometryAuditV1, RootDeleteAuxiliaryRowDataV3, DeleteAdmissionAuditInputsDataV3};
+#[cfg(target_os = "linux")]
+use readonly_receiving::{CapturedReadonlyReceivingContextV1, ReadonlyReceivingContextV1};
+#[cfg(target_os = "linux")]
+mod create_storage_append;
+mod execution_no_apply_settlement;
+#[cfg(target_os = "linux")]
+mod delete_admission;
+#[cfg(target_os = "linux")]
+pub(crate) use delete_admission::ControllerDeleteAdmissionOriginalV3;
+pub(crate) use delete_admission::ControllerDeleteTerminalOriginalV4;
+#[cfg(target_os = "linux")]
+mod create_stopped_pre_ack;
+#[cfg(target_os = "linux")]
+mod create_stopped_terminal;
+#[cfg(target_os = "linux")]
+mod create_stopped_observer;
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use create_stopped_observer::{CreateStoppedColdObserverOriginalV1, CreateStoppedColdObserverClosedV1};
+#[cfg(target_os = "linux")]
+pub(crate) use create_stopped_terminal::{
+    LifecycleTerminalMetadataOriginalV4, start_terminal_receiving_demand_v2, stop_terminal_receiving_demand_v5,
+    stop_cleanup_terminal_model_receiving_demand_v1,
+    CreateStoppedControllerTerminalAppendOriginalV1, create_stopped_terminal_receiving_demand_v1,
+    CreateStoppedMetadataTransitionOriginalV1, create_stopped_metadata_model_receiving_demand_v1,
+};
+#[cfg(target_os = "linux")]
+pub(crate) use create_stopped_pre_ack::CreateStoppedControllerPreAckAppendOriginalV1;
+pub(crate) mod source_provisioning;
+#[cfg(target_os = "linux")]
+mod operator_recover;
+mod public_authorization_floor;
+#[cfg(target_os = "linux")]
+mod operator_recover_floor;
+mod root_q04_inert_successor;
+#[cfg(target_os = "linux")]
+mod create_storage_position;
+mod start_resource_completion;
+pub(crate) use start_resource_completion::StartResourceNativePositionsOriginalV2;
+#[cfg(target_os = "linux")]
+pub(crate) use create_storage_position::{CreateStorageWriterPositionOriginalV1, create_storage_name_peak_demand_v1};
+#[cfg(target_os = "linux")]
+mod source_readonly_receiving;
+#[cfg(target_os = "linux")]
+pub(crate) use source_readonly_receiving::semantic_demand as source_readonly_semantic_demand_v1;
 #[cfg(target_os = "linux")]
 mod storage_prepare_clock;
+#[cfg(target_os = "linux")]
+pub(crate) mod storage_native_commit;
+#[cfg(target_os = "linux")]
+pub use storage_native_commit::{StorageStateNativeCommitAttemptV1, StorageStateNativeCommitClosedV1};
 #[cfg(target_os = "linux")]
 pub use storage_prepare_clock::StoragePrepareNativeClockCaptureV1;
 #[cfg(target_os = "linux")]
 mod original_release_capture;
 #[cfg(target_os = "linux")]
+mod receiving_demand;
+#[cfg(target_os = "linux")]
+mod append_receiving_demand;
+#[cfg(target_os = "linux")]
+pub use append_receiving_demand::JournalAppendReceivingDemandErrorV1;
+#[cfg(target_os = "linux")]
+mod semantic_receiving;
+#[cfg(target_os = "linux")]
+mod create_stopped_history;
+#[cfg(target_os = "linux")]
 mod original_currentness;
+#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
+mod cache_held_observation;
+#[cfg(target_os = "linux")]
+pub(crate) use cache_held_observation::CacheHeldWriterShapeV1;
 
 #[cfg(target_os = "linux")]
 use original_release_capture::native_release_replay_work_v1;
@@ -100,7 +237,6 @@ pub use git_coverage_history::{
 };
 #[cfg(target_os = "linux")]
 mod git_evidence_namespace;
-pub(crate) mod mount_manager_startup;
 pub(crate) mod controller_source_successor_issuance;
 pub(crate) mod source_tree_successor;
 pub use aos_sandbox_protocol::domain_ledger::transaction::{
@@ -145,41 +281,7 @@ pub(crate) use runtime_deployment_sidecar_history::{
 };
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use runtime_deployment_history::deployment_original_compaction_selected_for_test;
-pub use root_original_inventory::{
-    MountOriginalInventoryJournalAuthorityV6, OriginalInventoryProtectedReadbackV6,
-    PreparedOriginalInventoryAppendV6,
-};
-pub use root_original_native::{
-    MountOriginalNativeJournalAuthorityV5, OriginalRootProtectedReadbackV5,
-    PreparedOriginalRootAppendV5,
-};
-mod source_provider_readonly;
-mod source_original_native;
-pub use source_original_native::{
-    SOURCE_NATIVE_DISPATCH_TERMINAL_BYTES_V1, SOURCE_NATIVE_DISPATCH_TERMINAL_RECORDS_V1,
-    SourceCapacityStateV5, SourceOriginalAdmissionInputV5, SourceOriginalAdmissionDataV5,
-    SourceCapacityUnionComparisonDataV5, compare_source_original_admission_data_v5,
-    compare_source_capacity_union_data_v5,
-    SOURCE_NATIVE_NO_DISPATCH_TERMINAL_BYTES_V1,
-    source_native_ordinary_capacity_request_v1,
-    source_native_release_status_capacity_request_v1,
-    OriginalSourceProtectedReadbackV5, PreparedOriginalSourceAppendV5,
-    SourceOriginalAppendSubjectV5,
-    SourceOriginalChallengeCheckpointV5, SourceOriginalChallengeHistoryViewV5,
-    SourceOriginalNativeJournalAuthorityV5, SourceOriginalPhysicalCutV5,
-    SourceOriginalReplayViewV5,
-};
-pub use mount_manager_startup::MountManagerStartupPolicyReceiptV1;
-pub(crate) use mount_manager_startup::{
-    MountManagerStartupCapturePreflightV1, MountManagerStartupCaptureReceiptV1,
-    MountManagerStartupCaptureRecoveryV1,
-};
-pub use root_local_recovery::{
-    Kind2ProtectedReadbackV4, Kind5ProtectedReadbackV4,
-    MountBarrierIdleReplacementJournalAuthorityV4, MountDeadReplacementJournalAuthorityV4,
-    PreparedBarrierIdleReplacementV4, PreparedDeadReplacementV4,
-};
-pub use source_provider_readonly::SourceProviderHeldReadOnlyJournalAuthorityV1;
+mod source_history;
 mod cache_policy_hold;
 pub(crate) use cache_policy_hold::{
     BorrowedCacheMutationGateV1, CacheMutationGateV1, HeldCacheMutationGateV1,
@@ -189,6 +291,10 @@ pub(crate) use cache_policy_hold::CacheGitCoverageObservationV1;
 mod capacity_reservation;
 pub use capacity_reservation::native_held;
 mod controller_policy_hold;
+#[cfg(target_os = "linux")]
+pub(crate) use controller_policy_hold::{
+    RootControllerCreateAcceptanceOriginalsV1, RootControllerAcceptedNativeProgressV1,
+};
 pub(crate) mod controller_source_genesis;
 pub(crate) mod host_currentness_fence;
 pub(crate) mod host_execution_fence;
@@ -200,12 +306,10 @@ pub(crate) use source_domain_policy_hold::SourceQ04TransactionRecipesV1;
 #[cfg(target_os = "linux")]
 pub(crate) use cache_policy_hold::CacheQ04TransactionRecipesV1;
 #[cfg(target_os = "linux")]
-pub(crate) use cache_policy_hold::q04_clear_recipe_digest_data as q04_cache_clear_recipe_digest_data_v1;
-#[cfg(target_os = "linux")]
 pub(crate) use source_domain_policy_hold::q04_clear_recipe_digest_data as q04_source_clear_recipe_digest_data_v1;
 mod source_project_admission_challenge;
 pub(crate) mod source_tree_genesis;
-pub use cache_policy_hold::CachePolicyHoldV1;
+
 pub(crate) use cache_policy_hold::NAME as CACHE_POLICY_HOLD_JOURNAL;
 
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
@@ -240,9 +344,7 @@ pub(crate) use host_currentness_fence::HostCurrentnessFenceV1;
 pub(crate) use host_execution_fence::HostExecutionFenceV1;
 pub use source_domain_challenge::SourceDomainChallengeV1;
 pub(crate) use source_domain_challenge::replay_source_domain_challenge_v1;
-pub use source_domain_policy_hold::{
-    SourceDomainPolicyHoldV1, SourceDomainPolicyV8PendingSettlementV1,
-};
+
 use source_project_admission_challenge::SourceProjectAdmissionTransition;
 pub use source_project_admission_challenge::{
     SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1, SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1,
@@ -253,13 +355,6 @@ pub use source_project_admission_challenge::{
 pub(crate) use source_project_admission_challenge::{
     replay_source_project_admission_challenge_v1, source_project_challenge_matches_current,
 };
-mod mount_source_consumption;
-pub use mount_source_consumption::{
-    MountSourceConsumptionCommitReceipt, MountSourceConsumptionCompanionProjectionV2,
-    MountSourceConsumptionJournalAuthorityV1, MountSourceConsumptionPreflight,
-};
-
-const AUTHORITY_PREFLIGHT_DOMAIN: &[u8] = b"aos.sandbox.journal.authority-preflight.v1\0";
 
 /// Carries configured initial-replay representation DATA before a protected open.
 ///
@@ -269,35 +364,45 @@ const AUTHORITY_PREFLIGHT_DOMAIN: &[u8] = b"aos.sandbox.journal.authority-prefli
 /// before treating an aggregate as a prepaid service extent.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ProtectedJournalPreopenReplayExtentV1 {
+pub struct ProtectedJournalPreopenReplayExtentV1 {
     /// Preserves the exact limits supplied to the native opener.
-    pub(crate) limits: JournalLimits,
+    pub limits: JournalLimits,
     /// Bounds the configured native prefix; this is disk input, not heap storage.
-    pub(crate) native_bytes: u64,
+    pub native_bytes: u64,
     /// Reuses the original Release replay's logical map, frame and owner charge.
-    pub(crate) native_replay_representation_bytes: usize,
-    /// Covers an advertised frame payload allocated before a partial-tail EOF.
-    pub(crate) partial_tail_payload_bytes: usize,
+    pub native_replay_representation_bytes: usize,
+    /// Identifies the physical-clipped pending term already included above.
+    ///
+    /// A complete initial receiving demand replaces this term with
+    /// `declared_pending_record_bytes`; it does not omit the full BEGIN reserve.
+    pub clipped_native_pending_record_bytes: usize,
+    /// Covers reached frame Vec capacity plus the shared fixed read scratch.
+    ///
+    /// The incremental frame reader grows only after bytes are read; the full
+    /// advertised payload is a wire limit, not an absent-byte allocation.
+    pub native_frame_read_memory_bytes: usize,
+    /// Preserves the unchanged advertised frame payload wire ceiling.
+    pub maximum_advertised_payload_bytes: usize,
     /// Covers the full BEGIN reservation, irrespective of physical frame count.
-    pub(crate) declared_pending_record_bytes: usize,
+    pub declared_pending_record_bytes: usize,
     /// Covers insertion of one extra transaction ID before count refusal.
-    pub(crate) reached_transaction_id_bytes: usize,
+    pub reached_transaction_id_bytes: usize,
     /// Covers intermediate map cells before all transaction deletions apply.
-    pub(crate) reached_materialized_cell_bytes: usize,
+    pub reached_materialized_cell_bytes: usize,
     /// Bounds committed transactions reached before the count check can refuse.
-    pub(crate) source_transactions: usize,
+    pub source_transactions: usize,
     /// Covers conservative inline cache copies, including the pending marker.
-    pub(crate) source_cache_copies: usize,
+    pub source_cache_copies: usize,
     /// Bounds original checkpoint rows from this configured native file.
-    pub(crate) source_checkpoint_rows: usize,
+    pub source_checkpoint_rows: usize,
     /// Covers this file's original checkpoint rows and one independent copy.
-    pub(crate) source_checkpoint_representation_bytes: usize,
+    pub source_checkpoint_representation_bytes: usize,
     /// Covers initial cache owners whose physical-history collections stay empty.
-    pub(crate) source_cache_metadata_bytes: usize,
+    pub source_cache_metadata_bytes: usize,
     /// Covers inline native opener, replay, metadata, result and error owners.
-    pub(crate) native_owner_result_bytes: usize,
+    pub native_owner_result_bytes: usize,
     /// Requires independent bounds for all representations not priced here.
-    pub(crate) unpriced: ProtectedJournalPreopenUnpricedPrerequisitesV1,
+    pub unpriced: ProtectedJournalPreopenUnpricedPrerequisitesV1,
 }
 
 /// Identifies obligations that configured journal limits alone cannot price.
@@ -315,31 +420,31 @@ pub(crate) struct ProtectedJournalPreopenReplayExtentV1 {
 /// failure. This marker neither retains those locals nor changes their lifetime.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ProtectedJournalPreopenUnpricedPrerequisitesV1 {
+pub enum ProtectedJournalPreopenUnpricedPrerequisitesV1 {
     /// Requires conservative allocator, decoder/error and native/containment bounds.
     AllocatorDecoderErrorsNativePathsAndExternalChallenges,
 }
 
-/// Computes partial initial-replay DATA from the exact configured open limits.
+/// Computes replay representation DATA for an already captured physical prefix.
 ///
-/// The writable and retained read-only initial openers pass no Source challenge
-/// history. The common parser still accepts and validates its existing families;
-/// Source dependencies become pending before physical-cache retention. Independent
-/// checkpoint collection, compaction materialization and first-successor clones
-/// remain covered. Later challenge-bearing replay has its separate existing
-/// demand. No Journal, path, descriptor, authority or payer is constructed.
+/// The caller retains the genuine original metadata and bounds its reader to
+/// this same length. A scalar alone authenticates neither that prefix nor a
+/// payer. BEGIN count storage retains its full configured maximum independently
+/// of the prefix; frame Vec capacity follows reached bytes plus fixed scratch.
 ///
 /// # Errors
-///
-/// Rejects invalid native limits or an unrepresentable checked extent. It does
-/// not establish that the represented storage fits physical or paid memory.
+/// Rejects invalid limits, an excessive captured prefix, or checked overflow.
 #[cfg(target_os = "linux")]
-pub(crate) fn protected_journal_preopen_replay_extent_v1(
+pub fn protected_journal_preopen_replay_extent_for_prefix_v1(
     limits: JournalLimits,
+    native_prefix_bytes: u64,
 ) -> Result<ProtectedJournalPreopenReplayExtentV1, JournalError> {
     validate_limits(limits)?;
     let limit = || JournalError::LimitExceeded("protected journal pre-open replay extent");
-    let physical = usize::try_from(limits.maximum_journal_bytes).map_err(|_| limit())?;
+    if native_prefix_bytes > limits.maximum_journal_bytes {
+        return Err(JournalError::JournalTooLarge);
+    }
+    let physical = usize::try_from(native_prefix_bytes).map_err(|_| limit())?;
     let frames = physical / HEADER_BYTES;
     let source_transactions = limits.maximum_transactions.checked_add(1)
         .ok_or_else(limit)?.min(frames);
@@ -347,18 +452,19 @@ pub(crate) fn protected_journal_preopen_replay_extent_v1(
     let source_cache_copies = 3_usize;
     let map_entry = std::mem::size_of::<((RecordNamespace, Vec<u8>), Vec<u8>)>();
 
-    // BEGIN trusts the bounded declared count before reading its records;
-    // read_frame allocates the advertised payload before discovering EOF.
-    // Neither allocation is bounded by the number of complete physical frames.
+    // BEGIN reserves its bounded declared count before reading its records.
+    // The shared frame reader instead grows only after actual bytes arrive;
+    // its reached Vec capacity and fixed read scratch are already in Native work.
     let native_work = native_release_replay_work_v1(physical, limits)?;
     let native_replay_representation_bytes = native_work.replay_indexes
         .checked_add(native_work.pending_records)
         .and_then(|bytes| bytes.checked_add(native_work.frame_payload))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ReplayState>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PendingTransaction>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ObservedReplayStateV1>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(Vec<JournalRecord>, NativePendingTransaction)>()))
+        .and_then(|bytes| bytes.checked_add(ordinary_reread::receiving_control_bytes_v1()?))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<OriginalReleaseControllerCutCaptureV1>()))
         .ok_or_else(limit)?;
-    let partial_tail_payload_bytes = limits.maximum_record_bytes.checked_add(7).ok_or_else(limit)?;
+    let maximum_advertised_payload_bytes = limits.maximum_record_bytes.checked_add(7).ok_or_else(limit)?;
     let declared_pending_record_bytes = limits.maximum_records_per_transaction
         .checked_mul(std::mem::size_of::<JournalRecord>()).ok_or_else(limit)?;
     let reached_transaction_id_bytes = std::mem::size_of::<[u8; 16]>();
@@ -368,25 +474,24 @@ pub(crate) fn protected_journal_preopen_replay_extent_v1(
     // This runs independently of the optional external challenge witness.
     // Retain its committed-frame rows even when Source replay remains pending.
     let source_checkpoint_representation_bytes = source_checkpoint_rows
-        .checked_mul(std::mem::size_of::<source_original_native::SourceOriginalChallengeCheckpointV5>())
+        .checked_mul(std::mem::size_of::<source_history::SourceOriginalChallengeCheckpointV5>())
         .and_then(|bytes| bytes.checked_add(physical))
         .and_then(|bytes| bytes.checked_mul(2)).ok_or_else(limit)?;
     // replay_transaction(None) returns before origins, cuts, retirements or
     // their maps are retained. observe_compaction likewise only sets pending;
     // its temporary prospective map remains in the native replay allowance.
-    let source_cache_metadata_bytes = std::mem::size_of::<source_original_native::replay::SourceOriginalReplayCacheV5>()
+    let source_cache_metadata_bytes = std::mem::size_of::<source_history::replay::SourceOriginalReplayCacheV5>()
         .checked_mul(source_cache_copies)
         .ok_or_else(limit)?;
 
     // Price simultaneous inline representations conservatively. Ordinary
     // recovery still transfers its maps and drops its failure locals unchanged.
-    let native_owner_result_bytes = std::mem::size_of::<ControllerJournalOpenOriginalsV1>()
+    let native_owner_result_bytes = std::mem::size_of::<ProtectedWriterOpenOriginalsV1>()
         .checked_add(std::mem::size_of::<Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError>>())
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<ReplayState, JournalError>>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<ObservedReplayStateV1, JournalError>>()))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ProtectedJournalLocation>()))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ReadOnlyJournalNameWitness>()))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Frame>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<OriginalReleaseSourceCutCaptureV1>>()))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<std::cell::Cell<bool>>()))
         .and_then(|bytes| bytes.checked_add(HEADER_BYTES))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<fs::Metadata, io::Error>>()))
@@ -394,9 +499,11 @@ pub(crate) fn protected_journal_preopen_replay_extent_v1(
 
     Ok(ProtectedJournalPreopenReplayExtentV1 {
         limits,
-        native_bytes: limits.maximum_journal_bytes,
+        native_bytes: native_prefix_bytes,
         native_replay_representation_bytes,
-        partial_tail_payload_bytes,
+        clipped_native_pending_record_bytes: native_work.pending_records,
+        native_frame_read_memory_bytes: native_work.frame_payload,
+        maximum_advertised_payload_bytes,
         declared_pending_record_bytes,
         reached_transaction_id_bytes,
         reached_materialized_cell_bytes,
@@ -443,21 +550,12 @@ enum GlobalGenesisNativeCutV2<'cut> {
 pub use aos_sandbox_core::RecordNamespace;
 
 impl From<aos_sandbox_core::journal_namespace::UnknownRecordNamespace> for JournalError {
-    fn from(_: aos_sandbox_core::journal_namespace::UnknownRecordNamespace) -> Self {
-        Self::MalformedRecord("unknown record namespace")
+    fn from(error: aos_sandbox_core::journal_namespace::UnknownRecordNamespace) -> Self {
+        Self::from(CanonicalJournalMechanicalErrorV1::from(error))
     }
 }
 
-/// Reports whether a request key is new, an exact replay, or a conflict.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum IdempotencyOutcome {
-    /// No durable decision exists for this key.
-    Vacant,
-    /// The exact semantic request was previously accepted as this operation.
-    Replay(OperationId),
-    /// The key is already bound to different semantic request bytes.
-    Conflict,
-}
+pub use aos_sandbox_protocol::domain_ledger::readonly::IdempotencyOutcome;
 
 /// Summarizes recovery performed while opening a journal.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -482,6 +580,79 @@ pub struct CommitResult {
 /// Reports journal validation, durability, and ownership failures.
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
+    /// Keeps the actual normal Boot journal receiving and independent posts.
+    #[error(transparent)]
+    BootReceivingOriginal(runtime_deployment_receiving::BootJournalReceivingFailureOriginalV1),
+    /// Keeps the actual independently owed fixed deployment root/name original.
+    #[error(transparent)]
+    BootJournalPostOriginal(runtime_deployment_post::RuntimeDeploymentJournalPostFailureV1),
+    /// Preserves the canonical typed new-use refusal from actual Controller rows.
+    #[error(transparent)]
+    NewUseTombstone(aos_sandbox_protocol::domain_ledger::delete_batch::new_use::PublicMutationNewUseErrorV2),
+
+    /// Preserves the sole metadata-only Recover admission or terminal codec refusal.
+    #[error(transparent)]
+    MetadataComplete(#[from] aos_sandbox_protocol::domain_ledger::provisioning_root::finality_recover::public_operation::MetadataCompleteDataErrorV1),
+    /// Preserves the sole bank replay and durable baseline-precharge refusal.
+    #[error(transparent)]
+    ResourceBank(#[from] aos_sandbox_protocol::domain_ledger::resource_bank::ResourceBankDataError),
+    /// Preserves the canonical Environment projection refusal on its Source cut.
+    #[error(transparent)]
+    EnvironmentProjection(aos_sandbox_protocol::domain_ledger::DomainLedgerDataError),
+
+    /// Preserves the shared canonical Delete Source-predecessor refusal.
+    #[error(transparent)]
+    DeleteSourceCut(#[from] aos_sandbox_ledger_replay::replay::tree_lineage::delete_cut::DeleteSourceCutDataErrorV2),
+
+    /// Preserves the sole provisioning companion or publication-link refusal.
+    #[error(transparent)]
+    ProvisioningResources(#[from] aos_sandbox_protocol::domain_ledger::provisioning_resources::ProvisioningResourceLinkErrorV1),
+    /// Preserves checked receiving-representation arithmetic at its original boundary.
+    #[error(transparent)]
+    ReceivingAccounting(#[from] aos_sandbox_core::AccountingError),
+
+    /// Keeps the actual replacement, upper semantic prefix and owed posts.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    ReplacementOriginal(native_compaction::JournalReplacementFailureOriginalV1),
+
+    /// Keeps the same captured journal's failed owned append DATA.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    CapturedAppendOriginal(aos_sandbox_broker::canonical_journal::coordinator::retained_data::RetainedAppendDataFailureV1),
+
+    /// Keeps the original selected body error and independently owed native post.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    NativePostOriginal(native_interval::JournalNativePostFailureOriginalV1),
+
+    /// Preserves the actual closed Controller native entry failure.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    ControllerNative(aos_sandbox_broker::controller_receiving::bank_launch::ControllerBankLaunchErrorV1),
+    /// Borrows the exact permanently retained Controller append cause.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    ControllerAppendOriginal(aos_sandbox_broker::controller_receiving::bank_launch::ControllerAppendFailureOriginalV1),
+    /// Preserves the actual Root native/invocation entry failure.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    RootNative(aos_sandbox_broker::receiving::RootWriterErrorV1),
+    /// Retains the original Root financial refusal independently of Domain U.
+    #[error(transparent)]
+    RootFinancial(aos_sandbox_broker::receiving::RootJournalFinancialOriginalV1),
+    /// Borrows the exact permanently retained Root append cause.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    RootAppendOriginal(aos_sandbox_broker::receiving::RootAppendFailureOriginalV1),
+    /// Preserves the actual fixed Source entry failure.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    SourceNative(aos_sandbox_broker::source_receiving::SourceNativeErrorV1),
+    /// Borrows the exact permanently retained fixed Source append cause.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    SourceAppendOriginal(aos_sandbox_broker::source_receiving::SourceAppendFailureOriginalV1),
     /// The selected genesis or successor original cut failed before append.
     #[cfg(target_os = "linux")]
     #[error(transparent)]
@@ -498,6 +669,10 @@ pub enum JournalError {
     #[cfg(target_os = "linux")]
     #[error(transparent)]
     Q04ControllerLedger(Box<crate::reconciler::ReconcilerError>),
+    /// The distinct recovered Create joint terminal comparison refused.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    RecoveredCreateTerminal(#[from] aos_sandbox_protocol::domain_ledger::effect_history::CreateStoppedRecoveredTerminalDataErrorV1),
     /// A filesystem operation failed.
     #[error("journal I/O failed: {0}")]
     Io(#[from] io::Error),
@@ -546,6 +721,9 @@ pub enum JournalError {
     /// A protected path, owner, file type, or mode violates its boundary.
     #[error("protected journal storage boundary is invalid")]
     ProtectedBoundary,
+    /// A selected readonly name stage refused; its whole native cause stays owned.
+    #[error("selected readonly name observation {0} refused")]
+    ReadOnlyNameReceivingFailure(u8),
     /// A dedicated authority journal contains a record in another namespace.
     #[error("protected authority journal contains a foreign namespace")]
     ForeignAuthorityNamespace,
@@ -567,13 +745,39 @@ pub enum JournalError {
     GitCoverageNativeHistory(#[source] Box<GitCoverageNativeHistoryErrorV1>),
 }
 
+impl From<CanonicalJournalMechanicalErrorV1> for JournalError {
+    fn from(error: CanonicalJournalMechanicalErrorV1) -> Self {
+        match error {
+            CanonicalJournalMechanicalErrorV1::ResourceBank(value) => Self::ResourceBank(value),
+            CanonicalJournalMechanicalErrorV1::ProvisioningResources(value) => Self::ProvisioningResources(value),
+            CanonicalJournalMechanicalErrorV1::Io(value) => Self::Io(value),
+            CanonicalJournalMechanicalErrorV1::AlreadyLocked => Self::AlreadyLocked,
+            CanonicalJournalMechanicalErrorV1::JournalTooLarge => Self::JournalTooLarge,
+            CanonicalJournalMechanicalErrorV1::UnsupportedVersion(value) => Self::UnsupportedVersion(value),
+            CanonicalJournalMechanicalErrorV1::ChecksumMismatch(value) => Self::ChecksumMismatch(value),
+            CanonicalJournalMechanicalErrorV1::SequenceDiscontinuity(value) => Self::SequenceDiscontinuity(value),
+            CanonicalJournalMechanicalErrorV1::MalformedTransaction(value) => Self::MalformedTransaction(value),
+            CanonicalJournalMechanicalErrorV1::MalformedRecord(value) => Self::MalformedRecord(value),
+            CanonicalJournalMechanicalErrorV1::InvalidTransaction => Self::InvalidTransaction,
+            CanonicalJournalMechanicalErrorV1::InvalidIdempotencyKey => Self::InvalidIdempotencyKey,
+            CanonicalJournalMechanicalErrorV1::LimitExceeded(value) => Self::LimitExceeded(value),
+            CanonicalJournalMechanicalErrorV1::DuplicateRecordKey => Self::DuplicateRecordKey,
+            CanonicalJournalMechanicalErrorV1::DuplicateTransaction => Self::DuplicateTransaction,
+            CanonicalJournalMechanicalErrorV1::IdempotencyConflict => Self::IdempotencyConflict,
+            CanonicalJournalMechanicalErrorV1::Poisoned => Self::Poisoned,
+            CanonicalJournalMechanicalErrorV1::ProtectedBoundary => Self::ProtectedBoundary,
+            CanonicalJournalMechanicalErrorV1::ForeignAuthorityNamespace => Self::ForeignAuthorityNamespace,
+            CanonicalJournalMechanicalErrorV1::StaleAuthoritySnapshot => Self::StaleAuthoritySnapshot,
+            CanonicalJournalMechanicalErrorV1::AuthorityPreflightMismatch => Self::AuthorityPreflightMismatch,
+            CanonicalJournalMechanicalErrorV1::UnsupportedProtectedOpen => Self::UnsupportedProtectedOpen,
+            CanonicalJournalMechanicalErrorV1::SequenceExhausted => Self::SequenceExhausted,
+        }
+    }
+}
+
 impl From<aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1> for JournalError {
     fn from(error: aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1) -> Self {
-        match error {
-            aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1::Malformed => {
-                Self::ProtectedBoundary
-            }
-        }
+        Self::from(CanonicalJournalMechanicalErrorV1::from(error))
     }
 }
 
@@ -583,109 +787,68 @@ impl From<aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataErro
     fn from(
         error: aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError,
     ) -> Self {
-        use aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError;
-
-        match error {
-            CapacityDataError::MalformedRecord(reason) => Self::MalformedRecord(reason),
-            CapacityDataError::LimitExceeded(bound) => Self::LimitExceeded(bound),
-            CapacityDataError::JournalTooLarge => Self::JournalTooLarge,
-            CapacityDataError::InvalidTransaction => Self::InvalidTransaction,
-            CapacityDataError::ForeignAuthorityNamespace => Self::ForeignAuthorityNamespace,
-            CapacityDataError::ProtectedBoundary => Self::ProtectedBoundary,
-            CapacityDataError::Transaction(error) => Self::from(error),
-        }
+        Self::from(CanonicalJournalMechanicalErrorV1::from(error))
     }
 }
 
 impl From<JournalTransactionDataError> for JournalError {
     fn from(error: JournalTransactionDataError) -> Self {
-        match error {
-            JournalTransactionDataError::InvalidTransaction => Self::InvalidTransaction,
-            JournalTransactionDataError::InvalidIdempotencyKey => Self::InvalidIdempotencyKey,
-            JournalTransactionDataError::MalformedTransaction(reason) => {
-                Self::MalformedTransaction(reason)
-            }
-            JournalTransactionDataError::MalformedRecord(reason) => Self::MalformedRecord(reason),
-            JournalTransactionDataError::LimitExceeded(bound) => Self::LimitExceeded(bound),
-            JournalTransactionDataError::DuplicateRecordKey => Self::DuplicateRecordKey,
-            JournalTransactionDataError::JournalTooLarge => Self::JournalTooLarge,
-            JournalTransactionDataError::Frame(error) => Self::from(error),
-            JournalTransactionDataError::Record(error) => Self::from(error),
-        }
+        Self::from(CanonicalJournalMechanicalErrorV1::from(error))
     }
 }
 
 impl From<FrameError> for JournalError {
     fn from(error: FrameError) -> Self {
-        match error {
-            FrameError::Io(error) => Self::Io(error),
-            FrameError::JournalTooLarge => Self::JournalTooLarge,
-            FrameError::UnsupportedVersion(version) => Self::UnsupportedVersion(version),
-            FrameError::ChecksumMismatch(offset) => Self::ChecksumMismatch(offset),
-            FrameError::MalformedTransaction(reason) => Self::MalformedTransaction(reason),
-            FrameError::LimitExceeded(bound) => Self::LimitExceeded(bound),
-            FrameError::MissingRetainedPayload => Self::ProtectedBoundary,
-            FrameError::SequenceExhausted => Self::SequenceExhausted,
-        }
+        Self::from(CanonicalJournalMechanicalErrorV1::from(error))
     }
 }
 
 impl From<RecordError> for JournalError {
     fn from(error: RecordError) -> Self {
-        match error {
-            RecordError::MalformedRecord(reason) => Self::MalformedRecord(reason),
-            RecordError::LimitExceeded(bound) => Self::LimitExceeded(bound),
-        }
+        Self::from(CanonicalJournalMechanicalErrorV1::from(error))
     }
 }
 
 impl From<NativeReplayError> for JournalError {
     fn from(error: NativeReplayError) -> Self {
-        match error {
-            NativeReplayError::SequenceDiscontinuity(offset) => Self::SequenceDiscontinuity(offset),
-            NativeReplayError::SequenceExhausted => Self::SequenceExhausted,
-            NativeReplayError::JournalTooLarge => Self::JournalTooLarge,
-            NativeReplayError::DuplicateTransaction => Self::DuplicateTransaction,
-            NativeReplayError::LimitExceeded(bound) => Self::LimitExceeded(bound),
-        }
+        Self::from(CanonicalJournalMechanicalErrorV1::from(error))
     }
 }
 
 impl From<RecoveryTailError> for JournalError {
     fn from(error: RecoveryTailError) -> Self {
-        match error {
-            RecoveryTailError::Io(error) => Self::Io(error),
-            RecoveryTailError::UncommittedTail => Self::MalformedTransaction(
-                "read-only journal has an uncommitted tail",
-            ),
-            RecoveryTailError::RetainedNativeFailure => Self::ProtectedBoundary,
-        }
+        Self::from(CanonicalJournalMechanicalErrorV1::from(error))
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct IdempotencyDecision {
-    request_digest: [u8; 32],
-    operation_id: OperationId,
-}
-
-struct PendingTransaction {
-    records: Vec<JournalRecord>,
-    native: NativePendingTransaction,
-}
+#[cfg(target_os = "linux")]
+mod provisioning;
+mod start_admission;
+#[cfg(target_os = "linux")]
+mod execution_admission;
+pub(crate) use start_admission::StartAdmissionJournalIdentityV1;
 
 /// Owns one exclusively locked, append-only journal and its replayed indexes.
 pub struct Journal {
+    #[cfg(target_os = "linux")]
+    operator_recovery: Option<crate::controller_resource_reservation::operator_create_recovery::OperatorRecoverCustodyV2>,
+    #[cfg(target_os = "linux")]
+    provisioning: Option<Box<crate::reconciler::provisioning::ProvisioningScopeV1>>,
+    start_admission: Option<Box<crate::reconciler::start_admission::StartAdmissionScopeV1>>,
+    execution_admission: Option<Box<crate::controller_execution_operation::public_admission::ExecutionPublicAdmissionScopeV2>>,
     // The contiguous native prefix keeps its original file/set/map drop order.
     // All role admission, semantic indexes, and authority remain in this wrapper.
-    native: NativeJournal<RecordNamespace, JournalLimits>,
-    idempotency: BTreeMap<Vec<u8>, IdempotencyDecision>,
-    protected: Option<ProtectedJournalLocation>,
+    native: native_backing::JournalNativeBackingV1,
+    #[cfg(target_os = "linux")]
+    root_journal_financial: Option<aos_sandbox_broker::receiving::RootJournalFinancialOriginalV1>,
+    #[cfg(target_os = "linux")]
+    native_interval: Option<Arc<native_interval::JournalNativeIntervalOriginalV1>>,
+    #[cfg(target_os = "linux")]
+    replacement_original: Option<Arc<native_compaction::JournalReplacementOriginalV1>>,
     cache_policy_gate: Option<(PathBuf, u32)>,
-    mount_git_coverage_denied: bool,
     authority_instance: Arc<JournalAuthorityInstance>,
-    source_challenge_history: Vec<source_original_native::SourceOriginalChallengeCheckpointV5>,
-    source_original_replay: source_original_native::replay::SourceOriginalReplayCacheV5,
+    source_challenge_history: Vec<source_history::SourceOriginalChallengeCheckpointV5>,
+    source_original_replay: source_history::replay::SourceOriginalReplayCacheV5,
     source_history_compacted: bool,
     // Deny-only native provenance survives deletion of a Q04 lower marker.
     // It is never a floor, currentness certificate or permission to mutate.
@@ -693,34 +856,11 @@ pub struct Journal {
     q04_lower_history_present: bool,
 }
 
-// One materializer adopts a completely replayed original. The selected opener
-// supplies its already-resident authority allocation; ordinary recovery keeps
-// allocating that marker at its original field position.
-macro_rules! journal_from_original_replay {
-    ($path:expr, $file:expr, $lock:expr, $limits:expr, $protected:expr,
-     $replay:ident, $authority:expr) => {
-        Journal {
-            native: aos_sandbox_journal::owner::NativeJournal::from_owned_parts(
-                $path, $file, $lock, $limits,
-                aos_sandbox_journal::owner::NativeJournalState::from_owned_parts(
-                    $replay.next_sequence, $replay.committed_transactions,
-                    $replay.transaction_ids, $replay.committed_namespaces,
-                    $replay.state, $replay.materialized_bytes,
-                ),
-            ),
-            idempotency: $replay.idempotency,
-            protected: $protected,
-            cache_policy_gate: None,
-            mount_git_coverage_denied: false,
-            authority_instance: $authority,
-            source_challenge_history: $replay.source_challenge_history,
-            source_original_replay: $replay.source_original_replay,
-            source_history_compacted: $replay.source_history_compacted,
-            #[cfg(target_os = "linux")]
-            q04_lower_history_present: $replay.q04_lower_history_present,
-        }
-    };
-}
+#[cfg(target_os = "linux")]
+mod root_readonly_model;
+#[cfg(target_os = "linux")]
+pub(crate) use root_readonly_model::{RootReadonlyJournalModelOriginalsV1,
+    RootReadonlyJournalModelInputsV1};
 
 #[cfg(target_os = "linux")]
 mod nix_offline_provisioning;
@@ -730,20 +870,49 @@ pub use nix_offline_provisioning::{
     NixOfflineNativeJobErrorV5, NixOfflineNativeJobV5,
 };
 
+#[cfg(target_os = "linux")]
+mod execution_observation;
+pub(crate) use execution_observation::ExecutionObservationJournalIdentityV4;
+
+mod storage_captured_open;
+pub(crate) use storage_captured_open::controller_session_directory_data_v1;
+pub(crate) use storage_captured_open::EnvironmentEvidenceCapturedJournalOpenV1;
+#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
+pub(crate) use storage_captured_open::StorageNativeOpeningOwnerLinkV1;
+#[cfg(target_os = "linux")]
+pub use storage_captured_open::{
+    HostPeerCapturedJournalOpenV2, HostExecutionCapturedJournalOpenV2,
+    HostAgentCapturedJournalOpenV2, HostLifecycleCapturedJournalOpenV2,
+    HostArgumentCapturedJournalOpenV2,
+    RuntimeDeploymentMainCapturedJournalOpenV1, RuntimeDeploymentFloorCapturedJournalOpenV1,
+    ControllerBrokerSessionCapturedJournalOpenV1, ControllerStartResourceSessionCapturedJournalOpenV4, ControllerStorageFloorCapturedJournalOpenV1, StorageBrokerFloorCapturedJournalOpenV2,
+    StorageHostSessionCapturedJournalOpenV1,
+    CapturedJournalOpenModeV1, StorageBrokerCapturedJournalOpenV1, StorageStateCapturedJournalOpenV1,
+    MountBrokerSessionCapturedJournalOpenV4, HostBrokerSessionCapturedJournalOpenV1,
+    StorageWorkspaceCapturedJournalOpenV1, StorageNativeIssuanceCapturedJournalOpenV1, StorageOutputCapturedJournalOpenV1,
+    StorageRequestTrustCapturedJournalOpenV1,
+};
+
 mod protected_storage;
+mod runtime_deployment_post;
+pub(crate) mod runtime_deployment_receiving;
+pub use runtime_deployment_post::{
+    RuntimeDeploymentJournalPostFailureV1, RuntimeDeploymentJournalPostOriginalV1,
+};
+pub use protected_storage::ProtectedJournalCurrentnessOriginalsV1;
 pub use protected_storage::{ProtectedJournalLockCustodyV1, ProtectedJournalNamesV1};
 pub(crate) use protected_storage::{
-    ControllerJournalOpenOriginalsV1, ProtectedWriterNameWitness, ProtectedWriterOpenOriginalsV1,
+    ProtectedWriterNameWitness, ProtectedWriterOpenOriginalsV1,
     ReadOnlyJournalNameWitness, ReadOnlyJournalOpenOriginalsV1, ReadOnlyProtectedJournal,
 };
 use protected_storage::{
-    FileIdentity, ProtectedJournalLocation, compact_protected, open_protected_file_into,
+    FileIdentity, ProtectedJournalLocation, open_protected_file_into,
     resolve_protected_directory_from_root, rustix_io, validate_protected_fd,
 };
 #[cfg(test)]
 use protected_storage::{
-    MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES, ProtectedAncestry, ProtectedJournalOpenMode,
-    ProtectedOwnerPolicy, open_protected_file, protected_open_error,
+    MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES, ProtectedAncestry, open_protected_file, protected_open_error,
     reject_operator_provisioning_history, require_empty_operator_provisioning_state,
     require_opened_directory_identity, traverse_protected_directory,
 };
@@ -766,15 +935,6 @@ pub struct ProtectedJournalAuthority<'journal> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProtectedAuthorityScope {
     SingleNamespace,
-    FixedMountSourceAcquisition,
-    RootLocalRecoveryKind2,
-    RootLocalRecoveryKind5,
-    RootOriginalNativeV5,
-    RootOriginalInventoryV6,
-    SourceProviderHeldReadOnly,
-    SourceOriginalNativeV5,
-    MountSourceConsumption,
-    MountManagerStartup,
     CapacityReservation(GlobalCapacityReservationPurposeV1),
 }
 
@@ -784,7 +944,6 @@ enum RootOwnerEdge {
     NixOffline,
     #[cfg(target_os = "linux")]
     NixOfflineClosureData,
-    SourceOriginal,
     Local(root_local_recovery::Edge),
     OriginalNative([u8; 32]),
     OriginalInventory {
@@ -1012,73 +1171,37 @@ pub struct ProtectedJournalPreflight {
     transaction_digest: [u8; 32],
 }
 
-/// Seals one current claim over the fixed provider journal for session handoff.
-///
-/// The move-only value has no public constructor or projection. It carries no
-/// record, mutation, signing, or transport authority and is accepted only by
-/// the fixed provider security owner.
-#[must_use = "a fixed provider journal handoff must be consumed by its session owner"]
-pub struct FixedSourceProviderJournalHandoffV1<'authority, 'journal> {
-    authority: &'authority ProtectedJournalAuthority<'journal>,
-    sequence: u64,
-}
 
-impl core::fmt::Debug for FixedSourceProviderJournalHandoffV1<'_, '_> {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.write_str("FixedSourceProviderJournalHandoffV1([protected handoff])")
-    }
-}
 
-impl FixedSourceProviderJournalHandoffV1<'_, '_> {
-    /// Consumes and revalidates the exact fixed journal borrow.
-    ///
-    /// The retained immutable borrow prevents an intervening commit through
-    /// the same owner while this handoff exists.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error after owner replacement, reopen, compaction, or any
-    /// mismatch with the fixed namespace-41 storage boundary.
-    #[doc(hidden)]
-    pub fn validate_current(self) -> Result<(), JournalError> {
-        self.authority
-            .validate_fixed_source_provider_session_handoff(&self)
-    }
-}
 
-/// Lends the exact fixed Mount namespace-40 owner without allowing it to escape.
-#[must_use = "the fixed Mount source authority must remain owner-scoped"]
-pub struct MountSourceAcquisitionJournalAuthorityV2<'journal> {
-    authority: ProtectedJournalAuthority<'journal>,
-}
 
-impl core::fmt::Debug for MountSourceAcquisitionJournalAuthorityV2<'_> {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.write_str("MountSourceAcquisitionJournalAuthorityV2([protected authority])")
-    }
-}
 
-impl<'journal> MountSourceAcquisitionJournalAuthorityV2<'journal> {
-    pub(crate) fn claim(journal: &'journal mut Journal) -> Result<Self, JournalError> {
-        Ok(Self {
-            authority: journal.claim_fixed_mount_source_acquisition_authority()?,
-        })
-    }
-
-    /// Runs one operation with a nonescaping exact fixed namespace-40 claim.
-    ///
-    /// The higher-ranked borrow prevents the raw claim, any borrowed record,
-    /// or a security session facade tied to it from surviving this call.
-    #[doc(hidden)]
-    pub fn with_authority<R>(
-        &mut self,
-        operation: impl for<'borrow> FnOnce(&'borrow mut ProtectedJournalAuthority<'journal>) -> R,
-    ) -> R {
-        operation(&mut self.authority)
-    }
-}
 
 struct JournalAuthorityInstance;
+
+/// Holds a comparison-only weak stamp of an already-owned Journal instance.
+///
+/// This stamp survives moves but neither keeps the writer alive nor grants
+/// read, mutation, currentness or effect authority. Compaction replaces the
+/// original identity and therefore invalidates the comparison.
+#[doc(hidden)]
+pub struct JournalAuthorityComparisonStampV1(std::sync::Weak<JournalAuthorityInstance>);
+
+impl Journal {
+    /// Borrows the identity allocation of this exact existing writer as DATA.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn authority_comparison_stamp_v1(&self) -> JournalAuthorityComparisonStampV1 {
+        JournalAuthorityComparisonStampV1(Arc::downgrade(&self.authority_instance))
+    }
+
+    /// Compares a stamp to this same retained writer without native IO.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn matches_authority_comparison_stamp_v1(&self, stamp: &JournalAuthorityComparisonStampV1) -> bool {
+        std::sync::Weak::ptr_eq(&Arc::downgrade(&self.authority_instance), &stamp.0)
+    }
+}
 
 impl Journal {
     /// Reports whether this journal handle remains healthy.
@@ -1099,62 +1222,6 @@ impl Journal {
         }
     }
 
-    /// Compares Stage A Source DATA against this actual handle's opened ceilings.
-    ///
-    /// This advisory does not mint preflight, grant, writer or physical origin
-    /// evidence. A future protected adapter must revalidate currentness/custody.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a poisoned handle, repeated transaction, incomplete Source union,
-    /// insufficient full-transaction/current debt headroom or sequence exhaustion.
-    pub(crate) fn compare_source_capacity_advisory_v5(
-        &self,
-        transaction: Option<&JournalTransaction>,
-        origins: &[SourceOriginalAdmissionDataV5],
-        challenges: &[aos_sandbox_source_provider_ledger::ledger::source_capacity::OriginalSourceChallengeDataV5<'_>],
-    ) -> Result<SourceCapacityUnionComparisonDataV5, JournalError> {
-        self.ensure_healthy()?;
-        if transaction.is_some_and(|transaction| self.native.transaction_ids().contains(transaction.id())) {
-            return Err(JournalError::DuplicateTransaction);
-        }
-        let comparison = compare_source_capacity_union_data_v5(
-            self.native.state(),
-            transaction,
-            origins,
-            challenges,
-            self.native.limits(),
-        )?;
-        let (append_bytes, added_transactions, added_frames) = match transaction {
-            Some(transaction) => (
-                encoded_transaction_append_bytes(transaction)?,
-                1_usize,
-                (transaction.records().len() as u64)
-                    .checked_add(2)
-                    .ok_or(JournalError::SequenceExhausted)?,
-            ),
-            None => (0, 0, 0),
-        };
-        let journal_bytes = self.native
-            .file()
-            .metadata()?
-            .len()
-            .checked_add(append_bytes)
-            .ok_or(JournalError::JournalTooLarge)?;
-        let transactions = self.native.committed_transactions()
-            .checked_add(added_transactions)
-            .ok_or(JournalError::LimitExceeded("transaction count"))?;
-        let next_sequence = self.native.next_sequence()
-            .checked_add(added_frames)
-            .ok_or(JournalError::SequenceExhausted)?;
-        // The complete union already checked every exact changed floor. Reuse
-        // the shared all-family fold on the after cut, with no pretend generic
-        // settlement identifier or weaker legacy decoder.
-        source_original_native::replay::require_advisory_bounds(
-            &comparison, self.native.limits(), journal_bytes, transactions, next_sequence,
-        )?;
-        Ok(comparison)
-    }
 
     /// Claims this protected journal for one closed authority namespace.
     ///
@@ -1175,17 +1242,47 @@ impl Journal {
         &mut self,
         namespace: RecordNamespace,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
+        self.claim_protected_authority_engine_v1(namespace, None)
+    }
+
+    /// Claims the same namespace while retaining both reached capacity scans.
+    ///
+    /// The supplied captures are passive DATA destinations. All ordinary
+    /// health, namespace, canonical-family and ownership guards run in their
+    /// existing order; this method neither grants payment nor skips refusal.
+    /// The caller keeps the complete returned error beside both captures.
+    ///
+    /// # Errors
+    /// Returns the same native or canonical refusal as the ordinary claim.
+    /// Reused captures refuse entry without replacing their first partials.
+    pub fn claim_protected_authority_retaining_v1(
+        &mut self,
+        namespace: RecordNamespace,
+        captures: &mut [aos_sandbox_protocol::domain_ledger::capacity_family::family::
+            CanonicalCapacityReadCaptureV1; 2],
+    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
+        self.claim_protected_authority_engine_v1(namespace, Some(captures))
+    }
+
+    fn claim_protected_authority_engine_v1(
+        &mut self,
+        namespace: RecordNamespace,
+        mut captures: Option<&mut [aos_sandbox_protocol::domain_ledger::capacity_family::family::
+            CanonicalCapacityReadCaptureV1; 2]>,
+    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
         if namespace == RecordNamespace::MountSourceAcquisition
             || namespace == RecordNamespace::NixOfflineProvisioning
             || namespace == RecordNamespace::ControllerResourceReservation
+            || namespace == RecordNamespace::CreateStorageHistory
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(
-            self.native.state(),
-        )
-        .map_err(JournalError::from)?;
+        match captures.as_deref_mut() {
+            Some(originals) => originals[0].require_legacy_once_v1(self.native.state()),
+            None => aos_sandbox_protocol::domain_ledger::capacity_family::family::
+                require_legacy_reservations(self.native.state()),
+        }.map_err(JournalError::from)?;
         let has_foreign_history =
             self.native
                 .committed_namespaces()
@@ -1200,11 +1297,11 @@ impl Journal {
         });
         if has_foreign_history
             || has_foreign_state
-            || !aos_sandbox_protocol::domain_ledger::capacity_family::all_reservations_owned_by(
-                self.native.state(),
-                namespace,
-            )
-            .map_err(JournalError::from)?
+            || !(match captures {
+                Some(originals) => originals[1].all_owned_by_once_v1(self.native.state(), namespace),
+                None => aos_sandbox_protocol::domain_ledger::capacity_family::
+                    all_reservations_owned_by(self.native.state(), namespace),
+            }.map_err(JournalError::from)?)
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
@@ -1216,77 +1313,8 @@ impl Journal {
         })
     }
 
-    fn claim_fixed_mount_source_acquisition_authority(
-        &mut self,
-    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
-        self.ensure_protected_authority()?;
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_owner(
-            self.native.state(),
-            RecordNamespace::MountSourceAcquisition,
-        )
-        .map_err(JournalError::from)?;
-        Ok(ProtectedJournalAuthority {
-            journal: self,
-            namespace: RecordNamespace::MountSourceAcquisition,
-            scope: ProtectedAuthorityScope::FixedMountSourceAcquisition,
-        })
-    }
 
-    /// Claims the closed journal group used by atomic Mount source consumption.
-    ///
-    /// Owner reads and ordinary commits remain restricted to namespace 40.
-    /// The guard additionally permits its single purpose-built four-PUT edge
-    /// over namespaces 40, 39, 3, and 2. Other namespaces already retained by
-    /// the broker remain inaccessible through this purpose-limited guard.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`JournalError::ProtectedBoundary`] for an unprotected journal,
-    /// [`JournalError::Poisoned`] after ambiguous durability.
-    #[doc(hidden)]
-    pub(crate) fn claim_mount_source_consumption_authority(
-        &mut self,
-    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
-        self.ensure_protected_authority()?;
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_owner(
-            self.native.state(),
-            RecordNamespace::MountSourceAcquisition,
-        )
-        .map_err(JournalError::from)?;
-        Ok(ProtectedJournalAuthority {
-            journal: self,
-            namespace: RecordNamespace::MountSourceAcquisition,
-            scope: ProtectedAuthorityScope::MountSourceConsumption,
-        })
-    }
 
-    /// Claims the closed journal group used by Mount-manager startup capture.
-    ///
-    /// The guard exposes no generic record or transaction operations. Its
-    /// purpose-specific implementation reads only namespaces 45, 40, 39, and
-    /// 2, and may append only one fully derived namespace-45 capture record.
-    /// Other broker namespaces remain inaccessible through the guard.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`JournalError::ProtectedBoundary`] for an unprotected journal,
-    /// or [`JournalError::Poisoned`] after ambiguous durability.
-    #[doc(hidden)]
-    pub(crate) fn claim_mount_manager_startup_authority(
-        &mut self,
-    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
-        self.ensure_protected_authority()?;
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_owner(
-            self.native.state(),
-            RecordNamespace::MountSourceAcquisition,
-        )
-        .map_err(JournalError::from)?;
-        Ok(ProtectedJournalAuthority {
-            journal: self,
-            namespace: RecordNamespace::MountManagerStartupAuthority,
-            scope: ProtectedAuthorityScope::MountManagerStartup,
-        })
-    }
 
     /// Claims one closed cross-namespace capacity-reserved transaction protocol.
     ///
@@ -1320,60 +1348,20 @@ impl Journal {
         })
     }
 
-    /// Claims the fixed source-provider native terminal capacity protocol.
-    ///
-    /// Ordinary operations remain restricted to namespace 41. Capacity
-    /// admission and settlement alone may also name namespace 46.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unprotected or poisoned journal, malformed
-    /// reservation provenance, or foreign committed history or state.
-    pub fn claim_source_provider_native_terminal_authority_v1(
-        &mut self,
-    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
-        self.ensure_protected_authority()?;
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(
-            self.native.state(),
-        )
-        .map_err(JournalError::from)?;
-        let namespace = RecordNamespace::SourceProviderAuthority;
-        let has_foreign_history =
-            self.native
-                .committed_namespaces()
-                .iter()
-                .any(|committed_namespace| {
-                    *committed_namespace != namespace
-                        && *committed_namespace != RecordNamespace::GlobalCapacityReservation
-                });
-        let has_foreign_state = self.native.state().keys().any(|(record_namespace, _)| {
-            *record_namespace != namespace
-                && *record_namespace != RecordNamespace::GlobalCapacityReservation
-        });
-        // Deleted foreign rows still taint this generation until compaction.
-        if has_foreign_history
-            || has_foreign_state
-            || !aos_sandbox_protocol::domain_ledger::capacity_family::all_reservations_owned_by(
-                self.native.state(),
-                namespace,
-            )
-            .map_err(JournalError::from)?
-        {
-            return Err(JournalError::ForeignAuthorityNamespace);
-        }
-
-        self.claim_global_capacity_reservation_authority(
-            GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
-        )
-    }
 
     /// Requires retained protected storage provenance before resolving authority.
     pub(crate) fn ensure_protected_authority(&self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
-        if self.protected.is_none() {
+        if !self.native.is_protected() {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
+    }
+
+    // This lends the SAME actual native map/index as comparison DATA only.
+    // Protected provenance and all currentness/financial guards stay here.
+    pub(crate) fn historical_read_view_v1(&self) -> HistoricalLedgerReadViewV1<'_> {
+        self.native.read_view().historical_view()
     }
 
     /// Returns the currently materialized value for a logical key.
@@ -1382,9 +1370,7 @@ impl Journal {
     /// It does not establish that the value is current durable authority.
     #[must_use]
     pub fn get(&self, namespace: RecordNamespace, key: &[u8]) -> Option<&[u8]> {
-        self.native.state()
-            .get(&(namespace, key.to_vec()))
-            .map(Vec::as_slice)
+        self.historical_read_view_v1().get(namespace, key)
     }
 
     /// Iterates the materialized records in one namespace by bytewise key.
@@ -1395,10 +1381,7 @@ impl Journal {
     /// authority after an ambiguous I/O failure. The ordered namespace range
     /// avoids scanning unrelated desired-state and operation records.
     pub fn records(&self, namespace: RecordNamespace) -> impl Iterator<Item = (&[u8], &[u8])> {
-        self.native.state()
-            .range((namespace, Vec::new())..)
-            .take_while(move |((record_namespace, _), _)| *record_namespace == namespace)
-            .map(|((_, key), value)| (key.as_slice(), value.as_slice()))
+        self.historical_read_view_v1().records(namespace)
     }
 
     /// Iterates every materialized record by namespace and bytewise key.
@@ -1410,9 +1393,56 @@ impl Journal {
     /// journal schema can use this complete ordering to reject foreign
     /// namespaces instead of silently omitting them.
     pub fn all_records(&self) -> impl Iterator<Item = (RecordNamespace, &[u8], &[u8])> {
-        self.native.state()
-            .iter()
-            .map(|((namespace, key), value)| (*namespace, key.as_slice(), value.as_slice()))
+        self.historical_read_view_v1().all_records()
+    }
+
+    // This lends the SAME original file's whole metadata Result and unchanged
+    // limits as DATA. Its genuine role guard supplies currentness/payment;
+    // neither the tuple nor this private adapter constructs writer authority.
+    pub(crate) fn held_native_receiving_metadata_v1(
+        &self,
+    ) -> (std::io::Result<std::fs::Metadata>, JournalLimits) {
+        (self.native.metadata(), self.native.limits())
+    }
+
+    /// Measures the same held Session writer for passive receiving geometry.
+    ///
+    /// The caller prepays its fixed original before this native metadata read.
+    /// Its whole result remains in `metadata`; neither this extent nor the
+    /// original creates a payer, a new file, or current Session authority.
+    /// Materialized bytes backstop an externally shortened physical prefix.
+    ///
+    /// # Errors
+    /// Rejects repeated sampling, unhealthy/unprotected custody, native metadata
+    /// failure or invalid/overflowing exact native and materialized extents.
+    #[doc(hidden)]
+    pub fn held_session_receiving_extent_v1(
+        &self,
+        metadata: &mut Option<std::io::Result<std::fs::Metadata>>,
+    ) -> Result<ProtectedJournalPreopenReplayExtentV1, JournalError> {
+        if metadata.is_some() { return Err(JournalError::ProtectedBoundary); }
+        self.ensure_protected_authority()?;
+        *metadata = Some(self.native.metadata());
+        let physical = match metadata.as_ref() {
+            Some(Ok(value)) => value.len(),
+            _ => return Err(JournalError::ProtectedBoundary),
+        };
+        let prefix = physical.max(self.held_materialized_encoding_bytes_v1()?);
+        protected_journal_preopen_replay_extent_for_prefix_v1(self.native.limits(), prefix)
+    }
+
+    // Measures only the SAME already-held materialized key/value bytes through
+    // the actual encoder's geometry. The passive width prevents a smaller
+    // externally damaged File length from underpricing its resident read view.
+    pub(crate) fn held_materialized_encoding_bytes_v1(&self) -> Result<u64, JournalError> {
+        let records = self.native.state().iter().map(|((_, key), value)| {
+            aos_sandbox_journal::geometry::RecordShape {
+                key_bytes: key.len(),
+                value_bytes: Some(value.len()),
+            }
+        });
+        aos_sandbox_journal::geometry::encoded_transaction_append_bytes(records)
+            .map_err(JournalError::from)
     }
 
     // This closed borrowed extent prices already-owned storage and the actual
@@ -1421,6 +1451,13 @@ impl Journal {
     pub(crate) fn first_global_allocation_shape_v1(
         &self,
     ) -> Result<crate::journal::JournalShape, JournalError> {
+        self.first_global_allocation_shape_engine_v6(None)
+    }
+
+    pub(crate) fn first_global_allocation_shape_engine_v6(
+        &self,
+        metadata: Option<&mut Option<std::io::Result<std::fs::Metadata>>>,
+    ) -> Result<crate::journal::JournalShape, JournalError> {
         self.ensure_healthy()?;
         let mut retained_bytes = 0_usize;
         for ((_, key), value) in self.native.state() {
@@ -1428,18 +1465,29 @@ impl Journal {
                 .and_then(|bytes| bytes.checked_add(value.capacity()))
                 .ok_or(JournalError::JournalTooLarge)?;
         }
-        for key in self.idempotency.keys() {
+        for key in self.native.idempotency().keys() {
             retained_bytes = retained_bytes.checked_add(key.capacity())
                 .ok_or(JournalError::JournalTooLarge)?;
         }
-        let cells = self.native.state().len().checked_add(self.idempotency.len())
+        let cells = self.native.state().len().checked_add(self.native.idempotency().len())
             .and_then(|count| count.checked_add(self.native.transaction_ids().len()))
             .and_then(|count| count.checked_add(self.native.committed_namespaces().len()))
             .ok_or(JournalError::JournalTooLarge)?;
+        let native_bytes = match metadata {
+            Some(destination) => {
+                if destination.is_some() { return Err(JournalError::ProtectedBoundary); }
+                *destination = Some(self.held_native_receiving_metadata_v1().0);
+                match destination.as_ref() {
+                    Some(Ok(metadata)) => metadata.len(),
+                    _ => return Err(JournalError::ProtectedBoundary),
+                }
+            }
+            None => self.held_native_receiving_metadata_v1().0?.len(),
+        };
         Ok(crate::journal::JournalShape {
             retained_bytes,
             cells,
-            native_bytes: self.native.file().metadata()?.len(),
+            native_bytes,
             maximum_transaction_bytes: self.native.limits().maximum_transaction_bytes,
             maximum_record_bytes: self.native.limits().maximum_record_bytes,
         })
@@ -1453,7 +1501,7 @@ impl Journal {
     pub(crate) fn first_global_native_append_bound_v1(
         largest_phase_payload: usize,
     ) -> Result<u64, JournalError> {
-        let key = controller_source_genesis::ACCEPTANCE_PREFIX.len()
+        let key = aos_sandbox_ledger_replay::replay::controller_source_genesis::ACCEPTANCE_PREFIX.len()
             .checked_add(std::mem::size_of::<aos_sandbox_core::ProjectId>())
             .ok_or(JournalError::JournalTooLarge)?;
         let value = largest_phase_payload.max(945);
@@ -1496,6 +1544,17 @@ impl Journal {
     /// Supplies actual opened ceilings to a narrowly owned local protocol.
     pub(crate) const fn configured_limits(&self) -> JournalLimits {
         self.native.limits()
+    }
+
+    /// Borrows this journal's actual opened ceilings as comparison DATA.
+    ///
+    /// The returned limits do not establish currentness, ownership, admission
+    /// or permission to read, replay or mutate a journal. A genuine caller
+    /// independently binds its same held journal before deriving a sidecar.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn configured_limits_data_v1(&self) -> JournalLimits {
+        self.configured_limits()
     }
 
     /// Compares the remaining existing-output Nix main-journal geometry.
@@ -1623,7 +1682,7 @@ impl Journal {
                 *namespace != RecordNamespace::BrokerSessionTraffic)
             || self.native.state().keys().any(|(namespace, _)|
                 *namespace != RecordNamespace::BrokerSessionTraffic)
-            || !self.idempotency.is_empty()
+            || !self.native.idempotency().is_empty()
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
@@ -1644,7 +1703,7 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         let mut entries = self.native.state().len();
-        let original_length = self.native.file().metadata()?.len();
+        let original_length = self.native.metadata()?.len();
         let mut length = original_length;
         let mut next = self.native.next_sequence();
         let mut committed = self.native.committed_transactions();
@@ -1729,7 +1788,7 @@ impl Journal {
         }
 
         self.require_protected_names_current()?;
-        if self.native.file().metadata()?.len() != original_length {
+        if self.native.metadata()?.len() != original_length {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(widths)
@@ -1745,13 +1804,7 @@ impl Journal {
         key: &IdempotencyKey,
         request_digest: [u8; 32],
     ) -> IdempotencyOutcome {
-        match self.idempotency.get(key.as_bytes()) {
-            None => IdempotencyOutcome::Vacant,
-            Some(decision) if decision.request_digest == request_digest => {
-                IdempotencyOutcome::Replay(decision.operation_id)
-            }
-            Some(_) => IdempotencyOutcome::Conflict,
-        }
+        self.historical_read_view_v1().check_idempotency(key, request_digest)
     }
 
     /// Returns the already-decoded selected genesis and successor family DATA.
@@ -1802,7 +1855,14 @@ impl Journal {
     /// whose original native history must remain intact.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
-        if self.mount_git_coverage_denies_new_v1() {
+        if self.native.state().keys().any(|(namespace, _)| {
+            *namespace == RecordNamespace::CreateStorageHistory
+        }) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        if aos_sandbox_ledger_replay::git_coverage_prefix::has_durable_owner_fence_v1(
+            self.native.state(),
+        ) {
             return Err(JournalError::ProtectedBoundary);
         }
         if delete_batch::has_dependencies(self.native.state()) {
@@ -1821,10 +1881,10 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         if self.source_original_replay.has_dependencies()
-            || source_original_native::replay::has_original_rows(self.native.state())
+            || aos_sandbox_ledger_replay::replay::source_original::cache::has_original_rows(self.native.state())
             || self.native.state().keys().any(|(namespace, key)| {
                 *namespace == RecordNamespace::SourceProviderAuthority
-                    && source_original_native::challenge::is_challenge_key(key)
+                    && aos_sandbox_ledger_replay::replay::challenge::is_challenge_key(key)
             })
         {
             return Err(JournalError::ProtectedBoundary);
@@ -1836,7 +1896,7 @@ impl Journal {
         root_original_inventory::validate_rejoined_capacity(
             self.native.state(),
             self.native.materialized_bytes(),
-            self.native.file().metadata()?.len(),
+            self.native.metadata()?.len(),
             self.native.committed_transactions(),
             self.native.limits(),
             self.native.next_sequence(),
@@ -1844,7 +1904,7 @@ impl Journal {
         source_tree_genesis::require_no_compaction(self.native.state())?;
         source_tree_successor::require_no_compaction(self.native.state())?;
         source_project_admission_challenge::require_no_compaction(self.native.state())?;
-        controller_source_genesis::require_no_compaction(self.native.state())?;
+        aos_sandbox_ledger_replay::replay::controller_source_genesis::require_no_compaction(self.native.state()).map_err(crate::journal::JournalError::from)?;
         controller_source_successor_issuance::require_no_compaction(self.native.state())?;
         // The bank retains exact native transaction membership and uncertain
         // claims. Generic state-only compaction is not its recovery barrier.
@@ -1860,6 +1920,7 @@ impl Journal {
         controller_policy_hold::require_no_compaction(self.native.state())?;
         source_domain_policy_hold::require_no_compaction(self.native.state())?;
         let _cache_policy_guard = cache_policy_hold::mutation_guard(self)?;
+        let result = (|| {
         if let Err(error) = self.compact_inner() {
             self.native.poison();
             return Err(error);
@@ -1870,72 +1931,118 @@ impl Journal {
         root_original_inventory::validate_rejoined_capacity(
             self.native.state(),
             self.native.materialized_bytes(),
-            self.native.file().metadata()?.len(),
+            self.native.metadata()?.len(),
             self.native.committed_transactions(),
             self.native.limits(),
             self.native.next_sequence(),
         ).inspect_err(|_| self.native.poison())?;
         Ok(())
+        })();
+        #[cfg(target_os = "linux")]
+        { self.finish_selected_compaction_v1(result) }
+        #[cfg(not(target_os = "linux"))]
+        { result }
     }
 
     fn compact_inner(&mut self) -> Result<(), JournalError> {
-        if let Some(location) = &self.protected {
-            let (file, replay) = compact_protected(location, self.native.state(), self.native.limits())?;
-            self.native.replace_replayed_file(
-                file,
-                NativeJournalState::from_owned_parts(
-                    replay.next_sequence, replay.committed_transactions,
-                    replay.transaction_ids, replay.committed_namespaces,
-                    replay.state, replay.materialized_bytes,
-                ),
-            );
-            self.idempotency = replay.idempotency;
-            self.source_challenge_history = replay.source_challenge_history;
-            self.source_original_replay = replay.source_original_replay;
-            self.source_history_compacted = replay.source_history_compacted;
+        let ordinary = match &mut self.native {
+            native_backing::JournalNativeBackingV1::Ordinary(ordinary) => ordinary,
             #[cfg(target_os = "linux")]
-            {
-                self.q04_lower_history_present = replay.q04_lower_history_present;
+            _ => return self.compact_selected_v1(),
+        };
+        let limits = ordinary.held.read_view_v1().limits();
+        let mut replacement = ordinary
+            .held
+            .prepare_replacement_once_v1()
+            .map_err(project_ordinary_replacement_error)?;
+        let mut semantic = ordinary_semantics::OrdinarySemanticReplayOriginalV1::new();
+        let replayed = (|| {
+            let identity = replacement
+                .prepare_parser_identity_once_v1()
+                .map_err(project_ordinary_replacement_error)?;
+            let mut cursor = replacement
+                .begin_indexed_replay_once_v1()
+                .map_err(project_ordinary_replacement_error)?;
+            semantic
+                .observe_once(
+                    &mut cursor,
+                    identity,
+                    limits,
+                    None,
+                    #[cfg(target_os = "linux")]
+                    None,
+                )
+                .map_err(|()| JournalError::ProtectedBoundary)
+        })();
+        if let Err(body) = replayed {
+            let native_selected = replacement.native_failure_v1().is_some()
+                || replacement.index_failure_v1().is_some();
+            semantic.dispose_ordinary_prospective_v1();
+            let current_disposal = replacement.dispose_ordinary_current_once_v1();
+            let (upper_native, upper_semantic) = semantic.into_ordinary_errors();
+            let pending_disposal = replacement.dispose_ordinary_pending_once_v1();
+            let errors = replacement.into_ordinary_errors_v1();
+            let (index, native) = match errors {
+                Ok(errors) => errors,
+                // An impossible private phase mismatch keeps the whole real
+                // replacement alive through its ordinary negative Drop.
+                Err(original) => {
+                    drop(original);
+                    return Err(body);
+                }
+            };
+            if native_selected {
+                if let Some(cause) = index {
+                    return Err(project_idempotency_record_error(cause));
+                }
+                if let Some(cause) = native {
+                    return Err(
+                        CanonicalJournalMechanicalErrorV1::from_ordinary_native_v1(cause).into(),
+                    );
+                }
             }
-            self.authority_instance = Arc::new(JournalAuthorityInstance);
-            return Ok(());
+            if let Some(cause) = upper_native.or(upper_semantic) {
+                return Err(cause);
+            }
+            // Independent disposition results cannot replace the earlier body
+            // refusal; all reached originals have already retired in order.
+            drop(current_disposal);
+            drop(pending_disposal);
+            return Err(body);
         }
-        let temporary = sibling_with_suffix(self.native.path(), ".compact.tmp");
-        let mut replacement = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temporary)?;
 
-        write_compacted(&mut replacement, self.native.state(), self.native.limits())?;
-        replacement.sync_all()?;
-        if replacement.metadata()?.len() > self.native.limits().maximum_journal_bytes {
-            return Err(JournalError::JournalTooLarge);
-        }
-        drop(replacement);
-
-        fs::rename(&temporary, self.native.path())?;
-        sync_parent(self.native.path())?;
-
-        let (file, replay) = reopen_replacement(self.native.path(), self.native.limits())?;
-        self.native.replace_replayed_file(
-            file,
-            NativeJournalState::from_owned_parts(
-                replay.next_sequence, replay.committed_transactions,
-                replay.transaction_ids, replay.committed_namespaces,
-                replay.state, replay.materialized_bytes,
-            ),
-        );
-        self.idempotency = replay.idempotency;
-        self.source_challenge_history = replay.source_challenge_history;
-        self.source_original_replay = replay.source_original_replay;
-        self.source_history_compacted = replay.source_history_compacted;
+        let remainder = match semantic.take_remainder_once() {
+            Some(remainder) => remainder,
+            None => {
+                semantic.dispose_ordinary_prospective_v1();
+                let _ = replacement.dispose_ordinary_current_once_v1();
+                drop(semantic.into_ordinary_errors());
+                let _ = replacement.dispose_ordinary_pending_once_v1();
+                drop(replacement.into_ordinary_errors_v1());
+                return Err(JournalError::ProtectedBoundary);
+            }
+        };
+        // Upper temporary semantics end before the physical final metadata/
+        // seek. The full successful remainder stays resident on that failure.
+        semantic.dispose_ordinary_prospective_v1();
+        drop(semantic);
+        let ready = replacement
+            .finish_replayed_once_v1()
+            .map_err(project_ordinary_replacement_error)?;
+        let installed = ready
+            .install_once_v1(&mut ordinary.held)
+            .map_err(project_ordinary_replacement_error)?;
+        self.source_challenge_history = remainder.source_challenge_history;
+        self.source_original_replay = remainder.source_original_replay;
+        self.source_history_compacted = remainder.source_history_compacted;
         #[cfg(target_os = "linux")]
         {
-            self.q04_lower_history_present = replay.q04_lower_history_present;
+            self.q04_lower_history_present = remainder.q04_lower_history_present;
         }
-        self.authority_instance = Arc::new(JournalAuthorityInstance);
+        let instance = installed
+            .finish_after_semantic_once_v1(&mut ordinary.held, JournalAuthorityInstance)
+            .map_err(project_ordinary_replacement_error)?;
+        self.authority_instance = Arc::clone(instance.comparison_arc_v1());
         Ok(())
     }
 }
@@ -1961,49 +2068,10 @@ impl ProtectedJournalAuthority<'_> {
         self.journal.validate_held_root_owned_at(directory, name)
     }
 
-    /// Validates the fixed provider namespace-41 storage boundary.
-    ///
-    /// This purpose check compares the retained protected directory descriptor
-    /// with a fresh no-symlink resolution of the compiled-in provider state
-    /// root and requires the exact journal basename. It grants no record or
-    /// mutation authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless this is the current dedicated namespace-41
-    /// claim over `/var/lib/aos/source-provider/provider.journal`.
-    #[doc(hidden)]
-    pub fn validate_fixed_source_provider_storage(&self) -> Result<(), JournalError> {
-        self.validate_source_provider_authority()?;
-        self.validate_fixed_storage("/var/lib/aos/source-provider", "provider.journal")
-    }
 
-    /// Validates the fixed Provider native-hold challenge journal location.
-    ///
-    /// The dedicated journal shares namespace 41 but has its own exclusive
-    /// lock and format. Its retained directory must still be the protected
-    /// Provider state root at each authority-bound read or mutation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless this is the current dedicated namespace-41
-    /// claim over the fixed native-hold challenge journal.
-    #[doc(hidden)]
-    pub fn validate_fixed_source_provider_hold_challenge_storage(
-        &self,
-    ) -> Result<(), JournalError> {
-        self.validate_source_provider_authority()?;
-        self.validate_fixed_storage(
-            "/var/lib/aos/source-provider",
-            "native-hold-challenges.journal",
-        )
-    }
 
     fn validate_fixed_storage(&self, directory: &str, name: &str) -> Result<(), JournalError> {
-        let retained = self
-            .journal
-            .protected
-            .as_ref()
+        let retained = self.journal.native.protected_view()
             .ok_or(JournalError::ProtectedBoundary)?;
         if retained.expected_uid() != 0 || retained.name() != name {
             return Err(JournalError::ProtectedBoundary);
@@ -2016,298 +2084,20 @@ impl ProtectedJournalAuthority<'_> {
         Ok(())
     }
 
-    /// Mints one move-only handoff from the exact current fixed provider claim.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless the fixed path, basename, namespace, journal
-    /// instance, and current sequence are all protected and current.
-    #[doc(hidden)]
-    pub fn fixed_source_provider_session_handoff(
-        &self,
-    ) -> Result<FixedSourceProviderJournalHandoffV1<'_, '_>, JournalError> {
-        self.validate_fixed_source_provider_storage()?;
-        Ok(FixedSourceProviderJournalHandoffV1 {
-            authority: self,
-            sequence: self.journal.native.next_sequence(),
-        })
-    }
 
-    /// Revalidates a fixed provider session handoff before it is consumed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error after another append, compaction, reopen, or owner
-    /// replacement, or for a handoff minted by another journal.
-    #[doc(hidden)]
-    pub fn validate_fixed_source_provider_session_handoff(
-        &self,
-        handoff: &FixedSourceProviderJournalHandoffV1<'_, '_>,
-    ) -> Result<(), JournalError> {
-        if self.scope == ProtectedAuthorityScope::SourceOriginalNativeV5 {
-            source_original_native::writer::require_fixed(self.journal)?;
-        } else if self.scope == ProtectedAuthorityScope::SourceProviderHeldReadOnly {
-            source_provider_readonly::validate_current_authority(self)?;
-        } else {
-            self.validate_fixed_source_provider_storage()?;
-        }
-        if !core::ptr::eq(handoff.authority, self) || handoff.sequence != self.journal.native.next_sequence()
-        {
-            return Err(JournalError::StaleAuthoritySnapshot);
-        }
-        Ok(())
-    }
 
-    /// Validates this guard as the exact namespace-40 Mount source authority.
-    ///
-    /// This purpose check is public only so security custody in another crate
-    /// can reject a generic protected guard before interpreting `AOSMSA02`
-    /// bytes. It grants no record, mutation, or snapshot authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless the guard is healthy and names namespace 40.
-    #[doc(hidden)]
-    pub fn validate_mount_source_acquisition_authority(&self) -> Result<(), JournalError> {
-        self.journal.ensure_protected_authority()?;
-        if !matches!(
-            (self.namespace, self.scope),
-            (
-                RecordNamespace::MountSourceAcquisition,
-                ProtectedAuthorityScope::SingleNamespace
-                    | ProtectedAuthorityScope::FixedMountSourceAcquisition
-                    | ProtectedAuthorityScope::RootLocalRecoveryKind2
-                    | ProtectedAuthorityScope::RootLocalRecoveryKind5
-                    | ProtectedAuthorityScope::RootOriginalNativeV5
-                    | ProtectedAuthorityScope::RootOriginalInventoryV6
-                    | ProtectedAuthorityScope::MountSourceConsumption
-            ) | (
-                RecordNamespace::MountManagerStartupAuthority,
-                ProtectedAuthorityScope::MountManagerStartup
-            )
-        ) {
-            return Err(JournalError::ForeignAuthorityNamespace);
-        }
-        self.validate_fixed_storage("/var/lib/aos/sandbox-mount", "mount.journal")
-    }
 
-    /// Rejoins the same fixed Source owner before observing its NEW-effect denial.
-    ///
-    /// This is a negative-only observation. An unselected result does not
-    /// replace any original Session, graph, request, clock or mutation check.
-    ///
-    /// # Errors
-    /// Rejects another purpose, changed names or an unhealthy original writer.
-    #[doc(hidden)]
-    pub fn mount_source_git_coverage_denies_new_v1(&self) -> Result<bool, JournalError> {
-        self.validate_mount_source_acquisition_authority()?;
-        Ok(self.journal.mount_git_coverage_denies_new_v1())
-    }
 
-    /// Iterates exact current namespace-40 records through an approved owner or startup scope.
-    ///
-    /// This method does not expose other namespaces admitted by a purpose guard.
-    /// Callers must run the canonical AOSMSA02 graph validator before relying
-    /// on any returned bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless this is the sealed namespace-40 owner,
-    /// Mount-consumption, or Mount-manager-startup scope.
-    #[doc(hidden)]
-    pub fn mount_source_acquisition_records(
-        &self,
-    ) -> Result<impl Iterator<Item = (&[u8], &[u8])>, JournalError> {
-        self.validate_mount_source_acquisition_authority()?;
-        Ok(self
-            .journal
-            .records(RecordNamespace::MountSourceAcquisition))
-    }
 
-    /// Returns one exact current namespace-40 value through an approved scope.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless this is an approved namespace-40 owner or
-    /// purpose guard.
-    #[doc(hidden)]
-    pub fn mount_source_acquisition_get(&self, key: &[u8]) -> Result<Option<&[u8]>, JournalError> {
-        self.validate_mount_source_acquisition_authority()?;
-        Ok(self
-            .journal
-            .get(RecordNamespace::MountSourceAcquisition, key))
-    }
 
-    /// Validates the mutation-owning single-namespace AOSMSA02 authority.
-    ///
-    /// Purpose-scoped composite guards may read namespace 40 for correlation,
-    /// but cannot be substituted for the owner that commits row-only or
-    /// request/head lifecycle transitions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless the guard is the exact namespace-40 owner scope.
-    #[doc(hidden)]
-    pub fn validate_mount_source_acquisition_owner_authority(&self) -> Result<(), JournalError> {
-        self.validate_mount_source_acquisition_authority()?;
-        if self.namespace != RecordNamespace::MountSourceAcquisition
-            || !matches!(
-                self.scope,
-                ProtectedAuthorityScope::SingleNamespace
-                    | ProtectedAuthorityScope::FixedMountSourceAcquisition
-            )
-        {
-            return Err(JournalError::ForeignAuthorityNamespace);
-        }
-        Ok(())
-    }
 
-    /// Reports whether this protected journal generation retained one transaction identity.
-    ///
-    /// The identity is diagnostic unless the caller also validates the exact
-    /// deterministic AOSMSA02 transaction shape and every current record.
-    /// Compaction changes the authority instance and removes old provenance.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless the guard is the sealed namespace-40 authority.
-    #[doc(hidden)]
-    pub fn contains_mount_source_acquisition_transaction(
-        &self,
-        transaction_id: &[u8; 16],
-    ) -> Result<bool, JournalError> {
-        self.validate_mount_source_acquisition_authority()?;
-        Ok(self.journal.native.transaction_ids().contains(transaction_id))
-    }
 
-    /// Validates an exact current namespace-40 snapshot and guard.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless the guard names namespace 40 and the snapshot
-    /// has the same journal instance, purpose scope, namespace, and sequence.
-    #[doc(hidden)]
-    pub fn validate_mount_source_acquisition_snapshot(
-        &self,
-        snapshot: &ProtectedJournalSnapshot,
-    ) -> Result<(), JournalError> {
-        self.validate_mount_source_acquisition_authority()?;
-        self.validate_snapshot(snapshot)
-    }
 
-    /// Validates this guard as the exact namespace-41 provider authority.
-    ///
-    /// This purpose check is public only so the provider owner and independent
-    /// security custody can reject a generic protected guard before decoding
-    /// `AOSSPL01`. It grants no record, mutation, or snapshot authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless the guard is healthy, purpose scoped,
-    /// and names [`RecordNamespace::SourceProviderAuthority`].
-    #[doc(hidden)]
-    pub fn validate_source_provider_authority(&self) -> Result<(), JournalError> {
-        self.journal.ensure_protected_authority()?;
-        if self.namespace != RecordNamespace::SourceProviderAuthority
-            || !matches!(
-                self.scope,
-                ProtectedAuthorityScope::SingleNamespace
-                    | ProtectedAuthorityScope::CapacityReservation(
-                        GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
-                    )
-            )
-        {
-            return Err(JournalError::ForeignAuthorityNamespace);
-        }
-        Ok(())
-    }
 
-    /// Validates an exact current namespace-41 snapshot and guard.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless the guard is the dedicated namespace-41 scope
-    /// and the snapshot has the same journal instance, scope, and sequence.
-    #[doc(hidden)]
-    pub fn validate_source_provider_authority_snapshot(
-        &self,
-        snapshot: &ProtectedJournalSnapshot,
-    ) -> Result<(), JournalError> {
-        self.validate_source_provider_authority()?;
-        self.validate_snapshot(snapshot)
-    }
 
-    /// Validates this guard as the exact namespace-45 startup authority.
-    ///
-    /// This sealed purpose check prevents caller-shaped activation metadata in
-    /// any other protected namespace from authorizing manager custody or
-    /// absence. It grants no descriptor or mutation authority by itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless the guard is healthy, purpose scoped, and names
-    /// [`RecordNamespace::MountManagerStartupAuthority`].
-    #[doc(hidden)]
-    pub fn validate_mount_manager_startup_authority(&self) -> Result<(), JournalError> {
-        self.journal.ensure_protected_authority()?;
-        if self.namespace != RecordNamespace::MountManagerStartupAuthority
-            || self.scope != ProtectedAuthorityScope::MountManagerStartup
-        {
-            return Err(JournalError::ForeignAuthorityNamespace);
-        }
-        Ok(())
-    }
 
-    /// Validates an exact current namespace-45 snapshot and guard.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless the guard is the dedicated namespace-45 scope
-    /// and the snapshot has the same journal instance, scope, and sequence.
-    #[doc(hidden)]
-    pub fn validate_mount_manager_startup_snapshot(
-        &self,
-        snapshot: &ProtectedJournalSnapshot,
-    ) -> Result<(), JournalError> {
-        self.validate_mount_manager_startup_authority()?;
-        self.validate_snapshot(snapshot)
-    }
 
-    /// Validates the exact namespace-40 authority used by startup absence proof.
-    ///
-    /// This sealed crate-local check prevents a generic protected authority for
-    /// another namespace from authenticating shaped `AOSMSA02` bytes. Both the
-    /// dedicated namespace scope and the purpose-scoped composite Mount source
-    /// authority are accepted; the snapshot must still name this exact journal
-    /// instance, scope, namespace, and sequence.
-    pub(crate) fn validate_mount_source_inventory_snapshot(
-        &self,
-        snapshot: &ProtectedJournalSnapshot,
-    ) -> Result<(), JournalError> {
-        self.validate_mount_source_acquisition_snapshot(snapshot)
-    }
 
-    /// Validates a namespace-40 snapshot's immutable journal provenance.
-    ///
-    /// Unlike an effect snapshot, this accepts a later sequence in the same
-    /// uncompacted journal. The inventory capability separately compares its
-    /// exact acquisition row, allowing a canonical proof batch to be consumed
-    /// across unrelated row commits without surviving compaction or target-row
-    /// replacement.
-    pub(crate) fn validate_mount_source_inventory_origin(
-        &self,
-        snapshot: &ProtectedJournalSnapshot,
-    ) -> Result<(), JournalError> {
-        self.validate_mount_source_acquisition_authority()?;
-        if !Arc::ptr_eq(&self.journal.authority_instance, &snapshot.instance)
-            || snapshot.namespace != self.namespace
-            || snapshot.scope != self.scope
-            || snapshot.sequence > self.journal.snapshot_sequence()
-        {
-            return Err(JournalError::StaleAuthoritySnapshot);
-        }
-        Ok(())
-    }
 
     /// Returns the current authority value for a logical key.
     ///
@@ -2387,15 +2177,11 @@ impl ProtectedJournalAuthority<'_> {
     /// [`JournalError::ProtectedBoundary`] when this journal lacks retained
     /// protected-open provenance, or [`JournalError::StaleAuthoritySnapshot`]
     /// when `snapshot` belongs to another journal or namespace or its sequence
-    /// is no longer current. Read-only Source guards return
-    /// [`JournalError::ForeignAuthorityNamespace`] without granting an effect.
+    /// is no longer current.
     pub fn validate_snapshot_for_effect(
         &self,
         snapshot: &ProtectedJournalSnapshot,
     ) -> Result<(), JournalError> {
-        if self.scope == ProtectedAuthorityScope::SourceProviderHeldReadOnly {
-            return Err(JournalError::ForeignAuthorityNamespace);
-        }
         self.validate_generic_authority_read()?;
         self.journal.ensure_protected_authority()?;
         self.validate_snapshot(snapshot)
@@ -3294,7 +3080,6 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
         if self.namespace == RecordNamespace::MountManagerStartupAuthority
-            || self.scope == ProtectedAuthorityScope::MountManagerStartup
             || self.scope
                 == ProtectedAuthorityScope::CapacityReservation(
                     GlobalCapacityReservationPurposeV1::PublisherCompletion,
@@ -3326,7 +3111,6 @@ impl ProtectedJournalAuthority<'_> {
         if !matches!(
             self.scope,
             ProtectedAuthorityScope::SingleNamespace
-                | ProtectedAuthorityScope::FixedMountSourceAcquisition
                 | ProtectedAuthorityScope::CapacityReservation(
                     GlobalCapacityReservationPurposeV1::RuntimeExecution
                         | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
@@ -3339,87 +3123,20 @@ impl ProtectedJournalAuthority<'_> {
 }
 
 fn authority_preflight_digest(transactions: &[JournalTransaction]) -> [u8; 32] {
-    let mut digest = Sha256::new();
-    digest.update(AUTHORITY_PREFLIGHT_DOMAIN);
-    digest.update(transactions.len().to_be_bytes());
-
-    for transaction in transactions {
-        digest.update(transaction.id());
-        digest.update(transaction.records().len().to_be_bytes());
-
-        for record in transaction.records() {
-            digest.update([record.namespace() as u8]);
-            digest.update(record.key().len().to_be_bytes());
-            digest.update(record.key());
-
-            match record.value() {
-                Some(value) => {
-                    digest.update([1]);
-                    digest.update(value.len().to_be_bytes());
-                    digest.update(value);
-                }
-                None => digest.update([0]),
-            }
-        }
-    }
-
-    digest.finalize().into()
+    aos_sandbox_protocol::domain_ledger::transaction::transaction_preflight_comparison_digest_v1(transactions)
 }
 
-struct ReplayState {
-    durable_end: u64,
-    next_sequence: u64,
-    committed_transactions: usize,
-    committed_records: usize,
-    transaction_ids: BTreeSet<[u8; 16]>,
-    committed_namespaces: BTreeSet<RecordNamespace>,
-    state: BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    materialized_bytes: usize,
-    idempotency: BTreeMap<Vec<u8>, IdempotencyDecision>,
-    source_challenge_history: Vec<source_original_native::SourceOriginalChallengeCheckpointV5>,
-    source_original_replay: source_original_native::replay::SourceOriginalReplayCacheV5,
-    source_history_compacted: bool,
-    #[cfg(target_os = "linux")]
-    q04_lower_history_present: bool,
+pub(crate) fn source_native_family_dynamic_demand_v1(
+    state: &source_tree_successor::State,
+    transaction: Option<&JournalTransaction>,
+) -> Result<aos_sandbox_core::ResourceVector, JournalError> {
+    source_tree_successor::source_member_dynamic_demand_v1(state, transaction)
 }
 
-// Only Journal-owned partial originals live here. Transitive validators keep
-// their existing private temporaries; this is not a complete allocator bound.
-struct ReadOnlyReplayScratchV1 {
-    offset: u64,
-    durable_end: u64,
-    expected_sequence: u64,
-    durable_next_sequence: u64,
-    committed_transactions: usize,
-    committed_records: usize,
-    materialized_bytes: usize,
-    source_challenge_history_bytes: u64,
-    transaction_ids: BTreeSet<[u8; 16]>,
-    committed_namespaces: BTreeSet<RecordNamespace>,
-    state: BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    idempotency: BTreeMap<Vec<u8>, IdempotencyDecision>,
-    pending: Option<PendingTransaction>,
-    reached_pending: Option<PendingTransaction>,
-    reached_transaction: Option<JournalTransaction>,
-    reached_frame: Option<Frame>,
-    partial_frame: Option<ReadOnlyFrameScratchV1>,
-    prospective: Option<BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>>,
-    compaction_last_key: Option<(RecordNamespace, Vec<u8>)>,
-    source_challenge_history: Vec<source_original_native::SourceOriginalChallengeCheckpointV5>,
-    source_original_replay: source_original_native::replay::SourceOriginalReplayCacheV5,
-}
-
-fn replay_read_only_retained(
-    file: &mut File,
-    limits: JournalLimits,
-    scratch: &mut Option<ReadOnlyReplayScratchV1>,
-) -> Result<ReplayState, JournalError> {
-    replay_original_retained(
-        file, limits, None,
-        #[cfg(target_os = "linux")]
-        None,
-        Some(scratch),
-    )
+pub(crate) fn source_native_family_fixed_footprint_v1() -> Option<(usize, usize)> {
+    let (state_bytes, state_cells) = source_tree_successor::SourceReplayFamilyOriginalsV1::boxed_footprint_v1()?;
+    let (transition_bytes, transition_cells) = source_tree_successor::SourceReplayTransactionOriginalsV1::boxed_footprint_v1()?;
+    Some((state_bytes.checked_add(transition_bytes)?, state_cells.checked_add(transition_cells)?))
 }
 
 // Shared logical representation arithmetic only. The original Release caller
@@ -3433,51 +3150,7 @@ struct NativeReleaseReplayWorkV1 {
 
 #[cfg(target_os = "linux")]
 fn is_q04_lower_history_record_v1(record: &JournalRecord) -> bool {
-    use crate::policy_compiler::create_q04::{CACHE_PENDING_KEY, CONTROLLER_IDENTITY_KEY, SOURCE_PENDING_KEY};
-
-    (record.namespace() == RecordNamespace::SourceDomainPolicyHold && record.key() == SOURCE_PENDING_KEY)
-        || (record.namespace() == RecordNamespace::DesiredState && record.key() == CACHE_PENDING_KEY)
-        || (record.namespace() == RecordNamespace::ControllerPolicyHold && record.key() == CONTROLLER_IDENTITY_KEY)
-        || (record.namespace() == RecordNamespace::DesiredState && record.key().starts_with(b"\0aos-q04-root-"))
-}
-
-fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, JournalError> {
-    replay_with_source_original(file, limits, None)
-}
-
-fn replay_with_source_original(
-    file: &mut File,
-    limits: JournalLimits,
-    challenges: Option<&source_original_native::SourceOriginalChallengeHistoryViewV5<'_>>,
-) -> Result<ReplayState, JournalError> {
-    #[cfg(target_os = "linux")]
-    {
-        replay_original_observed(file, limits, challenges, None)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        replay_original_observed(file, limits, challenges)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn replay_observed<R: Read + Seek + Borrow<File>>(
-    file: &mut R,
-    limits: JournalLimits,
-    deployment_history: Option<&mut runtime_deployment_history::HistoryAuditV1<'_>>,
-) -> Result<ReplayState, JournalError> {
-    replay_original_observed(
-        file, limits, None, deployment_history.map(DeploymentHistoryObserverV1::Main),
-    )
-}
-
-#[cfg(target_os = "linux")]
-fn replay_sidecar_observed<R: Read + Seek + Borrow<File>>(
-    file: &mut R,
-    limits: JournalLimits,
-    history: &mut runtime_deployment_sidecar_history::SidecarHistoryAuditV1,
-) -> Result<ReplayState, JournalError> {
-    replay_original_observed(file, limits, None, Some(DeploymentHistoryObserverV1::Sidecar(history)))
+    aos_sandbox_ledger_replay::semantic_recipe::is_q04_lower_history_record_data_v1(record)
 }
 
 /// Selects closed original-history observers, never caller callbacks.
@@ -3490,11 +3163,8 @@ enum DeploymentHistoryObserverV1<'observer, 'data> {
     NixOffline(&'observer mut nix_offline_provisioning::NativeHistoryV5),
     Q04(&'observer mut Q04NativeRecipeAuditV1<'data>),
     Delete(&'observer mut delete_batch::NativeObserverV1),
+    DeletePending(&'observer mut semantic_append::delete::PendingNativeObserverV1<'data>),
     OriginalRelease(&'observer mut OriginalReleaseControllerNativeHistoryV1),
-    OriginalReleaseSource {
-        history: &'observer mut OriginalReleaseControllerNativeHistoryV1,
-        remaining: usize,
-    },
 }
 
 #[cfg(target_os = "linux")]
@@ -3526,29 +3196,13 @@ impl DeploymentHistoryObserverV1<'_, '_> {
             Self::Delete(history) => history.observe(
                 transaction, commit_sequence, end_offset, native_digest,
             ),
+            Self::DeletePending(history) => history.observe(
+                transaction, commit_sequence, end_offset, native_digest,
+            ),
             Self::OriginalRelease(history) => history.observe(
                 transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
                 native_digest,
             ),
-            Self::OriginalReleaseSource { history, remaining } => {
-                // The real held Journal supplies this count. The check precedes
-                // Source cache retention in the same validated COMMIT parser.
-                if *remaining == 0 {
-                    return Err(JournalError::LimitExceeded("Source original Release native transactions"));
-                }
-                if history.next_sequence.is_none() {
-                    // The same parser also validates any initial compacted
-                    // prefix before returning. Root's sequence1 rule is literal.
-                    history.next_sequence = Some(begin_sequence);
-                    history.durable_end = begin_offset;
-                }
-                history.observe(
-                    transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
-                    native_digest,
-                )?;
-                *remaining -= 1;
-                Ok(())
-            }
         }
     }
 }
@@ -3581,20 +3235,19 @@ enum OriginalReleaseControllerCutFailureV1 {
 enum OriginalReleaseNativeCutPurposeV1 {
     Controller,
     Root,
-    Source,
 }
 
 /// Retains whole native readback DATA and each independent named bookend.
 ///
-/// This has no public constructor, field, writer or cut getter. Source retains
-/// this through its native capture. Controller/Root routes remain undeployed;
+/// This has no public constructor, field, writer or cut getter. Its actual
+/// Controller/Root owner retains it through native comparison and named posts;
 /// no captured readback grants current cleanup authority.
 #[cfg(target_os = "linux")]
 pub(crate) struct OriginalReleaseControllerCutCaptureV1 {
     purpose: OriginalReleaseNativeCutPurposeV1,
     protection: Option<Result<ProtectedWriterNameWitness, JournalError>>,
     copy_bound: Option<Result<(), JournalError>>,
-    native: Option<Result<ReplayState, JournalError>>,
+    native: Option<Result<ObservedReplayStateV1, JournalError>>,
     comparison: Option<Result<(), JournalError>>,
     named_post: Option<Result<(), JournalError>>,
     history: OriginalReleaseControllerNativeHistoryV1,
@@ -3602,425 +3255,32 @@ pub(crate) struct OriginalReleaseControllerCutCaptureV1 {
     error_transferred: bool,
 }
 
-#[cfg(target_os = "linux")]
-#[derive(Clone, Copy)]
-enum OriginalReleaseSourceCutFailureV1 {
-    Readback,
-    Native,
-    ChallengePost,
-}
 
-/// Retains Source's same-readback validation, native replay and challenge post.
-///
-/// No field or constructor escapes Journal. This is physical observation DATA,
-/// not current cleanup admission, census membership or paid capacity.
-#[cfg(target_os = "linux")]
-pub(crate) struct OriginalReleaseSourceCutCaptureV1 {
-    readback: Option<Result<(), JournalError>>,
-    native: OriginalReleaseControllerCutCaptureV1,
-    challenge_post: Option<Result<(), JournalError>>,
-    first: Option<OriginalReleaseSourceCutFailureV1>,
-    error_transferred: bool,
-}
 
-// The closed history observers use the original parser and actual File.
-// A private read-at cursor changes no append-description offset or identity.
-fn replay_original_observed<R: Read + Seek + Borrow<File>>(
-    file: &mut R,
-    limits: JournalLimits,
-    challenges: Option<&source_original_native::SourceOriginalChallengeHistoryViewV5<'_>>,
-    #[cfg(target_os = "linux")]
-    deployment_history: Option<DeploymentHistoryObserverV1<'_, '_>>,
-) -> Result<ReplayState, JournalError> {
-    replay_original_retained(
-        file, limits, challenges,
-        #[cfg(target_os = "linux")]
-        deployment_history,
-        None,
-    )
-}
-
-// The selected destination changes ownership on failure, never replay rules.
-// Ordinary calls inline to the original loop and local disposal order.
-fn replay_original_retained<R: Read + Seek + Borrow<File>>(
-    file: &mut R,
-    limits: JournalLimits,
-    challenges: Option<&source_original_native::SourceOriginalChallengeHistoryViewV5<'_>>,
-    #[cfg(target_os = "linux")]
-    mut deployment_history: Option<DeploymentHistoryObserverV1<'_, '_>>,
-    scratch: Option<&mut Option<ReadOnlyReplayScratchV1>>,
-) -> Result<ReplayState, JournalError> {
-    file.seek(SeekFrom::Start(0))?;
-    let mut native = NativeReplayBookkeeping::new();
-    let mut committed_namespaces = BTreeSet::new();
-    #[cfg(target_os = "linux")]
-    let mut q04_lower_history_present = false;
-    let mut state = BTreeMap::new();
-    let mut materialized_bytes = 0_usize;
-    let mut idempotency = BTreeMap::new();
-    let mut pending: Option<PendingTransaction> = None;
-    let mut compaction_prefix = true;
-    let mut compaction_index = 1_u64;
-    let mut compaction_last_key = None;
-    let mut materialized_compaction = false;
-    let mut source_challenge_history = Vec::new();
-    let mut source_challenge_history_bytes = 0;
-    let mut source_original_replay =
-        source_original_native::replay::SourceOriginalReplayCacheV5::default();
-    let mut source_history_compacted = false;
-    let mut reached_pending = None;
-    let mut reached_transaction = None;
-    let mut reached_frame = None;
-    let mut partial_frame = None;
-    let mut reached_prospective = None;
-    let retained = scratch.is_some();
-    let outcome: Result<(), JournalError> = (|| {
-        let source_journal_identity =
-            FileIdentity::of::<crate::journal::JournalError>(<R as Borrow<File>>::borrow(file))?;
-
-        loop {
-            let Some((frame, bytes_read)) = read_frame_retained(
-                file, native.coordinates().offset, limits.maximum_record_bytes,
-                retained.then_some(&mut partial_frame),
-            )? else {
-                break;
-            };
-            let frame_outcome: Result<(), JournalError> = (|| {
-                native.observe_frame(&frame, bytes_read)?;
-                let NativeReplayCoordinates {
-                    offset, durable_end, expected_sequence, durable_next_sequence,
-                    committed_transactions, ..
-                } = native.coordinates();
-
-                match frame.kind {
-                    FrameKind::Begin => {
-                        if pending.is_some() {
-                            return Err(JournalError::MalformedTransaction("nested begin frame"));
-                        }
-                        let count = transaction::decode_begin_count(
-                            &frame.payload, limits.maximum_records_per_transaction,
-                        )?;
-                        pending = Some(PendingTransaction {
-                            records: Vec::with_capacity(count),
-                            native: NativePendingTransaction::begin(&frame, count, offset, bytes_read)?,
-                        });
-                    }
-                    FrameKind::Record => {
-                        let transaction = pending.as_mut().ok_or(JournalError::MalformedTransaction(
-                            "record outside transaction",
-                        ))?;
-                        transaction.native.observe_record(&frame, transaction.records.len())?;
-                        transaction
-                            .records
-                            .push(decode_record(&frame.payload, limits)?);
-                    }
-                    FrameKind::Commit => {
-                        reached_pending = pending.take();
-                        let transaction = reached_pending.as_ref().ok_or(JournalError::MalformedTransaction(
-                            "commit outside transaction",
-                        ))?;
-                        transaction.native.validate_commit(&frame, transaction.records.len())?;
-                        let (begin_sequence, begin_offset) = transaction.native.begin_position();
-                        reached_transaction = Some(JournalTransaction::from_unvalidated_data(
-                            transaction.native.transaction_id(),
-                            std::mem::take(&mut reached_pending.as_mut()
-                                .ok_or(JournalError::ProtectedBoundary)?.records),
-                        ));
-                        let replay_transaction = reached_transaction.as_ref()
-                            .ok_or(JournalError::ProtectedBoundary)?;
-                        validate_transaction(&replay_transaction, limits)?;
-                        delete_batch::validate(&state, &replay_transaction, begin_sequence, limits)?;
-
-                        #[cfg(target_os = "linux")]
-                        if let Some(history) = deployment_history.as_mut() {
-                            history.observe(
-                                &replay_transaction, begin_sequence, frame.sequence, begin_offset, offset,
-                                &frame.payload[4..],
-                            )?;
-                        }
-
-                        let mut query_edge = None;
-                        let mut logical_replay = false;
-                        let mut first_successor_replay = false;
-                        let mut compaction_id = [0_u8; 16];
-                        compaction_id[..8].copy_from_slice(&compaction_index.to_le_bytes());
-                        compaction_id[8..].copy_from_slice(b"compact1");
-                        if compaction_prefix && *replay_transaction.id() == compaction_id {
-                            if delete_batch::has_dependencies(&state)
-                                || delete_batch::selected(&replay_transaction)
-                            {
-                                return Err(JournalError::ProtectedBoundary);
-                            }
-                            // Private compaction emits a sorted, PUT-only initial copy.
-                            // Its IDs alone never exempt an ordinary logical mutation.
-                            for record in replay_transaction.records() {
-                                let key = (record.namespace(), record.key().to_vec());
-                                if record.value().is_none()
-                                    || compaction_last_key
-                                        .as_ref()
-                                        .is_some_and(|last| *last >= key)
-                                    || state.contains_key(&key)
-                                {
-                                    return Err(JournalError::MalformedTransaction(
-                                        "invalid compaction snapshot",
-                                    ));
-                                }
-                                compaction_last_key = Some(key);
-                            }
-                            compaction_index = compaction_index
-                                .checked_add(1)
-                                .ok_or(JournalError::SequenceExhausted)?;
-                            materialized_compaction = true;
-                            source_history_compacted = true;
-                            source_original_replay.observe_compaction(
-                                &root_original_inventory::materialize(&state, &replay_transaction),
-                            );
-                        } else {
-                            if materialized_compaction {
-                                source_tree_successor::validate_replayed_state(&state, true)?;
-                                root_local_recovery::pending(&state)?;
-                                root_original_native::pending(&state, limits)?;
-                                root_original_inventory::validate_rejoined_capacity(
-                                    &state, materialized_bytes, durable_end, committed_transactions,
-                                    limits, durable_next_sequence,
-                                )?;
-                                materialized_compaction = false;
-                            }
-                            compaction_prefix = false;
-                            logical_replay = true;
-                            first_successor_replay = source_tree_successor::validate_replayed_transaction(
-                                &state, &replay_transaction, limits,
-                            )?;
-                            let source_edge = source_original_replay.replay_transaction(
-                                &state,
-                                &replay_transaction,
-                                challenges,
-                                limits,
-                                begin_sequence,
-                                frame.sequence,
-                                begin_offset,
-                                offset,
-                                committed_transactions.checked_add(1).ok_or(
-                                    JournalError::LimitExceeded("committed transaction count"),
-                                )?,
-                                source_journal_identity.physical_pair(),
-                            )?;
-                            if !source_edge {
-                                query_edge = root_original_inventory::replay_edge(
-                                    &state, &replay_transaction, limits,
-                                )?;
-                                if query_edge.is_none()
-                                    && !root_original_native::validate_replayed_transaction(
-                                        &state, &replay_transaction, limits, expected_sequence,
-                                    )?
-                                {
-                                    root_local_recovery::validate_replayed_transaction(
-                                        &state,
-                                        &replay_transaction,
-                                    )?;
-                                }
-                                if query_edge.is_none() {
-                                    root_original_inventory::preserve_other_owner(
-                                        &state, &replay_transaction, limits,
-                                    )?;
-                                }
-                            }
-                            source_original_native::challenge::capture_checkpoint(
-                                &mut source_challenge_history,
-                                &mut source_challenge_history_bytes,
-                                &replay_transaction,
-                                begin_sequence,
-                                frame.sequence,
-                                begin_offset,
-                                offset,
-                                limits,
-                            )?;
-                        }
-                        native.register_transaction(*replay_transaction.id())?;
-                        validate_idempotency_changes(&idempotency, replay_transaction.records())?;
-                        materialized_bytes = validate_materialized_change(
-                            &state,
-                            materialized_bytes,
-                            replay_transaction.records(),
-                            limits,
-                        )?;
-                        // Keep floor decoding at its original short-circuit
-                        // position; acquire a full prospective copy only for
-                        // the checks that actually consume it. Earlier errors
-                        // no longer acquire or retain that unnecessary clone.
-                        if logical_replay
-                            && (query_edge.is_some()
-                                || first_successor_replay
-                                || root_original_inventory::has_query_floor(&state)?
-                                || root_original_inventory::has_query_floor_after(&state, &replay_transaction)?)
-                        {
-                            reached_prospective = Some(root_original_inventory::materialize(&state, &replay_transaction));
-                            let prospective = reached_prospective.as_ref()
-                                .ok_or(JournalError::ProtectedBoundary)?;
-                            // Exact owner/settlement validation already ran above.
-                            // Empty-change accounting charges that exact post-state;
-                            // no new settlement interpretation or authority follows.
-                            validate_reserved_capacity(
-                                &prospective,
-                                materialized_bytes,
-                                &[],
-                                None,
-                                offset,
-                                committed_transactions.checked_add(1)
-                                    .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
-                                limits,
-                                None,
-                            )?;
-                            root_original_inventory::require_sequence_headroom(
-                                &prospective, expected_sequence,
-                            )?;
-                            if first_successor_replay {
-                                source_tree_successor::require_sequence_headroom(&prospective, expected_sequence)?;
-                            }
-                            reached_prospective = None;
-                        }
-                        for record in replay_transaction.records() {
-                            committed_namespaces.insert(record.namespace());
-                            #[cfg(target_os = "linux")]
-                            {
-                                q04_lower_history_present |= is_q04_lower_history_record_v1(record);
-                            }
-                            apply_record(&mut state, &mut idempotency, record)?;
-                        }
-                        native.finish_commit(
-                            replay_transaction.records().len(), limits.maximum_transactions,
-                        )?;
-                        reached_transaction = None;
-                        reached_pending = None;
-                    }
-                }
-                Ok(())
-            })();
-            if let Err(error) = frame_outcome {
-                if retained {
-                    reached_frame = Some(frame);
-                } else {
-                    // Match the ordinary commit locals' disposal before its frame.
-                    drop(reached_prospective.take());
-                    drop(reached_transaction.take());
-                    drop(reached_pending.take());
-                }
-                return Err(error);
-            }
-        }
-
-        source_tree_successor::validate_replayed_state(&state, materialized_compaction)?;
-        root_local_recovery::pending(&state)?;
-        root_original_native::pending(&state, limits)?;
-        let NativeReplayCoordinates {
-            durable_end, durable_next_sequence, committed_transactions, ..
-        } = native.coordinates();
-        root_original_inventory::validate_rejoined_capacity(
-            &state, materialized_bytes, durable_end, committed_transactions, limits,
-            durable_next_sequence,
-        )?;
-        Ok(())
-    })();
-    let NativeReplayCoordinates {
-        offset, durable_end, expected_sequence, durable_next_sequence,
-        committed_transactions, committed_records,
-    } = native.coordinates();
-    if let Some(destination) = scratch {
-        if outcome.is_err() || pending.is_some() || partial_frame.is_some() {
-            let failed = outcome.is_err();
-            *destination = Some(ReadOnlyReplayScratchV1 {
-                offset, durable_end, expected_sequence, durable_next_sequence,
-                committed_transactions, committed_records, materialized_bytes,
-                source_challenge_history_bytes,
-                transaction_ids: if failed { native.take_transaction_ids() } else { BTreeSet::new() },
-                committed_namespaces: if failed { std::mem::take(&mut committed_namespaces) } else { BTreeSet::new() },
-                state: if failed { std::mem::take(&mut state) } else { BTreeMap::new() },
-                idempotency: if failed { std::mem::take(&mut idempotency) } else { BTreeMap::new() },
-                pending,
-                reached_pending,
-                reached_transaction,
-                reached_frame,
-                partial_frame,
-                prospective: reached_prospective,
-                compaction_last_key,
-                source_challenge_history: if failed {
-                    std::mem::take(&mut source_challenge_history)
-                } else {
-                    Vec::new()
-                },
-                source_original_replay: if failed {
-                    std::mem::take(&mut source_original_replay)
-                } else {
-                    Default::default()
-                },
-            });
-        }
-    }
-    outcome?;
-    Ok(ReplayState {
-        durable_end,
-        next_sequence: durable_next_sequence,
-        committed_transactions,
-        committed_records,
-        transaction_ids: native.take_transaction_ids(),
-        committed_namespaces,
-        state,
-        materialized_bytes,
-        idempotency,
-        source_challenge_history,
-        source_original_replay,
-        source_history_compacted,
-        #[cfg(target_os = "linux")]
-        q04_lower_history_present,
-    })
-}
-
-// Closed lower clear-recipe DATA, not an append certificate. The actual
-// owner later verifies full native membership at these original coordinates.
-// SHA256(domain || owner:u8 || (BEu32 length || Cut680) ||
-//   (BEu32 length || names48) || (BEu32 length || NEXT:BEu64) ||
-//   (BEu32 length || concatenated SAME canonical BEGIN/DELETE/COMMIT frames)).
-#[cfg(target_os = "linux")]
-fn q04_lower_clear_native_digest_v1(
-    identity: &crate::policy_compiler::create_q04::Q04CutIdentityV1,
-    owner: crate::policy_compiler::create_q04::Q04TransactionOwnerV1,
-    names: ProtectedJournalNamesV1,
-    first_sequence: u64,
+#[cfg(test)]
+fn validate_replayed_source_transaction(
+    state: &source_tree_successor::State,
     transaction: &JournalTransaction,
-) -> Result<ObjectDigest, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-    use crate::policy_compiler::create_q04::{
-        CACHE_PENDING_KEY, CreateQ04ErrorV1, Q04TransactionOwnerV1, SOURCE_PENDING_KEY,
-    };
-
-    let (tag, namespace, key) = match owner {
-        Q04TransactionOwnerV1::Source => (1, RecordNamespace::SourceDomainPolicyHold, SOURCE_PENDING_KEY),
-        Q04TransactionOwnerV1::Cache => (2, RecordNamespace::DesiredState, CACHE_PENDING_KEY),
-        _ => return Err(CreateQ04ErrorV1::ChangedCut),
-    };
-    if first_sequence == 0 || transaction.records().len() != 1
-        || transaction.records()[0].namespace() != namespace
-        || transaction.records()[0].key() != key
-        || transaction.records()[0].value().is_some()
-    {
-        return Err(CreateQ04ErrorV1::ChangedCut);
-    }
-    let frames = encode_transaction(transaction, first_sequence)?;
-    let native_bytes = frames.iter().try_fold(0_usize, |total, frame| {
-        total.checked_add(frame.len()).ok_or(CreateQ04ErrorV1::Bounds)
-    })?;
-    let mut digest = Sha256::new();
-    digest.update(b"aos.sandbox.create-q04.lower-clear-native-recipe.v1\0");
-    digest.update([tag]);
-    for value in [identity.bytes().as_slice(), names.to_bytes().as_slice(), first_sequence.to_be_bytes().as_slice()] {
-        digest.update(u32::try_from(value.len()).map_err(|_| CreateQ04ErrorV1::Bounds)?.to_be_bytes());
-        digest.update(value);
-    }
-    digest.update(u32::try_from(native_bytes).map_err(|_| CreateQ04ErrorV1::Bounds)?.to_be_bytes());
-    for frame in frames {
-        digest.update(frame);
-    }
-    Ok(ObjectDigest::from_bytes(digest.finalize().into()))
+    limits: JournalLimits,
+    retaining: bool,
+    original: &mut Option<Box<source_tree_successor::SourceReplayTransactionOriginalsV1>>,
+) -> Result<bool, JournalError> {
+    semantic_replay::validate_replayed_source_transaction(state, transaction, limits, retaining, original)
 }
+
+// Each actual validation has a fresh pure destination. Only complete positive
+// validation disposes it; a negative remains in the same Native scratch through
+// the enclosing Source transport and currentness posts. This is no loan rearm.
+#[cfg(test)]
+fn validate_replayed_source_state(
+    state: &source_tree_successor::State,
+    compacted: bool,
+    retaining: bool,
+    original: &mut Option<Box<source_tree_successor::SourceReplayFamilyOriginalsV1>>,
+) -> Result<(), JournalError> {
+    semantic_replay::validate_replayed_source_state(state, compacted, retaining, original)
+}
+
 
 #[allow(clippy::too_many_arguments)]
 fn validate_reserved_capacity(
@@ -4031,93 +3291,16 @@ fn validate_reserved_capacity(
     prospective_journal_bytes: u64,
     prospective_transactions: usize,
     limits: JournalLimits,
-    root_local_edge: Option<RootOwnerEdge>,
+    _root_local_edge: Option<RootOwnerEdge>,
 ) -> Result<(), JournalError> {
-    let mut reservations =
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservations(
-            state,
-        )
-        .map_err(JournalError::from)?;
-    for record in records {
-        if record.namespace() != RecordNamespace::GlobalCapacityReservation {
-            continue;
-        }
-        match record.value() {
-            Some(value) => {
-                let decoded = if root_local_edge.is_some() {
-                    // Only a closed private local edge has passed whole-owner
-                    // validation above. Generic and legacy callers stay strict.
-                    aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservation(record.key(), value).map_err(JournalError::from)?
-                } else {
-                    aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservation(record.key(), value).map_err(JournalError::from)?
-                };
-                if reservations
-                    .insert(decoded.reservation_id, decoded)
-                    .is_some()
-                {
-                    return Err(JournalError::DuplicateRecordKey);
-                }
-            }
-            None => {
-                let identifier = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
-                    let value = state
-                        .get(&(record.namespace(), record.key().to_vec()))
-                        .ok_or(JournalError::ProtectedBoundary)?;
-                    aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservation(record.key(), value).map_err(JournalError::from)?
-                        .reservation_id
-                } else {
-                    settling_reservation.ok_or(JournalError::ProtectedBoundary)?
-                };
-                if record.key()
-                    != capacity_reservation::reservation_key(identifier).as_slice()
-                    || reservations.remove(&identifier).is_none()
-                {
-                    return Err(JournalError::MalformedRecord(
-                        "capacity settlement does not remove its exact reservation",
-                    ));
-                }
-            }
-        }
-    }
-    let (reserved_records, reserved_bytes, reserved_transactions) =
-        reservations.values().try_fold(
-            (0_usize, 0_u64, 0_usize),
-            |(records, bytes, transactions), reservation| {
-                Ok::<_, JournalError>((
-                    records
-                        .checked_add(reservation.maximum_records)
-                        .ok_or(JournalError::LimitExceeded("reserved record count"))?,
-                    bytes
-                        .checked_add(reservation.maximum_bytes)
-                        .ok_or(JournalError::JournalTooLarge)?,
-                    transactions
-                        .checked_add(reservation.maximum_transactions)
-                        .ok_or(JournalError::LimitExceeded("reserved transaction count"))?,
-                ))
-            },
-        )?;
-    let projected_entries = projected_materialized_record_count(state, records)?;
-    if prospective_materialized_bytes
-        .checked_add(
-            usize::try_from(reserved_bytes)
-                .map_err(|_| JournalError::LimitExceeded("reserved materialized bytes"))?,
-        )
-        .is_none_or(|bytes| bytes > limits.maximum_materialized_bytes)
-        || projected_entries
-            .checked_add(reserved_records)
-            .is_none_or(|count| count > limits.maximum_materialized_records)
-        || prospective_journal_bytes
-            .checked_add(reserved_bytes)
-            .is_none_or(|bytes| bytes > limits.maximum_journal_bytes)
-        || prospective_transactions
-            .checked_add(reserved_transactions)
-            .is_none_or(|count| count > limits.maximum_transactions)
-    {
-        return Err(JournalError::LimitExceeded(
-            "outstanding global capacity reservations",
-        ));
-    }
-    Ok(())
+    use aos_sandbox_broker::domain_transaction_custody::pressure::{
+        CapacityDeletionSelectorDataV1, validate_reserved_capacity_data_v1,
+    };
+    let deletion = CapacityDeletionSelectorDataV1::Reservation(settling_reservation);
+    validate_reserved_capacity_data_v1(
+        state, prospective_materialized_bytes, records, deletion,
+        prospective_journal_bytes, prospective_transactions, limits,
+    ).map_err(JournalError::from)
 }
 
 fn projected_materialized_record_count(
@@ -4149,35 +3332,18 @@ fn validate_materialized_change(
     .map_err(JournalError::from)
 }
 
+fn project_idempotency_record_error(
+    error: aos_sandbox_protocol::domain_ledger::readonly::IdempotencyRecordDataErrorV1,
+) -> JournalError {
+    JournalError::from(CanonicalJournalMechanicalErrorV1::from(error))
+}
+
 fn validate_idempotency_changes(
     idempotency: &BTreeMap<Vec<u8>, IdempotencyDecision>,
     records: &[JournalRecord],
 ) -> Result<(), JournalError> {
-    for record in records {
-        if record.namespace() != RecordNamespace::Idempotency {
-            continue;
-        }
-        let value = record.value().ok_or(JournalError::MalformedRecord(
-            "idempotency records cannot be deleted",
-        ))?;
-        let request_digest = value[..32]
-            .try_into()
-            .map_err(|_| JournalError::MalformedRecord("invalid idempotency digest"))?;
-        let operation_bytes = value[32..]
-            .try_into()
-            .map_err(|_| JournalError::MalformedRecord("invalid operation identity"))?;
-        let proposed = IdempotencyDecision {
-            request_digest,
-            operation_id: OperationId::from_bytes(operation_bytes),
-        };
-        if idempotency
-            .get(record.key())
-            .is_some_and(|existing| existing != &proposed)
-        {
-            return Err(JournalError::IdempotencyConflict);
-        }
-    }
-    Ok(())
+    aos_sandbox_protocol::domain_ledger::readonly::validate_idempotency_changes(idempotency, records)
+        .map_err(project_idempotency_record_error)
 }
 
 /// Carries only one fixed selected sizing extent, never record bytes or a key.
@@ -4239,25 +3405,8 @@ fn apply_idempotency_record(
     idempotency: &mut BTreeMap<Vec<u8>, IdempotencyDecision>,
     record: &JournalRecord,
 ) -> Result<(), JournalError> {
-    if record.namespace() == RecordNamespace::Idempotency {
-        let value = record.value().ok_or(JournalError::MalformedRecord(
-            "idempotency records cannot be deleted",
-        ))?;
-        let request_digest = value[..32]
-            .try_into()
-            .map_err(|_| JournalError::MalformedRecord("invalid idempotency digest"))?;
-        let operation_bytes = value[32..]
-            .try_into()
-            .map_err(|_| JournalError::MalformedRecord("invalid operation identity"))?;
-        idempotency.insert(
-            record.key().to_vec(),
-            IdempotencyDecision {
-                request_digest,
-                operation_id: OperationId::from_bytes(operation_bytes),
-            },
-        );
-    }
-    Ok(())
+    aos_sandbox_protocol::domain_ledger::readonly::apply_idempotency_record(idempotency, record)
+        .map_err(project_idempotency_record_error)
 }
 
 fn write_compacted(
@@ -4265,99 +3414,23 @@ fn write_compacted(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     limits: JournalLimits,
 ) -> Result<(), JournalError> {
-    let mut first_sequence = 1_u64;
-    let mut transaction_index = 0_u64;
-    let mut chunk = Vec::new();
-    let mut chunk_bytes = 0_usize;
-    for ((namespace, key), value) in state {
-        let record = RecordMutationRef {
-            namespace: *namespace,
-            key,
-            value: Some(value.as_slice()),
-        };
-        // Preserve lookahead representation refusal before flushing the prior chunk.
-        let record_bytes =
-            EncodedRecordLayout::new(key.len(), Some(value.len()))?.payload_bytes;
-        if !chunk.is_empty()
-            && (chunk.len() == limits.maximum_records_per_transaction
-                || chunk_bytes.saturating_add(record_bytes) > limits.maximum_transaction_bytes)
-        {
-            if transaction_index >= limits.maximum_transactions as u64 {
-                return Err(JournalError::LimitExceeded("committed transaction count"));
-            }
-            first_sequence = write_compaction_transaction(
-                file,
-                &chunk,
-                transaction_index,
-                first_sequence,
-                limits,
-            )?;
-            transaction_index = transaction_index
-                .checked_add(1)
-                .ok_or(JournalError::SequenceExhausted)?;
-            chunk.clear();
-            chunk_bytes = 0;
-        }
-        chunk_bytes = chunk_bytes
-            .checked_add(record_bytes)
-            .ok_or(JournalError::LimitExceeded("transaction bytes"))?;
-        chunk.push(record);
-    }
-    if !chunk.is_empty() {
-        if transaction_index >= limits.maximum_transactions as u64 {
-            return Err(JournalError::LimitExceeded("committed transaction count"));
-        }
-        write_compaction_transaction(file, &chunk, transaction_index, first_sequence, limits)?;
-    }
-    file.flush()?;
-    Ok(())
+    aos_sandbox_broker::canonical_journal::write_compacted_data(file, state, limits)
+        .map_err(|error| JournalError::from(CanonicalJournalMechanicalErrorV1::from(error)))
 }
 
-fn write_compaction_transaction(
-    file: &mut File,
-    records: &[RecordMutationRef<'_, RecordNamespace>],
-    transaction_index: u64,
-    first_sequence: u64,
-    limits: JournalLimits,
-) -> Result<u64, JournalError> {
-    let mut id = [0_u8; 16];
-    id[..8].copy_from_slice(&(transaction_index + 1).to_le_bytes());
-    id[8..].copy_from_slice(b"compact1");
-    let records = records
-        .iter()
-        .map(|record| {
-            let namespace = record.namespace;
-            let key = record.key.to_vec();
-            match record.value {
-                Some(value) => JournalRecord::put(namespace, key, value.to_vec()),
-                None => JournalRecord::delete(namespace, key),
-            }
-        })
-        .collect();
-    let transaction = JournalTransaction::new(id, records)?;
-    validate_transaction(&transaction, limits)?;
-    let frames = encode_transaction(&transaction, first_sequence)?;
-    for frame in &frames {
-        file.write_all(frame)?;
+// Only the ordinary adapter consumes its completed native causes. Selected
+// replacement errors stay in their actual permanent stage and original sink.
+fn project_ordinary_replacement_error(
+    error: aos_sandbox_broker::canonical_journal::coordinator::replacement::CanonicalReplacementErrorV1,
+) -> JournalError {
+    use aos_sandbox_broker::canonical_journal::coordinator::replacement::CanonicalReplacementErrorV1 as Error;
+    match error {
+        Error::Native(error) => JournalError::from(
+            CanonicalJournalMechanicalErrorV1::from_ordinary_native_v1(error),
+        ),
+        Error::Encode(error) => JournalError::from(CanonicalJournalMechanicalErrorV1::from(error)),
+        Error::Closed => JournalError::ProtectedBoundary,
     }
-    first_sequence
-        .checked_add(frames.len() as u64)
-        .ok_or(JournalError::SequenceExhausted)
-}
-
-fn reopen_replacement(
-    path: &Path,
-    limits: JournalLimits,
-) -> Result<(File, ReplayState), JournalError> {
-    let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-    let replay = replay(&mut file, limits)?;
-    if replay.durable_end != file.metadata()?.len() {
-        return Err(JournalError::MalformedTransaction(
-            "compacted journal has an uncommitted tail",
-        ));
-    }
-    file.seek(SeekFrom::End(0))?;
-    Ok((file, replay))
 }
 
 fn sync_parent(path: &Path) -> Result<(), JournalError> {
@@ -4394,7 +3467,7 @@ mod tests {
         HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
         JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
         ProtectedAncestry, ProtectedAuthorityScope, ProtectedJournalAuthority,
-        ProtectedJournalLockCustodyV1, ProtectedOwnerPolicy,
+        ProtectedJournalLockCustodyV1,
         ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport, encode_transaction,
         open_protected_file, protected_open_error,
         require_opened_directory_identity, traverse_protected_directory,
@@ -4506,7 +3579,7 @@ mod tests {
             ..JournalLimits::default()
         };
 
-        for namespace in [0, 77, 78, 79, 255] {
+        for namespace in [0, 79, 82, 83, 255] {
             let payload = [namespace, 0, 0, 255, 255, 255, 255];
 
             assert!(matches!(
@@ -4536,79 +3609,66 @@ mod tests {
     }
 
     #[test]
-    fn replay_rejects_unknown_namespace_before_attempting_later_frame_io() {
-        use std::borrow::Borrow;
-        use std::io::{self, Read, Seek};
+    fn readonly_cursor_replays_the_same_real_committed_prefix_without_ofd_seek() {
+        use aos_sandbox_journal::storage::ReadOnlyCapturedFileCursorV1;
 
-        struct FailAfterPrefix {
-            file: File,
-            prefix_bytes: usize,
-            read_bytes: usize,
-            attempted_later_read: bool,
+        let transaction = transaction(23, vec![JournalRecord::put(
+            RecordNamespace::DesiredState, b"scope".to_vec(), b"active".to_vec(),
+        )]);
+        let frames = encode_transaction(&transaction, 1).unwrap();
+        let mut file = tempfile::tempfile().unwrap();
+        for frame in &frames {
+            file.write_all(frame).unwrap();
         }
+        let length = file.metadata().unwrap().len();
+        file.seek(SeekFrom::Start(2)).unwrap();
+        let mut reader = ReadOnlyCapturedFileCursorV1::new(&file, length);
 
-        impl Read for FailAfterPrefix {
-            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-                if self.read_bytes >= self.prefix_bytes {
-                    self.attempted_later_read = true;
-                    return Err(io::Error::other("later frame read must not occur"));
-                }
-                let read = self.file.read(bytes)?;
-                self.read_bytes += read;
-                Ok(read)
-            }
-        }
+        let actual = super::ordinary_reread::replay_fixture_observed_v1(
+            &mut reader, JournalLimits::default(), None,
+            #[cfg(target_os = "linux")]
+            None,
+        ).unwrap();
 
-        impl Seek for FailAfterPrefix {
-            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
-                let position = self.file.seek(position)?;
-                self.read_bytes = usize::try_from(position).map_err(io::Error::other)?;
-                Ok(position)
-            }
-        }
+        assert_eq!(actual.committed_transactions, 1);
+        assert_eq!(actual.committed_records, 1);
+        assert_eq!(actual.durable_end, length);
+        assert_eq!(actual.native.state_data_v1().get(&(RecordNamespace::DesiredState, b"scope".to_vec())),
+            Some(&b"active".to_vec()));
+        assert_eq!((&file).stream_position().unwrap(), 2);
+    }
 
-        impl Borrow<File> for FailAfterPrefix {
-            fn borrow(&self) -> &File {
-                &self.file
-            }
-        }
+    #[test]
+    fn readonly_cursor_preserves_the_actual_unknown_namespace_replay_refusal() {
+        use aos_sandbox_journal::storage::{CapturedFileCursor, ReadOnlyCapturedFileCursorV1};
 
         let frames = aos_sandbox_journal::transaction::encode_transaction(
-            [7; 16],
-            1,
+            [24; 16], 1,
             [aos_sandbox_journal::transaction::NativeRecordRef {
-                namespace_byte: 255,
-                key: b"key",
-                value: None,
-            }]
-            .into_iter(),
-        )
-        .unwrap();
+                namespace_byte: 255, key: b"key", value: None,
+            }].into_iter(),
+        ).unwrap();
         let prefix = [&frames[0][..], &frames[1][..]].concat();
         let mut file = tempfile::tempfile().unwrap();
         file.write_all(&prefix).unwrap();
-        let mut reader = FailAfterPrefix {
-            file,
-            prefix_bytes: prefix.len(),
-            read_bytes: 0,
-            attempted_later_read: false,
-        };
+        let mut ordinary = CapturedFileCursor::new(&file, prefix.len() as u64);
+        let mut readonly = ReadOnlyCapturedFileCursorV1::new(&file, prefix.len() as u64);
 
-        let outcome = super::replay_original_retained(
-            &mut reader,
-            JournalLimits::default(),
-            None,
+        let ordinary = super::ordinary_reread::replay_fixture_observed_v1(
+            &mut ordinary, JournalLimits::default(), None,
             #[cfg(target_os = "linux")]
             None,
+        );
+        let readonly = super::ordinary_reread::replay_fixture_observed_v1(
+            &mut readonly, JournalLimits::default(), None,
+            #[cfg(target_os = "linux")]
             None,
         );
 
-        assert!(matches!(
-            outcome,
-            Err(JournalError::MalformedRecord("unknown record namespace")),
-        ));
-        assert_eq!(reader.read_bytes, prefix.len());
-        assert!(!reader.attempted_later_read);
+        assert!(matches!(ordinary,
+            Err(JournalError::MalformedRecord("unknown record namespace"))));
+        assert!(matches!(readonly,
+            Err(JournalError::MalformedRecord("unknown record namespace"))));
     }
 
     #[test]
@@ -4986,23 +4046,6 @@ mod tests {
     }
 
     #[test]
-    fn operator_empty_provisioning_mode_never_enables_repair() {
-        use super::ProtectedJournalOpenMode;
-
-        let ordinary_create = ProtectedJournalOpenMode::Ordinary { allow_create: true };
-        assert!(ordinary_create.allows_creation());
-        assert!(ordinary_create.allows_repair());
-
-        let ordinary_existing = ProtectedJournalOpenMode::Ordinary { allow_create: false };
-        assert!(!ordinary_existing.allows_creation());
-        assert!(!ordinary_existing.allows_repair());
-
-        let provision = ProtectedJournalOpenMode::StorageOperatorEmptyProvisionV4;
-        assert!(provision.allows_creation());
-        assert!(!provision.allows_repair());
-    }
-
-    #[test]
     fn operator_provisioning_refuses_all_physical_history() {
         assert!(
             super::reject_operator_provisioning_history::<crate::journal::JournalError>(0).is_ok()
@@ -5059,6 +4102,26 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn public_projection_queries_refuse_intrinsic_poison_even_for_absent_rows() {
+        use crate::controller_service::public_projection::PublicProjectionStoreV1;
+        use aos_sandbox_protocol::public_api::projection::PublicProjectionKindV1;
+        let directory = TestDirectory::new("poisoned-public-observer");
+        let (mut journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let resource = [1; 16];
+        let operation = OperationId::from_bytes([2; 16]);
+        assert!(PublicProjectionStoreV1::new(&journal).get(PublicProjectionKindV1::Sandbox, resource).unwrap().is_none());
+
+        journal.native.poison();
+
+        let observer = PublicProjectionStoreV1::new(&journal);
+        assert!(observer.get(PublicProjectionKindV1::Sandbox, resource).is_err());
+        assert!(observer.list(PublicProjectionKindV1::Sandbox, aos_sandbox_core::ProjectId::from_bytes([3; 16])).is_err());
+        assert!(observer.list_operation(operation).is_err());
+        assert!(matches!(journal.ensure_healthy(), Err(JournalError::Poisoned)));
+    }
+
     #[test]
     fn read_only_directory_must_match_mount_witness_before_replay() {
         let directory = TestDirectory::new("read-only-mount-identity");
@@ -5088,529 +4151,13 @@ mod tests {
         JournalTransaction::new([id; 16], records).unwrap()
     }
 
-    fn source_provider_capacity_request() -> GlobalCapacityReservationRequestV1 {
-        GlobalCapacityReservationRequestV1 {
-            purpose: GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
-            owner_namespace: RecordNamespace::SourceProviderAuthority,
-            owner_id: [1; 32],
-            owner_digest: [2; 32],
-            operation_id: [3; 16],
-            artifact_digest: [4; 32],
-            checkpoint_digest: [5; 32],
-            chain_head_digest: [6; 32],
-            future_transactions: 1,
-            terminal_records: 3,
-            terminal_bytes: 4096,
-            poison_records: 3,
-            poison_bytes: 4096,
-        }
-    }
 
-    #[test]
-    fn source_held_readonly_scope_refuses_legacy_factories_and_effects() {
-        // This local protected-open fixture tests scope refusal only. It is
-        // not the fixed production location or a qualified Security Session.
-        let directory = TestDirectory::new("source-held-readonly-scope");
-        let (mut journal, _) = protected_open(&directory.0).unwrap();
-        let before = (
-            journal.native.state().clone(),
-            journal.native.next_sequence(),
-            journal.native.committed_transactions(),
-            journal.native.file().metadata().unwrap().len(),
-        );
-        let request = source_provider_capacity_request();
-        let binding = GlobalCapacityReservationRecoveryBindingV1 {
-            purpose: request.purpose,
-            operation_id: request.operation_id,
-            artifact_digest: request.artifact_digest,
-            checkpoint_digest: request.checkpoint_digest,
-            chain_head_digest: request.chain_head_digest,
-            future_transactions: request.future_transactions,
-            terminal_records: request.terminal_records,
-            terminal_bytes: request.terminal_bytes,
-            poison_records: request.poison_records,
-            poison_bytes: request.poison_bytes,
-        };
-        let change = transaction(
-            1,
-            vec![JournalRecord::put(
-                RecordNamespace::SourceProviderAuthority,
-                b"forbidden".to_vec(),
-                vec![1],
-            )],
-        );
-        {
-            let mut view = ProtectedJournalAuthority {
-                journal: &mut journal,
-                namespace: RecordNamespace::SourceProviderAuthority,
-                scope: ProtectedAuthorityScope::SourceProviderHeldReadOnly,
-            };
-            let snapshot = view.snapshot().unwrap();
 
-            // Immutable Security artifact factories use these unchanged
-            // purpose checks, not a generic readable snapshot as authority.
-            assert!(matches!(
-                view.validate_source_provider_authority(),
-                Err(JournalError::ForeignAuthorityNamespace)
-            ));
-            assert!(matches!(
-                view.validate_source_provider_authority_snapshot(&snapshot),
-                Err(JournalError::ForeignAuthorityNamespace)
-            ));
-            assert!(view.validate_fixed_source_provider_storage().is_err());
-            assert!(view.fixed_source_provider_session_handoff().is_err());
-            assert!(matches!(
-                view.validate_snapshot_for_effect(&snapshot),
-                Err(JournalError::ForeignAuthorityNamespace)
-            ));
-            assert!(matches!(
-                view.prepare_global_capacity_reservation_v1(request, [2; 16]),
-                Err(JournalError::ForeignAuthorityNamespace)
-            ));
-            assert!(matches!(
-                view.recover_unique_global_capacity_reservation_v1(&binding),
-                Err(JournalError::ForeignAuthorityNamespace)
-            ));
-            assert!(matches!(
-                view.preflight_transactions(std::slice::from_ref(&change)),
-                Err(JournalError::ForeignAuthorityNamespace)
-            ));
-            let preflight = super::ProtectedJournalPreflight {
-                snapshot: view.snapshot().unwrap(),
-                transaction_digest: super::authority_preflight_digest(std::slice::from_ref(
-                    &change,
-                )),
-            };
-            assert!(matches!(
-                view.validate_preflight_for_effect(&preflight, std::slice::from_ref(&change)),
-                Err(JournalError::ForeignAuthorityNamespace)
-            ));
-            assert!(matches!(
-                view.commit(&change),
-                Err(JournalError::ForeignAuthorityNamespace)
-            ));
-        }
-        assert_eq!(
-            before,
-            (
-                journal.native.state().clone(),
-                journal.native.next_sequence(),
-                journal.native.committed_transactions(),
-                journal.native.file().metadata().unwrap().len(),
-            )
-        );
-        journal.ensure_healthy().unwrap();
-    }
 
-    #[test]
-    fn source_held_readonly_claim_requires_actual_fixed_physical_custody() {
-        let directory = TestDirectory::new("source-held-readonly-location");
-        let (mut journal, _) = protected_open(&directory.0).unwrap();
-        assert!(journal.claim_source_provider_held_readonly_v1().is_err());
-        journal.ensure_healthy().unwrap();
-        assert!(journal.native.state().is_empty());
-    }
 
-    #[test]
-    fn source_provider_native_capacity_replays_and_settles_under_fixed_purpose() {
-        let directory = TestDirectory::new("source-provider-native-capacity");
-        let request = source_provider_capacity_request();
-        let (mut journal, _) = protected_open(&directory.0).unwrap();
-        let reservation_id = {
-            let mut authority = journal
-                .claim_source_provider_native_terminal_authority_v1()
-                .unwrap();
-            authority.validate_source_provider_authority().unwrap();
 
-            let prepared = authority
-                .prepare_global_capacity_reservation_v1(request, [7; 16])
-                .unwrap();
-            assert_eq!(prepared.record().value().unwrap()[11], 3);
-            let reservation_id = prepared.reservation_id();
-            let admission = transaction(
-                7,
-                vec![
-                    JournalRecord::put(
-                        RecordNamespace::SourceProviderAuthority,
-                        b"owner".to_vec(),
-                        b"admitted".to_vec(),
-                    ),
-                    prepared.record().clone(),
-                ],
-            );
-            let preflight = authority
-                .preflight_global_capacity_reservation_v1(&prepared, &admission)
-                .unwrap();
-            let (_, committed_reservation) = authority
-                .commit_global_capacity_reservation_v1(&preflight, prepared, &admission)
-                .unwrap();
-            assert_eq!(committed_reservation.reservation_id(), reservation_id);
-            assert_eq!(
-                authority.get(b"owner").unwrap(),
-                Some(b"admitted".as_slice())
-            );
-            assert_eq!(authority.records().unwrap().count(), 1);
-            authority
-                .commit(&transaction(
-                    9,
-                    vec![JournalRecord::put(
-                        RecordNamespace::SourceProviderAuthority,
-                        b"ordinary".to_vec(),
-                        b"retained".to_vec(),
-                    )],
-                ))
-                .unwrap();
-            reservation_id
-        };
-        drop(journal);
 
-        let (mut reopened, _) = protected_open(&directory.0).unwrap();
-        let mut authority = reopened
-            .claim_source_provider_native_terminal_authority_v1()
-            .unwrap();
-        authority
-            .validate_global_capacity_reservation_set_v1(&[reservation_id].into())
-            .unwrap();
-        let reservation = authority
-            .recover_global_capacity_reservation_by_binding_v1(
-                reservation_id,
-                &GlobalCapacityReservationRecoveryBindingV1 {
-                    purpose: request.purpose,
-                    operation_id: request.operation_id,
-                    artifact_digest: request.artifact_digest,
-                    checkpoint_digest: request.checkpoint_digest,
-                    chain_head_digest: request.chain_head_digest,
-                    future_transactions: request.future_transactions,
-                    terminal_records: request.terminal_records,
-                    terminal_bytes: request.terminal_bytes,
-                    poison_records: request.poison_records,
-                    poison_bytes: request.poison_bytes,
-                },
-            )
-            .unwrap();
-        let terminal = transaction(
-            8,
-            vec![
-                JournalRecord::put(
-                    RecordNamespace::SourceProviderAuthority,
-                    b"owner".to_vec(),
-                    b"settled".to_vec(),
-                ),
-                reservation.settlement_record(),
-            ],
-        );
-        let preflight = authority
-            .preflight_reserved_terminal_v1(&reservation, &terminal)
-            .unwrap();
-        authority
-            .commit_reserved_terminal_v1(&preflight, reservation, &terminal)
-            .unwrap();
-        authority
-            .validate_global_capacity_reservation_set_v1(&Default::default())
-            .unwrap();
-        assert_eq!(
-            authority.get(b"owner").unwrap(),
-            Some(b"settled".as_slice())
-        );
-    }
 
-    #[test]
-    fn source_provider_native_capacity_rejects_foreign_purpose_and_namespace() {
-        let directory = TestDirectory::new("source-provider-native-isolation");
-        let (mut journal, _) = protected_open(&directory.0).unwrap();
-        let mut authority = journal
-            .claim_source_provider_native_terminal_authority_v1()
-            .unwrap();
-        let mut wrong_purpose = source_provider_capacity_request();
-        wrong_purpose.purpose = GlobalCapacityReservationPurposeV1::RuntimeExecution;
-        assert!(matches!(
-            authority.prepare_global_capacity_reservation_v1(wrong_purpose, [1; 16]),
-            Err(JournalError::ForeignAuthorityNamespace)
-        ));
-
-        let prepared = authority
-            .prepare_global_capacity_reservation_v1(source_provider_capacity_request(), [2; 16])
-            .unwrap();
-        let foreign_admission = transaction(
-            2,
-            vec![
-                JournalRecord::put(RecordNamespace::Effect, b"foreign".to_vec(), vec![1]),
-                prepared.record().clone(),
-            ],
-        );
-        assert!(matches!(
-            authority.preflight_global_capacity_reservation_v1(&prepared, &foreign_admission),
-            Err(JournalError::ForeignAuthorityNamespace)
-        ));
-        let generic_capacity = transaction(3, vec![prepared.record().clone()]);
-        assert!(matches!(
-            authority.commit(&generic_capacity),
-            Err(JournalError::ForeignAuthorityNamespace)
-        ));
-        let foreign_generic = transaction(
-            4,
-            vec![JournalRecord::put(
-                RecordNamespace::Effect,
-                b"foreign".to_vec(),
-                vec![1],
-            )],
-        );
-        assert!(matches!(
-            authority.commit(&foreign_generic),
-            Err(JournalError::ForeignAuthorityNamespace)
-        ));
-        drop(authority);
-
-        let generic = journal
-            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)
-            .unwrap();
-        assert!(matches!(
-            generic.prepare_global_capacity_reservation_v1(
-                source_provider_capacity_request(),
-                [5; 16]
-            ),
-            Err(JournalError::ForeignAuthorityNamespace)
-        ));
-    }
-
-    #[test]
-    fn source_provider_native_claim_rejects_foreign_state_and_deleted_history() {
-        for (label, delete_foreign) in [("retained", false), ("deleted", true)] {
-            let directory = TestDirectory::new(label);
-            let (mut journal, _) = protected_open(&directory.0).unwrap();
-            journal
-                .commit(&transaction(
-                    21,
-                    vec![JournalRecord::put(
-                        RecordNamespace::Effect,
-                        b"foreign".to_vec(),
-                        vec![1],
-                    )],
-                ))
-                .unwrap();
-            if delete_foreign {
-                journal
-                    .commit(&transaction(
-                        22,
-                        vec![JournalRecord::delete(
-                            RecordNamespace::Effect,
-                            b"foreign".to_vec(),
-                        )],
-                    ))
-                    .unwrap();
-                assert!(journal.records(RecordNamespace::Effect).next().is_none());
-            }
-
-            assert!(matches!(
-                journal.claim_source_provider_native_terminal_authority_v1(),
-                Err(JournalError::ForeignAuthorityNamespace)
-            ));
-            drop(journal);
-
-            let (mut reopened, _) = protected_open(&directory.0).unwrap();
-            assert!(matches!(
-                reopened.claim_source_provider_native_terminal_authority_v1(),
-                Err(JournalError::ForeignAuthorityNamespace)
-            ));
-        }
-    }
-
-    #[test]
-    fn source_provider_native_capacity_checks_postimage_materialized_bytes_on_commit() {
-        let directory = TestDirectory::new("source-provider-capacity-postimage-bytes");
-        let request = source_provider_capacity_request();
-        let (mut journal, _) = protected_open(&directory.0).unwrap();
-        {
-            let mut authority = journal
-                .claim_source_provider_native_terminal_authority_v1()
-                .unwrap();
-            let prepared = authority
-                .prepare_global_capacity_reservation_v1(request, [11; 16])
-                .unwrap();
-            let admission = transaction(
-                11,
-                vec![
-                    JournalRecord::put(
-                        RecordNamespace::SourceProviderAuthority,
-                        b"owner".to_vec(),
-                        b"admitted".to_vec(),
-                    ),
-                    prepared.record().clone(),
-                ],
-            );
-            let preflight = authority
-                .preflight_global_capacity_reservation_v1(&prepared, &admission)
-                .unwrap();
-            authority
-                .commit_global_capacity_reservation_v1(&preflight, prepared, &admission)
-                .unwrap();
-        }
-
-        // Leave one byte beyond the held promise, then grow the owner by two.
-        // The owner alone fits, but its postimage plus the promise must not.
-        journal.native.replace_limits_for_fixture(JournalLimits {
-            maximum_materialized_bytes: journal.native.materialized_bytes()
-                + usize::try_from(request.terminal_bytes).unwrap() + 1,
-            ..journal.native.limits()
-        });
-        let before_sequence = journal.snapshot_sequence();
-        let before_length = journal.native.file().metadata().unwrap().len();
-        let competing = transaction(
-            12,
-            vec![JournalRecord::put(
-                RecordNamespace::SourceProviderAuthority,
-                b"owner".to_vec(),
-                b"admitted++".to_vec(),
-            )],
-        );
-        let mut authority = journal
-            .claim_source_provider_native_terminal_authority_v1()
-            .unwrap();
-
-        assert!(matches!(
-            authority.preflight_transactions(std::slice::from_ref(&competing)),
-            Err(JournalError::LimitExceeded(
-                "outstanding global capacity reservations"
-            ))
-        ));
-        assert!(matches!(
-            authority.commit(&competing),
-            Err(JournalError::LimitExceeded(
-                "outstanding global capacity reservations"
-            ))
-        ));
-        assert_eq!(
-            authority.get(b"owner").unwrap(),
-            Some(b"admitted".as_slice())
-        );
-        drop(authority);
-
-        assert_eq!(journal.snapshot_sequence(), before_sequence);
-        assert_eq!(journal.native.file().metadata().unwrap().len(), before_length);
-        assert!(journal.ensure_healthy().is_ok());
-    }
-
-    #[test]
-    fn source_provider_native_capacity_preserves_near_limit_terminal_space() {
-        let mut request = source_provider_capacity_request();
-        request.terminal_records = 2;
-        request.poison_records = 2;
-        let limits_with_terminal_slots = |slots: usize| JournalLimits {
-            // Admission retains one owner and one reservation row. The held
-            // terminal branch needs two further slots until settlement.
-            maximum_materialized_records: 2 + slots,
-            ..JournalLimits::default()
-        };
-        let admission = |prepared: &super::PreparedGlobalCapacityReservationV1| {
-            transaction(
-                11,
-                vec![
-                    JournalRecord::put(
-                        RecordNamespace::SourceProviderAuthority,
-                        b"owner".to_vec(),
-                        b"admitted".to_vec(),
-                    ),
-                    prepared.record().clone(),
-                ],
-            )
-        };
-
-        let too_small = TestDirectory::new("source-provider-capacity-one-terminal-slot");
-        fs::set_permissions(&too_small.0, fs::Permissions::from_mode(0o700)).unwrap();
-        let uid = fs::metadata(&too_small.0).unwrap().uid();
-        let (mut journal, _) = Journal::open_protected_at_uid(
-            &too_small.0,
-            "protected.journal",
-            limits_with_terminal_slots(1),
-            uid,
-        )
-        .unwrap();
-        let authority = journal
-            .claim_source_provider_native_terminal_authority_v1()
-            .unwrap();
-        let prepared = authority
-            .prepare_global_capacity_reservation_v1(request, [11; 16])
-            .unwrap();
-        assert!(matches!(
-            authority.preflight_global_capacity_reservation_v1(&prepared, &admission(&prepared)),
-            Err(JournalError::LimitExceeded(
-                "outstanding global capacity reservations"
-            ))
-        ));
-        assert_eq!(authority.records().unwrap().count(), 0);
-        drop(authority);
-        assert_eq!(journal.snapshot_sequence(), 1);
-        drop(journal);
-
-        let enough = TestDirectory::new("source-provider-capacity-two-terminal-slots");
-        fs::set_permissions(&enough.0, fs::Permissions::from_mode(0o700)).unwrap();
-        let uid = fs::metadata(&enough.0).unwrap().uid();
-        let limits = limits_with_terminal_slots(2);
-        let (mut journal, _) =
-            Journal::open_protected_at_uid(&enough.0, "protected.journal", limits, uid).unwrap();
-        let mut authority = journal
-            .claim_source_provider_native_terminal_authority_v1()
-            .unwrap();
-        let prepared = authority
-            .prepare_global_capacity_reservation_v1(request, [11; 16])
-            .unwrap();
-        let admission = admission(&prepared);
-        let preflight = authority
-            .preflight_global_capacity_reservation_v1(&prepared, &admission)
-            .unwrap();
-        let (_, reservation) = authority
-            .commit_global_capacity_reservation_v1(&preflight, prepared, &admission)
-            .unwrap();
-        let competing = transaction(
-            12,
-            vec![JournalRecord::put(
-                RecordNamespace::SourceProviderAuthority,
-                b"competing".to_vec(),
-                vec![1],
-            )],
-        );
-        assert!(matches!(
-            authority.commit(&competing),
-            Err(JournalError::LimitExceeded(
-                "outstanding global capacity reservations"
-            ))
-        ));
-        assert_eq!(authority.get(b"competing").unwrap(), None);
-
-        let terminal = transaction(
-            13,
-            vec![
-                JournalRecord::put(
-                    RecordNamespace::SourceProviderAuthority,
-                    b"owner".to_vec(),
-                    b"settled".to_vec(),
-                ),
-                reservation.settlement_record(),
-            ],
-        );
-        let preflight = authority
-            .preflight_reserved_terminal_v1(&reservation, &terminal)
-            .unwrap();
-        authority
-            .commit_reserved_terminal_v1(&preflight, reservation, &terminal)
-            .unwrap();
-        drop(authority);
-        drop(journal);
-
-        let (mut reopened, _) =
-            Journal::open_protected_at_uid(&enough.0, "protected.journal", limits, uid).unwrap();
-        let authority = reopened
-            .claim_source_provider_native_terminal_authority_v1()
-            .unwrap();
-        authority
-            .validate_global_capacity_reservation_set_v1(&Default::default())
-            .unwrap();
-        assert_eq!(
-            authority.get(b"owner").unwrap(),
-            Some(b"settled".as_slice())
-        );
-        assert_eq!(authority.get(b"competing").unwrap(), None);
-    }
 
     #[test]
     fn namespace_codes_are_append_only_and_unknown_codes_fail_closed() {
@@ -5691,6 +4238,8 @@ mod tests {
             RecordNamespace::ControllerStorageOutputReserveAttempt,
             RecordNamespace::ControllerConsumerReadAttempt,
             RecordNamespace::NixOfflineProvisioning,
+            RecordNamespace::ControllerStorageCaptureAdmission,
+            RecordNamespace::RootExecutionNoApplyFloorV2,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = namespace as u8;
@@ -5703,7 +4252,13 @@ mod tests {
             RecordNamespace::ControllerResourceReservation,
         );
 
-        for code in [0, 77, 78, 79, 255] {
+        assert_eq!(RecordNamespace::CreateStorageHistory as u8, 81);
+        assert_eq!(
+            RecordNamespace::from_byte(81).unwrap(),
+            RecordNamespace::CreateStorageHistory,
+        );
+
+        for code in [0, 79, 82, 83, 255] {
             let error = RecordNamespace::from_byte(code).unwrap_err();
             assert!(matches!(
                 JournalError::from(error),
@@ -6019,7 +4574,9 @@ mod tests {
         ));
 
         let mut foreign_scope = original.duplicate_provenance();
-        foreign_scope.scope = ProtectedAuthorityScope::FixedMountSourceAcquisition;
+        foreign_scope.scope = ProtectedAuthorityScope::CapacityReservation(
+            GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
+        );
         assert!(matches!(
             authority.validate_snapshot_for_effect(&foreign_scope),
             Err(JournalError::StaleAuthoritySnapshot),
@@ -6074,15 +4631,9 @@ mod tests {
     fn read_only_test_open(
         path: &Path,
     ) -> Result<(Journal, ReadOnlyJournalNameWitness), JournalError> {
-        let directory = File::open(path)?;
-        let uid = directory.metadata()?.uid();
-
-        let (readback, _) = Journal::open_read_only_protected_directory(
-            path,
-            directory,
-            "protected.journal",
-            JournalLimits::default(),
-            uid,
+        let uid = std::fs::metadata(path)?.uid();
+        let (readback, _) = Journal::open_actual_ordinary_readonly_v1(
+            path, "protected.journal", JournalLimits::default(), uid, None, true,
         )?;
         Ok(readback.into_parts())
     }
@@ -6631,13 +5182,12 @@ mod tests {
             uid,
         )
         .unwrap();
-        let (journal, _) = Journal::open_protected_directory(
+        drop(directory);
+        let (journal, _) = Journal::open_protected_at_uid(
             &root.0.join("trusted/final"),
-            directory,
             "state.journal",
             JournalLimits::default(),
-            ProtectedOwnerPolicy::Exact(uid),
-            true,
+            uid,
         )
         .unwrap();
         drop(journal);
@@ -6934,6 +5484,34 @@ mod tests {
             Some(b"value".as_slice())
         );
         assert_eq!(fs::metadata(path).unwrap().len(), committed_length);
+    }
+
+    #[test]
+    fn resident_encoding_width_survives_an_externally_truncated_file() {
+        let directory = TestDirectory::new("resident-receiving-width");
+        let (mut journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        journal.commit(&transaction(1, vec![JournalRecord::put(
+            RecordNamespace::DesiredState,
+            b"resident".to_vec(),
+            vec![0x52; 4096],
+        )])).unwrap();
+        let before = journal.held_materialized_encoding_bytes_v1().unwrap();
+        assert!(before >= 4096);
+
+        // This explicit native fault changes the same File after its map was
+        // replayed. It grants no protected read, selected J or currentness.
+        journal.native.set_length_for_fixture(0).unwrap();
+        let (metadata, limits) = journal.held_native_receiving_metadata_v1();
+        let physical = metadata.unwrap().len();
+        let resident = journal.held_materialized_encoding_bytes_v1().unwrap();
+        let extent = super::protected_journal_preopen_replay_extent_for_prefix_v1(
+            limits, physical.max(resident),
+        ).unwrap();
+
+        assert_eq!(physical, 0);
+        assert_eq!(resident, before);
+        assert_eq!(extent.native_bytes, resident);
+        assert_eq!(journal.get(RecordNamespace::DesiredState, b"resident").unwrap().len(), 4096);
     }
 
     fn commit_fixture(path: &Path) -> u64 {
@@ -7371,8 +5949,8 @@ mod tests {
 
     #[test]
     fn publisher_registry_rejects_unprotected_or_poisoned_journal() {
-        use crate::publisher_authority::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
-        use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
+        use crate::publisher_admin::capabilities::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
+        use crate::publisher_admin::policy::{PublisherPolicyLimits, PublisherPolicyStore};
 
         let directory = TestDirectory::new("publisher-poison");
         let (mut unprotected, _) =
@@ -7437,191 +6015,11 @@ mod tests {
 
     #[cfg(all(target_os = "linux", feature = "kernel-tests"))]
     #[test]
-    fn poisoned_journal_blocks_holder_join_despite_cached_live_state() {
-        use crate::publisher_authority::PublisherCapabilityRegistry;
-        use crate::publisher_control::tests::join::{join_fixture, join_now, send_holder};
-        use crate::publisher_control::{PublisherControlError, PublisherJoinError};
-        use crate::publisher_ingress::PublisherIngressStore;
-
-        let mut fixture = join_fixture();
-        let capability = fixture.request.capability();
-        let instance = fixture.registered.registration.fields().instance;
-        {
-            let capabilities = PublisherCapabilityRegistry::load(
-                &mut fixture.registered.local.journal,
-                fixture.join_policy.authority_limits,
-            )
-            .unwrap();
-            assert_eq!(
-                capabilities.resolve_current(capability).unwrap().id(),
-                capability
-            );
-        }
-        {
-            let ingress = PublisherIngressStore::load(
-                &mut fixture.registered.local.journal,
-                fixture.join_policy.control.ingress_limits,
-            )
-            .unwrap();
-            let pending = ingress
-                .challenge(instance, fixture.request.challenge())
-                .unwrap()
-                .unwrap();
-            assert_eq!(&pending.fields().request, &fixture.request);
-        }
-        let authority_before: Vec<_> = fixture
-            .registered
-            .local
-            .journal
-            .records(RecordNamespace::PublisherAuthority)
-            .map(|(key, value)| (key.to_vec(), value.to_vec()))
-            .collect();
-        let ingress_before: Vec<_> = fixture
-            .registered
-            .local
-            .journal
-            .records(RecordNamespace::PublisherIngress)
-            .map(|(key, value)| (key.to_vec(), value.to_vec()))
-            .collect();
-        send_holder(&mut fixture.holder, &fixture.request);
-
-        // An append/sync error is always durability-ambiguous to the service.
-        // Keep the materialized capability and challenge maps in memory while
-        // forcing the protected handle into its permanently poisoned state.
-        fixture.registered.local.journal.native.replace_file(
-            OpenOptions::new()
-                .read(true)
-                .open(
-                    fixture
-                        .registered
-                        .local
-                        .directory
-                        .path()
-                        .join("issuance.journal"),
-                )
-                .unwrap(),
-        );
-        let failed = transaction(
-            0xee,
-            vec![JournalRecord::put(
-                RecordNamespace::DesiredState,
-                b"holder-join-poison".to_vec(),
-                b"must-not-authorize".to_vec(),
-            )],
-        );
-        assert!(matches!(
-            fixture.registered.local.journal.commit(&failed),
-            Err(JournalError::Io(_))
-        ));
-        assert!(matches!(
-            fixture
-                .registered
-                .local
-                .journal
-                .ensure_protected_authority(),
-            Err(JournalError::Poisoned)
-        ));
-
-        assert!(matches!(
-            join_now(&mut fixture),
-            Err(PublisherJoinError::Control(PublisherControlError::Journal(
-                JournalError::Poisoned
-            )))
-        ));
-        assert_eq!(
-            fixture.holders.capability_id(fixture.holder_id).unwrap(),
-            capability,
-            "the poisoned precheck must not consume and reinterpret the queued holder record"
-        );
-        let authority_after: Vec<_> = fixture
-            .registered
-            .local
-            .journal
-            .records(RecordNamespace::PublisherAuthority)
-            .map(|(key, value)| (key.to_vec(), value.to_vec()))
-            .collect();
-        let ingress_after: Vec<_> = fixture
-            .registered
-            .local
-            .journal
-            .records(RecordNamespace::PublisherIngress)
-            .map(|(key, value)| (key.to_vec(), value.to_vec()))
-            .collect();
-        assert_eq!(authority_after, authority_before);
-        assert_eq!(ingress_after, ingress_before);
-    }
-
-    #[cfg(all(target_os = "linux", feature = "kernel-tests"))]
-    #[test]
-    fn failed_local_issuance_commit_never_activates_a_session() {
-        use crate::local_provisioning::LocalProvisioningError;
-        use crate::local_provisioning::tests::{
-            anchor, fixture, open_journal, provision_samples, sample, sessions,
-        };
-        use crate::publisher_authority::{
-            PublisherAuthorityError, PublisherAuthorityLimits, PublisherCapabilityRegistry,
-        };
-
-        let mut fixture = fixture(true, true);
-        let mut sessions = sessions();
-        assert_eq!(
-            fixture
-                .journal
-                .records(RecordNamespace::PublisherAuthority)
-                .count(),
-            0,
-        );
-        // Preserve the healthy protected journal and policy state while making
-        // the first issuance append fail before any bytes can be written.
-        fixture.journal.native.replace_file(
-            OpenOptions::new()
-                .read(true)
-                .open(fixture.directory.path().join("issuance.journal"))
-                .unwrap(),
-        );
-        assert!(matches!(
-            provision_samples(&mut fixture, &mut sessions, vec![Ok(sample(150, 1000))]),
-            Err(LocalProvisioningError::Authority(
-                PublisherAuthorityError::Journal(JournalError::Io(_))
-            ))
-        ));
-        assert!(matches!(
-            fixture.journal.ensure_healthy(),
-            Err(JournalError::Poisoned)
-        ));
-        assert!(matches!(
-            PublisherCapabilityRegistry::load(
-                &mut fixture.journal,
-                PublisherAuthorityLimits::default(),
-            ),
-            Err(PublisherAuthorityError::Journal(JournalError::Poisoned)),
-        ));
-        // Capacity is exactly one. A new preparation can succeed only if the
-        // failed operation neither activated a session nor retained its slot.
-        let pending = sessions.prepare(fixture.scope, anchor()).unwrap();
-        drop(pending);
-
-        let directory = fixture.directory.path().to_path_buf();
-        drop(fixture.journal);
-        let reopened = open_journal(&directory);
-        assert_eq!(
-            reopened
-                .records(RecordNamespace::PublisherAuthority)
-                .count(),
-            0
-        );
-        // Replay, not the poisoned in-memory view, establishes that this
-        // injected pre-write failure committed neither capability nor audit.
-        reopened.ensure_protected_authority().unwrap();
-    }
-
-    #[cfg(all(target_os = "linux", feature = "kernel-tests"))]
-    #[test]
     fn failed_publisher_registration_commit_retires_execution_pin() {
-        use crate::local_provisioning::tests::{anchor, fixture, open_journal, sample};
-        use crate::publisher_control::{PublisherControlError, PublisherControlPolicy};
-        use crate::publisher_ingress::{PublisherIngressError, PublisherIngressLimits};
-        use crate::publisher_sessions::{
+        use crate::publisher_admin::registration::tests::fixture::{anchor, fixture, open_journal, sample};
+        use crate::publisher_admin::registration::{PublisherControlError, PublisherControlPolicy};
+        use crate::publisher_admin::audit::{PublisherIngressError, PublisherIngressLimits};
+        use aos_sandbox_publisher::publisher_sessions::{
             PublisherSessionError, PublisherSessionLimits, PublisherSessionRegistry,
             PublisherSessionScope,
         };
@@ -7667,7 +6065,7 @@ mod tests {
                 .unwrap(),
         );
         assert!(matches!(
-            crate::publisher_control::register(
+            crate::publisher_admin::registration::register(
                 &mut fixture.journal,
                 &mut sessions,
                 &mut listener,
@@ -7704,14 +6102,14 @@ mod tests {
 
     #[test]
     fn failed_capability_revocation_denies_reads_until_protected_replay() {
-        use crate::publisher_authority::{
+        use crate::publisher_admin::capabilities::{
             PublisherAuthorityError, PublisherAuthorityLimits, PublisherCapabilityRegistry,
         };
 
         let directory = TestDirectory::new("publisher-revocation-poison");
         let (mut journal, _) = protected_open(&directory.0).unwrap();
         let id = aos_sandbox_core::CapabilityId::new();
-        let capability = crate::publisher_authority::tests::capability(id, 200);
+        let capability = crate::publisher_admin::capabilities::tests::capability(id, 200);
         PublisherCapabilityRegistry::load(&mut journal, PublisherAuthorityLimits::default())
             .unwrap()
             .install_from_trusted_controller([1; 16], capability.clone())
@@ -7757,7 +6155,7 @@ mod tests {
 
     #[test]
     fn failed_controller_generation_update_denies_policy_reads_until_replay() {
-        use crate::publisher_policy::{
+        use crate::publisher_admin::policy::{
             PublisherControllerHeadV1, PublisherPolicyError, PublisherPolicyLimits,
             PublisherPolicyStore,
         };
@@ -7981,3 +6379,5 @@ mod tests {
         }
     }
 }
+
+mod catalog_maintenance;

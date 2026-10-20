@@ -5,7 +5,7 @@
 //! and rechecks every partition before publishing one public receipt.
 
 use aos_sandbox::cache_residency::{CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1, CachePinV1};
-use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
+use aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1;
 
 use super::{EffectFailure, Journal, OperationId, ProductionEffectExecutor};
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
@@ -36,7 +36,7 @@ impl ProductionEffectExecutor {
     pub(super) fn apply_public_cache_unpin(
         &mut self,
         operation_id: OperationId,
-        consumer: &RecheckedCacheConsumerV1,
+        consumer: &CacheConsumerDataV1,
         journal: &Journal,
         request: &DormantSandboxRequestKindV1,
     ) -> Result<EffectReceipt, EffectFailure> {

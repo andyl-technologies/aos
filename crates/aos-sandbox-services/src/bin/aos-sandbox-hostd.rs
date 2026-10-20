@@ -21,8 +21,8 @@ use aos_sandbox_host::authorization::{HostAuthorityConfigError, HostAuthorityV1}
 use aos_sandbox_host::broker::{HostBroker, HostCanaryCoordinatorV1, HostComponentControlBrokerOpeningV2};
 use aos_sandbox_host::catalog::{FileHostCatalog, FileHostCatalogPublisher};
 use aos_sandbox_host::plan::{
-    GuardianConfig, HostComponentControlStartupV2, VerifiedPhase0ClaimV1,
-    verify_optional_phase0_claim_v1, verify_original_host_control_phase0_claim_v2,
+    GuardianConfig, HostComponentControlStartupV2, HostComponentPhase0OriginalV2,
+    verify_optional_phase0_claim_v1,
 };
 use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::{PidfdNamespaceAccessProbe, SystemdOneShotWorker};
@@ -174,6 +174,7 @@ enum ComponentAssemblySite {
     Guardian,
     Phase0Mutex,
     Phase0,
+    BackendPreparation,
     Opening,
     Transfer,
     Serving,
@@ -190,7 +191,10 @@ struct ComponentAssembly {
     startup: Arc<Mutex<HostComponentControlStartupV2>>,
     capture: Option<Result<()>>,
     runtime: Option<std::io::Result<tokio::runtime::Runtime>>,
-    manager: Option<std::result::Result<aos_systemd::SystemdClient, aos_systemd::Error>>,
+    manager: Option<std::result::Result<Arc<aos_systemd::SystemdClient>, aos_systemd::Error>>,
+    manager_preparation: Option<Result<Option<aos_systemd::ReadonlyPropertyReceiveScheduleV2>>>,
+    manager_original: Option<aos_systemd::ReadonlyPropertyManagerOriginalV2>,
+    manager_transfer: Option<Result<()>>,
     admission: Option<Result<()>>,
     activation: Option<std::result::Result<ProductionBrokerSessionActivationV1, ProductionBrokerSessionActivationErrorV1>>,
     service: Option<std::result::Result<ProductionHostBrokerServiceV1, ProductionBrokerSessionActivationErrorV1>>,
@@ -204,7 +208,9 @@ struct ComponentAssembly {
     state: Option<Result<FileHostStateStore>>,
     authority: Option<std::result::Result<HostAuthorityV1, HostAuthorityConfigError>>,
     guardian: Option<Result<GuardianConfig>>,
-    phase0: Option<Result<Option<VerifiedPhase0ClaimV1>>>,
+    phase0: Option<HostComponentPhase0OriginalV2>,
+    phase0_result: Option<Result<()>>,
+    backend_preparation: Option<Result<()>>,
     worker: Option<SystemdOneShotWorker>,
     opening: HostComponentControlBrokerOpeningV2,
     opening_result: Option<Result<()>>,
@@ -227,6 +233,9 @@ impl ComponentAssembly {
             capture: None,
             runtime: None,
             manager: None,
+            manager_preparation: None,
+            manager_original: None,
+            manager_transfer: None,
             admission: None,
             activation: None,
             service: None,
@@ -241,6 +250,8 @@ impl ComponentAssembly {
             authority: None,
             guardian: None,
             phase0: None,
+            phase0_result: None,
+            backend_preparation: None,
             worker: None,
             opening: HostComponentControlBrokerOpeningV2::new(),
             opening_result: None,
@@ -271,6 +282,14 @@ impl ComponentAssembly {
             self.first.get_or_insert(ComponentAssemblySite::Capture);
             return Err(component_refusal());
         }
+        // Selection belongs to the already strict captured profile. A refused
+        // version-four budget is not projected to the old manager constructor.
+        self.manager_preparation = Some(original.prepare_readonly_manager_once_v2()
+            .map_err(|_| component_refusal()));
+        if !self.manager_preparation.as_ref().is_some_and(|result| result.is_ok()) {
+            self.first.get_or_insert(ComponentAssemblySite::Manager);
+            return Err(component_refusal());
+        }
         drop(original);
 
         self.boot[0] = Some(KernelBootId::current());
@@ -286,7 +305,24 @@ impl ComponentAssembly {
                 return Err(component_refusal());
             }
         };
-        self.manager = Some(runtime.block_on(aos_systemd::SystemdClient::connect()));
+        self.manager = Some(match self.manager_preparation.as_ref() {
+            Some(Ok(Some(schedule))) => {
+                // The same Control original consumed the finite whole-vector
+                // requirement before these actual raw/native destinations.
+                self.manager_original = Some(aos_systemd::ReadonlyPropertyManagerOriginalV2::new(*schedule));
+                match self.manager_original.as_mut() {
+                    Some(original) => runtime.block_on(original.connect_once()).and_then(|()| {
+                        match original.client_v2() {
+                            Some(client) => Ok(Arc::clone(client)),
+                            None => std::process::abort(),
+                        }
+                    }),
+                    None => std::process::abort(),
+                }
+            }
+            Some(Ok(None)) => runtime.block_on(aos_systemd::SystemdClient::connect()).map(Arc::new),
+            _ => std::process::abort(),
+        });
         let manager = match self.manager.as_ref().and_then(|result| result.as_ref().ok()) {
             Some(manager) => manager,
             None => {
@@ -301,6 +337,15 @@ impl ComponentAssembly {
                 return Err(component_refusal());
             }
         };
+        if self.manager_original.is_some() {
+            self.manager_transfer = Some(original.adopt_readonly_manager_once_v2(
+                &mut self.manager_original, manager,
+            ).map_err(|_| component_refusal()));
+            if !self.manager_transfer.as_ref().is_some_and(|result| result.is_ok()) {
+                self.first.get_or_insert(ComponentAssemblySite::Manager);
+                return Err(component_refusal());
+            }
+        }
         self.admission = Some(runtime.block_on(original.admit_once(manager)).map_err(|_| component_refusal()));
         if !self.admission.as_ref().is_some_and(|result| result.is_ok()) {
             self.first.get_or_insert(ComponentAssemblySite::Admission);
@@ -403,18 +448,23 @@ impl ComponentAssembly {
             return Err(component_refusal());
         }
 
-        let original = match self.startup.lock() {
+        let mut original = match self.startup.lock() {
             Ok(original) => original,
             Err(_) => {
                 self.first.get_or_insert(ComponentAssemblySite::Phase0Mutex);
                 return Err(component_refusal());
             }
         };
-        self.phase0 = Some(runtime.block_on(verify_original_host_control_phase0_claim_v2(
-            &original, std::path::Path::new(&credential_directory), std::path::Path::new(STATE_ROOT), nspawn, policy,
-        )));
+        self.phase0 = Some(HostComponentPhase0OriginalV2::new());
+        self.phase0_result = Some(match self.phase0.as_mut() {
+            Some(phase0) => runtime.block_on(phase0.observe_once_v2(
+                &mut original, manager, std::path::Path::new(&credential_directory),
+                std::path::Path::new(STATE_ROOT), nspawn, policy,
+            )),
+            None => Err(component_refusal()),
+        });
         drop(original);
-        if !self.phase0.as_ref().is_some_and(|result| result.is_ok()) {
+        if !self.phase0_result.as_ref().is_some_and(|result| result.is_ok()) {
             self.first.get_or_insert(ComponentAssemblySite::Phase0);
             return Err(component_refusal());
         }
@@ -464,6 +514,20 @@ impl ComponentAssembly {
             self.broker = Some(broker.with_guardian(guardian).with_protected_agent_launch());
         } else {
             std::process::abort();
+        }
+        let has_claim = self.phase0.as_ref().map(|phase0| phase0.has_claim_v2());
+        self.backend_preparation = Some(match has_claim {
+            Some(Ok(true)) => match self.broker.as_mut() {
+                Some(broker) => broker.install_component_backend_preparation_once_v2(&mut self.phase0),
+                None => Err(component_refusal()),
+            },
+            // Optional absence preserves the observation-only installed Host.
+            Some(Ok(false)) => Ok(()),
+            _ => Err(component_refusal()),
+        });
+        if !matches!(self.backend_preparation, Some(Ok(()))) {
+            self.first.get_or_insert(ComponentAssemblySite::BackendPreparation);
+            return Err(component_refusal());
         }
         Ok(())
     }
@@ -580,12 +644,19 @@ fn serve_host(
                     return Err(production_error(error));
                 }
                 Err(ProductionHostBrokerServiceErrorV1::Request(error)) => {
-                    eprintln!("aos-sandbox-hostd: authenticated request failed: {error}");
+                    match host.launch_failure_view_v2() {
+                        Ok(Some(cause)) => eprintln!("aos-sandbox-hostd: authenticated request failed: {cause}"),
+                        _ => eprintln!("aos-sandbox-hostd: authenticated request failed: {error}"),
+                    }
                 }
                 Err(
                     error @ (ProductionHostBrokerServiceErrorV1::GuestRuntime(_)
-                    | ProductionHostBrokerServiceErrorV1::GuestSession(_)),
+                    | ProductionHostBrokerServiceErrorV1::GuestSession(_)
+                    | ProductionHostBrokerServiceErrorV1::GuestLaunch(_)),
                 ) => {
+                    if let Ok(Some(cause)) = host.launch_failure_view_v2() {
+                        eprintln!("aos-sandbox-hostd: retained native handoff failed: {cause}");
+                    }
                     return Err(HostError::State(error.to_string()));
                 }
             }

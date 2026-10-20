@@ -79,10 +79,8 @@ pub(crate) fn read_fixed_signer_cache_object_view_v1(
     reject_legacy_object_root()?;
     let signer_uid = rustix::process::geteuid().as_raw();
     let mount = require_signer_mount(SIGNER_OBJECT_VIEW, FIXED_CACHE_ROOT, signer_uid)?;
-    let root: OwnedFd = rustix::fs::open(
+    let root: OwnedFd = aos_sandbox_broker::physical_cache_observation::open_readonly_root_v1(
         SIGNER_OBJECT_VIEW,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
     )?;
     let root_identity = inspect_root(&root)?;
     if !mount.matches_opened_root(root_identity.device, root_identity.inode) {

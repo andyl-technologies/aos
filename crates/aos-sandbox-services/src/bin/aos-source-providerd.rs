@@ -17,10 +17,12 @@ use std::time::Duration;
 use aos_sandbox_broker_session_security::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerSessionActivationErrorV1,
     ProductionSourceProviderCatalogInstallErrorV1, ProductionSourceProviderIngressErrorV1,
-    ProductionSourceProviderIngressV1, ProductionSourceProviderStorageReadbackV1,
-    ProductionSelectedSourceProviderOriginalV1,
+    ProductionSourceProviderStorageReadbackV1,
     install_fixed_source_provider_catalog_credential,
     install_fixed_selected_source_provider_catalog_credential, production_deadline_after,
+};
+use aos_sandbox_services::production_source_provider::{
+    ProductionSourceProviderIngressV1, ProductionSelectedSourceProviderOriginalV1,
 };
 use aos_sandbox_source_provider::{
     FixedProviderBackendRequestOutcomeV1, FixedProviderIngressProgressV1,

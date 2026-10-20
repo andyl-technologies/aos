@@ -4,7 +4,10 @@
 //! can alter a host effect: portable descriptors, opaque catalog handles,
 //! limits, feature requirements, and the exact assignment. Resolved host
 //! paths, kernel identities, descriptor numbers, PIDs, BOOTTIME deadlines,
-//! and response ceilings are deliberately absent.
+//! and response ceilings are deliberately absent. Version two additionally
+//! binds the full current-publication304 beside immutable creation266 evidence.
+//! Version three binds the complete fresh Stop cleanup subject, including its
+//! immutable original Recover cutoff; it cannot reuse an ordinary Stop grant.
 
 use aos_proto::aos::sandbox::local::v1::RuntimeAction;
 use aos_sandbox_core::{
@@ -71,7 +74,7 @@ impl CanonicalHostSemanticsV1 {
 pub fn canonical_host_semantics_v1(
     request: &ValidatedRuntimeRequest,
 ) -> Result<CanonicalHostSemanticsV1, HostSemanticError> {
-    canonical_semantics(request.action(), request.fence(), request.launch_plan())
+    canonical_semantics(request.action(), request.fence(), request.launch_plan(), request.host_stop_cleanup_v1())
 }
 
 /// Derives portable semantics from inert, structurally validated template inputs.
@@ -86,19 +89,59 @@ pub fn canonical_host_semantics_v1(
 pub fn canonical_host_template_semantics_v1(
     template: &ValidatedRuntimeTemplateV1,
 ) -> Result<CanonicalHostSemanticsV1, HostSemanticError> {
-    canonical_semantics(template.action(), template.fence(), template.launch_plan())
+    canonical_semantics(template.action(), template.fence(), template.launch_plan(), template.host_stop_cleanup_v1())
+}
+
+// The shared initial Start normalizer requires this exact record. Older
+// creation-only native requests retain their original semantic tuple, while a
+// fresh Start cannot derive signing preparation through that absence branch.
+pub(crate) fn require_start_host_current_publication_v2(
+    plan: &ValidatedRuntimePlan,
+    assignment: aos_sandbox_core::BrokerAssignment,
+    lease_digest: aos_sandbox_core::ObjectDigest,
+) -> Result<(), HostSemanticError> {
+    let current = plan.current_guest_root_publication_v2()
+        .ok_or(HostSemanticError::InvalidTarget)?;
+    require_current_publication_assignment_v2(plan, assignment, current)?;
+    if current.ownership_lease_digest_v2() != lease_digest.as_bytes() {
+        return Err(HostSemanticError::InvalidTarget);
+    }
+    Ok(())
+}
+
+fn require_current_publication_assignment_v2(
+    plan: &ValidatedRuntimePlan,
+    assignment: aos_sandbox_core::BrokerAssignment,
+    current: &crate::semantics::storage_guest_root::StorageGuestRootCurrentPublicationDataV2,
+) -> Result<(), HostSemanticError> {
+    if current.current_assignment_v2().map_err(|_| HostSemanticError::InvalidTarget)? != assignment
+        || current.arguments_v2().canonical_bytes()[104..136] != *plan.workspace_handle()
+    {
+        return Err(HostSemanticError::InvalidTarget);
+    }
+    Ok(())
 }
 
 fn canonical_semantics(
     action: RuntimeAction,
     fence: &ValidatedAssignmentFence,
     launch_plan: Option<&ValidatedRuntimePlan>,
+    cleanup: Option<&crate::host_stop_cleanup::HostStopCleanupSubjectDataV1>,
 ) -> Result<CanonicalHostSemanticsV1, HostSemanticError> {
     let (verb, target, action_code) = action_semantics(action, fence)?;
 
     let mut encoder = Encoder::new();
     encoder.field(1, FORMAT_MAGIC)?;
-    encoder.field(2, &FORMAT_VERSION.to_be_bytes())?;
+    let format_version = if cleanup.is_some() {
+        3_u16
+    } else if launch_plan
+        .is_some_and(|plan| plan.current_guest_root_publication_v2().is_some())
+    {
+        2_u16
+    } else {
+        FORMAT_VERSION
+    };
+    encoder.field(2, &format_version.to_be_bytes())?;
     encoder.field(3, &[action_code])?;
     encoder.field(4, fence.sandbox_id())?;
     encoder.field(5, fence.incarnation_id())?;
@@ -132,10 +175,21 @@ fn canonical_semantics(
         }
         encoder.field(17, &features)?;
         encoder.field(18, plan.attachment_anchor_handle())?;
+        if let Some(current) = plan.current_guest_root_publication_v2() {
+            require_current_publication_assignment_v2(plan,
+                fence.broker_assignment().map_err(|_| HostSemanticError::InvalidTarget)?, current)?;
+            encoder.field(19, &current.encode_v2())?;
+        }
     } else {
         for tag in 10..=17 {
             encoder.field(tag, &[])?;
         }
+    }
+    if let Some(cleanup) = cleanup {
+        if action != RuntimeAction::RUNTIME_ACTION_STOP {
+            return Err(HostSemanticError::InvalidTarget);
+        }
+        encoder.field(20, &cleanup.encode_v1())?;
     }
     Ok(CanonicalHostSemanticsV1 {
         commitment: BrokerArgumentCommitment::for_canonical_bytes(&encoder.bytes),
@@ -396,4 +450,58 @@ mod tests {
         .unwrap();
         assert_ne!(first.commitment(), substituted.commitment());
     }
+
+    fn current_publication(
+        assignment: aos_sandbox_core::BrokerAssignment,
+        lease: u8,
+        effect: u8,
+    ) -> crate::semantics::storage_guest_root::StorageGuestRootCurrentPublicationDataV2 {
+        use crate::semantics::storage_guest_root::{
+            CanonicalStorageGuestRootArgumentsV1, StorageGuestRootCurrentPublicationDataV2,
+        };
+        let arguments = CanonicalStorageGuestRootArgumentsV1::from_protected_assignment(
+            assignment, [12; 16], [8; 32], [13; 16],
+        ).unwrap();
+        StorageGuestRootCurrentPublicationDataV2::from_data_v2(
+            arguments, [14; 32], [effect; 32], [15; 32], [lease; 32], [16; 16],
+        ).unwrap()
+    }
+
+    #[test]
+    fn fresh_start_requires_current_publication_and_its_exact_lease() {
+        let mut request = request(RuntimeAction::RUNTIME_ACTION_LAUNCH, 1_000);
+        let assignment = request.fence().broker_assignment().unwrap();
+        let lease = aos_sandbox_core::ObjectDigest::from_bytes([17; 32]);
+        assert!(require_start_host_current_publication_v2(
+            request.launch_plan().unwrap(), assignment, lease,
+        ).is_err());
+
+        request.launch_plan.as_mut().unwrap().current_guest_root_publication_v2 =
+            Some(current_publication(assignment, 17, 18));
+        assert!(require_start_host_current_publication_v2(
+            request.launch_plan().unwrap(), assignment, lease,
+        ).is_ok());
+        assert!(require_start_host_current_publication_v2(
+            request.launch_plan().unwrap(), assignment,
+            aos_sandbox_core::ObjectDigest::from_bytes([19; 32]),
+        ).is_err());
+    }
+
+    #[test]
+    fn signed_host_meaning_commits_the_whole_current_publication() {
+        let mut request = request(RuntimeAction::RUNTIME_ACTION_LAUNCH, 1_000);
+        let assignment = request.fence().broker_assignment().unwrap();
+        let ordinary = canonical_host_semantics_v1(&request).unwrap().commitment();
+        request.launch_plan.as_mut().unwrap().current_guest_root_publication_v2 =
+            Some(current_publication(assignment, 17, 18));
+        let current = canonical_host_semantics_v1(&request).unwrap().commitment();
+        assert_ne!(ordinary, current);
+
+        request.launch_plan.as_mut().unwrap().current_guest_root_publication_v2 =
+            Some(current_publication(assignment, 17, 20));
+        assert_ne!(current, canonical_host_semantics_v1(&request).unwrap().commitment());
+        request.launch_plan.as_mut().unwrap().workspace_handle = [21; 32];
+        assert!(canonical_host_semantics_v1(&request).is_err());
+    }
+
 }

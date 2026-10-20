@@ -9,8 +9,16 @@
 //! part of launch. Backend readiness still requires independently verified
 //! phase-0 filter and shifted-payload evidence before Host may advertise Apply.
 
-use std::fs::File;
-use std::io::{Read as _, Write as _};
+mod pins;
+mod launch;
+mod publication_native;
+pub(crate) mod publication;
+pub use launch::HostLaunchCatalogOriginalV2;
+pub use publication::{
+    HostCatalogPublicationCallsiteV2, HostCatalogPublicationCompletedV2,
+    HostCatalogPublicationFailureViewV2,
+};
+
 use std::os::fd::AsFd as _;
 use std::path::Path;
 
@@ -80,6 +88,27 @@ pub enum HostCatalogPublicationReadback {
 }
 
 impl FileHostCatalog {
+    // The actual production catalog donates its already-held fixed root. No
+    // trait accepts a caller path, descriptor or fabricated Storage proof.
+    pub(crate) fn capture_execution_storage_original_v2(
+        &self, original: &mut crate::storage_existing_output::StorageExistingOutputOriginalV2,
+    ) -> Result<()> {
+        let root = self.root_export_cgroup.as_ref().ok_or_else(|| {
+            HostError::Catalog("Storage root export cgroup is unavailable".to_owned())
+        })?;
+        original.capture_client_once(root)
+    }
+
+    pub(crate) fn capture_execution_capture_original_v3(
+        &self,
+        original: &mut crate::storage_existing_output::capture::StorageCaptureOriginalV2,
+    ) -> Result<()> {
+        let root = self.root_export_cgroup.as_ref().ok_or_else(|| {
+            HostError::Catalog("Storage root export cgroup is unavailable".to_owned())
+        })?;
+        original.capture_client_once(root)
+    }
+
     pub(crate) fn retain_canary_root_export_original(
         &self,
         owner: &mut crate::storage_root_export::HostCanaryRootExportOriginalV1,
@@ -158,28 +187,9 @@ impl FileHostCatalogPublisher {
     /// current or proposed catalog is invalid, the transition loses identity
     /// continuity, or atomic persistence and exact readback fail.
     pub fn publish(&self, snapshot: &HostCatalogSnapshot) -> Result<HostCatalogPublicationOutcome> {
-        let encoded = snapshot.encode()?;
-        let _publication_lock = lock_catalog_root(&self.root)?;
-        let current = read_catalog_snapshot(&self.root)?;
-
-        if let Some((current_snapshot, current_bytes)) = current.as_ref() {
-            if current_snapshot.generation() == snapshot.generation() && current_bytes == &encoded {
-                return Ok(HostCatalogPublicationOutcome::Replay);
-            }
-            validate_catalog_transition(current_snapshot, snapshot)?;
-        }
-
-        publish_catalog_bytes(&self.root, &encoded)?;
-        let (_, visible_bytes) = read_catalog_snapshot(&self.root)?.ok_or_else(|| {
-            HostError::Catalog("published host catalog disappeared during readback".to_owned())
-        })?;
-        if visible_bytes != encoded {
-            return Err(HostError::Catalog(
-                "published host catalog failed exact readback".to_owned(),
-            ));
-        }
-
-        Ok(HostCatalogPublicationOutcome::Published)
+        let mut original = publication_native::PublicationNativeOriginal::default();
+        original.publish(&self.root, snapshot, &mut publication_native::Receiving::Ordinary)
+            .map_err(|_| original.ordinary_error())
     }
 
     /// Resolves an ambiguous publication through locked durable readback.
@@ -198,28 +208,9 @@ impl FileHostCatalogPublisher {
         &self,
         intended: &HostCatalogSnapshot,
     ) -> Result<HostCatalogPublicationReadback> {
-        let intended_bytes = intended.encode()?;
-        let _publication_lock = lock_catalog_root(&self.root)?;
-        rustix::fs::fsync(self.root.as_fd()).map_err(catalog_error)?;
-        let first = read_catalog_snapshot(&self.root)?;
-        rustix::fs::fsync(self.root.as_fd()).map_err(catalog_error)?;
-        let second = read_catalog_snapshot(&self.root)?;
-        if first != second {
-            return Err(HostError::Catalog(
-                "host catalog changed during ambiguity readback".to_owned(),
-            ));
-        }
-
-        let Some((visible, visible_bytes)) = first else {
-            return Ok(HostCatalogPublicationReadback::Absent);
-        };
-        if visible.generation() == intended.generation() && visible_bytes == intended_bytes {
-            return Ok(HostCatalogPublicationReadback::Committed);
-        }
-        if validate_catalog_transition(&visible, intended).is_ok() {
-            return Ok(HostCatalogPublicationReadback::Absent);
-        }
-        Ok(HostCatalogPublicationReadback::Conflicting)
+        let mut original = publication_native::PublicationNativeOriginal::default();
+        original.resolve(&self.root, intended, &mut publication_native::Receiving::Ordinary)
+            .map_err(|_| original.ordinary_error())
     }
 }
 
@@ -229,7 +220,64 @@ impl HostCatalog for FileHostCatalog {
         fence: &ValidatedAssignmentFence,
         plan: &ValidatedRuntimePlan,
     ) -> Result<ResolvedLaunchResources> {
-        let snapshot = self.snapshot()?;
+        self.resolve_catalog_recipe_v2(fence, plan, &mut launch::CatalogResolutionDispositionV2::Ordinary)
+    }
+
+    fn resolve_launch_v2(
+        &self,
+        fence: &ValidatedAssignmentFence,
+        plan: &ValidatedRuntimePlan,
+        receiving: &mut crate::plan::HostLaunchCatalogReceivingV2<'_, '_>,
+        original: &mut HostLaunchCatalogOriginalV2,
+    ) -> Result<ResolvedLaunchResources> {
+        original.resolve_once(self, fence, plan, receiving)
+    }
+
+    fn export_root_mount_launch_v2(
+        &self,
+        workspace: &ResolvedWorkspace,
+        receiving: &mut crate::plan::HostLaunchCatalogReceivingV2<'_, '_>,
+        original: &mut HostLaunchCatalogOriginalV2,
+    ) -> Result<DetachedMount> {
+        let root = self.root_export_cgroup.as_ref().ok_or_else(||
+            HostError::Catalog("Storage root export cgroup is unavailable".to_owned()))?;
+        original.export_root_mount_once_v2(root, workspace, receiving)
+    }
+
+    fn export_root_mount(&self, workspace: &ResolvedWorkspace) -> Result<DetachedMount> {
+        let root = self.root_export_cgroup.as_ref().ok_or_else(|| {
+            HostError::Catalog("Storage root export cgroup is unavailable".to_owned())
+        })?;
+        let duplicate = root
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| HostError::Catalog(error.to_string()))?;
+        let root = CgroupV2Root::from_owned(duplicate)
+            .map_err(|error| HostError::Catalog(error.to_string()))?;
+        StorageRootMountClientV1::new(root)?.export(workspace)
+    }
+}
+
+impl FileHostCatalog {
+    fn resolve_catalog_recipe_v2(
+        &self,
+        fence: &ValidatedAssignmentFence,
+        plan: &ValidatedRuntimePlan,
+        disposition: &mut launch::CatalogResolutionDispositionV2<'_, '_, '_>,
+    ) -> Result<ResolvedLaunchResources> {
+        let snapshot = disposition.snapshot(self)?;
+        let result = self.resolve_snapshot_recipe_v2(&snapshot, fence, plan, disposition);
+        disposition.retain_snapshot(snapshot);
+        result
+    }
+
+    fn resolve_snapshot_recipe_v2(
+        &self,
+        snapshot: &HostCatalogSnapshot,
+        fence: &ValidatedAssignmentFence,
+        plan: &ValidatedRuntimePlan,
+        disposition: &mut launch::CatalogResolutionDispositionV2<'_, '_, '_>,
+    ) -> Result<ResolvedLaunchResources> {
         let workspace = snapshot
             .workspaces()
             .binary_search_by_key(plan.workspace_handle(), |entry| *entry.handle())
@@ -260,19 +308,14 @@ impl HostCatalog for FileHostCatalog {
         let guest_root_proof = publication
             .proof()
             .map_err(|error| HostError::Catalog(error.to_string()))?;
-        if guest_root_proof.package_binding != *protected_guest_package_binding()?.as_bytes() {
+        if guest_root_proof.package_binding != *disposition.package_binding()?.as_bytes() {
             return Err(HostError::Catalog(
                 "guest-root proof differs from the deployed package binding".to_owned(),
             ));
         }
 
-        let workspace_pin = verify_workspace_pin(
-            workspace.root_directory(),
-            workspace.device(),
-            workspace.inode(),
-        )?;
-        let network_pin =
-            verify_network_pin(network.namespace_path(), network.device(), network.inode())?;
+        let workspace_pin = disposition.workspace(workspace)?;
+        let network_pin = disposition.network(network)?;
         let anchor = snapshot
             .attachment_anchors()
             .binary_search_by_key(plan.attachment_anchor_handle(), |entry| *entry.handle())
@@ -284,53 +327,9 @@ impl HostCatalog for FileHostCatalog {
                 "attachment anchor does not bind the exact launch assignment".to_owned(),
             ));
         }
-        let pin = verify_attachment_anchor_pin(
-            anchor.directory(),
-            anchor.device(),
-            anchor.inode(),
-            anchor.mount_id(),
-        )?;
-        let attachment_anchor = ResolvedAttachmentAnchor::from_pinned(
-            anchor.directory().to_owned(),
-            anchor.device(),
-            anchor.inode(),
-            anchor.mount_id(),
-            pin,
-        )?;
-        Ok(ResolvedLaunchResources {
-            workspace: ResolvedWorkspace::from_pinned(
-                workspace.root_directory().to_owned(),
-                workspace.device(),
-                workspace.inode(),
-                workspace_pin,
-            )?
-            .with_guest_root_publication(guest_root_proof),
-            network: ResolvedNetwork::from_pinned(
-                network.namespace_path().to_owned(),
-                network.device(),
-                network.inode(),
-                network_pin,
-            )?,
-            identity: ResolvedIdentityAllocation {
-                range_start: workspace.identity().range_start(),
-                range_size: workspace.identity().range_size(),
-                catalog_generation: workspace.identity().catalog_generation(),
-            },
-            attachment_anchor,
-        })
-    }
-
-    fn export_root_mount(&self, workspace: &ResolvedWorkspace) -> Result<DetachedMount> {
-        let root = self.root_export_cgroup.as_ref().ok_or_else(|| {
-            HostError::Catalog("Storage root export cgroup is unavailable".to_owned())
-        })?;
-        let duplicate = root
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(|error| HostError::Catalog(error.to_string()))?;
-        let root = CgroupV2Root::from_owned(duplicate)
-            .map_err(|error| HostError::Catalog(error.to_string()))?;
-        StorageRootMountClientV1::new(root)?.export(workspace)
+        let pin = disposition.anchor(anchor)?;
+        disposition.construct_resources(workspace, network, anchor, guest_root_proof,
+            workspace_pin, network_pin, pin)
     }
 }
 
@@ -372,103 +371,40 @@ fn lowercase_hex_digit(byte: u8) -> Result<u8> {
 }
 
 fn open_catalog_root(path: impl AsRef<Path>) -> Result<BeneathRoot> {
-    let descriptor = rustix::fs::open(
-        path.as_ref(),
+    let descriptor = open_catalog_root_descriptor(path.as_ref()).map_err(catalog_error)?;
+    let metadata = rustix::fs::fstat(&descriptor).map_err(catalog_error)?;
+    require_catalog_root_protection(&metadata)?;
+
+    BeneathRoot::from_owned(descriptor).map_err(|error| HostError::Catalog(error.to_string()))
+}
+
+// Both ordinary acquisition and selected name observations use these exact
+// flags and protection checks. A selected observation retains the raw prefix.
+fn open_catalog_root_descriptor(path: &Path) -> rustix::io::Result<std::os::fd::OwnedFd> {
+    rustix::fs::open(
+        path,
         rustix::fs::OFlags::RDONLY
             | rustix::fs::OFlags::DIRECTORY
             | rustix::fs::OFlags::NOFOLLOW
             | rustix::fs::OFlags::CLOEXEC,
         rustix::fs::Mode::empty(),
     )
-    .map_err(catalog_error)?;
-    let metadata = rustix::fs::fstat(&descriptor).map_err(catalog_error)?;
+}
+
+fn require_catalog_root_protection(metadata: &rustix::fs::Stat) -> Result<()> {
     if metadata.st_uid != 0 || metadata.st_mode & 0o022 != 0 {
         return Err(HostError::Catalog(
             "catalog root must be a root-owned non-writable real directory".to_owned(),
         ));
     }
-
-    BeneathRoot::from_owned(descriptor).map_err(|error| HostError::Catalog(error.to_string()))
-}
-
-fn lock_catalog_root(root: &BeneathRoot) -> Result<std::os::fd::OwnedFd> {
-    // Opening `.` creates an independent open-file description, so flock also
-    // serializes concurrent calls made through the same publisher instance.
-    let descriptor = rustix::fs::openat(
-        root.as_fd(),
-        ".",
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::DIRECTORY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(catalog_error)?;
-    let metadata = rustix::fs::fstat(&descriptor).map_err(catalog_error)?;
-    if metadata.st_dev != root.identity().device || metadata.st_ino != root.identity().inode {
-        return Err(HostError::Catalog(
-            "catalog root identity changed before publication".to_owned(),
-        ));
-    }
-    rustix::fs::flock(
-        &descriptor,
-        rustix::fs::FlockOperation::NonBlockingLockExclusive,
-    )
-    .map_err(|error| {
-        if error == rustix::io::Errno::WOULDBLOCK {
-            HostError::Catalog("another host catalog publisher holds the root lock".to_owned())
-        } else {
-            HostError::Catalog(error.to_string())
-        }
-    })?;
-    Ok(descriptor)
+    Ok(())
 }
 
 fn read_catalog_snapshot(root: &BeneathRoot) -> Result<Option<(HostCatalogSnapshot, Vec<u8>)>> {
-    let descriptor = match rustix::fs::openat(
-        root.as_fd(),
-        CATALOG_FILE,
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC
-            | rustix::fs::OFlags::NONBLOCK,
-        rustix::fs::Mode::empty(),
-    ) {
-        Ok(descriptor) => descriptor,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(error) => return Err(catalog_error(error)),
-    };
-    let metadata = rustix::fs::fstat(&descriptor).map_err(catalog_error)?;
-    let root_metadata = rustix::fs::fstat(root.as_fd()).map_err(catalog_error)?;
-    if rustix::fs::FileType::from_raw_mode(metadata.st_mode) != rustix::fs::FileType::RegularFile
-        || metadata.st_uid != root_metadata.st_uid
-        || metadata.st_nlink != 1
-        || metadata.st_mode & 0o7777 != 0o600
-    {
-        return Err(HostError::Catalog(
-            "host catalog is not a protected owner-only regular file".to_owned(),
-        ));
-    }
-    let declared_size = usize::try_from(metadata.st_size)
-        .map_err(|_| HostError::Catalog("host catalog size is invalid".to_owned()))?;
-    if declared_size == 0 || declared_size > MAXIMUM_HOST_CATALOG_BYTES {
-        return Err(HostError::Catalog(
-            "host catalog size is invalid".to_owned(),
-        ));
-    }
-
-    let mut bytes = Vec::with_capacity(declared_size);
-    File::from(descriptor)
-        .take((MAXIMUM_HOST_CATALOG_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|error| HostError::Catalog(error.to_string()))?;
-    if bytes.len() != declared_size || bytes.len() > MAXIMUM_HOST_CATALOG_BYTES {
-        return Err(HostError::Catalog(
-            "host catalog changed while being read".to_owned(),
-        ));
-    }
-    let snapshot = HostCatalogSnapshot::decode_canonical(&bytes)?;
-    Ok(Some((snapshot, bytes)))
+    let mut original = publication_native::ReadOriginal::default();
+    original.observe(root, &mut publication_native::Receiving::Ordinary)
+        .map_err(|_| publication_native::ordinary_error(original.failure()))?;
+    original.take_value()
 }
 
 fn validate_catalog_transition(
@@ -533,71 +469,17 @@ fn identity_binding(
     )
 }
 
-fn publish_catalog_bytes(root: &BeneathRoot, bytes: &[u8]) -> Result<()> {
-    match rustix::fs::unlinkat(
-        root.as_fd(),
-        CATALOG_NEXT_FILE,
-        rustix::fs::AtFlags::empty(),
-    ) {
-        Ok(()) | Err(rustix::io::Errno::NOENT) => {}
-        Err(error) => return Err(catalog_error(error)),
-    }
-    let descriptor = rustix::fs::openat(
-        root.as_fd(),
-        CATALOG_NEXT_FILE,
-        rustix::fs::OFlags::WRONLY
-            | rustix::fs::OFlags::CREATE
-            | rustix::fs::OFlags::EXCL
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-    )
-    .map_err(catalog_error)?;
-    let result = rustix::fs::fchmod(&descriptor, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
-        .map_err(catalog_error)
-        .and_then(|()| {
-            let mut output = File::from(descriptor);
-            output
-                .write_all(bytes)
-                .and_then(|()| output.sync_all())
-                .map_err(|error| HostError::Catalog(error.to_string()))
-        })
-        .and_then(|()| {
-            rustix::fs::renameat(root.as_fd(), CATALOG_NEXT_FILE, root.as_fd(), CATALOG_FILE)
-                .map_err(catalog_error)
-        })
-        .and_then(|()| rustix::fs::fsync(root.as_fd()).map_err(catalog_error));
-    if result.is_err() {
-        let _ = rustix::fs::unlinkat(
-            root.as_fd(),
-            CATALOG_NEXT_FILE,
-            rustix::fs::AtFlags::empty(),
-        );
-    }
-    result
-}
 
 fn catalog_error(error: rustix::io::Errno) -> HostError {
     HostError::Catalog(error.to_string())
 }
 
 fn verify_workspace_pin(path: &str, device: u64, inode: u64) -> Result<std::os::fd::OwnedFd> {
-    let fd = rustix::fs::open(
-        path,
-        rustix::fs::OFlags::PATH
-            | rustix::fs::OFlags::DIRECTORY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(|error| HostError::Catalog(error.to_string()))?;
-    let stat = rustix::fs::fstat(&fd).map_err(|error| HostError::Catalog(error.to_string()))?;
-    if stat.st_dev != device || stat.st_ino != inode {
-        return Err(HostError::Catalog(
-            "workspace pin identity changed".to_owned(),
-        ));
+    let mut original = pins::CatalogPinOriginalV2::new();
+    if original.workspace_once(path, device, inode).is_err() {
+        return Err(original.into_ordinary_error());
     }
-    Ok(fd)
+    original.take_raw().ok_or_else(pins::closed)
 }
 
 fn verify_network_pin(
@@ -605,28 +487,11 @@ fn verify_network_pin(
     device: u64,
     inode: u64,
 ) -> Result<aos_sandbox_linux::pidfd::NamespaceFd> {
-    use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
-
-    let fd = rustix::fs::open(
-        path,
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(|error| HostError::Catalog(error.to_string()))?;
-    let namespace = NamespaceFd::from_owned(fd, NamespaceKind::Network)
-        .map_err(|error| HostError::Catalog(error.to_string()))?;
-    let identity = namespace.identity();
-    if identity.device != device || identity.inode != inode {
-        return Err(HostError::Catalog(
-            "network namespace pin identity changed".to_owned(),
-        ));
+    let mut original = pins::CatalogPinOriginalV2::new();
+    if original.network_once(path, device, inode).is_err() {
+        return Err(original.into_ordinary_error());
     }
-    if current_network_namespace_identity()? == identity {
-        return Err(HostError::Catalog(
-            "network pin resolves to the host network namespace".to_owned(),
-        ));
-    }
-    Ok(namespace)
+    original.take_namespace().ok_or_else(pins::closed)
 }
 
 fn verify_attachment_anchor_pin(
@@ -635,46 +500,19 @@ fn verify_attachment_anchor_pin(
     inode: u64,
     mount_id: u64,
 ) -> Result<std::os::fd::OwnedFd> {
-    let fd = rustix::fs::open(
-        path,
-        rustix::fs::OFlags::PATH
-            | rustix::fs::OFlags::DIRECTORY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(|error| HostError::Catalog(error.to_string()))?;
-    let stat = rustix::fs::fstat(&fd).map_err(|error| HostError::Catalog(error.to_string()))?;
-    let actual_mount_id = aos_sandbox_linux::inventory::MountId::from_fd(fd.as_fd())
-        .map_err(|error| HostError::Catalog(error.to_string()))?;
-    if stat.st_uid != 0
-        || stat.st_mode & 0o7777 != 0o755
-        || stat.st_dev != device
-        || stat.st_ino != inode
-        || actual_mount_id.get() != mount_id
-    {
-        return Err(HostError::Catalog(
-            "attachment-anchor pin identity or protection changed".to_owned(),
-        ));
+    let mut original = pins::CatalogPinOriginalV2::new();
+    if original.anchor_once(path, device, inode, mount_id).is_err() {
+        return Err(original.into_ordinary_error());
     }
-    Ok(fd)
+    original.take_raw().ok_or_else(pins::closed)
 }
 
 fn current_network_namespace_identity() -> Result<aos_sandbox_linux::pidfd::NamespaceIdentity> {
-    use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
-
-    let host_fd = rustix::fs::open(
-        "/proc/self/ns/net",
-        // procfs namespace entries are kernel magic links. The path is fixed,
-        // and NamespaceFd performs the authoritative nsfs/type check after
-        // following it; O_NOFOLLOW would reject every valid comparison.
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(|error| HostError::Catalog(error.to_string()))?;
-    let host = NamespaceFd::from_owned(host_fd, NamespaceKind::Network)
-        .map_err(|error| HostError::Catalog(error.to_string()))?;
-    Ok(host.identity())
+    let mut original = pins::CatalogPinOriginalV2::new();
+    if original.capture_host_current().is_err() {
+        return Err(original.into_ordinary_error());
+    }
+    original.current_network_identity().ok_or_else(pins::closed)
 }
 
 #[cfg(test)]
@@ -998,7 +836,8 @@ mod tests {
     fn publisher_serializes_calls_with_an_independent_directory_lock() {
         let directory = tempfile::tempdir().unwrap();
         let publisher = publisher(&directory);
-        let held_lock = lock_catalog_root(&publisher.root).unwrap();
+        let mut held_lock = publication_native::LockOriginal::default();
+        held_lock.acquire(&publisher.root).unwrap();
 
         assert!(publisher.publish(&empty_snapshot(1)).is_err());
         drop(held_lock);

@@ -261,115 +261,7 @@ impl VerifiedShiftedPayloadInspectionV1 {
         payload: &PinnedPayloadLeader,
         proof: &RuntimeProofSnapshot,
     ) -> Result<Self> {
-        if spec.name()
-            != &aos_systemd::SandboxUnitName::from_incarnation(*identity.incarnation_id())
-            || !proof.validate()
-        {
-            return Err(HostError::Worker(
-                "shifted proof has foreign launch scope".to_owned(),
-            ));
-        }
-        let launch_binding = spec
-            .launch_binding()
-            .ok_or_else(|| HostError::Worker("shifted proof requires a bound launch".to_owned()))?;
-        payload.recheck_kernel(supervisor)?;
-        let before = payload
-            .pidfd()
-            .process_identity()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        if before.pid() != proof.payload.pid
-            || before.thread_group_id() != proof.payload.thread_group_id
-            || before.parent_pid() != proof.payload.parent_pid
-            || before.cgroup_id() != Some(proof.payload.cgroup_id)
-            || before.start_time_ticks() != proof.payload.start_time_ticks
-        {
-            return Err(HostError::Worker(
-                "shifted payload differs from launch proof".to_owned(),
-            ));
-        }
-
-        // These four ioctls are performed by the actual Host service against
-        // the actual shifted payload, never against a phase-zero surrogate.
-        let host = super::PidfdNamespaceAccessProbe::current_service()?;
-        let user = payload
-            .pidfd()
-            .namespace(NamespaceKind::User)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let mount = payload
-            .pidfd()
-            .namespace(NamespaceKind::Mount)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let network = payload
-            .pidfd()
-            .namespace(NamespaceKind::Network)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let pid = payload
-            .pidfd()
-            .namespace(NamespaceKind::Pid)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        if user.identity() != payload.user().identity()
-            || mount.identity() != payload.mount().identity()
-            || network.identity() != payload.network().identity()
-            || pid.identity() != payload.pid().identity()
-            || namespace_snapshot(user.identity()) != proof.user_namespace
-            || namespace_snapshot(mount.identity()) != proof.mount_namespace
-            || namespace_snapshot(network.identity()) != proof.network_namespace
-            || user.identity() == host.user().identity()
-            || pid.identity() == host.pid().identity()
-        {
-            return Err(HostError::Worker(
-                "payload is not in the pinned shifted namespaces".to_owned(),
-            ));
-        }
-
-        let (host_id_start, mapping_count) = spec.private_user_range();
-        read_exact_id_map(before.pid(), "uid_map", host_id_start, mapping_count)?;
-        read_exact_id_map(before.pid(), "gid_map", host_id_start, mapping_count)?;
-
-        let after = payload
-            .pidfd()
-            .process_identity()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        if before != after
-            || !payload
-                .pidfd()
-                .is_alive()
-                .map_err(|error| HostError::Worker(error.to_string()))?
-        {
-            return Err(HostError::Worker(
-                "shifted payload changed during inspection".to_owned(),
-            ));
-        }
-        payload.recheck_kernel(supervisor)?;
-
-        let record = ShiftedPayloadInspectionRecordV1 {
-            version: VERSION,
-            host_boot_id: proof.host_boot_id,
-            sandbox_id: *identity.sandbox_id(),
-            incarnation_id: *identity.incarnation_id(),
-            assignment_epoch: identity.assignment_epoch(),
-            desired_generation: identity.desired_generation(),
-            assignment_digest: *identity.assignment_digest(),
-            launch_binding,
-            invocation_id,
-            payload_pid: before.pid(),
-            payload_parent_pid: before.parent_pid(),
-            payload_start_time_ticks: before.start_time_ticks(),
-            payload_cgroup_id: before.cgroup_id().ok_or_else(|| {
-                HostError::Worker("kernel omitted shifted payload cgroup ID".to_owned())
-            })?,
-            user_namespace: namespace_snapshot(user.identity()),
-            mount_namespace: namespace_snapshot(mount.identity()),
-            network_namespace: namespace_snapshot(network.identity()),
-            pid_namespace: namespace_snapshot(pid.identity()),
-            host_user_namespace: namespace_snapshot(host.user().identity()),
-            host_pid_namespace: namespace_snapshot(host.pid().identity()),
-            host_uid_start: host_id_start,
-            host_gid_start: host_id_start,
-            mapping_count,
-        };
-        record.validate()?;
-        Ok(Self { record })
+        shifted_original::inspect_local(identity, spec, invocation_id, supervisor, payload, proof)
     }
 
     /// Returns the physical observation as bounded canonical readback data.
@@ -440,18 +332,25 @@ fn require_original_owner_status(bytes: &[u8]) -> super::Result<()> {
     Ok(())
 }
 
+// Expanding at the original call site preserves the consuming File temporary
+// through ordinary error projection; the retained branch borrows its own File.
+macro_rules! read_id_map_bytes {
+    ($reader:expr, $bytes:expr) => {
+        $reader.take((MAXIMUM_ID_MAP_BYTES + 1) as u64).read_to_end($bytes)
+    };
+}
+
+mod shifted_original;
+pub(super) use shifted_original::{ShiftedPayloadOriginalV2, ShiftedNativeDisposedV2};
+
+mod id_map_original;
+pub(super) use id_map_original::ShiftedIdMapOriginalV2;
+
 fn read_exact_id_map(pid: u32, kind: &'static str, host_start: u32, count: u32) -> Result<()> {
-    let path = format!("/proc/{pid}/{kind}");
-    let descriptor = rustix::fs::open(
-        path,
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(|error| HostError::Worker(format!("cannot open payload {kind}: {error}")))?;
+    let descriptor = open_id_map(pid, kind)
+        .map_err(|error| HostError::Worker(format!("cannot open payload {kind}: {error}")))?;
     let mut bytes = Vec::new();
-    File::from(descriptor)
-        .take((MAXIMUM_ID_MAP_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
+    read_id_map_bytes!(File::from(descriptor), &mut bytes)
         .map_err(|error| HostError::Worker(format!("cannot read payload {kind}: {error}")))?;
     if bytes.len() > MAXIMUM_ID_MAP_BYTES {
         return Err(HostError::Worker(
@@ -460,6 +359,23 @@ fn read_exact_id_map(pid: u32, kind: &'static str, host_start: u32, count: u32) 
     }
     parse_exact_id_map(&bytes, host_start, count)
 }
+
+pub(super) fn read_exact_id_map_retaining_v2(
+    pid: u32, kind: &'static str, host_start: u32, count: u32,
+    original: &mut ShiftedIdMapOriginalV2,
+) -> Result<()> {
+    original.capture_once(pid, kind, host_start, count)
+}
+
+fn open_id_map(pid: u32, kind: &'static str) -> std::result::Result<std::os::fd::OwnedFd, rustix::io::Errno> {
+    let path = format!("/proc/{pid}/{kind}");
+    rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+}
+
 
 fn parse_exact_id_map(bytes: &[u8], host_start: u32, count: u32) -> Result<()> {
     let text = std::str::from_utf8(bytes)

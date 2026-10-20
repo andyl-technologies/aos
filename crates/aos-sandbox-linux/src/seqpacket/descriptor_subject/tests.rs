@@ -66,6 +66,40 @@ fn accepted_endpoint_requires_the_exact_bound_filesystem_path() {
 }
 
 #[test]
+fn owed_peer_path_observes_the_same_socket_after_a_fatal_transport_fence() {
+    let directory = tempfile::tempdir().expect("create owed-path fixture");
+    let expected = directory.path().join("server.sock");
+    let listener = uapi::bind_record_subject_listener(&expected, 1).expect("bind server");
+    let connector = uapi::connect_seqpacket(&expected).expect("connect server");
+    let _accepted = uapi::accept_record_subject_socket(listener.as_fd()).expect("accept peer");
+    let mut socket = DescriptorSubjectSocket::from_owned(connector).expect("adopt connector");
+    let before = rustix::fs::fstat(socket.as_fd().expect("healthy descriptor")).unwrap();
+
+    socket.retention.end(&socket.fd);
+    assert!(matches!(socket.as_fd(), Err(SeqpacketError::Closed)));
+    assert!(matches!(
+        socket.require_peer_filesystem_path(&expected),
+        Err(SeqpacketError::Closed)
+    ));
+    socket
+        .observe_owed_peer_filesystem_path_v2(&expected)
+        .expect("actual owed peer observation");
+
+    let after = rustix::fs::fstat(socket.fd.as_ref().expect("same original descriptor")).unwrap();
+    assert_eq!(
+        (before.st_dev, before.st_ino),
+        (after.st_dev, after.st_ino)
+    );
+    assert!(matches!(socket.as_fd(), Err(SeqpacketError::Closed)));
+    assert!(
+        socket
+            .observe_owed_peer_filesystem_path_v2(&directory.path().join("foreign.sock"))
+            .is_err()
+    );
+    assert_eq!(socket.retention.phase, RetentionPhaseV1::Failed);
+}
+
+#[test]
 fn exact_descriptor_replies_retain_subject_and_cloexec_ownership() {
     let (mut receiver, sender) = pair();
     uapi::send_seqpacket(sender.as_fd(), b"hello").expect("send hello");
@@ -695,4 +729,26 @@ fn mount_scope_reply_preserves_order_and_owns_descriptors_after_sender_closes() 
         })
         .collect();
     assert_eq!(received, identities);
+}
+
+#[test]
+fn owed_local_path_uses_the_same_accepted_socket_after_fatal_fencing() {
+    let directory = tempfile::tempdir().expect("create owed local-path fixture");
+    let expected = directory.path().join("server.sock");
+    let listener = uapi::bind_record_subject_listener(&expected, 1).expect("bind server");
+    let _connector = uapi::connect_seqpacket(&expected).expect("connect server");
+    let accepted = uapi::accept_record_subject_socket(listener.as_fd()).expect("accept peer");
+    let mut socket = DescriptorSubjectSocket::from_owned(accepted).expect("adopt accepted socket");
+    let before = rustix::fs::fstat(socket.as_fd().expect("healthy descriptor")).unwrap();
+
+    socket.retention.end(&socket.fd);
+    assert!(matches!(socket.as_fd(), Err(SeqpacketError::Closed)));
+    assert!(matches!(socket.require_local_filesystem_path(&expected), Err(SeqpacketError::Closed)));
+    socket.observe_owed_local_filesystem_path_v2(&expected).expect("same owed local endpoint");
+
+    let after = rustix::fs::fstat(socket.fd.as_ref().expect("same retained socket")).unwrap();
+    assert_eq!((before.st_dev, before.st_ino), (after.st_dev, after.st_ino));
+    assert!(socket.observe_owed_local_filesystem_path_v2(&directory.path().join("foreign.sock")).is_err());
+    assert!(matches!(socket.as_fd(), Err(SeqpacketError::Closed)));
+    assert_eq!(socket.retention.phase, RetentionPhaseV1::Failed);
 }

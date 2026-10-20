@@ -3,16 +3,27 @@
 //! This observation neither makes a notify service ready nor freezes PID 1's
 //! policy. Consumers must validate retained kernel objects independently.
 
-use zbus::proxy::CacheProperties;
+use std::borrow::Cow;
+
+use zbus::proxy::{CacheProperties, ProxyImpl as _};
 use zbus::zvariant::OwnedValue;
+
+use super::fixed_property::PropertyDecodingV1;
+
+mod retained;
+pub use retained::{ServicePropertiesReadOriginalV2, ServicePropertiesReadClosedV2,
+    ServiceControlGroupReadOriginalV2};
+use retained::{BookendCaptureOriginalV2, BookendAfterOriginalV2};
 
 use super::{Error, ManagerProxy, NixOfflineAbsenceObservationV5, Result, ServiceProxy, SystemdClient, UnitProxy};
 
 #[derive(Clone, Copy)]
 pub(super) enum ObservationPhase {
     Active,
+    OptionalActive,
     StartingOrRunning,
     StoppedNix,
+    SuccessfulOneshot,
 }
 
 pub(super) async fn observe(
@@ -23,11 +34,39 @@ pub(super) async fn observe(
     unit_properties: &[&str],
     phase: ObservationPhase,
 ) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>)> {
-    let original = ServicePropertyBookendV1::capture(
+    observe_recipe(client, name, expected_main_pid, service_properties,
+        unit_properties, phase, false).await
+}
+
+pub(super) const OWNERSHIP_PROFILE_PROPERTIES_V1: &[&str] = &[
+    "MainPID", "ControlGroup", "StateDirectory", "StateDirectoryMode",
+    "User", "Group", "CapabilityBoundingSet", "AmbientCapabilities",
+    "NoNewPrivileges", "ExecStart", "RuntimeDirectory", "RuntimeDirectoryMode",
+];
+pub(super) const OWNERSHIP_PROFILE_UNIT_PROPERTIES_V1: &[&str] = &[
+    "FragmentPath", "DropInPaths", "Transient", "InvocationID",
+];
+
+pub(super) async fn observe_fixed_ownership_profile_v1(client: &SystemdClient)
+    -> Result<(Vec<OwnedValue>, Vec<OwnedValue>)> {
+    observe_recipe(client, "aos-sandbox-ownershipd.service", 0,
+        OWNERSHIP_PROFILE_PROPERTIES_V1, OWNERSHIP_PROFILE_UNIT_PROPERTIES_V1,
+        ObservationPhase::Active, true).await
+}
+
+async fn observe_recipe(
+    client: &SystemdClient, name: &str, expected_main_pid: u32,
+    service_properties: &[&str], unit_properties: &[&str], phase: ObservationPhase,
+    discover_main_pid: bool,
+) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>)> {
+    let decoding = PropertyDecodingV1::for_client(client);
+    let original = ServicePropertyBookendV1::capture_inner(
         &client.conn,
         name,
         expected_main_pid,
         phase,
+        discover_main_pid,
+        decoding,
     )
     .await?;
     let properties = zbus::fdo::PropertiesProxy::builder(&client.conn)
@@ -39,12 +78,16 @@ pub(super) async fn observe(
         &properties,
         "org.freedesktop.systemd1.Service",
         service_properties,
+        original.service.inner(),
+        decoding,
     )
     .await?;
     let unit_values = read_properties(
         &properties,
         "org.freedesktop.systemd1.Unit",
         unit_properties,
+        original.unit.inner(),
+        decoding,
     )
     .await?;
 
@@ -54,14 +97,43 @@ pub(super) async fn observe(
         &original.owner,
         &original.unit,
         &original.service,
-        original.name,
+        original.name.as_ref(),
         original.expected_main_pid,
         original.phase,
         &original.before,
         original.before_substate.as_deref(),
+        decoding,
     )
     .await?;
     Ok((service_values, unit_values))
+}
+
+// Both service bookends and finite launch setup resolve the actual unique
+// PID-1 owner through this original identity recipe. This creates no role grant.
+pub(super) async fn capture_pid1_owner_v2(
+    connection: &zbus::Connection,
+) -> Result<(zbus::fdo::DBusProxy<'static>, zbus::names::BusName<'static>, zbus::names::OwnedUniqueName)> {
+    let mut pending = BookendCaptureOriginalV2::default();
+    capture_pid1_owner_into_v2(connection, &mut pending).await?;
+    Ok((pending.bus.take().ok_or_else(retained::closed)?,
+        pending.manager_name.take().ok_or_else(retained::closed)?,
+        pending.owner.take().ok_or_else(retained::closed)?))
+}
+
+async fn capture_pid1_owner_into_v2(
+    connection: &zbus::Connection, pending: &mut BookendCaptureOriginalV2,
+) -> Result<()> {
+    pending.bus = Some(zbus::fdo::DBusProxy::new(connection).await?);
+    pending.manager_name = Some(zbus::names::BusName::try_from("org.freedesktop.systemd1")
+        .map_err(|error| changed(&error.to_string()))?);
+    let bus = pending.bus.as_ref().ok_or_else(retained::closed)?;
+    let manager_name = pending.manager_name.as_ref().ok_or_else(retained::closed)?;
+    pending.owner = Some(bus.get_name_owner(manager_name.clone()).await?);
+    let owner_name = pending.owner.as_ref().ok_or_else(retained::closed)?.as_str().try_into()
+        .map_err(|error: zbus::names::Error| changed(&error.to_string()))?;
+    pending.owner_pid = Some(bus.get_connection_unix_process_id(owner_name).await?);
+    if pending.owner_pid != Some(1) { return Err(changed("systemd bus owner is not PID 1")); }
+    Ok(())
 }
 
 /// Borrows one connection and the exact original unique-PID-1 service proxies.
@@ -79,9 +151,10 @@ pub(crate) struct ServicePropertyBookendV1<'name> {
     owner: zbus::names::OwnedUniqueName,
     manager_name: zbus::names::BusName<'static>,
     bus: zbus::fdo::DBusProxy<'static>,
-    name: &'name str,
+    name: Cow<'name, str>,
     expected_main_pid: u32,
     phase: ObservationPhase,
+    decoding: PropertyDecodingV1,
 }
 
 impl<'name> ServicePropertyBookendV1<'name> {
@@ -91,68 +164,82 @@ impl<'name> ServicePropertyBookendV1<'name> {
         expected_main_pid: u32,
         phase: ObservationPhase,
     ) -> Result<Self> {
+        Self::capture_inner(
+            connection, name, expected_main_pid, phase, false, PropertyDecodingV1::Ordinary,
+        ).await
+    }
+
+    async fn capture_inner(
+        connection: &zbus::Connection, name: &'name str, expected_main_pid: u32,
+        phase: ObservationPhase, discover_main_pid: bool, decoding: PropertyDecodingV1,
+    ) -> Result<Self> {
+        Self::capture_inner_into(connection, Cow::Borrowed(name), expected_main_pid,
+            phase, discover_main_pid, decoding, &mut BookendCaptureOriginalV2::default()).await
+    }
+
+    async fn capture_inner_into(
+        connection: &zbus::Connection, name: Cow<'name, str>, mut expected_main_pid: u32,
+        phase: ObservationPhase, discover_main_pid: bool, decoding: PropertyDecodingV1,
+        pending: &mut BookendCaptureOriginalV2,
+    ) -> Result<Self> {
         if !name.ends_with(".service") || name.contains('/') || name.contains('\0') {
             return Err(changed("service name is not an exact unit name"));
         }
-        if expected_main_pid == 0 && !matches!(phase, ObservationPhase::StoppedNix) {
+        if expected_main_pid == 0 && !matches!(phase, ObservationPhase::StoppedNix | ObservationPhase::SuccessfulOneshot)
+            && !discover_main_pid {
             return Err(changed("service main PID is absent"));
         }
-
-        let bus = zbus::fdo::DBusProxy::new(connection).await?;
-        let manager_name = zbus::names::BusName::try_from("org.freedesktop.systemd1")
-            .map_err(|error| changed(&error.to_string()))?;
-        let owner = bus.get_name_owner(manager_name.clone()).await?;
-        let owner_name = owner
-            .as_str()
-            .try_into()
-            .map_err(|error: zbus::names::Error| changed(&error.to_string()))?;
-        if bus.get_connection_unix_process_id(owner_name).await? != 1 {
-            return Err(changed("systemd bus owner is not PID 1"));
+        capture_pid1_owner_into_v2(connection, pending).await?;
+        pending.manager = Some(ManagerProxy::builder(connection)
+            .destination(pending.owner.as_ref().ok_or_else(retained::closed)?.clone())?
+            .build().await?);
+        pending.path = Some(pending.manager.as_ref().ok_or_else(retained::closed)?
+            .get_unit(name.as_ref()).await?);
+        pending.unit = Some(UnitProxy::builder(connection)
+            .destination(pending.owner.as_ref().ok_or_else(retained::closed)?.clone())?
+            .path(pending.path.as_ref().ok_or_else(retained::closed)?.clone())?
+            .cache_properties(CacheProperties::No).build().await?);
+        pending.service = Some(ServiceProxy::builder(connection)
+            .destination(pending.owner.as_ref().ok_or_else(retained::closed)?.clone())?
+            .path(pending.path.as_ref().ok_or_else(retained::closed)?.clone())?
+            .cache_properties(CacheProperties::No).build().await?);
+        let unit = pending.unit.as_ref().ok_or_else(retained::closed)?;
+        let service = pending.service.as_ref().ok_or_else(retained::closed)?;
+        pending.id = Some(decoding.get::<String>(unit.inner(), "Id").await?);
+        pending.active = Some(decoding.get::<String>(unit.inner(), "ActiveState").await?);
+        pending.pid = Some(decoding.get::<u32>(service.inner(), "MainPID").await?);
+        pending.invocation = Some(decoding.get::<Vec<u8>>(unit.inner(), "InvocationID").await?);
+        if matches!(phase, ObservationPhase::SuccessfulOneshot) && pending.pid != Some(0) {
+            return Err(changed("successful oneshot still has a live main PID"));
         }
-
-        let manager = ManagerProxy::builder(connection)
-            .destination(owner.clone())?
-            .build()
-            .await?;
-        let path = manager.get_unit(name).await?;
-        let unit = UnitProxy::builder(connection)
-            .destination(owner.clone())?
-            .path(path.clone())?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await?;
-        let service = ServiceProxy::builder(connection)
-            .destination(owner.clone())?
-            .path(path.clone())?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await?;
-        let before = (
-            unit.id().await?,
-            unit.active_state().await?,
-            service.main_pid().await?,
-            unit.invocation_id().await?,
-        );
-        let before_substate = match phase {
-            ObservationPhase::Active => None,
-            ObservationPhase::StartingOrRunning | ObservationPhase::StoppedNix => {
-                Some(unit.sub_state().await?)
+        if discover_main_pid {
+            expected_main_pid = pending.pid.ok_or_else(retained::closed)?;
+            if expected_main_pid == 0 && !(matches!(phase, ObservationPhase::OptionalActive)
+                && pending.active.as_deref() != Some("active")) {
+                return Err(changed("service main PID is absent"));
+            }
+        }
+        pending.substate = match phase {
+            ObservationPhase::Active | ObservationPhase::OptionalActive => None,
+            ObservationPhase::StartingOrRunning | ObservationPhase::StoppedNix
+            | ObservationPhase::SuccessfulOneshot => {
+                Some(decoding.get::<String>(unit.inner(), "SubState").await?)
             }
         };
-
         Ok(Self {
-            before_substate,
-            before,
-            service,
-            unit,
-            path,
-            _manager: manager,
-            owner,
-            manager_name,
-            bus,
-            name,
-            expected_main_pid,
-            phase,
+            before_substate: pending.substate.take(),
+            before: (pending.id.take().ok_or_else(retained::closed)?,
+                pending.active.take().ok_or_else(retained::closed)?,
+                pending.pid.take().ok_or_else(retained::closed)?,
+                pending.invocation.take().ok_or_else(retained::closed)?),
+            service: pending.service.take().ok_or_else(retained::closed)?,
+            unit: pending.unit.take().ok_or_else(retained::closed)?,
+            path: pending.path.take().ok_or_else(retained::closed)?,
+            _manager: pending.manager.take().ok_or_else(retained::closed)?,
+            owner: pending.owner.take().ok_or_else(retained::closed)?,
+            manager_name: pending.manager_name.take().ok_or_else(retained::closed)?,
+            bus: pending.bus.take().ok_or_else(retained::closed)?,
+            name, expected_main_pid, phase, decoding,
         })
     }
 
@@ -178,11 +265,12 @@ impl<'name> ServicePropertyBookendV1<'name> {
             &self.owner,
             &self.unit,
             &self.service,
-            self.name,
+            self.name.as_ref(),
             self.expected_main_pid,
             self.phase,
             &self.before,
             self.before_substate.as_deref(),
+            self.decoding,
         )
         .await
     }
@@ -202,32 +290,135 @@ async fn finish_service_property_bookend_v1(
     phase: ObservationPhase,
     before: &(String, String, u32, Vec<u8>),
     before_substate: Option<&str>,
+    decoding: PropertyDecodingV1,
 ) -> Result<()> {
-    let after_substate = match phase {
-        ObservationPhase::Active => None,
-        ObservationPhase::StartingOrRunning | ObservationPhase::StoppedNix => {
-            Some(unit.sub_state().await?)
+    finish_service_property_bookend_into_v2(bus, manager_name, owner, unit, service, name, expected_main_pid, phase,
+        before, before_substate, decoding,
+        &mut BookendAfterOriginalV2::default()).await
+}
+
+async fn finish_service_property_bookend_into_v2(
+    bus: &zbus::fdo::DBusProxy<'_>,
+    manager_name: zbus::names::BusName<'_>,
+    owner: &zbus::names::OwnedUniqueName,
+    unit: &UnitProxy<'_>,
+    service: &ServiceProxy<'_>,
+    name: &str,
+    expected_main_pid: u32,
+    phase: ObservationPhase,
+    before: &(String, String, u32, Vec<u8>),
+    before_substate: Option<&str>,
+    decoding: PropertyDecodingV1,
+    pending: &mut BookendAfterOriginalV2,
+) -> Result<()> {
+    pending.substate = match phase {
+        ObservationPhase::Active | ObservationPhase::OptionalActive => None,
+        ObservationPhase::StartingOrRunning | ObservationPhase::StoppedNix
+            | ObservationPhase::SuccessfulOneshot => {
+            Some(decoding.get::<String>(unit.inner(), "SubState").await?)
         }
     };
-    let after = (
-        unit.id().await?,
-        unit.active_state().await?,
-        service.main_pid().await?,
-        unit.invocation_id().await?,
-    );
-    if *before != after
-        || before_substate != after_substate.as_deref()
-        || before.0 != name
-        || !phase.accepts(&before.1, before_substate)
-        || before.2 != expected_main_pid
-        || before.3.len() != 16
+    pending.id = Some(decoding.get::<String>(unit.inner(), "Id").await?);
+    pending.active = Some(decoding.get::<String>(unit.inner(), "ActiveState").await?);
+    pending.pid = Some(decoding.get::<u32>(service.inner(), "MainPID").await?);
+    pending.invocation = Some(decoding.get::<Vec<u8>>(unit.inner(), "InvocationID").await?);
+    if Some(before.0.as_str()) != pending.id.as_deref()
+        || Some(before.1.as_str()) != pending.active.as_deref()
+        || Some(before.2) != pending.pid || Some(before.3.as_slice()) != pending.invocation.as_deref()
+        || before_substate != pending.substate.as_deref()
+        || before.0 != name || !phase.accepts(&before.1, before_substate)
+        || before.2 != expected_main_pid || before.3.len() != 16
         || (!matches!(phase, ObservationPhase::StoppedNix)
-            && before.3.iter().all(|byte| *byte == 0))
-        || bus.get_name_owner(manager_name).await? != *owner
-    {
+            && !(matches!(phase, ObservationPhase::OptionalActive) && before.1 != "active")
+            && before.3.iter().all(|byte| *byte == 0)) {
+        return Err(changed("PID 1 service changed during property readback"));
+    }
+    pending.owner = Some(bus.get_name_owner(manager_name).await?);
+    if pending.owner.as_ref() != Some(owner) {
         return Err(changed("PID 1 service changed during property readback"));
     }
     Ok(())
+}
+
+// The fixed Controller startup recipe discovers only a locator. The SAME
+// unique-PID1 bookend binds that discovered MainPID before and after the read;
+// the actual Controller separately checks its retained kernel objects.
+pub(super) async fn observe_active_control_group(
+    client: &SystemdClient,
+    name: &'static str,
+) -> Result<super::ServiceControlGroupObservation> {
+    let original = ServicePropertyBookendV1::capture_inner(
+        &client.conn, name, 0, ObservationPhase::Active, true,
+        PropertyDecodingV1::for_client(client),
+    ).await?;
+    let control_group = original.decoding.get::<String>(
+        original.service.inner(), "ControlGroup",
+    ).await?;
+    original.finish().await?;
+    decode_control_group(name, &original.before, &original.before, control_group)
+}
+
+// Stable non-active service state is a successful absence observation. It
+// preserves the existing caller's retry behavior without treating an inactive
+// unit as a native failure that could be dropped and retried under a new loan.
+// Active units use the SAME normal ControlGroup decode and authentic bookends.
+pub(super) async fn observe_optional_active_control_group(
+    client: &SystemdClient,
+    name: &'static str,
+) -> Result<Option<super::ServiceControlGroupObservation>> {
+    let original = ServicePropertyBookendV1::capture_inner(
+        &client.conn, name, 0, ObservationPhase::OptionalActive, true,
+        PropertyDecodingV1::for_client(client),
+    ).await?;
+    if original.before.1 != "active" {
+        original.finish().await?;
+        return Ok(None);
+    }
+    let control_group = original.decoding.get::<String>(
+        original.service.inner(), "ControlGroup",
+    ).await?;
+    original.finish().await?;
+    decode_control_group(name, &original.before, &original.before, control_group).map(Some)
+}
+
+pub(super) fn decode_control_group(
+    name: &str, before: &(String, String, u32, Vec<u8>),
+    after: &(String, String, u32, Vec<u8>), control_group: String,
+) -> Result<super::ServiceControlGroupObservation> {
+    let (invocation_id, main_pid) = retained::validate_control_group_parts_v2(
+        name, (&before.0, &before.1, before.2, &before.3),
+        (&after.0, &after.1, after.2, &after.3), &control_group,
+    )?;
+    Ok(super::ServiceControlGroupObservation { control_group, main_pid, invocation_id })
+}
+
+// The selected Network native collector already bounds every property reply.
+// The same service bookend recipe checks the actual same process and unit;
+// only this closed name and concrete typed decoding disposition differ.
+#[cfg(target_os = "linux")]
+pub(crate) async fn capture_network_fd_store_bookend_v4(
+    connection: &zbus::Connection,
+) -> Result<ServicePropertyBookendV1<'static>> {
+    capture_fixed_inventory_fd_store_bookend_v2(connection, FixedFdStoreRoleV2::Network).await
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+pub(crate) enum FixedFdStoreRoleV2 { Network, Mount }
+
+#[cfg(target_os = "linux")]
+impl FixedFdStoreRoleV2 {
+    pub(crate) const fn unit(self) -> &'static str {
+        match self { Self::Network => "aos-netd.service", Self::Mount => "aos-sandbox-mountd.service" }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn capture_fixed_inventory_fd_store_bookend_v2(
+    connection: &zbus::Connection, role: FixedFdStoreRoleV2,
+) -> Result<ServicePropertyBookendV1<'static>> {
+    ServicePropertyBookendV1::capture_inner(connection, role.unit(), std::process::id(),
+        ObservationPhase::StartingOrRunning, false, PropertyDecodingV1::Fixed).await
 }
 
 pub(crate) async fn capture_mount_fd_store_bookend_v1(
@@ -246,6 +437,9 @@ impl ObservationPhase {
     fn accepts(self, state: &str, substate: Option<&str>) -> bool {
         match self {
             Self::Active => state == "active",
+            Self::OptionalActive => matches!(state,
+                "active" | "inactive" | "activating" | "deactivating" | "failed"
+                    | "reloading" | "maintenance" | "refreshing"),
             Self::StartingOrRunning => {
                 matches!(
                     (state, substate),
@@ -253,6 +447,7 @@ impl ObservationPhase {
                 )
             }
             Self::StoppedNix => matches!((state, substate), ("inactive", Some("dead"))),
+            Self::SuccessfulOneshot => matches!((state, substate), ("active", Some("exited"))),
         }
     }
 }
@@ -309,17 +504,24 @@ fn require_signatures(values: &[OwnedValue], signatures: &[&str]) -> Result<()> 
 }
 
 async fn read_properties(
-    proxy: &zbus::fdo::PropertiesProxy<'_>,
-    interface: &str,
-    names: &[&str],
+    proxy: &zbus::fdo::PropertiesProxy<'_>, interface: &str, names: &[&str],
+    source: &zbus::Proxy<'_>, decoding: PropertyDecodingV1,
 ) -> Result<Vec<OwnedValue>> {
+    let mut values = Vec::with_capacity(names.len());
+    read_properties_into_v2(proxy, interface, names, source, decoding, &mut values).await?;
+    Ok(values)
+}
+
+async fn read_properties_into_v2(
+    proxy: &zbus::fdo::PropertiesProxy<'_>, interface: &str, names: &[&str],
+    source: &zbus::Proxy<'_>, decoding: PropertyDecodingV1, values: &mut Vec<OwnedValue>,
+) -> Result<()> {
     let interface = zbus::names::InterfaceName::try_from(interface)
         .map_err(|error| changed(&error.to_string()))?;
-    let mut values = Vec::with_capacity(names.len());
     for name in names {
-        values.push(proxy.get(interface.clone(), name).await?);
+        values.push(decoding.value(proxy, source, interface.clone(), name).await?);
     }
-    Ok(values)
+    Ok(())
 }
 
 pub(super) async fn observe_offline_nix(
@@ -422,6 +624,48 @@ fn changed(message: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::ObservationPhase;
+
+    #[test]
+    fn successful_oneshot_is_distinct_from_running_starting_and_never_started() {
+        let phase = ObservationPhase::SuccessfulOneshot;
+        assert!(phase.accepts("active", Some("exited")));
+        for (state, substate) in [
+            ("active", Some("running")),
+            ("activating", Some("start")),
+            ("inactive", Some("dead")),
+            ("failed", Some("failed")),
+            ("active", None),
+        ] {
+            assert!(!phase.accepts(state, substate));
+        }
+        assert!(!ObservationPhase::StartingOrRunning.accepts("active", Some("exited")));
+    }
+
+
+    #[test]
+    fn active_control_group_requires_the_same_nonzero_invocation_and_pid() {
+        let before = ("aos-sandbox-hostd.service".to_owned(), "active".to_owned(), 42, vec![1; 16]);
+        let path = "/system.slice/aos-sandbox-hostd.service".to_owned();
+        let decoded = super::decode_control_group(&before.0, &before, &before, path.clone()).unwrap();
+        assert_eq!(decoded.main_pid.get(), 42);
+
+        let mut after = before.clone();
+        after.2 += 1;
+        assert!(super::decode_control_group(&before.0, &before, &after, path.clone()).is_err());
+        after = before.clone();
+        after.3[0] += 1;
+        assert!(super::decode_control_group(&before.0, &before, &after, path).is_err());
+    }
+
+    #[test]
+    fn active_control_group_refuses_noncanonical_locators() {
+        let before = ("aos-sandbox-mountd.service".to_owned(), "active".to_owned(), 42, vec![1; 16]);
+        for path in ["system.slice/unit.service", "/system.slice/../unit.service",
+            "/system.slice//unit.service", "/system.slice/./unit.service"]
+        {
+            assert!(super::decode_control_group(&before.0, &before, &before, path.to_owned()).is_err());
+        }
+    }
 
     #[test]
     fn stopped_nix_phase_accepts_only_inactive_dead() {

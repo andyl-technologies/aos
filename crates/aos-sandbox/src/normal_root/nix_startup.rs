@@ -1003,10 +1003,6 @@ fn profile_path(file: &File, role: Role) -> Result<PathBuf, images::ImageObserva
     Ok(path)
 }
 
-pub(super) fn retain_controller_profile(file: File) -> Result<RetainedImmutableFileV1, Error> {
-    retain_profile(file, Role::Controller).map(|(retained, _)| retained)
-}
-
 pub(super) fn park_controller_profile(
     pending: &mut PendingImmutableFileV1,
 ) -> Result<(), images::ImageObservationErrorV1> {

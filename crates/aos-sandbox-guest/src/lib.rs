@@ -28,6 +28,11 @@ pub use dormant_guest_agent::{
 };
 
 mod bridge;
+mod capture;
+mod sealed_authorize;
+mod ssh_authorize;
+
+pub use capture::GuestCaptureAuthorizeOriginalV2;
 mod execution_tree;
 mod gate;
 mod ledger;
@@ -35,7 +40,7 @@ mod monitor;
 mod openssh_pty;
 mod process;
 
-pub use process::{GuestProcessEffectErrorV1, GuestProcessEffectsV1};
+pub use process::{GuestProcessEffectErrorV1, GuestProcessEffectsV1, OriginalExecutionTransportRetirementV2};
 
 #[cfg(all(test, target_os = "linux"))]
 mod openssh_attach_qualification;

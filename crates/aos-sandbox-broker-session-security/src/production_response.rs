@@ -507,11 +507,42 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.finish_response_with_coverage_v1(committed, deadline_boottime_nanoseconds, None)
     }
 
+    pub(crate) fn finish_host_argument_response_v2(
+        self,
+        committed: ProtectedBrokerOutcomeCommitResultV1,
+        request: crate::DormantReceivedBrokerRequestV1,
+        host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+        deadline: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        let original = request.authenticated_original_v2();
+        let association = (original.method(), original.request_id(), original.session_binding(),
+            original.signed_request_digest());
+        let result = self.finish_response_with_argument_v2(committed, deadline, None,
+            Some((&mut *host, request)));
+        if result.is_err() && association.0 == aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION {
+            // Signed CAS/Sent/currentness failures cannot silently abandon the
+            // actual still-held Storage channel. This abort issues no grant.
+            let _ = host.abort_accepted_execution(association.1, association.2, association.3);
+        }
+        result
+    }
+
     fn finish_response_with_coverage_v1(
+        self,
+        committed: ProtectedBrokerOutcomeCommitResultV1,
+        deadline_boottime_nanoseconds: u64,
+        owner: Option<GitCoverageResponseOwnerV1<'_>>,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        self.finish_response_with_argument_v2(committed, deadline_boottime_nanoseconds, owner, None)
+    }
+
+    fn finish_response_with_argument_v2(
         mut self,
         committed: ProtectedBrokerOutcomeCommitResultV1,
         deadline_boottime_nanoseconds: u64,
         mut owner: Option<GitCoverageResponseOwnerV1<'_>>,
+        mut argument: Option<(&mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+            crate::DormantReceivedBrokerRequestV1)>,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
         let committed = match committed {
             ProtectedBrokerOutcomeCommitResultV1::Committed(committed) => committed,
@@ -544,8 +575,49 @@ impl DormantAuthenticatedBrokerSessionV1 {
             let progress = sent?;
             postchecked?;
             match progress {
-                DormantBrokerResponseSendProgressV1::Sent(_) => {
-                    return self.finish_sent_response(deadline_boottime_nanoseconds);
+                DormantBrokerResponseSendProgressV1::Sent(sent) => {
+                    if argument.is_none() {
+                        // Ordinary completion keeps its original drop-before-
+                        // final-clock order, including coverage callers.
+                        drop(sent);
+                        return self.finish_sent_response(deadline_boottime_nanoseconds);
+                    }
+                    // Only actual CAS/readback-derived Sent can reach this
+                    // branch. Its real authenticated request must still match
+                    // before ending the pending Host native interval.
+                    if let Some((_, request)) = &argument {
+                        let original = request.authenticated_original_v2();
+                        if sent.method() != original.method()
+                            || sent.request_id() != original.request_id()
+                            || sent.session_binding() != original.session_binding()
+                            || sent.signed_request_digest() != original.signed_request_digest()
+                        {
+                            return Err(ProductionBrokerResponseErrorV1::OutcomeRecovery);
+                        }
+                    }
+                    let session = self.finish_sent_response(deadline_boottime_nanoseconds)?;
+                    if let Some((host, request)) = &mut argument {
+                        let original = request.authenticated_original_v2();
+                        if original.host_before_argument_no_apply_data_v2().is_some()
+                            || original.method() == aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+                            || original.host_held_no_apply_settlement_data_v2().is_some()
+                            || original.host_no_apply_current_lease_query_data_v2().is_some()
+                        {
+                            host.retain_sent_execution_availability_response(
+                                original,
+                                sent.authenticated_outcome_v2(),
+                            )
+                            .map_err(|_| ProductionBrokerResponseErrorV1::OutcomeRecovery)?;
+                        }
+                    }
+                    // Dispose the actual positive protected outcome owner
+                    // before the Host's whole native capsule and operation.
+                    drop(sent);
+                    if let Some((host, request)) = argument.take() {
+                        host.retire_authenticated_argument(request.authenticated_original_v2())
+                            .map_err(|_| ProductionBrokerResponseErrorV1::OutcomeRecovery)?;
+                    }
+                    return Ok(session);
                 }
                 DormantBrokerResponseSendProgressV1::Pending(retained) => {
                     self.wait_for_response_readiness(deadline_boottime_nanoseconds)?;

@@ -15,7 +15,7 @@
 //! ```
 
 use aos_proto::aos::sandbox::local::v1::{
-    BrokerMethod, ObserveHostExecutionArgumentRequestV1, ObserveHostExecutionArgumentResponseV1,
+    BrokerMethod, AcceptHostExecutionArgumentRequestV2, AcceptHostExecutionArgumentResponseV2,
 };
 use aos_sandbox_agent::GuestRuntimeArgumentObserveRequestV1;
 use aos_sandbox_core::{
@@ -40,12 +40,10 @@ use crate::controller_execution_argument_attempt::{
 };
 use crate::environment::EnvironmentProtectedJournalOwnerV1;
 use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentAssignmentTarget, CurrentRuntimeScopeError};
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
-const MAGIC: &[u8; 8] = b"AOSCAF01";
-const DOMAIN: &[u8] = b"aos.sandbox.controller-argument-receipt.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.controller-argument-receipt-tx.v1\0";
 const FIXED_BYTES: usize = 8 + 16 + 16 + 32 + 32 + 32 + 2 + 32;
 const MAXIMUM_RECORD_BYTES: usize = FIXED_BYTES + MAXIMUM_HOST_ARGUMENT_FRESH_RECEIPT_BYTES_V1;
@@ -99,6 +97,21 @@ pub struct AuthenticatedControllerHostArgumentObservationV1 {
 }
 
 impl AuthenticatedControllerHostArgumentObservationV1 {
+    // This is the sole encoder's exact width (or bounded receipt width).
+    // It is passive requirement DATA, never an append or Native authority.
+    pub(crate) const fn receiving_record_shape_v1() -> aos_sandbox_journal::geometry::RecordShape {
+        aos_sandbox_journal::geometry::RecordShape {
+            key_bytes: 16,
+            value_bytes: Some(MAXIMUM_RECORD_BYTES),
+        }
+    }
+
+    /// Returns the original nonrenewable cutoff of this actual argument handoff.
+    #[must_use]
+    pub const fn deadline_boottime_nanoseconds(&self) -> u64 {
+        self.attempt.deadline_boottime_nanoseconds()
+    }
+
     /// Borrows the Host-attested, target-bound runtime argument limit.
     #[must_use]
     pub const fn evidence(&self) -> &ExecutionRuntimeArgumentLimitV1 {
@@ -171,94 +184,19 @@ impl HistoricalControllerHostArgumentReceiptV1 {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ReceiptRecordV1 {
-    execution: ExecutionId,
-    create_operation: OperationId,
-    attempt_digest: ObjectDigest,
-    request_packet_digest: ObjectDigest,
-    outcome_packet_digest: ObjectDigest,
-    exact_host_receipt: Vec<u8>,
-    record_digest: ObjectDigest,
-}
+use aos_sandbox_protocol::execution_argument_receipt::{
+    ControllerArgumentReceiptDataV1 as ReceiptRecordV1, digest_record,
+};
 
-impl ReceiptRecordV1 {
-    fn encode(&self) -> Result<Vec<u8>, ControllerExecutionArgumentReceiptErrorV1> {
-        let receipt_length = u16::try_from(self.exact_host_receipt.len())
-            .map_err(|_| ControllerExecutionArgumentReceiptErrorV1::Mismatch)?;
-        let mut bytes = Vec::with_capacity(FIXED_BYTES + self.exact_host_receipt.len());
-        bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(self.execution.as_bytes());
-        bytes.extend_from_slice(self.create_operation.as_bytes());
-        bytes.extend_from_slice(self.attempt_digest.as_bytes());
-        bytes.extend_from_slice(self.request_packet_digest.as_bytes());
-        bytes.extend_from_slice(self.outcome_packet_digest.as_bytes());
-        bytes.extend_from_slice(&receipt_length.to_be_bytes());
-        bytes.extend_from_slice(&self.exact_host_receipt);
-        bytes.extend_from_slice(self.record_digest.as_bytes());
-        Ok(bytes)
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, ControllerExecutionArgumentReceiptErrorV1> {
-        if bytes.len() < FIXED_BYTES
-            || bytes.len() > MAXIMUM_RECORD_BYTES
-            || bytes.get(..8) != Some(MAGIC.as_slice())
-        {
-            return Err(ControllerExecutionArgumentReceiptErrorV1::Mismatch);
-        }
-        let read_16 =
-            |start: usize| -> Result<[u8; 16], ControllerExecutionArgumentReceiptErrorV1> {
-                bytes[start..start + 16]
-                    .try_into()
-                    .map_err(|_| ControllerExecutionArgumentReceiptErrorV1::Mismatch)
-            };
-        let read_32 =
-            |start: usize| -> Result<ObjectDigest, ControllerExecutionArgumentReceiptErrorV1> {
-                Ok(ObjectDigest::from_bytes(
-                    bytes[start..start + 32]
-                        .try_into()
-                        .map_err(|_| ControllerExecutionArgumentReceiptErrorV1::Mismatch)?,
-                ))
-            };
-        let receipt_length = usize::from(u16::from_be_bytes(
-            bytes[136..138]
-                .try_into()
-                .map_err(|_| ControllerExecutionArgumentReceiptErrorV1::Mismatch)?,
-        ));
-        if receipt_length == 0 || bytes.len() != FIXED_BYTES + receipt_length {
-            return Err(ControllerExecutionArgumentReceiptErrorV1::Mismatch);
-        }
-        let checksum_start = bytes.len() - 32;
-        let record = Self {
-            execution: ExecutionId::from_bytes(read_16(8)?),
-            create_operation: OperationId::from_bytes(read_16(24)?),
-            attempt_digest: read_32(40)?,
-            request_packet_digest: read_32(72)?,
-            outcome_packet_digest: read_32(104)?,
-            exact_host_receipt: bytes[138..checksum_start].to_vec(),
-            record_digest: read_32(checksum_start)?,
-        };
-        if !record.is_valid()
-            || record.record_digest != digest_record(&bytes[..checksum_start])
-            || record.encode()? != bytes
-        {
-            return Err(ControllerExecutionArgumentReceiptErrorV1::Mismatch);
-        }
-        Ok(record)
-    }
-
-    fn is_valid(&self) -> bool {
-        self.execution.as_bytes() != &[0; 16]
-            && self.create_operation.as_bytes() != &[0; 16]
-            && self.attempt_digest.as_bytes() != &[0; 32]
-            && self.request_packet_digest.as_bytes() != &[0; 32]
-            && self.outcome_packet_digest.as_bytes() != &[0; 32]
-            && !self.exact_host_receipt.is_empty()
-            && self.exact_host_receipt.len() <= MAXIMUM_HOST_ARGUMENT_FRESH_RECEIPT_BYTES_V1
+impl From<aos_sandbox_protocol::execution_argument_receipt::ControllerArgumentReceiptDataErrorV1>
+    for ControllerExecutionArgumentReceiptErrorV1
+{
+    fn from(_: aos_sandbox_protocol::execution_argument_receipt::ControllerArgumentReceiptDataErrorV1) -> Self {
+        Self::Mismatch
     }
 }
 
-/// Retains one authenticated fresh method-37 Host outcome under Controller custody.
+/// Retains one authenticated fresh method59 Accept under Controller custody.
 ///
 /// AOSHQR01 method-38 replies cannot enter this constructor. Ambiguous append
 /// recovery is audit-only and cannot mint a fresh observation after restart.
@@ -268,7 +206,7 @@ impl ReceiptRecordV1 {
 /// Rejects a stale accepted Create/assignment/boot, substituted original
 /// request or Host receipt, malformed Guest runtime, or ambiguous durability.
 #[allow(clippy::too_many_arguments)]
-pub fn retain_authenticated_controller_host_argument_receipt_v1<T>(
+pub fn retain_authenticated_controller_host_argument_receipt_v2<T>(
     controller: &mut Journal,
     assignment: &CurrentAssignmentTarget,
     environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
@@ -395,6 +333,36 @@ where
     Ok(())
 }
 
+/// Revalidates the SAME live observation against its exact retained59 outcome.
+///
+/// The caller must already own the original non-cold-constructible observation.
+/// This neither persists another receipt nor constructs fresh evidence from a
+/// historical packet. All current source checks use the original engine.
+///
+/// # Errors
+/// Rejects a foreign signed outcome, protected CAF/source mismatch, changed
+/// current assignment or native owner, or failure of the retained clock.
+pub fn revalidate_authenticated_controller_host_argument_receipt_v2<T>(
+    controller: &mut Journal, assignment: &CurrentAssignmentTarget,
+    environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    proof: &AuthenticatedControllerHostArgumentObservationV1,
+    outcome: &AuthenticatedBrokerMethodOutcomeV1, clock: &mut T,
+) -> Result<(), ControllerExecutionArgumentReceiptErrorV1>
+where T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let host = authenticated_fresh_receipt(&proof.attempt, outcome)?;
+    let record = load_receipt(controller, proof.execution())?
+        .ok_or(ControllerExecutionArgumentReceiptErrorV1::Mismatch)?;
+    if record.record_digest != proof.record_digest
+        || record.request_packet_digest != raw_digest(outcome.request().canonical_packet())
+        || record.outcome_packet_digest != raw_digest(outcome.canonical_packet())
+        || record.exact_host_receipt != host.canonical_bytes()
+    { return Err(ControllerExecutionArgumentReceiptErrorV1::Mismatch); }
+    revalidate_current_controller_host_argument_observation_v1(
+        controller, assignment, environment_owner, parent, proof, clock)
+}
+
 /// Cold-reads an authenticated record for audit, never spec-admission authority.
 ///
 /// # Errors
@@ -452,29 +420,40 @@ fn authenticated_fresh_receipt(
     let request = outcome.request();
     if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
         || request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
-        || outcome.method() != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+        || outcome.method() != BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2
         || request.request_id() != attempt.request_id()
         || request.canonical_packet().is_empty()
         || outcome.canonical_packet().is_empty()
     {
         return Err(ControllerExecutionArgumentReceiptErrorV1::Mismatch);
     }
-    let observed = ObserveHostExecutionArgumentRequestV1::decode_from_slice(request.exact_body())
+    let observed = AcceptHostExecutionArgumentRequestV2::decode_from_slice(request.exact_body())
         .map_err(|_| ControllerExecutionArgumentReceiptErrorV1::Mismatch)?;
     if !observed.__buffa_unknown_fields.is_empty()
         || observed.encode_to_vec() != request.exact_body()
         || observed.canonical_attempt != attempt.canonical_bytes()
         || observed.header.as_option().is_none_or(|header| {
             header.request_id != request.request_id()
-                || header.deadline_boottime_nanoseconds != attempt.deadline_boottime_nanoseconds()
+                || header.deadline_boottime_nanoseconds < attempt.deadline_boottime_nanoseconds()
         })
     {
+        return Err(ControllerExecutionArgumentReceiptErrorV1::Mismatch);
+    }
+    // Structural preparation bytes are compared only after the actual
+    // authenticated Accept terminal. They cannot substitute for Host's own
+    // same-Session/live-Agent preparation and native one-shot consumption.
+    let preparation = aos_sandbox_protocol::host_execution_argument::preparation::HostArgumentPreparationV2::decode(
+        &observed.canonical_preparation,
+    ).map_err(|_| ControllerExecutionArgumentReceiptErrorV1::Mismatch)?;
+    preparation.require_accept_source(&attempt.canonical_bytes())
+        .map_err(|_| ControllerExecutionArgumentReceiptErrorV1::Mismatch)?;
+    if preparation.controller_session() != request.session_binding() {
         return Err(ControllerExecutionArgumentReceiptErrorV1::Mismatch);
     }
     let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
         return Err(ControllerExecutionArgumentReceiptErrorV1::Mismatch);
     };
-    let response = ObserveHostExecutionArgumentResponseV1::decode_from_slice(exact_body)
+    let response = AcceptHostExecutionArgumentResponseV2::decode_from_slice(exact_body)
         .map_err(|_| ControllerExecutionArgumentReceiptErrorV1::Mismatch)?;
     if !response.__buffa_unknown_fields.is_empty() || response.encode_to_vec() != *exact_body {
         return Err(ControllerExecutionArgumentReceiptErrorV1::Mismatch);
@@ -535,6 +514,7 @@ fn load_receipt(
         )
         .map(ReceiptRecordV1::decode)
         .transpose()
+        .map_err(Into::into)
 }
 
 fn persist_receipt(
@@ -582,15 +562,7 @@ fn raw_digest(bytes: &[u8]) -> ObjectDigest {
     ObjectDigest::from_bytes(Sha256::digest(bytes).into())
 }
 
-fn digest_record(bytes: &[u8]) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(DOMAIN)
-            .chain_update(bytes)
-            .finalize()
-            .into(),
-    )
-}
+
 
 #[cfg(test)]
 mod tests {

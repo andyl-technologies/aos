@@ -11,20 +11,12 @@ use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_core::state::{AssignmentPhase, DesiredSandboxState};
 use aos_sandbox_core::{
-    AssignmentEpoch, DesiredGeneration, IncarnationId, NodeId, ObjectDescriptor, ObjectDigest,
-    ObservationSequence, SandboxId,
+    AssignmentEpoch, DesiredGeneration, IncarnationId, MAX_ASSIGNMENT_AFFINITIES, NodeId,
+    ObjectDescriptor, ObjectDigest, ObservationSequence, SandboxId,
 };
 
-use super::assignment::{
-    AssignmentIntentV1, AssignmentObservationReasonV1, MAX_SNAPSHOT_TRANSFER_CHUNKS,
-    MAX_SNAPSHOT_TRANSFER_DEPENDENCIES, MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES,
-    SnapshotTransferManifestV1, SnapshotTransferResumeV1, assignment_reason_phase_consistent,
-};
-use super::capability::{NodeBootId, NodeBootLineageV1, NodeCapabilitySnapshotV1};
-use super::draining::{
-    DrainAssignmentProgressV1, DrainBlockReasonV1, DrainDirectiveV1, DrainPhaseV1,
-    observation_phase_consistent,
-};
+use super::assignment::{AssignmentObservationReasonV1, assignment_reason_phase_consistent};
+use super::draining::observation_phase_consistent;
 use super::journal::{InvalidMultiNodeJournal, MultiNodeJournalDomainV1};
 use super::protocol::semantic_codec_v1::{
     CapabilityWire as CapabilitySemanticWire, DrainDirectiveWire as DrainDirectiveSemanticWire,
@@ -32,13 +24,20 @@ use super::protocol::semantic_codec_v1::{
     capability_wire, drain_directive_model, drain_directive_wire, intent_model, intent_wire,
     manifest_model, manifest_wire,
 };
-use super::protocol::{
+use aos_sandbox_core::AssignmentIntentV1;
+use aos_sandbox_core::{
+    DrainAssignmentProgressV1, DrainBlockReasonV1, DrainDirectiveV1, DrainPhaseV1,
+};
+use aos_sandbox_core::{
+    MAX_SNAPSHOT_TRANSFER_CHUNKS, MAX_SNAPSHOT_TRANSFER_DEPENDENCIES,
+    MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES, SnapshotTransferManifestV1,
+    SnapshotTransferResumeV1,
+};
+use aos_sandbox_core::{NodeBootId, NodeBootLineageV1, NodeCapabilitySnapshotV1};
+use aos_sandbox_core::{
     NodeWatchBindingV1, NodeWatchCursorV1, RollingVersionWindowV1, stable_watch_bootstrap_uid,
     stable_watch_event_uid,
 };
-
-/// Maximum complete affinity projections retained in an assignment record.
-pub const MAX_ASSIGNMENT_AFFINITIES: usize = 4_096;
 
 /// Retains an authority-neutral exact carrier/currentness commitment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -521,7 +520,7 @@ impl DurableDrainObservationV1 {
     ) -> Result<Self, InvalidMultiNodeJournal> {
         if sequence.get() == 0
             || !evidence.covered(observed_at_unix_seconds)
-            || assignments.len() > super::draining::MAX_DRAIN_ASSIGNMENTS
+            || assignments.len() > aos_sandbox_core::MAX_DRAIN_ASSIGNMENTS
             || !assignments.windows(2).all(|p| p[0].sandbox < p[1].sandbox)
         {
             return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
@@ -618,7 +617,7 @@ impl DrainJournalStateV1 {
                 );
                 let needs_snapshot = contained
                     && plan.strategy()
-                        == super::draining::DrainAssignmentStrategyV1::SnapshotStopAndReplace;
+                        == aos_sandbox_core::DrainAssignmentStrategyV1::SnapshotStopAndReplace;
                 if row.sandbox != plan.sandbox()
                     || row.incarnation != plan.incarnation()
                     || row.epoch != plan.epoch()
@@ -629,7 +628,7 @@ impl DrainJournalStateV1 {
                         && row.release_digest.is_none())
                     || (needs_snapshot && row.snapshot_completion_digest.is_none())
                     || (plan.strategy()
-                        != super::draining::DrainAssignmentStrategyV1::SnapshotStopAndReplace
+                        != aos_sandbox_core::DrainAssignmentStrategyV1::SnapshotStopAndReplace
                         && row.snapshot_completion_digest.is_some())
                     || (!snapshot_allowed && row.snapshot_completion_digest.is_some())
                     || (!containment_allowed && row.containment_digest.is_some())
@@ -637,7 +636,7 @@ impl DrainJournalStateV1 {
                     || (row.release_digest.is_some() && row.containment_digest.is_none())
                     || (row.release_digest.is_some()
                         && plan.strategy()
-                            == super::draining::DrainAssignmentStrategyV1::SnapshotStopAndReplace
+                            == aos_sandbox_core::DrainAssignmentStrategyV1::SnapshotStopAndReplace
                         && row.snapshot_completion_digest.is_none())
                 {
                     return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
@@ -677,23 +676,7 @@ pub struct DurableStagedChunkV1 {
     pub protected_object_receipt: ObjectDigest,
 }
 
-/// Stores durable dependency staging and protected-liveness commitments.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DurableDependencyProjectionV1 {
-    /// Immutable dependency descriptor.
-    pub descriptor: ObjectDescriptor,
-    /// Bytes verified so far, always a contiguous prefix.
-    pub next_offset: u64,
-    /// Streaming commitment derived from the actual staged prefix bytes.
-    pub verified_prefix_digest: ObjectDigest,
-    /// Opaque protected-object receipt for the staged prefix.
-    pub protected_object_receipt: ObjectDigest,
-    /// Protected current-liveness proof commitment, when complete.
-    pub liveness_digest: Option<ObjectDigest>,
-    /// Currentness deadline of the liveness proof.
-    pub live_until_unix_seconds: Option<u64>,
-}
+use aos_sandbox_core::DurableDependencyProjectionV1;
 
 /// Stores atomic-publication evidence without recreating its opaque capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -899,7 +882,7 @@ impl WatchJournalStateV1 {
         if cursor.binding() != binding
             || bootstrap_inventory_digest.as_bytes() == &[0; 32]
             || bootstrap_inventory_receipt.as_bytes() == &[0; 32]
-            || events.len() > super::protocol::MAX_WATCH_EVENTS
+            || events.len() > aos_sandbox_core::MAX_WATCH_EVENTS
             || (events.is_empty()
                 && (cursor.event_sequence() != binding.bootstrap_watermark()
                     || cursor.last_event_uid()
@@ -930,7 +913,7 @@ impl WatchJournalStateV1 {
                     || event.event_uid.as_bytes() == &[0; 32]
                     || event.predecessor_event_uid.as_bytes() == &[0; 32]
                     || event.canonical_event_bytes == 0
-                    || event.canonical_event_bytes > super::protocol::MAX_NODE_RESPONSE_BYTES
+                    || event.canonical_event_bytes > aos_sandbox_core::MAX_NODE_RESPONSE_BYTES
                     || event.canonical_event_digest.as_bytes() == &[0; 32]
                     || event.protected_event_receipt.as_bytes() == &[0; 32]
                     || event.carrier_frame_digest.as_bytes() == &[0; 32]

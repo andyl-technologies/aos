@@ -13,10 +13,10 @@ use ed25519_dalek::{Signer as _, SigningKey};
 
 use super::*;
 use crate::JournalLimits;
-use crate::hierarchy::genesis_profile::ControllerSourceGenesisAcceptanceRecordV1;
+use aos_sandbox_protocol::source_genesis_acceptance::ControllerSourceGenesisAcceptanceRecordV1;
 use aos_sandbox_core::source_tree_model::TreeLimitsV1;
 use crate::hierarchy::protected_journal::recover_hierarchy_replay_validator_v1;
-use crate::hierarchy::source_seed::{
+use aos_sandbox_protocol::controller_source_seed::{
     ControllerSourceTreeSeedV1, sign_controller_source_tree_seed_v1,
 };
 use crate::journal::{JournalError, ReadOnlyProtectedJournal, encoded_transaction_append_bytes};

@@ -15,17 +15,16 @@ mod global_coordinator;
 mod current;
 mod flight;
 mod pins;
+pub(in crate::policy_compiler) use pins::{RootRolePinsDataV1, role_pins_from_journal_v1};
 mod records;
 mod store;
+mod history;
 pub(crate) use store::GlobalRootGenesisNativeCutV2;
 mod successor_issuance;
 mod successor_consumer;
 mod successor_flight;
 mod successor_owner;
-use super::first_source_successor_records as successor_records;
 mod transport;
-mod wire;
-pub use wire::{ROOT_SOURCE_RESOURCE_GENESIS_QUERY_MAGIC_V2, root_source_resource_genesis_payload_bytes_v2};
 
 pub use successor_consumer::{
     FailedOriginalFirstSourceSuccessorV2, FirstSourceSuccessorConsumerPhaseV2,
@@ -46,13 +45,13 @@ pub(crate) use successor_owner::RootSuccessorNativeServerCutV3;
 pub use current::CurrentRootFirstSourceSuccessorFloorV2;
 pub use current::CurrentRootProjectSuccessorFloorV3;
 
-pub use successor_records::{
+use aos_sandbox_ledger_replay::replay::phase_records::{
     ControllerFirstSourceSuccessorAnchoredV2, ControllerFirstSourceSuccessorBeginV2,
     ControllerFirstSourceSuccessorCompleteV2, RootFirstSourceSuccessorFloorV2,
     RootFirstSourceSuccessorIntentV2, SourceFirstSuccessorAckV2,
     SourceFirstSuccessorPendingV2, SourceFirstSuccessorReceiptV2,
 };
-pub(crate) use successor_records::{
+use aos_sandbox_ledger_replay::replay::phase_records::{
     ControllerFirstSourceSuccessorAnchoredFieldsV2, ControllerFirstSourceSuccessorBeginFieldsV2,
     ControllerFirstSourceSuccessorCompleteFieldsV2, RootFirstSourceSuccessorFloorFieldsV2,
     RootFirstSourceSuccessorIntentFieldsV2, SourceFirstSuccessorAckFieldsV2,
@@ -66,6 +65,7 @@ pub(crate) use successor_owner::{
 
 pub(crate) use capacity::{
     require_mutation as require_root_source_genesis_mutation_v1,
+    require_mutation_read_v1 as require_root_source_genesis_mutation_read_v1,
     require_owner as require_root_source_genesis_capacity_owner_v1,
     validate_admission as validate_root_source_genesis_capacity_admission_v1,
     validate_settlement as validate_root_source_genesis_capacity_settlement_v1,
@@ -125,28 +125,18 @@ pub(in crate::policy_compiler) fn wait_original_root_v1(
 ) -> Result<(), crate::hierarchy::genesis_profile::SourceGenesisErrorV1> {
     transport::wait(descriptor, interest, deadline)
 }
-#[cfg(target_os = "linux")]
-pub(in crate::policy_compiler) use wire::{
-    RootCreateQ04TransferKindV1, decode_root_create_q04_transfer_v1,
-    encode_root_create_q04_transfer_v1,
-    strict_genesis_payload_bytes_from_header, q04_genesis_refresh_payload_bytes_from_header,
-};
-pub use wire::{
-    ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1, ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1,
-    ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1, RootSourceGenesisFrameKindV1,
-    decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
-    decode_root_source_genesis_frame_v2, encode_root_source_genesis_frame_v2,
-};
-pub use wire::{
-    ROOT_SOURCE_PROJECT_GENESIS_QUERY_MAGIC_V3, ROOT_SOURCE_PROJECT_GENESIS_HELLO_MAGIC_V3,
-    encode_root_source_project_genesis_frame_v3, decode_root_source_project_genesis_frame_v3,
-    root_source_project_genesis_payload_bytes_v3,
-};
-pub use wire::{
-    ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2, ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2,
-    ROOT_PROJECT_SOURCE_SUCCESSOR_HELLO_MAGIC_V3, ROOT_PROJECT_SOURCE_SUCCESSOR_QUERY_MAGIC_V3,
-    RootFirstSourceSuccessorFrameKindV2, decode_root_first_source_successor_frame_v2,
-    encode_root_first_source_successor_frame_v2,
-    encode_root_project_source_successor_frame_v3, decode_root_project_source_successor_frame_v3,
-    root_resource_successor_payload_bytes_v4,
-};
+
+pub(in crate::policy_compiler) use history::{RootSavedSourceFloorDataV1, RootSavedFloorComparisonErrorV1, compare_saved_source_floor_v1};
+
+/// Reports additional controls for a flight embedded in a measured invocation.
+pub(crate) fn root_flight_additional_control_bytes_v1() -> Option<usize> {
+    flight::OriginalRootGenesisFlightV1::additional_control_bytes_v1()
+}
+
+/// Reports complete construction bytes for a separately resident Root flight.
+///
+/// Source-issue constructs its later original outside its measured Outer.
+pub(crate) fn root_flight_detached_construction_bytes_v1() -> Option<usize> {
+    std::mem::size_of::<flight::OriginalRootGenesisFlightV1<'_>>()
+        .checked_add(root_flight_additional_control_bytes_v1()?)
+}

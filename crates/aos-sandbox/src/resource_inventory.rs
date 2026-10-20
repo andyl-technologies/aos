@@ -767,7 +767,8 @@ impl SnapshotRecord {
                 KEY.to_vec(),
                 self.encode(),
             )],
-        ).map_err(JournalError::from)?)
+        )
+        .map_err(JournalError::from)?)
     }
 }
 
@@ -931,42 +932,191 @@ fn record_snapshot(
     persist_snapshot(journal, history, record, inventory)
 }
 
+// Names the concrete shared snapshot/transaction carriers before either the
+// empty-history decoder or candidate construction. No caller chooses a cap.
+pub(crate) fn canonical_snapshot_carrier_geometry_data_v2() -> Option<(usize, usize)> {
+    let carriers = std::mem::size_of::<SnapshotRecord>()
+        .checked_add(std::mem::size_of::<SnapshotHistory>())?
+        .checked_add(std::mem::size_of::<ValidatedResourceInventory>())?
+        .checked_add(std::mem::size_of::<ResourceInventoryCommitRecipeV2<'_>>())?
+        .checked_add(std::mem::size_of::<ResourceInventorySnapshotRetainedV2>())?
+        .checked_mul(4)?
+        .checked_add(std::mem::size_of::<JournalTransaction>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<JournalRecord>().checked_mul(3)?)?;
+    Some((format::FIXED_RECORD_BYTES, carriers))
+}
+
+/// Borrows the exact canonical resource snapshot and its prior latest row.
+pub(crate) struct ResourceInventoryCommitRecipeV2<'transaction> {
+    transaction: &'transaction JournalTransaction,
+    domain: InventoryDomain,
+    prior_digest: Option<[u8; 32]>,
+}
+
+impl<'transaction> ResourceInventoryCommitRecipeV2<'transaction> {
+    fn from_canonical_record_v2(
+        journal: &Journal,
+        transaction: &'transaction JournalTransaction,
+        record: &SnapshotRecord,
+    ) -> Self {
+        Self {
+            transaction,
+            domain: record.domain,
+            prior_digest: journal
+                .get(record.domain.namespace(), KEY)
+                .map(|bytes| Sha256::digest(bytes).into()),
+        }
+    }
+
+    pub(crate) fn require_transaction_v2(
+        &self,
+        journal: &Journal,
+        transaction: &JournalTransaction,
+    ) -> Result<(), JournalError> {
+        if self.transaction != transaction
+            || self.prior_digest
+                != journal
+                    .get(self.domain.namespace(), KEY)
+                    .map(|bytes| <[u8; 32]>::from(Sha256::digest(bytes)))
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
+    pub(crate) const fn is_storage_v2(&self) -> bool {
+        matches!(self.domain, InventoryDomain::Storage)
+    }
+}
+
 fn persist_snapshot(
     journal: &mut Journal,
     history: SnapshotHistory,
     record: SnapshotRecord,
     inventory: ValidatedResourceInventory,
 ) -> Result<RecordedSnapshot, ResourceInventoryError> {
+    persist_snapshot_with_commit_v2(
+        journal,
+        history,
+        record,
+        inventory,
+        |journal, transaction, _recipe| journal.commit(transaction).map_err(Into::into),
+    )
+}
+
+/// Retains canonical candidates and append inputs until their selected owner is disposed.
+/// Parser-only temporaries remain transient; every constructed canonical record,
+/// chosen inventory, append transaction and completed readback has an owned slot.
+pub(crate) struct ResourceInventorySnapshotRetainedV2 {
+    history: Option<SnapshotHistory>,
+    candidate: Option<(SnapshotRecord, ValidatedResourceInventory)>,
+    superseded: Option<(SnapshotRecord, ValidatedResourceInventory)>,
+    transaction: Option<JournalTransaction>,
+    readback: Option<SnapshotHistory>,
+}
+
+impl ResourceInventorySnapshotRetainedV2 {
+    pub(crate) fn new() -> Self {
+        Self {
+            history: None,
+            candidate: None,
+            superseded: None,
+            transaction: None,
+            readback: None,
+        }
+    }
+}
+
+fn persist_snapshot_with_commit_v2(
+    journal: &mut Journal,
+    history: SnapshotHistory,
+    record: SnapshotRecord,
+    inventory: ValidatedResourceInventory,
+    commit: impl FnMut(
+        &mut Journal,
+        &JournalTransaction,
+        &ResourceInventoryCommitRecipeV2<'_>,
+    ) -> Result<crate::CommitResult, ResourceInventoryError>,
+) -> Result<RecordedSnapshot, ResourceInventoryError> {
+    persist_snapshot_retaining_with_commit_v2(
+        journal,
+        history,
+        record,
+        inventory,
+        &mut ResourceInventorySnapshotRetainedV2::new(),
+        commit,
+    )
+}
+
+fn persist_snapshot_retaining_with_commit_v2(
+    journal: &mut Journal,
+    history: SnapshotHistory,
+    record: SnapshotRecord,
+    inventory: ValidatedResourceInventory,
+    retained: &mut ResourceInventorySnapshotRetainedV2,
+    mut commit: impl FnMut(
+        &mut Journal,
+        &JournalTransaction,
+        &ResourceInventoryCommitRecipeV2<'_>,
+    ) -> Result<crate::CommitResult, ResourceInventoryError>,
+) -> Result<RecordedSnapshot, ResourceInventoryError> {
+    if retained.history.is_some() || retained.candidate.is_some() {
+        return Err(ResourceInventoryError::Conflict);
+    }
     let domain = record.domain;
-    let (record, inventory, outcome) = match history.outcome(&record, &inventory)? {
-        SnapshotDecision::Replay => (
-            record,
-            inventory,
-            ResourceInventorySnapshotOutcomeV1::Replay,
-        ),
+    retained.history = Some(history);
+    retained.candidate = Some((record, inventory));
+    let history = retained
+        .history
+        .as_mut()
+        .ok_or(ResourceInventoryError::CorruptState)?;
+    let (record, inventory) = retained
+        .candidate
+        .as_ref()
+        .ok_or(ResourceInventoryError::CorruptState)?;
+    let outcome = match history.outcome(record, inventory)? {
+        SnapshotDecision::Replay => ResourceInventorySnapshotOutcomeV1::Replay,
         SnapshotDecision::Unchanged => {
-            let (current, current_inventory) =
-                history.record.ok_or(ResourceInventoryError::CorruptState)?;
-            (
-                current,
-                current_inventory,
-                ResourceInventorySnapshotOutcomeV1::Replay,
-            )
+            let current = history
+                .record
+                .take()
+                .ok_or(ResourceInventoryError::CorruptState)?;
+            retained.superseded = retained.candidate.replace(current);
+            ResourceInventorySnapshotOutcomeV1::Replay
         }
         SnapshotDecision::Record => {
-            journal.commit(&record.transaction()?)?;
-            (
+            retained.transaction = Some(record.transaction()?);
+            let transaction = retained
+                .transaction
+                .as_ref()
+                .ok_or(ResourceInventoryError::CorruptState)?;
+            let recipe = ResourceInventoryCommitRecipeV2::from_canonical_record_v2(
+                journal,
+                transaction,
                 record,
-                inventory,
-                ResourceInventorySnapshotOutcomeV1::Recorded,
-            )
+            );
+            commit(journal, transaction, &recipe)?;
+            ResourceInventorySnapshotOutcomeV1::Recorded
         }
     };
-    let committed = SnapshotHistory::load(journal, domain)?;
-    if committed.record.as_ref().map(|value| &value.0) != Some(&record) {
+    retained.readback = Some(SnapshotHistory::load(journal, domain)?);
+    let (record, _) = retained
+        .candidate
+        .as_ref()
+        .ok_or(ResourceInventoryError::CorruptState)?;
+    if retained
+        .readback
+        .as_ref()
+        .and_then(|history| history.record.as_ref())
+        .map(|value| &value.0)
+        != Some(record)
+    {
         return Err(ResourceInventoryError::CorruptState);
     }
-
+    let (record, inventory) = retained
+        .candidate
+        .take()
+        .ok_or(ResourceInventoryError::CorruptState)?;
     Ok(RecordedSnapshot {
         record,
         inventory,
@@ -1067,7 +1217,9 @@ pub(crate) fn validate_namespaces(journal: &mut Journal) -> Result<(), ResourceI
     Ok(())
 }
 
-fn controller_state_digest(journal: &mut Journal) -> Result<[u8; 32], ResourceInventoryError> {
+pub(crate) fn controller_state_digest(
+    journal: &mut Journal,
+) -> Result<[u8; 32], ResourceInventoryError> {
     let mount_state_digest = match mount_controller_state_digest(journal) {
         Ok(digest) => Ok(digest),
         Err(MountAttemptError::Capacity) => Err(ResourceInventoryError::Capacity),
@@ -2045,4 +2197,34 @@ mod tests {
             Err(ResourceInventoryError::Conflict)
         ));
     }
+
+    #[test]
+    fn failed_canonical_append_retains_the_actual_candidate_and_transaction() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = std::fs::metadata(directory.path()).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(directory.path(),
+            "controller.journal", JournalLimits::default(), owner).unwrap();
+        let state = controller_state_digest(&mut journal).unwrap();
+        let (candidate, inventory) = record(InventoryDomain::Storage, 7, state,
+            storage_response(2, 3, 4, 5, 6));
+        let digest = candidate.digest;
+        let history = SnapshotHistory::load(&mut journal, InventoryDomain::Storage).unwrap();
+        let sequence = journal.snapshot_sequence();
+        let mut retained = ResourceInventorySnapshotRetainedV2::new();
+
+        let result = persist_snapshot_retaining_with_commit_v2(&mut journal,
+            history, candidate, inventory, &mut retained, |_journal, transaction, _recipe| {
+                assert!(!transaction.records().is_empty());
+                Err(ResourceInventoryError::Journal(JournalError::ProtectedBoundary))
+            });
+
+        assert!(matches!(result, Err(ResourceInventoryError::Journal(JournalError::ProtectedBoundary))));
+        assert_eq!(retained.candidate.as_ref().map(|(record, _)| record.digest), Some(digest));
+        assert!(retained.transaction.as_ref().is_some_and(|transaction| !transaction.records().is_empty()));
+        assert!(retained.history.is_some());
+        assert!(retained.readback.is_none());
+        assert_eq!(journal.snapshot_sequence(), sequence);
+    }
+
 }

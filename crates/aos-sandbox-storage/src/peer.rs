@@ -189,19 +189,46 @@ pub(crate) enum RootServicePeerError {
     /// The original membership or liveness observation failed.
     #[error("root service peer observation failed: {0}")]
     Linux(#[from] aos_sandbox_linux::Error),
+    /// The caller retains the reached native prefix and borrows its real cause.
+    #[error("root service native observation is retained by its original")]
+    RetainedObservation,
 }
 
 fn verify_root_service_connection_typed(
     cgroup: &RetainedCgroupAnchor,
     peer: &ConnectionPeerIdentity,
 ) -> Result<PidFdInfo, RootServicePeerError> {
+    verify_root_service_connection_engine(cgroup, peer, None)
+}
+
+fn verify_root_service_connection_engine(
+    cgroup: &RetainedCgroupAnchor,
+    peer: &ConnectionPeerIdentity,
+    mut retained: Option<&mut RootServiceConnectionOriginalV2>,
+) -> Result<PidFdInfo, RootServicePeerError> {
     let credentials = peer.credentials();
     if credentials.uid() != 0 || credentials.gid() != 0 {
         return Err(RootServicePeerError::PolicyMismatch);
     }
-    let info = cgroup.verify_exact_membership(peer.pidfd())?;
+    let info = match retained.as_deref_mut() {
+        None => cgroup.verify_exact_membership(peer.pidfd())?,
+        Some(original) => {
+            original.membership.capture_once(cgroup, peer.pidfd(), None)
+                .map_err(|_| RootServicePeerError::RetainedObservation)?;
+            original.membership.completed_info().ok_or(RootServicePeerError::RetainedObservation)?
+        }
+    };
     let pid = credentials.pid().get();
-    if info.pid() != pid || info.thread_group_id() != pid || !peer.is_alive()? {
+    if info.pid() != pid || info.thread_group_id() != pid || !match retained {
+        None => peer.is_alive()?,
+        Some(original) => {
+            original.alive = Some(peer.is_alive());
+            match original.alive.as_ref() {
+                Some(Ok(alive)) => *alive,
+                _ => return Err(RootServicePeerError::RetainedObservation),
+            }
+        }
+    } {
         return Err(RootServicePeerError::PolicyMismatch);
     }
     Ok(info)
@@ -222,27 +249,150 @@ fn verify_root_service_record_typed(
     peer: &ConnectionPeerIdentity,
     subject: &KernelAuthorizedRecordSubject,
 ) -> Result<(), RootServicePeerError> {
+    verify_root_service_record_engine(cgroup, expected, peer, subject, None)
+}
+
+fn verify_root_service_record_engine(
+    cgroup: &RetainedCgroupAnchor,
+    expected: PidFdInfo,
+    peer: &ConnectionPeerIdentity,
+    subject: &KernelAuthorizedRecordSubject,
+    mut retained: Option<&mut RootServiceRecordOriginalV2>,
+) -> Result<(), RootServicePeerError> {
     // Recheck the original connection both before and after authenticating
     // the independently reported record subject.
-    let current = verify_root_service_connection_typed(cgroup, peer)?;
+    let current = verify_root_service_connection_engine(
+        cgroup, peer, retained.as_deref_mut().map(|original| &mut original.before),
+    )?;
     let credentials = subject.credentials();
     if !same_process(current, expected)
         || credentials.uid() != 0
         || credentials.gid() != 0
         || credentials.pid().get() != expected.pid()
-        || !subject.is_alive()?
+        || !match retained.as_deref_mut() {
+            None => subject.is_alive()?,
+            Some(original) => {
+                original.alive = Some(subject.is_alive());
+                match original.alive.as_ref() {
+                    Some(Ok(alive)) => *alive,
+                    _ => return Err(RootServicePeerError::RetainedObservation),
+                }
+            }
+        }
     {
         return Err(RootServicePeerError::PolicyMismatch);
     }
-    let record_info = cgroup.verify_exact_membership(subject.pidfd())?;
+    let record_info = match retained.as_deref_mut() {
+        None => cgroup.verify_exact_membership(subject.pidfd())?,
+        Some(original) => {
+            original.membership.capture_once(cgroup, subject.pidfd(), None)
+                .map_err(|_| RootServicePeerError::RetainedObservation)?;
+            original.membership.completed_info().ok_or(RootServicePeerError::RetainedObservation)?
+        }
+    };
     if !same_process(record_info, expected) {
         return Err(RootServicePeerError::PolicyMismatch);
     }
-    let after = verify_root_service_connection_typed(cgroup, peer)?;
+    let after = verify_root_service_connection_engine(
+        cgroup, peer, retained.as_deref_mut().map(|original| &mut original.after),
+    )?;
     if !same_process(after, expected) {
         return Err(RootServicePeerError::PolicyMismatch);
     }
     Ok(())
+}
+
+/// Retains one existing connection-membership/liveness observation.
+///
+/// Empty construction does not admit a peer or pay an observation. The sole
+/// caller prepays this representation and stores its complete typed result.
+pub(crate) struct RootServiceConnectionOriginalV2 {
+    membership: aos_sandbox_linux::cgroup::RuntimeScopeMembershipOriginalV1,
+    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    result: Option<Result<PidFdInfo, RootServicePeerError>>,
+}
+
+impl RootServiceConnectionOriginalV2 {
+    pub(crate) fn new() -> Self {
+        Self {
+            membership: aos_sandbox_linux::cgroup::RuntimeScopeMembershipOriginalV1::new(),
+            alive: None,
+            result: None,
+        }
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.membership.failure().map(|cause| cause as _)
+            .or_else(|| self.alive.as_ref()?.as_ref().err().map(|cause| cause as _))
+            .or_else(|| self.result.as_ref()?.as_ref().err().map(|cause| cause as _))
+    }
+
+    pub(crate) fn completed_info(&self) -> Option<PidFdInfo> {
+        self.result.as_ref()?.as_ref().ok().copied()
+    }
+
+    pub(crate) fn receiving_demand_v2() -> Option<(usize, usize)> {
+        let (bytes, files, _) = aos_sandbox_linux::cgroup::RuntimeScopeMembershipOriginalV1::exact_receiving_demand_v1()?;
+        Some((bytes.checked_add(3 * std::mem::size_of::<Self>())?, files))
+    }
+}
+
+/// Retains the exact old before/subject/after record-membership sandwich.
+pub(crate) struct RootServiceRecordOriginalV2 {
+    before: RootServiceConnectionOriginalV2,
+    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    membership: aos_sandbox_linux::cgroup::RuntimeScopeMembershipOriginalV1,
+    after: RootServiceConnectionOriginalV2,
+    result: Option<Result<(), RootServicePeerError>>,
+}
+
+impl RootServiceRecordOriginalV2 {
+    pub(crate) fn new() -> Self {
+        Self {
+            before: RootServiceConnectionOriginalV2::new(),
+            alive: None,
+            membership: aos_sandbox_linux::cgroup::RuntimeScopeMembershipOriginalV1::new(),
+            after: RootServiceConnectionOriginalV2::new(),
+            result: None,
+        }
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.before.failure()
+            .or_else(|| self.alive.as_ref()?.as_ref().err().map(|cause| cause as _))
+            .or_else(|| self.membership.failure().map(|cause| cause as _))
+            .or_else(|| self.after.failure())
+            .or_else(|| self.result.as_ref()?.as_ref().err().map(|cause| cause as _))
+    }
+
+    pub(crate) fn receiving_demand_v2() -> Option<(usize, usize)> {
+        let (connection_bytes, connection_files) = RootServiceConnectionOriginalV2::receiving_demand_v2()?;
+        let (bytes, files, _) = aos_sandbox_linux::cgroup::RuntimeScopeMembershipOriginalV1::exact_receiving_demand_v1()?;
+        Some((connection_bytes.checked_mul(2)?.checked_add(bytes)?
+            .checked_add(3 * std::mem::size_of::<Self>())?,
+            connection_files.checked_mul(2)?.checked_add(files)?))
+    }
+}
+
+/// Keeps both independent subject bookends after an entered root request.
+pub(crate) struct RootServiceSubjectPostOriginalV2 {
+    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    membership: aos_sandbox_linux::cgroup::RuntimeScopeMembershipOriginalV1,
+    result: Option<Result<(), RootServicePeerError>>,
+}
+
+impl RootServiceSubjectPostOriginalV2 {
+    pub(crate) fn new() -> Self {
+        Self { alive: None,
+            membership: aos_sandbox_linux::cgroup::RuntimeScopeMembershipOriginalV1::new(),
+            result: None }
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.alive.as_ref().and_then(|result| result.as_ref().err()).map(|cause| cause as _)
+            .or_else(|| self.membership.failure().map(|cause| cause as _))
+            .or_else(|| self.result.as_ref()?.as_ref().err().map(|cause| cause as _))
+    }
 }
 
 /// Pins the exact root-account Host service allowed to request root mounts.
@@ -262,6 +412,21 @@ impl HostRootExportPeerVerifier {
         Ok(Self { host_cgroup })
     }
 
+    // Only the fixed Host service capture supplies this already checked pair.
+    // Do not add the ordinary constructor's second active-file probe: its
+    // partial failure would be outside the actual retained capture owner.
+    pub(crate) fn take_fixed_capture_v2(
+        original: &mut aos_sandbox_linux::cgroup::ControllerStartupHostCgroupReadbackV1,
+    ) -> Result<(aos_sandbox_linux::cgroup::CgroupV2Root, Self), StorageServiceError> {
+        let (root, host_cgroup) = original.take_validated_pair().ok_or_else(|| {
+            StorageServiceError::Kernel(aos_sandbox_linux::Error::InvalidInput {
+                field: "Storage root-export Host cgroup",
+                message: "fixed original capture incomplete or refused".into(),
+            })
+        })?;
+        Ok((root, Self { host_cgroup }))
+    }
+
     /// Rechecks the retained service cgroup before accepting another request.
     ///
     /// # Errors
@@ -269,6 +434,68 @@ impl HostRootExportPeerVerifier {
     /// Returns an error if the cgroup was retired or replaced.
     pub fn validate_current(&self) -> Result<(), StorageServiceError> {
         self.host_cgroup.validate_current().map_err(Into::into)
+    }
+
+    pub(crate) fn verify_connection_retaining_v2(
+        &self,
+        peer: &ConnectionPeerIdentity,
+        original: &mut RootServiceConnectionOriginalV2,
+    ) -> Result<PidFdInfo, RootServicePeerError> {
+        if original.result.is_some() {
+            return Err(RootServicePeerError::PolicyMismatch);
+        }
+        original.result = Some(verify_root_service_connection_engine(
+            &self.host_cgroup, peer, Some(original),
+        ));
+        original.completed_info().ok_or(RootServicePeerError::RetainedObservation)
+    }
+
+    pub(crate) fn verify_record_retaining_v2(
+        &self,
+        expected: PidFdInfo,
+        peer: &ConnectionPeerIdentity,
+        subject: &KernelAuthorizedRecordSubject,
+        original: &mut RootServiceRecordOriginalV2,
+    ) -> Result<(), RootServicePeerError> {
+        if original.result.is_some() {
+            return Err(RootServicePeerError::PolicyMismatch);
+        }
+        original.result = Some(verify_root_service_record_engine(
+            &self.host_cgroup, expected, peer, subject, Some(original),
+        ));
+        if matches!(original.result, Some(Ok(()))) { Ok(()) }
+        else { Err(RootServicePeerError::RetainedObservation) }
+    }
+
+    // A final failed connection bookend cannot suppress the independently
+    // owed record-subject probes. Both use the existing native engines and
+    // retained destinations; only the pure result conjunction is evaluated last.
+    pub(crate) fn observe_record_subject_owed_v2(
+        &self,
+        expected: PidFdInfo,
+        subject: &KernelAuthorizedRecordSubject,
+        original: &mut RootServiceSubjectPostOriginalV2,
+    ) -> Result<(), RootServicePeerError> {
+        if original.result.is_some() {
+            return Err(RootServicePeerError::PolicyMismatch);
+        }
+        original.alive = Some(subject.is_alive());
+        let observed = original.membership.capture_once(&self.host_cgroup, subject.pidfd(), None);
+        original.result = Some((|| {
+            if !matches!(original.alive, Some(Ok(true))) || observed.is_err() {
+                return Err(RootServicePeerError::RetainedObservation);
+            }
+            let current = original.membership.completed_info()
+                .ok_or(RootServicePeerError::RetainedObservation)?;
+            let credentials = subject.credentials();
+            if credentials.uid() != 0 || credentials.gid() != 0
+                || credentials.pid().get() != expected.pid()
+                || !same_process(current, expected)
+            { return Err(RootServicePeerError::PolicyMismatch); }
+            Ok(())
+        })());
+        if matches!(original.result, Some(Ok(()))) { Ok(()) }
+        else { Err(RootServicePeerError::RetainedObservation) }
     }
 
     pub(crate) fn verify_connection(&self, peer: &ConnectionPeerIdentity) -> Result<PidFdInfo, ()> {

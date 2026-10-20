@@ -7,7 +7,9 @@
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt as _;
 
-use aos_sandbox::{Journal, JournalLimits, JournalRecord};
+use aos_sandbox_source::provider_journal::SourceProviderJournalV1 as Journal;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalLimits;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
 
 use super::*;
 

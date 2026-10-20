@@ -19,6 +19,12 @@ pub const GUEST_OWNER_CONTEXT: &str = "system_u:system_r:aos_sandbox_guest_owner
 /// Names every original admitted tenant, including UID zero.
 pub const GUEST_TENANT_CONTEXT: &str = "system_u:system_r:aos_sandbox_payload_t:s0";
 
+mod owner_original;
+pub use owner_original::GuestOwnerOriginalV2;
+
+mod subject_currentness;
+pub use subject_currentness::CurrentThreadSubjectOriginalV1;
+
 const SELINUXFS_MAGIC: u64 = 0xf97c_ff8c;
 const DEVPTS_MAGIC: u64 = 0x1cd1;
 const MAXIMUM_CONTEXT_BYTES: usize = 128;
@@ -111,12 +117,7 @@ fn require_object_label(descriptor: BorrowedFd<'_>, expected: &[u8]) -> Result<(
 /// Rejects a foreign subject, missing inherited NNP, permissive SELinux,
 /// non-selinuxfs observation, absent transition policy capability, or I/O error.
 pub fn require_guest_owner() -> Result<()> {
-    require_subject(GUEST_OWNER_CONTEXT)?;
-    if !rustix::thread::no_new_privs().map_err(syscall("read inherited NNP"))? {
-        return Err(Error::invalid("Guest owner", "inherited NNP is absent"));
-    }
-    require_kernel_boolean("/sys/fs/selinux/enforce")?;
-    require_kernel_boolean("/sys/fs/selinux/policy_capabilities/nnp_nosuid_transition")
+    GuestOwnerOriginalV2::ordinary()
 }
 
 /// Verifies the exact current SELinux subject of the calling thread.
@@ -125,11 +126,7 @@ pub fn require_guest_owner() -> Result<()> {
 ///
 /// Rejects oversized, empty or foreign contexts and failed procfs observation.
 pub fn require_subject(expected: &str) -> Result<()> {
-    let actual = read_context("/proc/thread-self/attr/current")?;
-    if !context_matches(&actual, expected) {
-        return Err(Error::invalid("Guest subject", "current context differs"));
-    }
-    Ok(())
+    CurrentThreadSubjectOriginalV1::new().observe_recipe(expected, false)
 }
 
 /// Observes a task context between equal live pidfd identity samples.
@@ -253,31 +250,6 @@ pub unsafe fn close_guest_private_descriptors(_worker: &SingleThreadedProcess) -
     uapi::close_guest_descriptor_tail()
 }
 
-fn require_kernel_boolean(path: &str) -> Result<()> {
-    let descriptor = open(
-        path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(syscall("open Guest confinement state"))?;
-    require_selinuxfs(descriptor.as_fd())?;
-    let mut value = Vec::new();
-    File::from(descriptor)
-        .take(3)
-        .read_to_end(&mut value)
-        .map_err(|source| Error::Syscall {
-            operation: "read Guest confinement state",
-            source,
-        })?;
-    if value != b"1" && value != b"1\n" {
-        return Err(Error::invalid(
-            "Guest confinement",
-            "required kernel boolean is false",
-        ));
-    }
-    Ok(())
-}
-
 fn require_selinuxfs(descriptor: BorrowedFd<'_>) -> Result<()> {
     if fstatfs(descriptor)
         .map_err(syscall("identify Guest confinement state"))?
@@ -292,23 +264,9 @@ fn require_selinuxfs(descriptor: BorrowedFd<'_>) -> Result<()> {
 }
 
 fn read_context(path: &str) -> Result<Vec<u8>> {
-    let mut context = Vec::new();
-    File::open(path)
-        .and_then(|file| {
-            file.take((MAXIMUM_CONTEXT_BYTES + 1) as u64)
-                .read_to_end(&mut context)
-        })
-        .map_err(|source| Error::Syscall {
-            operation: "read Guest context",
-            source,
-        })?;
-    if context.len() > MAXIMUM_CONTEXT_BYTES {
-        return Err(Error::invalid(
-            "Guest context",
-            "context exceeds fixed bound",
-        ));
-    }
-    Ok(context)
+    let mut original = subject_currentness::ContextReadOriginalV1::new();
+    original.read_once(path, false)?;
+    Ok(std::mem::take(&mut original.bytes))
 }
 
 fn context_matches(actual: &[u8], expected: &str) -> bool {

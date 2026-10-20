@@ -13,6 +13,8 @@
 //! the original intent allows cold settlement without reconstructing its nonce,
 //! boot or deadline. Neither replay nor an archive decoder renews admission.
 
+use aos_sandbox_protocol::source_genesis_wire as genesis_wire;
+
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
@@ -30,55 +32,16 @@ use crate::journal::{
 };
 
 use super::records::{FLOOR_PREFIX, INSTANCE_KEY, PINS_KEY, SourceHierarchyFloorRecordV1, decode_instance};
-use super::wire::FirstSuccessorWireRecipeV3;
-use super::successor_records::{
+use genesis_wire::FirstSuccessorWireRecipeV3;
+use aos_sandbox_ledger_replay::replay::phase_records::{
     RootFirstSourceSuccessorFloorFieldsV2, RootFirstSourceSuccessorFloorV2,
     RootFirstSourceSuccessorIntentFieldsV2, RootFirstSourceSuccessorIntentV2, SourceFirstSuccessorReceiptV2,
 };
 
-const PREFIX: &[u8] = b"\0aos-root-first-source-successor-v2\0";
-const INTENT_PREFIX: &[u8] = b"\0aos-root-first-source-successor-v2\0intent\0";
-const SUCCESSOR_FLOOR_PREFIX: &[u8] = b"\0aos-root-first-source-successor-v2\0floor\0";
-const ARCHIVE_BYTES: usize = 1936;
-const RESOURCE_ARCHIVE_BYTES: usize = 2112;
+use aos_sandbox_ledger_replay::replay::root_successor::{PREFIX, INTENT_PREFIX, SUCCESSOR_FLOOR_PREFIX};
+pub(super) use aos_sandbox_ledger_replay::replay::root_successor::{RootFirstSourceSuccessorArchiveV2, Rows, ProjectRowsV3};
 
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct RootFirstSourceSuccessorArchiveV2 {
-    pub(super) floor: RootFirstSourceSuccessorFloorV2,
-    pub(super) original: RootFirstSourceSuccessorIntentV2,
-}
-
-impl RootFirstSourceSuccessorArchiveV2 {
-    pub(super) fn decode(bytes: &[u8]) -> Result<Self, SourceGenesisErrorV1> {
-        if !matches!(bytes.len(), ARCHIVE_BYTES | RESOURCE_ARCHIVE_BYTES) {
-            return Err(SourceGenesisErrorV1::NonCanonical);
-        }
-        let archive = Self {
-            floor: RootFirstSourceSuccessorFloorV2::decode(&bytes[..688])?,
-            original: RootFirstSourceSuccessorIntentV2::decode(&bytes[688..])?,
-        };
-        require_receipt_intent(archive.floor.receipt(), &archive.original)?;
-        if archive.floor.approval() != archive.original.approval()
-            || archive.floor.roles() != archive.original.roles()
-            || archive.floor.predecessor_floor() != archive.original.predecessor_floor()
-        {
-            return Err(SourceGenesisErrorV1::Conflict);
-        }
-        Ok(archive)
-    }
-
-    pub(super) fn bytes(&self) -> Vec<u8> {
-        [self.floor.as_bytes().as_slice(), self.original.as_bytes()].concat()
-    }
-}
-
-#[derive(Default)]
-struct Rows {
-    intent: Option<RootFirstSourceSuccessorIntentV2>,
-    archive: Option<RootFirstSourceSuccessorArchiveV2>,
-}
 
 use super::super::nix_current_preflight::{
     CurrentNixRootArchiveAttemptV1, CurrentNixRootArchiveDataV1,
@@ -108,56 +71,18 @@ impl SourceSuccessorComparisonV3 {
         match self { Self::Strict(data) => data.receipt(), Self::Mixed(data) => data.receipt() }
     }
 
-    fn ack(&self) -> Option<&super::successor_records::SourceFirstSuccessorAckV2> {
+    fn ack(&self) -> Option<&aos_sandbox_ledger_replay::replay::phase_records::SourceFirstSuccessorAckV2> {
         match self { Self::Strict(data) => data.ack(), Self::Mixed(data) => data.ack() }
     }
 
-    fn genesis_receipt(&self) -> &crate::hierarchy::SourceTreeGenesisReceiptV1 {
+    fn genesis_receipt(&self) -> &aos_sandbox_ledger_replay::genesis::SourceTreeGenesisReceiptV1 {
         match self { Self::Strict(data) => data.genesis_receipt(), Self::Mixed(data) => data.genesis_receipt() }
     }
 }
 
-// All members are historical comparison DATA. A selected active intent is
-// not admitted by archive counts or by this structural fold.
-struct ProjectRowsV3 {
-    intent: Option<RootFirstSourceSuccessorIntentV2>,
-    archives: BTreeMap<ProjectId, RootFirstSourceSuccessorArchiveV2>,
-}
-
 fn project_rows_v3(state: &State, selected: Option<ProjectId>) -> Result<ProjectRowsV3, JournalError> {
-    let mut retained = ProjectRowsV3 { intent: None, archives: BTreeMap::new() };
-    for ((namespace, member_key), value) in state {
-        if !member_key.starts_with(PREFIX) { continue; }
-        if *namespace != RecordNamespace::DesiredState { return Err(JournalError::ProtectedBoundary); }
-        if member_key.starts_with(INTENT_PREFIX) {
-            let intent = RootFirstSourceSuccessorIntentV2::decode(value)
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-            if member_key != &intent_key(&intent) || selected != Some(intent.project())
-                || retained.intent.replace(intent).is_some()
-            { return Err(JournalError::ProtectedBoundary); }
-        } else if member_key.starts_with(SUCCESSOR_FLOOR_PREFIX) {
-            let archive = RootFirstSourceSuccessorArchiveV2::decode(value)
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-            if member_key != &floor_key(&archive.floor)
-                || retained.archives.insert(archive.original.project(), archive).is_some()
-            { return Err(JournalError::ProtectedBoundary); }
-        } else { return Err(JournalError::ProtectedBoundary); }
-    }
-    if retained.intent.as_ref().is_some_and(|intent| retained.archives.contains_key(&intent.project())) {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    for archive in retained.archives.values() {
-        require_predecessor(state, &archive.original)?;
-    }
-    if let Some(intent) = &retained.intent {
-        require_predecessor(state, intent)?;
-        first_source_successor_capacity_delete_v2(
-            state, &root_capacity_request(intent)?, transaction_id(intent.approval(), Phase::RootPrepared),
-        )?;
-    }
-    require_exact_capacity_family(state, Purpose::RootFirstSourceSuccessorAnchor,
-        usize::from(retained.intent.is_some()))?;
-    Ok(retained)
+    aos_sandbox_ledger_replay::replay::root_successor::project_rows_v3(state, selected)
+        .map_err(JournalError::from)
 }
 
 impl super::store::RootSourceGenesisAuthorityV1 {
@@ -258,7 +183,7 @@ impl super::store::RootSourceGenesisAuthorityV1 {
         match self.successor_recipe {
             FirstSuccessorWireRecipeV3::StrictV2 => rows(&journal_state(&self.journal)).map_err(Into::into),
             FirstSuccessorWireRecipeV3::MixedV3 => {
-                let mut family = project_rows_v3(&journal_state(&self.journal), Some(project))?;
+                let mut family = project_saved_rows_v3(&self.journal, project)?;
                 Ok(Rows { intent: family.intent, archive: family.archives.remove(&project) })
             }
         }
@@ -275,102 +200,28 @@ impl super::store::RootSourceGenesisAuthorityV1 {
     // An associated DATA fold avoids a new parent-module export or any new
     // authority constructor. Native cold/compaction callers borrow real maps.
     pub(crate) fn validate_project_successor_replay_v3(state: &State) -> Result<(), JournalError> {
-        let mut selected = None;
-        for ((namespace, member_key), value) in state {
-            if member_key.starts_with(INTENT_PREFIX) {
-                if *namespace != RecordNamespace::DesiredState || selected.is_some() {
-                    return Err(JournalError::ProtectedBoundary);
-                }
-                selected = Some(RootFirstSourceSuccessorIntentV2::decode(value)
-                    .map_err(|_| JournalError::ProtectedBoundary)?.project());
-            }
-        }
-        project_rows_v3(state, selected)?;
-        Ok(())
+        aos_sandbox_ledger_replay::replay::root_successor::validate_project_successor_replay_v3(state)
+            .map_err(JournalError::from)
     }
 
     pub(crate) fn validate_project_successor_transition_v3(
         state: &State, transaction: &JournalTransaction, phase: Option<Phase>,
     ) -> Result<Option<[u8; 32]>, JournalError> {
-        let canonical = phase.map(Phase::canonical);
-        let selected = if canonical == Some(Phase::RootPrepared) {
-            let put = transaction.records().first().ok_or(JournalError::ProtectedBoundary)?;
-            Some(RootFirstSourceSuccessorIntentV2::decode(
-                put.value().ok_or(JournalError::ProtectedBoundary)?,
-            ).map_err(|_| JournalError::ProtectedBoundary)?.project())
-        } else {
-            let mut selected = None;
-            for ((namespace, member_key), value) in state {
-                if member_key.starts_with(INTENT_PREFIX) {
-                    if *namespace != RecordNamespace::DesiredState || selected.is_some() {
-                        return Err(JournalError::ProtectedBoundary);
-                    }
-                    selected = Some(RootFirstSourceSuccessorIntentV2::decode(value)
-                        .map_err(|_| JournalError::ProtectedBoundary)?.project());
-                }
-            }
-            selected
-        };
-        let before = project_rows_v3(state, selected)?;
-        let touches = transaction.records().iter().any(|record| record.key().starts_with(PREFIX))
-            || touches_capacity_purpose(state, transaction, Purpose::RootFirstSourceSuccessorAnchor)?;
-        if !touches {
-            if matches!(canonical, Some(Phase::RootPrepared | Phase::RootAnchor)) || before.intent.is_some() {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            return Ok(None);
-        }
-        let settled = match canonical {
-            Some(Phase::RootPrepared) => {
-                let [put, reservation] = transaction.records() else { return Err(JournalError::ProtectedBoundary); };
-                let intent = RootFirstSourceSuccessorIntentV2::decode(put.value().ok_or(JournalError::ProtectedBoundary)?)
-                    .map_err(|_| JournalError::ProtectedBoundary)?;
-                require_predecessor(state, &intent)?;
-                let request = root_capacity_request(&intent)?;
-                let admission = transaction_id(intent.approval(), Phase::RootPrepared);
-                if before.intent.is_some() || before.archives.contains_key(&intent.project())
-                    || put.namespace() != RecordNamespace::DesiredState || put.key() != intent_key(&intent)
-                    || transaction.id() != &admission
-                    || reservation != &first_source_successor_capacity_record_v2(&request, admission)?
-                { return Err(JournalError::ProtectedBoundary); }
-                None
-            }
-            Some(Phase::RootAnchor) => {
-                let intent = before.intent.as_ref().ok_or(JournalError::ProtectedBoundary)?;
-                let [put, deletion, settlement] = transaction.records() else { return Err(JournalError::ProtectedBoundary); };
-                let archive = RootFirstSourceSuccessorArchiveV2::decode(put.value().ok_or(JournalError::ProtectedBoundary)?)
-                    .map_err(|_| JournalError::ProtectedBoundary)?;
-                let request = root_capacity_request(intent)?;
-                let admission = transaction_id(intent.approval(), Phase::RootPrepared);
-                if &archive.original != intent || put.namespace() != RecordNamespace::DesiredState
-                    || put.key() != floor_key(&archive.floor) || before.archives.contains_key(&intent.project())
-                    || transaction.id() != &transaction_id(intent.approval(), Phase::RootAnchor)
-                    || deletion != &JournalRecord::delete(RecordNamespace::DesiredState, intent_key(intent))
-                    || settlement != &first_source_successor_capacity_delete_v2(state, &request, admission)?
-                { return Err(JournalError::ProtectedBoundary); }
-                Some(first_source_successor_capacity_identity_v2(&request, admission)?)
-            }
-            _ => return Err(JournalError::ProtectedBoundary),
-        };
-        let after = crate::journal::materialize_root_inventory_transaction(state, transaction);
-        let prospective = project_rows_v3(&after, selected)?;
-        if before.archives.iter().any(|(project, archive)| prospective.archives.get(project) != Some(archive)) {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(settled)
+        aos_sandbox_ledger_replay::replay::root_successor::validate_project_successor_transition_v3(state, transaction, phase)
+            .map_err(JournalError::from)
     }
 }
 
 fn key(prefix: &[u8], project: ProjectId) -> Vec<u8> {
-    [prefix, project.as_bytes()].concat()
+    aos_sandbox_ledger_replay::replay::root_successor::key(prefix, project)
 }
 
 pub(super) fn intent_key(intent: &RootFirstSourceSuccessorIntentV2) -> Vec<u8> {
-    key(INTENT_PREFIX, intent.project())
+    aos_sandbox_ledger_replay::replay::root_successor::intent_key(intent)
 }
 
 pub(super) fn floor_key(floor: &RootFirstSourceSuccessorFloorV2) -> Vec<u8> {
-    key(SUCCESSOR_FLOOR_PREFIX, floor.receipt().project())
+    aos_sandbox_ledger_replay::replay::root_successor::floor_key(floor)
 }
 
 fn journal_state(journal: &Journal) -> State {
@@ -380,34 +231,8 @@ fn journal_state(journal: &Journal) -> State {
 }
 
 fn rows(state: &State) -> Result<Rows, JournalError> {
-    let mut rows = Rows::default();
-    for ((namespace, key), value) in state {
-        if !key.starts_with(PREFIX) {
-            continue;
-        }
-        if *namespace != RecordNamespace::DesiredState {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        if key.starts_with(INTENT_PREFIX) {
-            let intent = RootFirstSourceSuccessorIntentV2::decode(value)
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-            if key != &intent_key(&intent) || rows.intent.replace(intent).is_some() {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        } else if key.starts_with(SUCCESSOR_FLOOR_PREFIX) {
-            let archive = RootFirstSourceSuccessorArchiveV2::decode(value)
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-            if key != &floor_key(&archive.floor) || rows.archive.replace(archive).is_some() {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        } else {
-            return Err(JournalError::ProtectedBoundary);
-        }
-    }
-    if rows.intent.is_some() && rows.archive.is_some() {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(rows)
+    aos_sandbox_ledger_replay::replay::root_successor::rows(state)
+        .map_err(JournalError::from)
 }
 
 pub(super) fn retained_root_first_successor_v2(
@@ -456,81 +281,30 @@ pub(super) fn validate_root_first_successor_journal_v2(
 pub(crate) fn validate_root_first_source_successor_state_v2(state: &State)
     -> Result<(), JournalError>
 {
-    let rows = rows(state)?;
-    let original = rows.intent.as_ref().or_else(|| rows.archive.as_ref().map(|row| &row.original));
-    if let Some(original) = original {
-        require_predecessor(state, original)?;
-    }
-    if let Some(intent) = &rows.intent {
-        first_source_successor_capacity_delete_v2(
-            state, &root_capacity_request(intent)?, transaction_id(intent.approval(), Phase::RootPrepared),
-        )?;
-    }
-    require_exact_capacity_family(state, Purpose::RootFirstSourceSuccessorAnchor, usize::from(rows.intent.is_some()))
+    aos_sandbox_ledger_replay::replay::root_successor::validate_root_first_source_successor_state_v2(state)
+        .map_err(JournalError::from)
 }
 
 fn require_predecessor(state: &State, intent: &RootFirstSourceSuccessorIntentV2)
     -> Result<(), JournalError>
 {
-    let get = |key: &[u8]| state.get(&(RecordNamespace::DesiredState, key.to_vec()))
-        .map(Vec::as_slice).ok_or(JournalError::ProtectedBoundary);
-    let instance = decode_instance(get(INSTANCE_KEY)?)
-        .map_err(|_| JournalError::ProtectedBoundary)?;
-    let pins = get(PINS_KEY)?;
-    let roles = super::pins::role_tuple_digest(pins)
-        .map_err(|_| JournalError::ProtectedBoundary)?;
-    super::pins::verify_retained_first_source_successor_v2(pins, intent.approval_packet())
-        .map_err(|_| JournalError::ProtectedBoundary)?;
-    let predecessor = SourceHierarchyFloorRecordV1::from_record_bytes(
-        get(&key(FLOOR_PREFIX, intent.project()))?,
-    ).map_err(|_| JournalError::ProtectedBoundary)?;
-    let body = intent.approval_packet().body();
-    if instance != intent.instance() || roles != intent.roles()
-        || predecessor.instance() != instance || predecessor.roles() != roles
-        || predecessor.digest() != intent.predecessor_floor()
-        || predecessor.receipt().tree_head() != intent.old_tree_head()
-        || predecessor.receipt().lineage_head() != intent.old_lineage_head()
-        || predecessor.roles().as_bytes() != &body[112..144]
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::replay::root_successor::require_predecessor(state, intent)
+        .map_err(JournalError::from)
 }
 
 pub(super) fn require_receipt_intent(
     receipt: &SourceFirstSuccessorReceiptV2,
     intent: &RootFirstSourceSuccessorIntentV2,
 ) -> Result<(), SourceGenesisErrorV1> {
-    if receipt.instance() != intent.instance() || receipt.project() != intent.project()
-        || receipt.request() != intent.request() || receipt.approval() != intent.approval()
-        || receipt.epoch() != intent.epoch() || receipt.root_intent() != intent.digest()
-        || receipt.begin() != intent.begin() || receipt.roles() != intent.roles()
-        || receipt.predecessor_floor() != intent.predecessor_floor()
-        || receipt.old_tree_head() != intent.old_tree_head()
-        || receipt.old_lineage_head() != intent.old_lineage_head()
-        || receipt.old_tree_commit() != intent.approval_packet().old_tree_commit()
-        || receipt.next_tree_commit() != intent.next_tree_commit()
-        || receipt.source_names() != intent.source_names()
-    {
-        return Err(SourceGenesisErrorV1::Conflict);
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::replay::root_successor::require_receipt_intent(receipt, intent)
+        .map_err(SourceGenesisErrorV1::from)
 }
 
 pub(super) fn root_capacity_request(intent: &RootFirstSourceSuccessorIntentV2)
     -> Result<GlobalCapacityReservationRequestV1, JournalError>
 {
-    // Only shape: successor envelope heads do not exist before Source append.
-    // This exact physical archive width includes the preserved original intent.
-    let suffix = JournalTransaction::new([1; 16], vec![
-        JournalRecord::put(RecordNamespace::DesiredState, key(SUCCESSOR_FLOOR_PREFIX, intent.project()), vec![0; 688 + intent.as_bytes().len()]),
-        JournalRecord::delete(RecordNamespace::DesiredState, intent_key(intent)),
-        sizing_capacity_delete(),
-    ])?;
-    capacity_request(
-        Purpose::RootFirstSourceSuccessorAnchor, intent.instance(), intent.project(), intent.request(),
-        intent.digest(), intent.approval(), intent.begin(), intent.predecessor_floor(), &[suffix], 1,
-    )
+    aos_sandbox_ledger_replay::replay::root_successor::root_capacity_request(intent)
+        .map_err(JournalError::from)
 }
 
 pub(crate) fn validate_root_first_source_successor_transition_v2(
@@ -538,60 +312,8 @@ pub(crate) fn validate_root_first_source_successor_transition_v2(
     transaction: &JournalTransaction,
     phase: Option<Phase>,
 ) -> Result<Option<[u8; 32]>, JournalError> {
-    if matches!(phase, Some(Phase::MixedRootPrepared | Phase::MixedRootAnchor)) {
-        return super::store::RootSourceGenesisAuthorityV1::validate_project_successor_transition_v3(
-            state, transaction, phase,
-        );
-    }
-    validate_root_first_source_successor_state_v2(state)?;
-    let touches = transaction.records().iter().any(|record| record.key().starts_with(PREFIX))
-        || touches_capacity_purpose(state, transaction, Purpose::RootFirstSourceSuccessorAnchor)?;
-    if !touches {
-        if matches!(phase, Some(Phase::RootPrepared | Phase::RootAnchor)) {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        if rows(state)?.intent.is_some() {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        return Ok(None);
-    }
-    let before = rows(state)?;
-    match phase {
-        Some(Phase::RootPrepared) => {
-            let [put, reservation] = transaction.records() else { return Err(JournalError::ProtectedBoundary); };
-            let intent = RootFirstSourceSuccessorIntentV2::decode(put.value().ok_or(JournalError::ProtectedBoundary)?)
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-            require_predecessor(state, &intent)?;
-            let request = root_capacity_request(&intent)?;
-            let admission = transaction_id(intent.approval(), Phase::RootPrepared);
-            if before.intent.is_some() || before.archive.is_some()
-                || put.namespace() != RecordNamespace::DesiredState || put.key() != intent_key(&intent)
-                || transaction.id() != &admission
-                || reservation != &first_source_successor_capacity_record_v2(&request, admission)?
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            Ok(None)
-        }
-        Some(Phase::RootAnchor) => {
-            let intent = before.intent.ok_or(JournalError::ProtectedBoundary)?;
-            let [put, deletion, settlement] = transaction.records() else { return Err(JournalError::ProtectedBoundary); };
-            let archive = RootFirstSourceSuccessorArchiveV2::decode(put.value().ok_or(JournalError::ProtectedBoundary)?)
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-            let request = root_capacity_request(&intent)?;
-            let admission = transaction_id(intent.approval(), Phase::RootPrepared);
-            if archive.original != intent || put.namespace() != RecordNamespace::DesiredState
-                || put.key() != floor_key(&archive.floor)
-                || transaction.id() != &transaction_id(intent.approval(), Phase::RootAnchor)
-                || deletion != &JournalRecord::delete(RecordNamespace::DesiredState, intent_key(&intent))
-                || settlement != &first_source_successor_capacity_delete_v2(state, &request, admission)?
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            Ok(Some(first_source_successor_capacity_identity_v2(&request, admission)?))
-        }
-        _ => Err(JournalError::ProtectedBoundary),
-    }
+    aos_sandbox_ledger_replay::replay::root_successor::validate_root_first_source_successor_transition_v2(state, transaction, phase)
+        .map_err(JournalError::from)
 }
 
 /// Retains one Root mutation's whole native Result and independent post debt.
@@ -688,7 +410,7 @@ impl RootSuccessorNativeServerCutV3<'_> {
         let deployment_expiry = match phase {
             Phase::MixedRootPrepared => {
                 if retained.intent.is_some() || retained.archives.contains_key(&self.context.project())
-                    || RootFirstSourceSuccessorIntentV2::decode(value)? != *self.context
+                    || RootFirstSourceSuccessorIntentV2::decode(value).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)? != *self.context
                 { return Err(SourceGenesisErrorV1::Conflict); }
                 Some(super::store::require_current_deployment(journal)?)
             }
@@ -876,7 +598,7 @@ impl super::store::RootSourceGenesisAuthorityV1 {
             next_tree_commit: controller.begin.next_tree_commit(), roles: self.pins.digest(),
             boot: clock.host_boot_id(), boottime_deadline: signed_deadline.min(custody_bound),
             expires_wall: controller.packet.expires_wall()?,
-        })?;
+        }).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
         require_predecessor(&journal_state(&self.journal), &original)?;
         self.recheck()?;
         Ok(original)
@@ -1109,7 +831,7 @@ impl super::store::RootSourceGenesisAuthorityV1 {
             let floor = RootFirstSourceSuccessorFloorV2::new(RootFirstSourceSuccessorFloorFieldsV2 {
                 predecessor_floor: context.predecessor_floor(), approval: context.approval(),
                 receipt: receipt.clone(), roles: self.pins.digest(),
-            })?;
+            }).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
             let archive = RootFirstSourceSuccessorArchiveV2 { floor: floor.clone(), original: context.clone() };
             expected = Some(floor);
             let retained = self.successor_rows_for_project_v3(context.project())?;
@@ -1269,4 +991,11 @@ impl super::store::RootSourceGenesisAuthorityV1 {
         }
         self.recheck()
     }
+}
+
+// The same complete saved family fold, under either historical Root owner.
+// Returned rows are DATA; each actual caller keeps its native Root lifetime.
+pub(super) fn project_saved_rows_v3(journal: &Journal, project: ProjectId)
+    -> Result<aos_sandbox_ledger_replay::replay::root_successor::ProjectRowsV3, JournalError> {
+    project_rows_v3(&journal_state(journal), Some(project))
 }

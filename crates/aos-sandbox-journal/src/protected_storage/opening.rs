@@ -503,21 +503,9 @@ pub fn require_protected_file_names_current<E: ProtectedFailure>(
     lock: &File,
     file: &File,
 ) -> Result<(), E> {
-    let named_lock =
-        open_read_only_protected_file::<E>(directory, &format!("{name}.lock"), expected_uid)?;
-    let named_file = open_read_only_protected_file::<E>(directory, name, expected_uid)?;
-    let held_lock = fstat(lock).map_err(rustix_io::<E>)?;
-    let held_file = fstat(file).map_err(rustix_io::<E>)?;
-    let current_lock = fstat(&named_lock).map_err(rustix_io::<E>)?;
-    let current_file = fstat(&named_file).map_err(rustix_io::<E>)?;
-    if held_lock.st_dev != current_lock.st_dev
-        || held_lock.st_ino != current_lock.st_ino
-        || held_file.st_dev != current_file.st_dev
-        || held_file.st_ino != current_file.st_ino
-    {
-        return Err(E::STALE_NAME);
-    }
-    Ok(())
+    let mut originals = super::ProtectedFileNamesCurrentOriginalsV1::new();
+    originals.capture_once(directory, name, expected_uid, lock, file);
+    originals.into_result()
 }
 
 /// Parks the read-only native result before its original physical checks.
@@ -572,9 +560,22 @@ impl ProtectedTemporary<'_> {
 
 impl Drop for ProtectedTemporary<'_> {
     fn drop(&mut self) {
-        if self.armed {
-            let _ = unlinkat(self.directory, self.name.as_str(), AtFlags::empty());
-            let _ = fsync(self.directory);
-        }
+        retire_temporary(self.directory, &self.name, self.armed);
     }
 }
+
+// Both cleanup carriers retire the same physical name in the original order.
+pub(super) fn retire_temporary(directory: &File, name: &str, armed: bool) {
+    if armed {
+        let _ = unlinkat(directory, name, AtFlags::empty());
+        let _ = fsync(directory);
+    }
+}
+
+mod writer;
+pub use writer::{WriterAcquisitionRetentionV1, WriterAcquisitionSlotsV1, acquire_writer_originals_v1,
+    acquire_writer_originals_ordinary_v1, acquire_empty_writer_originals_ordinary_v1, writer_acquisition_temporary_shape_v1};
+
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use writer::{acquire_writer_fixture_originals_ordinary_v1,
+    acquire_writer_fixture_originals_retaining_v1};

@@ -57,6 +57,15 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn selected_pending_operation_rejects_a_substituted_public_idempotency_key() {
+        let operation = selected_operation();
+
+        assert!(super::super::delete_pending::require_operation_request_v1(&operation, b"key").is_ok());
+        assert!(super::super::delete_pending::require_operation_request_v1(&operation, b"different key").is_err());
+    }
+
     fn planned_record() -> LifecycleDeleteBatchRecordV1 {
         let bytes = fixture_batch_v1(b"projection", b"retained before", 1);
         let mut payload = vec![1, 0, 0, 0];
@@ -602,4 +611,103 @@ mod tests {
             Some((&operation, digest)),
         );
     }
+    #[test]
+    fn source_batch2_observer_binds_real_commit_eof_without_claiming_operation_validation() {
+        use aos_sandbox_protocol::domain_ledger::{
+            delete_batch::encode_native_commit_data_v1,
+            delete_root::source_current::{SourceDeleteCurrentPurposeDataV3 as Purpose,
+                SourceDeleteCurrentQueryDataV1, source_delete_controller_committed_batch_digest_v3},
+            lifecycle_auxiliary::{LifecycleAuxiliaryFrameDataV1, borrow_lifecycle_auxiliary_member_data_v1},
+            records::{encode_durable_member, domain_transaction_set_digest},
+            transaction::{JournalRecord, JournalTransaction, JournalLimits, encode_transaction},
+        };
+        use crate::lifecycle::protected_journal::{LifecycleProtectedJournalSchemaV1 as Schema,
+            LifecycleProtectedRecordKindV1 as Kind, LifecycleReducerRecordV1,
+            lifecycle_protected_key_v1, lifecycle_reducer_envelope_v1};
+        use aos_sandbox_broker::canonical_journal::{CanonicalReplayOriginalV1,
+            coordinator::indexed_replay::{CanonicalIndexedReplayV1, CanonicalReplayIndexOriginalsV1}};
+        use aos_sandbox_ledger_replay::delete_pending::SourceDeletePendingReplayDataV1;
+        use std::io::Write as _;
+
+        let authority = ObjectDigest::from_bytes([40;32]);
+        let verifier = LifecycleJournalVerifierV1::from_verified_authority(authority, vec![], vec![]).unwrap();
+        let planned = planned_record();
+        let native = encode_native_commit_data_v1(planned.batch().view().unwrap().transaction(), 7, 512, &[8;32]).unwrap();
+        let committed = planned.controller_committed_data_v3(&native).unwrap();
+        let encoded = committed.encode().unwrap();
+        let operation = selected_operation();
+        // Deliberately omit the Operation companion. The Source observation is
+        // only canonical Batch2/native EOF; Domain must still refuse this orphan.
+        let auxiliary = LifecycleAuxiliaryRecordV1::proposal(operation.project(), operation.operation_id(),
+            operation.record_revision(), operation_digest(&operation), ResourceId::from_bytes([51;16]),
+            Revision::new(1), None, LifecycleAuxiliaryPayloadV1::DeleteBatch(committed),
+            ResourceId::from_bytes([52;16]), None, verifier.replay()).unwrap();
+        let auxiliary_bytes = encode_lifecycle_auxiliary_record_v1(
+            &bind_lifecycle_atomic_join_v1(vec![unbound_fixture_member(&planned_join(verifier.replay())[0], verifier.replay()),
+                auxiliary]).unwrap()[1]).unwrap();
+        let frame = LifecycleAuxiliaryFrameDataV1::decode(&auxiliary_bytes).unwrap();
+        assert_eq!(frame.payload, encoded);
+        let auxiliary = decode_lifecycle_auxiliary_record_from_protected_envelope_v1(&auxiliary_bytes, verifier.replay()).unwrap();
+        assert!(LifecycleAuxiliaryHistoryV1::from_checkpoint_records(vec![auxiliary.clone()], verifier.replay()).is_err());
+        let key = lifecycle_protected_key_v1(Kind::Auxiliary, operation.project(), auxiliary.lineage(), operation.operation_id()).unwrap();
+        let envelope = lifecycle_reducer_envelope_v1(key.clone(), 1, None,
+            LifecycleReducerRecordV1::Auxiliary(&auxiliary), &verifier).unwrap();
+        let transaction_id = [54;16];
+        let set = domain_transaction_set_digest::<Schema>(transaction_id, std::slice::from_ref(&envelope));
+        let member = encode_durable_member::<Schema>(transaction_id, 0, 1, set, envelope).unwrap();
+        assert_eq!(borrow_lifecycle_auxiliary_member_data_v1(key.as_bytes(), member.encoded(), &transaction_id).unwrap().payload, encoded);
+        assert!(borrow_lifecycle_auxiliary_member_data_v1(key.as_bytes(), member.encoded(), &[55;16]).is_err());
+        let planned_transaction = JournalTransaction::new([52;16], vec![JournalRecord::put(
+            crate::RecordNamespace::SourceDomainPolicyHold,
+            aos_sandbox_ledger_replay::source_policy_hold::DELETE_PENDING_KEY.to_vec(),
+            planned.batch().as_bytes().to_vec())]).unwrap();
+        let batch_transaction = JournalTransaction::new(transaction_id, vec![JournalRecord::put(
+            crate::RecordNamespace::DesiredState, key.as_bytes().to_vec(), member.encoded().to_vec())]).unwrap();
+        let query = SourceDeleteCurrentQueryDataV1 { nonce: [1;16], project: *operation.project().as_bytes(),
+            operation: *operation.operation_id().as_bytes(), batch: source_delete_controller_committed_batch_digest_v3(&encoded).unwrap(),
+            boot: [2;16], started: 100, cutoff: 1000 };
+        let limits = JournalLimits { maximum_records_per_transaction: 8, maximum_record_bytes: 1024*1024,
+            maximum_key_bytes: 1024, maximum_transaction_bytes: 4*1024*1024, maximum_transactions: 8,
+            maximum_materialized_records: 16, maximum_materialized_bytes: 4*1024*1024, maximum_journal_bytes: 4*1024*1024 };
+        for append_later in [false, true] {
+            let mut file = tempfile::tempfile().unwrap();
+            let mut sequence = 1;
+            let mut transactions = vec![planned_transaction.clone(), batch_transaction.clone()];
+            if append_later { transactions.push(JournalTransaction::new([60;16], vec![JournalRecord::put(
+                crate::RecordNamespace::DesiredState, b"unrelated".to_vec(), b"later".to_vec())]).unwrap()); }
+            for transaction in transactions {
+                let frames = encode_transaction(&transaction, sequence).unwrap();
+                sequence += frames.len() as u64;
+                for frame in frames { file.write_all(&frame).unwrap(); }
+            }
+            let end = file.metadata().unwrap().len();
+            let mut replay = CanonicalReplayOriginalV1::new();
+            let mut index_original = CanonicalReplayIndexOriginalsV1::new();
+            let mut index = std::collections::BTreeMap::new();
+            let cursor = replay.begin_semantic_cursor_once(&mut file, limits, end).unwrap();
+            let mut cursor = CanonicalIndexedReplayV1::from_supplied_data_v1(cursor, &mut index, &mut index_original);
+            let mut observer = SourceDeletePendingReplayDataV1::new_for_purpose_v3(query, Purpose::ControllerCommitted);
+            while cursor.advance_once().unwrap() {
+                cursor.validate_compaction_once().unwrap();
+                cursor.register_and_compare_index_once().unwrap();
+                cursor.prepare_change_once().unwrap();
+                while cursor.apply_next_record_once().unwrap() {}
+                cursor.finish_commit_accounting_once().unwrap();
+
+                observer.observe_commit(cursor.current_commit().unwrap()).unwrap();
+                cursor.finish_commit_once().unwrap();
+            }
+            let result = observer.finish_prefix(cursor.completed_prefix().unwrap(), end);
+            assert_eq!(result.is_ok(), !append_later);
+            assert!(observer.proof(query).is_err());
+            if !append_later {
+                let proof = observer.proof_for_purpose_v3(query, Purpose::ControllerCommitted).unwrap();
+                assert_eq!(proof[..16], transaction_id);
+                assert_eq!(u64::from_be_bytes(proof[56..].try_into().unwrap()), end);
+                let mut changed = query; changed.batch[0] ^= 1;
+                assert!(observer.proof_for_purpose_v3(changed, Purpose::ControllerCommitted).is_err());
+            } else { assert!(observer.proof_for_purpose_v3(query, Purpose::ControllerCommitted).is_err()); }
+        }
+    }
+
 }

@@ -23,8 +23,8 @@ use zeroize::Zeroizing;
 
 use crate::recovery::{
     AuthenticatedNvObservationV1, BrokerPhysicalOpenV1, FloorErrorV1, FloorProfileV1,
-    HelperObservationV1, HelperOperationV1, LOCK_ACK_BYTES, MeasuredHelperImageV1,
-    NV_ATTRIBUTES_WRITTEN, RESPONSE_BYTES, RetainedFloorServicePolicyV1, decode_response_v2,
+    HelperImageAcquisitionOriginalV1, HelperObservationV1, HelperOperationV1, LOCK_ACK_BYTES, MeasuredHelperImageV1,
+    NV_ATTRIBUTES_WRITTEN, RESPONSE_BYTES, FloorServiceAcquisitionOriginalV1, FloorServiceCurrentnessOriginalV1, RetainedFloorServicePolicyV1, decode_response_v2,
     encode_auth_v2, encode_hello_v2, encode_request_v2, require_broker_floor_helper_v1,
     require_broker_floor_owner_v1, require_lock_ack_v2,
 };
@@ -34,6 +34,14 @@ use super::host::physical::{
     PhysicalTpmFailureV1, RetainedHostPhysicalBindingV1,
 };
 use super::{FloorRecoveryV1, NvCustodyEndpointV1, framing};
+
+use crate::recovery::HelperExecutedImageOriginalV1;
+
+mod controller;
+mod role;
+use role::{BrokerOnlyHostPhysicalSlotV1, PhysicalHostSlotV1};
+pub(in crate::tpm_nv_custody) mod native_receiving;
+pub(crate) use controller::BrokerPhysicalPaymentOriginalV2;
 
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -137,7 +145,8 @@ impl aos_sandbox_linux::process::FixedProcessSessionExchange for NixOfflineExcha
     }
 }
 
-enum RetainedPhysicalBindingV1<'owner, 'origin, 'startup> {
+enum RetainedPhysicalBindingV1<'owner, 'origin, 'startup,
+    H: PhysicalHostSlotV1<'owner, 'origin, 'startup>> {
     // Preserve the original image -> service -> profile owning/drop order.
     Broker {
         image: Option<MeasuredHelperImageV1>,
@@ -154,10 +163,14 @@ enum RetainedPhysicalBindingV1<'owner, 'origin, 'startup> {
         postflights: [Option<OnlinePhysicalPostflightV1>;
             crate::handshake::ONLINE_POSTFLIGHT_PASSES_V1],
     },
-    Host(RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>),
+    // The owner borrows Origins, which itself borrows the startup original.
+    // Preserve that whole natural borrow chain in the generic carrier.
+    Host(H, std::marker::PhantomData<&'owner &'origin &'startup ()>),
 }
 
-impl<'owner, 'origin, 'startup> RetainedPhysicalBindingV1<'owner, 'origin, 'startup> {
+impl<'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>>
+    RetainedPhysicalBindingV1<'owner, 'origin, 'startup, H>
+{
     fn broker(&self) -> Result<&BrokerPhysicalAttemptV1, PhysicalTpmFailureV1> {
         match self {
             Self::Broker { attempt, .. } => {
@@ -165,7 +178,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalBindingV1<'owner, 'origin, 'star
             }
             #[cfg(feature = "online-nix")]
             Self::Online { attempt, .. } => Ok(attempt),
-            Self::Host(_) => Err(PhysicalTpmFailureV1::State),
+            Self::Host(_, _) => Err(PhysicalTpmFailureV1::State),
         }
     }
 
@@ -173,7 +186,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalBindingV1<'owner, 'origin, 'star
         &self,
     ) -> Result<&RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>, PhysicalTpmFailureV1> {
         match self {
-            Self::Host(host) => Ok(host),
+            Self::Host(host, _) => Ok(host.host_ref_v1()),
             _ => Err(PhysicalTpmFailureV1::State),
         }
     }
@@ -217,7 +230,8 @@ impl OnlinePhysicalPostflightV1 {
 }
 
 /// Retains one actual carrier and its complete purpose-local owning binding.
-pub(crate) struct RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup> {
+pub(crate) struct RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup,
+    H: PhysicalHostSlotV1<'owner, 'origin, 'startup> = RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>> {
     // Legacy supplies these fields only at the original construction gate.
     // Retained purposes park each returned original before the next gate;
     // neither disposition exposes a from-fields owner factory.
@@ -225,11 +239,16 @@ pub(crate) struct RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup> {
     channel: Option<SeqpacketSocket>,
     pidfd: Option<PidFd>,
     identity: Option<PidFdProcessIdentity>,
-    binding: RetainedPhysicalBindingV1<'owner, 'origin, 'startup>,
+    binding: RetainedPhysicalBindingV1<'owner, 'origin, 'startup, H>,
     nonce: [u8; 32],
     sequence: u64,
     poisoned: bool,
 }
+
+/// Uses the same physical engine with an uninhabitable Host binding.
+pub(crate) type RetainedBrokerPhysicalTpmOwnerV1 = RetainedPhysicalTpmOwnerV1<
+    'static, 'static, 'static, BrokerOnlyHostPhysicalSlotV1,
+>;
 
 enum SentLocksV1<'locks> {
     None,
@@ -265,6 +284,21 @@ struct BrokerPhysicalAttemptV1 {
     locks: [ProtectedJournalLockCustodyV1; 2],
     launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
     observations: Option<PidFdProcObservationsV1>,
+    proc_captures: [Option<aos_sandbox_linux::pidfd::PidFdProcOriginalsV1>; 2],
+    proc_capture_entered: [bool; 2],
+    image_opening: Option<HelperImageAcquisitionOriginalV1>,
+    executed_image: Option<Box<HelperExecutedImageOriginalV1>>,
+    initial_image_currentness: Option<crate::recovery::HelperImageRevalidationOriginalV1>,
+    service_samples: [Option<Box<FloorServiceCurrentnessOriginalV1>>; 2],
+    payment: Option<BrokerPhysicalPaymentOriginalV2>,
+    owner_samples: [Option<crate::recovery::OwnerConfinementOriginalV1>; 2],
+    currentness: [Option<Box<controller::BrokerPhysicalCurrentnessOriginalV2>>; 3],
+    identity_captured: bool,
+    context_captured: bool,
+    after_entered: bool,
+    owed_physical_consumed: bool,
+    owed_floor_consumed: bool,
+    service_opening: Option<Box<FloorServiceAcquisitionOriginalV1>>,
     helper_phase: BrokerHelperPhaseV1,
     phase: BrokerPhysicalPhaseV1,
     first_failure: Option<BrokerPhysicalFailureV1>,
@@ -285,10 +319,22 @@ struct BrokerPhysicalAttemptV1 {
     // Its later pure move into Command stdin still enters the existing raw
     // consuming spawn prefix; this does not claim custody inside that provider.
     child_channel: Option<OwnedFd>,
+    channel_opening: Option<Box<aos_sandbox_linux::seqpacket::RecordSubjectSeqpacketPairOriginalV2>>,
+    channel_shape: Option<Result<(usize, usize), FloorErrorV1>>,
 }
 
 enum BrokerPhysicalFailureV1 {
+    ProcCapture(usize, PhysicalTpmFailureV1),
+    Payment(FloorErrorV1),
+    OwnerConfinement(usize, FloorErrorV1),
+    Currentness(usize, FloorErrorV1),
+    ExecutedImage(FloorErrorV1),
+    InitialImageCurrentness(FloorErrorV1),
+    ImageAcquisition(FloorErrorV1),
+    ServiceCurrentness(usize, FloorErrorV1),
+    ServiceAcquisition(FloorErrorV1),
     Carrier(PhysicalTpmFailureV1),
+    ChannelOpening(FloorErrorV1),
     Lock(aos_sandbox::JournalError),
     Deadline(crate::DormantBrokerSessionHandshakeErrorV1),
 }
@@ -305,10 +351,53 @@ impl BrokerPhysicalAttemptV1 {
 
     fn failure(&self) -> FloorErrorV1 {
         match self.first_failure.as_ref() {
-            Some(BrokerPhysicalFailureV1::Carrier(cause)) => broker_projection(cause),
+            Some(BrokerPhysicalFailureV1::OwnerConfinement(_, cause)
+                | BrokerPhysicalFailureV1::Payment(cause)
+                | BrokerPhysicalFailureV1::ChannelOpening(cause)
+                | BrokerPhysicalFailureV1::Currentness(_, cause)
+                | BrokerPhysicalFailureV1::InitialImageCurrentness(cause)
+                | BrokerPhysicalFailureV1::ExecutedImage(cause)
+                | BrokerPhysicalFailureV1::ImageAcquisition(cause)
+                | BrokerPhysicalFailureV1::ServiceCurrentness(_, cause)
+                | BrokerPhysicalFailureV1::ServiceAcquisition(cause)) => *cause,
+            Some(BrokerPhysicalFailureV1::ProcCapture(_, cause) | BrokerPhysicalFailureV1::Carrier(cause)) => broker_projection(cause),
             Some(BrokerPhysicalFailureV1::Lock(_) | BrokerPhysicalFailureV1::Deadline(_)) | None => {
                 FloorErrorV1::Unavailable
             }
+        }
+    }
+
+    fn native_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first_failure.as_ref()? {
+            BrokerPhysicalFailureV1::OwnerConfinement(index, cause) => self.owner_samples
+                .get(*index).and_then(Option::as_ref).and_then(|sample| sample.failure()).or(Some(cause)),
+            BrokerPhysicalFailureV1::Payment(cause) => self.payment.as_ref()
+                .and_then(BrokerPhysicalPaymentOriginalV2::failure).or(Some(cause)),
+            BrokerPhysicalFailureV1::Currentness(index, cause) => {
+                let sample = self.currentness.get(*index).and_then(Option::as_ref);
+                sample.and_then(|sample| sample.failure()).or(Some(cause))
+            }
+            BrokerPhysicalFailureV1::ImageAcquisition(cause) => self.image_opening.as_ref()
+                .and_then(HelperImageAcquisitionOriginalV1::failure)
+                .or(Some(cause)),
+            BrokerPhysicalFailureV1::InitialImageCurrentness(cause) => self.initial_image_currentness.as_ref()
+                .and_then(|original| original.failure()).or(Some(cause)),
+            BrokerPhysicalFailureV1::ExecutedImage(cause) => self.executed_image.as_ref()
+                .and_then(|original| original.failure()).or(Some(cause as _)),
+            BrokerPhysicalFailureV1::ServiceAcquisition(cause) => self.service_opening.as_ref()
+                .and_then(|opening| opening.failure()).or(Some(cause)),
+            BrokerPhysicalFailureV1::ServiceCurrentness(index, cause) => self.service_samples
+                .get(*index).and_then(Option::as_ref)
+                .and_then(|sample| sample.failure()).or(Some(cause)),
+            BrokerPhysicalFailureV1::ProcCapture(index, cause) => self.proc_captures
+                .get(*index).and_then(Option::as_ref).and_then(|original| original.failure()).or(Some(cause)),
+            BrokerPhysicalFailureV1::ChannelOpening(cause) => self.channel_opening.as_ref()
+                .and_then(|original| original.failure()).map(|cause| cause as &dyn std::error::Error)
+                .or_else(|| self.channel_shape.as_ref()?.as_ref().err().map(|cause| cause as _))
+                .or(Some(cause)),
+            BrokerPhysicalFailureV1::Carrier(cause) => Some(cause),
+            BrokerPhysicalFailureV1::Lock(cause) => Some(cause),
+            BrokerPhysicalFailureV1::Deadline(cause) => Some(cause),
         }
     }
 
@@ -359,7 +448,7 @@ macro_rules! broker_admission_step {
         require_broker_floor_owner_v1($profile.endpoint())?;
     };
     (Retained, owner $owner:ident, $profile:ident) => {
-        require_broker_floor_owner_v1($profile.endpoint())?;
+        $owner.require_broker_owner_retaining_v1($profile)?;
     };
     (Online, owner $owner:ident, $profile:ident) => {
         $owner.online_origin_mut()?.recheck()?;
@@ -402,6 +491,15 @@ macro_rules! broker_admission_step {
     (Online, read $owner:ident, $profile:ident) => {
         $owner.read_online_inner($profile, $profile.role().nv_index())?;
     };
+    (Legacy, channel_pair $owner:ident, $channel:ident, $child:ident) => {
+        let ($channel, $child) = broker_admission_step!(Legacy, error Send,
+            SeqpacketSocket::pair_with_record_subjects());
+    };
+    (Retained, channel_pair $owner:ident, $channel:ident, $child:ident) => {
+        $owner.capture_broker_channel_once_v1()?;
+    };
+    (Legacy, spawn_stack $owner:ident) => {};
+    (Retained, spawn_stack $owner:ident) => { $owner.require_controller_spawn_stack_v1()?; };
     (Legacy, deadline $owner:ident) => {};
     (Retained, deadline $owner:ident) => { $owner.check_broker_cold_deadline()?; };
     // Legacy projects at the original call site; Retained keeps typed causes.
@@ -423,21 +521,22 @@ macro_rules! broker_admission_step {
         let mut $image = MeasuredHelperImageV1::open()?;
     };
     (Retained, image $owner:ident, $image:ident) => {
-        let $image = MeasuredHelperImageV1::open()?;
-        if let RetainedPhysicalBindingV1::Broker { image, .. } = &mut $owner.binding {
-            *image = Some($image);
-        }
+        $owner.capture_broker_image_once()?;
     };
     (Legacy, service $owner:ident, $service:ident, $profile:ident, $launch:ident) => {
         let $service = RetainedFloorServicePolicyV1::open($profile.endpoint(), $launch)?;
     };
     (Retained, service $owner:ident, $service:ident, $profile:ident, $launch:ident) => {
-        let $service = RetainedFloorServicePolicyV1::open(
-            $profile.endpoint(),
-            $owner.broker()?.launch_image.as_ref().ok_or(FloorErrorV1::Unavailable)?,
-        )?;
-        if let RetainedPhysicalBindingV1::Broker { service, .. } = &mut $owner.binding {
-            *service = Some($service);
+        if $profile.endpoint() == super::FloorEndpointV1::ControllerStorageClient {
+            $owner.capture_broker_service_once()?;
+        } else {
+            let $service = RetainedFloorServicePolicyV1::open(
+                $profile.endpoint(),
+                $owner.broker()?.launch_image.as_ref().ok_or(FloorErrorV1::Unavailable)?,
+            )?;
+            if let RetainedPhysicalBindingV1::Broker { service, .. } = &mut $owner.binding {
+                *service = Some($service);
+            }
         }
     };
     (Legacy, nonce $owner:ident, $nonce:ident) => {};
@@ -461,20 +560,6 @@ macro_rules! broker_admission_step {
         $owner.broker_mut()?.hello = Some($hello.clone());
     };
 
-    (Legacy, channel $owner:ident, $channel:ident, $child_channel:ident) => {};
-    (Retained, channel $owner:ident, $channel:ident, $child_channel:ident) => {
-        $owner.channel = Some($channel);
-        match &mut $owner.binding {
-            RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => {
-                attempt.child_channel = Some($child_channel);
-            }
-            #[cfg(feature = "online-nix")]
-            RetainedPhysicalBindingV1::Online { attempt, .. } => {
-                attempt.child_channel = Some($child_channel);
-            }
-            _ => std::process::abort(),
-        }
-    };
     (Legacy, stdin $owner:ident, $child_channel:ident) => { Stdio::from($child_channel) };
     (Retained, stdin $owner:ident, $child_channel:ident) => {
         Stdio::from(match &mut $owner.binding {
@@ -496,6 +581,8 @@ macro_rules! broker_admission_step {
     };
     (Legacy, image_ref $owner:ident, $image:ident) => { $image };
     (Retained, image_ref $owner:ident, $image:ident) => { $owner.broker_image()? };
+    (Legacy, revalidate_image $owner:ident, $image:ident) => { $image.revalidate()?; };
+    (Retained, revalidate_image $owner:ident, $image:ident) => { $owner.revalidate_initial_broker_image_v1()?; };
     (Legacy, image_mut $owner:ident, $image:ident) => { $image };
     (Retained, image_mut $owner:ident, $image:ident) => { $owner.broker_image_mut()? };
     (Legacy, child $owner:ident, $child:ident) => {};
@@ -515,11 +602,17 @@ macro_rules! broker_admission_step {
     (Retained, identity $owner:ident, $pidfd:ident, $process:ident) => {
         $owner.identity = Some($owner.capture_broker_identity()?);
     };
+    (Legacy, executed $owner:ident, $image:ident, $pid:ident) => {
+        $image.require_executed($pid.get())?;
+    };
+    (Retained, executed $owner:ident, $image:ident, $pid:ident) => {
+        $owner.capture_broker_executed_image_v1($pid.get())?;
+    };
     (Legacy, helper $owner:ident, $profile:ident, $pid:ident) => {
         require_broker_floor_helper_v1($profile.endpoint(), $pid.get())?;
     };
     (Retained, helper $owner:ident, $profile:ident, $pid:ident) => {
-        BrokerPhysicalOpenV1::require_helper_preamble($profile, $pid.get())?;
+        $owner.require_broker_helper_preamble_retaining_v1($profile, $pid.get())?;
         $owner.capture_broker_context($profile)?;
     };
 
@@ -544,6 +637,8 @@ macro_rules! broker_admission_step {
     };
     (Retained, construct $owner:ident, $profile:ident, $image:ident, $service:ident,
         $nonce:ident, $channel:ident, $child:ident, $pidfd:ident, $process:ident) => {};
+    (Legacy, after_custody $owner:ident) => {};
+    (Retained, after_custody $owner:ident) => { $owner.mark_controller_after_entered_v1(); };
     (Legacy, measured $owner:ident) => {};
     (Retained, measured $owner:ident) => {
         $owner.broker_mut()?.helper_phase = BrokerHelperPhaseV1::Measured;
@@ -591,10 +686,9 @@ macro_rules! broker_admission_recipe {
         broker_admission_step!($mode, deadline $owner);
         let hello = broker_admission_step!($mode, hello_bytes $profile, nonce, $salt, identities);
         broker_admission_step!($mode, hello $owner, hello);
-        let (channel, child_channel) = broker_admission_step!($mode, error Send,
-            SeqpacketSocket::pair_with_record_subjects());
-        broker_admission_step!($mode, channel $owner, channel, child_channel);
+        broker_admission_step!($mode, channel_pair $owner, channel, child_channel);
         broker_admission_step!($mode, deadline $owner);
+        broker_admission_step!($mode, spawn_stack $owner);
         let child = OwnedHelperChildV1(broker_admission_step!($mode, error Child,
             Command::new(broker_admission_step!($mode, image_ref $owner, image).path())
                 .env_clear()
@@ -611,9 +705,9 @@ macro_rules! broker_admission_recipe {
         broker_admission_step!($mode, pidfd $owner, pidfd);
         broker_admission_step!($mode, deadline $owner);
         broker_admission_step!($mode, identity $owner, pidfd, process);
-        broker_admission_step!($mode, image_mut $owner, image).require_executed(pid.get())?;
+        broker_admission_step!($mode, executed $owner, image, pid);
         broker_admission_step!($mode, helper $owner, $profile, pid);
-        broker_admission_step!($mode, image_mut $owner, image).revalidate()?;
+        broker_admission_step!($mode, revalidate_image $owner, image);
 
         broker_admission_step!($mode, construct $owner, $profile, image, service,
             nonce, channel, child, pidfd, process);
@@ -630,6 +724,7 @@ macro_rules! broker_admission_recipe {
             nonce,
         )?;
         // The actual image and ACK still precede AUTH/device access.
+        broker_admission_step!($mode, after_custody $owner);
         broker_admission_step!($mode, result $owner.require_custody());
         let authentication = broker_admission_step!($mode, auth_bytes $owner, $profile, nonce, $auth);
         broker_admission_step!($mode, authentication $owner, authentication);
@@ -672,7 +767,7 @@ fn original_online_auth(
     auth
 }
 
-impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
+impl RetainedBrokerPhysicalTpmOwnerV1 {
     /// Parks a genuine online origin and the same two original lock loans.
     #[cfg(feature = "online-nix")]
     pub(crate) fn retain_online(
@@ -698,6 +793,21 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
                     locks,
                     launch_image: None,
                     observations: None,
+                    proc_captures: [None, None],
+                    proc_capture_entered: [false, false],
+                    image_opening: None,
+                    executed_image: None,
+                    initial_image_currentness: None,
+                    service_samples: [None, None],
+                    payment: None,
+                    owner_samples: [None, None],
+                    currentness: [None, None, None],
+                    identity_captured: false,
+                    context_captured: false,
+                    after_entered: false,
+                    owed_physical_consumed: false,
+                    owed_floor_consumed: false,
+                    service_opening: None,
                     helper_phase: BrokerHelperPhaseV1::AwaitingMeasurement,
                     phase: BrokerPhysicalPhaseV1::Fresh,
                     first_failure: None,
@@ -713,6 +823,8 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
                     observation: None,
                     cold_deadline: Some(deadline),
                     child_channel: None,
+                    channel_opening: None,
+                    channel_shape: None,
                 },
                 postflights: [const { None }; crate::handshake::ONLINE_POSTFLIGHT_PASSES_V1],
             },
@@ -896,6 +1008,48 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
         broker_admission_recipe!(Legacy, owner, profile, salt_name, auth, locks, launch_image)
     }
 
+    fn capture_broker_channel_once_v1(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        if !self.has_controller_payment_v1() {
+            // Preserve the original unselected/Online recipe and projection.
+            let (channel, endpoint) = SeqpacketSocket::pair_with_record_subjects()
+                .map_err(PhysicalTpmFailureV1::Send)?;
+            self.channel = Some(channel);
+            self.broker_mut()?.child_channel = Some(endpoint);
+            return Ok(());
+        }
+        let attempt = self.broker_mut()?;
+        if attempt.channel_opening.is_some() { return Err(FloorErrorV1::Unavailable.into()); }
+        attempt.channel_opening = Some(Box::new(
+            aos_sandbox_linux::seqpacket::RecordSubjectSeqpacketPairOriginalV2::zero_rights_parent_v1(),
+        ));
+        let opening = attempt.channel_opening.as_mut().ok_or(FloorErrorV1::Unavailable)?;
+        if opening.prepare().is_err() {
+            attempt.first_failure.get_or_insert(BrokerPhysicalFailureV1::ChannelOpening(FloorErrorV1::Unavailable));
+            attempt.phase = BrokerPhysicalPhaseV1::Failed;
+            return Err(FloorErrorV1::Unavailable.into());
+        }
+        let channel = opening.take_parent_socket().map_err(|_| FloorErrorV1::Unavailable)?;
+        // Park the actual parent before the once child transfer; no returned
+        // native descriptor is local across the next fallible frontier.
+        self.channel = Some(channel);
+        let actual = self.channel.as_ref().and_then(|channel|
+            channel.zero_rights_receive_obligations_v1(RESPONSE_BYTES));
+        let expected = SeqpacketSocket::closed_zero_rights_receive_obligations_v1(RESPONSE_BYTES);
+        let attempt = self.broker_mut()?;
+        attempt.channel_shape = Some(match (actual, expected) {
+            (Some(actual), Some(expected)) if actual == expected => Ok(actual),
+            _ => Err(FloorErrorV1::Unavailable),
+        });
+        if !matches!(attempt.channel_shape, Some(Ok(_))) {
+            attempt.first_failure.get_or_insert(BrokerPhysicalFailureV1::ChannelOpening(FloorErrorV1::Unavailable));
+            return Err(FloorErrorV1::Unavailable.into());
+        }
+        attempt.child_channel = Some(attempt.channel_opening.as_mut()
+            .ok_or(FloorErrorV1::Unavailable)?.take_child_endpoint()
+            .map_err(|_| FloorErrorV1::Unavailable)?);
+        Ok(())
+    }
+
     /// Parks the actual restricted inputs before the first fallible admission.
     pub(crate) fn retain_broker(binding: BrokerPhysicalOpenV1<'_>) -> Self {
         let (profile, salt_name, auth, locks, launch_image) = binding.into_parts();
@@ -914,6 +1068,21 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
                     locks,
                     launch_image: Some(launch_image.clone()),
                     observations: None,
+                    proc_captures: [None, None],
+                    proc_capture_entered: [false, false],
+                    image_opening: None,
+                    executed_image: None,
+                    initial_image_currentness: None,
+                    service_samples: [None, None],
+                    payment: None,
+                    owner_samples: [None, None],
+                    currentness: [None, None, None],
+                    identity_captured: false,
+                    context_captured: false,
+                    after_entered: false,
+                    owed_physical_consumed: false,
+                    owed_floor_consumed: false,
+                    service_opening: None,
                     helper_phase: BrokerHelperPhaseV1::AwaitingMeasurement,
                     phase: BrokerPhysicalPhaseV1::Fresh,
                     first_failure: None,
@@ -929,6 +1098,8 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
                     observation: None,
                     cold_deadline: None,
                     child_channel: None,
+                    channel_opening: None,
+                    channel_shape: None,
                 }),
             },
             nonce: [0; 32],
@@ -943,6 +1114,7 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
     /// Preserves the Broker facade's existing error cases while retaining the
     /// first available provider cause and every returned owner privately.
     pub(crate) fn admit_broker(&mut self) -> Result<(), FloorErrorV1> {
+        if self.has_controller_payment_v1() { return Err(FloorErrorV1::Unavailable); }
         let operation = BrokerPhysicalOperationV1::begin(self, BrokerPhysicalPhaseV1::Fresh)?;
         let result = operation.owner.admit_broker_inner();
         operation.finish(result)
@@ -955,7 +1127,28 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
     }
 }
 
-impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup> {
+impl<'owner, 'origin, 'startup>
+    RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup>
+{
+    pub(in crate::tpm_nv_custody) fn retain_host(
+        binding: RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>,
+    ) -> Self {
+        Self {
+            child: None,
+            channel: None,
+            pidfd: None,
+            identity: None,
+            binding: RetainedPhysicalBindingV1::Host(binding, std::marker::PhantomData),
+            nonce: [0; 32],
+            sequence: 1,
+            poisoned: false,
+        }
+    }
+}
+
+impl<'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>>
+    RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup, H>
+{
     fn check_broker_cold_deadline(&mut self) -> Result<(), PhysicalTpmFailureV1> {
         if let RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } = &mut self.binding {
             if let Some(deadline) = attempt.cold_deadline {
@@ -1011,21 +1204,6 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         Ok(frame_limit)
     }
 
-    pub(in crate::tpm_nv_custody) fn retain_host(
-        binding: RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>,
-    ) -> Self {
-        Self {
-            child: None,
-            channel: None,
-            pidfd: None,
-            identity: None,
-            binding: RetainedPhysicalBindingV1::Host(binding),
-            nonce: [0; 32],
-            sequence: 1,
-            poisoned: false,
-        }
-    }
-
     pub(in crate::tpm_nv_custody) fn admit_host(
         &mut self,
     ) -> Result<FloorRecoveryV1, HostPhysicalReadErrorV1> {
@@ -1038,10 +1216,21 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         self.host_mut()?.prepare_canary_v2()
     }
 
+    pub(in crate::tpm_nv_custody) fn drain_boot_input_after_unwind_once_v1(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        self.host_mut()?.drain_boot_input_after_unwind_once_v1()
+    }
+
+    pub(in crate::tpm_nv_custody) fn drain_boot_helper_after_unwind_once_v1(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        match (&mut self.binding, self.pidfd.as_ref()) {
+            (RetainedPhysicalBindingV1::Host(host, _), pidfd) => host.host_mut_v1().finish_boot_helper_after_once_v1(pidfd),
+            _ => Err(PhysicalTpmFailureV1::State),
+        }
+    }
+
     pub(in crate::tpm_nv_custody) fn admit_canary_host_v2(
-        &mut self, original: &super::host::CanaryAuthenticatedRequestV3,
+        &mut self, original: &super::host::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Result<FloorRecoveryV1, super::host::physical::CanaryPhysicalErrorV2> {
-        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Fresh);
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Fresh, original);
         let result = if operation.began {
             operation.owner.admit_host_inner_v2(Some(original))
         } else { Err(PhysicalTpmFailureV1::State) };
@@ -1049,9 +1238,9 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     pub(in crate::tpm_nv_custody) fn canary_main_data_v2(
-        &mut self, original: &super::host::CanaryAuthenticatedRequestV3,
+        &mut self, original: &super::host::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Result<super::host::CanaryHostMainDataV2, super::host::physical::CanaryPhysicalErrorV2> {
-        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready, original);
         let result = if operation.began {
             operation.owner.host_mut().and_then(|host| host.canary_main_data_v2())
         } else { Err(PhysicalTpmFailureV1::State) };
@@ -1060,11 +1249,21 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
 
     pub(in crate::tpm_nv_custody) fn fund_canary_host_v2(
         &mut self, transaction: &aos_sandbox::JournalTransaction,
-        original: &super::host::CanaryAuthenticatedRequestV3,
+        original: &super::host::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Result<super::HostFloorIntentDataV1, super::host::physical::CanaryPhysicalErrorV2> {
-        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready, original);
         let result = if operation.began {
             operation.owner.host_mut().and_then(|host| host.fund_canary_v2(transaction))
+        } else { Err(PhysicalTpmFailureV1::State) };
+        operation.finish(result, original)
+    }
+
+    pub(in crate::tpm_nv_custody) fn boot_main_data_v1(
+        &mut self, original: &super::host::PublisherNativeOriginalRefV3<'_, '_, '_>,
+    ) -> Result<super::host::BootHostMainDataV1, super::host::physical::CanaryPhysicalErrorV2> {
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready, original);
+        let result = if operation.began {
+            operation.owner.host_mut().and_then(|host| host.boot_main_data_v1())
         } else { Err(PhysicalTpmFailureV1::State) };
         operation.finish(result, original)
     }
@@ -1072,9 +1271,9 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     pub(in crate::tpm_nv_custody) fn commit_canary_host_v2(
         &mut self, step: super::host::CanaryHostNativeStepV2,
         transaction: &aos_sandbox::JournalTransaction,
-        original: &super::host::CanaryAuthenticatedRequestV3,
+        original: &super::host::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Result<(), super::host::physical::CanaryPhysicalErrorV2> {
-        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready, original);
         let result = if operation.began {
             operation.owner.require_custody().and_then(|()| {
                 operation.owner.host_mut()?.commit_canary_v2(step, transaction, original)
@@ -1085,9 +1284,9 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
 
     pub(in crate::tpm_nv_custody) fn extend_canary_host_v2(
         &mut self, transaction: &aos_sandbox::JournalTransaction,
-        original: &super::host::CanaryAuthenticatedRequestV3,
+        original: &super::host::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Result<(), super::host::physical::CanaryPhysicalErrorV2> {
-        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready, original);
         let result = if operation.began {
             (|| {
                 operation.owner.host_mut()?.capture_disk_cut()?;
@@ -1106,9 +1305,9 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     pub(in crate::tpm_nv_custody) fn classify_canary_host_v2(
-        &mut self, original: &super::host::CanaryAuthenticatedRequestV3,
+        &mut self, original: &super::host::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Result<FloorRecoveryV1, super::host::physical::CanaryPhysicalErrorV2> {
-        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready, original);
         let result = if operation.began {
             operation.owner.classify_host_inner_v2(Some(original))
         } else { Err(PhysicalTpmFailureV1::State) };
@@ -1124,15 +1323,16 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     /// A failed component returns its already resident cause/debt rather than
     /// issuing another pass or manufacturing a fresh positive floor proof.
     pub(in crate::tpm_nv_custody) fn observe_canary_terminal_v2(
-        &mut self, original: &super::host::CanaryAuthenticatedRequestV3,
+        &mut self, original: &super::host::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Result<(), super::host::physical::CanaryPhysicalErrorV2> {
-        if let RetainedPhysicalBindingV1::Host(host) = &self.binding {
+        if let RetainedPhysicalBindingV1::Host(host, _) = &self.binding {
+            let host = host.host_ref_v1();
             if let Some(cause) = host.canary_failure_v2() {
                 // Its failed action already ran the inner terminal posts.
                 return Err(cause);
             }
         }
-        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready, original);
         let result = if operation.began { Ok(()) } else { Err(PhysicalTpmFailureV1::State) };
         operation.finish(result, original)
     }
@@ -1150,8 +1350,11 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     fn admit_host_inner_v2(
-        &mut self, original: Option<&super::host::CanaryAuthenticatedRequestV3>,
+        &mut self, original: Option<&super::host::PublisherNativeOriginalRefV3<'_, '_, '_>>,
     ) -> Result<FloorRecoveryV1, PhysicalTpmFailureV1> {
+        if let Some(original) = original {
+            self.host_mut()?.prepare_boot_transport_once_v1(original)?;
+        }
         self.host_mut()?.claim_invocation()?;
         self.host_mut()?.retain_locks()?;
         self.nonce = crate::entropy::nonzero_random::<32, _>(&mut crate::entropy::KernelEntropy)
@@ -1167,9 +1370,26 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         .map_err(PhysicalTpmFailureV1::Carrier)?;
         self.host_mut()?.stage_hello(hello.clone());
 
-        let (channel, child_channel) = SeqpacketSocket::pair_with_record_subjects()
-            .map_err(PhysicalTpmFailureV1::Send)?;
-        self.channel = Some(channel);
+        let boot = original.is_some_and(|original|
+            matches!(original, super::host::PublisherNativeOriginalRefV3::Boot(_)));
+        let child_channel = if boot {
+            // Arm the actual original before entry; failed native prefixes
+            // remain in this owner together with the first returned error.
+            let pair = self.host_mut()?.boot_pair_v1()?;
+            if pair.prepare_retaining_v2().is_err() {
+                return Err(PhysicalTpmFailureV1::Send(pair.take_failure_closed_v3()
+                    .ok_or(PhysicalTpmFailureV1::State)?));
+            }
+            let channel = pair.take_parent_socket().map_err(PhysicalTpmFailureV1::Send)?;
+            self.channel = Some(channel);
+            self.host_mut()?.boot_pair_v1()?.take_child_endpoint()
+                .map_err(PhysicalTpmFailureV1::Send)?
+        } else {
+            let (channel, child_channel) = SeqpacketSocket::pair_with_record_subjects()
+                .map_err(PhysicalTpmFailureV1::Send)?;
+            self.channel = Some(channel);
+            child_channel
+        };
         let child = if let Some(original) = original {
             let mut command = Command::new(self.host()?.helper_path());
             command.env_clear()
@@ -1191,10 +1411,14 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         // Stage each real owner BEFORE later pidfd/identity/image admission.
         self.child = Some(OwnedHelperChildV1(child));
         let pid = NonZeroU32::new(self.child()?.0.id()).ok_or(FloorErrorV1::Unavailable)?;
-        self.pidfd = Some(PidFd::open(pid).map_err(PhysicalTpmFailureV1::Linux)?);
+        self.pidfd = Some(if boot {
+            PidFd::open_retaining_v4(pid).map_err(PhysicalTpmFailureV1::PidfdAdmission)?
+        } else {
+            PidFd::open(pid).map_err(PhysicalTpmFailureV1::Linux)?
+        });
         self.identity = Some(if original.is_some() {
             match (&mut self.binding, self.pidfd.as_ref()) {
-                (RetainedPhysicalBindingV1::Host(host), Some(pidfd)) => host.capture_canary_helper_v2(pidfd)?,
+                (RetainedPhysicalBindingV1::Host(host, _), Some(pidfd)) => host.host_mut_v1().capture_canary_helper_v2(pidfd)?,
                 _ => return Err(PhysicalTpmFailureV1::State),
             }
         } else {
@@ -1227,7 +1451,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     fn classify_host_inner_v2(
-        &mut self, original: Option<&super::host::CanaryAuthenticatedRequestV3>,
+        &mut self, original: Option<&super::host::PublisherNativeOriginalRefV3<'_, '_, '_>>,
     ) -> Result<FloorRecoveryV1, PhysicalTpmFailureV1> {
         self.host_mut()?.capture_disk_cut()?;
         let observation = self.exchange_inner_v2(HelperOperationV1::Read, [0; 32], original)?;
@@ -1259,7 +1483,8 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         let pidfd = self.pidfd.as_ref().ok_or(FloorErrorV1::Unavailable)?;
         let pid = self.child.as_ref().ok_or(FloorErrorV1::Unavailable)?.0.id();
         match &mut self.binding {
-            RetainedPhysicalBindingV1::Host(host) => {
+            RetainedPhysicalBindingV1::Host(host, _) => {
+                let host = host.host_mut_v1();
                 host.measure_helper_before_hello(pidfd, pid)
             }
             _ => Err(PhysicalTpmFailureV1::State),
@@ -1267,7 +1492,11 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     fn require_custody(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        if self.has_controller_payment_v1() {
+            return self.require_controller_custody_v1();
+        }
         self.require_original_child_process()?;
+        let mut completed_service_sample = None;
 
         let pidfd = self.pidfd.as_ref().ok_or(FloorErrorV1::Unavailable)?;
         let pid = self.child.as_ref().ok_or(FloorErrorV1::Unavailable)?.0.id();
@@ -1291,10 +1520,30 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                     require_broker_floor_helper_v1(profile.endpoint(), pid)?;
                 }
                 let service = service.as_mut().ok_or(FloorErrorV1::Unavailable)?;
-                service.revalidate()?;
-                service.require_child(pidfd)?;
+                if profile.endpoint() == super::FloorEndpointV1::ControllerStorageClient {
+                    if let Some(attempt) = attempt {
+                        let index = attempt.service_samples.iter().position(Option::is_none)
+                            .ok_or(PhysicalTpmFailureV1::State)?;
+                        attempt.service_samples[index] = Some(Box::new(FloorServiceCurrentnessOriginalV1::new()));
+                        let sample = attempt.service_samples[index].as_mut()
+                            .ok_or(PhysicalTpmFailureV1::State)?;
+                        if let Err(cause) = sample.observe_with_deadline(service, pidfd, attempt.cold_deadline) {
+                            attempt.first_failure.get_or_insert(
+                                BrokerPhysicalFailureV1::ServiceCurrentness(index, cause),
+                            );
+                            return Err(cause.into());
+                        }
+                        completed_service_sample = Some(index);
+                    } else {
+                        service.revalidate()?;
+                        service.require_child(pidfd)?;
+                    }
+                } else {
+                    service.revalidate()?;
+                    service.require_child(pidfd)?;
+                }
             }
-            RetainedPhysicalBindingV1::Host(host) => host.require_measured_helper(pidfd)?,
+            RetainedPhysicalBindingV1::Host(host, _) => host.host_mut_v1().require_measured_helper(pidfd)?,
             #[cfg(feature = "online-nix")]
             RetainedPhysicalBindingV1::Online { image, original, .. } => {
                 image.as_mut().ok_or(FloorErrorV1::Unavailable)?.revalidate()?;
@@ -1304,6 +1553,18 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         }
         if !self.pidfd()?.is_alive().map_err(|error| self.linux_error(error))? {
             return Err(FloorErrorV1::Unavailable.into());
+        }
+        if let RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } = &mut self.binding {
+            // This is the whole existing custody interval's last native check.
+            // Only completed positive samples retire before the next operation;
+            // any failed earlier sample remains resident on its fixed slot.
+            if let Some(index) = completed_service_sample {
+                if let Some(sample) = attempt.service_samples.get_mut(index) {
+                    if sample.as_ref().is_some_and(|sample| sample.is_complete()) {
+                        drop(sample.take());
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1353,8 +1614,14 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         &mut self,
         operation: HelperOperationV1,
         input: [u8; 32],
-        original: Option<&super::host::CanaryAuthenticatedRequestV3>,
+        original: Option<&super::host::PublisherNativeOriginalRefV3<'_, '_, '_>>,
     ) -> Result<HelperObservationV1, PhysicalTpmFailureV1> {
+        if self.has_controller_payment_v1() {
+            let attempt = self.broker_mut()?;
+            attempt.after_entered = false;
+            attempt.payment.as_mut().ok_or(PhysicalTpmFailureV1::State)?
+                .consume_tpm_request_v1()?;
+        }
         self.require_custody()?;
         let request = if self.is_host() {
             framing::encode_request_v2(operation, self.nonce, self.sequence, input)
@@ -1388,6 +1655,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
             } else {
                 decode_response_v2(payload, operation, self.nonce, self.sequence)?
             };
+            self.mark_controller_after_entered_v1();
             self.require_custody()?;
             self.sequence = self.sequence
                 .checked_add(1)
@@ -1449,7 +1717,8 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                         Ok(observation) => Ok(observation),
                     };
                 }
-                RetainedPhysicalBindingV1::Host(host) => {
+                RetainedPhysicalBindingV1::Host(host, _) => {
+                    let host = host.host_mut_v1();
                     // No replacement read/helper may overtake this failure.
                     // Carrier/child/loans/frames stay owned; close BEFORE return.
                     host.close();
@@ -1473,7 +1742,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         bytes: &[u8],
         locks: SentLocksV1<'_>,
         frame: Option<HostFrameV1>,
-        original: Option<&super::host::CanaryAuthenticatedRequestV3>,
+        original: Option<&super::host::PublisherNativeOriginalRefV3<'_, '_, '_>>,
     ) -> Result<(), PhysicalTpmFailureV1> {
         if self.is_retained_broker() {
             let attempt = self.broker_mut()?;
@@ -1579,7 +1848,12 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                 if Instant::now() >= deadline {
                     return Err(FloorErrorV1::Unavailable.into());
                 }
-                let received = match self.channel_mut()?.receive_retaining(maximum) {
+                let result = if self.host()?.has_boot_transport_v1() {
+                    self.channel_mut()?.receive_storage_preparation_retaining_v1(maximum)
+                } else {
+                    self.channel_mut()?.receive_retaining(maximum)
+                };
+                let received = match result {
                     Ok(received) => received,
                     Err(error) if error.is_nonconsuming_would_block()
                         || error.is_nonconsuming_interrupted() =>
@@ -1592,7 +1866,13 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                 self.host_mut()?.stage_reply(host_reply, received);
                 ReceivedFrameV1::Host(host_reply)
             } else if self.is_retained_broker() {
-                let received = match self.channel_mut()?.receive_retaining(maximum) {
+                let controller = self.has_controller_payment_v1();
+                let result = if controller {
+                    self.channel_mut()?.receive_storage_preparation_retaining_v1(maximum)
+                } else {
+                    self.channel_mut()?.receive_retaining(maximum)
+                };
+                let received = match result {
                     Ok(received) => received,
                     Err(error)
                         if error.is_nonconsuming_would_block()
@@ -1651,7 +1931,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     fn is_host(&self) -> bool {
-        matches!(&self.binding, RetainedPhysicalBindingV1::Host(_))
+        matches!(&self.binding, RetainedPhysicalBindingV1::Host(_, _))
     }
 
     fn is_retained_broker(&self) -> bool {
@@ -1676,8 +1956,85 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
             }
             #[cfg(feature = "online-nix")]
             RetainedPhysicalBindingV1::Online { attempt, .. } => Ok(attempt),
-            RetainedPhysicalBindingV1::Host(_) => Err(PhysicalTpmFailureV1::State),
+            RetainedPhysicalBindingV1::Host(_, _) => Err(PhysicalTpmFailureV1::State),
         }
+    }
+
+    fn capture_broker_image_once(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        let attempt = self.broker_mut()?;
+        if attempt.image_opening.is_some() {
+            return Err(PhysicalTpmFailureV1::State);
+        }
+        attempt.image_opening = Some(HelperImageAcquisitionOriginalV1::new());
+        let opening = attempt.image_opening.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        if let Err(cause) = opening.capture_once() {
+            attempt.first_failure.get_or_insert(BrokerPhysicalFailureV1::ImageAcquisition(cause));
+            return Err(cause.into());
+        }
+        let image = match opening.take_completed_once() {
+            Some(image) => image,
+            None => {
+                attempt.first_failure.get_or_insert(
+                    BrokerPhysicalFailureV1::ImageAcquisition(FloorErrorV1::Unavailable),
+                );
+                return Err(PhysicalTpmFailureV1::State);
+            }
+        };
+        match &mut self.binding {
+            RetainedPhysicalBindingV1::Broker { image: destination, .. } => {
+                *destination = Some(image);
+                Ok(())
+            }
+            _ => Err(PhysicalTpmFailureV1::State),
+        }
+    }
+
+    fn capture_broker_service_once(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        let attempt = self.broker_mut()?;
+        if let Some(payment) = &mut attempt.payment {
+            payment.require_primary_program_v2()?;
+            payment.consume_primary_policy_comparisons_v2(2).map_err(PhysicalTpmFailureV1::Floor)?;
+        }
+        if attempt.service_opening.is_some() {
+            return Err(PhysicalTpmFailureV1::State);
+        }
+        let opening = match attempt.payment.as_ref() {
+            Some(payment) => payment.new_service_acquisition_v2()?,
+            None => FloorServiceAcquisitionOriginalV1::new(),
+        };
+        attempt.service_opening = Some(Box::new(opening));
+        let launch = attempt.launch_image.as_ref().ok_or(PhysicalTpmFailureV1::State)?;
+        let opening = attempt.service_opening.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        if let Err(cause) = opening.capture_once(launch, attempt.cold_deadline) {
+            if let Some(payment) = &attempt.payment { payment.preserve_failed_shared_interval_v1(); }
+            attempt.first_failure.get_or_insert(BrokerPhysicalFailureV1::ServiceAcquisition(cause));
+            return Err(cause.into());
+        }
+        let service = match opening.take_completed_once() {
+            Some(service) => service,
+            None => {
+                attempt.first_failure.get_or_insert(
+                    BrokerPhysicalFailureV1::ServiceAcquisition(FloorErrorV1::Unavailable),
+                );
+                return Err(PhysicalTpmFailureV1::State);
+            }
+        };
+        match &mut self.binding {
+            RetainedPhysicalBindingV1::Broker { service: destination, .. } => {
+                // The actual returned service is resident before the final
+                // fallible native interval disposition can refuse.
+                *destination = Some(service);
+            }
+            _ => return Err(PhysicalTpmFailureV1::State),
+        }
+        let attempt = self.broker_mut()?;
+        if let Some(payment) = &mut attempt.payment {
+            if let Err(cause) = payment.retire_completed_shared_interval_v1() {
+                attempt.first_failure.get_or_insert(BrokerPhysicalFailureV1::Payment(cause));
+                return Err(cause.into());
+            }
+        }
+        Ok(())
     }
 
     fn broker_image(&self) -> Result<&MeasuredHelperImageV1, PhysicalTpmFailureV1> {
@@ -1689,7 +2046,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
             RetainedPhysicalBindingV1::Online { image, .. } => {
                 image.as_ref().ok_or_else(|| FloorErrorV1::Unavailable.into())
             }
-            RetainedPhysicalBindingV1::Host(_) => Err(PhysicalTpmFailureV1::State),
+            RetainedPhysicalBindingV1::Host(_, _) => Err(PhysicalTpmFailureV1::State),
         }
     }
 
@@ -1702,7 +2059,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
             RetainedPhysicalBindingV1::Online { image, .. } => {
                 image.as_mut().ok_or_else(|| FloorErrorV1::Unavailable.into())
             }
-            RetainedPhysicalBindingV1::Host(_) => Err(PhysicalTpmFailureV1::State),
+            RetainedPhysicalBindingV1::Host(_, _) => Err(PhysicalTpmFailureV1::State),
         }
     }
 
@@ -1727,11 +2084,31 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         let pidfd = self.pidfd.as_ref().ok_or(FloorErrorV1::Unavailable)?;
         match &mut self.binding {
             RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => {
-                attempt.observations
-                    .as_mut()
-                    .ok_or(FloorErrorV1::Unavailable)?
-                    .capture_stat(pidfd)
-                    .map_err(PhysicalTpmFailureV1::Linux)
+                if attempt.payment.is_none() {
+                    return attempt.observations.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                        .capture_stat(pidfd).map_err(PhysicalTpmFailureV1::Linux);
+                }
+                if attempt.proc_capture_entered[0] { return Err(PhysicalTpmFailureV1::State); }
+                attempt.proc_capture_entered[0] = true;
+                attempt.proc_captures[0] = Some(aos_sandbox_linux::pidfd::PidFdProcOriginalsV1::new());
+                let captured = attempt.observations.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                    .capture_stat_retaining_v1(pidfd,
+                        attempt.proc_captures[0].as_mut().ok_or(PhysicalTpmFailureV1::State)?);
+                let identity = match captured {
+                    Ok(identity) => identity,
+                    Err(cause) => {
+                        attempt.first_failure.get_or_insert(BrokerPhysicalFailureV1::ProcCapture(
+                            0, PhysicalTpmFailureV1::Linux(cause),
+                        ));
+                        return Err(FloorErrorV1::Unavailable.into());
+                    }
+                };
+                attempt.identity_captured = true;
+                controller::prepare_samples_v1(attempt)?;
+                // Original identity DATA and the real source File are held;
+                // completed parser/native comparison temporaries can retire.
+                drop(attempt.proc_captures[0].take());
+                Ok(identity)
             }
             #[cfg(feature = "online-nix")]
             RetainedPhysicalBindingV1::Online { attempt, .. } => {
@@ -1749,22 +2126,62 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         let pidfd = self.pidfd.as_ref().ok_or(FloorErrorV1::Unavailable)?;
         match &mut self.binding {
             RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => {
-                let context = attempt.observations
-                    .as_mut()
-                    .ok_or(FloorErrorV1::Unavailable)?
-                    .capture_context(pidfd)
-                    .map_err(PhysicalTpmFailureV1::Linux)?;
-                BrokerPhysicalOpenV1::require_helper_context(profile, context)?;
+                if attempt.payment.is_none() {
+                    let context = attempt.observations.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                        .capture_context(pidfd).map_err(PhysicalTpmFailureV1::Linux)?;
+                    BrokerPhysicalOpenV1::require_helper_context(profile, context)?;
+                    return Ok(());
+                }
+                if attempt.proc_capture_entered[1] { return Err(PhysicalTpmFailureV1::State); }
+                attempt.proc_capture_entered[1] = true;
+                attempt.proc_captures[1] = Some(aos_sandbox_linux::pidfd::PidFdProcOriginalsV1::new());
+                let captured = attempt.observations.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                    .capture_context_retaining_v1(pidfd,
+                        attempt.proc_captures[1].as_mut().ok_or(PhysicalTpmFailureV1::State)?);
+                let context = match captured {
+                    Ok(context) => context,
+                    Err(cause) => {
+                        attempt.first_failure.get_or_insert(BrokerPhysicalFailureV1::ProcCapture(
+                            1, PhysicalTpmFailureV1::Linux(cause),
+                        ));
+                        return Err(FloorErrorV1::Unavailable.into());
+                    }
+                };
+                let binding = BrokerPhysicalOpenV1::require_helper_context(profile, context);
+                attempt.context_captured = true;
+                controller::prepare_samples_v1(attempt)?;
+                binding?;
+                drop(attempt.proc_captures[1].take());
                 Ok(())
             }
             _ => Err(PhysicalTpmFailureV1::State),
         }
     }
 
+    fn capture_broker_executed_image_v1(&mut self, pid: u32) -> Result<(), PhysicalTpmFailureV1> {
+        if self.broker_profile()?.endpoint() != super::FloorEndpointV1::ControllerStorageClient {
+            return self.broker_image()?.require_executed(pid).map_err(Into::into);
+        }
+        let RetainedPhysicalBindingV1::Broker { image: Some(image), attempt: Some(attempt), .. }
+            = &mut self.binding else { return Err(PhysicalTpmFailureV1::State); };
+        if attempt.executed_image.is_some() { return Err(PhysicalTpmFailureV1::State); }
+        attempt.executed_image = Some(Box::new(HelperExecutedImageOriginalV1::new()));
+        let original = attempt.executed_image.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        if let Err(cause) = image.require_executed_retaining_v1(pid, original) {
+            attempt.first_failure.get_or_insert(BrokerPhysicalFailureV1::ExecutedImage(cause));
+            return Err(cause.into());
+        }
+        // This composite inode/loader comparison completed. The immutable
+        // executable/loader and same pidfd remain the real identity anchors.
+        original.retire_positive_probes_once_v1();
+        Ok(())
+    }
+
     fn observe_original_identity(&mut self) -> Result<PidFdProcessIdentity, PhysicalTpmFailureV1> {
         let pidfd = self.pidfd.as_ref().ok_or(FloorErrorV1::Unavailable)?;
         match &mut self.binding {
-            RetainedPhysicalBindingV1::Host(host) if host.is_canary_v2() => {
+            RetainedPhysicalBindingV1::Host(host, _) if host.host_ref_v1().is_canary_v2() => {
+                let host = host.host_mut_v1();
                 host.observe_canary_helper_identity_v2(pidfd)
             }
             RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => {
@@ -1825,13 +2242,13 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         &mut self,
     ) -> Result<&mut RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>, PhysicalTpmFailureV1> {
         match &mut self.binding {
-            RetainedPhysicalBindingV1::Host(host) => Ok(host),
+            RetainedPhysicalBindingV1::Host(host, _) => Ok(host.host_mut_v1()),
             _ => Err(PhysicalTpmFailureV1::State),
         }
     }
 
     fn is_canary_host_v2(&self) -> bool {
-        matches!(&self.binding, RetainedPhysicalBindingV1::Host(host) if host.is_canary_v2())
+        matches!(&self.binding, RetainedPhysicalBindingV1::Host(host, _) if host.host_ref_v1().is_canary_v2())
     }
 
     fn broker_profile(&self) -> Result<FloorProfileV1, FloorErrorV1> {
@@ -1895,7 +2312,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
             #[cfg(feature = "online-nix")]
             RetainedPhysicalBindingV1::Online { .. } => self.require_online_helper()
                 .map_err(PhysicalTpmFailureV1::broker_error),
-            RetainedPhysicalBindingV1::Host(_) => Err(FloorErrorV1::Provisioning),
+            RetainedPhysicalBindingV1::Host(_, _) => Err(FloorErrorV1::Provisioning),
         }
     }
 
@@ -1962,6 +2379,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     /// # Errors
     /// Preserves fixed-index, custody, framing and carrier failures.
     pub(crate) fn read(&mut self, index: u32) -> Result<AuthenticatedNvObservationV1, FloorErrorV1> {
+        if self.has_controller_payment_v1() { return Err(FloorErrorV1::Unavailable); }
         #[cfg(feature = "online-nix")]
         if let RetainedPhysicalBindingV1::Online { profile, .. } = &self.binding {
             let profile = *profile;
@@ -2008,6 +2426,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     /// # Errors
     /// Preserves original fixed-index, custody, framing and observation failures.
     pub(crate) fn extend(&mut self, index: u32, input: &[u8; 32]) -> Result<(), FloorErrorV1> {
+        if self.has_controller_payment_v1() { return Err(FloorErrorV1::Unavailable); }
         #[cfg(feature = "online-nix")]
         if let RetainedPhysicalBindingV1::Online { profile, .. } = &self.binding {
             let profile = *profile;
@@ -2055,16 +2474,17 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
 }
 
 /// Pre-arms the resident attempt before all actual admission/exchange work.
-struct BrokerPhysicalOperationV1<'operation, 'owner, 'origin, 'startup> {
-    owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup>,
+struct BrokerPhysicalOperationV1<'operation, 'owner, 'origin, 'startup,
+    H: PhysicalHostSlotV1<'owner, 'origin, 'startup>> {
+    owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup, H>,
     complete: bool,
 }
 
-impl<'operation, 'owner, 'origin, 'startup>
-    BrokerPhysicalOperationV1<'operation, 'owner, 'origin, 'startup>
+impl<'operation, 'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>>
+    BrokerPhysicalOperationV1<'operation, 'owner, 'origin, 'startup, H>
 {
     fn begin(
-        owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup>,
+        owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup, H>,
         expected: BrokerPhysicalPhaseV1,
     ) -> Result<Self, FloorErrorV1> {
         let attempt = match &mut owner.binding {
@@ -2124,7 +2544,9 @@ impl<'operation, 'owner, 'origin, 'startup>
     }
 }
 
-impl Drop for BrokerPhysicalOperationV1<'_, '_, '_, '_> {
+impl<'operation, 'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>>
+    Drop for BrokerPhysicalOperationV1<'operation, 'owner, 'origin, 'startup, H>
+{
     fn drop(&mut self) {
         if !self.complete {
             self.owner.poisoned = true;
@@ -2142,9 +2564,12 @@ impl Drop for BrokerPhysicalOperationV1<'_, '_, '_, '_> {
     }
 }
 
-impl Drop for RetainedPhysicalTpmOwnerV1<'_, '_, '_> {
+impl<'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>>
+    Drop for RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup, H>
+{
     fn drop(&mut self) {
-        if let RetainedPhysicalBindingV1::Host(host) = &mut self.binding {
+        if let RetainedPhysicalBindingV1::Host(host, _) = &mut self.binding {
+            let host = host.host_mut_v1();
             self.poisoned = true;
             host.close();
         }
@@ -2158,21 +2583,24 @@ impl Drop for RetainedPhysicalTpmOwnerV1<'_, '_, '_> {
 /// This guard changes no ordinary disposition. Its eight post destinations
 /// were reserved before admission: inputs, main name, sidecar name, invocation,
 /// original helper process, context, carrier and unconditional final clock.
-struct CanaryHostOperationV2<'operation, 'owner, 'origin, 'startup> {
-    owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup>,
+struct CanaryHostOperationV2<'operation, 'owner, 'origin, 'startup,
+    H: PhysicalHostSlotV1<'owner, 'origin, 'startup>> {
+    owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup, H>,
     began: bool,
     complete: bool,
 }
 
-impl<'operation, 'owner, 'origin, 'startup>
-    CanaryHostOperationV2<'operation, 'owner, 'origin, 'startup>
+impl<'operation, 'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>>
+    CanaryHostOperationV2<'operation, 'owner, 'origin, 'startup, H>
 {
     fn begin(
-        owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup>,
+        owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup, H>,
         expected: HostAttemptPhaseV1,
+        original: &super::host::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Self {
-        let began = match &mut owner.binding {
-            RetainedPhysicalBindingV1::Host(host) => {
+        let mut began = match &mut owner.binding {
+            RetainedPhysicalBindingV1::Host(host, _) => {
+                let host = host.host_mut_v1();
                 match host.begin_canary_v2(expected) {
                     Ok(()) => true,
                     Err(cause) => {
@@ -2185,17 +2613,57 @@ impl<'operation, 'owner, 'origin, 'startup>
             }
             _ => std::process::abort(),
         };
+        if began {
+            if let Err(cause) = original.begin_outer_startup_after_v1() {
+                let cause = super::host::HostOwnedJournalErrorV1::from(cause);
+                if owner.host_mut().and_then(|host| host.retain_canary_failure_v2(cause.into())).is_err() {
+                    std::process::abort();
+                }
+                began = false;
+            }
+        }
+        if began {
+            if let Err(cause) = owner.host_mut().and_then(|host| host.prepare_boot_input_after_v1()) {
+                if owner.host_mut().and_then(|host| host.retain_canary_failure_v2(cause)).is_err() {
+                    std::process::abort();
+                }
+                began = false;
+            }
+        }
+        if began {
+            if let Err(cause) = owner.host_mut().and_then(|host| host.prepare_boot_helper_after_once_v1(original)) {
+                if owner.host_mut().and_then(|host| host.retain_canary_failure_v2(cause)).is_err() {
+                    std::process::abort();
+                }
+                began = false;
+            }
+        }
         Self { owner, began, complete: false }
     }
 
     fn finish<T>(
         mut self,
         result: Result<T, PhysicalTpmFailureV1>,
-        original: &super::host::CanaryAuthenticatedRequestV3,
+        original: &super::host::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Result<T, super::host::physical::CanaryPhysicalErrorV2> {
         if !self.began {
+            if matches!(original, super::host::PublisherNativeOriginalRefV3::Boot(_)) {
+                // A later preparation can refuse after earlier frames were
+                // already prepaid/parked. Finish those actual owed frames
+                // here even though the physical body was never entered.
+                let inputs = self.owner.host_mut().and_then(|host| host.drain_boot_input_after_unwind_once_v1());
+                let helper = self.owner.drain_boot_helper_after_unwind_once_v1();
+                let startup = original.finish_outer_startup_after_owed_once_v1().map_err(PhysicalTpmFailureV1::from);
+                if let RetainedPhysicalBindingV1::Host(host, _) = &mut self.owner.binding {
+                    let host = host.host_mut_v1();
+                    host.retain_canary_post_v2(0, inputs);
+                    host.retain_canary_post_v2(9, helper);
+                    host.retain_canary_post_v2(8, startup);
+                }
+            }
             let error = match &mut self.owner.binding {
-                RetainedPhysicalBindingV1::Host(host) => {
+                RetainedPhysicalBindingV1::Host(host, _) => {
+                    let host = host.host_mut_v1();
                     let error = host.canary_failure_v2().unwrap_or_else(|| std::process::abort());
                     host.close();
                     error
@@ -2215,35 +2683,63 @@ impl<'operation, 'owner, 'origin, 'startup>
                 None
             }
         };
-        if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+        if let RetainedPhysicalBindingV1::Host(host, _) = &mut self.owner.binding {
+            let host = host.host_mut_v1();
             host.canary_original_posts_v2();
         }
-        if self.owner.pidfd.is_some() && self.owner.child.is_some() {
+        if matches!(original, super::host::PublisherNativeOriginalRefV3::Boot(_)) {
+            let helper = self.owner.drain_boot_helper_after_unwind_once_v1();
+            if let RetainedPhysicalBindingV1::Host(host, _) = &mut self.owner.binding {
+                let host = host.host_mut_v1();
+                host.retain_canary_post_v2(9, helper);
+            }
+            // The original Child observation remains independently owed even
+            // if pidfd admission or either proc reader already failed.
+            if self.owner.child.is_some() {
+                let process = self.owner.observe_child_exit().and_then(|exited|
+                    if exited { Err(FloorErrorV1::Unavailable.into()) } else { Ok(()) });
+                if let RetainedPhysicalBindingV1::Host(host, _) = &mut self.owner.binding {
+                    let host = host.host_mut_v1();
+                    host.retain_canary_post_v2(4, process);
+                }
+            }
+        } else if self.owner.pidfd.is_some() && self.owner.child.is_some() {
             let process = self.owner.require_original_child_process();
-            if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+            if let RetainedPhysicalBindingV1::Host(host, _) = &mut self.owner.binding {
+                let host = host.host_mut_v1();
                 host.retain_canary_post_v2(4, process);
             }
             let context = match (&mut self.owner.binding, self.owner.pidfd.as_ref()) {
-                (RetainedPhysicalBindingV1::Host(host), Some(pidfd)) => {
+                (RetainedPhysicalBindingV1::Host(host, _), Some(pidfd)) => {
+                    let host = host.host_mut_v1();
                     host.observe_canary_helper_context_v2(pidfd)
                 }
                 _ => Err(PhysicalTpmFailureV1::State),
             };
-            if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+            if let RetainedPhysicalBindingV1::Host(host, _) = &mut self.owner.binding {
+                let host = host.host_mut_v1();
                 host.retain_canary_post_v2(5, context);
             }
         }
         if let Some(channel) = self.owner.channel.as_ref() {
             let carrier = channel.as_fd().map(|_| ()).map_err(PhysicalTpmFailureV1::Send);
-            if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+            if let RetainedPhysicalBindingV1::Host(host, _) = &mut self.owner.binding {
+                let host = host.host_mut_v1();
                 host.retain_canary_post_v2(6, carrier);
             }
+        }
+        let startup_after = original.finish_outer_startup_after_owed_once_v1()
+            .map_err(PhysicalTpmFailureV1::from);
+        if let RetainedPhysicalBindingV1::Host(host, _) = &mut self.owner.binding {
+            let host = host.host_mut_v1();
+            host.retain_canary_post_v2(8, startup_after);
         }
         // Always sample the same original pair LAST, even when native/schema
         // or positive owner checks have fenced themselves. This never issues
         // a TPM command, supplies a replacement floor or renews the window.
-        let clock = original.require_clock().map_err(PhysicalTpmFailureV1::from);
-        if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+        let clock = original.require_owed_clock().map_err(PhysicalTpmFailureV1::from);
+        if let RetainedPhysicalBindingV1::Host(host, _) = &mut self.owner.binding {
+            let host = host.host_mut_v1();
             host.retain_canary_post_v2(7, clock);
             if host.canary_failure_v2().is_none() {
                 if let Err(cause) = host.complete_canary_v2() {
@@ -2267,10 +2763,13 @@ impl<'operation, 'owner, 'origin, 'startup>
     }
 }
 
-impl Drop for CanaryHostOperationV2<'_, '_, '_, '_> {
+impl<'operation, 'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>>
+    Drop for CanaryHostOperationV2<'operation, 'owner, 'origin, 'startup, H>
+{
     fn drop(&mut self) {
         if !self.complete {
-            if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+            if let RetainedPhysicalBindingV1::Host(host, _) = &mut self.owner.binding {
+                let host = host.host_mut_v1();
                 if host.retain_canary_failure_v2(PhysicalTpmFailureV1::Unfinished).is_err() {
                     std::process::abort();
                 }
@@ -2281,20 +2780,22 @@ impl Drop for CanaryHostOperationV2<'_, '_, '_, '_> {
     }
 }
 
-struct HostPhysicalOperationV1<'operation, 'owner, 'origin, 'startup> {
-    owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup>,
+struct HostPhysicalOperationV1<'operation, 'owner, 'origin, 'startup,
+    H: PhysicalHostSlotV1<'owner, 'origin, 'startup>> {
+    owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup, H>,
     complete: bool,
 }
 
-impl<'operation, 'owner, 'origin, 'startup>
-    HostPhysicalOperationV1<'operation, 'owner, 'origin, 'startup>
+impl<'operation, 'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>>
+    HostPhysicalOperationV1<'operation, 'owner, 'origin, 'startup, H>
 {
     fn begin(
-        owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup>,
+        owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup, H>,
         expected: HostAttemptPhaseV1,
     ) -> Result<Self, HostPhysicalReadErrorV1> {
         match &mut owner.binding {
-            RetainedPhysicalBindingV1::Host(host) => {
+            RetainedPhysicalBindingV1::Host(host, _) => {
+                let host = host.host_mut_v1();
                 if let Err(error) = host.begin(expected) {
                     owner.poisoned = true;
                     return Err(error);
@@ -2315,15 +2816,18 @@ impl<'operation, 'owner, 'origin, 'startup>
         result: Result<FloorRecoveryV1, PhysicalTpmFailureV1>,
     ) -> Result<FloorRecoveryV1, HostPhysicalReadErrorV1> {
         let result = match &mut self.owner.binding {
-            RetainedPhysicalBindingV1::Host(host) => match result {
-                Ok(classification) => {
-                    host.complete().map(|()| classification)
+            RetainedPhysicalBindingV1::Host(host, _) => {
+                let host = host.host_mut_v1();
+                match result {
+                    Ok(classification) => {
+                        host.complete().map(|()| classification)
+                    }
+                    Err(cause) => {
+                        self.owner.poisoned = true;
+                        Err(host.fail(cause))
+                    }
                 }
-                Err(cause) => {
-                    self.owner.poisoned = true;
-                    Err(host.fail(cause))
-                }
-            },
+            }
             _ => Err(HostPhysicalReadErrorV1::wrong_owner()),
         };
         if result.is_err() {
@@ -2334,11 +2838,14 @@ impl<'operation, 'owner, 'origin, 'startup>
     }
 }
 
-impl Drop for HostPhysicalOperationV1<'_, '_, '_, '_> {
+impl<'operation, 'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>>
+    Drop for HostPhysicalOperationV1<'operation, 'owner, 'origin, 'startup, H>
+{
     fn drop(&mut self) {
         if !self.complete {
             self.owner.poisoned = true;
-            if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+            if let RetainedPhysicalBindingV1::Host(host, _) = &mut self.owner.binding {
+                let host = host.host_mut_v1();
                 host.fail(PhysicalTpmFailureV1::Unfinished);
             }
         }

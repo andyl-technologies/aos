@@ -23,7 +23,7 @@ use crate::execution_output_reservation::{
     CLAIM_BYTES, ExecutionOutputReservationErrorV1, accepted_claim, decode_claim,
 };
 use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::reconciler::{ReconcilerError, accepted_create_execution_effect_from_journal_v1};
 use crate::runtime_scope::{CurrentAssignmentTarget, CurrentRuntimeScopeError};
 
@@ -294,14 +294,48 @@ pub fn prepare_execution_reserve_source_v1<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
-    revalidate_accepted_execution_preissue_v1(
-        controller,
-        assignment,
-        environment_owner,
-        parent,
-        preissue,
-        clock,
-    )?;
+    prepare_execution_reserve_source_inner_v4(controller, assignment, environment_owner, parent, preissue, clock, None)
+}
+
+/// Retains actual assignment verifier prefixes on the selected Capture source.
+///
+/// # Errors
+/// Preserves every existing protected accepted source/currentness error while
+/// the supplied original keeps any reached partial ownership verification.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_execution_reserve_source_with_checks_v4<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    preissue: &ControllerExecutionPreissueV1,
+    clock: &mut T,
+    checks: &mut crate::runtime_scope::ControllerCaptureAssignmentChecksV4,
+) -> Result<ControllerExecutionReserveSourceV1, ControllerExecutionReserveSourceErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    prepare_execution_reserve_source_inner_v4(controller, assignment, environment_owner, parent, preissue, clock, Some(checks))
+}
+
+fn prepare_execution_reserve_source_inner_v4<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    preissue: &ControllerExecutionPreissueV1,
+    clock: &mut T,
+    mut checks: Option<&mut crate::runtime_scope::ControllerCaptureAssignmentChecksV4>,
+) -> Result<ControllerExecutionReserveSourceV1, ControllerExecutionReserveSourceErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    match checks.as_deref_mut() {
+        Some(original) => super::revalidate_accepted_execution_preissue_with_checks_v4(
+            controller, assignment, environment_owner, parent, preissue, clock, original)?,
+        None => revalidate_accepted_execution_preissue_v1(
+            controller, assignment, environment_owner, parent, preissue, clock)?,
+    }
     let claim = accepted_claim(
         controller,
         preissue.create_operation(),
@@ -341,14 +375,12 @@ where
     source.carrier_digest = carrier_digest(&source.canonical_bytes()[..SOURCE_BYTES - 32]);
 
     // The source is returned only after the same owners survive a final check.
-    revalidate_accepted_execution_preissue_v1(
-        controller,
-        assignment,
-        environment_owner,
-        parent,
-        preissue,
-        clock,
-    )?;
+    match checks.as_deref_mut() {
+        Some(original) => super::revalidate_accepted_execution_preissue_with_checks_v4(
+            controller, assignment, environment_owner, parent, preissue, clock, original)?,
+        None => revalidate_accepted_execution_preissue_v1(
+            controller, assignment, environment_owner, parent, preissue, clock)?,
+    }
     Ok(source)
 }
 

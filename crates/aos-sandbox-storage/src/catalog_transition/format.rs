@@ -47,10 +47,23 @@ pub(super) fn transition_payload(
     object_guid: Option<u64>,
     observation_digest: ObjectDigest,
 ) -> Result<TransitionPayload, StorageStateError> {
+    transition_payload_binding_v3(operation_id, mutation_digest, catalog.binding(),
+        predecessor, result_state, object_guid, observation_digest)
+}
+
+pub(super) fn transition_payload_binding_v3(
+    operation_id: [u8; 16],
+    mutation_digest: ObjectDigest,
+    binding: crate::CatalogBindingV1,
+    predecessor: &PhysicalCatalogState,
+    result_state: &PhysicalCatalogState,
+    object_guid: Option<u64>,
+    observation_digest: ObjectDigest,
+) -> Result<TransitionPayload, StorageStateError> {
     Ok(TransitionPayload {
         operation_id,
         mutation_digest: *mutation_digest.as_bytes(),
-        catalog: catalog.binding().into(),
+        catalog: binding.into(),
         predecessor: predecessor.binding.into(),
         result: result_state.binding.into(),
         observation_digest: *observation_digest.as_bytes(),
@@ -65,15 +78,29 @@ pub(super) fn encode_transition_payload(
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<Vec<u8>, StorageStateError> {
+    encode_transition_payload_receiving_v1(payload, key_id, secret, None)
+}
+
+pub(super) fn encode_transition_payload_receiving_v1(
+    payload: &TransitionPayload,
+    key_id: [u8; 16],
+    secret: &[u8; 32],
+    mut receiving: Option<&mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>>,
+) -> Result<Vec<u8>, StorageStateError> {
+    if let Some(receiving) = receiving.as_deref_mut() {
+        receiving.reserve_catalog_wire_v1(super::wire_custody::transition_geometry_v1(payload))?;
+    }
     match payload.group.as_ref() {
-        Some(group) => {
-            encode_authenticated(&group_transition_wire(payload, group)?, key_id, secret)
-        }
-        None => encode_authenticated(&transition_wire(payload)?, key_id, secret),
+        Some(group) => encode_authenticated_receiving_v1(
+            &group_transition_wire(payload, group)?, key_id, secret, receiving,
+        ),
+        None => encode_authenticated_receiving_v1(
+            &transition_wire(payload)?, key_id, secret, receiving,
+        ),
     }
 }
 
-fn group_transition_wire(
+pub(super) fn group_transition_wire(
     payload: &TransitionPayload,
     group: &GroupTransitionEvidence,
 ) -> Result<GroupTransitionPayloadV2, StorageStateError> {
@@ -104,6 +131,23 @@ pub(super) fn encoded_transition_size(
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<usize, StorageStateError> {
+    encoded_transition_size_receiving_v1(operation_id, mutation_digest, catalog, predecessor, result_state,
+        object_guid, observation_digest, key_id, secret, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn encoded_transition_size_receiving_v1(
+    operation_id: [u8; 16],
+    mutation_digest: ObjectDigest,
+    catalog: &ResolvedCatalogCommitmentV1,
+    predecessor: &PhysicalCatalogState,
+    result_state: &PhysicalCatalogState,
+    object_guid: Option<u64>,
+    observation_digest: ObjectDigest,
+    key_id: [u8; 16],
+    secret: &[u8; 32],
+    receiving: Option<&mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>>,
+) -> Result<usize, StorageStateError> {
     let payload = transition_payload(
         operation_id,
         mutation_digest,
@@ -113,7 +157,7 @@ pub(super) fn encoded_transition_size(
         object_guid,
         observation_digest,
     )?;
-    encode_transition_payload(&payload, key_id, secret)?
+    encode_transition_payload_receiving_v1(&payload, key_id, secret, receiving)?
         .len()
         .checked_add(transition_variable_array_bytes(catalog) * MAXIMUM_JSON_BYTE_EXPANSION)
         .ok_or(StorageStateError::InvalidValue)
@@ -185,12 +229,26 @@ pub(super) fn validate_reserved_transition_bound(
 pub(super) fn transition_digest(
     payload: &TransitionPayload,
 ) -> Result<ObjectDigest, StorageStateError> {
-    let bytes = if let Some(group) = payload.group.as_ref() {
-        serde_json::to_vec(&group_transition_wire(payload, group)?)
-    } else {
-        serde_json::to_vec(&transition_wire(payload)?)
+    transition_digest_receiving_v1(payload, None)
+}
+
+pub(super) fn transition_digest_receiving_v1(
+    payload: &TransitionPayload,
+    mut receiving: Option<&mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>>,
+) -> Result<ObjectDigest, StorageStateError> {
+    if let Some(receiving) = receiving.as_deref_mut() {
+        receiving.reserve_catalog_wire_v1(super::wire_custody::transition_geometry_v1(payload))?;
     }
-    .map_err(|_| StorageStateError::CorruptRecord)?;
+    let encoded = match payload.group.as_ref() {
+        Some(group) => crate::state::encoding::encode_json_v1(
+            &group_transition_wire(payload, group)?, receiving,
+        ),
+        None => crate::state::encoding::encode_json_v1(&transition_wire(payload)?, receiving),
+    };
+    let bytes = encoded.map_err(|cause| match cause {
+        StorageStateError::Receiving => StorageStateError::Receiving,
+        _ => StorageStateError::CorruptRecord,
+    })?;
     let mut hash = Sha256::new();
     hash.update(TRANSITION_DIGEST_DOMAIN);
     hash.update(bytes);
@@ -480,8 +538,21 @@ pub(super) fn encode_reservation_payload(
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<Vec<u8>, StorageStateError> {
+    encode_reservation_payload_receiving_v1(payload, predecessor, key_id, secret, None)
+}
+
+pub(super) fn encode_reservation_payload_receiving_v1(
+    payload: &ReservationPayload,
+    predecessor: &PhysicalCatalogState,
+    key_id: [u8; 16],
+    secret: &[u8; 32],
+    mut receiving: Option<&mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>>,
+) -> Result<Vec<u8>, StorageStateError> {
+    if let Some(receiving) = receiving.as_deref_mut() {
+        receiving.reserve_catalog_wire_v1(super::wire_custody::reservation_geometry_v1(predecessor))?;
+    }
     if let Some(program) = payload.group_program {
-        return encode_authenticated(
+        return encode_authenticated_receiving_v1(
             &GroupReservationPayloadV2 {
                 magic: RESERVATION_MAGIC.to_owned(),
                 version: 2,
@@ -497,9 +568,10 @@ pub(super) fn encode_reservation_payload(
             },
             key_id,
             secret,
+            receiving,
         );
     }
-    encode_authenticated(
+    encode_authenticated_receiving_v1(
         &ReservationPayloadV1 {
             magic: RESERVATION_MAGIC.to_owned(),
             version: FORMAT_VERSION,
@@ -514,6 +586,7 @@ pub(super) fn encode_reservation_payload(
         },
         key_id,
         secret,
+        receiving,
     )
 }
 
@@ -566,7 +639,7 @@ pub(super) fn decode_transition_payload(
     Ok(payload)
 }
 
-fn transition_wire(payload: &TransitionPayload) -> Result<TransitionPayloadV1, StorageStateError> {
+pub(super) fn transition_wire(payload: &TransitionPayload) -> Result<TransitionPayloadV1, StorageStateError> {
     Ok(TransitionPayloadV1 {
         magic: TRANSITION_MAGIC.to_owned(),
         version: FORMAT_VERSION,
@@ -609,12 +682,21 @@ pub(super) fn encode_head_payload(
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<Vec<u8>, StorageStateError> {
-    let genesis_state = payload
-        .genesis_state
-        .as_ref()
-        .map(PhysicalCatalogState::persistent_wire)
-        .transpose()?;
-    encode_authenticated(
+    encode_head_payload_receiving_v1(payload, key_id, secret, None)
+}
+
+pub(super) fn encode_head_payload_receiving_v1(
+    payload: &HeadPayload,
+    key_id: [u8; 16],
+    secret: &[u8; 32],
+    mut receiving: Option<&mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>>,
+) -> Result<Vec<u8>, StorageStateError> {
+    if let Some(receiving) = receiving.as_deref_mut() {
+        receiving.reserve_catalog_wire_v1(super::wire_custody::head_geometry_v1(payload))?;
+    }
+    let genesis_state = payload.genesis_state.as_ref()
+        .map(PhysicalCatalogState::persistent_wire).transpose()?;
+    encode_authenticated_receiving_v1(
         &HeadPayloadV1 {
             magic: HEAD_MAGIC.to_owned(),
             version: FORMAT_VERSION,
@@ -625,6 +707,7 @@ pub(super) fn encode_head_payload(
         },
         key_id,
         secret,
+        receiving,
     )
 }
 
@@ -633,14 +716,23 @@ pub(super) fn encode_authenticated<T: Serialize>(
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<Vec<u8>, StorageStateError> {
-    let payload_bytes = serde_json::to_vec(payload).map_err(|_| StorageStateError::InvalidValue)?;
+    encode_authenticated_receiving_v1(payload, key_id, secret, None)
+}
+
+pub(super) fn encode_authenticated_receiving_v1<T: Serialize>(
+    payload: &T,
+    key_id: [u8; 16],
+    secret: &[u8; 32],
+    mut receiving: Option<&mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>>,
+) -> Result<Vec<u8>, StorageStateError> {
+    let payload_bytes = crate::state::encoding::encode_json_v1(payload, receiving.as_deref_mut())?;
     let mac = record_mac(secret, &payload_bytes)?;
     let value = AuthenticatedRecord {
         payload,
         key_id,
         mac,
     };
-    let bytes = serde_json::to_vec(&value).map_err(|_| StorageStateError::InvalidValue)?;
+    let bytes = crate::state::encoding::encode_json_v1(&value, receiving)?;
     if bytes.len() > MAXIMUM_RECORD_BYTES {
         return Err(StorageStateError::InvalidValue);
     }

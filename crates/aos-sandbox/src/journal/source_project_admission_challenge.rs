@@ -55,23 +55,14 @@ use crate::policy_compiler::{
 };
 use crate::reconciler::ControllerProjectHistoryAcceptanceV1;
 
-const KEY: &[u8] = b"\0aos-source-project-admission-challenge-v1\0";
+use aos_sandbox_ledger_replay::source_project_readback::{
+    KEY, RESERVATION_KEY, CANCELLATION_KEY, RETIREMENT_ACK_KEY, SETTLEMENT_KEY,
+};
+
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.source-project-admission-transaction.v1\0";
-const RESERVATION_KEY: &[u8] = b"\0aos-source-project-admission-reservation-v1\0";
-const CANCELLATION_KEY: &[u8] = b"\0aos-source-project-reservation-cancellation-v1\0";
-const RETIREMENT_ACK_KEY: &[u8] = b"\0aos-source-project-terminal-retirement-ack-v1\0";
 
-const SETTLEMENT_KEY: &[u8] = b"\0aos-source-project-admission-settlement-v1\0";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum SourceProjectAdmissionTransition {
-    None,
-    Reserve,
-    Acquire,
-    Settle,
-    CancelReservation,
-    AcknowledgeRetirement,
-}
+pub(super) use aos_sandbox_ledger_replay::source_project_readback::SourceProjectAdmissionTransition;
 
 /// Checks this row against a retained writer or independent signer view.
 pub(crate) fn source_project_challenge_matches_current(
@@ -83,13 +74,9 @@ pub(crate) fn source_project_challenge_matches_current(
     stage: ObjectDigest,
     names: ProtectedJournalNamesV1,
 ) -> bool {
-    row.kind() == SourceProjectAdmissionChallengeKindV1::Admission
-        && row.nonce() == nonce
-        && row.cut() == cut
-        && row.project() == project
-        && row.ancestry() == ancestry
-        && row.stage() == stage
-        && row.names() == names
+    aos_sandbox_ledger_replay::source_project_readback::challenge_matches_current_v1(
+        row, nonce, cut, project, ancestry, stage, names,
+    )
 }
 
 /// Replays only the typed row; callers establish protected custody first.
@@ -105,51 +92,22 @@ pub(crate) fn replay_source_project_admission_challenge_v1(
 fn current_reservation(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<SourceProjectAdmissionReservationV1>, JournalError> {
-    state
-        .get(&(RecordNamespace::DesiredState, RESERVATION_KEY.to_vec()))
-        .map(|bytes| SourceProjectAdmissionReservationV1::decode(bytes).map_err(JournalError::from))
-        .transpose()
+    aos_sandbox_ledger_replay::source_project_readback::current_reservation(state)
+        .map_err(JournalError::from)
 }
 
 fn current_cancellation(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<SourceProjectReservationCancellationV1>, JournalError> {
-    state
-        .get(&(RecordNamespace::DesiredState, CANCELLATION_KEY.to_vec()))
-        .map(|bytes| {
-            SourceProjectReservationCancellationV1::decode(bytes).map_err(JournalError::from)
-        })
-        .transpose()
+    aos_sandbox_ledger_replay::source_project_readback::current_cancellation(state)
+        .map_err(JournalError::from)
 }
 
 fn current_rows(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<CurrentProjectAdmissionRows, JournalError> {
-    let challenge = state
-        .get(&(RecordNamespace::DesiredState, KEY.to_vec()))
-        .map(|bytes| SourceProjectAdmissionChallengeV1::decode(bytes).map_err(JournalError::from))
-        .transpose()?;
-    let settlement = state
-        .get(&(RecordNamespace::DesiredState, SETTLEMENT_KEY.to_vec()))
-        .map(|bytes| SourceProjectAdmissionSettlementV1::decode(bytes).map_err(JournalError::from))
-        .transpose()?;
-    let reservation = current_reservation(state)?;
-    let cancellation = current_cancellation(state)?;
-    let retirement_ack = state
-        .get(&(RecordNamespace::DesiredState, RETIREMENT_ACK_KEY.to_vec()))
-        .map(|bytes| {
-            SourceProjectTerminalRetirementAckV1::decode(bytes).map_err(JournalError::from)
-        })
-        .transpose()?;
-    let rows = CurrentProjectAdmissionRows::from_historical_fields(
-        reservation,
-        cancellation,
-        challenge,
-        settlement,
-        retirement_ack,
-    );
-    rows.require_joined().map_err(JournalError::from)?;
-    Ok(rows)
+    aos_sandbox_ledger_replay::source_project_readback::current_rows(state)
+        .map_err(JournalError::from)
 }
 
 pub(super) fn require_no_mutation(
@@ -157,192 +115,20 @@ pub(super) fn require_no_mutation(
     transaction: &JournalTransaction,
     transition: SourceProjectAdmissionTransition,
 ) -> Result<(), JournalError> {
-    let rows = current_rows(state)?;
-    let reservation = rows.reservation();
-    let cancellation = rows.cancellation();
-    let challenge = rows.challenge();
-    let settlement = rows.settlement();
-    let retirement_ack = rows.retirement_ack();
-    let records = transaction.records();
-    match transition {
-        SourceProjectAdmissionTransition::None => {
-            if reservation.is_some() && retirement_ack.is_none() {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            if records.iter().any(|record| {
-                record.namespace() == RecordNamespace::DesiredState
-                    && (record.key() == KEY
-                        || record.key() == SETTLEMENT_KEY
-                        || record.key() == RESERVATION_KEY
-                        || record.key() == CANCELLATION_KEY
-                        || record.key() == RETIREMENT_ACK_KEY)
-            }) {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-        SourceProjectAdmissionTransition::Reserve => {
-            let [record, rest @ ..] = records else {
-                return Err(JournalError::ProtectedBoundary);
-            };
-            if record.namespace() != RecordNamespace::DesiredState
-                || record.key() != RESERVATION_KEY
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            let next = record
-                .value()
-                .ok_or(JournalError::ProtectedBoundary)
-                .and_then(|bytes| {
-                    SourceProjectAdmissionReservationV1::decode(bytes).map_err(JournalError::from)
-                })?;
-            match (reservation, challenge, settlement, rest) {
-                (None, None, None, []) if next.issue() == 1 && retirement_ack.is_none() => {}
-                (
-                    Some(previous),
-                    Some(_),
-                    Some(_),
-                    [delete_challenge, delete_settlement, delete_ack],
-                ) if retirement_ack.is_some()
-                    && next.issue()
-                        == previous
-                            .issue()
-                            .checked_add(1)
-                            .ok_or(JournalError::ProtectedBoundary)?
-                    && delete_challenge.namespace() == RecordNamespace::DesiredState
-                    && delete_challenge.key() == KEY
-                    && delete_challenge.value().is_none()
-                    && delete_settlement.namespace() == RecordNamespace::DesiredState
-                    && delete_settlement.key() == SETTLEMENT_KEY
-                    && delete_settlement.value().is_none()
-                    && is_ack_delete(delete_ack) => {}
-                (Some(previous), None, None, [delete_cancellation, delete_ack])
-                    if cancellation.is_some()
-                        && retirement_ack.is_some()
-                        && next.issue()
-                            == previous
-                                .issue()
-                                .checked_add(1)
-                                .ok_or(JournalError::ProtectedBoundary)?
-                        && delete_cancellation.namespace() == RecordNamespace::DesiredState
-                        && delete_cancellation.key() == CANCELLATION_KEY
-                        && delete_cancellation.value().is_none()
-                        && is_ack_delete(delete_ack) => {}
-                _ => return Err(JournalError::ProtectedBoundary),
-            }
-        }
-        SourceProjectAdmissionTransition::Acquire => {
-            let [record, rest @ ..] = records else {
-                return Err(JournalError::ProtectedBoundary);
-            };
-            if record.namespace() != RecordNamespace::DesiredState || record.key() != KEY {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            let next = record
-                .value()
-                .ok_or(JournalError::ProtectedBoundary)
-                .and_then(|bytes| {
-                    SourceProjectAdmissionChallengeV1::decode(bytes).map_err(JournalError::from)
-                })?;
-            if !rest.is_empty()
-                || challenge.is_some()
-                || settlement.is_some()
-                || cancellation.is_some()
-                || retirement_ack.is_some()
-                || !reservation.is_some_and(|reserved| {
-                    next.issue() == reserved.issue()
-                        && next.project() == reserved.project()
-                        && next.names() == reserved.names()
-                })
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-        SourceProjectAdmissionTransition::Settle => {
-            let [record] = records else {
-                return Err(JournalError::ProtectedBoundary);
-            };
-            let row = record
-                .value()
-                .ok_or(JournalError::ProtectedBoundary)
-                .and_then(|bytes| {
-                    SourceProjectAdmissionSettlementV1::decode(bytes).map_err(JournalError::from)
-                })?;
-            if record.namespace() != RecordNamespace::DesiredState
-                || record.key() != SETTLEMENT_KEY
-                || settlement.is_some()
-                || cancellation.is_some()
-                || retirement_ack.is_some()
-                || !challenge.is_some_and(|challenge| row.matches(challenge))
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-        SourceProjectAdmissionTransition::CancelReservation => {
-            let [record] = records else {
-                return Err(JournalError::ProtectedBoundary);
-            };
-            let row = record
-                .value()
-                .ok_or(JournalError::ProtectedBoundary)
-                .and_then(|bytes| {
-                    SourceProjectReservationCancellationV1::decode(bytes)
-                        .map_err(JournalError::from)
-                })?;
-            if record.namespace() != RecordNamespace::DesiredState
-                || record.key() != CANCELLATION_KEY
-                || challenge.is_some()
-                || settlement.is_some()
-                || cancellation.is_some()
-                || retirement_ack.is_some()
-                || !reservation.is_some_and(|reservation| {
-                    row.issue() == reservation.issue()
-                        && row.reservation() == reservation.record_digest()
-                })
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-        SourceProjectAdmissionTransition::AcknowledgeRetirement => {
-            let [record] = records else {
-                return Err(JournalError::ProtectedBoundary);
-            };
-            let row = record
-                .value()
-                .ok_or(JournalError::ProtectedBoundary)
-                .and_then(|bytes| {
-                    SourceProjectTerminalRetirementAckV1::decode(bytes).map_err(JournalError::from)
-                })?;
-            let rows = current_rows(state)?;
-            let terminal = rows.terminal().ok_or(JournalError::ProtectedBoundary)?;
-            if record.namespace() != RecordNamespace::DesiredState
-                || record.key() != RETIREMENT_ACK_KEY
-                || retirement_ack.is_some()
-                || row.issue() != terminal.reservation().issue()
-                || row.reservation() != terminal.reservation().record_digest()
-                || row.source_terminal() != terminal.source_terminal_digest()
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::source_project_readback::require_no_mutation(
+        state, transaction, transition,
+    ).map_err(JournalError::from)
 }
 
 pub(super) fn require_no_compaction(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<(), JournalError> {
-    let rows = current_rows(state)?;
-    if rows.reservation().is_some() && rows.retirement_ack().is_none() {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::source_project_readback::require_no_compaction(
+        state,
+    ).map_err(JournalError::from)
 }
 
-fn is_ack_delete(record: &JournalRecord) -> bool {
-    record.namespace() == RecordNamespace::DesiredState
-        && record.key() == RETIREMENT_ACK_KEY
-        && record.value().is_none()
-}
+
 
 impl Journal {
     /// Replays the actual completed Source rows without renewing their authority.

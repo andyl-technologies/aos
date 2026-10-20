@@ -110,6 +110,18 @@ impl StorageInventoryAbandonmentV1 {
     }
 
     fn decode(key: &[u8], bytes: &[u8]) -> Result<Self, BrokerSessionSecurityError> {
+        Self::decode_engine_v3(key, bytes, None)
+    }
+
+    fn decode_schema_v3(journal: &mut ProtectedBrokerSessionJournalV1, key: &[u8], bytes: &[u8])
+        -> Result<Self, BrokerSessionSecurityError>
+    {
+        Self::decode_engine_v3(key, bytes, Some(journal))
+    }
+
+    fn decode_engine_v3(key: &[u8], bytes: &[u8], journal: Option<&mut ProtectedBrokerSessionJournalV1>)
+        -> Result<Self, BrokerSessionSecurityError>
+    {
         if bytes.len() < HEADER_BYTES + DIGEST_BYTES
             || bytes.get(..8) != Some(MAGIC.as_slice())
             || read_u16(bytes, 8)? != 1
@@ -149,12 +161,13 @@ impl StorageInventoryAbandonmentV1 {
         let signed_control_history = if length == 0 {
             None
         } else {
-            Some(StoredProtocolHistoryV1::decode(
-                &protocol_key(BrokerSessionProtocolV1::Storage),
-                bytes
-                    .get(HEADER_BYTES..end)
-                    .ok_or(BrokerSessionSecurityError::Currentness)?,
-            )?)
+            let key = protocol_key(BrokerSessionProtocolV1::Storage);
+            let history = bytes.get(HEADER_BYTES..end)
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            Some(match journal {
+                Some(journal) => journal.schema_decode_stored_v3(&key, history)?,
+                None => StoredProtocolHistoryV1::decode(&key, history)?,
+            })
         };
         let record = Self {
             endpoint,
@@ -340,31 +353,37 @@ impl ProtectedBrokerSessionJournalV1 {
             super::MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS,
         )?;
         for (key, value) in entries {
-            let record = StorageInventoryAbandonmentV1::decode(&key, &value)?;
-            if record.endpoint != self.endpoint.role() {
-                return Err(BrokerSessionSecurityError::Currentness);
-            }
-            let original = self.archived_storage_inventory_head(
-                record.group_request_id,
-                record.group_request_digest,
-                record.inventory_request_id,
-                record.inventory_request_digest,
-            )?;
-            if original.terminal_packet.is_some() {
-                return Err(BrokerSessionSecurityError::Currentness);
-            }
-            match record.endpoint {
-                BrokerSessionDurableEndpointV1::Broker
-                    if record.broker_archive_digest == original.archive_digest
-                        && record.broker_original_head == original.original_head => {}
-                BrokerSessionDurableEndpointV1::Client
-                    if record.client_archive_digest == original.archive_digest
-                        && record.client_original_head == original.original_head =>
-                {
-                    self.verify_client_storage_inventory_abandonment(&record)?;
+            let scope = self.schema_scope_v3();
+            let result = (|| {
+                let record = StorageInventoryAbandonmentV1::decode_schema_v3(self, &key, &value)?;
+                if record.endpoint != self.endpoint.role() {
+                    return Err(BrokerSessionSecurityError::Currentness);
                 }
-                _ => return Err(BrokerSessionSecurityError::Currentness),
-            }
+                let original = self.archived_storage_inventory_head(
+                    record.group_request_id,
+                    record.group_request_digest,
+                    record.inventory_request_id,
+                    record.inventory_request_digest,
+                )?;
+                if original.terminal_packet.is_some() {
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+                match record.endpoint {
+                    BrokerSessionDurableEndpointV1::Broker
+                        if record.broker_archive_digest == original.archive_digest
+                            && record.broker_original_head == original.original_head => {}
+                    BrokerSessionDurableEndpointV1::Client
+                        if record.client_archive_digest == original.archive_digest
+                            && record.client_original_head == original.original_head =>
+                    {
+                        self.verify_client_storage_inventory_abandonment(&record)?;
+                    }
+                    _ => return Err(BrokerSessionSecurityError::Currentness),
+                }
+                Ok(())
+            })();
+            self.schema_complete_scope_v3(scope, &result);
+            result?;
         }
         Ok(())
     }
@@ -378,17 +397,14 @@ impl ProtectedBrokerSessionJournalV1 {
             inventory_request_id,
         )?;
         let value = {
-            let authority = self
-                .journal_mut()?
-                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let mut authority = self.schema_authority_v3()?;
             authority
                 .get(&key)
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?
                 .map(<[u8]>::to_vec)
         };
-        value
-            .map(|value| StorageInventoryAbandonmentV1::decode(&inventory_request_id, &value))
+        self.schema_retain_value_v3(value)?
+            .map(|value| StorageInventoryAbandonmentV1::decode_schema_v3(self, &inventory_request_id, &value))
             .transpose()
     }
 

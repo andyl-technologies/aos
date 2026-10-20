@@ -15,12 +15,79 @@ use crate::{Error, Result};
 // Linux 6.18 `include/linux/socket.h`. glibc versions older than 2.39 do not
 // publish these constants even when the running kernel implements the ABI.
 pub(crate) const SO_PASSPIDFD: libc::c_int = 76;
+// Deployed Linux7.2.3 asm-generic/socket.h; unsupported kernels fail closed.
+pub(crate) const SO_PASSRIGHTS: libc::c_int = 83;
 pub(crate) const SCM_PIDFD: libc::c_int = 0x04;
 pub(crate) const SCM_SECURITY: libc::c_int = 0x03;
 pub(crate) const SO_PEERPIDFD: libc::c_int = 77;
 pub(crate) const SO_COOKIE: libc::c_int = 57;
 
-const SEQPACKET_CONTROL_BYTES: usize = 512;
+pub(crate) const SEQPACKET_CONTROL_BYTES: usize = 512;
+/// Selects descriptor-buffer geometry only, never a peer or authority bypass.
+#[derive(Clone, Copy)]
+pub(crate) enum ReceiveControlProfileV1 {
+    ZeroAncillary,
+    Standard,
+    Pid1ServiceOrigin,
+    WorkerObserver,
+    OrdinaryAuthenticated80,
+    AgentAuthorize,
+    ComponentStartupReport5,
+    NetworkChildOrigin9,
+    NetworkBirthHandoff3,
+    NetworkObserverPublicHandoff6,
+    NetworkPid1CredentialsOnly,
+    StreamContextWidth(usize),
+}
+
+impl ReceiveControlProfileV1 {
+    pub(crate) const fn maximum_descriptor_slots(self) -> usize {
+        // Every raw FD-sized cell may already contain an installed right
+        // before parser rejection; ignoring cmsg headers is conservative.
+        self.bytes() / size_of::<RawFd>() + 2
+    }
+
+    pub(crate) const fn bytes(self) -> usize {
+        match self {
+            Self::ZeroAncillary => 0,
+            Self::Standard => SEQPACKET_CONTROL_BYTES,
+            Self::Pid1ServiceOrigin | Self::OrdinaryAuthenticated80 =>
+                cmsg_align(size_of::<libc::cmsghdr>() + size_of::<libc::ucred>())
+                    + 2 * cmsg_align(size_of::<libc::cmsghdr>() + size_of::<RawFd>()),
+            Self::StreamContextWidth(context_bytes) =>
+                cmsg_align(size_of::<libc::cmsghdr>() + size_of::<libc::ucred>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + size_of::<RawFd>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + context_bytes + 1),
+            Self::AgentAuthorize =>
+                cmsg_align(size_of::<libc::cmsghdr>() + size_of::<libc::ucred>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + size_of::<RawFd>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + 3 * size_of::<RawFd>()),
+            Self::ComponentStartupReport5 =>
+                cmsg_align(size_of::<libc::cmsghdr>() + size_of::<libc::ucred>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + size_of::<RawFd>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + 5 * size_of::<RawFd>()),
+            Self::NetworkChildOrigin9 =>
+                cmsg_align(size_of::<libc::cmsghdr>() + size_of::<libc::ucred>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + size_of::<RawFd>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + 9 * size_of::<RawFd>()),
+            Self::NetworkBirthHandoff3 =>
+                cmsg_align(size_of::<libc::cmsghdr>() + size_of::<libc::ucred>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + size_of::<RawFd>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + 3 * size_of::<RawFd>()),
+            Self::NetworkObserverPublicHandoff6 =>
+                cmsg_align(size_of::<libc::cmsghdr>() + size_of::<libc::ucred>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + size_of::<RawFd>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + 6 * size_of::<RawFd>()),
+            Self::NetworkPid1CredentialsOnly =>
+                cmsg_align(size_of::<libc::cmsghdr>() + size_of::<libc::ucred>()),
+            Self::WorkerObserver =>
+                cmsg_align(size_of::<libc::cmsghdr>() + size_of::<libc::ucred>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + size_of::<RawFd>())
+                    + cmsg_align(size_of::<libc::cmsghdr>() + 2 * size_of::<RawFd>()),
+        }
+    }
+}
+
 const PR_GET_AOS_NO_SETID: libc::c_int = 83;
 
 pub(crate) fn close_guest_descriptor_tail() -> Result<()> {
@@ -31,6 +98,23 @@ pub(crate) fn close_guest_descriptor_tail() -> Result<()> {
         unsafe { libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0_u32) },
         "close Guest private descriptor tail",
     )
+}
+
+pub(crate) fn observe_nofile_limit_v1() -> Result<rustix::process::Rlimit> {
+    let mut limit = MaybeUninit::<libc::rlimit>::uninit();
+    // SAFETY: this fixed, read-only query writes one native rlimit to a live,
+    // correctly aligned output slot. The slot is read only after success;
+    // no process limit is changed and no descriptor ownership is affected.
+    let result = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) };
+    if result != 0 {
+        return Err(Error::syscall("getrlimit(RLIMIT_NOFILE)"));
+    }
+    // SAFETY: getrlimit returned success and initialized both scalar fields.
+    let limit = unsafe { limit.assume_init() };
+    Ok(rustix::process::Rlimit {
+        current: (limit.rlim_cur != libc::RLIM_INFINITY).then_some(u64::from(limit.rlim_cur)),
+        maximum: (limit.rlim_max != libc::RLIM_INFINITY).then_some(u64::from(limit.rlim_max)),
+    })
 }
 
 pub(crate) fn get_aos_no_setid() -> Result<i32> {
@@ -105,6 +189,7 @@ struct DisposedDescriptorDataV1 {
 /// Owns initialized control storage and every adopted slot before any check.
 pub(crate) struct RawReceiveObservationV1 {
     control: [usize; SEQPACKET_CONTROL_BYTES / size_of::<usize>()],
+    control_profile: ReceiveControlProfileV1,
     pub(crate) received: bool,
     pub(crate) reported: isize,
     pub(crate) flags: i32,
@@ -119,7 +204,13 @@ pub(crate) struct RawReceiveObservationV1 {
 
 impl RawReceiveObservationV1 {
     pub(crate) fn empty() -> Self {
+        Self::with_control(ReceiveControlProfileV1::Standard)
+    }
+
+    pub(crate) fn with_control(control_profile: ReceiveControlProfileV1) -> Self {
+        let control_bytes = control_profile.bytes();
         Self {
+            control_profile,
             control: [0; SEQPACKET_CONTROL_BYTES / size_of::<usize>()],
             received: false,
             reported: 0,
@@ -128,10 +219,20 @@ impl RawReceiveObservationV1 {
             parser_offset: 0,
             requested_flags: 0,
             control_parsed: false,
-            ancillary: Vec::with_capacity(SEQPACKET_CONTROL_BYTES / size_of::<libc::cmsghdr>()),
-            slots: Vec::with_capacity(SEQPACKET_CONTROL_BYTES / size_of::<RawFd>()),
-            disposed: Vec::with_capacity(SEQPACKET_CONTROL_BYTES / size_of::<RawFd>()),
+            ancillary: Vec::with_capacity(control_bytes / size_of::<libc::cmsghdr>()),
+            slots: Vec::with_capacity(control_bytes / size_of::<RawFd>()),
+            disposed: Vec::with_capacity(control_bytes / size_of::<RawFd>()),
         }
+    }
+
+    pub(crate) fn requested_dynamic_bytes(control: ReceiveControlProfileV1) -> usize {
+        let bytes = control.bytes();
+        let descriptor_slots = bytes / size_of::<RawFd>();
+        (bytes / size_of::<libc::cmsghdr>()) * size_of::<Option<RawAncillary>>()
+            + descriptor_slots * (size_of::<ReceivedDescriptorSlotV1>() + size_of::<DisposedDescriptorDataV1>())
+            + descriptor_slots * size_of::<OwnedFd>()
+            + bytes
+            + 4096
     }
 
     pub(crate) fn legacy_slots(ancillary: Vec<RawAncillary>) -> Self {
@@ -556,6 +657,62 @@ pub(crate) fn posix_spawn_fixed(
     stderr: BorrowedFd<'_>,
     inherited: &[BorrowedFd<'_>],
 ) -> Result<rustix::process::Pid> {
+    posix_spawn_fixed_capture_v3(executable, argument_zero, arguments,
+        stdin, stdout, stderr, inherited, None)
+}
+
+// The optional Capture ceiling is denial DATA. Ordinary callers preserve None;
+// one existing native body builds actions and performs the actual libc spawn.
+pub(crate) fn posix_spawn_fixed_capture_v3(
+    executable: &CStr,
+    argument_zero: &CStr,
+    arguments: &[CString],
+    stdin: BorrowedFd<'_>,
+    stdout: BorrowedFd<'_>,
+    stderr: BorrowedFd<'_>,
+    inherited: &[BorrowedFd<'_>],
+    capture: Option<(crate::process::FixedProcessCaptureCutV3,
+        &mut crate::process::capture_cut::CaptureProcessCutOriginalV3)>,
+) -> Result<rustix::process::Pid> {
+    let mut guard = posix_spawn_fixed_engine(
+        executable, argument_zero, arguments, stdin, stdout, stderr, inherited, capture, None,
+    )?;
+    let pid = guard.pid()?;
+    guard.disarm();
+    Ok(pid)
+}
+
+/// Borrows only the already-created SSH destination owned by the Guest scope.
+pub(crate) struct GuestSshBirthV1<'scope> {
+    pub(crate) cgroup: BorrowedFd<'scope>,
+}
+
+pub(crate) fn posix_spawn_fixed_guest_ssh_v1(
+    executable: &CStr,
+    arguments: &[CString],
+    stdin: BorrowedFd<'_>,
+    null: BorrowedFd<'_>,
+    birth: GuestSshBirthV1<'_>,
+    cut: crate::process::FixedProcessCaptureCutV3,
+    clock: &mut crate::process::capture_cut::CaptureProcessCutOriginalV3,
+) -> Result<RawSpawnedChildGuard> {
+    posix_spawn_fixed_engine(
+        executable, executable, arguments, stdin, null, null, &[], Some((cut, clock)), Some(birth),
+    )
+}
+
+fn posix_spawn_fixed_engine(
+    executable: &CStr,
+    argument_zero: &CStr,
+    arguments: &[CString],
+    stdin: BorrowedFd<'_>,
+    stdout: BorrowedFd<'_>,
+    stderr: BorrowedFd<'_>,
+    inherited: &[BorrowedFd<'_>],
+    capture: Option<(crate::process::FixedProcessCaptureCutV3,
+        &mut crate::process::capture_cut::CaptureProcessCutOriginalV3)>,
+    guest_ssh: Option<GuestSshBirthV1<'_>>,
+) -> Result<RawSpawnedChildGuard> {
     let mut action_storage = MaybeUninit::<libc::posix_spawn_file_actions_t>::uninit();
     // SAFETY: the pointer names writable uninitialized action storage.
     check_posix(
@@ -583,6 +740,13 @@ pub(crate) fn posix_spawn_fixed(
         destroy_fixed_actions(&mut actions);
         return Err(error);
     }
+    if let Some(birth) = guest_ssh.as_ref() {
+        if let Err(error) = configure_guest_ssh_birth(&mut attributes, birth) {
+            destroy_fixed_attributes(&mut attributes);
+            destroy_fixed_actions(&mut actions);
+            return Err(error);
+        }
+    }
 
     let mut argument_pointers = Vec::with_capacity(arguments.len() + 2);
     argument_pointers.push(argument_zero.as_ptr().cast_mut());
@@ -592,8 +756,21 @@ pub(crate) fn posix_spawn_fixed(
             .map(|argument| argument.as_ptr().cast_mut()),
     );
     argument_pointers.push(std::ptr::null_mut());
-    let environment = [std::ptr::null_mut::<libc::c_char>()];
+    let empty_environment = [std::ptr::null_mut::<libc::c_char>()];
+    let ssh_environment = [c"LANG=C".as_ptr().cast_mut(), c"LC_ALL=C".as_ptr().cast_mut(),
+        std::ptr::null_mut()];
+    let environment = if guest_ssh.is_some() { ssh_environment.as_slice() }
+        else { empty_environment.as_slice() };
     let mut raw_pid = 0;
+    if let Some((cut, original)) = capture {
+        // Apply the original ceiling after all libc action/attribute/argv
+        // setup, immediately before the sole actual process-creation call.
+        if let Err(error) = original.observe(cut) {
+            destroy_fixed_attributes(&mut attributes);
+            destroy_fixed_actions(&mut actions);
+            return Err(error);
+        }
+    }
     // SAFETY: strings and pointer arrays remain live through the call; actions
     // and attributes are initialized; argv/envp are terminated; and raw_pid
     // names writable output. libc never returns child-side Rust execution.
@@ -611,15 +788,45 @@ pub(crate) fn posix_spawn_fixed(
     destroy_fixed_actions(&mut actions);
     check_posix(result, "spawn fixed process")?;
 
-    let mut guard = RawSpawnedChildGuard::new(raw_pid);
-    let pid = rustix::process::Pid::from_raw(raw_pid).ok_or_else(|| {
-        Error::invalid(
-            "fixed process PID",
-            "successful posix_spawn returned a nonpositive PID",
-        )
-    })?;
-    guard.disarm();
-    Ok(pid)
+    let guard = if guest_ssh.is_some() {
+        RawSpawnedChildGuard::new_owned_leader(raw_pid)
+    } else {
+        RawSpawnedChildGuard::new(raw_pid)
+    };
+    guard.pid()?;
+    Ok(guard)
+}
+
+// These exact GNU extensions are exported by the actually selected AOS glibc
+// 2.39. Its spawn engine uses CLONE_INTO_CGROUP and refuses unavailable clone3;
+// there is deliberately no late migration, fork or host-library fallback.
+unsafe extern "C" {
+    fn posix_spawnattr_setcgroup_np(attributes: *mut libc::posix_spawnattr_t,
+        descriptor: libc::c_int) -> libc::c_int;
+    fn posix_spawnattr_getcgroup_np(attributes: *const libc::posix_spawnattr_t,
+        descriptor: *mut libc::c_int) -> libc::c_int;
+}
+
+fn configure_guest_ssh_birth(attributes: &mut libc::posix_spawnattr_t,
+    birth: &GuestSshBirthV1<'_>) -> Result<()>
+{
+    const POSIX_SPAWN_SETCGROUP: libc::c_short = 0x100;
+    // SAFETY: attributes is initialized and exclusively borrowed; the actual
+    // retained cgroup FD stays live through posix_spawn's synchronous clone.
+    check_posix(unsafe { posix_spawnattr_setcgroup_np(attributes, birth.cgroup.as_raw_fd()) },
+        "set Guest SSH birth cgroup")?;
+    let mut actual = -1;
+    // SAFETY: attributes is initialized and actual names writable scalar output.
+    check_posix(unsafe { posix_spawnattr_getcgroup_np(attributes, &raw mut actual) },
+        "read Guest SSH birth cgroup attribute")?;
+    if actual != birth.cgroup.as_raw_fd() {
+        return Err(Error::invalid("Guest SSH birth", "cgroup attribute differs"));
+    }
+    // SAFETY: these GNU flags retain the existing new-process-group recipe and
+    // add only atomic placement into the same continuously held destination.
+    check_posix(unsafe { libc::posix_spawnattr_setflags(attributes,
+        libc::POSIX_SPAWN_SETPGROUP as libc::c_short | POSIX_SPAWN_SETCGROUP) },
+        "enable Guest SSH cgroup-at-birth")
 }
 
 // Four inherited roles occupy FDs 3..=6, and the executable occupies FD 7.
@@ -1154,6 +1361,7 @@ fn check_posix(result: libc::c_int, operation: &'static str) -> Result<()> {
 pub(crate) struct RawSpawnedChildGuard {
     pid: libc::pid_t,
     armed: bool,
+    leader_only: bool,
 }
 
 impl RawSpawnedChildGuard {
@@ -1167,7 +1375,11 @@ impl RawSpawnedChildGuard {
     }
 
     const fn new(pid: libc::pid_t) -> Self {
-        Self { pid, armed: true }
+        Self { pid, armed: true, leader_only: false }
+    }
+
+    const fn new_owned_leader(pid: libc::pid_t) -> Self {
+        Self { pid, armed: true, leader_only: true }
     }
 
     pub(crate) fn disarm(&mut self) {
@@ -1180,10 +1392,13 @@ impl Drop for RawSpawnedChildGuard {
         if !self.armed || self.pid <= 0 {
             return;
         }
-        // The child was created as a new process group and remains unreaped,
-        // so its PID/process-group ID cannot yet have been recycled.
-        // SAFETY: negative positive-child PID selects exactly that group.
-        let _ = unsafe { libc::kill(-self.pid, libc::SIGKILL) };
+        // Ordinary fixed children keep the original process-group cleanup.
+        // SSH's independent cgroup owner handles descendants; this fallback
+        // can address only its actual still-unreaped direct child.
+        let target = if self.leader_only { self.pid } else { -self.pid };
+        // SAFETY: the guard owns the unreaped native spawn result. The finite
+        // constructor selects its direct PID or original dedicated group.
+        let _ = unsafe { libc::kill(target, libc::SIGKILL) };
         let mut status = 0;
         loop {
             // SAFETY: status is writable and pid is the successful spawn result.
@@ -1419,7 +1634,12 @@ pub(crate) fn pidfd_open(pid: u32) -> Result<OwnedFd> {
 
 // The current-self owner parks this fresh descriptor before either flag check.
 pub(crate) fn pidfd_open_current_original() -> Result<OwnedFd> {
-    let result = pidfd_open_raw_result(std::process::id());
+    pidfd_open_original(std::process::id())
+}
+
+// Selected owners park any fresh pidfd before the ordinary flag/type passes.
+pub(crate) fn pidfd_open_original(pid: u32) -> Result<OwnedFd> {
+    let result = pidfd_open_raw_result(pid);
     adopt_created_fd(result, "pidfd_open")
 }
 
@@ -1492,6 +1712,23 @@ pub(crate) enum NamespaceIoctl {
 }
 
 pub(crate) fn pidfd_namespace(pidfd: BorrowedFd<'_>, namespace: NamespaceIoctl) -> Result<OwnedFd> {
+    fd_result(pidfd_namespace_raw_result(pidfd, namespace), "pidfd namespace ioctl")
+}
+
+// Selected destinations keep the actual created FD before the SAME flag check.
+// Ordinary namespace acquisition above keeps its original consuming disposition.
+pub(crate) fn pidfd_namespace_retaining_v2(
+    pidfd: BorrowedFd<'_>, namespace: NamespaceIoctl, original: &mut Option<OwnedFd>,
+) -> Result<()> {
+    if original.is_some() {
+        return Err(Error::invalid("pidfd namespace", "raw destination already occupied"));
+    }
+    *original = Some(adopt_created_fd(pidfd_namespace_raw_result(pidfd, namespace), "pidfd namespace ioctl")?);
+    ensure_cloexec(original.as_ref().ok_or_else(|| Error::invalid(
+        "pidfd namespace", "created descriptor is absent"))?.as_fd())
+}
+
+fn pidfd_namespace_raw_result(pidfd: BorrowedFd<'_>, namespace: NamespaceIoctl) -> libc::c_long {
     let request = match namespace {
         NamespaceIoctl::Mount => PIDFD_GET_MNT_NAMESPACE,
         NamespaceIoctl::Network => PIDFD_GET_NET_NAMESPACE,
@@ -1502,7 +1739,7 @@ pub(crate) fn pidfd_namespace(pidfd: BorrowedFd<'_>, namespace: NamespaceIoctl) 
     // SAFETY: pidfs requires an explicit zero scalar argument for these `_IO`
     // requests. The call borrows the pidfd and returns a new close-on-exec fd.
     let result = unsafe { libc::ioctl(pidfd.as_raw_fd(), request, 0 as libc::c_ulong) };
-    fd_result(libc::c_long::from(result), "pidfd namespace ioctl")
+    libc::c_long::from(result)
 }
 
 pub(crate) fn is_namespace(fd: BorrowedFd<'_>) -> Result<bool> {
@@ -2193,7 +2430,7 @@ pub(crate) fn socket_cookie(fd: BorrowedFd<'_>) -> Result<u64> {
     Ok(cookie)
 }
 
-fn socket_integer_option(fd: BorrowedFd<'_>, option: i32, operation: &'static str) -> Result<i32> {
+pub(crate) fn socket_integer_option(fd: BorrowedFd<'_>, option: i32, operation: &'static str) -> Result<i32> {
     let mut value = 0_i32;
     let mut length = size_of::<i32>() as libc::socklen_t;
     // SAFETY: the output integer and its length are writable and live for the
@@ -2215,6 +2452,23 @@ fn socket_integer_option(fd: BorrowedFd<'_>, option: i32, operation: &'static st
         });
     }
     Ok(value)
+}
+
+// Linux's receive-direction admission happens before a rights-bearing skb
+// enters the peer queue. This is distinct from dropping installed rights.
+pub(crate) fn set_seqpacket_passrights(fd: BorrowedFd<'_>, enabled: bool) -> Result<()> {
+    set_socket_integer(fd, SO_PASSRIGHTS, i32::from(enabled), "setsockopt(SO_PASSRIGHTS)")
+}
+
+pub(crate) fn set_seqpacket_passpidfd(fd: BorrowedFd<'_>, enabled: bool) -> Result<()> {
+    set_socket_integer(fd, SO_PASSPIDFD, i32::from(enabled), "setsockopt(SO_PASSPIDFD)")
+}
+
+pub(crate) fn require_seqpacket_zero_rights(fd: BorrowedFd<'_>) -> Result<()> {
+    if socket_integer_option(fd, SO_PASSRIGHTS, "getsockopt(SO_PASSRIGHTS)")? != 0 {
+        return Err(Error::invalid("closed zero-rights socket", "SO_PASSRIGHTS must remain disabled"));
+    }
+    Ok(())
 }
 
 pub(crate) fn enable_seqpacket_identity(fd: BorrowedFd<'_>) -> Result<()> {
@@ -2265,6 +2519,22 @@ pub(crate) fn peer_credentials(fd: BorrowedFd<'_>) -> Result<libc::ucred> {
 }
 
 pub(crate) fn peer_pidfd(fd: BorrowedFd<'_>) -> Result<OwnedFd> {
+    peer_pidfd_observed(fd, None)?.ok_or(Error::WrongDescriptorType { expected: "pidfd" })
+}
+
+// Only the actual guarded peer capture supplies this private original slot.
+pub(crate) fn peer_pidfd_retaining_into_v1(
+    fd: BorrowedFd<'_>,
+    original: &mut Option<RawAncillary>,
+) -> Result<()> {
+    if original.is_some() { return Err(Error::WrongDescriptorType { expected: "vacant peer pidfd slot" }); }
+    peer_pidfd_observed(fd, Some(original)).map(|_| ())
+}
+
+fn peer_pidfd_observed(
+    fd: BorrowedFd<'_>,
+    retained: Option<&mut Option<RawAncillary>>,
+) -> Result<Option<OwnedFd>> {
     let mut peer_fd = -1_i32;
     let mut length = size_of::<RawFd>() as libc::socklen_t;
     // SAFETY: the output integer and length remain writable and live for the
@@ -2290,6 +2560,24 @@ pub(crate) fn peer_pidfd(fd: BorrowedFd<'_>) -> Result<OwnedFd> {
     // SAFETY: SO_PEERPIDFD returned a fresh descriptor in this process, and
     // ownership has not been transferred elsewhere.
     let peer_fd = unsafe { OwnedFd::from_raw_fd(peer_fd) };
+    finish_peer_pidfd_observation_v1(peer_fd, length, retained)
+}
+
+fn finish_peer_pidfd_observation_v1(
+    peer_fd: OwnedFd,
+    length: libc::socklen_t,
+    retained: Option<&mut Option<RawAncillary>>,
+) -> Result<Option<OwnedFd>> {
+    let retaining = retained.is_some();
+    let mut ordinary = None;
+    let destination = retained.unwrap_or(&mut ordinary);
+    // Install the actual adopted kernel FD before CLOEXEC/length validation.
+    // The retained caller keeps this same slot on either later native error;
+    // None uses a local slot with the existing immediate error disposition.
+    *destination = Some(RawAncillary::PidFd(peer_fd));
+    let Some(RawAncillary::PidFd(peer_fd)) = destination.as_ref() else {
+        return Err(Error::WrongDescriptorType { expected: "pidfd" });
+    };
     ensure_cloexec(peer_fd.as_fd())?;
     if length as usize != size_of::<RawFd>() {
         return Err(Error::MalformedKernelResponse {
@@ -2297,11 +2585,21 @@ pub(crate) fn peer_pidfd(fd: BorrowedFd<'_>) -> Result<OwnedFd> {
             message: "kernel returned an unexpected descriptor length".to_string(),
         });
     }
-    Ok(peer_fd)
+    if retaining { return Ok(None); }
+    match ordinary.take() {
+        Some(RawAncillary::PidFd(peer_fd)) => Ok(Some(peer_fd)),
+        other => {
+            drop(other);
+            Err(Error::WrongDescriptorType { expected: "pidfd" })
+        }
+    }
 }
 
 fn set_socket_bool(fd: BorrowedFd<'_>, option: i32, operation: &'static str) -> Result<()> {
-    let enabled = 1_i32;
+    set_socket_integer(fd, option, 1, operation)
+}
+
+fn set_socket_integer(fd: BorrowedFd<'_>, option: i32, enabled: i32, operation: &'static str) -> Result<()> {
     // SAFETY: the scalar option value remains live and correctly sized for
     // the complete call; the socket descriptor is borrowed.
     let result = unsafe {
@@ -2359,6 +2657,19 @@ pub(crate) fn recv_seqpacket_staged(
     observed: &mut RawReceiveObservationV1,
     policy: ReceiveCustodyPolicyV1,
 ) -> std::result::Result<usize, RawReceiveFailureV1> {
+    recv_seqpacket_staged_with_gate_v4(fd, payload, flags, observed, policy, None)
+}
+
+// Every receive disposition uses the same syscall/parser. The closed Network
+// worker supplies a deny-only original-cutoff check at the actual syscall.
+pub(crate) fn recv_seqpacket_staged_with_gate_v4(
+    fd: BorrowedFd<'_>,
+    payload: &mut [u8],
+    flags: i32,
+    observed: &mut RawReceiveObservationV1,
+    policy: ReceiveCustodyPolicyV1,
+    gate: Option<&mut dyn FnMut() -> Result<()>>,
+) -> std::result::Result<usize, RawReceiveFailureV1> {
     observed.requested_flags = flags;
     let mut byte = 0_u8;
     let (payload_pointer, payload_length) = if payload.is_empty() {
@@ -2377,7 +2688,13 @@ pub(crate) fn recv_seqpacket_staged(
     message.msg_iov = std::ptr::addr_of_mut!(vector);
     message.msg_iovlen = 1;
     message.msg_control = observed.control.as_mut_ptr().cast();
-    message.msg_controllen = SEQPACKET_CONTROL_BYTES;
+    message.msg_controllen = observed.control_profile.bytes();
+
+    if let Some(gate) = gate {
+        if let Err(source) = gate() {
+            return Err(RawReceiveFailureV1 { source, nonconsuming_syscall: false });
+        }
+    }
 
     // SAFETY: every pointer in `message` targets live writable storage for
     // the call. The kernel initializes returned payload/control lengths and
@@ -2462,7 +2779,7 @@ fn decode_control_policy(observed: &mut RawReceiveObservationV1, policy: Receive
 
 fn decode_control(observed: &mut RawReceiveObservationV1) -> Result<()> {
     let used = observed.used;
-    if used > std::mem::size_of_val(&observed.control) {
+    if used > observed.control_profile.bytes() {
         return Err(Error::MalformedKernelResponse {
             object: "SOCK_SEQPACKET ancillary data",
             message: "kernel returned an oversized control length".to_string(),
@@ -2652,30 +2969,60 @@ pub(crate) fn connect_seqpacket_borrowed(
     socket: BorrowedFd<'_>,
     path: ValidatedSeqpacketConnectionPath<'_>,
 ) -> Result<()> {
-    let bytes = path.bytes;
-    enable_seqpacket_identity(socket.as_fd())?;
+    connect_seqpacket_borrowed_engine_v4::<std::convert::Infallible>(socket, path, None).0
+}
 
-    // All-zero initializes the pathname terminator after the copied bytes.
-    // SAFETY: every field of `sockaddr_un` admits the all-zero bit pattern.
-    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    for (destination, source) in address.sun_path.iter_mut().zip(bytes) {
-        *destination = *source as libc::c_char;
-    }
-    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
-    // A nonblocking Unix-domain connect normally completes synchronously. An
-    // incomplete result is rejected; callers never exchange records on a
-    // connection whose completion or peer identity remains uncertain.
-    // SAFETY: the address covers initialized family/path bytes, including the
-    // trailing NUL, and the fresh socket remains live throughout the call.
-    let result = unsafe {
-        libc::connect(
-            socket.as_raw_fd(),
-            std::ptr::addr_of!(address).cast(),
-            length as libc::socklen_t,
-        )
-    };
-    unit_result(result.into(), "connect(record-subject SOCK_SEQPACKET)")
+/// Places an optional restrictive gate at the actual single connect syscall.
+pub(crate) fn connect_seqpacket_borrowed_guarded_v4<E>(
+    socket: BorrowedFd<'_>,
+    path: ValidatedSeqpacketConnectionPath<'_>,
+    before_native: &mut impl FnMut() -> std::result::Result<(), E>,
+) -> (Result<()>, Option<E>) {
+    connect_seqpacket_borrowed_engine_v4(socket, path, Some(before_native))
+}
+
+fn connect_seqpacket_borrowed_engine_v4<E>(
+    socket: BorrowedFd<'_>,
+    path: ValidatedSeqpacketConnectionPath<'_>,
+    mut before_native: Option<&mut dyn FnMut() -> std::result::Result<(), E>>,
+) -> (Result<()>, Option<E>) {
+    let mut gate_failure = None;
+    let native = (|| {
+        let bytes = path.bytes;
+        enable_seqpacket_identity(socket.as_fd())?;
+
+        // All-zero initializes the pathname terminator after the copied bytes.
+        // SAFETY: every field of `sockaddr_un` admits the all-zero bit pattern.
+        let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        for (destination, source) in address.sun_path.iter_mut().zip(bytes) {
+            *destination = *source as libc::c_char;
+        }
+        let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+        // A nonblocking Unix-domain connect normally completes synchronously. An
+        // incomplete result is rejected; callers never exchange records on a
+        // connection whose completion or peer identity remains uncertain.
+        if let Some(gate) = before_native.as_mut() {
+            if let Err(error) = gate() {
+                gate_failure = Some(error);
+                return Err(Error::invalid(
+                    "Network activation connect gate",
+                    "original restrictive gate refused",
+                ));
+            }
+        }
+        // SAFETY: the address covers initialized family/path bytes, including the
+        // trailing NUL, and the fresh socket remains live throughout the call.
+        let result = unsafe {
+            libc::connect(
+                socket.as_raw_fd(),
+                std::ptr::addr_of!(address).cast(),
+                length as libc::socklen_t,
+            )
+        };
+        unit_result(result.into(), "connect(record-subject SOCK_SEQPACKET)")
+    })();
+    (native, gate_failure)
 }
 
 pub(crate) fn unix_socket_local_filesystem_path(fd: BorrowedFd<'_>) -> Result<Vec<u8>> {
@@ -2924,7 +3271,7 @@ pub(crate) fn send_seqpacket_rights(
     }
 }
 
-#[cfg(test)]
+/// Reads the borrowed descriptor's existing CLOEXEC flag without changing it.
 pub(crate) fn is_cloexec(fd: BorrowedFd<'_>) -> Result<bool> {
     // SAFETY: F_GETFD only observes a descriptor borrowed for the call.
     let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
@@ -3047,6 +3394,56 @@ mod tests {
         output.resize(output.len() + cmsg_align(size_of::<libc::cmsghdr>()) - size_of::<usize>() - 8, 0);
         output.extend_from_slice(payload);
         output.resize(cmsg_align(output.len()), 0);
+    }
+
+    #[test]
+    fn bounded_stream_control_retains_installed_rights_and_kernel_truncation() {
+        let original = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+        let rights = vec![original.as_fd(); 64];
+
+        for control in [
+            ReceiveControlProfileV1::OrdinaryAuthenticated80,
+            ReceiveControlProfileV1::StreamContextWidth(42),
+            ReceiveControlProfileV1::StreamContextWidth(48),
+            ReceiveControlProfileV1::Standard,
+        ] {
+            let (sender, receiver) = std::os::unix::net::UnixStream::pair().unwrap();
+            let mut observed = RawReceiveObservationV1::with_control(control);
+            let mut payload = [0; 1];
+
+            send_seqpacket_rights(sender.as_fd(), b"x", &rights).unwrap();
+            let received = recv_seqpacket_staged(
+                receiver.as_fd(), &mut payload, 0, &mut observed,
+                ReceiveCustodyPolicyV1::Retaining,
+            );
+
+            assert_eq!(received.unwrap(), 1);
+            assert_eq!(payload, *b"x");
+            assert!(observed.received);
+            assert!(observed.used <= control.bytes());
+            assert!(!observed.slots.is_empty());
+            assert!(observed.slots.len() <= control.bytes() / size_of::<RawFd>());
+            assert!(observed.slots.iter().all(|slot| slot.screened));
+            let retained = observed.ancillary.iter().flatten().map(|message| match message {
+                RawAncillary::Rights(descriptors) => descriptors.len(),
+                _ => 0,
+            }).sum::<usize>();
+            assert_eq!(retained, observed.slots.len());
+            assert!(retained <= (control.bytes() - size_of::<libc::cmsghdr>()) / size_of::<RawFd>());
+            if matches!(control, ReceiveControlProfileV1::OrdinaryAuthenticated80) {
+                assert_eq!(control.bytes(), 80);
+                assert!(retained <= 16);
+            }
+            if matches!(control, ReceiveControlProfileV1::Standard) {
+                assert_eq!(observed.flags & libc::MSG_CTRUNC, 0);
+                assert_eq!(retained, rights.len());
+                assert_eq!(observed.control_custody(), ReceiveControlCustodyV1::ParsedCapturedControl);
+            } else {
+                assert_ne!(observed.flags & libc::MSG_CTRUNC, 0);
+                assert!(retained < rights.len());
+                assert_eq!(observed.control_custody(), ReceiveControlCustodyV1::KernelDiscardedTail);
+            }
+        }
     }
 
     #[test]
@@ -3199,6 +3596,7 @@ mod tests {
     fn vendored_socket_options_match_linux_6_18() {
         assert_eq!(SO_COOKIE, 57);
         assert_eq!(SO_PASSPIDFD, 76);
+        assert_eq!(SO_PASSRIGHTS, 83);
         assert_eq!(SO_PEERPIDFD, 77);
         assert_eq!(SCM_PIDFD, 0x04);
     }
@@ -3375,5 +3773,41 @@ mod fixed_exec_status_tests {
         drop(writer);
 
         assert!(status.read_once().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod peer_pidfd_retention_tests {
+    use super::*;
+    use std::os::fd::AsRawFd;
+
+    #[test]
+    fn malformed_peer_pidfd_length_keeps_the_actual_kernel_pin_in_retained_slot() {
+        let (receiver, _peer) = seqpacket_pair().unwrap();
+        let pin = peer_pidfd(receiver.as_fd()).unwrap();
+        let descriptor = pin.as_raw_fd();
+        let mut original = None;
+
+        // Exercise the same post-syscall validation with a real kernel pidfd
+        // and a refused reported length. No raw FD or native proof is forged.
+        let result = finish_peer_pidfd_observation_v1(pin, 0, Some(&mut original));
+
+        assert!(matches!(result, Err(Error::MalformedKernelResponse { object: "SO_PEERPIDFD", .. })));
+        let Some(RawAncillary::PidFd(held)) = original.as_ref() else { panic!("actual peer pidfd missing"); };
+        assert_eq!(held.as_raw_fd(), descriptor);
+        assert!(raw_fd_is_open(descriptor));
+        assert!(pidfd_info(held.as_fd()).is_ok());
+    }
+
+    #[test]
+    fn ordinary_peer_pidfd_length_refusal_keeps_its_immediate_close() {
+        let (receiver, _peer) = seqpacket_pair().unwrap();
+        let pin = peer_pidfd(receiver.as_fd()).unwrap();
+        let descriptor = pin.as_raw_fd();
+
+        let result = finish_peer_pidfd_observation_v1(pin, 0, None);
+
+        assert!(matches!(result, Err(Error::MalformedKernelResponse { object: "SO_PEERPIDFD", .. })));
+        assert!(!raw_fd_is_open(descriptor));
     }
 }

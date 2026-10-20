@@ -10,6 +10,8 @@
   publisherUnit,
   storageUnit,
   storageArguments,
+  bootPreparation ? false,
+  hostd ? null,
 }: let
   primitives = ../pkgs/security/aos-normal-root-profile.py;
   manifest = ../pkgs/security/aos-selinux-runtime-manifest.py;
@@ -29,11 +31,16 @@
     propagatedDeps = [];
     outputChecks = {};
     selectedStorage = if storageOnly then "1" else "0";
+    selectedBootPreparation = if bootPreparation then "1" else "0";
+    hostdExecutable = if bootPreparation then "${hostd}/bin/aos-sandbox-hostd" else "";
+    nspawnExecutable = if bootPreparation then "${systemd}/bin/systemd-nspawn" else "";
     unitContract = if storageOnly then storageUnit else publisherUnit;
-    argumentsJson = builtins.toJSON storageArguments;
+    argumentsJson = if storageOnly then builtins.toJSON storageArguments else "[]";
     passAsFile = ["unitContract"];
     exportReferencesGraph.runtimeDeploymentClosure = if storageOnly then [storage] else [publisher helper];
-    nukeRefsKeep = [publisher helper storage systemd policy canonicalPolicy];
+    nukeRefsKeep = [publisher helper systemd policy canonicalPolicy]
+      ++ (if storageOnly || !bootPreparation then [storage] else [])
+      ++ (if bootPreparation then [hostd] else []);
 
     phases = [{
       name = "build";
@@ -53,7 +60,7 @@
           "$src" ${manifest} "$NIX_ATTRS_JSON_FILE" \
           ${publisher}/bin/aos-sandbox-runtime-publisher \
           ${helper}/libexec/aos-runtime-deployment-tpm-helper \
-          ${storage}/bin/aos-storaged ${systemd}/lib/systemd/systemd \
+          ${if bootPreparation then hostd else storage}/bin/${if bootPreparation then "aos-sandbox-hostd" else "aos-storaged"} ${systemd}/lib/systemd/systemd \
           ${canonicalPolicy}/policy.33 "$out/source-policy.33" \
           "$out/effective-policy.tsv" "$unitContractPath" \
           ${pkgs.buildPackages.patchelf}/bin/patchelf \
@@ -131,11 +138,20 @@
                 "source_policy": source_pin,
                 "effective_matrix": original.pin(matrix),
             })
-            profile = {
-                "format": "AOS_RUNTIME_DEPLOYMENT_CANARY_STARTUP_2",
-                "publisher": profile,
-                "canary_storage": original.pin(Path(os.environ["storageProfile"]) / "storage.json"),
-            }
+            if os.environ["selectedBootPreparation"] == "1":
+                profile = {
+                    "format": "AOS_RUNTIME_DEPLOYMENT_BOOT_STARTUP_1",
+                    "publisher": profile,
+                    "nspawn_executable": os.environ["nspawnExecutable"],
+                    "hostd_executable": os.environ["hostdExecutable"],
+                    "selinux_policy": str(canonical),
+                }
+            else:
+                profile = {
+                    "format": "AOS_RUNTIME_DEPLOYMENT_CANARY_STARTUP_2",
+                    "publisher": profile,
+                    "canary_storage": original.pin(Path(os.environ["storageProfile"]) / "storage.json"),
+                }
             basename = "profile.json"
         encoded = json.dumps(profile, separators=(",", ":")).encode()
         if len(encoded) > 1048576:
@@ -149,5 +165,6 @@
   storageProfile = makeProfile true;
 in {
   storage = storageProfile;
-  publisher = (makeProfile false).overrideAttrs (_: {inherit storageProfile;});
+  publisher = (makeProfile false).overrideAttrs (_:
+    if bootPreparation then {} else {inherit storageProfile;});
 }

@@ -19,7 +19,7 @@ use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::public_policy_planner::{
     AuthorizedPublicPolicyPlanRequestV1, PublicPolicyPlanningErrorV1,
 };
-use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
+use crate::publisher_admin::policy::{PublisherPolicyLimits, PublisherPolicyStore};
 
 const POLICY_PLAN_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-policy-plan.v1\0";
 
@@ -231,8 +231,10 @@ fn current_policy(
     project: ProjectId,
     authorized_at: i64,
     policy_generation: u64,
-) -> Result<crate::publisher_policy::PreparedPublisherPolicyRevisionV1, PublicPolicyPlanningErrorV1>
-{
+) -> Result<
+    aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1,
+    PublicPolicyPlanningErrorV1
+> {
     let current = PublisherPolicyStore::load(journal, PublisherPolicyLimits::default())
         .map_err(|_| PublicPolicyPlanningErrorV1::Unavailable)?
         .current_policy(project)
@@ -307,7 +309,7 @@ mod tests {
 
     use super::*;
     use crate::JournalLimits;
-    use crate::publisher_policy::PreparedPublisherPolicyRevisionV1;
+    use aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1;
 
     #[test]
     fn current_policy_rechecks_the_exact_authorization_interval_after_head_change() {

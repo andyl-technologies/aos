@@ -17,6 +17,13 @@ use crate::{
     PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedHeader, validate_request_header,
 };
 
+pub mod preparation;
+mod prepared_transport;
+pub use prepared_transport::{
+    ValidatedHostExecutionArgumentAcceptV2,
+    decode_host_execution_argument_prepare_request_v2,
+    decode_host_execution_argument_accept_request_v2,
+};
 pub mod receipt;
 
 use receipt::{HostExecutionArgumentFreshReceiptV1, HostExecutionArgumentHistoricalReceiptV1};

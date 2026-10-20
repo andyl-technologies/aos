@@ -19,11 +19,19 @@ use crate::{Error, Result};
 mod identity;
 mod proc_observations;
 
-pub use identity::PidFdProcessIdentity;
+pub use identity::{PidFdProcessIdentity, PidFdProcessIdentityOriginalV1};
 pub use proc_observations::{
     HostCanaryLocalChildOriginalsV1, HostCanaryReceivedChildErrorV1,
-    HostCanaryReceivedChildOriginalsV1, PidFdProcObservationsV1,
+    HostCanaryReceivedChildOriginalsV1, PidFdContextReadbackV1, PidFdIdentityReadbackV1,
+    PidFdNegativeContextOriginalV1,
+    PidFdNegativeIdentityOriginalV1,
+    PidFdProcObservationsV1, PidFdProcOriginalsV1,
 };
+
+mod current_network;
+pub use current_network::CurrentNetworkNamespaceOriginalV4;
+mod single_thread_original;
+pub use single_thread_original::SingleThreadedProcessOriginalV2;
 
 const LIVENESS_POLL_INTERRUPT_LIMIT: usize = 8;
 
@@ -125,6 +133,49 @@ impl CurrentSelfPidFdCustodyV1 {
             .observe_stat_identity(process)
     }
 
+    /// Prearms one negative comparison from this same healthy original stat OFD.
+    ///
+    /// The caller retains and prepays the destination before its primary
+    /// observation. Preparation duplicates only the already-held stat File;
+    /// it does not open a name, replace the pidfd or create a healthy grant.
+    /// [`PidFdNegativeIdentityOriginalV1::receiving_demand_v1`] supplies the
+    /// actual byte and one-descriptor requirement. Its diagnostic control
+    /// census does not represent resident namespace metadata entries.
+    ///
+    /// # Errors
+    /// Refuses incomplete or closed current-self custody, unavailable original
+    /// stat custody, repeated destination preparation or native duplication.
+    /// The caller keeps the same destination and its original native cause.
+    pub fn prepare_negative_identity_once_into_v1(
+        &self,
+        original: &mut PidFdNegativeIdentityOriginalV1,
+    ) -> Result<()> {
+        if self.phase != CurrentSelfPhaseV1::Ready {
+            return Err(current_self_closed());
+        }
+        self.observations.as_ref().ok_or_else(current_self_closed)?
+            .prepare_negative_identity_once_into(original)
+    }
+
+    /// Observes a prearmed negative comparison on this same retained pidfd.
+    ///
+    /// This route may inspect the actual held pin after healthy custody was
+    /// fenced. Only the destination's original once-preparation permits its
+    /// native read. It never restores either healthy phase, exposes a pin or
+    /// returns role, currentness, receiving or retry authority. The caller
+    /// retains all native originals through its independently owed interval.
+    ///
+    /// # Errors
+    /// Refuses an absent original pidfd, unprepared or reused destination,
+    /// native failure, changed original identity or process exit. A successful
+    /// comparison leaves closed healthy custody closed.
+    pub fn observe_negative_identity_once_v1(
+        &self,
+        original: &mut PidFdNegativeIdentityOriginalV1,
+    ) -> Result<()> {
+        original.observe_once(self.process.as_ref().ok_or_else(current_self_closed)?)
+    }
+
     /// Borrows the actual original pidfd only after completed capture.
     ///
     /// The short borrow is a process pin, not a purpose approval or a freshness
@@ -138,6 +189,13 @@ impl CurrentSelfPidFdCustodyV1 {
             return Err(current_self_closed());
         }
         self.process.as_ref().ok_or_else(current_self_closed)
+    }
+
+    pub(crate) fn completed_stat_native_file_count_v1(&self) -> Option<usize> {
+        if self.phase != CurrentSelfPhaseV1::Ready || self.raw.is_some()
+            || self.process.is_none()
+        { return None; }
+        1usize.checked_add(self.observations.as_ref()?.completed_stat_native_file_count_v1()?)
     }
 
     /// Permanently closes this instance without releasing retained originals.
@@ -186,7 +244,191 @@ fn current_self_closed() -> Error {
     )
 }
 
+/// Retains one received pidfd through the existing typed descriptor admission.
+///
+/// This is kernel DATA custody, not Host identity, scope or role authority.
+/// No descriptor is duplicated or reopened and no process is nominated by PID.
+#[derive(Debug, Default)]
+pub struct RuntimeScopeReceivedPidFdOriginalV1 {
+    raw: Option<OwnedFd>,
+    validation: Option<Result<()>>,
+    pin: Option<PidFd>,
+    attempted: bool,
+}
+
+impl RuntimeScopeReceivedPidFdOriginalV1 {
+    /// Creates empty received-pin custody without native IO.
+    #[must_use]
+    pub fn new() -> Self { Self::default() }
+
+    /// Validates the same received descriptor before its once-only typed move.
+    ///
+    /// # Errors
+    /// Retains actual CLOEXEC/pidfs/GET_INFO failure; refuses reentry.
+    pub fn capture_once(&mut self, fd: OwnedFd) -> Result<()> {
+        if self.attempted { return Err(current_self_closed()); }
+        self.attempted = true;
+        self.raw = Some(fd);
+        self.validation = Some(match self.raw.as_ref() {
+            Some(raw) => PidFd::validate_owned_kind(raw.as_fd()),
+            None => Err(current_self_closed()),
+        });
+        if !matches!(self.validation, Some(Ok(()))) { return Err(current_self_closed()); }
+        let Some(fd) = self.raw.take() else { std::process::abort(); };
+        self.pin = Some(PidFd { fd });
+        Ok(())
+    }
+
+    /// Moves only the same fully validated received pin once.
+    #[must_use]
+    pub fn take_completed_once(&mut self) -> Option<PidFd> {
+        if !matches!(self.validation, Some(Ok(()))) { return None; }
+        self.pin.take()
+    }
+
+    /// Borrows the original actual admission error.
+    #[must_use]
+    pub fn failure(&self) -> Option<&Error> {
+        self.validation.as_ref()?.as_ref().err()
+    }
+
+    /// Returns fixed byte and one-descriptor representation DATA.
+    #[must_use]
+    pub fn receiving_demand_v1() -> Option<(usize, usize)> {
+        Some((std::mem::size_of::<Self>().checked_mul(2)?.checked_add(2048)?, 1))
+    }
+}
+
+/// Reports that an original pidfd opening remains incomplete or fenced.
+///
+/// The actual native first cause remains in [`PidFdOpenAttemptV1`]. This marker
+/// supplies no process identity, authority or permission to reopen a pidfd.
+#[derive(Debug, thiserror::Error)]
+#[error("original pidfd opening is incomplete or fenced")]
+pub struct PidFdOpenRefusalV1;
+
+/// Retains a transferred descriptor rejected by the sole kernel-pin validator.
+///
+/// No descriptor getter, retry or process authority is supplied.
+#[derive(Debug)]
+pub struct PidFdOwnedAdmissionFailureV3 {
+    cause: Error,
+    _input: Option<OwnedFd>,
+}
+
+impl std::fmt::Display for PidFdOwnedAdmissionFailureV3 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.cause, formatter)
+    }
+}
+
+impl std::error::Error for PidFdOwnedAdmissionFailureV3 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
+/// Retains one original kernel pidfd through validation and once-only transfer.
+///
+/// This is passive kernel custody. The caller independently authenticates the
+/// actual PID selector and checks membership, credentials and current liveness.
+/// It must fund this reservoir before acquisition and retain it on failure.
+pub struct PidFdOpenAttemptV1 {
+    open: Option<Result<OwnedFd>>,
+    flags: Option<Result<()>>,
+    validation: Option<Result<()>>,
+    process: Option<PidFd>,
+    closed: Option<Error>,
+    entered: bool,
+    complete: bool,
+}
+
+impl PidFdOpenAttemptV1 {
+    /// Creates empty storage without opening or duplicating a descriptor.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            open: None, flags: None, validation: None, process: None, closed: None,
+            entered: false, complete: false,
+        }
+    }
+
+    /// Opens once and runs the sole ordinary pidfd-kind validator by borrow.
+    ///
+    /// The returned raw FD is parked before CLOEXEC/type validation. Native
+    /// failure keeps that same raw descriptor and whole Result resident.
+    ///
+    /// # Errors
+    /// Returns a negative marker while [`Self::failure`] borrows the actual
+    /// open/validation cause. Reentry fences even an earlier completed opening.
+    pub fn capture_once(&mut self, pid: NonZeroU32) -> std::result::Result<(), PidFdOpenRefusalV1> {
+        if self.entered {
+            self.complete = false;
+            self.closed.get_or_insert_with(|| Error::invalid("original pidfd opening", "already entered"));
+            return Err(PidFdOpenRefusalV1);
+        }
+        self.entered = true;
+        self.open = Some(uapi::pidfd_open_original(pid.get()));
+        let Some(Ok(raw)) = self.open.as_ref() else {
+            return Err(PidFdOpenRefusalV1);
+        };
+        self.flags = Some(uapi::ensure_cloexec(raw.as_fd()));
+        if !matches!(self.flags, Some(Ok(()))) {
+            return Err(PidFdOpenRefusalV1);
+        }
+        self.validation = Some(PidFd::validate_owned_kind(raw.as_fd()));
+        if !matches!(self.validation, Some(Ok(()))) {
+            return Err(PidFdOpenRefusalV1);
+        }
+        // Validation borrows the original. Only this infallible owning move
+        // follows; no new syscall or duplicate can lose the validated prefix.
+        match self.open.take() {
+            Some(Ok(fd)) => self.process = Some(PidFd { fd }),
+            _ => std::process::abort(),
+        }
+        self.complete = true;
+        Ok(())
+    }
+
+    /// Moves the same fully validated pidfd once, without reopening or IO.
+    #[must_use]
+    pub fn take_validated(&mut self) -> Option<PidFd> {
+        if !self.complete {
+            return None;
+        }
+        self.complete = false;
+        self.process.take()
+    }
+
+    /// Borrows the earliest original native or permanent-entry error.
+    #[must_use]
+    pub fn failure(&self) -> Option<&Error> {
+        self.open.as_ref().and_then(|result| result.as_ref().err())
+            .or_else(|| self.flags.as_ref().and_then(|result| result.as_ref().err()))
+            .or_else(|| self.validation.as_ref().and_then(|result| result.as_ref().err()))
+            .or(self.closed.as_ref())
+    }
+}
+
+impl Default for PidFdOpenAttemptV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PidFd {
+    /// Validates a transferred original while retaining its descriptor on error.
+    ///
+    /// This mechanical admission identifies a kernel pin only. The caller
+    /// independently verifies the received subject, role, ancestry and scope.
+    ///
+    /// # Errors
+    /// Preserves the actual same-validator error and raw input descriptor.
+    pub fn from_owned_retaining_v3(fd: OwnedFd) -> std::result::Result<Self, PidFdOwnedAdmissionFailureV3> {
+        let mut input = Some(fd);
+        Self::adopt_owned_slot_v2(&mut input).map_err(|cause| PidFdOwnedAdmissionFailureV3 { cause, _input: input })
+    }
+
     /// Opens and validates a pidfd for `pid`.
     ///
     /// # Errors
@@ -195,6 +437,22 @@ impl PidFd {
     /// required pidfd operations, or the returned descriptor is not a pidfd.
     pub fn open(pid: NonZeroU32) -> Result<Self> {
         Self::from_owned(uapi::pidfd_open(pid.get())?)
+    }
+
+    /// Opens the same pidfd while retaining any raw typed-admission failure.
+    ///
+    /// The existing kernel open and CLOEXEC/pidfs checker remain shared. The
+    /// failure owns any returned original descriptor; it grants no identity,
+    /// process membership or permission to observe a different task.
+    ///
+    /// # Errors
+    /// Retains the original syscall or typed descriptor validation cause and
+    /// any raw descriptor acquired before that validation failed.
+    pub fn open_retaining_v4(pid: NonZeroU32) -> std::result::Result<Self, PidFdOwnedAdmissionFailureV3> {
+        let descriptor = uapi::pidfd_open(pid.get()).map_err(|cause| PidFdOwnedAdmissionFailureV3 {
+            cause, _input: None,
+        })?;
+        Self::from_owned_retaining_v3(descriptor)
     }
 
     /// Validates and adopts an already-owned pidfd.
@@ -207,8 +465,18 @@ impl PidFd {
     /// Returns an error if the descriptor is not a live pidfd supported by the
     /// Linux 6.18 pidfs UAPI.
     pub fn from_owned(fd: OwnedFd) -> Result<Self> {
+        Self::adopt_owned_slot_v2(&mut Some(fd))
+    }
+
+    // Typed admission leaves the exact raw fd in its actual native owner if
+    // the common borrowed CLOEXEC/pidfs checker refuses before the move.
+    pub(crate) fn adopt_owned_slot_v2(slot: &mut Option<OwnedFd>) -> Result<Self> {
+        let fd = slot.as_ref().ok_or_else(current_self_closed)?;
         Self::validate_owned_kind(fd.as_fd())?;
-        Ok(Self { fd })
+        match slot.take() {
+            Some(fd) => Ok(Self { fd }),
+            None => std::process::abort(),
+        }
     }
 
     // All callers use this sole checker and its original error precedence.
@@ -405,16 +673,26 @@ impl PidFd {
     }
 
     fn acquire_namespace_original(&self, kind: NamespaceKind) -> Result<OwnedFd> {
-        let request = match kind {
-            NamespaceKind::Mount => NamespaceIoctl::Mount,
-            NamespaceKind::Network => NamespaceIoctl::Network,
-            NamespaceKind::Pid => NamespaceIoctl::Pid,
-            NamespaceKind::User => NamespaceIoctl::User,
-            NamespaceKind::Uts => NamespaceIoctl::Uts,
-        };
-        uapi::pidfd_namespace(self.fd.as_fd(), request)
+        uapi::pidfd_namespace(self.fd.as_fd(), namespace_request_v2(kind))
+    }
+
+    fn acquire_namespace_retaining_v2(&self, kind: NamespaceKind, original: &mut Option<OwnedFd>) -> Result<()> {
+        uapi::pidfd_namespace_retaining_v2(self.fd.as_fd(), namespace_request_v2(kind), original)
     }
 }
+
+fn namespace_request_v2(kind: NamespaceKind) -> NamespaceIoctl {
+    match kind {
+        NamespaceKind::Mount => NamespaceIoctl::Mount,
+        NamespaceKind::Network => NamespaceIoctl::Network,
+        NamespaceKind::Pid => NamespaceIoctl::Pid,
+        NamespaceKind::User => NamespaceIoctl::User,
+        NamespaceKind::Uts => NamespaceIoctl::Uts,
+    }
+}
+
+mod namespace_original;
+pub use namespace_original::PidFdNamespaceOriginalV2;
 
 /// Information returned by one `PIDFD_GET_INFO` ioctl observation.
 ///
@@ -609,6 +887,34 @@ pub struct NamespaceFd {
     identity: NamespaceIdentity,
 }
 
+/// Retains a rejected namespace descriptor and its original native error.
+///
+/// This mechanical failure owns only the descriptor supplied to the existing
+/// adoption boundary. It supplies no admitted namespace, resource allowance or
+/// permission to retry acquisition.
+#[derive(Debug)]
+pub struct NamespaceAdoptionFailureV2 {
+    fd: OwnedFd,
+    cause: Error,
+}
+
+impl NamespaceAdoptionFailureV2 {
+    /// Borrows the actual validation error while keeping its descriptor owned.
+    #[must_use]
+    pub const fn cause(&self) -> &Error { &self.cause }
+
+    /// Borrows the same rejected descriptor without extracting or duplicating it.
+    #[must_use]
+    pub fn as_fd(&self) -> BorrowedFd<'_> { self.fd.as_fd() }
+
+    /// Transfers the same rejected descriptor and its actual cause together.
+    ///
+    /// This mechanical custody move grants no namespace or permission to retry
+    /// adoption. Retained owners keep both parts through their owed posts.
+    #[must_use]
+    pub fn into_parts(self) -> (OwnedFd, Error) { (self.fd, self.cause) }
+}
+
 impl NamespaceFd {
     /// Opens and type-checks the calling process's current Network namespace.
     ///
@@ -621,16 +927,7 @@ impl NamespaceFd {
     /// Returns an error if the fixed procfs namespace entry cannot be opened or
     /// is not an `nsfs` Network namespace descriptor.
     pub fn current_network() -> Result<Self> {
-        let descriptor = rustix::fs::open(
-            "/proc/self/ns/net",
-            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|source| Error::Syscall {
-            operation: "open /proc/self/ns/net",
-            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
-        })?;
-        Self::from_owned(descriptor, NamespaceKind::Network)
+        current_network::capture_local()
     }
 
     /// Checks whether this descriptor is the calling process's current namespace.
@@ -640,18 +937,7 @@ impl NamespaceFd {
     /// Returns an error if this is not a Network namespace or if the fixed
     /// current-namespace descriptor cannot be opened and inspected.
     pub fn validate_current_network(&self) -> Result<()> {
-        if self.kind != NamespaceKind::Network {
-            return Err(Error::WrongDescriptorType {
-                expected: "Network namespace",
-            });
-        }
-        if Self::current_network()?.identity != self.identity {
-            return Err(Error::invalid(
-                "current Network namespace",
-                "retained descriptor does not identify the current namespace",
-            ));
-        }
-        Ok(())
+        current_network::compare_local(self)
     }
 
     /// Validates and adopts an owned `nsfs` descriptor with its expected kind.
@@ -664,8 +950,26 @@ impl NamespaceFd {
     /// Returns an error if `fd` is not an `nsfs` descriptor, has a different
     /// namespace kind, or cannot be inspected.
     pub fn from_owned(fd: OwnedFd, kind: NamespaceKind) -> Result<Self> {
-        let identity = Self::validate_original_kind(fd.as_fd(), kind)?;
-        Ok(Self { fd, kind, identity })
+        Self::from_owned_retaining_v2(fd, kind).map_err(|failure| failure.cause)
+    }
+
+    /// Retains the original descriptor if namespace validation fails.
+    ///
+    /// This uses the same close-on-exec, nsfs, namespace-kind and identity
+    /// checks as [`Self::from_owned`]. The failure owns the supplied descriptor
+    /// before any check; neither outcome establishes role or launch authority.
+    ///
+    /// # Errors
+    /// Returns the descriptor and its actual validation error without reopening
+    /// or replacing a failed original.
+    pub fn from_owned_retaining_v2(
+        fd: OwnedFd,
+        kind: NamespaceKind,
+    ) -> std::result::Result<Self, NamespaceAdoptionFailureV2> {
+        match Self::validate_original_kind(fd.as_fd(), kind) {
+            Ok(identity) => Ok(Self { fd, kind, identity }),
+            Err(cause) => Err(NamespaceAdoptionFailureV2 { fd, cause }),
+        }
     }
 
     // Selected received records keep their raw descriptors resident until all
@@ -744,33 +1048,7 @@ impl SingleThreadedProcess {
     /// Returns an error if procfs cannot be inspected or the process has zero
     /// or more than one visible task.
     pub fn verify() -> Result<Self> {
-        let tasks = std::fs::read_dir("/proc/self/task").map_err(|source| Error::Syscall {
-            operation: "read /proc/self/task",
-            source,
-        })?;
-        let mut count = 0usize;
-        for task in tasks {
-            task.map_err(|source| Error::Syscall {
-                operation: "read /proc/self/task entry",
-                source,
-            })?;
-            count += 1;
-            if count > 1 {
-                return Err(Error::invalid(
-                    "namespace worker",
-                    "process has more than one thread",
-                ));
-            }
-        }
-        if count != 1 {
-            return Err(Error::invalid(
-                "namespace worker",
-                "process has no visible calling thread",
-            ));
-        }
-        Ok(Self {
-            not_send_or_sync: PhantomData,
-        })
+        single_thread_original::verify_local()
     }
 
     /// Disables core dumps for this short-lived namespace worker process.
@@ -789,17 +1067,82 @@ impl SingleThreadedProcess {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_owned_pidfd_admission_keeps_the_exact_input_file() {
+        use std::os::fd::AsRawFd as _;
+        let file = tempfile::tempfile().unwrap();
+        let path = format!("/proc/self/fd/{}", file.as_raw_fd());
+
+        let failed = super::PidFd::from_owned_retaining_v3(file.into()).unwrap_err();
+
+        assert!(std::fs::read_link(&path).is_ok());
+        assert!(std::error::Error::source(&failed).is_some());
+        drop(failed);
+        assert!(std::fs::read_link(path).is_err());
+    }
+
     use std::fs::File;
     #[cfg(feature = "kernel-tests")]
     use std::io::Write as _;
     #[cfg(feature = "kernel-tests")]
     use std::io::{BufRead as _, BufReader};
+    #[cfg(feature = "kernel-tests")]
+    use std::os::fd::AsRawFd as _;
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
 
     use super::*;
 
+    #[test]
+    fn refused_received_pidfd_keeps_same_owned_file_and_first_cause() {
+        let file = tempfile::tempfile().unwrap();
+        let descriptor = std::os::fd::AsRawFd::as_raw_fd(&file);
+        let mut original = RuntimeScopeReceivedPidFdOriginalV1::new();
+
+        assert!(original.capture_once(file.into()).is_err());
+        let cause = std::ptr::from_ref(original.failure().unwrap());
+        assert!(original.take_completed_once().is_none());
+        let retained = original.raw.as_ref().unwrap();
+        assert_eq!(std::os::fd::AsRawFd::as_raw_fd(retained), descriptor);
+        assert!(rustix::fs::fcntl_getfl(retained).is_ok());
+
+        assert!(original.capture_once(tempfile::tempfile().unwrap().into()).is_err());
+        assert_eq!(std::ptr::from_ref(original.failure().unwrap()), cause);
+        assert_eq!(std::os::fd::AsRawFd::as_raw_fd(original.raw.as_ref().unwrap()), descriptor);
+    }
+
     const LIVENESS_TARGET_ENV: &str = "AOS_PIDFD_LIVENESS_TARGET_V1";
+
+    #[cfg(feature = "kernel-tests")]
+    #[test]
+    fn original_open_moves_the_exact_validated_self_pin_once() {
+        let pid = NonZeroU32::new(std::process::id()).unwrap();
+        let mut opening = PidFdOpenAttemptV1::new();
+
+        opening.capture_once(pid).unwrap();
+        let process = opening.take_validated().unwrap();
+
+        assert_eq!(process.info().unwrap().pid(), pid.get());
+        assert!(process.is_alive().unwrap());
+        assert!(opening.take_validated().is_none());
+        assert!(opening.failure().is_none());
+    }
+
+    #[cfg(feature = "kernel-tests")]
+    #[test]
+    fn repeated_original_open_keeps_the_first_pin_and_refuses_transfer() {
+        let pid = NonZeroU32::new(std::process::id()).unwrap();
+        let mut opening = PidFdOpenAttemptV1::new();
+        opening.capture_once(pid).unwrap();
+        let original = opening.process.as_ref().unwrap().as_fd().as_raw_fd();
+
+        assert!(opening.capture_once(pid).is_err());
+
+        assert!(opening.take_validated().is_none());
+        assert!(opening.failure().is_some());
+        assert_eq!(opening.process.as_ref().unwrap().as_fd().as_raw_fd(), original);
+        assert!(opening.process.as_ref().unwrap().is_alive().unwrap());
+    }
     #[cfg(feature = "kernel-tests")]
     const LIVENESS_OBSERVER_ENV: &str = "AOS_PIDFD_CROSS_UID_OBSERVER_V1";
     #[cfg(feature = "kernel-tests")]
@@ -816,6 +1159,49 @@ mod tests {
         assert!(custody.process.is_none());
         assert!(custody.observations.is_none());
         assert!(custody.capture_current().is_err());
+    }
+
+    #[test]
+    fn prearmed_current_self_negative_observation_preserves_closed_healthy_source() {
+        use std::os::fd::AsRawFd as _;
+
+        let mut custody = CurrentSelfPidFdCustodyV1::new();
+        let captured = custody.capture_current().unwrap();
+        let descriptor = custody.process.as_ref().unwrap().as_fd().as_raw_fd();
+        let mut owed = PidFdNegativeIdentityOriginalV1::new();
+        custody.prepare_negative_identity_once_into_v1(&mut owed).unwrap();
+        custody.fence();
+        assert!(custody.observe_identity().is_err());
+        assert!(custody.pidfd().is_err());
+
+        custody.observe_negative_identity_once_v1(&mut owed).unwrap();
+
+        assert!(owed.is_complete());
+        assert!(owed.failure().is_none());
+        let actual = owed.completed_info_v1().unwrap();
+        assert_eq!(actual.pid(), captured.pid());
+        assert_eq!(actual.parent_pid(), captured.parent_pid());
+        assert_eq!(custody.phase, CurrentSelfPhaseV1::Closed);
+        assert_eq!(custody.process.as_ref().unwrap().as_fd().as_raw_fd(), descriptor);
+        assert!(custody.observe_identity().is_err());
+        assert!(custody.pidfd().is_err());
+        assert!(custody.observe_negative_identity_once_v1(&mut owed).is_err());
+        assert_eq!(owed.completed_info_v1(), Some(actual));
+    }
+
+    #[test]
+    fn closed_current_self_cannot_prepare_a_new_negative_destination() {
+        let mut custody = CurrentSelfPidFdCustodyV1::new();
+        custody.capture_current().unwrap();
+        custody.fence();
+        let mut unprepared = PidFdNegativeIdentityOriginalV1::new();
+
+        assert!(custody.prepare_negative_identity_once_into_v1(&mut unprepared).is_err());
+        assert!(custody.observe_negative_identity_once_v1(&mut unprepared).is_err());
+
+        assert!(!unprepared.is_complete());
+        assert!(unprepared.completed_info_v1().is_none());
+        assert_eq!(custody.phase, CurrentSelfPhaseV1::Closed);
     }
 
     #[test]

@@ -8,7 +8,10 @@ use std::path::Path;
 
 use aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1;
 
-use aos_sandbox_linux::credential::read_optional_fixed_role_credential_v1;
+use aos_sandbox_linux::credential::CredentialOwnerPolicyV1;
+use super::credential_receiving::{
+    CredentialMetadataV1, CredentialSourceV1, OrdinaryCredentialSourceV1,
+};
 
 const PACKAGE_BINDING: &str = "guest-root-package-binding-v1";
 const ROOT_TREE_DIGEST: &str = "guest-root-tree-digest-v1";
@@ -30,31 +33,49 @@ pub(crate) struct ControllerGuestRootCredentialErrorV1;
 /// partial pair, or zero digest.
 pub(crate) fn load_guest_root_template_pins_optional()
 -> Result<Option<GuestRootTemplatePinsV1>, ControllerGuestRootCredentialErrorV1> {
+    load_guest_root_template_pins_with_source(&mut OrdinaryCredentialSourceV1)
+}
+
+pub(super) fn load_guest_root_template_pins_with_source(
+    source: &mut impl CredentialSourceV1,
+) -> Result<Option<GuestRootTemplatePinsV1>, ControllerGuestRootCredentialErrorV1> {
     let Some(directory) = std::env::var_os("CREDENTIALS_DIRECTORY") else {
         return Ok(None);
     };
+    source.directory(&directory);
     let directory = Path::new(&directory);
     if !directory.is_absolute() {
         return Err(ControllerGuestRootCredentialErrorV1);
     }
-    let package = read_digest_line(directory, PACKAGE_BINDING)?;
-    let tree = read_digest_line(directory, ROOT_TREE_DIGEST)?;
+    let package = read_digest_line(source, directory, PACKAGE_BINDING)?;
+    let tree = read_digest_line(source, directory, ROOT_TREE_DIGEST)?;
     match (package, tree) {
         (None, None) => Ok(None),
         (Some(package), Some(tree)) => GuestRootTemplatePinsV1::new(package, tree)
             .map(Some)
-            .map_err(|_| ControllerGuestRootCredentialErrorV1),
+            .map_err(|cause| {
+                source.retain(cause);
+                ControllerGuestRootCredentialErrorV1
+            }),
         _ => Err(ControllerGuestRootCredentialErrorV1),
     }
 }
 
 fn read_digest_line(
+    source: &mut impl CredentialSourceV1,
     directory: &Path,
-    name: &str,
+    name: &'static str,
 ) -> Result<Option<[u8; 32]>, ControllerGuestRootCredentialErrorV1> {
     let Some(line) =
-        read_optional_fixed_role_credential_v1(directory, name, HEX_LINE_BYTES as u64, true)
-            .map_err(|_| ControllerGuestRootCredentialErrorV1)?
+        source.read(directory, name, HEX_LINE_BYTES, HEX_LINE_BYTES,
+            CredentialMetadataV1::Protected {
+                private: true,
+                owner: CredentialOwnerPolicyV1::Any,
+            })
+            .map_err(|cause| {
+                source.retain(cause);
+                ControllerGuestRootCredentialErrorV1
+            })?
     else {
         return Ok(None);
     };

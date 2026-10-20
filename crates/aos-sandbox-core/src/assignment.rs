@@ -6,7 +6,7 @@
 
 use sha2::{Digest as _, Sha256};
 
-use crate::format::{decode_assignment_manifest_v1, encode_assignment_manifest_v1};
+use crate::format::encode_assignment_manifest_v1;
 use crate::model::AssignmentManifestV1;
 use crate::{
     BrokerAssignment, CanonicalCborError, DecodeLimits, InvalidBrokerAuthorizationPlan,
@@ -46,15 +46,35 @@ impl CanonicalAssignmentManifestV1 {
         bytes: &[u8],
         limits: DecodeLimits,
     ) -> Result<Self, CanonicalCborError> {
-        let manifest = decode_assignment_manifest_v1(bytes, limits)?;
+        Self::from_canonical_bytes_engine_v1(bytes, limits)
+            .map_err(crate::format::decode_attempt::DecodeFailure::into_canonical)
+    }
+
+    pub(crate) fn from_canonical_bytes_engine_v1(
+        bytes: &[u8],
+        limits: DecodeLimits,
+    ) -> crate::format::decode_attempt::DecodeResult<Self> {
+        let manifest = crate::format::decode_assignment_manifest_engine_v1(bytes, limits)?;
         let canonical = Self::new(manifest);
         if canonical.canonical_bytes != bytes {
             return Err(CanonicalCborError::InvalidSemantics {
                 object: "assignment manifest",
                 message: "decoded bytes do not reproduce the canonical assignment".to_owned(),
-            });
+            }
+            .into());
         }
         Ok(canonical)
+    }
+
+    /// Computes only the existing exact-byte assignment commitment as DATA.
+    ///
+    /// This performs no canonical decoding or semantic validation and creates
+    /// no assignment owner. Independent consumers must validate the complete
+    /// manifest and its current inputs before accepting any assignment.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn digest_canonical_bytes_data_v1(bytes: &[u8]) -> ObjectDigest {
+        digest_bytes(bytes)
     }
 
     /// Returns the validated controller-known assignment semantics.
@@ -225,6 +245,16 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("test assignment failed: {error}"));
         CanonicalAssignmentManifestV1::new(manifest)
+    }
+
+    #[test]
+    fn passive_byte_commitment_uses_the_existing_canonical_assignment_domain() {
+        let actual = fixture(None);
+        assert_eq!(CanonicalAssignmentManifestV1::digest_canonical_bytes_data_v1(
+            actual.canonical_bytes()), actual.digest());
+        let mut changed = actual.canonical_bytes().to_vec();
+        changed.push(0);
+        assert_ne!(CanonicalAssignmentManifestV1::digest_canonical_bytes_data_v1(&changed), actual.digest());
     }
 
     #[test]

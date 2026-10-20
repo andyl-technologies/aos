@@ -618,6 +618,15 @@ mod tests {
 
     use super::*;
     use crate::JournalLimits;
+    use aos_sandbox_core::{ResourceId, ResourceKind, Selector};
+    use aos_sandbox_protocol::domain_ledger::operation::{
+        OperationRecord, decode_operation, encode_operation_record,
+    };
+    use aos_sandbox_protocol::domain_ledger::public_operation::{
+        OperationState, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
+        PublicRecoveryKindV1,
+    };
+    use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 
     fn open_journal(directory: &tempfile::TempDir) -> Journal {
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -631,6 +640,34 @@ mod tests {
         .0
     }
 
+    fn operation_bytes(state: OperationState, wall_seconds: i64) -> Vec<u8> {
+        let authorization = PublicOperationAuthorizationV1::new(
+            ProjectId::from_bytes([6; 16]),
+            ResourceKind::Sandbox,
+            Selector::Resource {
+                resource: ResourceId::from_bytes([8; 16]),
+            },
+        )
+        .unwrap();
+        let admission = PublicOperationAdmissionV1::new(
+            PublicOperationMethodV1::OperatorRecover,
+            1,
+            [7; 16],
+            100,
+            authorization,
+        )
+        .unwrap();
+        let public = admission.durable().advance(state, wall_seconds).unwrap();
+        let operation = OperationRecord::new(state, 1, false, None, Some(public));
+        let bytes = encode_operation_record(operation);
+
+        // Generic replacement inspects the old canonical Operation before
+        // refusing the distinct closed recovery kinds. This fixture is Repair.
+        assert_eq!(decode_operation(&bytes).unwrap(), operation);
+        assert_eq!(public.recovery_kind_v1(), PublicRecoveryKindV1::Ordinary);
+        bytes
+    }
+
     fn seeded() -> (tempfile::TempDir, Journal, PreparedRepairSuccessorV1) {
         let directory = tempfile::tempdir().unwrap();
         let mut journal = open_journal(&directory);
@@ -642,7 +679,7 @@ mod tests {
         let archive_key = b"repair-archive".to_vec();
         let receipt_key = b"repair-terminal-receipt".to_vec();
         let predecessor_effect = b"effect-pending".to_vec();
-        let predecessor_operation = b"operation-applying".to_vec();
+        let predecessor_operation = operation_bytes(OperationState::Applying, 100);
         let predecessor_projection = b"projection-before".to_vec();
         let predecessor_current = b"head-before".to_vec();
         journal
@@ -680,7 +717,11 @@ mod tests {
             vec![
                 JournalRecord::put(RecordNamespace::OperatorRecovery, archive_key, vec![11]),
                 JournalRecord::put(RecordNamespace::Effect, effect_key, vec![12]),
-                JournalRecord::put(RecordNamespace::Operation, operation_key, vec![13]),
+                JournalRecord::put(
+                    RecordNamespace::Operation,
+                    operation_key,
+                    operation_bytes(OperationState::Succeeded, 101),
+                ),
                 JournalRecord::put(RecordNamespace::DesiredState, projection_key, vec![14]),
                 JournalRecord::put(RecordNamespace::OperatorRecovery, current_key, vec![15]),
                 JournalRecord::put(RecordNamespace::OperatorRecovery, receipt_key, vec![16]),
@@ -763,9 +804,14 @@ mod tests {
         for index in 1..=4 {
             let (_directory, mut journal, prepared) = seeded();
             let row = &prepared.transaction.records()[index];
+            let replacement = if row.namespace() == RecordNamespace::Operation {
+                operation_bytes(OperationState::Applying, 102)
+            } else {
+                b"replaced".to_vec()
+            };
             journal.commit(&JournalTransaction::new(
                 [21; 16],
-                vec![JournalRecord::put(row.namespace(), row.key().to_vec(), b"replaced".to_vec())],
+                vec![JournalRecord::put(row.namespace(), row.key().to_vec(), replacement)],
             ).unwrap()).unwrap();
 
             assert!(!prepared.predecessor_matches(&journal));
@@ -822,7 +868,7 @@ mod tests {
                     vec![JournalRecord::put(
                         operation.namespace(),
                         operation.key().to_vec(),
-                        b"substituted-operation".to_vec(),
+                        operation_bytes(OperationState::Succeeded, 102),
                     )],
                 )
                 .unwrap(),

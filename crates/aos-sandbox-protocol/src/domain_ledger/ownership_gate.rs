@@ -206,14 +206,7 @@ pub fn encode_ownership_gate(
         u32::try_from(plan.publication_draft.canonical_bytes().len()).map_err(|_| {
             OwnershipGateDataErrorV1::InvalidPlan("ownership publication draft is too large")
         })?;
-    let capacity = OWNERSHIP_GATE_FIXED_BYTES
-        .checked_add(plan.idempotency_key.as_bytes().len())
-        .and_then(|value| value.checked_add(key_id.len()))
-        .and_then(|value| value.checked_add(CLAIM_BYTES))
-        .and_then(|value| value.checked_add(plan.publication_draft.canonical_bytes().len()))
-        .ok_or(OwnershipGateDataErrorV1::InvalidPlan(
-            "ownership gate length overflow",
-        ))?;
+    let capacity = ownership_gate_encoded_bytes_v1(plan)?;
     let mut bytes = Vec::with_capacity(capacity);
     bytes.extend_from_slice(OWNERSHIP_GATE_MAGIC);
     bytes.extend_from_slice(&OWNERSHIP_GATE_VERSION.to_be_bytes());
@@ -237,6 +230,26 @@ pub fn encode_ownership_gate(
     bytes.extend_from_slice(plan.claim.canonical_bytes());
     bytes.extend_from_slice(plan.publication_draft.canonical_bytes());
     Ok(bytes)
+}
+
+/// Returns the exact pending or activated record width without encoding.
+///
+/// Both states have identical field widths. This passive calculation neither
+/// validates authority nor allocates a record or publication.
+///
+/// # Errors
+/// Rejects checked length overflow before the existing encoder allocates.
+pub fn ownership_gate_encoded_bytes_v1(
+    plan: &OwnershipGatePlanV1,
+) -> Result<usize, OwnershipGateDataErrorV1> {
+    OWNERSHIP_GATE_FIXED_BYTES
+        .checked_add(plan.idempotency_key.as_bytes().len())
+        .and_then(|value| value.checked_add(plan.expected_authority().stable_key_id().as_str().len()))
+        .and_then(|value| value.checked_add(CLAIM_BYTES))
+        .and_then(|value| value.checked_add(plan.publication_draft.canonical_bytes().len()))
+        .ok_or(OwnershipGateDataErrorV1::InvalidPlan(
+            "ownership gate length overflow",
+        ))
 }
 
 /// Decodes the complete bounded V1 record and its original structural context.

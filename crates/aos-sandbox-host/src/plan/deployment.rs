@@ -7,37 +7,31 @@
 
 use std::fs::File;
 use std::io::{Read as _, Seek as _};
-use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
-use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
 use aos_systemd::{OwnedValue, SandboxUnitSpec, SystemdClient, Value};
-use ed25519_dalek::VerifyingKey;
 use rustix::fs::{Mode, OFlags, open};
 #[cfg(target_arch = "x86_64")]
 use serde::Deserialize;
 
-use super::readiness::verified_packaged_nspawn_digest;
 use super::{
     BackendReadinessBlocker, ProtectedBackendReadinessEvidence, VerifiedLiveSelinuxPolicyV1,
     VerifiedLiveSupervisorPolicyV1, VerifiedPackagedRuntimeV1,
 };
-use crate::phase0_probe::{
-    PHASE0_PROBE_RECORD_BYTES, Phase0ProbeObservationV2, SignedPhase0ProbeRecordV2,
-    verified_packaged_hostd_digest, verified_packaged_inspector_digest,
-};
+use crate::phase0_probe::{Phase0DeploymentFactsOriginalV2, Phase0ProbeObservationV2};
 use crate::{HostError, Result};
 
 pub(crate) mod canary;
 pub(crate) mod control;
+pub(crate) mod component_phase0;
+mod component_backend;
+pub(crate) use component_backend::{HostComponentBackendPreparationV2, HostComponentBackendCompletionV2};
+pub(crate) mod component_target;
 
 use canary::StartupFailure;
 
-const PROBE_DIRECTORY: &str = "/var/lib/aos/sandbox-host-phase0";
-const PROBE_RECORD: &str = "probe-v2";
-const PROBE_PUBLIC_KEY: &str = "phase0-probe-public-key-v1";
 const PROBE_TARGET_SERVICE: &str = "aos-sandbox-host-phase0-target.service";
 const HOST_SERVICE: &str = "aos-sandbox-hostd.service";
 const HOST_CONTEXT: &str = "system_u:system_r:aos_sandbox_host_t";
@@ -236,7 +230,6 @@ const HOST_FILTER_PROPERTIES: &[&str] = &[
 enum DeploymentOriginV1<'startup> {
     Ordinary,
     Canary(&'startup canary::HostCanaryStartupV1),
-    ComponentControl(&'startup control::HostComponentControlStartupV2),
 }
 
 impl DeploymentOriginV1<'_> {
@@ -244,7 +237,6 @@ impl DeploymentOriginV1<'_> {
         match self {
             Self::Ordinary => evidence.verify_packaged_runtime(),
             Self::Canary(original) => evidence.verify_canary_packaged_runtime(original),
-            Self::ComponentControl(original) => evidence.verify_control_packaged_runtime(original),
         }
     }
 
@@ -254,7 +246,6 @@ impl DeploymentOriginV1<'_> {
         match self {
             Self::Ordinary => packaged.revalidate(evidence),
             Self::Canary(original) => packaged.revalidate_canary(evidence, original),
-            Self::ComponentControl(original) => packaged.revalidate_control(evidence, original),
         }
     }
 
@@ -264,7 +255,6 @@ impl DeploymentOriginV1<'_> {
         match self {
             Self::Ordinary => packaged.verify_live_pid1_service(evidence, systemd).await,
             Self::Canary(original) => packaged.verify_canary_pid1_service(evidence, systemd, original).await,
-            Self::ComponentControl(original) => packaged.verify_control_pid1_service(evidence, systemd, original).await,
         }
     }
 }
@@ -469,27 +459,6 @@ pub(crate) async fn verify_original_canary_phase0_claim_v1(
     ).await?.ok_or_else(|| HostError::State("original Host canary phase-0 claim is absent".to_owned()))
 }
 
-/// Checks optional phase-0 evidence against the same retained Control PID1 original.
-///
-/// This shares the existing package and deployment engine. Absence preserves
-/// observation-only Host service and never constructs backend readiness.
-///
-/// # Errors
-/// Rejects a changed original, malformed optional evidence, or failed existing
-/// package, supervisor, kernel or signed-target readback.
-pub async fn verify_original_host_control_phase0_claim_v2(
-    original: &control::HostComponentControlStartupV2,
-    credential_directory: &Path,
-    state_root: &Path,
-    nspawn_executable: &str,
-    selinux_policy: &str,
-) -> Result<Option<VerifiedPhase0ClaimV1>> {
-    verify_phase0_claim_origin(
-        credential_directory, state_root, nspawn_executable, selinux_policy,
-        DeploymentOriginV1::ComponentControl(original),
-    ).await
-}
-
 async fn verify_phase0_claim_origin(
     credential_directory: &Path,
     state_root: &Path,
@@ -609,57 +578,14 @@ fn verify_optional_protected_phase0_probe(
     nspawn_executable: &str,
     selinux_policy: &str,
 ) -> Result<Option<([u8; 32], Phase0ProbeObservationV2)>> {
-    let public_path = credential_directory.join(PROBE_PUBLIC_KEY);
-    match public_path.symlink_metadata() {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(HostError::State(format!(
-                "cannot inspect phase-0 verifier pin: {error}"
-            )));
-        }
-    }
-    let public = read_protected_exact(&public_path, 32)?;
-    let public: [u8; 32] = public
-        .try_into()
-        .map_err(|_| HostError::State("phase-0 probe verifier key has wrong length".to_owned()))?;
-    let key = VerifyingKey::from_bytes(&public)
-        .map_err(|_| HostError::State("phase-0 probe verifier key is invalid".to_owned()))?;
-
-    let directory = Path::new(PROBE_DIRECTORY);
-    let metadata = directory
-        .symlink_metadata()
-        .map_err(|error| HostError::State(format!("phase-0 probe root is absent: {error}")))?;
-    if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o077 != 0 {
-        return Err(HostError::State(
-            "phase-0 probe root is not protected".to_owned(),
-        ));
-    }
-    let bytes = read_protected_exact(&directory.join(PROBE_RECORD), PHASE0_PROBE_RECORD_BYTES)?;
-    let boot_id = KernelBootId::current()
-        .map(KernelBootId::into_bytes)
-        .map_err(|error| HostError::State(error.to_string()))?;
-    let nspawn_sha256 = verified_packaged_nspawn_digest(nspawn_executable)?;
-    let hostd_path = std::env::current_exe().map_err(|error| {
-        HostError::State(format!("cannot resolve running Host daemon: {error}"))
-    })?;
-    let hostd_sha256 = verified_packaged_hostd_digest(&hostd_path)?;
-    let inspector_path = hostd_path
-        .parent()
-        .ok_or_else(|| HostError::State("running Host package has no binary directory".to_owned()))?
-        .join("aos-sandbox-host-phase0-probe");
-    let inspector_sha256 = verified_packaged_inspector_digest(&inspector_path)?;
-    let selinux_policy_sha256 = VerifiedLiveSelinuxPolicyV1::verify(selinux_policy)?.digest();
-    let report = SignedPhase0ProbeRecordV2::verify(
-        &bytes,
-        &key,
-        boot_id,
-        nspawn_sha256,
-        hostd_sha256,
-        inspector_sha256,
-        selinux_policy_sha256,
-    )?;
-    Ok(Some((report.digest(), *report.observation())))
+    let mut original = Phase0DeploymentFactsOriginalV2::new();
+    original
+        .observe_running_host_once_v2(credential_directory, nspawn_executable, selinux_policy)
+        .map(|facts| facts.map(|facts| (facts.probe_digest, facts.observation)))
+        .map_err(|_| HostError::State(match original.failure_v2() {
+            Some(cause) => format!("protected phase-0 deployment comparison failed: {cause}"),
+            None => "protected phase-0 deployment comparison is incomplete".to_owned(),
+        }))
 }
 
 async fn verify_host_shifted_target_access(
@@ -946,42 +872,6 @@ fn status_field<'a>(status: &'a str, name: &str) -> Option<&'a str> {
     values.next().is_none().then_some(value)
 }
 
-fn read_protected_exact(path: &Path, length: usize) -> Result<Vec<u8>> {
-    let descriptor = open(
-        path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map_err(|error| HostError::State(format!("protected phase-0 input is absent: {error}")))?;
-    let mut file = File::from(descriptor);
-    let metadata = file.metadata().map_err(|error| {
-        HostError::State(format!("cannot stat protected phase-0 input: {error}"))
-    })?;
-    if !metadata.is_file()
-        || metadata.uid() != 0
-        || metadata.nlink() != 1
-        || metadata.mode() & 0o077 != 0
-        || metadata.len() != length as u64
-    {
-        return Err(HostError::State(
-            "protected phase-0 input has invalid metadata".to_owned(),
-        ));
-    }
-    let mut bytes = vec![0; length];
-    file.read_exact(&mut bytes).map_err(|error| {
-        HostError::State(format!("cannot read protected phase-0 input: {error}"))
-    })?;
-    let mut trailing = [0];
-    if file.read(&mut trailing).map_err(|error| {
-        HostError::State(format!("cannot recheck protected phase-0 input: {error}"))
-    })? != 0
-    {
-        return Err(HostError::State(
-            "protected phase-0 input has trailing bytes".to_owned(),
-        ));
-    }
-    Ok(bytes)
-}
 
 #[cfg(test)]
 mod tests {

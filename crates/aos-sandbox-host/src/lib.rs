@@ -29,6 +29,7 @@ pub mod catalog;
 mod dormant_broker_session;
 /// Source-only RFC-0021 adapters that are not connected to service dispatch.
 pub mod dormant_runtime_backend;
+pub mod execution_effect;
 #[cfg(target_os = "linux")]
 pub mod fuse_worker;
 pub mod live_agent;
@@ -52,6 +53,9 @@ pub use dormant_broker_session::{
     OriginalHostFuseWorkerTransportActionV1, OriginalHostFuseWorkerTransportCallbackV1,
     OriginalHostFuseWorkerTransportProgressV1,
 };
+pub use plan::{HostControlColdSessionOwnerV1, HostControlColdSessionAccessV1,
+    HostControlColdSessionLoanV1, HostControlColdSessionPurposeV1,
+    HostControlColdSessionNativeRetentionV1, HostControlColdSessionClosedV1};
 
 pub(crate) const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
 

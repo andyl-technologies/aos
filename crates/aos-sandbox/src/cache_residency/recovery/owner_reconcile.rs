@@ -4,16 +4,17 @@ use aos_sandbox_protocol::cache_state::PhysicalPartitionId;
 
 use crate::cache_residency::{
     CacheOwnerErrorV1, CacheOwnerPinIdV1, CacheOwnerPinPresenceV1, CacheOwnerPinSnapshotV1,
-    CachePinCompactionPhysicalProofV1, CachePinId, CachePinKindV1, CachePinV1,
+    CachePinCompactionPhysicalProofV1, CachePinId, CachePinKindV1,
 };
 
 use super::CacheRecoveryInventoryV1;
+use aos_sandbox_protocol::cache_state::pin_data::CachePinDataV1;
 
 /// Reports one exact logical pin whose protected and physical states disagree.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CacheLogicalOwnerPinDiscrepancyV1 {
     /// Exact protected pin or release tombstone that must be reconciled.
-    pub pin: CachePinV1,
+    pub pin: CachePinDataV1,
     /// Presence required by the latest protected cache projection.
     pub expected: CacheOwnerPinPresenceV1,
     /// Presence observed in the validated physical-owner manifest.
@@ -120,7 +121,7 @@ impl CacheRecoveryInventoryV1 {
 fn observe_logical_pin(
     owner: &CacheOwnerPinSnapshotV1<'_>,
     partition: PhysicalPartitionId,
-    pin: &CachePinV1,
+    pin: &CachePinDataV1,
     expected: CacheOwnerPinPresenceV1,
     discrepancies: &mut Vec<CacheLogicalOwnerPinDiscrepancyV1>,
 ) -> Result<(), CacheOwnerErrorV1> {

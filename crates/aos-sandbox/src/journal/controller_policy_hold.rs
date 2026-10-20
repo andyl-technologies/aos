@@ -16,8 +16,11 @@
 //! The hold freezes ordinary Controller mutations across crash and reopen.
 //! Only exact private no-Apply acknowledgment and release transitions can
 //! write while held. Neither freezes other owners nor authorizes public Create,
-//! policy publication, or Apply. The AOSQ8F01 and AOSQ8S01 rows have private
-//! codecs in `v8_pre_release_floor` and `v8_settlement`.
+//! policy publication, or Apply. The AOSQ8F01 and AOSQ8S01 DATA codecs are shared with
+//! LedgerReplay; their mutation exceptions remain private to this owner.
+
+use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
+use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
 
 use crate::journal::{CacheMutationGateV1, PreflightTransactionViewV1};
 use crate::journal::semantic_append::{AppendScope, PreflightScope};
@@ -30,8 +33,11 @@ use sha2::{Digest as _, Sha256};
 use crate::policy_compiler::{ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootV8EffectAckV1};
 
 use super::{
-    CachePolicyHoldV1, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
-    SourceDomainPolicyHoldV1,
+    Journal,
+    JournalError,
+    JournalRecord,
+    JournalTransaction,
+    RecordNamespace,
 };
 
 #[cfg(target_os = "linux")]
@@ -41,599 +47,53 @@ use crate::policy_compiler::create_q04::{
     Q04RootDecisionV1, Q04TransactionOwnerV1,
 };
 
-mod v8_pre_release_floor;
-mod v8_settlement;
+#[cfg(target_os = "linux")]
+mod create_storage_acceptance;
 
-pub(crate) use v8_pre_release_floor::ControllerPolicyV8PreReleaseFloorV1;
+#[cfg(target_os = "linux")]
+pub(crate) use create_storage_acceptance::{
+    RootControllerCreateAcceptanceOriginalsV1, RootControllerAcceptedNativeProgressV1,
+    RootControllerAcceptedNativeV1,
+};
+
 use v8_pre_release_floor::{
     KEY as V8_FLOOR_KEY, RECORD_BYTES as V8_FLOOR_RECORD_BYTES,
     TRANSACTION_DOMAIN as V8_FLOOR_TRANSACTION_DOMAIN,
 };
-pub(crate) use v8_settlement::{
-    ControllerPolicyV8ReleaseEvidenceV1, ControllerPolicyV8SettlementV1,
+
+use aos_sandbox_ledger_replay::controller_policy_hold as canonical;
+use canonical::ControllerHoldReadbackV1;
+#[cfg(target_os = "linux")]
+pub(crate) use canonical::ControllerQ04HistoryV1;
+use canonical::{
+    ACK_KEY, CHECKSUM_DOMAIN, KEY, MAGIC, RECORD_BYTES, TRANSACTION_DOMAIN, V8_ACK_CHECKSUM_DOMAIN,
+    V8_ACK_KEY, V8_ACK_MAGIC, V8_ACK_RECORD_BYTES, V8_ACK_TRANSACTION_DOMAIN,
+    V8_ATTEMPT_CHECKSUM_DOMAIN, V8_ATTEMPT_KEY, V8_ATTEMPT_MAGIC, V8_ATTEMPT_RECORD_BYTES,
+    V8_ATTEMPT_TRANSACTION_DOMAIN, V8_ROOT_RECEIPT_CHECKSUM_DOMAIN, V8_ROOT_RECEIPT_KEY,
+    V8_ROOT_RECEIPT_MAGIC, V8_ROOT_RECEIPT_RECORD_BYTES, V8_ROOT_RECEIPT_TRANSACTION_DOMAIN,
+    V8_SETTLEMENT_CHECKSUM_DOMAIN, V8_SETTLEMENT_KEY, V8_SETTLEMENT_MAGIC,
+    V8_SETTLEMENT_RECORD_BYTES, V8_SETTLEMENT_TRANSACTION_DOMAIN,
 };
-
-const KEY: &[u8] = b"\0aos-controller-policy-hold-v1\0";
-const MAGIC: &[u8; 8] = b"AOSCTH01";
-const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-hold.v1\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-hold-transaction.v1\0";
-const RECORD_BYTES: usize = 152;
-// Presence of the retired profile fails closed at the current namespace scan.
-const ACK_KEY: &[u8] = b"\0aos-controller-policy-effect-ack-v1\0";
-const V8_ATTEMPT_KEY: &[u8] = b"\0aos-controller-policy-v8-attempt-v1\0";
-const V8_ATTEMPT_MAGIC: &[u8; 8] = b"AOSQ8A01";
-const V8_ATTEMPT_CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-v8-attempt.v1\0";
-const V8_ATTEMPT_TRANSACTION_DOMAIN: &[u8] =
-    b"aos.sandbox.controller-policy-v8-attempt-transaction.v1\0";
-const V8_ATTEMPT_RECORD_BYTES: usize = 184;
-const V8_ACK_KEY: &[u8] = b"\0aos-controller-policy-v8-effect-ack-v1\0";
-const V8_ACK_MAGIC: &[u8; 8] = b"AOSQ8K01";
-const V8_ACK_CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-v8-effect-ack.v1\0";
-const V8_ACK_TRANSACTION_DOMAIN: &[u8] =
-    b"aos.sandbox.controller-policy-v8-effect-ack-transaction.v1\0";
-const V8_ACK_RECORD_BYTES: usize = 16 + V8_ATTEMPT_RECORD_BYTES + 8 + 16 + 32 + 32 + 32;
-const V8_ROOT_RECEIPT_KEY: &[u8] = b"\0aos-controller-policy-v8-root-receipt-v1\0";
-const V8_ROOT_RECEIPT_MAGIC: &[u8; 8] = b"AOSQ8R01";
-const V8_ROOT_RECEIPT_CHECKSUM_DOMAIN: &[u8] =
-    b"aos.sandbox.controller-policy-v8-root-receipt.v1\0";
-const V8_ROOT_RECEIPT_TRANSACTION_DOMAIN: &[u8] =
-    b"aos.sandbox.controller-policy-v8-root-receipt-transaction.v1\0";
-const V8_ROOT_RECEIPT_RECORD_BYTES: usize = 16 + ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1 + 32;
-const V8_SETTLEMENT_KEY: &[u8] = b"\0aos-controller-policy-v8-settlement-v1\0";
-const V8_SETTLEMENT_MAGIC: &[u8; 8] = b"AOSQ8S01";
-const V8_SETTLEMENT_CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-v8-settlement.v1\0";
-const V8_SETTLEMENT_TRANSACTION_DOMAIN: &[u8] =
-    b"aos.sandbox.controller-policy-v8-settlement-transaction.v1\0";
-const V8_SETTLEMENT_RECORD_BYTES: usize = 312;
-
-/// Retains the exact V8 terminal digest before sending it to held Root.
-///
-/// This row is crash-replay custody only. It neither proves Root committed
-/// nor grants owner release, publication, Create, or Apply.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ControllerPolicyV8AttemptV1 {
-    hold: ControllerPolicyHoldV1,
-    terminal: ObjectDigest,
-}
-
-impl ControllerPolicyV8AttemptV1 {
-    /// Constructs an exact terminal attempt under a retained Controller hold.
-    ///
-    /// # Errors
-    ///
-    /// Rejects released custody or an absent terminal digest.
-    pub fn new(hold: ControllerPolicyHoldV1, terminal: ObjectDigest) -> Result<Self, JournalError> {
-        let attempt = Self { hold, terminal };
-        attempt.validate()?;
-        Ok(attempt)
-    }
-
-    /// Returns the held Create and proposed Root binding.
-    #[must_use]
-    pub const fn hold(self) -> ControllerPolicyHoldV1 {
-        self.hold
-    }
-
-    /// Returns the exact Controller-predicted AOSSFT01 digest.
-    #[must_use]
-    pub const fn terminal(self) -> ObjectDigest {
-        self.terminal
-    }
-
-    fn validate(self) -> Result<(), JournalError> {
-        self.hold.validate()?;
-        if !self.hold.held || self.terminal.as_bytes() == &[0; 32] {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
-
-    fn encode(self) -> Result<[u8; V8_ATTEMPT_RECORD_BYTES], JournalError> {
-        self.validate()?;
-        let mut bytes = [0; V8_ATTEMPT_RECORD_BYTES];
-        bytes[..8].copy_from_slice(V8_ATTEMPT_MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[10] = 1;
-        bytes[16..32].copy_from_slice(self.hold.operation.as_bytes());
-        bytes[32..48].copy_from_slice(self.hold.sandbox.as_bytes());
-        bytes[48..80].copy_from_slice(self.hold.source.as_bytes());
-        bytes[80..112].copy_from_slice(self.hold.binding.as_bytes());
-        bytes[112..120].copy_from_slice(&self.hold.epoch.to_be_bytes());
-        bytes[120..152].copy_from_slice(self.terminal.as_bytes());
-        let checksum = Sha256::new()
-            .chain_update(V8_ATTEMPT_CHECKSUM_DOMAIN)
-            .chain_update(&bytes[..152])
-            .finalize();
-        bytes[152..].copy_from_slice(&checksum);
-        Ok(bytes)
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        if bytes.len() != V8_ATTEMPT_RECORD_BYTES
-            || bytes.get(..8) != Some(V8_ATTEMPT_MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || bytes[10] != 1
-            || bytes[11..16] != [0; 5]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let attempt = Self::new(
-            ControllerPolicyHoldV1::new(
-                OperationId::from_bytes(take_attempt::<16>(bytes, 16)?),
-                SandboxId::from_bytes(take_attempt::<16>(bytes, 32)?),
-                ObjectDigest::from_bytes(take_attempt::<32>(bytes, 48)?),
-                ObjectDigest::from_bytes(take_attempt::<32>(bytes, 80)?),
-                u64::from_be_bytes(take_attempt::<8>(bytes, 112)?),
-            )?,
-            ObjectDigest::from_bytes(take_attempt::<32>(bytes, 120)?),
-        )?;
-        if attempt.encode()?.as_slice() != bytes {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(attempt)
-    }
-}
-
-fn take_attempt<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], JournalError> {
-    bytes[offset..offset + N]
-        .try_into()
-        .map_err(|_| JournalError::ProtectedBoundary)
-}
-
-/// Retains an exact V8 Root-held CAS observation without authorizing Apply.
-///
-/// The prepared terminal, accepted Create, consumed AOSPCP02, and complete
-/// Cache quota envelope stay bound under Controller custody. This record is
-/// not an ordered-release grant; Root must separately acknowledge it under a
-/// qualified live all-owner barrier before any owner can be released.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ControllerPolicyV8EffectAckV1 {
-    attempt: ControllerPolicyV8AttemptV1,
-    accepted_generation: u64,
-    effect_transaction: [u8; 16],
-    root_proof: ObjectDigest,
-    cache_quota: ObjectDigest,
-}
-
-impl ControllerPolicyV8EffectAckV1 {
-    /// Constructs a no-Apply ACK for one exact protected V8 attempt.
-    ///
-    /// # Errors
-    ///
-    /// Rejects released custody or absent generation, transaction, proof, or quota.
-    pub fn new(
-        attempt: ControllerPolicyV8AttemptV1,
-        accepted_generation: u64,
-        effect_transaction: [u8; 16],
-        root_proof: ObjectDigest,
-        cache_quota: ObjectDigest,
-    ) -> Result<Self, JournalError> {
-        let ack = Self {
-            attempt,
-            accepted_generation,
-            effect_transaction,
-            root_proof,
-            cache_quota,
-        };
-        ack.validate()?;
-        Ok(ack)
-    }
-
-    /// Returns the pre-send attempt and held Create identity.
-    #[must_use]
-    pub const fn attempt(self) -> ControllerPolicyV8AttemptV1 {
-        self.attempt
-    }
-
-    /// Returns the accepted Create generation.
-    #[must_use]
-    pub const fn accepted_generation(self) -> u64 {
-        self.accepted_generation
-    }
-
-    /// Returns the exact reserved effect transaction identity.
-    #[must_use]
-    pub const fn effect_transaction(self) -> [u8; 16] {
-        self.effect_transaction
-    }
-
-    /// Returns the digest of Root's consumed AOSPCP02 proof.
-    #[must_use]
-    pub const fn root_proof(self) -> ObjectDigest {
-        self.root_proof
-    }
-
-    /// Returns the complete Cache quota envelope retained by Root.
-    #[must_use]
-    pub const fn cache_quota(self) -> ObjectDigest {
-        self.cache_quota
-    }
-
-    /// Returns the digest a future versioned Root ACK must bind.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed protected ACK fields.
-    pub fn record_digest(self) -> Result<ObjectDigest, JournalError> {
-        Ok(ObjectDigest::from_bytes(
-            Sha256::digest(self.encode()?).into(),
-        ))
-    }
-
-    /// Encodes the canonical protected ACK for Controller-only signing.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid ACK fields.
-    pub fn record_bytes(self) -> Result<[u8; 320], JournalError> {
-        self.encode()
-    }
-
-    /// Decodes a canonical ACK without asserting current Controller custody.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed or noncanonical record bytes.
-    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, JournalError> {
-        Self::decode(bytes)
-    }
-
-    fn validate(self) -> Result<(), JournalError> {
-        self.attempt.validate()?;
-        if self.accepted_generation == 0
-            || self.effect_transaction == [0; 16]
-            || self.root_proof.as_bytes() == &[0; 32]
-            || self.cache_quota.as_bytes() == &[0; 32]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
-
-    fn encode(self) -> Result<[u8; V8_ACK_RECORD_BYTES], JournalError> {
-        self.validate()?;
-        let mut bytes = [0; V8_ACK_RECORD_BYTES];
-        bytes[..8].copy_from_slice(V8_ACK_MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[10] = 1;
-        bytes[16..200].copy_from_slice(&self.attempt.encode()?);
-        bytes[200..208].copy_from_slice(&self.accepted_generation.to_be_bytes());
-        bytes[208..224].copy_from_slice(&self.effect_transaction);
-        bytes[224..256].copy_from_slice(self.root_proof.as_bytes());
-        bytes[256..288].copy_from_slice(self.cache_quota.as_bytes());
-        let checksum = Sha256::new()
-            .chain_update(V8_ACK_CHECKSUM_DOMAIN)
-            .chain_update(&bytes[..288])
-            .finalize();
-        bytes[288..].copy_from_slice(&checksum);
-        Ok(bytes)
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        if bytes.len() != V8_ACK_RECORD_BYTES
-            || bytes.get(..8) != Some(V8_ACK_MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || bytes[10] != 1
-            || bytes[11..16] != [0; 5]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let ack = Self::new(
-            ControllerPolicyV8AttemptV1::decode(&bytes[16..200])?,
-            u64::from_be_bytes(take_attempt::<8>(bytes, 200)?),
-            take_attempt::<16>(bytes, 208)?,
-            ObjectDigest::from_bytes(take_attempt::<32>(bytes, 224)?),
-            ObjectDigest::from_bytes(take_attempt::<32>(bytes, 256)?),
-        )?;
-        if ack.encode()?.as_slice() != bytes {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(ack)
-    }
-}
-
-/// Identifies one exact, nonauthorizing Controller policy hold.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ControllerPolicyHoldV1 {
-    operation: OperationId,
-    sandbox: SandboxId,
-    source: ObjectDigest,
-    binding: ObjectDigest,
-    epoch: u64,
-    held: bool,
-}
-
-impl ControllerPolicyHoldV1 {
-    /// Constructs the exact hold to persist before root Q04 submission.
-    ///
-    /// # Errors
-    ///
-    /// Rejects zero identifiers, commitments, or epoch.
-    pub fn new(
-        operation: OperationId,
-        sandbox: SandboxId,
-        source: ObjectDigest,
-        binding: ObjectDigest,
-        epoch: u64,
-    ) -> Result<Self, JournalError> {
-        let hold = Self {
-            operation,
-            sandbox,
-            source,
-            binding,
-            epoch,
-            held: true,
-        };
-        hold.validate()?;
-        Ok(hold)
-    }
-
-    /// Returns the accepted Create operation fixed by this hold.
-    #[must_use]
-    pub const fn operation(self) -> OperationId {
-        self.operation
-    }
-
-    /// Returns the accepted Create sandbox fixed by this hold.
-    #[must_use]
-    pub const fn sandbox(self) -> SandboxId {
-        self.sandbox
-    }
-
-    /// Returns the query-time Controller source commitment.
-    #[must_use]
-    pub const fn source(self) -> ObjectDigest {
-        self.source
-    }
-
-    /// Returns the root binding digest fixed before submission.
-    #[must_use]
-    pub const fn binding(self) -> ObjectDigest {
-        self.binding
-    }
-
-    /// Returns the root handoff epoch fixed before submission.
-    #[must_use]
-    pub const fn epoch(self) -> u64 {
-        self.epoch
-    }
-
-    /// Reports whether the Controller writer remains frozen.
-    #[must_use]
-    pub const fn is_held(self) -> bool {
-        self.held
-    }
-
-    /// Returns the digest of this exact held or released Controller row.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed local hold fields.
-    pub(crate) fn record_digest(self) -> Result<ObjectDigest, JournalError> {
-        Ok(ObjectDigest::from_bytes(
-            Sha256::digest(self.encode()?).into(),
-        ))
-    }
-
-    // Canonical comparison DATA only. A digest does not observe retirement or
-    // permit a transition; the Q04 native/owner engines establish that cut.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn q04_released_record_digest(self) -> Result<ObjectDigest, JournalError> {
-        Self { held: false, ..self }.record_digest()
-    }
-
-    fn validate(self) -> Result<(), JournalError> {
-        if self.operation.as_bytes() == &[0; 16]
-            || self.sandbox.as_bytes() == &[0; 16]
-            || self.source.as_bytes() == &[0; 32]
-            || self.binding.as_bytes() == &[0; 32]
-            || self.epoch == 0
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
-
-    fn encode(self) -> Result<[u8; RECORD_BYTES], JournalError> {
-        self.validate()?;
-        let mut bytes = [0_u8; RECORD_BYTES];
-        bytes[..8].copy_from_slice(MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[10] = if self.held { 1 } else { 2 };
-        bytes[16..32].copy_from_slice(self.operation.as_bytes());
-        bytes[32..48].copy_from_slice(self.sandbox.as_bytes());
-        bytes[48..80].copy_from_slice(self.source.as_bytes());
-        bytes[80..112].copy_from_slice(self.binding.as_bytes());
-        bytes[112..120].copy_from_slice(&self.epoch.to_be_bytes());
-        let checksum = Sha256::new()
-            .chain_update(CHECKSUM_DOMAIN)
-            .chain_update(&bytes[..120])
-            .finalize();
-        bytes[120..].copy_from_slice(&checksum);
-        Ok(bytes)
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
-        if bytes.len() != RECORD_BYTES
-            || bytes.get(..8) != Some(MAGIC.as_slice())
-            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-            || !matches!(bytes[10], 1 | 2)
-            || bytes[11..16] != [0; 5]
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let hold = Self {
-            operation: OperationId::from_bytes(
-                bytes[16..32]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            sandbox: SandboxId::from_bytes(
-                bytes[32..48]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            source: ObjectDigest::from_bytes(
-                bytes[48..80]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            binding: ObjectDigest::from_bytes(
-                bytes[80..112]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            epoch: u64::from_be_bytes(
-                bytes[112..120]
-                    .try_into()
-                    .map_err(|_| JournalError::ProtectedBoundary)?,
-            ),
-            held: bytes[10] == 1,
-        };
-        if hold.encode()?.as_slice() != bytes {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(hold)
-    }
-}
+pub use canonical::{
+    ControllerPolicyHoldV1, ControllerPolicyV8AttemptV1, ControllerPolicyV8EffectAckV1,
+};
+pub(crate) use canonical::{
+    ControllerPolicyV8PreReleaseFloorV1, ControllerPolicyV8ReleaseEvidenceV1,
+    ControllerPolicyV8SettlementV1,
+};
+use canonical::{v8_pre_release_floor, v8_settlement};
+mod data_errors;
 
 fn current(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<ControllerPolicyHoldV1>, JournalError> {
-    current_readback(state).map(|readback| readback.hold)
-}
-
-struct ControllerHoldReadbackV1 {
-    hold: Option<ControllerPolicyHoldV1>,
-    #[cfg(target_os = "linux")]
-    q04: Option<ControllerQ04HistoryV1>,
+    canonical::current(state).map_err(JournalError::from)
 }
 
 fn current_readback(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<ControllerHoldReadbackV1, JournalError> {
-    let mut hold = None;
-    let mut attempt = None;
-    let mut v8_ack = None;
-    let mut v8_root_receipt = None;
-    let mut v8_floor = None;
-    let mut v8_settlement = None;
-    #[cfg(target_os = "linux")]
-    let mut q04 = false;
-    for ((_, key), value) in state
-        .range((RecordNamespace::ControllerPolicyHold, Vec::new())..)
-        .take_while(|((namespace, _), _)| *namespace == RecordNamespace::ControllerPolicyHold)
-    {
-        match key.as_slice() {
-            KEY if hold.is_none() => hold = Some(ControllerPolicyHoldV1::decode(value)?),
-            ACK_KEY => return Err(JournalError::ProtectedBoundary),
-            V8_ATTEMPT_KEY if attempt.is_none() => {
-                attempt = Some(ControllerPolicyV8AttemptV1::decode(value)?)
-            }
-            V8_ACK_KEY if v8_ack.is_none() => {
-                v8_ack = Some(ControllerPolicyV8EffectAckV1::decode(value)?)
-            }
-            V8_ROOT_RECEIPT_KEY if v8_root_receipt.is_none() => {
-                v8_root_receipt = Some(decode_v8_root_receipt(value)?)
-            }
-            V8_FLOOR_KEY if v8_floor.is_none() => {
-                v8_floor = Some(ControllerPolicyV8PreReleaseFloorV1::decode(value)?)
-            }
-            V8_SETTLEMENT_KEY if v8_settlement.is_none() => {
-                v8_settlement = Some(ControllerPolicyV8SettlementV1::decode(value)?)
-            }
-            #[cfg(target_os = "linux")]
-            key if key == CONTROLLER_IDENTITY_KEY || key.starts_with(CONTROLLER_PHASE_PREFIX)
-                || key == aos_sandbox_protocol::domain_ledger::resource_bank::CONTROLLER_INPUT_ORIGIN_KEY => {
-                q04 = true;
-            }
-            _ => return Err(JournalError::ProtectedBoundary),
-        }
-    }
-    if attempt.is_some_and(|attempt| {
-        hold.map(|current| ControllerPolicyHoldV1 {
-            held: true,
-            ..current
-        }) != Some(attempt.hold)
-            || !attempt.hold.is_held()
-    }) {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    if v8_ack.is_some_and(|ack| attempt != Some(ack.attempt)) {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    if let Some(receipt) = v8_root_receipt {
-        let ack = v8_ack.ok_or(JournalError::ProtectedBoundary)?;
-        if !v8_root_receipt_matches_ack(receipt, ack)? {
-            return Err(JournalError::ProtectedBoundary);
-        }
-    }
-    if let Some(floor) = v8_floor {
-        let controller = hold.ok_or(JournalError::ProtectedBoundary)?;
-        let receipt = v8_root_receipt.ok_or(JournalError::ProtectedBoundary)?;
-        if !floor.matches_chain(controller, receipt)? {
-            return Err(JournalError::ProtectedBoundary);
-        }
-    }
-    if let Some(settlement) = v8_settlement {
-        let released = hold.ok_or(JournalError::ProtectedBoundary)?;
-        let floor = v8_floor.ok_or(JournalError::ProtectedBoundary)?;
-        let expected = ControllerPolicyV8SettlementV1::from_chain(
-            released,
-            attempt.ok_or(JournalError::ProtectedBoundary)?,
-            v8_ack.ok_or(JournalError::ProtectedBoundary)?,
-            v8_root_receipt.ok_or(JournalError::ProtectedBoundary)?,
-            settlement.root_release_marker,
-            settlement.cache_released,
-            settlement.source_released,
-        )?;
-        if settlement != expected
-            || settlement.root_release_marker != floor.root_release_marker
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-    }
-    if hold.is_some_and(|hold| !hold.is_held()) && attempt.is_some() && v8_settlement.is_none() {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    #[cfg(target_os = "linux")]
-    let q04 = if q04 {
-        if attempt.is_some()
-            || v8_ack.is_some()
-            || v8_root_receipt.is_some()
-            || v8_floor.is_some()
-            || v8_settlement.is_some()
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Some(q04_history(state, hold.ok_or(JournalError::ProtectedBoundary)?)?)
-    } else {
-        None
-    };
-    Ok(ControllerHoldReadbackV1 {
-        hold,
-        #[cfg(target_os = "linux")]
-        q04,
-    })
-}
-
-// These are bounded historical DATA. Native membership and the complete
-// Create ledger are independently checked by the closed replay/transition.
-#[cfg(target_os = "linux")]
-pub(crate) struct ControllerQ04HistoryV1 {
-    pub(crate) identity: Q04CutIdentityV1,
-    pub(crate) phases: Vec<Q04PhaseRecordV1>,
-}
-
-#[cfg(target_os = "linux")]
-fn has_q04_history(state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>) -> bool {
-    state
-        .range((RecordNamespace::ControllerPolicyHold, Vec::new())..)
-        .take_while(|((namespace, _), _)| *namespace == RecordNamespace::ControllerPolicyHold)
-        .any(|((_, key), _)| {
-            key == CONTROLLER_IDENTITY_KEY || key.starts_with(CONTROLLER_PHASE_PREFIX)
-                || key == aos_sandbox_protocol::domain_ledger::resource_bank::CONTROLLER_INPUT_ORIGIN_KEY
-        })
+    canonical::current_readback(state).map_err(JournalError::from)
 }
 
 // Old private hold transitions are not a Q04 waiver. Check this even when
@@ -644,19 +104,7 @@ pub(super) fn require_q04_ordinary_boundary(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
-    if has_q04_history(state)
-        || transaction.records().iter().any(|record| {
-            (record.namespace() == RecordNamespace::ControllerPolicyHold
-                && (record.key() == CONTROLLER_IDENTITY_KEY
-                    || record.key() == aos_sandbox_protocol::domain_ledger::resource_bank::CONTROLLER_INPUT_ORIGIN_KEY
-                    || record.key().starts_with(CONTROLLER_PHASE_PREFIX)))
-                || (record.namespace() == RecordNamespace::Effect
-                    && record.value().is_some_and(|bytes| bytes.first() == Some(&6)))
-        })
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    canonical::require_q04_ordinary_boundary(state, transaction).map_err(JournalError::from)
 }
 
 // This exception borrows the actual moved Q04 child and its whole Results.
@@ -668,12 +116,124 @@ pub(super) fn require_q04_terminal_bank_successor(
     terminal: &crate::controller_resource_reservation::Q04TerminalBankAppendV1<'_>,
 ) -> Result<(), JournalError> {
     terminal.require_current(state, transaction)?;
+    require_q04_cleared_bank_successor(state, Q04ClearedSuccessorV1::Terminal(terminal))
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_create_intake_bank_successor(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+    intake: &crate::controller_resource_reservation::CreateIntakeBankAppendV1<'_>,
+) -> Result<(), JournalError> {
+    intake.require_current(state, transaction)?;
+    require_q04_cleared_bank_successor(state, Q04ClearedSuccessorV1::CreateIntake(intake))
+}
+
+// The exact same cleared Q04 join admits only the genuine completed Root
+// authorization and funded U reservation. It does not waive ordinary guards.
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_create_storage_use_bank_successor(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+    original: &crate::controller_resource_reservation::CreateStorageUseBankAppendV1<'_>,
+) -> Result<(), JournalError> {
+    original.require_current(state, transaction)?;
+    require_q04_cleared_bank_successor(state, Q04ClearedSuccessorV1::CreateStorageUse(original))
+}
+
+// The genuine C receiver and exact Core recipe already checked the complete
+// candidate rows. Reuse the same sole released-hold/eight-phase/gate validator.
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_provisioning_successor(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    original: &crate::reconciler::provisioning::ProvisioningAppendLoanV1<'_>,
+) -> Result<(), JournalError> {
+    require_q04_cleared_bank_successor(state, Q04ClearedSuccessorV1::Provisioning(original))
+}
+
+// Only the real ACK-dependent terminal destination admits the public CAS.
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_create_stopped_terminal_successor(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    original: &super::create_stopped_terminal::CreateStoppedControllerTerminalAppendLoanV1<'_, '_>,
+) -> Result<(), JournalError> {
+    require_q04_cleared_bank_successor(state, Q04ClearedSuccessorV1::CreateStoppedTerminal(original))
+}
+
+// A genuine Completing/Applied pre-ACK context admits only its exact parent
+// Effect replacement; the eight-phase released Q04 history is unchanged.
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_create_stopped_pre_ack_successor(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    original: &super::create_stopped_pre_ack::CreateStoppedControllerPreAckAppendLoanV1<'_>,
+) -> Result<(), JournalError> {
+    require_q04_cleared_bank_successor(state, Q04ClearedSuccessorV1::CreateStoppedPreAck(original))
+}
+
+// This later history transition borrows the SAME actual parent and successful
+// J return. It changes only the exact first namespace81 record/head pair and
+// preserves all eight old Q04 phases, released hold and consumed Effect gate.
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_create_storage_history_successor(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+    original: &crate::controller_resource_reservation::CreateStorageHistoryAppendLoanV1<'_, '_>,
+) -> Result<(), JournalError> {
+    original.require_controller_history_successor(state, transaction)?;
+    require_q04_cleared_bank_successor(state, Q04ClearedSuccessorV1::History(original))
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_operator_recover_successor(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    original: &super::operator_recover_floor::OperatorRecoverAppendLoanV1<'_>,
+) -> Result<(), JournalError> {
+    require_q04_cleared_bank_successor(state, Q04ClearedSuccessorV1::OperatorRecover(original))
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_delete_admission_successor_v3(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    original: &dyn super::delete_admission::DeleteAdmissionOriginalV3,
+) -> Result<(), JournalError> {
+    require_q04_cleared_bank_successor(state, Q04ClearedSuccessorV1::DeleteAdmission(original))
+}
+
+#[cfg(target_os = "linux")]
+enum Q04ClearedSuccessorV1<'borrow, 'owner, 'original> {
+    DeleteAdmission(&'borrow dyn super::delete_admission::DeleteAdmissionOriginalV3),
+    OperatorRecover(&'borrow super::operator_recover_floor::OperatorRecoverAppendLoanV1<'owner>),
+    Terminal(&'borrow crate::controller_resource_reservation::Q04TerminalBankAppendV1<'owner>),
+    CreateIntake(&'borrow crate::controller_resource_reservation::CreateIntakeBankAppendV1<'owner>),
+    CreateStorageUse(&'borrow crate::controller_resource_reservation::CreateStorageUseBankAppendV1<'owner>),
+    History(&'borrow crate::controller_resource_reservation::CreateStorageHistoryAppendLoanV1<'owner, 'original>),
+    Provisioning(&'borrow crate::reconciler::provisioning::ProvisioningAppendLoanV1<'owner>),
+    CreateStoppedTerminal(&'borrow super::create_stopped_terminal::CreateStoppedControllerTerminalAppendLoanV1<'owner, 'original>),
+    CreateStoppedPreAck(&'borrow super::create_stopped_pre_ack::CreateStoppedControllerPreAckAppendLoanV1<'owner>),
+}
+
+#[cfg(target_os = "linux")]
+fn require_q04_cleared_bank_successor(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    original: Q04ClearedSuccessorV1<'_, '_, '_>,
+) -> Result<(), JournalError> {
     let readback = current_readback(state)?;
     let history = readback.q04.ok_or(JournalError::ProtectedBoundary)?;
+    let identity_matches = match original {
+        Q04ClearedSuccessorV1::DeleteAdmission(original) => original.matches_identity_v3(&history.identity),
+        Q04ClearedSuccessorV1::OperatorRecover(original) => original.matches_identity_v1(&history.identity),
+        Q04ClearedSuccessorV1::Terminal(original) => original.matches_identity(&history.identity),
+        Q04ClearedSuccessorV1::CreateIntake(original) => original.matches_identity(&history.identity),
+        Q04ClearedSuccessorV1::CreateStorageUse(original) => original.matches_identity(&history.identity),
+        Q04ClearedSuccessorV1::History(original) => original.matches_identity(&history.identity),
+        Q04ClearedSuccessorV1::Provisioning(original) => original.matches_identity_v1(&history.identity, state),
+        Q04ClearedSuccessorV1::CreateStoppedTerminal(original) => original.matches_identity_v1(&history.identity),
+        Q04ClearedSuccessorV1::CreateStoppedPreAck(original) => original.matches_identity_v1(&history.identity),
+    };
     if readback.hold.is_none_or(ControllerPolicyHoldV1::is_held)
         || history.phases.len() != 8
         || history.phases.last().is_none_or(|phase| phase.phase() != 8)
-        || !terminal.matches_identity(&history.identity)
+        || !identity_matches
     {
         return Err(JournalError::ProtectedBoundary);
     }
@@ -698,77 +258,6 @@ pub(super) fn require_q04_terminal_bank_successor(
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn q04_history(
-    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    hold: ControllerPolicyHoldV1,
-) -> Result<ControllerQ04HistoryV1, JournalError> {
-    let identity = state
-        .get(&(RecordNamespace::ControllerPolicyHold, CONTROLLER_IDENTITY_KEY.to_vec()))
-        .ok_or(JournalError::ProtectedBoundary)?;
-    let identity = Q04CutIdentityV1::decode(identity)?;
-    let origin = state.get(&(
-        RecordNamespace::ControllerPolicyHold,
-        aos_sandbox_protocol::domain_ledger::resource_bank::CONTROLLER_INPUT_ORIGIN_KEY.to_vec(),
-    ));
-    aos_sandbox_protocol::domain_ledger::resource_bank::require_input_history(
-        state, &identity, origin.map(Vec::as_slice),
-    ).map_err(|_| JournalError::ProtectedBoundary)?;
-    if hold.operation() != identity.operation()
-        || hold.sandbox() != identity.sandbox()
-        || hold.binding() != identity.binding()
-        || hold.epoch() != identity.epoch()
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-
-    let mut phases = Vec::<Q04PhaseRecordV1>::new();
-    for ((_, key), bytes) in state
-        .range((RecordNamespace::ControllerPolicyHold, Vec::new())..)
-        .take_while(|((namespace, _), _)| *namespace == RecordNamespace::ControllerPolicyHold)
-    {
-        if !key.starts_with(CONTROLLER_PHASE_PREFIX) {
-            continue;
-        }
-        if key.len() != CONTROLLER_PHASE_PREFIX.len() + 1 {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let phase = Q04PhaseRecordV1::decode(Q04PhaseOwnerV1::Controller, bytes, &identity)?;
-        let expected = u8::try_from(phases.len() + 1)
-            .map_err(|_| JournalError::ProtectedBoundary)?;
-        if phase.phase() != expected
-            || key[CONTROLLER_PHASE_PREFIX.len()] != expected
-            || phase.bytes()[512..544] != *identity.before_controller_rows().as_bytes()
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let predecessor = if let Some(prior) = phases.last() {
-            phase.require_successor(prior)?;
-            prior.digest()
-        } else {
-            identity.before_controller_rows()
-        };
-        if phase.native_transaction_id()
-            != Q04TransactionOwnerV1::Controller.transaction_id(&identity, expected, predecessor)?
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        phases.push(phase);
-    }
-
-    let first = phases.first().ok_or(JournalError::ProtectedBoundary)?;
-    let last = phases.last().ok_or(JournalError::ProtectedBoundary)?;
-    let held = ControllerPolicyHoldV1 { held: true, ..hold }.record_digest()?;
-    let released = ControllerPolicyHoldV1 { held: false, ..hold }.record_digest()?;
-    if first.bytes()[288..320] != *held.as_bytes()
-        || hold.is_held() != (last.phase() < 5)
-        || (last.phase() >= 5 && last.bytes()[320..352] != *released.as_bytes())
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(ControllerQ04HistoryV1 { identity, phases })
 }
 
 /// Retains one closed native recipe, never a currentness or commit permit.
@@ -1095,36 +584,13 @@ pub(crate) fn v8_root_receipt_matches_ack(
     receipt: RootV8EffectAckV1,
     ack: ControllerPolicyV8EffectAckV1,
 ) -> Result<bool, JournalError> {
-    let hold = ack.attempt().hold();
-    Ok(receipt.binding() == hold.binding()
-        && receipt.epoch() == hold.epoch()
-        && receipt.operation() == hold.operation()
-        && receipt.sandbox() == hold.sandbox()
-        && receipt.accepted_generation() == ack.accepted_generation()
-        && receipt.effect_transaction() == ack.effect_transaction()
-        && receipt.terminal() == ack.attempt().terminal()
-        && receipt.proof() == ack.root_proof()
-        && receipt.quota() == ack.cache_quota()
-        && receipt.controller_ack() == ack.record_digest()?)
+    canonical::v8_root_receipt_matches_ack(receipt, ack).map_err(JournalError::from)
 }
 
 fn encode_v8_root_receipt(
     receipt: RootV8EffectAckV1,
 ) -> Result<[u8; V8_ROOT_RECEIPT_RECORD_BYTES], JournalError> {
-    let mut bytes = [0; V8_ROOT_RECEIPT_RECORD_BYTES];
-    bytes[..8].copy_from_slice(V8_ROOT_RECEIPT_MAGIC);
-    bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    bytes[16..16 + ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1].copy_from_slice(
-        &receipt
-            .record_bytes()
-            .map_err(|_| JournalError::ProtectedBoundary)?,
-    );
-    let checksum = Sha256::new()
-        .chain_update(V8_ROOT_RECEIPT_CHECKSUM_DOMAIN)
-        .chain_update(&bytes[..V8_ROOT_RECEIPT_RECORD_BYTES - 32])
-        .finalize();
-    bytes[V8_ROOT_RECEIPT_RECORD_BYTES - 32..].copy_from_slice(&checksum);
-    Ok(bytes)
+    canonical::encode_v8_root_receipt(receipt).map_err(JournalError::from)
 }
 
 /// Returns the digest of Controller's canonical retained Root ACK receipt.
@@ -1135,141 +601,56 @@ fn encode_v8_root_receipt(
 pub(crate) fn controller_v8_root_receipt_record_digest_v1(
     receipt: RootV8EffectAckV1,
 ) -> Result<ObjectDigest, JournalError> {
-    Ok(ObjectDigest::from_bytes(
-        Sha256::digest(encode_v8_root_receipt(receipt)?).into(),
-    ))
+    canonical::controller_v8_root_receipt_record_digest_v1(receipt).map_err(JournalError::from)
 }
 
-fn validate_held_owner_cut(
-    controller: ControllerPolicyHoldV1,
-    cache: CachePolicyHoldV1,
-    source: SourceDomainPolicyHoldV1,
-) -> Result<(), JournalError> {
-    if !controller.is_held()
-        || !cache.is_held()
-        || cache.binding() != controller.binding()
-        || cache.epoch() != controller.epoch()
-        || !source.is_held()
-        || source.operation() != controller.operation()
-        || source.sandbox() != controller.sandbox()
-        || source.controller_source() != controller.source()
-        || source.binding() != controller.binding()
-        || source.epoch() != controller.epoch()
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
-}
+
 
 fn decode_v8_root_receipt(bytes: &[u8]) -> Result<RootV8EffectAckV1, JournalError> {
-    if bytes.len() != V8_ROOT_RECEIPT_RECORD_BYTES
-        || bytes.get(..8) != Some(V8_ROOT_RECEIPT_MAGIC.as_slice())
-        || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
-        || bytes[10..16] != [0; 6]
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    let receipt =
-        RootV8EffectAckV1::from_record_bytes(&bytes[16..16 + ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1])
-            .map_err(|_| JournalError::ProtectedBoundary)?;
-    if encode_v8_root_receipt(receipt)?.as_slice() != bytes {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(receipt)
+    canonical::decode_v8_root_receipt(bytes).map_err(JournalError::from)
 }
 
 fn current_v8_attempt(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<ControllerPolicyV8AttemptV1>, JournalError> {
-    current(state)?;
-    state
-        .get(&(
-            RecordNamespace::ControllerPolicyHold,
-            V8_ATTEMPT_KEY.to_vec(),
-        ))
-        .map(|bytes| ControllerPolicyV8AttemptV1::decode(bytes))
-        .transpose()
+    canonical::current_v8_attempt(state).map_err(JournalError::from)
 }
 
 fn current_v8_ack(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<ControllerPolicyV8EffectAckV1>, JournalError> {
-    current(state)?;
-    state
-        .get(&(RecordNamespace::ControllerPolicyHold, V8_ACK_KEY.to_vec()))
-        .map(|bytes| ControllerPolicyV8EffectAckV1::decode(bytes))
-        .transpose()
+    canonical::current_v8_ack(state).map_err(JournalError::from)
 }
 
 fn current_v8_root_receipt(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<RootV8EffectAckV1>, JournalError> {
-    current(state)?;
-    state
-        .get(&(
-            RecordNamespace::ControllerPolicyHold,
-            V8_ROOT_RECEIPT_KEY.to_vec(),
-        ))
-        .map(|bytes| decode_v8_root_receipt(bytes))
-        .transpose()
+    canonical::current_v8_root_receipt(state).map_err(JournalError::from)
 }
 
 fn current_v8_floor(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<ControllerPolicyV8PreReleaseFloorV1>, JournalError> {
-    current(state)?;
-    state
-        .get(&(RecordNamespace::ControllerPolicyHold, V8_FLOOR_KEY.to_vec()))
-        .map(|bytes| ControllerPolicyV8PreReleaseFloorV1::decode(bytes))
-        .transpose()
+    canonical::current_v8_floor(state).map_err(JournalError::from)
 }
 
 fn current_v8_settlement(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<ControllerPolicyV8SettlementV1>, JournalError> {
-    current(state)?;
-    state
-        .get(&(
-            RecordNamespace::ControllerPolicyHold,
-            V8_SETTLEMENT_KEY.to_vec(),
-        ))
-        .map(|bytes| ControllerPolicyV8SettlementV1::decode(bytes))
-        .transpose()
+    canonical::current_v8_settlement(state).map_err(JournalError::from)
 }
 
 pub(super) fn require_no_mutation(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
-    if current(state)?.is_some_and(ControllerPolicyHoldV1::is_held)
-        || current_v8_attempt(state)?.is_some()
-        || transaction
-            .records()
-            .iter()
-            .any(|record| record.namespace() == RecordNamespace::ControllerPolicyHold)
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    #[cfg(target_os = "linux")]
-    if has_q04_history(state) {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    canonical::require_no_mutation(state, transaction).map_err(JournalError::from)
 }
 
 pub(super) fn require_no_compaction(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<(), JournalError> {
-    if current(state)?.is_some_and(ControllerPolicyHoldV1::is_held)
-        || current_v8_attempt(state)?.is_some()
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    #[cfg(target_os = "linux")]
-    if has_q04_history(state) {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    canonical::require_no_compaction(state).map_err(JournalError::from)
 }
 
 fn single_record_transaction(
@@ -1440,7 +821,7 @@ fn v8_settlement_capacity_transaction(
 
 fn ensure_controller(journal: &Journal) -> Result<(), JournalError> {
     journal.ensure_protected_authority()?;
-    if journal.protected.as_ref().map(|location| location.name()) != Some("controller.journal") {
+    if journal.native.protected_view().map(|location| location.name()) != Some("controller.journal") {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())

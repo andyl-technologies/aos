@@ -67,17 +67,21 @@ impl MonitorRegistry {
         effect_deadline_boottime_nanoseconds: u64,
     ) -> Result<OriginalControlObservationV5, Error> {
         let mut registry = self.0.lock().map_err(|_| Error::LedgerConflict)?;
+        if registry.refusal.is_some() || registry.owner.has_retiring()
+            || registry.registration.is_some() || registry.relay_intake.is_some() {
+            return Err(Error::AmbiguousEffect);
+        }
         let result = (|| {
             let Registry {
                 installed,
-                custody,
-                session,
+                owner,
+                ..
             } = &mut *registry;
             let installed = installed.as_ref().ok_or(Error::InvalidRequest)?;
             if installed.original_ticket != ticket || super::read_ticket()? != ticket {
                 return Err(Error::LedgerConflict);
             }
-            if let Some(session) = session.as_mut() {
+            if let Some(session) = owner.session_mut() {
                 super::terminal::refresh_original_terminal(installed, session, ledger)?;
                 apply_or_observe(
                     installed,
@@ -96,7 +100,7 @@ impl MonitorRegistry {
                     authority_expires_at,
                     effect_deadline_boottime_nanoseconds,
                 )
-            } else if let Some(custody) = custody.as_mut() {
+            } else if let Some(custody) = owner.custody_mut() {
                 super::refresh_relay(installed, custody, ledger)?;
                 apply_or_observe(
                     installed,
@@ -127,11 +131,11 @@ impl MonitorRegistry {
                 Err(Error::InvalidRequest)
             }
         })();
-        if result.is_err() {
-            // A failed effect/ACK may already have happened. Cold or equal-row
-            // recovery cannot recreate this original private root connection.
-            registry.custody.take();
-            registry.session.take();
+        if let Err(cause) = result {
+            // Preserve the whole original after a failed effect/ACK. Empty
+            // fields would otherwise counterfeit later terminal retirement.
+            registry.refusal = Some(cause);
+            return Err(Error::AmbiguousEffect);
         }
         result
     }

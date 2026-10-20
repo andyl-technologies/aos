@@ -16,6 +16,8 @@
 //! distinct Controller-purpose signature64
 //! ```
 
+use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
+
 mod input;
 
 use aos_sandbox_core::bounded_codec::checked_byte_region;
@@ -30,7 +32,7 @@ use crate::JournalError;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 
 use super::consumer_read_flight::ConsumerReadFlightErrorV1;
-use super::controller_hold_readback::PinnedControllerHoldSignerV1;
+
 use super::source_hold_readback::PinnedSourceHoldReadbackSignerV1;
 use super::source_successor_readback::{
     VerifiedSourceFirstSuccessorReadbackV2, VerifiedSourceProjectContinuationReadbackV3,
@@ -354,8 +356,8 @@ impl CurrentNixPreflightCarrierV1 {
 
 // Only the same already-held Root writer constructs this archive capture.
 pub(super) struct CurrentNixRootArchiveDataV1 {
-    pub(super) floor: super::RootFirstSourceSuccessorFloorV2,
-    pub(super) original: super::RootFirstSourceSuccessorIntentV2,
+    pub(super) floor: aos_sandbox_ledger_replay::replay::phase_records::RootFirstSourceSuccessorFloorV2,
+    pub(super) original: aos_sandbox_ledger_replay::replay::phase_records::RootFirstSourceSuccessorIntentV2,
     pub(super) nonce: [u8; 16],
     pub(super) sequence: u64,
     pub(super) recipe: u8,
@@ -543,10 +545,7 @@ impl<'source> CurrentNixPreflightAttemptV1<'source> {
         source: &crate::journal::JournalShape,
     ) -> Result<aos_sandbox_core::ResourceVector, crate::ResourceReservationErrorV1> {
         use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
-        use crate::hierarchy::protected_journal::{
-            HierarchyJournalReplayTransactionV1, HierarchyProtectedJournalEnvelopeV1,
-            HierarchyProtectedJournalSchemaV1,
-        };
+        use aos_sandbox_ledger_replay::replay::hierarchy_records::{HierarchyJournalReplayTransactionV1, HierarchyProtectedJournalEnvelopeV1, HierarchyProtectedJournalSchemaV1};
         use aos_sandbox_protocol::domain_ledger::records::ProtectedCurrentRecordCandidateV1;
 
         let refused = || crate::ResourceReservationErrorV1::Conflict;
@@ -569,7 +568,7 @@ impl<'source> CurrentNixPreflightAttemptV1<'source> {
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
                 ProtectedCurrentRecordCandidateV1<HierarchyProtectedJournalSchemaV1>,
             >()))
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::hierarchy::graph::SandboxTreeV1>()))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_ledger_replay::hierarchy::graph::SandboxTreeV1>()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_core::source_tree_model::SandboxTreeRecordV1>()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(SandboxId, usize, [usize; 6])>()))
             .ok_or_else(refused)?;
@@ -1306,7 +1305,7 @@ impl VerifiedCurrentNixSourceObservationV1 {
     /// through the existing strict/mixed engine, with no alternate fallback.
     pub fn verify_data(
         bytes: &[u8], context: &CurrentNixPreflightContextV1,
-        original: &super::RootFirstSourceSuccessorIntentV2,
+        original: &aos_sandbox_ledger_replay::replay::phase_records::RootFirstSourceSuccessorIntentV2,
         signer: &PinnedSourceHoldReadbackSignerV1,
     ) -> Result<Self, CurrentNixPreflightDataErrorV1> {
         if !matches!(bytes.len(), 3140 | 3316 | 3492)
@@ -1393,8 +1392,8 @@ impl VerifiedCurrentNixSourceObservationV1 {
         nonce: [u8; 16],
         sequence: u64,
         recipe: u8,
-        floor: &super::RootFirstSourceSuccessorFloorV2,
-        original: &super::RootFirstSourceSuccessorIntentV2,
+        floor: &aos_sandbox_ledger_replay::replay::phase_records::RootFirstSourceSuccessorFloorV2,
+        original: &aos_sandbox_ledger_replay::replay::phase_records::RootFirstSourceSuccessorIntentV2,
     ) -> Result<(), CurrentNixPreflightDataErrorV1> {
         let (phase, receipt, ack, intent, generation) = match &self.native {
             CurrentNixSourceNativeDataV1::Strict(data) => (

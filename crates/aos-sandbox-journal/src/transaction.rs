@@ -46,10 +46,11 @@ pub enum NativeRecordValidationError {
 ///
 /// Callers observe each extent, perform their typed record checks, then register
 /// its raw namespace/key pair. These stages grant no namespace admission,
-/// currentness, or persistence proof. The index remains local to the original
-/// validator scope; it owns index nodes but never copies a record's key bytes.
+/// currentness, or persistence proof. Ordinary validation owns local index
+/// nodes over original key borrows. Retaining validation borrows an owning
+/// DATA destination for those same nodes and actual copied key bytes.
 pub struct NativeRecordValidation<'keys> {
-    keys: BTreeSet<(u8, &'keys [u8])>,
+    keys: NativeRecordKeysV1<'keys>,
     transaction_bytes: usize,
     bounds: NativeGeometryBounds,
 }
@@ -78,10 +79,28 @@ impl<'keys> NativeRecordValidation<'keys> {
         }
 
         Ok(Self {
-            keys: BTreeSet::new(),
+            keys: NativeRecordKeysV1::Borrowed(BTreeSet::new()),
             transaction_bytes: 0,
             bounds,
         })
+    }
+
+    /// Starts the same checks with an owning destination for reached key nodes.
+    ///
+    /// The destination is representation DATA, never an admitted transaction.
+    /// Its caller must retain it after failure and pay before index growth.
+    ///
+    /// # Errors
+    /// Rejects the same identity and configured count as [`Self::begin`].
+    pub fn begin_retaining_v1(
+        transaction_id: [u8; 16],
+        record_count: usize,
+        bounds: NativeGeometryBounds,
+        original: &'keys mut NativeRecordKeyIndexV1,
+    ) -> Result<Self, NativeRecordValidationError> {
+        let mut validation = Self::begin(transaction_id, record_count, bounds)?;
+        validation.keys = NativeRecordKeysV1::Retained(original);
+        Ok(validation)
     }
 
     /// Checks one raw extent and accumulates its bounded native payload width.
@@ -121,7 +140,7 @@ impl<'keys> NativeRecordValidation<'keys> {
         Ok(())
     }
 
-    /// Retains one original key borrow after the caller's typed checks.
+    /// Registers one original key after the caller's typed checks.
     ///
     /// Raw namespace bytes have no semantic interpretation. Insertion neither
     /// rechecks an extent nor establishes that any prior owner check succeeded.
@@ -134,10 +153,73 @@ impl<'keys> NativeRecordValidation<'keys> {
         namespace_byte: u8,
         key: &'keys [u8],
     ) -> Result<(), NativeRecordValidationError> {
-        if !self.keys.insert((namespace_byte, key)) {
+        let inserted = match &mut self.keys {
+            NativeRecordKeysV1::Borrowed(keys) => keys.insert((namespace_byte, key)),
+            NativeRecordKeysV1::Retained(original) => {
+                original.current = Some((namespace_byte, key.to_vec()));
+                let current = original.current.as_ref()
+                    .ok_or(NativeRecordValidationError::InvalidTransaction)?;
+                if original.keys.contains(current) {
+                    false
+                } else {
+                    let current = original.current.take()
+                        .ok_or(NativeRecordValidationError::InvalidTransaction)?;
+                    original.keys.insert(current)
+                }
+            }
+        };
+        if !inserted {
             return Err(NativeRecordValidationError::DuplicateRecordKey);
         }
         Ok(())
+    }
+}
+
+enum NativeRecordKeysV1<'keys> {
+    Borrowed(BTreeSet<(u8, &'keys [u8])>),
+    Retained(&'keys mut NativeRecordKeyIndexV1),
+}
+
+/// Owns reached duplicate-index nodes and the current comparison key.
+///
+/// The ordinary validator keeps original key borrows. A retaining caller uses
+/// this owning representation to avoid references into its own transaction.
+/// This DATA cannot validate, persist or admit any transaction by itself.
+#[derive(Default)]
+pub struct NativeRecordKeyIndexV1 {
+    keys: BTreeSet<(u8, Vec<u8>)>,
+    current: Option<(u8, Vec<u8>)>,
+}
+
+impl NativeRecordKeyIndexV1 {
+    /// Creates an empty destination without heap allocation.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { keys: BTreeSet::new(), current: None }
+    }
+
+    /// Counts reached unique key nodes without granting acceptance.
+    #[must_use]
+    pub fn retained_key_count_v1(&self) -> usize { self.keys.len() }
+
+    /// Borrows the actual current comparison key left by a duplicate refusal.
+    #[must_use]
+    pub fn current_key_v1(&self) -> Option<(u8, &[u8])> {
+        self.current.as_ref().map(|(namespace, key)| (*namespace, key.as_slice()))
+    }
+
+    /// Counts the fixed tree-root and current-key owning destinations.
+    #[must_use]
+    pub const fn receiving_metadata_cells_v1() -> usize { 2 }
+
+    /// Bounds owned index backing plus the current comparison key as DATA.
+    ///
+    /// One full eleven-key node and twelve links per reached key dominates
+    /// native tree occupancy. Key bytes and the current duplicate are distinct.
+    #[must_use]
+    pub fn dynamic_bytes_v1(keys: usize, key_bytes: usize, current_bytes: usize) -> Option<usize> {
+        crate::geometry::conservative_btree_node_bytes_v1::<(u8, Vec<u8>), ()>(keys)?
+            .checked_add(key_bytes)?.checked_add(current_bytes)
     }
 }
 
@@ -172,44 +254,149 @@ pub fn encode_transaction<'a>(
     first_sequence: u64,
     records: impl ExactSizeIterator<Item = NativeRecordRef<'a>>,
 ) -> Result<Vec<Vec<u8>>, FrameError> {
-    let record_count = u32::try_from(records.len())
-        .map_err(|_| FrameError::LimitExceeded("records per transaction"))?;
-    let mut sequence = first_sequence;
-    let mut frames = Vec::with_capacity(records.len() + 2);
-    frames.push(encode_frame(
-        FrameKind::Begin,
-        sequence,
-        transaction_id,
-        &record_count.to_le_bytes(),
-    )?);
-    sequence = sequence
-        .checked_add(1)
-        .ok_or(FrameError::SequenceExhausted)?;
+    encode_transaction_engine(transaction_id, first_sequence, records, None)
+}
 
-    let mut transaction_digest = transaction_hasher();
-    for record in records {
-        let payload = encode_record_fields(record.namespace_byte, record.key, record.value)?;
-        transaction_digest.update(&payload);
-        frames.push(encode_frame(
-            FrameKind::Record,
-            sequence,
-            transaction_id,
-            &payload,
-        )?);
-        sequence = sequence
-            .checked_add(1)
-            .ok_or(FrameError::SequenceExhausted)?;
+/// Retains failed encoder locals without admitting a transaction or native owner.
+///
+/// Successful iteration payloads and the successful final COMMIT scratch retire
+/// at their existing last-borrow boundaries. On error the actual reached frame
+/// prefix, current payload/COMMIT and still-live digest state remain here.
+/// The actual returned FrameError belongs to the caller's whole stage result.
+pub struct NativeTransactionEncodeOriginalsV1 {
+    frames: Option<Vec<Vec<u8>>>,
+    payload: Option<Vec<u8>>,
+    commit: Option<Vec<u8>>,
+    digest: Option<Sha256>,
+    sequence: u64,
+    count: Option<u32>,
+    attempted: bool,
+    closed: bool,
+}
+
+impl NativeTransactionEncodeOriginalsV1 {
+    /// Creates empty fixed destinations without allocation.
+    pub const fn new() -> Self {
+        Self {
+            frames: None, payload: None, commit: None, digest: None,
+            sequence: 0, count: None, attempted: false, closed: false,
+        }
     }
 
-    let mut commit = Vec::with_capacity(COMMIT_PAYLOAD_BYTES);
-    commit.extend_from_slice(&record_count.to_le_bytes());
-    commit.extend_from_slice(&transaction_digest.finalize());
-    frames.push(encode_frame(
-        FrameKind::Commit,
-        sequence,
-        transaction_id,
-        &commit,
-    )?);
+    /// Borrows the actual completed frame prefix retained on an encoder refusal.
+    pub fn frames(&self) -> Option<&[Vec<u8>]> { self.frames.as_deref() }
+
+    /// Borrows the actual current RECORD payload retained on a later refusal.
+    pub fn payload(&self) -> Option<&[u8]> { self.payload.as_deref() }
+
+    /// Borrows the actual COMMIT scratch retained on a later refusal.
+    pub fn commit(&self) -> Option<&[u8]> { self.commit.as_deref() }
+
+    /// Counts the eight named owning/result-control destinations as DATA.
+    pub const fn receiving_metadata_cells_v1() -> usize { 8 }
+}
+
+impl Default for NativeTransactionEncodeOriginalsV1 {
+    fn default() -> Self { Self::new() }
+}
+
+/// Uses the same encoder while retaining every reached failed allocation prefix.
+///
+/// # Errors
+/// Returns the identical count/layout/sequence error at its existing frontier;
+/// repeated entry refuses without replacing any prior destination. Callers must
+/// retain this owner AND the returned original error on a selected negative.
+///
+/// # Panics
+/// Preserves the ordinary encoder's allocation/count panic conditions.
+pub fn encode_transaction_retaining_v1<'a>(
+    transaction_id: [u8; 16],
+    first_sequence: u64,
+    records: impl ExactSizeIterator<Item = NativeRecordRef<'a>>,
+    original: &mut NativeTransactionEncodeOriginalsV1,
+) -> Result<Vec<Vec<u8>>, FrameError> {
+    if original.attempted {
+        original.closed = true;
+        return Err(FrameError::MissingRetainedPayload);
+    }
+    original.attempted = true;
+    encode_transaction_engine(transaction_id, first_sequence, records, Some(original))
+}
+
+fn encode_transaction_engine<'a>(
+    transaction_id: [u8; 16],
+    first_sequence: u64,
+    records: impl ExactSizeIterator<Item = NativeRecordRef<'a>>,
+    mut original: Option<&mut NativeTransactionEncodeOriginalsV1>,
+) -> Result<Vec<Vec<u8>>, FrameError> {
+    let record_count = u32::try_from(records.len())
+        .map_err(|_| FrameError::LimitExceeded("records per transaction"))?;
+    // The iterator stays in its parameter position until the original for-loop
+    // frontier. BEGIN failure drops frames before this still-unentered iterator;
+    // a reached loop failure drops its iterator before digest/frame locals.
+    let mut records = Some(records);
+    let mut sequence = first_sequence;
+    let mut frames = Vec::with_capacity(
+        records.as_ref().ok_or(FrameError::MissingRetainedPayload)?.len() + 2,
+    );
+    // Options preserve the old native activation/drop order: the digest is
+    // created only after BEGIN's sequence step; COMMIT only after all records.
+    let mut transaction_digest = None;
+    let mut commit = None;
+    let outcome = (|| {
+        frames.push(encode_frame(
+            FrameKind::Begin, sequence, transaction_id, &record_count.to_le_bytes(),
+        )?);
+        sequence = sequence.checked_add(1).ok_or(FrameError::SequenceExhausted)?;
+        transaction_digest = Some(transaction_hasher());
+        for record in records.take().ok_or(FrameError::MissingRetainedPayload)? {
+            let payload = encode_record_fields(record.namespace_byte, record.key, record.value)?;
+            let digest = transaction_digest.as_mut().ok_or(FrameError::MissingRetainedPayload)?;
+            digest.update(&payload);
+            let encoded = encode_frame(FrameKind::Record, sequence, transaction_id, &payload);
+            let encoded = match encoded {
+                Ok(encoded) => encoded,
+                Err(cause) => {
+                    if let Some(original) = original.as_deref_mut() {
+                        original.payload = Some(payload);
+                    }
+                    return Err(cause);
+                }
+            };
+            frames.push(encoded);
+            sequence = match sequence.checked_add(1) {
+                Some(next) => next,
+                None => {
+                    if let Some(original) = original.as_deref_mut() {
+                        original.payload = Some(payload);
+                    }
+                    return Err(FrameError::SequenceExhausted);
+                }
+            };
+            // The current payload drops here after its complete iteration,
+            // before the next record, exactly as in the ordinary encoder.
+        }
+
+        commit = Some(Vec::with_capacity(COMMIT_PAYLOAD_BYTES));
+        let commit = commit.as_mut().ok_or(FrameError::MissingRetainedPayload)?;
+        commit.extend_from_slice(&record_count.to_le_bytes());
+        let digest = transaction_digest.take().ok_or(FrameError::MissingRetainedPayload)?;
+        commit.extend_from_slice(&digest.finalize());
+        frames.push(encode_frame(FrameKind::Commit, sequence, transaction_id, commit)?);
+        Ok(())
+    })();
+    if let Err(cause) = outcome {
+        if let Some(original) = original {
+            original.frames = Some(frames);
+            original.commit = commit;
+            original.digest = transaction_digest;
+            original.sequence = sequence;
+            original.count = Some(record_count);
+        }
+        // Ordinary locals drop COMMIT, live digest, then frames. A failed
+        // selected branch instead moves those same originals to its owner.
+        return Err(cause);
+    }
     Ok(frames)
 }
 
@@ -571,5 +758,64 @@ mod tests {
                 "transaction digest mismatch"
             )),
         ));
+    }
+}
+
+#[cfg(test)]
+mod encoder_retaining_tests {
+    use super::*;
+
+    fn records() -> impl ExactSizeIterator<Item = NativeRecordRef<'static>> {
+        [NativeRecordRef { namespace_byte: 1, key: b"key", value: Some(b"value") }].into_iter()
+    }
+
+    #[test]
+    fn begin_and_record_sequence_refusals_keep_the_exact_reached_frame_prefix() {
+        for (sequence, frames, payload) in [
+            (u64::MAX, 1, None),
+            (u64::MAX - 1, 2, Some(encode_record_fields(1, b"key", Some(b"value")).unwrap())),
+        ] {
+            let ordinary = encode_transaction([1; 16], sequence, records());
+            let mut original = NativeTransactionEncodeOriginalsV1::new();
+            let retained = encode_transaction_retaining_v1([1; 16], sequence, records(), &mut original);
+
+            assert!(matches!(ordinary, Err(FrameError::SequenceExhausted)));
+            assert!(matches!(retained, Err(FrameError::SequenceExhausted)));
+            assert_eq!(original.frames().unwrap().len(), frames);
+            assert_eq!(original.payload(), payload.as_deref());
+            assert_eq!(original.sequence, u64::MAX);
+            assert_eq!(original.count, Some(1));
+            assert_eq!(original.digest.is_some(), frames == 2);
+            let prefix = original.frames().unwrap().as_ptr();
+            assert!(encode_transaction_retaining_v1([1; 16], 1, records(), &mut original).is_err());
+            assert_eq!(original.frames().unwrap().as_ptr(), prefix);
+        }
+    }
+
+    #[test]
+    fn later_unrepresentable_record_keeps_begin_and_live_digest_without_a_second_encoder() {
+        let key = vec![1; usize::from(u16::MAX) + 1];
+        let records = || [NativeRecordRef { namespace_byte: 1, key: &key, value: Some(b"v") }].into_iter();
+        let ordinary = encode_transaction([1; 16], 1, records());
+        let mut original = NativeTransactionEncodeOriginalsV1::new();
+        let retained = encode_transaction_retaining_v1([1; 16], 1, records(), &mut original);
+
+        assert_eq!(ordinary.unwrap_err().to_string(), retained.unwrap_err().to_string());
+        assert_eq!(original.frames().unwrap().len(), 1);
+        assert!(original.payload().is_none());
+        assert!(original.digest.is_some());
+    }
+
+    #[test]
+    fn positive_retained_encoding_moves_same_complete_output_and_retires_leaf_scratch() {
+        let ordinary = encode_transaction([1; 16], 1, records()).unwrap();
+        let mut original = NativeTransactionEncodeOriginalsV1::new();
+        let retained = encode_transaction_retaining_v1([1; 16], 1, records(), &mut original).unwrap();
+
+        assert_eq!(retained, ordinary);
+        assert!(original.frames().is_none());
+        assert!(original.payload().is_none());
+        assert!(original.commit().is_none());
+        assert!(original.digest.is_none());
     }
 }

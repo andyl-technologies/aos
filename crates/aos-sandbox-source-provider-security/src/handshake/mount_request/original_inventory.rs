@@ -7,7 +7,7 @@
 
 use std::cell::Cell;
 
-use aos_sandbox::{
+use aos_sandbox_mount_native::{
     JournalTransaction, MountOriginalInventoryJournalAuthorityV6,
     OriginalInventoryProtectedReadbackV6, OriginalRootProtectedReadbackV5,
 };

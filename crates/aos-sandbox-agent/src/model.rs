@@ -204,6 +204,10 @@ pub enum AgentFeatureV1 {
     /// Not yet part of the production guest-root feature mask: the Host must
     /// first bind this readback to its current profile and exec-child limits.
     RuntimeArgumentObservation = 7,
+    /// Accepts kind14 sealed Capture with two actual write-only pipe roles.
+    ///
+    /// This signed transport capability grants no Storage output authority.
+    CapturePipeHandoffV2 = 8,
 }
 
 /// Stores a canonical bounded nonempty feature set.

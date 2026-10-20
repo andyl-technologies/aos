@@ -25,7 +25,7 @@ use aos_sandbox_core::{
 use crate::{
     BrokerDispatchAttemptError, BrokerDispatchAttemptV1, GuardianPlanRequestV1, IdempotencyKey,
     IdempotencyOutcome, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
-    SignedOwnershipLease,
+    
 };
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 use aos_sandbox_protocol::domain_ledger::effect_history::PreparedAuthorityEffectHistoryV1;
@@ -36,12 +36,15 @@ use aos_sandbox_core::{DecodeLimits, descriptor_for_bytes};
 #[cfg(test)]
 use crate::BrokerDispatchTemplateV1;
 
+use publication_data::ledger_read;
 mod format;
 use format::{decode_current, decode_prepared};
 use aos_sandbox_protocol::publication::{
     self as publication_data, PublicationHistoryV1, PublicationHistoryError,
 };
-use publication_data::{current_key, prepared_key, CURRENT_KEY_PREFIX, PREPARED_KEY_PREFIX};
+use publication_data::{current_key, prepared_key};
+#[cfg(test)]
+use publication_data::CURRENT_KEY_PREFIX;
 pub(crate) use publication_data::{
     MAXIMUM_PUBLICATION_BYTES, decode_historical_output_publication_v1,
     validate_historical_output_publication_v1,
@@ -181,6 +184,11 @@ pub struct CurrentAuthorityPublicationV1 {
 }
 
 impl CurrentAuthorityPublicationV1 {
+    /// Borrows the same structural history without creating a current owner.
+    pub(crate) fn history_data_v2(&self) -> &PublicationHistoryV1 {
+        &self.prepared.history
+    }
+
     /// Returns the complete structurally recovered assignment manifest.
     ///
     /// This durable record is not proof of current runtime ownership.
@@ -414,6 +422,19 @@ impl<'a> AuthorityPublicationStore<'a> {
     }
 }
 
+/// Reads current structural DATA through the sole complete publication validator.
+///
+/// This shares the ordinary Store lookup without borrowing its writer facade.
+/// Native authority, payment and same-Journal custody remain with the caller.
+///
+/// # Errors
+/// Refuses unhealthy/corrupt bounded publication history or an inconsistent head.
+pub(crate) fn current_readonly_v2(journal: &Journal, sandbox: SandboxId)
+    -> Result<Option<CurrentAuthorityPublicationV1>, AuthorityPublicationError> {
+    validate_publication_namespace(journal)?;
+    current_in_validated_namespace(journal, sandbox)
+}
+
 /// Checks one exact current/prepared pair after a caller's full namespace scan.
 ///
 /// The caller must retain exclusive journal ownership between that scan and
@@ -422,29 +443,9 @@ pub(crate) fn current_in_validated_namespace(
     journal: &Journal,
     sandbox: SandboxId,
 ) -> Result<Option<CurrentAuthorityPublicationV1>, AuthorityPublicationError> {
-    journal.ensure_healthy()?;
-    let current = journal
-        .get(RecordNamespace::AuthorityPublication, &current_key(sandbox))
-        .map(decode_current)
-        .transpose()?;
-    let Some(current) = current else {
-        return Ok(None);
-    };
-    if current.prepared.history.sandbox() != sandbox {
-        return Err(AuthorityPublicationError::CorruptCurrent);
-    }
-    let prepared = journal
-        .get(
-            RecordNamespace::AuthorityPublication,
-            &prepared_key(current.digest()),
-        )
-        .map(|bytes| decode_prepared(bytes, current.digest()))
-        .transpose()?
-        .ok_or(AuthorityPublicationError::CorruptCurrent)?;
-    if prepared != current.prepared {
-        return Err(AuthorityPublicationError::CorruptCurrent);
-    }
-    Ok(Some(current))
+    ledger_read::current_in_validated_namespace(journal.historical_read_view_v1(), sandbox)
+        .map(|current| current.map(format::enclose_decoded_current))
+        .map_err(AuthorityPublicationError::from)
 }
 
 pub(crate) fn validate_durable_gate_publication(
@@ -455,49 +456,15 @@ pub(crate) fn validate_durable_gate_publication(
     lease_generation: u64,
     lease_digest: ObjectDigest,
 ) -> Result<(), AuthorityPublicationError> {
-    journal.ensure_healthy()?;
-    let prepared = journal
-        .get(
-            RecordNamespace::AuthorityPublication,
-            &prepared_key(publication_digest),
-        )
-        .map(|bytes| decode_prepared(bytes, publication_digest))
-        .transpose()?
-        .ok_or(AuthorityPublicationError::CorruptCurrent)?;
-    let manifest = draft.manifest();
-    let semantics = manifest.manifest();
-    let assignment = claim.assignment();
-    if prepared.history.sandbox() != assignment.sandbox()
-        || *prepared.history.incarnation() != *assignment.incarnation().as_bytes()
-        || prepared.history.epoch() != assignment.epoch().get()
-        || prepared.history.desired_generation() != claim.desired_generation().get()
-        || prepared.history.assignment_digest() != assignment.digest()
-        || *prepared.history.node() != *claim.node().as_bytes()
-        || prepared.history.source_draft_digest() != draft.digest()
-        || prepared.history.lease_generation() != lease_generation
-        || prepared.history.lease_digest() != lease_digest
-        || prepared.history.receipt_authority() != draft.ownership_authority()
-        || prepared.history.receipt_action() != claim.action()
-        || *prepared.history.receipt_request_id() != *claim.request_id()
-        || prepared.history.receipt_claim_digest() != claim.digest()
-        || semantics.sandbox() != assignment.sandbox()
-    {
-        return Err(AuthorityPublicationError::CorruptCurrent);
-    }
-    let current = journal
-        .get(
-            RecordNamespace::AuthorityPublication,
-            &current_key(assignment.sandbox()),
-        )
-        .map(decode_current)
-        .transpose()?
-        .ok_or(AuthorityPublicationError::CorruptCurrent)?;
-    prepared
-        .history
-        .require_successor(&current.prepared.history)
-        .map_err(AuthorityPublicationError::from)
-        .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
-    Ok(())
+    ledger_read::validate_durable_gate_publication(
+        journal.historical_read_view_v1(),
+        publication_digest,
+        draft,
+        claim,
+        lease_generation,
+        lease_digest,
+    )
+    .map_err(AuthorityPublicationError::from)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -588,40 +555,24 @@ pub(crate) fn validate_durable_effect_attempt(
 pub(crate) fn validate_publication_namespace(
     journal: &Journal,
 ) -> Result<(), AuthorityPublicationError> {
-    // Diagnostic materialized values can lag an ambiguously committed successor.
-    // Never turn that stale snapshot into current publication or replay evidence.
-    journal.ensure_healthy()?;
-    for (key, value) in journal.records(RecordNamespace::AuthorityPublication) {
-        if let Some(suffix) = key.strip_prefix(CURRENT_KEY_PREFIX) {
-            let sandbox_bytes: [u8; 16] = suffix
-                .try_into()
-                .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
-            let sandbox = SandboxId::from_bytes(sandbox_bytes);
-            let current = decode_current(value)?;
-            if current.prepared.history.sandbox() != sandbox {
-                return Err(AuthorityPublicationError::CorruptCurrent);
-            }
-            let permanent = journal
-                .get(
-                    RecordNamespace::AuthorityPublication,
-                    &prepared_key(current.digest()),
-                )
-                .map(|bytes| decode_prepared(bytes, current.digest()))
-                .transpose()?
-                .ok_or(AuthorityPublicationError::CorruptCurrent)?;
-            if permanent != current.prepared {
-                return Err(AuthorityPublicationError::CorruptCurrent);
-            }
-        } else if let Some(suffix) = key.strip_prefix(PREPARED_KEY_PREFIX) {
-            let digest_bytes: [u8; 32] = suffix
-                .try_into()
-                .map_err(|_| AuthorityPublicationError::CorruptCurrent)?;
-            decode_prepared(value, ObjectDigest::from_bytes(digest_bytes))?;
-        } else {
-            return Err(AuthorityPublicationError::CorruptCurrent);
-        }
-    }
-    Ok(())
+    scan_publication_namespace(journal, None).map(|_| ())
+}
+
+// This is structural absence DATA. The original Create loan separately keeps
+// the writer, accepted operation and paid before/after observations alive.
+pub(crate) fn assignment_subject_present_v1(
+    journal: &Journal,
+    sandbox: SandboxId,
+) -> Result<bool, AuthorityPublicationError> {
+    scan_publication_namespace(journal, Some(sandbox))
+}
+
+fn scan_publication_namespace(
+    journal: &Journal,
+    subject: Option<SandboxId>,
+) -> Result<bool, AuthorityPublicationError> {
+    ledger_read::scan_publication_namespace(journal.historical_read_view_v1(), subject)
+        .map_err(AuthorityPublicationError::from)
 }
 
 impl<'a> AuthorityPublicationStore<'a> {
@@ -638,8 +589,7 @@ impl<'a> AuthorityPublicationStore<'a> {
         &self,
         sandbox: SandboxId,
     ) -> Result<Option<CurrentAuthorityPublicationV1>, AuthorityPublicationError> {
-        self.validate_namespace()?;
-        current_in_validated_namespace(self.journal, sandbox)
+        current_readonly_v2(self.journal, sandbox)
     }
 
     fn validate_namespace(&self) -> Result<(), AuthorityPublicationError> {
@@ -762,52 +712,8 @@ impl<'a> AuthorityPublicationStore<'a> {
         let current = self
             .current(sandbox)?
             .ok_or(AuthorityPublicationError::CurrentAbsent)?;
-        activated
-            .history
-            .require_successor(&current.prepared.history)
-            .map_err(AuthorityPublicationError::from)?;
-        if activated.history.source_draft_digest() != source_draft_digest
-            || current.prepared.history.source_draft_digest() != source_draft_digest
-        {
-            return Err(AuthorityPublicationError::StaleCurrent);
-        }
-        let template = current
-            .templates
-            .iter()
-            .find(|candidate| candidate.digest() == template_digest)
-            .ok_or(AuthorityPublicationError::TemplateAbsent)?;
-        if template.audience() != audience {
-            return Err(AuthorityPublicationError::WrongAudience);
-        }
-        if !template.descriptor_roles().is_empty() {
-            return Err(AuthorityPublicationError::DescriptorExecutionUnsupported);
-        }
-        let host_launch = template.semantics().verb() == BrokerVerb::HostLaunch;
-        let attempt = match (host_launch, guardian_plan) {
-            (true, Some(guardian_plan))
-                if template.audience() == BrokerAudience::Host
-                    && template.plan().protocol_version() == ProtocolVersion::new(1, 0) =>
-            {
-                BrokerDispatchAttemptV1::from_recovered_current_with_guardian(
-                    template,
-                    &current.lease,
-                    guardian_plan,
-                    clock.host_boot_id(),
-                    deadline_boottime_nanoseconds,
-                    clock,
-                )
-            }
-            (true, _) => return Err(AuthorityPublicationError::GuardianRequired),
-            (false, Some(_)) => return Err(AuthorityPublicationError::UnexpectedGuardianPlan),
-            (false, None) => BrokerDispatchAttemptV1::from_recovered_current(
-                template,
-                &current.lease,
-                deadline_boottime_nanoseconds,
-                clock,
-            ),
-        }
-        .map_err(AuthorityPublicationError::DispatchAttempt)?;
-        Ok((current.digest(), attempt))
+        select_bound_current_models_v4(&activated.history, &current, source_draft_digest,
+            audience, template_digest, guardian_plan, deadline_boottime_nanoseconds, clock)
     }
 }
 
@@ -873,6 +779,17 @@ pub enum AuthorityPublicationError {
     DispatchAttempt(#[from] BrokerDispatchAttemptError),
 }
 
+impl From<ledger_read::PublicationLedgerDataErrorV1> for AuthorityPublicationError {
+    fn from(error: ledger_read::PublicationLedgerDataErrorV1) -> Self {
+        match error {
+            ledger_read::PublicationLedgerDataErrorV1::Poisoned => {
+                Self::Journal(JournalError::Poisoned)
+            }
+            ledger_read::PublicationLedgerDataErrorV1::Publication(error) => Self::from(error),
+        }
+    }
+}
+
 impl From<PublicationHistoryError> for AuthorityPublicationError {
     fn from(error: PublicationHistoryError) -> Self {
         match error {
@@ -934,3 +851,65 @@ pub fn bind_authority_publication_lease(
 #[cfg(test)]
 #[path = "publication/tests.rs"]
 pub(crate) mod tests;
+
+use aos_sandbox_ownership_protocol::{SignedOwnershipLease};
+
+
+// Both actual selectors have already retained their protected getter results.
+// This is the same structural attenuation recipe, not a trust/key adopter.
+pub(crate) fn select_bound_current_models_v4(
+    activated: &PublicationHistoryV1,
+    current: &CurrentAuthorityPublicationV1,
+    source_draft_digest: ObjectDigest,
+    audience: BrokerAudience,
+    template_digest: ObjectDigest,
+    guardian_plan: Option<&SignedBrokerPlan>,
+    deadline_boottime_nanoseconds: u64,
+    clock: RawPairedClockSample,
+) -> Result<(ObjectDigest, BrokerDispatchAttemptV1), AuthorityPublicationError> {
+        activated
+            .require_successor(&current.prepared.history)
+            .map_err(AuthorityPublicationError::from)?;
+        if activated.source_draft_digest() != source_draft_digest
+            || current.prepared.history.source_draft_digest() != source_draft_digest
+        {
+            return Err(AuthorityPublicationError::StaleCurrent);
+        }
+        let template = current
+            .templates
+            .iter()
+            .find(|candidate| candidate.digest() == template_digest)
+            .ok_or(AuthorityPublicationError::TemplateAbsent)?;
+        if template.audience() != audience {
+            return Err(AuthorityPublicationError::WrongAudience);
+        }
+        if !template.descriptor_roles().is_empty() {
+            return Err(AuthorityPublicationError::DescriptorExecutionUnsupported);
+        }
+        let host_launch = template.semantics().verb() == BrokerVerb::HostLaunch;
+        let attempt = match (host_launch, guardian_plan) {
+            (true, Some(guardian_plan))
+                if template.audience() == BrokerAudience::Host
+                    && template.plan().protocol_version() == ProtocolVersion::new(1, 0) =>
+            {
+                BrokerDispatchAttemptV1::from_recovered_current_with_guardian(
+                    template,
+                    &current.lease,
+                    guardian_plan,
+                    clock.host_boot_id(),
+                    deadline_boottime_nanoseconds,
+                    clock,
+                )
+            }
+            (true, _) => return Err(AuthorityPublicationError::GuardianRequired),
+            (false, Some(_)) => return Err(AuthorityPublicationError::UnexpectedGuardianPlan),
+            (false, None) => BrokerDispatchAttemptV1::from_recovered_current(
+                template,
+                &current.lease,
+                deadline_boottime_nanoseconds,
+                clock,
+            ),
+        }
+        .map_err(AuthorityPublicationError::DispatchAttempt)?;
+        Ok((current.digest(), attempt))
+}

@@ -477,10 +477,10 @@ mod tests {
     #[test]
     fn first_validation_cause_precedes_postcheck_debt() {
         let mut relay = OriginalProviderRelayV5::pending();
-        relay.retain_failure(aos_sandbox::JournalError::InvalidTransaction.into());
+        relay.retain_failure(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::InvalidTransaction.into());
         relay.retain_postcheck(0, Err(SourceProviderSecurityError::SessionContinuity.into()));
 
         assert!(matches!(relay.failure().and_then(|cause| cause.downcast_ref::<OriginalHeldCauseV5>()),
-            Some(OriginalHeldCauseV5::Journal(aos_sandbox::JournalError::InvalidTransaction))));
+            Some(OriginalHeldCauseV5::Journal(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::InvalidTransaction))));
     }
 }

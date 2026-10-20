@@ -10,7 +10,7 @@ use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::openssh_gate_linux::{OpenSshGatePhysicalErrorV1, RunningOpenSshGateV1};
+use crate::openssh_gate_linux::{OpenSshGatePhysicalErrorV1, SelectedRunningOpenSshGateV1};
 use aos_sandbox_agent::AgentRuntimeBindingV1;
 use aos_sandbox_agent::openssh_gate::{
     OpenSshGateClaimV1, OpenSshGateObserveRequestV1, OpenSshGateReadbackV1,
@@ -28,16 +28,24 @@ const CONFIG: &str = "/etc/aos/sandbox-attach/sshd_config";
 const CLAIM: &str = "/etc/aos/sandbox-attach/gate-record.json";
 const NSS_POLICY: &str = "/etc/nsswitch.conf";
 const LOGIN_DATABASE: &str = "/etc/passwd";
-const MAXIMUM_LOGIN_FILE_BYTES: u64 = 1_048_576;
+const MAXIMUM_LOGIN_FILE_BYTES: u64 = aos_sandbox_agent::openssh_receiving::OPENSSH_LOGIN_FILE_BYTES_V1 as u64;
 const O_CLOEXEC: i32 = 0o2_000_000;
 const O_NOFOLLOW: i32 = 0o400_000;
 
+mod startup;
+pub(super) use startup::GuestOpenSshInstallOriginalV1;
+
 pub(super) struct GuestOpenSshGate {
-    daemon: RunningOpenSshGateV1,
+    daemon: SelectedRunningOpenSshGateV1,
     claim: OpenSshGateClaimV1,
 }
 
 impl GuestOpenSshGate {
+    /// Polls retirement of only the same owner-created SSH daemon.
+    pub(super) fn poll_original_retirement_v1(&mut self, ledger: &Ledger) -> Result<bool, GuestProcessEffectErrorV1> {
+        self.daemon.poll_retirement(ledger)
+    }
+
     pub(super) fn bind_ticket_v2(
         &mut self,
         request: &OpenSshGateObserveRequestV1,
@@ -77,31 +85,72 @@ impl GuestOpenSshGate {
         self.claim.binding.execution_id
     }
 
-    pub(super) fn install(
+    pub(super) fn install_retaining_once(
         request: &OpenSshGateObserveRequestV1,
         runtime: &AgentRuntimeBindingV1,
         ledger: &Ledger,
         deadline: Instant,
+        startup_deadline: Option<u64>,
+        topology: &aos_sandbox_linux::guest_cgroup::GuestRuntimeTopologyOriginalV1,
+        payload: &aos_sandbox_linux::guest_cgroup::GuestPayloadCgroupCustodyV1,
+        execution_root: &aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
+        original: &mut GuestOpenSshInstallOriginalV1,
     ) -> Result<Self, GuestProcessEffectErrorV1> {
+        if original.entered { return Err(GuestProcessEffectErrorV1::AmbiguousEffect); }
+        original.entered = true;
+        original.execution = Some(request.binding.execution_id);
+        let result = Self::install_retaining_inner(request, runtime, ledger, deadline, startup_deadline,
+            topology, payload, execution_root, original);
+        let positive = result.is_ok();
+        original.body = Some(result);
+        if !positive {
+            ledger.request_ssh_retirement_v1(request.binding.execution_id);
+            return Err(GuestProcessEffectErrorV1::AmbiguousEffect);
+        }
+        Ok(Self {
+            daemon: original.daemon.take().ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?,
+            claim: original.claim.take().ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?,
+        })
+    }
+
+    fn install_retaining_inner(
+        request: &OpenSshGateObserveRequestV1,
+        runtime: &AgentRuntimeBindingV1,
+        ledger: &Ledger,
+        deadline: Instant,
+        startup_deadline: Option<u64>,
+        topology: &aos_sandbox_linux::guest_cgroup::GuestRuntimeTopologyOriginalV1,
+        payload: &aos_sandbox_linux::guest_cgroup::GuestPayloadCgroupCustodyV1,
+        execution_root: &aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
+        original: &mut GuestOpenSshInstallOriginalV1,
+    ) -> Result<(), GuestProcessEffectErrorV1> {
         check_deadline(deadline)?;
         let process = ledger.read_process_bytes(request.binding.execution_id)?;
-        verify_admitted_process(&process, request, runtime, ledger)?;
+        verify_admitted_process_with_login(&process, request, runtime, ledger, &mut |user| {
+            let nss_policy = original.daemon_start.read_static_login_v1(Path::new(NSS_POLICY), MAXIMUM_LOGIN_FILE_BYTES)?;
+            let database = original.daemon_start.read_static_login_v1(Path::new(LOGIN_DATABASE), MAXIMUM_LOGIN_FILE_BYTES)?;
+            static_login_identity_contents(user, &nss_policy, &database)
+        })?;
 
         let config = expected_openssh_gate_config_v1(&request.binding)
             .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
         if <[u8; 32]>::from(Sha256::digest(&config)) != request.binding.gate_config_digest {
             return Err(GuestProcessEffectErrorV1::InvalidRequest);
         }
-        install_protected_file(CONFIG, &config, 0o644)?;
+        let startup_deadline = startup_deadline.ok_or(OpenSshGatePhysicalErrorV1::ListenerReceiptRequired)?;
+        original.current.bind_original_cutoff_v1(startup_deadline, &process)?;
+        let mut current = || original.current.require_next(ledger, &process, request.binding.expires_at, deadline);
+        original.config.install_once(CONFIG, &config, 0o644, &mut current)?;
         check_deadline(deadline)?;
 
         // start() authenticates the guest-local private host key, public key,
         // CA, fixed config, and installed gate executable before launching.
-        let mut daemon = RunningOpenSshGateV1::start_with_monitor_v2(request.binding.clone())
-            .map_err(|_| GuestProcessEffectErrorV1::Unavailable("OpenSSH gate unavailable"))?;
-        let (sshd_pid, sshd_start_ticks) = daemon
-            .daemon_identity()
-            .map_err(|_| GuestProcessEffectErrorV1::Unavailable("OpenSSH gate unavailable"))?;
+        original.daemon = Some(original.selected.start_once(
+            request.binding.clone(), &process, ledger, topology, payload, execution_root,
+            startup_deadline, &mut original.daemon_start, &mut current,
+        )?);
+        let (sshd_pid, sshd_start_ticks) = original.daemon.as_ref()
+            .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?.coordinates();
         let claim = OpenSshGateClaimV1 {
             binding: request.binding.clone(),
             route_digest: request.route_digest,
@@ -118,16 +167,16 @@ impl GuestOpenSshGate {
         let bytes =
             serde_json::to_vec(&claim).map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
         check_deadline(deadline)?;
-        install_protected_file(CLAIM, &bytes, 0o644)?;
-
-        Ok(Self { daemon, claim })
+        original.record.install_once(CLAIM, &bytes, 0o644, &mut current)?;
+        current()?;
+        original.claim = Some(claim);
+        Ok(())
     }
 
     pub(super) fn monitor_runtime_v2(
         &mut self,
     ) -> Result<crate::openssh_gate_linux::OpenSshMonitorRuntimeV2, GuestProcessEffectErrorV1> {
-        self.daemon
-            .monitor_runtime_v2(&self.claim)
+        self.daemon.monitor_runtime(&self.claim)
             .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)
     }
 
@@ -140,6 +189,7 @@ impl GuestOpenSshGate {
         deadline: Instant,
     ) -> Result<OpenSshGateReadbackV1, GuestProcessEffectErrorV1> {
         check_deadline(deadline)?;
+        self.daemon.require_selected_readback_ready_v1()?;
         if self.claim.binding != request.binding || self.claim.route_digest != request.route_digest
         {
             return Err(GuestProcessEffectErrorV1::InvalidRequest);
@@ -156,6 +206,7 @@ impl GuestOpenSshGate {
         loop {
             check_deadline(deadline)?;
             match self.daemon.physical_readback(
+                &self.claim,
                 request.challenge,
                 request.route_digest,
                 *channel.as_bytes(),
@@ -191,6 +242,7 @@ impl GuestOpenSshGate {
         deadline: Instant,
     ) -> Result<OpenSshGateReadbackV1, GuestProcessEffectErrorV1> {
         check_deadline(deadline)?;
+        self.daemon.require_selected_readback_ready_v1()?;
         let process = ledger.read_process_bytes(request.binding.execution_id)?;
         let bridge_request =
             aos_sandbox_agent::openssh_gate::decode_openssh_gate_bridge_request_v1(
@@ -211,7 +263,8 @@ impl GuestOpenSshGate {
         static_login_identity(&request.binding.user)?;
         let readback = self
             .daemon
-            .original_control_physical_readback_v5(
+            .physical_readback(
+                &self.claim,
                 request.challenge,
                 request.route_digest,
                 *channel.as_bytes(),
@@ -229,6 +282,16 @@ fn verify_admitted_process(
     runtime: &AgentRuntimeBindingV1,
     ledger: &Ledger,
 ) -> Result<(), GuestProcessEffectErrorV1> {
+    verify_admitted_process_with_login(process, request, runtime, ledger, &mut static_login_identity)
+}
+
+fn verify_admitted_process_with_login(
+    process: &ProcessRecord,
+    request: &OpenSshGateObserveRequestV1,
+    runtime: &AgentRuntimeBindingV1,
+    ledger: &Ledger,
+    login: &mut dyn FnMut(&str) -> Result<(u32, u32), GuestProcessEffectErrorV1>,
+) -> Result<(), GuestProcessEffectErrorV1> {
     let binding = &request.binding;
     if process.execution != binding.execution_id
         || process.incarnation != binding.incarnation_id
@@ -242,7 +305,7 @@ fn verify_admitted_process(
     {
         return Err(GuestProcessEffectErrorV1::InvalidRequest);
     }
-    static_login_identity(&binding.user)?;
+    login(&binding.user)?;
     Ok(())
 }
 
@@ -416,43 +479,6 @@ mod tests {
             .is_err()
         );
     }
-}
-
-fn install_protected_file(
-    target: &str,
-    bytes: &[u8],
-    mode: u32,
-) -> Result<(), GuestProcessEffectErrorV1> {
-    for directory in ["/etc", "/etc/aos", DIRECTORY] {
-        let metadata = fs::symlink_metadata(directory)?;
-        if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-            return Err(GuestProcessEffectErrorV1::UnprotectedLedger);
-        }
-    }
-    let target = Path::new(target);
-    match fs::symlink_metadata(target) {
-        Ok(metadata)
-            if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 =>
-        {
-            return Err(GuestProcessEffectErrorV1::UnprotectedLedger);
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    let temporary = target.with_extension("next");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(O_CLOEXEC | O_NOFOLLOW)
-        .open(&temporary)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    fs::set_permissions(&temporary, fs::Permissions::from_mode(mode))?;
-    fs::rename(&temporary, target)?;
-    File::open(DIRECTORY)?.sync_all()?;
-    Ok(())
 }
 
 fn install_original_ticket_v2(bytes: &[u8]) -> Result<(), GuestProcessEffectErrorV1> {

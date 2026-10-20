@@ -51,6 +51,8 @@ members = [
     "aos-sandbox-source-provider",
     "aos-sandbox-source-provider-protocol",
     "aos-sandbox-source-provider-security",
+    "aos-sandbox-source",
+    "aos-sandbox-ledger-replay",
     "aos-sandbox-source-signer",
     "aos-sandbox-broker-session-protocol",
     "aos-sandbox-broker-session-security",
@@ -58,6 +60,7 @@ members = [
     "aos-sandbox-cache-signer",
     "aos-sandbox-services",
     "aos-sandbox-protocol",
+    "aos-sandbox-publisher",
     "aos-sandbox",
     "aos-sandbox/tests/fixtures/service-journal",
     "aos-sandbox-linux",
@@ -67,6 +70,7 @@ members = [
     "aos-sandbox-host",
     "aos-sandbox-guardian",
     "aos-sandbox-mount",
+    "aos-sandbox-mount-native",
     "aos-sandbox-network",
     "aos-sandbox-network/tests/fixtures/protected-store",
     "aos-sandbox-network/tests/fixtures/systemd-custody",
@@ -142,6 +146,8 @@ default-members = [
     "aos-sandbox-source-provider",
     "aos-sandbox-source-provider-protocol",
     "aos-sandbox-source-provider-security",
+    "aos-sandbox-source",
+    "aos-sandbox-ledger-replay",
     "aos-sandbox-source-signer",
     "aos-sandbox-broker-session-protocol",
     "aos-sandbox-broker-session-security",
@@ -149,6 +155,7 @@ default-members = [
     "aos-sandbox-cache-signer",
     "aos-sandbox-services",
     "aos-sandbox-protocol",
+    "aos-sandbox-publisher",
     "aos-sandbox",
     "aos-sandbox/tests/fixtures/service-journal",
     "aos-sandbox-linux",
@@ -158,6 +165,7 @@ default-members = [
     "aos-sandbox-host",
     "aos-sandbox-guardian",
     "aos-sandbox-mount",
+    "aos-sandbox-mount-native",
     "aos-sandbox-network",
     "aos-sandbox-network/tests/fixtures/protected-store",
     "aos-sandbox-network/tests/fixtures/systemd-custody",
@@ -391,6 +399,8 @@ aos-sandbox-source-provider = { path = "aos-sandbox-source-provider" }
 aos-sandbox-source-provider-ledger = { path = "aos-sandbox-source-provider-ledger" }
 aos-sandbox-source-provider-protocol = { path = "aos-sandbox-source-provider-protocol" }
 aos-sandbox-source-provider-security = { path = "aos-sandbox-source-provider-security" }
+aos-sandbox-source = { path = "aos-sandbox-source" }
+aos-sandbox-ledger-replay = { path = "aos-sandbox-ledger-replay" }
 aos-sandbox-source-signer = { path = "aos-sandbox-source-signer" }
 aos-sandbox-broker-session-protocol = { path = "aos-sandbox-broker-session-protocol" }
 aos-sandbox-broker-session-security = { path = "aos-sandbox-broker-session-security" }
@@ -398,9 +408,11 @@ aos-sandbox-controller-runtime = { path = "aos-sandbox-controller-runtime" }
 aos-sandbox-cache-signer = { path = "aos-sandbox-cache-signer" }
 aos-sandbox-services = { path = "aos-sandbox-services" }
 aos-sandbox-protocol = { path = "aos-sandbox-protocol" }
+aos-sandbox-publisher = { path = "aos-sandbox-publisher" }
 aos-sandbox = { path = "aos-sandbox" }
 aos-sandbox-broker = { path = "aos-sandbox-broker" }
 aos-sandbox-mount = { path = "aos-sandbox-mount" }
+aos-sandbox-mount-native = { path = "aos-sandbox-mount-native" }
 aos-sandbox-network = { path = "aos-sandbox-network" }
 aos-sandbox-storage = { path = "aos-sandbox-storage" }
 aos-sandbox-linux = { path = "aos-sandbox-linux" }

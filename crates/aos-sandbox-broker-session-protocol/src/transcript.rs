@@ -14,6 +14,10 @@ use crate::artifact::{
 };
 use crate::context::ProtectedBrokerSessionVerificationContextV1;
 use crate::model::{BrokerSessionKeyUsageV1, BrokerSessionValidationError};
+mod capture;
+#[doc(hidden)]
+pub use capture::BrokerSessionTranscriptVerifyCaptureV1;
+
 use crate::profile::{
     BrokerSessionNegotiationError, ValidatedBrokerSessionNegotiationV1,
     validate_authenticated_negotiation_v1,
@@ -260,24 +264,9 @@ pub fn verify_broker_session_transcript_v1(
     broker: &CanonicalBrokerServerHelloV1,
     context: &ProtectedBrokerSessionVerificationContextV1,
 ) -> Result<VerifiedBrokerSessionTranscriptV1, BrokerSessionTranscriptError> {
-    // This public wrapper preserves the original fail-closed error precedence.
-    context.require_all_active()?;
-    let negotiation = validate_authenticated_negotiation_v1(
-        client.message(),
-        broker.message(),
-        context.protocol(),
-        context.protocol_major(),
-        context.protocol_minor(),
-        context.audience(),
-    )?;
-    require_client_context(client, context)?;
-    let client_key = context.key(BrokerSessionKeyUsageV1::ClientHello);
-    client_key.matches_active(client.signed_artifact().signer())?;
-    client
-        .signed_artifact()
-        .verify_with_public_key(client_key.public_key())?;
-
-    verify_remaining_hello_pair(client, broker, context, negotiation)
+    let mut capture = BrokerSessionTranscriptVerifyCaptureV1::ordinary();
+    let _classification = capture.capture_once(client, broker, context);
+    capture.into_ordinary_result()
 }
 
 /// Completes mutual transcript verification after staged ClientHello checks.
@@ -322,55 +311,27 @@ fn verify_remaining_hello_pair(
     context: &ProtectedBrokerSessionVerificationContextV1,
     negotiation: ValidatedBrokerSessionNegotiationV1,
 ) -> Result<VerifiedBrokerSessionTranscriptV1, BrokerSessionTranscriptError> {
-    let protected_context_digest = context.protected_context_digest();
-    let client_subject = client.signed_artifact().subject();
-    let client_digest = complete_signed_client_hello_digest_v1(client.signed_artifact());
-    let broker_subject = broker.signed_artifact().subject();
-    if broker_subject.node_id != context.node_id()
-        || broker_subject.boot_id != context.boot_id()
-        || broker_subject.protocol != context.protocol()
-        || broker_subject.major != context.protocol_major()
-        || broker_subject.minor != context.protocol_minor()
-        || broker_subject.audience != context.audience()
-        || broker_subject.broker_process() != context.broker_process()
-        || broker_subject.protected_context_digest() != protected_context_digest
-        || broker_subject.cleared_fields_digest() != broker.cleared_fields_digest()
-        || broker.message().protocol_major != u32::from(context.protocol_major())
-        || broker.message().protocol_minor != u32::from(context.protocol_minor())
-        || broker_subject.signed_client_hello_digest() != client_digest
-    {
-        return Err(BrokerSessionTranscriptError::ContextMismatch);
-    }
-    if client_subject.nonce() == broker_subject.nonce() {
-        return Err(BrokerSessionTranscriptError::EqualNonces);
-    }
-    let broker_key = context.key(BrokerSessionKeyUsageV1::BrokerHello);
-    broker_key.matches_active(broker.signed_artifact().signer())?;
-    broker
-        .signed_artifact()
-        .verify_with_public_key(broker_key.public_key())?;
+    let mut capture = BrokerSessionTranscriptVerifyCaptureV1::ordinary();
+    capture.negotiation = Some(negotiation);
+    capture.result = Some(capture.verify_remaining(client, broker, context).map(Some));
+    capture.into_ordinary_result()
+}
 
-    let session_binding = session_binding(
-        &client.signed_artifact().to_canonical_bytes(),
-        &broker.signed_artifact().to_canonical_bytes(),
-    );
-    Ok(VerifiedBrokerSessionTranscriptV1 {
-        session_binding,
-        protected_context_digest,
-        protocol: negotiation.protocol,
-        protocol_major: negotiation.major,
-        protocol_minor: negotiation.minor,
-        audience: negotiation.audience,
-        client_process: context.client_process(),
-        broker_process: context.broker_process(),
-        required_features: negotiation.required_features,
-        advertised_features: negotiation.advertised_features,
-        required_methods: negotiation.required_methods,
-        advertised_methods: negotiation.advertised_methods,
-        negotiated_maximum_request_bytes: negotiation.maximum_request_bytes,
-        negotiated_maximum_response_bytes: negotiation.maximum_response_bytes,
-        phase: BrokerSessionTranscriptPhaseV1::Provisional,
-    })
+/// Retains reached negotiation, canonical artifacts and transcript failures.
+///
+/// This pure verifier confers no protected origin or current-session authority.
+///
+/// # Errors
+/// Returns the existing transcript classification and retains its actual cause
+/// and partial inputs in `capture`; repeated use refuses without more parsing.
+#[doc(hidden)]
+pub fn verify_broker_session_transcript_retaining_v1(
+    client: &CanonicalBrokerClientHelloV1,
+    broker: &CanonicalBrokerServerHelloV1,
+    context: &ProtectedBrokerSessionVerificationContextV1,
+    capture: &mut BrokerSessionTranscriptVerifyCaptureV1,
+) -> Result<(), BrokerSessionTranscriptError> {
+    capture.capture_once(client, broker, context)
 }
 
 fn require_client_context(

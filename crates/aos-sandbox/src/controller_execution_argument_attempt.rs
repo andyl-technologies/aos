@@ -29,7 +29,7 @@ use crate::controller_execution_preissue::{
 };
 use crate::environment::EnvironmentProtectedJournalOwnerV1;
 use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentAssignmentTarget, CurrentRuntimeScopeError};
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 

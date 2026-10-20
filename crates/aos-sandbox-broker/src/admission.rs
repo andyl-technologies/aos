@@ -5,6 +5,28 @@
 //! records. Returned records are not executable authority until durably
 //! committed and checked again through [`BrokerAuthority::check_before_effect`].
 
+mod receiving;
+mod public_verification;
+pub use public_verification::NetworkPublicVerifierV2;
+
+mod signed_original;
+pub use signed_original::BrokerSignedAdmissionOriginalV4;
+
+mod effect_clock;
+pub use effect_clock::BrokerEffectClockComparisonV3;
+
+mod capture_lifetime;
+pub use capture_lifetime::VerifiedStorageCaptureLifetimeV3;
+
+mod capture_stop;
+pub use capture_stop::{StorageCaptureStopInspectionErrorV4,
+    StorageCaptureStopInspectionOriginalV4, VerifiedStorageCaptureStopCleanupV4};
+
+mod storage_root_launch_export;
+pub use storage_root_launch_export::{
+    StorageHostLaunchExportInspectionErrorV2, VerifiedStorageHostLaunchExportV2,
+};
+
 mod storage_prepare_clock;
 pub use storage_prepare_clock::StoragePrepareNativeClockLoanV1;
 
@@ -13,7 +35,7 @@ use aos_sandbox_core::format::decode_signature;
 use aos_sandbox_core::{
     BrokerAdmissionIntersection, BrokerArgumentCommitment, BrokerAssignment, BrokerAudience,
     BrokerGrantTarget, BrokerPlanExpectation, BrokerPlanRequest, BrokerPlanTrustAnchor, BrokerVerb,
-    CLOCK_PAIR_TOLERANCE_NANOSECONDS, DecodeLimits, NodeId, ObjectDigest,
+    DecodeLimits, NodeId, ObjectDigest,
     OwnershipLeaseExpectation, OwnershipLeaseTrustAnchor, ProtocolId, ProtocolVersion,
     RawPairedClockSample, VerifiedOwnershipLease, intersect_broker_admission, negotiate_protocol,
     prepare_local_lease_record, verify_broker_plan, verify_ownership_lease,
@@ -109,6 +131,14 @@ enum AdmissionPhase {
 }
 
 impl BrokerAuthority {
+    /// Returns the configured local node identity as comparison DATA.
+    ///
+    /// The returned identity carries no admission or mutation capability.
+    #[must_use]
+    pub const fn node_identity_data_v2(&self) -> NodeId {
+        self.node
+    }
+
     /// Admits an operation-owned Snapshot derivative beside its unchanged base.
     ///
     /// A same-plan request retains ordinary admission. A changed plan must use
@@ -154,12 +184,38 @@ impl BrokerAuthority {
         journal_key_id: [u8; 16],
         journal_secret: [u8; 32],
     ) -> Result<Self, BrokerAdmissionError> {
+        let mut plan = Some(Ok(plan_anchor));
+        let mut lease = Some(Ok(lease_anchor));
+        Self::new_from_anchor_results_v1(
+            domain, &mut plan, &mut lease, node, journal_key_id, journal_secret,
+        )
+    }
+
+    // The selected loader keeps these actual successful anchors resident if
+    // later node/MAC validation fails. Ordinary callers use the same recipe
+    // with local slots and their existing semantic validation order.
+    pub(crate) fn new_from_anchor_results_v1(
+        domain: BrokerDomain,
+        plan: &mut Option<Result<BrokerPlanTrustAnchor, aos_sandbox_core::BrokerPlanVerificationError>>,
+        lease: &mut Option<Result<OwnershipLeaseTrustAnchor, aos_sandbox_core::OwnershipLeaseVerificationError>>,
+        node: NodeId,
+        journal_key_id: [u8; 16],
+        journal_secret: [u8; 32],
+    ) -> Result<Self, BrokerAdmissionError> {
         let journal_secret = Zeroizing::new(journal_secret);
         if node.as_bytes() == &[0; 16] {
             return Err(BrokerAdmissionError::InvalidConfiguration);
         }
         let journal_mac_key = NodeJournalMacKey::new(domain, journal_key_id, *journal_secret)
             .map_err(|_| BrokerAdmissionError::InvalidConfiguration)?;
+        let (plan_anchor, lease_anchor) = match (plan.take(), lease.take()) {
+            (Some(Ok(plan)), Some(Ok(lease))) => (plan, lease),
+            (original_plan, original_lease) => {
+                *plan = original_plan;
+                *lease = original_lease;
+                return Err(BrokerAdmissionError::InvalidConfiguration);
+            }
+        };
         Ok(Self {
             domain,
             plan_anchor,
@@ -288,6 +344,8 @@ impl BrokerAuthority {
             || !matches!(
                 request.verb,
                 BrokerVerb::HostObserveExecutionArgument
+                    | BrokerVerb::HostPrepareExecutionArgumentV2
+                    | BrokerVerb::HostAcceptExecutionArgumentV2
                     | BrokerVerb::HostQueryExecutionArgument
                     | BrokerVerb::HostTerminalNoApply
                     | BrokerVerb::HostQueryNoApply
@@ -534,6 +592,78 @@ impl BrokerAuthority {
         )
     }
 
+    /// Verifies the explicit physical Capture reserve on its existing assignment.
+    ///
+    /// This checks the independent Capture grant, rather than treating a logical
+    /// output reservation as permission to create a dataset or mount. Storage
+    /// still owns the current catalog, Host and durable one-shot joins.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another domain, verb, target, descriptor-bearing request, changed
+    /// assignment, substituted signed plan, stale lease or invalid protected fence.
+    pub fn admit_storage_capture_reserve_v2(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        self.admit_storage_capture_exact_v2(artifacts, request, current_clock, prior_fence,
+            BrokerVerb::StorageReserveExecutionCapture)
+    }
+
+    /// Verifies only a fresh read-only Capture Query on the same existing lease.
+    ///
+    /// The signed query may rotate its exact plan. It cannot renew the base
+    /// assignment or lease and supplies no worker, reservation or write permit.
+    ///
+    /// # Errors
+    /// Rejects another domain, verb, target, descriptors, assignment, grant,
+    /// protected fence, stale clock or changed original local lease.
+    pub fn admit_storage_capture_query_v2(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        self.admit_storage_capture_exact_v2(artifacts, request, current_clock, prior_fence,
+            BrokerVerb::StorageQueryExecutionCapture)
+    }
+
+    fn admit_storage_capture_exact_v2(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+        expected_verb: BrokerVerb,
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Storage
+            || request.verb != expected_verb
+            || request.target != BrokerGrantTarget::Assignment
+            || request.descriptor_count != 0
+        {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+        let current = self.open_fence(request.assignment.sandbox().as_bytes(), prior_fence)?;
+        if current.assignment() != request.assignment {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        let admission = self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            Some(prior_fence),
+            AdmissionPhase::ExactGrantRotation,
+        )?;
+        if admission.fence.local_lease_record() != current.local_lease_record() {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        Ok(admission)
+    }
+
     /// Admits only Nix population on the same installed Storage assignment.
     ///
     /// The post-Create grant may rotate its exact plan, but it borrows the
@@ -588,6 +718,20 @@ impl BrokerAuthority {
         prior_fence: Option<&[u8]>,
         phase: AdmissionPhase,
     ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        self.admit_with_plan_rotation_retaining_v4(
+            artifacts, request, current_clock, prior_fence, phase, None,
+        )
+    }
+
+    fn admit_with_plan_rotation_retaining_v4(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+        phase: AdmissionPhase,
+        mut original: Option<&mut BrokerSignedAdmissionOriginalV4>,
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
         let fuse_intent = phase == AdmissionPhase::ExistingMountFuseIntent
             && self.domain == BrokerDomain::Mount
             && is_fuse_intent_admission(&request);
@@ -611,26 +755,8 @@ impl BrokerAuthority {
         {
             return Err(BrokerAdmissionError::RequestMismatch);
         }
-        let plan_signature = decode_signature(
-            artifacts.broker_plan_signature(),
-            artifact_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES),
-        )
-        .map_err(|_| BrokerAdmissionError::VerificationFailed)?;
-        let verified_plan = verify_broker_plan(
-            artifacts.broker_plan(),
-            &plan_signature,
-            &self.plan_anchor,
-            BrokerPlanExpectation {
-                audience: request.audience,
-                protocol: request.protocol,
-                protocol_version: request.protocol_version,
-                assignment: request.assignment,
-                node: self.node,
-                now_seconds: current_clock.wall_seconds(),
-            },
-            artifact_limits(MAXIMUM_BROKER_PLAN_BYTES),
-        )
-        .map_err(|_| BrokerAdmissionError::VerificationFailed)?;
+        let authorization = borrowed_artifacts(artifacts);
+        let verified_plan = self.verify_signed_plan_retaining_v4(authorization, &request, current_clock, original.as_deref_mut())?;
         let request_bytes = u32::try_from(request.request_body.len())
             .map_err(|_| BrokerAdmissionError::RequestMismatch)?;
         let matched = verified_plan
@@ -641,26 +767,14 @@ impl BrokerAuthority {
                 request_bytes,
                 descriptor_count: request.descriptor_count,
             })
-            .map_err(|_| BrokerAdmissionError::RequestMismatch)?;
+            .map_err(|cause| {
+                if let Some(original) = original.as_deref_mut() { original.retain_plan_v4(cause); }
+                BrokerAdmissionError::RequestMismatch
+            })?;
 
-        let lease_signature = decode_signature(
-            artifacts.ownership_lease_signature(),
-            artifact_limits(MAXIMUM_AUTHORIZATION_SIGNATURE_BYTES),
-        )
-        .map_err(|_| BrokerAdmissionError::VerificationFailed)?;
-        let verified_lease = verify_ownership_lease(
-            artifacts.ownership_lease(),
-            &lease_signature,
-            &self.lease_anchor,
-            OwnershipLeaseExpectation {
-                assignment: request.assignment,
-                node: self.node,
-                ownership_authority: verified_plan.plan().ownership_authority(),
-                clock: current_clock,
-            },
-            artifact_limits(MAXIMUM_OWNERSHIP_LEASE_BYTES),
-        )
-        .map_err(|_| BrokerAdmissionError::VerificationFailed)?;
+        let verified_lease = self.verify_signed_lease_retaining_v4(
+            authorization, &verified_plan, &request, current_clock, original.as_deref_mut(),
+        )?;
 
         let sandbox = request.assignment.sandbox();
         let sandbox_key = sandbox.as_bytes();
@@ -679,7 +793,10 @@ impl BrokerAuthority {
                     )
                 })
                 .transpose()
-                .map_err(|_| BrokerAdmissionError::FenceRejected)?
+                .map_err(|cause| {
+                    if let Some(original) = original.as_deref_mut() { original.retain_record_v4(cause); }
+                    BrokerAdmissionError::FenceRejected
+                })?
         };
         let snapshot_derivative = phase == AdmissionPhase::ExistingStorageSnapshot
             && prior.as_ref().is_some_and(|base| base.plan_digest() != verified_plan.plan_digest());
@@ -708,7 +825,10 @@ impl BrokerAuthority {
                 && (phase != AdmissionPhase::ExistingStorageSnapshot || snapshot_derivative),
         )?;
         let pending_lease = prepare_local_lease_record(prior_local, &verified_lease, current_clock)
-            .map_err(|_| BrokerAdmissionError::FenceRejected)?;
+            .map_err(|cause| {
+                if let Some(original) = original.as_deref_mut() { original.retain_lease_v4(cause); }
+                BrokerAdmissionError::FenceRejected
+            })?;
         if matches!(
             phase,
             AdmissionPhase::ExistingMountFuseIntent | AdmissionPhase::ExistingHostFuseWorker
@@ -728,7 +848,10 @@ impl BrokerAuthority {
             request.request_id,
             request.argument_commitment.digest(),
         )
-        .map_err(|_| BrokerAdmissionError::FenceRejected)?;
+        .map_err(|cause| {
+            if let Some(original) = original.as_deref_mut() { original.retain_lease_v4(cause); }
+            BrokerAdmissionError::FenceRejected
+        })?;
         let fence = BrokerAuthorizationFenceV1::new(
             request.assignment,
             self.node,
@@ -737,7 +860,10 @@ impl BrokerAuthority {
             verified_plan.plan().ownership_authority().clone(),
             pending_lease.record.clone(),
         )
-        .map_err(|_| BrokerAdmissionError::FenceRejected)?;
+        .map_err(|cause| {
+            if let Some(original) = original.as_deref_mut() { original.retain_record_v4(cause); }
+            BrokerAdmissionError::FenceRejected
+        })?;
         let effect_deadline =
             conservative_plan_deadline(verified_plan.plan().expires_seconds(), current_clock)?
                 .min(pending_lease.record.fail_stop_boottime_nanoseconds())
@@ -753,13 +879,63 @@ impl BrokerAuthority {
             request.request_deadline_boottime_nanoseconds,
             effect_deadline,
         )
-        .map_err(|_| BrokerAdmissionError::FenceRejected)?;
+        .map_err(|cause| {
+            if let Some(original) = original.as_deref_mut() { original.retain_record_v4(cause); }
+            BrokerAdmissionError::FenceRejected
+        })?;
         Ok(VerifiedBrokerAdmission {
             fence,
             effect,
             verified_lease,
             intersection,
         })
+    }
+
+    // These two pure verification stages are shared with Storage's closed
+    // inspection of an original HostLaunch. Only ordinary admission continues
+    // into the local lease, durable fence and pending effect machinery.
+    fn verify_signed_plan(
+        &self,
+        artifacts: aos_sandbox_protocol::session::AuthorizationArtifactBytes<'_>,
+        request: &AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<aos_sandbox_core::VerifiedBrokerPlan, BrokerAdmissionError> {
+        self.verify_signed_plan_retaining_v4(artifacts, request, current_clock, None)
+    }
+
+    fn verify_signed_plan_retaining_v4(
+        &self,
+        artifacts: aos_sandbox_protocol::session::AuthorizationArtifactBytes<'_>,
+        request: &AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        original: Option<&mut BrokerSignedAdmissionOriginalV4>,
+    ) -> Result<aos_sandbox_core::VerifiedBrokerPlan, BrokerAdmissionError> {
+        self.public_verification_v2().verify_signed_plan_retaining_v4(
+            artifacts, request, current_clock, original,
+        )
+    }
+
+    fn verify_signed_lease(
+        &self,
+        artifacts: aos_sandbox_protocol::session::AuthorizationArtifactBytes<'_>,
+        verified_plan: &aos_sandbox_core::VerifiedBrokerPlan,
+        request: &AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<VerifiedOwnershipLease, BrokerAdmissionError> {
+        self.verify_signed_lease_retaining_v4(artifacts, verified_plan, request, current_clock, None)
+    }
+
+    fn verify_signed_lease_retaining_v4(
+        &self,
+        artifacts: aos_sandbox_protocol::session::AuthorizationArtifactBytes<'_>,
+        verified_plan: &aos_sandbox_core::VerifiedBrokerPlan,
+        request: &AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        original: Option<&mut BrokerSignedAdmissionOriginalV4>,
+    ) -> Result<VerifiedOwnershipLease, BrokerAdmissionError> {
+        self.public_verification_v2().verify_signed_lease_retaining_v4(
+            artifacts, verified_plan, request, current_clock, original,
+        )
     }
 
     /// Authenticates and opens one exact effect-record location.
@@ -968,35 +1144,7 @@ impl BrokerAuthority {
         effect: &BrokerEffectIntentV1,
         current_clock: &RawPairedClockSample,
     ) -> Result<BrokerEffectClockDispositionV1, BrokerAdmissionError> {
-        let wall_elapsed = current_clock
-            .wall_seconds()
-            .checked_sub(effect.admitted_wall_seconds())
-            .and_then(|seconds| u64::try_from(seconds).ok())
-            .and_then(|seconds| seconds.checked_mul(1_000_000_000))
-            .ok_or(BrokerAdmissionError::FenceRejected)?;
-        let boottime_elapsed = current_clock
-            .boottime_nanoseconds()
-            .checked_sub(effect.admitted_boottime_nanoseconds())
-            .ok_or(BrokerAdmissionError::FenceRejected)?;
-        if current_clock.provenance().as_bytes() != *effect.clock_provenance()
-            || wall_elapsed.abs_diff(boottime_elapsed) > CLOCK_PAIR_TOLERANCE_NANOSECONDS
-            || current_clock.host_boot_id() != *effect.host_boot_id()
-        {
-            return Err(BrokerAdmissionError::FenceRejected);
-        }
-
-        if current_clock.boottime_nanoseconds() >= effect.effect_deadline_boottime_nanoseconds() {
-            Ok(BrokerEffectClockDispositionV1::Expired)
-        } else if current_clock.wall_seconds() >= effect.plan_expires_seconds()
-            || current_clock.wall_seconds() >= effect.authority_expires_seconds()
-        {
-            // The BOOTTIME deadline is derived conservatively from both wall
-            // expiries. Reaching either wall expiry first indicates clock
-            // inconsistency, not a safe tombstone condition.
-            Err(BrokerAdmissionError::FenceRejected)
-        } else {
-            Ok(BrokerEffectClockDispositionV1::Fresh)
-        }
+        BrokerEffectClockComparisonV3::from_effect(effect).classify(current_clock)
     }
 
     /// Authenticates one assignment fence for its exact durable location.
@@ -1214,6 +1362,17 @@ pub struct VerifiedBrokerAdmission {
     pub verified_lease: VerifiedOwnershipLease,
     /// Exact signed-plan/current-lease match retained for protected effect owners.
     pub intersection: BrokerAdmissionIntersection,
+}
+
+fn borrowed_artifacts(
+    artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+) -> aos_sandbox_protocol::session::AuthorizationArtifactBytes<'_> {
+    aos_sandbox_protocol::session::AuthorizationArtifactBytes {
+        broker_plan: artifacts.broker_plan(),
+        broker_plan_signature: artifacts.broker_plan_signature(),
+        ownership_lease: artifacts.ownership_lease(),
+        ownership_lease_signature: artifacts.ownership_lease_signature(),
+    }
 }
 
 const fn artifact_limits(maximum_bytes: usize) -> DecodeLimits {
@@ -1434,4 +1593,17 @@ mod tests {
         assert_ne!(BrokerAuthority::online_nix_fence_key(&[8; 16]), fence);
         assert_ne!(BrokerAuthority::online_nix_effect_key(&[8; 16]), effect);
     }
+}
+
+// The canonical comparison always checks the actual pair continuity first.
+// Its request-local Expired disposition is comparison DATA here: the genuine
+// verified Capture lifetime owner separately enforces its original ongoing
+// BOOTTIME bound and both original signed WALL ceilings before any use.
+fn require_effect_paired_clock_v3(
+    effect: &BrokerEffectIntentV1,
+    current_clock: &RawPairedClockSample,
+) -> Result<(), BrokerAdmissionError> {
+    BrokerEffectClockComparisonV3::from_effect(effect)
+        .classify(current_clock)
+        .map(|_| ())
 }

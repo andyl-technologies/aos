@@ -1,6 +1,8 @@
 //! Durable physical-catalog provider and authenticated journal recovery.
 
 use super::*;
+use super::preparation::PreparationFailureV1;
+use super::format::{encoded_transition_size_receiving_v1, encode_reservation_payload_receiving_v1};
 
 #[derive(Debug)]
 pub(crate) struct StorageCatalogTransitionProvider {
@@ -8,9 +10,67 @@ pub(crate) struct StorageCatalogTransitionProvider {
     pub(super) head: Option<PhysicalCatalogState>,
     pub(super) reservations: BTreeMap<[u8; 16], CatalogReservation>,
     pub(super) transitions: BTreeMap<[u8; 16], TransitionPayload>,
+    pub(super) capture_operations: BTreeMap<[u8; 16], capture_resolution::CaptureCatalogOperationWireV3>,
 }
 
 impl StorageCatalogTransitionProvider {
+    /// Counts current physical projection rows without making a snapshot copy.
+    pub(crate) fn receiving_inventory_rows_v1(&self)
+        -> Result<u64, aos_sandbox_core::AccountingError>
+    {
+        use crate::receiving_demand::{add, count, multiply};
+        let Some(head) = self.head.as_ref() else { return Ok(0); };
+        let datasets = multiply(count(head.wire.datasets.len())?, 3)?;
+        add(add(datasets, count(head.wire.snapshots.len())?)?, count(head.wire.holds.len())?)
+    }
+
+    pub(crate) fn receiving_observer_rows_v1(&self)
+        -> Result<u64, aos_sandbox_core::AccountingError>
+    {
+        use crate::receiving_demand::{add, count};
+        let Some(head) = self.head.as_ref() else { return Ok(0); };
+        [head.wire.roots.len(), head.wire.datasets.len(), head.wire.snapshots.len(),
+            head.wire.holds.len(), head.wire.tombstones.len()]
+            .into_iter().try_fold(0, |total, rows| add(total, count(rows)?))
+    }
+
+    /// Counts the held map entries and actual named catalog objects.
+    ///
+    /// Counts each versioned transition's catalog namespace and metadata index
+    /// once. The head clones the last transition, so it contributes only for
+    /// genesis without a transition. Parser fields, canonical copies and
+    /// uniqueness scratch remain byte costs.
+    pub(crate) fn receiving_namespace_entries_v1(&self)
+        -> Result<u64, aos_sandbox_core::AccountingError>
+    {
+        use crate::receiving_demand::{add, count};
+
+        fn state_entries(state: &PhysicalCatalogState)
+            -> Result<u64, aos_sandbox_core::AccountingError>
+        {
+            [
+                state.wire.roots.len(),
+                state.wire.datasets.len(),
+                state.wire.snapshots.len(),
+                state.wire.holds.len(),
+                state.wire.tombstones.len(),
+                state.snapshot_metadata.len(),
+            ].into_iter().try_fold(0, |entries, rows| add(entries, count(rows)?))
+        }
+
+        let mut entries = add(count(self.reservations.len())?, count(self.transitions.len())?)?;
+        entries = add(entries, count(self.capture_operations.len())?)?;
+        if self.transitions.is_empty() {
+            if let Some(head) = &self.head {
+                entries = add(entries, state_entries(head)?)?;
+            }
+        }
+        for transition in self.transitions.values() {
+            entries = add(entries, state_entries(&transition.result_state)?)?;
+        }
+        Ok(entries)
+    }
+
     /// Reloads and projects only a fully authenticated durable catalog head.
     ///
     /// This is deliberately an associated journal operation rather than a
@@ -92,7 +152,12 @@ impl StorageCatalogTransitionProvider {
         )?;
         let genesis = genesis_binding(head_payload.as_ref(), &reservations, &transitions)?;
 
+        let capture_operations = capture_resolution::load_operations_v3(
+            journal, key_id, secret, &reservations, &transitions,
+        )?;
+
         Ok(Self {
+            capture_operations,
             genesis,
             head,
             reservations,
@@ -135,10 +200,18 @@ impl StorageCatalogTransitionProvider {
     pub(crate) fn workspace_projection(
         &self,
     ) -> Result<Vec<PhysicalWorkspaceProjection>, StorageStateError> {
-        self.head
-            .as_ref()
-            .map(PhysicalCatalogState::workspace_projection)
-            .ok_or(StorageStateError::InvalidTransition)
+        let head = self.head.as_ref().ok_or(StorageStateError::InvalidTransition)?;
+        Ok(head.workspace_projection().into_iter().filter(|row| {
+            match row {
+                PhysicalWorkspaceProjection::Active { operation_id, .. } =>
+                    !self.capture_operations.contains_key(operation_id),
+                PhysicalWorkspaceProjection::Retired { object_guid, .. } =>
+                    !self.capture_operations.keys().any(|operation| {
+                        self.transitions.get(operation)
+                            .is_some_and(|transition| transition.object_guid == Some(*object_guid))
+                    }),
+            }
+        }).collect())
     }
 
     pub(crate) const fn genesis_binding(&self) -> Option<CatalogBindingV1> {
@@ -166,11 +239,70 @@ impl StorageCatalogTransitionProvider {
         key_id: [u8; 16],
         secret: &[u8; 32],
     ) -> Result<CatalogReservation, StorageStateError> {
+        self.reserve_inner_v1(operation_id, request_digest, mutation_digest, catalog, key_id, secret, None)
+    }
+
+    pub(crate) fn reserve_receiving_v1(
+        &self,
+        operation_id: [u8; 16],
+        request_digest: ObjectDigest,
+        mutation_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+        key_id: [u8; 16],
+        secret: &[u8; 32],
+        receiving: &mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>,
+    ) -> Result<CatalogReservation, StorageStateError> {
+        self.reserve_inner_v1(operation_id, request_digest, mutation_digest, catalog, key_id, secret, Some(receiving))
+    }
+
+    fn reserve_inner_v1(
+        &self,
+        operation_id: [u8; 16],
+        request_digest: ObjectDigest,
+        mutation_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+        key_id: [u8; 16],
+        secret: &[u8; 32],
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>>,
+    ) -> Result<CatalogReservation, StorageStateError> {
+        self.reserve_recipe_inner_v3(operation_id, request_digest, mutation_digest,
+            CatalogResolutionRecipeV3::Ordinary(catalog), key_id, secret, receiving)
+    }
+
+    pub(crate) fn reserve_capture_receiving_v3(
+        &self,
+        capture: &CaptureCatalogResolutionV3,
+        key_id: [u8; 16],
+        secret: &[u8; 32],
+        receiving: &mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>,
+    ) -> Result<CatalogReservation, StorageStateError> {
+        if self.head_binding() != Some(capture.predecessor_v3()) {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        let source = self.head.as_ref().ok_or(StorageStateError::InvalidTransition)?;
+        receiving.reserve_owned_shape_v1(super::singular_application::capture_shape_v3(
+            source, capture.requirement_v3(),
+        ))?;
+        self.reserve_recipe_inner_v3(capture.operation_v3(), capture.request_digest_v3(),
+            capture.mutation_digest_v3(), CatalogResolutionRecipeV3::Capture(capture),
+            key_id, secret, Some(receiving))
+    }
+
+    fn reserve_recipe_inner_v3(
+        &self,
+        operation_id: [u8; 16],
+        request_digest: ObjectDigest,
+        mutation_digest: ObjectDigest,
+        recipe: CatalogResolutionRecipeV3<'_>,
+        key_id: [u8; 16],
+        secret: &[u8; 32],
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>>,
+    ) -> Result<CatalogReservation, StorageStateError> {
         if let Some(existing) = self.reservations.get(&operation_id) {
             if existing.payload.request_digest == *request_digest.as_bytes()
                 && existing.payload.mutation_digest == *mutation_digest.as_bytes()
-                && existing.payload.catalog == catalog.binding().into()
-                && existing.payload.catalog_bytes_digest == digest_bytes(catalog.canonical_bytes())
+                && existing.payload.catalog == recipe.binding().into()
+                && existing.payload.catalog_bytes_digest == digest_bytes(recipe.canonical_bytes())
             {
                 return Ok(existing.clone());
             }
@@ -188,35 +320,26 @@ impl StorageCatalogTransitionProvider {
             .as_ref()
             .cloned()
             .ok_or(StorageStateError::InvalidTransition)?;
-        if catalog.format_version() != FORMAT_VERSION {
+        if !recipe.current_format() {
             return Err(StorageStateError::InvalidTransition);
         }
-        if predecessor.binding.generation().checked_add(1) != Some(catalog.generation()) {
+        if predecessor.binding.generation().checked_add(1) != Some(recipe.generation()) {
             return Err(StorageStateError::InvalidTransition);
         }
-        ingest_plan_inputs(&mut predecessor.wire.clone(), catalog.plan(), false)?;
+        recipe.ingest(&mut predecessor.wire.clone(), operation_id)?;
 
-        let worst_case_guid = capture_guid(catalog.plan()).then_some(u64::MAX);
+        let worst_case_guid = recipe.captures_guid().then_some(u64::MAX);
         let worst_case_zfs_observation = ObjectDigest::from_bytes([u8::MAX; 32]);
         let worst_case_metadata = worst_case_guid
             .map(|guid| {
-                maximum_snapshot_metadata_record(
-                    operation_id,
-                    request_digest,
-                    mutation_digest,
-                    catalog,
-                    guid,
-                    worst_case_zfs_observation,
-                )
+                recipe.snapshot_metadata(operation_id, request_digest, mutation_digest,
+                    guid, worst_case_zfs_observation)
             })
             .transpose()?
             .flatten();
-        let worst_case_state = predecessor.apply_with_snapshot_metadata(
-            operation_id,
-            catalog,
-            worst_case_guid,
-            worst_case_metadata,
-        )?;
+        let mut worst_case_physical = CatalogPhysicalApplicationOriginalV1::new();
+        let worst_case_state = recipe.apply(&predecessor, operation_id,
+            worst_case_guid, worst_case_metadata, None, &mut worst_case_physical)?;
         let worst_case_observation = match worst_case_metadata {
             Some(metadata) => snapshot_commit_observation_digest(
                 worst_case_zfs_observation,
@@ -225,17 +348,14 @@ impl StorageCatalogTransitionProvider {
             .map_err(|_| StorageStateError::InvalidValue)?,
             None => worst_case_zfs_observation,
         };
-        let maximum_transition_bytes = encoded_transition_size(
-            operation_id,
-            mutation_digest,
-            catalog,
-            &predecessor,
-            &worst_case_state,
-            worst_case_guid,
-            worst_case_observation,
-            key_id,
-            secret,
+        let worst_case_transition = format::transition_payload_binding_v3(
+            operation_id, mutation_digest, recipe.binding(), &predecessor,
+            &worst_case_state, worst_case_guid, worst_case_observation,
         )?;
+        let maximum_transition_bytes = encode_transition_payload_receiving_v1(
+            &worst_case_transition, key_id, secret, receiving.as_deref_mut(),
+        )?.len().checked_add(recipe.transition_variable_bytes() * MAXIMUM_JSON_BYTE_EXPANSION)
+            .ok_or(StorageStateError::InvalidValue)?;
         if maximum_transition_bytes > MAXIMUM_RECORD_BYTES {
             return Err(StorageStateError::InvalidValue);
         }
@@ -244,14 +364,14 @@ impl StorageCatalogTransitionProvider {
             operation_id,
             request_digest: *request_digest.as_bytes(),
             mutation_digest: *mutation_digest.as_bytes(),
-            catalog: catalog.binding().into(),
-            catalog_bytes_digest: digest_bytes(catalog.canonical_bytes()),
+            catalog: recipe.binding().into(),
+            catalog_bytes_digest: digest_bytes(recipe.canonical_bytes()),
             predecessor: predecessor.binding.into(),
             maximum_transition_bytes: u32::try_from(maximum_transition_bytes)
                 .map_err(|_| StorageStateError::InvalidValue)?,
             group_program: None,
         };
-        let bytes = encode_reservation_payload(&payload, &predecessor, key_id, secret)?;
+        let bytes = encode_reservation_payload_receiving_v1(&payload, &predecessor, key_id, secret, receiving)?;
         if bytes.len() > MAXIMUM_RECORD_BYTES {
             return Err(StorageStateError::InvalidValue);
         }
@@ -268,6 +388,19 @@ impl StorageCatalogTransitionProvider {
             reservation.payload.operation_id.to_vec(),
             reservation.bytes.clone(),
         )
+    }
+
+    pub(crate) fn reservation_record_receiving_v1(
+        reservation: &CatalogReservation,
+        receiving: &mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>,
+    ) -> Result<JournalRecord, StorageStateError> {
+        let bytes = reservation.bytes.len()
+            .checked_add(16 + std::mem::size_of::<JournalRecord>())
+            .ok_or(aos_sandbox_core::AccountingError::ArithmeticOverflow {
+                dimension: aos_sandbox_core::ResourceDimension::MemoryBytes,
+            });
+        receiving.reserve_owned_capacity_v1(bytes, 0)?;
+        Ok(Self::reservation_record(reservation))
     }
 
     pub(crate) fn group_effect_capacity_records(operation_id: [u8; 16]) -> Vec<JournalRecord> {
@@ -392,62 +525,11 @@ impl StorageCatalogTransitionProvider {
         key_id: [u8; 16],
         secret: &[u8; 32],
     ) -> Result<PreparedCatalogTransition, StorageStateError> {
-        let reservation = self
-            .reservations
-            .get(&program.operation())
-            .ok_or(StorageStateError::InvalidTransition)?;
-        if self.transitions.contains_key(&program.operation())
-            || reservation.payload.group_program != Some(*program.commitment().as_bytes())
-            || reservation.payload.request_digest != *request_digest.as_bytes()
-            || reservation.payload.catalog_bytes_digest
-                != digest_bytes(
-                    &program
-                        .canonical_bytes()
-                        .map_err(|_| StorageStateError::InvalidValue)?,
-                )
-            || self.head_binding() != Some(reservation.predecessor.binding)
-            || crate::lifecycle_atomic_snapshot::atomic_snapshot_observation_digest(
-                program,
-                member_guids,
-            )
-            .map_err(|_| StorageStateError::InvalidValue)?
-                != observation
-        {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        let result_state = reservation
-            .predecessor
-            .apply_atomic_snapshot_group(program, member_guids)?;
-        let transition = group_transition_payload(
-            program,
-            &reservation.predecessor,
-            &result_state,
-            observation,
-            member_guids,
-        );
-        let transition_bytes = encode_transition_payload(&transition, key_id, secret)?;
-        let digest = transition_digest(&transition)?;
-        let head_bytes = encode_head_payload(
-            &HeadPayload {
-                binding: result_state.binding.into(),
-                operation_id: Some(program.operation()),
-                transition_digest: Some(*digest.as_bytes()),
-                genesis_state: None,
-            },
-            key_id,
-            secret,
-        )?;
-        if head_bytes.len() > MAXIMUM_HEAD_BYTES {
-            return Err(StorageStateError::InvalidValue);
-        }
-        Ok(PreparedCatalogTransition {
-            operation_id: program.operation(),
-            snapshot_metadata: None,
-            transition,
-            transition_bytes,
-            head_bytes,
-            result_state,
-        })
+        let mut original = AtomicGroupPreparationOriginalV1::new();
+        self.prepare_atomic_group_transition_receiving_v1(
+            program, request_digest, observation, member_guids, key_id, secret,
+            None, &mut original,
+        )
     }
 
     pub(crate) fn effect_capacity_records(
@@ -472,6 +554,25 @@ impl StorageCatalogTransitionProvider {
                 vec![0; MAXIMUM_HEAD_BYTES],
             ),
         ])
+    }
+
+    pub(crate) fn effect_capacity_records_receiving_v1(
+        &self,
+        operation_id: [u8; 16],
+        receiving: &mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>,
+    ) -> Result<Vec<JournalRecord>, StorageStateError> {
+        let reservation = self.reservations.get(&operation_id)
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let transition = usize::try_from(reservation.payload.maximum_transition_bytes)
+            .map_err(|_| StorageStateError::InvalidValue)?;
+        let bytes = transition.checked_add(MAXIMUM_HEAD_BYTES)
+            .and_then(|bytes| bytes.checked_add(16 + HEAD_KEY.len()))
+            .and_then(|bytes| bytes.checked_add(3 * std::mem::size_of::<JournalRecord>()))
+            .ok_or(aos_sandbox_core::AccountingError::ArithmeticOverflow {
+                dimension: aos_sandbox_core::ResourceDimension::MemoryBytes,
+            });
+        receiving.reserve_owned_capacity_v1(bytes, 0)?;
+        self.effect_capacity_records(operation_id)
     }
 
     pub(crate) fn install_reservation(&mut self, reservation: CatalogReservation) {
@@ -553,6 +654,38 @@ impl StorageCatalogTransitionProvider {
         key_id: [u8; 16],
         secret: &[u8; 32],
     ) -> Result<PreparedCatalogTransition, StorageStateError> {
+        let mut physical = CatalogPhysicalApplicationOriginalV1::new();
+        let mut original = CatalogTransitionPreparationOriginalV1::new();
+        self.prepare_transition_with_supplement_receiving_v1(
+            operation_id,
+            mutation_digest,
+            catalog,
+            object_guid,
+            zfs_observation_digest,
+            supplement,
+            key_id,
+            secret,
+            None,
+            &mut original,
+            &mut physical,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_transition_with_supplement_receiving_v1(
+        &self,
+        operation_id: [u8; 16],
+        mutation_digest: ObjectDigest,
+        catalog: &ResolvedCatalogCommitmentV1,
+        object_guid: Option<u64>,
+        zfs_observation_digest: ObjectDigest,
+        supplement: CatalogCommitSupplementV1,
+        key_id: [u8; 16],
+        secret: &[u8; 32],
+        receiving: Option<&mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>>,
+        original: &mut CatalogTransitionPreparationOriginalV1,
+        physical: &mut CatalogPhysicalApplicationOriginalV1,
+    ) -> Result<PreparedCatalogTransition, StorageStateError> {
         let reservation = self
             .reservations
             .get(&operation_id)
@@ -594,7 +727,8 @@ impl StorageCatalogTransitionProvider {
             }
             None => zfs_observation_digest,
         };
-        self.prepare_transition_inner(
+        let selected = receiving.is_some();
+        let result = self.prepare_transition_inner(
             operation_id,
             mutation_digest,
             catalog,
@@ -603,7 +737,17 @@ impl StorageCatalogTransitionProvider {
             snapshot_metadata,
             key_id,
             secret,
-        )
+            receiving,
+            original,
+            physical,
+        );
+        result.map_err(|cause| {
+            if selected {
+                cause
+            } else {
+                original.take_failure().unwrap_or(cause)
+            }
+        })
     }
 
     #[cfg(test)]
@@ -644,6 +788,49 @@ impl StorageCatalogTransitionProvider {
         snapshot_metadata: Option<CheckedSnapshotMetadataRecordV1>,
         key_id: [u8; 16],
         secret: &[u8; 32],
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>>,
+        original: &mut CatalogTransitionPreparationOriginalV1,
+        physical: &mut CatalogPhysicalApplicationOriginalV1,
+    ) -> Result<PreparedCatalogTransition, StorageStateError> {
+        self.prepare_transition_recipe_inner_v3(operation_id, mutation_digest,
+            CatalogResolutionRecipeV3::Ordinary(catalog), object_guid, observation_digest,
+            snapshot_metadata, key_id, secret, receiving, original, physical)
+    }
+
+    pub(crate) fn prepare_capture_transition_receiving_v3(
+        &self,
+        capture: &CaptureCatalogResolutionV3,
+        observed: &execution_capture::readback::CaptureCreatedDatasetReadbackV3,
+        key_id: [u8; 16],
+        secret: &[u8; 32],
+        receiving: &mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>,
+        original: &mut CatalogTransitionPreparationOriginalV1,
+        physical: &mut CatalogPhysicalApplicationOriginalV1,
+    ) -> Result<PreparedCatalogTransition, StorageStateError> {
+        if self.head_binding() != Some(capture.predecessor_v3()) || observed.guid == 0
+            || observed.observation_digest.as_bytes() == &[0; 32]
+            || observed.attempt_digest.as_bytes() == &[0; 32]
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        self.prepare_transition_recipe_inner_v3(capture.operation_v3(), capture.mutation_digest_v3(),
+            CatalogResolutionRecipeV3::Capture(capture), Some(observed.guid), observed.observation_digest,
+            None, key_id, secret, Some(receiving), original, physical)
+    }
+
+    fn prepare_transition_recipe_inner_v3(
+        &self,
+        operation_id: [u8; 16],
+        mutation_digest: ObjectDigest,
+        recipe: CatalogResolutionRecipeV3<'_>,
+        object_guid: Option<u64>,
+        observation_digest: ObjectDigest,
+        snapshot_metadata: Option<CheckedSnapshotMetadataRecordV1>,
+        key_id: [u8; 16],
+        secret: &[u8; 32],
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingContextV1<'_, '_, '_>>,
+        original: &mut CatalogTransitionPreparationOriginalV1,
+        physical: &mut CatalogPhysicalApplicationOriginalV1,
     ) -> Result<PreparedCatalogTransition, StorageStateError> {
         if self.transitions.contains_key(&operation_id) {
             return Err(StorageStateError::InvalidTransition);
@@ -653,8 +840,8 @@ impl StorageCatalogTransitionProvider {
             .get(&operation_id)
             .ok_or(StorageStateError::InvalidTransition)?;
         if reservation.payload.mutation_digest != *mutation_digest.as_bytes()
-            || reservation.payload.catalog != catalog.binding().into()
-            || reservation.payload.catalog_bytes_digest != digest_bytes(catalog.canonical_bytes())
+            || reservation.payload.catalog != recipe.binding().into()
+            || reservation.payload.catalog_bytes_digest != digest_bytes(recipe.canonical_bytes())
             || self
                 .head
                 .as_ref()
@@ -662,51 +849,98 @@ impl StorageCatalogTransitionProvider {
         {
             return Err(StorageStateError::InvalidTransition);
         }
-        if capture_guid(catalog.plan()) != object_guid.is_some()
+        if recipe.captures_guid() != object_guid.is_some()
             || object_guid == Some(0)
             || observation_digest.as_bytes() == &[0; 32]
         {
             return Err(StorageStateError::InvalidValue);
         }
-        let result_state = reservation.predecessor.apply_with_snapshot_metadata(
-            operation_id,
-            catalog,
-            object_guid,
-            snapshot_metadata,
-        )?;
-        let transition = transition_payload(
-            operation_id,
-            mutation_digest,
-            catalog,
-            &reservation.predecessor,
-            &result_state,
-            object_guid,
-            observation_digest,
-        )?;
-        let transition_bytes = encode_transition_payload(&transition, key_id, secret)?;
-        if transition_bytes.len() > reservation.payload.maximum_transition_bytes as usize
+        original.first = Some(PreparationFailureV1::ResultState);
+        original.result_state = Some(match receiving.as_deref_mut() {
+            Some(receiving) => {
+                receiving.reserve_owned_shape_v1(recipe.application_shape(&reservation.predecessor))?;
+                recipe.apply(&reservation.predecessor, operation_id, object_guid,
+                    snapshot_metadata, Some(receiving), physical)
+            }
+            None => recipe.apply(&reservation.predecessor, operation_id, object_guid,
+                snapshot_metadata, None, physical),
+        });
+        let Some(Ok(result_state)) = original.result_state.as_ref() else {
+            return Err(StorageStateError::Receiving);
+        };
+        original.first = Some(PreparationFailureV1::Transition);
+        original.transition = Some(format::transition_payload_binding_v3(
+            operation_id, mutation_digest, recipe.binding(), &reservation.predecessor,
+            result_state, object_guid, observation_digest,
+        ));
+        let Some(Ok(transition)) = original.transition.as_ref() else {
+            return Err(StorageStateError::Receiving);
+        };
+        original.first = Some(PreparationFailureV1::TransitionBytes);
+        original.transition_bytes = Some(encode_transition_payload_receiving_v1(
+            transition, key_id, secret, receiving.as_deref_mut(),
+        ));
+        let Some(Ok(transition_bytes)) = original.transition_bytes.as_ref() else {
+            return Err(StorageStateError::Receiving);
+        };
+        original.first = Some(PreparationFailureV1::TransitionBound);
+        original.transition_bound = Some(if transition_bytes.len()
+            > reservation.payload.maximum_transition_bytes as usize
             || transition_bytes.len() > MAXIMUM_RECORD_BYTES
         {
-            return Err(StorageStateError::InvalidTransition);
+            Err(StorageStateError::InvalidTransition)
+        } else { Ok(()) });
+        if !matches!(original.transition_bound, Some(Ok(()))) {
+            return Err(StorageStateError::Receiving);
         }
-        let transition_digest = transition_digest(&transition)?;
-        let head_payload = HeadPayload {
+        original.first = Some(PreparationFailureV1::Digest);
+        original.digest = Some(transition_digest_receiving_v1(
+            transition, receiving.as_deref_mut(),
+        ));
+        let Some(Ok(transition_digest)) = original.digest.as_ref() else {
+            return Err(StorageStateError::Receiving);
+        };
+        original.head_payload = Some(HeadPayload {
             binding: result_state.binding.into(),
             operation_id: Some(operation_id),
             transition_digest: Some(*transition_digest.as_bytes()),
             genesis_state: None,
+        });
+        let Some(head_payload) = original.head_payload.as_ref() else {
+            std::process::abort();
         };
-        let head_bytes = encode_head_payload(&head_payload, key_id, secret)?;
-        if head_bytes.len() > MAXIMUM_HEAD_BYTES {
-            return Err(StorageStateError::InvalidValue);
+        original.first = Some(PreparationFailureV1::HeadBytes);
+        original.head_bytes = Some(encode_head_payload_receiving_v1(
+            head_payload, key_id, secret, receiving,
+        ));
+        let Some(Ok(head_bytes)) = original.head_bytes.as_ref() else {
+            return Err(StorageStateError::Receiving);
+        };
+        original.first = Some(PreparationFailureV1::HeadBound);
+        original.head_bound = Some(if head_bytes.len() > MAXIMUM_HEAD_BYTES {
+            Err(StorageStateError::InvalidValue)
+        } else { Ok(()) });
+        if !matches!(original.head_bound, Some(Ok(()))) {
+            return Err(StorageStateError::Receiving);
         }
+        // These exact slots were checked above under the same exclusive owner.
+        // No fallible work or external mutation lies between check and move.
+        let Some(Ok(result_state)) = original.result_state.take() else {
+            std::process::abort();
+        };
+        let Some(Ok(transition)) = original.transition.take() else {
+            std::process::abort();
+        };
+        let Some(Ok(transition_bytes)) = original.transition_bytes.take() else {
+            std::process::abort();
+        };
+        let Some(Ok(head_bytes)) = original.head_bytes.take() else {
+            std::process::abort();
+        };
+        original.first = None;
         Ok(PreparedCatalogTransition {
-            operation_id,
-            snapshot_metadata,
-            transition,
-            transition_bytes,
-            head_bytes,
-            result_state,
+            operation_id, snapshot_metadata, transition, transition_bytes,
+            head_bytes, result_state,
         })
     }
 
@@ -824,7 +1058,14 @@ impl StorageCatalogTransitionProvider {
         &self,
         operation_ids: impl Iterator<Item = [u8; 16]>,
     ) -> Result<(), StorageStateError> {
-        let operations = operation_ids.collect::<std::collections::BTreeSet<_>>();
+        let mut operations = operation_ids.collect::<std::collections::BTreeSet<_>>();
+        // Capture IDs join only after the same MAC/recipe/transition replay in
+        // load_operations_v3. A normal operation cannot alias a Capture fence.
+        for operation in self.capture_operations.keys() {
+            if !operations.insert(*operation) {
+                return Err(StorageStateError::CorruptRecord);
+            }
+        }
         if self
             .reservations
             .keys()
@@ -928,7 +1169,7 @@ fn genesis_binding(
     Ok(Some(root))
 }
 
-fn group_transition_payload(
+pub(super) fn group_transition_payload(
     program: &crate::DormantAtomicDatasetSnapshotV1,
     predecessor: &PhysicalCatalogState,
     result_state: &PhysicalCatalogState,
@@ -951,5 +1192,55 @@ fn group_transition_payload(
             member_guids: member_guids.to_vec(),
         }),
         result_state: result_state.clone(),
+    }
+}
+
+#[cfg(test)]
+mod recovery_retention_tests {
+    use super::*;
+
+    #[test]
+    fn later_transition_bound_rejection_keeps_actual_completed_preparation_outputs() {
+        let catalog = super::super::tests::catalog(7, "tank/aos/project/work");
+        let state = PhysicalCatalogState::bootstrap(6, std::slice::from_ref(&catalog)).unwrap();
+        let mut provider = StorageCatalogTransitionProvider {
+            capture_operations: BTreeMap::new(),
+            genesis: Some(state.binding),
+            head: Some(state),
+            reservations: BTreeMap::new(),
+            transitions: BTreeMap::new(),
+        };
+        let key_id = [31; 16];
+        let secret = [32; 32];
+        let operation = [33; 16];
+        let mutation = ObjectDigest::from_bytes([35; 32]);
+        let mut reservation = provider.reserve(
+            operation, ObjectDigest::from_bytes([34; 32]), mutation,
+            &catalog, key_id, &secret,
+        ).unwrap();
+        // Exercise an actual later bound failure in the private DATA engine.
+        // This damaged reservation creates no paid or authenticated authority.
+        reservation.payload.maximum_transition_bytes = 0;
+        provider.install_reservation(reservation);
+        let mut physical = CatalogPhysicalApplicationOriginalV1::new();
+        let mut original = CatalogTransitionPreparationOriginalV1::new();
+
+        let result = provider.prepare_transition_inner(
+            operation, mutation, &catalog, Some(36), ObjectDigest::from_bytes([37; 32]),
+            None, key_id, &secret, None, &mut original, &mut physical,
+        );
+
+        assert!(matches!(result, Err(StorageStateError::Receiving)));
+        assert!(matches!(original.result_state, Some(Ok(_))));
+        assert!(matches!(original.transition, Some(Ok(_))));
+        let bytes = original.transition_bytes.as_ref().unwrap().as_ref().unwrap();
+        assert!(!bytes.is_empty());
+        let pointer = bytes.as_ptr();
+        let returned = original.failure().unwrap();
+        let actual = original.transition_bound.as_ref().unwrap().as_ref().unwrap_err();
+        assert!(std::ptr::eq(returned, actual));
+        assert!(matches!(original.take_failure(), Some(StorageStateError::InvalidTransition)));
+        assert_eq!(original.transition_bytes.as_ref().unwrap().as_ref().unwrap().as_ptr(), pointer);
+        assert!(original.head_bytes.is_none());
     }
 }

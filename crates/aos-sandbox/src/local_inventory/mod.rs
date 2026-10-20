@@ -11,22 +11,20 @@
 //! Local recovery validates the complete historical assignment, drain, watch
 //! and snapshot projections, including an owner-proven empty transfer set.
 //! Their canonical domains and fixed protected names remain unchanged. The
-//! fixed local lease issuer belongs to [`crate::local_ownership`].
+//! fixed local lease issuer belongs to the separate `aos-sandbox-ownership` crate.
 //!
-//! The optional Coordinator owns placement, ordered-watch adapters and committed
-//! lease projection. Its selected `multi-node` inputs retain their sealed Native
-//! producers here. `local_inventory::remote` exposes protected transport and store
-//! orchestration. The verifier retains its private child and custody. Protected-store
-//! remote exchange, assignment, drain, watch writes, and destination transfer
-//! orchestration are feature-gated private children of that same owner. Local
-//! opener, inventory discovery, readback, and all retained-history checks remain
-//! available by default. Coordinator persistence DATA, shared session verifiers,
-//! and model helpers are retained. Authenticated snapshot byte handoffs,
-//! protected streaming checkpoints and streaming verification require `multi-node`.
-//! Immutable manifests, resume DATA, historical Journal checkpoints and completed
-//! drain evidence remain available by default.
-//! This is not a fully isolated ownership crate
-//! or a coordinator-free implementation graph.
+//! The optional Coordinator owns placement, remote observation reconciliation,
+//! canonical transport exchanges, and watch/drain/transfer request workflows.
+//! Its `multi-node` inputs borrow genuine native channel and store contracts in
+//! [`remote`]. Private local issuers retain authenticated sessions, source and
+//! destination admission, artifact custody, protected writes, publication and
+//! outcome-unknown recovery. They cannot be created from portable DATA.
+//!
+//! Local opening, inventory discovery, currentness and complete retained-history
+//! replay remain available by default. Shared identities and non-authorizing
+//! models belong to `aos-sandbox-core`; generated remote wire mapping belongs to
+//! the explicitly selected coordinator protocol crate. Authenticated snapshot
+//! handoffs and the native streaming proof issuers require `multi-node`.
 
 pub mod assignment;
 pub mod capability;
@@ -35,8 +33,6 @@ pub mod draining;
 pub mod evidence;
 mod evidence_authority;
 pub mod journal;
-#[cfg(feature = "multi-node")]
-mod placement_input;
 mod protected_artifact_store;
 pub mod protocol;
 mod reducer_state;
@@ -45,48 +41,28 @@ pub mod remote;
 mod store_authority;
 
 pub use assignment::{
-    AssignmentIntentV1, AssignmentObservationPhaseV1, AssignmentObservationReasonV1,
-    AtomicSnapshotPublicationV1, DurableSnapshotDependencySetV1, InvalidAssignmentModel,
-    InvalidSnapshotTransfer, MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES, MAX_SNAPSHOT_TRANSFER_CHUNKS,
-    MAX_SNAPSHOT_TRANSFER_DEPENDENCIES, MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES,
-    NodeAssignmentObservationV1, SelectedCapabilityBindingV1, SnapshotDependencyRangeV1,
-    SnapshotTransferChunkRequestV1, SnapshotTransferChunkV1, SnapshotTransferCompletionV1,
-    SnapshotTransferIdentityV1,
-    SnapshotTransferManifestV1, SnapshotTransferResumeV1,
-    SnapshotTransferVersionV1, VerifiedAssignmentAuthorityV1, VerifiedGuardianStateV1,
-    VerifiedSnapshotDependencySetV1, VerifiedSnapshotDependencyV1, VerifiedStagedSnapshotV1,
+    AssignmentObservationPhaseV1, AssignmentObservationReasonV1, AtomicSnapshotPublicationV1,
+    DurableSnapshotDependencySetV1, NodeAssignmentObservationV1, SnapshotTransferCompletionV1,
+    VerifiedAssignmentAuthorityV1, VerifiedGuardianStateV1, VerifiedSnapshotDependencySetV1,
+    VerifiedSnapshotDependencyV1, VerifiedStagedSnapshotV1,
 };
 
 #[cfg(feature = "multi-node")]
 pub use assignment::{
-    AssignmentObservationApplyOutcomeV1, AssignmentObservationReducerV1,
     AuthenticatedSnapshotChunkV1, AuthenticatedSnapshotDependencyRangeV1,
     DurableSnapshotTransferCheckpointV1, SnapshotDependencyReducerV1,
-    SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1,
-    SnapshotRestoreBlockReasonV1, SnapshotTransferApplyOutcomeV1, SnapshotTransferReducerV1,
-    VerifiedAssignmentAcceptanceV1, VerifiedRestoreAuthorizationV1,
+    SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1, SnapshotRestoreBlockReasonV1,
+    SnapshotTransferApplyOutcomeV1, SnapshotTransferReducerV1, VerifiedAssignmentAcceptanceV1,
+    VerifiedRestoreAuthorizationV1,
 };
 
-pub use capability::{
-    CarrierValidatedCapabilityObservationV1, HardFeatureFactRequirementV1, InvalidNodeCapability,
-    MAX_NODE_CAPABILITY_FACTS, MAX_NODE_FEATURES, MAX_NODE_PROTOCOL_OFFERS, NodeAdmissionStateV1,
-    NodeBootId, NodeBootLineageV1, NodeCapabilityFactV1, NodeCapabilityKindV1,
-    NodeCapabilitySnapshotV1, NodeProbeEvidenceV1, NodeProtocolOfferV1, NodeProtocolV1,
-    hard_feature_fact_requirements_v1_0,
-};
+pub use capability::CarrierValidatedCapabilityObservationV1;
 pub use draining::{
-    DrainAssignmentObservationV1, DrainAssignmentPlanV1, DrainAssignmentProgressV1,
-    DrainAssignmentStrategyV1, DrainBlockReasonV1, DrainContainmentEvidenceV1, DrainDirectiveV1,
-    DrainGuardianEvidenceV1, DrainGuardianStateV1, DrainObservationV1, DrainPhaseV1,
-    DrainReleaseEvidenceV1, DrainSnapshotEvidenceV1, InvalidDrainModel, MAX_DRAIN_ASSIGNMENTS,
-    NodeDrainModeV1,
+    DrainAssignmentObservationV1, DrainContainmentEvidenceV1, DrainGuardianEvidenceV1,
+    DrainObservationV1, DrainReleaseEvidenceV1, DrainSnapshotEvidenceV1,
 };
 #[cfg(feature = "multi-node")]
 pub use evidence_authority::AffinityPlacementV1;
-#[cfg(feature = "multi-node")]
-pub use placement_input::InvalidPlacementInput;
-#[cfg(feature = "multi-node")]
-pub use reducer_state::MAX_ASSIGNMENT_AFFINITIES;
 
 pub use evidence::{AuthenticatedEvidenceContextV1, InvalidEvidenceContext};
 pub use journal::{
@@ -101,24 +77,21 @@ pub use journal::{
 };
 pub use protocol::{
     AuthenticatedNodeSessionV1, BoundedFrameDecodeError, BoundedFrameDecoderV1,
-    CanonicalNodeFrameKindV1, CanonicalNodeFrameV1, CanonicalNodeSemanticCodecV1,
-    InvalidMultiNodeProtocol, MAX_NODE_REQUEST_BYTES, MAX_NODE_RESPONSE_BYTES,
-    MAX_RESYNC_ASSIGNMENTS, MAX_WATCH_EVENTS, NodeResponseBodyV1, NodeWatchBindingV1,
-    NodeWatchCursorV1, NodeWatchEventBodyV1, NodeWatchEventV1, ResyncInventoryV1,
-    RollingVersionWindowV1, stable_watch_bootstrap_uid, stable_watch_event_uid,
+    CanonicalNodeFrameV1, CanonicalNodeSemanticCodecV1, NodeResponseBodyV1, NodeWatchEventBodyV1,
+    NodeWatchEventV1, ResyncInventoryV1,
 };
 #[cfg(feature = "multi-node")]
 pub use protocol::{
-    CarrierValidatedResyncInventoryV1, NodeRequestBodyV1, NodeRequestEnvelopeV1,
-    NodeResponseEnvelopeV1, NodeWatchBootstrapV1,
+    CarrierValidatedResyncInventoryV1, NodeRequestEnvelopeV1, NodeResponseEnvelopeV1,
+    NodeWatchBootstrapV1,
 };
 
 pub use reducer_state::{
     AssignmentJournalStateV1, CapabilityJournalStateV1, DrainJournalStateV1,
-    DurableAffinityProjectionV1, DurableAssignmentObservationV1, DurableDependencyProjectionV1,
-    DurableDrainAssignmentV1, DurableDrainObservationV1, DurableEvidenceBindingV1,
-    DurablePublicationProjectionV1, DurableStagedChunkV1, DurableWatchEventV1,
-    MultiNodeReducerStateV1, SnapshotTransferJournalStateV1, WatchJournalStateV1,
+    DurableAffinityProjectionV1, DurableAssignmentObservationV1, DurableDrainAssignmentV1,
+    DurableDrainObservationV1, DurableEvidenceBindingV1, DurablePublicationProjectionV1,
+    DurableStagedChunkV1, DurableWatchEventV1, MultiNodeReducerStateV1,
+    SnapshotTransferJournalStateV1, WatchJournalStateV1,
 };
 pub use store_authority::{
     ProtectedCheckpointCommitOutcomeV1, ProtectedMultiNodeAuthorityOpenErrorV1,

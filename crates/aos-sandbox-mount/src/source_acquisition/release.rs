@@ -4,7 +4,7 @@
 //! lease evidence, and pre-reservation acquisition witness are committed before
 //! the security-owned carrier can send the provider request.
 
-use aos_sandbox::journal::{JournalTransaction, ProtectedJournalAuthority};
+use aos_sandbox_mount_native::{JournalTransaction, ProtectedJournalAuthority};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::{
     LiveValidatedReleaseMountSourceAcquisitionRequest, mount_source_acquisition_request_digest_v1,
@@ -50,7 +50,7 @@ pub(crate) struct RetainedReleasePreparationFailureV2 {
 enum ReleasePreparationV1<'writer, 'journal, 'outputs, 'effect_owner> {
     Legacy(&'writer mut ProtectedJournalAuthority<'journal>),
     Original {
-        writer: &'writer aos_sandbox::MountOriginalNativeJournalAuthorityV5<'journal>,
+        writer: &'writer aos_sandbox_mount_native::MountOriginalNativeJournalAuthorityV5<'journal>,
         signed: &'outputs mut Option<SignedSourceProviderRequestV1>,
         prepared: &'outputs mut Option<PreparedMountProviderRequestV2>,
         signing: &'outputs mut OriginalReleaseSigningV1,
@@ -150,7 +150,7 @@ impl SourceAcquisitionTableV2 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare_original_release_reservation_v1<'effect_owner>(
         &mut self,
-        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        writer: &aos_sandbox_mount_native::MountOriginalNativeJournalAuthorityV5<'_>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         live_request: &LiveValidatedReleaseMountSourceAcquisitionRequest,
         mount_request: Vec<u8>,

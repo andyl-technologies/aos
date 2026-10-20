@@ -41,7 +41,7 @@ use crate::destination_slot_inventory::{
 };
 use crate::dispatch::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1};
 use crate::mount_preparation::{self, MountCatalogPreparationError};
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::CurrentAssignmentTarget;
 use crate::Journal;
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;

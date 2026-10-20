@@ -16,6 +16,8 @@
 //! SHA-256(Root-history-floor-domain || preceding 360 bytes):32
 //! ```
 
+use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
+
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
@@ -25,7 +27,7 @@ use crate::journal::{
 
 use super::super::controller_project_terminal_readback::verify_controller_project_terminal_readback_v1;
 use super::super::{
-    PinnedControllerHoldSignerV1, PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackChallengeV1,
+    PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackChallengeV1,
     verify_source_project_completed_terminal_readback_v1,
 };
 pub(crate) use aos_sandbox_protocol::domain_ledger::root_project_history::ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1;
@@ -87,12 +89,13 @@ pub(super) fn retire_root_project_history_with_journal(
         .map(RootProjectHistoryFloorV1::from_record_bytes)
         .transpose()?;
     let controller_pin = authority
-        .get(super::CONTROLLER_HOLD_PIN_KEY)?
+        .get(aos_sandbox_policy::journal_keys::CONTROLLER_HOLD_PIN_KEY)?
         .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
     let source_pin = authority
-        .get(super::SOURCE_HOLD_PIN_KEY)?
+        .get(aos_sandbox_policy::journal_keys::SOURCE_HOLD_PIN_KEY)?
         .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
     let controller_signer = PinnedControllerHoldSignerV1::decode(controller_pin)
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
     let source_signer = PinnedSourceHoldReadbackSignerV1::decode(source_pin)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
@@ -246,7 +249,7 @@ pub fn recover_fixed_root_project_history_floor_v1(
     let Some(floor) = floor else {
         return Ok(None);
     };
-    if authority.get(super::SOURCE_HOLD_PIN_KEY)?.map(digest) != Some(floor.source_pin_digest()) {
+    if authority.get(aos_sandbox_policy::journal_keys::SOURCE_HOLD_PIN_KEY)?.map(digest) != Some(floor.source_pin_digest()) {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     if floor.issue() < reservation.issue() {
@@ -279,7 +282,7 @@ pub fn fixed_root_project_history_readback_available_v1()
     else {
         return Ok(false);
     };
-    if authority.get(super::SOURCE_HOLD_PIN_KEY)?.map(digest) != Some(floor.source_pin_digest()) {
+    if authority.get(aos_sandbox_policy::journal_keys::SOURCE_HOLD_PIN_KEY)?.map(digest) != Some(floor.source_pin_digest()) {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     Ok(true)
@@ -296,7 +299,7 @@ pub(super) fn require_successor_source_issue(
     {
         Some(floor)
             if floor.issue().checked_add(1) == Some(reservation.issue())
-                && authority.get(super::SOURCE_HOLD_PIN_KEY)?.map(digest)
+                && authority.get(aos_sandbox_policy::journal_keys::SOURCE_HOLD_PIN_KEY)?.map(digest)
                     == Some(floor.source_pin_digest()) =>
         {
             Ok(())
@@ -368,7 +371,7 @@ pub(crate) fn validate_capacity_settlement(
             _ => return Err(PolicyDeploymentHeadErrorV1::StaleHead),
         }
         if journal
-            .get(RecordNamespace::DesiredState, super::SOURCE_HOLD_PIN_KEY)
+            .get(RecordNamespace::DesiredState, aos_sandbox_policy::journal_keys::SOURCE_HOLD_PIN_KEY)
             .map(digest)
             != Some(floor.source_pin_digest())
         {

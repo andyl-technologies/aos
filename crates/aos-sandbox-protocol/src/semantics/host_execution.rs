@@ -81,8 +81,8 @@ pub fn canonical_host_execution_apply_semantics_v1(
     let content = request
         .content_fields()
         .ok_or(HostExecutionSemanticErrorV1::InvalidAction)?;
-    host_execution_apply_content_grant_v1(
-        assignment,
+    apply_content_grant(
+        request.content_version(), assignment,
         request.operation_id(),
         request.execution_id(),
         request.source_commitment(),
@@ -147,6 +147,38 @@ pub fn host_execution_apply_content_grant_v1(
     action: EffectOperationV1,
     content: HostExecutionSpecContentFieldsV1,
 ) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
+    apply_content_grant(1, assignment, operation_id, execution_id,
+        source_commitment, action, content)
+}
+
+/// Compiles the exact tagged lifetime reference under version five.
+///
+/// The real Host joins the signed reference to its original native59, verified
+/// lease, specification and logical hold or actual physical Capture pipes.
+///
+/// # Errors
+/// Rejects invalid locators or empty/oversized content. The reference alone
+/// grants no execution, pipe, lifetime renewal or completion authority.
+pub fn host_execution_apply_lifetime_admission_grant_v5(
+    assignment: BrokerAssignment, operation_id: [u8; 16], execution_id: ExecutionId,
+    source_commitment: ObjectDigest, content: HostExecutionSpecContentFieldsV1,
+) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
+    apply_content_grant(5, assignment, operation_id, execution_id,
+        source_commitment, EffectOperationV1::AuthorizeExecution, content)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_content_grant(
+    version: u32, assignment: BrokerAssignment, operation_id: [u8; 16],
+    execution_id: ExecutionId, source_commitment: ObjectDigest,
+    action: EffectOperationV1, content: HostExecutionSpecContentFieldsV1,
+) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
+    let maximum = match version {
+        1 => MAXIMUM_HOST_EXECUTION_SPEC_BYTES,
+        5 if action == EffectOperationV1::AuthorizeExecution =>
+            crate::host_execution::admission_content::MAXIMUM_ADMISSION_CONTENT_BYTES_V5,
+        _ => return Err(HostExecutionSemanticErrorV1::InvalidAction),
+    };
     validate_locator(operation_id, execution_id, source_commitment)?;
     let mut bytes = common_bytes(
         1,
@@ -161,7 +193,7 @@ pub fn host_execution_apply_content_grant_v1(
     match action {
         EffectOperationV1::AuthorizeExecution
             if content.bytes() > 1
-                && content.bytes() <= MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64 => {}
+                && content.bytes() <= maximum as u64 => {}
         EffectOperationV1::ResizeTerminal { rows, columns }
             if rows != 0 && columns != 0 && content.is_control_marker() => {}
         EffectOperationV1::Signal { signal_code }
@@ -169,7 +201,7 @@ pub fn host_execution_apply_content_grant_v1(
         EffectOperationV1::Cancel | EffectOperationV1::Observe if content.is_control_marker() => {}
         _ => return Err(HostExecutionSemanticErrorV1::InvalidAction),
     }
-    bytes.push(1);
+    bytes.push(version as u8);
     bytes.extend_from_slice(&content.bytes().to_be_bytes());
     bytes.extend_from_slice(&content.digest());
 
@@ -189,14 +221,9 @@ pub fn canonical_host_execution_query_semantics_v1(
     request: &ValidatedHostExecutionQueryV1,
     assignment: BrokerAssignment,
 ) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
-    host_execution_query_content_grant_v2(
-        assignment,
-        request.operation_id(),
-        request.execution_id(),
-        request.source_commitment(),
-        request.content_fields(),
-        request.specification_digest(),
-    )
+    query_content_grant_v3(assignment, request.operation_id(), request.execution_id(),
+        request.source_commitment(), request.content_fields(), request.specification_digest(),
+        request.monitor_v3().copied())
 }
 
 /// Compiles the version-two Query grant for the retained semantic specification.
@@ -212,9 +239,36 @@ pub fn host_execution_query_content_grant_v2(
     content: HostExecutionSpecContentFieldsV1,
     specification_digest: ObjectDigest,
 ) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
+    query_content_grant_v3(assignment, operation_id, execution_id, source_commitment,
+        content, specification_digest, None)
+}
+
+/// Compiles a read-only Query3 grant for the original content5 monitor family.
+///
+/// # Errors
+/// Rejects invalid original locators, content widths or specification digests.
+#[allow(clippy::too_many_arguments)]
+pub fn host_execution_monitor_query_grant_v3(assignment: BrokerAssignment,
+    create: [u8; 16], execution: ExecutionId, original_source: ObjectDigest,
+    content: HostExecutionSpecContentFieldsV1, specification: ObjectDigest,
+    selector: crate::host_execution::monitor::HostExecutionMonitorSelectorV3,
+) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
+    query_content_grant_v3(assignment, create, execution, original_source,
+        content, specification, Some(selector))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn query_content_grant_v3(assignment: BrokerAssignment, operation_id: [u8; 16],
+    execution_id: ExecutionId, source_commitment: ObjectDigest,
+    content: HostExecutionSpecContentFieldsV1, specification_digest: ObjectDigest,
+    selector: Option<crate::host_execution::monitor::HostExecutionMonitorSelectorV3>,
+) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
     validate_locator(operation_id, execution_id, source_commitment)?;
+    let maximum = if selector.is_some() {
+        crate::host_execution::admission_content::MAXIMUM_ADMISSION_CONTENT_BYTES_V5
+    } else { MAXIMUM_HOST_EXECUTION_SPEC_BYTES };
     if content.bytes() == 0
-        || content.bytes() > MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64
+        || content.bytes() > maximum as u64
         || specification_digest.as_bytes() == &[0; 32]
     {
         return Err(HostExecutionSemanticErrorV1::InvalidAction);
@@ -226,11 +280,12 @@ pub fn host_execution_query_content_grant_v2(
         execution_id.as_bytes(),
         source_commitment,
     );
-    bytes.push(1);
+    bytes.push(if selector.is_some() { 5 } else { 1 });
     bytes.extend_from_slice(&content.bytes().to_be_bytes());
     bytes.extend_from_slice(&content.digest());
-    bytes.push(2);
+    bytes.push(if selector.is_some() { 3 } else { 2 });
     bytes.extend_from_slice(specification_digest.as_bytes());
+    if let Some(selector) = selector { bytes.extend_from_slice(&selector.canonical_comparison_bytes_v3()); }
     Ok(CanonicalHostExecutionSemanticsV1 {
         verb: BrokerVerb::HostQueryExecution,
         target: BrokerGrantTarget::Assignment,
@@ -509,4 +564,23 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn monitor_query_grant_is_read_only_and_binds_source_kind_runtime_and_first_child() {
+        use crate::host_execution::monitor::HostExecutionMonitorSelectorV3;
+        use aos_sandbox_core::runtime_backend::BackendOperationIdV1;
+        let selector = |runtime, child, source, kind| HostExecutionMonitorSelectorV3::new(
+            ObjectDigest::from_bytes([runtime; 32]), BackendOperationIdV1::new([child; 16]).unwrap(),
+            ObjectDigest::from_bytes([source; 32]), kind).unwrap();
+        let grant = |selector| host_execution_monitor_query_grant_v3(assignment(3), [7; 16],
+            ExecutionId::from_bytes([8; 16]), ObjectDigest::from_bytes([9; 32]),
+            HostExecutionSpecContentFieldsV1::for_grant(b"original content5"),
+            ObjectDigest::from_bytes([5; 32]), selector).unwrap();
+        let original = grant(selector(10, 11, 12, 2));
+        assert_eq!(original.verb(), BrokerVerb::HostQueryExecution);
+        for changed in [selector(13, 11, 12, 2), selector(10, 13, 12, 2),
+            selector(10, 11, 13, 2), selector(10, 11, 12, 1)] {
+            assert_ne!(original.commitment(), grant(changed).commitment());
+        }
+    }
+
 }

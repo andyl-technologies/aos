@@ -4,8 +4,6 @@
 //! originals and Q04 loans used by Controller and Runtime callers. Fixed names
 //! and limits belong to this owner; Lifecycle retains its schemas and recovery.
 
-use crate::journal::JournalLimits;
-
 mod fixed_writer;
 
 #[cfg(target_os = "linux")]
@@ -14,20 +12,8 @@ pub use fixed_writer::ControllerSourceJournalConstructionV1;
 pub(crate) use fixed_writer::OriginalQ04SourceOwnerCutV1;
 pub use fixed_writer::ProtectedSourceDomainJournalOwnerV1;
 
-const MAXIMUM_CROSS_DOMAIN_REPLAY_MEMBERS: usize = 262_144;
-pub(crate) const PROTECTED_SOURCE_DOMAIN_ROOT: &str = "/var/lib/aos/sandbox/source-domains";
-pub(crate) const PROTECTED_SOURCE_DOMAIN_JOURNAL: &str = "source-domains-v1.journal";
-
-pub(crate) fn source_domain_journal_limits() -> JournalLimits {
-    JournalLimits {
-        maximum_journal_bytes: 4 * 1024 * 1024 * 1024,
-        maximum_record_bytes: 256 * 1024 * 1024,
-        maximum_key_bytes: 512,
-        maximum_records_per_transaction: 64,
-        maximum_transaction_bytes: 1024 * 1024 * 1024,
-        maximum_transactions: 1_000_000,
-        maximum_materialized_bytes: 2 * 1024 * 1024 * 1024,
-        // The V8 pending marker must not reduce the existing replay-member bound.
-        maximum_materialized_records: MAXIMUM_CROSS_DOMAIN_REPLAY_MEMBERS + 1,
-    }
-}
+pub(crate) use aos_sandbox_broker::source_receiving::{
+    SOURCE_DOMAIN_DIRECTORY_V1 as PROTECTED_SOURCE_DOMAIN_ROOT,
+    SOURCE_DOMAIN_JOURNAL_V1 as PROTECTED_SOURCE_DOMAIN_JOURNAL,
+    source_journal_limits_v1 as source_domain_journal_limits,
+};

@@ -12,10 +12,54 @@
 //! dropping a handle never establishes physical cleanup.
 
 mod bootstrap;
+mod operation_intake;
+pub(crate) use create_intake::provisioning::receiving::storage_io::{ExecutionAvailabilityIoOriginalV2, ExecutionNoApplyIoOriginalV2};
+pub(crate) use operation_intake::{
+    ControllerOperationIntakeOriginalV1, ControllerOperationIntakeReceivingLoanV1,
+    ControllerOperationIntakeDisposalV1, ControllerOperationIntakeDemandDataV1,
+    ControllerOperationIntakeFailureViewV1,
+    ControllerExecutionSourceScopeV1, ControllerExecutionSourceDisposalV1,
+    ControllerExecutionSourceCompleteBorrowV1,
+};
+mod runtime_receiving;
+mod startup_credentials;
+pub(crate) mod operator_create_recovery;
+#[doc(hidden)]
+pub use operator_create_recovery::{OperatorCreateRecoveryOriginalV1, OperatorCreateRecoveryLoanV1, OperatorCreateRecoveryClosedV1, OperatorStopCleanupObservationLoanV1};
+pub use operator_create_recovery::OperatorExecutionNoApplyRecoveryCompletedHandoffV2;
+pub use operator_create_recovery::OperatorStopCleanupRecoveryCompletedHandoffV1;
+pub(crate) use operator_create_recovery::storage::inventory::InventoryOriginalsV1 as ControllerRecoveryInventoryOriginalsV3;
+pub(crate) use operator_create_recovery::storage::inventory::borrow_stop_cleanup_source_inventory_once_v1;
+pub use operator_create_recovery::OperatorRecoveredStoppedCreateSeedV1;
+mod initial_session;
+pub use initial_session::{
+    ControllerInitialBrokerSessionRoleV1, ControllerInitialBrokerSessionCaptureShapeV1,
+    ControllerInitialBrokerSessionShapeV1, ControllerInitialBrokerSessionClosedV1,
+    ControllerInitialBrokerSessionReceivingV1, ControllerInitialBrokerSessionReceivingLoanV1,
+    ControllerInitialSessionCompletedNativeBorrowV1,
+};
+pub(crate) use initial_session::ControllerInitialBrokerSessionOwnerLinkV1;
+mod service_identity;
+mod publisher_environment;
+pub(crate) mod publisher_receiving;
+pub use publisher_environment::{
+    ControllerPublisherBusEnvironmentErrorV1, ControllerPublisherBusEnvironmentV1,
+};
+pub use publisher_receiving::{ControllerPublisherReceivingV1, ControllerPublisherStartupDataV1};
+pub use startup_credentials::{ControllerSourceGenesisReceivingV1, ControllerPublicTlsReceivingV1};
+pub use service_identity::ControllerAttachmentStartupV1;
+pub use runtime_receiving::{
+    ControllerRuntimeStartupShapeV1, ControllerRuntimeCredentialShapeV1,
+    ControllerRuntimeRequestedCountsV1, ControllerRuntimeTaskEnvelopeV1,
+    CONTROLLER_RUNTIME_TASKS_V1, CONTROLLER_RUNTIME_ROLE_TASKS_V1,
+    CONTROLLER_RUNTIME_BLOCKING_THREADS_V1, CONTROLLER_RUNTIME_STACK_BYTES_V1,
+};
 mod grant;
 mod component;
+pub(crate) mod component_receiving;
 mod root_component;
-pub(crate) use root_component::RootReceivingOriginalV1;
+pub(crate) use root_component::{RootStopCleanupChunkPostsV1, RootExecutionNoApplyChunkPostsV2, RootDeleteChunkPostsV1, RootApplyChunkPostsV1, RootStartAssignmentInputsChunkPostsV2, RootHostLaunchChunkPostsV2, RootMaintenanceStorageChunkPostsV2, RootReceivingOriginalV1, RootContinuationDemandV1, RootContinuationStageV1, RootStopCleanupStageV1, StopCleanupRootPeerPurposeV1, RootMaintenanceStorageStageV2, RootExecutionNoApplyReadPhaseV2, RootContinuationStagesV1, RootPurposePeerAdmissionV1, RootPurposePeerPostV1, RootPeerPurposeV1, DeleteRootPeerPurposeV1, EnvironmentRootPeerPurposeV1, ApplyRootPeerPurposeV1, HostLaunchRootPeerPurposeV1, MaintenanceStorageRootPeerPurposeV2, ExecutionNoApplyRootPeerPurposeV2, FinalityRecoverRootPeerPurposeV1, StartAssignmentInputsRootPeerPurposeV2};
+pub(crate) use operator_create_recovery::RequestModelsV1 as OperatorCreateRecoveryRequestDataV1;
 mod preparation;
 mod q04;
 mod settlement;
@@ -25,6 +69,48 @@ pub(crate) use terminal_append::Q04TerminalBankAppendV1;
 pub(crate) mod service_interval;
 mod nix_intake;
 mod q04_intake;
+
+// The actual upper capture derives its own native widths. Security cannot
+// supply arbitrary layouts or turn comparison DATA into an admission.
+pub(crate) fn initial_profile_native_layout_v1() -> bank::NativeLayoutDemand {
+    q04_intake::native_layout()
+}
+
+mod create_intake;
+pub(crate) use create_intake::ready::{CreateStorageOriginalLoanV1, CacheTerminalReceivingLoanV1, CacheReleaseReceivingLoanV1, CacheCurrentAuditReceivingLoanV1,
+    CreateStorageUseBankOriginalsV1, CreateStorageUseBankAppendV1, CreateStorageUseHistoryReceivingLoanV1};
+#[doc(hidden)]
+pub use crate::cache_residency::{CreateStorageCacheCurrentExtentsDataV1, create_storage_cache_current_dynamic_receiving_demand_v1};
+#[doc(hidden)]
+pub use create_intake::ready::create_storage_cache_current_fixed_receiving_demand_v1;
+#[doc(hidden)]
+pub use create_intake::ready::create_storage_held_release_receiving_demand_v1;
+pub use create_intake::ready::{CreateStorageRootUseTailShapeDataV1, create_storage_root_use_tail_shape_v1};
+#[doc(hidden)]
+pub use create_intake::ready::{
+    OriginalCreateStorageReadyV1, CreateStorageReadyClosedV1,
+    OriginalCreateStorageUseSigningV1, CreateStorageUseSigningInputsDataV1, CreateStoragePrepareInputsDataV1,
+    OriginalCreateStorageRootExchangeV1, CreateStorageRootExchangeClosedV1, CreateStorageControllerDriverShapeDataV1,
+    CreateStorageClientSessionClosedV1, CreateStorageClientSessionShapeDataV1,
+    CreateStorageEndpointRevalidationShapeDataV1,
+    OriginalCreateStorageClientSessionV1, CreateStorageClientPositiveDisposalV1,
+    OriginalCreateStorageInventoryV1, CreateStorageInventoryClosedV1,
+    CreateStorageInventoryShapeDataV1, CreateStorageInventoryPendingDisposalV1,
+    CreateStorageOwnershipProgressV1,
+};
+pub(crate) use create_intake::history::{CreateStorageHistoryAppendLoanV1, CreateStorageWriterPositionV1, HistoryRoleV1};
+mod create_intake_append;
+#[doc(hidden)]
+pub use crate::reconciler::provisioning::{CreateProvisioningStorageIoOriginalV1,
+    CreateProvisioningStorageIoLoanV1, CreateProvisioningStorageIoErrorV1};
+#[doc(hidden)]
+pub(crate) use create_intake::provisioning::CreateStorageCompletedIntakeOriginalV1;
+pub(crate) use create_intake::provisioning::{SourceAdmissionAuthorizationV1, SourcePurposeV1};
+pub use create_intake::provisioning::{CreateProvisioningOriginalsV1, OriginalCreateProvisioningRootLoanV1,
+    StorageProvisioningIoDisposalV1, StorageProvisioningWorkspaceOriginalV1, StorageProvisioningSessionIoShapeDataV1, DeleteStoragePreparationIoOriginalV3, DeleteStorageApplyIoOriginalV3, DeleteNetworkApplyIoOriginalV4, DeleteMountReapIoOriginalV4,
+    CreateProvisioningClientSessionAssociationErrorV1, StorageProvisioningSessionPostShapeDataV1};
+pub use create_intake::CreateContinuationIntakeAttemptV1;
+pub(crate) use create_intake_append::CreateIntakeBankAppendV1;
 
 pub(crate) use grant::ProjectResourceGrantAttemptV1;
 pub use service_interval::ControllerFirstGlobalPrefixAttemptV1;
@@ -40,8 +126,10 @@ pub use bootstrap::{
     ControllerResourceBankOpeningV1, ControllerResourcePreopenLoanV1,
     ControllerResourcePreopenPostV1,
 };
+pub(crate) use component::StorageComponentPairPostV1;
+
 pub use component::{
-    StorageComponentEnvelopeLoanV1, StorageComponentEnvelopeOriginalV1, StorageComponentPostV1,
+    StorageComponentEnvelopeOriginalV1,
 };
 
 use aos_sandbox_core::{AccountingError, ResourceVector};
@@ -54,6 +142,36 @@ type State = std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
 use crate::{JournalTransaction, RecordNamespace};
 
+// Pure compiled component geometry; actual Root/C callers independently
+// prove their originals and pay before entering the closed U append.
+pub(crate) fn create_storage_use_bank_receiving_demand_v1()
+    -> Result<ResourceVector, ResourceReservationErrorV1>
+{
+    CreateStorageUseBankOriginalsV1::fixed_receiving_demand_v1()
+}
+
+pub(crate) fn create_storage_use_commit_receiving_demand_v1()
+    -> Result<ResourceVector, ResourceReservationErrorV1>
+{
+    create_intake::ready::commit_receiving_demand_v1()
+}
+
+// These cost projections do not construct a history pair or admit its work.
+pub(crate) fn create_storage_use_history_pair_receiving_demand_v1(
+    record_bytes: usize,
+    semantic: &ResourceVector,
+) -> Result<ResourceVector, ResourceReservationErrorV1> {
+    create_intake::history::use_history_pair_receiving_demand_v1(record_bytes, semantic)
+}
+
+pub(crate) fn create_storage_use_profile_rows_receiving_demand_v1(
+    rows: usize,
+) -> Result<ResourceVector, ResourceReservationErrorV1> {
+    let row = crate::normal_root::ProductionControllerNormalRootProfileV1::
+        create_intake_observer_demand()?;
+    service_interval::multiply(row, rows)
+}
+
 // The bootstrap interval is paid by the same original enrollment, not the
 // per-operation request. This is observation only and issues no child loan.
 pub(crate) fn require_controller_interval(
@@ -65,33 +183,18 @@ pub(crate) fn require_controller_interval(
         .require_enrolled(journal, profile).map(|_| ())
 }
 
-/// Retains the original pair delivered by the existing privileged PID1 owner.
-///
-/// Capturing the closed roles is not bank enrollment. The bank independently
-/// verifies the same image bytes, fixed Controller invocation and producer
-/// custody before its first durable write. No caller-FD constructor is exposed.
-pub struct ControllerResourceEnrollmentCaptureV1 {
-    policy: std::fs::File,
-    enrollment: std::fs::File,
-    process: u32,
-}
-
-impl ControllerResourceEnrollmentCaptureV1 {
-    pub(crate) fn from_original_table(
-        policy: std::os::fd::OwnedFd,
-        enrollment: std::os::fd::OwnedFd,
-    ) -> Self {
-        Self {
-            policy: policy.into(),
-            enrollment: enrollment.into(),
-            process: std::process::id(),
-        }
-    }
-}
-
 /// Reports missing enrollment, invalid native custody, or exhausted capacity.
 #[derive(Debug, thiserror::Error)]
 pub enum ResourceReservationErrorV1 {
+    /// Retains the actual lower Root financial error on its original allocation.
+    #[error(transparent)]
+    RootReceiving(aos_sandbox_broker::receiving::RootJournalFinancialOriginalV1),
+    /// The same closed Controller receiving original refused an operation.
+    #[error(transparent)]
+    ControllerReceiving(#[from] aos_sandbox_broker::controller_receiving::ControllerReceivingErrorV1),
+    /// The same fixed writer or live PID1 Bank/launch stage refused.
+    #[error(transparent)]
+    ControllerBankLaunch(#[from] aos_sandbox_broker::controller_receiving::bank_launch::ControllerBankLaunchErrorV1),
     /// An original bootstrap file read failed; the owning files remain held.
     #[error(transparent)]
     BootstrapIo(#[from] std::io::Error),
@@ -116,6 +219,9 @@ pub enum ResourceReservationErrorV1 {
     /// The sole resource arithmetic rejected the proposed reservation.
     #[error(transparent)]
     Accounting(#[from] AccountingError),
+    /// Retains an actual bounded bank-history allocation refusal.
+    #[error(transparent)]
+    Representation(#[from] std::collections::TryReserveError),
     /// The original protected writer refused or could not durably append.
     #[error(transparent)]
     Journal(#[from] crate::JournalError),
@@ -140,6 +246,7 @@ impl From<bank::ResourceBankDataError> for ResourceReservationErrorV1 {
             bank::ResourceBankDataError::Names(error) => Self::Journal(crate::JournalError::from(error)),
             bank::ResourceBankDataError::Transaction(error) => Self::Journal(crate::JournalError::from(error)),
             bank::ResourceBankDataError::Frame(error) => Self::Journal(crate::JournalError::from(error)),
+            bank::ResourceBankDataError::Representation(error) => Self::Representation(error),
         }
     }
 }
@@ -168,7 +275,9 @@ pub fn require_original_host_component_pair_v2(
     expected_host_service: &ResourceVector,
     expected_host_control: &ResourceVector,
 ) -> Result<(), ResourceReservationErrorV1> {
-    let original = bootstrap::observe_original_pair(policy, enrollment)?;
+    let original = aos_sandbox_broker::receiving::observe_original_pair(
+        policy, enrollment, q04_intake::native_layout(),
+    ).map_err(ResourceReservationErrorV1::from)?;
     let host_service = *expected_host_service;
     let host_control = *expected_host_control;
     if !original.identity.matches_host_fields(
@@ -209,7 +318,10 @@ struct NativeCrossing<'original> {
 enum TransitionOriginal<'original> {
     Account(&'original AccountTransition),
     Q04Terminal(Q04TerminalBankAppendV1<'original>),
-    Enrollment(&'original bootstrap::EnrollmentTransition),
+    CreateIntake(CreateIntakeBankAppendV1<'original>),
+    CreateStorageUse(CreateStorageUseBankAppendV1<'original>),
+    Enrollment(&'original aos_sandbox_broker::controller_receiving::bank_launch::ControllerPreparedEnrollmentMutationV1),
+    ControllerLaunch(&'original aos_sandbox_broker::controller_receiving::bank_launch::ControllerBankLaunchOriginalV1),
     Q04(&'original Q04ResourceTransferV1),
 }
 
@@ -217,11 +329,18 @@ impl Transition<'_> {
     // Runs only at the shared engine's final pre-append frontier. This is a
     // kernel-only observation: no reentrant Root or Source call holds a lock.
     pub(crate) fn final_crossing(&self) -> Result<(), crate::JournalError> {
+        if let TransitionOriginal::CreateStorageUse(original) = &self.original {
+            let crossing = self.crossing.as_ref().ok_or(crate::JournalError::ProtectedBoundary)?;
+            return original.final_crossing(crossing.result);
+        }
         let Some(crossing) = &self.crossing else {
             return match self.original {
                 TransitionOriginal::Enrollment(_) => Ok(()),
+                TransitionOriginal::ControllerLaunch(original) => original.final_crossing()
+                    .map_err(|_| crate::JournalError::ProtectedBoundary),
                 TransitionOriginal::Account(_) | TransitionOriginal::Q04(_)
-                | TransitionOriginal::Q04Terminal(_) =>
+                | TransitionOriginal::Q04Terminal(_) | TransitionOriginal::CreateIntake(_)
+                | TransitionOriginal::CreateStorageUse(_) =>
                     Err(crate::JournalError::ProtectedBoundary),
             };
         };
@@ -235,7 +354,8 @@ impl Transition<'_> {
                 TransitionOriginal::Account(original)
                     if matches!(original.claim.native_fields().purpose,
                         ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake
-                            | ClaimPurpose::Q04OriginalIntake));
+                            | ClaimPurpose::Q04OriginalIntake))
+                || matches!(self.original, TransitionOriginal::CreateIntake(_));
             let observed = if first_global {
                 // This closed boot-lifetime subdivision has no inherited
                 // operation's 65-second recipe. Its boot-lifetime first use
@@ -272,12 +392,20 @@ impl Transition<'_> {
         transaction: &JournalTransaction,
     ) -> Result<(), crate::JournalError> {
         match &self.original {
-            TransitionOriginal::Account(original) if original.terminal.is_none() => {
+            TransitionOriginal::Account(original) if original.terminal.is_none()
+                && !matches!(original.claim.native_fields().purpose,
+                    ClaimPurpose::CreateContinuationIntake | ClaimPurpose::CreateStorageUse
+                        | ClaimPurpose::DeleteOperationIntake | ClaimPurpose::ExecutionOperationIntake) => {
                 original.require_current(state, transaction)
             }
             TransitionOriginal::Account(_) => Err(crate::JournalError::ProtectedBoundary),
             TransitionOriginal::Q04Terminal(original) => original.require_current(state, transaction),
-            TransitionOriginal::Enrollment(original) => original.require_current(state, transaction),
+            TransitionOriginal::CreateIntake(original) => original.require_current(state, transaction),
+            TransitionOriginal::CreateStorageUse(original) => original.require_current(state, transaction),
+            TransitionOriginal::Enrollment(original) => original.require_exact(state, transaction)
+                .map_err(|_| crate::JournalError::ProtectedBoundary),
+            TransitionOriginal::ControllerLaunch(original) => original.require_exact(state, transaction)
+                .map_err(|_| crate::JournalError::ProtectedBoundary),
             TransitionOriginal::Q04(original) => original.require_current(state, transaction)
                 .map_err(|_| crate::JournalError::ProtectedBoundary),
         }
@@ -294,13 +422,41 @@ struct AccountTransition {
     original_clock: Option<aos_sandbox_core::RawPairedClockSample>,
     preparation: Option<PreparationBinding>,
     terminal: Option<TerminalBinding>,
+    create_storage_use: Option<bank::CreateStorageUseBindingV1>,
 }
 
 impl AccountTransition {
     fn reserve(before: AccountHead, claim: Claim) -> Result<Self, ResourceReservationErrorV1> {
         let after = bank::reserve_head(before, claim).map_err(ResourceReservationErrorV1::from)?;
-        Ok(Self {
-            transaction_id: aos_sandbox_core::OperationId::new().into_bytes(),
+        Ok(Self::reserved_parts(before, after, claim,
+            aos_sandbox_core::OperationId::new().into_bytes()))
+    }
+
+    fn reserve_create_storage_use(before: AccountHead, claim: Claim,
+        binding: bank::CreateStorageUseBindingV1, original_clock: aos_sandbox_core::RawPairedClockSample,
+    ) -> Result<Self, ResourceReservationErrorV1> {
+        let after = bank::reserve_head(before, claim).map_err(ResourceReservationErrorV1::from)?;
+        let mut transition = Self::reserved_parts(before, after, claim, binding.reserve_transaction_id()?);
+        transition.original_clock = Some(original_clock);
+        transition.create_storage_use = Some(binding);
+        Ok(transition)
+    }
+
+    fn commit_create_storage_use(before: AccountHead, previous: Claim,
+        binding: bank::CreateStorageUseBindingV1, original_clock: aos_sandbox_core::RawPairedClockSample,
+    ) -> Result<Self, ResourceReservationErrorV1> {
+        let mut transition = Self::settle(before, previous, true)?;
+        transition.transaction_id = binding.commit_transaction_id()?;
+        transition.original_clock = Some(original_clock);
+        transition.create_storage_use = Some(binding);
+        Ok(transition)
+    }
+
+    fn reserved_parts(before: AccountHead, after: AccountHead, claim: Claim,
+        transaction_id: [u8; 16],
+    ) -> Self {
+        Self {
+            transaction_id,
             before,
             after,
             claim,
@@ -309,7 +465,8 @@ impl AccountTransition {
             original_clock: None,
             preparation: None,
             terminal: None,
-        })
+            create_storage_use: None,
+        }
     }
 
     fn settle(before: AccountHead, previous_claim: Claim, committed: bool) -> Result<Self, ResourceReservationErrorV1> {
@@ -325,6 +482,7 @@ impl AccountTransition {
             original_clock: None,
             preparation: None,
             terminal: None,
+            create_storage_use: None,
         })
     }
 
@@ -350,12 +508,13 @@ impl AccountTransition {
             original_clock: Some(original_clock),
             preparation: None,
             terminal: None,
+            create_storage_use: None,
         })
     }
 
 
     fn history(&self) -> AccountMutation<'_> {
-        AccountMutation::new((
+        let mutation = AccountMutation::new((
             &self.transaction_id,
             &self.before,
             &self.after,
@@ -364,7 +523,11 @@ impl AccountTransition {
             &self.child,
             &self.preparation,
             &self.terminal,
-        ))
+        ));
+        match self.create_storage_use.as_ref() {
+            Some(binding) => mutation.with_create_storage_use_v1(binding),
+            None => mutation,
+        }
     }
 
     fn transaction(&self) -> Result<JournalTransaction, ResourceReservationErrorV1> {
@@ -407,6 +570,16 @@ struct ReturnedAppend {
     post: Option<Result<(), crate::JournalError>>,
 }
 
+enum AppendOriginals<'original> {
+    Account,
+    CreateStorageUse(CreateStorageUseBankOriginalsV1<'original>),
+    Q04Terminal(Q04TerminalOriginalsV1<'original>),
+    CreateIntake {
+        parent: &'original ProjectPreparationReservationAttemptV1,
+        entry: q04_intake::CreateIntakeBankOriginalsV1<'original>,
+    },
+}
+
 impl ReturnedAppend {
     const fn new() -> Self {
         Self {
@@ -428,7 +601,7 @@ impl ReturnedAppend {
         journal: &mut crate::Journal,
         original: Result<AccountTransition, ResourceReservationErrorV1>,
     ) {
-        self.append_for(journal, original, None);
+        self.append_for(journal, original, AppendOriginals::Account);
     }
 
     // Only the parent retaining the actual moved child lends these originals.
@@ -439,18 +612,43 @@ impl ReturnedAppend {
         original: Result<AccountTransition, ResourceReservationErrorV1>,
         retained: Q04TerminalOriginalsV1<'_>,
     ) {
-        self.append_for(journal, original, Some(retained));
+        self.append_for(journal, original, AppendOriginals::Q04Terminal(retained));
+    }
+
+    fn append_create_intake_into(
+        &mut self,
+        journal: &mut crate::Journal,
+        original: Result<AccountTransition, ResourceReservationErrorV1>,
+        parent: &ProjectPreparationReservationAttemptV1,
+        entry: q04_intake::CreateIntakeBankOriginalsV1<'_>,
+    ) {
+        self.append_for(journal, original, AppendOriginals::CreateIntake { parent, entry });
+    }
+
+    // The only caller holds the actual completed Root turn, RootValidated
+    // native owner and its funded same-bank use preparation simultaneously.
+    fn append_create_storage_use_into(
+        &mut self,
+        journal: &mut crate::Journal,
+        original: Result<AccountTransition, ResourceReservationErrorV1>,
+        retained: CreateStorageUseBankOriginalsV1<'_>,
+    ) {
+        self.append_for(journal, original, AppendOriginals::CreateStorageUse(retained));
     }
 
     fn append_for(
         &mut self,
         journal: &mut crate::Journal,
         original: Result<AccountTransition, ResourceReservationErrorV1>,
-        retained: Option<Q04TerminalOriginalsV1<'_>>,
+        retained: AppendOriginals<'_>,
     ) {
         if self.original.is_some() {
             return;
         }
+        let storage_use = match &retained {
+            AppendOriginals::CreateStorageUse(original) => Some(original.observations_v1()),
+            _ => None,
+        };
         self.original = Some(original);
         if let Some(Ok(original)) = self.original.as_ref() {
             self.transaction = Some(original.transaction());
@@ -469,10 +667,16 @@ impl ReturnedAppend {
                     transaction,
                     &Transition {
                         original: match retained {
-                            Some(retained) => TransitionOriginal::Q04Terminal(
+                            AppendOriginals::Q04Terminal(retained) => TransitionOriginal::Q04Terminal(
                                 Q04TerminalBankAppendV1::new(original, retained),
                             ),
-                            None => TransitionOriginal::Account(original),
+                            AppendOriginals::CreateIntake { parent, entry } => TransitionOriginal::CreateIntake(
+                                CreateIntakeBankAppendV1::new(original, parent, entry),
+                            ),
+                            AppendOriginals::CreateStorageUse(retained) => TransitionOriginal::CreateStorageUse(
+                                retained.bind_transition_v1(original),
+                            ),
+                            AppendOriginals::Account => TransitionOriginal::Account(original),
                         },
                         crossing: match (
                             original.original_clock,
@@ -481,7 +685,7 @@ impl ReturnedAppend {
                             (Some(clock), ClaimCut::BootLifetime)
                                 if matches!(original.claim.native_fields().purpose,
                                     ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake
-                                        | ClaimPurpose::Q04OriginalIntake) =>
+                                        | ClaimPurpose::Q04OriginalIntake | ClaimPurpose::CreateContinuationIntake) =>
                                 Some(NativeCrossing {
                                         original: clock,
                                         deadline: clock.boottime_nanoseconds(),
@@ -502,7 +706,10 @@ impl ReturnedAppend {
         if self.native.is_some() {
             self.readback = Some(self.recover(journal));
         }
-        self.post = Some(journal.validate_held_protected_names());
+        self.post = Some(match storage_use {
+            Some(original) => original.observe_post_once(journal, self.transaction.as_ref(), self.native.as_ref()),
+            None => journal.validate_held_protected_names(),
+        });
     }
 
     fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -633,3 +840,126 @@ pub(crate) fn require_transition(
         _ => Err(crate::JournalError::ProtectedBoundary),
     }
 }
+
+impl From<aos_sandbox_broker::receiving::OriginalPairErrorV1> for ResourceReservationErrorV1 {
+    fn from(error: aos_sandbox_broker::receiving::OriginalPairErrorV1) -> Self {
+        use aos_sandbox_broker::receiving::OriginalPairErrorV1;
+        match error {
+            OriginalPairErrorV1::Io(error) => Self::BootstrapIo(error),
+            OriginalPairErrorV1::Descriptor(error) => Self::BootstrapDescriptor(error),
+            OriginalPairErrorV1::Kernel(error) => Self::BootstrapKernel(error),
+            OriginalPairErrorV1::Data(error) => error.into(),
+            OriginalPairErrorV1::EnrollmentUnavailable => Self::EnrollmentUnavailable,
+            OriginalPairErrorV1::Conflict => Self::Conflict,
+        }
+    }
+}
+
+#[doc(hidden)]
+pub use create_intake::ready::{CreateStorageReadyNativeInputsV1,
+    CreateStorageBundleShapeDataV1, CreateStorageBundleClosedV1, OriginalCreateStorageBundleV1};
+
+pub use initial_session::ControllerStorageFloorPhysicalReceivingV1;
+
+// The actual once-only signing loan and both peers use this same inert cost.
+pub(crate) fn create_storage_signing_originals_receiving_demand_v1()
+    -> Result<ResourceVector, ResourceReservationErrorV1>
+{
+    create_intake::ready::signing_originals_receiving_demand_v1()
+}
+
+// The actual request caller and both peers share this compiled Native layout.
+pub(crate) fn create_storage_preparation_originals_receiving_demand_v1()
+    -> Result<ResourceVector, ResourceReservationErrorV1> {
+    create_intake::ready::preparation_originals_receiving_demand_v1()
+}
+
+// The C8-only Native IO entrance and both peers use this same actual layout.
+pub(crate) fn create_storage_preparation_io_receiving_demand_v1()
+    -> Result<ResourceVector, ResourceReservationErrorV1> {
+    create_intake::ready::preparation_io_receiving_demand_v1()
+}
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use bootstrap::{ControllerDeletePlanningRootOriginalV1, ControllerDeletePlanningRootLoanV1};
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use bootstrap::{ControllerDeleteFinalDisposalOriginalV4, ControllerDeletePendingRootClientOriginalV2,
+    ControllerDeletePendingRootChallengeLoanV2, ControllerDeletePendingRootFailureViewV2, OriginalDeleteResourceSigningV2};
+
+#[doc(hidden)]
+pub use create_intake::provisioning::{CreateProvisioningSourceWorkspaceContextV1,
+    CreateStoppedCompletionAttemptV1, CreateStoppedPreAckContextV1,
+    CreateStoppedCompletionAssociationV1, CreateStoppedPreAckOriginalV1,
+    CreateStoppedPostAckContextV1, CreateStoppedTerminalOriginalV1, CreateStoppedTerminalCustodyV1};
+
+#[doc(hidden)]
+pub use create_intake::provisioning::AcceptedStartEntryOriginalV1;
+
+pub(crate) use create_intake::provisioning::{SourceAppendBoundaryV1,StartSourceAdmissionAuthorizationV1,StartSourcePurposeV2};
+
+// Private typed borrowers cross module privacy without exposing their owners.
+pub(crate) use create_intake::provisioning::{StartNativeStateV1, AcceptedStartPlanOriginalV1, StartTerminalAppendContextV2};
+
+#[doc(hidden)]
+pub use create_intake::provisioning::OriginalStartHostRootLoanV1;
+
+
+#[doc(hidden)]
+pub use create_intake::provisioning::{PreparedStartResourceRequestOriginalV2,
+    PreparedStartResourceRequestClosedV2, StartHostCatalogPublicationLoanV2, StartHostCatalogIoLoanV2, StartHostCatalogNativeCompletionV2, StartHostCatalogCompletionRefusalV2, StartHostSessionRejoinOriginalV2, StartHostCatalogProjectionOriginalV2, StartHostCatalogProjectionClosedV2, StartResourceUpperDisposalV2, StartResourceSessionOpeningOriginalV2,
+    StartResourceSessionOpeningLoanV2, StartResourceSessionOpeningOwnerLinkV2,
+    StartResourceColdCompletionOriginalV4,
+    StartResourceSessionAssociationV4, StartResourceHelloDisposalV4,
+    StartResourceHelloDisposalErrorV4, StartResourceSessionCurrentnessErrorV4,
+    StartResourceProvisioningIoLoanV2, StartResourcePreparedRequestBorrowV2,
+    StartResourceSessionPostShapeDataV2, StartResourceSessionResidentShapeDataV4};
+
+pub use create_intake::provisioning::{OriginalStartAssignmentInputsLoanV2, StartAssignmentInputsCompletedTurnV2};
+
+#[doc(hidden)]
+pub use operator_create_recovery::{OperatorReconciliationObservationCustodyV2,
+    OperatorFirstLocalOrdinaryEnrollmentOriginalV2,
+    OperatorFirstLocalReconciliationCompleteV2, OperatorReconciliationInventoryProofV2,
+    OperatorReconciliationInventoryLoanV2, ControllerRecoveryInventoryLoanV2,
+    OperatorReconciliationObservationEntryRefusalV2, OperatorReconciliationObservationOriginalV2,
+    OperatorReconciliationObservationLoanV2, ControllerReconciliationInventoryRoleV2};
+
+pub(crate) use create_intake::provisioning::StartHostPublicationContractV2;
+
+pub(crate) use create_intake::provisioning::start_host_publication_operation_id_data_v2;
+
+mod source_family;
+
+mod catalog_maintenance;
+pub(crate) use catalog_maintenance::ControllerCatalogMaintenanceRootLoanV3;
+#[doc(hidden)]
+pub use catalog_maintenance::ControllerCatalogMaintenanceSigningBorrowV3;
+#[doc(hidden)]
+pub use catalog_maintenance::ControllerMaintenanceStorageRequestOriginalV3;
+#[doc(hidden)]
+pub use catalog_maintenance::ControllerMaintenanceStorageIoLoanV3;
+#[doc(hidden)]
+pub use catalog_maintenance::ControllerMaintenanceStorageSdkDisposalV3;
+pub(crate) use catalog_maintenance::CatalogMaintenanceAppendContextV2;
+pub(crate) use catalog_maintenance::CatalogMaintenanceSourceReceivingV2;
+pub(crate) use catalog_maintenance::{
+    CatalogMaintenanceCompletedStartDataV1, CatalogMaintenanceCompletedStartOriginalV1,
+};
+pub use catalog_maintenance::{CatalogMaintenanceClosedV2, CatalogMaintenanceOriginalV2, ControllerCatalogMaintenanceLoanV2};
+
+pub use catalog_maintenance::{ControllerCatalogMaintenanceIoLoanV2, ControllerCatalogMaintenanceSessionCurrentnessErrorV2};
+
+pub use catalog_maintenance::{ControllerCatalogMaintenanceCompletionRefusalV2, ControllerCatalogMaintenanceCatalogDisposalV2};
+
+#[doc(hidden)]
+pub use catalog_maintenance::CatalogMaintenanceColdCompletedNativeBorrowV2;
+pub use catalog_maintenance::CatalogMaintenanceRefreshCompletedNativeBorrowV2;
+
+#[doc(hidden)]
+pub use catalog_maintenance::CatalogMaintenanceSdkShapeDataV2;
+
+#[doc(hidden)]
+pub use catalog_maintenance::CatalogMaintenanceSourceBorrowV2;

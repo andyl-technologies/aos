@@ -195,6 +195,7 @@
 
   rootfs = mkRootfs ({
       inherit pkgs lib system;
+      systemd = system.config.systemd.package;
       pname = "aos-image-${name}-rootfs";
       label = "aos-root";
       fsType = rootFsType;

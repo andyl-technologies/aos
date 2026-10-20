@@ -81,3 +81,88 @@ threads-required = "num-test-threads"
 inherits = "default"
 fail-fast = false
 junit = { path = "target/nextest/ci/junit.xml" }
+
+# Protected ancestry, real cgroup-v2 and user-xattr fixtures require the
+# host-native profile described in README.md. Default and ci stay unfiltered.
+# Exclude only these exact 53 native cases from the hermetic sandbox.
+# Stack failures are not excluded: both entries set RUST_MIN_STACK=33554432.
+[profile.nix-sandbox]
+inherits = "ci"
+default-filter = """
+not (
+  (package(=aos-sandbox) & (
+    test(=journal::protected_storage::currentness::tests::one_native_ancestry_binds_actual_writers_and_rejects_different_directory_uid_or_path) or
+    test(=journal::protected_storage::opening::retained::captured_preparation::tests::changed_captured_prefix_refuses_before_tail_repair_or_handoff) or
+    test(=journal::protected_storage::opening::retained::captured_preparation::tests::positive_captured_handoff_retires_only_traversal_ancestors) or
+    test(=journal::protected_storage::opening::retained::captured_readonly::tests::captured_empty_input_excludes_later_growth_and_retains_the_refusing_post) or
+    test(=journal::protected_storage::opening::retained::captured_readonly::tests::empty_captured_prefix_records_actual_geometry_before_replay) or
+    test(=journal::protected_storage::opening::retained::captured_readonly::tests::malformed_same_file_replay_keeps_typed_parser_cause_and_independent_metadata_post) or
+    test(=journal::protected_storage::opening::retained::captured_readonly::tests::ordinary_empty_readonly_materializes_actual_readonly_owner_with_legacy_basename) or
+    test(=journal::protected_storage::opening::retained::captured_readonly::tests::readonly_incomplete_tail_keeps_its_post_and_never_repairs_the_actual_file) or
+    test(=journal::protected_storage::opening::retained::writable::tests::incomplete_tail_keeps_its_original_post_before_writable_repair) or
+    test(=journal::root_readonly_model::tests::saved_challenge_refusal_preserves_acquisition_and_owed_names_after_mount_failure) or
+    test(=policy_compiler::create_storage_current::controller_readonly::native_read::completed::tests::an_already_transferred_model_cannot_also_retire_as_complete_data) or
+    test(=policy_compiler::create_storage_current::controller_readonly::native_read::completed::tests::incomplete_native_handoff_returns_the_same_live_file_owner)
+  )) or
+  (package(=aos-sandbox-broker) & (
+    test(=canonical_journal::opening::ordinary_held::append::tests::borrowed_partial_index_failure_preserves_its_typed_cause_and_unpublished_native) or
+    test(=canonical_journal::opening::ordinary_held::append::tests::captured_failure_parks_before_diagnostic_drop_and_cannot_reenter) or
+    test(=canonical_journal::opening::ordinary_held::append::tests::captured_unwind_keeps_the_actual_reached_cause_in_the_original_sink) or
+    test(=canonical_journal::opening::ordinary_held::append::tests::premature_borrowed_publication_keeps_frames_and_refuses_wrong_extraction) or
+    test(=canonical_journal::opening::ordinary_held::readonly::tests::actual_readonly_flags_no_flock_and_same_file_index_move_precede_late_identity) or
+    test(=canonical_journal::opening::ordinary_held::readonly::tests::actual_readonly_holder_keeps_prepare_order_and_refuses_both_write_dispositions) or
+    test(=canonical_journal::opening::ordinary_held::readonly::tests::audit_and_full_indexed_pass_keep_two_actual_independent_canonical_reservoirs) or
+    test(=canonical_journal::opening::ordinary_held::readonly::tests::malformed_frame_retains_same_cause_and_native_file_after_reentry) or
+    test(=canonical_journal::opening::ordinary_held::readonly::tests::ordinary_original_replay_moves_actual_error_after_disposal_and_keeps_files) or
+    test(=canonical_journal::opening::ordinary_held::readonly::tests::original_directory_without_binding_uses_actual_rooted_acquisition) or
+    test(=canonical_journal::opening::ordinary_held::readonly::tests::owed_name_post_observes_same_unhealthy_file_and_retains_real_name_replacement) or
+    test(=canonical_journal::opening::ordinary_held::readonly::tests::readonly_torn_tail_never_repairs_or_allocates_a_late_marker) or
+    test(=canonical_journal::opening::ordinary_held::readonly::tests::retained_capture_keeps_initial_bound_then_observes_later_drift_without_moving_ofd) or
+    test(=canonical_journal::opening::ordinary_held::readonly::tests::retained_original_description_uses_actual_ofd_and_keeps_basename_path_data) or
+    test(=canonical_journal::opening::ordinary_held::readonly::tests::retained_original_replay_refuses_ordinary_error_extraction) or
+    test(=canonical_journal::opening::ordinary_held::replacement::tests::actual_parser_error_survives_the_explicit_ordinary_disposal_windows) or
+    test(=canonical_journal::opening::ordinary_held::replacement::tests::advanced_installed_head_refuses_late_marker_without_another_allocation) or
+    test(=canonical_journal::opening::ordinary_held::replacement::tests::different_instance_and_advanced_old_head_cannot_install_the_bundle) or
+    test(=canonical_journal::opening::ordinary_held::replacement::tests::genuine_no_instance_opening_refuses_replacement_before_io) or
+    test(=canonical_journal::opening::ordinary_held::replacement::tests::real_bundle_installs_before_one_late_same_alias_rotation) or
+    test(=canonical_journal::opening::ordinary_held::replacement::tests::unfinished_cursor_and_actual_late_tail_cannot_transfer) or
+    test(=canonical_journal::opening::ordinary_held::tests::actual_bundle_moves_same_native_file_and_index_without_an_instance) or
+    test(=canonical_journal::opening::ordinary_held::tests::actual_index_conflict_survives_ordered_ordinary_disposition_as_typed_cause) or
+    test(=canonical_journal::opening::ordinary_held::tests::captured_identity_moves_by_alias_and_weak_stamp_does_not_extend_custody) or
+    test(=canonical_journal::opening::ordinary_held::tests::independent_late_payload_preserves_two_origins_and_refuses_before_tail) or
+    test(=canonical_journal::opening::ordinary_held::tests::late_identity_appears_only_after_the_actual_completed_transfer) or
+    test(=canonical_journal::opening::ordinary_held::tests::late_non_clone_payload_keeps_typed_arc_through_actual_borrowed_append) or
+    test(=canonical_journal::opening::ordinary_held::tests::pending_transfer_keeps_the_same_native_index_and_capture_through_retirement) or
+    test(=canonical_journal::opening::ordinary_held::tests::premature_retirement_cannot_be_repaired_by_a_later_bundle_move) or
+    test(=canonical_journal::opening::ordinary_held::tests::typed_capture_preserves_non_clone_payload_same_arc_and_outer_drop_alias) or
+    test(=canonical_journal::opening::ordinary_held::tests::vacant_and_incomplete_openings_cannot_transfer_or_create_late_identity) or
+    test(=canonical_journal::opening::tests::completed_native_move_retires_only_real_traversal_files)
+  )) or
+  (package(=aos-sandbox-guest-root-realization) & (
+    test(=guest_root_label::read_original::tests::failed_label_keeps_actual_file_raw_buffer_and_original_errno) or
+    test(=guest_root_label::read_original::tests::positive_file_scope_disposes_only_after_complete_exact_readback) or
+    test(=guest_root_label::tests::physical_xattr_readback_rejects_substitution_and_absence)
+  )) or
+  (package(=aos-sandbox-host) & (
+    test(=worker::systemd::quiescence::tests::expired_independent_thaw_parks_refusal_without_entering_native_write)
+  )) or
+  (package(=aos-sandbox-linux) & (
+    test(=cgroup::freezer_request::tests::root_freezer_refusal_keeps_same_native_cause_through_reentry) or
+    test(=cgroup::retained_limit_active_tests::complete_initial_boundary_probes_retire_before_the_next_native_interval) or
+    test(=cgroup::retained_limit_active_tests::failed_final_anchor_keeps_actual_completed_initial_active_probes) or
+    test(=cgroup::retained_native::tests::complete_root_and_child_probes_retire_after_the_same_real_outputs_move)
+  )) or
+  (package(=aos-sandbox-network) & (
+    test(=kernel_reader::artifact_path::tests::native_missing_component_keeps_prior_directory_pins_and_first_error)
+  ))
+)
+"""
+junit = { path = "target/nextest/nix-sandbox/junit.xml" }
+
+# Requires actual protected uid0->test-owner ancestry, a real cgroup-v2 root,
+# working user.* xattrs, matching source/binary/package/feature receipts and
+# no --skip or -E narrowing. Ordinary #[ignore] cases remain separately listed.
+[profile.host-native]
+inherits = "ci"
+default-filter = "all()"
+junit = { path = "target/nextest/host-native/junit.xml" }

@@ -316,7 +316,7 @@ impl CheckedStartAuthorityV2 {
     /// Refuses the original malformed claims or semantic disagreement in original order.
     pub fn validate(&self) -> Result<(), NixHistoryDataError> {
         let claims = self.capability.claims();
-        let policy = aos_sandbox_policy::PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
+        let policy = crate::policy_data::PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
             self.project,
             self.coordinates.policy_generation,
             self.coordinates.policy_not_before,

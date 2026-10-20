@@ -19,8 +19,8 @@ use crate::Result;
 
 pub(super) fn install_and_retire_kind5_runtime(
     runtime: &mut SourceAcquisitionRuntimeV2,
-    writer: &mut aos_sandbox::MountDeadReplacementJournalAuthorityV4<'_>,
-    mut initial: Option<aos_sandbox::Kind5ProtectedReadbackV4>,
+    writer: &mut aos_sandbox_mount_native::MountDeadReplacementJournalAuthorityV4<'_>,
+    mut initial: Option<aos_sandbox_mount_native::Kind5ProtectedReadbackV4>,
 ) -> Result<()> {
     let table = SourceAcquisitionTableV2::from_state(writer.current_source_state()?);
     let metadata = RecoveryMetadata::derive(&table)?;

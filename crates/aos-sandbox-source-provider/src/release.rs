@@ -1,6 +1,6 @@
 //! Release reservation, backend execution boundary, and durable tombstones.
 
-use aos_sandbox::ProtectedJournalSnapshot;
+use aos_sandbox_source::provider_journal::ProtectedJournalSnapshot;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     ReleaseSourceResponseV1, SourceProviderMethod, SourceProviderResponseStatusV1,

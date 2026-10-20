@@ -5,6 +5,8 @@
 //! actual fixed owner API or authenticated installed Root/Source endpoint. No
 //! cached file, NotFound reply or dropped ACK is used as retirement authority.
 
+use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
+
 use std::error::Error;
 use std::fs;
 use std::io::Write as _;
@@ -16,10 +18,9 @@ use std::time::Duration;
 use aos_sandbox::journal::controller::production_journal_limits;
 use aos_sandbox::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
-    CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1, PinnedControllerHoldSignerV1,
-    ROOT_PROJECT_HISTORY_RETIRE_MAGIC, ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC,
-    RootProjectAdmissionOutcomeProofV1, RootProjectReservationCancellationProofV1,
-    acknowledge_source_project_terminal_retirement_v1,
+    CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1, ROOT_PROJECT_HISTORY_RETIRE_MAGIC,
+    ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC, RootProjectAdmissionOutcomeProofV1,
+    RootProjectReservationCancellationProofV1, acknowledge_source_project_terminal_retirement_v1,
     cancel_fixed_root_project_reservation_over_socket_v1,
     preflight_source_project_negative_recovery_v1,
     prepare_fixed_root_project_negative_intent_over_socket_v1,
@@ -473,7 +474,8 @@ pub(super) fn with_controller_key<T>(
     let pin = PinnedControllerHoldSignerV1::decode(&fs::read(credential_path(
         "aos-sandboxd.service",
         "controller-hold-public-key",
-    ))?)?;
+    ))?)
+    .map_err(aos_sandbox::policy_compiler::ControllerHoldReadbackErrorV1::from)?;
     let key = SigningKey::from_bytes(&seed);
     if pin.verifying_key() != &key.verifying_key() {
         return Err("Controller seed differs from its protected credential pin".into());

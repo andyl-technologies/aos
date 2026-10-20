@@ -5,14 +5,17 @@
 //! base is only a proposal input; its own writer verifies it at CAS. This
 //! producer never grants publication or an effect.
 
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentHeadV1, PolicyDeploymentSourcesV1, VerifiedSignedProjectPolicySourceV2,
+};
+
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use super::{ClosedPolicyRootBindingV2, ClosedPolicyRootCasBaseV2};
 use crate::policy_compiler::{
     CurrentCreatePolicyBarrierHeadsV2, CurrentCreateProjectPolicySourceV1,
-    PolicyCompilerJournalErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentSourcesV1,
-    PolicyPublicationPrerequisitesV1, VerifiedSignedProjectPolicySourceV2,
+    PolicyCompilerJournalErrorV1, PolicyPublicationPrerequisitesV1,
     checked_parentless_create_verified_policy_draft_v2, normalized_policy_input_digest_v1,
 };
 use aos_sandbox_policy::{PolicyCompilerInputV1, PolicyCompilerV1};

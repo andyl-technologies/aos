@@ -114,6 +114,8 @@ pub(super) type RawSystemdStoreRow = aos_systemd::fd_store::RawFdStoreRow;
 pub struct NetworkNamespaceStoreName(String);
 
 impl NetworkNamespaceStoreName {
+    pub(crate) const fn maximum_bytes_v4() -> usize { NAME_PREFIX.len() + HANDLE_HEX_LENGTH }
+
     /// Derives the sole accepted descriptor-store name for `network_handle`.
     ///
     /// # Errors

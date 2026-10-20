@@ -24,13 +24,13 @@ use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    BrokerDispatchSemanticIdentityV1, GuardianPlanRequestV1, OwnershipAuthorityVerifier,
-    OwnershipClaimV1, OwnershipTransactionReceiptV1, UnverifiedOwnershipLeaseResponse,
+    BrokerDispatchSemanticIdentityV1, GuardianPlanRequestV1,
+      
 };
 use aos_sandbox_protocol::authorization_artifact::{
     BrokerPlanPreparation, ReturnedSignature, SignedBrokerPlan, SigningAuthority,
 };
-use aos_sandbox_ownership_protocol::ExpectedOwnershipLease;
+use aos_sandbox_ownership_protocol::{ExpectedOwnershipLease, OwnershipAuthorityVerifier};
 
 use super::*;
 
@@ -1734,3 +1734,22 @@ fn a_prepared_record_without_current_is_never_observed_as_current() {
     );
 }
 
+
+#[test]
+fn fresh_assignment_absence_includes_a_valid_prepared_only_publication() {
+    let directory = TestDirectory::new();
+    let (mut journal, _) = Journal::open(directory.journal(), Default::default()).unwrap();
+    let prepared = proposal(1, 190).prepare().unwrap();
+    let sandbox = prepared.manifest().manifest().sandbox();
+    journal.commit(&JournalTransaction::new([82; 16], vec![JournalRecord::put(
+        RecordNamespace::AuthorityPublication, prepared_key(prepared.digest()),
+        prepared.canonical_bytes().to_vec(),
+    )]).unwrap()).unwrap();
+
+    assert!(current_in_validated_namespace(&journal, sandbox).unwrap().is_none());
+    assert!(assignment_subject_present_v1(&journal, sandbox).unwrap());
+    assert!(!assignment_subject_present_v1(&journal, SandboxId::from_bytes([0x83; 16])).unwrap());
+    assert!(validate_publication_namespace(&journal).is_ok());
+}
+
+use aos_sandbox_ownership_protocol::{OwnershipAuthority, OwnershipClaimV1, OwnershipTransactionReceiptV1, UnverifiedOwnershipLeaseResponse};

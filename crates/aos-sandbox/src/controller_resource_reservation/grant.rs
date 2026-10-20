@@ -276,7 +276,7 @@ fn prepare(
     let (tree, _, _) = inventory.trees().map_err(SourceGenesisErrorV1::from)?
         .find(|(tree, _, _)| tree.project() == project)
         .ok_or(SourceGenesisErrorV1::Conflict)?;
-    let tree = crate::hierarchy::codec::tree_commitment_v1(tree)
+    let tree = aos_sandbox_ledger_replay::hierarchy::codec::tree_commitment_v1(tree)
         .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
     let (original, deadline) = origin.original_cut()?;
     let data = OriginalProjectGrantData {

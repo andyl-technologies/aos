@@ -2,10 +2,50 @@
 
 pub(crate) mod agent_launch;
 pub(crate) mod canary_job;
+pub(crate) mod component_startup;
 mod consumer_cgroup;
+mod agent_custody;
+pub use agent_custody::HostRuntimeNativeCustodyViewV2;
+pub use launch_handoff::HostLaunchFailureViewV2;
+pub(crate) use launch_handoff::write_clock::HostLaunchWriteClockV2;
+mod argument_handoff;
+mod launch_handoff;
+pub(crate) use argument_handoff::HostNoApplyTerminalPositiveV2;
+pub(crate) use launch_handoff::HostLaunchResidentNativeV4;
+pub(crate) use launch_handoff::capture_stop::HostCaptureFailedStageV4;
+pub(crate) use launch_handoff::execution_monitor::{
+    ExecutionMonitorPostsPositiveV5, ExecutionMonitorStorageDisposedV5,
+    HostExecutionMonitorRequestV5,
+};
+pub(crate) use launch_handoff::execution_query::ExecutionQueryStorageDisposedV3;
+pub(crate) use launch_handoff::next_execution::{
+    HostExecutionTransitionParentV5, HostExecutionTransitionShapeV5,
+};
+pub(crate) use launch_handoff::stop_admission::{
+    HostCaptureStopAdmissionParentV4, HostCaptureStopAdmissionShapeV4,
+};
+pub(crate) use launch_handoff::terminal_stage::HostTerminalStagePositiveV3;
+pub(crate) use launch_handoff::{HostLiveCleanupOwnerV1, HostLiveCleanupParentV1};
+mod accepted_execution;
+mod before_argument_no_apply;
+
+pub use argument_handoff::{HostArgumentFailureCauseV2, HostArgumentFailureViewV2};
+pub(crate) use argument_handoff::ArgumentClockV2;
 mod existing_output;
 mod fuse_worker;
+mod guardian_preparation;
 mod guardian_transaction;
+mod resident_stop;
+mod terminal_inventory;
+mod catalog_publication;
+mod native_inventory;
+pub(crate) use native_inventory::HostCleanupNativeOwnershipV1;
+mod stop_cleanup;
+pub(crate) use stop_cleanup::{HostStopCleanupNativeCompletedV1,HostStopCleanupTerminalPositiveV1};
+mod control_cold_session;
+pub(crate) use resident_stop::HostStoppedNamespaceOriginalV4;
+pub(crate) use terminal_inventory::HostTerminalInventoryShapeV4;
+pub(crate) use resident_stop::HostResidentStopNativeCompletedV4;
 mod mount_scope;
 mod original_attach;
 mod payload_scope;
@@ -52,6 +92,9 @@ use aos_sandbox_protocol::host_execution_argument::receipt::{
 use aos_sandbox_protocol::host_execution_argument::{
     ValidatedHostExecutionArgumentRequestV1, decode_host_execution_argument_observe_request_v1,
     decode_host_execution_argument_query_request_v1,
+    ValidatedHostExecutionArgumentAcceptV2,
+    decode_host_execution_argument_prepare_request_v2,
+    decode_host_execution_argument_accept_request_v2,
 };
 use aos_sandbox_protocol::host_execution_no_apply::{
     HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1, HostExecutionNoApplyRecordV1,
@@ -76,6 +119,7 @@ use aos_sandbox_protocol::semantics::{
     canonical_host_execution_apply_semantics_v1, canonical_host_execution_query_semantics_v1,
     host_execution_argument_no_apply_grant_v1, host_execution_argument_observe_grant_v1,
     host_execution_argument_query_grant_v1, host_execution_argument_query_no_apply_grant_v1,
+    host_execution_argument_prepare_grant_v2, host_execution_argument_accept_grant_v2,
     host_output_query_grant_v1, host_output_reserve_grant_v1,
 };
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
@@ -687,9 +731,10 @@ impl HostBroker<
         self.commit_state(&proposed)?;
 
         let launch = self.advance_guardian_start_inner(
-            &fence, request_id, request_digest, &admitted.effect, guardian,
+            &fence, request_id, request_digest, &admitted.effect,
+            guardian_transaction::GuardianStartSpecV2::Local(guardian),
             guardian_transaction::LaunchInputV1::Canary(original), None,
-            maximum_response, &mut crate::service::trusted_paired_clock_sample,
+            maximum_response, &mut crate::service::trusted_paired_clock_sample, None,
         ).await;
         if let Err(cause) = launch {
             if original.first_failure.is_none() {
@@ -922,7 +967,28 @@ pub struct HostBroker<C, S, W> {
     worker: W,
     authority: HostAuthorityCustodyV1,
     component_control: Option<Arc<Mutex<crate::plan::HostComponentControlStartupV2>>>,
+    component_manager: Option<Arc<aos_systemd::SystemdClient>>,
+    catalog_publication_v2: Option<Box<crate::catalog::publication::HostCatalogPublicationOriginalV2>>,
+    argument_stages: [Option<Arc<Mutex<argument_handoff::ArgumentStageOriginalV2>>>; 2],
+    active_argument_writes: Option<Arc<Mutex<argument_handoff::ArgumentStateWritesV2>>>,
+    // Set only by the actual retained NoApply receiver after durable39.
+    // Its same four writers and whole HostState cut stay frozen through ACK.
+    no_apply_settlement_frozen_v2: bool,
+    launch_original: Option<Arc<Mutex<launch_handoff::HostLaunchOriginalV2>>>,
+    stop_cleanup_original: Option<Arc<Mutex<stop_cleanup::HostStopCleanupOriginalV1>>>,
+    stopped_namespace_v4: Option<resident_stop::HostStoppedNamespaceOriginalV4>,
+    terminal_inventory_v4: Option<terminal_inventory::HostTerminalInventoryOriginalV4>,
+    native_inventory_v5: Option<Box<native_inventory::HostNativeInventoryOriginalV5>>,
+    native_inventory_shape_v5: Option<Result<native_inventory::Shape>>,
+    native_inventory_funding_v5: Option<Result<()>>,
+    native_inventory_entry_v5: Option<Result<aos_sandbox_core::ResourceVector>>,
+    native_inventory_original_selected_v5: bool,
+    active_launch_writes: Option<Arc<Mutex<launch_handoff::LaunchStateWritesV2>>>,
+    // Only the closed live59/Storage-held callee lends this exact association
+    // across the synchronous existing signed reservation engine.
+    active_accepted_authorization: Option<([u8; 16], [u8; 32], [u8; 32])>,
     nspawn: Option<NspawnConfig>,
+    component_backend: Option<crate::plan::HostComponentBackendPreparationV2>,
     guardian: Option<GuardianConfig>,
     protected_agent_launch: bool,
     live_agent: Option<HostAgentLiveSessionV1>,
@@ -949,9 +1015,14 @@ pub struct HostComponentControlBrokerOpeningV2 {
     worker: Option<crate::worker::SystemdOneShotWorker>,
     authority: Option<HostAuthorityV1>,
     startup: Option<Arc<Mutex<crate::plan::HostComponentControlStartupV2>>>,
+    manager: Option<Arc<aos_systemd::SystemdClient>>,
     gate: Option<Result<()>>,
     loaded: Option<Result<HostState>>,
+    state_read: crate::state::HostStateReadAttemptV2,
     authentication: Option<Result<()>>,
+    execution_origin: Option<Result<()>>,
+    execution_origin_write: crate::state::HostStateWriteAttemptV2,
+    execution_seal: Option<Result<()>>,
     post: Option<Result<()>>,
     attempted: bool,
     transferred: bool,
@@ -964,15 +1035,20 @@ enum ControlOpeningCauseV2 {
     Gate,
     Load,
     Authentication,
+    ExecutionOrigin,
     Post,
+    ExecutionSeal,
 }
 
 impl HostComponentControlBrokerOpeningV2 {
     /// Creates empty fixed slots without opening files or admitting authority.
     pub fn new() -> Self {
         Self {
-            catalog: None, store: None, worker: None, authority: None, startup: None,
+            catalog: None, store: None, worker: None, authority: None, startup: None, manager: None,
             gate: None, loaded: None, authentication: None, post: None,
+            state_read: crate::state::HostStateReadAttemptV2::new(),
+            execution_origin: None, execution_origin_write: crate::state::HostStateWriteAttemptV2::new(),
+            execution_seal: None,
             attempted: false, transferred: false, first: None,
             refusal: HostError::Fence("original Host component opening is unavailable"),
         }
@@ -985,10 +1061,24 @@ impl HostComponentControlBrokerOpeningV2 {
             Some(ControlOpeningCauseV2::Gate) => self.gate.as_ref().and_then(|result| result.as_ref().err()),
             Some(ControlOpeningCauseV2::Load) => self.loaded.as_ref().and_then(|result| result.as_ref().err()),
             Some(ControlOpeningCauseV2::Authentication) => self.authentication.as_ref().and_then(|result| result.as_ref().err()),
+            Some(ControlOpeningCauseV2::ExecutionOrigin) => self.execution_origin.as_ref().and_then(|result| result.as_ref().err()),
             Some(ControlOpeningCauseV2::Post) => self.post.as_ref().and_then(|result| result.as_ref().err()),
+            Some(ControlOpeningCauseV2::ExecutionSeal) => self.execution_seal.as_ref().and_then(|result| result.as_ref().err()),
             None => None,
         };
         error.unwrap_or(&self.refusal)
+    }
+
+    /// Borrows the retained native origin-write error behind the coarse opening refusal.
+    #[must_use]
+    pub fn native_execution_origin_failure_v2(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.execution_origin_write.failure()
+    }
+
+    /// Borrows the retained selected snapshot reader's actual native cause.
+    #[must_use]
+    pub fn native_state_read_failure_v2(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.state_read.failure()
     }
 
     /// Transfers the admitted concrete broker once into a vacant destination.
@@ -1003,21 +1093,24 @@ impl HostComponentControlBrokerOpeningV2 {
     >>) -> Result<()> {
         if destination.is_some() || !self.attempted || self.transferred || self.first.is_some()
             || self.catalog.is_none() || self.store.is_none() || self.worker.is_none()
-            || self.authority.is_none() || self.startup.is_none()
+            || self.authority.is_none() || self.startup.is_none() || self.manager.is_none()
             || !self.loaded.as_ref().is_some_and(|result| result.is_ok())
             || !self.authentication.as_ref().is_some_and(|result| result.is_ok())
             || !self.post.as_ref().is_some_and(|result| result.is_ok())
+            || !self.execution_origin.as_ref().is_some_and(|result| result.is_ok())
+            || !self.execution_seal.as_ref().is_some_and(|result| result.is_ok())
         {
             return Err(HostError::Fence("original Host component opening cannot transfer"));
         }
         self.transferred = true;
         let originals = (self.catalog.take(), self.store.take(), self.worker.take(),
-            self.authority.take(), self.startup.take(), self.loaded.take());
-        if let (Some(catalog), Some(store), Some(worker), Some(authority), Some(startup), Some(Ok(state))) = originals {
+            self.authority.take(), self.startup.take(), self.manager.take(), self.loaded.take());
+        if let (Some(catalog), Some(store), Some(worker), Some(authority), Some(startup), Some(manager), Some(Ok(state))) = originals {
             let mut broker = HostBroker::from_admitted_state(
                 catalog, store, worker, None, HostAuthorityCustodyV1::Inline(authority), state,
             );
             broker.component_control = Some(startup);
+            broker.component_manager = Some(manager);
             *destination = Some(broker);
         } else {
             // Every slot was checked under this exclusive borrow. An invariant
@@ -1059,7 +1152,7 @@ impl HostBroker<crate::catalog::FileHostCatalog, crate::state::FileHostStateStor
         worker: &mut Option<crate::worker::SystemdOneShotWorker>,
         authority: &mut Option<HostAuthorityV1>,
         startup: &Arc<Mutex<crate::plan::HostComponentControlStartupV2>>,
-        systemd: &aos_systemd::SystemdClient,
+        systemd: &Arc<aos_systemd::SystemdClient>,
     ) -> std::result::Result<(), &'opening HostError> {
         if opening.attempted || catalog.is_none() || store.is_none()
             || worker.is_none() || authority.is_none()
@@ -1070,6 +1163,7 @@ impl HostBroker<crate::catalog::FileHostCatalog, crate::state::FileHostStateStor
         opening.worker = worker.take();
         opening.authority = authority.take();
         opening.startup = Some(Arc::clone(startup));
+        opening.manager = Some(Arc::clone(systemd));
 
         let mut lock = startup.lock();
         opening.gate = Some(match &mut lock {
@@ -1079,10 +1173,15 @@ impl HostBroker<crate::catalog::FileHostCatalog, crate::state::FileHostStateStor
         if opening.gate.as_ref().is_some_and(|result| result.is_err()) {
             opening.first = Some(ControlOpeningCauseV2::Gate);
         } else {
-            opening.loaded = Some(match opening.store.as_ref() {
-                Some(store) => store.load(),
-                None => Err(HostError::Fence("original Host store is absent")),
-            });
+            opening.loaded = Some((|| {
+                let original = match &mut lock {
+                    Ok(original) => &mut **original,
+                    Err(_) => return Err(HostError::Fence("original Host component mutex is poisoned")),
+                };
+                let selected = original.prepay_component_state_read_v2()?;
+                let store = opening.store.as_ref().ok_or(HostError::Fence("original Host store is absent"))?;
+                if selected { opening.state_read.load_once_v2(store) } else { store.load() }
+            })());
             if opening.loaded.as_ref().is_some_and(|result| result.is_err()) {
                 opening.first = Some(ControlOpeningCauseV2::Load);
             } else {
@@ -1099,10 +1198,42 @@ impl HostBroker<crate::catalog::FileHostCatalog, crate::state::FileHostStateStor
             Ok(original) => &mut **original,
             Err(poison) => &mut **poison.get_mut(),
         };
+        // The same genuine original prepays before row/payload/encoder growth.
+        // A failed or unknown commit retains the modified resident state and
+        // native prefix, still runs the independent post, and never unseals.
+        if opening.first.is_none() {
+            opening.execution_origin = Some((|| {
+                let Some(binding) = original.execution_origin_binding_v2()? else { return Ok(()); };
+                let state = opening.loaded.as_mut().and_then(|result| result.as_mut().ok())
+                    .ok_or(HostError::Fence("execution origin snapshot is absent"))?;
+                original.prepay_execution_origin_v2(state)?;
+                let authority = opening.authority.as_ref()
+                    .ok_or(HostError::Fence("execution origin authority is absent"))?;
+                state.spend_execution_origin_v2(binding, authority)?;
+                let store = opening.store.as_ref()
+                    .ok_or(HostError::Fence("execution origin snapshot writer is absent"))?;
+                opening.execution_origin_write.commit_execution_origin_once_v2(store, state, binding)
+            })());
+            if opening.execution_origin.as_ref().is_some_and(|result| result.is_err()) {
+                opening.first = Some(ControlOpeningCauseV2::ExecutionOrigin);
+            }
+        }
         opening.post = Some(original.recheck_original(systemd).await
             .map_err(|_| HostError::Fence("original Host component opening postcheck failed")));
         if opening.post.as_ref().is_some_and(|result| result.is_err()) {
             opening.first.get_or_insert(ControlOpeningCauseV2::Post);
+        }
+        if opening.first.is_none() {
+            opening.execution_seal = Some((|| {
+                if original.execution_origin_binding_v2()?.is_some() {
+                    let committed = opening.execution_origin_write.committed_origin_v2()?;
+                    original.seal_execution_origin_v2(&committed)?;
+                }
+                Ok(())
+            })());
+            if opening.execution_seal.as_ref().is_some_and(|result| result.is_err()) {
+                opening.first = Some(ControlOpeningCauseV2::ExecutionSeal);
+            }
         }
         drop(lock);
         if opening.first.is_some() { Err(opening.failure()) } else { Ok(()) }
@@ -1256,12 +1387,20 @@ pub enum HostExecutionGrantRequestV1 {
     QueryOutput(ValidatedHostOutputQueryRequestV1),
     /// Issues one original retained Guest runtime argument observation.
     ObserveArgument(ValidatedHostExecutionArgumentRequestV1),
+    /// Prepares the exact source without generating a Guest challenge.
+    PrepareArgumentV2(ValidatedHostExecutionArgumentRequestV1),
+    /// Accepts the native-verified preparation for the sole Guest challenge.
+    AcceptArgumentV2(ValidatedHostExecutionArgumentAcceptV2),
     /// Reads historical custody for an original argument observation.
     QueryArgument(ValidatedHostExecutionArgumentRequestV1),
     /// Closes Host Apply for the exact sealed original argument attempt.
     TerminalNoApply(ValidatedHostExecutionNoApplyRequestV1),
     /// Reads the exact protected terminal marker without granting a retry.
     QueryNoApply(ValidatedHostExecutionNoApplyRequestV1),
+    /// Closes future Apply using the explicit accepted-Create early source.
+    TerminalBeforeArgumentNoApply(aos_sandbox_protocol::host_execution_no_apply::ValidatedHostBeforeArgumentNoApplyRequestV2),
+    /// Reads that same closed early variant without reviving its native lease.
+    QueryBeforeArgumentNoApply(aos_sandbox_protocol::host_execution_no_apply::ValidatedHostBeforeArgumentNoApplyRequestV2),
 }
 
 impl HostExecutionGrantReservationV1 {
@@ -1309,6 +1448,12 @@ impl HostExecutionGrantReservationV1 {
                 HostExecutionGrantRequestV1::ObserveArgument(_),
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
             ) | (
+                HostExecutionGrantRequestV1::PrepareArgumentV2(_),
+                BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2
+            ) | (
+                HostExecutionGrantRequestV1::AcceptArgumentV2(_),
+                BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2
+            ) | (
                 HostExecutionGrantRequestV1::QueryArgument(_),
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
             ) | (
@@ -1316,6 +1461,12 @@ impl HostExecutionGrantReservationV1 {
                 BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
             ) | (
                 HostExecutionGrantRequestV1::QueryNoApply(_),
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
+            ) | (
+                HostExecutionGrantRequestV1::TerminalBeforeArgumentNoApply(_),
+                BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+            ) | (
+                HostExecutionGrantRequestV1::QueryBeforeArgumentNoApply(_),
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
             )
         ) && self.request_id == request_id
@@ -1343,26 +1494,92 @@ impl HostExecutionGrantReservationV1 {
         self.verified_output_source.as_ref()
     }
 
+    /// Captures a non-consuming preparation on the actual retained live Agent.
+    ///
+    /// The service completes this already admitted Prepare request in its SAME
+    /// Host State writer using these exact outcome bytes. No Guest request,
+    /// nonce or argument-attempt journal is created at this phase.
+    ///
+    /// # Errors
+    /// Rejects a mismatched grant, changed protected source, expired clock,
+    /// poisoned Agent or missing runtime-argument feature.
+    pub(crate) fn prepare_argument_once_v2(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        agent: &HostAgentLiveSessionV1,
+        clock: &mut argument_handoff::ArgumentClockV2,
+    ) -> std::result::Result<
+        aos_sandbox_protocol::host_execution_argument::preparation::HostArgumentPreparationV2,
+        HostArgumentAttemptErrorV1,
+    > {
+        let HostExecutionGrantRequestV1::PrepareArgumentV2(request) = &self.request else {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        };
+        if self.intersection.verb() != aos_sandbox_core::BrokerVerb::HostPrepareExecutionArgumentV2
+            || self.intersection.request_id() != &self.request_id
+            || self.effect.request_id() != &self.request_id
+            || self.effect.transport_request_digest() != self.request_body_digest
+            || self.session_binding == [0; 32] || self.signed_request_digest == [0; 32]
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        let source = ControllerExecutionArgumentAttemptV1::decode_canonical(request.canonical_attempt())
+            .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+        if source.request_id() != self.request_id
+            || source.assignment_digest() != self.assignment.digest()
+            || source.host_boot_id() != claim.host_verifier().boot_id()
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        agent.require_argument_session_current_v2(claim)?;
+        claim.host_output_for_argument_v1(&source).map_err(HostAgentLiveErrorV1::from)?;
+        let sample = clock.sample()
+            .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+        if sample.host_boot_id() != source.host_boot_id()
+            || sample.boottime_nanoseconds() >= source.deadline_boottime_nanoseconds()
+            || sample.boottime_nanoseconds() >= self.effect_deadline_boottime_nanoseconds()
+            || sample.wall_seconds() >= self.authority_expires_at()
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        let cut = claim.protected_host_settlement_cut_v1().map_err(HostAgentLiveErrorV1::from)?;
+        let preparation = aos_sandbox_protocol::host_execution_argument::preparation::HostArgumentPreparationV2::from_observed_fields(
+            request.canonical_attempt(), self.session_binding,
+            *agent.session_binding().digest().as_bytes(),
+            *claim.currentness().runtime().handle().as_bytes(),
+            self.signed_request_digest, *cut.digest().as_bytes(), cut.epoch(),
+        ).map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+        agent.require_argument_session_current_v2(claim)?;
+        let after = claim.protected_host_settlement_cut_v1().map_err(HostAgentLiveErrorV1::from)?;
+        if after.epoch() != cut.epoch() || after.digest() != cut.digest() {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        Ok(preparation)
+    }
+
     /// Sends the original argument challenge under this matched, durable grant.
     ///
     /// The reservation retains pinned plan, semantic, transport, and session
     /// identity; none can be supplied as a scalar by the broker-session caller. A
-    /// replayed method-37 request is rejected before this method can be reached.
+    /// replayed Accept request is rejected before this method can be reached.
     ///
     /// # Errors
     ///
-    /// Rejects a non-observe grant, stale Host claim/lease clock, missing
+    /// Rejects a non-Accept grant, stale Host claim/lease clock, missing
     /// output correlation, repeated one-shot attempt, or invalid Guest proof.
-    pub fn observe_argument_once(
+    pub(crate) fn accept_prepared_argument_once_v2(
         &self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
         agent: &mut HostAgentLiveSessionV1,
+        opening: &mut crate::live_agent::argument_attempt::HostArgumentAttemptOpeningV2,
+        clock: &mut argument_handoff::ArgumentClockV2,
         deadline: Instant,
     ) -> std::result::Result<HostExecutionArgumentFreshReceiptV1, HostArgumentAttemptErrorV1> {
-        let HostExecutionGrantRequestV1::ObserveArgument(request) = &self.request else {
+        let HostExecutionGrantRequestV1::AcceptArgumentV2(accepted) = &self.request else {
             return Err(HostArgumentAttemptErrorV1::Binding);
         };
-        if self.intersection.verb() != aos_sandbox_core::BrokerVerb::HostObserveExecutionArgument
+        let request = accepted.source();
+        if self.intersection.verb() != aos_sandbox_core::BrokerVerb::HostAcceptExecutionArgumentV2
             || self.intersection.request_id() != &self.request_id
             || self.effect.request_id() != &self.request_id
             || self.effect.transport_request_digest() != self.request_body_digest
@@ -1382,16 +1599,18 @@ impl HostExecutionGrantReservationV1 {
             return Err(HostArgumentAttemptErrorV1::Binding);
         }
         claim.revalidate().map_err(HostAgentLiveErrorV1::from)?;
-        agent.observe_execution_argument_once(
+        agent.observe_prepared_execution_argument_once_v2(
             claim,
             &source,
+            accepted.preparation(),
+            opening,
             self.intersection.plan_digest(),
             self.intersection.request_digest(),
             self.request_body_digest,
             self.session_binding,
             self.signed_request_digest,
             || {
-                let sample = crate::service::trusted_paired_clock_sample()
+                let sample = clock.sample()
                     .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
                 if sample.host_boot_id() != *self.intersection.host_boot_id()
                     || sample.boottime_nanoseconds()
@@ -1486,6 +1705,31 @@ impl RetainedRuntimePins {
     }
 }
 
+fn mint_scope_handle_engine_v3(
+    runtime_pins: &BTreeMap<HostRuntimeIdentity, RetainedRuntimePins>,
+    mut original: Option<&mut launch_handoff::runtime_retention::HostLaunchRuntimeRetentionV3>,
+) -> Result<[u8; 32]> {
+    for attempt in 0..MAXIMUM_SCOPE_HANDLE_ATTEMPTS {
+        let handle = match original.as_deref_mut() {
+            Some(original) => original.entropy_once_v3(attempt)?,
+            None => {
+                let mut handle = [0_u8; 32];
+                launch_handoff::runtime_retention::fill_scope_entropy_v3(&mut handle)
+                    .map_err(|_| HostError::State("payload scope entropy unavailable".to_owned()))?;
+                handle
+            }
+        };
+        if handle != [0; 32]
+            && runtime_pins
+                .values()
+                .all(|retained| retained.scope_handle != handle)
+        {
+            return Ok(handle);
+        }
+    }
+    Err(HostError::ResourceExhausted)
+}
+
 impl<C, S, W> HostBroker<C, S, W>
 where
     C: HostCatalog,
@@ -1541,7 +1785,21 @@ where
             worker,
             authority,
             component_control: None,
+            component_manager: None,
+            catalog_publication_v2: None,
+            argument_stages: std::array::from_fn(|_| None),
+            active_argument_writes: None,
+            no_apply_settlement_frozen_v2: false,
+            launch_original: None,
+            stop_cleanup_original: None,
+            stopped_namespace_v4: None,
+            terminal_inventory_v4: None,
+            native_inventory_v5: None, native_inventory_shape_v5: None,
+            native_inventory_funding_v5: None, native_inventory_entry_v5: None, native_inventory_original_selected_v5: false,
+            active_launch_writes: None,
+            active_accepted_authorization: None,
             nspawn,
+            component_backend: None,
             guardian: None,
             protected_agent_launch: false,
             live_agent: None,
@@ -1554,6 +1812,41 @@ where
             #[cfg(test)]
             fail_runtime_retention: false,
         }
+    }
+
+    /// Retains the actual installed component's completed paid preparation.
+    ///
+    /// This installs no backend readiness. A genuine authenticated Launch must
+    /// still consume its own receiving and prove the real payload and Agent.
+    /// Failed preflight leaves the caller's complete native owner untouched.
+    ///
+    /// # Errors
+    /// Refuses another startup, incomplete preparation, an existing backend or
+    /// a previously entered Launch. It performs no native observation.
+    #[doc(hidden)]
+    pub fn install_component_backend_preparation_once_v2(
+        &mut self,
+        preparation: &mut Option<crate::plan::HostComponentPhase0OriginalV2>,
+    ) -> Result<()> {
+        if self.component_backend.is_some() || self.nspawn.is_some()
+            || self.launch_original.is_some()
+        {
+            return Err(HostError::Fence("component backend preparation is already occupied"));
+        }
+        let startup = self.component_control.as_ref()
+            .ok_or(HostError::Fence("component backend has no installed startup original"))?;
+        let startup = startup.lock()
+            .map_err(|_| HostError::Fence("component backend startup original is poisoned"))?;
+        let original = preparation.as_ref()
+            .ok_or(HostError::Fence("component backend preparation original is absent"))?;
+        original.require_same_startup_v2(&startup)?;
+        original.phase0_v2()?;
+        drop(startup);
+        let Some(original) = preparation.take() else { std::process::abort(); };
+        self.component_backend = Some(
+            crate::plan::HostComponentBackendPreparationV2::retain_completed_v2(original),
+        );
+        Ok(())
     }
 
     /// Installs the fixed production Guardian executable profile.
@@ -1574,6 +1867,10 @@ where
         self
     }
 
+    pub(crate) fn authenticated_agent_launch(&self) -> Option<&HostAgentLiveSessionV1> {
+        self.live_agent.as_ref()
+    }
+
     pub(crate) fn take_authenticated_agent_launch(&mut self) -> Option<HostAgentLiveSessionV1> {
         self.live_agent.take()
     }
@@ -1581,11 +1878,11 @@ where
     /// Reports whether the closed Guardian-first launch backend is available.
     #[must_use]
     pub fn launch_available(&self) -> bool {
-        closed_launch_backend_available(self.nspawn.is_some(), self.guardian.is_some())
-            && self
-                .nspawn
-                .as_ref()
-                .is_some_and(|nspawn| nspawn.revalidate().is_ok())
+        closed_launch_backend_available(
+            self.nspawn.is_some() || self.component_backend.is_some(), self.guardian.is_some(),
+        ) && (self.nspawn.as_ref().is_some_and(|nspawn| nspawn.revalidate().is_ok())
+            || (self.nspawn.is_none() && self.component_backend.is_some()
+                && self.component_control.is_some() && self.protected_agent_launch))
             && matches!(
                 self.authority.revalidated_guardian_credentials(),
                 Ok(Some(_))
@@ -1814,11 +2111,57 @@ where
         authenticated: &AuthenticatedBrokerMethodRequestV1,
         execution_spec_content: Option<&[u8]>,
         protected_boot_id: [u8; 16],
-        mut trusted_clock: F,
+        trusted_clock: F,
     ) -> Result<HostExecutionGrantReservationV1>
     where
         F: FnMut() -> Result<RawPairedClockSample>,
     {
+        self.reserve_host_execution_engine_v3(claim, authenticated, execution_spec_content,
+            protected_boot_id, trusted_clock, None)
+    }
+
+    pub(crate) fn reserve_host_execution_query_retaining_v3<F>(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+        trusted_clock: F,
+        original: &mut aos_sandbox_broker::BrokerSignedAdmissionOriginalV4,
+    ) -> Result<HostExecutionGrantReservationV1>
+    where F: FnMut() -> Result<RawPairedClockSample> {
+        if authenticated.method() != BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            || authenticated.host_execution_query_data_v3().and_then(|query| query.monitor_v3()).is_none()
+        { return Err(HostError::Fence("retained resident read requires QueryExecution27 version3")); }
+        self.reserve_host_execution_engine_v3(claim, authenticated, None, protected_boot_id,
+            trusted_clock, Some(original))
+    }
+
+    pub(crate) fn reserve_host_prepare_transition_retaining_v5<F>(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+        trusted_clock: F,
+        original: &mut aos_sandbox_broker::BrokerSignedAdmissionOriginalV4,
+    ) -> Result<HostExecutionGrantReservationV1>
+    where F: FnMut() -> Result<RawPairedClockSample> {
+        if authenticated.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || authenticated.method() != BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2
+        { return Err(HostError::Fence("execution transition requires received method58")); }
+        self.reserve_host_execution_engine_v3(claim, authenticated, None,
+            protected_boot_id, trusted_clock, Some(original))
+    }
+
+    fn reserve_host_execution_engine_v3<F>(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
+        execution_spec_content: Option<&[u8]>,
+        protected_boot_id: [u8; 16],
+        mut trusted_clock: F,
+        signed_original: Option<&mut aos_sandbox_broker::BrokerSignedAdmissionOriginalV4>,
+    ) -> Result<HostExecutionGrantReservationV1>
+    where F: FnMut() -> Result<RawPairedClockSample> {
         if authenticated.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive {
             return Err(HostError::Fence(
                 "Host execution request was not received by Host",
@@ -1981,57 +2324,69 @@ where
                     )
                 }
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
+                    return Err(HostError::Fence("legacy argument observation has no live entry"));
+                }
+                BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2 => {
                     if execution_spec_content.is_some() {
-                        return Err(HostError::Fence("Host argument descriptor is invalid"));
+                        return Err(HostError::Fence("Host argument preparation has a descriptor"));
                     }
-                    let request = decode_host_execution_argument_observe_request_v1(
-                        request_body,
-                        peer,
-                        policy,
-                        admission_clock.boottime_nanoseconds(),
+                    let request = decode_host_execution_argument_prepare_request_v2(
+                        request_body, peer, policy, admission_clock.boottime_nanoseconds(),
                     )?;
-                    // Reserve enough response budget for every canonical
-                    // signed Guest packet before the one-shot send can occur.
-                    if request.header().maximum_response_bytes()
+                    let source = self.require_argument_source_v2(
+                        claim, request.canonical_attempt(), protected_boot_id, admission_clock,
+                    )?;
+                    if self.state.has_other_argument_preparation_v2(
+                        source.execution(), request_id,
+                    ) {
+                        return Err(HostError::Fence("execution already has an argument preparation"));
+                    }
+                    if request.header().maximum_response_bytes() < 544 {
+                        return Err(HostError::Fence("Host argument preparation response is too small"));
+                    }
+                    let semantics = host_execution_argument_prepare_grant_v2(
+                        assignment, request_id, request.canonical_attempt(),
+                    ).map_err(|_| HostError::Fence("Host argument preparation semantics changed"))?;
+                    (*request.header(), *source.create_operation().as_bytes(), source.execution(),
+                        source.record_digest(), HostExactGrantSemanticsV1::Argument(semantics),
+                        HostAction::PrepareExecutionArgumentV2,
+                        HostExecutionGrantRequestV1::PrepareArgumentV2(request))
+                }
+                BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2 => {
+                    if execution_spec_content.is_some() {
+                        return Err(HostError::Fence("Host argument Accept has a descriptor"));
+                    }
+                    let request = decode_host_execution_argument_accept_request_v2(
+                        request_body, peer, policy, admission_clock.boottime_nanoseconds(),
+                    )?;
+                    let source = self.require_argument_source_v2(
+                        claim, request.source().canonical_attempt(), protected_boot_id, admission_clock,
+                    )?;
+                    if request.source().header().maximum_response_bytes()
                         < (MAXIMUM_HOST_ARGUMENT_FRESH_RECEIPT_BYTES_V1 + 4) as u32
                     {
-                        return Err(HostError::Fence(
-                            "Host argument response budget is too small",
-                        ));
+                        return Err(HostError::Fence("Host argument Accept response is too small"));
                     }
-                    let source = ControllerExecutionArgumentAttemptV1::decode_canonical(
-                        request.canonical_attempt(),
-                    )
-                    .map_err(|_| HostError::Fence("Host argument source is invalid"))?;
-                    claim.host_output_for_argument_v1(&source).map_err(|_| {
-                        HostError::Fence("Host argument output correlation is not current")
-                    })?;
-                    claim
-                        .ensure_host_argument_not_terminal_v1(source.execution())
-                        .map_err(|_| {
-                            HostError::Fence("Host argument is terminally closed without Apply")
-                        })?;
-                    if source.host_boot_id() != protected_boot_id
-                        || admission_clock.boottime_nanoseconds()
-                            >= source.deadline_boottime_nanoseconds()
-                    {
-                        return Err(HostError::Fence("Host argument source is stale"));
+                    if self.state.has_other_argument_accept_v2(source.execution(), request_id) {
+                        return Err(HostError::Fence("Host argument Accept already has an original request"));
                     }
-                    let semantics = host_execution_argument_observe_grant_v1(
-                        assignment,
-                        request_id,
-                        request.canonical_attempt(),
-                    )
-                    .map_err(|_| HostError::Fence("Host argument semantics are invalid"))?;
-                    (
-                        *request.header(),
-                        *source.create_operation().as_bytes(),
-                        source.execution(),
-                        source.record_digest(),
-                        HostExactGrantSemanticsV1::Argument(semantics),
-                        HostAction::ObserveExecutionArgument,
-                        HostExecutionGrantRequestV1::ObserveArgument(request),
-                    )
+                    let cut = claim.protected_host_settlement_cut_v1()
+                        .map_err(|_| HostError::Fence("Host argument Effect cut is unavailable"))?;
+                    // Agent coordinates here are authenticated by the existing
+                    // completed State entry. The actual live Agent is compared
+                    // again by the sole nonce engine before it can consume.
+                    self.state.require_completed_argument_preparation_v2(
+                        &self.authority, request.preparation(), &source, assignment,
+                        authenticated.session_binding(), request.preparation().agent_session(),
+                        claim.currentness().runtime().handle(), cut.digest(), cut.epoch(),
+                    )?;
+                    let semantics = host_execution_argument_accept_grant_v2(
+                        assignment, request_id, request.source().canonical_attempt(), request.preparation(),
+                    ).map_err(|_| HostError::Fence("Host argument Accept semantics changed"))?;
+                    (*request.source().header(), *source.create_operation().as_bytes(), source.execution(),
+                        source.record_digest(), HostExactGrantSemanticsV1::Argument(semantics),
+                        HostAction::AcceptExecutionArgumentV2,
+                        HostExecutionGrantRequestV1::AcceptArgumentV2(request))
                 }
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
                     if execution_spec_content.is_some() {
@@ -2073,98 +2428,107 @@ where
                 }
                 BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
-                    if execution_spec_content.is_some() {
-                        return Err(HostError::Fence("Host no-Apply descriptor is invalid"));
-                    }
-                    let request = if method == BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY {
-                        decode_host_execution_argument_no_apply_request_v1(
-                            request_body,
-                            peer,
-                            policy,
-                            admission_clock.boottime_nanoseconds(),
+                    if authenticated.host_before_argument_no_apply_data_v2().is_some() {
+                        if execution_spec_content.is_some() {
+                            return Err(HostError::Fence("Host early no-Apply descriptor is invalid"));
+                        }
+                        before_argument_no_apply::prepare_before_argument_no_apply_v2(
+                            authenticated, assignment, claim, protected_boot_id,
                         )?
                     } else {
-                        decode_host_execution_argument_query_no_apply_request_v1(
-                            request_body,
-                            peer,
-                            policy,
-                            admission_clock.boottime_nanoseconds(),
-                        )?
-                    };
-                    // A committed marker is not reversible. Reserve the largest
-                    // canonical response before entering its journal CAS.
-                    if request.header().maximum_response_bytes()
-                        < (HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1 + 6) as u32
-                    {
-                        return Err(HostError::Fence(
-                            "Host no-Apply response budget is too small",
-                        ));
-                    }
-                    let source = ControllerExecutionArgumentAttemptV1::decode_canonical(
-                        request.canonical_attempt(),
-                    )
-                    .map_err(|_| HostError::Fence("Host no-Apply source is invalid"))?;
-                    claim.host_output_for_argument_v1(&source).map_err(|_| {
-                        HostError::Fence("Host no-Apply output correlation is not current")
-                    })?;
-                    if source.host_boot_id() != protected_boot_id
-                        || !self
-                            .original_argument_intent(
-                                &source,
-                                assignment,
-                                claim.currentness().runtime().handle(),
-                            )
-                            .map_err(|_| {
-                                HostError::Fence("Host original argument intent is unavailable")
-                            })?
-                            .matches_original_session(
-                                request.original_session_binding(),
-                                request.original_signed_request_digest(),
-                            )
-                    {
-                        return Err(HostError::Fence("Host original argument identity changed"));
-                    }
-                    let header = *request.header();
-                    let (semantics, action, request) = if method
-                        == BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
-                    {
-                        (
-                            host_execution_argument_no_apply_grant_v1(
-                                assignment,
-                                request_id,
-                                request.canonical_attempt(),
-                                request.original_session_binding(),
-                                request.original_signed_request_digest(),
-                            )
-                            .map_err(|_| HostError::Fence("Host no-Apply semantics are invalid"))?,
-                            HostAction::TerminalNoApply,
-                            HostExecutionGrantRequestV1::TerminalNoApply(request),
+                        if execution_spec_content.is_some() {
+                            return Err(HostError::Fence("Host no-Apply descriptor is invalid"));
+                        }
+                        let request = if method == BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY {
+                            decode_host_execution_argument_no_apply_request_v1(
+                                request_body,
+                                peer,
+                                policy,
+                                admission_clock.boottime_nanoseconds(),
+                            )?
+                        } else {
+                            decode_host_execution_argument_query_no_apply_request_v1(
+                                request_body,
+                                peer,
+                                policy,
+                                admission_clock.boottime_nanoseconds(),
+                            )?
+                        };
+                        // A committed marker is not reversible. Reserve the largest
+                        // canonical response before entering its journal CAS.
+                        if request.header().maximum_response_bytes()
+                            < (HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1 + 6) as u32
+                        {
+                            return Err(HostError::Fence(
+                                "Host no-Apply response budget is too small",
+                            ));
+                        }
+                        let source = ControllerExecutionArgumentAttemptV1::decode_canonical(
+                            request.canonical_attempt(),
                         )
-                    } else {
-                        (
-                            host_execution_argument_query_no_apply_grant_v1(
-                                assignment,
-                                request_id,
-                                request.canonical_attempt(),
-                                request.original_session_binding(),
-                                request.original_signed_request_digest(),
+                        .map_err(|_| HostError::Fence("Host no-Apply source is invalid"))?;
+                        claim.host_output_for_argument_v1(&source).map_err(|_| {
+                            HostError::Fence("Host no-Apply output correlation is not current")
+                        })?;
+                        if source.host_boot_id() != protected_boot_id
+                            || !self
+                                .original_argument_intent(
+                                    &source,
+                                    assignment,
+                                    claim.currentness().runtime().handle(),
+                                )
+                                .map_err(|_| {
+                                    HostError::Fence("Host original argument intent is unavailable")
+                                })?
+                                .matches_original_session(
+                                    request.original_session_binding(),
+                                    request.original_signed_request_digest(),
+                                )
+                        {
+                            return Err(HostError::Fence("Host original argument identity changed"));
+                        }
+                        let header = *request.header();
+                        let (semantics, action, request) = if method
+                            == BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+                        {
+                            (
+                                host_execution_argument_no_apply_grant_v1(
+                                    assignment,
+                                    request_id,
+                                    request.canonical_attempt(),
+                                    request.original_session_binding(),
+                                    request.original_signed_request_digest(),
+                                )
+                                .map_err(|_| HostError::Fence("Host no-Apply semantics are invalid"))?,
+                                HostAction::TerminalNoApply,
+                                HostExecutionGrantRequestV1::TerminalNoApply(request),
                             )
-                            .map_err(|_| {
-                                HostError::Fence("Host no-Apply query semantics are invalid")
-                            })?,
-                            HostAction::QueryNoApply,
-                            HostExecutionGrantRequestV1::QueryNoApply(request),
+                        } else {
+                            (
+                                host_execution_argument_query_no_apply_grant_v1(
+                                    assignment,
+                                    request_id,
+                                    request.canonical_attempt(),
+                                    request.original_session_binding(),
+                                    request.original_signed_request_digest(),
+                                )
+                                .map_err(|_| {
+                                    HostError::Fence("Host no-Apply query semantics are invalid")
+                                })?,
+                                HostAction::QueryNoApply,
+                                HostExecutionGrantRequestV1::QueryNoApply(request),
+                            )
+                        };
+                        (
+                            header,
+                            *source.create_operation().as_bytes(),
+                            source.execution(),
+                            source.record_digest(),
+                            HostExactGrantSemanticsV1::Argument(semantics),
+                            action,
+                            request,
                         )
-                    };
-                    (
-                        header,
-                        *source.create_operation().as_bytes(),
-                        source.execution(),
-                        source.record_digest(),
-                        HostExactGrantSemanticsV1::Argument(semantics),
-                        action,
-                        request,
-                    )
+                    }
                 }
                 _ => return Err(HostError::Fence("Host execution method is invalid")),
             };
@@ -2187,7 +2551,8 @@ where
             .state
             .runtime_witness_request_id(assignment.sandbox().as_bytes())
             .ok_or(HostError::Fence("Host runtime witness is absent"))?;
-        if action == HostAction::ObserveExecutionArgument
+        if matches!(action, HostAction::ObserveExecutionArgument
+            | HostAction::PrepareExecutionArgumentV2 | HostAction::AcceptExecutionArgumentV2)
             && self.state.effect(&request_id).is_some()
         {
             return Err(HostError::Fence(
@@ -2222,6 +2587,7 @@ where
                 header.deadline_boottime_nanoseconds(),
                 &admission_clock,
                 prior_fence,
+                signed_original,
             )?,
             HostExactGrantSemanticsV1::AttachGate(semantics) => self.authority.admit_attach_gate(
                 artifacts,
@@ -2243,19 +2609,26 @@ where
                 &admission_clock,
                 prior_fence,
             )?,
-            HostExactGrantSemanticsV1::Argument(semantics) => self.authority.admit_argument(
-                artifacts,
-                assignment,
-                request_id,
-                request_body,
-                semantics,
-                header.deadline_boottime_nanoseconds(),
-                &admission_clock,
-                prior_fence,
-            )?,
+            HostExactGrantSemanticsV1::Argument(semantics) => match signed_original {
+                Some(original) => self.authority.admit_prepare_argument_retaining_v5(
+                    artifacts, assignment, request_id, request_body, semantics,
+                    header.deadline_boottime_nanoseconds(), &admission_clock, prior_fence, original)?,
+                None => self.authority.admit_argument(
+                    artifacts, assignment, request_id, request_body, semantics,
+                    header.deadline_boottime_nanoseconds(), &admission_clock, prior_fence)?,
+            },
         };
         if let HostExecutionGrantRequestV1::Apply(apply) = &request {
-            ensure_host_apply_action_available(apply.action())?;
+            if apply.action() == EffectOperationV1::AuthorizeExecution {
+                if apply.content_version() != 5
+                    || self.active_accepted_authorization != Some((authenticated.request_id(),
+                        authenticated.session_binding(), authenticated.signed_request_digest()))
+                {
+                    ensure_host_apply_action_available(apply.action())?;
+                }
+            } else {
+                ensure_host_apply_action_available(apply.action())?;
+            }
         }
         let verified_output_source = match &request {
             HostExecutionGrantRequestV1::ReserveOutput(reserve) => {
@@ -2294,6 +2667,16 @@ where
             execution_id: *execution_id.as_bytes(),
             source_commitment: *source_commitment.as_bytes(),
             semantic_commitment: *semantics.commitment().digest().as_bytes(),
+            historical_read_binding_v5: match &request {
+                HostExecutionGrantRequestV1::Apply(apply) =>
+                    crate::state::historical_execution::HistoricalExecutionReadBindingV5::from_admitted_apply_v5(apply)?,
+                _ => None,
+            },
+            argument_preparation: match &request {
+                HostExecutionGrantRequestV1::AcceptArgumentV2(accepted) =>
+                    Some(accepted.preparation().canonical_bytes().to_vec()),
+                _ => None,
+            },
         };
         let mut proposed = self.state.clone();
         let admission = proposed.admit_execution_handoff(
@@ -2359,6 +2742,27 @@ where
             intersection: admitted.intersection,
             verified_output_source,
         })
+    }
+
+    fn require_argument_source_v2(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        bytes: &[u8],
+        boot: [u8; 16],
+        clock: RawPairedClockSample,
+    ) -> Result<ControllerExecutionArgumentAttemptV1> {
+        let source = ControllerExecutionArgumentAttemptV1::decode_canonical(bytes)
+            .map_err(|_| HostError::Fence("Host argument source is invalid"))?;
+        claim.host_output_for_argument_v1(&source)
+            .map_err(|_| HostError::Fence("Host argument output correlation changed"))?;
+        claim.ensure_host_argument_not_terminal_v1(source.execution())
+            .map_err(|_| HostError::Fence("Host argument is terminal without Apply"))?;
+        if source.host_boot_id() != boot
+            || clock.boottime_nanoseconds() >= source.deadline_boottime_nanoseconds()
+        {
+            return Err(HostError::Fence("Host argument source expired"));
+        }
+        Ok(source)
     }
 
     /// Reads Query38 only after rejoining its source to the sealed method-37 intent.
@@ -3025,6 +3429,53 @@ where
     where
         W: Sync,
     {
+        self.apply_runtime_candidate_engine_v2(candidate, artifacts, protocol_version, peer,
+            policy, negotiated_maximum_response_bytes, trusted_clock, None, None).await
+    }
+
+    pub(crate) async fn apply_runtime_authenticated_v2(
+        &mut self,
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
+        retained_agent: Option<&HostAgentLiveSessionV1>,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        trusted_clock: impl FnMut() -> Result<RawPairedClockSample> + Send,
+    ) -> Result<Vec<u8>>
+    where W: Sync,
+    {
+        if self.has_failed_capture_stop_parent_v4()? {
+            let (request, admitted, sample) = self.admit_failed_capture_stop_once_v4(
+                authenticated, protocol_version,
+            ).await?;
+            let digest: [u8; 32] = Sha256::digest(authenticated.exact_body()).into();
+            let mut trusted_clock = trusted_clock;
+            return self.execute_composite_stop_turn_v4(&request, digest, admitted, &sample,
+                Some(authenticated), retained_agent, &mut trusted_clock).await
+                .map(ValidatedRuntimeApplyResponse::into_body);
+        }
+        let candidate = classify_historical_runtime_request_v1(authenticated.exact_body(),
+            authenticated.peer(), authenticated.peer_policy())?;
+        self.apply_runtime_candidate_engine_v2(candidate, artifacts, protocol_version,
+            authenticated.peer(), authenticated.peer_policy(), u32::MAX,
+            trusted_clock, Some(authenticated), retained_agent).await.map(ValidatedRuntimeApplyResponse::into_body)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn apply_runtime_candidate_engine_v2(
+        &mut self,
+        candidate: HistoricalRuntimeRequestCandidateV1,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        negotiated_maximum_response_bytes: u32,
+        mut trusted_clock: impl FnMut() -> Result<RawPairedClockSample> + Send,
+        authenticated: Option<&AuthenticatedBrokerMethodRequestV1>,
+        retained_agent: Option<&HostAgentLiveSessionV1>,
+    ) -> Result<ValidatedRuntimeApplyResponse>
+    where
+        W: Sync,
+    {
         self.ensure_healthy()?;
         if !is_exact_host_protocol(protocol_version) {
             return Err(HostError::Authority(
@@ -3087,6 +3538,11 @@ where
                 });
             }
         }
+        if guardian_launch && self.state.guardian_attempt(&request_id).is_some_and(|attempt|
+            matches!(attempt.phase, crate::state::transition::GuardianLaunchPhase::CompensatedRetainedV1 { .. }))
+        {
+            return Err(HostError::AgentLaunchQuarantined);
+        }
         if guardian_launch
             && agent_launch::agent_replay_is_quarantined(self.state.guardian_attempt(&request_id))
         {
@@ -3097,7 +3553,13 @@ where
             return Err(HostError::AgentLaunchQuarantined);
         }
 
-        let guardian_backend = guardian_launch && self.guardian.is_some() && self.nspawn.is_some();
+        // The component preparation enters only the selected, authenticated
+        // normal Launch below. It does not unlock ordinary/test worker paths.
+        let component_bootstrap = self.nspawn.is_none() && self.component_backend.is_some()
+            && self.component_control.is_some() && self.protected_agent_launch
+            && authenticated.is_some();
+        let guardian_backend = guardian_launch && self.guardian.is_some()
+            && (self.nspawn.is_some() || component_bootstrap);
         let composite_stop_backend = composite_stop && self.guardian.is_some();
         if (guardian_launch && !guardian_backend) || (composite_stop && !composite_stop_backend) {
             return Err(request_mismatch());
@@ -3159,6 +3621,81 @@ where
                 &admitted.fence,
             )?;
         }
+        if composite_stop {
+            return self.execute_composite_stop_turn_v4(&request, request_digest, admitted,
+                &admission_clock, authenticated, retained_agent, &mut trusted_clock).await;
+        }
+        let selected_launch = guardian_launch && self.component_control.is_some();
+        if selected_launch && !self.protected_agent_launch {
+            return Err(HostError::Fence("selected Host launch requires its protected Agent backend"));
+        }
+        if selected_launch && authenticated.is_none() {
+            return Err(HostError::Fence("selected Host launch requires its authenticated Session request"));
+        }
+        if selected_launch && (self.launch_original.is_some() || self.active_argument_writes.is_some()
+            || self.active_launch_writes.is_some())
+        { return Err(HostError::Fence("Host launch original is occupied or has unresolved custody")); }
+        if selected_launch && (!self.runtime_pins.is_empty() || !self.observed_leaders.is_empty()) {
+            // This initial purpose has not financed prior-runtime continuity.
+            // Refuse before native opening/start; empty volatile DATA supplies
+            // no permission to enter or reuse the actual consumed Launch.
+            return Err(HostError::Fence("first Launch requires empty prior volatile runtime pins"));
+        }
+        if selected_launch {
+            self.retire_terminal_inventory_payloads_before_launch_v4()?;
+        }
+        let original_arc = selected_launch.then(|| self.component_control.as_ref().cloned()).flatten();
+        let mut original = match original_arc.as_ref() {
+            Some(original) => Some(original.lock()
+                .map_err(|_| HostError::Fence("Host launch intrinsic original is poisoned"))?),
+            None => None,
+        };
+        let mut receiving = match original.as_mut() {
+            Some(original) => {
+                let authenticated = authenticated.ok_or(HostError::Fence("Host launch Session request is absent"))?;
+                original.require_argument_boot_v2(admission_clock.host_boot_id())?;
+                let complete = launch_handoff::HostLaunchOriginalV2::fixed_demand(authenticated, &request)
+                    .and_then(|fixed| fixed.checked_add(original.launch_observation_demand_v2().ok()?).ok())
+                    .ok_or(HostError::ResourceExhausted)?;
+                let loan = original.begin_launch_receiving_v2(authenticated, &request, &admitted, complete)?;
+                let stage = Arc::new(Mutex::new(launch_handoff::HostLaunchOriginalV2::new(
+                    authenticated, complete, admission_clock.host_boot_id(),
+                    admitted.effect.effect_deadline_boottime_nanoseconds(), Some(&request))));
+                // Even a later failed new Launch invalidates the former live
+                // disposal witness; it cannot authorize Reap of a reused anchor.
+                self.stopped_namespace_v4 = None;
+                self.launch_original = Some(stage);
+                Some(loan)
+            }
+            None => None,
+        };
+        let launch = self.launch_original.as_ref().filter(|_| selected_launch).cloned();
+        let mut prepared = Ok(());
+        if let (Some(launch), Some(receiving)) = (&launch, receiving.as_mut()) {
+            let before = receiving.observe_before_v2().await;
+            let mut stage = launch.lock().map_err(|_| HostError::Fence("Host launch capsule is poisoned"))?;
+            if before.is_err() { stage.first.get_or_insert(launch_handoff::LaunchFirstV2::Before); }
+            stage.before = Some(before);
+            prepared = if matches!(stage.before, Some(Ok(()))) {
+                // The original's negative process post was armed by before
+                // observation before this first additional native clock read.
+                stage.clock = Some(argument_handoff::ArgumentClockV2::capture_launch_effect_v3(
+                    admission_clock.host_boot_id(), &admitted.effect,
+                ));
+                stage.prepare_opening(receiving)
+            } else { Err(HostError::Fence("Host launch before observation failed")) };
+            if prepared.is_ok() { self.active_launch_writes = stage.writes.as_ref().cloned(); }
+        }
+        // The selected branch samples the same retained clock, not a renewed
+        // request/source clock. Ordinary callers keep their exact old callback.
+        let clock_stage = launch.clone();
+        let mut effect_clock = || match clock_stage.as_ref() {
+            Some(stage) => stage.lock().map_err(|_| HostError::Fence("Host launch clock custody is poisoned"))?
+                .clock.as_mut().ok_or(HostError::Fence("Host launch clock is absent"))?.sample(),
+            None => trusted_clock(),
+        };
+        let primary = async {
+            prepared?;
         let sealed_fence = self
             .authority
             .seal_fence(request.fence().sandbox_id(), &admitted.fence)?;
@@ -3166,33 +3703,134 @@ where
 
         let (guardian_payload, pending_agent): (_, Option<HostAgentPendingSessionV1>) =
             if guardian_launch {
-                let payload = self.compile_launch(&request)?;
-                if self.protected_agent_launch {
-                    let (payload, pending) =
-                        self.prepare_protected_agent_payload(request.fence(), payload)?;
-                    (Some(payload), Some(pending))
+                if let Some(receiving) = receiving.as_mut() {
+                    let authenticated = authenticated.ok_or(HostError::AgentLaunchQuarantined)?;
+                    let stage = launch.as_ref().ok_or(HostError::AgentLaunchQuarantined)?;
+                    let mut stage = stage.lock().map_err(|_| HostError::Fence("Host launch capsule is poisoned"))?;
+                    if let Some(config) = self.component_backend.as_ref().filter(|_| self.nspawn.is_none()) {
+                        config.require_receiving_v2(receiving)?;
+                        stage.reserve_component_report_before_catalog_v2(receiving)?;
+                    }
+                    stage.reserve_worker_before_catalog_v2(receiving, authenticated,
+                        self.guardian.as_ref().ok_or(HostError::AgentLaunchQuarantined)?)?;
+                    let launch_handoff::HostLaunchOriginalV2 { complete, deadline, catalog, compilation, .. } = &mut *stage;
+                    let mut catalog_receiving = crate::plan::HostLaunchCatalogReceivingV2::new(
+                        receiving, complete, authenticated, *deadline)?;
+                    let payload = self.compile_launch_engine_v2(&request, Some((&mut catalog_receiving,
+                        catalog.as_mut().ok_or(HostError::AgentLaunchQuarantined)?,
+                        compilation.as_mut().ok_or(HostError::AgentLaunchQuarantined)?)))?;
+                    // The compiler has moved real pins into this payload. Park
+                    // them before currentness, claim, or Agent setup can fail.
+                    stage.prepared_payload = Some(payload);
+                    stage.dispose_compilation_once_v2(receiving, authenticated)?;
+                    drop(stage);
+                    if self.protected_agent_launch {
+                        self.prepare_protected_agent_payload_receiving_v2(request.fence(), receiving)?;
+                        if self.nspawn.is_none() && self.component_backend.is_some() {
+                            let original = launch.as_ref().ok_or(HostError::AgentLaunchQuarantined)?;
+                            let mut stage = original.lock().map_err(|_| HostError::Fence("Host launch capsule is poisoned"))?;
+                            let report = stage.component_report.as_ref().cloned().ok_or(HostError::AgentLaunchQuarantined)?;
+                            let mut report = report.try_lock().map_err(|_| HostError::Fence("component report owner is already borrowed"))?;
+                            report.prepare_channel_once_v2(stage.prepared_payload.as_mut().ok_or(HostError::AgentLaunchQuarantined)?)?;
+                        }
+
+                    }
+                    (None, None)
                 } else {
-                    (Some(payload), None)
+                    let payload = self.compile_launch(&request)?;
+                    if self.protected_agent_launch {
+                        let (payload, pending) = self.prepare_protected_agent_payload(request.fence(), payload)?;
+                        (Some(payload), Some(pending))
+                    } else {
+                        (Some(payload), None)
+                    }
                 }
             } else {
                 (None, None)
             };
+        // Park the actual payload before Guardian credential creation, binding
+        // or State admission can refuse. Recovering a poisoned lock here only
+        // retains incoming native custody; it never permits an effect.
+        let mut poisoned_launch = false;
+        let mut preparation_stage = launch.as_ref().map(|stage| match stage.lock() {
+            Ok(stage) => stage,
+            Err(poisoned) => {
+                poisoned_launch = true;
+                poisoned.into_inner()
+            }
+        });
+        let (payload_destination, spec_destination, lease_destination, intersection_destination, guardian_destination,
+            component_report, component_setup, mut component_clock, component_deadline) =
+            match preparation_stage.as_deref_mut() {
+                Some(stage) => (
+                    Some(&mut stage.prepared_payload),
+                    Some(&mut stage.guardian_spec),
+                    Some(&mut stage.lease),
+                    Some(&mut stage.intersection),
+                    stage.guardian.as_mut(),
+                    stage.component_report.as_ref().cloned(),
+                    stage.setup.as_ref(),
+                    stage.clock.as_mut(),
+                    Some(stage.deadline),
+                ),
+                None => (None, None, None, None, None, None, None, None, None),
+            };
+        use aos_sandbox_core::retained::CaptureValueV1;
+        let mut guardian_payload = match payload_destination {
+            Some(destination) => CaptureValueV1::Retained(destination),
+            None => CaptureValueV1::Local(guardian_payload),
+        };
+        let mut guardian_spec = CaptureValueV1::new(None, spec_destination);
+        if poisoned_launch {
+            return Err(HostError::Fence("Host launch capsule is poisoned"));
+        }
+        if selected_launch && self.worker.retained_payload_worker().is_none() {
+            return Err(HostError::Fence("paid Host launch requires its actual retained Systemd worker"));
+        }
+
         let mut proposed = self.state.clone();
-        let guardian_start = if guardian_launch {
-            let payload = guardian_payload.ok_or_else(|| {
+        if guardian_launch {
+            if selected_launch && guardian_destination.is_none() {
+                return Err(HostError::Fence("paid Host Guardian destination is absent"));
+            }
+            let payload = guardian_payload.as_mut().ok_or_else(|| {
                 HostError::State("Guardian launch lost its compiled payload".to_owned())
             })?;
-            let (execution, spec) = self.prepare_guardian_execution(
-                &request,
-                artifacts,
-                &admitted,
-                request_digest,
-                payload.snapshot(),
-            )?;
+            let (mut execution, spec) = match guardian_destination {
+                Some(destination) => self.prepare_guardian_execution_retaining_v2(
+                    GuardianOriginalInputV1::Runtime(&request), artifacts, &admitted,
+                    request_digest, payload.snapshot(),
+                    authenticated.ok_or(HostError::AgentLaunchQuarantined)?,
+                    receiving.as_ref().ok_or(HostError::AgentLaunchQuarantined)?, destination,
+                )?,
+                None => self.prepare_guardian_execution(
+                    &request, artifacts, &admitted, request_digest, payload.snapshot(),
+                )?,
+            };
+            if self.state.effect(&request_id).is_none() {
+                if let (Some(authenticated), Some(receiving)) = (authenticated, receiving.as_ref()) {
+                    execution.bind_launch_namespace_history_v1(&request, authenticated, receiving, &admitted)?;
+                }
+            }
+            *guardian_spec = Some(spec);
             let binding = execution.guardian_binding().ok_or_else(|| {
                 HostError::State("Guardian launch lost its immutable binding".to_owned())
             })?;
-            let payload = payload.bind(binding)?;
+            payload.bind_retaining_v2(binding)?;
+            if self.nspawn.is_none() && self.component_backend.is_some() {
+                let scope = component_startup::ComponentStartupReportScopeV2::from_actual_launch_v2(
+                    authenticated.ok_or(HostError::AgentLaunchQuarantined)?, &request,
+                    component_setup.ok_or(HostError::AgentLaunchQuarantined)?, &execution,
+                    component_clock.as_deref().ok_or(HostError::AgentLaunchQuarantined)?.protected_boot_data_v4(),
+                    component_deadline.ok_or(HostError::AgentLaunchQuarantined)?,
+                )?;
+                let report = component_report.as_ref().ok_or(HostError::AgentLaunchQuarantined)?;
+                report.try_lock().map_err(|_| HostError::Fence("component report owner is already borrowed"))?
+                    .send_challenges_once_v2(scope, receiving.as_ref().ok_or(HostError::AgentLaunchQuarantined)?,
+                        authenticated.ok_or(HostError::AgentLaunchQuarantined)?,
+                        component_clock.as_deref_mut().ok_or(HostError::AgentLaunchQuarantined)?)?;
+            }
+
             let admission = proposed.admit_guardian(
                 request.fence(),
                 request_id,
@@ -3204,23 +3842,6 @@ where
                 &self.authority,
             )?;
             ensure_pending_runtime_admission(admission)?;
-            Some((spec, payload))
-        } else if composite_stop {
-            let execution = self
-                .prepare_composite_stop_execution(&request, request_digest)
-                .await?;
-            let admission = proposed.admit_composite_stop(
-                request.fence(),
-                request_id,
-                request_digest,
-                execution,
-                sealed_fence,
-                &admitted,
-                sealed_effect,
-                &self.authority,
-            )?;
-            ensure_pending_runtime_admission(admission)?;
-            None
         } else {
             let admission = proposed.admit(
                 request.fence(),
@@ -3233,9 +3854,38 @@ where
                 &self.authority,
             )?;
             ensure_pending_runtime_admission(admission)?;
+        }
+        self.commit_state(&proposed)?;
+        // Keep the verified lease on the SAME capsule before the final
+        // infallible payload/spec moves into the retained worker entry.
+        if let Some(lease) = lease_destination {
+            *lease = Some(admitted.verified_lease);
+        }
+        if let Some(intersection) = intersection_destination {
+            *intersection = Some(admitted.intersection);
+        }
+        let guardian_start = if guardian_launch {
+            if let Some(receiving) = receiving.as_ref() {
+                let authenticated = authenticated.ok_or(HostError::AgentLaunchQuarantined)?;
+                let launch = launch.as_ref().ok_or(HostError::AgentLaunchQuarantined)?;
+                let spec = self.retain_guardian_start_receiving_v2(request_id, launch,
+                    &mut guardian_payload, &mut guardian_spec, receiving, authenticated)?;
+                drop(guardian_payload);
+                drop(guardian_spec);
+                Some((spec,
+                    guardian_transaction::LaunchInputV1::Retained(request_id)))
+            } else {
+                let spec = guardian_spec.take().ok_or(HostError::AgentLaunchQuarantined)?;
+                let payload = guardian_payload.take().ok_or(HostError::AgentLaunchQuarantined)?;
+                Some((guardian_transaction::GuardianStartSpecV2::Local(spec),
+                    guardian_transaction::LaunchInputV1::Local(payload)))
+            }
+        } else {
+            drop(guardian_spec);
+            drop(guardian_payload);
             None
         };
-        self.commit_state(&proposed)?;
+        drop(preparation_stage);
 
         let effect = admitted.effect;
         if let Some((spec, payload)) = guardian_start {
@@ -3249,24 +3899,8 @@ where
                     payload,
                     pending_agent,
                     request.header().maximum_response_bytes(),
-                    &mut trusted_clock,
-                )
-                .await?;
-            return Ok(ValidatedRuntimeApplyResponse {
-                request_id,
-                maximum_response_bytes: request.header().maximum_response_bytes(),
-                body,
-            });
-        }
-        if composite_stop {
-            let body = self
-                .advance_composite_stop(
-                    request.fence(),
-                    request_id,
-                    request_digest,
-                    &effect,
-                    request.header().maximum_response_bytes(),
-                    &mut trusted_clock,
+                    &mut effect_clock,
+                    receiving.as_mut().zip(authenticated),
                 )
                 .await?;
             return Ok(ValidatedRuntimeApplyResponse {
@@ -3283,7 +3917,7 @@ where
             let mut before_effect = || {
                 authority
                     .check_before_effect(&effect, &mut || {
-                        trusted_clock()
+                        effect_clock()
                             .map_err(|_| aos_sandbox_broker::BrokerAdmissionError::FenceRejected)
                     })
                     .map_err(HostError::from)
@@ -3319,6 +3953,44 @@ where
             maximum_response_bytes: request.header().maximum_response_bytes(),
             body: response,
         })
+
+        }.await;
+        let primary = if selected_launch && primary.is_ok() {
+            self.validate_launch_replacement_v2(retained_agent).and_then(|()| primary)
+        } else { primary };
+        self.active_launch_writes = None;
+        let Some(stage) = launch else { return primary; };
+        {
+            let mut capture = stage.lock().map_err(|_| HostError::Fence("Host launch capsule is poisoned"))?;
+            if primary.is_err() || capture.setup.as_ref().and_then(|setup| setup.failure()).is_some()
+                || capture.owner_error.is_some()
+            { capture.first.get_or_insert(launch_handoff::LaunchFirstV2::Primary); }
+            capture.primary = Some(primary);
+            if capture.owner.is_some() { let _ = capture.observe_names_once_v2(1); }
+        }
+        let active = receiving.as_mut().ok_or(HostError::Fence("Host launch loan is absent"))?;
+        let after = active.observe_after_v2().await;
+        let mut capture = stage.lock().map_err(|_| HostError::Fence("Host launch capsule is poisoned"))?;
+        if after.is_err() { capture.first.get_or_insert(launch_handoff::LaunchFirstV2::After); }
+        capture.after = Some(after);
+        if capture.first.is_some() || !matches!(capture.primary, Some(Ok(_))) {
+            return Err(HostError::Fence("Host launch failed; original native custody is retained"));
+        }
+        capture.native_finish = Some(active.finish_native_v2());
+        if !matches!(capture.native_finish, Some(Ok(()))) {
+            capture.first.get_or_insert(launch_handoff::LaunchFirstV2::NativeFinish);
+            return Err(HostError::Fence("Host launch native completion failed; custody is retained"));
+        }
+        if self.nspawn.is_none() && self.component_backend.is_some() {
+            self.nspawn = Some(capture.backend_readiness.take_completed_after_posts_v2()?);
+        }
+        let Some(Ok(response)) = capture.primary.take() else { std::process::abort(); };
+        drop(capture);
+        // End only the temporary borrow. Real outcome CAS/Sent still owes the
+        // actual stage and consumed launch operation their final handoff.
+        receiving.take().ok_or(HostError::Fence("Host launch loan disappeared"))?
+            .retain_pending_authenticated_v2()?;
+        Ok(response)
     }
 
     /// Authenticates and reports one exact original Apply transaction.
@@ -3593,6 +4265,53 @@ where
         transport_request_digest: [u8; 32],
         payload_snapshot: &crate::state::transition::PayloadLaunchSnapshot,
     ) -> Result<(DurableExecution, GuardianUnitSpec)> {
+        self.prepare_guardian_execution_engine_v2(
+            original, artifacts, admitted, transport_request_digest, payload_snapshot, None,
+        )
+    }
+
+    fn prepare_guardian_execution_retaining_v2(
+        &self,
+        original: GuardianOriginalInputV1<'_>,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        admitted: &aos_sandbox_broker::VerifiedBrokerAdmission,
+        transport_request_digest: [u8; 32],
+        payload_snapshot: &crate::state::transition::PayloadLaunchSnapshot,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        receiving: &crate::plan::HostExecutionReceivingLoanV2<'_>,
+        destination: &mut guardian_preparation::GuardianPreparationOriginalV2,
+    ) -> Result<(DurableExecution, GuardianUnitSpec)> {
+        receiving.require_launch_request_v2(request)?;
+        if destination.entered {
+            return Err(HostError::Fence("Host Guardian preparation is already entered"));
+        }
+        destination.entered = true;
+        let result = self.prepare_guardian_execution_engine_v2(
+            original, artifacts, admitted, transport_request_digest, payload_snapshot,
+            Some(&mut *destination),
+        );
+        match result {
+            Ok(prepared) => {
+                destination.returned = Some(Ok(()));
+                Ok(prepared)
+            }
+            Err(cause) => {
+                destination.first.get_or_insert(destination.frontier);
+                destination.returned = Some(Err(cause));
+                Err(HostError::Fence("Host Guardian preparation failed; original retained"))
+            }
+        }
+    }
+
+    fn prepare_guardian_execution_engine_v2(
+        &self,
+        original: GuardianOriginalInputV1<'_>,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        admitted: &aos_sandbox_broker::VerifiedBrokerAdmission,
+        transport_request_digest: [u8; 32],
+        payload_snapshot: &crate::state::transition::PayloadLaunchSnapshot,
+        mut destination: Option<&mut guardian_preparation::GuardianPreparationOriginalV2>,
+    ) -> Result<(DurableExecution, GuardianUnitSpec)> {
         const MAXIMUM_PLAN_BYTES: usize = 256 * 1024;
         const MAXIMUM_LEASE_BYTES: usize = 64 * 1024;
         const MAXIMUM_SIGNATURE_BYTES: usize = 64 * 1024;
@@ -3600,10 +4319,15 @@ where
         let config = self.guardian.as_ref().ok_or_else(|| {
             HostError::InvalidPlan("Guardian backend readiness is unavailable".to_owned())
         })?;
-        let protected = self
-            .authority
-            .revalidated_guardian_credentials()
-            .map_err(|error| HostError::InvalidPlan(error.to_string()))?
+        let protected = match destination.as_deref_mut() {
+            Some(destination) => {
+                destination.frontier = guardian_preparation::PreparationFrontierV2::Public;
+                self.authority
+                    .revalidated_guardian_credentials_retaining_v2(&mut destination.public)
+            }
+            None => self.authority.revalidated_guardian_credentials(),
+        }
+        .map_err(|error| HostError::InvalidPlan(error.to_string()))?
             .ok_or_else(|| {
                 HostError::InvalidPlan(
                     "Guardian requires protected public-credential custody".to_owned(),
@@ -3665,62 +4389,102 @@ where
                     .to_owned(),
             ));
         }
-        let dynamic_credentials = [
-            (
-                GuardianCredentialRole::BrokerPlan,
-                SealedReadOnlyCredential::create(
-                    GuardianCredentialRole::BrokerPlan.as_str(),
-                    attempt.broker_plan,
-                    MAXIMUM_PLAN_BYTES,
+        let dynamic_credentials = if destination.is_none() {
+            let dynamic_credentials = [
+                (
+                    GuardianCredentialRole::BrokerPlan,
+                    SealedReadOnlyCredential::create(
+                        GuardianCredentialRole::BrokerPlan.as_str(),
+                        attempt.broker_plan,
+                        MAXIMUM_PLAN_BYTES,
+                    ),
                 ),
-            ),
-            (
-                GuardianCredentialRole::BrokerPlanSignature,
-                SealedReadOnlyCredential::create(
-                    GuardianCredentialRole::BrokerPlanSignature.as_str(),
-                    attempt.broker_plan_signature,
-                    MAXIMUM_SIGNATURE_BYTES,
+                (
+                    GuardianCredentialRole::BrokerPlanSignature,
+                    SealedReadOnlyCredential::create(
+                        GuardianCredentialRole::BrokerPlanSignature.as_str(),
+                        attempt.broker_plan_signature,
+                        MAXIMUM_SIGNATURE_BYTES,
+                    ),
                 ),
-            ),
-            (
-                GuardianCredentialRole::OwnershipLease,
-                SealedReadOnlyCredential::create(
-                    GuardianCredentialRole::OwnershipLease.as_str(),
-                    attempt.ownership_lease,
-                    MAXIMUM_LEASE_BYTES,
+                (
+                    GuardianCredentialRole::OwnershipLease,
+                    SealedReadOnlyCredential::create(
+                        GuardianCredentialRole::OwnershipLease.as_str(),
+                        attempt.ownership_lease,
+                        MAXIMUM_LEASE_BYTES,
+                    ),
                 ),
-            ),
-            (
-                GuardianCredentialRole::OwnershipLeaseSignature,
-                SealedReadOnlyCredential::create(
-                    GuardianCredentialRole::OwnershipLeaseSignature.as_str(),
-                    attempt.ownership_lease_signature,
-                    MAXIMUM_SIGNATURE_BYTES,
+                (
+                    GuardianCredentialRole::OwnershipLeaseSignature,
+                    SealedReadOnlyCredential::create(
+                        GuardianCredentialRole::OwnershipLeaseSignature.as_str(),
+                        attempt.ownership_lease_signature,
+                        MAXIMUM_SIGNATURE_BYTES,
+                    ),
                 ),
-            ),
-        ];
-        let dynamic_credentials = dynamic_credentials
-            .into_iter()
-            .map(|(role, credential)| {
-                credential
-                    .map(|credential| (role, credential))
-                    .map_err(|error| HostError::InvalidPlan(error.to_string()))
-            })
-            .collect::<Result<Vec<_>>>()?;
+            ];
+            let dynamic_credentials = dynamic_credentials
+                .into_iter()
+                .map(|(role, credential)| {
+                    credential
+                        .map(|credential| (role, credential))
+                        .map_err(|error| HostError::InvalidPlan(error.to_string()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Some(dynamic_credentials)
+        } else {
+            None
+        };
+
+        if let Some(destination) = destination.as_deref_mut() {
+            // The old eager array enters all four independent creation calls
+            // before selecting its first failed result. Preserve that schedule.
+            for (index, (role, bytes, maximum)) in [
+                (GuardianCredentialRole::BrokerPlan, attempt.broker_plan, MAXIMUM_PLAN_BYTES),
+                (GuardianCredentialRole::BrokerPlanSignature, attempt.broker_plan_signature, MAXIMUM_SIGNATURE_BYTES),
+                (GuardianCredentialRole::OwnershipLease, attempt.ownership_lease, MAXIMUM_LEASE_BYTES),
+                (GuardianCredentialRole::OwnershipLeaseSignature, attempt.ownership_lease_signature, MAXIMUM_SIGNATURE_BYTES),
+            ].into_iter().enumerate() {
+                destination.seal_results[index] = Some(destination.seals[index]
+                    .create_once(role.as_str(), bytes, maximum)
+                    .map_err(|error| HostError::InvalidPlan(error.to_string())));
+            }
+            for index in 0..4 {
+                if !matches!(destination.seal_results[index], Some(Ok(()))) {
+                    destination.frontier = guardian_preparation::PreparationFrontierV2::Seal(index);
+                    return Err(HostError::Fence("Host Guardian sealed credential failed; original retained"));
+                }
+            }
+        }
 
         let mut descriptors = Vec::with_capacity(10);
         descriptors.extend(
-            protected
-                .iter()
-                .map(|(role, descriptor, _)| (guardian_credential_role(*role), *descriptor)),
+            protected.iter().map(|(role, descriptor, _)| (guardian_credential_role(*role), *descriptor)),
         );
-        descriptors.extend(
-            dynamic_credentials
-                .iter()
-                .map(|(role, credential)| (*role, credential.as_fd())),
-        );
-        let credentials = GuardianCredentialDescriptors::from_descriptors(descriptors)
-            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let credentials = match destination.as_deref_mut() {
+            Some(destination) => {
+                destination.frontier = guardian_preparation::PreparationFrontierV2::Pins;
+                for (role, original) in [
+                    GuardianCredentialRole::BrokerPlan,
+                    GuardianCredentialRole::BrokerPlanSignature,
+                    GuardianCredentialRole::OwnershipLease,
+                    GuardianCredentialRole::OwnershipLeaseSignature,
+                ].into_iter().zip(&destination.seals) {
+                    descriptors.push((role, original.completed()
+                        .ok_or(HostError::Fence("Host Guardian credential completion is absent"))?.as_fd()));
+                }
+                GuardianCredentialDescriptors::from_descriptors_retaining_v2(descriptors, &mut destination.pins)
+            }
+            None => {
+                descriptors.extend(dynamic_credentials.as_ref().into_iter().flatten()
+                    .map(|(role, credential)| (*role, credential.as_fd())));
+                GuardianCredentialDescriptors::from_descriptors(descriptors)
+            }
+        }.map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        if let Some(destination) = destination.as_deref_mut() {
+            destination.frontier = guardian_preparation::PreparationFrontierV2::Specification;
+        }
         let spec = config.prepare(
             *original.fence()?.incarnation_id(),
             credentials,
@@ -3752,15 +4516,65 @@ where
     }
 
     fn compile_launch(&self, request: &ValidatedRuntimeRequest) -> Result<PreparedLaunch> {
-        let nspawn = self.nspawn.as_ref().ok_or_else(|| {
-            HostError::InvalidPlan("nspawn backend readiness is unavailable".to_owned())
-        })?;
+        self.compile_launch_engine_v2(request, None)
+    }
+
+    fn compile_launch_engine_v2(
+        &self, request: &ValidatedRuntimeRequest,
+        mut receiving: Option<(&mut crate::plan::HostLaunchCatalogReceivingV2<'_, '_>,
+            &mut crate::plan::HostLaunchCatalogOriginalV2,
+            &mut crate::plan::HostLaunchCompilationOriginalV2)>,
+    ) -> Result<PreparedLaunch> {
+        let nspawn = self.nspawn.as_ref();
+        let component = self.component_backend.as_ref().filter(|_| nspawn.is_none());
+        if nspawn.is_none() && (component.is_none() || receiving.is_none()) {
+            return Err(HostError::InvalidPlan("nspawn backend preparation is unavailable".to_owned()));
+        }
         let plan = request.launch_plan().ok_or(HostError::InvalidPlan(
             "validated launch request lost its launch plan".to_owned(),
         ))?;
-        let resolved: ResolvedLaunchResources = self.catalog.resolve(request.fence(), plan)?;
-        let root_mount = self.catalog.export_root_mount(&resolved.workspace)?;
-        nspawn.compile_resolved(request.fence(), plan, resolved, root_mount)
+        use aos_sandbox_core::retained::CaptureValueV1;
+        let (mut receiving, mut catalog_original, mut compilation) = match receiving.take() {
+            Some((receiving, catalog, compilation)) => (Some(receiving), Some(catalog), Some(compilation)),
+            None => (None, None, None),
+        };
+        let (resolved_destination, root_destination) = match compilation.as_deref_mut() {
+            Some(original) => (Some(&mut original.resolved), Some(&mut original.root_mount)),
+            None => (None, None),
+        };
+        let resolved: ResolvedLaunchResources = match (&mut receiving, &mut catalog_original) {
+            (Some(receiving), Some(original)) => self.catalog.resolve_launch_v2(request.fence(), plan, receiving, original)?,
+            _ => self.catalog.resolve(request.fence(), plan)?,
+        };
+        let resolved = CaptureValueV1::new(Some(resolved), resolved_destination);
+        let workspace = &resolved.as_ref().ok_or(HostError::AgentLaunchQuarantined)?.workspace;
+        let root_mount = match (&mut receiving, &mut catalog_original) {
+            (Some(receiving), Some(original)) => self.catalog.export_root_mount_launch_v2(workspace, receiving, original)?,
+            _ => self.catalog.export_root_mount(workspace)?,
+        };
+        let root_mount = CaptureValueV1::new(Some(root_mount), root_destination);
+        match receiving {
+            Some(receiving) => {
+                // End only borrowed facades. Both actual native inputs stay
+                // parked through the compiler's genuine currentness gate.
+                drop(root_mount);
+                drop(resolved);
+                let original = compilation.ok_or(HostError::AgentLaunchQuarantined)?;
+                match nspawn {
+                    Some(nspawn) => nspawn.compile_resolved_receiving_v2(request.fence(), plan, receiving, original),
+                    None => crate::plan::compile_component_backend_launch_v2(
+                        component.ok_or(HostError::AgentLaunchQuarantined)?,
+                        request.fence(), plan, receiving, original,
+                    ),
+                }
+            }
+            None => {
+                let root_mount = root_mount.take().ok_or(HostError::AgentLaunchQuarantined)?;
+                let resolved = resolved.take().ok_or(HostError::AgentLaunchQuarantined)?;
+                nspawn.ok_or(HostError::AgentLaunchQuarantined)?
+                    .compile_resolved(request.fence(), plan, resolved, root_mount)
+            }
+        }
     }
 
     fn retain_runtime_observation(
@@ -3881,21 +4695,7 @@ where
     }
 
     fn mint_scope_handle(&self) -> Result<[u8; 32]> {
-        for _ in 0..MAXIMUM_SCOPE_HANDLE_ATTEMPTS {
-            let mut handle = [0_u8; 32];
-            OsRng
-                .try_fill_bytes(&mut handle)
-                .map_err(|_| HostError::State("payload scope entropy unavailable".to_owned()))?;
-            if handle != [0; 32]
-                && self
-                    .runtime_pins
-                    .values()
-                    .all(|retained| retained.scope_handle != handle)
-            {
-                return Ok(handle);
-            }
-        }
-        Err(HostError::ResourceExhausted)
+        mint_scope_handle_engine_v3(&self.runtime_pins, None)
     }
 
     pub(crate) async fn refresh_payload_scope(
@@ -4200,8 +5000,20 @@ where
     }
 
     fn commit_state(&mut self, proposed: &HostState) -> Result<()> {
+        if self.no_apply_settlement_frozen_v2 {
+            return Err(HostError::Fence(
+                "HostState is held by the current NoApply settlement",
+            ));
+        }
         self.state_healthy = false;
-        self.store.commit(proposed)?;
+        if let Some(writes) = self.active_argument_writes.as_ref() {
+            writes.lock().map_err(|_| HostError::Fence("Host argument State custody is poisoned"))?
+                .commit_once_v2(&self.store, proposed)?;
+        } else if self.active_launch_writes.is_some() {
+            self.commit_launch_state_v2(proposed)?;
+        } else {
+            self.store.commit(proposed)?;
+        }
         self.state = proposed.clone();
         self.state_healthy = true;
         Ok(())
@@ -4522,6 +5334,14 @@ fn runtime_handle(identity: &HostRuntimeIdentity) -> [u8; 32] {
         identity.assignment_epoch(),
         identity.assignment_digest(),
     )
+}
+
+/// Returns the existing final native promotion's passive source geometry.
+///
+/// The real caller retains the opaque original and must admit its exact phase
+/// before duplicating any leader or entering the same kernel-check engine.
+pub(crate) fn final_runtime_retention_demand_v4() -> Option<aos_sandbox_core::ResourceVector> {
+    launch_handoff::runtime_retention::HostLaunchRuntimeRetentionV3::receiving_demand_v3()
 }
 
 #[cfg(test)]
@@ -6449,6 +7269,9 @@ mod tests {
         .unwrap();
         let bytes = broker.inventory_runtime(4_096).await.unwrap();
         assert!(bytes.is_empty());
+        let inventory = InventoryRuntimeResponse::decode_from_slice(&bytes).unwrap();
+        assert!(inventory.stopped_namespaces_v4.is_empty());
+        assert!(broker.stopped_namespace_v4.is_none());
         assert!(
             InventoryRuntimeResponse::decode_from_slice(&bytes)
                 .unwrap()

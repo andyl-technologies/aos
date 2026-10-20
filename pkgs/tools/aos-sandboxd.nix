@@ -9,6 +9,8 @@
   coreutils,
   git,
   aos-git-helper,
+  aos-method46-tpm-helper,
+  systemd,
   protobuf,
   stdenv,
   buildPackages,
@@ -55,13 +57,22 @@
       "nix-provision"
     ]
     ++ lib.optional onlineSelected "nix";
+  # Publisher is the protected crate's executable, not a Services feature.
+  rolePackage = role:
+    if role == "publisher"
+    then "aos-sandbox-publisher"
+    else "aos-sandbox-services";
   roleFlags = role:
-    "--no-default-features --features aos-sandbox-services/${role}"
+    "--no-default-features"
+    + lib.optionalString (role != "publisher") " --features aos-sandbox-services/${role}"
     + lib.optionalString (role == "controller") ",aos-sandbox/git-helper-mechanics"
     + lib.optionalString (onlineSelected && role == "controller") ",aos-sandbox-services/online-nix";
   controllerRoleFlags = roleFlags "controller";
+  roleTestFlags = role:
+    roleFlags role
+    + lib.optionalString (role == "publisher") " --features aos-sandbox-publisher/kernel-tests";
   roleTestPackages = role:
-    "-p aos-sandbox-services"
+    "-p ${rolePackage role}"
     + lib.optionalString (role == "policy-key-pin") " -p aos-sandbox-policy"
     + lib.optionalString (role == "cache-signer") " -p aos-sandbox-cache-signer"
     + lib.optionalString (role == "source-signer") " -p aos-sandbox-source-signer";
@@ -69,18 +80,25 @@
   # Separate Cargo invocations prevent role features from unifying merely
   # because these independently confined executables share an output package.
   roleBuildCommands = map (role:
-    "build --release --frozen --offline -j$NIX_BUILD_CORES ${roleFlags role} -p aos-sandbox-services "
+    "build --release --frozen --offline -j$NIX_BUILD_CORES ${roleFlags role} -p ${rolePackage role} "
     + lib.concatStringsSep " " (map (bin: "--bin ${bin}") roleBins.${role}))
   serviceRoles;
-  roleTestCommands = map (role: "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${roleFlags role} ${roleTestPackages role}") serviceRoles;
+  roleTestCommands = map (role: "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${roleTestFlags role} ${roleTestPackages role}") serviceRoles;
   coreTestCommand = "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${controllerRoleFlags} -p aos-sandbox -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime";
   onlineInputs = lib.optionals onlineSelected [nixOnlineStoreReader aos-nix-runtime-tpm-helpers];
+  # The installed Controller owns the same pinned Required-floor helper and
+  # original PID1 image used by the production packaged CLI.
+  requiredFloorInputs = lib.optionals stdenv.hostPlatform.isLinux [aos-method46-tpm-helper systemd];
   workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib fetchCargoVendor;};
   inherit (workspaceCargo) src cargoDeps;
   cargoEnv =
     {
       PROTOC = "${buildProtobuf}/bin/protoc";
       AOS_GIT_HELPER_SELECTION_HEADER = "${gitHelperImages}/selected-images.rs";
+    }
+    // lib.optionalAttrs stdenv.hostPlatform.isLinux {
+      AOS_METHOD46_TPM_HELPER = "${aos-method46-tpm-helper}/libexec/aos-method46-tpm-helper";
+      AOS_METHOD46_TPM_PID1 = "${systemd}/lib/systemd/systemd";
     }
     // lib.optionalAttrs onlineSelected {
       AOS_NIX_ONLINE_STORE_READER_HEADER = "${nixOnlineStoreReader}/selected-reader.rs";
@@ -90,7 +108,7 @@
   cargoArtifactContract = {
     family = "aos-sandboxd-native";
     checkType = "debug";
-    nativeInputs = map toString ([buildProtobuf gitHelperImages aos-git-helper git] ++ onlineInputs);
+    nativeInputs = map toString ([buildProtobuf gitHelperImages aos-git-helper git] ++ onlineInputs ++ requiredFloorInputs);
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-sandboxd-artifacts";
@@ -103,8 +121,8 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = roleBuildCommands ++ roleTestCommands ++ [coreTestCommand];
-    buildDeps = [buildProtobuf gitHelperImages] ++ onlineInputs;
-    runtimeDeps = [aos-git-helper git] ++ onlineInputs;
+    buildDeps = [buildProtobuf] ++ onlineInputs ++ requiredFloorInputs;
+    runtimeDeps = [aos-git-helper git] ++ onlineInputs ++ requiredFloorInputs;
   };
 in
   assert !onlineSelected || aos-nix-runtime-tpm-helpers != null;
@@ -123,12 +141,12 @@ in
         [
           "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime"
         ]
-        ++ map (role: "${roleFlags role} ${roleTestPackages role}")
+        ++ map (role: "${roleTestFlags role} ${roleTestPackages role}")
         (lib.filter (role: role != "controller") serviceRoles);
       cargoNextest = true;
       doCheck = true;
-      buildDeps = [buildProtobuf gitHelperImages] ++ onlineInputs;
-      runtimeDeps = [aos-git-helper git] ++ onlineInputs;
+      buildDeps = [buildProtobuf] ++ onlineInputs ++ requiredFloorInputs;
+      runtimeDeps = [aos-git-helper git] ++ onlineInputs ++ requiredFloorInputs;
 
       postInstall =
         ''

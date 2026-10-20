@@ -169,7 +169,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// physical SourceRoot observation.
     pub fn receive_and_verify_provider_outcome_v2(
         &mut self,
-        catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        catalog_journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         authorization: &AuthorizedMountProviderOutcomeV2,
     ) -> Result<VerifiedReceivedMountProviderOutcomeV2, SourceProviderSecurityError> {
         self.require_native_outcome_authorization_v3(authorization)?;

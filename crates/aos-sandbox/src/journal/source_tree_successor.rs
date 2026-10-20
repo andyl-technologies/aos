@@ -34,179 +34,50 @@ use super::{
     GlobalCapacityReservationRequestV1, Journal, JournalError, JournalRecord, JournalTransaction,
     PreflightTransactionViewV1, RecordNamespace,
 };
-use crate::policy_compiler::{
-    ControllerFirstSourceSuccessorAnchoredFieldsV2, ControllerFirstSourceSuccessorAnchoredV2,
-    RootFirstSourceSuccessorFloorFieldsV2, RootFirstSourceSuccessorFloorV2,
-    RootFirstSourceSuccessorIntentV2, SourceFirstSuccessorAckV2,
-    SourceFirstSuccessorPendingV2, SourceFirstSuccessorReceiptV2,
+use aos_sandbox_ledger_replay::replay::phase_records::{
+    ControllerFirstSourceSuccessorAnchoredFieldsV2, ControllerFirstSourceSuccessorAnchoredV2, RootFirstSourceSuccessorFloorFieldsV2, RootFirstSourceSuccessorFloorV2, RootFirstSourceSuccessorIntentV2, SourceFirstSuccessorAckV2, SourceFirstSuccessorPendingV2, SourceFirstSuccessorReceiptV2,
 };
 
-pub(crate) type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
+pub(crate) use aos_sandbox_ledger_replay::replay::source_tree_successor::{
+    State, FirstSourceSuccessorNativePhaseV2, SourceFirstSuccessorRowsV2,
+    SourceProjectFamilyDataV3, SourceSuccessorFamilyRecipeV3, ProjectGenesisNativePhaseV3,
+};
+use aos_sandbox_ledger_replay::replay::source_tree_successor::{PREFIX, RECEIPT_PREFIX, ACK_PREFIX, ACK_SIZING_BYTES};
+pub(crate) use aos_sandbox_ledger_replay::replay::source_tree_successor::PENDING_KEY;
 
-const PREFIX: &[u8] = b"\0aos-source-first-successor-v2\0";
-pub(crate) const PENDING_KEY: &[u8] = b"\0aos-source-first-successor-v2\0pending";
-const RECEIPT_PREFIX: &[u8] = b"\0aos-source-first-successor-v2\0receipt\0";
-const ACK_PREFIX: &[u8] = b"\0aos-source-first-successor-v2\0ACK\0";
+mod retained;
+pub(super) use retained::SourceReplayFamilyOriginalsV1;
 
-/// Selects one exact native phase, never a public request or capacity scope.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub(crate) enum FirstSourceSuccessorNativePhaseV2 {
-    ControllerBegin = 1,
-    RootPrepared = 2,
-    SourceAppend = 3,
-    RootAnchor = 4,
-    ControllerAnchored = 5,
-    SourceAck = 6,
-    ControllerComplete = 7,
-    MixedSourceAppend,
-    MixedSourceAck,
-    MixedRootPrepared,
-    MixedRootAnchor,
-    MixedControllerBegin,
-    MixedControllerAnchored,
-    MixedControllerComplete,
-}
+mod transition_retained;
+pub(super) use transition_retained::SourceReplayTransactionOriginalsV1;
 
-impl FirstSourceSuccessorNativePhaseV2 {
-    // These four variants are private comparison selectors, never durable
-    // phase bytes. Retain the selected mode until the complete family join.
-    pub(crate) const fn canonical(self) -> Self {
-        match self {
-            Self::MixedSourceAppend => Self::SourceAppend,
-            Self::MixedSourceAck => Self::SourceAck,
-            Self::MixedRootPrepared => Self::RootPrepared,
-            Self::MixedRootAnchor => Self::RootAnchor,
-            Self::MixedControllerBegin => Self::ControllerBegin,
-            Self::MixedControllerAnchored => Self::ControllerAnchored,
-            Self::MixedControllerComplete => Self::ControllerComplete,
-            ordinary => ordinary,
-        }
-    }
+mod predecessor_retained;
+pub(super) use predecessor_retained::SourceGenesisPredecessorOriginalsV1;
 
-    pub(super) const fn has_capacity_records(self) -> bool {
-        !matches!(self.canonical(), Self::ControllerAnchored)
-    }
+mod project_genesis_retained;
+use project_genesis_retained::SourceProjectGenesisOriginalsV1;
 
-    pub(super) const fn source_genesis_transition(
-        self,
-    ) -> super::source_tree_genesis::SourceGenesisTransitionV1 {
-        use super::source_tree_genesis::SourceGenesisTransitionV1;
-        match self.canonical() {
-            Self::SourceAppend => SourceGenesisTransitionV1::FirstSuccessorAppend,
-            Self::SourceAck => SourceGenesisTransitionV1::FirstSuccessorAck,
-            _ => SourceGenesisTransitionV1::None,
-        }
-    }
 
-    pub(super) const fn controller_transition(
-        self,
-    ) -> Option<super::controller_source_successor_issuance::Transition> {
-        use super::controller_source_successor_issuance::Transition;
-        match self.canonical() {
-            Self::ControllerBegin => Some(Transition::Begin),
-            Self::ControllerAnchored => Some(Transition::Anchored),
-            Self::ControllerComplete => Some(Transition::Complete),
-            _ => None,
-        }
-    }
-
-    pub(super) fn controller_transition_for(
-        self, transaction: &JournalTransaction,
-    ) -> Result<Option<super::controller_source_successor_issuance::Transition>, JournalError> {
-        if matches!(self, Self::MixedControllerBegin | Self::MixedControllerAnchored | Self::MixedControllerComplete) {
-            let actual = super::controller_source_successor_issuance::recognize_replayed_transition(transaction)?
-                .ok_or(JournalError::ProtectedBoundary)?;
-            if Some(actual.canonical()) != self.controller_transition()
-            { return Err(JournalError::ProtectedBoundary); }
-            return Ok(Some(actual));
-        }
-        Ok(self.controller_transition())
-    }
-}
-
-/// Retains validated local phase DATA without a cross-owner currentness loan.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SourceFirstSuccessorRowsV2 {
-    pub(crate) receipts: BTreeMap<ProjectId, SourceFirstSuccessorReceiptV2>,
-    pub(crate) acks: BTreeMap<ProjectId, SourceFirstSuccessorAckV2>,
-    pub(crate) pending: Option<SourceFirstSuccessorPendingV2>,
-}
-
-/// Owns the two decoded families from one complete local DATA comparison.
-///
-/// These maps carry no writer, Root floor loan or admission authority. Each
-/// consumer moves its required family out within the same observation window;
-/// the other family is dropped rather than retained across an owner effect.
-pub(crate) struct SourceProjectFamilyDataV3 {
-    genesis: super::source_tree_genesis::SourceGenesisRowsV1,
-    successor: SourceFirstSuccessorRowsV2,
-}
-
-impl SourceProjectFamilyDataV3 {
-    /// Moves the already-decoded genesis rows, discarding successor DATA.
-    pub(crate) fn into_genesis(self) -> super::source_tree_genesis::SourceGenesisRowsV1 {
-        self.genesis
-    }
-
-    fn into_successor(self) -> SourceFirstSuccessorRowsV2 {
-        self.successor
-    }
-}
 
 pub(crate) fn receipt_key(project: ProjectId) -> Vec<u8> {
-    [RECEIPT_PREFIX, project.as_bytes()].concat()
+    aos_sandbox_ledger_replay::replay::source_tree_successor::receipt_key(project)
 }
 
 pub(crate) fn ack_key(project: ProjectId) -> Vec<u8> {
-    [ACK_PREFIX, project.as_bytes()].concat()
+    aos_sandbox_ledger_replay::replay::source_tree_successor::ack_key(project)
 }
 
 pub(crate) fn transaction_id(
     approval: ObjectDigest,
     phase: FirstSourceSuccessorNativePhaseV2,
 ) -> [u8; 16] {
-    let mut digest = Sha256::new();
-    digest.update(b"aos.sandbox.source-first-successor.transaction.v2\0");
-    digest.update(approval.as_bytes());
-    digest.update([phase.canonical() as u8]);
-    let digest: [u8; 32] = digest.finalize().into();
-    let mut identity = [0; 16];
-    identity.copy_from_slice(&digest[..16]);
-    identity
+    aos_sandbox_ledger_replay::replay::source_tree_successor::transaction_id(approval, phase)
 }
 
 /// Rejoins the complete immutable Source predecessor and successor family.
 pub(crate) fn current_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
-    current_rows_with_recipe(state, SourceSuccessorFamilyRecipeV3::SingleProjectV2)
-}
-
-/// Selects a structural family comparison, never native admission authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SourceSuccessorFamilyRecipeV3 {
-    SingleProjectV2,
-    MixedProjectsV3 { selected: Option<ProjectId> },
-}
-
-/// Selects an initial-project comparison without changing any durable phase byte.
-#[derive(Clone, Copy)]
-pub(super) enum ProjectGenesisNativePhaseV3 {
-    SourceAppend(ProjectId),
-    SourceAck(ProjectId),
-    RootPrepared(ProjectId),
-    RootAnchor(ProjectId),
-    ControllerFloorAck(ProjectId),
-    ControllerComplete(ProjectId),
-}
-
-impl ProjectGenesisNativePhaseV3 {
-    pub(super) const fn project(self) -> ProjectId {
-        match self {
-            Self::SourceAppend(project) | Self::SourceAck(project)
-            | Self::RootPrepared(project) | Self::RootAnchor(project)
-            | Self::ControllerFloorAck(project) | Self::ControllerComplete(project) => project,
-        }
-    }
+    aos_sandbox_ledger_replay::replay::source_tree_successor::current_rows(state)
+        .map_err(JournalError::from)
 }
 
 pub(super) enum ProjectGenesisNativeCutV3<'cut> {
@@ -280,21 +151,16 @@ pub(crate) fn current_project_rows_v3(
     state: &State,
     selected: Option<ProjectId>,
 ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
-    current_rows_with_recipe(state, SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected })
+    aos_sandbox_ledger_replay::replay::source_tree_successor::current_project_rows_v3(state, selected)
+        .map_err(JournalError::from)
 }
 
 pub(crate) fn current_project_genesis_rows_v3(
     state: &State,
     selected: ProjectId,
 ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
-    if selected.as_bytes() == &[0; 16] {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    current_rows_with_genesis_selection(
-        state,
-        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: None },
-        Some(selected),
-    )
+    aos_sandbox_ledger_replay::replay::source_tree_successor::current_project_genesis_rows_v3(state, selected)
+        .map_err(JournalError::from)
 }
 
 /// Returns both already-decoded families after the same selected whole fold.
@@ -306,65 +172,36 @@ pub(super) fn current_project_genesis_data_v3(
     state: &State,
     selected: ProjectId,
 ) -> Result<SourceProjectFamilyDataV3, JournalError> {
-    if selected.as_bytes() == &[0; 16] {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    current_family_with_genesis_selection(
-        state,
-        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: None },
-        Some(selected),
-    )
+    aos_sandbox_ledger_replay::replay::source_tree_successor::current_project_genesis_data_v3(state, selected)
+        .map_err(JournalError::from)
 }
 
 // Cold replay selects only comparison DATA from the actual canonical pending
 // member. It cannot provide a live selected writer or renew its admission.
 fn replay_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
-    replay_family(state).map(SourceProjectFamilyDataV3::into_successor)
+    aos_sandbox_ledger_replay::replay::source_tree_successor::replay_rows(state)
+        .map_err(JournalError::from)
 }
 
 // Both owned families stay local to the same immutable comparison window.
 fn replay_family(state: &State) -> Result<SourceProjectFamilyDataV3, JournalError> {
-    if !state.keys().any(|(_, key)| key.starts_with(RECEIPT_PREFIX)) {
-        // An ordinary genesis-only replay retains its original incomplete
-        // genesis handling. Explicit mixed Before observation below still
-        // checks every completed member, even without a successor receipt.
-        return current_family_with_genesis_selection(
-            state, SourceSuccessorFamilyRecipeV3::SingleProjectV2, None,
-        );
-    }
-    let selected = state.get(&(RecordNamespace::DesiredState, PENDING_KEY.to_vec()))
-        .map(|bytes| SourceFirstSuccessorPendingV2::decode(bytes)
-            .map(|pending| pending.project()).map_err(|_| JournalError::ProtectedBoundary))
-        .transpose()?;
-    let genesis = super::source_tree_genesis::current_rows(state)?;
-    if let Some(pending) = genesis.pending.as_ref() {
-        if selected.is_some() {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let project = pending.project;
-        if project.as_bytes() == &[0; 16] {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        return current_family_with_genesis_data(
-            state,
-            SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: None },
-            Some(project),
-            Some(genesis),
-        );
-    }
-    current_family_with_genesis_data(
-        state,
-        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected },
-        None,
-        Some(genesis),
-    )
+    aos_sandbox_ledger_replay::replay::source_tree_successor::replay_family(state)
+        .map_err(JournalError::from)
+}
+
+fn replay_family_with_originals(
+    state: &State,
+    originals: Option<&mut SourceReplayFamilyOriginalsV1>,
+) -> Result<SourceProjectFamilyDataV3, JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::replay_family_with_originals(state, originals)
 }
 
 fn current_rows_with_recipe(
     state: &State,
     recipe: SourceSuccessorFamilyRecipeV3,
 ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
-    current_rows_with_genesis_selection(state, recipe, None)
+    aos_sandbox_ledger_replay::replay::source_tree_successor::current_rows_with_recipe(state, recipe)
+        .map_err(JournalError::from)
 }
 
 fn current_rows_with_genesis_selection(
@@ -372,8 +209,8 @@ fn current_rows_with_genesis_selection(
     recipe: SourceSuccessorFamilyRecipeV3,
     genesis_selection: Option<ProjectId>,
 ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
-    current_family_with_genesis_selection(state, recipe, genesis_selection)
-        .map(SourceProjectFamilyDataV3::into_successor)
+    aos_sandbox_ledger_replay::replay::source_tree_successor::current_rows_with_genesis_selection(state, recipe, genesis_selection)
+        .map_err(JournalError::from)
 }
 
 fn current_family_with_genesis_selection(
@@ -381,7 +218,8 @@ fn current_family_with_genesis_selection(
     recipe: SourceSuccessorFamilyRecipeV3,
     genesis_selection: Option<ProjectId>,
 ) -> Result<SourceProjectFamilyDataV3, JournalError> {
-    current_family_with_genesis_data(state, recipe, genesis_selection, None)
+    aos_sandbox_ledger_replay::replay::source_tree_successor::current_family_with_genesis_selection(state, recipe, genesis_selection)
+        .map_err(JournalError::from)
 }
 
 // Replay moves the whole genesis DATA parsed from this same immutable State.
@@ -391,159 +229,28 @@ fn current_family_with_genesis_data(
     state: &State,
     recipe: SourceSuccessorFamilyRecipeV3,
     genesis_selection: Option<ProjectId>,
-    decoded_genesis: Option<super::source_tree_genesis::SourceGenesisRowsV1>,
+    decoded_genesis: Option<aos_sandbox_ledger_replay::replay::source_tree_genesis::SourceGenesisRowsV1>,
 ) -> Result<SourceProjectFamilyDataV3, JournalError> {
-    let mut rows = SourceFirstSuccessorRowsV2 {
-        receipts: BTreeMap::new(),
-        acks: BTreeMap::new(),
-        pending: None,
-    };
-    for ((namespace, key), value) in state {
-        if !key.starts_with(PREFIX) {
-            continue;
-        }
-        if *namespace != RecordNamespace::DesiredState {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        if key == PENDING_KEY {
-            rows.pending = Some(SourceFirstSuccessorPendingV2::decode(value)
-                .map_err(|_| JournalError::ProtectedBoundary)?);
-        } else if let Some(project) = project_key(key, RECEIPT_PREFIX)? {
-            let receipt = SourceFirstSuccessorReceiptV2::decode(value)
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-            if project != receipt.project() {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            rows.receipts.insert(project, receipt);
-        } else if let Some(project) = project_key(key, ACK_PREFIX)? {
-            let ack = SourceFirstSuccessorAckV2::decode(value)
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-            if project != ack.project() {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            rows.acks.insert(project, ack);
-        } else {
-            return Err(JournalError::ProtectedBoundary);
-        }
-    }
-    // Issuance is globally singleton. Another project cannot hide a second
-    // successor behind its otherwise valid, independent genesis provenance.
-    if recipe == SourceSuccessorFamilyRecipeV3::SingleProjectV2 && rows.receipts.len() > 1 {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    let genesis = match decoded_genesis {
-        Some(genesis) => genesis,
-        None => super::source_tree_genesis::current_rows(state)?,
-    };
-    for (project, receipt) in &rows.receipts {
-        let predecessor = genesis.receipts.get(project)
-            .ok_or(JournalError::ProtectedBoundary)?;
-        let original_ack = genesis.acks.get(project)
-            .ok_or(JournalError::ProtectedBoundary)?;
-        if predecessor.instance() != receipt.instance()
-            || predecessor.tree_head() != receipt.old_tree_head()
-            || predecessor.lineage_head() != receipt.old_lineage_head()
-            || original_ack.root_floor != receipt.predecessor_floor()
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        if recipe == SourceSuccessorFamilyRecipeV3::SingleProjectV2 {
-            crate::hierarchy::validate_source_first_successor_members_v2(state, receipt, None)?;
-        }
-        match rows.acks.get(project) {
-            Some(ack) => {
-                let floor = RootFirstSourceSuccessorFloorV2::new(RootFirstSourceSuccessorFloorFieldsV2 {
-                    predecessor_floor: receipt.predecessor_floor(),
-                    approval: receipt.approval(),
-                    receipt: receipt.clone(),
-                    roles: receipt.roles(),
-                }).map_err(|_| JournalError::ProtectedBoundary)?;
-                let anchored = ControllerFirstSourceSuccessorAnchoredV2::new(ControllerFirstSourceSuccessorAnchoredFieldsV2 {
-                    approval: receipt.approval(),
-                    receipt: receipt.digest(),
-                    floor: floor.digest(),
-                }).map_err(|_| JournalError::ProtectedBoundary)?;
-                if ack.instance() != predecessor.instance()
-                    || ack.receipt() != receipt.digest()
-                    || ack.root_floor() != floor.digest()
-                    || ack.controller_anchored() != anchored.digest()
-                    || match recipe {
-                        SourceSuccessorFamilyRecipeV3::SingleProjectV2 => rows.pending.is_some(),
-                        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { .. } => rows.pending
-                            .as_ref().is_some_and(|pending| pending.project() == *project),
-                    }
-                {
-                    return Err(JournalError::ProtectedBoundary);
-                }
-            }
-            None => {
-                if let SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected } = recipe
-                    && selected != Some(*project)
-                {
-                    return Err(JournalError::ProtectedBoundary);
-                }
-                let pending = rows.pending.as_ref()
-                    .ok_or(JournalError::ProtectedBoundary)?;
-                if !pending_matches_receipt(pending, receipt) {
-                    return Err(JournalError::ProtectedBoundary);
-                }
-                first_source_successor_capacity_delete_v2(
-                    state,
-                    &source_capacity_request(receipt)?,
-                    transaction_id(receipt.approval(), FirstSourceSuccessorNativePhaseV2::SourceAppend),
-                )?;
-            }
-        }
-    }
-    if rows.acks.keys().any(|project| !rows.receipts.contains_key(project))
-        || (rows.pending.is_some() && rows.receipts.is_empty())
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    require_exact_capacity_family(
-        state,
-        GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck,
-        usize::from(rows.pending.is_some()),
-    )?;
-    if let SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected } = recipe {
-        if rows.pending.as_ref().is_some_and(|pending| {
-            selected != Some(pending.project()) || !rows.receipts.contains_key(&pending.project())
-        }) {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        match genesis_selection {
-            Some(project) => {
-                crate::hierarchy::validate_source_project_genesis_members_from_genesis_data_v3(
-                    state, &genesis, &rows.receipts, project,
-                )?
-            }
-            None => {
-                crate::hierarchy::validate_source_project_continuation_members_from_genesis_data_v3(
-                    state, &genesis, &rows.receipts,
-                )?
-            }
-        }
-    }
-    Ok(SourceProjectFamilyDataV3 { genesis, successor: rows })
+    aos_sandbox_ledger_replay::replay::source_tree_successor::current_family_with_genesis_data(state, recipe, genesis_selection, decoded_genesis)
+        .map_err(JournalError::from)
+}
+
+fn current_family_with_genesis_data_originals(
+    state: &State,
+    recipe: SourceSuccessorFamilyRecipeV3,
+    genesis_selection: Option<ProjectId>,
+    decoded_genesis: Option<aos_sandbox_ledger_replay::replay::source_tree_genesis::SourceGenesisRowsV1>,
+    originals: Option<&mut retained::SourceFamilyOriginalsV1>,
+) -> Result<SourceProjectFamilyDataV3, JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::current_family_with_genesis_data_originals(state, recipe, genesis_selection, decoded_genesis, originals)
 }
 
 /// Derives exact ACK sizing from the receipt and the sole canonical frame codec.
 pub(crate) fn source_capacity_request(
     receipt: &SourceFirstSuccessorReceiptV2,
 ) -> Result<GlobalCapacityReservationRequestV1, JournalError> {
-    let suffix = JournalTransaction::new([1; 16], vec![
-        JournalRecord::delete(RecordNamespace::DesiredState, PENDING_KEY.to_vec()),
-        JournalRecord::put(
-            RecordNamespace::DesiredState, ack_key(receipt.project()), vec![1; 192],
-        ),
-        sizing_capacity_delete(),
-    ])?;
-    capacity_request(
-        GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck,
-        receipt.instance(), receipt.project(), receipt.request(),
-        receipt.digest(), receipt.approval(), receipt.root_intent(), receipt.old_lineage_head(),
-        &[suffix], 1,
-    )
+    aos_sandbox_ledger_replay::replay::source_tree_successor::source_capacity_request(receipt)
+        .map_err(JournalError::from)
 }
 
 /// Binds one closed owner to its exact conservative remaining suffix budget.
@@ -560,63 +267,20 @@ pub(crate) fn capacity_request(
     suffix: &[JournalTransaction],
     future_transactions: u32,
 ) -> Result<GlobalCapacityReservationRequestV1, JournalError> {
-    let label: &[u8] = match purpose {
-        GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor => b"root-capacity-owner",
-        GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck => b"source-capacity-owner",
-        GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete => b"controller-capacity-owner",
-        _ => return Err(JournalError::ProtectedBoundary),
-    };
-    let mut owner = Sha256::new();
-    owner.update(b"aos.sandbox.source-first-successor.");
-    owner.update(label);
-    owner.update(b".v2\0");
-    owner.update(instance);
-    owner.update(project.as_bytes());
-    owner.update(request);
-    let (records, bytes) = suffix.iter().try_fold((0_u32, 0_u64), |(records, bytes), transaction| {
-        Ok::<_, JournalError>((
-            records.checked_add(u32::try_from(transaction.records().len())
-                .map_err(|_| JournalError::InvalidTransaction)?).ok_or(JournalError::InvalidTransaction)?,
-            bytes.checked_add(super::encoded_transaction_append_bytes(transaction)?)
-                .ok_or(JournalError::JournalTooLarge)?,
-        ))
-    })?;
-    Ok(GlobalCapacityReservationRequestV1 {
-        purpose,
-        owner_namespace: RecordNamespace::DesiredState,
-        owner_id: owner.finalize().into(),
-        owner_digest: *owner_digest.as_bytes(),
-        operation_id: request,
-        artifact_digest: *approval.as_bytes(),
-        checkpoint_digest: *checkpoint.as_bytes(),
-        chain_head_digest: *predecessor.as_bytes(),
-        future_transactions,
-        terminal_records: records,
-        terminal_bytes: bytes,
-        poison_records: records,
-        poison_bytes: bytes,
-    })
+    aos_sandbox_ledger_replay::replay::source_tree_successor::capacity_request(purpose, instance, project, request, owner_digest, approval, checkpoint, predecessor, suffix, future_transactions)
+        .map_err(JournalError::from)
 }
 
 /// Returns fixed-width deletion sizing DATA with the actual capacity key codec.
 pub(crate) fn sizing_capacity_delete() -> JournalRecord {
-    JournalRecord::delete(
-        RecordNamespace::GlobalCapacityReservation,
-        reservation_key([1; 32]),
-    )
+    aos_sandbox_ledger_replay::replay::source_tree_successor::sizing_capacity_delete()
 }
 
 fn pending_matches_receipt(
     pending: &SourceFirstSuccessorPendingV2,
     receipt: &SourceFirstSuccessorReceiptV2,
 ) -> bool {
-    pending.instance() == receipt.instance()
-        && pending.project() == receipt.project()
-        && pending.request() == receipt.request()
-        && pending.approval() == receipt.approval()
-        && pending.root_intent() == receipt.root_intent()
-        && pending.receipt() == receipt.digest()
-        && pending.source_names() == receipt.source_names()
+    aos_sandbox_ledger_replay::replay::source_tree_successor::pending_matches_receipt(pending, receipt)
 }
 
 pub(super) fn require_transition(
@@ -624,64 +288,33 @@ pub(super) fn require_transition(
     transaction: &JournalTransaction,
     phase: Option<FirstSourceSuccessorNativePhaseV2>,
 ) -> Result<Option<[u8; 32]>, JournalError> {
-    let root_settling = validate_root_transition(state, transaction, phase)?;
-    let source_settling = require_source_transition(state, transaction, phase)?;
-    if root_settling.is_some() && source_settling.is_some() {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    let controller_settling = super::controller_source_successor_issuance::consumer_settling(
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_transition::<JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1>(
         state, transaction, phase,
-    )?;
-    Ok(root_settling.or(source_settling).or(controller_settling))
+    )
 }
 
 fn require_replayed_transition(
     state: &State, transaction: &JournalTransaction,
     phase: Option<FirstSourceSuccessorNativePhaseV2>,
+    originals: Option<&mut transition_retained::SourceTransitionOriginalsV1>,
+    project_originals: Option<&mut SourceProjectGenesisOriginalsV1>,
 ) -> Result<Option<[u8; 32]>, JournalError> {
-    #[cfg(target_os = "linux")]
-    let root_settling = crate::policy_compiler::RootSourceGenesisAuthorityV1::validate_project_successor_transition_v3(
-        state, transaction, phase,
-    )?;
-    #[cfg(not(target_os = "linux"))]
-    let root_settling = validate_root_transition(state, transaction, phase)?;
-    let genesis_selection = if phase.is_none()
-        && state.keys().any(|(_, key)| key.starts_with(RECEIPT_PREFIX))
-    {
-        match super::source_tree_genesis::recognize_replayed_transition(transaction)? {
-            super::source_tree_genesis::SourceGenesisTransitionV1::Append => {
-                let receipt = crate::hierarchy::SourceTreeGenesisReceiptV1::decode(
-                    required_value(transaction.records().get(2).ok_or(JournalError::ProtectedBoundary)?)?,
-                ).map_err(|_| JournalError::ProtectedBoundary)?;
-                Some(receipt.project())
-            }
-            _ => super::source_tree_genesis::current_rows(state)?.pending.map(|pending| pending.project),
-        }
-    } else {
-        None
-    };
-    let source_settling = if let Some(project) = genesis_selection {
-        require_project_genesis_transition_v3(state, transaction, project)?;
-        None
-    } else if matches!(phase, Some(FirstSourceSuccessorNativePhaseV2::MixedSourceAppend
-        | FirstSourceSuccessorNativePhaseV2::MixedSourceAck))
-    {
-        require_source_transition(state, transaction, phase)?
-    } else if !state.keys().any(|(_, key)| key.starts_with(RECEIPT_PREFIX)) {
-        require_source_transition(state, transaction, phase.map(FirstSourceSuccessorNativePhaseV2::canonical))?
-    } else {
-        let selected = state.get(&(RecordNamespace::DesiredState, PENDING_KEY.to_vec()))
-            .map(|bytes| SourceFirstSuccessorPendingV2::decode(bytes)
-                .map(|pending| pending.project()).map_err(|_| JournalError::ProtectedBoundary))
-            .transpose()?;
-        require_source_transition_with_recipe(state, transaction, phase,
-            SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected })?
-    };
-    if root_settling.is_some() && source_settling.is_some() { return Err(JournalError::ProtectedBoundary); }
-    let controller_settling = super::controller_source_successor_issuance::consumer_settling(
-        state, transaction, phase.map(FirstSourceSuccessorNativePhaseV2::canonical),
-    )?;
-    Ok(root_settling.or(source_settling).or(controller_settling))
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_replayed_transition::<JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1>(
+        state, transaction, phase, originals, project_originals,
+    )
+}
+
+fn select_replayed_genesis_project_engine(
+    state: &State,
+    transaction: &JournalTransaction,
+    phase: Option<FirstSourceSuccessorNativePhaseV2>,
+    originals: Option<&mut project_genesis_retained::SourceGenesisSelectionOriginalsV1>,
+) -> Result<Option<ProjectId>, JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::select_replayed_genesis_project_engine(state, transaction, phase, originals)
 }
 
 // The canonical genesis reducer still owns the exact four/two-record shape.
@@ -692,36 +325,25 @@ pub(super) fn require_project_genesis_transition_v3(
     transaction: &JournalTransaction,
     project: ProjectId,
 ) -> Result<(), JournalError> {
-    let before = current_project_genesis_rows_v3(state, project)?;
-    if before.pending.is_some() {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    let transition = super::source_tree_genesis::recognize_replayed_transition(transaction)?;
-    match transition {
-        super::source_tree_genesis::SourceGenesisTransitionV1::Append => {
-            let receipt = crate::hierarchy::SourceTreeGenesisReceiptV1::decode(
-                required_value(transaction.records().get(2).ok_or(JournalError::ProtectedBoundary)?)?,
-            ).map_err(|_| JournalError::ProtectedBoundary)?;
-            if receipt.project() != project {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-        super::source_tree_genesis::SourceGenesisTransitionV1::Anchor => {
-            if super::source_tree_genesis::current_rows(state)?.pending
-                .is_none_or(|pending| pending.project != project)
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-        _ => return Err(JournalError::ProtectedBoundary),
-    }
-    super::source_tree_genesis::require_no_mutation(state, transaction, transition)?;
-    let after = super::root_original_inventory::materialize(state, transaction);
-    let next = current_project_genesis_rows_v3(&after, project)?;
-    if next != before {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_project_genesis_transition_v3(state, transaction, project)
+        .map_err(JournalError::from)
+}
+
+fn require_project_genesis_transition_engine(
+    state: &State,
+    transaction: &JournalTransaction,
+    project: ProjectId,
+    originals: Option<&mut SourceProjectGenesisOriginalsV1>,
+) -> Result<(), JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_project_genesis_transition_engine(state, transaction, project, originals)
+}
+
+fn current_project_genesis_rows_with_originals(
+    state: &State,
+    selected: ProjectId,
+    originals: &mut retained::SourceFamilyOriginalsV1,
+) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::current_project_genesis_rows_with_originals(state, selected, originals)
 }
 
 pub(super) fn require_project_genesis_family_v3(
@@ -729,56 +351,8 @@ pub(super) fn require_project_genesis_family_v3(
     transaction: &JournalTransaction,
     phase: ProjectGenesisNativePhaseV3,
 ) -> Result<(), JournalError> {
-    let project = phase.project();
-    match phase {
-        ProjectGenesisNativePhaseV3::SourceAppend(_) | ProjectGenesisNativePhaseV3::SourceAck(_) => {
-            require_project_genesis_transition_v3(state, transaction, project)?;
-        }
-        ProjectGenesisNativePhaseV3::RootPrepared(_) | ProjectGenesisNativePhaseV3::RootAnchor(_) => {
-            #[cfg(target_os = "linux")]
-            crate::policy_compiler::RootSourceGenesisAuthorityV1::validate_project_successor_transition_v3(
-                state, transaction, None,
-            )?;
-            #[cfg(not(target_os = "linux"))]
-            return Err(JournalError::ProtectedBoundary);
-            let expected_prefix = match phase {
-                ProjectGenesisNativePhaseV3::RootPrepared(_) => b"\0aos-source-genesis-intent-v1\0".as_slice(),
-                _ => b"\0aos-source-hierarchy-floor-v1\0".as_slice(),
-            };
-            let first = transaction.records().first().ok_or(JournalError::ProtectedBoundary)?;
-            if first.namespace() != RecordNamespace::DesiredState
-                || first.key() != [expected_prefix, project.as_bytes()].concat()
-                || first.value().is_none()
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-        ProjectGenesisNativePhaseV3::ControllerFloorAck(_) | ProjectGenesisNativePhaseV3::ControllerComplete(_) => {
-            use super::controller_source_genesis::ControllerSourceGenesisTransition as Transition;
-            let transition = match phase {
-                ProjectGenesisNativePhaseV3::ControllerFloorAck(_) => Transition::FloorAck,
-                _ => Transition::Complete,
-            };
-            super::controller_source_genesis::require_no_mutation(state, transaction, transition)?;
-            let rows = super::controller_source_genesis::all_rows(state)?
-                .remove(&project).ok_or(JournalError::ProtectedBoundary)?;
-            let expected = match phase {
-                ProjectGenesisNativePhaseV3::ControllerFloorAck(_) => {
-                    let record = transaction.records().first().ok_or(JournalError::ProtectedBoundary)?;
-                    let value: &[u8; 144] = required_value(record)?.try_into().map_err(|_| JournalError::ProtectedBoundary)?;
-                    if digest_at(value, 16)? != rows.acceptance.digest() { return Err(JournalError::ProtectedBoundary); }
-                    super::controller_source_genesis::ack_transaction(project, value)?
-                }
-                _ => {
-                    let record = transaction.records().first().ok_or(JournalError::ProtectedBoundary)?;
-                    let value: &[u8; 144] = required_value(record)?.try_into().map_err(|_| JournalError::ProtectedBoundary)?;
-                    super::controller_source_genesis::complete_transaction(project, value)?
-                }
-            };
-            if transaction != &expected { return Err(JournalError::ProtectedBoundary); }
-        }
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_project_genesis_family_v3(state, transaction, phase)
+        .map_err(JournalError::from)
 }
 
 pub(super) fn require_project_genesis_native_owner_v3(
@@ -807,28 +381,24 @@ fn require_source_transition(
     transaction: &JournalTransaction,
     phase: Option<FirstSourceSuccessorNativePhaseV2>,
 ) -> Result<Option<[u8; 32]>, JournalError> {
-    let recipe = match phase {
-        Some(FirstSourceSuccessorNativePhaseV2::MixedSourceAppend) => {
-            let record = transaction.records().get(2).ok_or(JournalError::ProtectedBoundary)?;
-            let receipt = SourceFirstSuccessorReceiptV2::decode(required_value(record)?)
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-            SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: Some(receipt.project()) }
-        }
-        Some(FirstSourceSuccessorNativePhaseV2::MixedSourceAck) => {
-            let pending = SourceFirstSuccessorPendingV2::decode(
-                state.get(&(RecordNamespace::DesiredState, PENDING_KEY.to_vec()))
-                    .ok_or(JournalError::ProtectedBoundary)?,
-            ).map_err(|_| JournalError::ProtectedBoundary)?;
-            SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: Some(pending.project()) }
-        }
-        Some(FirstSourceSuccessorNativePhaseV2::MixedControllerBegin
-            | FirstSourceSuccessorNativePhaseV2::MixedControllerAnchored
-            | FirstSourceSuccessorNativePhaseV2::MixedControllerComplete) => {
-            SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: None }
-        }
-        _ => SourceSuccessorFamilyRecipeV3::SingleProjectV2,
-    };
-    require_source_transition_with_recipe(state, transaction, phase, recipe)
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_source_transition::<JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1>(
+        state, transaction, phase,
+    )
+}
+
+fn require_source_transition_with_originals(
+    state: &State,
+    transaction: &JournalTransaction,
+    phase: Option<FirstSourceSuccessorNativePhaseV2>,
+    originals: Option<&mut transition_retained::SourceTransitionOriginalsV1>,
+) -> Result<Option<[u8; 32]>, JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_source_transition_with_originals::<JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1>(
+        state, transaction, phase, originals,
+    )
 }
 
 fn require_source_transition_with_recipe(
@@ -837,177 +407,79 @@ fn require_source_transition_with_recipe(
     phase: Option<FirstSourceSuccessorNativePhaseV2>,
     recipe: SourceSuccessorFamilyRecipeV3,
 ) -> Result<Option<[u8; 32]>, JournalError> {
-    let rows = current_rows_with_recipe(state, recipe)?;
-    match phase.map(FirstSourceSuccessorNativePhaseV2::canonical) {
-        Some(FirstSourceSuccessorNativePhaseV2::SourceAppend) => {
-            let [_, _, receipt_record, pending_record, capacity] = transaction.records() else {
-                return Err(JournalError::ProtectedBoundary);
-            };
-            if rows.pending.is_some()
-                || (recipe == SourceSuccessorFamilyRecipeV3::SingleProjectV2 && !rows.receipts.is_empty())
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            let receipt = SourceFirstSuccessorReceiptV2::decode(required_value(receipt_record)?)
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-            let pending = SourceFirstSuccessorPendingV2::decode(required_value(pending_record)?)
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-            let project = receipt.project();
-            if matches!(recipe, SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { .. })
-                && rows.receipts.contains_key(&project)
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            let expected_id = transaction_id(receipt.approval(), FirstSourceSuccessorNativePhaseV2::SourceAppend);
-            let expected_capacity = first_source_successor_capacity_record_v2(
-                &source_capacity_request(&receipt)?, *transaction.id(),
-            )?;
-            if transaction.id() != &expected_id
-                || receipt_record.namespace() != RecordNamespace::DesiredState
-                || receipt_record.key() != receipt_key(project)
-                || pending_record.namespace() != RecordNamespace::DesiredState
-                || pending_record.key() != PENDING_KEY
-                || !pending_matches_receipt(&pending, &receipt)
-                || capacity != &expected_capacity
-                || [receipt_record, pending_record, capacity].iter().any(|record| {
-                    state.contains_key(&(record.namespace(), record.key().to_vec()))
-                })
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            let pair = &transaction.records()[..2];
-            match recipe {
-                SourceSuccessorFamilyRecipeV3::SingleProjectV2 => {
-                    crate::hierarchy::validate_source_first_successor_members_v2(state, &receipt, Some(pair))?;
-                }
-                SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected } => {
-                    if selected != Some(project) { return Err(JournalError::ProtectedBoundary); }
-                    crate::hierarchy::validate_source_project_continuation_members_v3(
-                        state, &rows.receipts, Some((&receipt, pair)),
-                    )?;
-                }
-            }
-            let after = super::root_original_inventory::materialize(state, transaction);
-            current_rows_with_recipe(&after, recipe)?;
-            Ok(None)
-        }
-        Some(FirstSourceSuccessorNativePhaseV2::SourceAck) => {
-            let [pending_delete, ack_record, capacity_delete] = transaction.records() else {
-                return Err(JournalError::ProtectedBoundary);
-            };
-            let pending = rows.pending.as_ref()
-                .ok_or(JournalError::ProtectedBoundary)?;
-            let project = pending.project();
-            let receipt = rows.receipts.get(&project)
-                .ok_or(JournalError::ProtectedBoundary)?;
-            let ack = SourceFirstSuccessorAckV2::decode(required_value(ack_record)?)
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-            let request = source_capacity_request(receipt)?;
-            let admission = transaction_id(receipt.approval(), FirstSourceSuccessorNativePhaseV2::SourceAppend);
-            let expected_id = transaction_id(receipt.approval(), FirstSourceSuccessorNativePhaseV2::SourceAck);
-            let expected_deletion = first_source_successor_capacity_delete_v2(state, &request, admission)?;
-            if transaction.id() != &expected_id
-                || pending_delete != &JournalRecord::delete(RecordNamespace::DesiredState, PENDING_KEY.to_vec())
-                || ack_record.namespace() != RecordNamespace::DesiredState
-                || ack_record.key() != ack_key(project)
-                || ack.instance() != receipt.instance()
-                || ack.project() != receipt.project()
-                || ack.receipt() != receipt.digest()
-                || state.contains_key(&(ack_record.namespace(), ack_record.key().to_vec()))
-                || capacity_delete != &expected_deletion
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            current_rows_with_recipe(&super::root_original_inventory::materialize(state, transaction), recipe)?;
-            Ok(Some(first_source_successor_capacity_identity_v2(&request, admission)?))
-        }
-        _ => {
-            if rows.pending.is_some()
-                || transaction.records().iter().any(|record| record.key().starts_with(PREFIX))
-                || touches_capacity_purpose(state, transaction, GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck)?
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            Ok(None)
-        }
-    }
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_source_transition_with_recipe::<JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1>(
+        state, transaction, phase, recipe,
+    )
+}
+
+fn require_source_transition_with_recipe_originals(
+    state: &State,
+    transaction: &JournalTransaction,
+    phase: Option<FirstSourceSuccessorNativePhaseV2>,
+    recipe: SourceSuccessorFamilyRecipeV3,
+    originals: Option<&mut transition_retained::SourceTransitionOriginalsV1>,
+) -> Result<Option<[u8; 32]>, JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_source_transition_with_recipe_originals::<JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1>(
+        state, transaction, phase, recipe, originals,
+    )
+}
+
+fn require_source_transition_engine(
+    state: &State,
+    transaction: &JournalTransaction,
+    phase: Option<FirstSourceSuccessorNativePhaseV2>,
+    recipe: SourceSuccessorFamilyRecipeV3,
+    originals: Option<&mut transition_retained::SourceTransitionOriginalsV1>,
+) -> Result<Option<[u8; 32]>, JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_source_transition_engine::<JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1>(
+        state, transaction, phase, recipe, originals,
+    )
 }
 
 pub(super) fn require_genesis_predecessor(
     state: &State,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
-    // Source genesis forwards the canonical durable phase only. Derive this
-    // DATA comparison target from the actual receipt/ACK key, not the first
-    // retained receipt or a fabricated Journal. Singleton forwarding retains
-    // strict validation order while keeping both DATA families through selection.
-    let target = transaction.records().iter().find_map(|record| {
-        record.key().strip_prefix(RECEIPT_PREFIX)
-            .or_else(|| record.key().strip_prefix(ACK_PREFIX))
-    });
-    if let Some(target) = target
-        && state.keys().any(|(_, key)| key.strip_prefix(RECEIPT_PREFIX)
-            .is_some_and(|project| project != target))
-    {
-        return require_project_genesis_predecessor_v3(state, transaction);
-    }
-    let record = transaction.records().iter()
-        .find(|record| record.key().starts_with(RECEIPT_PREFIX));
-    let SourceProjectFamilyDataV3 { genesis, successor: rows } =
-        current_family_with_genesis_selection(
-            state, SourceSuccessorFamilyRecipeV3::SingleProjectV2, None,
-        )?;
-    let receipt = match record {
-        Some(record) => SourceFirstSuccessorReceiptV2::decode(required_value(record)?)
-            .map_err(|_| JournalError::ProtectedBoundary)?,
-        None => rows.receipts.values().next().cloned().ok_or(JournalError::ProtectedBoundary)?,
-    };
-    let project = receipt.project();
-    let original = genesis.receipts.get(&project)
-        .ok_or(JournalError::ProtectedBoundary)?;
-    if genesis.pending.is_some()
-        || !genesis.acks.contains_key(&project)
-        || original.tree_head() != receipt.old_tree_head()
-        || original.lineage_head() != receipt.old_lineage_head()
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_genesis_predecessor(state, transaction)
+        .map_err(JournalError::from)
+}
+
+pub(super) fn require_genesis_predecessor_with_originals(
+    state: &State,
+    transaction: &JournalTransaction,
+    originals: Option<&mut SourceGenesisPredecessorOriginalsV1>,
+) -> Result<(), JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_genesis_predecessor_with_originals(state, transaction, originals)
+}
+
+fn require_genesis_predecessor_engine(
+    state: &State,
+    transaction: &JournalTransaction,
+    originals: Option<&mut SourceGenesisPredecessorOriginalsV1>,
+) -> Result<(), JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_genesis_predecessor_engine(state, transaction, originals)
 }
 
 fn require_project_genesis_predecessor_v3(
     state: &State,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
-    let SourceProjectFamilyDataV3 { genesis, successor: rows } = replay_family(state)?;
-    let receipt = match transaction.records().iter()
-        .find(|record| record.key().starts_with(RECEIPT_PREFIX))
-    {
-        Some(record) => SourceFirstSuccessorReceiptV2::decode(required_value(record)?)
-            .map_err(|_| JournalError::ProtectedBoundary)?,
-        None => {
-            let pending = rows.pending.as_ref().ok_or(JournalError::ProtectedBoundary)?;
-            let receipt = rows.receipts.get(&pending.project())
-                .ok_or(JournalError::ProtectedBoundary)?;
-            if !transaction.records().iter().any(|record| {
-                record.namespace() == RecordNamespace::DesiredState
-                    && record.key() == ack_key(pending.project())
-            }) {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            receipt.clone()
-        }
-    };
-    let original = genesis.receipts.get(&receipt.project())
-        .ok_or(JournalError::ProtectedBoundary)?;
-    if genesis.pending.is_some()
-        || !genesis.acks.contains_key(&receipt.project())
-        || original.tree_head() != receipt.old_tree_head()
-        || original.lineage_head() != receipt.old_lineage_head()
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_project_genesis_predecessor_v3(state, transaction)
+        .map_err(JournalError::from)
+}
+
+fn require_project_genesis_predecessor_engine(
+    state: &State,
+    transaction: &JournalTransaction,
+    originals: Option<&mut SourceGenesisPredecessorOriginalsV1>,
+) -> Result<(), JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_project_genesis_predecessor_engine(state, transaction, originals)
 }
 
 pub(crate) fn require_capacity_owner(
@@ -1027,9 +499,7 @@ pub(crate) fn require_capacity_owner(
             }
         }
         GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck => {
-            let location = journal
-                .protected
-                .as_ref()
+            let location = journal.native.protected_view()
                 .ok_or(JournalError::ProtectedBoundary)?;
             if location.expected_uid() == 0 {
                 return Err(JournalError::ProtectedBoundary);
@@ -1042,9 +512,7 @@ pub(crate) fn require_capacity_owner(
             )
         }
         GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete => {
-            let location = journal
-                .protected
-                .as_ref()
+            let location = journal.native.protected_view()
                 .ok_or(JournalError::ProtectedBoundary)?;
             if location.expected_uid() == 0 {
                 return Err(JournalError::ProtectedBoundary);
@@ -1088,7 +556,7 @@ pub(super) fn require_live_custody(
     let receipt = match phase {
         FirstSourceSuccessorNativePhaseV2::SourceAppend => {
             let record = transaction.records().get(2).ok_or(JournalError::ProtectedBoundary)?;
-            Some(SourceFirstSuccessorReceiptV2::decode(required_value(record)?)
+            Some(SourceFirstSuccessorReceiptV2::decode(required_value(record)?).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)
                 .map_err(|_| JournalError::ProtectedBoundary)?)
         }
         FirstSourceSuccessorNativePhaseV2::SourceAck => {
@@ -1096,7 +564,7 @@ pub(super) fn require_live_custody(
         }
         FirstSourceSuccessorNativePhaseV2::MixedSourceAppend => {
             let record = transaction.records().get(2).ok_or(JournalError::ProtectedBoundary)?;
-            Some(SourceFirstSuccessorReceiptV2::decode(required_value(record)?)
+            Some(SourceFirstSuccessorReceiptV2::decode(required_value(record)?).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)
                 .map_err(|_| JournalError::ProtectedBoundary)?)
         }
         FirstSourceSuccessorNativePhaseV2::MixedSourceAck => {
@@ -1115,65 +583,20 @@ pub(super) fn require_live_custody(
 }
 
 pub(super) fn require_sequence_headroom(state: &State, next: u64) -> Result<(), JournalError> {
-    accounting_reservations(state)?.values().try_fold(next, |sequence, reservation| {
-        let records = u64::try_from(reservation.maximum_records)
-            .map_err(|_| JournalError::SequenceExhausted)?;
-        let transactions = u64::try_from(reservation.maximum_transactions)
-            .map_err(|_| JournalError::SequenceExhausted)?;
-        let framing = transactions.checked_mul(2)
-            .ok_or(JournalError::SequenceExhausted)?;
-
-        sequence.checked_add(records).and_then(|value| value.checked_add(framing))
-            .ok_or(JournalError::SequenceExhausted)
-    })?;
-    Ok(())
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_sequence_headroom(state, next)
+        .map_err(JournalError::from)
 }
 
 pub(super) fn require_no_compaction(state: &State) -> Result<(), JournalError> {
-    if replay_rows(state)?.pending.is_some()
-        || state.keys().any(|(_, key)| key.starts_with(b"\0aos-root-first-source-successor-v2\0intent\0"))
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    validate_root_state(state)
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_no_compaction(state)
+        .map_err(JournalError::from)
 }
 
 pub(super) fn recognize_replayed_phase(
     transaction: &JournalTransaction,
 ) -> Result<Option<FirstSourceSuccessorNativePhaseV2>, JournalError> {
-    let mut selected = None;
-    for record in transaction.records() {
-        let phase = if record.key().starts_with(PREFIX) {
-            if record.key().starts_with(RECEIPT_PREFIX) { Some(FirstSourceSuccessorNativePhaseV2::SourceAppend) }
-            else if record.key().starts_with(ACK_PREFIX) { Some(FirstSourceSuccessorNativePhaseV2::SourceAck) }
-            else { None }
-        } else if record.key().starts_with(b"\0aos-root-first-source-successor-v2\0") {
-            if record.key().starts_with(b"\0aos-root-first-source-successor-v2\0intent\0") && record.value().is_some() {
-                Some(FirstSourceSuccessorNativePhaseV2::RootPrepared)
-            } else if record.key().starts_with(b"\0aos-root-first-source-successor-v2\0floor\0") {
-                Some(FirstSourceSuccessorNativePhaseV2::RootAnchor)
-            } else { None }
-        } else { None };
-        if let Some(phase) = phase {
-            if selected.replace(phase).is_some_and(|previous| previous != phase) {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-    }
-    if let Some(transition) = super::controller_source_successor_issuance::recognize_replayed_transition(transaction)? {
-        let phase = match transition {
-            super::controller_source_successor_issuance::Transition::Begin => Some(FirstSourceSuccessorNativePhaseV2::ControllerBegin),
-            super::controller_source_successor_issuance::Transition::Anchored => Some(FirstSourceSuccessorNativePhaseV2::ControllerAnchored),
-            super::controller_source_successor_issuance::Transition::Complete => Some(FirstSourceSuccessorNativePhaseV2::ControllerComplete),
-            super::controller_source_successor_issuance::Transition::ProjectBegin(_) => Some(FirstSourceSuccessorNativePhaseV2::MixedControllerBegin),
-            super::controller_source_successor_issuance::Transition::ProjectAnchored(_) => Some(FirstSourceSuccessorNativePhaseV2::MixedControllerAnchored),
-            super::controller_source_successor_issuance::Transition::ProjectComplete(_) => Some(FirstSourceSuccessorNativePhaseV2::MixedControllerComplete),
-            _ => None,
-        };
-        if phase.is_some() && selected.is_some() { return Err(JournalError::ProtectedBoundary); }
-        selected = phase.or(selected);
-    }
-    Ok(selected)
+    aos_sandbox_ledger_replay::replay::source_tree_successor::recognize_replayed_phase(transaction)
+        .map_err(JournalError::from)
 }
 
 pub(super) fn validate_replayed_transaction(
@@ -1181,71 +604,62 @@ pub(super) fn validate_replayed_transaction(
     transaction: &JournalTransaction,
     limits: super::JournalLimits,
 ) -> Result<bool, JournalError> {
-    let phase = recognize_replayed_phase(transaction)?;
-    // A cold phase is complete structural DATA, not a live selected admission.
-    let comparison_phase = phase.map(|phase| match phase {
-        FirstSourceSuccessorNativePhaseV2::SourceAppend => FirstSourceSuccessorNativePhaseV2::MixedSourceAppend,
-        FirstSourceSuccessorNativePhaseV2::SourceAck => FirstSourceSuccessorNativePhaseV2::MixedSourceAck,
-        FirstSourceSuccessorNativePhaseV2::RootPrepared => FirstSourceSuccessorNativePhaseV2::MixedRootPrepared,
-        FirstSourceSuccessorNativePhaseV2::RootAnchor => FirstSourceSuccessorNativePhaseV2::MixedRootAnchor,
-        ordinary => ordinary,
-    });
-    require_replayed_transition(state, transaction, comparison_phase)?;
-    if phase.is_some() {
-        for record in transaction.records() {
-            if record.namespace() != RecordNamespace::GlobalCapacityReservation
-                || record.value().is_none()
-            {
-                continue;
-            }
-            let (request, admission, _) = aos_sandbox_protocol::domain_ledger::capacity_family::decode_capacity_reservation_request_v1(record)?;
-            if !request.purpose.is_first_source_successor() || &admission != transaction.id() {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            aos_sandbox_protocol::domain_ledger::capacity_family::validate_request_with_limits(
-                &request, limits,
-            )?;
-        }
-    }
-    super::controller_source_successor_issuance::require_no_mutation(
+    aos_sandbox_ledger_replay::replay::source_tree_successor::validate_replayed_transaction::<JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1>(
+        state, transaction, limits,
+    )
+}
+
+fn validate_replayed_transaction_with_originals(
+    state: &State,
+    transaction: &JournalTransaction,
+    limits: super::JournalLimits,
+    originals: Option<&mut transition_retained::SourceTransitionOriginalsV1>,
+    genesis_originals: Option<&mut super::source_tree_genesis::SourceGenesisMutationOriginalsV1>,
+    project_originals: Option<&mut SourceProjectGenesisOriginalsV1>,
+) -> Result<bool, JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::validate_replayed_transaction_with_originals::<JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1>(
+        state, transaction, limits, originals, genesis_originals, project_originals,
+    )
+}
+
+pub(super) fn source_member_dynamic_demand_v1(
+    state: &State,
+    transaction: Option<&JournalTransaction>,
+) -> Result<aos_sandbox_core::ResourceVector, JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::source_member_dynamic_demand_v1::<JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1>(
         state, transaction,
-        super::controller_source_successor_issuance::recognize_replayed_transition(transaction)?,
-    )?;
-    let genesis_transition = phase.map(|phase| phase.source_genesis_transition())
-        .map_or_else(|| super::source_tree_genesis::recognize_replayed_transition(transaction), Ok)?;
-    super::source_tree_genesis::require_no_mutation(state, transaction, genesis_transition)?;
-    Ok(phase.is_some() || state.keys().any(|(_, key)| {
-        key.starts_with(PREFIX) || key.starts_with(b"\0aos-root-first-source-successor-v2\0")
-            || key.starts_with(b"\0aos-controller-source-successor-issuance-v2\0consumer-")
-    }))
+    )
 }
 
 pub(super) fn validate_replayed_state(state: &State, compacted: bool) -> Result<(), JournalError> {
-    replay_rows(state)?;
-    validate_root_state(state)?;
-    super::controller_source_successor_issuance::validate_rows(state)?;
-    if compacted {
-        require_no_compaction(state)?;
-        super::controller_source_successor_issuance::require_no_compaction(state)?;
-        super::source_tree_genesis::require_no_compaction(state)?;
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::replay::source_tree_successor::validate_replayed_state::<JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1>(
+        state, compacted,
+    )
+}
+
+pub(super) fn validate_replayed_state_with_originals(
+    state: &State,
+    compacted: bool,
+    originals: Option<&mut SourceReplayFamilyOriginalsV1>,
+) -> Result<(), JournalError> {
+    aos_sandbox_ledger_replay::replay::source_tree_successor::validate_replayed_state_with_originals::<JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1>(
+        state, compacted, originals,
+    )
 }
 
 fn validate_root_state(state: &State) -> Result<(), JournalError> {
-    #[cfg(target_os = "linux")]
-    {
-        crate::policy_compiler::RootSourceGenesisAuthorityV1::validate_project_successor_replay_v3(state)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        if state.keys().any(|(_, key)| key.starts_with(b"\0aos-root-first-source-successor-v2\0")) {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        require_exact_capacity_family(
-            state, GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor, 0,
-        )
-    }
+    aos_sandbox_ledger_replay::replay::source_tree_successor::validate_root_state(state)
+        .map_err(JournalError::from)
 }
 
 fn validate_root_transition(
@@ -1253,28 +667,8 @@ fn validate_root_transition(
     transaction: &JournalTransaction,
     phase: Option<FirstSourceSuccessorNativePhaseV2>,
 ) -> Result<Option<[u8; 32]>, JournalError> {
-    #[cfg(target_os = "linux")]
-    {
-        crate::policy_compiler::validate_root_first_source_successor_transition_v2(
-            state, transaction, phase,
-        )
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        validate_root_state(state)?;
-        if matches!(phase, Some(FirstSourceSuccessorNativePhaseV2::RootPrepared
-            | FirstSourceSuccessorNativePhaseV2::RootAnchor))
-            || transaction.records().iter().any(|record| {
-                record.key().starts_with(b"\0aos-root-first-source-successor-v2\0")
-            })
-            || touches_capacity_purpose(
-                state, transaction, GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor,
-            )?
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(None)
-    }
+    aos_sandbox_ledger_replay::replay::source_tree_successor::validate_root_transition(state, transaction, phase)
+        .map_err(JournalError::from)
 }
 
 pub(crate) fn touches_capacity_purpose(
@@ -1282,19 +676,8 @@ pub(crate) fn touches_capacity_purpose(
     transaction: &JournalTransaction,
     purpose: GlobalCapacityReservationPurposeV1,
 ) -> Result<bool, JournalError> {
-    let mut touches = false;
-    for record in transaction.records() {
-        if record.namespace() != RecordNamespace::GlobalCapacityReservation {
-            continue;
-        }
-        let value = record.value().or_else(|| {
-            state.get(&(record.namespace(), record.key().to_vec())).map(Vec::as_slice)
-        })
-            .ok_or(JournalError::ProtectedBoundary)?;
-        let put = JournalRecord::put(record.namespace(), record.key().to_vec(), value.to_vec());
-        touches |= aos_sandbox_protocol::domain_ledger::capacity_family::capacity_record_has_legacy_purpose(&put, purpose)?;
-    }
-    Ok(touches)
+    aos_sandbox_ledger_replay::replay::source_tree_successor::touches_capacity_purpose(state, transaction, purpose)
+        .map_err(JournalError::from)
 }
 
 pub(crate) fn require_exact_capacity_family(
@@ -1302,57 +685,33 @@ pub(crate) fn require_exact_capacity_family(
     purpose: GlobalCapacityReservationPurposeV1,
     count: usize,
 ) -> Result<(), JournalError> {
-    aos_sandbox_protocol::domain_ledger::capacity_family::validate_capacity_snapshot_data_v2(
-        state,
-    )?;
-    let mut actual = 0_usize;
-    for ((namespace, key), value) in state {
-        if *namespace != RecordNamespace::GlobalCapacityReservation {
-            continue;
-        }
-        let record = JournalRecord::put(*namespace, key.clone(), value.clone());
-        if aos_sandbox_protocol::domain_ledger::capacity_family::capacity_record_has_legacy_purpose(
-            &record, purpose,
-        )? {
-            actual = actual
-                .checked_add(1)
-                .ok_or(JournalError::ProtectedBoundary)?;
-        }
-    }
-    if actual != count {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_exact_capacity_family(state, purpose, count)
+        .map_err(JournalError::from)
 }
 
 pub(crate) fn array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], JournalError> {
-    let (value, _) =
-        checked_byte_region(bytes, offset, N).map_err(|_| JournalError::ProtectedBoundary)?;
-    value
-        .try_into()
-        .map_err(|_| JournalError::ProtectedBoundary)
+    aos_sandbox_ledger_replay::replay::source_tree_successor::array::<N>(bytes, offset)
+        .map_err(JournalError::from)
 }
 
 pub(crate) fn digest_at(bytes: &[u8], offset: usize) -> Result<ObjectDigest, JournalError> {
-    Ok(ObjectDigest::from_bytes(array(bytes, offset)?))
+    aos_sandbox_ledger_replay::replay::source_tree_successor::digest_at(bytes, offset)
+        .map_err(JournalError::from)
 }
 
 pub(crate) fn receipt_project(receipt: &SourceFirstSuccessorReceiptV2) -> Result<ProjectId, JournalError> {
-    Ok(ProjectId::from_bytes(array(receipt.as_bytes(), 48)?))
+    aos_sandbox_ledger_replay::replay::source_tree_successor::receipt_project(receipt)
+        .map_err(JournalError::from)
 }
 
 fn project_key(key: &[u8], prefix: &[u8]) -> Result<Option<ProjectId>, JournalError> {
-    if !key.starts_with(prefix) {
-        return Ok(None);
-    }
-    if key.len() != prefix.len() + 16 {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(Some(ProjectId::from_bytes(array(key, prefix.len())?)))
+    aos_sandbox_ledger_replay::replay::source_tree_successor::project_key(key, prefix)
+        .map_err(JournalError::from)
 }
 
 fn required_value(record: &JournalRecord) -> Result<&[u8], JournalError> {
-    record.value().ok_or(JournalError::ProtectedBoundary)
+    aos_sandbox_ledger_replay::replay::source_tree_successor::required_value(record)
+        .map_err(JournalError::from)
 }
 
 impl Journal {
@@ -1440,7 +799,7 @@ impl Journal {
         )?;
         let prefix_append_bytes = super::encoded_transaction_append_bytes(prepared)?;
         let suffix_append_bytes = super::encoded_transaction_append_bytes(&suffix)?;
-        let journal_bytes = self.native.file().metadata()?.len()
+        let journal_bytes = self.native.metadata()?.len()
             .checked_add(prefix_append_bytes)
             .and_then(|bytes| bytes.checked_add(suffix_append_bytes))
             .ok_or(JournalError::JournalTooLarge)?;

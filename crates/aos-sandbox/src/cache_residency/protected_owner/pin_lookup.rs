@@ -14,9 +14,8 @@ use crate::cache_residency::{
     CachePinId, CachePinKindV1, CachePinLedgerV1, ValidatedPublicLogicalPinAcquisitionV1,
     protected_journal::LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS,
 };
-use crate::production_operation_compiler::{
-    RecheckedCacheConsumerV1, recheck_cache_consumer_projection_v1,
-};
+use aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1;
+use crate::production_operation_compiler::recheck_cache_consumer_projection_v1;
 
 #[cfg(target_os = "linux")]
 #[derive(Default)]
@@ -121,7 +120,7 @@ impl ResidentCachePinMutationV1 {
         session: &mut crate::cache_residency::protected_journal::RetainedCacheAuthoritySessionV1<'_, '_, '_, '_>,
         state: &mut crate::Journal,
         transaction_id: [u8; 16],
-        consumer: &RecheckedCacheConsumerV1,
+        consumer: &CacheConsumerDataV1,
         operation: OperationId,
         released_pin: Option<&CachePinV1>,
         source_journal: &crate::Journal,
@@ -372,7 +371,7 @@ impl CacheResidencyProtectedOwnerV1 {
         session: &mut crate::cache_residency::protected_journal::RetainedCacheAuthoritySessionV1<'_, '_, '_, '_>,
         state: &mut crate::Journal,
         progress: &mut ResidentCachePinMutationV1,
-        consumer: &RecheckedCacheConsumerV1,
+        consumer: &CacheConsumerDataV1,
         pin: &CachePinV1,
         operation: OperationId,
         transaction_id: [u8; 16],
@@ -397,7 +396,7 @@ impl CacheResidencyProtectedOwnerV1 {
             .filter(|candidate| logical_pin_matches_consumer(
                 candidate, pin.partition, &pin.object, pin.project, pin.view, pin.attachment,
             ));
-        if retained.next() != Some(pin) || retained.next().is_some() {
+        if retained.next() != Some(pin.historical_data_v1()) || retained.next().is_some() {
             return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
         }
         let budget = progress.state.payload_budget.as_mut()
@@ -512,7 +511,7 @@ impl CacheResidencyProtectedOwnerV1 {
     pub fn commit_public_logical_pin_release<R>(
         &mut self,
         transaction_id: [u8; 16],
-        consumer: &RecheckedCacheConsumerV1,
+        consumer: &CacheConsumerDataV1,
         pin: &CachePinV1,
         operation: OperationId,
         source_journal: &crate::Journal,
@@ -547,7 +546,7 @@ impl CacheResidencyProtectedOwnerV1 {
     /// exact protected pin, or when authority issuance cannot be confirmed.
     pub fn prepare_logical_pin_drain(
         &mut self,
-        consumer: &RecheckedCacheConsumerV1,
+        consumer: &CacheConsumerDataV1,
         pin: &CachePinV1,
     ) -> Result<CacheResidencyAuthorityRequestV1, CacheResidencyProtectedJournalErrorV1> {
         if consumer.acquisition_fence().is_some()
@@ -618,7 +617,7 @@ impl CacheResidencyProtectedOwnerV1 {
             let mut retained = Vec::new();
             for inventory in inventories {
                 let mut partition_pin = None;
-                for payload in inventory.reconstructed {
+                for payload in inventory.into_parsed_history_data_v1().reconstructed {
                     if &payload.plan.descriptor != object || payload.plan.project != project {
                         continue;
                     }
@@ -632,7 +631,7 @@ impl CacheResidencyProtectedOwnerV1 {
                         {
                             continue;
                         }
-                        if partition_pin.replace(pin).is_some() {
+                        if partition_pin.replace(CachePinV1::from_parsed_history_data_v1(pin)).is_some() {
                             return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
                         }
                     }
@@ -665,7 +664,7 @@ impl CacheResidencyProtectedOwnerV1 {
         self.with_reconstructed_partitions(|inventories| {
             let mut released = Vec::new();
             for inventory in inventories {
-                for payload in inventory.reconstructed {
+                for payload in inventory.into_parsed_history_data_v1().reconstructed {
                     if &payload.plan.descriptor != object || payload.plan.project != project {
                         continue;
                     }
@@ -680,7 +679,7 @@ impl CacheResidencyProtectedOwnerV1 {
                             && pin.attachment == attachment
                             && pin.kind == CachePinKindV1::LogicalLease
                         {
-                            released.push(pin);
+                            released.push(CachePinV1::from_parsed_history_data_v1(pin));
                         }
                     }
                 }
@@ -691,7 +690,7 @@ impl CacheResidencyProtectedOwnerV1 {
 }
 
 pub(super) fn logical_pin_matches_consumer(
-    candidate: &CachePinV1,
+    candidate: &aos_sandbox_protocol::cache_state::pin_data::CachePinDataV1,
     partition: PhysicalPartitionId,
     object: &ObjectDescriptor,
     project: ProjectId,
@@ -710,7 +709,7 @@ pub(super) fn logical_pin_matches_consumer(
 fn recheck_current_cache_consumer(
     source_journal: &crate::Journal,
     request: &aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1,
-    expected: &RecheckedCacheConsumerV1,
+    expected: &CacheConsumerDataV1,
 ) -> Result<(), ProtectedDomainJournalErrorV1> {
     let current = recheck_cache_consumer_projection_v1(source_journal, expected.project(), request)
         .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
@@ -745,14 +744,17 @@ fn select_public_logical_pin_id(
     let active = inventory
         .reconstructed
         .iter()
-        .flat_map(|payload| payload.pins.iter().cloned());
+        .flat_map(|payload| payload.pins.iter().cloned().map(CachePinV1::from_parsed_history_data_v1));
     let released = inventory
         .reconstructed
         .iter()
-        .flat_map(|payload| payload.released_pins.iter().cloned());
+        .flat_map(|payload| payload.released_pins.iter().map(|released| super::ReleasedCachePinV1 {
+            pin: CachePinV1::from_parsed_history_data_v1(released.pin.clone()),
+            drain: super::super::pin::PinDrainEvidenceV1::from_parsed_history_data_v1(released.drain),
+        }));
     let ledger = CachePinLedgerV1::replay(
         CacheRecoveryLimitsV1::default().maximum_records,
-        inventory.global.pin_floor,
+        inventory.global.pin_floor.map(super::super::pin::PinCompactionFloorV1::from_parsed_history_data_v1),
         active,
         released,
     )

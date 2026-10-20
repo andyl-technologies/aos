@@ -10,6 +10,10 @@ use buffa::Enumeration as _;
 use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 
+mod verification_capture;
+#[doc(hidden)]
+pub use verification_capture::BrokerSessionArtifactVerifyCaptureV1;
+
 use crate::model::{
     BROKER_HELLO_SUBJECT_BYTES, BROKER_OUTCOME_SUBJECT_BYTES, BROKER_REQUEST_SUBJECT_BYTES,
     BROKER_SESSION_SIGNED_OVERHEAD_BYTES, BROKER_SESSION_SIGNER_REFERENCE_BYTES,
@@ -353,10 +357,12 @@ pub fn signer_set_digest_v1(signers: &[BrokerSessionSignerReferenceV1; 4]) -> [u
 /// Digests the complete signed ClientHello artifact under its independent domain.
 #[must_use]
 pub fn complete_signed_client_hello_digest_v1(value: &SignedBrokerClientHelloV1) -> [u8; 32] {
-    length_prefixed_digest(
-        SIGNED_CLIENT_HELLO_DIGEST_DOMAIN,
-        &value.to_canonical_bytes(),
-    )
+    complete_signed_client_hello_digest_from_canonical_v1(&value.to_canonical_bytes())
+}
+
+// The retained transcript owns the same canonical buffer before later checks.
+pub(crate) fn complete_signed_client_hello_digest_from_canonical_v1(bytes: &[u8]) -> [u8; 32] {
+    length_prefixed_digest(SIGNED_CLIENT_HELLO_DIGEST_DOMAIN, bytes)
 }
 
 /// Digests the complete signed ClientRecord artifact under its independent domain.
@@ -537,6 +543,23 @@ macro_rules! hello_wire {
                     public_key,
                 )
             }
+
+            /// Retains the actual subject, signing preimage and strict outcome.
+            ///
+            /// This destination is passive DATA; the same caller-selected key
+            /// and unchanged strict verifier supply every cryptographic check.
+            ///
+            /// # Errors
+            /// Returns the existing artifact classification and retains reached
+            /// buffers and the original result. Reentry refuses before encoding.
+            #[doc(hidden)]
+            pub fn verify_with_public_key_retaining_v1(
+                &self, public_key: &[u8; 32], capture: &mut BrokerSessionArtifactVerifyCaptureV1,
+            ) -> Result<(), BrokerSessionArtifactError> {
+                capture.capture_once($domain, $purpose, 0, &self.signer, &self.signature,
+                    $usage, public_key, || $encode(&self.subject))
+            }
+
         }
     };
 }
@@ -623,6 +646,27 @@ macro_rules! traffic_wire {
                     public_key,
                 )
             }
+
+            /// Retains the actual subject, signing preimage and strict outcome.
+            ///
+            /// The same closed method and caller-selected key are checked by
+            /// the ordinary verifier; this inert capture supplies no authority.
+            ///
+            /// # Errors
+            /// Returns the original method/key/signature classification while
+            /// retaining reached buffers. Reentry refuses before encoding.
+            #[doc(hidden)]
+            pub fn verify_with_public_key_retaining_v1(
+                &self, public_key: &[u8; 32], capture: &mut BrokerSessionArtifactVerifyCaptureV1,
+            ) -> Result<(), BrokerSessionArtifactError> {
+                let method = match method_code(self.method) {
+                    Ok(method) => method,
+                    Err(error) => return capture.reject_before_subject(error.into()),
+                };
+                capture.capture_once($domain, $purpose, method, &self.signer, &self.signature,
+                    $usage, public_key, || $encode(&self.subject))
+            }
+
         }
     };
 }
@@ -764,17 +808,38 @@ fn verify(
     usage: BrokerSessionKeyUsageV1,
     public_key: &[u8; 32],
 ) -> Result<(), BrokerSessionArtifactError> {
+    let mut message = None;
+    let result = verify_into(domain, purpose, method, subject, signer, signature, usage,
+        public_key, &mut message, false);
+    // The old signing temporary ended after the same strict verification.
+    drop(message);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_into(
+    domain: &[u8], purpose: u8, method: u8, subject: &[u8],
+    signer: &BrokerSessionSignerReferenceV1, signature: &BrokerSessionSignature,
+    usage: BrokerSessionKeyUsageV1, public_key: &[u8; 32], message: &mut Option<Vec<u8>>,
+    retain_failure: bool,
+) -> Result<(), BrokerSessionArtifactError> {
     require_key(signer, usage, public_key)?;
     let key = VerifyingKey::from_bytes(public_key)
         .map_err(|_| BrokerSessionArtifactError::InvalidPublicKey)?;
     if key.is_weak() {
         return Err(BrokerSessionArtifactError::InvalidPublicKey);
     }
-    key.verify_strict(
-        &signing_message(domain, purpose, method, signer, subject),
+    *message = Some(signing_message(domain, purpose, method, signer, subject));
+    let result = key.verify_strict(
+        message.as_deref().ok_or(BrokerSessionArtifactError::InvalidSignature)?,
         &ed25519_dalek::Signature::from_bytes(signature.as_bytes()),
     )
-    .map_err(|_| BrokerSessionArtifactError::InvalidSignature)
+    .map_err(|_| BrokerSessionArtifactError::InvalidSignature);
+    if !retain_failure || result.is_ok() {
+        // Ordinary signing scratch ended before the local verification key.
+        drop(message.take());
+    }
+    result
 }
 
 fn require_key(

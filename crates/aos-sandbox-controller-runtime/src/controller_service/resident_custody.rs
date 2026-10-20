@@ -7,6 +7,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
+
 use super::activation::SystemdReadyNotifier;
 use super::worker::WorkerEvent;
 use super::{
@@ -24,6 +25,12 @@ use super::{
 #[derive(Default)]
 pub(super) struct ControllerWorkerOriginalsV1 {
     pub(super) resource_bank: Option<Arc<Mutex<aos_sandbox::ControllerResourceBankOpeningV1>>>,
+    pub(super) shared_runtime: Option<Arc<tokio::runtime::Runtime>>,
+    pub(super) foundations: Option<Arc<ControllerFoundationOriginalsV1>>,
+
+    // A deny-only startup disposition selected from the confirmed native
+    // successor. Every recovery request still needs its own admitted owner.
+    pub(super) operator_recover_only: bool,
 
     pub(super) git_coverage_enabled: bool,
     pub(super) git_read: Option<git_read_inspection::GitReadWorkerInputsV1>,
@@ -51,6 +58,40 @@ pub(super) struct ControllerWorkerOriginalsV1 {
     worker_stage: ControllerWorkerStageV1,
 }
 
+// The sole installed assembly moves these SAME producer originals here only
+// after their actual output anchors have moved into this owner's Controller.
+// Failed optional producers move too: inspecting them never retires errors.
+pub(super) struct ControllerFoundationOriginalsV1 {
+    host: super::attachment_target::startup_identity::ControllerAttachmentStartupV1,
+    mount: super::attachment_target::startup_identity::ControllerAttachmentStartupV1,
+}
+
+impl ControllerFoundationOriginalsV1 {
+    pub(super) fn new(
+        host: super::attachment_target::startup_identity::ControllerAttachmentStartupV1,
+        mount: super::attachment_target::startup_identity::ControllerAttachmentStartupV1,
+    ) -> Self {
+        Self { host, mount }
+    }
+
+    pub(super) const fn receiving_bytes_v1() -> usize {
+        // Arc destination and its pre-allocation temporary can coexist.
+        2 * std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()
+    }
+
+    pub(super) fn completed_anchor_files_v1(&self) -> Option<usize> {
+        if self.host.native_temporaries_disposed_v1()
+            && self.mount.native_temporaries_disposed_v1()
+        {
+            // The actual private assembly moved precisely one output cgroup
+            // anchor from each original into the co-owned Controller.
+            Some(2)
+        } else {
+            None
+        }
+    }
+}
+
 // Consecutive values constrain this private, single execution recipe. They are
 // negative bookkeeping, never a currentness, floor, or detached Ready witness.
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -60,6 +101,7 @@ pub(super) enum ControllerParentStepV1 {
     Node,
     Nix,
     GenesisInput,
+    RuntimePreparation,
     PublisherRegistration,
     Cache,
     Ownership,
@@ -162,6 +204,10 @@ impl ControllerWorkerOriginalsV1 {
         Some(ControllerWorkerLoanV1 {
             controller: self.controller.as_mut()?,
             profile: self.profile.as_ref()?.as_deref(),
+            profile_original: self.profile.as_ref()?.as_ref(),
+            resource_bank: self.resource_bank.as_ref(),
+            shared_runtime: self.shared_runtime.as_ref(),
+            foundations: self.foundations.as_ref(),
             node: self.node?,
             ownership: self.ownership.as_ref()?.as_ref().and_then(|donation| donation.get()),
             attach: self.attach.as_ref()?.as_ref(),
@@ -171,6 +217,7 @@ impl ControllerWorkerOriginalsV1 {
             publisher: self.publisher_registration.as_mut()?.as_mut(),
             cache_bootstrap: self.publisher_policy_bootstrap.as_mut(),
             git_coverage_enabled: self.git_coverage_enabled,
+            operator_recover_only: self.operator_recover_only,
             git_read: self.git_read.as_mut(),
             capabilities: self.capabilities.as_ref()?,
             sessions: self.sessions.as_ref()?,
@@ -184,6 +231,10 @@ impl ControllerWorkerOriginalsV1 {
 pub(super) struct ControllerWorkerLoanV1<'owner> {
     pub(super) controller: &'owner mut ProductionController,
     pub(super) profile: Option<&'owner aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>,
+    pub(super) profile_original: Option<&'owner Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
+    pub(super) resource_bank: Option<&'owner Arc<Mutex<aos_sandbox::ControllerResourceBankOpeningV1>>>,
+    pub(super) shared_runtime: Option<&'owner Arc<tokio::runtime::Runtime>>,
+    pub(super) foundations: Option<&'owner Arc<ControllerFoundationOriginalsV1>>,
     pub(super) node: [u8; 16],
     pub(super) ownership: Option<&'owner ControllerOwnershipConfigurationV1>,
     pub(super) attach: Option<&'owner ControllerAttachCredentialsV1>,
@@ -193,6 +244,7 @@ pub(super) struct ControllerWorkerLoanV1<'owner> {
     pub(super) publisher: Option<&'owner mut publisher_ingress::PublisherRegistrationOwnerV1>,
     pub(super) cache_bootstrap: Option<&'owner mut publisher_policy_source::PublisherPolicyBootstrapAttemptV1>,
     pub(super) git_coverage_enabled: bool,
+    pub(super) operator_recover_only: bool,
     pub(super) git_read: Option<&'owner mut git_read_inspection::GitReadWorkerInputsV1>,
     pub(super) capabilities: &'owner Arc<Mutex<CapabilityState>>,
     pub(super) sessions: &'owner SharedControllerBrokerSessions,
@@ -258,6 +310,8 @@ pub(super) struct ControllerWorkerCustodyV1 {
     pub(super) originals: Mutex<ControllerWorkerOriginalsV1>,
     terminal: Mutex<Option<ControllerResidentCauseV1>>,
     pub(super) receiver: Mutex<Option<mpsc::Receiver<WorkerEvent>>>,
+    // Private activity scheduling; true only immediately before main driving.
+    pub(super) serving: AtomicBool,
     pub(super) ended: AtomicBool,
 }
 
@@ -306,17 +360,65 @@ pub(super) enum ControllerMonitorOutcomeV1 {
     Ended,
 }
 
+// Ordinary startup retains its original Runtime value and disposal. Selected
+// startup shares the exact admitted reactor with its physical readers; this
+// carrier provides mechanics only and never substitutes for C/B admission.
+pub(super) enum ControllerParentRuntimeV1 {
+    Ordinary(tokio::runtime::Runtime),
+    Shared(Arc<tokio::runtime::Runtime>),
+}
+
+impl std::ops::Deref for ControllerParentRuntimeV1 {
+    type Target = tokio::runtime::Runtime;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Ordinary(runtime) => runtime,
+            Self::Shared(runtime) => runtime,
+        }
+    }
+}
+
 // Same parent frame owns these partial I/O returns independently of the worker
 // mutex. Selected termination intentionally precedes every normal field Drop.
 pub(super) struct ControllerParentCustodyV1<A: ControllerServerAssembly> {
     pub(super) worker: Arc<ControllerWorkerCustodyV1>,
     pub(super) stage: ControllerParentStageV1,
     pub(super) launch: Option<Option<aos_sandbox_broker_session_security::controller_composition::Pid1LaunchImageV1>>,
-    pub(super) runtime: Option<tokio::runtime::Runtime>,
+    pub(super) runtime_receiving: bool,
+    pub(super) node_read: aos_sandbox_linux::credential::FixedRoleCredentialReadV1,
+    pub(super) cache_bundle_read: aos_sandbox_linux::credential::FixedRoleCredentialReadV1,
+    pub(super) ownership_credentials: super::credential_receiving::CredentialAttemptV1<
+        ControllerOwnershipConfigurationV1, super::ownership::ControllerOwnershipCredentialErrorV1,
+    >,
+    pub(super) attach_credentials: super::credential_receiving::CredentialAttemptV1<
+        ControllerAttachCredentialsV1, super::attach_credentials::ControllerAttachCredentialErrorV1,
+    >,
+    pub(super) worker_signer_credentials: super::credential_receiving::CredentialAttemptV1<
+        ControllerBrokerPlanSignerV1, super::plan_signer::ControllerBrokerPlanSignerError,
+    >,
+    pub(super) executor_signer_credentials: super::credential_receiving::CredentialAttemptV1<
+        ControllerBrokerPlanSignerV1, super::plan_signer::ControllerBrokerPlanSignerError, 7,
+    >,
+    pub(super) pins_credentials: super::credential_receiving::CredentialAttemptV1<
+        aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1, super::guest_root_credentials::ControllerGuestRootCredentialErrorV1,
+    >,
+    pub(super) cache_readback_credentials: super::credential_receiving::CredentialAttemptV1<
+        (), super::cache_readback_credential::CacheReadbackCredentialErrorV1,
+    >,
+    pub(super) hold_credentials: super::credential_receiving::CredentialAttemptV1<
+        (), super::hold_credential::ControllerHoldCredentialErrorV1,
+    >,
+    pub(super) genesis_startup: Option<aos_sandbox::ControllerSourceGenesisReceivingV1>,
+    pub(super) genesis_capture: Option<Result<(), ()>>,
+    pub(super) runtime: Option<ControllerParentRuntimeV1>,
     pub(super) diagnostic_registration: Option<tokio::net::UnixListenerRegistrationAttempt>,
     pub(super) diagnostic: Option<A::DiagnosticListener>,
     pub(super) public_startup: A::PublicStartup,
+    pub(super) public_credentials: Option<aos_sandbox::ControllerPublicTlsReceivingV1>,
     pub(super) public: Option<Option<A::PublicListener>>,
+    pub(super) host_startup: Option<super::attachment_target::startup_identity::ControllerAttachmentStartupV1>,
+    pub(super) mount_startup: Option<super::attachment_target::startup_identity::ControllerAttachmentStartupV1>,
     pub(super) host: Option<Option<aos_sandbox::runtime_scope::HostServiceIdentity>>,
     pub(super) mount: Option<Option<aos_sandbox::mount_preparation::MountServiceIdentity>>,
     pub(super) resource_opening: Option<aos_sandbox::ControllerResourceBankOpeningV1>,
@@ -338,7 +440,9 @@ impl<A: ControllerServerAssembly> ControllerParentCustodyV1<A> {
     pub(super) fn new(
         profile: Option<Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
         launch: Option<aos_sandbox_broker_session_security::controller_composition::Pid1LaunchImageV1>,
+        resource_opening: Option<aos_sandbox::ControllerResourceBankOpeningV1>,
     ) -> Self {
+        let runtime_receiving = resource_opening.is_some();
         Self {
             worker: Arc::new(ControllerWorkerCustodyV1 {
                 originals: Mutex::new(ControllerWorkerOriginalsV1 {
@@ -347,18 +451,34 @@ impl<A: ControllerServerAssembly> ControllerParentCustodyV1<A> {
                 }),
                 terminal: Mutex::new(None),
                 receiver: Mutex::new(None),
+                serving: AtomicBool::new(false),
                 ended: AtomicBool::new(false),
             }),
             stage: ControllerParentStageV1::Prepared,
             launch: Some(launch),
+            runtime_receiving,
+            node_read: aos_sandbox_linux::credential::FixedRoleCredentialReadV1::prearmed(),
+            cache_bundle_read: aos_sandbox_linux::credential::FixedRoleCredentialReadV1::prearmed(),
+            ownership_credentials: super::credential_receiving::CredentialAttemptV1::new(),
+            attach_credentials: super::credential_receiving::CredentialAttemptV1::new(),
+            worker_signer_credentials: super::credential_receiving::CredentialAttemptV1::new(),
+            executor_signer_credentials: super::credential_receiving::CredentialAttemptV1::new_start_signer_v2(),
+            pins_credentials: super::credential_receiving::CredentialAttemptV1::new(),
+            cache_readback_credentials: super::credential_receiving::CredentialAttemptV1::new(),
+            hold_credentials: super::credential_receiving::CredentialAttemptV1::new(),
+            genesis_startup: None,
+            genesis_capture: None,
             runtime: None,
             diagnostic_registration: None,
             diagnostic: None,
             public_startup: A::public_startup(),
+            public_credentials: None,
             public: None,
+            host_startup: None,
+            mount_startup: None,
             host: None,
             mount: None,
-            resource_opening: None,
+            resource_opening,
             controller_journal: aos_sandbox::journal::controller::ControllerJournalConstructionV1::new(),
             source_journal: aos_sandbox::source_domain::ControllerSourceJournalConstructionV1::new(),
             executor_signer: None,
@@ -469,20 +589,51 @@ mod tests {
 
     #[test]
     fn partial_optional_absence_does_not_create_a_worker_loan() {
-        let mut originals = ControllerWorkerOriginalsV1::default();
-        assert!(originals.genesis.is_none());
+        with_controller_fixture_stack(|| {
+            let mut originals = ControllerWorkerOriginalsV1::default();
+            assert!(originals.genesis.is_none());
 
-        originals.genesis = Some(None);
-        originals.nix_selector = Some(None);
-        originals.cache_bundle = Some(None);
-        originals.publisher_registration = Some(None);
+            originals.genesis = Some(None);
+            originals.nix_selector = Some(None);
+            originals.cache_bundle = Some(None);
+            originals.publisher_registration = Some(None);
 
-        assert!(matches!(originals.genesis, Some(None)));
-        assert!(originals.ready_loan().is_none());
-        assert!(!originals.complete_worker_inputs(&ControllerParentStageV1::Prepared));
-        assert!(!originals.complete_worker_inputs(&ControllerParentStageV1::Completed(
-            ControllerParentStepV1::Commands,
-        )));
+            assert!(matches!(originals.genesis, Some(None)));
+            assert!(originals.ready_loan().is_none());
+            assert!(!originals.complete_worker_inputs(&ControllerParentStageV1::Prepared));
+            assert!(!originals.complete_worker_inputs(&ControllerParentStageV1::Completed(
+                ControllerParentStepV1::Commands,
+            )));
+        });
+    }
+
+    fn with_controller_fixture_stack(test: impl FnOnce() + Send + 'static) {
+        // This test scaffold constructs an inline empty owner, returns it by
+        // value through a helper, then stores it in a test local. The retained
+        // production worker instead borrows the already allocated Arc owner.
+        // Cover each fixture construction/move plane using its compiled size;
+        // this is not evidence that production startup fits its stack budget.
+        let fixture_planes = [
+            std::mem::size_of::<ControllerWorkerOriginalsV1>(),
+            std::mem::size_of::<Mutex<ControllerWorkerOriginalsV1>>(),
+            std::mem::size_of::<ControllerWorkerCustodyV1>(),
+            std::mem::size_of::<ControllerWorkerCustodyV1>(),
+        ];
+        let stack = fixture_planes
+            .into_iter()
+            .try_fold(
+                aos_sandbox::CONTROLLER_RUNTIME_STACK_BYTES_V1,
+                usize::checked_add,
+            )
+            .expect("Controller test fixture stack bound overflowed");
+
+        std::thread::Builder::new()
+            .name("controller-custody-fixture".to_owned())
+            .stack_size(stack)
+            .spawn(test)
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     fn empty_controller_test_custody() -> ControllerWorkerCustodyV1 {
@@ -490,85 +641,94 @@ mod tests {
             originals: Mutex::new(ControllerWorkerOriginalsV1::default()),
             terminal: Mutex::new(None),
             receiver: Mutex::new(None),
+            serving: AtomicBool::new(false),
             ended: AtomicBool::new(false),
         }
     }
 
     #[test]
     fn terminal_close_does_not_wait_on_the_worker_owner_loan() {
-        let custody = empty_controller_test_custody();
-        let _owner_loan = custody.originals.lock().unwrap();
-        let message = "original worker cause".to_owned();
-        let original_buffer = message.as_ptr();
+        with_controller_fixture_stack(|| {
+            let custody = empty_controller_test_custody();
+            let _owner_loan = custody.originals.lock().unwrap();
+            let message = "original worker cause".to_owned();
+            let original_buffer = message.as_ptr();
 
-        custody.close(ControllerResidentCauseV1::Worker(message));
-        custody.close(ControllerResidentCauseV1::Closed("later failure"));
+            custody.close(ControllerResidentCauseV1::Worker(message));
+            custody.close(ControllerResidentCauseV1::Closed("later failure"));
 
-        assert!(custody.ended.load(Ordering::Acquire));
-        let terminal = custody.terminal.lock().unwrap();
-        assert!(matches!(
-            terminal.as_ref(),
-            Some(ControllerResidentCauseV1::Worker(message))
-                if message.as_ptr() == original_buffer && message == "original worker cause"
-        ));
+            assert!(custody.ended.load(Ordering::Acquire));
+            let terminal = custody.terminal.lock().unwrap();
+            assert!(matches!(
+                terminal.as_ref(),
+                Some(ControllerResidentCauseV1::Worker(message))
+                    if message.as_ptr() == original_buffer && message == "original worker cause"
+            ));
+        });
     }
 
     #[test]
     fn ready_send_failure_retains_the_actual_returned_send_error() {
-        let custody = empty_controller_test_custody();
-        let (sender, receiver) = mpsc::channel();
-        drop(receiver);
-        let cause = match sender.send(WorkerEvent::Ready) {
-            Err(cause) => cause,
-            Ok(()) => panic!("disconnected actual channel unexpectedly accepted readiness"),
-        };
+        with_controller_fixture_stack(|| {
+            let custody = empty_controller_test_custody();
+            let (sender, receiver) = mpsc::channel();
+            drop(receiver);
+            let cause = match sender.send(WorkerEvent::Ready) {
+                Err(cause) => cause,
+                Ok(()) => panic!("disconnected actual channel unexpectedly accepted readiness"),
+            };
 
-        custody.close(ControllerResidentCauseV1::ReadySend(cause));
+            custody.close(ControllerResidentCauseV1::ReadySend(cause));
 
-        let terminal = custody.terminal.lock().unwrap();
-        assert!(matches!(
-            terminal.as_ref(),
-            Some(ControllerResidentCauseV1::ReadySend(mpsc::SendError(WorkerEvent::Ready)))
-        ));
+            let terminal = custody.terminal.lock().unwrap();
+            assert!(matches!(
+                terminal.as_ref(),
+                Some(ControllerResidentCauseV1::ReadySend(mpsc::SendError(WorkerEvent::Ready)))
+            ));
+        });
     }
 
     #[test]
     fn original_event_receiver_stays_in_its_slot_after_reception() {
-        let custody = empty_controller_test_custody();
-        let (sender, receiver) = mpsc::channel();
-        *custody.receiver.lock().unwrap() = Some(receiver);
-        assert!(sender.send(WorkerEvent::Ready).is_ok());
+        with_controller_fixture_stack(|| {
+            let custody = empty_controller_test_custody();
+            let (sender, receiver) = mpsc::channel();
+            *custody.receiver.lock().unwrap() = Some(receiver);
+            assert!(sender.send(WorkerEvent::Ready).is_ok());
 
-        let observed = custody.receive();
+            let observed = custody.receive();
 
-        assert!(matches!(
-            observed,
-            ControllerMonitorOutcomeV1::Event(WorkerEvent::Ready)
-        ));
-        assert!(custody.receiver.lock().unwrap().is_some());
-        assert!(!custody.ended.load(Ordering::Acquire));
+            assert!(matches!(
+                observed,
+                ControllerMonitorOutcomeV1::Event(WorkerEvent::Ready)
+            ));
+            assert!(custody.receiver.lock().unwrap().is_some());
+            assert!(!custody.ended.load(Ordering::Acquire));
+        });
     }
 
     #[test]
     fn selected_worker_failure_parks_cause_before_marker_notification() {
-        let custody = empty_controller_test_custody();
-        let (sender, receiver) = mpsc::channel();
-        let original = "original returned worker failure".to_owned();
-        let original_buffer = original.as_ptr();
+        with_controller_fixture_stack(|| {
+            let custody = empty_controller_test_custody();
+            let (sender, receiver) = mpsc::channel();
+            let original = "original returned worker failure".to_owned();
+            let original_buffer = original.as_ptr();
 
-        report_controller_worker_failure(
-            &sender,
-            Some(&custody),
-            ControllerResidentCauseV1::Worker(original),
-        );
+            report_controller_worker_failure(
+                &sender,
+                Some(&custody),
+                ControllerResidentCauseV1::Worker(original),
+            );
 
-        assert!(matches!(receiver.recv(), Ok(WorkerEvent::ResidentFailure)));
-        let terminal = custody.terminal.lock().unwrap();
-        assert!(matches!(
-            terminal.as_ref(),
-            Some(ControllerResidentCauseV1::Worker(cause)) if cause.as_ptr() == original_buffer
-        ));
-        assert!(custody.ended.load(Ordering::Acquire));
+            assert!(matches!(receiver.recv(), Ok(WorkerEvent::ResidentFailure)));
+            let terminal = custody.terminal.lock().unwrap();
+            assert!(matches!(
+                terminal.as_ref(),
+                Some(ControllerResidentCauseV1::Worker(cause)) if cause.as_ptr() == original_buffer
+            ));
+            assert!(custody.ended.load(Ordering::Acquire));
+        });
     }
 
     #[test]

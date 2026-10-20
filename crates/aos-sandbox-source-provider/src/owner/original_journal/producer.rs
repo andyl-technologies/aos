@@ -5,7 +5,8 @@
 //! protected append remain owned by the fixed owner on error or unwind. Replay
 //! and immutable request bytes cannot construct or resume this live producer.
 
-use aos_sandbox::{JournalError, JournalRecord};
+use aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1 as JournalError;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
 use aos_sandbox_source_provider_ledger::ledger::{
     LedgerFormatErrorV1,
     native_completion::{

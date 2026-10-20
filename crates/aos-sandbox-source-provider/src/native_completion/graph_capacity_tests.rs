@@ -8,7 +8,9 @@
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt as _;
 
-use aos_sandbox::{Journal, JournalLimits, JournalRecord};
+use aos_sandbox_source::provider_journal::SourceProviderJournalV1 as Journal;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalLimits;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
 use aos_sandbox_source_provider_ledger::ledger::format::*;
 use aos_sandbox_source_provider_ledger::ledger::model::*;
 use aos_sandbox_source_provider_ledger::{
@@ -1031,7 +1033,7 @@ fn transaction(id: u8, rows: BTreeMap<Vec<u8>, Vec<u8>>) -> JournalTransaction {
 fn admit(
     owner: &mut ProtectedJournalAuthority<'_>,
     graph: &Graph,
-) -> aos_sandbox::GlobalCapacityReservationV1 {
+) -> aos_sandbox_source::provider_journal::GlobalCapacityReservationV1 {
     admit_rows(owner, graph, graph.rows())
 }
 
@@ -1039,7 +1041,7 @@ fn admit_rows(
     owner: &mut ProtectedJournalAuthority<'_>,
     graph: &Graph,
     rows: BTreeMap<Vec<u8>, Vec<u8>>,
-) -> aos_sandbox::GlobalCapacityReservationV1 {
+) -> aos_sandbox_source::provider_journal::GlobalCapacityReservationV1 {
     aos_sandbox_source_provider_ledger::validate_prospective_records(
         rows.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
     )
@@ -1095,7 +1097,7 @@ fn admit_release_suffix(
     id: u8,
     graph: &Graph,
     require_active_cas: bool,
-) -> aos_sandbox::GlobalCapacityReservationV1 {
+) -> aos_sandbox_source::provider_journal::GlobalCapacityReservationV1 {
     let current: BTreeMap<_, _> = owner
         .records()
         .unwrap()

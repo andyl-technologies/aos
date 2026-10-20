@@ -5,12 +5,10 @@
 //! redirects, writable or non-root-owned objects, noncanonical bytes, unknown
 //! fields, policy rollback, and every invalid typed policy relationship.
 
-use std::io::Read as _;
 use std::path::Path;
 
 use aos_sandbox_core::model::{NetworkKind, NetworkProfile};
 use aos_sandbox_core::{NetworkEndpointId, NodeId, ObjectDigest};
-use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -24,6 +22,9 @@ pub const NETWORK_POLICY_CATALOG_FILE_NAME: &str = "network-policy.catalog";
 
 const FORMAT_VERSION: u16 = 1;
 const MAXIMUM_CATALOG_BYTES: usize = 1024 * 1024;
+
+mod receiving;
+pub(crate) use receiving::ProtectedNetworkPolicyOriginalV4;
 
 /// Reports an unavailable, insecure, malformed, or stale policy publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -71,80 +72,13 @@ impl NetworkPolicyCatalogV1 {
         directory: &Path,
         minimum_generation: u64,
     ) -> Result<Self, ProtectedNetworkPolicyErrorV1> {
-        let directory = open(
-            directory,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|_| ProtectedNetworkPolicyErrorV1::ProtectedPath)?;
-        let directory_metadata =
-            fstat(&directory).map_err(|_| ProtectedNetworkPolicyErrorV1::ProtectedPath)?;
-        if FileType::from_raw_mode(directory_metadata.st_mode) != FileType::Directory
-            || directory_metadata.st_uid != 0
-            || !matches!(directory_metadata.st_mode & 0o7777, 0o500 | 0o700)
-        {
-            return Err(ProtectedNetworkPolicyErrorV1::ProtectedPath);
-        }
-
-        let descriptor = openat(
-            &directory,
-            NETWORK_POLICY_CATALOG_FILE_NAME,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-            Mode::empty(),
-        )
-        .map_err(|_| ProtectedNetworkPolicyErrorV1::ProtectedPath)?;
-        let metadata =
-            fstat(&descriptor).map_err(|_| ProtectedNetworkPolicyErrorV1::ProtectedPath)?;
-        let declared_size = usize::try_from(metadata.st_size)
-            .map_err(|_| ProtectedNetworkPolicyErrorV1::ProtectedPath)?;
-        if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
-            || metadata.st_uid != 0
-            || metadata.st_nlink != 1
-            || !matches!(metadata.st_mode & 0o7777, 0o400 | 0o600)
-            || !(1..=MAXIMUM_CATALOG_BYTES).contains(&declared_size)
-        {
-            return Err(ProtectedNetworkPolicyErrorV1::ProtectedPath);
-        }
-
-        let mut bytes = Vec::with_capacity(declared_size);
-        let mut file = std::fs::File::from(descriptor);
-        (&mut file)
-            .take((MAXIMUM_CATALOG_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|_| ProtectedNetworkPolicyErrorV1::ProtectedPath)?;
-        let current = fstat(&file).map_err(|_| ProtectedNetworkPolicyErrorV1::ProtectedPath)?;
-        if bytes.len() != declared_size
-            || current.st_dev != metadata.st_dev
-            || current.st_ino != metadata.st_ino
-            || current.st_size != metadata.st_size
-            || current.st_mode != metadata.st_mode
-            || current.st_uid != metadata.st_uid
-            || current.st_gid != metadata.st_gid
-            || current.st_nlink != metadata.st_nlink
-            || current.st_mtime != metadata.st_mtime
-            || current.st_mtime_nsec != metadata.st_mtime_nsec
-            || current.st_ctime != metadata.st_ctime
-            || current.st_ctime_nsec != metadata.st_ctime_nsec
-        {
-            return Err(ProtectedNetworkPolicyErrorV1::ProtectedPath);
-        }
-
-        let document: PolicyCatalogWireV1 =
-            serde_json::from_slice(&bytes).map_err(|_| ProtectedNetworkPolicyErrorV1::Malformed)?;
-        if document.version != FORMAT_VERSION || document.generation < minimum_generation {
-            return Err(if document.generation < minimum_generation {
-                ProtectedNetworkPolicyErrorV1::Rollback
-            } else {
-                ProtectedNetworkPolicyErrorV1::Malformed
-            });
-        }
-        let catalog = document.into_catalog()?;
-        let canonical = catalog.encode_protected_publication()?;
-        if canonical != bytes {
-            return Err(ProtectedNetworkPolicyErrorV1::Malformed);
-        }
-
-        Ok(catalog)
+        // Ordinary and selected callers use one native/typed recipe. The
+        // ordinary facade keeps its historical local scratch lifetime; the
+        // selected service retains this same original through its owed posts.
+        let mut original = ProtectedNetworkPolicyOriginalV4::new();
+        original.capture_native_once_v4(directory)?;
+        original.materialize_once_v4(minimum_generation)?;
+        original.take_completed_v4().ok_or(ProtectedNetworkPolicyErrorV1::Malformed)
     }
 }
 

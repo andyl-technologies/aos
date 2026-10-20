@@ -18,6 +18,24 @@ use crate::{Journal, JournalError};
 use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 
+pub(crate) mod delete_admission;
+mod authorization_native;
+pub(crate) use authorization_native::PublicMutationAuthorizationNativeV1;
+
+// A purpose selects only the existing retained engine's native destinations.
+// Each entry separately verifies the exact decoded method and genuine C loan.
+enum RetainedMutationPurposeV1<'native> {
+    Delete(&'native mut PublicMutationAuthorizationNativeV1),
+    Start(&'native mut PublicMutationAuthorizationNativeV1),
+    Execution(&'native mut PublicMutationAuthorizationNativeV1),
+}
+
+impl RetainedMutationPurposeV1<'_> {
+    fn original_v1(&mut self) -> &mut PublicMutationAuthorizationNativeV1 {
+        match self { Self::Delete(original) | Self::Start(original) | Self::Execution(original) => original }
+    }
+}
+
 /// Carries a resolved mutation only after current protected authorization.
 ///
 /// The authorization proof remains private so downstream planning can consume
@@ -31,6 +49,7 @@ pub(crate) struct AuthorizedPublicMutationRequestV1 {
     fuse_authority: Option<crate::controller_fuse_admission::AdmissionAuthorityV1>,
     #[cfg(target_os = "linux")]
     start_authority: Option<crate::production_operation_compiler::CheckedStartAuthorityV2>,
+    accepted_start: Option<aos_sandbox_protocol::domain_ledger::operation::AcceptedStartOriginDataV1>,
     original_request: Vec<u8>,
     original_trust: [[u8; 32]; 4],
 }
@@ -61,6 +80,7 @@ impl AuthorizedPublicMutationRequestV1 {
             encoded,
             #[cfg(target_os = "linux")]
             None,
+            None,
         )
     }
 
@@ -81,7 +101,52 @@ impl AuthorizedPublicMutationRequestV1 {
         encoded: &[u8],
         nix_start: Option<&crate::production_operation_compiler::ControllerNixStartRecipeSelectorV2>,
     ) -> Result<Self, PublicMutationAuthorizationErrorV1> {
-        Self::authorize_inner(journal, peer, capability_id, encoded, nix_start)
+        Self::authorize_inner(journal, peer, capability_id, encoded, nix_start, None)
+    }
+
+    // The only selected caller holds the genuine consumed Delete C17 loan.
+    pub(crate) fn authorize_delete_retaining_v1(
+        journal: &mut Journal,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        encoded: &[u8],
+        native: &mut delete_admission::DeleteAuthorizationNativeV1,
+    ) -> Result<Self, PublicMutationAuthorizationErrorV1> {
+        Self::authorize_inner(journal, peer, capability_id, encoded,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(RetainedMutationPurposeV1::Delete(native)),
+        )
+    }
+
+    // Only the closed genuine C23 Start admission owner selects this entry.
+    pub(crate) fn authorize_start_retaining_v1(
+        journal: &mut Journal, peer: &PublicApiPeer, capability_id: CapabilityId,
+        encoded: &[u8], native: &mut PublicMutationAuthorizationNativeV1,
+        nix_start: Option<&crate::production_operation_compiler::ControllerNixStartRecipeSelectorV2>,
+    ) -> Result<Self, PublicMutationAuthorizationErrorV1> {
+        Self::authorize_inner(journal, peer, capability_id, encoded,
+            #[cfg(target_os = "linux")]
+            nix_start,
+            Some(RetainedMutationPurposeV1::Start(native)),
+        )
+    }
+
+    // Only the genuine predurable C18 scope selects this retained entrance.
+    pub(crate) fn authorize_execution_retaining_v2(
+        journal: &mut Journal,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        encoded: &[u8],
+        native: &mut PublicMutationAuthorizationNativeV1,
+    ) -> Result<Self, PublicMutationAuthorizationErrorV1> {
+        journal.require_execution_admission_current_v2()
+            .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
+        Self::authorize_inner(journal, peer, capability_id, encoded,
+            #[cfg(target_os = "linux")]
+            None,
+            Some(RetainedMutationPurposeV1::Execution(native)),
+        )
     }
 
     fn authorize_inner(
@@ -91,12 +156,24 @@ impl AuthorizedPublicMutationRequestV1 {
         encoded: &[u8],
         #[cfg(target_os = "linux")]
         nix_start: Option<&crate::production_operation_compiler::ControllerNixStartRecipeSelectorV2>,
+        mut native: Option<RetainedMutationPurposeV1<'_>>,
     ) -> Result<Self, PublicMutationAuthorizationErrorV1> {
-        let request = ResolvedPublicMutationRequestV1::decode_with_historical_capability_id(
-            encoded,
-            Some(capability_id),
-        )
-        .map_err(|_| PublicMutationAuthorizationErrorV1::Malformed)?;
+        let request = match native.as_ref() {
+            Some(RetainedMutationPurposeV1::Delete(_)) => ResolvedPublicMutationRequestV1::decode_delete(encoded),
+            Some(RetainedMutationPurposeV1::Execution(_)) => ResolvedPublicMutationRequestV1::decode_execution_v2(encoded),
+            Some(RetainedMutationPurposeV1::Start(_)) | None => ResolvedPublicMutationRequestV1::decode_with_historical_capability_id(
+                encoded, Some(capability_id),
+            ),
+        }.map_err(|_| PublicMutationAuthorizationErrorV1::Malformed)?;
+        if matches!(native.as_ref(), Some(RetainedMutationPurposeV1::Start(_)))
+            && !matches!(request.request(), DormantSandboxRequestKindV1::Start(_)) {
+            return Err(PublicMutationAuthorizationErrorV1::Rejected);
+        }
+        if matches!(native.as_ref(), Some(RetainedMutationPurposeV1::Execution(_)))
+            && !matches!(request.request(), DormantSandboxRequestKindV1::Exec(_))
+        {
+            return Err(PublicMutationAuthorizationErrorV1::Rejected);
+        }
         let target_handle = match request.request() {
             DormantSandboxRequestKindV1::CapabilityAttenuate(value) => {
                 Some(value.parent_capability_handle.as_slice())
@@ -109,9 +186,9 @@ impl AuthorizedPublicMutationRequestV1 {
         if let Some(handle) = target_handle {
             peer.recheck()
                 .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
-            let registry = crate::publisher_authority::PublisherCapabilityRegistry::load(
+            let registry = crate::publisher_admin::capabilities::PublisherCapabilityRegistry::load(
                 journal,
-                crate::publisher_authority::PublisherAuthorityLimits::default(),
+                crate::publisher_admin::capabilities::PublisherAuthorityLimits::default(),
             )
             .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
             if registry
@@ -122,14 +199,39 @@ impl AuthorizedPublicMutationRequestV1 {
                 return Err(PublicMutationAuthorizationErrorV1::Rejected);
             }
         }
-        let (authorization, checked_admission) =
-            crate::controller::authorize_resolved_public_mutation_v1(
-                journal,
-                peer,
-                capability_id,
-                &request,
-            )
-            .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
+        let (authorization, checked_admission) = match native.as_mut() {
+            Some(RetainedMutationPurposeV1::Delete(native)) => crate::controller::authorize_resolved_delete_retaining_v1(
+                journal, peer, capability_id, &request, native,
+            ),
+            Some(RetainedMutationPurposeV1::Start(native)) => crate::controller::authorize_resolved_start_retaining_v1(
+                journal, peer, capability_id, &request, native,
+            ),
+            Some(RetainedMutationPurposeV1::Execution(native)) => crate::controller::authorize_resolved_execution_retaining_v2(
+                journal, peer, capability_id, &request, native,
+            ),
+            None => crate::controller::authorize_resolved_public_mutation_v1(
+                journal, peer, capability_id, &request,
+            ),
+        }.map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
+
+        // Capture the SAME paid protected-floor sample and immutable peer cutoff
+        // before ordinary lowering releases the checked authorization decision.
+        let accepted_start = if let DormantSandboxRequestKindV1::Start(start) = request.request() {
+            let coordinates = authorization.original_coordinates()
+                .ok_or(PublicMutationAuthorizationErrorV1::Rejected)?;
+            let timeout = start.mutation.as_option()
+                .and_then(|mutation| mutation.operation_timeout.as_option())
+                .ok_or(PublicMutationAuthorizationErrorV1::Malformed)?;
+            let clock = checked_admission.clock();
+            if clock.wall_seconds() != authorization.accepted_wall_seconds() {
+                return Err(PublicMutationAuthorizationErrorV1::Rejected);
+            }
+            Some(aos_sandbox_protocol::domain_ledger::operation::AcceptedStartOriginDataV1::from_data_v1(
+                clock, peer.accepted_original_deadline_data_v1(),
+                coordinates.capability_expires_at(), coordinates.policy_expires_at(),
+                timeout.nanoseconds,
+            ).map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?)
+        } else { None };
 
         let fuse_authority = if matches!(
             request.request(),
@@ -177,6 +279,10 @@ impl AuthorizedPublicMutationRequestV1 {
             None
         };
 
+        if let Some(mut native) = native {
+            native.original_v1().decision = Some(checked_admission);
+        }
+
         Ok(Self {
             request,
             authorization,
@@ -185,6 +291,7 @@ impl AuthorizedPublicMutationRequestV1 {
             fuse_authority,
             #[cfg(target_os = "linux")]
             start_authority,
+            accepted_start,
             original_request,
             original_trust,
         })
@@ -228,6 +335,7 @@ impl AuthorizedPublicMutationRequestV1 {
             fuse_authority: None,
             #[cfg(target_os = "linux")]
             start_authority: None,
+            accepted_start: None,
             original_request: Vec::new(),
             original_trust: [[0; 32]; 4],
         }
@@ -238,6 +346,25 @@ impl AuthorizedPublicMutationRequestV1 {
     pub(crate) const fn request(&self) -> &ResolvedPublicMutationRequestV1 {
         &self.request
     }
+
+    /// Borrows the immutable request originally authorized for this Start.
+    ///
+    /// This accessor performs no decoding or authorization. Later native Root
+    /// readers independently compare these bytes with the actual protected
+    /// accepted operation and Source origin.
+    pub(crate) fn retained_start_request_data_v2(
+        &self,
+    ) -> Result<&[u8], PublicMutationAuthorizationErrorV1> {
+        if self.accepted_start.is_none() || self.original_request.is_empty() {
+            return Err(PublicMutationAuthorizationErrorV1::Malformed);
+        }
+        Ok(&self.original_request)
+    }
+
+    /// Returns only the original accepted Start DATA captured by authorization.
+    pub(crate) const fn accepted_start_origin_v1(&self)
+        -> Option<aos_sandbox_protocol::domain_ledger::operation::AcceptedStartOriginDataV1>
+    { self.accepted_start }
 
     /// Returns the protected authorization decision time in Unix seconds.
     #[must_use]

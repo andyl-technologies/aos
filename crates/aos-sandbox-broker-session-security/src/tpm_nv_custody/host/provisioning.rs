@@ -24,7 +24,7 @@ use zeroize::Zeroizing;
 use aos_sandbox_linux::credential::{
     CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
 };
-use crate::recovery::ModePinV1;
+use crate::recovery::{InitialModeOriginalV1, ModePinV1, ModeRevalidationOriginalV1};
 use crate::tpm_nv_custody::{NvCustodyEndpointV1, framing::salt_handle_v1};
 
 use super::HostTpmAdmissionErrorV1;
@@ -45,6 +45,36 @@ pub(super) struct HostProvisioningPinV1<'origin, 'startup> {
 }
 
 impl<'origin, 'startup> HostProvisioningPinV1<'origin, 'startup> {
+    pub(super) fn origins(&self) -> &'origin RuntimeDeploymentComparisonOriginsV1<'startup> {
+        self.origins
+    }
+
+    pub(super) fn mode_receiving_demand_v1(&self) -> Option<aos_sandbox_core::ResourceVector> {
+        self.mode.runtime_deployment_revalidation_receiving_demand_v1()
+    }
+
+    pub(super) fn recheck_mode_retaining(
+        &self,
+        original: &mut ModeRevalidationOriginalV1,
+    ) -> Result<(), HostTpmAdmissionErrorV1> {
+        self.mode.revalidate_retaining(original).map_err(HostTpmAdmissionErrorV1::Mode)?;
+        require_required_mode(self.mode.is_required())
+    }
+
+    pub(super) fn auth_retaining(
+        &self,
+        original: &mut HostAuthReadOriginalV1,
+    ) -> Result<(), HostTpmAdmissionErrorV1> {
+        original.capture_once()?;
+        let auth = original.auth.as_ref().ok_or(HostTpmAdmissionErrorV1::Unusable)?;
+        original.binding = Some(require_same_auth(auth, &self.auth_digest));
+        if matches!(original.binding, Some(Ok(()))) {
+            Ok(())
+        } else {
+            Err(HostTpmAdmissionErrorV1::ChangedAuth)
+        }
+    }
+
     /// Retains only the fixed roles of already-rechecked genuine Origins.
     ///
     /// # Errors
@@ -103,6 +133,14 @@ impl<'origin, 'startup> HostProvisioningPinV1<'origin, 'startup> {
     /// Retains comparison failures and rejects different signed bytes or Names.
     pub(super) fn recheck_origins(&self) -> Result<(), HostTpmAdmissionErrorV1> {
         self.origins.recheck().map_err(HostTpmAdmissionErrorV1::Origins)?;
+        self.compare_retained_origins_data_v1()
+    }
+
+    /// Compares only this same borrowed owner's retained historical DATA.
+    ///
+    /// This pure comparison cannot replace Core's separately prepared native
+    /// Origins post. The physical binding owes that actual pass independently.
+    pub(super) fn compare_retained_origins_data_v1(&self) -> Result<(), HostTpmAdmissionErrorV1> {
         require_fixed_host_purpose()?;
 
         let claims = self.origins.genesis_claims();
@@ -113,6 +151,147 @@ impl<'origin, 'startup> HostProvisioningPinV1<'origin, 'startup> {
             return Err(HostTpmAdmissionErrorV1::ChangedPurpose);
         }
         Ok(())
+    }
+}
+
+/// Holds the real initial mode and auth prefixes before constructing a pin.
+pub(super) struct HostProvisioningAdmissionOriginalV1 {
+    mode: InitialModeOriginalV1,
+    pin: Option<ModePinV1>,
+    pub(super) auth: HostAuthReadOriginalV1,
+    result: Option<Result<(), HostTpmAdmissionErrorV1>>,
+}
+
+impl HostProvisioningAdmissionOriginalV1 {
+    pub(super) fn new() -> Self {
+        Self {
+            mode: InitialModeOriginalV1::new(),
+            pin: None,
+            auth: HostAuthReadOriginalV1::new(),
+            result: None,
+        }
+    }
+
+    pub(super) fn open_once<'origin, 'startup>(
+        &mut self,
+        origins: &'origin RuntimeDeploymentComparisonOriginsV1<'startup>,
+    ) -> Result<HostProvisioningPinV1<'origin, 'startup>, HostTpmAdmissionErrorV1> {
+        if self.result.is_some() {
+            return Err(HostTpmAdmissionErrorV1::Unusable);
+        }
+        self.result = Some(self.capture_once());
+        if !matches!(self.result, Some(Ok(()))) {
+            return Err(HostTpmAdmissionErrorV1::Unusable);
+        }
+        require_fixed_host_purpose()?;
+        let signed_genesis = origins.signed_genesis().try_into()
+            .map_err(|_| HostTpmAdmissionErrorV1::ChangedPurpose)?;
+        let claims = origins.genesis_claims();
+        let auth = self.auth.auth.as_ref().ok_or(HostTpmAdmissionErrorV1::Unusable)?;
+        let digest = Zeroizing::new(Sha256::digest(&auth[..]).into());
+        let mode = self.pin.take().ok_or(HostTpmAdmissionErrorV1::Unusable)?;
+        Ok(HostProvisioningPinV1 {
+            origins,
+            mode,
+            auth_digest: digest,
+            signed_genesis,
+            nv_name: claims.nv_name,
+            salt_name: claims.salt_name,
+        })
+    }
+
+    fn capture_once(&mut self) -> Result<(), HostTpmAdmissionErrorV1> {
+        self.pin = Some(ModePinV1::open_runtime_deployment_retaining(&mut self.mode)
+            .map_err(HostTpmAdmissionErrorV1::Mode)?);
+        require_required_mode(self.pin.as_ref().is_some_and(ModePinV1::is_required))?;
+        self.auth.capture_once()
+    }
+
+    pub(super) fn receiving_demand_v1() -> Option<aos_sandbox_core::ResourceVector> {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        let own = std::mem::size_of::<Self>().checked_mul(2)?;
+        ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(own).ok()?)
+            .checked_add(ModePinV1::runtime_deployment_initial_receiving_demand_v1()?).ok()?
+            .checked_add(HostAuthReadOriginalV1::receiving_demand_v1()?).ok()
+    }
+
+    pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.mode.failure().or_else(|| self.auth.failure())
+            .or_else(|| super::inputs::failure(&self.result))
+    }
+}
+
+/// Keeps the exact bounded secret read, including malformed bytes and errors.
+pub(super) struct HostAuthReadOriginalV1 {
+    read: aos_sandbox_linux::credential::FixedRoleCredentialReadV1,
+    auth: Option<Zeroizing<[u8; 32]>>,
+    result: Option<Result<(), HostTpmAdmissionErrorV1>>,
+    binding: Option<Result<(), HostTpmAdmissionErrorV1>>,
+}
+
+impl HostAuthReadOriginalV1 {
+    pub(super) fn new() -> Self {
+        Self {
+            read: aos_sandbox_linux::credential::FixedRoleCredentialReadV1::prearmed(),
+            auth: None,
+            result: None,
+            binding: None,
+        }
+    }
+
+    fn capture_once(&mut self) -> Result<(), HostTpmAdmissionErrorV1> {
+        if self.result.is_some() {
+            return Err(HostTpmAdmissionErrorV1::Unusable);
+        }
+        self.read.read_once(Path::new(CREDENTIAL_DIRECTORY), AUTH_ROLE, 32, 32, true,
+            CredentialOwnerPolicyV1::RootOrCurrent);
+        let decoded = match self.read.outcome() {
+            Some(Ok(Some(bytes))) if bytes.len() == 32 && bytes.iter().any(|byte| *byte != 0) => {
+                let mut auth = Zeroizing::new([0; 32]);
+                auth.copy_from_slice(bytes);
+                self.auth = Some(auth);
+                Ok(())
+            }
+            Some(Ok(None)) => Err(HostTpmAdmissionErrorV1::MissingAuth),
+            Some(Ok(Some(_))) => Err(HostTpmAdmissionErrorV1::InvalidAuth),
+            _ => Err(HostTpmAdmissionErrorV1::Unusable),
+        };
+        self.result = Some(decoded);
+        if matches!(self.result, Some(Ok(()))) { Ok(()) }
+        else { Err(HostTpmAdmissionErrorV1::Unusable) }
+    }
+
+    pub(super) fn take_auth(&mut self) -> Option<Zeroizing<[u8; 32]>> {
+        if matches!(self.result, Some(Ok(()))) && matches!(self.binding, Some(Ok(()))) {
+            self.auth.take()
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn retire_positive_file(&mut self) {
+        if self.failure().is_none() && matches!(self.result, Some(Ok(()))) {
+            self.read.retire_completed_file_once_v1();
+        }
+    }
+
+    pub(super) fn receiving_demand_v1() -> Option<aos_sandbox_core::ResourceVector> {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        let joined = aos_sandbox_linux::credential::FixedRoleCredentialReadV1::joined_path_receiving_bytes_v1(
+            Path::new(CREDENTIAL_DIRECTORY), AUTH_ROLE)?;
+        // Three secret planes cover the retained native read, decoded array
+        // and its eventual zeroizing AUTH transfer. Error backing is bounded
+        // with the same conservative native-error supplier used by this role.
+        let bytes = std::mem::size_of::<Self>().checked_mul(2)?
+            .checked_add(joined)?.checked_add(3 * 32 + 8 * 256)?;
+        Some(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(bytes).ok()?)
+            .with(D::OpenFiles, 1).with(D::MetadataEntries, 1)
+            .with(D::OutputBytes, 33))
+    }
+
+    pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.read.failure().or_else(|| super::inputs::failure(&self.result))
+            .or_else(|| super::inputs::failure(&self.binding))
     }
 }
 

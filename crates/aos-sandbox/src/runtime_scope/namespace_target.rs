@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use aos_sandbox_core::{IncarnationId, RawPairedClockSample, SandboxId};
 
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
 use super::generation::{History as RuntimeHistory, Identity};

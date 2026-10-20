@@ -6,12 +6,17 @@
 //! publication form one ordered recipe. Opening, replay, selector DATA and
 //! domain authority admission remain in the parent and their existing owners.
 
+pub(super) mod engine;
+mod preflight_retained;
+mod stop_cleanup_source;
+pub use preflight_retained::ProtectedJournalPreflightOriginalV2;
+#[cfg(target_os = "linux")]
+pub(crate) mod delete;
+
 use aos_sandbox_protocol::domain_ledger::capacity_family::capacity_record_has_legacy_purpose;
 
 use std::collections::BTreeMap;
 
-use aos_sandbox_journal::materialized::RecordMutationRef;
-use aos_sandbox_journal::transaction::NativeRecordRef;
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -20,12 +25,12 @@ use super::{
     JournalLimits, JournalRecord, JournalTransaction, PreflightTransactionViewV1,
     PreparedGlobalCapacityReservationV1, ProjectNativeTransitionV3, ProtectedJournalAuthority,
     RecordNamespace, RootOwnerEdge, RootSourceGenesisTransitionV1, SourceProjectAdmissionTransition,
-    apply_idempotency_record, apply_record, cache_policy_hold,
+    apply_record, cache_policy_hold,
     capacity_reservation, controller_policy_hold, controller_source_genesis,
     controller_source_successor_issuance, delete_batch, encode_transaction,
     encoded_transaction_append_bytes, host_currentness_fence, host_execution_fence,
     host_settlement_admission_gate, native_held, root_local_recovery, root_original_inventory,
-    root_original_native, source_domain_policy_hold, source_original_native,
+    root_original_native, source_domain_policy_hold, source_history,
     source_project_admission_challenge, source_tree_genesis, source_tree_successor,
     validate_idempotency_changes, validate_materialized_change, validate_reserved_capacity,
     validate_transaction,
@@ -50,7 +55,7 @@ pub(super) struct AppendScope {
     pub(super) allow_host_settlement_admission_append: bool,
     pub(super) project_admission_transition: SourceProjectAdmissionTransition,
     pub(super) controller_genesis_transition:
-        controller_source_genesis::ControllerSourceGenesisTransition,
+        aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition,
     pub(super) source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
     pub(super) root_genesis_transition: RootSourceGenesisTransitionV1,
     pub(super) root_local_edge: Option<RootOwnerEdge>,
@@ -70,7 +75,7 @@ impl Default for AppendScope {
             allow_host_settlement_admission_append: false,
             project_admission_transition: SourceProjectAdmissionTransition::None,
             controller_genesis_transition:
-                controller_source_genesis::ControllerSourceGenesisTransition::None,
+                aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition::None,
             source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1::None,
             root_genesis_transition: RootSourceGenesisTransitionV1::None,
             root_local_edge: None,
@@ -90,7 +95,7 @@ pub(super) struct PreflightScope<'phases> {
     pub(super) allow_policy_hold_transition: bool,
     pub(super) project_transitions: Option<&'phases [SourceProjectAdmissionTransition]>,
     pub(super) controller_genesis_transitions:
-        Option<&'phases [controller_source_genesis::ControllerSourceGenesisTransition]>,
+        Option<&'phases [aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition]>,
     pub(super) genesis_transitions:
         Option<&'phases [source_tree_genesis::SourceGenesisTransitionV1]>,
     pub(super) root_local_edge: Option<RootOwnerEdge>,
@@ -142,9 +147,9 @@ impl GlobalGenesisNativeCutV2<'_> {
         &self,
         journal: &Journal,
         source_transition: source_tree_genesis::SourceGenesisTransitionV1,
-        controller_transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        controller_transition: aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition,
     ) -> Result<(), JournalError> {
-        use controller_source_genesis::ControllerSourceGenesisTransition as Controller;
+        use aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition as Controller;
         use source_tree_genesis::SourceGenesisTransitionV1 as Source;
         let original = match self {
             Self::SourcePrepared(root) if source_transition == Source::Append
@@ -197,14 +202,16 @@ fn require_no_nix_native_mutation(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
-    if state.keys().any(|(namespace, _)| *namespace == RecordNamespace::NixOfflineProvisioning)
-        || transaction.records().iter().any(|record| {
-            record.namespace() == RecordNamespace::NixOfflineProvisioning
-        })
-    {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::ordinary_mutation::require_no_nix_native_mutation_v1(state, transaction)
+        .map_err(crate::journal::JournalError::from)
+}
+
+fn require_no_create_storage_mutation(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+) -> Result<(), JournalError> {
+    aos_sandbox_ledger_replay::ordinary_mutation::require_no_create_storage_mutation(state, transaction)
+        .map_err(JournalError::from)
 }
 
 // Append and forecast share these refusals in the same order. The scope is
@@ -213,12 +220,72 @@ fn require_common_mutation_boundaries(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     transaction: &JournalTransaction,
     scope: AppendScope,
+    create_storage_original: bool,
+    #[cfg(target_os = "linux")] root_floor: Option<&crate::policy_compiler::execution_no_apply_root::RootExecutionNoApplyFloorAppendLoanV2<'_, '_, '_>>,
+    #[cfg(target_os = "linux")] controller_no_apply: Option<&crate::controller_execution_operation::ControllerExecutionNoApplyAppendLoanV2<'_, '_, '_>>,
+    #[cfg(target_os = "linux")] controller_stop_cleanup: Option<&crate::controller_lifecycle_stop::StopCleanupControllerAppendContextV1<'_>>,
+    cache_gate: &CacheMutationGateV1<'_>,
 ) -> Result<(), JournalError> {
-    controller_source_genesis::require_no_mutation(
+    // This closed path selects no native exception. The canonical DATA folds
+    // run in exactly the old common order; actual selected branches remain
+    // below and keep their genuine original rather than a comparison flag.
+    #[cfg(target_os = "linux")]
+    let no_native_original = root_floor.is_none()
+        && controller_no_apply.is_none()
+        && controller_stop_cleanup.is_none();
+    #[cfg(not(target_os = "linux"))]
+    let no_native_original = true;
+    if no_native_original
+        && !create_storage_original
+        && !matches!(cache_gate, CacheMutationGateV1::StopCleanupSource(_))
+        && scope.controller_genesis_transition
+            == aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition::None
+        && scope.successor_issuance_transition.is_none()
+        && scope.first_successor.is_none()
+        && scope.source_genesis_transition == source_tree_genesis::SourceGenesisTransitionV1::None
+        && scope.project_admission_transition == SourceProjectAdmissionTransition::None
+        && !scope.allow_host_settlement_admission_append
+        && !scope.allow_host_currentness_fence_acquisition
+        && !scope.allow_host_fence_acquisition
+    {
+        return aos_sandbox_ledger_replay::ordinary_mutation::require_common_no_selected_boundaries_v1(
+            state, transaction,
+        ).map_err(JournalError::from);
+    }
+
+    stop_cleanup_source::require_append_scope_v1(state, transaction, cache_gate)?;
+    #[cfg(target_os = "linux")]
+    match controller_stop_cleanup {
+        Some(original) => original.require_prechecked_transaction_v1(transaction)?,
+        None => super::execution_no_apply_settlement::require_no_stop_cleanup_controller_mutation_v1(state, transaction)?,
+    }
+    #[cfg(not(target_os = "linux"))]
+    super::execution_no_apply_settlement::require_no_stop_cleanup_controller_mutation_v1(state, transaction)?;
+    #[cfg(target_os = "linux")]
+    match controller_no_apply {
+        Some(original) => original.require_prechecked_transaction_v2(transaction)?,
+        None => super::execution_no_apply_settlement::require_no_closed_controller_mutation_v2(state, transaction)?,
+    }
+    #[cfg(not(target_os = "linux"))]
+    super::execution_no_apply_settlement::require_no_closed_controller_mutation_v2(state, transaction)?;
+    // Namespace registration and canonical DATA confer no native append port.
+    // The distinct paid Root floor issuer must supply its own exact original
+    // through this shared engine before this transition can be opened.
+    #[cfg(target_os = "linux")]
+    match root_floor {
+        Some(original) => original.require_prechecked_floor_successor_v2(transaction)?,
+        None => require_no_root_execution_no_apply_floor_mutation_v2(transaction)?,
+    }
+    #[cfg(not(target_os = "linux"))]
+    require_no_root_execution_no_apply_floor_mutation_v2(transaction)?;
+    if !create_storage_original {
+        require_no_create_storage_mutation(state, transaction)?;
+    }
+    aos_sandbox_ledger_replay::replay::controller_source_genesis::require_no_mutation(
         state,
         transaction,
         scope.controller_genesis_transition,
-    )?;
+    ).map_err(crate::journal::JournalError::from)?;
     controller_source_successor_issuance::require_no_mutation(
         state,
         transaction,
@@ -261,6 +328,27 @@ fn require_common_mutation_boundaries(
     Ok(())
 }
 
+fn require_no_root_execution_no_apply_floor_mutation_v2(transaction: &JournalTransaction)
+    -> Result<(), JournalError> {
+    aos_sandbox_ledger_replay::ordinary_mutation::require_no_root_execution_no_apply_floor_mutation_v2(transaction)
+        .map_err(JournalError::from)
+}
+
+#[cfg(test)]
+mod execution_no_apply_floor_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn registered_root_floor_data_has_no_generic_append_permission() {
+        let transaction = JournalTransaction::new([1; 16], vec![super::super::JournalRecord::put(
+            RecordNamespace::RootExecutionNoApplyFloorV2, vec![2; 16], vec![3; 104],
+        )]).unwrap();
+
+        assert!(matches!(require_no_root_execution_no_apply_floor_mutation_v2(&transaction),
+            Err(JournalError::ProtectedBoundary)));
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn require_q04_journal_transition(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
@@ -269,26 +357,93 @@ fn require_q04_journal_transition(
         Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
     >,
     terminal: Option<&crate::controller_resource_reservation::Q04TerminalBankAppendV1<'_>>,
+    intake: Option<&crate::controller_resource_reservation::CreateIntakeBankAppendV1<'_>>,
+    storage_use: Option<&crate::controller_resource_reservation::CreateStorageUseBankAppendV1<'_>>,
+    history: Option<&crate::controller_resource_reservation::CreateStorageHistoryAppendLoanV1<'_, '_>>,
+    root_open: Option<&crate::policy_compiler::create_storage_current::root_open::RootCurrentOpenAppendLoanV1<'_, '_, '_>>,
+    provisioning: Option<&crate::reconciler::provisioning::ProvisioningAppendLoanV1<'_>>,
+    source_provisioning: Option<&super::source_provisioning::SourceProvisioningAppendLoanV1<'_>>,
+    create_stopped_pre_ack: Option<&super::create_stopped_pre_ack::CreateStoppedControllerPreAckAppendLoanV1<'_>>,
+    create_stopped_terminal: Option<&super::create_stopped_terminal::CreateStoppedControllerTerminalAppendLoanV1<'_, '_>>,
+    recover: Option<&super::operator_recover_floor::OperatorRecoverAppendLoanV1<'_>>,
+    delete_admission: Option<&dyn super::delete_admission::DeleteAdmissionOriginalV3>,
 ) -> Result<(), JournalError> {
-    if transition.is_some() && terminal.is_some() {
+    if delete_admission.is_some() && (transition.is_some() || terminal.is_some()
+        || intake.is_some() || storage_use.is_some() || history.is_some() || root_open.is_some()
+        || provisioning.is_some() || source_provisioning.is_some()
+        || create_stopped_pre_ack.is_some() || create_stopped_terminal.is_some() || recover.is_some()) {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    if recover.is_some() && (transition.is_some() || terminal.is_some()
+        || intake.is_some() || storage_use.is_some() || history.is_some() || root_open.is_some()
+        || provisioning.is_some() || source_provisioning.is_some()
+        || create_stopped_pre_ack.is_some() || create_stopped_terminal.is_some()) {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    if create_stopped_terminal.is_some() && (transition.is_some() || terminal.is_some()
+            || intake.is_some() || storage_use.is_some() || history.is_some()
+            || root_open.is_some() || provisioning.is_some() || source_provisioning.is_some()
+            || create_stopped_pre_ack.is_some())
+        || create_stopped_pre_ack.is_some() && (transition.is_some() || terminal.is_some()
+            || intake.is_some() || storage_use.is_some() || history.is_some()
+            || root_open.is_some() || provisioning.is_some() || source_provisioning.is_some())
+        || source_provisioning.is_some() && (transition.is_some() || terminal.is_some()
+            || intake.is_some() || storage_use.is_some() || history.is_some()
+            || root_open.is_some() || provisioning.is_some())
+        || provisioning.is_some() && (transition.is_some() || terminal.is_some()
+            || intake.is_some() || storage_use.is_some() || history.is_some() || root_open.is_some())
+        || storage_use.is_some() && (transition.is_some() || terminal.is_some() || intake.is_some() || history.is_some() || root_open.is_some())
+        || root_open.is_some() && (transition.is_some() || terminal.is_some() || intake.is_some() || history.is_some())
+        || transition.is_some() && (terminal.is_some() || intake.is_some() || history.is_some())
+        || terminal.is_some() && (intake.is_some() || history.is_some())
+        || intake.is_some() && history.is_some()
+    {
         return Err(JournalError::ProtectedBoundary);
     }
     match transition {
         Some(Q04JournalTransitionV1::Controller(recipe, _)) => {
             controller_policy_hold::require_q04_transition(state, transaction, recipe)?;
         }
-        _ => match terminal {
-            Some(original) => controller_policy_hold::require_q04_terminal_bank_successor(
+        _ if delete_admission.is_some() =>
+            controller_policy_hold::require_q04_delete_admission_successor_v3(
+                state, delete_admission.ok_or(JournalError::ProtectedBoundary)?)?,
+        _ if recover.is_some() =>
+            controller_policy_hold::require_q04_operator_recover_successor(
+                state, recover.ok_or(JournalError::ProtectedBoundary)?)?,
+        _ if create_stopped_terminal.is_some() =>
+            controller_policy_hold::require_q04_create_stopped_terminal_successor(
+                state, create_stopped_terminal.ok_or(JournalError::ProtectedBoundary)?)?,
+        _ if create_stopped_pre_ack.is_some() =>
+            controller_policy_hold::require_q04_create_stopped_pre_ack_successor(
+                state, create_stopped_pre_ack.ok_or(JournalError::ProtectedBoundary)?)?,
+        _ if storage_use.is_some() => controller_policy_hold::require_q04_create_storage_use_bank_successor(
+            state, transaction, storage_use.ok_or(JournalError::ProtectedBoundary)?,
+        )?,
+        _ => match (terminal, intake) {
+            (Some(original), None) => controller_policy_hold::require_q04_terminal_bank_successor(
                 state, transaction, original,
             )?,
-            None => controller_policy_hold::require_q04_ordinary_boundary(state, transaction)?,
+            (None, Some(original)) => controller_policy_hold::require_q04_create_intake_bank_successor(
+                state, transaction, original,
+            )?,
+            (None, None) => match history {
+                Some(original) => controller_policy_hold::require_q04_create_storage_history_successor(state, transaction, original)?,
+                None => match provisioning {
+                    Some(original) => controller_policy_hold::require_q04_provisioning_successor(state, original)?,
+                    None => controller_policy_hold::require_q04_ordinary_boundary(state, transaction)?,
+                },
+            },
+            _ => return Err(JournalError::ProtectedBoundary),
         },
     }
     match transition {
         Some(Q04JournalTransitionV1::Source(recipes, index, ..)) => {
             source_domain_policy_hold::require_q04_transition(state, transaction, recipes, index)?;
         }
-        _ => source_domain_policy_hold::require_q04_ordinary_boundary(state, transaction)?,
+        _ => match source_provisioning {
+            Some(original) => original.require_retained_source_cut_v1(state)?,
+            None => source_domain_policy_hold::require_q04_ordinary_boundary(state, transaction)?,
+        },
     }
     match transition {
         Some(Q04JournalTransitionV1::Cache(recipes, index, ..)) => {
@@ -301,7 +456,10 @@ fn require_q04_journal_transition(
             history.require_transition(state, transaction, index)?;
         }
         Some(Q04JournalTransitionV1::RootCapacity(expected)) if expected == transaction => {}
-        _ => crate::policy_compiler::create_q04::require_root_q04_ordinary_boundary(state, transaction)?,
+        _ => match root_open {
+            Some(original) => original.require_prechecked_root_history_successor_v1(transaction)?,
+            None => crate::policy_compiler::create_q04::require_root_q04_ordinary_boundary(state, transaction)?,
+        },
     }
     Ok(())
 }
@@ -323,9 +481,6 @@ fn validate_root_owner_edge(
             nix_offline_provisioning::require_closure_data_edge(state, transaction, limits)?;
             Ok(None)
         }
-        // The Source route also needs actual replay/challenge witnesses, so its
-        // caller uses the Journal-owned branch rather than a state-only check.
-        RootOwnerEdge::SourceOriginal => return Err(JournalError::ProtectedBoundary),
         RootOwnerEdge::Local(edge) => root_local_recovery::validate_edge(state, transaction, edge),
         RootOwnerEdge::OriginalNative(attempt) => {
             root_original_native::validate_edge(state, transaction, attempt, limits)
@@ -440,7 +595,7 @@ impl Journal {
     pub(crate) fn commit_controller_source_genesis_transition(
         &mut self,
         transaction: &JournalTransaction,
-        transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        transition: aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition,
     ) -> Result<CommitResult, JournalError> {
         self.commit_in_scope(
             transaction,
@@ -568,7 +723,7 @@ impl Journal {
     pub(crate) fn commit_controller_global_genesis_v2(
         &mut self,
         transaction: &JournalTransaction,
-        transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        transition: aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition,
         root: &crate::policy_compiler::RootSourceGenesisFloorProofV1<'_>,
     ) -> Result<CommitResult, JournalError> {
         self.commit_with_native_scope(
@@ -648,10 +803,10 @@ impl Journal {
     pub(crate) fn commit_controller_project_genesis_v3(
         &mut self,
         transaction: &JournalTransaction,
-        transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        transition: aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition,
         root: &crate::policy_compiler::RootSourceProjectGenesisFloorProofV3<'_>,
     ) -> Result<CommitResult, JournalError> {
-        use controller_source_genesis::ControllerSourceGenesisTransition as Transition;
+        use aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition as Transition;
         use source_tree_successor::{ProjectGenesisNativeCutV3 as Cut, ProjectGenesisNativePhaseV3 as Phase};
         let phase = match transition {
             Transition::FloorAck => Phase::ControllerFloorAck(root.floor().project()),
@@ -938,6 +1093,8 @@ impl Journal {
             resource_reservation,
             #[cfg(target_os = "linux")]
             None,
+            #[cfg(target_os = "linux")]
+            None,
         )
     }
 
@@ -959,386 +1116,64 @@ impl Journal {
             &aos_sandbox_broker::StoragePrepareNativeClockLoanV1<'_>,
             &mut super::StoragePrepareNativeClockCaptureV1,
         )>,
+        #[cfg(target_os = "linux")] mut create_storage: Option<
+            super::create_storage_append::CreateStorageAppendOriginalV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
+        >,
     ) -> Result<CommitResult, JournalError> {
-        let AppendScope {
-            settling_reservation,
-            allow_capacity_records,
-            allow_policy_hold_transition,
-            allow_host_fence_acquisition,
-            allow_host_currentness_fence_acquisition,
-            allow_host_settlement_admission_append,
-            project_admission_transition,
-            controller_genesis_transition,
-            source_genesis_transition,
-            root_genesis_transition,
-            root_local_edge,
-            successor_issuance_transition,
-            first_successor,
-        } = scope;
-
-        #[cfg(target_os = "linux")]
-        if matches!(root_local_edge, Some(RootOwnerEdge::NixOfflineClosureData)) {
-            // Synthetic upper-size values are preview DATA, never an effect.
-            return Err(JournalError::ProtectedBoundary);
-        }
-        self.ensure_healthy()?;
-        #[cfg(target_os = "linux")]
-        crate::controller_resource_reservation::require_transition(
-            self.native.state(), transaction, resource_reservation,
-        )?;
-        #[cfg(not(target_os = "linux"))]
-        if transaction.records().iter().any(|record| {
-            record.namespace() == RecordNamespace::ControllerResourceReservation
-        }) {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let selected_successor = first_successor.is_some_and(|phase| phase != phase.canonical());
-        #[cfg(target_os = "linux")]
-        if selected_successor != matches!(&project_genesis, Some(ProjectNativeTransitionV3::FirstSuccessor(_))) {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        #[cfg(not(target_os = "linux"))]
-        if selected_successor {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let first_successor_settling = if let Some(ProjectNativeTransitionV3::Genesis(phase, _)) = &project_genesis {
-            if first_successor.is_some() {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            source_tree_successor::require_project_genesis_native_owner_v3(self, *phase)?;
-            source_tree_successor::require_project_genesis_family_v3(self.native.state(), transaction, *phase)?;
-            None
-        } else {
-            source_tree_successor::require_transition(self.native.state(), transaction, first_successor)?
-        };
-        let settling_reservation = first_successor_settling.or(settling_reservation);
-        if let Some(phase) = first_successor {
-            source_tree_successor::require_live_custody(self, self.native.state(), transaction, phase)?;
-            capacity_reservation::validate_first_source_successor_capacity_records_v2(self, transaction)?;
-            if allow_capacity_records != phase.has_capacity_records() {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-        if !nix_offline_provisioning_edge(root_local_edge) {
-            require_no_nix_native_mutation(self.native.state(), transaction)?;
-        }
-        #[cfg(target_os = "linux")]
-        cache_policy_hold::require_no_exclusive_mutation_v1(self, self.native.state())?;
-        let settling_reservation = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
-            let (_, comparison) = self.source_original_replay.preview_transaction(
-                self.native.state(), transaction, self.native.limits(),
-            )?;
-            if comparison.before() != self.native.state() {
-                return Err(JournalError::StaleAuthoritySnapshot);
-            }
-            None
-        } else if let Some(edge) = root_local_edge {
-            validate_root_owner_edge(self.native.state(), transaction, edge, self.native.limits())?
-        } else {
-            if self.source_original_replay.has_dependencies() {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            root_local_recovery::require_fences(self.native.state(), transaction)?;
-            root_original_native::require_generic_transaction(self.native.state(), transaction)?;
-            root_original_inventory::require_generic_transaction(
-                self.native.state(),
-                transaction,
-                self.native.limits(),
-            )?;
-            aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(self.native.state(), transaction)?;
-            settling_reservation
-        };
-        #[cfg(target_os = "linux")]
-        if nix_offline_provisioning_edge(root_local_edge) {
-            nix_offline_provisioning::require_native_identifier(
-                self.native.state(), transaction, self.native.next_sequence(),
-            )?;
-        }
-        self.validate_consumer_resource_transition(
-            transaction,
-            allow_capacity_records,
-            settling_reservation,
-        )?;
-        #[cfg(target_os = "linux")]
-        crate::policy_compiler::require_root_source_genesis_mutation_v1(
-            self,
-            transaction,
-            root_genesis_transition,
-            allow_capacity_records,
-            settling_reservation,
-        )?;
-        require_common_mutation_boundaries(self.native.state(), transaction, scope)?;
-        #[cfg(target_os = "linux")]
-        if q04_transition.is_some() {
-            if matches!(q04_transition, Some(Q04JournalTransitionV1::RootCapacity(_)))
-                || matches!(q04_transition, Some(Q04JournalTransitionV1::Controller(_, None)))
-                || matches!(q04_transition, Some(Q04JournalTransitionV1::Root(_, _, None)))
-                || matches!(q04_transition, Some(Q04JournalTransitionV1::Source(_, _, None, _)))
-                || matches!(q04_transition, Some(Q04JournalTransitionV1::Source(_, 2, _, None)))
-                || matches!(q04_transition, Some(Q04JournalTransitionV1::Cache(_, _, None)))
-                || allow_capacity_records || allow_policy_hold_transition
-                || allow_host_fence_acquisition || allow_host_currentness_fence_acquisition
-                || allow_host_settlement_admission_append || settling_reservation.is_some()
-                || project_admission_transition != SourceProjectAdmissionTransition::None
-                || controller_genesis_transition
-                    != controller_source_genesis::ControllerSourceGenesisTransition::None
-                || source_genesis_transition != source_tree_genesis::SourceGenesisTransitionV1::None
-                || root_genesis_transition != RootSourceGenesisTransitionV1::None
-                || root_local_edge.is_some() || successor_issuance_transition.is_some()
-                || !matches!(&cache_gate, CacheMutationGateV1::Ordinary)
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
-        #[cfg(target_os = "linux")]
-        let terminal = resource_reservation.and_then(|original| original.q04_terminal());
-        #[cfg(target_os = "linux")]
-        if let Some(original) = terminal {
-            original.require_native_position(self)?;
-        }
-        #[cfg(target_os = "linux")]
-        require_q04_journal_transition(self.native.state(), transaction, q04_transition, terminal)?;
-        if !allow_policy_hold_transition {
+        self.commit_with_native_scope_and_financial_original(
+            transaction, scope, cache_gate,
             #[cfg(target_os = "linux")]
-            if !matches!(q04_transition, Some(Q04JournalTransitionV1::Controller(..))) {
-                match terminal {
-                    Some(original) => controller_policy_hold::require_q04_terminal_bank_successor(
-                        self.native.state(), transaction, original,
-                    )?,
-                    None => controller_policy_hold::require_no_mutation(self.native.state(), transaction)?,
-                }
-            }
-            #[cfg(not(target_os = "linux"))]
-            controller_policy_hold::require_no_mutation(self.native.state(), transaction)?;
+            q04_transition,
+            project_genesis,
             #[cfg(target_os = "linux")]
-            if !matches!(q04_transition, Some(Q04JournalTransitionV1::Source(..))) {
-                source_domain_policy_hold::require_no_mutation(self.native.state(), transaction)?;
-            }
-            #[cfg(not(target_os = "linux"))]
-            source_domain_policy_hold::require_no_mutation(self.native.state(), transaction)?;
-        }
-        self.require_mount_git_coverage_source_transition_v1(self.native.state(), transaction)?;
-        self.require_storage_git_coverage_transition_v1(self.native.state(), transaction)?;
-        self.require_owner_git_coverage_transition_v1(self.native.state(), transaction)?;
-        validate_transaction(transaction, self.native.limits())?;
-        delete_batch::validate(self.native.state(), transaction, self.native.next_sequence(), self.native.limits())?;
-        let has_capacity_records = transaction
-            .records()
-            .iter()
-            .any(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation);
-        if has_capacity_records != allow_capacity_records {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        if self.native.transaction_ids().contains(transaction.id()) {
-            return Err(JournalError::DuplicateTransaction);
-        }
-        if self.native.committed_transactions() >= self.native.limits().maximum_transactions {
-            return Err(JournalError::LimitExceeded("committed transaction count"));
-        }
-        validate_idempotency_changes(&self.idempotency, transaction.records())?;
-        let materialized_bytes = self.native.projected_change(
-            transaction.records().iter().map(RecordMutationRef::from),
-        )?;
-        let frames = self.native.encode_at_head(
-            *transaction.id(),
-            transaction.records().iter().map(|record| NativeRecordRef {
-                namespace_byte: record.namespace() as u8,
-                key: record.key(),
-                value: record.value(),
-            }),
-        )?;
-        let frame_count = u64::try_from(frames.len())
-            .map_err(|_| JournalError::LimitExceeded("transaction frame count"))?;
-        let commit_sequence = self.native.next_sequence()
-            .checked_add(frame_count - 1)
-            .ok_or(JournalError::SequenceExhausted)?;
-        let following_sequence = commit_sequence
-            .checked_add(1)
-            .ok_or(JournalError::SequenceExhausted)?;
-        root_original_inventory::require_append_sequence_headroom(
-            self.native.state(), transaction, following_sequence,
-        )?;
-        if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
-            let (_, comparison) = self.source_original_replay.preview_transaction(
-                self.native.state(), transaction, self.native.limits(),
-            )?;
-            source_original_native::replay::require_advisory_bounds(
-                &comparison,
-                self.native.limits(),
-                self.native.file().metadata()?.len().checked_add(
-                    encoded_transaction_append_bytes(transaction)?,
-                ).ok_or(JournalError::JournalTooLarge)?,
-                self.native.committed_transactions().checked_add(1)
-                    .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
-                following_sequence,
-            )?;
-        }
-        let expected_length = self.native.expected_append_length(&frames)?;
-        validate_reserved_capacity(
-            self.native.state(),
-            materialized_bytes,
-            transaction.records(),
-            settling_reservation,
-            expected_length,
-            self.native.committed_transactions()
-                .checked_add(1)
-                .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
-            self.native.limits(),
-            root_local_edge,
-        )?;
-        if first_successor.is_some() {
-            source_tree_successor::require_sequence_headroom(
-                &root_original_inventory::materialize(self.native.state(), transaction),
-                following_sequence,
-            )?;
-        }
-
-        // Retain the hold-journal lock through the durable append. The freeze
-        // writer takes Cache journal locks before this lock in the same order.
-        let _cache_policy_guard = cache_gate.before_append(self)?;
-
-        #[cfg(target_os = "linux")]
-        if let Some(Q04JournalTransitionV1::Root(history, _, Some(original))) = q04_transition {
-            // This is the actual borrowed Root flight, checked after native
-            // encoding/preflight and immediately before the shared append.
-            // The lower synchronous I/O can still straddle the cutoff; its
-            // outcome must remain resident and pass an upper postcheck.
-            original.recheck_cut(history.identity())
-                .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
-        }
-        #[cfg(target_os = "linux")]
-        match q04_transition {
-            Some(Q04JournalTransitionV1::Controller(transition, Some(root))) => {
-                if !std::ptr::eq(root.identity(), transition.identity()) {
-                    return Err(JournalError::ProtectedBoundary);
-                }
-                root.require_controller_transition(transition)
-                    .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
-            }
-            Some(Q04JournalTransitionV1::Source(recipes, index, Some(root), clearance)) => {
-                root.require_lower_transition(index, recipes.release_authorization())
-                    .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
-                if let Some(clearance) = clearance {
-                    clearance.recheck_at_append(recipes.identity())
-                        .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
-                }
-            }
-            Some(Q04JournalTransitionV1::Cache(recipes, index, Some(root))) => {
-                root.require_lower_transition(index, recipes.release_authorization())
-                    .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
-            }
-            _ => {}
-        }
-
-        if let Some(phase) = first_successor {
-            source_tree_successor::require_live_custody(self, self.native.state(), transaction, phase)?;
-        }
-
-        if let Some(ProjectNativeTransitionV3::Genesis(phase, original)) = &project_genesis {
-            source_tree_successor::require_project_genesis_native_owner_v3(self, *phase)?;
+            resource_reservation,
             #[cfg(target_os = "linux")]
-            {
-                let admission_expiry = if matches!(phase, source_tree_successor::ProjectGenesisNativePhaseV3::RootPrepared(_)) {
-                    Some(crate::policy_compiler::RootSourceGenesisAuthorityV1::require_project_genesis_current_deployment_v3(self)
-                        .map_err(|error| JournalError::ProjectGenesisOriginal(Box::new(error)))?)
-                } else { None };
-                original.final_crossing(admission_expiry)
-                    .map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                let _ = original;
-                return Err(JournalError::ProtectedBoundary);
-            }
-        }
+            storage_clock,
+            #[cfg(target_os = "linux")]
+            create_storage,
+            #[cfg(target_os = "linux")]
+            None,
+        )
+    }
 
-        #[cfg(target_os = "linux")]
-        if let Some(ProjectNativeTransitionV3::Issuance { transition, completed }) = &project_genesis {
-            let project = match transition {
-                controller_source_successor_issuance::Transition::ProjectSave(project)
-                | controller_source_successor_issuance::Transition::ProjectDelivered(project) => *project,
-                _ => return Err(JournalError::ProtectedBoundary),
-            };
-            if successor_issuance_transition != Some(*transition) || completed.floor().project() != project
-                || first_successor.is_some()
-            { return Err(JournalError::ProtectedBoundary); }
-            crate::hierarchy::controller_genesis::require_controller(self, self.protected_owner_uid()?)
-                .map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
-            controller_source_successor_issuance::require_no_mutation(self.native.state(), transaction, Some(*transition))?;
-            completed.recheck().map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
-            completed.signing_boundary_clock().map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
-        }
-
-        #[cfg(target_os = "linux")]
-        if let Some(ProjectNativeTransitionV3::FirstSuccessor(original)) = &project_genesis {
-            let phase = first_successor.ok_or(JournalError::ProtectedBoundary)?;
-            original.final_crossing(self, transaction, phase)
-                .map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
-        }
-
-        #[cfg(target_os = "linux")]
-        if let Some(original) = resource_reservation {
-            if let Some(terminal) = original.q04_terminal() {
-                terminal.require_native_position(self)?;
-            }
-            original.final_crossing()?;
-        }
-
-        #[cfg(target_os = "linux")]
-        if let Some(ProjectNativeTransitionV3::GlobalGenesis(original)) = &project_genesis {
-            original.final_crossing(self, source_genesis_transition, controller_genesis_transition)?;
-        }
-
-        #[cfg(target_os = "linux")]
-        if let Some(ProjectNativeTransitionV3::GlobalRootGenesis(original)) = &project_genesis {
-            if source_genesis_transition != source_tree_genesis::SourceGenesisTransitionV1::None
-                || controller_genesis_transition != controller_source_genesis::ControllerSourceGenesisTransition::None
-                || first_successor.is_some() || resource_reservation.is_some()
-            { return Err(JournalError::ProtectedBoundary); }
-            original.final_crossing(
-                self, root_genesis_transition == RootSourceGenesisTransitionV1::Initialize,
-                allow_capacity_records, settling_reservation.is_some(),
-            )?;
-        }
-
-        #[cfg(target_os = "linux")]
-        if let Some((loan, capture)) = storage_clock.as_mut() {
-            capture.require_final_clock(loan)?;
-        }
-        let durable_bytes = self.native.append_exact(&frames, expected_length)?;
-        #[cfg(all(target_os = "linux", any(test, feature = "test-fixtures")))]
-        if storage_clock.as_mut().is_some_and(|(_, capture)| capture.take_durable_append_failure()) {
-            self.native.poison();
-            return Err(JournalError::Io(std::io::Error::other(
-                "injected Storage Prepare failure after durable native append",
-            )));
-        }
-
-        for record in transaction.records() {
-            self.native.apply_mutation(RecordMutationRef::from(record));
-            apply_idempotency_record(&mut self.idempotency, record)?;
-        }
-        self.native.publish_append(
-            materialized_bytes, following_sequence, *transaction.id(),
-            transaction.records().iter().map(JournalRecord::namespace),
-        );
-        #[cfg(target_os = "linux")]
-        {
-            self.q04_lower_history_present |= transaction.records().iter()
-                .any(is_q04_lower_history_record_v1);
-        }
-
-        if let Err(error) =
-            cache_gate.own_successor(self, transaction, following_sequence, durable_bytes)
-        {
-            self.native.poison();
-            return Err(error);
-        }
-
-        Ok(CommitResult {
-            commit_sequence,
-            durable_bytes,
-        })
+    pub(super) fn commit_with_native_scope_and_financial_original(
+        &mut self,
+        transaction: &JournalTransaction,
+        scope: AppendScope,
+        cache_gate: CacheMutationGateV1<'_>,
+        #[cfg(target_os = "linux")] q04_transition: Option<
+            Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
+        >,
+        project_genesis: Option<ProjectNativeTransitionV3<'_, '_>>,
+        #[cfg(target_os = "linux")] resource_reservation: Option<
+            &crate::controller_resource_reservation::Transition,
+        >,
+        #[cfg(target_os = "linux")] storage_clock: Option<(
+            &aos_sandbox_broker::StoragePrepareNativeClockLoanV1<'_>,
+            &mut super::StoragePrepareNativeClockCaptureV1,
+        )>,
+        #[cfg(target_os = "linux")] create_storage: Option<
+            super::create_storage_append::CreateStorageAppendOriginalV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
+        >,
+        #[cfg(target_os = "linux")] borrowed_root: Option<
+            &aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'_>,
+        >,
+    ) -> Result<CommitResult, JournalError> {
+        let mut context = engine::OriginalAppendContextV1::new(self);
+        engine::commit(&mut context,
+            transaction, scope, cache_gate,
+            #[cfg(target_os = "linux")]
+            q04_transition,
+            project_genesis,
+            #[cfg(target_os = "linux")]
+            resource_reservation,
+            #[cfg(target_os = "linux")]
+            storage_clock,
+            #[cfg(target_os = "linux")]
+            create_storage,
+            #[cfg(target_os = "linux")]
+            borrowed_root,
+        )
     }
 
     /// Validates that an ordered sequence of future transactions fits all bounds.
@@ -1370,7 +1205,7 @@ impl Journal {
     pub(crate) fn preflight_controller_source_genesis_transitions(
         &self,
         transactions: &[JournalTransaction],
-        transitions: &[controller_source_genesis::ControllerSourceGenesisTransition],
+        transitions: &[aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition],
     ) -> Result<(), JournalError> {
         self.preflight_in_scope(
             PreflightTransactionViewV1::Ordinary(transactions),
@@ -1420,6 +1255,34 @@ impl Journal {
         mut cache_gate: CacheMutationGateV1<'_>,
         project_genesis: Option<&[source_tree_successor::ProjectGenesisNativePhaseV3]>,
     ) -> Result<(), JournalError> {
+        self.preflight_with_source_selection_v1(transactions, scope, cache_gate, project_genesis, None)
+    }
+
+    pub(crate) fn preflight_with_source_provisioning_v1(&self,
+        transactions: &[JournalTransaction],
+        original: &super::source_provisioning::SourceProvisioningAppendLoanV1<'_>,
+    ) -> Result<(), JournalError> {
+        self.preflight_with_source_selection_v1(PreflightTransactionViewV1::Ordinary(transactions),
+            PreflightScope::default(), CacheMutationGateV1::Ordinary, None, Some(original))
+    }
+
+    fn preflight_with_source_selection_v1(&self,
+        transactions: PreflightTransactionViewV1<'_>, scope: PreflightScope<'_>,
+        mut cache_gate: CacheMutationGateV1<'_>,
+        project_genesis: Option<&[source_tree_successor::ProjectGenesisNativePhaseV3]>,
+        source_provisioning: Option<&super::source_provisioning::SourceProvisioningAppendLoanV1<'_>>,
+    ) -> Result<(), JournalError> {
+        self.preflight_with_source_selection_engine_v2(transactions, scope, cache_gate,
+            project_genesis, source_provisioning, None)
+    }
+
+    fn preflight_with_source_selection_engine_v2(&self,
+        transactions: PreflightTransactionViewV1<'_>, scope: PreflightScope<'_>,
+        mut cache_gate: CacheMutationGateV1<'_>,
+        project_genesis: Option<&[source_tree_successor::ProjectGenesisNativePhaseV3]>,
+        source_provisioning: Option<&super::source_provisioning::SourceProvisioningAppendLoanV1<'_>>,
+        mut retained: Option<&mut ProtectedJournalPreflightOriginalV2>,
+    ) -> Result<(), JournalError> {
         let PreflightScope {
             settling_reservation,
             allow_capacity_records,
@@ -1433,6 +1296,15 @@ impl Journal {
         } = scope;
 
         self.ensure_healthy()?;
+        // Refuse the held family before cloning any prospective map/model.
+        // Every branch here is advisory DATA; no Root original enters it.
+        for index in 0..transactions.len() {
+            if let Some(original) = source_provisioning {
+                original.require_transition(self, transactions.transaction(index))?;
+            } else {
+                require_no_create_storage_mutation(self.native.state(), transactions.transaction(index))?;
+            }
+        }
         if first_successors.is_some_and(|phases| phases.len() != transactions.len()) {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -1480,203 +1352,226 @@ impl Journal {
         cache_gate.check(self)?;
 
         delete_batch::bound_preview_view(self.native.state(), &transactions, self.native.limits())?;
+        if let Some(original) = retained.as_deref_mut() {
+            original.reserve_transactions_v2(transactions.len())?;
+        }
         let mut state = self.native.state().clone();
-        let mut idempotency = self.idempotency.clone();
+        let mut idempotency = self.native.idempotency().clone();
         let mut transaction_ids = self.native.transaction_ids().clone();
         let mut materialized_bytes = self.native.materialized_bytes();
         let mut next_sequence = self.native.next_sequence();
         let mut committed_transactions = self.native.committed_transactions();
-        let mut expected_length = self.native.file().metadata()?.len();
-
-        for index in 0..transactions.len() {
-            let transaction = transactions.transaction(index);
-            let first_successor = first_successors.map(|phases| phases[index]);
-            let first_successor_settling = if let Some(phases) = project_genesis {
-                source_tree_successor::require_project_genesis_native_owner_v3(self, phases[index])?;
-                source_tree_successor::require_project_genesis_family_v3(&state, transaction, phases[index])?;
-                None
-            } else {
-                source_tree_successor::require_transition(&state, transaction, first_successor)?
+        let result: Result<(), JournalError> = (|| {
+            let mut expected_length = match retained.as_deref_mut() {
+                Some(original) => original.metadata_once_v2(self)?,
+                None => self.native.metadata()?.len(),
             };
-            let allow_capacity_records = first_successor
-                .map_or(allow_capacity_records, |phase| phase.has_capacity_records());
-            let settling_reservation = first_successor_settling.or(settling_reservation);
-            if let Some(phase) = first_successor {
-                source_tree_successor::require_live_custody(self, &state, transaction, phase)?;
-                capacity_reservation::validate_first_source_successor_capacity_records_v2(self, transaction)?;
-            }
-            #[cfg(target_os = "linux")]
-            cache_policy_hold::require_no_exclusive_mutation_v1(self, &state)?;
-            if !nix_offline_provisioning_edge(root_local_edge) {
-                require_no_nix_native_mutation(&state, transaction)?;
-            }
-            let settling_reservation = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
-                self.source_original_replay.preview_transaction(
-                    &state, transaction, self.native.limits(),
-                )?;
-                None
-            } else if let Some(edge) = root_local_edge {
-                validate_root_owner_edge(&state, transaction, edge, self.native.limits())?
-            } else {
-                if self.source_original_replay.has_dependencies() {
-                    return Err(JournalError::ProtectedBoundary);
+
+            for index in 0..transactions.len() {
+                let transaction = transactions.transaction(index);
+                if let Some(original) = retained.as_deref_mut() {
+                    original.begin_transaction_v2();
                 }
-                root_local_recovery::require_fences(&state, transaction)?;
-                root_original_native::require_generic_transaction(&state, transaction)?;
-                root_original_inventory::require_generic_transaction(
-                    &state,
-                    transaction,
-                    self.native.limits(),
-                )?;
-                aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(&state, transaction)?;
-                settling_reservation
-            };
-            #[cfg(target_os = "linux")]
-            if matches!(root_local_edge, Some(RootOwnerEdge::NixOffline)) {
-                nix_offline_provisioning::require_native_identifier(
-                    &state, transaction, next_sequence,
-                )?;
-            }
-            require_common_mutation_boundaries(
-                &state,
-                transaction,
-                AppendScope {
-                    controller_genesis_transition: controller_genesis_transitions
-                        .map(|transitions| transitions[index])
-                        .unwrap_or(
-                            controller_source_genesis::ControllerSourceGenesisTransition::None,
-                        ),
-                    successor_issuance_transition: successor_issuance_transitions
-                        .map(|transitions| transitions[index]),
-                    source_genesis_transition: genesis_transitions
-                        .map(|transitions| transitions[index])
-                        .unwrap_or(source_tree_genesis::SourceGenesisTransitionV1::None),
-                    project_admission_transition: project_transitions
-                        .map(|transitions| transitions[index])
-                        .unwrap_or(SourceProjectAdmissionTransition::None),
-                    first_successor,
-                    ..AppendScope::default()
-                },
-            )?;
-            #[cfg(target_os = "linux")]
-            let q04_transition = transactions.q04_transition(index);
-            #[cfg(target_os = "linux")]
-            if q04_transition.is_some()
-                && (allow_capacity_records || allow_policy_hold_transition
-                    || settling_reservation.is_some() || root_local_edge.is_some()
-                    || project_transitions.is_some() || controller_genesis_transitions.is_some()
-                    || genesis_transitions.is_some() || successor_issuance_transitions.is_some()
-                    || !matches!(&cache_gate, CacheMutationGateV1::Ordinary))
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            #[cfg(target_os = "linux")]
-            require_q04_journal_transition(&state, transaction, q04_transition, None)?;
-            if !allow_policy_hold_transition {
-                #[cfg(target_os = "linux")]
-                if !matches!(q04_transition, Some(Q04JournalTransitionV1::Controller(..))) {
-                    controller_policy_hold::require_no_mutation(&state, transaction)?;
+                let mut retained_frames = None;
+                let transaction_result: Result<(), JournalError> = (|| {
+                    let first_successor = first_successors.map(|phases| phases[index]);
+                    let first_successor_settling = if let Some(phases) = project_genesis {
+                        source_tree_successor::require_project_genesis_native_owner_v3(self, phases[index])?;
+                        source_tree_successor::require_project_genesis_family_v3(&state, transaction, phases[index])?;
+                        None
+                    } else {
+                        source_tree_successor::require_transition(&state, transaction, first_successor)?
+                    };
+                    let allow_capacity_records = first_successor
+                        .map_or(allow_capacity_records, |phase| phase.has_capacity_records());
+                    let settling_reservation = first_successor_settling.or(settling_reservation);
+                    if let Some(phase) = first_successor {
+                        source_tree_successor::require_live_custody(self, &state, transaction, phase)?;
+                        capacity_reservation::validate_first_source_successor_capacity_records_v2(self, transaction)?;
+                    }
+                    #[cfg(target_os = "linux")]
+                    cache_policy_hold::require_no_exclusive_mutation_v1(self, &state)?;
+                    if !nix_offline_provisioning_edge(root_local_edge) {
+                        require_no_nix_native_mutation(&state, transaction)?;
+                    }
+                    let settling_reservation = if let Some(edge) = root_local_edge {
+                        validate_root_owner_edge(&state, transaction, edge, self.native.limits())?
+                    } else {
+                        if self.source_original_replay.has_dependencies() {
+                            return Err(JournalError::ProtectedBoundary);
+                        }
+                        root_local_recovery::require_fences(&state, transaction)?;
+                        root_original_native::require_generic_transaction(&state, transaction)?;
+                        root_original_inventory::require_generic_transaction(
+                            &state,
+                            transaction,
+                            self.native.limits(),
+                        )?;
+                        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(&state, transaction)?;
+                        settling_reservation
+                    };
+                    #[cfg(target_os = "linux")]
+                    if matches!(root_local_edge, Some(RootOwnerEdge::NixOffline)) {
+                        nix_offline_provisioning::require_native_identifier(
+                            &state, transaction, next_sequence,
+                        )?;
+                    }
+                    require_common_mutation_boundaries(
+                        &state,
+                        transaction,
+                        AppendScope {
+                            controller_genesis_transition: controller_genesis_transitions
+                                .map(|transitions| transitions[index])
+                                .unwrap_or(
+                                    aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition::None,
+                                ),
+                            successor_issuance_transition: successor_issuance_transitions
+                                .map(|transitions| transitions[index]),
+                            source_genesis_transition: genesis_transitions
+                                .map(|transitions| transitions[index])
+                                .unwrap_or(source_tree_genesis::SourceGenesisTransitionV1::None),
+                            project_admission_transition: project_transitions
+                                .map(|transitions| transitions[index])
+                                .unwrap_or(SourceProjectAdmissionTransition::None),
+                            first_successor,
+                            ..AppendScope::default()
+                        },
+                        source_provisioning.is_some(),
+                        #[cfg(target_os = "linux")] None,
+                        #[cfg(target_os = "linux")] None,
+                        #[cfg(target_os = "linux")] None,
+                        &cache_gate,
+                    )?;
+                    #[cfg(target_os = "linux")]
+                    let q04_transition = transactions.q04_transition(index);
+                    #[cfg(target_os = "linux")]
+                    if q04_transition.is_some()
+                        && (allow_capacity_records || allow_policy_hold_transition
+                            || settling_reservation.is_some() || root_local_edge.is_some()
+                            || project_transitions.is_some() || controller_genesis_transitions.is_some()
+                            || genesis_transitions.is_some() || successor_issuance_transitions.is_some()
+                            || !matches!(&cache_gate, CacheMutationGateV1::Ordinary))
+                    {
+                        return Err(JournalError::ProtectedBoundary);
+                    }
+                    #[cfg(target_os = "linux")]
+                    require_q04_journal_transition(&state, transaction, q04_transition, None, None, None, None, None, None, source_provisioning, None, None, None, None)?;
+                    if !allow_policy_hold_transition {
+                        #[cfg(target_os = "linux")]
+                        if !matches!(q04_transition, Some(Q04JournalTransitionV1::Controller(..))) {
+                            controller_policy_hold::require_no_mutation(&state, transaction)?;
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        controller_policy_hold::require_no_mutation(&state, transaction)?;
+                        #[cfg(target_os = "linux")]
+                        if !matches!(q04_transition, Some(Q04JournalTransitionV1::Source(..))) {
+                            match source_provisioning {
+                                Some(original) => original.require_retained_source_cut_v1(&state)?,
+                                None => source_domain_policy_hold::require_no_mutation(&state, transaction)?,
+                            }
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        source_domain_policy_hold::require_no_mutation(&state, transaction)?;
+                    }
+                    self.require_mount_git_coverage_source_transition_v1(&state, transaction)?;
+                    self.require_storage_git_coverage_transition_v1(&state, transaction)?;
+                    self.require_owner_git_coverage_transition_v1(&state, transaction)?;
+                    let has_capacity_records = transaction
+                        .records()
+                        .iter()
+                        .any(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation);
+                    self.validate_consumer_resource_transition(
+                        transaction,
+                        allow_capacity_records,
+                        settling_reservation,
+                    )?;
+                    if has_capacity_records != allow_capacity_records {
+                        return Err(JournalError::ProtectedBoundary);
+                    }
+                    match retained.as_deref_mut() {
+                        Some(original) => original.validate_transaction_v2(transaction, self.native.limits())?,
+                        None => validate_transaction(transaction, self.native.limits())?,
+                    }
+                    delete_batch::validate(&state, transaction, next_sequence, self.native.limits())?;
+                    if !transaction_ids.insert(*transaction.id()) {
+                        return Err(JournalError::DuplicateTransaction);
+                    }
+                    if committed_transactions >= self.native.limits().maximum_transactions {
+                        return Err(JournalError::LimitExceeded("committed transaction count"));
+                    }
+                    validate_idempotency_changes(&idempotency, transaction.records())?;
+                    materialized_bytes = validate_materialized_change(
+                        &state,
+                        materialized_bytes,
+                        transaction.records(),
+                        self.native.limits(),
+                    )?;
+
+                    retained_frames = Some(match retained.as_deref_mut() {
+                        Some(original) => original.encode_transaction_v2(transaction, next_sequence)?,
+                        None => encode_transaction(transaction, next_sequence)?,
+                    });
+                    let frames = retained_frames.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+                    let frame_count = u64::try_from(frames.len())
+                        .map_err(|_| JournalError::LimitExceeded("transaction frame count"))?;
+                    root_original_inventory::require_append_sequence_headroom(
+                        &state,
+                        transaction,
+                        next_sequence.checked_add(frame_count).ok_or(JournalError::SequenceExhausted)?,
+                    )?;
+                    let additional_bytes = frames
+                        .iter()
+                        .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64));
+                    expected_length = expected_length
+                        .checked_add(additional_bytes.ok_or(JournalError::JournalTooLarge)?)
+                        .ok_or(JournalError::JournalTooLarge)?;
+                    if expected_length > self.native.limits().maximum_journal_bytes {
+                        return Err(JournalError::JournalTooLarge);
+                    }
+
+
+                    validate_reserved_capacity(
+                        &state,
+                        materialized_bytes,
+                        transaction.records(),
+                        settling_reservation,
+                        expected_length,
+                        committed_transactions
+                            .checked_add(1)
+                            .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
+                        self.native.limits(),
+                        root_local_edge,
+                    )?;
+                    if first_successor.is_some() {
+                        source_tree_successor::require_sequence_headroom(
+                            &root_original_inventory::materialize(&state, transaction),
+                            next_sequence.checked_add(frame_count).ok_or(JournalError::SequenceExhausted)?,
+                        )?;
+                    }
+
+                    for record in transaction.records() {
+                        apply_record(&mut state, &mut idempotency, record)?;
+                    }
+                    next_sequence = next_sequence
+                        .checked_add(frame_count)
+                        .ok_or(JournalError::SequenceExhausted)?;
+                    committed_transactions += 1;
+                    Ok(())
+                })();
+                if let Some(original) = retained.as_deref_mut() {
+                    original.retain_frames_v2(retained_frames);
                 }
-                #[cfg(not(target_os = "linux"))]
-                controller_policy_hold::require_no_mutation(&state, transaction)?;
-                #[cfg(target_os = "linux")]
-                if !matches!(q04_transition, Some(Q04JournalTransitionV1::Source(..))) {
-                    source_domain_policy_hold::require_no_mutation(&state, transaction)?;
-                }
-                #[cfg(not(target_os = "linux"))]
-                source_domain_policy_hold::require_no_mutation(&state, transaction)?;
+                transaction_result?;
             }
-            self.require_mount_git_coverage_source_transition_v1(&state, transaction)?;
-            self.require_storage_git_coverage_transition_v1(&state, transaction)?;
-            self.require_owner_git_coverage_transition_v1(&state, transaction)?;
-            let has_capacity_records = transaction
-                .records()
-                .iter()
-                .any(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation);
-            self.validate_consumer_resource_transition(
-                transaction,
-                allow_capacity_records,
-                settling_reservation,
-            )?;
-            if has_capacity_records != allow_capacity_records {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            validate_transaction(transaction, self.native.limits())?;
-            delete_batch::validate(&state, transaction, next_sequence, self.native.limits())?;
-            if !transaction_ids.insert(*transaction.id()) {
-                return Err(JournalError::DuplicateTransaction);
-            }
-            if committed_transactions >= self.native.limits().maximum_transactions {
-                return Err(JournalError::LimitExceeded("committed transaction count"));
-            }
-            validate_idempotency_changes(&idempotency, transaction.records())?;
-            materialized_bytes = validate_materialized_change(
-                &state,
-                materialized_bytes,
-                transaction.records(),
-                self.native.limits(),
-            )?;
-
-            let frames = encode_transaction(transaction, next_sequence)?;
-            let frame_count = u64::try_from(frames.len())
-                .map_err(|_| JournalError::LimitExceeded("transaction frame count"))?;
-            root_original_inventory::require_append_sequence_headroom(
-                &state,
-                transaction,
-                next_sequence.checked_add(frame_count).ok_or(JournalError::SequenceExhausted)?,
-            )?;
-            let additional_bytes = frames
-                .iter()
-                .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64));
-            expected_length = expected_length
-                .checked_add(additional_bytes.ok_or(JournalError::JournalTooLarge)?)
-                .ok_or(JournalError::JournalTooLarge)?;
-            if expected_length > self.native.limits().maximum_journal_bytes {
-                return Err(JournalError::JournalTooLarge);
-            }
-
-            if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
-                let (_, comparison) = self.source_original_replay.preview_transaction(
-                    &state, transaction, self.native.limits(),
-                )?;
-                source_original_native::replay::require_advisory_bounds(
-                    &comparison,
-                    self.native.limits(),
-                    expected_length,
-                    committed_transactions.checked_add(1)
-                        .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
-                    next_sequence.checked_add(frame_count).ok_or(JournalError::SequenceExhausted)?,
-                )?;
-            }
-
-            validate_reserved_capacity(
-                &state,
-                materialized_bytes,
-                transaction.records(),
-                settling_reservation,
-                expected_length,
-                committed_transactions
-                    .checked_add(1)
-                    .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
-                self.native.limits(),
-                root_local_edge,
-            )?;
-            if first_successor.is_some() {
-                source_tree_successor::require_sequence_headroom(
-                    &root_original_inventory::materialize(&state, transaction),
-                    next_sequence.checked_add(frame_count).ok_or(JournalError::SequenceExhausted)?,
-                )?;
-            }
-
-            for record in transaction.records() {
-                apply_record(&mut state, &mut idempotency, record)?;
-            }
-            next_sequence = next_sequence
-                .checked_add(frame_count)
-                .ok_or(JournalError::SequenceExhausted)?;
-            committed_transactions += 1;
+            Ok(())
+        })();
+        if let Some(original) = retained {
+            original.retain_models_v2(preflight_retained::PreflightModelsV2 {
+                state, idempotency, transaction_ids, materialized_bytes,
+                next_sequence, committed_transactions,
+            });
         }
-        Ok(())
+        result
     }
 }
 
@@ -1977,5 +1872,162 @@ impl Journal {
             #[cfg(target_os = "linux")]
             None,
         ).map_err(Into::into)
+    }
+}
+
+
+#[cfg(target_os = "linux")]
+impl Journal {
+    /// Appends a fixed RootOpen or UseAuthorized pair under its same Root original.
+    ///
+    /// # Errors
+    /// Retains the shared semantic, original-currentness and durability refusal.
+    pub(crate) fn commit_create_storage_root_history_v1(
+        &mut self,
+        transaction: &JournalTransaction,
+        original: &mut crate::policy_compiler::create_storage_current::root_open::RootCurrentOpenAppendLoanV1<'_, '_, '_>,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_native_scope_and_storage_clock(transaction, AppendScope::default(),
+            CacheMutationGateV1::Ordinary, None, None, None, None,
+            Some(super::create_storage_append::CreateStorageAppendOriginalV1::Root(original)))
+    }
+}
+
+#[cfg(test)]
+mod create_storage_generic_boundary_tests {
+    use super::*;
+    use aos_sandbox_protocol::domain_ledger::create_storage_history::{
+        KeyV1, LatestHeadV1, OwnerV1, PhaseV1, RecordCoordinatesV1, RecordEnvelopeV1,
+        root_open::RootOpenBodyDataV1,
+        transport::OpenQueryV1,
+    };
+    use crate::journal::ProtectedJournalNamesV1;
+
+    #[test]
+    fn canonical_root_open_data_cannot_enter_generic_native_mutation() {
+        // These are explicit historical DATA coordinates, not actual native
+        // names, a RootR original, a current peer or an append-loan fixture.
+        let body = RootOpenBodyDataV1 {
+            open: OpenQueryV1 {
+                controller_nonce: [1; 16],
+                lane: [2; 16],
+                seed: [3; 32],
+                ready: [4; 32],
+            },
+            root_nonce: [5; 16],
+            boot: [6; 16],
+            started: 7,
+            cutoff: 8,
+            authority_names: ProtectedJournalNamesV1::from_historical_fields((1, 2), (3, 4), (5, 6)),
+            policy_names: ProtectedJournalNamesV1::from_historical_fields((1, 2), (7, 8), (9, 10)),
+            authority_next: 1,
+            policy_next: 1,
+            root_profile: [11; 32],
+            root_recipient: [12; 16],
+            root_producer: [13; 16],
+            root_pid: 14,
+            controller_pid: 15,
+            controller_uid: 16,
+            controller_gid: 17,
+        };
+        let key = KeyV1::new(body.open.lane, OwnerV1::Root, 1).unwrap();
+        let phase = PhaseV1::new(OwnerV1::Root, 1).unwrap();
+        let latest = KeyV1::new(body.open.lane, OwnerV1::Root, 0).unwrap();
+        let mut record = [0; 500];
+        let checksum = RecordEnvelopeV1::encode_into(RecordCoordinatesV1 {
+            key,
+            phase,
+            predecessor: [0; 32],
+            correlation: body.open.seed,
+        }, &body.encode().unwrap(), &mut record).unwrap();
+        assert!(RecordEnvelopeV1::decode(&record, key, phase).is_ok());
+        let transaction = JournalTransaction::new([18; 16], vec![
+            JournalRecord::put(RecordNamespace::CreateStorageHistory, key.encode().to_vec(), record.to_vec()),
+            JournalRecord::put(RecordNamespace::CreateStorageHistory, latest.encode().to_vec(),
+                LatestHeadV1::new(1, checksum).unwrap().encode().to_vec()),
+        ]).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("journal");
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let sequence = journal.snapshot_sequence();
+        let length = std::fs::metadata(&path).unwrap().len();
+
+        let forecast = journal.preflight_transactions(std::slice::from_ref(&transaction));
+        let returned = journal.commit(&transaction);
+
+        assert!(matches!(forecast, Err(JournalError::ProtectedBoundary)));
+        assert!(matches!(returned, Err(JournalError::ProtectedBoundary)));
+        assert_eq!(journal.snapshot_sequence(), sequence);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), length);
+        assert!(journal.records(RecordNamespace::CreateStorageHistory).next().is_none());
+    }
+
+    #[test]
+    fn canonical_use_authorized_data_cannot_substitute_a_live_root_append_loan() {
+        use aos_sandbox_core::{ResourceDimension, ResourceVector};
+        use aos_sandbox_protocol::domain_ledger::create_storage_history::{
+            association::AcceptedAssociationDataV1,
+            use_authorized::{UseAuthorizedBodyDataV1, USE_AUTHORIZED_RECORD_BYTES_V1},
+        };
+
+        // Strict canonical DATA still carries no R, accepted flight, typed
+        // readonly interval, same writer or purpose-closed native loan.
+        let body = UseAuthorizedBodyDataV1 {
+            association: AcceptedAssociationDataV1 {
+                operation: [1; 16], project: [2; 16], sandbox: [3; 16],
+                accepted_request: [4; 32], coissuance_binding: [5; 32],
+                seed: [6; 32], controller_nonce: [7; 16], boot: [8; 16],
+                started: 10, cutoff: 20,
+            },
+            root_nonce: [9; 16], root_open: [10; 32], ready: [11; 32],
+            inputs_ready: [12; 32], current_proofs: [13; 32],
+            source_current: [14; 32], assignment: [15; 32], ownership_lease: [16; 32],
+            receiving: ResourceVector::ZERO.with(ResourceDimension::MemoryBytes, 4096),
+        };
+        let lane = [17; 16];
+        let key = KeyV1::new(lane, OwnerV1::Root, 2).unwrap();
+        let phase = PhaseV1::new(OwnerV1::Root, 2).unwrap();
+        let mut record = [0; USE_AUTHORIZED_RECORD_BYTES_V1];
+        let checksum = RecordEnvelopeV1::encode_into(RecordCoordinatesV1 {
+            key, phase, predecessor: body.root_open, correlation: body.association.seed,
+        }, &body.encode().unwrap(), &mut record).unwrap();
+        let transaction = crate::journal::create_storage_history::prepare_history_pair_v1(
+            key, phase, &record, &LatestHeadV1::new(2, checksum).unwrap().encode(),
+        ).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("journal");
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let sequence = journal.snapshot_sequence();
+        let length = std::fs::metadata(&path).unwrap().len();
+
+        let forecast = journal.preflight_transactions(std::slice::from_ref(&transaction));
+        let returned = journal.commit(&transaction);
+
+        assert!(matches!(forecast, Err(JournalError::ProtectedBoundary)));
+        assert!(matches!(returned, Err(JournalError::ProtectedBoundary)));
+        assert_eq!(journal.snapshot_sequence(), sequence);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), length);
+        assert!(journal.records(RecordNamespace::CreateStorageHistory).next().is_none());
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ProtectedJournalAuthority<'_> {
+    pub(crate) fn commit_root_credential_receiving_v1(
+        &mut self,
+        transaction: &JournalTransaction,
+        original: &aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'_>,
+    ) -> Result<CommitResult, JournalError> {
+        self.validate_generic_authority_mutation()?;
+        self.journal.ensure_protected_authority()?;
+        self.validate_transaction_namespace(transaction)?;
+        original.require_current_v1().map_err(|_| match original.diagnostic_original_v1() {
+            Some(cause) => JournalError::RootFinancial(cause),
+            None => JournalError::ProtectedBoundary,
+        })?;
+        self.journal.commit_with_native_scope_and_financial_original(
+            transaction, AppendScope::default(), CacheMutationGateV1::Ordinary,
+            None, None, None, None, None, Some(original),
+        )
     }
 }

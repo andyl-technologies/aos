@@ -6,7 +6,7 @@
 //! secret names are checked for absence with metadata lookup and are never
 //! opened.
 
-use std::os::fd::OwnedFd;
+use aos_sandbox_broker::endpoint_native_files::EndpointNativeFileV1;
 use std::path::{Path, PathBuf};
 
 use aos_sandbox_broker_session_protocol::manifest::{
@@ -14,11 +14,17 @@ use aos_sandbox_broker_session_protocol::manifest::{
 };
 use aos_sandbox_linux::protected_file::{self, ExactReadError};
 use ed25519_dalek::SigningKey;
-use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags, Stat};
+use rustix::fs::{FileType, Mode, OFlags, Stat};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::BrokerSessionSecurityError;
+
+mod observations;
+mod opening;
+mod revalidation;
+pub(crate) use revalidation::ProtectedEndpointFilesRevalidationV1;
+pub(crate) use opening::ProtectedEndpointFilesOpeningV1;
 
 pub(crate) const MANIFEST_NAME: &str = "broker-session-manifest";
 const CLIENT_HELLO_KEY_NAME: &str = "client-hello-signing-key";
@@ -97,14 +103,14 @@ impl MetadataSnapshot {
 }
 
 struct ManifestFile {
-    descriptor: OwnedFd,
+    descriptor: EndpointNativeFileV1,
     metadata: MetadataSnapshot,
     exact: [u8; BROKER_SESSION_MANIFEST_BYTES],
     digest: [u8; 32],
 }
 
 pub(crate) struct SecretFile {
-    descriptor: OwnedFd,
+    descriptor: EndpointNativeFileV1,
     metadata: MetadataSnapshot,
     exact: Box<Zeroizing<[u8; SECRET_BYTES]>>,
     label: &'static str,
@@ -127,7 +133,7 @@ pub(crate) struct ProtectedEndpointFiles {
     path: PathBuf,
     owner: u32,
     role: EndpointRole,
-    directory: OwnedFd,
+    directory: EndpointNativeFileV1,
     directory_metadata: MetadataSnapshot,
     manifest_file: ManifestFile,
     secrets: [SecretFile; 2],
@@ -139,46 +145,14 @@ impl ProtectedEndpointFiles {
         path: &Path,
         role: EndpointRole,
     ) -> Result<Self, BrokerSessionSecurityError> {
-        validate_absolute_fixed_path(path)?;
-        let owner = rustix::process::geteuid().as_raw();
-        let directory = open_directory(path)?;
-        let directory_metadata = validate_directory(&directory, owner)?;
-        require_opposite_absent(&directory, role)?;
+        let mut opening = ProtectedEndpointFilesOpeningV1::ordinary();
+        opening.load_once(path, role);
+        opening.into_result()
+    }
 
-        let manifest_file = load_manifest(&directory, owner)?;
-        rustix::fs::flock(
-            &manifest_file.descriptor,
-            FlockOperation::NonBlockingLockExclusive,
-        )
-        .map_err(|error| {
-            if error == rustix::io::Errno::AGAIN {
-                BrokerSessionSecurityError::AlreadyInUse
-            } else {
-                BrokerSessionSecurityError::filesystem("manifest", "lock")
-            }
-        })?;
-        let manifest = BrokerSessionManifestV1::decode(&manifest_file.exact)?;
-        manifest.require_all_active()?;
-
-        let [first, second] = role.local_files();
-        let secrets = [
-            load_secret(&directory, owner, first.0, first.1)?,
-            load_secret(&directory, owner, second.0, second.1)?,
-        ];
-        validate_local_keys(&manifest, &secrets, [first.2, second.2])?;
-
-        let files = Self {
-            path: path.to_path_buf(),
-            owner,
-            role,
-            directory,
-            directory_metadata,
-            manifest_file,
-            secrets,
-            manifest,
-        };
-        files.revalidate()?;
-        Ok(files)
+    pub(crate) fn native_files_v1(&self) -> [&EndpointNativeFileV1; 4] {
+        [&self.directory, &self.manifest_file.descriptor,
+            &self.secrets[0].descriptor, &self.secrets[1].descriptor]
     }
 
     pub(crate) const fn manifest(&self) -> &BrokerSessionManifestV1 {
@@ -230,38 +204,16 @@ impl ProtectedEndpointFiles {
     }
 
     pub(crate) fn revalidate(&self) -> Result<(), BrokerSessionSecurityError> {
-        if rustix::process::geteuid().as_raw() != self.owner {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-
-        validate_retained_directory(&self.directory, self.owner, self.directory_metadata)?;
-        require_opposite_absent(&self.directory, self.role)?;
-        validate_retained_manifest(&self.manifest_file, self.owner)?;
-        for secret in &self.secrets {
-            validate_retained_secret(secret, self.owner)?;
-        }
-
-        let reopened_directory =
-            open_directory(&self.path).map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        if validate_directory(&reopened_directory, self.owner)? != self.directory_metadata {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        require_opposite_absent(&reopened_directory, self.role)?;
-        let reopened_manifest = load_manifest(&reopened_directory, self.owner)?;
-        if reopened_manifest.metadata != self.manifest_file.metadata
-            || reopened_manifest.digest != self.manifest_file.digest
-            || reopened_manifest.exact != self.manifest_file.exact
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        for (secret, (name, label, _)) in self.secrets.iter().zip(self.role.local_files()) {
-            let reopened = load_secret(&reopened_directory, self.owner, name, label)?;
-            if reopened.metadata != secret.metadata || reopened.exact[..] != secret.exact[..] {
-                return Err(BrokerSessionSecurityError::Currentness);
-            }
-        }
-        Ok(())
+        let mut observation = ProtectedEndpointFilesRevalidationV1::new();
+        observation.observe_once(self, false);
+        observation.classified_failure().map_or(Ok(()), Err)
     }
+
+    /// Parks one complete native observation in its caller-owned destination.
+    pub(crate) fn revalidate_into(&self, observation: &mut ProtectedEndpointFilesRevalidationV1) {
+        observation.observe_once(self, true);
+    }
+
 }
 
 fn validate_absolute_fixed_path(path: &Path) -> Result<(), BrokerSessionSecurityError> {
@@ -271,23 +223,10 @@ fn validate_absolute_fixed_path(path: &Path) -> Result<(), BrokerSessionSecurity
     Ok(())
 }
 
-fn open_directory(path: &Path) -> Result<OwnedFd, BrokerSessionSecurityError> {
-    rustix::fs::open(
-        path,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
+#[cfg(test)]
+fn open_directory(path: &Path) -> Result<EndpointNativeFileV1, BrokerSessionSecurityError> {
+    EndpointNativeFileV1::open_directory(path)
     .map_err(|_| BrokerSessionSecurityError::filesystem("endpoint directory", "open"))
-}
-
-fn validate_directory(
-    descriptor: &OwnedFd,
-    owner: u32,
-) -> Result<MetadataSnapshot, BrokerSessionSecurityError> {
-    let stat = rustix::fs::fstat(descriptor)
-        .map_err(|_| BrokerSessionSecurityError::filesystem("endpoint directory", "inspect"))?;
-    require_directory_metadata(&stat, owner)?;
-    Ok(MetadataSnapshot::capture(&stat))
 }
 
 fn require_directory_metadata(stat: &Stat, owner: u32) -> Result<(), BrokerSessionSecurityError> {
@@ -303,72 +242,16 @@ fn require_directory_metadata(stat: &Stat, owner: u32) -> Result<(), BrokerSessi
     }
 }
 
-fn validate_retained_directory(
-    descriptor: &OwnedFd,
-    owner: u32,
-    expected: MetadataSnapshot,
-) -> Result<(), BrokerSessionSecurityError> {
-    if validate_directory(descriptor, owner)? == expected {
-        Ok(())
-    } else {
-        Err(BrokerSessionSecurityError::Currentness)
-    }
+#[cfg(test)]
+fn load_manifest(directory: &EndpointNativeFileV1, owner: u32) -> Result<ManifestFile, BrokerSessionSecurityError> {
+    let mut opening = opening::ManifestOpeningV1::new();
+    opening.load_once(directory, owner);
+    opening.into_result()
 }
 
-fn require_opposite_absent(
-    directory: &OwnedFd,
-    role: EndpointRole,
-) -> Result<(), BrokerSessionSecurityError> {
-    for name in role.opposite_files() {
-        match rustix::fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
-            Err(rustix::io::Errno::NOENT) => {}
-            Ok(_) => return Err(BrokerSessionSecurityError::OppositeRoleSecret),
-            Err(_) => {
-                return Err(BrokerSessionSecurityError::filesystem(
-                    "opposite-role secret name",
-                    "inspect",
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn load_manifest(
-    directory: &OwnedFd,
-    owner: u32,
-) -> Result<ManifestFile, BrokerSessionSecurityError> {
-    let descriptor = open_child(directory, MANIFEST_NAME, "manifest")?;
-    let before = validate_child_metadata(
-        &descriptor,
-        owner,
-        BROKER_SESSION_MANIFEST_BYTES,
-        "manifest",
-    )?;
-    let exact =
-        read_exact_positioned::<BROKER_SESSION_MANIFEST_BYTES>(&descriptor, "manifest")?;
-    let repeated =
-        read_exact_positioned::<BROKER_SESSION_MANIFEST_BYTES>(&descriptor, "manifest")?;
-    let after = validate_child_metadata(
-        &descriptor,
-        owner,
-        BROKER_SESSION_MANIFEST_BYTES,
-        "manifest",
-    )?;
-    if before != after || exact != repeated {
-        return Err(BrokerSessionSecurityError::Currentness);
-    }
-    let digest = Sha256::digest(exact).into();
-    Ok(ManifestFile {
-        descriptor,
-        metadata: before,
-        exact,
-        digest,
-    })
-}
-
+#[cfg(test)]
 fn load_secret(
-    directory: &OwnedFd,
+    directory: &EndpointNativeFileV1,
     owner: u32,
     name: &'static str,
     label: &'static str,
@@ -376,8 +259,9 @@ fn load_secret(
     load_secret_with_between_reads(directory, owner, name, label, || Ok(()))
 }
 
+#[cfg(test)]
 fn load_secret_with_between_reads<Between>(
-    directory: &OwnedFd,
+    directory: &EndpointNativeFileV1,
     owner: u32,
     name: &'static str,
     label: &'static str,
@@ -386,44 +270,19 @@ fn load_secret_with_between_reads<Between>(
 where
     Between: FnOnce() -> Result<(), BrokerSessionSecurityError>,
 {
-    let descriptor = open_child(directory, name, label)?;
-    let before = validate_child_metadata(&descriptor, owner, SECRET_BYTES, label)?;
-    let exact = read_secret_positioned(&descriptor, label)?;
-    between_reads()?;
-    let repeated = read_secret_positioned(&descriptor, label)?;
-    let after = validate_child_metadata(&descriptor, owner, SECRET_BYTES, label)?;
-    if before != after || exact[..] != repeated[..] {
-        return Err(BrokerSessionSecurityError::Currentness);
-    }
-    Ok(SecretFile {
-        descriptor,
-        metadata: before,
-        exact,
-        label,
-    })
+    let mut opening = opening::SecretOpeningV1::new();
+    opening.load_once(directory, owner, name, label, between_reads);
+    opening.into_result()
 }
 
+#[cfg(test)]
 fn open_child(
-    directory: &OwnedFd,
+    directory: &EndpointNativeFileV1,
     name: &'static str,
     label: &'static str,
-) -> Result<OwnedFd, BrokerSessionSecurityError> {
-    protected_file::open_nofollow_child(directory, name)
+) -> Result<EndpointNativeFileV1, BrokerSessionSecurityError> {
+    directory.open_nofollow_child(name)
         .map_err(|_| BrokerSessionSecurityError::filesystem(label, "open"))
-}
-
-fn validate_child_metadata(
-    descriptor: &OwnedFd,
-    owner: u32,
-    exact_size: usize,
-    label: &'static str,
-) -> Result<MetadataSnapshot, BrokerSessionSecurityError> {
-    let stat = rustix::fs::fstat(descriptor)
-        .map_err(|_| BrokerSessionSecurityError::filesystem(label, "inspect"))?;
-    let expected_size = i64::try_from(exact_size)
-        .map_err(|_| BrokerSessionSecurityError::Metadata { object: label })?;
-    require_child_metadata(&stat, owner, expected_size, label)?;
-    Ok(MetadataSnapshot::capture(&stat))
 }
 
 fn require_child_metadata(
@@ -444,16 +303,6 @@ fn require_child_metadata(
     }
 }
 
-fn read_exact_positioned<const N: usize>(
-    descriptor: &OwnedFd,
-    label: &'static str,
-) -> Result<[u8; N], BrokerSessionSecurityError> {
-    let mut output = [0_u8; N];
-    protected_file::read_exact_positioned(descriptor, &mut output)
-        .map_err(|error| exact_read_error(error, label))?;
-    Ok(output)
-}
-
 fn exact_read_error(error: ExactReadError, label: &'static str) -> BrokerSessionSecurityError {
     match error {
         ExactReadError::Read => BrokerSessionSecurityError::filesystem(label, "read"),
@@ -461,15 +310,7 @@ fn exact_read_error(error: ExactReadError, label: &'static str) -> BrokerSession
     }
 }
 
-fn read_secret_positioned(
-    descriptor: &OwnedFd,
-    label: &'static str,
-) -> Result<Box<Zeroizing<[u8; SECRET_BYTES]>>, BrokerSessionSecurityError> {
-    read_secret_with(label, |buffer, position| {
-        rustix::io::pread(descriptor, buffer, position)
-    })
-}
-
+#[cfg(test)]
 fn read_secret_with(
     label: &'static str,
     read_at: impl FnMut(&mut [u8], u64) -> rustix::io::Result<usize>,
@@ -482,67 +323,12 @@ fn read_secret_with(
     Ok(output)
 }
 
-fn validate_retained_manifest(
-    file: &ManifestFile,
-    owner: u32,
-) -> Result<(), BrokerSessionSecurityError> {
-    let before = validate_child_metadata(
-        &file.descriptor,
-        owner,
-        BROKER_SESSION_MANIFEST_BYTES,
-        "manifest",
-    )?;
-    let exact = read_exact_positioned::<BROKER_SESSION_MANIFEST_BYTES>(
-        &file.descriptor,
-        "manifest",
-    )?;
-    let repeated = read_exact_positioned::<BROKER_SESSION_MANIFEST_BYTES>(
-        &file.descriptor,
-        "manifest",
-    )?;
-    let after = validate_child_metadata(
-        &file.descriptor,
-        owner,
-        BROKER_SESSION_MANIFEST_BYTES,
-        "manifest",
-    )?;
-    if before == file.metadata
-        && after == before
-        && exact == file.exact
-        && repeated == exact
-        && <[u8; 32]>::from(Sha256::digest(exact)) == file.digest
-    {
-        Ok(())
-    } else {
-        Err(BrokerSessionSecurityError::Currentness)
-    }
-}
-
-fn validate_retained_secret(
-    file: &SecretFile,
-    owner: u32,
-) -> Result<(), BrokerSessionSecurityError> {
-    let before = validate_child_metadata(&file.descriptor, owner, SECRET_BYTES, file.label)?;
-    let exact = read_secret_positioned(&file.descriptor, file.label)?;
-    let repeated = read_secret_positioned(&file.descriptor, file.label)?;
-    let after = validate_child_metadata(&file.descriptor, owner, SECRET_BYTES, file.label)?;
-    if before == file.metadata
-        && after == before
-        && exact[..] == file.exact[..]
-        && repeated[..] == exact[..]
-    {
-        Ok(())
-    } else {
-        Err(BrokerSessionSecurityError::Currentness)
-    }
-}
-
-fn validate_local_keys(
+fn validate_local_key_refs(
     manifest: &BrokerSessionManifestV1,
-    secrets: &[SecretFile; 2],
+    secrets: [&SecretFile; 2],
     indices: [usize; 2],
 ) -> Result<(), BrokerSessionSecurityError> {
-    for (secret, index) in secrets.iter().zip(indices) {
+    for (secret, index) in secrets.into_iter().zip(indices) {
         let pin = &manifest.key_pins()[index];
         let seed = secret.seed()?;
         if secret.key_id() != pin.signer().key_id() || seed.iter().all(|byte| *byte == 0) {
@@ -630,7 +416,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("directory permissions failed: {error}"));
         let directory = open_directory(temporary.path())
             .unwrap_or_else(|error| panic!("directory open failed: {error}"));
-        let directory_stat = rustix::fs::fstat(&directory)
+        let directory_stat = directory.metadata()
             .unwrap_or_else(|error| panic!("directory stat failed: {error}"));
         assert!(require_directory_metadata(&directory_stat, directory_stat.st_uid).is_ok());
         assert!(

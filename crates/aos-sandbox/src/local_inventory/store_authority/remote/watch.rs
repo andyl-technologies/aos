@@ -6,24 +6,6 @@
 use super::*;
 
 impl ProtectedMultiNodeAuthorityOwnerV1 {
-    /// Builds the complete-inventory request that establishes a watch cursor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidMultiNodeProtocol`] unless the authenticated session
-    /// belongs to this owner and admits its fixed rolling-version window.
-    pub fn prepare_watch_bootstrap_request(
-        &mut self,
-        session: &AuthenticatedNodeSessionV1,
-    ) -> Result<ProtectedOutboundNodeRequestV1, InvalidMultiNodeProtocol> {
-        let binding = self.protected_watch_binding(session)?;
-        self.prepare_outbound_request(
-            session,
-            NodeRequestBodyV1::RelistAssignments { binding },
-            b"watch-bootstrap",
-        )
-    }
-
     /// Durably installs an authenticated complete-inventory watch bootstrap.
     ///
     /// # Errors
@@ -174,81 +156,6 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
             };
         }
         self.resolve_store_write(recovery)
-    }
-
-    /// Builds a watch request from the exact cold-replayed protected cursor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] when no durable bootstrap
-    /// exists or the session, coordinator epoch, schema, or cursor is stale.
-    pub fn prepare_watch_resume_request(
-        &mut self,
-        session: &AuthenticatedNodeSessionV1,
-    ) -> Result<ProtectedOutboundNodeRequestV1, ProtectedMultiNodeUpdateErrorV1> {
-        let state = match self.current_domain_projection(MultiNodeJournalDomainV1::Watch)? {
-            Some(MultiNodeReducerStateV1::Watch(state)) => state,
-            _ => return Err(InvalidMultiNodeJournal::HistoryGap.into()),
-        };
-        if state.binding().coordinator_epoch() != session.coordinator_epoch()
-            || state.binding().audience_digest() != session.audience_digest()
-            || state.binding().disclosure_domain_digest() != session.disclosure_domain_digest()
-            || !state.binding().schema().admits(session.version())
-        {
-            return Err(InvalidMultiNodeProtocol::WatchBindingMismatch.into());
-        }
-        let maximum_events = u16::try_from(MAX_WATCH_EVENTS)
-            .map_err(|_| InvalidMultiNodeProtocol::InvalidFrameLimits)?;
-        self.prepare_outbound_request(
-            session,
-            NodeRequestBodyV1::Watch {
-                after: state.cursor(),
-                maximum_events,
-            },
-            b"watch-resume",
-        )
-        .map_err(Into::into)
-    }
-
-    /// Builds a bounded relist that advances the retained watch history floor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] unless current replay and
-    /// session fencing prove one exact same-policy compaction bootstrap.
-    pub fn prepare_watch_compaction_resync_request(
-        &mut self,
-        session: &AuthenticatedNodeSessionV1,
-    ) -> Result<ProtectedOutboundNodeRequestV1, ProtectedMultiNodeUpdateErrorV1> {
-        let current = match self.current_domain_projection(MultiNodeJournalDomainV1::Watch)? {
-            Some(MultiNodeReducerStateV1::Watch(state)) => state,
-            _ => return Err(InvalidMultiNodeJournal::HistoryGap.into()),
-        };
-        let binding = current.binding();
-        if binding.coordinator_epoch() != session.coordinator_epoch()
-            || binding.audience_digest() != session.audience_digest()
-            || binding.disclosure_domain_digest() != session.disclosure_domain_digest()
-            || !binding.schema().admits(session.version())
-        {
-            return Err(InvalidMultiNodeProtocol::WatchBindingMismatch.into());
-        }
-        let next = NodeWatchBindingV1::new(
-            binding.coordinator_epoch(),
-            current.cursor().event_sequence(),
-            current.cursor().last_event_uid(),
-            current.cursor().event_sequence(),
-            binding.query_digest(),
-            binding.authorization_digest(),
-            binding.audience_digest(),
-            binding.disclosure_domain_digest(),
-            binding.schema(),
-        )?;
-        self.prepare_outbound_request(
-            session,
-            NodeRequestBodyV1::RelistAssignments { binding: next },
-            b"watch-compaction-resync",
-        )
-        .map_err(Into::into)
     }
 
     /// Commits one exact ordered watch batch or returns a sealed resync edge.
@@ -446,8 +353,8 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
                         observation.assignments().iter().any(|assignment| {
                             matches!(
                                 assignment.progress(),
-                                crate::local_inventory::draining::DrainAssignmentProgressV1::Contained
-                                    | crate::local_inventory::draining::DrainAssignmentProgressV1::Released
+                                aos_sandbox_core::DrainAssignmentProgressV1::Contained
+                                    | aos_sandbox_core::DrainAssignmentProgressV1::Released
                             )
                         });
                     if requires_protected_evidence {
@@ -527,33 +434,6 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
         Ok(PlacementCandidateV1::from_authenticated_observation(
             observation,
         ))
-    }
-
-    /// Builds the exact relist request required by a carrier-authenticated gap.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidMultiNodeProtocol`] unless the consumed binding remains
-    /// current for this fixed owner's authenticated session.
-    pub fn prepare_watch_resync_request(
-        &mut self,
-        session: &AuthenticatedNodeSessionV1,
-        resync: ProtectedWatchResyncRequiredV1,
-    ) -> Result<ProtectedOutboundNodeRequestV1, InvalidMultiNodeProtocol> {
-        if resync.binding.coordinator_epoch() != session.coordinator_epoch()
-            || resync.binding.audience_digest() != session.audience_digest()
-            || resync.binding.disclosure_domain_digest() != session.disclosure_domain_digest()
-            || !resync.binding.schema().admits(session.version())
-        {
-            return Err(InvalidMultiNodeProtocol::WatchBindingMismatch);
-        }
-        self.prepare_outbound_request(
-            session,
-            NodeRequestBodyV1::RelistAssignments {
-                binding: resync.binding,
-            },
-            b"watch-resync",
-        )
     }
 
     /// Resolves only an exact ambiguous watch commit by protected readback.

@@ -12,9 +12,8 @@ use aos_sandbox_core::{
 };
 
 use super::*;
-use crate::publisher_policy::{
-    PreparedPublisherPolicyRevisionV1, PublisherControllerHeadV1, PublisherRevocationHeadV1,
-};
+use crate::publisher_admin::policy::{PublisherControllerHeadV1, PublisherRevocationHeadV1};
+use aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1;
 use crate::{JournalLimits, RecordNamespace};
 
 fn grant(operation: Operation) -> Grant {

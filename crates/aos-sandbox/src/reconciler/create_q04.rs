@@ -330,13 +330,6 @@ pub fn continue_original_create_q04_policy_subgate_v1(
     let Some(bank) = bank.filter(|_| pending_reservation.is_none()) else {
         std::process::exit(1);
     };
-    if resident
-        .root
-        .arm_resource_preparation(journal, source, bank, operation)
-        .is_err()
-    {
-        std::process::exit(1);
-    }
     let source_original = source;
     let InstalledOriginalCreateQ04V1 {
         root,
@@ -356,11 +349,22 @@ pub fn continue_original_create_q04_policy_subgate_v1(
     } = &mut resident;
 
     let continued = (|| -> Result<(), ()> {
+        // Keep parking, funded Q entry and consuming Cache capture inside the
+        // same reborrow scope. After exact clearance/drop the original parent
+        // references are available for the independent terminal recheck.
+        let mut cache_preflight = crate::cache_residency::OriginalQ04CachePreflightLoanV1::park(
+            initialization, cache_owner, physical,
+        );
+        if root.arm_resource_preparation(
+            journal, &mut *source_original, bank, operation, &mut cache_preflight,
+        ).is_err() {
+            std::process::exit(1);
+        }
         // Keep acquisition and terminal parent reborrows in one continuation.
         // These same short loans end only after their original clearance.
         let mut source =
             crate::source_domain::OriginalQ04SourceOwnerCutV1::park(&mut *source_original);
-        let mut cache = match initialization.begin_original_q04(cache_owner, physical) {
+        let mut cache = match root.begin_original_cache_capture(cache_preflight) {
             Ok(cache) => cache,
             // The actual initializer, including its original result, is still
             // borrowed from the parent. The prearmed negative owner exits before
@@ -1113,7 +1117,24 @@ pub fn continue_original_create_q04_policy_subgate_v1(
         Ok(())
     })();
     match continued {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            // Preserve the same paid accepted-Create rows and original role
+            // files through the next current cut; their C charge was retained.
+            // Moving after the closure keeps every old loan/post/drop order.
+            let policy_sources = root.take_retained_create_policy_sources_once();
+            let original_ledger = ledger.take();
+            let original_credentials = std::mem::replace(
+                credentials,
+                crate::public_api_session::ControllerQ04CredentialCustodyV1::new(),
+            );
+            let Some(reservation) = pending_reservation.as_mut() else {
+                std::process::exit(1);
+            };
+            if reservation.retain_create_originals(original_ledger, original_credentials, policy_sources).is_err() {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Err(()) => std::process::exit(1),
     }
 }
@@ -1130,6 +1151,7 @@ pub(crate) struct OriginalQ04ControllerLedgerV1 {
     scope: crate::controller::ControllerRequestScopeV1,
     revision: ObjectDigest,
     accepted_generation: u64,
+    accepted_request: [u8; 32],
     operation_bytes: Vec<u8>,
     desired_key: Vec<u8>,
     desired_bytes: Vec<u8>,
@@ -1207,6 +1229,12 @@ impl OriginalQ04ControllerLedgerV1 {
             return Err(ReconcilerError::CorruptLedger("Q04 original method changed").into());
         };
         let project = context.project();
+        // Derive this while the actual admitted context is already decoded.
+        // Later continuation reads copy these bytes, never decode/reallocate
+        // the public request merely to recover its accepted identity.
+        let accepted_request = scope.public_request_digest(
+            context.caller(), project, context.canonical_request(),
+        );
         if !create.parent_sandbox_id.is_empty() {
             return Err(
                 ReconcilerError::CorruptLedger("Q04 original Create is not parentless").into(),
@@ -1305,6 +1333,7 @@ impl OriginalQ04ControllerLedgerV1 {
             scope,
             revision,
             accepted_generation,
+            accepted_request,
             operation_bytes,
             desired_key,
             desired_bytes,
@@ -1323,6 +1352,15 @@ impl OriginalQ04ControllerLedgerV1 {
         }
         journal.validate_held_protected_names()?;
         Ok(retained)
+    }
+
+    // Comparison DATA from the actually captured accepted Create, not the
+    // earlier Spec publication operation or a currentness/reservation permit.
+    pub(crate) fn create_storage_accepted_identity_v1(
+        &self,
+    ) -> ([u8; 16], [u8; 16], [u8; 16], [u8; 32]) {
+        (self.operation.into_bytes(), self.project.into_bytes(),
+            self.sandbox.into_bytes(), self.accepted_request)
     }
 
     pub(crate) fn specification(&self) -> &aos_sandbox_core::ObjectDescriptor {
@@ -1391,6 +1429,12 @@ impl OriginalQ04ControllerLedgerV1 {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
         Ok(current)
+    }
+
+    // The exact originally retained public-mutation context includes its
+    // canonical Request; this borrow performs no decode, allocation or I/O.
+    pub(crate) fn create_storage_accepted_context_v1(&self) -> &[u8] {
+        self.effect.plan().request()
     }
 
     pub(crate) fn original_rows(&self) -> [&[u8]; 3] {
@@ -1510,6 +1554,10 @@ fn copy_original_row(bytes: &[u8]) -> Result<Vec<u8>, CreateQ04ErrorV1> {
     copy.extend_from_slice(bytes);
     Ok(copy)
 }
+
+mod accepted_create;
+
+pub(crate) use accepted_create::RootAcceptedCreateRowsV1;
 
 // This checks the original signed Claim's row DATA through the same existing
 // codecs. It is not a synthetic Journal or complete Controller authority:

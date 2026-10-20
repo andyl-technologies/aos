@@ -301,7 +301,7 @@ impl CurrentProviderIngressSessionV1 {
     #[doc(hidden)]
     pub fn sign_current_catalog_response(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         current_catalog: &crate::ProtectedCurrentCatalogPublicationV1,
         query: &CatalogCurrentnessQueryV1,
         publication_digest: aos_sandbox_core::ObjectDigest,
@@ -354,7 +354,7 @@ impl CurrentProviderIngressSessionV1 {
     #[doc(hidden)]
     pub fn send_current_catalog_response(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         current_catalog: &crate::ProtectedCurrentCatalogPublicationV1,
         query: &CatalogCurrentnessQueryV1,
         response: &SignedCatalogCurrentnessV1,
@@ -537,8 +537,8 @@ impl CurrentProviderIngressSessionV1 {
     #[doc(hidden)]
     pub fn authorize_fixed_current_catalog_publication_v1(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
         publication: crate::VerifiedCatalogPublicationV1,
     ) -> Result<crate::ProtectedCurrentCatalogPublicationV1, SourceProviderSecurityError> {
         self.revalidate()?;
@@ -584,8 +584,8 @@ impl CurrentProviderIngressSessionV1 {
     pub fn authorize_reserved_request(
         &mut self,
         current: super::CurrentProviderRequestV1,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
         attempt_key: &[u8],
         attempt_record: &[u8],
         response_sequence: u64,
@@ -634,8 +634,8 @@ impl CurrentProviderIngressSessionV1 {
     #[doc(hidden)]
     pub fn borrow_original_release_status_send_v1<'owner>(
         &'owner mut self,
-        writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
-        readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+        writer: &aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+        readback: &aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
         authorization: &super::ProviderOutcomeAuthorizationV1,
         response: &'owner [u8],
         attempted: &mut bool,
@@ -652,7 +652,7 @@ impl CurrentProviderIngressSessionV1 {
         }
         let records = aos_sandbox_source_provider_ledger::collect_bounded_records(
             readback.rows().iter().filter(|((namespace, _), _)| {
-                *namespace == aos_sandbox::RecordNamespace::SourceProviderAuthority
+                *namespace == aos_sandbox_core::RecordNamespace::SourceProviderAuthority
             }).map(|((_, key), value)| (key.as_slice(), value.as_slice())),
         ).map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         let retained = records.iter().any(|(key, value)| {
@@ -695,7 +695,7 @@ impl CurrentProviderIngressSessionV1 {
     /// carrier failure.
     pub fn send_committed_reply(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         committed: super::CommittedProviderOutcomeV1,
         source_root: Option<crate::ProviderSourceRootHandoffV1>,
     ) -> Result<(), SourceProviderSecurityError> {
@@ -715,7 +715,7 @@ impl CurrentProviderIngressSessionV1 {
     /// failures, stale post-send journal authority, or either callback refusal.
     pub fn send_committed_reply_checked(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         committed: &super::CommittedProviderOutcomeV1,
         source_root: Option<&crate::ProviderSourceRootHandoffV1>,
         mut validate_retained_owner: impl FnMut() -> Result<(), SourceProviderSecurityError>,
@@ -730,7 +730,7 @@ impl CurrentProviderIngressSessionV1 {
 
     fn send_committed_reply_inner(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         committed: &super::CommittedProviderOutcomeV1,
         source_root: Option<&crate::ProviderSourceRootHandoffV1>,
         mut validate_retained_owner: Option<
@@ -828,8 +828,8 @@ impl CurrentProviderIngressSessionV1 {
     /// shape, or carrier failure.
     pub fn authorize_recovered_reply(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
+        snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
         attempt_key: &[u8],
         response: Vec<u8>,
         has_source_root: bool,
@@ -903,8 +903,8 @@ impl CurrentProviderIngressSessionV1 {
     #[doc(hidden)]
     pub fn authorize_persisted_mount_outcome(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
+        snapshot: &aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
         attempt_key: &[u8],
         response: &[u8],
     ) -> Result<crate::PersistedProviderOutcomeV1, SourceProviderSecurityError> {
@@ -960,7 +960,7 @@ impl CurrentProviderIngressSessionV1 {
     /// descriptor-role substitution, or carrier failure.
     pub fn send_revalidated_reply(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         replay: RevalidatedProviderReplayV1,
         source_root: Option<crate::ProviderSourceRootHandoffV1>,
     ) -> Result<(), SourceProviderSecurityError> {
@@ -1029,8 +1029,8 @@ impl CurrentProviderIngressSessionV1 {
     /// execution whose exit or PID reuse cannot be proven.
     pub fn prove_recovered_execution_dead(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
+        journal_snapshot: &aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
         retained_session_key: &[u8],
         retained_session_record: &[u8],
         old_boot_id: [u8; 16],
@@ -1090,7 +1090,7 @@ impl CurrentProviderIngressSessionV1 {
     /// live custody, or authenticated session is no longer current.
     pub fn provider_outcome_facade<'session, 'journal, 'authority, 'authorization>(
         &'session mut self,
-        journal: &'journal aos_sandbox::ProtectedJournalAuthority<'authority>,
+        journal: &'journal aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'authority>,
         authorization: &'authorization super::ProviderOutcomeAuthorizationV1,
     ) -> Result<
         ProviderOwnerSecurityFacadeV1<'session, 'journal, 'authority, 'authorization>,
@@ -1172,7 +1172,7 @@ impl CurrentProviderIngressSessionV1 {
     /// custody changed or the lease does not name the current provider.
     pub(super) fn sign_current_export_lease(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         authorization: &super::ProviderOutcomeAuthorizationV1,
         lease: SourceExportLeaseV1,
     ) -> Result<SignedSourceExportLeaseV1, SourceProviderSecurityError> {
@@ -1227,7 +1227,7 @@ impl CurrentProviderIngressSessionV1 {
     /// custody changed or the receipt lineage is invalid.
     pub(super) fn sign_current_provider_receipt(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         authorization: &super::ProviderOutcomeAuthorizationV1,
         receipt: SourceProviderReceiptV1,
     ) -> Result<SignedSourceProviderReceiptV1, SourceProviderSecurityError> {
@@ -1277,7 +1277,7 @@ impl CurrentProviderIngressSessionV1 {
     /// custody changed or the receipt does not name the current provider.
     pub(super) fn sign_current_release_receipt(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         authorization: &super::ProviderOutcomeAuthorizationV1,
         receipt: SourceReleaseReceiptV1,
     ) -> Result<SignedSourceReleaseReceiptV1, SourceProviderSecurityError> {
@@ -1322,7 +1322,7 @@ impl CurrentProviderIngressSessionV1 {
     /// custody changed or the inventory does not name the current provider.
     pub(super) fn sign_current_inventory(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         authorization: &super::ProviderOutcomeAuthorizationV1,
         inventory: SourceProviderInventoryV1,
     ) -> Result<SignedSourceProviderInventoryV1, SourceProviderSecurityError> {
@@ -1366,7 +1366,7 @@ impl CurrentProviderIngressSessionV1 {
     /// custody changed or the status names another session or execution.
     pub(super) fn sign_current_response_status(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         authorization: &super::ProviderOutcomeAuthorizationV1,
         status: SourceProviderResponseStatusV1,
     ) -> Result<(SignedSourceProviderStatusV1, i64), SourceProviderSecurityError> {

@@ -33,7 +33,7 @@ use crate::execution_parent_resource::{
     ExecutionParentResourceSourceErrorV1, ExecutionParentResourceSourceV1,
     revalidate_execution_parent_resource_from_journal_v1,
 };
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::reconciler::{ReconcilerError, accepted_create_execution_effect_from_journal_v1};
 use crate::runtime_scope::{CurrentAssignmentTarget, CurrentRuntimeScopeError};
 use crate::sandbox_spec_state::{self, SandboxSpecStateError};
@@ -49,7 +49,7 @@ pub use attempt::{
 pub use reserve_source::{
     ControllerExecutionReserveSourceErrorV1,
     ControllerExecutionReserveSourceV1, EXECUTION_RESERVE_SOURCE_BYTES_V1,
-    prepare_execution_reserve_source_v1,
+    prepare_execution_reserve_source_v1, prepare_execution_reserve_source_with_checks_v4,
 };
 
 const MAGIC: &[u8; 8] = b"AOSCIP01";
@@ -119,6 +119,15 @@ pub struct ControllerExecutionPreissueV1 {
 }
 
 impl ControllerExecutionPreissueV1 {
+    // This is the sole encoder's exact width (or bounded receipt width).
+    // It is passive requirement DATA, never an append or Native authority.
+    pub(crate) const fn receiving_record_shape_v1() -> aos_sandbox_journal::geometry::RecordShape {
+        aos_sandbox_journal::geometry::RecordShape {
+            key_bytes: 16,
+            value_bytes: Some(RECORD_BYTES),
+        }
+    }
+
     /// Returns the exact execution selected by accepted Create.
     #[must_use]
     pub const fn execution(&self) -> ExecutionId {
@@ -360,8 +369,43 @@ pub fn revalidate_accepted_execution_preissue_v1<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
+    revalidate_accepted_execution_preissue_inner_v4(controller, assignment, environment_owner, parent, preissue, clock, None)
+}
+
+/// Uses the same source checks with selected retained assignment destinations.
+///
+/// # Errors
+/// Preserves existing source/evidence/expiry errors and retains any actual
+/// partial ownership verifier on the supplied closed Capture original.
+pub fn revalidate_accepted_execution_preissue_with_checks_v4<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    preissue: &ControllerExecutionPreissueV1,
+    clock: &mut T,
+    checks: &mut crate::runtime_scope::ControllerCaptureAssignmentChecksV4,
+) -> Result<(), ControllerExecutionPreissueErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    revalidate_accepted_execution_preissue_inner_v4(controller, assignment, environment_owner, parent, preissue, clock, Some(checks))
+}
+
+fn revalidate_accepted_execution_preissue_inner_v4<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    preissue: &ControllerExecutionPreissueV1,
+    clock: &mut T,
+    mut checks: Option<&mut crate::runtime_scope::ControllerCaptureAssignmentChecksV4>,
+) -> Result<(), ControllerExecutionPreissueErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
     controller.ensure_protected_authority()?;
-    let (_, observed) = assignment.verified_plan_lease(controller, clock)?;
+    let (_, observed) = capture_source_plan_lease_v4(assignment, controller, clock, checks.as_deref_mut())?;
     let source = current_source(
         controller,
         assignment,
@@ -372,7 +416,7 @@ where
     )?;
     revalidate_execution_parent_resource_from_journal_v1(controller, parent)?;
     environment_owner.revalidate_execution_source(&source.environment)?;
-    let (_, final_sample) = assignment.verified_plan_lease(controller, clock)?;
+    let (_, final_sample) = capture_source_plan_lease_v4(assignment, controller, clock, checks.as_deref_mut())?;
     if final_sample.host_boot_id() != observed.host_boot_id() {
         return Err(ControllerExecutionPreissueErrorV1::Expired);
     }
@@ -411,8 +455,43 @@ pub fn revalidate_historical_execution_preissue_source_v1<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
+    revalidate_historical_execution_preissue_source_inner_v4(controller, assignment, environment_owner, parent, preissue, clock, None)
+}
+
+/// Uses the same source checks with selected retained assignment destinations.
+///
+/// # Errors
+/// Preserves existing source/evidence/expiry errors and retains any actual
+/// partial ownership verifier on the supplied closed Capture original.
+pub fn revalidate_historical_execution_preissue_source_with_checks_v4<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    preissue: &ControllerExecutionPreissueV1,
+    clock: &mut T,
+    checks: &mut crate::runtime_scope::ControllerCaptureAssignmentChecksV4,
+) -> Result<(), ControllerExecutionPreissueErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    revalidate_historical_execution_preissue_source_inner_v4(controller, assignment, environment_owner, parent, preissue, clock, Some(checks))
+}
+
+fn revalidate_historical_execution_preissue_source_inner_v4<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    preissue: &ControllerExecutionPreissueV1,
+    clock: &mut T,
+    mut checks: Option<&mut crate::runtime_scope::ControllerCaptureAssignmentChecksV4>,
+) -> Result<(), ControllerExecutionPreissueErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
     controller.ensure_protected_authority()?;
-    let (_, observed) = assignment.verified_plan_lease(controller, clock)?;
+    let (_, observed) = capture_source_plan_lease_v4(assignment, controller, clock, checks.as_deref_mut())?;
     let source = current_source(
         controller,
         assignment,
@@ -423,7 +502,7 @@ where
     )?;
     revalidate_execution_parent_resource_from_journal_v1(controller, parent)?;
     environment_owner.revalidate_execution_source(&source.environment)?;
-    let (_, final_sample) = assignment.verified_plan_lease(controller, clock)?;
+    let (_, final_sample) = capture_source_plan_lease_v4(assignment, controller, clock, checks.as_deref_mut())?;
     if observed.host_boot_id() != final_sample.host_boot_id() {
         return Err(ControllerExecutionPreissueErrorV1::Expired);
     }
@@ -438,6 +517,18 @@ where
         return Err(ControllerExecutionPreissueErrorV1::NotCurrent);
     }
     validate_source_and_boot(&stored, source.identity(), final_sample)
+}
+
+fn capture_source_plan_lease_v4<T>(assignment: &CurrentAssignmentTarget,
+    controller: &mut Journal, clock: &mut T,
+    checks: Option<&mut crate::runtime_scope::ControllerCaptureAssignmentChecksV4>)
+    -> Result<(aos_sandbox_ownership_protocol::SignedOwnershipLease, RawPairedClockSample), crate::runtime_scope::CurrentRuntimeScopeError>
+where T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>
+{
+    match checks {
+        Some(original) => original.verified_plan_lease_v4(assignment, controller, clock),
+        None => assignment.verified_plan_lease(controller, clock),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -579,6 +670,35 @@ fn current_source(
         create_operation,
         environment,
     })
+}
+
+/// Borrows the exact accepted output mode, including zero-byte Capture.
+///
+/// This is comparison DATA from the same protected preissue/accepted request,
+/// never output admission, Native readiness or a Host/Storage effect grant.
+///
+/// # Errors
+/// Refuses an unprotected or changed original, non-Exec request, unknown mode,
+/// inconsistent typed ceilings or a different accepted operation.
+pub fn execution_preissue_io_mode_v3(controller: &Journal, preissue: &ControllerExecutionPreissueV1)
+    -> Result<ExecutionIoMode, ControllerExecutionPreissueErrorV1>
+{
+    controller.ensure_protected_authority()?;
+    let stored = controller.get(RecordNamespace::ControllerExecutionPreissue, preissue.execution().as_bytes())
+        .ok_or(ControllerExecutionPreissueErrorV1::NotCurrent)?;
+    if ControllerExecutionPreissueV1::decode(stored)? != *preissue {
+        return Err(ControllerExecutionPreissueErrorV1::NotCurrent);
+    }
+    let accepted = accepted_create_execution_effect_from_journal_v1(controller, preissue.create_operation())?
+        .ok_or(ControllerExecutionPreissueErrorV1::NotCurrent)?;
+    let DormantSandboxRequestKindV1::Exec(request) = accepted.validated_request().map_err(ReconcilerError::from)?
+    else { return Err(ControllerExecutionPreissueErrorV1::NotCurrent); };
+    let command = request.command.as_option().ok_or(ControllerExecutionPreissueErrorV1::UnsupportedCommand)?;
+    let limits = accepted_stream_ceiling(command)?;
+    if limits != (preissue.maximum_stdout_bytes(), preissue.maximum_stderr_bytes()) {
+        return Err(ControllerExecutionPreissueErrorV1::NotCurrent);
+    }
+    command.io_mode.as_known().ok_or(ControllerExecutionPreissueErrorV1::UnsupportedCommand)
 }
 
 fn accepted_stream_ceiling(

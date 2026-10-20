@@ -9,6 +9,7 @@
 
 mod observe_reservation;
 mod current_publication;
+mod monitor;
 
 pub(crate) use current_publication::{ExecutionPublicationCauseV1, ExecutionPublicationDebtsV1};
 
@@ -32,7 +33,7 @@ use aos_sandbox::execution_guest_identity::read_execution_guest_identity_v1;
 use aos_sandbox::production_operation_compiler::{
     PublicExecutionControlDispatchV1, lower_public_execution_control_v1,
 };
-use aos_sandbox::runtime_execution::{
+use aos_sandbox_protocol::execution_evidence::{
     RuntimeExecutionEvidenceError, decode_authorize_completion_binding_v1,
     decode_control_completion_phase_v1, decode_observe_completion_phase_v1,
 };
@@ -77,7 +78,6 @@ use crate::DormantBrokerRequestCoordinatesV1;
 use super::REQUEST_SCOPE;
 
 const PUBLIC_REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-public-request.v1\0";
-const EXECUTION_RECEIPT_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-receipt.v1\0";
 const CONTROL_PROJECTION_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.controller.execution-control-projection.v1\0";
 const RETAINED_RECOVERY: &str = "execution effect retains protected Host session recovery custody";
@@ -116,6 +116,7 @@ pub(crate) struct ControllerExecutionCompletionV1 {
     observation_sequence: u64,
     terminal: Option<HostExecutionTerminalResultV1>,
     authorization_binding: Option<AuthenticatedHostAuthorizationBindingV1>,
+    capture_complete: Option<aos_sandbox_protocol::storage_capture_result::CaptureCompleteRecordDataV2>,
 }
 
 /// Identifies the exact Create request whose signed Host completion minted a receipt.
@@ -254,6 +255,8 @@ fn require_stream_without_capture(command: &Command) -> Result<(), EffectFailure
 /// Separates authenticated absence from an exact guest control completion.
 pub(crate) enum ControllerExecutionObservationV1 {
     Absent,
+    /// An authenticated read completed while the original execution is ongoing.
+    Pending,
     Applied(ControllerExecutionCompletionV1),
 }
 
@@ -315,6 +318,24 @@ impl ExecutionAuthorizationKindV1 {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum ExecutionDescriptorVersionV2 { Ordinary, LifetimeAdmission }
+
+#[derive(Debug, thiserror::Error)]
+pub(super) enum ExecutionLifetimeSourceErrorV5 {
+    #[error(transparent)]
+    Current(#[from] EffectFailure),
+    #[error(transparent)]
+    Data(#[from] aos_sandbox_protocol::ProtocolValidationError),
+}
+
+
+#[derive(Clone, Copy)]
+enum ExecutionPlanContentV2<'content> { Ordinary, Admission { content: &'content [u8], cutoff: u64, version: ExecutionDescriptorVersionV2 }, AcceptedObserve { cutoff: u64 }, Monitor { content: HostExecutionSpecContentFieldsV1, selector: aos_sandbox_protocol::host_execution::monitor::HostExecutionMonitorSelectorV3 } }
+
+#[derive(Clone, Copy)]
+enum ExecutionAuthorityPurposeV4 { Ordinary, MonitorQuery }
+
 impl ControllerExecutionIntentV1 {
     fn descriptor_content(&self) -> Result<Vec<u8>, EffectFailure> {
         let bytes = self
@@ -357,6 +378,26 @@ impl ControllerExecutionIntentV1 {
         completion: &ControllerExecutionCompletionV1,
         native_append: &mut Option<Result<aos_sandbox::CommitResult, aos_sandbox::JournalError>>,
     ) -> Result<(), EffectFailure> {
+        self.commit_control_projection_with_clock_retained(project, journal, completion, native_append, None)
+    }
+
+    fn commit_control_projection_with_clock_retained(
+        &self, project: ProjectId, journal: &mut Journal,
+        completion: &ControllerExecutionCompletionV1,
+        native_append: &mut Option<Result<aos_sandbox::CommitResult, aos_sandbox::JournalError>>,
+        terminal_clock: Option<aos_sandbox_core::RawPairedClockSample>,
+    ) -> Result<(), EffectFailure> {
+        self.commit_projection_output_engine_v4(project, journal, completion, native_append, terminal_clock, None, None)
+    }
+
+    fn commit_projection_output_engine_v4(
+        &self, project: ProjectId, journal: &mut Journal,
+        completion: &ControllerExecutionCompletionV1,
+        native_append: &mut Option<Result<aos_sandbox::CommitResult, aos_sandbox::JournalError>>,
+        terminal_clock: Option<aos_sandbox_core::RawPairedClockSample>,
+        capture: Option<&super::execution_output_storage_capture::AuthenticatedControllerStorageCaptureQueryObservationV3<'_>>,
+        receiving: Option<&mut monitor::MonitorProjectionReceivingV4<'_, '_, '_>>,
+    ) -> Result<(), EffectFailure> {
         if self.action == ControllerExecutionActionV1::Authorize {
             return Err(EffectFailure::Retryable(
                 "execution authorization cannot publish a public phase".to_owned(),
@@ -391,7 +432,10 @@ impl ControllerExecutionIntentV1 {
             let command = execution.command.as_option().ok_or_else(|| {
                 EffectFailure::Permanent("execution projection has no command".to_owned())
             })?;
-            require_stream_without_capture(command)?;
+            match capture {
+                Some(capture) => monitor::require_capture_terminal_projection_v4(self, command, completion, capture)?,
+                None => require_stream_without_capture(command)?,
+            }
             Some(completion.terminal_outcome().ok_or_else(|| {
                 EffectFailure::Permanent(
                     "signed original Guest terminal result is absent".to_owned(),
@@ -452,9 +496,11 @@ impl ControllerExecutionIntentV1 {
             // Guest signs the terminal status, not a wall-clock event time. Persist
             // the Controller's first verified publication time with the result.
             let observed_at = Timestamp {
-                seconds: aos_sandbox_broker_session_security::controller_composition::sample_ownership_clock()
-                    .map_err(retryable)?
-                    .wall_seconds(),
+                seconds: match terminal_clock {
+                    Some(sample) => sample,
+                    None => aos_sandbox_broker_session_security::controller_composition::sample_ownership_clock()
+                        .map_err(retryable)?,
+                }.wall_seconds(),
                 nanoseconds: 0,
                 ..Default::default()
             };
@@ -500,6 +546,9 @@ impl ControllerExecutionIntentV1 {
             )],
         ).map_err(aos_sandbox::JournalError::from)
         .map_err(retryable)?;
+        if let Some(receiving) = receiving {
+            return receiving.commit_v4(journal, transaction, native_append);
+        }
         *native_append = Some(journal.commit(&transaction));
         if let Some(Err(error)) = native_append.as_ref() {
             return Err(retryable(error));
@@ -790,9 +839,67 @@ impl ControllerExecutionIntentV1 {
             observe_reservation::require_current(journal, self)?;
             return Self::await_observe_handoff();
         }
-        let signer = signer.ok_or_else(|| {
-            EffectFailure::Retryable("Host execution plan signer is unavailable".to_owned())
-        })?;
+        self.prepare_authorization_engine_v2(kind, project, node, journal, signer,
+            ExecutionPlanContentV2::Ordinary,
+            &mut || aos_sandbox_broker_session_security::controller_composition::sample_ownership_clock())
+    }
+
+    pub(super) fn prepare_lifetime_authorization_v5<T>(
+        &self, project: ProjectId, node: NodeId, journal: &mut Journal,
+        signer: &ControllerBrokerPlanSignerV1, content: &[u8], cutoff: u64, clock: &mut T,
+    ) -> Result<BrokerAuthorizationArtifactsV1, EffectFailure>
+    where T: FnMut() -> Result<aos_sandbox_core::RawPairedClockSample,
+        aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError>,
+    {
+        self.prepare_accepted_authorization_engine_v3(project, node, journal,
+            signer, content, cutoff, ExecutionDescriptorVersionV2::LifetimeAdmission, clock)
+    }
+
+    pub(super) fn prepare_lifetime_data_v5(
+        &self, project: ProjectId, node: NodeId, journal: &mut Journal,
+        specification: &ControllerExecutionSpecAttemptV1,
+        lifetime: &super::execution_lifetime::ExecutionLifetimeOriginalV5,
+    ) -> Result<aos_sandbox_protocol::storage_capture_lifetime::StorageCaptureExecutionLifetimeDataV2, ExecutionLifetimeSourceErrorV5> {
+        let current = self.current_authority_source_v5(
+            ExecutionAuthorizationKindV1::Apply, project, node, journal)?;
+        let parent = Self::current_host_parent_v5(&current, node)?;
+        lifetime.prepared_data_for_parent_v5(specification, parent).map_err(Into::into)
+    }
+
+    fn prepare_accepted_authorization_engine_v3<T>(
+        &self, project: ProjectId, node: NodeId, journal: &mut Journal,
+        signer: &ControllerBrokerPlanSignerV1, content: &[u8], cutoff: u64,
+        version: ExecutionDescriptorVersionV2, clock: &mut T,
+    ) -> Result<BrokerAuthorizationArtifactsV1, EffectFailure>
+    where T: FnMut() -> Result<aos_sandbox_core::RawPairedClockSample,
+        aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError>,
+    {
+        let source = match self.action {
+            ControllerExecutionActionV1::Authorize => ExecutionPlanContentV2::Admission { content, cutoff, version },
+            ControllerExecutionActionV1::Observe => {
+                observe_reservation::require_current(journal, self)?;
+                ExecutionPlanContentV2::AcceptedObserve { cutoff }
+            }
+            _ => return Err(retryable("accepted execution stage has another action")),
+        };
+        self.prepare_authorization_engine_v2(ExecutionAuthorizationKindV1::Apply,
+            project, node, journal, Some(signer), source, clock)
+    }
+
+    fn current_authority_source_v5(
+        &self, kind: ExecutionAuthorizationKindV1, project: ProjectId, node: NodeId,
+        journal: &mut Journal,
+    ) -> Result<aos_sandbox::CurrentAuthorityPublicationV1, EffectFailure> {
+        self.current_authority_source_engine_v4(kind, project, node, journal, ExecutionAuthorityPurposeV4::Ordinary)
+    }
+
+    fn current_authority_source_engine_v4(
+        &self, kind: ExecutionAuthorizationKindV1, project: ProjectId, node: NodeId,
+        journal: &mut Journal, purpose: ExecutionAuthorityPurposeV4,
+    ) -> Result<aos_sandbox::CurrentAuthorityPublicationV1, EffectFailure> {
+        if matches!(purpose, ExecutionAuthorityPurposeV4::MonitorQuery)
+            && (kind != ExecutionAuthorizationKindV1::Query || self.action != ControllerExecutionActionV1::Observe)
+        { return Err(retryable("historical monitor cannot select effect authority")); }
         let projection = PublicProjectionStoreV1::new(journal)
             .get(PublicProjectionKindV1::Execution, self.execution_id)
             .map_err(retryable)?
@@ -839,9 +946,10 @@ impl ControllerExecutionIntentV1 {
         let lease_assignment = current.lease().lease().assignment();
         if manifest.manifest().project() != project
             || manifest.manifest().node() != node
-            || execution.sandbox_incarnation_id.as_slice()
+            || (matches!(purpose, ExecutionAuthorityPurposeV4::Ordinary)
+                && (execution.sandbox_incarnation_id.as_slice()
                 != manifest.manifest().incarnation().as_bytes()
-            || execution.assignment_epoch != manifest.manifest().epoch().get()
+            || execution.assignment_epoch != manifest.manifest().epoch().get()))
             || lease_assignment.sandbox() != assignment.sandbox()
             || lease_assignment.incarnation() != assignment.incarnation()
             || lease_assignment.epoch() != assignment.epoch()
@@ -876,28 +984,14 @@ impl ControllerExecutionIntentV1 {
             }
         }
 
-        let semantics = match kind {
-            ExecutionAuthorizationKindV1::Apply => host_execution_apply_grant_v1(
-                assignment,
-                *self.operation_id.as_bytes(),
-                ExecutionId::from_bytes(self.execution_id),
-                ObjectDigest::from_bytes(self.source_operation_commitment),
-                self.action.effect_operation(),
-                self.specification.as_ref(),
-            ),
-            ExecutionAuthorizationKindV1::Query => {
-                let content = self.descriptor_content()?;
-                host_execution_query_content_grant_v2(
-                    assignment,
-                    *self.operation_id.as_bytes(),
-                    ExecutionId::from_bytes(self.execution_id),
-                    ObjectDigest::from_bytes(self.source_operation_commitment),
-                    HostExecutionSpecContentFieldsV1::for_grant(&content),
-                    self.specification_digest,
-                )
-            }
-        }
-        .map_err(retryable)?;
+        Ok(current)
+    }
+
+    fn current_host_parent_v5(
+        current: &aos_sandbox::CurrentAuthorityPublicationV1,
+        node: NodeId,
+    ) -> Result<&BrokerAuthorizationPlan, EffectFailure> {
+        let assignment = current.manifest().broker_assignment().map_err(retryable)?;
         let template = current
             .templates()
             .iter()
@@ -911,17 +1005,91 @@ impl ControllerExecutionIntentV1 {
                 "current Host template differs from execution assignment".to_owned(),
             ));
         }
-        let now = aos_sandbox_broker_session_security::controller_composition::sample_ownership_clock()
-            .map_err(retryable)?
-            .wall_seconds();
-        let expires = now
-            .checked_add(30)
-            .map(|limit| {
-                limit
-                    .min(parent.expires_seconds())
-                    .min(current.lease().lease().authority_expires_seconds())
-            })
-            .ok_or_else(|| EffectFailure::Retryable("execution clock overflowed".to_owned()))?;
+        Ok(parent)
+    }
+
+    fn prepare_authorization_engine_v2<T, E>(
+        &self, kind: ExecutionAuthorizationKindV1, project: ProjectId, node: NodeId,
+        journal: &mut Journal, signer: Option<&ControllerBrokerPlanSignerV1>,
+        source: ExecutionPlanContentV2<'_>, clock: &mut T,
+    ) -> Result<BrokerAuthorizationArtifactsV1, EffectFailure>
+    where
+        T: FnMut() -> Result<aos_sandbox_core::RawPairedClockSample, E>,
+        E: std::fmt::Display,
+    {
+        let signer = signer.ok_or_else(|| {
+            EffectFailure::Retryable("Host execution plan signer is unavailable".to_owned())
+        })?;
+        let purpose = if matches!(source, ExecutionPlanContentV2::Monitor { .. }) {
+            ExecutionAuthorityPurposeV4::MonitorQuery
+        } else { ExecutionAuthorityPurposeV4::Ordinary };
+        let current = self.current_authority_source_engine_v4(kind, project, node, journal, purpose)?;
+        let assignment = current.manifest().broker_assignment().map_err(retryable)?;
+
+        let semantics = match kind {
+            ExecutionAuthorizationKindV1::Apply if matches!(source, ExecutionPlanContentV2::Admission { .. }) => {
+                let ExecutionPlanContentV2::Admission { content, version, .. } = source else { return Err(retryable("admission content is absent")); };
+                let compile = match version {
+                    ExecutionDescriptorVersionV2::LifetimeAdmission => aos_sandbox_protocol::semantics::host_execution::host_execution_apply_lifetime_admission_grant_v5,
+                    ExecutionDescriptorVersionV2::Ordinary => return Err(retryable("ordinary content cannot select an accepted admission")),
+                };
+                compile(assignment, *self.operation_id.as_bytes(), ExecutionId::from_bytes(self.execution_id),
+                    ObjectDigest::from_bytes(self.source_operation_commitment),
+                    HostExecutionSpecContentFieldsV1::for_grant(content))
+            }
+            ExecutionAuthorizationKindV1::Apply => host_execution_apply_grant_v1(
+                assignment,
+                *self.operation_id.as_bytes(),
+                ExecutionId::from_bytes(self.execution_id),
+                ObjectDigest::from_bytes(self.source_operation_commitment),
+                self.action.effect_operation(),
+                self.specification.as_ref(),
+            ),
+            ExecutionAuthorizationKindV1::Query => {
+                if let ExecutionPlanContentV2::Monitor { content, selector } = source {
+                    aos_sandbox_protocol::semantics::host_execution::host_execution_monitor_query_grant_v3(
+                        assignment, *self.operation_id.as_bytes(), ExecutionId::from_bytes(self.execution_id),
+                        ObjectDigest::from_bytes(self.source_operation_commitment), content,
+                        self.specification_digest, selector)
+                } else {
+                let content = self.descriptor_content()?;
+                host_execution_query_content_grant_v2(
+                    assignment,
+                    *self.operation_id.as_bytes(),
+                    ExecutionId::from_bytes(self.execution_id),
+                    ObjectDigest::from_bytes(self.source_operation_commitment),
+                    HostExecutionSpecContentFieldsV1::for_grant(&content),
+                    self.specification_digest,
+                )
+                }
+            }
+        }
+        .map_err(retryable)?;
+        let parent = Self::current_host_parent_v5(&current, node)?;
+        let sample = clock().map_err(retryable)?;
+        let now = sample.wall_seconds();
+        let source_lifetime = match source {
+            ExecutionPlanContentV2::Ordinary | ExecutionPlanContentV2::Monitor { .. } => 30,
+            ExecutionPlanContentV2::Admission { cutoff, .. } | ExecutionPlanContentV2::AcceptedObserve { cutoff } => {
+                let remaining = cutoff.checked_sub(sample.boottime_nanoseconds())
+                    .filter(|remaining| *remaining > 0).ok_or_else(|| retryable("original argument cutoff expired"))? / 1_000_000_000;
+                i64::try_from(remaining.min(30)).map_err(retryable)?
+            }
+        };
+        let expires = if matches!(source, ExecutionPlanContentV2::Admission {
+            version: ExecutionDescriptorVersionV2::LifetimeAdmission, ..
+        }) {
+            parent.expires_seconds().min(current.lease().lease().authority_expires_seconds())
+        } else {
+            now
+                .checked_add(source_lifetime)
+                .map(|limit| {
+                    limit
+                        .min(parent.expires_seconds())
+                        .min(current.lease().lease().authority_expires_seconds())
+                })
+                .ok_or_else(|| EffectFailure::Retryable("execution clock overflowed".to_owned()))?
+        };
         if now < parent.issued_seconds() || expires <= now {
             return Err(EffectFailure::Retryable(
                 "current Host authority is outside its validity interval".to_owned(),
@@ -975,6 +1143,23 @@ impl ControllerExecutionIntentV1 {
         authorization: &BrokerAuthorizationArtifactsV1,
         stable_content: HostExecutionSpecContentFieldsV1,
     ) -> BrokerRequestEnvelope {
+        self.envelope_content_v2(kind, coordinates, authorization, stable_content, ExecutionDescriptorVersionV2::Ordinary)
+    }
+
+    pub(super) fn envelope_content_v2(
+        &self, kind: ExecutionAuthorizationKindV1, coordinates: DormantBrokerRequestCoordinatesV1,
+        authorization: &BrokerAuthorizationArtifactsV1, stable_content: HostExecutionSpecContentFieldsV1,
+        version: ExecutionDescriptorVersionV2,
+    ) -> BrokerRequestEnvelope {
+        self.envelope_content_engine_v4(kind, coordinates, authorization, stable_content, version, None)
+    }
+
+    fn envelope_content_engine_v4(
+        &self, kind: ExecutionAuthorizationKindV1, coordinates: DormantBrokerRequestCoordinatesV1,
+        authorization: &BrokerAuthorizationArtifactsV1, stable_content: HostExecutionSpecContentFieldsV1,
+        version: ExecutionDescriptorVersionV2,
+        monitor: Option<aos_sandbox_protocol::host_execution::monitor::HostExecutionMonitorSelectorV3>,
+    ) -> BrokerRequestEnvelope {
         let header = RequestHeader {
             protocol_major: u32::from(coordinates.protocol_version().major()),
             protocol_minor: u32::from(coordinates.protocol_version().minor()),
@@ -988,13 +1173,14 @@ impl ControllerExecutionIntentV1 {
             ExecutionAuthorizationKindV1::Apply => {
                 let (action, terminal_rows, terminal_columns, signal_number) =
                     self.action.wire_fields();
-                let content = stable_content.bind_attempt(
-                    coordinates.request_id(),
-                    *self.operation_id.as_bytes(),
-                    ExecutionId::from_bytes(self.execution_id),
-                    ObjectDigest::from_bytes(self.source_operation_commitment),
-                    self.action.effect_operation(),
-                );
+                let content = match version {
+                    ExecutionDescriptorVersionV2::LifetimeAdmission => stable_content.bind_lifetime_admission_attempt_v5(
+                        coordinates.request_id(), *self.operation_id.as_bytes(),
+                        ExecutionId::from_bytes(self.execution_id), ObjectDigest::from_bytes(self.source_operation_commitment)),
+                    ExecutionDescriptorVersionV2::Ordinary => stable_content.bind_attempt(
+                        coordinates.request_id(), *self.operation_id.as_bytes(), ExecutionId::from_bytes(self.execution_id),
+                        ObjectDigest::from_bytes(self.source_operation_commitment), self.action.effect_operation()),
+                };
                 let request = ApplyHostExecutionRequestV1 {
                     header: Some(header).into(),
                     operation_id: self.operation_id.as_bytes().to_vec(),
@@ -1004,7 +1190,7 @@ impl ControllerExecutionIntentV1 {
                     terminal_rows,
                     terminal_columns,
                     signal_number,
-                    spec_transfer_version: 1,
+                    spec_transfer_version: match version { ExecutionDescriptorVersionV2::Ordinary => 1, ExecutionDescriptorVersionV2::LifetimeAdmission => 5 },
                     spec_content_bytes: content.bytes(),
                     spec_content_digest: content.digest().to_vec(),
                     spec_attempt_commitment: content.attempt_commitment().to_vec(),
@@ -1013,13 +1199,19 @@ impl ControllerExecutionIntentV1 {
                 request.encode_to_vec()
             }
             ExecutionAuthorizationKindV1::Query => {
-                let content = stable_content.bind_query_attempt_v2(
+                let content = match monitor {
+                    Some(selector) => stable_content.bind_query_attempt_v3(
+                        coordinates.request_id(), *self.operation_id.as_bytes(),
+                        ExecutionId::from_bytes(self.execution_id), ObjectDigest::from_bytes(self.source_operation_commitment),
+                        self.specification_digest, selector),
+                    None => stable_content.bind_query_attempt_v2(
                     coordinates.request_id(),
                     *self.operation_id.as_bytes(),
                     ExecutionId::from_bytes(self.execution_id),
                     ObjectDigest::from_bytes(self.source_operation_commitment),
                     self.specification_digest,
-                );
+                    ),
+                };
                 let request = QueryHostExecutionRequestV1 {
                     header: Some(header).into(),
                     operation_id: self.operation_id.as_bytes().to_vec(),
@@ -1027,8 +1219,12 @@ impl ControllerExecutionIntentV1 {
                     source_operation_commitment: self.source_operation_commitment.to_vec(),
                     spec_content_bytes: content.bytes(),
                     spec_content_digest: content.digest().to_vec(),
-                    spec_transfer_version: 1,
-                    query_binding_version: 2,
+                    spec_transfer_version: if monitor.is_some() { 5 } else { 1 },
+                    query_binding_version: if monitor.is_some() { 3 } else { 2 },
+                    monitor_runtime_handle: monitor.map_or_else(Vec::new, |selector| selector.runtime_v3().as_bytes().to_vec()),
+                    monitor_first_observe_operation_id: monitor.map_or_else(Vec::new, |selector| selector.first_observe_v3().as_bytes().to_vec()),
+                    monitor_source_digest: monitor.map_or_else(Vec::new, |selector| selector.source_v3().as_bytes().to_vec()),
+                    monitor_source_kind: monitor.map_or(0, |selector| selector.source_kind_v3()),
                     execution_spec_digest: self.specification_digest.as_bytes().to_vec(),
                     spec_attempt_commitment: content.attempt_commitment().to_vec(),
                     ..Default::default()
@@ -1092,6 +1288,46 @@ mod tests {
     use aos_sandbox::JournalLimits;
 
     use super::*;
+
+    #[test]
+    fn accepted_authorize_classifier_matches_only_its_actual_held_v5_content() {
+        let intent = ControllerExecutionIntentV1 {
+            operation_id: OperationId::from_bytes([1; 16]),
+            projection_operation_id: OperationId::from_bytes([1; 16]),
+            execution_id: [2; 16], action: ControllerExecutionActionV1::Authorize,
+            specification: None, specification_digest: ObjectDigest::from_bytes([3; 32]),
+            source_operation_commitment: [4; 32],
+        };
+        let held = HostExecutionSpecContentFieldsV1::for_grant(b"actual held admission bytes");
+        let fields = held.bind_lifetime_admission_attempt_v5([5; 16], *intent.operation_id.as_bytes(),
+            ExecutionId::from_bytes(intent.execution_id), ObjectDigest::from_bytes(intent.source_operation_commitment));
+        let request = ApplyHostExecutionRequestV1 {
+            header: Some(RequestHeader { request_id: vec![5; 16], ..Default::default() }).into(),
+            operation_id: intent.operation_id.as_bytes().to_vec(), execution_id: intent.execution_id.to_vec(),
+            action: HostExecutionActionV1::HOST_EXECUTION_ACTION_AUTHORIZE.into(),
+            source_operation_commitment: intent.source_operation_commitment.to_vec(),
+            spec_transfer_version: 5, spec_content_bytes: fields.bytes(),
+            spec_content_digest: fields.digest().to_vec(), spec_attempt_commitment: fields.attempt_commitment().to_vec(),
+            ..Default::default()
+        };
+        let actual = Some((held, ExecutionDescriptorVersionV2::LifetimeAdmission));
+
+        assert!(apply_body_matches_intent(&intent, &request.encode_to_vec(), actual));
+        assert!(!apply_body_matches_intent(&intent, &request.encode_to_vec(), None));
+        assert!(!apply_body_matches_intent(&intent, &request.encode_to_vec(),
+            Some((held, ExecutionDescriptorVersionV2::Ordinary))));
+        assert!(!apply_body_matches_intent(&intent, &request.encode_to_vec(),
+            Some((HostExecutionSpecContentFieldsV1::for_grant(b"foreign held admission bytes"), ExecutionDescriptorVersionV2::LifetimeAdmission))));
+
+        for version in [1, 2, 4] {
+            let mut foreign = request.clone();
+            foreign.spec_transfer_version = version;
+            assert!(!apply_body_matches_intent(&intent, &foreign.encode_to_vec(), actual));
+        }
+        let mut foreign = request;
+        foreign.spec_attempt_commitment[0] ^= 1;
+        assert!(!apply_body_matches_intent(&intent, &foreign.encode_to_vec(), actual));
+    }
 
     #[test]
     fn query_classifier_requires_v2_specification_binding() {
@@ -1209,6 +1445,7 @@ mod tests {
             observation_sequence: 1,
             terminal: None,
             authorization_binding: None,
+            capture_complete: None,
         };
         assert!(matches!(
             completion.public_phase(),
@@ -1222,6 +1459,7 @@ mod tests {
             observation_sequence: 2,
             terminal: Some(HostExecutionTerminalResultV1::Canceled),
             authorization_binding: None,
+            capture_complete: None,
         };
         assert!(matches!(
             canceled.public_phase(),
@@ -1234,6 +1472,7 @@ mod tests {
             observation_sequence: 3,
             terminal: Some(HostExecutionTerminalResultV1::Exited(0)),
             authorization_binding: None,
+            capture_complete: None,
         };
         assert_eq!(
             exited.public_phase().unwrap(),
@@ -1253,6 +1492,7 @@ mod tests {
             observation_sequence: 4,
             terminal: Some(HostExecutionTerminalResultV1::Exited(-1)),
             authorization_binding: None,
+            capture_complete: None,
         };
         assert!(matches!(
             unknown_signal.public_phase(),
@@ -1408,6 +1648,7 @@ mod tests {
             observation_sequence: 2,
             terminal: Some(terminal),
             authorization_binding: None,
+            capture_complete: None,
         };
         intent
             .commit_control_projection(project, &mut journal, &completion)
@@ -1459,6 +1700,7 @@ mod tests {
             observation_sequence: completion.observation_sequence,
             terminal: Some(HostExecutionTerminalResultV1::Exited(18)),
             authorization_binding: completion.authorization_binding.clone(),
+            capture_complete: completion.capture_complete,
         };
         assert!(matches!(
             intent.commit_control_projection(project, &mut journal, &changed),
@@ -1497,8 +1739,9 @@ fn classify_outcome(
     intent: &ControllerExecutionIntentV1,
     kind: ExecutionAuthorizationKindV1,
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    accepted_content: Option<(HostExecutionSpecContentFieldsV1, ExecutionDescriptorVersionV2)>,
 ) -> Result<ControllerExecutionObservationV1, EffectFailure> {
-    if outcome.method() != kind.broker_method() || !request_matches_intent(intent, kind, outcome) {
+    if outcome.method() != kind.broker_method() || !request_matches_intent(intent, kind, outcome, accepted_content) {
         return Err(EffectFailure::Permanent(
             "Host execution outcome has the wrong signed request".to_owned(),
         ));
@@ -1517,6 +1760,14 @@ fn classify_outcome(
     .map_err(|_| {
         EffectFailure::Permanent("signed Host execution outcome is malformed".to_owned())
     })?;
+    classify_decoded_outcome_v4(intent, kind, &body)
+}
+
+fn classify_decoded_outcome_v4(
+    intent: &ControllerExecutionIntentV1,
+    kind: ExecutionAuthorizationKindV1,
+    body: &aos_proto::aos::sandbox::local::v1::HostExecutionOutcomeV1,
+) -> Result<ControllerExecutionObservationV1, EffectFailure> {
     match body.phase.as_known() {
         Some(HostExecutionPhaseV1::HOST_EXECUTION_PHASE_COMPLETE) => {
             let effect_commitment: [u8; 32] =
@@ -1657,21 +1908,11 @@ fn classify_outcome(
                     "execution exited before cancellation was observed".to_owned(),
                 ));
             }
-            let mut receipt_hash = Sha256::new()
-                .chain_update(EXECUTION_RECEIPT_DOMAIN)
-                .chain_update(intent.operation_id.as_bytes())
-                .chain_update(intent.execution_id)
-                .chain_update(intent.source_operation_commitment)
-                .chain_update(effect_commitment)
-                .chain_update(completion_digest)
-                .chain_update(body.observation_sequence.to_be_bytes())
-                .chain_update(&body.completion_bytes);
-            if terminal.is_some() {
-                receipt_hash.update((body.terminal_guest_result.len() as u64).to_be_bytes());
-                receipt_hash.update(&body.terminal_guest_result);
-            }
-            let digest: [u8; 32] = receipt_hash.finalize().into();
-            let receipt = EffectReceipt::new([b"AOSEXE01".as_slice(), digest.as_slice()].concat())
+            let receipt_bytes = aos_sandbox_protocol::execution_evidence::controller_execution_receipt_v1(
+                intent.operation_id.as_bytes(), intent.execution_id, intent.source_operation_commitment,
+                effect_commitment, completion_digest, body.observation_sequence, &body.completion_bytes,
+                terminal.as_ref().map(|_| body.terminal_guest_result.as_slice()));
+            let receipt = EffectReceipt::new(receipt_bytes.to_vec())
                 .map_err(aos_sandbox::ReconcilerError::from)
                 .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
             // Only exact signed Host request/completion classification may mint
@@ -1699,6 +1940,7 @@ fn classify_outcome(
                     observation_sequence: body.observation_sequence,
                     terminal,
                     authorization_binding,
+                    capture_complete: None,
                 },
             ))
         }
@@ -1724,47 +1966,61 @@ fn request_matches_intent(
     intent: &ControllerExecutionIntentV1,
     kind: ExecutionAuthorizationKindV1,
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    accepted_content: Option<(HostExecutionSpecContentFieldsV1, ExecutionDescriptorVersionV2)>,
 ) -> bool {
     let exact_body = outcome.request().exact_body();
     match kind {
-        ExecutionAuthorizationKindV1::Apply => {
-            let Ok(request) = ApplyHostExecutionRequestV1::decode_from_slice(exact_body) else {
-                return false;
-            };
-            let Some(request_id) = request
-                .header
-                .as_option()
-                .and_then(|header| header.request_id.as_slice().try_into().ok())
-            else {
-                return false;
-            };
-            let Ok(content) = intent.descriptor_content() else {
-                return false;
-            };
-            let fields = HostExecutionSpecContentFieldsV1::for_grant(&content).bind_attempt(
-                request_id,
-                *intent.operation_id.as_bytes(),
-                ExecutionId::from_bytes(intent.execution_id),
-                ObjectDigest::from_bytes(intent.source_operation_commitment),
-                intent.action.effect_operation(),
-            );
-            let (action, rows, columns, signal_number) = intent.action.wire_fields();
-            request.encode_to_vec() == exact_body
-                && request.operation_id == intent.operation_id.as_bytes()
-                && request.execution_id == intent.execution_id
-                && request.source_operation_commitment == intent.source_operation_commitment
-                && request.canonical_execution_spec.is_empty()
-                && request.spec_transfer_version == 1
-                && request.spec_content_bytes == fields.bytes()
-                && request.spec_content_digest == fields.digest().to_vec()
-                && request.spec_attempt_commitment == fields.attempt_commitment().to_vec()
-                && request.action.as_known() == Some(action)
-                && request.terminal_rows == rows
-                && request.terminal_columns == columns
-                && request.signal_number == signal_number
-        }
+        ExecutionAuthorizationKindV1::Apply => apply_body_matches_intent(intent, exact_body, accepted_content),
         ExecutionAuthorizationKindV1::Query => query_body_matches_intent(intent, exact_body),
     }
+}
+
+// Selected publication supplies the exact already-held content used by its
+// request producer. The signed response cannot choose a different descriptor
+// version or substitute its own content commitment during classification.
+fn apply_body_matches_intent(
+    intent: &ControllerExecutionIntentV1,
+    exact_body: &[u8],
+    accepted_content: Option<(HostExecutionSpecContentFieldsV1, ExecutionDescriptorVersionV2)>,
+) -> bool {
+    let Ok(request) = ApplyHostExecutionRequestV1::decode_from_slice(exact_body) else {
+        return false;
+    };
+    let Some(request_id) = request.header.as_option()
+        .and_then(|header| header.request_id.as_slice().try_into().ok()) else {
+        return false;
+    };
+    let ordinary_content;
+    let (content, version) = match accepted_content {
+        Some(held) => held,
+        None => {
+            let Ok(bytes) = intent.descriptor_content() else { return false; };
+            ordinary_content = bytes;
+            (HostExecutionSpecContentFieldsV1::for_grant(&ordinary_content), ExecutionDescriptorVersionV2::Ordinary)
+        }
+    };
+    let (fields, expected_version) = match version {
+        ExecutionDescriptorVersionV2::LifetimeAdmission => (content.bind_lifetime_admission_attempt_v5(
+            request_id, *intent.operation_id.as_bytes(), ExecutionId::from_bytes(intent.execution_id),
+            ObjectDigest::from_bytes(intent.source_operation_commitment)), 5),
+        ExecutionDescriptorVersionV2::Ordinary => (content.bind_attempt(
+            request_id, *intent.operation_id.as_bytes(), ExecutionId::from_bytes(intent.execution_id),
+            ObjectDigest::from_bytes(intent.source_operation_commitment), intent.action.effect_operation()), 1),
+    };
+    let (action, rows, columns, signal_number) = intent.action.wire_fields();
+    request.encode_to_vec() == exact_body
+        && request.operation_id == intent.operation_id.as_bytes()
+        && request.execution_id == intent.execution_id
+        && request.source_operation_commitment == intent.source_operation_commitment
+        && request.canonical_execution_spec.is_empty()
+        && request.spec_transfer_version == expected_version
+        && request.spec_content_bytes == fields.bytes()
+        && request.spec_content_digest == fields.digest().to_vec()
+        && request.spec_attempt_commitment == fields.attempt_commitment().to_vec()
+        && request.action.as_known() == Some(action)
+        && request.terminal_rows == rows
+        && request.terminal_columns == columns
+        && request.signal_number == signal_number
 }
 
 fn query_body_matches_intent(intent: &ControllerExecutionIntentV1, exact_body: &[u8]) -> bool {

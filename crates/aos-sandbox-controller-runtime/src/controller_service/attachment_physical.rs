@@ -18,7 +18,7 @@ use aos_sandbox::attachment_source::{
     CurrentAttachmentSourcePlanV1, DurableCurrentAttachmentSourceDispatchV1,
 };
 use aos_sandbox::attachment_state::AttachmentDesiredPresenceV1;
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::NamespaceTargetOutcome;
 use aos_sandbox_core::model::{AttachmentConsistency, AttachmentPresentation};
 use aos_sandbox_core::{AttachmentId, ObjectDigest, OperationId, RawPairedClockSample, SandboxId};

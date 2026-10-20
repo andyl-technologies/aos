@@ -1,11 +1,13 @@
 //! Canonical portable authority semantics for network effects.
 //!
-//! Network V1 encodes tagged, length-delimited fields in ascending tag order:
+//! Network encodes tagged, length-delimited fields in ascending tag order.
+//! Prepare version two also binds the exact sealed assignment/specification
+//! content; existing-resource operations preserve their version-one meaning:
 //!
 //! ```text
 //! field := tag:u8 || length:u32be || value:length
 //! fields := magic, version, action, assignment fence, optional network handle,
-//!           ordered endpoint IDs
+//!           ordered endpoint IDs, Prepare-only content length and SHA-256
 //! ```
 //!
 //! Interface names, ifindexes, namespaces, nftables expressions, host paths,
@@ -15,9 +17,12 @@
 //! which a future broker must compare with the separately verified lease and
 //! durable monotonic fence immediately before each effect.
 
-use aos_proto::aos::sandbox::local::v1::{ApplyNetworkRequest, NetworkAction};
+pub mod preparation_content;
+
+use aos_proto::aos::sandbox::local::v1::{ApplyNetworkRequest, BrokerMethod, NetworkAction};
 use aos_sandbox_core::{
-    BrokerArgumentCommitment, BrokerGrantTarget, BrokerResourceHandle, BrokerVerb, ProtocolId,
+    BrokerArgumentCommitment, BrokerAssignment, BrokerGrantTarget, BrokerResourceHandle,
+    BrokerVerb, NetworkEndpointId, ProtocolId,
 };
 use buffa::Message as _;
 
@@ -29,6 +34,7 @@ use crate::{
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSNSEM1";
 const FORMAT_VERSION: u16 = 1;
+const PREPARATION_FORMAT_VERSION: u16 = 2;
 const MAXIMUM_CANONICAL_BYTES: usize = 16 * 1024;
 /// Maximum logical endpoint resources accepted by one network preparation.
 pub const MAXIMUM_NETWORK_ENDPOINTS: usize = 256;
@@ -105,6 +111,23 @@ impl NetworkOperation {
         }
     }
 
+    /// Reconstructs an existing-resource cleanup commitment from inert DATA.
+    ///
+    /// The live request decoder and this comparison use the same encoder.
+    /// No resource, assignment, lease or current native owner is authenticated.
+    ///
+    /// # Errors
+    /// Refuses another operation, a zero resource or canonical encoding failure.
+    pub fn persisted_cleanup_argument_commitment_v2(
+        &self, assignment: BrokerAssignment,
+    ) -> Result<BrokerArgumentCommitment, NetworkSemanticsError> {
+        if !matches!(self, Self::Disarm { .. } | Self::Destroy { .. }) {
+            return Err(NetworkSemanticsError::InvalidActionShape);
+        }
+        let (_, commitment, _) = canonical_operation_v2(assignment, self, None)?;
+        Ok(commitment)
+    }
+
     /// Returns the network handle for existing-resource operations.
     #[must_use]
     pub const fn network_handle(&self) -> Option<&[u8; 32]> {
@@ -170,6 +193,7 @@ pub struct CanonicalNetworkSemanticsV1 {
     bytes: Vec<u8>,
     commitment: BrokerArgumentCommitment,
     target: BrokerGrantTarget,
+    preparation_content: Option<preparation_content::NetworkPreparationContentReferenceV2>,
 }
 
 impl CanonicalNetworkSemanticsV1 {
@@ -187,11 +211,22 @@ impl CanonicalNetworkSemanticsV1 {
         policy: PeerPolicy,
         now_boottime_nanoseconds: u64,
     ) -> Result<Self, NetworkSemanticsError> {
+        Self::decode_engine_v4(bytes, peer, policy, now_boottime_nanoseconds, None)
+    }
+
+    pub(crate) fn decode_engine_v4(
+        bytes: &[u8], peer: PeerCredentials, policy: PeerPolicy,
+        now_boottime_nanoseconds: u64,
+        capture: Option<(&mut ApplyNetworkRequest, &mut Option<Result<(), buffa::DecodeError>>)>,
+    ) -> Result<Self, NetworkSemanticsError> {
         if bytes.len() > MAXIMUM_REQUEST_BYTES {
             return Err(ProtocolValidationError::RequestTooLarge.into());
         }
-        let request = ApplyNetworkRequest::decode_from_slice(bytes)
-            .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+        let (raw, decode) = match capture {
+            Some((raw, decode)) => (Some(raw), Some(decode)),
+            None => (None, None),
+        };
+        let request = crate::capture::decode_message_v1::<ApplyNetworkRequest>(bytes, raw, decode)?;
         if !request.__buffa_unknown_fields.is_empty() {
             return Err(ProtocolValidationError::UnknownFields.into());
         }
@@ -229,27 +264,20 @@ impl CanonicalNetworkSemanticsV1 {
             request.fail_stop_boottime_nanoseconds,
             now_boottime_nanoseconds,
         )?;
-        let target = match operation.network_handle() {
-            None => BrokerGrantTarget::Assignment,
-            Some(handle) => BrokerGrantTarget::Resource(
-                BrokerResourceHandle::from_bytes(*handle)
-                    .map_err(|_| NetworkSemanticsError::InvalidActionShape)?,
-            ),
+        let preparation_content = if matches!(operation, NetworkOperation::Prepare { .. }) {
+            Some(preparation_content::NetworkPreparationContentReferenceV2::from_request(&request)?)
+        } else {
+            if request.prepare_content_version != 0 || request.prepare_content_bytes != 0
+                || !request.prepare_content_digest.is_empty()
+            {
+                return Err(NetworkSemanticsError::InvalidActionShape);
+            }
+            None
         };
-
-        let mut encoder = Encoder::new();
-        encoder.field(1, FORMAT_MAGIC)?;
-        encoder.field(2, &FORMAT_VERSION.to_be_bytes())?;
-        encoder.field(3, &[action_code(&operation)])?;
-        encoder.field(4, fence.sandbox_id())?;
-        encoder.field(5, fence.incarnation_id())?;
-        encoder.field(6, &fence.assignment_epoch().to_be_bytes())?;
-        encoder.field(7, &fence.desired_generation().to_be_bytes())?;
-        encoder.field(8, fence.assignment_digest())?;
-        encoder.optional_fixed(9, operation.network_handle())?;
-        encoder.endpoint_ids(10, operation.endpoint_ids())?;
-        let bytes = encoder.finish();
-        let commitment = BrokerArgumentCommitment::for_canonical_bytes(&bytes);
+        let (bytes, commitment, target) = canonical_operation_v2(
+            fence.broker_assignment().map_err(|_| NetworkSemanticsError::InvalidActionShape)?,
+            &operation, preparation_content,
+        )?;
         Ok(Self {
             header,
             fence,
@@ -257,6 +285,7 @@ impl CanonicalNetworkSemanticsV1 {
             bytes,
             commitment,
             target,
+            preparation_content,
         })
     }
 
@@ -301,6 +330,84 @@ impl CanonicalNetworkSemanticsV1 {
     pub const fn broker_verb(&self) -> BrokerVerb {
         self.operation.broker_verb()
     }
+
+    /// Returns the exact sealed-content reference required only by Prepare.
+    #[must_use]
+    pub const fn preparation_content_reference_v2(&self)
+        -> Option<preparation_content::NetworkPreparationContentReferenceV2>
+    {
+        self.preparation_content
+    }
+
+    /// Returns the sole method matching this closed operation's carrier shape.
+    #[must_use]
+    pub const fn broker_method_v2(&self) -> BrokerMethod {
+        match self.operation {
+            NetworkOperation::Prepare { .. } => BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2,
+            _ => BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
+        }
+    }
+}
+
+/// Derives the same Prepare argument from inert original model DATA.
+///
+/// This shares the broker decoder's sole portable encoder. It authenticates no
+/// peer, checks no live deadline and constructs no validated request or grant.
+///
+/// # Errors
+/// Rejects noncanonical endpoint IDs or semantic encoding overflow.
+pub fn canonical_network_preparation_argument_v2(
+    assignment: BrokerAssignment,
+    endpoints: &[NetworkEndpointId],
+    content: preparation_content::NetworkPreparationContentReferenceV2,
+) -> Result<BrokerArgumentCommitment, NetworkSemanticsError> {
+    if endpoints.len() > MAXIMUM_NETWORK_ENDPOINTS
+        || endpoints.iter().any(|endpoint| endpoint.as_bytes() == &[0; 16])
+        || endpoints.windows(2).any(|pair| pair[0].as_bytes() >= pair[1].as_bytes())
+    {
+        return Err(NetworkSemanticsError::InvalidActionShape);
+    }
+    let operation = NetworkOperation::Prepare {
+        endpoint_ids: endpoints.iter().map(|endpoint| *endpoint.as_bytes()).collect(),
+    };
+    let (_, commitment, _) = canonical_operation_v2(assignment, &operation, Some(content))?;
+
+    Ok(commitment)
+}
+
+fn canonical_operation_v2(
+    assignment: BrokerAssignment,
+    operation: &NetworkOperation,
+    preparation_content: Option<preparation_content::NetworkPreparationContentReferenceV2>,
+) -> Result<(Vec<u8>, BrokerArgumentCommitment, BrokerGrantTarget), NetworkSemanticsError> {
+    let target = match operation.network_handle() {
+        None => BrokerGrantTarget::Assignment,
+        Some(handle) => BrokerGrantTarget::Resource(
+            BrokerResourceHandle::from_bytes(*handle)
+                .map_err(|_| NetworkSemanticsError::InvalidActionShape)?,
+        ),
+    };
+    let mut encoder = Encoder::new();
+    encoder.field(1, FORMAT_MAGIC)?;
+    let version = if preparation_content.is_some() { PREPARATION_FORMAT_VERSION }
+        else { FORMAT_VERSION };
+    encoder.field(2, &version.to_be_bytes())?;
+    encoder.field(3, &[action_code(operation)])?;
+    encoder.field(4, assignment.sandbox().as_bytes())?;
+    encoder.field(5, assignment.incarnation().as_bytes())?;
+    encoder.field(6, &assignment.epoch().get().to_be_bytes())?;
+    encoder.field(7, &assignment.desired_generation().get().to_be_bytes())?;
+    encoder.field(8, assignment.digest().as_bytes())?;
+    encoder.optional_fixed(9, operation.network_handle())?;
+    encoder.endpoint_ids(10, operation.endpoint_ids())?;
+    if let Some(content) = preparation_content {
+        encoder.field(11, &content.content_bytes().to_be_bytes())?;
+        encoder.field(12, content.content_digest().as_bytes())?;
+    }
+    let bytes = encoder.finish();
+    let commitment = BrokerArgumentCommitment::for_canonical_bytes(&bytes);
+
+    Ok((bytes, commitment, target))
 }
 
 fn operation_for(
@@ -538,6 +645,10 @@ mod tests {
     fn prepare() -> ApplyNetworkRequest {
         let mut request = request(NetworkAction::NETWORK_ACTION_PREPARE);
         request.endpoint_ids = vec![vec![7; 16], vec![8; 16]];
+        let content = preparation_content::NetworkPreparationContentV2::new(b"m", b"s")
+            .unwrap().encode().unwrap();
+        preparation_content::NetworkPreparationContentReferenceV2::for_content(&content)
+            .unwrap().bind_request(&mut request);
         request
     }
 
@@ -564,10 +675,27 @@ mod tests {
         assert_eq!(
             semantics.argument_commitment().digest().as_bytes(),
             &[
-                254, 21, 228, 83, 186, 179, 103, 42, 218, 163, 93, 42, 64, 125, 137, 239, 26, 223,
-                74, 104, 62, 185, 166, 61, 150, 67, 110, 67, 178, 89, 198, 248,
+                29, 227, 249, 20, 121, 17, 212, 56, 34, 92, 134, 240, 232, 115, 26, 42,
+                4, 207, 16, 37, 71, 241, 106, 138, 40, 80, 34, 153, 221, 240, 20, 227,
             ]
         );
+    }
+
+    #[test]
+    fn inert_prepare_argument_matches_the_actual_broker_decoder() {
+        let semantics = decode(&prepare()).unwrap();
+        let assignment = semantics.fence().broker_assignment().unwrap();
+        let endpoints: Vec<_> = semantics.operation().endpoint_ids().iter()
+            .map(|endpoint| NetworkEndpointId::from_bytes(*endpoint)).collect();
+        let content = semantics.preparation_content_reference_v2().unwrap();
+        assert_eq!(canonical_network_preparation_argument_v2(
+            assignment, &endpoints, content).unwrap(), semantics.argument_commitment());
+
+        let mut changed = endpoints.clone();
+        changed.reverse();
+        assert!(canonical_network_preparation_argument_v2(assignment, &changed, content).is_err());
+        changed = vec![endpoints[0]; 2];
+        assert!(canonical_network_preparation_argument_v2(assignment, &changed, content).is_err());
     }
 
     #[test]
@@ -598,6 +726,35 @@ mod tests {
             request.network_handle = vec![9; 32];
             assert_eq!(decode(&request).unwrap().broker_verb(), verb);
         }
+    }
+
+    #[test]
+    fn preparation_requires_current_content_and_commits_to_both_operands() {
+        let valid = prepare();
+        let expected = decode(&valid).unwrap();
+        assert!(expected.preparation_content_reference_v2().is_some());
+
+        let mut old = valid.clone();
+        old.prepare_content_version = 0;
+        old.prepare_content_bytes = 0;
+        old.prepare_content_digest.clear();
+        assert_eq!(decode(&old), Err(NetworkSemanticsError::InvalidActionShape));
+
+        for (manifest, specification) in [(b"n".as_slice(), b"s".as_slice()), (b"m", b"t")] {
+            let mut changed = valid.clone();
+            let content = preparation_content::NetworkPreparationContentV2::new(
+                manifest, specification).unwrap().encode().unwrap();
+            preparation_content::NetworkPreparationContentReferenceV2::for_content(&content)
+                .unwrap().bind_request(&mut changed);
+            assert_ne!(decode(&changed).unwrap().argument_commitment(),
+                expected.argument_commitment());
+        }
+
+        let mut arm = gate(NetworkAction::NETWORK_ACTION_ARM_LEASE);
+        arm.prepare_content_version = 2;
+        arm.prepare_content_bytes = valid.prepare_content_bytes;
+        arm.prepare_content_digest = valid.prepare_content_digest;
+        assert_eq!(decode(&arm), Err(NetworkSemanticsError::InvalidActionShape));
     }
 
     #[test]

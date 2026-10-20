@@ -106,6 +106,8 @@ impl FixedProcessBoottimeCutV1 {
 pub enum FixedProcessDrivenCauseV1 {
     /// The shared kernel/process engine failed.
     Process(Error),
+    /// The selected PATH setup retains its original descriptors and exact error.
+    Spawn(Box<super::super::FixedProcessSpawnFailureV2>),
     /// Pre-fork capture reservation failed with its original allocator cause.
     CaptureAllocation(std::collections::TryReserveError),
     /// Reading the original clock failed.
@@ -220,6 +222,7 @@ impl fmt::Display for FixedProcessDrivenCauseV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Process(_) => "fixed process engine failed",
+            Self::Spawn(_) => "fixed process original PATH setup failed",
             Self::CaptureAllocation(_) => "fixed process capture allocation failed",
             Self::Clock(_) => "fixed process original clock failed",
             Self::Wake(_) => "fixed process wake failed",
@@ -237,6 +240,7 @@ impl std::error::Error for FixedProcessDrivenCauseV1 {
         match self {
             Self::Process(source) | Self::Clock(source) | Self::Wake(source) => Some(source),
             Self::CaptureAllocation(source) => Some(source),
+            Self::Spawn(source) => Some(source.as_ref()),
             Self::Reactor(source) => Some(source),
             _ => None,
         }
@@ -325,6 +329,7 @@ pub struct FixedProcessDrivenSessionV1 {
     debt: Option<FixedProcessDrivenDebtV1>,
     outcome: Option<FixedProcessRetainedSessionOutcome<()>>,
     invocation_disposition: InvocationDisposition,
+    spawn_original: Option<Box<super::super::FixedProcessSpawnFailureV2>>,
     single_thread: PhantomData<Rc<()>>,
 }
 
@@ -352,6 +357,7 @@ impl FixedProcessDrivenSessionV1 {
             debt: None,
             outcome: None,
             invocation_disposition: InvocationDisposition::Descriptor,
+            spawn_original: None,
             single_thread: PhantomData,
         }
     }
@@ -378,6 +384,39 @@ impl FixedProcessDrivenSessionV1 {
         let mut owner = Self::park(prepared, inputs, cut);
         owner.invocation_disposition = InvocationDisposition::Path;
         owner
+    }
+
+    /// Parks the same PATH invocation with prepaid native setup custody.
+    ///
+    /// This mechanical alternative retains failed setup descriptors and the
+    /// exact native cause. It grants no execution, image, F or role authority.
+    /// The caller must fund the compiled prefix before this allocation and
+    /// separately retain its reaping/proc-task and raw exec-helper providers.
+    #[must_use]
+    pub fn park_path_retaining_spawn_v2(
+        prepared: FixedProcessPreparedInvocationV1,
+        inputs: FixedProcessDrivenInputsV1,
+        cut: FixedProcessBoottimeCutV1,
+    ) -> Self {
+        let mut owner = Self::park_path(prepared, inputs, cut);
+        owner.spawn_original = Some(Box::new(super::super::FixedProcessSpawnFailureV2::new()));
+        owner
+    }
+
+    /// Returns compiled prefix bytes and its complete setup descriptor bound.
+    ///
+    /// This passive DATA covers the selected PATH setup only. Existing child,
+    /// timer, capture, actual inputs and reaping validation remain separate.
+    #[must_use]
+    pub fn path_spawn_receiving_demand_v2() -> Option<(usize, usize)> {
+        let bytes = std::mem::size_of::<super::super::FixedProcessSpawnFailureV2>()
+            .checked_mul(3)?
+            .checked_add(4usize.checked_mul(std::mem::size_of::<OwnedFd>())?)?
+            .checked_add(8usize.checked_mul(std::mem::size_of::<BorrowedFd<'_>>())?)?
+            .checked_add(2048)?;
+        // /dev/null + two pipe pairs + three high aliases + supplied stdin
+        // + the existing four inherited roles + the actual typed pidfd.
+        Some((bytes, 14))
     }
 
     /// Arms a borrowing closure guard synchronously, including unpolled use.
@@ -508,10 +547,32 @@ impl FixedProcessDrivenSessionV1 {
                     self.cut,
                 )
             }
-            InvocationDisposition::Path => self.prepared.invocation.spawn(
-                self.stdin.as_ref().map(|fd| fd.as_fd()),
-                &inherited_borrows,
-            ),
+            InvocationDisposition::Path => {
+                if let Some(original) = self.spawn_original.as_mut() {
+                    match super::super::spawn_original::spawn_into_original_v2(
+                        &self.prepared.invocation,
+                        self.stdin.as_ref().map(|fd| fd.as_fd()),
+                        &inherited_borrows,
+                        super::super::SpawnExecution::Path,
+                        None,
+                        original,
+                    ) {
+                        Ok(spawned) => Ok(spawned),
+                        Err(()) => {
+                            let original = match self.spawn_original.take() {
+                                Some(original) => original,
+                                None => std::process::abort(),
+                            };
+                            return Err(FixedProcessDrivenCauseV1::Spawn(original));
+                        }
+                    }
+                } else {
+                    self.prepared.invocation.spawn(
+                        self.stdin.as_ref().map(|fd| fd.as_fd()),
+                        &inherited_borrows,
+                    )
+                }
+            }
         }.map_err(FixedProcessDrivenCauseV1::Process)?;
 
         // Successful fork is installed before the next fallible operation.
@@ -587,6 +648,13 @@ impl FixedProcessDrivenSessionV1 {
             if let Err(source) = run.signal_driven_cleanup() {
                 record_process_debt(run, &mut self.debt, source);
             }
+        } else if matches!(&self.cause,
+            Some(FixedProcessDrivenCauseV1::Spawn(original)) if original.has_armed_child())
+        {
+            // A post-spawn setup refusal can own an unreaped child without a
+            // usable pidfd. Keep it as whole negative debt for the enclosing
+            // unit owner; never announce Ended or release its numeric identity.
+            self.phase = Phase::Debt;
         } else {
             self.phase = Phase::Ended;
         }
@@ -903,6 +971,7 @@ mod tests {
             timer: None, kernel: KernelState::pending(), phase: Phase::Parked,
             finish: None, cause: None, debt: None, outcome: None,
             invocation_disposition: InvocationDisposition::Path,
+            spawn_original: None,
             single_thread: PhantomData,
         };
 

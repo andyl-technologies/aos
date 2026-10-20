@@ -20,6 +20,7 @@
   aos-method46-tpm-helper,
   aos-sandbox-view-preparer-tools,
   viewPreparers ? [],
+  environmentProvision ? null,
   homeContextAliases ? "",
   gitReadDelegation ? false,
   sourceProviderMount ? false,
@@ -112,14 +113,22 @@
     if builtins.length (builtins.split pattern source) != 3
     then throw "selected owner DATA requires exactly one fixed initializer"
     else builtins.replaceStrings [literal] [replacement] source;
+  environmentOwnerData =
+    if environmentProvision != null
+    then replaceSelectedInitializer
+      "ENVIRONMENT_PROVISION = False"
+      "ENVIRONMENT_PROVISION = False"
+      "ENVIRONMENT_PROVISION = True"
+      (builtins.readFile (policySupport + "/owner_policy.py"))
+    else builtins.readFile (policySupport + "/owner_policy.py");
   resourceBankOwnerData =
     if resourceBankEnrollment
     then replaceSelectedInitializer
       "RESOURCE_BANK_RECIPIENTS = \\(\\)"
       "RESOURCE_BANK_RECIPIENTS = ()"
       "RESOURCE_BANK_RECIPIENTS = RESOURCE_BANK_KNOWN_RECIPIENTS"
-      (builtins.readFile (policySupport + "/owner_policy.py"))
-    else builtins.readFile (policySupport + "/owner_policy.py");
+      environmentOwnerData
+    else environmentOwnerData;
   runtimeOwnerData =
     if runtimeDeploymentPublisher
     then replaceSelectedInitializer
@@ -165,7 +174,7 @@
   # Selected checks import the rendered immutable DATA beside the same checker.
   # No policy observation or runtime option chooses its expected permissions.
   checkerScript =
-    if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl
+    if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null
     then "selected-policy-checker/effective_policy.py"
     else "${policySupport}/effective_policy.py";
   # toFile cannot carry an output reference, and the policy must not build
@@ -247,6 +256,7 @@
     + closedSelectedSource (policySupport + "/owner_confinement.te")
     + "\n"
     + builtins.readFile (policySupport + "/view_confinement.te")
+    + (if environmentProvision != null then "\n" + builtins.readFile (policySupport + "/environment_confinement.te") else "")
     + (if gitReadDelegation then "\n" + builtins.readFile (policySupport + "/git_read_delegation.te") else "")
   );
   viewEntrypointContext = entry: let
@@ -255,7 +265,7 @@
       if entry.role == "source"
       then ["aos-sandbox-source-signer-view"]
       else if entry.role == "cache"
-      then ["aos-sandbox-cache-journal-view" "aos-sandbox-cache-signer-views" "aos-sandbox-cache-signer-views-stop"]
+      then ["aos-sandbox-cache-journal-view" "aos-sandbox-cache-journal-view-stop" "aos-sandbox-cache-signer-views" "aos-sandbox-cache-signer-views-stop"]
       else [];
   in
     if builtins.elem entry.program allowedPrograms && builtins.match "[a-z0-9]{32}-${entry.program}" basename != null
@@ -301,6 +311,62 @@
     && builtins.match workerPathRegex (workerPath workerBasename) != null
     && builtins.match workerPathRegex (workerPath workerSibling) == null
     && builtins.match workerPathRegex (workerPath (workerBasename + "-alias")) == null;
+  # Only the selected, explicitly supplied immutable package receives this
+  # read-only Environment label. No wildcard store package becomes readable.
+  environmentFileContexts =
+    if environmentProvision == null
+    then ""
+    else let
+      basename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString environmentProvision));
+    in
+      if builtins.match "[0-9abcdfghijklmnpqrsvwxyz]{32}-aos-environment-provision-1" basename == null
+      then throw "Environment evidence requires the exact canonical provision package"
+      else ''
+        /(nix|nix\.lower)/store/${basename} -d system_u:object_r:aos_environment_provision_t
+        /(nix|nix\.lower)/store/${basename}/objects -d system_u:object_r:aos_environment_provision_t
+        /(nix|nix\.lower)/store/${basename}/instruction-v1 -- system_u:object_r:aos_environment_provision_t
+        /(nix|nix\.lower)/store/${basename}/objects/[0-9a-f]{64} -- system_u:object_r:aos_environment_provision_t
+        /nix -d system_u:object_r:usr_t
+        /nix/store -d system_u:object_r:usr_t
+        /nix/var -d system_u:object_r:var_t
+        /nix/var/nix -d system_u:object_r:var_t
+        /nix/var/nix/gcroots -d system_u:object_r:var_t
+        /nix/var/nix/gcroots/aos-selected-environment-v1 -l system_u:object_r:aos_environment_gcroot_t
+        /var/lib/aos/sandbox/source-evidence/environment-authority-v1\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_policy_authority_state_t
+      '';
+  environmentContextExpectations = builtins.toFile "aos-environment-context-expectations.json" (builtins.toJSON {
+    version = 1;
+    entries =
+      if environmentProvision == null
+      then []
+      else let
+        artifact = builtins.unsafeDiscardStringContext (toString environmentProvision);
+        entry = path: kind: type: {
+          inherit path kind;
+          context = "system_u:object_r:${type}";
+        };
+        artifactEntries = root: [
+          (entry root "directory" "aos_environment_provision_t")
+          (entry "${root}/objects" "directory" "aos_environment_provision_t")
+          (entry "${root}/instruction-v1" "regular" "aos_environment_provision_t")
+          (entry "${root}/objects/${builtins.concatStringsSep "" (builtins.genList (_: "a") 64)}" "regular" "aos_environment_provision_t")
+        ];
+      in
+        [
+          (entry "/nix" "directory" "usr_t")
+          (entry "/nix/store" "directory" "usr_t")
+          (entry "/nix/var" "directory" "var_t")
+          (entry "/nix/var/nix" "directory" "var_t")
+          (entry "/nix/var/nix/gcroots" "directory" "var_t")
+          (entry "/nix/var/nix/gcroots/aos-selected-environment-v1" "symlink" "aos_environment_gcroot_t")
+          (entry "/var/lib/aos/sandbox/source-evidence" "directory" "aos_sandbox_policy_authority_state_t")
+          (entry "/var/lib/aos/sandbox/source-evidence/environment-authority-v1.journal" "regular" "aos_sandbox_policy_authority_state_t")
+          (entry "/var/lib/aos/sandbox/source-evidence/environment-authority-v1.journal.lock" "regular" "aos_sandbox_policy_authority_state_t")
+          (entry "/var/lib/aos/sandbox/source-evidence/environment-authority-v1.journal.compact.tmp" "regular" "aos_sandbox_policy_authority_state_t")
+        ]
+        ++ artifactEntries artifact
+        ++ artifactEntries (builtins.replaceStrings ["/nix/store/"] ["/nix.lower/store/"] artifact);
+  });
   fileContexts =
     if exactNetdLabel && exactWorkerLabel && exactPublisherLabel && exactSystemdPinLabel
     then
@@ -314,6 +380,7 @@
         + builtins.concatStringsSep "" (map viewEntrypointContext viewPreparers)
         + (if gitReadDelegation then builtins.readFile (policySupport + "/git_read_delegation.fc") else "")
         + onlineFileContexts
+        + environmentFileContexts
       )
     else throw "fixed service SELinux labels must match only their evaluated package roots";
 in
@@ -342,7 +409,7 @@ in
           attribute_negative_module=aos_sandbox_attribute_negative
           export PYTHONPATH=${setools}/lib/python3/site-packages
 
-          ${if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl then ''
+          ${if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null then ''
             mkdir selected-policy-checker
             cp -R ${policySupport}/. selected-policy-checker/
             chmod u+w selected-policy-checker
@@ -585,6 +652,14 @@ in
             -o file_contexts.bin \
             file_contexts
           test -s file_contexts.bin
+          ${if environmentProvision == null then "" else ''
+            # Verify the final whole-policy context precedence, not merely the
+            # contributed .fc fragment or guessed default labels.
+            ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
+              --file-contexts file_contexts.bin \
+              --libselinux ${libselinux}/lib/libselinux.so.1 \
+              --expected ${environmentContextExpectations}
+          ''}
         '';
       }
       {
@@ -634,7 +709,7 @@ in
             deficient-binary-diagnostic \
             "$evidence_root/"
           install -m 0644 ${fileContexts} "$evidence_root/aos_sandbox.fc"
-          ${if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl then ''
+          ${if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null then ''
             # Adjacent modules and rendered expectation DATA are the same
             # inputs used above; the relative passthru has no output cycle.
             mkdir -p "$out/share/aos/selected-policy-checker"
@@ -663,7 +738,7 @@ in
         refpolicy-production.src
         linux.src
       ];
-    } // (if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl then {
+    } // (if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null then {
       effectivePolicyCheckerRelative = "share/aos/selected-policy-checker/effective_policy.py";
     } else {});
 

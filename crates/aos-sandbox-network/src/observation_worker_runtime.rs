@@ -7,15 +7,22 @@
 //! digest of two equal complete observations. It has no mutation dispatch,
 //! authority key, replay ledger, or systemd descriptor-store access.
 
-use std::os::fd::{AsFd as _, OwnedFd};
+mod retaining;
+pub(crate) mod child_programme_v2;
+pub use child_programme_v2::run_inherited_network_observation_worker_entry_v2;
+mod request_fields_v2;
+use request_fields_v2::ObservationRequestFieldsV2;
+
+pub(crate) use retaining::{NetworkParentObservationInputV2, NetworkParentObservationOriginalV2};
+pub(crate) mod read_admission_v2;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aos_sandbox_core::ObjectDigest;
-use aos_sandbox_core::model::NetworkKind;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::pidfd::{
-    NamespaceFd, NamespaceIdentity, NamespaceKind, SingleThreadedProcess,
+    NamespaceFd, NamespaceIdentity, NamespaceKind,
 };
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{
@@ -23,39 +30,34 @@ use aos_sandbox_linux::seqpacket::{
 };
 
 use crate::kernel_plan::{NetworkKernelPlanError, NetworkKernelPlanV1};
-use crate::kernel_reader::{FixedBpfObservationReader, NetworkKernelReaderError};
+use crate::kernel_reader::NetworkKernelReaderError;
 use crate::lifecycle_state::AmbiguousNetworkLifecycleRecoveryV1;
 use crate::namespace_catalog::{
     NetworkNamespaceObservedStateKindV1, NetworkNamespaceObservedStateV1,
 };
 use crate::namespace_observer::{
-    NetworkKernelObservationReaders, NetworkNamespaceObserverError,
-    observe_stable_destroyed_network_kernel, observe_stable_expected_network_kernel,
+    NetworkNamespaceObserverError,
 };
 use crate::namespace_store::RetainedNetworkNamespace;
-use crate::nftables_reader::FixedNftablesObservationReader;
-use crate::rtnetlink_reader::FixedRtnetlinkObservationReader;
-use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
 use crate::worker_process::{
     NetworkWorkerProcessError, acknowledgement, decode_acknowledgement, validate_broker_subject,
     validate_same_worker_execution, validate_systemd_manager_peer,
 };
 use crate::worker_runtime::{
     NetworkWorkerRuntimeError, PreparedNetworkWorkerOutput, RecoveredNetworkPreparationObservation,
-    current_cgroup, deadline_after, normalized_absolute_path, open_cgroup_root, quiesce_worker,
+    deadline_after, open_cgroup_root, quiesce_worker,
     receive_record_before, send_record_before, send_record_with_descriptors_before,
     wait_for_quiescence,
 };
 
+use crate::worker_process::cgroup_recipe::{WorkerCgroupPlacementV4, WorkerCgroupRoleV4};
+
 const SYSTEMD_MANAGER_CGROUP: &str = "init.scope";
 const CONTROL_SLICE_CGROUP: &str = "aos.slice/aos-control.slice";
-const OBSERVER_CGROUP_PREFIX: &str =
-    "aos.slice/aos-control.slice/aos-sandbox-network-observation-worker@";
-const OBSERVER_CGROUP_SUFFIX: &str = ".service";
-const READY_MAGIC: &[u8; 8] = b"AOSNORD1";
-const REQUEST_MAGIC: &[u8; 8] = b"AOSNORQ1";
-const RESPONSE_MAGIC: &[u8; 8] = b"AOSNORS1";
-const WIRE_VERSION: u16 = 1;
+const READY_MAGIC: &[u8; 8] = b"AOSNORD2";
+const REQUEST_MAGIC: &[u8; 8] = b"AOSNORQ2";
+const RESPONSE_MAGIC: &[u8; 8] = b"AOSNORS2";
+const WIRE_VERSION: u16 = 2;
 const READY_KIND: u8 = 1;
 const REQUEST_KIND: u8 = 2;
 const RESPONSE_KIND: u8 = 3;
@@ -181,6 +183,7 @@ pub struct SystemdNetworkObservationExecutor {
     worker_parent_cgroup: RetainedCgroupAnchor,
     host_namespace: NamespaceFd,
     fail_stopped: bool,
+    fixed_service: bool,
 }
 
 impl SystemdNetworkObservationExecutor {
@@ -195,20 +198,15 @@ impl SystemdNetworkObservationExecutor {
         cgroup_root: CgroupV2Root,
         host_namespace: NamespaceFd,
     ) -> Result<Self, NetworkObservationWorkerError> {
-        if !normalized_absolute_path(&socket_path) {
-            return Err(NetworkObservationWorkerError::Protocol(
-                "unsafe Network observation-worker socket path",
-            ));
-        }
-        host_namespace.validate_current_network()?;
+        crate::worker_runtime::prepare_observation_local(socket_path, cgroup_root, host_namespace)
+    }
 
-        Ok(Self {
-            socket_path,
-            systemd_manager_cgroup: cgroup_root.resolve(Path::new(SYSTEMD_MANAGER_CGROUP))?,
-            worker_parent_cgroup: cgroup_root.resolve(Path::new(CONTROL_SLICE_CGROUP))?,
-            host_namespace,
-            fail_stopped: false,
-        })
+    pub(crate) fn from_completed_opening_v4(
+        completed: crate::worker_runtime::CompletedObservationOpeningV4,
+    ) -> Self {
+        let (socket_path, systemd_manager_cgroup, worker_parent_cgroup, host_namespace, fixed_service) = completed.into_parts();
+        Self { socket_path, systemd_manager_cgroup, worker_parent_cgroup,
+            host_namespace, fixed_service, fail_stopped: false }
     }
 
     /// Observes one quiescent prepared namespace and proves worker termination.
@@ -369,174 +367,7 @@ impl SystemdNetworkObservationExecutor {
         request: &ObservationRequestV1,
         target_namespace: &NamespaceFd,
     ) -> Result<PreparedNetworkObservationV1, NetworkObservationWorkerError> {
-        if self.fail_stopped {
-            return Err(NetworkObservationWorkerError::Protocol(
-                "Network observation executor is fail-stopped",
-            ));
-        }
-        self.host_namespace.validate_current_network()?;
-        let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
-        validate_systemd_manager_peer(socket.peer(), &self.systemd_manager_cgroup)?;
-
-        let ready = receive_record_before(
-            &mut socket,
-            READY_HEADER_BYTES + MAXIMUM_CGROUP_BYTES,
-            0,
-            deadline_after(TRANSFER_TIMEOUT)?,
-        )?;
-        let ready_payload = ObservationReadyV1::decode(ready.payload())?;
-        let worker_cgroup = validate_observer_subject(
-            ready_payload.cgroup(),
-            ready.subject(),
-            &self.worker_parent_cgroup,
-        )?;
-        let population = worker_cgroup.population_monitor()?;
-
-        let exchange = exchange_observation(
-            &mut socket,
-            request,
-            self.host_namespace.as_fd(),
-            target_namespace.as_fd(),
-            ready.subject(),
-            &worker_cgroup,
-        );
-        match exchange {
-            Ok(observation) => {
-                match wait_for_quiescence(ready.subject(), &population, NATURAL_EXIT_TIMEOUT) {
-                    Ok(()) => Ok(observation),
-                    Err(error) => {
-                        if quiesce_worker(ready.subject(), &worker_cgroup, &population).is_err() {
-                            self.fail_stopped = true;
-                        }
-                        Err(error.into())
-                    }
-                }
-            }
-            Err(error) => {
-                if quiesce_worker(ready.subject(), &worker_cgroup, &population).is_err() {
-                    self.fail_stopped = true;
-                }
-                Err(error)
-            }
-        }
-    }
-}
-
-/// Runs one inherited, read-only Network observation worker.
-///
-/// # Errors
-///
-/// Returns an error unless the fixed broker, both descriptor roles, canonical
-/// plan, immutable readers, stable observation, and final acknowledgement all
-/// validate within the one-record service lifetime.
-pub fn run_inherited_network_observation_worker(
-    configuration: NetworkObservationWorkerConfiguration,
-) -> Result<(), NetworkObservationWorkerError> {
-    let worker = SingleThreadedProcess::verify()?;
-    worker.disable_core_dumps()?;
-    let readers = FixedObservationReaders::open(configuration)?;
-    let cgroup_root = open_cgroup_root()?;
-    let control_cgroup = cgroup_root.resolve(Path::new(CONTROL_SLICE_CGROUP))?;
-    let descriptor: OwnedFd = rustix::io::dup(std::io::stdin().as_fd())?;
-    let mut socket = DescriptorSubjectSocket::from_owned(descriptor)?;
-    validate_observer_broker_peer(socket.peer(), &control_cgroup)?;
-
-    let ready = ObservationReadyV1::new(current_cgroup()?)?;
-    send_record_before(
-        &mut socket,
-        &ready.encode()?,
-        deadline_after(TRANSFER_TIMEOUT)?,
-    )?;
-    let request_record = receive_record_before(
-        &mut socket,
-        MAXIMUM_REQUEST_BYTES,
-        2,
-        deadline_after(TRANSFER_TIMEOUT)?,
-    )?;
-    validate_broker_subject(socket.peer(), request_record.subject(), &control_cgroup)?;
-    let (request_bytes, _subject, descriptors) = request_record.into_parts();
-    let request = ObservationRequestV1::decode(&request_bytes)?;
-    let (host_namespace, target_namespace) =
-        validate_request_descriptors(socket.peer(), descriptors, request.namespace)?;
-    host_namespace.enter(&worker)?;
-    host_namespace.validate_current_network()?;
-
-    let observation_digest =
-        if request.expected_state.kind() == NetworkNamespaceObservedStateKindV1::Absent {
-            observe_stable_destroyed_network_kernel(
-                readers.for_plan(&request.plan),
-                &request.plan,
-                &target_namespace,
-                request.kernel_plan_digest,
-                request.kernel_boot_id,
-                &host_namespace,
-                &worker,
-            )?
-        } else {
-            observe_stable_expected_network_kernel(
-                readers.for_plan(&request.plan),
-                &request.plan,
-                &target_namespace,
-                request.kernel_plan_digest,
-                request.kernel_boot_id,
-                request.expected_state,
-                &host_namespace,
-                &worker,
-            )?
-            .digest()
-        };
-    let response = PreparedNetworkObservationV1 {
-        request_id: request.request_id,
-        effect_digest: request.effect_digest,
-        kernel_plan_digest: request.kernel_plan_digest,
-        kernel_boot_id: request.kernel_boot_id,
-        namespace: request.namespace,
-        observed_state: request.expected_state,
-        observation_digest,
-    };
-    let deadline = deadline_after(TRANSFER_TIMEOUT)?;
-    send_record_before(&mut socket, &encode_response(response), deadline)?;
-    let acknowledgement_record = receive_record_before(&mut socket, ACK_BYTES, 0, deadline)?;
-    validate_broker_subject(
-        socket.peer(),
-        acknowledgement_record.subject(),
-        &control_cgroup,
-    )?;
-    decode_acknowledgement(acknowledgement_record.payload())?;
-    Ok(())
-}
-
-struct FixedObservationReaders {
-    rtnetlink: FixedRtnetlinkObservationReader,
-    nftables: FixedNftablesObservationReader,
-    bpf: FixedBpfObservationReader,
-}
-
-impl FixedObservationReaders {
-    fn open(
-        configuration: NetworkObservationWorkerConfiguration,
-    ) -> Result<Self, NetworkObservationWorkerError> {
-        Ok(Self {
-            rtnetlink: FixedRtnetlinkObservationReader::new(configuration.ip)?,
-            nftables: FixedNftablesObservationReader::new(
-                configuration.nft,
-                configuration.enforcement_loader,
-            )?,
-            bpf: FixedBpfObservationReader::new(
-                configuration.bpf_observer,
-                configuration.lease_gate_object,
-            )?,
-        })
-    }
-
-    fn for_plan<'a>(&'a self, plan: &NetworkKernelPlanV1) -> NetworkKernelObservationReaders<'a> {
-        let bpf = match plan.observation_expectation().kind() {
-            NetworkKind::Isolated | NetworkKind::Host => None,
-            NetworkKind::Project | NetworkKind::Outbound | NetworkKind::Published => {
-                Some(&self.bpf)
-            }
-        };
-        NetworkKernelObservationReaders::new(&self.rtnetlink, &self.nftables, bpf)
+        retaining::observe_local_v4(self, request, target_namespace)
     }
 }
 
@@ -546,7 +377,18 @@ struct ObservationReadyV1 {
 
 impl ObservationReadyV1 {
     fn new(cgroup: String) -> Result<Self, NetworkObservationWorkerError> {
-        validate_observer_cgroup(&cgroup)?;
+        Self::new_engine(cgroup, WorkerCgroupPlacementV4::Ordinary)
+    }
+
+    fn new_receiving_v4(cgroup: String) -> Result<Self, NetworkObservationWorkerError> {
+        Self::new_engine(cgroup, WorkerCgroupPlacementV4::Receiving)
+    }
+
+    fn new_engine(
+        cgroup: String,
+        placement: WorkerCgroupPlacementV4,
+    ) -> Result<Self, NetworkObservationWorkerError> {
+        placement.require_path(&cgroup, WorkerCgroupRoleV4::Observation)?;
         Ok(Self { cgroup })
     }
 
@@ -555,7 +397,7 @@ impl ObservationReadyV1 {
     }
 
     fn encode(&self) -> Result<Vec<u8>, NetworkObservationWorkerError> {
-        validate_observer_cgroup(&self.cgroup)?;
+        crate::worker_process::cgroup_recipe::require_constructed_ready_path(&self.cgroup, WorkerCgroupRoleV4::Observation)?;
         let cgroup = self.cgroup.as_bytes();
         let length = u16::try_from(cgroup.len())
             .map_err(|_| NetworkObservationWorkerError::Protocol("observer cgroup is too long"))?;
@@ -571,6 +413,17 @@ impl ObservationReadyV1 {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, NetworkObservationWorkerError> {
+        Self::decode_engine(bytes, WorkerCgroupPlacementV4::Ordinary)
+    }
+
+    fn decode_receiving_v4(bytes: &[u8]) -> Result<Self, NetworkObservationWorkerError> {
+        Self::decode_engine(bytes, WorkerCgroupPlacementV4::Receiving)
+    }
+
+    fn decode_engine(
+        bytes: &[u8],
+        placement: WorkerCgroupPlacementV4,
+    ) -> Result<Self, NetworkObservationWorkerError> {
         if bytes.len() < READY_HEADER_BYTES
             || bytes.len() > READY_HEADER_BYTES + MAXIMUM_CGROUP_BYTES
             || &bytes[..8] != READY_MAGIC
@@ -588,7 +441,7 @@ impl ObservationReadyV1 {
         let cgroup = std::str::from_utf8(&bytes[READY_HEADER_BYTES..])
             .map_err(|_| NetworkObservationWorkerError::Protocol("observer cgroup is not UTF-8"))?
             .to_owned();
-        let ready = Self::new(cgroup)?;
+        let ready = Self::new_engine(cgroup, placement)?;
         if ready.encode()? != bytes {
             return protocol("observation READY is not canonical");
         }
@@ -630,55 +483,18 @@ impl ObservationRequestV1 {
         Ok(request)
     }
 
+    fn fields_data_v2(&self) -> ObservationRequestFieldsV2 {
+        ObservationRequestFieldsV2 { request_id: self.request_id, effect_digest: self.effect_digest,
+            kernel_plan_digest: self.kernel_plan_digest, kernel_boot_id: self.kernel_boot_id,
+            namespace: self.namespace, expected_state: self.expected_state }
+    }
+
     fn validate(&self) -> Result<(), NetworkObservationWorkerError> {
-        if self.request_id == [0; 16]
-            || self.effect_digest.as_bytes() == &[0; 32]
-            || self.kernel_plan_digest != self.plan.digest()
-            || self.kernel_boot_id == [0; 16]
-            || self.namespace.device == 0
-            || self.namespace.inode == 0
-        {
-            return protocol("observation request identity is invalid");
-        }
-        Ok(())
+        self.fields_data_v2().validate(&self.plan)
     }
 
     fn encode(&self) -> Result<Vec<u8>, NetworkObservationWorkerError> {
-        self.validate()?;
-        let total = REQUEST_HEADER_BYTES
-            .checked_add(self.plan.as_bytes().len())
-            .ok_or(NetworkObservationWorkerError::Protocol(
-                "observation request length overflowed",
-            ))?;
-        let total_u32 = u32::try_from(total).map_err(|_| {
-            NetworkObservationWorkerError::Protocol("observation request is too large")
-        })?;
-        let plan_length = u32::try_from(self.plan.as_bytes().len())
-            .map_err(|_| NetworkObservationWorkerError::Protocol("kernel plan is too large"))?;
-        let mut bytes = Vec::with_capacity(total);
-        bytes.extend_from_slice(REQUEST_MAGIC);
-        bytes.extend_from_slice(&WIRE_VERSION.to_be_bytes());
-        bytes.push(REQUEST_KIND);
-        bytes.push(0);
-        bytes.extend_from_slice(&total_u32.to_be_bytes());
-        bytes.extend_from_slice(&self.request_id);
-        bytes.extend_from_slice(self.effect_digest.as_bytes());
-        bytes.extend_from_slice(self.kernel_plan_digest.as_bytes());
-        bytes.extend_from_slice(&self.kernel_boot_id);
-        bytes.extend_from_slice(&self.namespace.device.to_be_bytes());
-        bytes.extend_from_slice(&self.namespace.inode.to_be_bytes());
-        bytes.push(observed_state_code(self.expected_state.kind()));
-        bytes.extend_from_slice(&[0; 3]);
-        let (lease_digest, lease_generation, lease_deadline) = self
-            .expected_state
-            .lease()
-            .unwrap_or((ObjectDigest::from_bytes([0; 32]), 0, 0));
-        bytes.extend_from_slice(lease_digest.as_bytes());
-        bytes.extend_from_slice(&lease_generation.to_be_bytes());
-        bytes.extend_from_slice(&lease_deadline.to_be_bytes());
-        bytes.extend_from_slice(&plan_length.to_be_bytes());
-        bytes.extend_from_slice(self.plan.as_bytes());
-        Ok(bytes)
+        self.fields_data_v2().encode(&self.plan)
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, NetworkObservationWorkerError> {
@@ -827,32 +643,13 @@ fn decode_response(
     Ok(response)
 }
 
-fn validate_request_descriptors(
+fn validate_request_namespace_roles(
     peer: &ConnectionPeerIdentity,
-    descriptors: Vec<OwnedFd>,
+    host: &NamespaceFd,
+    target: &NamespaceFd,
+    peer_namespace: &NamespaceFd,
     expected_target: NamespaceIdentity,
-) -> Result<(NamespaceFd, NamespaceFd), NetworkObservationWorkerError> {
-    if descriptors.len() != 2 {
-        return protocol("observation request requires host and target namespace descriptors");
-    }
-    let mut descriptors = descriptors.into_iter();
-    let host = NamespaceFd::from_owned(
-        descriptors
-            .next()
-            .ok_or(NetworkObservationWorkerError::Protocol(
-                "host namespace is absent",
-            ))?,
-        NamespaceKind::Network,
-    )?;
-    let target = NamespaceFd::from_owned(
-        descriptors
-            .next()
-            .ok_or(NetworkObservationWorkerError::Protocol(
-                "target namespace is absent",
-            ))?,
-        NamespaceKind::Network,
-    )?;
-    let peer_namespace = peer.pidfd().namespace(NamespaceKind::Network)?;
+) -> Result<(), NetworkObservationWorkerError> {
     if host.identity() != peer_namespace.identity()
         || host.identity() == target.identity()
         || target.identity() != expected_target
@@ -862,7 +659,7 @@ fn validate_request_descriptors(
             NetworkWorkerProcessError::PeerMismatch,
         ));
     }
-    Ok((host, target))
+    Ok(())
 }
 
 fn validate_observer_subject(
@@ -900,25 +697,8 @@ fn validate_observer_subject_record(
     Ok(())
 }
 
-fn validate_observer_broker_peer(
-    peer: &ConnectionPeerIdentity,
-    control_cgroup: &RetainedCgroupAnchor,
-) -> Result<(), NetworkObservationWorkerError> {
-    crate::worker_process::validate_broker_peer(peer, control_cgroup)?;
-    Ok(())
-}
-
 fn validate_observer_cgroup(cgroup: &str) -> Result<(), NetworkObservationWorkerError> {
-    let Some(instance) = cgroup
-        .strip_prefix(OBSERVER_CGROUP_PREFIX)
-        .and_then(|value| value.strip_suffix(OBSERVER_CGROUP_SUFFIX))
-    else {
-        return Err(NetworkObservationWorkerError::Process(
-            NetworkWorkerProcessError::PeerMismatch,
-        ));
-    };
-    validate_systemd_socket_instance_fields(instance)
-        .map_err(|_| NetworkWorkerProcessError::PeerMismatch)?;
+    WorkerCgroupPlacementV4::Ordinary.require_path(cgroup, WorkerCgroupRoleV4::Observation)?;
     Ok(())
 }
 
@@ -964,4 +744,73 @@ fn copy_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], NetworkObservatio
 
 fn protocol<T>(message: &'static str) -> Result<T, NetworkObservationWorkerError> {
     Err(NetworkObservationWorkerError::Protocol(message))
+}
+
+#[cfg(test)]
+mod receiving_ready_tests {
+    use super::*;
+
+    #[test]
+    fn v2_observer_refuses_legacy_headers_before_read_admission() {
+        let mut ready = ObservationReadyV1::new(
+            "aos.slice/aos-control.slice/aos-sandbox-network-observation-worker@0-984321-543_876-0.service".to_owned(),
+        ).unwrap().encode().unwrap();
+        ready[..8].copy_from_slice(b"AOSNORD1");
+        ready[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(ObservationReadyV1::decode(&ready).is_err());
+
+        let mut old_request = vec![0; REQUEST_HEADER_BYTES];
+        old_request[..8].copy_from_slice(b"AOSNORQ1");
+        old_request[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(matches!(ObservationRequestV1::decode(&old_request),
+            Err(NetworkObservationWorkerError::Protocol("observation request header is invalid"))));
+
+        let mut old_response = [0; RESPONSE_BYTES];
+        old_response[..8].copy_from_slice(b"AOSNORS1");
+        old_response[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(matches!(decode_response(&old_response),
+            Err(NetworkObservationWorkerError::Protocol("observation response header is invalid"))));
+    }
+
+    #[test]
+    fn observation_ready_chooses_one_expected_placement_without_ordinary_fallback() {
+        let ordinary = "aos.slice/aos-control.slice/aos-sandbox-network-observation-worker@0-984321-543_876-0.service";
+        let receiving = "aoscomponents.slice/aoscomponents-network.slice/aos-sandbox-network-observation-worker@0-984321-543_876-0.service";
+        let old_bytes = ObservationReadyV1::new(ordinary.to_owned())
+            .unwrap()
+            .encode()
+            .unwrap();
+        let selected_bytes = ObservationReadyV1::new_receiving_v4(receiving.to_owned())
+            .unwrap()
+            .encode()
+            .unwrap();
+
+        assert_eq!(&old_bytes[..12], &selected_bytes[..12]);
+        assert_eq!(selected_bytes.len(), READY_HEADER_BYTES + receiving.len());
+        assert_eq!(
+            ObservationReadyV1::decode_receiving_v4(&selected_bytes)
+                .unwrap()
+                .cgroup(),
+            receiving
+        );
+        assert!(ObservationReadyV1::decode(&selected_bytes).is_err());
+        assert!(ObservationReadyV1::decode_receiving_v4(&old_bytes).is_err());
+        assert!(ObservationReadyV1::new(receiving.to_owned()).is_err());
+        assert!(ObservationReadyV1::new_receiving_v4(ordinary.to_owned()).is_err());
+        assert_eq!(
+            ObservationReadyV1::decode(&old_bytes)
+                .unwrap()
+                .encode()
+                .unwrap(),
+            old_bytes
+        );
+    }
+}
+
+impl SystemdNetworkObservationExecutor {
+    // Synchronous calls retain all live worker custody until completion. This
+    // local check is only a conjunct of the independent whole-native census.
+    pub(crate) fn inventory_local_custody_clear_v2(&self) -> bool {
+        !self.fail_stopped && self.fixed_service
+    }
 }

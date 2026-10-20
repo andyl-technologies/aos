@@ -25,7 +25,7 @@ use rand::{TryRngCore as _, rngs::OsRng};
 use super::*;
 use crate::Journal;
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::publication::{
     AuthorityPublicationStore, CurrentAuthorityPublicationV1, RecoveredBrokerDispatchTemplateV1,
 };
@@ -35,6 +35,12 @@ use crate::runtime_authority::{
 };
 
 mod validity;
+mod capture_lifetime;
+mod capture_source_checks;
+pub use capture_source_checks::ControllerCaptureAssignmentChecksV4;
+pub use capture_lifetime::OriginalAssignmentCaptureLifetimeV2;
+mod receiving;
+pub(super) use receiving::acquisition_receiving_demand_v1;
 use validity::ObservationValidity;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -386,6 +392,16 @@ impl CurrentRuntimeScope {
     where
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
+        self.recheck_with_disposition(journal, clock, None)
+    }
+
+    fn recheck_with_disposition<T>(
+        &self, journal: &mut Journal, clock: &mut T,
+        original: Option<&mut super::retaining::RuntimeScopeMembershipWindowV1>,
+    ) -> Result<(), CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
         transport::check_deadline(self.validity.deadline())?;
         let fresh = read_clock(&self.policy, clock)?;
         self.validity.check(fresh)?;
@@ -407,7 +423,7 @@ impl CurrentRuntimeScope {
             return Err(CurrentRuntimeScopeError::CurrentMismatch);
         }
         verify_plan(template, &self.binding, &self.policy, &lease, fresh)?;
-        self.observed.recheck()?;
+        self.observed.recheck_with_disposition(original)?;
         self.validity.check(read_clock(&self.policy, clock)?)?;
         transport::check_deadline(self.validity.deadline())?;
         Ok(())
@@ -620,14 +636,43 @@ impl CurrentAssignmentTarget {
     where
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
-        self.recheck(journal, clock)?;
+        self.verified_plan_lease_with_source_checks_v4(journal, clock, None)
+    }
+
+    fn verified_plan_lease_with_source_checks_v4<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+        mut checks: Option<&mut ControllerCaptureAssignmentChecksV4>,
+    ) -> Result<(SignedOwnershipLease, RawPairedClockSample), CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        match checks.as_deref_mut() {
+            Some(original) => original.recheck_inside_lease_v4(self, journal, clock)?,
+            None => self.recheck(journal, clock)?,
+        }
         let fresh = read_clock(&self.policy, clock)?;
         self.validity.check(fresh)?;
         let (current, publication) = select_current(journal, self.selection, &self.policy)?;
         RuntimeAuthorityStore::load(journal, self.policy.runtime_limits)?
             .validate_continuity(&self.binding, &current)?;
-        let lease = verify_lease(journal, &current, &publication, &self.policy, fresh)?;
-        self.recheck(journal, clock)?;
+        let ordinary_lease = match checks.as_deref_mut() {
+            Some(original) => {
+                if current != self.binding { return Err(CurrentRuntimeScopeError::CurrentMismatch); }
+                original.verify_lease_v4(journal, &current, &publication, &self.policy, fresh)?;
+                None
+            }
+            None => Some(verify_lease(journal, &current, &publication, &self.policy, fresh)?),
+        };
+        match checks.as_deref_mut() {
+            Some(original) => original.recheck_inside_lease_v4(self, journal, clock)?,
+            None => self.recheck(journal, clock)?,
+        }
+        let lease = match checks {
+            Some(original) => original.take_lease_v4()?,
+            None => ordinary_lease.ok_or(CurrentRuntimeScopeError::CurrentMismatch)?,
+        };
         Ok((lease, fresh))
     }
 
@@ -649,9 +694,23 @@ impl CurrentAssignmentTarget {
     where
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
+        self.recheck_with_capture_v2(journal, clock, None)
+    }
+
+    // Both dispositions use this same original transport/clock/continuity
+    // sandwich. A retained bookend replaces only the lease result destination.
+    fn recheck_with_capture_v2<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+        capture: Option<&mut capture_lifetime::VerificationV2>,
+    ) -> Result<(), CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
         transport::check_deadline(self.validity.deadline())?;
         let fresh = read_clock(&self.policy, clock)?;
-        self.recheck_at(journal, fresh)?;
+        self.recheck_at_with_capture_v2(journal, fresh, capture)?;
 
         self.validity.check(read_clock(&self.policy, clock)?)?;
         transport::check_deadline(self.validity.deadline())?;
@@ -663,11 +722,30 @@ impl CurrentAssignmentTarget {
         journal: &mut Journal,
         fresh: RawPairedClockSample,
     ) -> Result<(), CurrentRuntimeScopeError> {
+        self.recheck_at_with_capture_v2(journal, fresh, None)
+    }
+
+    fn recheck_at_with_capture_v2(
+        &self,
+        journal: &mut Journal,
+        fresh: RawPairedClockSample,
+        capture: Option<&mut capture_lifetime::VerificationV2>,
+    ) -> Result<(), CurrentRuntimeScopeError> {
         self.validity.check(fresh)?;
         let (current, publication) = select_current(journal, self.selection, &self.policy)?;
         RuntimeAuthorityStore::load(journal, self.policy.runtime_limits)?
             .validate_continuity(&self.binding, &current)?;
-        verify_lease(journal, &current, &publication, &self.policy, fresh)?;
+        match capture {
+            Some(capture) => {
+                // This finite lifetime owner paid the original artifact widths.
+                // Refuse renewal before decoding a replacement lease graph.
+                if current != self.binding {
+                    return Err(CurrentRuntimeScopeError::CurrentMismatch);
+                }
+                capture.verify_once_v2(journal, &current, &publication, &self.policy, fresh)?;
+            }
+            None => { verify_lease(journal, &current, &publication, &self.policy, fresh)?; }
+        }
         Ok(())
     }
 
@@ -824,18 +902,59 @@ pub(crate) fn acquire<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
+    acquire_with_disposition(journal, selection, client, policy, clock, None)
+}
+
+pub(crate) fn acquire_retaining<T>(
+    journal: &mut Journal,
+    selection: RuntimeScopeHolder,
+    client: RuntimeScopeClient,
+    policy: CurrentRuntimeScopePolicy,
+    clock: &mut T,
+    original: &mut super::RuntimeScopeAcquireOriginalV1,
+) -> Result<CurrentRuntimeScope, CurrentRuntimeScopeError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    if original.attempted { return Err(RuntimeScopeError::RetainedNative.into()); }
+    original.attempted = true;
+    match acquire_with_disposition(journal, selection, client, policy, clock, Some(&mut *original)) {
+        Ok(value) => Ok(value),
+        Err(cause) => { original.error = Some(cause); Err(RuntimeScopeError::RetainedNative.into()) }
+    }
+}
+
+fn acquire_with_disposition<T>(
+    journal: &mut Journal,
+    selection: RuntimeScopeHolder,
+    client: RuntimeScopeClient,
+    policy: CurrentRuntimeScopePolicy,
+    clock: &mut T,
+    original: Option<&mut super::RuntimeScopeAcquireOriginalV1>,
+) -> Result<CurrentRuntimeScope, CurrentRuntimeScopeError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    use super::retaining::HeldValueV1;
+    let (client_destination, observation, current_destination, membership) = match original {
+        Some(original) => (Some(&mut original.client), Some(&mut original.observation), Some(&mut original.current), Some(&mut original.membership)),
+        None => (None, None, None, None),
+    };
+    let client = HeldValueV1::new(client, client_destination);
     validate_selection_and_policy(selection, &policy)?;
     let initial = read_clock(&policy, clock)?;
     let prepared = prepare(journal, selection, &policy, initial)?;
-    let observed = client.observe(
-        &prepared.body,
-        AuthorizationArtifactBytes {
+    let authorization = AuthorizationArtifactBytes {
             broker_plan: prepared.template.canonical_plan(),
             broker_plan_signature: prepared.template.canonical_plan_signature(),
             ownership_lease: prepared.lease.canonical_lease(),
             ownership_lease_signature: prepared.lease.canonical_signature(),
-        },
-    )?;
+        };
+    let client = client.take()?;
+    let observed = match observation {
+        Some(original) => client.observe_retaining_v1(&prepared.body, authorization, original),
+        None => client.observe(&prepared.body, authorization),
+    }?;
     let result = CurrentRuntimeScope {
         selection,
         policy,
@@ -843,8 +962,9 @@ where
         observed,
         validity: prepared.validity,
     };
-    result.recheck(journal, clock)?;
-    Ok(result)
+    let result = HeldValueV1::new(result, current_destination);
+    result.get()?.recheck_with_disposition(journal, clock, membership)?;
+    Ok(result.take()?)
 }
 
 fn validate_selection_and_policy(

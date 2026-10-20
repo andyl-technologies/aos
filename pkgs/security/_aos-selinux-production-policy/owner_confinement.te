@@ -421,6 +421,26 @@ allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_credential_t:f
 allow init_t aos_sandbox_policy_authority_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
 allow init_t aos_sandbox_policy_authority_credential_t:file { create getattr open read setattr unlink write };
 type_transition init_t aos_sandbox_policy_authority_credential_t:file aos_sandbox_policy_authority_credential_t;
+
+# This fixed secret has no public-pin or other owner's credential role.
+type aos_sandbox_root_noapply_signing_credential_t;
+allow aos_sandbox_root_noapply_signing_credential_t tmpfs_t:filesystem associate;
+allow aos_sandbox_policy_authority_t aos_sandbox_root_noapply_signing_credential_t:file { getattr open read };
+allow init_t aos_sandbox_root_noapply_signing_credential_t:file { create getattr open read setattr unlink write };
+type_transition init_t aos_sandbox_policy_authority_credential_t:file aos_sandbox_root_noapply_signing_credential_t "root-noapply-floor-signing";
+
+# The Host pin uses the same fixed-reader ancestry and immutable PID1 copy.
+# Other Host credentials keep their existing unopenable temporary type.
+type aos_sandbox_host_noapply_credential_t;
+allow aos_sandbox_host_noapply_credential_t tmpfs_t:filesystem associate;
+allow aos_sandbox_host_t { root_t var_run_t tmpfs_t init_tmpfs_t }:dir { getattr open read search };
+allow aos_sandbox_host_t aos_sandbox_host_noapply_credential_t:dir { getattr open read search };
+allow aos_sandbox_host_t aos_sandbox_host_noapply_credential_t:file { getattr open read };
+allow init_t aos_sandbox_host_noapply_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t aos_sandbox_host_noapply_credential_t:file { create getattr open read setattr unlink write };
+type_transition init_t aos_sandbox_host_noapply_credential_t:file init_tmpfs_t;
+type_transition init_t aos_sandbox_host_noapply_credential_t:file aos_sandbox_host_noapply_credential_t "root-noapply-floor-public";
+
 allow aos_sandbox_policy_authority_t aos_sandbox_view_parent_t:dir { getattr open search };
 allow aos_sandbox_policy_authority_t tmpfs_t:filesystem getattr;
 allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_runtime_t:dir { add_name getattr open read remove_name search write };
@@ -782,6 +802,8 @@ type aos_runtime_deployment_credential_t;
 type aos_runtime_deployment_state_t;
 type aos_runtime_deployment_lock_t;
 type aos_runtime_deployment_runtime_t;
+type aos_runtime_deployment_readiness_dir_t;
+type aos_runtime_deployment_readiness_file_t;
 
 type aos_runtime_deployment_helper_t;
 typeattribute aos_runtime_deployment_helper_t domain;
@@ -796,6 +818,9 @@ allow init_t aos_runtime_deployment_publisher_t:process2 nnp_transition;
 allow aos_runtime_deployment_publisher_t aos_runtime_deployment_publisher_exec_t:file { entrypoint execute getattr map open read };
 allow aos_runtime_deployment_publisher_t self:process { fork getattr getsched sigchld signal };
 allow aos_runtime_deployment_publisher_t init_t:fd use;
+# The original PID1 capsule is borrowed read-only. This adds no reopening,
+# mutation, mapping, executable use or permission to construct another Source.
+allow aos_runtime_deployment_publisher_t init_tmpfs_t:file { getattr read };
 allow aos_runtime_deployment_publisher_t self:unix_stream_socket { accept connect create getattr getopt listen read setopt shutdown write };
 
 # Original self, fixed Storage/PID1 task DATA, immutable image and status-only
@@ -807,6 +832,8 @@ allow aos_runtime_deployment_publisher_t { self init_t aos_sandbox_storage_t }:l
 allow aos_runtime_deployment_publisher_t { aos_sandbox_storage_exec_t init_exec_t }:file { getattr open read };
 allow aos_runtime_deployment_publisher_t { root_t var_t var_lib_t var_run_t usr_t etc_t device_t }:dir { getattr open search };
 allow aos_runtime_deployment_publisher_t aos_sandbox_view_parent_t:dir { getattr open search };
+# The normal output observer pins each fixed ancestry directory O_RDONLY.
+allow aos_runtime_deployment_publisher_t { root_t var_t var_lib_t aos_sandbox_view_parent_t }:dir read;
 allow aos_runtime_deployment_publisher_t { usr_t etc_t }:file { getattr open read };
 allow aos_runtime_deployment_publisher_t etc_t:lnk_file { getattr read };
 allow aos_runtime_deployment_publisher_t { lib_t ld_so_t }:file { execute getattr map open read };
@@ -820,6 +847,11 @@ allow aos_runtime_deployment_publisher_t cgroup_t:file { getattr open read };
 allow aos_runtime_deployment_publisher_t sysctl_t:dir search;
 allow aos_runtime_deployment_publisher_t sysctl_kernel_t:dir search;
 allow aos_runtime_deployment_publisher_t sysctl_kernel_t:file { getattr open read };
+# The fixed notes reader proves this process's selected-kernel affinity. These
+# existing sysfs type reads carry neither a kernel layout nor birth authority.
+allow aos_runtime_deployment_publisher_t sysfs_t:dir search;
+allow aos_runtime_deployment_publisher_t sysfs_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t sysfs_t:filesystem getattr;
 allow aos_runtime_deployment_publisher_t systemd_unit_t:file { getattr open read };
 allow aos_runtime_deployment_publisher_t null_device_t:chr_file { getattr open read write };
 allow aos_runtime_deployment_publisher_t aos_runtime_deployment_profile_t:file { getattr open read };
@@ -847,6 +879,8 @@ type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_depl
 type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-canary-purpose-v2";
 type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-signing-seed-v1";
 type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-tpm-index-auth-v1";
+type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-boot-purpose-v1";
+type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "phase0-probe-public-key-v1";
 
 # Both journals/empty locks must already exist. No directory creation, removal,
 # rename, relabel, foreign writer or offline bootstrap is enabled here.
@@ -854,6 +888,31 @@ allow { aos_runtime_deployment_state_t aos_runtime_deployment_lock_t } fs_t:file
 allow aos_runtime_deployment_publisher_t aos_runtime_deployment_state_t:dir { getattr open read search };
 allow aos_runtime_deployment_publisher_t aos_runtime_deployment_state_t:file { append getattr open read write };
 allow aos_runtime_deployment_publisher_t aos_runtime_deployment_lock_t:file { getattr lock open read write };
+
+# PID1 creates only the literal private readiness child. Parent name insertion
+# is separate from child creation; neither journal nor lock gains create,
+# unlink, rename, relabel or directory mutation for the publisher.
+allow { aos_runtime_deployment_readiness_dir_t aos_runtime_deployment_readiness_file_t } fs_t:filesystem associate;
+allow init_t aos_runtime_deployment_state_t:dir { add_name getattr open read search write };
+type_transition init_t aos_runtime_deployment_state_t:dir aos_runtime_deployment_readiness_dir_t "readiness";
+allow init_t aos_runtime_deployment_readiness_dir_t:dir { create getattr open read search setattr };
+
+# Rename preserves the temporary inode's type. Each constant temporary/final
+# pair therefore shares the protected output file type. Unknown child names
+# receive the directory type, on which publisher file creation is absent.
+type_transition aos_runtime_deployment_publisher_t aos_runtime_deployment_readiness_dir_t:file aos_runtime_deployment_readiness_file_t "backend-readiness.next";
+type_transition aos_runtime_deployment_publisher_t aos_runtime_deployment_readiness_dir_t:file aos_runtime_deployment_readiness_file_t "backend-readiness.json";
+type_transition aos_runtime_deployment_publisher_t aos_runtime_deployment_readiness_dir_t:file aos_runtime_deployment_readiness_file_t "backend-readiness-completion-v1.next";
+type_transition aos_runtime_deployment_publisher_t aos_runtime_deployment_readiness_dir_t:file aos_runtime_deployment_readiness_file_t "backend-readiness-completion-v1";
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_readiness_dir_t:dir { add_name getattr open read remove_name search write };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_readiness_file_t:file { create getattr open read rename unlink write };
+
+# These are read/copy observations, never a signing, floor or readiness grant.
+# Host consumers still open and verify the two exact final names themselves.
+allow init_t aos_runtime_deployment_readiness_file_t:file { getattr open read };
+allow aos_sandbox_host_t aos_runtime_deployment_state_t:dir { getattr open read search };
+allow aos_sandbox_host_t aos_runtime_deployment_readiness_dir_t:dir { getattr open read search };
+allow aos_sandbox_host_t aos_runtime_deployment_readiness_file_t:file { getattr open read };
 
 # PID1 owns the fixed activated pathname. Storage alone connects; the received
 # full job remains sealed nonauthorizing DATA. These are type-wide SCM read

@@ -122,6 +122,7 @@ in
           patch -p1 < ${./patches/0001-aos-no-setid-prctl-uapi.patch}
           patch -p1 < ${./patches/0002-aos-no-setid-vfs.patch}
           patch -p1 < ${./patches/0003-aos-no-setid-io-workers.patch}
+          patch -p1 < ${./patches/0004-aos-clone-layout-data.patch}
           "$CONFIG_SHELL" ${./check-no-setid-prctl.sh} include/uapi/linux/prctl.h
           "$CONFIG_SHELL" ${./check-no-setid-source.sh}
         '';
@@ -222,6 +223,26 @@ in
           # the production system closure (which references `out`) is unaffected.
           mkdir -p $vmlinux/boot
           cp vmlinux $vmlinux/boot/vmlinux-${linuxSource.version}
+
+          # Kbuild emits these nine facts with the configured target compiler.
+          # Pair them with this exact image/config/notes, not a default kernel.
+          # Runtime use still requires the paid running-notes identity check.
+          clone_layout="$dev/share/aos-kernel-clone-layout-v1"
+          mkdir -p "$clone_layout"
+          test -s include/generated/aos-kernel-clone-layout-v1.h
+          cp include/generated/aos-kernel-clone-layout-v1.h "$clone_layout/"
+          cp .config "$clone_layout/kernel.config"
+          ${stdenv.binutils}/bin/objcopy --only-section=.notes --output-target=binary \
+            vmlinux "$clone_layout/kernel-notes"
+          test -s "$clone_layout/kernel-notes"
+          clone_notes_report="$TMPDIR/aos-kernel-clone-notes.txt"
+          ${stdenv.binutils}/bin/readelf --notes vmlinux > "$clone_notes_report"
+          gawk '/Build ID:/ { found = 1 } END { exit found ? 0 : 1 }' "$clone_notes_report"
+          ${buildPackages.python3}/bin/python3 ${./write-clone-layout-association.py} \
+            --directory "$clone_layout" \
+            --image ${kernelArch.imgPath} \
+            --release-file include/config/kernel.release
+          chmod 0444 "$clone_layout/"*
 
           # External modules must build against the exact configured kernel,
           # including generated headers, symbol versions, BTF tools, and any

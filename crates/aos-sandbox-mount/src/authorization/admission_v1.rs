@@ -30,6 +30,15 @@ pub(crate) type VerifiedMountAdmissionV1 = VerifiedBrokerAdmission;
 pub struct MountAuthorityV1(pub(super) BrokerAuthority);
 
 impl MountAuthorityV1 {
+    // Only the fixed Mount configuration receiver supplies this completed
+    // value. The move preserves its actual authority and six public Files.
+    pub(crate) fn from_captured_mount_configuration_v4(
+        configuration: aos_sandbox_broker::ProtectedBrokerAuthorityConfiguration,
+    ) -> (Self, aos_sandbox_broker::ProtectedBrokerPublicCredentials) {
+        let (authority, credentials) = configuration.into_authority_and_public_credentials();
+        (Self(authority), credentials)
+    }
+
     /// Admits only the independently signed original purpose-57 FUSE request.
     ///
     /// Common admission rechecks signatures, ownership, monotonic fences and
@@ -202,6 +211,43 @@ impl MountAuthorityV1 {
         )
     }
 
+    /// Borrows the common supplier against this same protected authority.
+    pub(crate) fn signed_admission_receiving_demand_v4(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+    ) -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError> {
+        self.0.signed_admission_receiving_demand_v4(artifacts)
+    }
+
+    /// Admits only the new signed no-slot namespace purpose on this authority.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_attachment_anchor_v4(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &aos_sandbox_protocol::mount_attachment_anchor::ValidatedAttachmentAnchorRequestV1,
+        request_body: &[u8],
+        protocol_version: ProtocolVersion,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+        original: &mut aos_sandbox_broker::BrokerSignedAdmissionOriginalV4,
+    ) -> Result<VerifiedMountAdmissionV1, MountAdmissionError> {
+        let semantics = aos_sandbox_protocol::mount_attachment_anchor::canonical_attachment_anchor_semantics_v1(request)
+            .map_err(|_| MountAdmissionError::RequestMismatch)?;
+        original.admit_once_v4(&self.0, artifacts, AdmissionRequest {
+            audience: aos_sandbox_core::BrokerAudience::Mount,
+            protocol: ProtocolId::MountBroker,
+            protocol_version,
+            assignment: assignment(request.fence())?,
+            request_id: *request.header().request_id(),
+            request_body,
+            descriptor_count: 0,
+            verb: semantics.verb(),
+            target: semantics.target(),
+            argument_commitment: semantics.commitment(),
+            request_deadline_boottime_nanoseconds: request.header().deadline_boottime_nanoseconds(),
+        }, current_clock, prior_fence)
+    }
+
     pub(crate) fn open_effect(
         &self,
         request_id: &[u8; 16],
@@ -253,7 +299,7 @@ impl MountAuthorityV1 {
         let domain = aos_sandbox_broker::BrokerLocalRecordDomain::new(*b"aos.fuse.origin1")
             .map_err(|_| MountAdmissionError::FenceRejected)?;
         self.0.seal_local_record(
-            aos_sandbox::journal::RecordNamespace::AuthorityPublication,
+            aos_sandbox_mount_native::RecordNamespace::AuthorityPublication,
             key,
             domain,
             payload,
@@ -268,7 +314,7 @@ impl MountAuthorityV1 {
         let domain = aos_sandbox_broker::BrokerLocalRecordDomain::new(*b"aos.fuse.origin1")
             .map_err(|_| MountAdmissionError::FenceRejected)?;
         self.0.open_local_record(
-            aos_sandbox::journal::RecordNamespace::AuthorityPublication,
+            aos_sandbox_mount_native::RecordNamespace::AuthorityPublication,
             key,
             domain,
             value,

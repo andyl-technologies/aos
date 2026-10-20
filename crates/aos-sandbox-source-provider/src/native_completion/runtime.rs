@@ -12,7 +12,9 @@ use crate::zfs_hold_challenge::ProtectedZfsHoldChallengesV1;
 use crate::{DurableAcquireEffectPermitV1, DurableProviderReplyV1};
 
 #[cfg(test)]
-use aos_sandbox::{JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction;
+use aos_sandbox_core::RecordNamespace;
 #[cfg(test)]
 use crate::zfs_hold_challenge::current_seconds;
 

@@ -35,13 +35,137 @@ struct RecordEnvelope<T> {
     record: T,
 }
 
+/// Reports canonical serialization or prepaid byte admission failure.
+///
+/// The accounting marker refers to the supplied ledger's retained first cause;
+/// it does not replace that error or confer any publication authority.
+#[derive(Debug, thiserror::Error)]
+pub enum CanonicalMapReceivingErrorV1 {
+    /// Preserves the actual local byte-count arithmetic refusal.
+    #[error(transparent)]
+    Arithmetic(#[from] aos_sandbox_core::AccountingError),
+    /// Indicates the supplied ledger retains the exact refused reservation.
+    #[error("canonical catalog receiving account is closed")]
+    Accounting,
+    /// Preserves the ordinary canonical payload error.
+    #[error(transparent)]
+    Canonical(#[from] CanonicalMapError),
+}
+
+#[derive(Default)]
+struct EncodedByteCount {
+    bytes: usize,
+}
+
+impl std::io::Write for EncodedByteCount {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.bytes = self.bytes.checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn payload_encoding_demand_v1<T: Serialize>(payload: &T)
+    -> Result<aos_sandbox_core::ResourceVector, CanonicalMapReceivingErrorV1>
+{
+    use aos_sandbox_core::{AccountingError, ResourceDimension as D, ResourceVector};
+    let mut count = EncodedByteCount::default();
+    serde_json::to_writer(&mut count, payload).map_err(|_| CanonicalMapError)?;
+    let bytes = count.bytes.max(128).checked_mul(3)
+        .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<Vec<u8>>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<EncodedByteCount>()))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes })?;
+    Ok(ResourceVector::ZERO.with(D::MemoryBytes, bytes))
+}
+
+/// Counts a head's reached serialization peak without allocating its buffer.
+///
+/// The returned portable DATA establishes no payment or publication authority.
+///
+/// # Errors
+/// Returns serialization failure or checked byte-count overflow.
+pub fn head_encoding_demand_v1<T: Serialize>(head: &T, version: u16)
+    -> Result<aos_sandbox_core::ResourceVector, CanonicalMapReceivingErrorV1>
+{
+    payload_encoding_demand_v1(&HeadEnvelope { version, head })
+}
+
+/// Counts a record's reached serialization peak without allocating its buffer.
+///
+/// The returned portable DATA establishes no payment or publication authority.
+///
+/// # Errors
+/// Returns serialization failure or checked byte-count overflow. The ordinary
+/// encoder still performs its existing maximum-size check after serialization.
+pub fn record_encoding_demand_v1<T: Serialize>(record: &T, version: u16)
+    -> Result<aos_sandbox_core::ResourceVector, CanonicalMapReceivingErrorV1>
+{
+    payload_encoding_demand_v1(&RecordEnvelope { version, record })
+}
+
+// Ordinary and selected calls use this one serializer. Only selected DATA
+// receives an allocation-free pass and charges its SAME borrowed ledger before
+// Vec growth; actual typed value/envelope models are paid by their owner.
+fn encode_payload_v1<T: Serialize>(
+    payload: &T,
+    maximum_bytes: Option<usize>,
+    ledger: Option<&mut aos_sandbox_core::component_receiving::ComponentServiceReceivingLedgerV1>,
+) -> Result<Vec<u8>, CanonicalMapReceivingErrorV1> {
+    if let Some(ledger) = ledger {
+        let demand = payload_encoding_demand_v1(payload)?;
+        ledger.reserve(demand)
+            .map_err(|_| CanonicalMapReceivingErrorV1::Accounting)?;
+    }
+    let bytes = serde_json::to_vec(payload).map_err(|_| CanonicalMapError)?;
+    if maximum_bytes.is_some_and(|maximum| bytes.len() > maximum) {
+        return Err(CanonicalMapError.into());
+    }
+    Ok(bytes)
+}
+
+/// Encodes a head after charging its reached byte peak on the supplied ledger.
+///
+/// This is portable DATA, not a receiving original or permission to publish.
+///
+/// # Errors
+/// Returns the canonical payload failure, arithmetic overflow or a marker for
+/// the ledger's original retained reservation refusal.
+pub fn encode_head_receiving_v1<T: Serialize>(
+    head: &T,
+    version: u16,
+    ledger: &mut aos_sandbox_core::component_receiving::ComponentServiceReceivingLedgerV1,
+) -> Result<Vec<u8>, CanonicalMapReceivingErrorV1> {
+    encode_payload_v1(&HeadEnvelope { version, head }, None, Some(ledger))
+}
+
+/// Encodes a record after charging its reached byte peak on the supplied ledger.
+///
+/// This is portable DATA; publication still requires the owner's native stage.
+///
+/// # Errors
+/// Returns the original canonical size/serialization error, arithmetic overflow
+/// or a marker for the supplied ledger's exact retained reservation refusal.
+pub fn encode_record_receiving_v1<T: Serialize>(
+    record: &T,
+    version: u16,
+    maximum_bytes: usize,
+    ledger: &mut aos_sandbox_core::component_receiving::ComponentServiceReceivingLedgerV1,
+) -> Result<Vec<u8>, CanonicalMapReceivingErrorV1> {
+    encode_payload_v1(&RecordEnvelope { version, record }, Some(maximum_bytes), Some(ledger))
+}
+
 /// Encodes a versioned catalog head without imposing a publication size limit.
 ///
 /// # Errors
 ///
 /// Returns [`CanonicalMapError`] if the head cannot be serialized.
 pub fn encode_head<T: Serialize>(head: &T, version: u16) -> Result<Vec<u8>, CanonicalMapError> {
-    serde_json::to_vec(&HeadEnvelope { version, head }).map_err(|_| CanonicalMapError)
+    encode_payload_v1(&HeadEnvelope { version, head }, None, None).map_err(|_| CanonicalMapError)
 }
 
 /// Decodes a head only when its bytes have the exact canonical representation.
@@ -76,12 +200,8 @@ pub fn encode_record<T: Serialize>(
     version: u16,
     maximum_bytes: usize,
 ) -> Result<Vec<u8>, CanonicalMapError> {
-    let bytes =
-        serde_json::to_vec(&RecordEnvelope { version, record }).map_err(|_| CanonicalMapError)?;
-    if bytes.len() > maximum_bytes {
-        return Err(CanonicalMapError);
-    }
-    Ok(bytes)
+    encode_payload_v1(&RecordEnvelope { version, record }, Some(maximum_bytes), None)
+        .map_err(|_| CanonicalMapError)
 }
 
 /// Decodes a record only when its bytes have the exact canonical representation.
@@ -188,6 +308,38 @@ mod tests {
         assert!(decode_head::<Sample>(&head, 1, head.len() - 1).is_err());
         assert!(decode_record::<Sample>(&record, 1, record.len() - 1).is_err());
         assert!(encode_record(&sample, 1, record.len() - 1).is_err());
+    }
+
+    #[test]
+    fn prepaid_encoding_preserves_bytes_limits_and_same_ledger_failure() {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        use aos_sandbox_core::component_receiving::ComponentServiceReceivingLedgerV1;
+        let sample = Sample { id: 7 };
+        let mut paid = ComponentServiceReceivingLedgerV1::new(
+            ResourceVector::ZERO.with(D::MemoryBytes, 4096),
+        );
+        let ordinary = encode_record(&sample, 1, 100).unwrap();
+        let selected = encode_record_receiving_v1(&sample, 1, 100, &mut paid).unwrap();
+        assert_eq!(selected, ordinary);
+        assert_eq!(paid.charged(), record_encoding_demand_v1(&sample, 1).unwrap());
+        assert!(paid.charged().get(D::MemoryBytes) >= selected.len() as u64);
+        let mut head_paid = ComponentServiceReceivingLedgerV1::new(
+            ResourceVector::ZERO.with(D::MemoryBytes, 4096),
+        );
+        assert_eq!(encode_head_receiving_v1(&sample, 1, &mut head_paid).unwrap(),
+            encode_head(&sample, 1).unwrap());
+        assert_eq!(head_paid.charged(), head_encoding_demand_v1(&sample, 1).unwrap());
+        assert!(matches!(encode_record_receiving_v1(&sample, 1, ordinary.len() - 1, &mut paid),
+            Err(CanonicalMapReceivingErrorV1::Canonical(_))));
+
+        let mut refused = ComponentServiceReceivingLedgerV1::new(ResourceVector::ZERO);
+        assert!(matches!(encode_head_receiving_v1(&sample, 1, &mut refused),
+            Err(CanonicalMapReceivingErrorV1::Accounting)));
+        let first = refused.failure().unwrap() as *const _;
+        assert!(matches!(encode_record_receiving_v1(&sample, 1, 100, &mut refused),
+            Err(CanonicalMapReceivingErrorV1::Accounting)));
+        assert_eq!(first, refused.failure().unwrap() as *const _);
+        assert_eq!(refused.charged(), ResourceVector::ZERO);
     }
 
     #[test]

@@ -8,6 +8,8 @@
 //! fence is lifted after Controller durably accepts that floor. This module cannot
 //! issue a Q04 binding, publish a compiler result, or complete public Create.
 
+use aos_sandbox_policy::controller_project_readback::ControllerProjectAdmissionChallengeV1;
+
 use std::io;
 
 use aos_sandbox::journal::{
@@ -16,7 +18,7 @@ use aos_sandbox::journal::{
 };
 use aos_sandbox::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
-    ControllerProjectAdmissionChallengeV1, CurrentCreateProjectPolicySourceV1,
+    CurrentCreateProjectPolicySourceV1,
     RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeProofV1,
     RootProjectAdmissionOutcomeV1, RootProjectAdmissionStageV1,
     RootProjectReservationCancellationProofV1, SourceHoldReadbackChallengeV1,

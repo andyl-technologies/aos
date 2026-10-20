@@ -12,12 +12,18 @@
 //! The row is a historical receipt under the still-held Root decision. It
 //! never permits Root or another owner to release, publish, or Apply.
 
+use aos_sandbox_policy::journal_keys::{CONTROLLER_HOLD_PIN_KEY, SOURCE_HOLD_PIN_KEY};
+
+use aos_sandbox_policy::controller_readback::{
+    PinnedControllerHoldSignerV1, encode_controller_hold_signer_credential_v1,
+};
+
 use std::{io, path::Path};
 
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use sha2::{Digest as _, Sha256};
 
-use crate::cache_residency::PinnedCacheOwnerReadbackSignerV1;
+use aos_sandbox_protocol::cache_owner_readback::PinnedCacheOwnerReadbackSignerV1;
 use crate::journal::{
     Journal, JournalError, JournalRecord, JournalTransaction, ProtectedJournalAuthority,
     RecordNamespace,
@@ -27,10 +33,10 @@ use crate::policy_compiler::controller_effect_ack_readback::{
     ControllerEffectAckChallengeV1, ControllerEffectAckReadbackErrorV1,
 };
 use crate::policy_compiler::controller_effect_ack_readback_v8::verify_controller_v8_effect_ack_readback_v1;
-use crate::policy_compiler::controller_hold_pin::CONTROLLER_HOLD_PIN_KEY;
-use crate::policy_compiler::controller_hold_readback::PinnedControllerHoldSignerV1;
+
+
 use crate::policy_compiler::root_challenge_record::RootChallengeRecordCodec;
-use crate::policy_compiler::source_hold_pin::SOURCE_HOLD_PIN_KEY;
+
 use crate::policy_compiler::source_hold_readback::PinnedSourceHoldReadbackSignerV1;
 
 use super::*;
@@ -84,8 +90,6 @@ pub enum RootV8HeldTerminalStepV1 {
 
 const ACK_KEY: &[u8] = b"\0aos-policy-compiler-root-v8-effect-ack-v1\0";
 const CHALLENGE_KEY: &[u8] = b"\0aos-policy-compiler-root-v8-effect-ack-challenge-v1\0";
-const MAGIC: &[u8; 8] = b"AOSPC88A";
-const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.root-v8-effect-ack.v1\0";
 const TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.policy-compiler.root-v8-effect-ack-transaction.v1\0";
 const CUT_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.root-v8-effect-ack-cut.v1\0";
@@ -96,7 +100,7 @@ const CHALLENGE_CODEC: RootChallengeRecordCodec = RootChallengeRecordCodec::new(
     CHALLENGE_KEY,
 );
 /// Bounds a canonical protected V8 Root ACK record.
-pub const ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1: usize = 332;
+pub use aos_sandbox_ledger_replay::controller_policy_hold::root_v8_receipt::ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1;
 
 /// Reports a rejected V8 Root/Controller ACK session.
 #[derive(Debug, thiserror::Error)]
@@ -121,209 +125,13 @@ impl From<JournalError> for RootV8EffectAckErrorV1 {
     }
 }
 
-/// Retains one exact no-Apply Root receipt before Root releases its writer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RootV8EffectAckV1 {
-    binding: ObjectDigest,
-    epoch: u64,
-    operation: OperationId,
-    sandbox: SandboxId,
-    accepted_generation: u64,
-    effect_transaction: [u8; 16],
-    terminal: ObjectDigest,
-    proof: ObjectDigest,
-    quota: ObjectDigest,
-    controller_ack: ObjectDigest,
-    receipt: ObjectDigest,
-    signer_generation: u64,
-    controller_uid: u32,
-    nonce: [u8; 16],
-}
+pub use aos_sandbox_ledger_replay::controller_policy_hold::root_v8_receipt::RootV8EffectAckV1;
+use aos_sandbox_ledger_replay::controller_policy_hold::root_v8_receipt::RootV8EffectAckDataErrorV1;
 
-impl RootV8EffectAckV1 {
-    /// Returns the held binding.
-    #[must_use]
-    pub const fn binding(self) -> ObjectDigest {
-        self.binding
+impl From<RootV8EffectAckDataErrorV1> for RootV8EffectAckErrorV1 {
+    fn from(_: RootV8EffectAckDataErrorV1) -> Self {
+        Self::Stale
     }
-
-    /// Returns the Root handoff epoch.
-    #[must_use]
-    pub const fn epoch(self) -> u64 {
-        self.epoch
-    }
-
-    /// Returns the Create operation.
-    #[must_use]
-    pub const fn operation(self) -> OperationId {
-        self.operation
-    }
-
-    /// Returns the sandbox.
-    #[must_use]
-    pub const fn sandbox(self) -> SandboxId {
-        self.sandbox
-    }
-
-    /// Returns the accepted Create generation.
-    #[must_use]
-    pub const fn accepted_generation(self) -> u64 {
-        self.accepted_generation
-    }
-
-    /// Returns the reserved no-Apply effect transaction.
-    #[must_use]
-    pub const fn effect_transaction(self) -> [u8; 16] {
-        self.effect_transaction
-    }
-
-    /// Returns the exact signed terminal digest.
-    #[must_use]
-    pub const fn terminal(self) -> ObjectDigest {
-        self.terminal
-    }
-
-    /// Returns the consumed AOSPCP02 digest.
-    #[must_use]
-    pub const fn proof(self) -> ObjectDigest {
-        self.proof
-    }
-
-    /// Returns the complete Cache quota digest.
-    #[must_use]
-    pub const fn quota(self) -> ObjectDigest {
-        self.quota
-    }
-
-    /// Returns the protected AOSQ8K01 digest.
-    #[must_use]
-    pub const fn controller_ack(self) -> ObjectDigest {
-        self.controller_ack
-    }
-
-    /// Returns the signed packet digest.
-    #[must_use]
-    pub const fn receipt(self) -> ObjectDigest {
-        self.receipt
-    }
-
-    /// Returns the pinned Controller signer generation.
-    #[must_use]
-    pub const fn signer_generation(self) -> u64 {
-        self.signer_generation
-    }
-
-    /// Returns the authenticated Controller UID.
-    #[must_use]
-    pub const fn controller_uid(self) -> u32 {
-        self.controller_uid
-    }
-
-    /// Returns the spent Root nonce.
-    #[must_use]
-    pub const fn nonce(self) -> [u8; 16] {
-        self.nonce
-    }
-
-    /// Encodes canonical bytes for authenticated transport.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed fields.
-    pub fn record_bytes(
-        self,
-    ) -> Result<[u8; ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1], RootV8EffectAckErrorV1> {
-        self.encode()
-    }
-
-    /// Decodes canonical historical bytes without asserting current custody.
-    ///
-    /// # Errors
-    ///
-    /// Rejects changed or noncanonical bytes.
-    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, RootV8EffectAckErrorV1> {
-        Self::decode(bytes)
-    }
-
-    fn encode(self) -> Result<[u8; ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1], RootV8EffectAckErrorV1> {
-        if self.binding.as_bytes() == &[0; 32]
-            || self.epoch == 0
-            || self.operation.as_bytes() == &[0; 16]
-            || self.sandbox.as_bytes() == &[0; 16]
-            || self.accepted_generation == 0
-            || self.effect_transaction == [0; 16]
-            || self.terminal.as_bytes() == &[0; 32]
-            || self.proof.as_bytes() == &[0; 32]
-            || self.quota.as_bytes() == &[0; 32]
-            || self.controller_ack.as_bytes() == &[0; 32]
-            || self.receipt.as_bytes() == &[0; 32]
-            || self.signer_generation == 0
-            || self.controller_uid == 0
-            || self.nonce == [0; 16]
-        {
-            return Err(RootV8EffectAckErrorV1::Stale);
-        }
-        let mut bytes = [0; ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1];
-        bytes[..8].copy_from_slice(MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[16..48].copy_from_slice(self.binding.as_bytes());
-        bytes[48..56].copy_from_slice(&self.epoch.to_be_bytes());
-        bytes[56..72].copy_from_slice(self.operation.as_bytes());
-        bytes[72..88].copy_from_slice(self.sandbox.as_bytes());
-        bytes[88..96].copy_from_slice(&self.accepted_generation.to_be_bytes());
-        bytes[96..112].copy_from_slice(&self.effect_transaction);
-        bytes[112..144].copy_from_slice(self.terminal.as_bytes());
-        bytes[144..176].copy_from_slice(self.proof.as_bytes());
-        bytes[176..208].copy_from_slice(self.quota.as_bytes());
-        bytes[208..240].copy_from_slice(self.controller_ack.as_bytes());
-        bytes[240..272].copy_from_slice(self.receipt.as_bytes());
-        bytes[272..280].copy_from_slice(&self.signer_generation.to_be_bytes());
-        bytes[280..284].copy_from_slice(&self.controller_uid.to_be_bytes());
-        bytes[284..300].copy_from_slice(&self.nonce);
-        let checksum = Sha256::new()
-            .chain_update(CHECKSUM_DOMAIN)
-            .chain_update(&bytes[..300])
-            .finalize();
-        bytes[300..].copy_from_slice(&checksum);
-        Ok(bytes)
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, RootV8EffectAckErrorV1> {
-        if bytes.len() != ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1
-            || bytes[..8] != MAGIC[..]
-            || bytes[8..10] != 1_u16.to_be_bytes()
-            || bytes[10..16] != [0; 6]
-        {
-            return Err(RootV8EffectAckErrorV1::Stale);
-        }
-        let record = Self {
-            binding: ObjectDigest::from_bytes(take::<32>(bytes, 16)?),
-            epoch: u64::from_be_bytes(take::<8>(bytes, 48)?),
-            operation: OperationId::from_bytes(take::<16>(bytes, 56)?),
-            sandbox: SandboxId::from_bytes(take::<16>(bytes, 72)?),
-            accepted_generation: u64::from_be_bytes(take::<8>(bytes, 88)?),
-            effect_transaction: take::<16>(bytes, 96)?,
-            terminal: ObjectDigest::from_bytes(take::<32>(bytes, 112)?),
-            proof: ObjectDigest::from_bytes(take::<32>(bytes, 144)?),
-            quota: ObjectDigest::from_bytes(take::<32>(bytes, 176)?),
-            controller_ack: ObjectDigest::from_bytes(take::<32>(bytes, 208)?),
-            receipt: ObjectDigest::from_bytes(take::<32>(bytes, 240)?),
-            signer_generation: u64::from_be_bytes(take::<8>(bytes, 272)?),
-            controller_uid: u32::from_be_bytes(take::<4>(bytes, 280)?),
-            nonce: take::<16>(bytes, 284)?,
-        };
-        if record.encode()?.as_slice() != bytes {
-            return Err(RootV8EffectAckErrorV1::Stale);
-        }
-        Ok(record)
-    }
-}
-
-fn take<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], RootV8EffectAckErrorV1> {
-    bytes
-        .get(offset..offset + N)
-        .and_then(|part| part.try_into().ok())
-        .ok_or(RootV8EffectAckErrorV1::Stale)
 }
 
 struct HeldCut {
@@ -388,8 +196,9 @@ fn custody_cut(
         .get(CONTROLLER_HOLD_PIN_KEY)?
         .ok_or(RootV8EffectAckErrorV1::Stale)?
         .to_vec();
-    let signer =
-        PinnedControllerHoldSignerV1::decode(&pin).map_err(|_| RootV8EffectAckErrorV1::Stale)?;
+    let signer = PinnedControllerHoldSignerV1::decode(&pin)
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+        .map_err(|_| RootV8EffectAckErrorV1::Stale)?;
     let source_pin = authority
         .get(SOURCE_HOLD_PIN_KEY)?
         .ok_or(RootV8EffectAckErrorV1::Stale)?;
@@ -552,7 +361,7 @@ pub fn acknowledge_fixed_closed_root_v8_effect_v1(
         epoch,
         uid,
         credential,
-        super::super::root_nonce::fresh_root_nonce,
+        aos_sandbox_broker::root_nonce::fresh_root_nonce,
         exchange,
     )
 }
@@ -588,8 +397,8 @@ pub fn acknowledge_and_verify_fixed_closed_root_v8_terminal_v1(
         epoch,
         uid,
         credential,
-        super::super::root_nonce::fresh_root_nonce,
-        super::super::root_nonce::fresh_root_nonce,
+        aos_sandbox_broker::root_nonce::fresh_root_nonce,
+        aos_sandbox_broker::root_nonce::fresh_root_nonce,
         exchange,
     )
 }
@@ -625,15 +434,15 @@ pub fn acknowledge_verify_and_release_fixed_closed_root_v8_terminal_v1(
         epoch,
         uid,
         credential,
-        super::super::root_nonce::fresh_root_nonce,
-        super::super::root_nonce::fresh_root_nonce,
+        aos_sandbox_broker::root_nonce::fresh_root_nonce,
+        aos_sandbox_broker::root_nonce::fresh_root_nonce,
         &mut exchange,
     )?;
     release_verified_terminal_after_command_in_authority(
         &mut authority,
         terminal,
         uid,
-        super::super::root_nonce::fresh_root_nonce,
+        aos_sandbox_broker::root_nonce::fresh_root_nonce,
         |challenge, terminal_digest| {
             exchange(RootV8HeldTerminalStepV1::FinalRelease {
                 challenge,
@@ -819,12 +628,12 @@ fn acknowledge_in_authority(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache_residency::encode_cache_owner_readback_signer_credential_v1;
+    use aos_sandbox_protocol::cache_owner_readback::encode_cache_owner_readback_signer_credential_v1;
     use crate::journal::{
         ControllerPolicyHoldV1, ControllerPolicyV8AttemptV1, ControllerPolicyV8EffectAckV1,
     };
     use crate::policy_compiler::controller_effect_ack_readback_v8::sign_test_controller_v8_effect_ack_readback_v1;
-    use crate::policy_compiler::controller_hold_readback::encode_controller_hold_signer_credential_v1;
+
     use crate::policy_compiler::controller_root_receipt_readback_v8::sign_test_controller_v8_root_receipt_readback_v1;
     use crate::policy_compiler::source_hold_readback::encode_source_hold_readback_signer_credential_v1;
     use ed25519_dalek::SigningKey;
@@ -851,6 +660,7 @@ mod tests {
         let cache_key = SigningKey::from_bytes(&[3; 32]);
         let controller_pin =
             encode_controller_hold_signer_credential_v1(4, &controller_key.verifying_key())
+                .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
                 .unwrap();
         let source_pin =
             encode_source_hold_readback_signer_credential_v1(5, &source_key.verifying_key())

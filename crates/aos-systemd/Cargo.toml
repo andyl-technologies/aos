@@ -21,7 +21,7 @@ zbus = { workspace = true, features = ["p2p"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aos-sandbox-linux.workspace = true
-rustix = { workspace = true, features = ["fs", "process"] }
+rustix = { workspace = true, features = ["fs", "process", "time"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 rustix = { workspace = true, features = ["event"] }

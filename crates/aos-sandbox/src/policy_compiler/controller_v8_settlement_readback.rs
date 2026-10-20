@@ -8,6 +8,8 @@
 //! compares the returned record with its own ACK, terminal, and release row
 //! beneath the Root writer before it can replace a settled predecessor.
 
+use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
+
 use std::path::Path;
 
 use ed25519_dalek::SigningKey;
@@ -18,7 +20,7 @@ use crate::journal::{ControllerPolicyV8SettlementV1, Journal, RecordNamespace};
 use super::controller_effect_ack_readback::{
     ControllerEffectAckChallengeV1, ControllerEffectAckReadbackErrorV1,
 };
-use super::controller_hold_readback::PinnedControllerHoldSignerV1;
+
 use super::controller_v8_readback_envelope::{
     ControllerV8ReadbackProtocol, HEADER_BYTES, SIGNATURE_BYTES, sign_packet, verify_packet,
 };

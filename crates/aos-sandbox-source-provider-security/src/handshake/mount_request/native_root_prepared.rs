@@ -3,7 +3,7 @@
 //! The private signer requires the named held writer's exact readback and the
 //! retained original native guard. No historical bytes reconstruct hot custody.
 
-use aos_sandbox::{MountOriginalNativeJournalAuthorityV5, OriginalRootProtectedReadbackV5};
+use aos_sandbox_mount_native::{MountOriginalNativeJournalAuthorityV5, OriginalRootProtectedReadbackV5};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::native_held_completion::{
     NativeHeldControlKindV1 as Kind, NativeHeldOwnerV1, NativeHeldScopeV1,
@@ -201,7 +201,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         &mut self,
         writer: &MountOriginalNativeJournalAuthorityV5<'_>,
         prepared: &PreparedMountProviderRequestV2,
-        owners: &aos_sandbox::JournalTransaction,
+        owners: &aos_sandbox_mount_native::JournalTransaction,
     ) -> Result<PreparedNativeHeldControlV1, SourceProviderSecurityError> {
         let mut retained = None;
         self.prepare_original_root_assertion_retaining_v5(writer, prepared, owners, &mut retained)?;
@@ -217,7 +217,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         &mut self,
         writer: &MountOriginalNativeJournalAuthorityV5<'_>,
         prepared: &PreparedMountProviderRequestV2,
-        owners: &aos_sandbox::JournalTransaction,
+        owners: &aos_sandbox_mount_native::JournalTransaction,
         root1_slot: &mut Option<PreparedNativeHeldControlV1>,
     ) -> Result<(), SourceProviderSecurityError> {
         OriginalBoundaryV5::new(self, ()).run(|owner, _| {
@@ -236,7 +236,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 .records()
                 .iter()
                 .filter_map(|record| {
-                    if record.namespace() != aos_sandbox::RecordNamespace::MountSourceAcquisition {
+                    if record.namespace() != aos_sandbox_mount_native::RecordNamespace::MountSourceAcquisition {
                         return None;
                     }
                     match aos_sandbox_protocol::mount_source_acquisition_state::decode_mount_source_state_record_v2(

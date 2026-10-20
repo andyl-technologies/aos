@@ -19,8 +19,12 @@ pub mod all_methods;
 pub mod checkpoint;
 /// Holds canonical historical data without live session or floor authority.
 pub mod historical_checkpoint;
+/// Reconstructs canonical signed historical method comparison DATA.
+pub mod historical_method;
 /// Holds canonical historical stored-session DATA without protected custody.
 pub mod stored_history;
+
+pub mod history_archive;
 
 use aos_proto::aos::sandbox::local::v1::{
     BrokerDescriptorRole, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,

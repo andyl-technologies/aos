@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! bank-key = prefix:u8 || identity[16]
-//! prefix = h (head) | c (claim) | p (preparation) | q (co-issuance) | t (terminal)
+//! prefix = h (head) | c (claim) | p (preparation) | q (co-issuance) | t (terminal) | i (recipient incarnation)
 //! ```
 
 use std::collections::BTreeMap;
@@ -15,7 +15,7 @@ use aos_sandbox_core::{ResourceAccount, ResourceDimension, ResourceLimit, Resour
 
 use super::{
     AccountHead, AccountKind, ClaimPurpose, ClaimState, EnrollmentIdentity, ResourceBankDataError,
-    codec, q04, settlement,
+    codec, q04, recipient, settlement,
 };
 use aos_sandbox_core::RecordNamespace;
 
@@ -92,6 +92,29 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
                 )?;
                 require_enrollment(&mut enrollment, q04::original_claim(binding).enrollment)?;
             }
+            Some(&super::create_use::PREFIX) => {
+                let binding = super::CreateStorageUseBindingV1::decode(bytes)?;
+                require_key(key_bytes, super::create_use::PREFIX, binding.claim_id())?;
+                let original = q04::decode(record_bytes(state, q04::PREFIX, binding.original_claim_id())
+                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                require_enrollment(&mut enrollment, q04::original_claim(original).enrollment)?;
+            }
+            Some(&super::recovered_funding::PREFIX) => {
+                let identity = super::recovered_funding::row_enrollment_v2(key_bytes, bytes)?;
+                require_enrollment(&mut enrollment, identity)?;
+            }
+            Some(&recipient::range::HISTORY_PREFIX) => {
+                let row = recipient::decode(bytes)?;
+                if key_bytes.as_slice() != recipient::range::history_key(row) {
+                    return Err(ResourceBankDataError::CorruptLedger);
+                }
+                require_enrollment(&mut enrollment, row.enrollment())?;
+            }
+            Some(&recipient::PREFIX) => {
+                let row = recipient::decode(bytes)?;
+                require_key(key_bytes, recipient::PREFIX, row.enrollment().node)?;
+                require_enrollment(&mut enrollment, row.enrollment())?;
+            }
             _ => return Err(ResourceBankDataError::CorruptLedger),
         }
     }
@@ -104,6 +127,23 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
 
     for ((namespace, key_bytes), bytes) in state {
         if *namespace != RecordNamespace::ControllerResourceReservation {
+            continue;
+        }
+        // The precharges subdivide the already recorded B, never a second
+        // account debit. Preserve every plane, including old spent traffic.
+        if key_bytes[0] == super::recovered_funding::PREFIX {
+            super::recovered_funding::require_row_replayed_v2(state, bytes)?;
+            continue;
+        }
+        if key_bytes[0] == recipient::range::HISTORY_PREFIX {
+            let row = recipient::decode(bytes)?;
+            if recipient::recipient_incarnation(state, row.enrollment())?
+                .is_none_or(|current| current.prepaid_range_v2().is_none())
+            { return Err(ResourceBankDataError::CorruptLedger); }
+            continue;
+        }
+        if key_bytes[0] == recipient::PREFIX {
+            recipient::require_replayed_v1(state, recipient::decode(bytes)?)?;
             continue;
         }
         if key_bytes[0] == HEAD_PREFIX {
@@ -124,6 +164,8 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
                 None if codec::decode_claim(claim)? == binding.claim => {}
                 None => return Err(ResourceBankDataError::CorruptLedger),
             }
+        } else if key_bytes[0] == super::create_use::PREFIX {
+            super::CreateStorageUseBindingV1::decode(bytes)?.require_replayed(state)?;
         } else if key_bytes[0] == q04::PREFIX {
             q04::require_replayed(state, q04::decode(bytes)?)?;
         } else if key_bytes[0] == settlement::PREFIX {
@@ -169,11 +211,15 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
                     ClaimPurpose::Snapshot
                     | ClaimPurpose::ProjectPreparation
                     | ClaimPurpose::Q04Preparation
+                    | ClaimPurpose::CreateStorageUse
                     | ClaimPurpose::HostControlInterval
                     | ClaimPurpose::ControllerFirstGlobalPrefix
                     | ClaimPurpose::NixOriginalStartIntake
                     | ClaimPurpose::Q04OriginalIntake
-                    | ClaimPurpose::RootReceiving => false,
+                    | ClaimPurpose::RootReceiving | ClaimPurpose::StorageReceiving
+                    | ClaimPurpose::CreateContinuationIntake
+                    | ClaimPurpose::DeleteOperationIntake | ClaimPurpose::ExecutionOperationIntake
+                    | ClaimPurpose::HostExecutionPrepare | ClaimPurpose::HostExecutionAccept => false,
                 };
                 if !purpose_matches {
                     return Err(ResourceBankDataError::CorruptLedger);
@@ -187,6 +233,9 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
                 && parent.kind != AccountKind::Project
             {
                 return Err(ResourceBankDataError::CorruptLedger);
+            }
+            if claim.purpose == ClaimPurpose::CreateStorageUse {
+                super::create_use::require_use_claim(state, claim)?;
             }
             if claim.purpose == ClaimPurpose::ProjectPreparation {
                 let binding = record_bytes(state, PREPARATION_PREFIX, claim.id)
@@ -210,6 +259,7 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
             if matches!(
                 claim.purpose,
                 ClaimPurpose::HostComponentBootstrap | ClaimPurpose::HostControlInterval
+                    | ClaimPurpose::HostExecutionPrepare | ClaimPurpose::HostExecutionAccept
             ) {
                 require_host_component(state, claim)?;
             }
@@ -265,9 +315,93 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
                 )?;
                 require_first_global_prefix(state, parent, prefix)?;
             }
-            if claim.purpose == ClaimPurpose::RootReceiving {
-                let expected_id =
-                    super::bootstrap::account_id(claim.enrollment, b"root-receiving-v1");
+            if claim.purpose == ClaimPurpose::CreateContinuationIntake {
+                let expected_id = super::bootstrap::account_id(
+                    claim.enrollment,
+                    b"controller-create-continuation-intake-v1",
+                );
+                if claim.id != expected_id
+                    || claim.account
+                        != super::bootstrap::account_id(claim.enrollment, b"controller")
+                    || parent.enrollment != claim.enrollment
+                {
+                    return Err(ResourceBankDataError::CorruptLedger);
+                }
+                let root_id = super::bootstrap::account_id(claim.enrollment, b"root-receiving-v1");
+                let root = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, root_id)
+                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                if root.purpose != ClaimPurpose::RootReceiving {
+                    return Err(ResourceBankDataError::CorruptLedger);
+                }
+                let storage_id = super::bootstrap::account_id(claim.enrollment, b"storage-receiving-v1");
+                let storage = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, storage_id)
+                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                if storage.purpose != ClaimPurpose::StorageReceiving {
+                    return Err(ResourceBankDataError::CorruptLedger);
+                }
+                let prefix_id = super::bootstrap::account_id(
+                    claim.enrollment,
+                    b"controller-first-global-prefix-v1",
+                );
+                let prefix = codec::decode_claim(
+                    record_bytes(state, CLAIM_PREFIX, prefix_id)
+                        .ok_or(ResourceBankDataError::CorruptLedger)?,
+                )?;
+                require_first_global_prefix(state, parent, prefix)?;
+            }
+            if claim.purpose == ClaimPurpose::DeleteOperationIntake {
+                let id = super::bootstrap::account_id(claim.enrollment,
+                    b"controller-delete-operation-intake-v1");
+                let controller = super::bootstrap::account_id(claim.enrollment, b"controller");
+                if claim.id != id || claim.account != controller
+                    || parent.kind != AccountKind::Controller
+                    || parent.enrollment != claim.enrollment
+                    || claim.state != ClaimState::Reserved
+                {
+                    return Err(ResourceBankDataError::CorruptLedger);
+                }
+                let prefix_id = super::bootstrap::account_id(claim.enrollment,
+                    b"controller-first-global-prefix-v1");
+                let prefix = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, prefix_id)
+                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                let storage_id = super::bootstrap::account_id(claim.enrollment, b"storage-receiving-v1");
+                let storage = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, storage_id)
+                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                if storage.purpose != ClaimPurpose::StorageReceiving {
+                    return Err(ResourceBankDataError::CorruptLedger);
+                }
+                require_first_global_prefix(state, parent, prefix)?;
+            }
+            if claim.purpose == ClaimPurpose::ExecutionOperationIntake {
+                let id = super::bootstrap::account_id(claim.enrollment,
+                    b"controller-execution-operation-intake-v1");
+                let controller = super::bootstrap::account_id(claim.enrollment, b"controller");
+                if claim.id != id || claim.account != controller
+                    || parent.kind != AccountKind::Controller
+                    || parent.enrollment != claim.enrollment
+                    || claim.state != ClaimState::Reserved
+                {
+                    return Err(ResourceBankDataError::CorruptLedger);
+                }
+                let prefix_id = super::bootstrap::account_id(claim.enrollment,
+                    b"controller-first-global-prefix-v1");
+                let prefix = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, prefix_id)
+                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                let storage_id = super::bootstrap::account_id(claim.enrollment, b"storage-receiving-v1");
+                let storage = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, storage_id)
+                    .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                if storage.purpose != ClaimPurpose::StorageReceiving {
+                    return Err(ResourceBankDataError::CorruptLedger);
+                }
+                require_first_global_prefix(state, parent, prefix)?;
+            }
+            if matches!(claim.purpose, ClaimPurpose::RootReceiving | ClaimPurpose::StorageReceiving) {
+                let role: &[u8] = match claim.purpose {
+                    ClaimPurpose::RootReceiving => b"root-receiving-v1",
+                    ClaimPurpose::StorageReceiving => b"storage-receiving-v1",
+                    _ => return Err(ResourceBankDataError::CorruptLedger),
+                };
+                let expected_id = super::bootstrap::account_id(claim.enrollment, role);
                 if claim.id != expected_id
                     || claim.account
                         != super::bootstrap::account_id(claim.enrollment, b"components")
@@ -276,9 +410,28 @@ pub fn validate(state: &State) -> Result<Option<EnrollmentIdentity>, ResourceBan
                 {
                     return Err(ResourceBankDataError::CorruptLedger);
                 }
-                super::require_root_service_envelope(claim.amount)?;
-                // R is a distinct retained row in the same K account as H.
-                // Complete replay sums both claims against K only once.
+                match claim.purpose {
+                    ClaimPurpose::RootReceiving => super::require_root_service_envelope(claim.amount)?,
+                    ClaimPurpose::StorageReceiving => {
+                        super::require_storage_service_envelope(claim.amount)?;
+                        let j = super::bootstrap::account_id(claim.enrollment, b"controller-create-continuation-intake-v1");
+                        let j = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, j)
+                            .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                        if j.purpose != ClaimPurpose::CreateContinuationIntake {
+                            return Err(ResourceBankDataError::CorruptLedger);
+                        }
+                        let root = super::bootstrap::account_id(claim.enrollment, b"root-receiving-v1");
+                        let root = codec::decode_claim(record_bytes(state, CLAIM_PREFIX, root)
+                            .ok_or(ResourceBankDataError::CorruptLedger)?)?;
+                        if root.purpose != ClaimPurpose::RootReceiving {
+                            return Err(ResourceBankDataError::CorruptLedger);
+                        }
+                        finite_ceilings(parent)?.checked_sub(root.amount)?.checked_sub(claim.amount)?;
+                    }
+                    _ => return Err(ResourceBankDataError::CorruptLedger),
+                }
+                // Receiving subdivisions remain reserved in the same Components account
+                // as Host. Complete replay sums these charges exactly once.
                 let host_id = super::bootstrap::account_id(claim.enrollment, b"host-component-v2");
                 let host_claim_id = super::bootstrap::account_id(claim.enrollment, &host_id);
                 let host = codec::decode_claim(
@@ -335,14 +488,49 @@ fn require_first_global_prefix(
                 return Err(ResourceBankDataError::CorruptLedger);
             }
         }
+        let create_id = super::bootstrap::account_id(identity, b"controller-create-continuation-intake-v1");
+        let create = record_bytes(state, CLAIM_PREFIX, create_id).map(codec::decode_claim).transpose()?;
+        if let Some(part) = create {
+            if q04.is_none() || part.purpose != ClaimPurpose::CreateContinuationIntake
+                || part.enrollment != identity || part.id != create_id || part.account != controller_id
+            {
+                return Err(ResourceBankDataError::CorruptLedger);
+            }
+        }
+        let delete_id = super::bootstrap::account_id(identity, b"controller-delete-operation-intake-v1");
+        let delete = record_bytes(state, CLAIM_PREFIX, delete_id).map(codec::decode_claim).transpose()?;
+        if let Some(part) = delete {
+            if create.is_none() || part.purpose != ClaimPurpose::DeleteOperationIntake
+                || part.enrollment != identity || part.id != delete_id
+                || part.account != controller_id || part.state != ClaimState::Reserved
+            {
+                return Err(ResourceBankDataError::CorruptLedger);
+            }
+        }
+        let execution_id = super::bootstrap::account_id(identity, b"controller-execution-operation-intake-v1");
+        let execution = record_bytes(state, CLAIM_PREFIX, execution_id).map(codec::decode_claim).transpose()?;
+        if let Some(part) = execution {
+            if create.is_none() || part.purpose != ClaimPurpose::ExecutionOperationIntake
+                || part.enrollment != identity || part.id != execution_id
+                || part.account != controller_id || part.state != ClaimState::Reserved
+            {
+                return Err(ResourceBankDataError::CorruptLedger);
+            }
+        }
+        if delete.is_some() != execution.is_some() {
+            return Err(ResourceBankDataError::CorruptLedger);
+        }
         let retained = ceiling
             .checked_sub(claim.amount)?
             .checked_sub(intake.amount)?
-            .checked_sub(q04.map_or(ResourceVector::ZERO, |part| part.amount))?;
+            .checked_sub(q04.map_or(ResourceVector::ZERO, |part| part.amount))?
+            .checked_sub(create.map_or(ResourceVector::ZERO, |part| part.amount))?
+            .checked_sub(delete.map_or(ResourceVector::ZERO, |part| part.amount))?
+            .checked_sub(execution.map_or(ResourceVector::ZERO, |part| part.amount))?;
         let mut committed = retained;
         let mut reserved = ResourceVector::ZERO;
         let mut generation = 1;
-        for part in [Some(claim), Some(intake), q04].into_iter().flatten() {
+        for part in [Some(claim), Some(intake), q04, create, delete, execution].into_iter().flatten() {
             match part.state {
                 ClaimState::Reserved => reserved = reserved.checked_add(part.amount)?,
                 ClaimState::Committed => {
@@ -410,8 +598,9 @@ fn require_first_global_prefix(
     Ok(())
 }
 
-// The Host record is a single Components subdivision with a reserved control
-// interval. Neither claim can be interpreted as a Global or Sandbox grant.
+// The Host record is one Components subdivision. Its control and optional
+// execution pair stay reserved inside the unchanged total. No claim here can
+// be interpreted as a Global or Sandbox grant.
 fn require_host_component(state: &State, claim: super::Claim) -> Result<(), ResourceBankDataError> {
     let identity = claim.enrollment;
     let host_id = super::bootstrap::account_id(identity, b"host-component-v2");
@@ -428,6 +617,30 @@ fn require_host_component(state: &State, claim: super::Claim) -> Result<(), Reso
         record_bytes(state, CLAIM_PREFIX, control_claim_id)
             .ok_or(ResourceBankDataError::CorruptLedger)?,
     )?;
+    let mut execution = [None, None];
+    for (slot, name, purpose) in [
+        (0, b"host-execution-prepare-v2".as_slice(), ClaimPurpose::HostExecutionPrepare),
+        (1, b"host-execution-accept-v2".as_slice(), ClaimPurpose::HostExecutionAccept),
+    ] {
+        let id = super::bootstrap::account_id(identity, name);
+        if let Some(bytes) = record_bytes(state, CLAIM_PREFIX, id) {
+            let part = codec::decode_claim(bytes)?;
+            if part.id != id || part.account != host_id || part.enrollment != identity
+                || part.purpose != purpose || part.state != ClaimState::Reserved
+            {
+                return Err(ResourceBankDataError::CorruptLedger);
+            }
+            execution[slot] = Some(part);
+        }
+    }
+    if execution[0].is_some() != execution[1].is_some() {
+        return Err(ResourceBankDataError::CorruptLedger);
+    }
+    let mut reserved = control.amount;
+    for part in execution.into_iter().flatten() {
+        reserved = reserved.checked_add(part.amount)?;
+    }
+    let baseline = finite_ceilings(host)?.checked_sub(reserved)?;
     if host.kind != AccountKind::Operation
         || host.parent != components_id
         || host.generation != 1
@@ -447,10 +660,12 @@ fn require_host_component(state: &State, claim: super::Claim) -> Result<(), Reso
         || control.id != control_claim_id
         || control.account != host_id
         || control.child != [0; 16]
-        || control.amount != host.account.reserved()
+        || reserved != host.account.reserved()
+        || baseline != host.baseline
         || component.enrollment != identity
         || control.enrollment != identity
-        || (claim != component && claim != control)
+        || (claim != component && claim != control
+            && !execution.into_iter().flatten().any(|part| part == claim))
     {
         return Err(ResourceBankDataError::CorruptLedger);
     }

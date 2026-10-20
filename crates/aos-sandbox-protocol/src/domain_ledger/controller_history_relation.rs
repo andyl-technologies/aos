@@ -33,6 +33,9 @@ use crate::publication::PublicationHistoryError;
 /// at its established malformed-transaction frontier after its current-map checks.
 #[derive(Debug, thiserror::Error)]
 pub enum DeleteAdmissionHistoryErrorV1 {
+    /// The original public request differs from the canonical batch.
+    #[error(transparent)]
+    Batch(#[from] super::lifecycle_model::LifecycleModelError),
     /// An Effect, request context or complete Delete relation is invalid.
     #[error(transparent)]
     Effect(#[from] EffectHistoryDataError),
@@ -325,12 +328,16 @@ fn validate_delete_effect_record(
         else {
             return Err(invalid());
         };
-        if context.project() != batch.project()
-            || request.sandbox_id.as_slice() != root
-            || request.expected_plan_digest.as_slice() != batch.graph_plan().as_slice()
+        if context.project() != batch.project() || request.sandbox_id.as_slice() != root {
+            return Err(invalid());
+        }
+        if batch.version() == 2 {
+            batch.require_public_request_v2(&request)?;
+        } else if request.expected_plan_digest.as_slice() != batch.graph_plan().as_slice()
             || request.cascade != (batch.flags() & 1 != 0)
             || request.force != (batch.flags() & 2 != 0)
         {
+            // Historical V1 keeps its established mandatory expectation.
             return Err(invalid());
         }
         // The original counter advances before this decoded Effect is dropped.

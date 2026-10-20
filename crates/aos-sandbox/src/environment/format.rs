@@ -35,7 +35,7 @@ const MAGIC: &[u8; 8] = b"AOSENVG1";
 const VERSION: u16 = 1;
 const FIXED_PREFIX_BYTES: usize = 136;
 const DIGEST_BYTES: usize = 32;
-const MAXIMUM_RECORD_BYTES: usize = 96 * 1024 * 1024;
+pub(super) const MAXIMUM_RECORD_BYTES: usize = 96 * 1024 * 1024;
 
 /// Encodes one validated manifest in exact v1 form.
 ///
@@ -155,7 +155,14 @@ pub fn decode_environment_generation_v1(
     let disclosure_id = CacheDomainId::from_bytes(bytes.array()?);
     let environment_descriptor = decode_descriptor(&mut bytes)?;
     let environment_length = read_u32_length(&mut bytes, MAXIMUM_INLINE_ENVIRONMENT_BYTES)?;
-    let environment = decode_environment(bytes.bytes(environment_length)?, DecodeLimits::default())
+    // Every canonical CBOR item occupies at least one input byte. Capping
+    // announced collection/total reservations by this actual inner extent
+    // preserves every valid encoding while refusing impossible lengths before
+    // decoder allocation. The same decoder and public error projection remain.
+    let mut limits = DecodeLimits::default();
+    limits.maximum_collection_items = limits.maximum_collection_items.min(environment_length);
+    limits.maximum_total_items = limits.maximum_total_items.min(environment_length);
+    let environment = decode_environment(bytes.bytes(environment_length)?, limits)
         .map_err(|_| EnvironmentModelError::InvalidInlineEnvironment)?;
     let output_length = read_u32_length(&mut bytes, MAXIMUM_SELECTED_OUTPUT_BYTES)?;
     let selected_output =
@@ -216,6 +223,15 @@ pub fn environment_manifest_digest_v1(
     let encoded = encode_environment_generation_v1(value)?;
     let body_length = encoded.len() - DIGEST_BYTES;
     Ok(EnvironmentManifestDigestV1::commit(&encoded[..body_length]))
+}
+
+/// Borrows the exact existing encoder geometry from a validated model.
+pub(super) fn canonical_generation_bytes_v1(value: &EnvironmentGenerationManifestV1)
+    -> Result<usize, EnvironmentModelError>
+{
+    let inline = usize::try_from(value.environment_descriptor().encoded_size())
+        .map_err(|_| EnvironmentModelError::InvalidModel)?;
+    encoded_length(value, inline)
 }
 
 fn encoded_length(

@@ -203,16 +203,21 @@
     "aos-sandbox-guest-root-tree"
     "aos-sandbox-guardian"
     "aos-sandbox-journal"
+    "aos-sandbox-ledger-replay"
     "aos-sandbox-mount"
+    "aos-sandbox-mount-native"
     "aos-sandbox-network"
     "aos-sandbox-ownership-protocol"
     "aos-sandbox-ownership"
     "aos-sandbox-policy"
+    "aos-sandbox-publisher"
     "aos-sandbox-protocol"
+    "aos-sandbox-source"
     "aos-sandbox-source-provider"
     "aos-sandbox-source-provider-ledger"
     "aos-sandbox-source-provider-protocol"
     "aos-sandbox-source-provider-security"
+    "aos-sandbox-services"
     "aos-sandbox-source-signer"
     "aos-sandbox-storage"
     "aos-sandbox"
@@ -339,11 +344,14 @@ in
     cargoNextest = true;
     # Preserve failing-test details in retained Nix build directories, even
     # when the terminal reporter only emits a generic test-run failure.
-    nextestFlags = "--profile ci";
+    nextestFlags = "--profile nix-sandbox";
     # Compilation still uses every allocated build core. Bound concurrent test
     # processes separately so loopback servers and SQLite workers retain enough
     # scheduler time to satisfy their production-sized deadlines on large hosts.
     cargoNextestMaxTestThreads = 16;
+    # Match the native qualification runner's test-thread stack. This changes
+    # test process configuration, not production stack or receiving bounds.
+    RUST_MIN_STACK = "33554432";
     passthru = {
       inherit cargoArtifacts cargoDeps cargoEnv testTargets coordinatorTestTargets;
     };

@@ -82,6 +82,14 @@ impl SandboxAncestry {
     /// Returns [`InvalidDomainModel::InvalidAncestry`] if the chain exceeds
     /// 4096 edges, repeats an identity, or contains the subject sandbox.
     pub fn new(sandbox: SandboxId, ancestors: Vec<SandboxId>) -> Result<Self, InvalidDomainModel> {
+        Self::validate_ancestors_v1(sandbox, &ancestors)?;
+        Ok(Self { sandbox, ancestors })
+    }
+
+    fn validate_ancestors_v1(
+        sandbox: SandboxId,
+        ancestors: &[SandboxId],
+    ) -> Result<(), InvalidDomainModel> {
         if ancestors.len() > MAX_ANCESTRY_DEPTH
             || ancestors.contains(&sandbox)
             || ancestors
@@ -91,7 +99,7 @@ impl SandboxAncestry {
         {
             return Err(InvalidDomainModel::InvalidAncestry);
         }
-        Ok(Self { sandbox, ancestors })
+        Ok(())
     }
 
     /// Returns the subject sandbox.

@@ -45,7 +45,13 @@ use aos_sandbox_ownership_protocol::{
 
 mod bound_effect;
 mod draft;
+pub use draft::publication_construction_encoded_bound_v1;
 mod format;
+mod receiving;
+pub use receiving::{decoding_receiving_bytes_v1, decoding_receiving_namespace_entries_v1,
+    assignment_decoding_namespace_entries_v1};
+/// Shares historical ledger joins without protected Native acceptance.
+pub mod ledger_read;
 
 pub use bound_effect::{AuthorityBoundEffectPlanV1, bind_authority_publication_effect};
 
@@ -55,7 +61,10 @@ use draft::{
     validate_proposal,
 };
 use format::validate_encoded_publication;
-pub use format::{decode_current, decode_prepared, decode_prepared_with_artifacts, encode_current};
+pub use format::{
+    current_publication_encoded_bytes_v1, decode_current, decode_prepared,
+    decode_prepared_with_artifacts, encode_current,
+};
 
 const MAGIC: &[u8; 8] = b"AOSCPUB1";
 const VERSION: u16 = 1;
@@ -786,6 +795,12 @@ pub struct DecodedPublicationCurrentV1 {
 }
 
 impl DecodedPublicationCurrentV1 {
+    /// Borrows the same decoded historical model without Native acceptance.
+    #[must_use]
+    pub const fn history(&self) -> &PublicationHistoryV1 {
+        &self.history
+    }
+
     /// Consumes the decode result into its history, lease and templates in that order.
     ///
     /// The owned artifacts come from the same complete decode and move without

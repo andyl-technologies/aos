@@ -123,7 +123,7 @@ impl PinnedImage {
         // The preflight digest is observational, not authenticated publication
         // data. Comparing it on this original FD establishes mechanical custody
         // only; the caller has received no protected execution permission.
-        let duplicate = original.file.as_fd().try_clone_to_owned()
+        let duplicate = original.original_descriptor_v1().try_clone_to_owned()
             .map_err(GitHelperImageErrorV1::Duplicate)?;
         let backing = FsVerityBacking::from_received(
             duplicate,

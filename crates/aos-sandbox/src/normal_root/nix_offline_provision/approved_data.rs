@@ -34,22 +34,30 @@ pub fn nix_offline_job_has_original_label_v5(file: &std::fs::File) -> std::io::R
 }
 
 pub(crate) fn nix_offline_location_has_original_label_v5<P>(
-    location: &aos_sandbox_journal::protected_storage::ProtectedJournalLocation<P>,
+    location: aos_sandbox_broker::canonical_journal::coordinator::CanonicalWriterNativeOperationsV1<'_, P>,
 ) -> std::io::Result<bool> {
     original_label_matches(OriginalLabelFile::Location(location))
+}
+
+pub(crate) fn nix_offline_opening_has_original_label_v5(
+    file: aos_sandbox_broker::canonical_journal::CanonicalNixOfflineFileOperationsV1<'_>,
+) -> std::io::Result<bool> {
+    original_label_matches::<()>(OriginalLabelFile::Opening(file))
 }
 
 // This fixed borrowed selector keeps the actor policy here. No directory FD
 // leaves the physical owner and no predicate/provider callback is supplied.
 enum OriginalLabelFile<'a, P> {
     File(&'a std::fs::File),
-    Location(&'a aos_sandbox_journal::protected_storage::ProtectedJournalLocation<P>),
+    Opening(aos_sandbox_broker::canonical_journal::CanonicalNixOfflineFileOperationsV1<'a>),
+    Location(aos_sandbox_broker::canonical_journal::coordinator::CanonicalWriterNativeOperationsV1<'a, P>),
 }
 
 impl<P> OriginalLabelFile<'_, P> {
     fn xattr(&self, name: &str, bytes: &mut [u8]) -> Result<usize, rustix::io::Errno> {
         match self {
             Self::File(file) => rustix::fs::fgetxattr(file, name, bytes),
+            Self::Opening(file) => file.xattr(name, bytes),
             Self::Location(location) => location.directory_xattr(name, bytes),
         }
     }

@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::OwnedFd;
 
-use aos_sandbox::journal::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_mount_native::{MountJournalV1 as Journal, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::path::ResolvedPath;
 use aos_sandbox_protocol::mount_source_consumption_state::{
@@ -950,7 +950,7 @@ impl SourcePinResolver for FixtureSourcePins {
 /// ```compile_fail
 /// use std::collections::BTreeMap;
 ///
-/// use aos_sandbox::journal::Journal;
+/// use aos_sandbox_mount_native::MountJournalV1 as Journal;
 /// use aos_sandbox_linux::path::ResolvedPath;
 /// use aos_sandbox_mount::keeper::{SourcePinName, SystemdFdStore};
 /// use aos_sandbox_mount::source_pin::{ReopenedSourcePins, SourcePinTableV1};
@@ -1667,7 +1667,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let (mut journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         let pin = row(1, 20, 21, 22);
@@ -1691,7 +1691,7 @@ mod tests {
             let directory = tempdir().unwrap();
             let (mut journal, _) = Journal::open(
                 directory.path().join("journal"),
-                aos_sandbox::journal::JournalLimits::default(),
+                aos_sandbox_mount_native::JournalLimits::default(),
             )
             .unwrap();
             let mut predecessor = row(1, 20, 21, 22);
@@ -1768,7 +1768,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let (journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         let mut resources =
@@ -1870,7 +1870,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("journal");
         let (mut journal, _) =
-            Journal::open(&path, aos_sandbox::journal::JournalLimits::default()).unwrap();
+            Journal::open(&path, aos_sandbox_mount_native::JournalLimits::default()).unwrap();
         let mut table = empty_table();
         let first_records = table.plan_activate(&first, None).unwrap();
         journal
@@ -1898,7 +1898,7 @@ mod tests {
         drop(journal);
 
         let (journal, _) =
-            Journal::open(&path, aos_sandbox::journal::JournalLimits::default()).unwrap();
+            Journal::open(&path, aos_sandbox_mount_native::JournalLimits::default()).unwrap();
         let recovered = SourcePinTableV1::recover(&journal, [15; 16]).unwrap();
         assert_eq!(
             recovered.current_handle(first.binding_digest),
@@ -1928,7 +1928,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let (journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         let resources =
@@ -1965,7 +1965,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let (journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         let mut resources =
@@ -2035,7 +2035,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let (journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         let resources =
@@ -2066,7 +2066,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let (mut journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         let mut resources =
@@ -2157,7 +2157,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let (journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         let pin = row(1, 20, 21, 22);
@@ -2198,13 +2198,13 @@ mod tests {
         let directory = tempdir().unwrap();
         let (mut journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         let row = row(1, 20, 21, 22);
         let mut value = put_record(&row).unwrap().value().unwrap().to_vec();
         value.push(b' ');
-        let transaction = aos_sandbox::journal::JournalTransaction::new(
+        let transaction = aos_sandbox_mount_native::JournalTransaction::new(
             [1; 16],
             vec![JournalRecord::put(
                 RecordNamespace::MountSourcePin,
@@ -2222,7 +2222,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let (mut journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         let pin = row(1, 20, 21, 22);
@@ -2253,7 +2253,7 @@ mod tests {
         keeper.names.lock().unwrap().insert(name.clone());
         let (mut journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         journal
@@ -2278,7 +2278,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let (mut journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         let pin = row(1, 20, 21, 22);
@@ -2305,7 +2305,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("journal");
         let (mut journal, _) =
-            Journal::open(&path, aos_sandbox::journal::JournalLimits::default()).unwrap();
+            Journal::open(&path, aos_sandbox_mount_native::JournalLimits::default()).unwrap();
         let resources =
             MountResourceTableV1::recover(&journal, MountResourceLimitsV1::default(), [15; 16])
                 .unwrap();
@@ -2350,7 +2350,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("journal");
         let (mut journal, _) =
-            Journal::open(&path, aos_sandbox::journal::JournalLimits::default()).unwrap();
+            Journal::open(&path, aos_sandbox_mount_native::JournalLimits::default()).unwrap();
         let resources =
             MountResourceTableV1::recover(&journal, MountResourceLimitsV1::default(), [15; 16])
                 .unwrap();
@@ -2390,7 +2390,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("journal");
         let (mut journal, _) =
-            Journal::open(&path, aos_sandbox::journal::JournalLimits::default()).unwrap();
+            Journal::open(&path, aos_sandbox_mount_native::JournalLimits::default()).unwrap();
         let resources =
             MountResourceTableV1::recover(&journal, MountResourceLimitsV1::default(), [15; 16])
                 .unwrap();
@@ -2429,7 +2429,7 @@ mod tests {
         let identity = source.identity();
         let mount_id = MountId::from_fd(source.as_fd()).unwrap().get();
         let (mut journal, _) =
-            Journal::open(&path, aos_sandbox::journal::JournalLimits::default()).unwrap();
+            Journal::open(&path, aos_sandbox_mount_native::JournalLimits::default()).unwrap();
         let resources =
             MountResourceTableV1::recover(&journal, MountResourceLimitsV1::default(), [15; 16])
                 .unwrap();
@@ -2490,7 +2490,7 @@ mod tests {
         keeper.names.lock().unwrap().insert(name.clone());
         let (mut journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         journal
@@ -2522,7 +2522,7 @@ mod tests {
         let pin = row(1, identity.device, identity.inode, mount_id);
         let (mut journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         journal
@@ -2554,7 +2554,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let (mut journal, _) = Journal::open(
             directory.path().join("journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         let name = SourcePinName::from_digest([91; 32]);
@@ -2571,7 +2571,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let (mut orphan_journal, _) = Journal::open(
             directory.path().join("orphan-journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         let orphan_name = SourcePinName::from_digest([91; 32]);
@@ -2595,7 +2595,7 @@ mod tests {
         let name = SourcePinName::from_digest(pin.handle);
         let (mut journal, _) = Journal::open(
             directory.path().join("reaping-journal"),
-            aos_sandbox::journal::JournalLimits::default(),
+            aos_sandbox_mount_native::JournalLimits::default(),
         )
         .unwrap();
         journal

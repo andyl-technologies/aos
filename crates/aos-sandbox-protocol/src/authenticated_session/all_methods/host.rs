@@ -31,11 +31,48 @@ pub(super) fn validate_runtime_observation(
     Ok(())
 }
 
-pub(super) fn validate_runtime_inventory(body: &[u8]) -> Result<(), ProtocolValidationError> {
+pub(super) fn validate_runtime_inventory(body: &[u8], request_id: [u8; 16]) -> Result<(), ProtocolValidationError> {
+    decode_runtime_inventory_data_v2(body, request_id).map(|_| ())
+}
+
+pub(super) fn decode_runtime_inventory_data_v2(
+    body: &[u8],
+    request_id: [u8; 16],
+) -> Result<InventoryRuntimeResponse, ProtocolValidationError> {
     let inventory = InventoryRuntimeResponse::decode_from_slice(body)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
-    if !inventory.__buffa_unknown_fields.is_empty() || inventory.runtimes.len() > 16_384 {
+    if !inventory.__buffa_unknown_fields.is_empty() || inventory.runtimes.len() > 16_384
+        || inventory.stopped_namespaces_v4.len() > 1 {
         return Err(ProtocolValidationError::UnknownFields);
+    }
+    if let Some(lineage) = crate::host_cleanup_lineage::HostCleanupLineageDataV1::from_inventory_v1(&inventory)? {
+        if lineage.observation_v1().request_id_v5() != &request_id {
+            return Err(ProtocolValidationError::InvalidField("Host cleanup lineage census request binding"));
+        }
+        if inventory.encode_to_vec() != body {
+            return Err(ProtocolValidationError::UnknownFields);
+        }
+        return Ok(inventory);
+    }
+    if let Some(candidate) = crate::host_launch_cleanup_candidate::HostLaunchCleanupCandidateDataV1::from_inventory_v1(&inventory)? {
+        if candidate.request_id_v1() != &request_id {
+            return Err(ProtocolValidationError::InvalidField("Host LaunchReady cleanup census request binding"));
+        }
+        if inventory.encode_to_vec() != body { return Err(ProtocolValidationError::UnknownFields); }
+        return Ok(inventory);
+    }
+    if crate::host_inventory_absence::HostInventoryAbsenceDataV5::from_inventory_v5(&inventory)?
+        .is_some_and(|absence| absence.request_id_v5() != &request_id)
+    {
+        return Err(ProtocolValidationError::InvalidField("Host inventory absence request binding"));
+    }
+    if crate::host_recovered_namespace::HostRecoveredNamespaceDataV7::from_inventory_v7(&inventory)?
+        .is_some_and(|recovery| recovery.observation_v7().request_id_v5() != &request_id) {
+        return Err(ProtocolValidationError::InvalidField("Host recovery census request binding"));
+    }
+    if crate::host_stop_cleanup_candidate::HostStopCleanupCandidateDataV1::from_inventory_v1(&inventory)?
+        .is_some_and(|candidate| candidate.request_id_v1() != &request_id) {
+        return Err(ProtocolValidationError::InvalidField("Host present cleanup census request binding"));
     }
     let mut prior_handle: Option<&[u8]> = None;
     for observation in &inventory.runtimes {
@@ -47,10 +84,18 @@ pub(super) fn validate_runtime_inventory(body: &[u8]) -> Result<(), ProtocolVali
         }
         prior_handle = Some(&observation.runtime_handle);
     }
+    for bytes in &inventory.stopped_namespaces_v4 {
+        let scope = crate::host_stopped_namespace::HostStoppedNamespaceDataV4::decode_v4(bytes)?;
+        if inventory.runtimes.iter().any(|row|
+            row.runtime_handle.as_slice() == scope.runtime_v4())
+        {
+            return Err(ProtocolValidationError::InvalidField("Host namespace inventory conflict"));
+        }
+    }
     if inventory.encode_to_vec() != body {
         return Err(ProtocolValidationError::UnknownFields);
     }
-    Ok(())
+    Ok(inventory)
 }
 
 fn validate_runtime_observation_shape(
@@ -63,6 +108,7 @@ fn validate_runtime_observation_shape(
         .ok_or(ProtocolValidationError::InvalidField("runtime observation"))?;
     let error = observation.error.as_option();
     if !observation.__buffa_unknown_fields.is_empty()
+        || !observation.capture_stop_residual_v4.is_empty()
         || observation.observation_sequence == 0
         || (state == RuntimeState::RUNTIME_STATE_FAILED) != error.is_some()
     {

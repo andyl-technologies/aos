@@ -16,7 +16,7 @@
 //! current Session binding | observed-query-length:u32be | actual query bytes
 //! ```
 
-use aos_sandbox::journal::JournalError;
+use aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1 as JournalError;
 
 use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
     ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5, OriginalSourceCapacityRecordV5,
@@ -25,11 +25,12 @@ use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use aos_sandbox::journal::{
-    SourceOriginalAdmissionDataV5, SourceOriginalAppendSubjectV5,
-    SourceOriginalChallengeHistoryViewV5, SourceOriginalPhysicalCutV5,
-};
-use aos_sandbox::{JournalRecord, RecordNamespace};
+use aos_sandbox_ledger_replay::replay::source_original::union::SourceOriginalAdmissionDataV5;
+use aos_sandbox_source::provider_journal::SourceOriginalAppendSubjectV5;
+use aos_sandbox_source::provider_journal::SourceOriginalChallengeHistoryViewV5;
+use aos_sandbox_source::provider_journal::SourceOriginalPhysicalCutV5;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
+use aos_sandbox_core::RecordNamespace;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::limits::MAXIMUM_LEDGER_GRAPH_BYTES;
 use sha2::{Digest as _, Sha256};

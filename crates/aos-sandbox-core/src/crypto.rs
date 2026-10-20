@@ -18,7 +18,9 @@ use crate::registry::{
 };
 use crate::{ObjectDescriptor, ObjectDigest};
 
-const SIGNATURE_DOMAIN: &[u8] = b"aos-sandbox-signature-v1\0";
+pub(crate) mod retained;
+
+pub(crate) const SIGNATURE_DOMAIN: &[u8] = b"aos-sandbox-signature-v1\0";
 
 /// Reports a signing or trust-envelope verification failure.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -180,16 +182,55 @@ pub fn verify_signature(
     now_seconds: i64,
     limits: DecodeLimits,
 ) -> Result<VerifiedSignature, SignatureVerificationError> {
-    let statement = signature.statement();
-    validate_statement_registry(statement)?;
-    validate_public_key_fingerprint(statement, public_key)?;
+    verify_signature_engine(signature, canonical_trust_policy, public_key, now_seconds, limits, None)
+}
 
-    let policy = decode_trust_policy(canonical_trust_policy, limits)?;
-    let computed_policy = descriptor_for_bytes(
+pub(crate) fn verify_signature_engine(
+    signature: &Signature,
+    canonical_trust_policy: &[u8],
+    public_key: &[u8; 32],
+    now_seconds: i64,
+    limits: DecodeLimits,
+    capture: Option<&mut retained::SignatureVerificationCaptureV1>,
+) -> Result<VerifiedSignature, SignatureVerificationError> {
+    let selected = capture.is_some();
+    let mut work = crate::retained::CaptureValueV1::new(
+        retained::SignatureVerificationCaptureV1::default(), capture);
+    verify_signature_work(signature, canonical_trust_policy, public_key, now_seconds,
+        limits, &mut work, selected)
+}
+
+fn verify_signature_work(
+    signature: &Signature,
+    canonical_trust_policy: &[u8],
+    public_key: &[u8; 32],
+    now_seconds: i64,
+    limits: DecodeLimits,
+    work: &mut retained::SignatureVerificationCaptureV1,
+    retained: bool,
+) -> Result<VerifiedSignature, SignatureVerificationError> {
+    let statement = signature.statement();
+    validate_statement_registry_engine(statement,
+        retained.then_some(&mut work.subject_role), retained.then_some(&mut work.policy_role))?;
+    work.fingerprint = Some(validate_public_key_fingerprint(statement, public_key));
+    work.fingerprint.as_ref().ok_or(SignatureVerificationError::InvalidPublicKey)?
+        .as_ref().map_err(Clone::clone)?;
+
+    work.policy = Some(if retained {
+        crate::format::decode_trust_policy_retaining_v1(canonical_trust_policy, limits,
+            &mut work.policy_decode).map_err(|_| work.policy_decode.failure().cloned()
+                .map(SignatureVerificationError::from)
+                .unwrap_or(SignatureVerificationError::InvalidPublicKey))?;
+        work.policy_decode.take_policy_once().ok_or(SignatureVerificationError::InvalidPublicKey)?
+    } else {
+        decode_trust_policy(canonical_trust_policy, limits)?
+    });
+    let policy = work.policy.as_ref().ok_or(SignatureVerificationError::InvalidPublicKey)?;
+    work.computed_policy = Some(descriptor_for_bytes(
         statement.verification_policy().media_type().clone(),
         canonical_trust_policy,
-    );
-    if &computed_policy != statement.verification_policy() {
+    ));
+    if work.computed_policy.as_ref() != Some(statement.verification_policy()) {
         return Err(SignatureVerificationError::TrustPolicyDescriptorMismatch);
     }
     if policy.trust_scope() != statement.trust_scope() {
@@ -211,12 +252,17 @@ pub fn verify_signature(
         return Err(SignatureVerificationError::Expired);
     }
 
-    let verifying_key = VerifyingKey::from_bytes(public_key)
-        .map_err(|_| SignatureVerificationError::InvalidPublicKey)?;
-    let dalek_signature = ed25519_dalek::Signature::from_bytes(signature.signature().as_bytes());
-    verifying_key
-        .verify_strict(&signature_signing_message(statement), &dalek_signature)
-        .map_err(|_| SignatureVerificationError::InvalidSignature)?;
+    work.verifying_key = Some(VerifyingKey::from_bytes(public_key));
+    let verifying_key = work.verifying_key.as_ref()
+        .and_then(|result| result.as_ref().ok()).ok_or(SignatureVerificationError::InvalidPublicKey)?;
+    work.dalek_signature = Some(ed25519_dalek::Signature::from_bytes(signature.signature().as_bytes()));
+    work.message = Some(signature_signing_message_engine(statement,
+        retained.then_some(&mut work.statement_bytes)));
+    work.crypto = Some(verifying_key.verify_strict(
+        work.message.as_deref().ok_or(SignatureVerificationError::InvalidSignature)?,
+        work.dalek_signature.as_ref().ok_or(SignatureVerificationError::InvalidSignature)?));
+    work.crypto.as_ref().and_then(|result| result.as_ref().ok())
+        .ok_or(SignatureVerificationError::InvalidSignature)?;
 
     Ok(VerifiedSignature {
         subject: statement.subject().clone(),
@@ -227,12 +273,32 @@ pub fn verify_signature(
 fn validate_statement_registry(
     statement: &SignatureStatement,
 ) -> Result<(), SignatureVerificationError> {
-    validate_signature_subject(statement.purpose(), statement.subject())?;
-    validate_descriptor_role(
-        DescriptorRole::SignatureVerificationPolicy,
-        statement.verification_policy(),
-    )?;
+    validate_statement_registry_engine(statement, None, None)
+}
+
+fn validate_statement_registry_engine(
+    statement: &SignatureStatement,
+    subject: Option<&mut Option<Result<crate::PortableMediaType, RegistryError>>>,
+    policy: Option<&mut Option<Result<crate::PortableMediaType, RegistryError>>>,
+) -> Result<(), SignatureVerificationError> {
+    retain_registry_result(validate_signature_subject(statement.purpose(), statement.subject()), subject)?;
+    retain_registry_result(validate_descriptor_role(DescriptorRole::SignatureVerificationPolicy,
+        statement.verification_policy()), policy)?;
     Ok(())
+}
+
+fn retain_registry_result(
+    result: Result<crate::PortableMediaType, RegistryError>,
+    destination: Option<&mut Option<Result<crate::PortableMediaType, RegistryError>>>,
+) -> Result<(), SignatureVerificationError> {
+    match destination {
+        None => result.map(|_| ()).map_err(SignatureVerificationError::from),
+        Some(destination) => {
+            *destination = Some(result);
+            destination.as_ref().ok_or(SignatureVerificationError::InvalidSignature)?
+                .as_ref().map(|_| ()).map_err(|cause| SignatureVerificationError::from(cause.clone()))
+        }
+    }
 }
 
 fn validate_public_key_fingerprint(
@@ -255,7 +321,20 @@ fn validate_public_key_fingerprint(
 /// Ed25519 message used by [`sign_statement`] and [`verify_signature`].
 #[must_use]
 pub fn signature_signing_message(statement: &SignatureStatement) -> Vec<u8> {
-    let statement_bytes = encode_signature_statement(statement);
+    signature_signing_message_engine(statement, None)
+}
+
+/// Returns domain framing plus a canonical statement's byte extent.
+///
+/// This checked shape uses the same domain as the actual signing-message
+/// encoder. A supplied length is sizing DATA and proves no statement validity.
+#[must_use]
+pub fn signature_signing_message_bytes_v1(canonical_statement_bytes: usize) -> Option<usize> {
+    SIGNATURE_DOMAIN.len().checked_add(canonical_statement_bytes)
+}
+
+fn signature_signing_message_engine(statement: &SignatureStatement, destination: Option<&mut Vec<u8>>) -> Vec<u8> {
+    let statement_bytes = crate::retained::CaptureValueV1::new(encode_signature_statement(statement), destination);
     let mut message = Vec::with_capacity(SIGNATURE_DOMAIN.len() + statement_bytes.len());
     message.extend_from_slice(SIGNATURE_DOMAIN);
     message.extend_from_slice(&statement_bytes);

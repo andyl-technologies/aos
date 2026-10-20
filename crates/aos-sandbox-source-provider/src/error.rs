@@ -1,6 +1,6 @@
 //! Failure types for the protected SourceProvider ledger.
 
-use aos_sandbox::JournalError;
+use aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1 as JournalError;
 use aos_sandbox_source_provider_protocol::{
     SourceProviderSignatureError, SourceProviderValidationError, SourceProviderVerificationError,
 };

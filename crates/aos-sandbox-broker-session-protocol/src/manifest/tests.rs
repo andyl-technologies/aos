@@ -29,7 +29,7 @@ const GOLDEN_HEX: &str = concat!(
 );
 const GOLDEN_BINDING_HEX: &str = "61aea33546af9d99c79ac81bf0705500a81c94d472dbf98681c87308103dbb26";
 
-fn manifest() -> BrokerSessionManifestV1 {
+pub(super) fn manifest() -> BrokerSessionManifestV1 {
     let keys = core::array::from_fn(|index| {
         let seed = [u8::try_from(index + 1).unwrap_or(1); 32];
         let signing_key = SigningKey::from_bytes(&seed);

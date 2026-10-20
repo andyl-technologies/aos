@@ -19,7 +19,7 @@ enum OriginalOutcomeVerificationPurposeV5<'owner> {
         prepared: &'owner PreparedMountProviderRequestV2,
         original: &'owner AuthorizedMountProviderOutcomeV2,
         retained: &'owner native_pending::OriginalNativeReceivedOutcomeV5,
-        current: &'owner aos_sandbox::OriginalRootProtectedReadbackV5,
+        current: &'owner aos_sandbox_mount_native::OriginalRootProtectedReadbackV5,
     },
 }
 
@@ -115,8 +115,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// verified outcome, sole descriptor, and exact transaction for resealing.
     pub fn commit_received_mount_source_root_v2(
         &mut self,
-        journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
-        transaction: aos_sandbox::JournalTransaction,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         outcome: VerifiedMountProviderOutcomeV2,
         source_root: crate::ObservedSourceRootV1,
     ) -> crate::SourceRootPostcommitOutcomeV2 {
@@ -265,8 +265,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// recovered outcome, sole reopened descriptor, and exact transaction.
     pub fn commit_reopened_mount_source_root_v2(
         &mut self,
-        journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
-        transaction: aos_sandbox::JournalTransaction,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         outcome: VerifiedMountProviderOutcomeV2,
         source_root: ReopenedMountSourceRootV2,
     ) -> crate::SourceRootPostcommitOutcomeV2 {
@@ -420,8 +420,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// sole descriptor and exact transaction for resealing.
     pub fn commit_mount_source_root_custody_v2(
         &mut self,
-        journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
-        transaction: aos_sandbox::JournalTransaction,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         prepared: crate::PreparedMountSourceRootCustodyV2,
     ) -> crate::SourceRootPostcommitOutcomeV2 {
         let validated = (|| {
@@ -502,8 +502,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[must_use]
     pub fn commit_startup_mount_source_adoption_v2(
         &mut self,
-        journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
-        transaction: aos_sandbox::JournalTransaction,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         prepared: crate::PreparedStartupMountSourceAdoptionV2,
     ) -> crate::SourceRootPostcommitOutcomeV2 {
         use aos_sandbox_protocol::mount_source_acquisition_state::{
@@ -642,8 +642,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// sole descriptor and exact transaction for resealing.
     pub fn commit_active_mount_source_root_v2(
         &mut self,
-        journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
-        transaction: aos_sandbox::JournalTransaction,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         prepared: crate::PreparedActiveMountSourceRootV2,
     ) -> crate::SourceRootPostcommitOutcomeV2 {
         let validated = (|| {
@@ -714,8 +714,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// retaining the sole descriptor and exact transaction for resealing.
     pub fn commit_mount_source_consumption_v2(
         &mut self,
-        journal: &mut aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>,
-        transaction: aos_sandbox::JournalTransaction,
+        journal: &mut aos_sandbox_mount_native::MountSourceConsumptionJournalAuthorityV1<'_>,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         prepared: crate::PreparedMountSourceConsumptionV2,
     ) -> crate::SourceRootPostcommitOutcomeV2 {
         let mut retained_predecessor = None;
@@ -857,8 +857,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// the sole descriptor and exact prepared request authorization.
     pub fn commit_mount_source_release_v2(
         &mut self,
-        journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
-        transaction: aos_sandbox::JournalTransaction,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         prepared: crate::PreparedMountSourceReleaseV2,
         request: PreparedMountProviderRequestV2,
     ) -> crate::SourceRootPostcommitOutcomeV2 {
@@ -1000,8 +1000,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// sole manager-negative proof and exact transaction for resealing.
     pub fn commit_released_mount_source_root_v2(
         &mut self,
-        journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
-        transaction: aos_sandbox::JournalTransaction,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        transaction: aos_sandbox_mount_native::JournalTransaction,
         prepared: crate::PreparedReleasedMountSourceRootV2,
     ) -> crate::NegativeCustodyPostcommitOutcomeV2 {
         let validated = (|| {
@@ -1068,7 +1068,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[must_use]
     pub fn reseal_mount_source_root_postcommit_v2(
         &mut self,
-        journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         recovery: crate::SourceRootPostcommitRecoveryV2,
     ) -> crate::SourceRootPostcommitOutcomeV2 {
         use crate::descriptor::{
@@ -1205,7 +1205,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn reseal_mount_source_consumption_postcommit_v2(
         &mut self,
-        journal: &mut aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>,
+        journal: &mut aos_sandbox_mount_native::MountSourceConsumptionJournalAuthorityV1<'_>,
         recovery: crate::SourceRootPostcommitRecoveryV2,
     ) -> crate::SourceRootPostcommitOutcomeV2 {
         use crate::descriptor::SourceRootPostcommitRecoveryPayloadV2;
@@ -1337,9 +1337,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn validate_sealed_mount_source_consumption_v2(
         &mut self,
-        journal: &aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>,
+        journal: &aos_sandbox_mount_native::MountSourceConsumptionJournalAuthorityV1<'_>,
         success: &crate::SourceRootPostcommitSuccessV2,
-        transaction: &aos_sandbox::JournalTransaction,
+        transaction: &aos_sandbox_mount_native::JournalTransaction,
         predecessor_record: &[u8],
     ) -> Result<(), SourceProviderSecurityError> {
         let crate::SourceRootPostcommitSuccessV2::Consumed(consumed) = success else {
@@ -1370,7 +1370,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[must_use]
     pub fn reseal_negative_custody_postcommit_v2(
         &mut self,
-        journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         recovery: crate::NegativeCustodyPostcommitRecoveryV2,
     ) -> crate::NegativeCustodyPostcommitOutcomeV2 {
         self.commit_released_mount_source_root_v2(journal, recovery.transaction, recovery.prepared)
@@ -1378,7 +1378,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
 
     pub(super) fn verify_provider_outcome_bytes_v2(
         &mut self,
-        catalog_journal: Option<&aos_sandbox::ProtectedJournalAuthority<'_>>,
+        catalog_journal: Option<&aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>>,
         authorization: &AuthorizedMountProviderOutcomeV2,
         canonical_response: Vec<u8>,
         source_root_observation: Option<
@@ -1416,7 +1416,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
 
     pub(super) fn check_original_release_status_bytes_v1(
         &mut self,
-        current: &aos_sandbox::OriginalRootProtectedReadbackV5,
+        current: &aos_sandbox_mount_native::OriginalRootProtectedReadbackV5,
         prepared: &PreparedMountProviderRequestV2,
         original: &AuthorizedMountProviderOutcomeV2,
         retained: &native_pending::OriginalNativeReceivedOutcomeV5,
@@ -1431,7 +1431,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
 
     fn verify_provider_outcome_bytes_inner_v5(
         &mut self,
-        catalog_journal: Option<&aos_sandbox::ProtectedJournalAuthority<'_>>,
+        catalog_journal: Option<&aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>>,
         authorization: &AuthorizedMountProviderOutcomeV2,
         canonical_response: Vec<u8>,
         source_root_observation: Option<

@@ -75,9 +75,11 @@ impl VerifiedAssignmentAcceptanceV1 {
             || !observation
                 .context()
                 .is_current_at(coordinator_unix_seconds)
-            || !intent
-                .selected_capability_binding()
-                .matches_current(&capability_observation, coordinator_unix_seconds)
+            || !super::selected_capability_matches_current_v1(
+                intent.selected_capability_binding(),
+                &capability_observation,
+                coordinator_unix_seconds,
+            )
             || capability_observation.audience_node() != intent.node()
             || capability_observation.snapshot().lineage() != observation.lineage()
             || capability_observation.coordinator_epoch()
@@ -179,10 +181,11 @@ impl VerifiedAssignmentAcceptanceV1 {
                 .is_current_at(coordinator_unix_seconds)
             && self.capability_evidence_digest
                 == self.capability_observation.evidence_binding_digest()
-            && self
-                .intent
-                .selected_capability_binding()
-                .matches_current(&self.capability_observation, coordinator_unix_seconds)
+            && super::selected_capability_matches_current_v1(
+                self.intent.selected_capability_binding(),
+                &self.capability_observation,
+                coordinator_unix_seconds,
+            )
             && self.observation.observed_at_unix_seconds() <= coordinator_unix_seconds
             && self.observation.authority().is_some_and(|authority| {
                 authority.is_current_for(

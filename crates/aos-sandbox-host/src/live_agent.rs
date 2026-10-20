@@ -7,7 +7,12 @@
 //! inherited descriptor, reconnects to a path, or activates nspawn.
 
 pub mod argument_attempt;
+pub mod execution_original;
 pub mod argument_readback;
+
+pub(crate) mod launch_original;
+mod send_original;
+pub(crate) mod deferred_completion;
 
 use std::fs::File;
 use std::io::Read as _;
@@ -94,7 +99,7 @@ struct CanaryCredentialIdentityV1 {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum CanaryAgentFailureV1 {
+pub(crate) enum CanaryAgentFailureV1 {
     #[error(transparent)]
     Native(#[from] rustix::io::Errno),
     #[error(transparent)]
@@ -541,7 +546,7 @@ impl HostCanaryAgentOwnerV1 {
             512,
             deadline,
             Some(original.deadline),
-            AgentReceiveDispositionV1::Canary {
+            AgentReceiveDispositionV1::Retained {
                 record: &mut self.response_record,
                 failure: &mut self.receive_failure,
             },
@@ -595,6 +600,19 @@ impl HostCanaryAgentOwnerV1 {
         child: &mut aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1,
         report_socket: &mut SeqpacketSocket,
     ) -> Result<(), CanaryAgentFailureV1> {
+        require_original_agent_subject_data_v2(
+            self.response_record.as_ref(), self.socket.as_ref(), child, report_socket,
+        )
+    }
+
+}
+
+fn require_original_agent_subject_data_v2(
+    response: Option<&aos_sandbox_linux::seqpacket::ReceivedRecord>,
+    socket: Option<&SeqpacketSocket>,
+    child: &mut aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1,
+    report_socket: &mut SeqpacketSocket,
+) -> Result<(), CanaryAgentFailureV1> {
         use std::os::fd::AsFd as _;
 
         // The signature authenticates bytes, not execution provenance. Join the
@@ -602,8 +620,8 @@ impl HostCanaryAgentOwnerV1 {
         // Guest bootstrap. The coordinator still checks that bootstrap, its
         // root/package/mapping and its invocation before this exchange.
         child.recheck_original(report_socket)?;
-        let response = self.response_record.as_ref().ok_or(CanaryAgentFailureV1::Original)?;
-        self.socket.as_ref().ok_or(CanaryAgentFailureV1::Original)?
+        let response = response.ok_or(CanaryAgentFailureV1::Original)?;
+        socket.ok_or(CanaryAgentFailureV1::Original)?
             .require_host_canary_response_original_v1(response)?;
         let actual = response.subject();
         let nominated = child.child()?;
@@ -622,7 +640,6 @@ impl HostCanaryAgentOwnerV1 {
         }
         child.recheck_original(report_socket)?;
         Ok(())
-    }
 }
 
 fn canary_credential_identity(file: &File) -> Result<CanaryCredentialIdentityV1, rustix::io::Errno> {
@@ -652,6 +669,9 @@ pub enum HostAgentLiveErrorV1 {
     /// The bounded channel operation exceeded its deadline.
     #[error("guest channel deadline expired")]
     Deadline,
+    /// The same retained effect clock refused the final native write.
+    #[error("guest effect write clock refused")]
+    RetainedEffectClock,
     /// The agent answered with an unexpected frame or invalid signature.
     #[error("guest channel returned unauthenticated traffic")]
     Unauthenticated,
@@ -744,14 +764,7 @@ impl HostAgentProtectedAttachTrustV1 {
         claim.revalidate()?;
         let pins = HostOpenSshStaticTrustV1::load_protected()
             .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
-        if self.runtime != agent_runtime(claim.currentness())?
-            || self.trust_digest != pins.credential_digest()
-            || self.record.host_public_key_bytes() != pins.host_public_key().as_bytes()
-            || self.record.trusted_ca_public_key_bytes()
-                != pins.trusted_user_ca_public_key().as_bytes()
-        {
-            return Err(HostAgentLiveErrorV1::Binding);
-        }
+        require_attach_trust_pins_v2(claim, &self, &pins)?;
 
         let bytes = self.record.encode();
         let credential = SealedReadOnlyCredential::create(
@@ -762,6 +775,30 @@ impl HostAgentProtectedAttachTrustV1 {
         claim.revalidate()?;
         Ok(credential)
     }
+}
+
+fn require_attach_trust_pins_v2(
+    claim: &DormantRuntimeExecutionClaimV1<'_>,
+    trust: &HostAgentProtectedAttachTrustV1,
+    pins: &HostOpenSshStaticTrustV1,
+) -> Result<(), HostAgentLiveErrorV1> {
+    if trust.runtime != agent_runtime(claim.currentness())?
+        || trust.trust_digest != pins.credential_digest()
+        || trust.record.host_public_key_bytes() != pins.host_public_key().as_bytes()
+        || trust.record.trusted_ca_public_key_bytes() != pins.trusted_user_ca_public_key().as_bytes()
+    { return Err(HostAgentLiveErrorV1::Binding); }
+    Ok(())
+}
+
+fn require_launch_record_v2(
+    claim: &DormantRuntimeExecutionClaimV1<'_>, record: &GuestAgentLaunchRecordV1,
+) -> Result<(), HostAgentLiveErrorV1> {
+    let runtime = agent_runtime(claim.currentness())?;
+    let peer = claim.agent_peer();
+    if record.runtime() != &runtime || record.channel_binding() != peer.channel_binding()
+        || record.verifying_key_bytes() != peer.public_key()
+    { return Err(HostAgentLiveErrorV1::Binding); }
+    Ok(())
 }
 
 fn read_protected_attach_private_key() -> Result<Vec<u8>, HostAgentLiveErrorV1> {
@@ -776,14 +813,168 @@ pub(crate) fn read_root_owned_credential(
     minimum_bytes: u64,
     maximum_bytes: u64,
 ) -> Result<Zeroizing<Vec<u8>>, ()> {
-    let directory = open(
+    read_root_owned_credential_engine(file_name, minimum_bytes, maximum_bytes, None)?
+        .ok_or(())
+}
+
+
+/// Retains the fixed public guest-package binding credential's native prefix.
+///
+/// This inert destination exposes neither seed input nor a path-selected
+/// reader. Its actual catalog caller pays the footprint before capture.
+pub(crate) struct HostGuestPackageBindingCredentialOriginalV2 {
+    native: launch_original::CredentialOriginalV2,
+    captured: Option<crate::Result<()>>,
+    held_directory: Option<std::io::Result<std::fs::Metadata>>,
+    held_file: Option<std::io::Result<std::fs::Metadata>>,
+    named_directory: Option<Result<std::fs::File, rustix::io::Errno>>,
+    named_directory_metadata: Option<std::io::Result<std::fs::Metadata>>,
+    named_file: Option<Result<std::fs::File, rustix::io::Errno>>,
+    named_file_metadata: Option<std::io::Result<std::fs::Metadata>>,
+    finished: Option<crate::Result<()>>,
+}
+
+impl HostGuestPackageBindingCredentialOriginalV2 {
+    pub(crate) fn new() -> Self {
+        Self { native: launch_original::CredentialOriginalV2::new(), captured: None,
+            held_directory: None, held_file: None, named_directory: None,
+            named_directory_metadata: None, named_file: None, named_file_metadata: None,
+            finished: None }
+    }
+
+    pub(crate) fn receiving_demand_v2() -> Option<aos_sandbox_core::ResourceVector> {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        let bytes = std::mem::size_of::<Self>().checked_mul(2)?
+            .checked_add(65_usize.checked_mul(4)?)?;
+        Some(ResourceVector::ZERO
+            .with(D::MemoryBytes, u64::try_from(bytes).ok()?)
+            // Original directory/leaf and independent named directory/leaf
+            // coexist through the complete owed comparison, including failure.
+            .with(D::OpenFiles, 4))
+    }
+
+    pub(crate) fn capture_once_v2(&mut self) -> crate::Result<()> {
+        if self.captured.is_some() {
+            return Err(crate::HostError::Fence("guest package credential capture was already entered"));
+        }
+        self.captured = Some(read_root_owned_credential_engine(
+            "guest-root-package-binding-v1", 65, 65, Some(&mut self.native),
+        ).map(|_| ()).map_err(|()| crate::HostError::Catalog(
+            "guest package binding credential is unavailable".to_owned(),
+        )));
+        if !matches!(self.captured, Some(Ok(()))) {
+            return Err(crate::HostError::Fence("guest package credential failed; native originals retained"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn bytes_v2(&self) -> crate::Result<&[u8]> {
+        if !matches!(self.captured, Some(Ok(()))) {
+            return Err(crate::HostError::Fence("guest package credential has no completed read"));
+        }
+        Ok(self.native.bytes.as_slice())
+    }
+
+    pub(crate) fn finish_once_v2(&mut self) -> crate::Result<()> {
+        if self.captured.is_none() || self.finished.is_some() {
+            return Err(crate::HostError::Fence("guest package credential post is not owed"));
+        }
+        // Observe all reachable held/named locations before interpreting any
+        // result. A failed primary never suppresses the independent fixed-name
+        // pass, and none of these observations supplies new launch authority.
+        self.held_directory = self.native.directory.as_ref().and_then(|result| result.as_ref().ok())
+            .map(std::fs::File::metadata);
+        self.held_file = self.native.file.as_ref().and_then(|result| result.as_ref().ok())
+            .map(std::fs::File::metadata);
+        self.named_directory = Some(open(SEED_DIRECTORY,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty()).map(std::fs::File::from));
+        if let Some(Ok(directory)) = self.named_directory.as_ref() {
+            self.named_directory_metadata = Some(directory.metadata());
+            self.named_file = Some(openat(directory, "guest-root-package-binding-v1",
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty()).map(std::fs::File::from));
+        }
+        if let Some(Ok(file)) = self.named_file.as_ref() {
+            self.named_file_metadata = Some(file.metadata());
+        }
+        self.finished = Some((|| {
+            let captured_directory = self.native.directory_metadata.as_ref().and_then(|result| result.as_ref().ok());
+            let captured_file = self.native.metadata.as_ref().and_then(|result| result.as_ref().ok());
+            let held_directory = self.held_directory.as_ref().and_then(|result| result.as_ref().ok());
+            let held_file = self.held_file.as_ref().and_then(|result| result.as_ref().ok());
+            let named_directory = self.named_directory_metadata.as_ref().and_then(|result| result.as_ref().ok());
+            let named_file = self.named_file_metadata.as_ref().and_then(|result| result.as_ref().ok());
+            let (Some(captured_directory), Some(captured_file), Some(held_directory),
+                Some(held_file), Some(named_directory), Some(named_file)) =
+                (captured_directory, captured_file, held_directory, held_file, named_directory, named_file)
+            else { return Err(crate::HostError::Fence("guest package credential post is incomplete")); };
+            let directory_key = |metadata: &std::fs::Metadata|
+                (metadata.dev(), metadata.ino(), metadata.uid(), metadata.mode());
+            let file_key = |metadata: &std::fs::Metadata|
+                (metadata.dev(), metadata.ino(), metadata.uid(), metadata.mode(), metadata.nlink(),
+                    metadata.len(), metadata.mtime(), metadata.mtime_nsec(), metadata.ctime(), metadata.ctime_nsec());
+            if directory_key(captured_directory) != directory_key(held_directory)
+                || directory_key(captured_directory) != directory_key(named_directory)
+                || file_key(captured_file) != file_key(held_file)
+                || file_key(captured_file) != file_key(named_file)
+            { return Err(crate::HostError::Fence("guest package credential held or named identity changed")); }
+            Ok(())
+        })());
+        if !matches!(self.finished, Some(Ok(()))) {
+            return Err(crate::HostError::Fence("guest package credential post failed; originals retained"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        fn error<T, E: std::error::Error + 'static>(slot: &Option<Result<T, E>>)
+            -> Option<&(dyn std::error::Error + 'static)>
+        { slot.as_ref()?.as_ref().err().map(|cause| cause as _) }
+        self.native.failure().or_else(|| error(&self.captured))
+            .or_else(|| error(&self.held_directory)).or_else(|| error(&self.held_file))
+            .or_else(|| error(&self.named_directory)).or_else(|| error(&self.named_directory_metadata))
+            .or_else(|| error(&self.named_file)).or_else(|| error(&self.named_file_metadata))
+            .or_else(|| error(&self.finished))
+    }
+}
+
+fn read_root_owned_credential_engine(
+    file_name: &str,
+    minimum_bytes: u64,
+    maximum_bytes: u64,
+    original: Option<&mut launch_original::CredentialOriginalV2>,
+) -> Result<Option<Zeroizing<Vec<u8>>>, ()> {
+    // Local declaration order preserves the ordinary bytes-before-File and
+    // leaf-before-directory destruction boundaries. Receiving borrows only
+    // the same named native destinations instead of those local slots.
+    let mut local_directory = None;
+    let mut local_directory_metadata = None;
+    let mut local_file = None;
+    let mut local_metadata = None;
+    let mut local_bytes = Zeroizing::new(Vec::new());
+    let mut local_read = None;
+    let selected = original.is_some();
+    let (directory, directory_metadata, file, metadata, bytes, read) = match original {
+        Some(original) => (
+            &mut original.directory, &mut original.directory_metadata,
+            &mut original.file, &mut original.metadata, &mut original.bytes,
+            &mut original.read,
+        ),
+        None => (
+            &mut local_directory, &mut local_directory_metadata,
+            &mut local_file, &mut local_metadata, &mut local_bytes,
+            &mut local_read,
+        ),
+    };
+    *directory = Some(open(
         SEED_DIRECTORY,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
-    )
-    .map_err(|_| ())?;
-    let directory = File::from(directory);
-    let directory_metadata = directory.metadata().map_err(|_| ())?;
+    ).map(File::from));
+    let directory = directory.as_ref().and_then(|result| result.as_ref().ok()).ok_or(())?;
+    *directory_metadata = Some(directory.metadata());
+    let directory_metadata = directory_metadata.as_ref().and_then(|result| result.as_ref().ok()).ok_or(())?;
     if !directory_metadata.is_dir()
         || directory_metadata.uid() != 0
         || directory_metadata.mode() & 0o022 != 0
@@ -791,15 +982,15 @@ pub(crate) fn read_root_owned_credential(
         return Err(());
     }
 
-    let descriptor = openat(
-        &directory,
+    *file = Some(openat(
+        directory,
         Path::new(file_name),
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
-    )
-    .map_err(|_| ())?;
-    let mut file = File::from(descriptor);
-    let metadata = file.metadata().map_err(|_| ())?;
+    ).map(File::from));
+    let file = file.as_mut().and_then(|result| result.as_mut().ok()).ok_or(())?;
+    *metadata = Some(file.metadata());
+    let metadata = metadata.as_ref().and_then(|result| result.as_ref().ok()).ok_or(())?;
     if !metadata.is_file()
         || metadata.uid() != 0
         || metadata.nlink() != 1
@@ -812,9 +1003,12 @@ pub(crate) fn read_root_owned_credential(
     }
 
     let length = usize::try_from(metadata.len()).map_err(|_| ())?;
-    let mut bytes = Zeroizing::new(vec![0; length]);
-    file.read_exact(&mut bytes).map_err(|_| ())?;
-    Ok(bytes)
+    *bytes = Zeroizing::new(vec![0; length]);
+    *read = Some(file.read_exact(bytes));
+    if !read.as_ref().is_some_and(Result::is_ok) {
+        return Err(());
+    }
+    if selected { Ok(None) } else { Ok(Some(std::mem::take(bytes))) }
 }
 
 /// Retains a zeroizing seed verified against the fixed protected agent peer.
@@ -849,7 +1043,28 @@ impl HostAgentProtectedSeedV1 {
             SEED_CREDENTIAL_BYTES as u64,
         )
         .map_err(|()| HostAgentLiveErrorV1::SeedUnavailable)?;
-        let seed = decode_seed_credential(&bytes)?;
+        Self::from_credential_for_claim(claim, &bytes)
+    }
+
+    pub(super) fn open_receiving_v2(
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        original: &mut launch_original::CredentialOriginalV2,
+        receiving: &crate::plan::HostExecutionReceivingLoanV2<'_>,
+    ) -> Result<Self, HostAgentLiveErrorV1> {
+        receiving.require_launch_current_v2().map_err(|_| HostAgentLiveErrorV1::RecoveryRequired)?;
+        claim.revalidate()?;
+        read_root_owned_credential_engine(
+            SEED_FILE, SEED_CREDENTIAL_BYTES as u64, SEED_CREDENTIAL_BYTES as u64,
+            Some(&mut *original),
+        ).map_err(|()| HostAgentLiveErrorV1::SeedUnavailable)?;
+        Self::from_credential_for_claim(claim, &original.bytes)
+    }
+
+    fn from_credential_for_claim(
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        bytes: &[u8],
+    ) -> Result<Self, HostAgentLiveErrorV1> {
+        let seed = decode_seed_credential(bytes)?;
         if SigningKey::from_bytes(&seed).verifying_key().to_bytes()
             != claim.agent_peer().public_key()
         {
@@ -876,6 +1091,14 @@ impl HostAgentProtectedSeedV1 {
     /// Returns an error for unavailable entropy or invalid launch parameters.
     pub fn launch_record(
         self,
+        features: aos_sandbox_agent::AgentFeatureSetV1,
+        package_binding: ObjectDigest,
+    ) -> Result<GuestAgentLaunchRecordV1, HostAgentLiveErrorV1> {
+        self.launch_record_engine(features, package_binding)
+    }
+
+    fn launch_record_engine(
+        &self,
         features: aos_sandbox_agent::AgentFeatureSetV1,
         package_binding: ObjectDigest,
     ) -> Result<GuestAgentLaunchRecordV1, HostAgentLiveErrorV1> {
@@ -950,6 +1173,26 @@ impl HostAgentGuestLaunchDescriptorsV1 {
         claim.revalidate()?;
         Ok(spec)
     }
+    pub(crate) fn bind_unit_spec_receiving_v2(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        assignment: &ValidatedAssignmentFence,
+        spec: &mut SandboxUnitSpec,
+        original: &mut aos_systemd::SandboxGuestAgentPinOriginalV2,
+    ) -> Result<(), HostAgentLiveErrorV1> {
+        claim.revalidate()?;
+        if claim.currentness() != &self.currentness
+            || !matches_assignment(claim, assignment)
+            || spec.name() != &SandboxUnitName::from_incarnation(*assignment.incarnation_id())
+        {
+            return Err(HostAgentLiveErrorV1::Binding);
+        }
+        spec.bind_guest_agent_descriptors_retaining_v2(
+            self.channel_fd3(), self.provisioning_fd4(), self.attach_trust_fd5(), original,
+        )?;
+        claim.revalidate()?;
+        Ok(())
+    }
 }
 
 /// Prepares an exact launch without allowing a socket or signer substitution.
@@ -982,12 +1225,7 @@ impl HostAgentLaunchHandoffV1 {
         let currentness = *claim.currentness();
         let peer = claim.agent_peer();
         let runtime = agent_runtime(&currentness)?;
-        if record.runtime() != &runtime
-            || record.channel_binding() != peer.channel_binding()
-            || record.verifying_key_bytes() != peer.public_key()
-        {
-            return Err(HostAgentLiveErrorV1::Binding);
-        }
+        require_launch_record_v2(claim, &record)?;
 
         let (socket, channel) = SeqpacketSocket::pair_with_record_subjects()?;
         let provisioning_bytes = Zeroizing::new(record.encode());
@@ -1089,26 +1327,91 @@ impl HostAgentPendingSessionV1 {
         claim: &DormantRuntimeExecutionClaimV1<'_>,
         deadline: Instant,
     ) -> Result<HostAgentLiveSessionV1, HostAgentLiveErrorV1> {
+        let authenticated = self.authenticate_engine(claim, deadline, None, None)?;
+        Ok(HostAgentLiveSessionV1 {
+            socket: self.socket,
+            currentness: self.currentness,
+            public_key: self.public_key,
+            handshake: authenticated.handshake,
+            response: authenticated.response,
+            binding: authenticated.binding,
+            next_sequence: authenticated.next_sequence,
+            poisoned: false,
+        })
+    }
+
+    // The ordinary and receiving entries share this exact handshake recipe.
+    // A receiving caller has parked Self before invoking it; raw originals
+    // stay in its destination when later framing, signature or currentness fails.
+    fn authenticate_engine(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        deadline: Instant,
+        mut original: Option<&mut launch_original::HostAgentHandshakeOriginalV2>,
+        before_native_write: Option<&mut dyn FnMut() -> Result<(), HostAgentLiveErrorV1>>,
+    ) -> Result<launch_original::AuthenticatedHandshakeV2, HostAgentLiveErrorV1> {
+        if let Some(original) = original.as_deref_mut() {
+            original.io.require_response_mode_v6(&self.socket)?;
+        }
         self.validate_claim(claim)?;
         let mut session = [0; 16];
         let mut challenge = [0; 32];
         let handshake = fresh_handshake(self.runtime, self.channel_binding, &mut session, &mut challenge)?;
-
-        send_frame(
-            &mut self.socket,
-            &encode_frame_v1(&AgentFrameV1::HandshakeRequest(handshake.clone())),
-            deadline,
-            None,
-        )?;
-        let response = match decode_frame_v1(&receive_record(
-            &mut self.socket,
-            aos_sandbox_agent::protocol::MAX_AGENT_FRAME_BYTES,
-            deadline,
-            None,
-        )?)? {
+        if let Some(original) = original.as_deref_mut() {
+            original.handshake = Some(handshake.clone());
+            original.send_bytes = encode_frame_v1(&AgentFrameV1::HandshakeRequest(handshake.clone()));
+            let before_native_write = before_native_write
+                .ok_or(HostAgentLiveErrorV1::RecoveryRequired)?;
+            original.io.sent = Some(send_frame_engine(
+                &mut self.socket, &original.send_bytes, deadline, None,
+                AgentSendDispositionV3::Retained {
+                    attempts: &mut original.send_attempts,
+                    before_native_write,
+                },
+            ));
+            if !original.io.sent.as_ref().is_some_and(Result::is_ok) {
+                return Err(HostAgentLiveErrorV1::RecoveryRequired);
+            }
+        } else {
+            send_frame(
+                &mut self.socket,
+                &encode_frame_v1(&AgentFrameV1::HandshakeRequest(handshake.clone())),
+                deadline,
+                None,
+            )?;
+        }
+        let frame = if let Some(original) = original.as_deref_mut() {
+            original.io.received = Some(receive_record_into(
+                &mut self.socket,
+                aos_sandbox_agent::protocol::MAX_AGENT_HANDSHAKE_RESPONSE_BYTES_V2,
+                deadline,
+                None,
+                AgentReceiveDispositionV1::Response {
+                    record: &mut original.io.record,
+                    failure: &mut original.io.receive_failure,
+                },
+            ));
+            if !original.io.received.as_ref().is_some_and(Result::is_ok) {
+                return Err(HostAgentLiveErrorV1::RecoveryRequired);
+            }
+            let record = original.io.record.as_ref()
+                .ok_or(HostAgentLiveErrorV1::RecoveryRequired)?;
+            decode_frame_v1(record.payload())?
+        } else {
+            decode_frame_v1(&receive_record(
+                &mut self.socket,
+                aos_sandbox_agent::protocol::MAX_AGENT_FRAME_BYTES,
+                deadline,
+                None,
+            )?)?
+        };
+        let response = match frame {
             AgentFrameV1::HandshakeResponse(response) => response,
             _ => return Err(HostAgentLiveErrorV1::Unauthenticated),
         };
+        if let Some(original) = original.as_deref_mut() {
+            original.response = Some(response.clone());
+        }
         let binding = verify_original_handshake(
             &handshake,
             &response,
@@ -1117,16 +1420,9 @@ impl HostAgentPendingSessionV1 {
             self.public_key,
         )?;
         self.validate_claim(claim)?;
-
-        Ok(HostAgentLiveSessionV1 {
-            socket: self.socket,
-            currentness: self.currentness,
-            public_key: self.public_key,
-            handshake,
-            response,
-            binding,
+        Ok(launch_original::AuthenticatedHandshakeV2 {
+            handshake, response, binding,
             next_sequence: AgentOperationSequenceV1::new(1)?,
-            poisoned: false,
         })
     }
 
@@ -1159,6 +1455,32 @@ pub struct HostAgentLiveSessionV1 {
 }
 
 impl HostAgentLiveSessionV1 {
+    pub(crate) fn observe_stop_channel_once_v4(
+        &self,
+        original: &mut aos_sandbox_linux::seqpacket::SeqpacketShutdownOriginalV4,
+        returned: &mut Option<std::result::Result<bool, SeqpacketError>>,
+    ) {
+        // No transport/session mutation or normal send/receive is permitted by
+        // this native observation. Services still owns the whole SAME Agent.
+        *returned = Some(original.observe_once_v4(&self.socket));
+    }
+
+
+    /// Borrows the native roster of the exact successful initial handshake.
+    ///
+    /// # Errors
+    /// Rejects an already-used, poisoned or closed channel without native IO.
+    pub(crate) fn initial_launch_native_files_v4(&self) -> crate::Result<usize> {
+        if self.poisoned || self.next_sequence.get() != 1 || self.socket.as_fd().is_err() {
+            return Err(crate::HostError::Fence("initial Agent native channel is unavailable"));
+        }
+        // Only the successful initial handshake consumer calls this before
+        // any execution send. A failed/partial send remains on its launch
+        // setup original and prevents the whole positive handoff.
+        Ok(2)
+    }
+
+
     /// Returns the binding proven by the guest's exact signed handshake.
     #[must_use]
     pub const fn session_binding(&self) -> AgentSessionBindingV1 {
@@ -1216,13 +1538,71 @@ impl HostAgentLiveSessionV1 {
         deadline: Instant,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DurableExecutionEffectV1, HostAgentLiveErrorV1> {
+        self.issue_pending_effect_engine_v2(claim, pending, deadline,
+            deadline_boottime_nanoseconds, None, None, None, None)
+    }
+
+    /// Uses the same pending effect engine with caller-owned native custody.
+    ///
+    /// The existing real runtime claim, already committed pending effect and
+    /// live Agent are mandatory; this adds no grant or receiving capacity.
+    ///
+    /// # Errors
+    /// Preserves semantic errors and retains native creation/send/receive
+    /// failures in `original`, returning a recovery projection at that frontier.
+    #[doc(hidden)]
+    pub fn issue_pending_effect_retaining_v2(
+        &mut self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        pending: &DurableExecutionEffectV1,
+        deadline: Instant,
+        deadline_boottime_nanoseconds: u64,
+        original: &mut execution_original::AgentExecutionOriginalV2,
+        before_native_write: &mut dyn FnMut() -> Result<(), HostAgentLiveErrorV1>,
+    ) -> Result<DurableExecutionEffectV1, HostAgentLiveErrorV1> {
+        if original.entered { return Err(HostAgentLiveErrorV1::RecoveryRequired); }
+        original.entered = true;
+        self.issue_pending_effect_engine_v2(claim, pending, deadline,
+            deadline_boottime_nanoseconds, Some(original), None, Some(before_native_write), None)
+    }
+
+    pub(crate) fn issue_pending_effect_retaining_capture_v3(
+        &mut self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        pending: &DurableExecutionEffectV1,
+        deadline: Instant,
+        deadline_boottime_nanoseconds: u64,
+        original: &mut execution_original::AgentExecutionOriginalV2,
+        before_native_write: &mut dyn FnMut() -> Result<(), HostAgentLiveErrorV1>,
+        pipes: &crate::storage_existing_output::capture::StorageCapturePipeLoanV2<'_>,
+    ) -> Result<DurableExecutionEffectV1, HostAgentLiveErrorV1> {
+        if original.entered { return Err(HostAgentLiveErrorV1::RecoveryRequired); }
+        original.entered = true;
+        self.issue_pending_effect_engine_v2(claim, pending, deadline,
+            deadline_boottime_nanoseconds, Some(original), Some(pipes), Some(before_native_write), None)
+    }
+
+    fn issue_pending_effect_engine_v2(
+        &mut self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        pending: &DurableExecutionEffectV1,
+        deadline: Instant,
+        deadline_boottime_nanoseconds: u64,
+        mut original: Option<&mut execution_original::AgentExecutionOriginalV2>,
+        capture: Option<&crate::storage_existing_output::capture::StorageCapturePipeLoanV2<'_>>,
+        before_native_write: Option<&mut dyn FnMut() -> Result<(), HostAgentLiveErrorV1>>,
+        deferred: Option<&mut deferred_completion::AgentDeferredCompletionOriginalV5>,
+    ) -> Result<DurableExecutionEffectV1, HostAgentLiveErrorV1> {
+        if let Some(original) = original.as_deref_mut() {
+            original.require_response_mode_v6(&self.socket)?;
+        }
         if self.poisoned {
             return Err(HostAgentLiveErrorV1::RecoveryRequired);
         }
         check_deadline(deadline, Some(deadline_boottime_nanoseconds))?;
         self.validate_claim(claim)?;
+        claim.revalidate_execution_admission_v2(pending.admission())?;
         if pending.phase() != EffectPhaseV1::Pending
-            || pending.admission().currentness() != claim.currentness()
             || claim.has_unsettled_host_agent_route()?
         {
             return Err(HostAgentLiveErrorV1::Binding);
@@ -1237,25 +1617,64 @@ impl HostAgentLiveSessionV1 {
         if required_feature.is_some_and(|feature| !self.response.features().contains(feature)) {
             return Err(HostAgentLiveErrorV1::Binding);
         }
+        if capture.is_some()
+            && (pending.issue().operation() != EffectOperationV1::AuthorizeExecution
+                || original.is_none()
+                || !self.response.features().contains(AgentFeatureV1::CapturePipeHandoffV2))
+        {
+            return Err(HostAgentLiveErrorV1::Binding);
+        }
         let next_sequence = self.next_sequence.checked_next()?;
         let request = project_agent_request(pending, self.binding, self.next_sequence, claim)?;
+        let ssh_plan = original.as_ref().and_then(|original| original.ssh_quote)
+            .map(|quote| {
+                if capture.is_some() || pending.issue().operation() != EffectOperationV1::AuthorizeExecution {
+                    return Err(HostAgentLiveErrorV1::Binding);
+                }
+                aos_sandbox_agent::openssh_receiving::OpenSshDescendantPlanDataV1::derive_quote_data_v1(
+                    self.handshake.runtime(), &request, quote.memory,
+                    u64::from(quote.nofile) * 4, quote.copied_files, quote.highest_fd,
+                ).map_err(|_| HostAgentLiveErrorV1::Binding)
+            }).transpose()?;
         let sealed_specification = match request.operation() {
             AgentExecutionOperationV1::Authorize {
                 specification_bytes,
                 ..
-            } => Some(SealedReadOnlyCredential::create(
-                "aos-agent-execution-spec-v1",
-                specification_bytes,
-                MAX_AGENT_SEALED_SPEC_BYTES_V1,
-            )?),
+            } => match original.as_deref_mut() {
+                Some(original) => {
+                    original.credential.create_once("aos-agent-execution-spec-v1",
+                        specification_bytes, MAX_AGENT_SEALED_SPEC_BYTES_V1)
+                        .map_err(|_| HostAgentLiveErrorV1::RecoveryRequired)?;
+                    None
+                }
+                None => Some(SealedReadOnlyCredential::create(
+                    "aos-agent-execution-spec-v1", specification_bytes,
+                    MAX_AGENT_SEALED_SPEC_BYTES_V1,
+                )?),
+            },
             _ => None,
         };
-        let frame = if sealed_specification.is_some() {
+        let frame = if sealed_specification.is_some()
+            || original.as_ref().is_some_and(|original| original.credential.completed().is_some()) {
             let reference = AgentSealedAuthorizeReferenceV1::from_request(&request)?;
-            encode_frame_v1(&AgentFrameV1::SealedAuthorizeRequest(reference))
+            if capture.is_some() {
+                encode_frame_v1(&AgentFrameV1::SealedCaptureAuthorizeRequestV2(reference))
+            } else if let Some(plan) = ssh_plan {
+                let reference = aos_sandbox_agent::AgentSealedSshAuthorizeReferenceV1::from_request_data_v1(
+                    self.handshake.runtime(), &request, plan)?;
+                encode_frame_v1(&AgentFrameV1::SealedSshAuthorizeRequestV1(reference))
+            } else {
+                encode_frame_v1(&AgentFrameV1::SealedAuthorizeRequest(reference))
+            }
         } else {
             encode_frame_v1(&AgentFrameV1::OperationRequest(request.clone()))
         };
+        // Park the exact encoded packet before any subsequent claim/append
+        // refusal. Ordinary callers retain their original local ownership.
+        let ordinary_frame = if let Some(original) = original.as_deref_mut() {
+            original.frame = Some(frame);
+            None
+        } else { Some(frame) };
         let verifier = BackendEvidenceVerifierV1::new(
             claim.agent_peer().public_key(),
             claim.agent_peer().trust_context(),
@@ -1289,29 +1708,65 @@ impl HostAgentLiveSessionV1 {
         let operation = *issued.issue().idempotency().operation().as_bytes();
         // Retain this exact sealed descriptor through signed outcome custody;
         // an uncertain send poisons the session rather than rebuilding a retry.
-        if let Some(specification) = &sealed_specification {
-            send_descriptor_frame(
-                &mut self.socket,
-                &frame,
-                specification.as_fd(),
-                deadline,
-                Some(deadline_boottime_nanoseconds),
-            )?;
+        if let Some(original) = original.as_deref_mut() {
+            let frame = original.frame.as_deref().ok_or(HostAgentLiveErrorV1::RecoveryRequired)?;
+            let gate = before_native_write.ok_or(HostAgentLiveErrorV1::RecoveryRequired)?;
+            let disposition = AgentSendDispositionV3::Retained {
+                attempts: &mut original.send_attempts, before_native_write: gate,
+            };
+            original.sent = Some(match original.credential.completed() {
+                Some(specification) => match capture {
+                    Some(pipes) => {
+                        let stdout = pipes.stdout_v2().map_err(|_| HostAgentLiveErrorV1::Binding)?;
+                        let stderr = pipes.stderr_v2().map_err(|_| HostAgentLiveErrorV1::Binding)?;
+                        send_frames_engine(&mut self.socket, frame,
+                            Some(&[specification.as_fd(), stdout, stderr]), deadline,
+                            Some(deadline_boottime_nanoseconds), disposition)
+                    }
+                    None => send_frames_engine(&mut self.socket, frame,
+                        Some(&[specification.as_fd()]), deadline,
+                        Some(deadline_boottime_nanoseconds), disposition),
+                },
+                None => send_frames_engine(&mut self.socket, frame, None, deadline,
+                    Some(deadline_boottime_nanoseconds), disposition),
+            });
+            if !original.sent.as_ref().is_some_and(Result::is_ok) {
+                return Err(HostAgentLiveErrorV1::RecoveryRequired);
+            }
         } else {
-            send_frame(
-                &mut self.socket,
-                &frame,
-                deadline,
-                Some(deadline_boottime_nanoseconds),
-            )?;
+            let frame = ordinary_frame.as_deref().ok_or(HostAgentLiveErrorV1::RecoveryRequired)?;
+            if let Some(specification) = &sealed_specification {
+                send_descriptor_frame(&mut self.socket, frame, specification.as_fd(),
+                    deadline, Some(deadline_boottime_nanoseconds))?;
+            } else {
+                send_frame(&mut self.socket, frame, deadline, Some(deadline_boottime_nanoseconds))?;
+            }
         }
-        let bytes = receive_record(
-            &mut self.socket,
-            MAX_SIGNED_AGENT_OUTCOME_PACKET_BYTES,
-            deadline,
-            Some(deadline_boottime_nanoseconds),
-        )?;
-        let packet = decode_signed_agent_outcome_packet_v1(&bytes)?;
+        let response_maximum = if deferred.is_some() {
+            aos_sandbox_agent::signed_outcome_packet::observe_signed_outcome_packet_bytes_v5()
+                .ok_or(HostAgentLiveErrorV1::RecoveryRequired)?
+        } else { MAX_SIGNED_AGENT_OUTCOME_PACKET_BYTES };
+        let ordinary_bytes;
+        let bytes = match original.as_deref_mut() {
+            Some(original) => {
+                original.received = Some(receive_record_into(&mut self.socket,
+                    response_maximum, deadline,
+                    Some(deadline_boottime_nanoseconds), AgentReceiveDispositionV1::Response {
+                        record: &mut original.record, failure: &mut original.receive_failure,
+                    }));
+                if !original.received.as_ref().is_some_and(Result::is_ok) {
+                    return Err(HostAgentLiveErrorV1::RecoveryRequired);
+                }
+                original.record.as_ref().ok_or(HostAgentLiveErrorV1::RecoveryRequired)?.payload()
+            }
+            None => {
+                ordinary_bytes = receive_record(&mut self.socket,
+                    response_maximum, deadline,
+                    Some(deadline_boottime_nanoseconds))?;
+                ordinary_bytes.as_slice()
+            }
+        };
+        let packet = decode_signed_agent_outcome_packet_v1(bytes)?;
         let authenticated = claim.authenticate_recovered_agent_outcome_packet(
             &operation,
             aos_sandbox_agent::SignedAgentOutcomePacketV1::new(
@@ -1349,24 +1804,43 @@ impl HostAgentLiveSessionV1 {
         let observation = verifier
             .verify_execution_inspection(&inspection_request, observation_sequence, signed)
             .map_err(|_| HostAgentLiveErrorV1::Unauthenticated)?;
-        let observation_commitment = observation.observation_commitment();
         let completion = completion_from_backend_observation_v1(&issued, observation)?;
 
+        let work = deferred_completion::AgentCompletionWorkV5 {
+            issued, packet, observation, completion, next_sequence,
+        };
+        match deferred {
+            Some(original) => {
+                // No Complete row is visible before the caller's actual native
+                // posts. Keep the same channel poisoned and every signed field.
+                let pending = work.issued.clone();
+                original.park_once_v5(work)?;
+                Ok(pending)
+            }
+            None => self.commit_completion_work_v5(claim, &work),
+        }
+    }
+
+    fn commit_completion_work_v5(
+        &mut self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        work: &deferred_completion::AgentCompletionWorkV5,
+    ) -> Result<DurableExecutionEffectV1, HostAgentLiveErrorV1> {
         claim.commit_signed_host_agent_outcome_packet(
-            &operation,
-            &packet,
-            observation_sequence,
-            observation_commitment,
+            work.issued.issue().idempotency().operation().as_bytes(),
+            &work.packet,
+            work.observation.sequence(),
+            work.observation.observation_commitment(),
         )?;
-        claim.consume_execution_observation(&observation)?;
-        let complete = match claim.commit_verified_completion(&issued, &completion)? {
+        claim.consume_execution_observation(&work.observation)?;
+        let complete = match claim.commit_verified_completion(&work.issued, &work.completion)? {
             ExecutionEffectTransitionV1::Committed(effect) => effect,
             ExecutionEffectTransitionV1::RecoveryRequired(_)
             | ExecutionEffectTransitionV1::NotCommitted => {
                 return Err(HostAgentLiveErrorV1::RecoveryRequired);
             }
         };
-        self.next_sequence = next_sequence;
+        self.next_sequence = work.next_sequence;
         self.poisoned = false;
         Ok(complete)
     }
@@ -1601,21 +2075,84 @@ fn core_phase(
     }
 }
 
+// One atomic seqpacket request and one retry. This is independent of all
+// SDK/freezer clock schedules and is paid before the selected Launch catalog.
+pub(crate) const MAXIMUM_HANDSHAKE_WRITE_ATTEMPTS_V3: usize = 2;
+
+// The separate Host20 lane allows one atomic effect and one nonconsuming retry.
+pub(crate) const MAXIMUM_EFFECT_WRITE_ATTEMPTS_V4: usize = 2;
+
+enum AgentSendDispositionV3<'a> {
+    Ordinary,
+    Retained {
+        attempts: &'a mut [Option<send_original::AgentSendAttemptV4>; MAXIMUM_HANDSHAKE_WRITE_ATTEMPTS_V3],
+        before_native_write: &'a mut dyn FnMut() -> Result<(), HostAgentLiveErrorV1>,
+    },
+}
+
 fn send_frame(
     socket: &mut SeqpacketSocket,
     bytes: &[u8],
     deadline: Instant,
     deadline_boottime_nanoseconds: Option<u64>,
 ) -> Result<(), HostAgentLiveErrorV1> {
+    send_frame_engine(socket, bytes, deadline, deadline_boottime_nanoseconds,
+        AgentSendDispositionV3::Ordinary)
+}
+
+fn send_frame_engine(
+    socket: &mut SeqpacketSocket,
+    bytes: &[u8],
+    deadline: Instant,
+    deadline_boottime_nanoseconds: Option<u64>,
+    disposition: AgentSendDispositionV3<'_>,
+) -> Result<(), HostAgentLiveErrorV1> {
+    send_frames_engine(socket, bytes, None, deadline, deadline_boottime_nanoseconds, disposition)
+}
+
+fn send_frames_engine(
+    socket: &mut SeqpacketSocket,
+    bytes: &[u8],
+    descriptors: Option<&[BorrowedFd<'_>]>,
+    deadline: Instant,
+    deadline_boottime_nanoseconds: Option<u64>,
+    mut disposition: AgentSendDispositionV3<'_>,
+) -> Result<(), HostAgentLiveErrorV1> {
     loop {
         check_deadline(deadline, deadline_boottime_nanoseconds)?;
-        match socket.send(bytes) {
-            Ok(()) => return Ok(()),
-            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
-                std::thread::sleep(RETRY_INTERVAL);
+        match &mut disposition {
+            AgentSendDispositionV3::Ordinary => {
+                let sent = match descriptors {
+                    Some(descriptors) => socket.send_with_descriptors(bytes, descriptors),
+                    None => socket.send(bytes),
+                };
+                match sent {
+                    Ok(()) => return Ok(()),
+                    Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
-            Err(error) => return Err(error.into()),
+            AgentSendDispositionV3::Retained { attempts, before_native_write } => {
+                let destination = attempts.iter_mut().find(|attempt| attempt.is_none())
+                    .ok_or(HostAgentLiveErrorV1::RecoveryRequired)?;
+                let (native, guard) = socket.send_agent_effect_retaining_v4(bytes, descriptors, *before_native_write);
+                *destination = Some(send_original::AgentSendAttemptV4 { native, guard });
+
+                let attempt = destination.as_ref().ok_or(HostAgentLiveErrorV1::RecoveryRequired)?;
+                if attempt.native.is_sent() {
+                    return Ok(());
+                }
+                if attempt.guard.is_some() {
+                    // The owning typed callback error remains in this receipt;
+                    // the selected caller already projects it to recovery.
+                    return Err(HostAgentLiveErrorV1::RecoveryRequired);
+                }
+                if !attempt.native.is_nonconsuming() {
+                    return Err(HostAgentLiveErrorV1::RecoveryRequired);
+                }
+            }
         }
+        std::thread::sleep(RETRY_INTERVAL);
     }
 }
 
@@ -1626,16 +2163,18 @@ fn send_descriptor_frame(
     deadline: Instant,
     deadline_boottime_nanoseconds: Option<u64>,
 ) -> Result<(), HostAgentLiveErrorV1> {
-    loop {
-        check_deadline(deadline, deadline_boottime_nanoseconds)?;
-        match socket.send_with_descriptors(bytes, &[descriptor]) {
-            Ok(()) => return Ok(()),
-            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
-                std::thread::sleep(RETRY_INTERVAL);
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
+    send_descriptor_frames(socket, bytes, &[descriptor], deadline, deadline_boottime_nanoseconds)
+}
+
+fn send_descriptor_frames(
+    socket: &mut SeqpacketSocket,
+    bytes: &[u8],
+    descriptors: &[BorrowedFd<'_>],
+    deadline: Instant,
+    deadline_boottime_nanoseconds: Option<u64>,
+) -> Result<(), HostAgentLiveErrorV1> {
+    send_frames_engine(socket, bytes, Some(descriptors), deadline,
+        deadline_boottime_nanoseconds, AgentSendDispositionV3::Ordinary)
 }
 
 fn receive_record(
@@ -1651,7 +2190,11 @@ fn receive_record(
 
 enum AgentReceiveDispositionV1<'a> {
     Legacy,
-    Canary {
+    Retained {
+        record: &'a mut Option<aos_sandbox_linux::seqpacket::ReceivedRecord>,
+        failure: &'a mut Option<aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>,
+    },
+    Response {
         record: &'a mut Option<aos_sandbox_linux::seqpacket::ReceivedRecord>,
         failure: &'a mut Option<aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>,
     },
@@ -1666,6 +2209,7 @@ fn receive_record_into(
 ) -> Result<Option<Vec<u8>>, HostAgentLiveErrorV1> {
     loop {
         check_deadline(deadline, deadline_boottime_nanoseconds)?;
+        let response = matches!(&disposition, AgentReceiveDispositionV1::Response { .. });
         match &mut disposition {
             AgentReceiveDispositionV1::Legacy => match socket.receive(maximum_bytes) {
                 Ok(record) => return Ok(Some(record.payload().to_vec())),
@@ -1674,8 +2218,15 @@ fn receive_record_into(
                 }
                 Err(error) => return Err(error.into()),
             },
-            AgentReceiveDispositionV1::Canary { record, failure } => {
-                match socket.receive_retaining(maximum_bytes) {
+            AgentReceiveDispositionV1::Retained { record, failure }
+            | AgentReceiveDispositionV1::Response { record, failure } => {
+                let received = if response {
+                    execution_original::require_response_mode_v6(socket)?;
+                    socket.receive_host_agent_response_retaining_v2(maximum_bytes)
+                } else {
+                    socket.receive_retaining(maximum_bytes)
+                };
+                match received {
                     Ok(original) => {
                         **record = Some(original);
                         return Ok(None);
@@ -1718,7 +2269,142 @@ fn check_deadline(
 
 #[cfg(test)]
 mod tests {
+    use std::os::fd::AsFd;
+
     use super::*;
+
+    #[test]
+    fn retained_effect_descriptor_gate_keeps_socket_and_actual_guard() {
+        let (mut socket, peer) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let (read, write) = rustix::pipe::pipe().unwrap();
+        let mut attempts = std::array::from_fn(|_| None);
+        let mut called = 0;
+        let mut gate = || {
+            called += 1;
+            Err(HostAgentLiveErrorV1::RetainedEffectClock)
+        };
+
+        let result = send_frames_engine(&mut socket, b"sealed-capture",
+            Some(&[read.as_fd(), write.as_fd(), peer.as_fd()]),
+            Instant::now() + Duration::from_secs(1), None,
+            AgentSendDispositionV3::Retained {
+                attempts: &mut attempts, before_native_write: &mut gate,
+            });
+
+        assert!(matches!(result, Err(HostAgentLiveErrorV1::RecoveryRequired)));
+        assert_eq!(called, 1);
+        let attempt = attempts[0].as_ref().unwrap();
+        assert!(matches!(attempt.failure().unwrap().downcast_ref::<HostAgentLiveErrorV1>(),
+            Some(HostAgentLiveErrorV1::RetainedEffectClock)));
+        assert!(attempt.native.retains_descriptor());
+        assert!(attempts[1].is_none());
+        assert!(socket.as_fd().is_err());
+        let mut bytes = [0; 32];
+        assert!(matches!(rustix::net::recv(&peer, &mut bytes, rustix::net::RecvFlags::DONTWAIT),
+            Err(rustix::io::Errno::AGAIN)));
+    }
+
+    #[test]
+    fn execution_native_send_failure_remains_original_after_projection() {
+        let (mut socket, peer) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let (read, _write) = rustix::pipe::pipe().unwrap();
+        drop(peer);
+        let mut original = execution_original::AgentExecutionOriginalV2::new();
+        original.frame = Some(b"sealed".to_vec());
+        let mut gate = || Ok(());
+
+        original.sent = Some(send_frames_engine(&mut socket, original.frame.as_deref().unwrap(),
+            Some(&[read.as_fd()]), Instant::now() + Duration::from_secs(1), None,
+            AgentSendDispositionV3::Retained {
+                attempts: &mut original.send_attempts, before_native_write: &mut gate,
+            }));
+
+        let first = original.send_attempts[0].as_ref().unwrap();
+        assert!(first.native.retains_descriptor());
+        assert!(first.native.failure().is_some());
+        assert!(std::ptr::eq(original.failure().unwrap(), first.failure().unwrap()));
+        assert_eq!(original.frame.as_deref(), Some(b"sealed".as_slice()));
+        assert!(socket.as_fd().is_err());
+        assert!(!original.completed_positive_v2());
+    }
+
+    #[test]
+    fn retained_handshake_clock_refusal_precedes_native_send() {
+        let (mut socket, peer) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut attempts = std::array::from_fn(|_| None);
+        let mut called = 0;
+        let mut gate = || {
+            called += 1;
+            Err(HostAgentLiveErrorV1::Deadline)
+        };
+
+        let result = send_frame_engine(&mut socket, b"handshake", Instant::now() + Duration::from_secs(1),
+            None, AgentSendDispositionV3::Retained {
+                attempts: &mut attempts, before_native_write: &mut gate,
+            });
+
+        assert!(matches!(result, Err(HostAgentLiveErrorV1::RecoveryRequired)));
+        assert_eq!(called, 1);
+        let attempt = attempts[0].as_ref().expect("entered retained send");
+        assert!(matches!(attempt.guard, Some(HostAgentLiveErrorV1::Deadline)));
+        assert!(attempt.native.retains_descriptor());
+        assert!(socket.as_fd().is_err());
+        assert!(attempts[1].is_none());
+        let mut bytes = [0; 32];
+        assert!(matches!(rustix::net::recv(&peer, &mut bytes, rustix::net::RecvFlags::DONTWAIT),
+            Err(rustix::io::Errno::AGAIN)));
+    }
+
+    #[test]
+    fn retained_handshake_sends_only_after_gate_and_parks_actual_result() {
+        let (mut socket, peer) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut attempts = std::array::from_fn(|_| None);
+        let mut called = 0;
+        let mut gate = || { called += 1; Ok(()) };
+
+        send_frame_engine(&mut socket, b"handshake", Instant::now() + Duration::from_secs(1),
+            None, AgentSendDispositionV3::Retained {
+                attempts: &mut attempts, before_native_write: &mut gate,
+            }).unwrap();
+
+        assert_eq!(called, 1);
+        assert!(attempts[0].as_ref().is_some_and(|attempt| attempt.native.is_sent()));
+        assert!(attempts[1].is_none());
+        let mut bytes = [0; 32];
+        let (received, _) = rustix::net::recv(&peer, &mut bytes, rustix::net::RecvFlags::DONTWAIT).unwrap();
+        assert_eq!(&bytes[..received], b"handshake");
+    }
+
+    #[test]
+    fn exhausted_handshake_keeps_both_attempts_and_never_reenters_send() {
+        let (mut socket, peer) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut refused = || Err(HostAgentLiveErrorV1::Deadline);
+        let (first_native, first_guard) = socket.send_agent_handshake_retaining_v3(b"handshake", &mut refused);
+        let (other, _other_peer) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut other = other;
+        let (second_native, second_guard) = other.send_agent_handshake_retaining_v3(b"handshake", &mut refused);
+        let mut attempts = [
+            Some(send_original::AgentSendAttemptV4 { native: first_native, guard: first_guard }),
+            Some(send_original::AgentSendAttemptV4 { native: second_native, guard: second_guard }),
+        ];
+        let first_cause = attempts[0].as_ref().unwrap().failure().unwrap()  .downcast_ref::<HostAgentLiveErrorV1>().unwrap() as *const HostAgentLiveErrorV1;
+        let second_cause = attempts[1].as_ref().unwrap().failure().unwrap()  .downcast_ref::<HostAgentLiveErrorV1>().unwrap() as *const HostAgentLiveErrorV1;
+        let mut called = 0;
+        let mut gate = || { called += 1; Ok(()) };
+
+        let result = send_frame_engine(&mut socket, b"handshake", Instant::now() + Duration::from_secs(1),
+            None, AgentSendDispositionV3::Retained {
+                attempts: &mut attempts, before_native_write: &mut gate,
+            });
+
+        assert!(matches!(result, Err(HostAgentLiveErrorV1::RecoveryRequired)));
+        assert_eq!(called, 0);
+        assert!(std::ptr::eq(attempts[0].as_ref().unwrap().failure().unwrap().downcast_ref::<HostAgentLiveErrorV1>().unwrap(), first_cause));
+        assert!(std::ptr::eq(attempts[1].as_ref().unwrap().failure().unwrap().downcast_ref::<HostAgentLiveErrorV1>().unwrap(), second_cause));
+        let mut bytes = [0; 32];
+        assert!(matches!(rustix::net::recv(&peer, &mut bytes, rustix::net::RecvFlags::DONTWAIT),
+            Err(rustix::io::Errno::AGAIN)));
+    }
 
     fn credential(seed: [u8; 32]) -> [u8; SEED_CREDENTIAL_BYTES] {
         let mut bytes = [0; SEED_CREDENTIAL_BYTES];

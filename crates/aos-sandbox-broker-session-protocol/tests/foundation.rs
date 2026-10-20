@@ -2384,3 +2384,163 @@ fn v1_packets_reject_new_generator_field_order() {
         ));
     }
 }
+
+#[test]
+fn outer_carrier_authentication_does_not_admit_body_header_or_sequence() {
+    let handshake = handshake(BrokerSessionProtocolV1::Host, 1);
+    let state = BrokerSessionTrafficStateV1::from_provisional_transcript(transcript(&handshake))
+        .unwrap();
+    // The ordinary pure-crypto fixture deliberately carries opaque body bytes,
+    // rather than a semantically validated request/header.
+    let (_, packet) = signed_request(&handshake, state.transcript().session_binding());
+    let request = decode_canonical_request_v1(&packet).unwrap();
+
+    state.authenticate_request_carrier_v1(&request, &handshake.context).unwrap();
+    state.authenticate_request_carrier_v1(&request, &handshake.context).unwrap();
+
+    assert_eq!(state.next_client_sequence(), 1);
+    assert_eq!(state.next_broker_sequence(), 1);
+    assert!(!state.has_outstanding_request());
+    assert_eq!(state.transcript().phase(), BrokerSessionTranscriptPhaseV1::Provisional);
+    assert!(matches!(
+        state.admit_request(&request, REQUEST_ID, 65_536, &handshake.context),
+        Ok(BrokerRequestAdmissionV1::New { .. })
+    ));
+}
+
+#[test]
+fn outer_carrier_authentication_rejects_changed_bytes_key_and_profile() {
+    let handshake = handshake(BrokerSessionProtocolV1::Host, 1);
+    let state = BrokerSessionTrafficStateV1::from_provisional_transcript(transcript(&handshake))
+        .unwrap();
+    let binding = state.transcript().session_binding();
+    let (_, packet) = signed_request(&handshake, binding);
+    let request = decode_canonical_request_v1(&packet).unwrap();
+    let mut changed = BrokerRequestEnvelope::decode_from_slice(&packet).unwrap();
+    changed.body.push(9);
+    let changed = decode_canonical_request_v1(&encode_request_test_packet(&changed)).unwrap();
+    let revoked = context_with_inactive_key(
+        BrokerSessionProtocolV1::Host, 1, &handshake.keys, Some((0, true, None)),
+    );
+    let (_, other_method) = signed_request_for_method_at(
+        &handshake, binding, BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+        1, REQUEST_ID, vec![1, 2, 3],
+    );
+    let other_method = decode_canonical_request_v1(&other_method).unwrap();
+
+    assert!(state.authenticate_request_carrier_v1(&changed, &handshake.context).is_err());
+    assert!(state.authenticate_request_carrier_v1(&request, &revoked).is_err());
+    assert!(state.authenticate_request_carrier_v1(&other_method, &handshake.context).is_err());
+    assert!(!state.has_outstanding_request());
+}
+
+#[test]
+fn retained_request_keeps_actual_signed_bytes_after_a_later_sequence_gap() {
+    use aos_sandbox_broker_session_protocol::traffic::BrokerRequestAdmissionCaptureV1;
+
+    let handshake = handshake(BrokerSessionProtocolV1::Host, 1);
+    let state = BrokerSessionTrafficStateV1::from_provisional_transcript(transcript(&handshake)).unwrap();
+    let (signed, packet) = signed_request_at(
+        &handshake, state.transcript().session_binding(), 2, REQUEST_ID, vec![1, 2, 3],
+    );
+    let request = decode_canonical_request_v1(&packet).unwrap();
+    let mut capture = BrokerRequestAdmissionCaptureV1::new();
+
+    assert!(state.admit_request_retaining(
+        &request, REQUEST_ID, 65_536, &handshake.context, &mut capture,
+    ).is_err());
+
+    assert!(matches!(capture.failure(), Some(BrokerSessionSequenceError::Gap)));
+    assert_eq!(capture.retained_signed_bytes().unwrap(), signed.to_canonical_bytes());
+    let original = capture.retained_signed_bytes().unwrap().as_ptr();
+    assert!(state.admit_request_retaining(
+        &request, REQUEST_ID, 65_536, &handshake.context, &mut capture,
+    ).is_err());
+    assert_eq!(capture.retained_signed_bytes().unwrap().as_ptr(), original);
+    assert!(matches!(capture.failure(), Some(BrokerSessionSequenceError::Gap)));
+}
+
+#[test]
+fn retained_outcome_keeps_actual_signed_bytes_after_a_later_sequence_gap() {
+    use aos_sandbox_broker_session_protocol::traffic::BrokerOutcomeAdmissionCaptureV1;
+
+    let handshake = handshake(BrokerSessionProtocolV1::Host, 1);
+    let state = BrokerSessionTrafficStateV1::from_provisional_transcript(transcript(&handshake)).unwrap();
+    let binding = state.transcript().session_binding();
+    let (signed_request, packet) = signed_request(&handshake, binding);
+    let request = decode_canonical_request_v1(&packet).unwrap();
+    let pending = match state.admit_request(&request, REQUEST_ID, 65_536, &handshake.context).unwrap() {
+        BrokerRequestAdmissionV1::New { next_state, .. } => next_state,
+        BrokerRequestAdmissionV1::ExactReplay(_) => panic!("first request was replay"),
+    };
+    let (signed, packet) = signed_outcome_at(&handshake, binding, &signed_request, 2, REQUEST_ID);
+    let outcome = decode_canonical_response_v1(&packet).unwrap();
+    let mut capture = BrokerOutcomeAdmissionCaptureV1::new();
+
+    assert!(pending.admit_outcome_retaining(&outcome, &handshake.context, &mut capture).is_err());
+
+    assert!(matches!(capture.failure(), Some(BrokerSessionSequenceError::Gap)));
+    assert_eq!(capture.retained_signed_bytes().unwrap(), signed.to_canonical_bytes());
+    assert!(capture.admission().is_none());
+    assert!(pending.has_outstanding_request());
+}
+
+#[test]
+fn retained_request_keeps_the_actual_invalid_signature_leaf() {
+    use aos_sandbox_broker_session_protocol::artifact::BrokerSessionArtifactError;
+    use aos_sandbox_broker_session_protocol::traffic::BrokerRequestAdmissionCaptureV1;
+
+    let handshake = handshake(BrokerSessionProtocolV1::Host, 1);
+    let state = BrokerSessionTrafficStateV1::from_provisional_transcript(transcript(&handshake)).unwrap();
+    let (_, packet) = signed_request(&handshake, state.transcript().session_binding());
+    let mut message = BrokerRequestEnvelope::decode_from_slice(&packet).unwrap();
+    *message.signed_session_request.last_mut().unwrap() ^= 1;
+    let request = decode_canonical_request_v1(&encode_request_test_packet(&message)).unwrap();
+    let mut capture = BrokerRequestAdmissionCaptureV1::new();
+
+    let ordinary = state.admit_request(&request, REQUEST_ID, 65_536, &handshake.context).unwrap_err();
+    let selected = state.admit_request_retaining(
+        &request, REQUEST_ID, 65_536, &handshake.context, &mut capture,
+    ).unwrap_err();
+
+    assert_eq!(selected, ordinary);
+    let cause = capture.cause().unwrap().downcast_ref::<BrokerSessionArtifactError>().unwrap();
+    assert!(matches!(cause, BrokerSessionArtifactError::InvalidSignature));
+    let original = cause as *const BrokerSessionArtifactError;
+    assert!(capture.retained_signed_bytes().is_none());
+    assert!(state.admit_request_retaining(
+        &request, REQUEST_ID, 65_536, &handshake.context, &mut capture,
+    ).is_err());
+    assert_eq!(capture.cause().unwrap().downcast_ref::<BrokerSessionArtifactError>().unwrap()
+        as *const BrokerSessionArtifactError, original);
+}
+
+#[test]
+fn retained_outcome_keeps_signature_failure_beside_actual_signed_bytes() {
+    use aos_sandbox_broker_session_protocol::artifact::BrokerSessionArtifactError;
+    use aos_sandbox_broker_session_protocol::traffic::BrokerOutcomeAdmissionCaptureV1;
+
+    let handshake = handshake(BrokerSessionProtocolV1::Host, 1);
+    let state = BrokerSessionTrafficStateV1::from_provisional_transcript(transcript(&handshake)).unwrap();
+    let binding = state.transcript().session_binding();
+    let (signed_request, packet) = signed_request(&handshake, binding);
+    let request = decode_canonical_request_v1(&packet).unwrap();
+    let pending = match state.admit_request(&request, REQUEST_ID, 65_536, &handshake.context).unwrap() {
+        BrokerRequestAdmissionV1::New { next_state, .. } => next_state,
+        BrokerRequestAdmissionV1::ExactReplay(_) => panic!("first request was replay"),
+    };
+    let (_, packet) = signed_outcome(&handshake, binding, &signed_request);
+    let mut message = BrokerResponseEnvelope::decode_from_slice(&packet).unwrap();
+    *message.signed_session_outcome.last_mut().unwrap() ^= 1;
+    let outcome = decode_canonical_response_v1(&encode_response_test_packet(&message)).unwrap();
+    let mut capture = BrokerOutcomeAdmissionCaptureV1::new();
+
+    let ordinary = pending.admit_outcome(&outcome, &handshake.context).unwrap_err();
+    let selected = pending.admit_outcome_retaining(&outcome, &handshake.context, &mut capture).unwrap_err();
+
+    assert_eq!(selected, ordinary);
+    assert!(matches!(capture.cause().unwrap().downcast_ref::<BrokerSessionArtifactError>(),
+        Some(BrokerSessionArtifactError::InvalidSignature)));
+    assert_eq!(capture.retained_signed_bytes().unwrap(), outcome.signed_artifact().to_canonical_bytes());
+    assert!(pending.has_outstanding_request());
+}

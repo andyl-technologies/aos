@@ -128,6 +128,8 @@ PROTECTED_OBJECT_TYPES = (*PROTECTED_DIRECTORIES, *PROTECTED_RECORDS)
 GUARDED_OBJECT_TYPES = (
     *PROTECTED_OBJECT_TYPES, *fuse_worker_policy.WORKER_OBJECT_TYPES,
     HOST_CANARY_STATE_TYPE,
+    owner_policy.ROOT_NO_APPLY_SIGNING_CREDENTIAL,
+    owner_policy.HOST_NO_APPLY_CREDENTIAL,
     *(("aos_runtime_deployment_credential_t",
        "aos_runtime_deployment_state_t",
        "aos_runtime_deployment_lock_t") if owner_policy.RUNTIME_DOMAINS else ()),
@@ -906,8 +908,10 @@ def negative_access() -> tuple[Access, ...]:
         )
     for record in PROTECTED_RECORDS:
         checks.extend(accesses(HANDOFF_DOMAIN, record, "file", RECORD_MUTATIONS))
+    # Nspawn's existing supervisor transition also requires PID 1 fd:use;
+    # its independent object, execution and connection cuts remain below.
     for domain in DOMAINS:
-        if domain not in (INSPECTOR_DOMAIN, fuse_worker_policy.WORKER_DOMAIN) and not (
+        if domain not in (INSPECTOR_DOMAIN, fuse_worker_policy.WORKER_DOMAIN, "aos_nspawn_t") and not (
             HOST_COMPONENT_CONTROL and domain == "aos_sandbox_host_t"
         ):
             checks.append(Access(domain, "init_t", "fd", "use"))
@@ -1437,7 +1441,7 @@ def _check_online_nix_policy(setools: Any, policy: Any) -> list[str]:
 def _check_host_canary_namespace_ioctls(setools: Any, policy: Any) -> list[str]:
     """Checks complete expanded selector sets for the two fixed nsfs cells."""
 
-    return _check_host_canary_original_ioctls(
+    return _check_original_ioctls(
         setools, policy, HOST_CANARY_NAMESPACE_SUBJECTS, "nsfs_t",
         HOST_CANARY_NAMESPACE_SELECTOR, "namespace",
     )
@@ -1446,7 +1450,7 @@ def _check_host_canary_namespace_ioctls(setools: Any, policy: Any) -> list[str]:
 def _check_host_canary_native_pidfs_ioctls(setools: Any, policy: Any) -> list[str]:
     """Checks only GET_INFO on the fixed Host/native pidfs cell."""
 
-    return _check_host_canary_original_ioctls(
+    return _check_original_ioctls(
         setools, policy, HOST_CANARY_NATIVE_PIDFS_SUBJECTS, "aos_nspawn_t",
         HOST_CANARY_NATIVE_PIDFS_SELECTOR, "native pidfs",
     )
@@ -1455,25 +1459,25 @@ def _check_host_canary_native_pidfs_ioctls(setools: Any, policy: Any) -> list[st
 def _check_host_canary_state_ioctls(setools: Any, policy: Any) -> list[str]:
     """Checks GETFLAGS only on Host's original native cell objects."""
 
-    return _check_host_canary_original_ioctls(
+    return _check_original_ioctls(
         setools, policy, ("aos_sandbox_host_t",), HOST_CANARY_STATE_TYPE,
         HOST_CANARY_STATE_SELECTOR, "native state",
     )
 
 
-def _check_host_canary_original_ioctls(
+def _check_original_ioctls(
     setools: Any, policy: Any, subjects: tuple[str, ...], target: str,
-    selector: int, description: str,
+    selector: int, description: str, owner: str = "Host canary",
 ) -> list[str]:
     """Shares the exact expanded integer-set check for closed original cells."""
 
     if str(policy.lookup_type(target)) != target:
-        raise ValueError(f"Host canary {description} target is aliased")
+        raise ValueError(f"{owner} {description} target is aliased")
 
     evidence = []
     for subject in subjects:
         if str(policy.lookup_type(subject)) != subject:
-            raise ValueError(f"Host canary {description} source is aliased: {subject}")
+            raise ValueError(f"{owner} {description} source is aliased: {subject}")
 
         query = setools.TERuleQuery(
             policy,
@@ -1498,12 +1502,12 @@ def _check_host_canary_original_ioctls(
                 or any(type(selector) is not int for selector in selectors)
                 or selectors != {selector}
             ):
-                raise ValueError(f"forbidden Host canary {description} ioctl selectors: {rule}")
+                raise ValueError(f"forbidden {owner} {description} ioctl selectors: {rule}")
             if rule.enabled():
                 enabled_selectors.update(selectors)
 
         if enabled_selectors != {selector}:
-            raise ValueError(f"missing Host canary {description} ioctl selector: {subject}")
+            raise ValueError(f"missing {owner} {description} ioctl selector: {subject}")
         evidence.append(f"allowxperm\t{subject}\t{target}\tfile\tioctl\t0x{selector:x}")
 
     return evidence
@@ -1557,6 +1561,27 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
         raise ValueError("unexpected Storage credential delivery transition")
     evidence.append("exclusive-storage-credential-transitions")
 
+    # A default Host copy stays unopenable. Root's existing generic public
+    # credential type never substitutes for its one dedicated signing leaf.
+    for parent, default, name, promoted in (
+        (owner_policy.HOST_NO_APPLY_CREDENTIAL, "init_tmpfs_t",
+         owner_policy.HOST_NO_APPLY_PUBLIC_NAME, owner_policy.HOST_NO_APPLY_CREDENTIAL),
+        ("aos_sandbox_policy_authority_credential_t", "aos_sandbox_policy_authority_credential_t",
+         owner_policy.ROOT_NO_APPLY_SIGNING_NAME, owner_policy.ROOT_NO_APPLY_SIGNING_CREDENTIAL),
+    ):
+        candidates = transition_candidates(setools, policy, "init_t", parent, "file")
+        permitted = [
+            rule for rule in _transition_filename_rules(setools, candidates, Transition.UNNAMED)
+            if str(rule.default) == default
+        ]
+        permitted.extend(
+            rule for rule in _transition_filename_rules(setools, candidates, name)
+            if str(rule.default) == promoted
+        )
+        if any(rule not in permitted for rule in candidates):
+            raise ValueError("unexpected Root NoApply credential delivery transition")
+    evidence.append("exclusive-root-noapply-credential-transitions")
+
     # The selected publisher shares this same filename-aware delivery checker,
     # never a parallel import/parser or generic secret-directory promotion.
     if owner_policy.RUNTIME_DOMAINS:
@@ -1601,6 +1626,11 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
                 if (object_class, permission) == ("process", "transition")
                 else {root, "init_t", "kernel_t"}
             )
+            if (object_class, permission) == ("file", "ioctl"):
+                # The existing Source observer reads Root's pidfd identity.
+                # Its complete selector set is checked below as only 0xff0b;
+                # no other Root custody permission is delegated to Source.
+                permitted_sources.add("aos_sandbox_source_signer_t")
             if {str(value) for value in expanded} - permitted_sources:
                 raise ValueError(f"foreign normal Root custody grant exists: {rule}")
         evidence.append(f"deny-foreign-root\t{object_class}\t{permission}")
@@ -1676,10 +1706,24 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
 
     evidence.extend(_check_host_canary_namespace_ioctls(setools, policy))
     evidence.extend(_check_host_canary_native_pidfs_ioctls(setools, policy))
+    for target in ("aos_sandbox_source_signer_t", "aos_sandbox_policy_authority_t", "init_t"):
+        evidence.extend(_check_original_ioctls(
+            setools, policy, ("aos_sandbox_source_signer_t",), target,
+            0xff0b, "pidfs", owner="Source Root peer",
+        ))
     evidence.extend(_check_host_canary_state_ioctls(setools, policy))
 
     for access in NEGATIVE_ACCESS:
         rules = allow_rules(setools, policy, access)
+        source_socket_targets = view_policy.SOURCE_OBSERVER_SOCKET_TARGETS.get(access.permission)
+        if (access.source == "aos_sandbox_source_signer_t"
+                and access.target == "*" and access.object_class == "unix_stream_socket"
+                and source_socket_targets is not None):
+            violations = view_policy.source_observer_socket_violations(rules, source_socket_targets)
+            if violations:
+                raise ValueError(f"forbidden Source observer socket target: {access}: {' | '.join(violations)}")
+            evidence.append(f"deny-outside-source-observer\t{access.permission}\tallowed={','.join(sorted(source_socket_targets))}")
+            continue
         cohort = GUEST_FILE_TYPE_COHORTS.get((access.source, access.permission))
         if (
             access.target == "file_type"

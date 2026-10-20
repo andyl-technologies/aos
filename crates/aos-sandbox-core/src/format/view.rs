@@ -91,6 +91,24 @@ pub fn decode_view(bytes: &[u8], limits: DecodeLimits) -> Result<View, Canonical
     .map_err(|error| semantics("view", error))
 }
 
+/// Bounds the actual View decoder's two collection layouts before entry.
+///
+/// Owned path/feature/descriptor bytes are bounded by the complete encoded
+/// input. The same canonical validator prices its recursive frames separately.
+/// This pure geometry authenticates neither a View, path nor disclosure grant.
+#[must_use]
+pub fn view_decode_receiving_bytes_v2(bytes: usize, limits: DecodeLimits) -> Option<usize> {
+    if bytes > limits.maximum_bytes { return None; }
+    let rows = bytes.min(limits.maximum_collection_items).min(limits.maximum_total_items);
+    let fields = std::mem::size_of::<PresentationAction>()
+        .checked_add(std::mem::size_of::<crate::FeatureRef>())?;
+    let models = rows.checked_mul(fields)?.checked_mul(3)?;
+    let fixed = std::mem::size_of::<View>().checked_mul(3)?
+        .checked_add(std::mem::size_of::<Result<View, CanonicalCborError>>().checked_mul(3)?)?;
+    let validation = super::cbor::validation_receiving_bytes_v1(bytes, limits)?;
+    fixed.checked_add(models)?.checked_add(bytes.checked_mul(3)?)?.checked_add(validation)
+}
+
 /// Encodes one immutable project environment in portable v1 CBOR form.
 #[must_use]
 pub fn encode_environment(environment: &Environment) -> Vec<u8> {

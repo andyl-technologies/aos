@@ -23,8 +23,8 @@ use aos_sandbox_agent::openssh_gate::{
     expected_openssh_gate_config_v1, sign_openssh_gate_readback_v1,
 };
 
-const SSHD_PATH: &str = "/usr/sbin/sshd";
-const CONFIG_PATH: &str = "/etc/aos/sandbox-attach/sshd_config";
+const SSHD_PATH: &str = aos_sandbox_agent::openssh_receiving::OPENSSH_DAEMON_PROGRAM_V1;
+const CONFIG_PATH: &str = aos_sandbox_agent::openssh_receiving::OPENSSH_DAEMON_CONFIGURATION_V1;
 const CA_PATH: &str = "/etc/aos/sandbox-attach/trusted_user_ca.pub";
 const HOST_KEY_PATH: &str = "/etc/aos/sandbox-attach/host_key";
 const HOST_PUBLIC_KEY_PATH: &str = "/etc/aos/sandbox-attach/host_key.pub";
@@ -33,7 +33,12 @@ const SSHD_SESSION_PATH: &str = "/usr/libexec/sshd-session";
 const CLAIM_PATH: &str = "/etc/aos/sandbox-attach/gate-record.json";
 const O_CLOEXEC: i32 = 0o2_000_000;
 const O_NOFOLLOW: i32 = 0o400_000;
-const MAXIMUM_EXECUTABLE_BYTES: u64 = 128 * 1_048_576;
+const MAXIMUM_EXECUTABLE_BYTES: u64 = aos_sandbox_agent::openssh_receiving::OPENSSH_EXECUTABLE_FILE_BYTES_V1;
+
+mod startup;
+pub(crate) use startup::OpenSshDaemonStartupOriginalV1;
+mod selected;
+pub(crate) use selected::{SelectedDaemonStartupOriginalV1, SelectedRunningOpenSshGateV1};
 
 /// Owns the live daemon launched for an exact installed attach gate.
 pub struct RunningOpenSshGateV1 {
@@ -45,6 +50,16 @@ pub struct RunningOpenSshGateV1 {
     gate_inode: u64,
     gate_digest: [u8; 32],
     monitor_installation: Option<MonitorInstallationV2>,
+    retirement_before_wait: Option<std::io::Result<Option<std::process::ExitStatus>>>,
+    retirement_kill: Option<std::io::Result<()>>,
+    retirement_wait: Option<std::io::Result<Option<std::process::ExitStatus>>>,
+    retirement_completed: bool,
+    readback_purpose: OpenSshReadbackPurposeV1,
+}
+
+enum OpenSshReadbackPurposeV1 {
+    Ordinary,
+    SelectedAwaitingListener,
 }
 
 #[derive(Clone)]
@@ -59,15 +74,21 @@ impl MeasuredExecutable {
         Self {
             device: file.device,
             inode: file.inode,
-            digest: digest(&file.bytes),
+            digest: file.digest(),
         }
     }
 
     fn require_file(&self, path: &Path) -> Result<(), OpenSshGatePhysicalErrorV1> {
-        let file = read_protected_file(path, MAXIMUM_EXECUTABLE_BYTES, true)?;
+        self.require_file_with(path, &mut read_protected_file)
+    }
+
+    fn require_file_with(&self, path: &Path,
+        read: &mut dyn FnMut(&Path, u64, bool) -> Result<ProtectedFile, OpenSshGatePhysicalErrorV1>,
+    ) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        let file = read(path, MAXIMUM_EXECUTABLE_BYTES, true)?;
         if file.device != self.device
             || file.inode != self.inode
-            || digest(&file.bytes) != self.digest
+            || file.digest() != self.digest
         {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
         }
@@ -83,6 +104,7 @@ struct MonitorInstallationV2 {
     session_executable: MeasuredExecutable,
     listener_executable: MeasuredExecutable,
     gate_executable: MeasuredExecutable,
+    selected: Option<Arc<std::sync::Mutex<selected::SelectedListenerOriginalV1>>>,
 }
 
 /// Retains a live owner-created monitor installation, not persisted SSH proof.
@@ -139,13 +161,18 @@ impl OpenSshMonitorRuntimeV2 {
         if listener.pid() != self.claim.sshd_pid
             || listener.start_time_ticks() != self.claim.sshd_start_ticks
             || load_installed_gate_claim()? != self.claim
-            || !owns_listening_socket(listener.pid(), self.claim.binding.port)?
+            || (self.installation.selected.is_none()
+                && !owns_listening_socket(listener.pid(), self.claim.binding.port)?)
             || credentials.real_user_id() != 0
             || credentials.effective_user_id() != 0
             || credentials.saved_user_id() != 0
             || credentials.filesystem_user_id() != 0
         {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+        }
+        if let Some(selected) = self.installation.selected.as_ref() {
+            selected.lock().map_err(|_| OpenSshGatePhysicalErrorV1::InvalidInstallation)?
+                .recheck()?;
         }
         self.installation
             .listener_executable
@@ -163,6 +190,16 @@ impl OpenSshMonitorRuntimeV2 {
             .gate_executable
             .require_file(&canonicalize_physical_path(GATE_PATH)?)?;
         Ok(())
+    }
+
+    // A terminal send's after validates the original installation, not fresh
+    // monitor authority. Its private caller separately retains the actual
+    // before, send and same-socket observations. Receiver exit is permitted;
+    // no control, IO handoff or new execution can use this comparison.
+    pub(crate) fn require_original_terminal_after_installation_v1(
+        &self,
+    ) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        self.require_original_session_installation_v4()
     }
 
     /// Checks one pinned root monitor against the accepted helper and listener.
@@ -320,6 +357,39 @@ impl OpenSshMonitorRuntimeV2 {
 }
 
 impl RunningOpenSshGateV1 {
+    pub(crate) fn require_selected_readback_ready_v1(&self) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        match self.readback_purpose {
+            OpenSshReadbackPurposeV1::Ordinary => Ok(()),
+            // The new selected path must consume the actual daemon bootstrap
+            // listener receipt before physical Ready/monitor publication. It
+            // cannot fall through to the unbounded historical proc-table scan.
+            OpenSshReadbackPurposeV1::SelectedAwaitingListener => Err(OpenSshGatePhysicalErrorV1::ListenerReceiptRequired),
+        }
+    }
+
+    pub(crate) fn daemon_identity_retaining_v1(&mut self, original: &mut OpenSshDaemonStartupOriginalV1)
+        -> Result<(u32, u64), OpenSshGatePhysicalErrorV1>
+    {
+        if original.identity_wait.is_some() || original.identity.is_some() {
+            return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+        }
+        original.identity_wait = Some(self.child.try_wait());
+        if !matches!(original.identity_wait, Some(Ok(None))) {
+            return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
+        }
+        let installation = self.monitor_installation.as_ref().ok_or(OpenSshGatePhysicalErrorV1::InvalidInstallation)?;
+        original.identity = Some(Default::default());
+        let identity = original.identity.as_mut().ok_or(OpenSshGatePhysicalErrorV1::InvalidInstallation)?;
+        identity.capture_once(&installation.listener).map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
+        let identity = identity.identity().ok_or(OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
+        if identity.pid() != self.child.id() { return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation); }
+        let result = (identity.pid(), identity.start_time_ticks());
+        // The existing canonical identity reader has completed its actual
+        // independent posts; only its immutable DATA leaves this local phase.
+        original.identity.take();
+        Ok(result)
+    }
+
     /// Returns the owned daemon identity for a protected guest claim.
     ///
     /// # Errors
@@ -385,34 +455,67 @@ impl RunningOpenSshGateV1 {
         monitor: bool,
         stderr: Stdio,
     ) -> Result<Self, OpenSshGatePhysicalErrorV1> {
+        Self::start_profile_engine(binding, monitor, stderr, None, None)
+    }
+
+    pub(crate) fn start_with_monitor_retaining_v1(
+        binding: OpenSshGateBindingV1,
+        original: &mut OpenSshDaemonStartupOriginalV1,
+        before_spawn: &mut dyn FnMut() -> Result<(), OpenSshGatePhysicalErrorV1>,
+    ) -> Result<Self, OpenSshGatePhysicalErrorV1> {
+        if original.entered || original.child.is_some() || original.body.is_some() {
+            return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+        }
+        original.entered = true;
+        match Self::start_profile_engine(binding, true, Stdio::null(), Some(original), Some(before_spawn)) {
+            Ok(running) => Ok(running),
+            Err(cause) => {
+                original.body = Some(cause);
+                Err(OpenSshGatePhysicalErrorV1::InvalidInstallation)
+            }
+        }
+    }
+
+    fn start_profile_engine(
+        binding: OpenSshGateBindingV1,
+        monitor: bool,
+        stderr: Stdio,
+        mut original: Option<&mut OpenSshDaemonStartupOriginalV1>,
+        mut before_spawn: Option<&mut dyn FnMut() -> Result<(), OpenSshGatePhysicalErrorV1>>,
+    ) -> Result<Self, OpenSshGatePhysicalErrorV1> {
         binding
             .validate()
             .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidBinding)?;
-        let installed = check_installed_files(&binding)?;
+        let retaining = original.is_some();
+        let mut read = |path: &Path, maximum, executable| match original.as_deref_mut() {
+            Some(original) => original.read_fixed(path, maximum, executable),
+            None => read_protected_file(path, maximum, executable),
+        };
+        let installed = check_installed_files_with(&binding, &mut read)?;
         let executable_path = canonicalize_physical_path(SSHD_PATH)?;
-        let executable = read_protected_file(&executable_path, MAXIMUM_EXECUTABLE_BYTES, true)?;
-        if executable.bytes.is_empty() {
+        let executable = read(&executable_path, MAXIMUM_EXECUTABLE_BYTES, true)?;
+        if executable.bytes.is_empty() && executable.measured_digest.is_none() {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
         }
 
         // Pin the exact callback opened during installation, then recheck it
         // immediately before launch. A later physical readback must still
         // match this identity before the guest can report certificate readiness.
-        let gate_digest = digest(&installed.gate_executable.bytes);
-        let gate = read_protected_file(
+        let gate_digest = installed.gate_executable.digest();
+        let gate = read(
             &canonicalize_physical_path(GATE_PATH)?,
             MAXIMUM_EXECUTABLE_BYTES,
             true,
         )?;
         if gate.device != installed.gate_executable.device
             || gate.inode != installed.gate_executable.inode
-            || digest(&gate.bytes) != gate_digest
+            || gate.digest() != gate_digest
         {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
         }
 
         let session_executable = if monitor {
-            Some(read_protected_file(
+            Some(read(
                 &canonicalize_physical_path(SSHD_SESSION_PATH)?,
                 MAXIMUM_EXECUTABLE_BYTES,
                 true,
@@ -421,28 +524,74 @@ impl RunningOpenSshGateV1 {
             None
         };
         let mut command = Command::new(SSHD_PATH);
-        command.args(["-D", "-e", "-f", CONFIG_PATH]);
+        if retaining {
+            startup::configure_selected_command_v1(&mut command);
+        } else {
+            command.args(["-D", "-e", "-f", CONFIG_PATH]);
+        }
         if monitor {
-            command.arg("-oAosAttachMonitorV2=yes");
-            command.arg("-oSshdSessionPath=/usr/libexec/sshd-session");
+            if !retaining {
+                command.arg("-oAosAttachMonitorV2=yes");
+                command.arg("-oSshdSessionPath=/usr/libexec/sshd-session");
+            }
             MeasuredExecutable::opened(
                 session_executable
                     .as_ref()
                     .ok_or(OpenSshGatePhysicalErrorV1::InvalidInstallation)?,
             )
-            .require_file(&canonicalize_physical_path(SSHD_SESSION_PATH)?)?;
+            .require_file_with(&canonicalize_physical_path(SSHD_SESSION_PATH)?, &mut read)?;
         }
-        let mut child = command
+        drop(read);
+        if let Some(original) = original.as_deref_mut() {
+            if original.read.as_ref().is_some_and(|read| !read.completed_v3()) {
+                return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+            }
+            original.read.take();
+        }
+        // A daemon can fork preauthentication children before certificate
+        // readiness. The selected route therefore needs its actual owned
+        // listener/bootstrap and descendant receiving recipe before spawn;
+        // a later readback guard alone cannot account for those children.
+        if retaining {
+            return Err(OpenSshGatePhysicalErrorV1::ListenerReceiptRequired);
+        }
+        let mut ordinary_child = None;
+        let (child_slot, mut pidfd, mut cleanup_kill, mut cleanup_wait) = match original.as_deref_mut() {
+            Some(original) => (&mut original.child, Some(&mut original.pidfd),
+                Some(&mut original.cleanup_kill), Some(&mut original.cleanup_wait)),
+            None => (&mut ordinary_child, None, None, None),
+        };
+        if let Some(gate) = before_spawn.as_mut() { gate()?; }
+        *child_slot = Some(command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(stderr)
-            .spawn()?;
+            .spawn());
+        if child_slot.as_ref().is_some_and(Result::is_err) {
+            if retaining {
+                return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
+            }
+            // The selected destination keeps the exact spawn error. The
+            // ordinary adapter returns the same owned error as before.
+            return match child_slot.take() {
+                Some(Err(cause)) => Err(cause.into()),
+                _ => Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable),
+            };
+        }
+        let child = child_slot.as_mut().and_then(|result| result.as_mut().ok())
+            .ok_or(OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
         let monitor_installation = match session_executable
             .map(|session| {
                 let pid = std::num::NonZeroU32::new(child.id())
                     .ok_or(OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
-                let listener = aos_sandbox_linux::pidfd::PidFd::open(pid)
-                    .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
+                let listener = match pidfd.as_deref_mut() {
+                    Some(original) => {
+                        original.capture_once(pid).map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
+                        original.take_validated().ok_or(OpenSshGatePhysicalErrorV1::DaemonUnavailable)?
+                    }
+                    None => aos_sandbox_linux::pidfd::PidFd::open(pid)
+                        .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?,
+                };
                 Ok::<_, OpenSshGatePhysicalErrorV1>(MonitorInstallationV2 {
                     listener: Arc::new(listener),
                     configuration_device: installed.configuration.device,
@@ -450,15 +599,32 @@ impl RunningOpenSshGateV1 {
                     session_executable: MeasuredExecutable::opened(&session),
                     listener_executable: MeasuredExecutable::opened(&executable),
                     gate_executable: MeasuredExecutable::opened(&installed.gate_executable),
+                    selected: None,
                 })
             })
             .transpose()
         {
             Ok(installation) => installation,
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                if retaining {
+                    let killed = child.kill();
+                    // Reap observation remains owed even after failed kill;
+                    // this actor never blocks on an uncertain native child.
+                    let waited = child.try_wait();
+                    if let Some(destination) = cleanup_kill.as_mut() { **destination = Some(killed); }
+                    if let Some(destination) = cleanup_wait.as_mut() { **destination = Some(waited); }
+                } else {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
                 return Err(error);
+            }
+        };
+        let child = match child_slot.take() {
+            Some(Ok(child)) => child,
+            other => {
+                *child_slot = other;
+                return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
             }
         };
         Ok(Self {
@@ -470,6 +636,10 @@ impl RunningOpenSshGateV1 {
             gate_inode: installed.gate_executable.inode,
             gate_digest,
             monitor_installation,
+            retirement_before_wait: None, retirement_kill: None,
+            retirement_wait: None, retirement_completed: false,
+            readback_purpose: if retaining { OpenSshReadbackPurposeV1::SelectedAwaitingListener }
+                else { OpenSshReadbackPurposeV1::Ordinary },
         })
     }
 
@@ -481,6 +651,7 @@ impl RunningOpenSshGateV1 {
         &mut self,
         claim: &OpenSshGateClaimV1,
     ) -> Result<OpenSshMonitorRuntimeV2, OpenSshGatePhysicalErrorV1> {
+        self.require_selected_readback_ready_v1()?;
         if claim.binding != self.binding
             || self.daemon_identity()? != (claim.sshd_pid, claim.sshd_start_ticks)
         {
@@ -530,6 +701,7 @@ impl RunningOpenSshGateV1 {
         route_digest: [u8; 32],
         channel_binding: [u8; 32],
     ) -> Result<OpenSshGateReadbackV1, OpenSshGatePhysicalErrorV1> {
+        self.require_selected_readback_ready_v1()?;
         let claim = load_openssh_gate_claim_v1()?;
         self.physical_readback_from_installed_claim(challenge, route_digest, channel_binding, claim)
     }
@@ -545,6 +717,7 @@ impl RunningOpenSshGateV1 {
         route_digest: [u8; 32],
         channel_binding: [u8; 32],
     ) -> Result<OpenSshGateReadbackV1, OpenSshGatePhysicalErrorV1> {
+        self.require_selected_readback_ready_v1()?;
         let claim = load_unexpired_openssh_attach_profile_v5()?;
         self.physical_readback_from_installed_claim(challenge, route_digest, channel_binding, claim)
     }
@@ -634,8 +807,63 @@ impl RunningOpenSshGateV1 {
 
 impl Drop for RunningOpenSshGateV1 {
     fn drop(&mut self) {
+        if self.retirement_completed {
+            return;
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+impl RunningOpenSshGateV1 {
+    /// Polls the original daemon's physical termination without blocking the actor.
+    ///
+    /// This uses only the actual Child created by this owner. It grants no
+    /// Tenant, Host, Guardian, Continue-disconnect or arbitrary-PID control.
+    /// Each failed syscall remains in its original slot; kill is never retried.
+    ///
+    /// # Errors
+    /// Refuses an original kill or reap failure while its actual native cause
+    /// and daemon remain retained. Pending reap or pinned aliases return false.
+    pub(crate) fn poll_original_retirement_v1(&mut self) -> Result<bool, OpenSshGatePhysicalErrorV1> {
+        if self.retirement_completed {
+            return Ok(true);
+        }
+        if self.retirement_kill.as_ref().is_some_and(Result::is_err)
+            || self.retirement_wait.as_ref().is_some_and(Result::is_err)
+        {
+            return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
+        }
+        if self.retirement_before_wait.is_none() {
+            self.retirement_before_wait = Some(self.child.try_wait());
+        }
+        if self.retirement_before_wait.as_ref().is_some_and(Result::is_err) {
+            return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
+        }
+        if matches!(self.retirement_before_wait, Some(Ok(None))) {
+            if self.retirement_kill.is_none() {
+                self.retirement_kill = Some(self.child.kill());
+            }
+            if self.retirement_wait.as_ref().is_none_or(|result| matches!(result, Ok(None))) {
+                // This independent reap remains owed after native kill error.
+                self.retirement_wait = Some(self.child.try_wait());
+            }
+            if self.retirement_kill.as_ref().is_some_and(Result::is_err)
+                || self.retirement_wait.as_ref().is_some_and(Result::is_err)
+            {
+                return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
+            }
+            if !matches!(self.retirement_wait, Some(Ok(Some(_)))) {
+                return Ok(false);
+            }
+        }
+        if self.monitor_installation.as_ref().is_some_and(|installation|
+            Arc::strong_count(&installation.listener) != 1 || Arc::weak_count(&installation.listener) != 0)
+        {
+            return Ok(false);
+        }
+        self.retirement_completed = true;
+        Ok(true)
     }
 }
 
@@ -722,6 +950,13 @@ struct ProtectedFile {
     device: u64,
     inode: u64,
     mode: u32,
+    measured_digest: Option<[u8; 32]>,
+}
+
+impl ProtectedFile {
+    fn digest(&self) -> [u8; 32] {
+        self.measured_digest.unwrap_or_else(|| digest(&self.bytes))
+    }
 }
 
 struct InstalledGateFiles {
@@ -732,16 +967,23 @@ struct InstalledGateFiles {
 fn check_installed_files(
     binding: &OpenSshGateBindingV1,
 ) -> Result<InstalledGateFiles, OpenSshGatePhysicalErrorV1> {
-    let config = read_protected_file(Path::new(CONFIG_PATH), 4096, false)?;
+    check_installed_files_with(binding, &mut read_protected_file)
+}
+
+fn check_installed_files_with(
+    binding: &OpenSshGateBindingV1,
+    read: &mut dyn FnMut(&Path, u64, bool) -> Result<ProtectedFile, OpenSshGatePhysicalErrorV1>,
+) -> Result<InstalledGateFiles, OpenSshGatePhysicalErrorV1> {
+    let config = read(Path::new(CONFIG_PATH), 4096, false)?;
     if digest(&config.bytes) != binding.gate_config_digest
         || config.bytes != expected_openssh_gate_config_v1(binding)
             .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidBinding)?
     {
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
-    let ca = read_protected_file(Path::new(CA_PATH), 256, false)?;
-    let host_public = read_protected_file(Path::new(HOST_PUBLIC_KEY_PATH), 256, false)?;
-    let host_private = read_protected_file(Path::new(HOST_KEY_PATH), 16 * 1024, false)?;
+    let ca = read(Path::new(CA_PATH), 256, false)?;
+    let host_public = read(Path::new(HOST_PUBLIC_KEY_PATH), 256, false)?;
+    let host_private = read(Path::new(HOST_KEY_PATH), 16 * 1024, false)?;
     if host_private.mode & 0o077 != 0 {
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
@@ -763,7 +1005,7 @@ fn check_installed_files(
     {
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
-    let gate_executable = read_protected_file(
+    let gate_executable = read(
         &canonicalize_physical_path(GATE_PATH)?,
         MAXIMUM_EXECUTABLE_BYTES,
         true,
@@ -814,6 +1056,7 @@ fn read_protected_file(
         device: metadata.dev(),
         inode: metadata.ino(),
         mode: metadata.mode(),
+        measured_digest: None,
     })
 }
 
@@ -959,6 +1202,9 @@ pub enum OpenSshGatePhysicalErrorV1 {
     /// The owned sshd process or its listener is unavailable.
     #[error("OpenSSH attach gate daemon is unavailable")]
     DaemonUnavailable,
+    /// The selected daemon has not supplied its actual listener-native receipt.
+    #[error("selected OpenSSH attach gate requires its original listener receipt")]
+    ListenerReceiptRequired,
     /// The Linux file or process readback failed.
     #[error("OpenSSH attach gate physical readback failed: {0}")]
     Io(#[from] std::io::Error),
@@ -967,6 +1213,63 @@ pub enum OpenSshGatePhysicalErrorV1 {
 #[cfg(test)]
 mod tests {
     use super::{OpenSshGateBindingV1, expected_openssh_gate_config_v1};
+
+    #[test]
+    fn original_retirement_child_fixture() {
+        if std::env::var_os("AOS_TEST_ORIGINAL_DAEMON_RETIREMENT").is_some() {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+    }
+
+    #[test]
+    fn original_daemon_retires_only_after_actual_reap_and_listener_alias_drop() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "openssh_gate_linux::tests::original_retirement_child_fixture"])
+            .env("AOS_TEST_ORIGINAL_DAEMON_RETIREMENT", "1")
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()).spawn().unwrap();
+        let binding = OpenSshGateBindingV1 {
+            attach_operation_id: [1; 16], execution_id: [2; 16], incarnation_id: [3; 16],
+            assignment_epoch: 4, principal_id: [5; 16], audit_id: [6; 16],
+            user: "aos_exec".to_owned(), port: 2222,
+            host_public_key: String::new(), trusted_user_ca_public_key: String::new(),
+            expires_at: 0, gate_config_digest: [7; 32],
+        };
+        let listener = std::sync::Arc::new(aos_sandbox_linux::pidfd::PidFd::open(
+            std::num::NonZeroU32::new(std::process::id()).unwrap(),
+        ).unwrap());
+        let measured = super::MeasuredExecutable { device: 0, inode: 0, digest: [0; 32] };
+        let mut original = super::RunningOpenSshGateV1 {
+            child, binding, config_device: 0, config_inode: 0, gate_device: 0,
+            gate_inode: 0, gate_digest: [0; 32],
+            monitor_installation: Some(super::MonitorInstallationV2 {
+                listener: std::sync::Arc::clone(&listener), configuration_device: 0,
+                configuration_inode: 0, session_executable: measured.clone(),
+                listener_executable: measured.clone(), gate_executable: measured,
+                selected: None,
+            }), retirement_before_wait: None, retirement_kill: None,
+            retirement_wait: None, retirement_completed: false,
+            readback_purpose: super::OpenSshReadbackPurposeV1::Ordinary,
+        };
+
+        // This is only an actual owned Child/alias disposal fixture. No fake
+        // claim or installation check is used as process-control authority.
+        assert!(!original.poll_original_retirement_v1().unwrap());
+        assert!(matches!(original.retirement_before_wait, Some(Ok(None))));
+        assert!(matches!(original.retirement_kill, Some(Ok(()))));
+        let cutoff = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !matches!(original.retirement_wait, Some(Ok(Some(_)))) {
+            assert!(std::time::Instant::now() < cutoff);
+            assert!(!original.poll_original_retirement_v1().unwrap());
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(!original.retirement_completed);
+
+        drop(listener);
+        assert!(original.poll_original_retirement_v1().unwrap());
+        assert!(original.retirement_completed);
+        assert!(original.poll_original_retirement_v1().unwrap());
+    }
 
     #[test]
     fn canonical_path_diagnostics_preserve_resolved_path_and_original_error() {

@@ -19,7 +19,7 @@ use aos_sandbox_source_provider_protocol::{
 pub enum OriginalNativeSigningErrorV5 {
     /// Retains the actual scoped writer's physical/readback failure.
     #[error("original native signing journal boundary failed")]
-    Journal(#[from] aos_sandbox::JournalError),
+    Journal(#[from] aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1),
     /// Retains the actual current custody or signing-purpose failure.
     #[error("original native signing security boundary failed")]
     Security(#[from] SourceProviderSecurityError),
@@ -49,8 +49,8 @@ impl CurrentProviderIngressSessionV1 {
     #[doc(hidden)]
     pub fn sign_original_storage_native_request_v5(
         &mut self,
-        journal: &aos_sandbox::journal::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
-        readback: &aos_sandbox::journal::OriginalSourceProtectedReadbackV5,
+        journal: &aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+        readback: &aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5,
         root: &super::CurrentRootPreparedCarrierV1,
         acquire: &super::CurrentProviderRequestV1,
         request: &StorageNativeAcquireRequestV2,
@@ -103,7 +103,7 @@ impl CurrentProviderIngressSessionV1 {
                 .ok_or(SourceProviderSecurityError::SessionContinuity)?;
             let mut catalog = None;
             for ((namespace, key), value) in readback.rows() {
-                if *namespace == aos_sandbox::RecordNamespace::SourceProviderAuthority
+                if *namespace == aos_sandbox_core::RecordNamespace::SourceProviderAuthority
                     && let Ok(DecodedRecordV1::Catalog(value)) = decode_record(key, value)
                 {
                     if catalog.replace(value).is_some() {
@@ -140,7 +140,7 @@ impl CurrentProviderIngressSessionV1 {
             let witness = &provenance.records;
             let decode = |key: &[u8]| {
                 readback.rows().get(&(
-                    aos_sandbox::RecordNamespace::SourceProviderAuthority, key.to_vec(),
+                    aos_sandbox_core::RecordNamespace::SourceProviderAuthority, key.to_vec(),
                 )).and_then(|bytes| decode_record(key, bytes).ok())
             };
             let Some(DecodedRecordV1::Attempt(attempt)) = decode(witness[0].key()) else {

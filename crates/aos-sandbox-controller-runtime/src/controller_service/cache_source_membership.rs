@@ -11,7 +11,7 @@ use aos_filesystem_view_core::{
 use aos_sandbox::filesystem_view_state::{
     DurableFilesystemViewRevisionV1, FilesystemViewRevisionPresenceV1,
 };
-use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
+use aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1;
 use aos_sandbox_core::model::ViewSource;
 use aos_sandbox_core::{
     CanonicalCborError, MediaType, Revision, decode_view, descriptor_for_bytes,
@@ -102,7 +102,7 @@ pub(super) enum CompiledCacheSourceMembershipErrorV1<E: std::error::Error + 'sta
 /// Returns an error for release-only consumers, mismatched View identity or
 /// generation, an absent source object, or invalid authenticated index data.
 pub(super) fn join_cache_source_membership_v1<'projection, 'index, 'bytes>(
-    consumer: &'projection RecheckedCacheConsumerV1,
+    consumer: &'projection CacheConsumerDataV1,
     projection: &'projection ValidatedViewProjection<'index, 'bytes>,
 ) -> Result<ValidatedViewSourceObject<'projection, 'index, 'bytes>, CacheSourceMembershipErrorV1> {
     let fence = consumer
@@ -136,7 +136,7 @@ pub(super) fn join_cache_source_membership_v1<'projection, 'index, 'bytes>(
 /// Returns an error for release-only consumers, invalid or stale View/index
 /// data, an absent source object, or exceeded validation limits.
 pub(super) fn with_cache_source_membership_v1<R>(
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
     view_bytes: &[u8],
     index_bytes: &[u8],
     index_expectation: &IndexExpectation<'_>,
@@ -180,7 +180,7 @@ pub(super) fn with_cache_source_membership_v1<R>(
 /// Returns an error for a release-only consumer, stale or released revision,
 /// exceeded compilation limits, invalid tree source, or absent object.
 pub(super) fn with_compiled_cache_source_membership_from_revision_v1<S, R>(
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
     source: &mut S,
     revision: &DurableFilesystemViewRevisionV1,
     compiler_abi: [u8; 32],
@@ -233,7 +233,7 @@ where
 }
 
 fn compile_authenticated_cache_source_membership_v1<S, R>(
-    consumer: &RecheckedCacheConsumerV1,
+    consumer: &CacheConsumerDataV1,
     source: &mut S,
     view_bytes: &[u8],
     compiler_abi: [u8; 32],

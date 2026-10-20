@@ -4,6 +4,11 @@
 //! A positive post-Root caller remains closed until genuine disposition can keep
 //! every original guard alive on success, ambiguity, and unwind.
 
+#[cfg(target_os = "linux")]
+mod create_storage;
+#[cfg(target_os = "linux")]
+pub(in crate::cache_residency) use create_storage::CacheHeldSelectionV1;
+
 use super::*;
 use crate::cache_residency::protected_owner::CacheClockWriterReadbackGuard;
 use crate::journal::{ProtectedJournalAuthority, ProtectedJournalSnapshot};
@@ -831,10 +836,44 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
             &'session mut Journal,
         ) -> Result<R, CacheResidencyProtectedJournalErrorV1>,
     ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
+        self.with_borrowed_mutable_authority_priced_v1::<R, ()>(
+            state, hold, clock,
+            #[cfg(target_os = "linux")]
+            None,
+            #[cfg(target_os = "linux")]
+            None,
+            action,
+        )
+    }
+
+    // Ordinary and selected initializer callers share this one engine. Only
+    // the genuine selected caller can supply its private original B loan.
+    pub(in crate::cache_residency) fn with_borrowed_mutable_authority_priced_v1<R, P>(
+        &self,
+        state: &mut Journal,
+        hold: &mut Journal,
+        clock: &CacheClockWriterReadbackGuard<'_>,
+        #[cfg(target_os = "linux")]
+        loan: Option<&super::super::protected_owner::CacheConstructionOriginalsV1>,
+        #[cfg(target_os = "linux")]
+        receiving: Option<&super::super::protected_owner::CacheConstructionReceivingV1<'_, '_, '_, '_, P>>,
+        action: impl for<'session, 'claim, 'journal, 'gate, 'clock> FnOnce(
+            &'session mut RetainedCacheAuthoritySessionV1<'claim, 'journal, 'gate, 'clock>,
+            &'session mut Journal,
+        ) -> Result<R, CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
         clock.require_time_authority(&self.current_time)?;
         let mut journal = self.journal.lock()
             .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
         clock.require_cache_targets(state, &journal)?;
+        #[cfg(target_os = "linux")]
+        if let Some(receiving) = receiving {
+            receiving.require_initial_inventory_protected(&journal, state)?;
+        } else if let Some(loan) = loan {
+            // Before original_records or any verified replay/model clone;
+            // only pure accounting runs under this same original Mutex.
+            loan.require_initial_inventory_protected(&journal, state)?;
+        }
         let mut gate = Journal::borrow_cache_mutation_gate_v1(state, &journal, hold)?;
         let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
         let snapshot = authority.snapshot()?;

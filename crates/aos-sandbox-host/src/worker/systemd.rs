@@ -5,9 +5,25 @@
 
 use super::*;
 
+mod payload_inspection;
+mod quiescence;
+mod supervisor;
+mod proof_snapshot;
+mod sandbox_observation;
+mod stop_quiescence;
+pub(in crate::worker) use stop_quiescence::{
+    StopQuiescenceDisposedV4, StopQuiescenceOriginalV3,
+};
+pub(super) use sandbox_observation::SandboxNativeOriginalV2;
+pub(super) use proof_snapshot::RuntimeProofOriginalV2;
+pub(super) use supervisor::SupervisorProofOriginalV2;
+pub(super) use quiescence::PayloadInspectionQuiescenceOriginalV2;
+pub(crate) use payload_inspection::{HostPayloadInspectionOriginalV2, PayloadInspectionLimitsV2};
+
 // One verification recipe preserves Local's lexical ownership while the retained
 // disposition parks returned originals before the next fallible observation.
 macro_rules! verification_slot {
+    (Launch, $($arguments:tt)*) => { verification_slot!(Retained, $($arguments)*) };
     (Local, park_observation, $s:ident, $v:ident) => {};
     (Retained, park_observation, $s:ident, $v:ident) => { $s.observation = Some($v); };
     (Local, observation, $s:ident, $v:ident) => { $v };
@@ -71,6 +87,61 @@ macro_rules! verification_slot {
     }};
 }
 
+// The outer proof conjunction stays one recipe. These closed native hooks
+// select either the existing consuming worker or the genuine Launch borrower.
+macro_rules! bound_supervisor_v3 {
+    (Launch, $worker:ident, $pins:ident, $leader:ident, $spec:ident) => {
+        $worker.verify_supervisor_v3($pins, $leader, $spec.payload_root_continuity_policy()).await?
+    };
+    ($mode:ident, $worker:ident, $pins:ident, $leader:ident, $spec:ident) => {
+        verify_supervisor_pins(&$worker.cgroup_root, $pins, $leader, $spec.payload_root_continuity_policy())?
+    };
+}
+
+macro_rules! bound_snapshot_v3 {
+    (Launch, $worker:ident, $pins:ident, $leader:ident, $payload:expr) => {
+        $worker.snapshot_v3($pins, $leader, $payload).await?
+    };
+    ($mode:ident, $worker:ident, $pins:ident, $leader:ident, $payload:expr) => {
+        runtime_proof_snapshot($pins, $leader, $payload)?
+    };
+}
+
+macro_rules! bound_shifted_v3 {
+    (Launch, $worker:ident, $identity:ident, $spec:ident, $invocation:ident, $leader:ident, $payload:expr, $proof:ident) => {
+        $worker.shifted_v3($identity, $spec, $invocation, $leader, $payload, &$proof).await?
+    };
+    ($mode:ident, $worker:ident, $identity:ident, $spec:ident, $invocation:ident, $leader:ident, $payload:expr, $proof:ident) => {
+        VerifiedShiftedPayloadInspectionV1::inspect($identity, $spec, $invocation, $leader, $payload, &$proof)?
+    };
+}
+
+macro_rules! bound_submission_v3 {
+    (Launch, $worker:ident, $spec:ident, $identity:ident, $guardian:ident, $before_effect:ident) => {
+        $worker.submit_payload_v3($spec, $identity, $guardian, $before_effect).await?
+    };
+    ($mode:ident, $worker:ident, $spec:ident, $identity:ident, $guardian:ident, $before_effect:ident) => {
+        ExactUnitClient::connect()
+            .await
+            .map_err(|error| worker_error(&error))?
+            .start_payload_guarded($spec, $guardian, $before_effect)
+            .await
+            .map_err(|error| match error {
+                ExactStartError::Guard(error) => error,
+                ExactStartError::Systemd(error) => worker_error(&error),
+            })?
+    };
+}
+
+macro_rules! bound_client_v3 {
+    // The actual Launch adapter opens each paid SDK row itself. This unit
+    // value is only the unused Local recipe parameter, never a native client.
+    (Launch) => { () };
+    ($mode:ident) => {
+        SystemdClient::connect().await.map_err(|error| worker_error(&error))?
+    };
+}
+
 macro_rules! verify_bound_payload_recipe {
     ($worker:ident, $client:ident, $spec:ident, $pins:ident, $identity:ident, $mode:ident, $state:ident) => {{
         let expected_binding = $spec.launch_binding().ok_or_else(|| {
@@ -100,23 +171,13 @@ macro_rules! verify_bound_payload_recipe {
         let leader = verification_slot!($mode, observation, $state, observation).leader.as_ref().ok_or_else(|| {
             HostError::Worker("bound payload has no pinned supervisor".to_owned())
         })?;
-        let payload = verify_supervisor_pins(
-            &$worker.cgroup_root,
-            $pins,
-            leader,
-            $spec.payload_root_continuity_policy(),
-        )?;
+        let payload = bound_supervisor_v3!($mode, $worker, $pins, leader, $spec);
         verification_slot!($mode, park_payload, $state, payload);
-        let proof = runtime_proof_snapshot($pins, leader, verification_slot!($mode, payload, $state, payload))?;
+        let proof = bound_snapshot_v3!($mode, $worker, $pins, leader,
+            verification_slot!($mode, payload, $state, payload));
         verification_slot!($mode, park_proof, $state, proof);
-        let shifted_payload_inspection = VerifiedShiftedPayloadInspectionV1::inspect(
-            $identity,
-            $spec,
-            invocation_id,
-            leader,
-            verification_slot!($mode, payload, $state, payload),
-            &proof,
-        )?;
+        let shifted_payload_inspection = bound_shifted_v3!($mode, $worker, $identity, $spec,
+            invocation_id, leader, verification_slot!($mode, payload, $state, payload), proof);
         verification_slot!($mode, park_shifted, $state, shifted_payload_inspection);
         verification_slot!($mode, join_payload, $state, observation, payload);
         verification_slot!($mode, limits, $state, $worker, $spec);
@@ -133,6 +194,10 @@ macro_rules! verify_bound_payload_recipe {
 }
 
 macro_rules! bound_call_finish {
+    (Launch, $worker:ident, $client:ident, $spec:ident, $pins:ident, $identity:ident, $state:ident) => {{
+        let retained_client = &$client;
+        verify_bound_payload_recipe!($worker, retained_client, $spec, $pins, $identity, Launch, $state)
+    }};
     (Canary, $worker:ident, $client:ident, $spec:ident, $pins:ident, $identity:ident, $state:ident) => {
         $worker.verify_original_canary(&$client, $spec, $pins, $identity, $state).await
     };
@@ -169,15 +234,7 @@ macro_rules! start_bound_payload_recipe {
         })?;
         let guardian = ExactUnitTarget::new(binding, $guardian_invocation_id)
             .map_err(|error| worker_error(&error))?;
-        let outcome = ExactUnitClient::connect()
-            .await
-            .map_err(|error| worker_error(&error))?
-            .start_payload_guarded($spec, guardian, $before_effect)
-            .await
-            .map_err(|error| match error {
-                ExactStartError::Guard(error) => error,
-                ExactStartError::Systemd(error) => worker_error(&error),
-            })?;
+        let outcome = bound_submission_v3!($mode, $worker, $spec, $identity, guardian, $before_effect);
         if outcome.result != JobResult::Done {
             return Err(HostError::Worker(format!(
                 "bound payload start job completed as {:?}",
@@ -185,9 +242,7 @@ macro_rules! start_bound_payload_recipe {
             )));
         }
 
-        let client = SystemdClient::connect()
-            .await
-            .map_err(|error| worker_error(&error))?;
+        let client = bound_client_v3!($mode);
 
         bound_call_finish!($mode, $worker, client, $spec, $pins, $identity, $state)
     }};
@@ -195,12 +250,71 @@ macro_rules! start_bound_payload_recipe {
 
 macro_rules! prove_bound_payload_recipe {
     ($worker:ident, $spec:ident, $pins:ident, $identity:ident, $mode:ident, $state:ident) => {{
-        let client = SystemdClient::connect()
-            .await
-            .map_err(|error| worker_error(&error))?;
+        let client = bound_client_v3!($mode);
 
         bound_call_finish!($mode, $worker, client, $spec, $pins, $identity, $state)
     }};
+}
+
+pub(in crate::worker) mod launch_payload;
+
+// One absence recipe preserves the old consuming disposition and the paid
+// receiver's native prefixes. In particular, the root is resident before any
+// later child or root-bookend operation can refuse.
+macro_rules! absence_resolution_v2 {
+    (Local, $root:ident, $relative:ident, $original:ident) => {
+        $root.resolve($relative)
+    };
+    (Retained, $root:ident, $relative:ident, $original:ident) => {{
+        let returned = $original.resolution.resolve_once($root, $relative);
+        match returned {
+            Ok(()) => Ok(()),
+            Err(_) => Err($original.resolution.failure()
+                .ok_or_else(|| resident_readback_missing("absence child cause"))?),
+        }
+    }};
+}
+
+macro_rules! absence_expected_missing_v2 {
+    (Local, $original:ident) => {};
+    (Retained, $original:ident) => {
+        $original.resolution_was_absent = true;
+    };
+}
+
+macro_rules! absence_root_post_v2 {
+    (Local, $root:ident, $original:ident) => {
+        $root.resolve(Path::new("."))
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+    };
+    (Retained, $root:ident, $original:ident) => {
+        $original.after.resolve_once($root, Path::new("."))
+            .map_err(|_| resident_readback_missing("absence root post; cause retained"))?;
+    };
+}
+
+macro_rules! exact_cgroup_absence_recipe_v2 {
+    ($mode:ident, $root:ident, $relative:ident, $original:ident, $replacement_message:ident) => {{
+        match absence_resolution_v2!($mode, $root, $relative, $original) {
+            Err(error) if exact_cgroup_path_missing_v2(&error) => {
+                absence_expected_missing_v2!($mode, $original);
+                // Missing manager state alone is not containment evidence.
+                // Keep the actual resolution Result through the same live-root
+                // bookend, including the ordinary consuming drop boundary.
+                absence_root_post_v2!($mode, $root, $original);
+                Ok(())
+            }
+            Ok(_) => Err(HostError::Worker(
+                $replacement_message.to_owned(),
+            )),
+            Err(error) => Err(HostError::Worker(error.to_string())),
+        }
+    }};
+}
+
+fn exact_cgroup_path_missing_v2(error: &aos_sandbox_linux::Error) -> bool {
+    matches!(error, aos_sandbox_linux::Error::Syscall { source, .. }
+        if source.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()))
 }
 
 pub(super) fn resident_readback_missing(field: &str) -> HostError {
@@ -212,6 +326,15 @@ impl HostCanaryPayloadReadbackV1 {
         &mut self,
         job: &mut crate::broker::canary_job::HostCanaryJobOwnerV1,
     ) -> std::result::Result<(), CanaryPayloadFailureV1> {
+        self.receive_original_reports_engine_v2(
+            super::component_startup::StartupReportReceivingV2::Canary(job),
+        ).await
+    }
+
+    pub(super) async fn receive_original_reports_engine_v2(
+        &mut self,
+        mut scope: super::component_startup::StartupReportReceivingV2<'_, '_, '_>,
+    ) -> std::result::Result<(), CanaryPayloadFailureV1> {
         if self.received || self.receive_cursor != 0 {
             return Err(CanaryPayloadFailureV1::Mismatch);
         }
@@ -219,10 +342,12 @@ impl HostCanaryPayloadReadbackV1 {
         // child and final Guest manager have one fixed serialized report order.
         // No successful or consumed attempt can be retried after a refusal.
         while self.receive_cursor < 8 {
-            require_canary_deadline(job)?;
+            scope.require_deadline_v2()?;
             let socket = self.report_socket.as_mut().ok_or(CanaryPayloadFailureV1::Mismatch)?;
             if self.receive_cursor == 1 {
-                match socket.receive_retaining(98_504) {
+                match if scope.is_component_v2() {
+                    socket.receive_component_startup_program_retaining_v2(98_504)
+                } else { socket.receive_retaining(98_504) } {
                     Ok(record) => self.program_report = Some(record),
                     Err(cause) if cause.is_nonconsuming_would_block()
                         || cause.is_nonconsuming_interrupted() =>
@@ -238,7 +363,9 @@ impl HostCanaryPayloadReadbackV1 {
             } else {
                 let slot = if self.receive_cursor == 0 { 0 } else { self.receive_cursor - 1 };
                 let count = [3, 5, 5, 1, 5, 5, 1][slot];
-                match socket.receive_with_descriptors_retaining(176, count) {
+                match if scope.is_component_v2() {
+                    socket.receive_component_startup_report_retaining_v2(176, count)
+                } else { socket.receive_with_descriptors_retaining(176, count) } {
                     Ok(record) => self.reports[slot] = Some(record),
                     Err(cause) if cause.is_nonconsuming_would_block()
                         || cause.is_nonconsuming_interrupted() =>
@@ -255,14 +382,19 @@ impl HostCanaryPayloadReadbackV1 {
             // The complete return is parked before time, job or later report
             // checks. A failing bookend keeps its original subject and rights.
             self.receive_cursor += 1;
-            job.recheck()?;
-            require_canary_deadline(job)?;
+            if self.receive_cursor == 2 {
+                if let super::component_startup::StartupReportReceivingV2::Component(expected, _) = &scope {
+                    self.require_component_program_error_prefix_v2(expected)?;
+                }
+            }
+            scope.require_current_v2()?;
+            scope.require_deadline_v2()?;
         }
         self.received = true;
         Ok(())
     }
 
-    fn capture_received_originals(&mut self)
+    pub(super) fn capture_received_originals(&mut self)
         -> std::result::Result<(), CanaryPayloadFailureV1>
     {
         if !self.received || self.reports.iter().any(Option::is_none) {
@@ -312,6 +444,12 @@ impl HostCanaryPayloadReadbackV1 {
     fn require_loaded_programs(&self, artifact: &[u8])
         -> std::result::Result<(), CanaryPayloadFailureV1>
     {
+        self.require_loaded_programs_engine_v2(artifact, *b"AOSHCR01")
+    }
+
+    pub(super) fn require_loaded_programs_engine_v2(&self, artifact: &[u8], magic: [u8; 8])
+        -> std::result::Result<(), CanaryPayloadFailureV1>
+    {
         let record = self.program_report.as_ref().ok_or(CanaryPayloadFailureV1::Mismatch)?;
         self.report_socket.as_ref().ok_or(CanaryPayloadFailureV1::Mismatch)?
             .require_host_canary_response_original_v1(record)?;
@@ -323,27 +461,15 @@ impl HostCanaryPayloadReadbackV1 {
         {
             return Err(CanaryPayloadFailureV1::Mismatch);
         }
-        if observed.len() == 184 && observed[..12] == *b"AOSHCR01\0\x01\0\x09" {
-            let original = self.originals.original_report_header()?;
-            let phase = u16::from_be_bytes(observed[176..178].try_into()
-                .map_err(|_| CanaryPayloadFailureV1::Mismatch)?);
-            let error = i32::from_be_bytes(observed[180..184].try_into()
-                .map_err(|_| CanaryPayloadFailureV1::Mismatch)?);
-            if observed[12..16] != 184_u32.to_be_bytes()
-                || observed[16..176] != original[16..176]
-                || phase != 2
-                || observed[178..180] != [0; 2]
-                || error >= 0
-            {
-                return Err(CanaryPayloadFailureV1::Mismatch);
-            }
-            return Err(CanaryPayloadFailureV1::Report { phase, error });
-        }
+        require_reported_program_error_v2(
+            observed, self.originals.original_report_header()?, magic,
+        )?;
         let original = self.originals.original_report_header()?;
         if artifact.len() <= 176 || artifact.len() > 98_504
             || observed.len() != artifact.len()
             || artifact[..12] != *b"AOSHCR01\0\x01\0\x02"
-            || observed[..12] != artifact[..12]
+            || observed[..8] != magic
+            || observed[8..12] != artifact[8..12]
             || observed[12..16] != (observed.len() as u32).to_be_bytes()
             || artifact[12..16] != observed[12..16]
             || artifact[16..160] != [0; 144]
@@ -370,6 +496,14 @@ impl HostCanaryPayloadReadbackV1 {
         -> std::result::Result<(), CanaryPayloadFailureV1>
     {
         let observation = self.original_observation().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        self.require_supervisor_and_root_engine_v2(pins, observation)
+    }
+
+    pub(super) fn require_supervisor_and_root_engine_v2(
+        &self, pins: &LaunchPins, observation: &WorkerObservation,
+    )
+        -> std::result::Result<(), CanaryPayloadFailureV1>
+    {
         let leader = observation.leader.as_ref().ok_or(CanaryPayloadFailureV1::Mismatch)?;
         let (subject, actual) = self.originals.supervisor_observation()?;
         let (image, network) = self.originals.supervisor_image_and_network()?;
@@ -415,13 +549,15 @@ impl HostCanaryPayloadReadbackV1 {
         Ok(())
     }
 
-    fn require_original_images(&self)
+    pub(super) fn require_original_images(&self)
         -> std::result::Result<(), CanaryPayloadFailureV1>
     {
         let (_, bootstrap) = self.originals.bootstrap_root_and_image()?;
         let actual = [bootstrap, self.originals.executed_image()?, self.originals.systemd_executed_image()?];
         for (slot, received) in actual.into_iter().enumerate() {
-            let expected = self.images[slot].as_ref().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+            let expected = if self.component_report {
+                self.component_images[slot].regular_v1().ok_or(CanaryPayloadFailureV1::Mismatch)?
+            } else { self.images[slot].as_ref().ok_or(CanaryPayloadFailureV1::Mismatch)? };
             if !same_original_image(received, expected.as_fd())? {
                 return Err(CanaryPayloadFailureV1::Mismatch);
             }
@@ -434,6 +570,14 @@ impl HostCanaryPayloadReadbackV1 {
         pins: &LaunchPins,
         job: &crate::broker::canary_job::HostCanaryJobOwnerV1,
     ) -> std::result::Result<RuntimeProofSnapshot, CanaryPayloadFailureV1> {
+        self.original_proof_engine_v2(pins, job.originals()?.boot_id)
+    }
+
+    pub(super) fn original_proof_engine_v2(
+        &self,
+        pins: &LaunchPins,
+        host_boot_id: [u8; 16],
+    ) -> std::result::Result<RuntimeProofSnapshot, CanaryPayloadFailureV1> {
         let (_, supervisor) = self.originals.supervisor_observation()?;
         let (payload, local) = self.originals.bootstrap_observation()?;
         let (root, _) = self.originals.bootstrap_root_and_image()?;
@@ -441,7 +585,7 @@ impl HostCanaryPayloadReadbackV1 {
         let supervisor_cgroup = supervisor.cgroup_id().ok_or(CanaryPayloadFailureV1::Mismatch)?;
         let payload_cgroup = payload.cgroup_id().ok_or(CanaryPayloadFailureV1::Mismatch)?;
         let proof = RuntimeProofSnapshot {
-            host_boot_id: job.originals()?.boot_id,
+            host_boot_id,
             supervisor: ProcessProofSnapshot {
                 pid: supervisor.pid(),
                 thread_group_id: supervisor.thread_group_id(),
@@ -471,6 +615,28 @@ impl HostCanaryPayloadReadbackV1 {
     }
 }
 
+pub(super) fn require_reported_program_error_v2(
+    observed: &[u8], original: &[u8], magic: [u8; 8],
+) -> std::result::Result<(), CanaryPayloadFailureV1> {
+    if observed.len() == 184 && observed[..8] == magic && observed[8..12] == [0, 1, 0, 9] {
+        let phase = u16::from_be_bytes(observed[176..178].try_into()
+            .map_err(|_| CanaryPayloadFailureV1::Mismatch)?);
+        let error = i32::from_be_bytes(observed[180..184].try_into()
+            .map_err(|_| CanaryPayloadFailureV1::Mismatch)?);
+        if original.len() != 176
+            || observed[12..16] != 184_u32.to_be_bytes()
+            || observed[16..176] != original[16..176]
+            || phase != 2
+            || observed[178..180] != [0; 2]
+            || error >= 0
+        {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        return Err(CanaryPayloadFailureV1::Report { phase, error });
+    }
+    Ok(())
+}
+
 fn same_original_image(actual: BorrowedFd<'_>, expected: BorrowedFd<'_>)
     -> std::result::Result<bool, rustix::io::Errno>
 {
@@ -485,7 +651,7 @@ fn same_original_image(actual: BorrowedFd<'_>, expected: BorrowedFd<'_>)
             == (expected.st_dev, expected.st_ino, expected.st_size))
 }
 
-fn require_canary_deadline(job: &crate::broker::canary_job::HostCanaryJobOwnerV1)
+pub(super) fn require_canary_deadline(job: &crate::broker::canary_job::HostCanaryJobOwnerV1)
     -> std::result::Result<(), CanaryPayloadFailureV1>
 {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
@@ -578,21 +744,53 @@ fn require_original_limit_membership(
         .ok_or_else(|| resident_readback_missing("membership payload"))?;
     let service = state.anchors[3].as_ref()
         .ok_or_else(|| resident_readback_missing("membership service"))?;
-    retain_native_limit_result(
-        service.verify_descendant_membership(leader.pidfd(), Path::new("supervisor")),
-        &mut state.native_failure,
-    )?;
+    let mut retained_round = match state.limit_native.as_mut() {
+        Some(native) => {
+            // A later round cannot coexist with an earlier native prefix.
+            // These proofs live on the exact prior originals; a failed or
+            // partial recipe leaves them absent and keeps the phase closed.
+            if native.memberships[..native.membership_rounds].iter().flatten()
+                .any(|original| original.native_disposal_v4().is_none())
+            {
+                return Err(resident_readback_missing("earlier limit membership files remain occupied"));
+            }
+            let round = native.memberships.get_mut(native.membership_rounds)
+                .ok_or_else(|| resident_readback_missing("finite limit membership roster"))?;
+            native.membership_rounds += 1;
+            Some(round)
+        }
+        None => None,
+    };
+    let supervisor_membership = match retained_round.as_deref_mut() {
+        Some(round) => round[0].capture_once(service, leader.pidfd(), Some(Path::new("supervisor"))),
+        None => service.verify_descendant_membership(leader.pidfd(), Path::new("supervisor")).map(|_| ()),
+    };
+    retain_native_limit_result(supervisor_membership, &mut state.native_failure)?;
     let anchor = state.payload_anchor.as_ref()
         .ok_or_else(|| resident_readback_missing("payload anchor"))?;
     if anchor.kernel_id() != payload.cgroup.identity().inode {
         return Err(HostError::Worker("payload subtree is not beneath the retained service".to_owned()));
     }
-    let membership = if payload.relative_cgroup_hint.is_empty() {
-        anchor.verify_exact_membership(&payload.pidfd)
-    } else {
-        anchor.verify_descendant_membership(&payload.pidfd, Path::new(&payload.relative_cgroup_hint))
+    let hint = (!payload.relative_cgroup_hint.is_empty())
+        .then(|| Path::new(&payload.relative_cgroup_hint));
+    let membership = match retained_round.as_deref_mut() {
+        Some(round) => round[1].capture_once(anchor, &payload.pidfd, hint),
+        None => match hint {
+            None => anchor.verify_exact_membership(&payload.pidfd).map(|_| ()),
+            Some(hint) => anchor.verify_descendant_membership(&payload.pidfd, hint).map(|_| ()),
+        },
     };
     retain_native_limit_result(membership, &mut state.native_failure)?;
+    if let Some(round) = retained_round {
+        // Both original process/anchor identities and each recipe's final
+        // liveness check succeeded. Later rounds use fresh observations of
+        // the separately held input pins, never these temporary files.
+        for original in round {
+            if original.retire_completed_files_once_v4().is_none() {
+                return Err(resident_readback_missing("complete limit membership disposal"));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -657,7 +855,7 @@ fn limit_decimal(readback: &CgroupLimitReadbackV1, control: CgroupLimitControlV1
         .ok_or_else(|| HostError::Worker("service control is not a finite decimal".to_owned()))
 }
 
-fn fixed_limit_paths(service: &SandboxCgroupPath) -> [&str; 4] {
+pub(super) fn fixed_limit_paths(service: &SandboxCgroupPath) -> [&str; 4] {
     [
         ".",
         "aos.slice",
@@ -804,40 +1002,7 @@ impl SystemdOneShotWorker {
                 payload: None,
             });
         };
-        let payload_freezer = if observation.active_state == "active" {
-            let cgroup = observation.cgroup.as_ref().ok_or_else(|| {
-                HostError::Worker("active sandbox unit has no exact cgroup".to_owned())
-            })?;
-            Some(
-                resolve_payload_cgroup(&self.cgroup_root, cgroup)?
-                    .freezer_state()
-                    .map_err(|error| HostError::Worker(error.to_string()))?,
-            )
-        } else {
-            None
-        };
-        let state = classify_state(&observation, payload_freezer);
-        let leader = match observation.supervisor_pid {
-            Some(pid) => Some(self.pin_leader(identity, &observation, pid)?),
-            None if matches!(
-                state,
-                ObservedRuntimeState::Starting
-                    | ObservedRuntimeState::Ready
-                    | ObservedRuntimeState::Frozen
-            ) =>
-            {
-                return Err(HostError::Worker(
-                    "active sandbox unit has no supervisor MainPID".to_owned(),
-                ));
-            }
-            None => None,
-        };
-        Ok(WorkerObservation {
-            state,
-            invocation_id: observation.invocation_id,
-            leader,
-            payload: None,
-        })
+        sandbox_observation::project_local(self, identity, &observation)
     }
 
     async fn observe_guardian_with_client(
@@ -1014,6 +1179,34 @@ impl SystemdOneShotWorker {
         Ok(())
     }
 
+    fn capture_limit_root_v2(&self, state: &mut BoundPayloadReadbackV1) -> Result<CgroupV2Root> {
+        let Some(native) = state.limit_native.as_mut() else {
+            let descriptor = self.cgroup_root.as_fd().try_clone_to_owned()
+                .map_err(|source| HostError::Descriptor {
+                    operation: "duplicate limit-readback cgroup root",
+                    source,
+                })?;
+            return retain_native_limit_result(
+                CgroupV2Root::from_owned(descriptor), &mut state.native_failure,
+            );
+        };
+
+        // Park the actual duplicate before root admission. Completed anchors
+        // move to the existing readback while the lower active probes remain.
+        native.root_descriptor = Some(self.cgroup_root.as_fd().try_clone_to_owned());
+        let descriptor = match native.root_descriptor.take() {
+            Some(Ok(descriptor)) => descriptor,
+            Some(Err(source)) => {
+                native.root_descriptor = Some(Err(source));
+                return Err(resident_readback_missing("cgroup root duplicate; cause retained"));
+            }
+            None => return Err(resident_readback_missing("cgroup root duplicate")),
+        };
+        retain_native_limit_result(native.root.admit_once(descriptor), &mut state.native_failure)?;
+        native.root.take_completed_once()
+            .ok_or_else(|| resident_readback_missing("completed cgroup root"))
+    }
+
     fn capture_service_limits(
         &self,
         spec: &SandboxUnitSpec,
@@ -1028,35 +1221,74 @@ impl SystemdOneShotWorker {
         state: &mut BoundPayloadReadbackV1,
         canary: Option<&aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1>,
     ) -> Result<()> {
-        // Root/directory constructors still have their existing pre-return
-        // acquisition gaps. Every successfully returned owner is parked here
-        // before the next gate; fixed regular-file acquisition is retained below.
-        let descriptor = self.cgroup_root.as_fd().try_clone_to_owned()
-            .map_err(|source| HostError::Descriptor {
-                operation: "duplicate limit-readback cgroup root",
-                source,
-            })?;
-        state.root = Some(retain_native_limit_result(
-            CgroupV2Root::from_owned(descriptor), &mut state.native_failure,
-        )?);
+        state.root = Some(self.capture_limit_root_v2(state)?);
         let root = state.root.as_ref().ok_or_else(|| resident_readback_missing("cgroup root"))?;
+        if let Some(native) = state.limit_native.as_mut() {
+            if !native.root.retire_completed_prefix_once_v4(root) {
+                return Err(resident_readback_missing("complete root admission prefix"));
+            }
+        }
         let service_path = spec.name().cgroup_path();
         let paths = fixed_limit_paths(&service_path);
         for (index, path) in paths.iter().enumerate() {
-            state.anchors[index] = Some(retain_native_limit_result(
-                root.resolve(Path::new(path)), &mut state.native_failure,
-            )?);
+            state.anchors[index] = Some(match state.limit_native.as_mut() {
+                Some(native) => {
+                    retain_native_limit_result(
+                        native.ancestors[index].resolve_once(root, Path::new(path)),
+                        &mut state.native_failure,
+                    )?;
+                    native.ancestors[index].take_completed_once()
+                        .ok_or_else(|| resident_readback_missing("completed cgroup ancestor"))?
+                }
+                None => retain_native_limit_result(
+                    root.resolve(Path::new(path)), &mut state.native_failure,
+                )?,
+            });
             let anchor = state.anchors[index].as_ref()
                 .ok_or_else(|| resident_readback_missing("cgroup ancestor"))?;
-            state.limits[index].capture(anchor)
-                .map_err(|_| resident_readback_missing("native control capture; cause retained"))?;
+            let capture = if state.limit_native.is_some() {
+                state.limits[index].capture_retaining_v2(anchor)
+            } else {
+                state.limits[index].capture(anchor)
+            };
+            capture.map_err(|_| resident_readback_missing("native control capture; cause retained"))?;
             require_limit_topology(&state.limits[index], index, &mut state.missing_control)?;
+            if let Some(native) = state.limit_native.as_mut() {
+                if !native.ancestors[index].retire_completed_prefix_once_v4(anchor) {
+                    return Err(resident_readback_missing("complete ancestor admission prefix"));
+                }
+                // The service's Spec comparison follows below. Other ancestor
+                // rows have completed their whole local topology conjunction.
+                if index != 3 {
+                    retain_native_limit_result(
+                        state.limits[index].retire_initial_active_files_once_v4(),
+                        &mut state.native_failure,
+                    )?;
+                }
+            }
         }
         let service = state.anchors[3].as_ref()
             .ok_or_else(|| resident_readback_missing("service anchor"))?;
-        state.payload_anchor = Some(retain_native_limit_result(
-            service.resolve_descendant(Path::new("payload")), &mut state.native_failure,
-        )?);
+        state.payload_anchor = Some(match state.limit_native.as_mut() {
+            Some(native) => {
+                retain_native_limit_result(
+                    native.payload.resolve_descendant_once(service, Path::new("payload")),
+                    &mut state.native_failure,
+                )?;
+                native.payload.take_completed_once()
+                    .ok_or_else(|| resident_readback_missing("completed payload descendant"))?
+            }
+            None => retain_native_limit_result(
+                service.resolve_descendant(Path::new("payload")), &mut state.native_failure,
+            )?,
+        });
+        if let Some(native) = state.limit_native.as_mut() {
+            let anchor = state.payload_anchor.as_ref()
+                .ok_or_else(|| resident_readback_missing("completed payload anchor"))?;
+            if !native.payload.retire_completed_prefix_once_v4(anchor) {
+                return Err(resident_readback_missing("complete payload admission prefix"));
+            }
+        }
         require_original_limit_membership(state, canary)?;
         let limits = &state.limits[3];
         let expected = spec.resources();
@@ -1064,6 +1296,12 @@ impl SystemdOneShotWorker {
             || limit_decimal(limits, CgroupLimitControlV1::CpuWeight)? != expected.cpu_weight().get()
         {
             return Err(HostError::Worker("service task limit or CPU weight differs from original Spec".to_owned()));
+        }
+        if state.limit_native.is_some() {
+            retain_native_limit_result(
+                state.limits[3].retire_initial_active_files_once_v4(),
+                &mut state.native_failure,
+            )?;
         }
         // Memory bytes remain paired with the actual original byte request in
         // the resident PreparedLaunch. No page conversion/equality is invented.
@@ -1088,20 +1326,48 @@ impl SystemdOneShotWorker {
         for index in 0..4 {
             let anchor = state.anchors[index].as_ref()
                 .ok_or_else(|| resident_readback_missing("final ancestor"))?;
-            state.limits[index].recheck(anchor)
-                .map_err(|_| resident_readback_missing("native control bookend; cause retained"))?;
+            let recheck = if state.limit_native.is_some() {
+                state.limits[index].recheck_after_initial_disposal_v4(anchor)
+            } else {
+                state.limits[index].recheck(anchor)
+            };
+            recheck.map_err(|_| resident_readback_missing("native control bookend; cause retained"))?;
+            if state.limit_native.is_some() {
+                retain_native_limit_result(
+                    state.limits[index].retire_final_active_files_once_v4(),
+                    &mut state.native_failure,
+                )?;
+            }
         }
         let root = state.root.as_ref().ok_or_else(|| resident_readback_missing("final root"))?;
         let service_path = spec.name().cgroup_path();
         for (index, path) in fixed_limit_paths(&service_path).iter().enumerate() {
-            state.anchor_bookends[index] = Some(retain_native_limit_result(
-                root.resolve(Path::new(path)), &mut state.native_failure,
-            )?);
+            state.anchor_bookends[index] = Some(match state.limit_native.as_mut() {
+                Some(native) => {
+                    retain_native_limit_result(
+                        native.bookends[index].resolve_once(root, Path::new(path)),
+                        &mut state.native_failure,
+                    )?;
+                    native.bookends[index].take_completed_once()
+                        .ok_or_else(|| resident_readback_missing("completed ancestor bookend"))?
+                }
+                None => retain_native_limit_result(
+                    root.resolve(Path::new(path)), &mut state.native_failure,
+                )?,
+            });
             let (Some(original), Some(bookend)) = (&state.anchors[index], &state.anchor_bookends[index]) else {
                 return Err(resident_readback_missing("ancestor bookend"));
             };
             if original.kernel_id() != bookend.kernel_id() {
                 return Err(HostError::Worker("named service ancestry changed during limit readback".to_owned()));
+            }
+            if let Some(native) = state.limit_native.as_mut() {
+                if !native.bookends[index].retire_completed_prefix_once_v4(bookend) {
+                    return Err(resident_readback_missing("complete compared ancestor bookend prefix"));
+                }
+                // Later membership uses the still-held original ancestor,
+                // never this same-kernel-identity verification duplicate.
+                drop(state.anchor_bookends[index].take());
             }
         }
         require_original_limit_membership(state, canary)
@@ -1112,86 +1378,52 @@ impl SystemdOneShotWorker {
     }
 
     fn verify_absent_exact_cgroup(&self, path: SandboxCgroupPath) -> Result<()> {
-        let descriptor = self
-            .cgroup_root
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let root = CgroupV2Root::from_owned(descriptor)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        match root.resolve(Path::new(path.as_str().trim_start_matches('/'))) {
-            Err(aos_sandbox_linux::Error::Syscall { source, .. })
-                if source.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) =>
-            {
-                // A missing manager object is not containment evidence by
-                // itself. Require the exact runtime cgroup to be absent and
-                // recheck the live cgroup-v2 anchor after that observation.
-                root.resolve(Path::new("."))
-                    .map_err(|error| HostError::Worker(error.to_string()))?;
-                Ok(())
-            }
-            Ok(_) => Err(HostError::Worker(
-                "systemd unit is absent but its runtime cgroup still exists".to_owned(),
-            )),
-            Err(error) => Err(HostError::Worker(error.to_string())),
-        }
+        self.verify_absent_exact_cgroup_engine_v2(path, None)
     }
 
-    fn pin_leader(
+    pub(super) fn verify_absent_exact_cgroup_engine_v2(
         &self,
-        identity: &HostRuntimeIdentity,
-        observation: &SandboxUnitObservation,
-        pid: NonZeroU32,
-    ) -> Result<PinnedLeader> {
-        let invocation_id = observation.invocation_id.ok_or_else(|| {
-            HostError::Worker("sandbox leader has no systemd invocation ID".to_owned())
-        })?;
-        let cgroup = observation.cgroup.as_ref().ok_or_else(|| {
-            HostError::Worker("sandbox leader has no verified unit cgroup".to_owned())
-        })?;
-        let supervisor = cgroup.supervisor_subgroup();
-        let supervisor_relative = supervisor.as_str().trim_start_matches('/');
-        let supervisor = self
-            .cgroup_root
-            .resolve(Path::new(supervisor_relative), ResolveOptions::directory())
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let pidfd = PidFd::open(pid).map_err(|error| HostError::Worker(error.to_string()))?;
-        let info = pidfd
-            .info()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        if info.pid() != pid.get() || info.thread_group_id() != pid.get() {
-            return Err(HostError::Worker(
-                "systemd MainPID is not the pinned thread-group leader".to_owned(),
-            ));
-        }
-        let cgroup_id = info
-            .cgroup_id()
-            .ok_or_else(|| HostError::Worker("kernel omitted leader cgroup identity".to_owned()))?;
-        if cgroup_id != supervisor.identity().inode {
-            return Err(HostError::Worker(
-                "pinned leader is outside the expected supervisor cgroup".to_owned(),
-            ));
-        }
-        if !pidfd
-            .is_alive()
-            .map_err(|error| HostError::Worker(error.to_string()))?
-        {
-            return Err(HostError::Worker(
-                "sandbox supervisor exited during identity validation".to_owned(),
-            ));
-        }
+        path: SandboxCgroupPath,
+        retained: Option<&mut super::launch::ExactCgroupAbsenceOriginalV2>,
+    ) -> Result<()> {
+        verify_absent_cgroup_original_v3(&self.cgroup_root, &path, retained,
+            "systemd unit is absent but its runtime cgroup still exists")
+    }
+}
 
-        let mut digest = Sha256::new();
-        digest.update(b"aos.sandbox.host.leader.v1\0");
-        digest.update(identity.incarnation_id());
-        digest.update(invocation_id);
-        digest.update(cgroup_id.to_le_bytes());
-        digest.update(pid.get().to_le_bytes());
-        Ok(PinnedLeader {
-            handle: digest.finalize().into(),
-            pidfd,
-            cgroup: cgroup.clone(),
-        })
+fn verify_absent_cgroup_original_v3(
+    cgroup_root: &BeneathRoot,
+    path: &SandboxCgroupPath,
+    retained: Option<&mut super::launch::ExactCgroupAbsenceOriginalV2>,
+    replacement_message: &'static str,
+) -> Result<()> {
+    let relative = Path::new(path.as_str().trim_start_matches('/'));
+    match retained {
+        Some(original) => {
+            original.duplicate = Some(cgroup_root.as_fd().try_clone_to_owned());
+            let descriptor = match original.duplicate.take() {
+                Some(Ok(descriptor)) => descriptor,
+                Some(Err(error)) => {
+                    original.duplicate = Some(Err(error));
+                    return Err(resident_readback_missing("absence root duplicate; cause retained"));
+                }
+                None => return Err(resident_readback_missing("absence root duplicate")),
+            };
+            original.root.admit_once(descriptor)
+                .map_err(|_| resident_readback_missing("absence root; cause retained"))?;
+            original.completed_root = Some(original.root.take_completed_once()
+                .ok_or_else(|| resident_readback_missing("absence root"))?);
+            let root = original.completed_root.as_ref()
+                .ok_or_else(|| resident_readback_missing("absence root"))?;
+            exact_cgroup_absence_recipe_v2!(Retained, root, relative, original, replacement_message)
+        }
+        None => {
+            let descriptor = cgroup_root.as_fd().try_clone_to_owned()
+                .map_err(|error| HostError::Worker(error.to_string()))?;
+            let root = CgroupV2Root::from_owned(descriptor)
+                .map_err(|error| HostError::Worker(error.to_string()))?;
+            exact_cgroup_absence_recipe_v2!(Local, root, relative, unused, replacement_message)
+        }
     }
 }
 
@@ -1199,205 +1431,9 @@ pub(super) struct LinuxPayloadInspector<'a> {
     pub(super) payload_root: &'a BeneathRoot,
 }
 
-impl PayloadInspectionBackend for LinuxPayloadInspector<'_> {
-    type Proof = PinnedPayloadLeader;
-
-    fn snapshot(&self) -> Result<Vec<PayloadCandidate>> {
-        let duplicate = self
-            .payload_root
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let root = BeneathRoot::from_owned(duplicate)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let mut pending = VecDeque::from([(root, String::new())]);
-        let mut candidates = Vec::new();
-        let mut directories = 0_usize;
-        while let Some((directory, relative_cgroup_hint)) = pending.pop_front() {
-            directories = directories
-                .checked_add(1)
-                .ok_or_else(|| HostError::Worker("payload cgroup count overflow".to_owned()))?;
-            if directories > MAXIMUM_PAYLOAD_CGROUPS {
-                return Err(HostError::Worker(
-                    "payload cgroup tree exceeds its fixed bound".to_owned(),
-                ));
-            }
-            let cgroup_id = directory.identity().inode;
-            let processes = directory
-                .open_regular(Path::new("cgroup.procs"))
-                .and_then(|file| file.read_bounded(MAXIMUM_CGROUP_PROCS_BYTES))
-                .map_err(|error| HostError::Worker(error.to_string()))?;
-            for pid in parse_cgroup_processes(&processes)? {
-                if candidates.len() >= MAXIMUM_PAYLOAD_PROCESSES {
-                    return Err(HostError::Worker(
-                        "payload process snapshot exceeds its fixed bound".to_owned(),
-                    ));
-                }
-                candidates.push(PayloadCandidate {
-                    pid,
-                    cgroup_id,
-                    relative_cgroup_hint: relative_cgroup_hint.clone(),
-                });
-            }
-
-            // Resolution pins use O_PATH. Dir::read_from preserves that flag,
-            // but getdents requires a readable descriptor. Open only the pinned
-            // directory itself, never a reconstructed pathname or parent hint.
-            let readable = rustix::fs::openat(
-                directory.as_fd(),
-                ".",
-                rustix::fs::OFlags::RDONLY
-                    | rustix::fs::OFlags::DIRECTORY
-                    | rustix::fs::OFlags::NOFOLLOW
-                    | rustix::fs::OFlags::CLOEXEC,
-                rustix::fs::Mode::empty(),
-            )
-            .map_err(|error| {
-                HostError::Worker(format!("open payload cgroup for reading: {error}"))
-            })?;
-            let entries = rustix::fs::Dir::new(readable)
-                .map_err(|error| HostError::Worker(format!("iterate payload cgroup: {error}")))?;
-            for entry in entries {
-                let entry = entry.map_err(|error| {
-                    HostError::Worker(format!("read payload cgroup entry: {error}"))
-                })?;
-                let name = entry.file_name().to_bytes();
-                if matches!(name, b"." | b"..") {
-                    continue;
-                }
-                match entry.file_type() {
-                    rustix::fs::FileType::Directory => {
-                        let name = std::str::from_utf8(name).map_err(|_| {
-                            HostError::Worker("payload cgroup name is not UTF-8".to_owned())
-                        })?;
-                        let child = directory
-                            .resolve(Path::new(name), ResolveOptions::directory())
-                            .map_err(|error| HostError::Worker(error.to_string()))?;
-                        let relative = if relative_cgroup_hint.is_empty() {
-                            name.to_owned()
-                        } else {
-                            format!("{relative_cgroup_hint}/{name}")
-                        };
-                        if relative.len() > 4096 {
-                            return Err(HostError::Worker(
-                                "payload cgroup hint exceeds its fixed bound".to_owned(),
-                            ));
-                        }
-                        pending.push_back((
-                            BeneathRoot::from_resolved(child)
-                                .map_err(|error| HostError::Worker(error.to_string()))?,
-                            relative,
-                        ));
-                    }
-                    rustix::fs::FileType::Unknown => {
-                        return Err(HostError::Worker(
-                            "payload cgroup returned an unknown directory-entry type".to_owned(),
-                        ));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Ok(candidates)
-    }
-
-    fn prove(&self, candidate: PayloadCandidate) -> Result<(PayloadEvidence, Option<Self::Proof>)> {
-        let pidfd =
-            PidFd::open(candidate.pid).map_err(|error| HostError::Worker(error.to_string()))?;
-        let info = pidfd
-            .info()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let cgroup_id = info.cgroup_id().ok_or_else(|| {
-            HostError::Worker("kernel omitted payload cgroup identity".to_owned())
-        })?;
-        let nested_pid = read_nested_pid(candidate.pid)?;
-        if nested_pid != 1 {
-            return Ok((
-                PayloadEvidence {
-                    pid: candidate.pid,
-                    thread_group_id: info.thread_group_id(),
-                    parent_pid: info.parent_pid(),
-                    cgroup_id,
-                    nested_pid,
-                    root_device: 0,
-                    root_inode: 0,
-                    network_device: 0,
-                    network_inode: 0,
-                },
-                None,
-            ));
-        }
-        // Both `/proc/PID/root` traversal and PIDFD_GET_* namespace ioctls are
-        // ptrace-policy gated. EPERM/EACCES propagate as a failed proof: this
-        // boundary never falls back to a numeric PID, machined metadata, setns,
-        // or a broad capability grant.
-        let root = open_payload_root(candidate.pid)?;
-        let root_identity =
-            rustix::fs::fstat(&root).map_err(|error| HostError::Worker(error.to_string()))?;
-        let network = pidfd
-            .namespace(NamespaceKind::Network)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let mount = pidfd
-            .namespace(NamespaceKind::Mount)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let user = pidfd
-            .namespace(NamespaceKind::User)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let pid = pidfd
-            .namespace(NamespaceKind::Pid)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let network_identity = network.identity();
-        let final_info = pidfd
-            .info()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        if final_info != info {
-            return Err(HostError::Worker(
-                "payload pidfd identity changed during proof".to_owned(),
-            ));
-        }
-        Ok((
-            PayloadEvidence {
-                pid: candidate.pid,
-                thread_group_id: info.thread_group_id(),
-                parent_pid: info.parent_pid(),
-                cgroup_id,
-                nested_pid,
-                root_device: root_identity.st_dev,
-                root_inode: root_identity.st_ino,
-                network_device: network_identity.device,
-                network_inode: network_identity.inode,
-            },
-            Some(PinnedPayloadLeader {
-                pidfd,
-                cgroup: BeneathRoot::from_owned(
-                    self.payload_root
-                        .as_fd()
-                        .try_clone_to_owned()
-                        .map_err(|error| HostError::Worker(error.to_string()))?,
-                )
-                .map_err(|error| HostError::Worker(error.to_string()))?,
-                relative_cgroup_hint: candidate.relative_cgroup_hint,
-                root,
-                network,
-                mount,
-                pid,
-                user,
-            }),
-        ))
-    }
-
-    fn is_alive(&self, proof: &Self::Proof) -> Result<bool> {
-        proof
-            .pidfd
-            .is_alive()
-            .map_err(|error| HostError::Worker(error.to_string()))
-    }
-}
-
-fn parse_cgroup_processes(bytes: &[u8]) -> Result<Vec<NonZeroU32>> {
+fn parse_cgroup_processes_into(bytes: &[u8], processes: &mut Vec<NonZeroU32>) -> Result<()> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| HostError::Worker("cgroup.procs is not UTF-8".to_owned()))?;
-    let mut processes = Vec::new();
     for line in text.lines() {
         if line.is_empty() {
             continue;
@@ -1414,31 +1450,52 @@ fn parse_cgroup_processes(bytes: &[u8]) -> Result<Vec<NonZeroU32>> {
             .ok_or_else(|| HostError::Worker("cgroup.procs contains an invalid PID".to_owned()))?;
         processes.push(pid);
     }
-    Ok(processes)
+    Ok(())
 }
 
 pub(super) fn read_nested_pid(pid: NonZeroU32) -> Result<u32> {
+    let descriptor = open_payload_status_native(pid)
+        .map_err(|error| HostError::Worker(error.to_string()))?;
+    let mut bytes = Vec::new();
+    read_nested_pid_from(File::from(descriptor), &mut bytes, &mut Vec::new(), pid)
+        .map_err(|cause| HostError::Worker(cause.to_string()))
+}
+
+pub(super) fn open_payload_status_native(pid: NonZeroU32) -> rustix::io::Result<OwnedFd> {
     let path = format!("/proc/{pid}/status");
-    let descriptor = rustix::fs::open(
+    rustix::fs::open(
         path,
         rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
         rustix::fs::Mode::empty(),
     )
-    .map_err(|error| HostError::Worker(error.to_string()))?;
-    let mut bytes = Vec::new();
-    File::from(descriptor)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(super) enum PayloadStatusReadErrorV2 {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Host(#[from] HostError),
+}
+
+pub(super) fn read_nested_pid_from(reader: impl std::io::Read, bytes: &mut Vec<u8>, values: &mut Vec<u32>, pid: NonZeroU32)
+    -> std::result::Result<u32, PayloadStatusReadErrorV2> {
+    reader
         .take((MAXIMUM_PROC_STATUS_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|error| HostError::Worker(error.to_string()))?;
+        .read_to_end(bytes)?;
     if bytes.len() > MAXIMUM_PROC_STATUS_BYTES {
         return Err(HostError::Worker(
             "payload proc status exceeds its fixed bound".to_owned(),
-        ));
+        ).into());
     }
-    parse_nested_pid(&bytes, pid)
+    Ok(parse_nested_pid_into(bytes, pid, values)?)
 }
 
 pub(super) fn parse_nested_pid(bytes: &[u8], host_pid: NonZeroU32) -> Result<u32> {
+    parse_nested_pid_into(bytes, host_pid, &mut Vec::new())
+}
+
+fn parse_nested_pid_into(bytes: &[u8], host_pid: NonZeroU32, values: &mut Vec<u32>) -> Result<u32> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| HostError::Worker("payload proc status is not UTF-8".to_owned()))?;
     let mut matches = text
@@ -1452,11 +1509,11 @@ pub(super) fn parse_nested_pid(bytes: &[u8], host_pid: NonZeroU32) -> Result<u32
             "payload proc status repeated NSpid".to_owned(),
         ));
     }
-    let values = value
-        .split('\t')
-        .map(|part| part.parse::<u32>())
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|_| HostError::Worker("payload proc status has invalid NSpid".to_owned()))?;
+    for part in value.split('\t') {
+        values.push(part.parse::<u32>().map_err(|_| {
+            HostError::Worker("payload proc status has invalid NSpid".to_owned())
+        })?);
+    }
     if values.first() != Some(&host_pid.get()) {
         return Err(HostError::Worker(
             "payload proc status host PID contradicts its pidfd".to_owned(),
@@ -1469,13 +1526,16 @@ pub(super) fn parse_nested_pid(bytes: &[u8], host_pid: NonZeroU32) -> Result<u32
 }
 
 pub(super) fn open_payload_root(pid: NonZeroU32) -> Result<OwnedFd> {
+    open_payload_root_native(pid).map_err(|error| HostError::Worker(error.to_string()))
+}
+
+pub(super) fn open_payload_root_native(pid: NonZeroU32) -> std::result::Result<OwnedFd, rustix::io::Errno> {
     let path = format!("/proc/{pid}/root");
     rustix::fs::open(
         path,
         rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
         rustix::fs::Mode::empty(),
     )
-    .map_err(|error| HostError::Worker(error.to_string()))
 }
 
 #[async_trait]
@@ -1896,7 +1956,11 @@ fn project_guardian_observation(observation: GuardianUnitObservation) -> Guardia
     }
 }
 
-fn project_exact_observation(observation: ExactUnitObservation) -> GuardianObservation {
+pub(super) fn project_exact_observation(observation: ExactUnitObservation) -> GuardianObservation {
+    project_exact_observation_ref_v3(&observation)
+}
+
+pub(in crate::worker) fn project_exact_observation_ref_v3(observation: &ExactUnitObservation) -> GuardianObservation {
     GuardianObservation {
         binding: observation.binding,
         invocation_id: observation.invocation_id,
@@ -1920,32 +1984,7 @@ fn prepare_stop_quiescence(
     cgroup_root: &BeneathRoot,
     observation: &ExactUnitObservation,
 ) -> Result<PreparedStopQuiescence> {
-    let expected_path = observation
-        .cgroup
-        .clone()
-        .ok_or_else(|| HostError::Worker("exact stop target has no realized cgroup".to_owned()))?;
-    let root = CgroupV2Root::from_owned(
-        cgroup_root
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(|error| HostError::Worker(error.to_string()))?,
-    )
-    .map_err(|error| HostError::Worker(error.to_string()))?;
-    let cgroup = root
-        .resolve(Path::new(expected_path.as_str().trim_start_matches('/')))
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-    let population = cgroup
-        .population_monitor()
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-    let leader = observation
-        .main_pid
-        .map(|pid| pin_stop_leader(&cgroup, pid))
-        .transpose()?;
-    Ok(PreparedStopQuiescence {
-        leader,
-        population,
-        expected_path,
-    })
+    stop_quiescence::prepare_local(cgroup_root, observation)
 }
 
 pub(super) fn pin_stop_leader(cgroup: &RetainedCgroupAnchor, pid: NonZeroU32) -> Result<PidFd> {
@@ -1953,11 +1992,7 @@ pub(super) fn pin_stop_leader(cgroup: &RetainedCgroupAnchor, pid: NonZeroU32) ->
     let identity = cgroup
         .verify_exact_membership(&process)
         .map_err(|error| HostError::Worker(error.to_string()))?;
-    if identity.pid() != pid.get() || identity.thread_group_id() != pid.get() {
-        return Err(HostError::Worker(
-            "exact stop MainPID is not its pinned process leader".to_owned(),
-        ));
-    }
+    stop_quiescence::require_stop_leader_identity_v3(identity, pid)?;
     Ok(process)
 }
 
@@ -1966,142 +2001,24 @@ fn confirm_stop_quiescence(
     observation: &ExactUnitObservation,
     proof: PreparedStopQuiescence,
 ) -> Result<bool> {
-    if !observation.is_intermediate_terminal()
-        || observation.cgroup.as_ref() != Some(&proof.expected_path)
-    {
-        return Ok(false);
-    }
-    if let Some(leader) = proof.leader
-        && leader
-            .is_alive()
-            .map_err(|error| HostError::Worker(error.to_string()))?
-    {
-        return Ok(false);
-    }
-    match proof
-        .population
-        .state()
-        .map_err(|error| HostError::Worker(error.to_string()))?
-    {
-        CgroupPopulationState::Empty => Ok(true),
-        CgroupPopulationState::Populated => Ok(false),
-        CgroupPopulationState::Retired => {
-            verify_retired_cgroup_absence(cgroup_root, &proof.expected_path)?;
-            Ok(true)
-        }
-    }
+    stop_quiescence::confirm_local(cgroup_root, observation, proof)
 }
 
 fn verify_retired_cgroup_absence(
     cgroup_root: &BeneathRoot,
     expected_path: &SandboxCgroupPath,
 ) -> Result<()> {
-    let root = CgroupV2Root::from_owned(
-        cgroup_root
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(|error| HostError::Worker(error.to_string()))?,
-    )
-    .map_err(|error| HostError::Worker(error.to_string()))?;
-    match root.resolve(Path::new(expected_path.as_str().trim_start_matches('/'))) {
-        Err(aos_sandbox_linux::Error::Syscall { source, .. })
-            if source.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) => {}
-        Ok(_) => {
-            return Err(HostError::Worker(
-                "retired exact cgroup path names a replacement object".to_owned(),
-            ));
-        }
-        Err(error) => return Err(HostError::Worker(error.to_string())),
-    }
-    root.resolve(Path::new("."))
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-    Ok(())
+    verify_absent_cgroup_original_v3(cgroup_root, expected_path, None,
+        "retired exact cgroup path names a replacement object")
 }
 
 pub(super) fn verify_supervisor_pins(
     cgroup_root: &BeneathRoot,
     pins: &LaunchPins,
     leader: &PinnedLeader,
-    _root_policy: PayloadRootContinuityPolicyV1,
+    root_policy: PayloadRootContinuityPolicyV1,
 ) -> Result<PinnedPayloadLeader> {
-    // The unforgeable policy witness couples this point-in-time root check to
-    // the immutable command which prevents PID 1 and descendants from later
-    // replacing their root. Binary identity is checked below before the
-    // payload observation is accepted.
-    let pidfd = &leader.pidfd;
-    let info = pidfd
-        .info()
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-    let executable_path = format!("/proc/{}/exe", info.pid());
-    let executable = rustix::fs::open(
-        executable_path,
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(|error| HostError::Worker(error.to_string()))?;
-    let expected = rustix::fs::fstat(pins.executable())
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-    let observed =
-        rustix::fs::fstat(&executable).map_err(|error| HostError::Worker(error.to_string()))?;
-    if (expected.st_dev, expected.st_ino) != (observed.st_dev, observed.st_ino) {
-        return Err(HostError::Worker(
-            "nspawn supervisor executable differs from its pin".to_owned(),
-        ));
-    }
-
-    let network = pidfd
-        .namespace(NamespaceKind::Network)
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-    if network.identity() != pins.network().identity() {
-        return Err(HostError::Worker(
-            "nspawn supervisor network namespace differs from its pin".to_owned(),
-        ));
-    }
-    let root = rustix::fs::fstat(pins.workspace())
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-    let exported_root = rustix::fs::fstat(pins.transferred_root())
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-    if (root.st_dev, root.st_ino) != (exported_root.st_dev, exported_root.st_ino) {
-        return Err(HostError::Worker(
-            "exported root mount differs from the retained workspace".to_owned(),
-        ));
-    }
-    let network = pins.network().identity();
-    let payload_root = resolve_payload_root(cgroup_root, &leader.cgroup)?;
-    let payload = inspect_quiesced_payload(&payload_root, |inspector| {
-        discover_payload_leader(
-            inspector,
-            info.pid(),
-            (root.st_dev, root.st_ino),
-            (network.device, network.inode),
-        )
-    })?;
-    // The nspawn supervisor deliberately remains outside the guest root, so
-    // `/proc/<supervisor>/root` is not evidence for the container root. The
-    // root guarantee here is instead the owned descriptor transferred through
-    // the fixed supervisor-only root FD role and retained until this
-    // post-start check. Guest-root comparison must wait for payload PID 1
-    // discovery and pinning; treating the supervisor root as equivalent would
-    // be a false proof.
-    if !payload
-        .pidfd()
-        .is_alive()
-        .map_err(|error| HostError::Worker(error.to_string()))?
-    {
-        return Err(HostError::Worker(
-            "payload PID 1 exited during launch identity validation".to_owned(),
-        ));
-    }
-    if !pidfd
-        .is_alive()
-        .map_err(|error| HostError::Worker(error.to_string()))?
-    {
-        return Err(HostError::Worker(
-            "nspawn supervisor exited during launch identity validation".to_owned(),
-        ));
-    }
-    payload.recheck_kernel(leader)?;
-    Ok(payload)
+    supervisor::verify_local(cgroup_root, pins, leader, root_policy)
 }
 
 fn runtime_proof_snapshot(
@@ -2109,10 +2026,7 @@ fn runtime_proof_snapshot(
     supervisor: &PinnedLeader,
     payload: &PinnedPayloadLeader,
 ) -> Result<RuntimeProofSnapshot> {
-    let workspace_mount_id = MountId::from_fd(pins.workspace())
-        .map_err(|error| HostError::Worker(error.to_string()))?
-        .get();
-    runtime_proof_snapshot_with_workspace_mount_id(workspace_mount_id, supervisor, payload)
+    proof_snapshot::snapshot_local(pins, supervisor, payload)
 }
 
 pub(crate) fn runtime_proof_snapshot_with_workspace_mount_id(
@@ -2120,67 +2034,7 @@ pub(crate) fn runtime_proof_snapshot_with_workspace_mount_id(
     supervisor: &PinnedLeader,
     payload: &PinnedPayloadLeader,
 ) -> Result<RuntimeProofSnapshot> {
-    let supervisor_identity = supervisor
-        .pidfd
-        .process_identity()
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-    let payload_identity = payload
-        .pidfd
-        .process_identity()
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-    let supervisor_cgroup_id = supervisor_identity
-        .cgroup_id()
-        .ok_or_else(|| HostError::Worker("kernel omitted supervisor cgroup identity".to_owned()))?;
-    let payload_cgroup_id = payload_identity
-        .cgroup_id()
-        .ok_or_else(|| HostError::Worker("kernel omitted payload cgroup identity".to_owned()))?;
-    let payload_root_mount_id = MountId::from_fd(payload.root.as_fd())
-        .map_err(|error| HostError::Worker(error.to_string()))?
-        .get();
-    let network = payload.network.identity();
-    let mount = payload.mount.identity();
-    let user = payload.user.identity();
-    let snapshot = RuntimeProofSnapshot {
-        host_boot_id: KernelBootId::current()
-            .map_err(|error| HostError::Worker(error.to_string()))?
-            .into_bytes(),
-        supervisor: ProcessProofSnapshot {
-            pid: supervisor_identity.pid(),
-            thread_group_id: supervisor_identity.thread_group_id(),
-            parent_pid: supervisor_identity.parent_pid(),
-            cgroup_id: supervisor_cgroup_id,
-            start_time_ticks: supervisor_identity.start_time_ticks(),
-        },
-        payload: ProcessProofSnapshot {
-            pid: payload_identity.pid(),
-            thread_group_id: payload_identity.thread_group_id(),
-            parent_pid: payload_identity.parent_pid(),
-            cgroup_id: payload_cgroup_id,
-            start_time_ticks: payload_identity.start_time_ticks(),
-        },
-        supervisor_cgroup_id,
-        payload_cgroup_id,
-        workspace_mount_id,
-        payload_root_mount_id,
-        network_namespace: NamespaceProofSnapshot {
-            device: network.device,
-            inode: network.inode,
-        },
-        mount_namespace: NamespaceProofSnapshot {
-            device: mount.device,
-            inode: mount.inode,
-        },
-        user_namespace: NamespaceProofSnapshot {
-            device: user.device,
-            inode: user.inode,
-        },
-    };
-    if !snapshot.validate() {
-        return Err(HostError::Worker(
-            "bound payload kernel proof contains a sentinel or contradiction".to_owned(),
-        ));
-    }
-    Ok(snapshot)
+    proof_snapshot::snapshot_local_with_workspace_mount_id(workspace_mount_id, supervisor, payload)
 }
 
 fn require_completed_unit(
@@ -2226,68 +2080,14 @@ fn inspect_quiesced_payload<T>(
     payload_root: &BeneathRoot,
     inspect: impl FnOnce(&LinuxPayloadInspector<'_>) -> Result<T>,
 ) -> Result<T> {
-    // A normal payload may fork continuously. Freeze only its delegated
-    // subtree so the two bounded process snapshots form one stable proof while
-    // the nspawn supervisor remains available to the host.
-    let root = CgroupV2Root::from_owned(
-        payload_root
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(|error| HostError::Worker(error.to_string()))?,
-    )
-    .map_err(|error| HostError::Worker(error.to_string()))?;
-    let payload = root
-        .resolve(Path::new("."))
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-    let initial_state = payload
-        .freezer_state()
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-
-    if initial_state == CgroupFreezerState::Thawed {
-        payload
-            .request_freezer_state(CgroupFreezerState::Frozen)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        await_payload_freezer_blocking(&payload, CgroupFreezerState::Frozen)?;
-    }
-
-    let result = inspect(&LinuxPayloadInspector { payload_root });
-    if initial_state == CgroupFreezerState::Frozen {
-        return result;
-    }
-
-    let thaw = payload
-        .request_freezer_state(CgroupFreezerState::Thawed)
-        .map_err(|error| HostError::Worker(error.to_string()))
-        .and_then(|()| await_payload_freezer_blocking(&payload, CgroupFreezerState::Thawed));
-    match (result, thaw) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Err(primary), Err(cleanup)) => Err(HostError::Worker(format!(
-            "{primary}; additionally failed to thaw payload after inspection: {cleanup}"
-        ))),
-    }
+    quiescence::inspect_local(payload_root, inspect)
 }
 
 fn await_payload_freezer_blocking(
     payload: &RetainedCgroupAnchor,
     expected: CgroupFreezerState,
 ) -> Result<()> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    loop {
-        let observed = payload
-            .freezer_state()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        if observed == expected {
-            return Ok(());
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(HostError::Worker(format!(
-                "payload cgroup did not reach {expected:?} freezer state"
-            )));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    quiescence::await_local(payload, expected)
 }
 
 async fn await_payload_freezer(

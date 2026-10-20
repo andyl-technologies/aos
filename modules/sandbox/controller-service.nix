@@ -201,6 +201,8 @@ in {
 
     sourceSuccessorIssuance.enable = lib.mkEnableOption "the exclusive one-shot first Source successor issuer; never the Source mutation consumer";
 
+    operatorRecoveryOnly.enable = lib.mkEnableOption "a successor-only authenticated operator recovery listener without ordinary Controller readiness or effects";
+
     createQ04PolicySubgate.enable = lib.mkEnableOption "the same-original gen1 Create policy-admission subgate; Create and its Effect remain pending";
 
     publisherIngress.enable = lib.mkEnableOption "the exact-process project publisher registration channel; publication effects remain unavailable";
@@ -359,6 +361,22 @@ in {
     assertions =
       [
         {
+          assertion = !cfg.operatorRecoveryOnly.enable || (
+            config.aos.sandbox.resourceBank.policy != null
+            && config.aos.sandbox.resourceBank.policy.controllerRecovery != null
+            && cfg.publicApi.enable
+            && normalRootProfile != null
+            && cfg.package == pkgs.aos-sandboxd
+            && !cfg.publisherIngress.enable
+            && !cfg.sourceSuccessorIssuance.enable
+            && !cfg.createQ04PolicySubgate.enable
+            && !cfg.gitUploadBootstrap.enable
+            && !cfg.gitReadInspection.enable
+            && !onlineNix.enable
+          );
+          message = "Operator recovery requires the selected public Controller/Root profile and excludes ordinary startup purposes; a genuine confirmed successor remains mandatory at runtime";
+        }
+        {
           assertion = lib.all (option: (cfg.credentials.${option} != null) == coverageSelected)
             (builtins.attrNames gitCoverageCredentialNames);
           message = "Controller Git coverage requires the four fixed public inputs together";
@@ -416,6 +434,13 @@ in {
               && cacheSignerView.enable && sourceSignerView.enable
               && cacheSignerService.enable && sourceSignerService.enable);
           message = "Q04 policy subgate requires the genuine selected normal-Root profile and both existing signer views/services; it is not issue mode or public Create activation";
+        }
+        {
+          assertion = !cfg.createQ04PolicySubgate.enable
+            || (brokers.resourceBank.policy != null
+              && brokers.resourceBank.policy.createContinuationIntake != null
+              && brokers.resourceBank.policy.storageReceiving != null);
+          message = "Selected original Create requires the explicit V7 Controller and Storage subdivisions inside their already-paid envelopes";
         }
         {
           assertion = !cfg.createQ04PolicySubgate.enable
@@ -714,6 +739,7 @@ in {
           + lib.optionalString coverageSelected " --git-upload-coverage"
           + lib.optionalString cfg.gitReadInspection.enable " --git-read-inspection=${toString config.aos.sandbox.gitGatewayTransport.uid}:${toString config.aos.sandbox.gitGatewayTransport.gid}"
           + lib.optionalString cfg.sourceSuccessorIssuance.enable " --issue-source-successor"
+          + lib.optionalString cfg.operatorRecoveryOnly.enable " --operator-recover-only"
           + lib.optionalString onlineNix.enable " --nix-start-admission"
           + lib.optionalString onlineNix.storageGenerationPrepare.enable " --nix-storage-generation-prepare";
         # The selected flag uses the existing paired initial-table capture.
@@ -731,7 +757,7 @@ in {
         FileDescriptorStoreMax = lib.mkIf (cfg.method46TpmFloor.required || normalRootProfile != null || onlineNix.enable) 0;
         # The selected online binary is not a credential installer. Its fixed
         # custody files must already match the independently delivered originals.
-        ExecStartPre = lib.optionals (!cfg.sourceSuccessorIssuance.enable && !onlineNix.enable) brokerSessionConfiguration.installCommands;
+        ExecStartPre = lib.optionals (!cfg.sourceSuccessorIssuance.enable && !cfg.operatorRecoveryOnly.enable && !onlineNix.enable) brokerSessionConfiguration.installCommands;
         LoadCredential =
           nodeCredentials
           ++ cacheReplayCredentials
@@ -767,7 +793,10 @@ in {
         ExitType = lib.mkIf (cfg.method46TpmFloor.required || onlineNix.enable) "cgroup";
         KillMode = lib.mkIf (cfg.method46TpmFloor.required || onlineNix.enable) "control-group";
         TimeoutStopSec = lib.mkIf (cfg.method46TpmFloor.required || onlineNix.enable) "infinity";
-        TimeoutStartSec = "90s";
+        # Recovery serves explicit requests while remaining unready. Keep the
+        # same Type=notify dependency barrier; no timer may kill that retained
+        # successor merely because ordinary Ready is intentionally unavailable.
+        TimeoutStartSec = if cfg.operatorRecoveryOnly.enable then "infinity" else "90s";
         User = "aos-sandboxd";
         Group = "aos-sandboxd";
         StateDirectory = [

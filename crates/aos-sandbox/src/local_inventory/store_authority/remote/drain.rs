@@ -110,11 +110,11 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
             match (state.directive().mode(), mode) {
                 (NodeDrainModeV1::CordonOnly, _) => !matches!(
                     phase,
-                    Some(crate::local_inventory::draining::DrainPhaseV1::Cordoned)
-                        | Some(crate::local_inventory::draining::DrainPhaseV1::Complete)
+                    Some(aos_sandbox_core::DrainPhaseV1::Cordoned)
+                        | Some(aos_sandbox_core::DrainPhaseV1::Complete)
                 ),
                 (NodeDrainModeV1::Evacuate, NodeDrainModeV1::Decommission) => {
-                    phase != Some(crate::local_inventory::draining::DrainPhaseV1::Complete)
+                    phase != Some(aos_sandbox_core::DrainPhaseV1::Complete)
                 }
                 _ => true,
             }
@@ -174,28 +174,6 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
         self.store
             .commit_record_once(record, accepted_at_unix_seconds)
             .map_err(Into::into)
-    }
-
-    /// Builds a drain reconciliation request from the protected current directive.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] unless a current durable
-    /// drain exists and the authenticated session belongs to the same owner.
-    pub fn prepare_current_drain_request(
-        &mut self,
-        session: &AuthenticatedNodeSessionV1,
-    ) -> Result<ProtectedOutboundNodeRequestV1, ProtectedMultiNodeUpdateErrorV1> {
-        let state = match self.current_domain_projection(MultiNodeJournalDomainV1::Drain)? {
-            Some(MultiNodeReducerStateV1::Drain(state)) => state,
-            _ => return Err(InvalidMultiNodeJournal::HistoryGap.into()),
-        };
-        self.prepare_outbound_request(
-            session,
-            NodeRequestBodyV1::ReconcileDrain(Box::new(state.directive().clone())),
-            b"reconcile-drain",
-        )
-        .map_err(Into::into)
     }
 
     /// Durably commits a current carrier-authenticated cordon observation.
@@ -392,8 +370,8 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
         if observation.reassignment_ready().len() != 1
             || !matches!(
                 observation.phase(),
-                crate::local_inventory::draining::DrainPhaseV1::ReadyForReassignment
-                    | crate::local_inventory::draining::DrainPhaseV1::Complete
+                aos_sandbox_core::DrainPhaseV1::ReadyForReassignment
+                    | aos_sandbox_core::DrainPhaseV1::Complete
             )
         {
             return Err(InvalidDrainModel::ProgressMismatch.into());

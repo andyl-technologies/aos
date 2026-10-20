@@ -51,6 +51,11 @@ pub struct GuestRootPublicationProofV1 {
 }
 
 impl GuestRootPublicationProofV1 {
+    /// Reports the fixed canonical representation width without encoding.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn canonical_bytes_v1() -> usize { CANONICAL_BYTES }
+
     /// Encodes the fixed 266-byte `AOSGRP01` record.
     ///
     /// # Errors

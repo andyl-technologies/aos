@@ -967,7 +967,7 @@ impl DerivedSourceRecordV3 {
             .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
         let lease_signature = decode_signature(&self.sections[6], DecodeLimits::default())
             .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
-        let receipt = crate::ownership_authority::OwnershipTransactionReceiptV1::from_canonical_bytes(&self.sections[7])
+        let receipt = aos_sandbox_ownership_protocol::OwnershipTransactionReceiptV1::from_canonical_bytes(&self.sections[7])
             .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;
         let receipt_signature = decode_signature(&self.sections[8], DecodeLimits::default())
             .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Corrupt)?;

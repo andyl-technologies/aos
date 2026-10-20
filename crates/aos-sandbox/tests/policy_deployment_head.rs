@@ -1,9 +1,11 @@
 //! Portable signature and canonical-input checks for deployment policy heads.
 
-use aos_sandbox::policy_compiler::{
-    PolicyDeploymentHeadErrorV1, PolicyDeploymentInputsV1, decode_policy_deployment_sources_v1,
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentInputsV1, decode_policy_deployment_sources_v1,
     verify_policy_deployment_head_v1, verify_signed_project_policy_source_v2,
 };
+
+use aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1;
 use aos_sandbox_core::ProjectId;
 use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
@@ -118,8 +120,11 @@ fn signed_bounded_resource_sources_decode_without_fabricated_limits() {
     let key = SigningKey::from_bytes(&[9; 32]);
     let packet = signed_packet_for(&key, &inputs);
     let head = verify_policy_deployment_head_v1(&packet, &inputs, &key.verifying_key(), 20)
+        .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .expect("signed typed head");
-    let sources = decode_policy_deployment_sources_v1(&inputs, head).expect("typed sources");
+    let sources = decode_policy_deployment_sources_v1(&inputs, head)
+        .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from)
+        .expect("typed sources");
     assert_eq!(sources.node().layer().resources().portable().len(), 16);
     assert_eq!(sources.site().layer().resources().accounting().len(), 22);
     assert!(
@@ -170,6 +175,7 @@ fn dedicated_project_head_requires_exact_explicit_signed_layer() {
 
     let verified =
         verify_signed_project_policy_source_v2(&packet, &input, &key.verifying_key(), 20)
+            .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .expect("signed explicit project layer");
     assert_eq!(verified.head().project(), project);
     assert_eq!(verified.head().publisher_generation(), 2);
@@ -185,7 +191,8 @@ fn dedicated_project_head_requires_exact_explicit_signed_layer() {
     );
     assert_eq!(verified.revocation().grace_nanos(), 0);
     assert!(matches!(
-        verify_signed_project_policy_source_v2(&packet, &input, &key.verifying_key(), 30),
+        verify_signed_project_policy_source_v2(&packet, &input, &key.verifying_key(), 30)
+            .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from),
         Err(PolicyDeploymentHeadErrorV1::InvalidHead)
     ));
 
@@ -193,12 +200,14 @@ fn dedicated_project_head_requires_exact_explicit_signed_layer() {
     changed[0] ^= 1;
     assert!(
         verify_signed_project_policy_source_v2(&packet, &changed, &key.verifying_key(), 20)
+            .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from)
             .is_err()
     );
     let mut tampered = packet.clone();
     tampered[264] ^= 1;
     assert!(matches!(
-        verify_signed_project_policy_source_v2(&tampered, &input, &key.verifying_key(), 20),
+        verify_signed_project_policy_source_v2(&tampered, &input, &key.verifying_key(), 20)
+            .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from),
         Err(PolicyDeploymentHeadErrorV1::InvalidSignature)
     ));
 
@@ -216,7 +225,8 @@ fn dedicated_project_head_requires_exact_explicit_signed_layer() {
             &noncanonical,
             &key.verifying_key(),
             20,
-        ),
+        )
+        .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from),
         Err(PolicyDeploymentHeadErrorV1::InvalidHead)
     ));
 
@@ -246,7 +256,8 @@ fn dedicated_project_head_requires_exact_explicit_signed_layer() {
                 &missing_limit,
                 &key.verifying_key(),
                 20,
-            ),
+            )
+            .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from),
             Err(PolicyDeploymentHeadErrorV1::InvalidHead)
         ));
     }
@@ -285,7 +296,8 @@ fn dedicated_project_head_requires_exact_explicit_signed_layer() {
     signed.extend_from_slice(&old_packet);
     old_packet.extend_from_slice(&key.sign(&signed).to_bytes());
     assert!(matches!(
-        verify_signed_project_policy_source_v2(&old_packet, &old_input, &key.verifying_key(), 20),
+        verify_signed_project_policy_source_v2(&old_packet, &old_input, &key.verifying_key(), 20)
+            .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from),
         Err(PolicyDeploymentHeadErrorV1::InvalidHead)
     ));
 }
@@ -295,12 +307,14 @@ fn signed_head_binds_exact_inputs_and_expiry() {
     let key = SigningKey::from_bytes(&[7; 32]);
     let packet = signed_packet(&key);
     let verified = verify_policy_deployment_head_v1(&packet, &inputs(), &key.verifying_key(), 20)
+        .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .expect("signed head");
     assert_eq!(verified.generation(), 1);
     assert_eq!(verified.expires_at(), 30);
 
     assert!(matches!(
-        verify_policy_deployment_head_v1(&packet, &inputs(), &key.verifying_key(), 30),
+        verify_policy_deployment_head_v1(&packet, &inputs(), &key.verifying_key(), 30)
+            .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from),
         Err(PolicyDeploymentHeadErrorV1::InvalidHead)
     ));
     let changed = PolicyDeploymentInputsV1 {
@@ -308,14 +322,16 @@ fn signed_head_binds_exact_inputs_and_expiry() {
         ..inputs()
     };
     assert!(matches!(
-        verify_policy_deployment_head_v1(&packet, &changed, &key.verifying_key(), 20),
+        verify_policy_deployment_head_v1(&packet, &changed, &key.verifying_key(), 20)
+            .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from),
         Err(PolicyDeploymentHeadErrorV1::InvalidHead)
     ));
 
     let mut tampered = packet;
     tampered[160] ^= 1;
     assert!(matches!(
-        verify_policy_deployment_head_v1(&tampered, &inputs(), &key.verifying_key(), 20),
+        verify_policy_deployment_head_v1(&tampered, &inputs(), &key.verifying_key(), 20)
+            .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from),
         Err(PolicyDeploymentHeadErrorV1::InvalidSignature)
     ));
 }
@@ -329,7 +345,8 @@ fn noncanonical_json_cannot_be_signed_as_deployment_input() {
         ..inputs()
     };
     assert!(matches!(
-        verify_policy_deployment_head_v1(&packet, &changed, &key.verifying_key(), 20),
+        verify_policy_deployment_head_v1(&packet, &changed, &key.verifying_key(), 20)
+            .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from),
         Err(PolicyDeploymentHeadErrorV1::InvalidHead)
     ));
 }

@@ -33,6 +33,7 @@
 pub mod boot;
 pub mod cgroup;
 pub mod credential;
+pub mod guest_startup_report;
 pub mod fixed_spawn;
 pub mod fuse_mount;
 pub mod fuse_worker_image;
@@ -43,6 +44,7 @@ pub mod guest_confinement;
 pub mod immutable_file;
 pub mod inherited_fd;
 pub mod inventory;
+pub mod kernel_clone;
 pub mod mount;
 pub mod netlink;
 pub mod no_setid;

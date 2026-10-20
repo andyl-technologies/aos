@@ -1608,3 +1608,75 @@ async fn root_guardian_payload_failure_completes_exact_compensation() {
 
     println!("AOS_GUARDIAN_COMPENSATION_ROOT_INTEGRATION_OK");
 }
+
+#[tokio::test]
+async fn capture_stop_terminal_proposal_cannot_publish_without_actual_storage_original() {
+    let fixture = AuthorityFixture::new();
+    let authority = fixture.authority();
+    let (state, _, _) = completed_guardian_state(&fixture, &authority);
+    let GuardianLineage::Complete(lineage) = state
+        .completed_guardian_lineage(&[2; 16], &[3; 16], &authority).unwrap()
+    else { panic!("completed Guardian fixture lost its actual lineage"); };
+    let store = GuardianRecordingStore::default();
+    *store.state.lock().unwrap() = state;
+    let worker = live_guardian_worker(store.clone(), lineage.binding);
+    let mut broker = HostBroker::open(FixedCatalog, store.clone(), worker.clone(),
+        Some(nspawn()), authority).unwrap()
+        .with_guardian(GuardianConfig::for_tests().unwrap());
+    let body = composite_stop_request(64, 2, 5);
+    let request = decode_runtime_request(&body, peer(), policy(), TEST_BOOTTIME_NANOSECONDS).unwrap();
+    let digest = Sha256::digest(&body).into();
+    let artifacts = fixture.artifacts(&body, 1);
+    let admitted = broker.authority.admit(&artifacts, &request, &body,
+        ProtocolVersion::new(1, 0), &clock(),
+        broker.state.prior_authorization(request.fence().sandbox_id())).unwrap();
+    let execution = broker.prepare_composite_stop_receiving_v4(request.fence(),
+        [64; 16], digest, None).await.unwrap();
+    let sealed_fence = broker.authority.seal_fence(request.fence().sandbox_id(), &admitted.fence).unwrap();
+    let sealed_effect = broker.authority.seal_effect(&[64; 16], &admitted.effect).unwrap();
+    let mut proposed = broker.state.clone();
+    proposed.admit_composite_stop(request.fence(), [64; 16], digest, execution,
+        sealed_fence, &admitted, sealed_effect, &broker.authority).unwrap();
+    broker.commit_state(&proposed).unwrap();
+    let mut terminal = None;
+
+    let observation = broker.advance_composite_stop_to_terminal_v5(request.fence(),
+        [64; 16], digest, &admitted.effect, request.header().maximum_response_bytes(),
+        &mut || Ok(clock()), None, &mut terminal).await.unwrap();
+
+    assert_absent_receipt(&observation);
+    assert!(matches!(broker.state.query_effect(&[64; 16], digest).unwrap(), RuntimeEffectQuery::Pending));
+    assert!(!matches!(broker.state.composite_stop_execution(&[64; 16]).unwrap().phase,
+        CompositeStopPhase::Complete { .. }));
+    let mut terminal = terminal.unwrap();
+    let inert_storage = crate::storage_existing_output::capture::StorageCaptureOriginalV2::new();
+    assert!(broker.commit_capture_stop_terminal_v4(&mut terminal, &admitted.effect, &inert_storage).is_err());
+    assert!(matches!(broker.state.query_effect(&[64; 16], digest).unwrap(), RuntimeEffectQuery::Pending));
+    assert_eq!(worker.stop_roles.lock().unwrap().as_slice(),
+        [ExactUnitRole::Payload, ExactUnitRole::Guardian]);
+}
+
+
+#[test]
+fn retained_capture_stop_uses_the_same_signed_base_plan_as_ordinary_stop() {
+    let fixture = AuthorityFixture::new();
+    let authority = fixture.authority();
+    let bytes = composite_stop_request(72, 1, 4);
+    let request = decode_runtime_request(&bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS).unwrap();
+    let artifacts = fixture.artifacts(&bytes, 1);
+    let ordinary = authority.admit(&artifacts, &request, &bytes, ProtocolVersion::new(1, 0),
+        &clock(), None).unwrap();
+    let mut retained = aos_sandbox_broker::BrokerSignedAdmissionOriginalV4::new();
+    let selected = authority.admit_stop_retaining_v4(&artifacts, &request, &bytes,
+        ProtocolVersion::new(1, 0), &clock(), None, &mut retained).unwrap();
+
+    assert_eq!(ordinary.effect.verb(), selected.effect.verb());
+    assert_eq!(ordinary.effect.request_id(), selected.effect.request_id());
+    assert_eq!(ordinary.effect.transport_request_digest(), selected.effect.transport_request_digest());
+    assert_eq!(authority.seal_effect(&[72; 16], &ordinary.effect).unwrap(),
+        authority.seal_effect(&[72; 16], &selected.effect).unwrap());
+    assert!(retained.failure().is_none());
+    assert!(authority.admit_stop_retaining_v4(&artifacts, &request, &bytes,
+        ProtocolVersion::new(1, 0), &clock(), None, &mut retained).is_err());
+    assert!(retained.failure().is_some());
+}

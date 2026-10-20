@@ -184,6 +184,39 @@ pub fn validate_canonical_cbor(
     decoder.finish()
 }
 
+// Passive geometry for the SAME canonical validator's reached recursive frames.
+// Each nested value consumes at least one actual input byte. A map can keep
+// both validate_item and validate_map active at one depth; include both logical
+// frames, their return planes and the first refusing depth. No input is parsed.
+pub(super) fn validation_receiving_bytes_v1(
+    input_bytes: usize,
+    limits: DecodeLimits,
+) -> Option<usize> {
+    let depth = input_bytes.min(limits.maximum_depth).checked_add(2)?;
+    let planes = depth.checked_mul(2)?;
+    let bytes = planes.checked_mul(std::mem::size_of::<ValidationReceivingFrameV1>())?;
+    // Recursive validator frames consume the byte envelope, not namespace
+    // entries. The schema owner separately bounds its retained collections.
+    Some(bytes)
+}
+
+#[allow(dead_code)]
+struct ValidationReceivingFrameV1 {
+    decoder: &'static mut Decoder<'static>,
+    depth: usize,
+    head: Head,
+    length: usize,
+    item: usize,
+    bytes: &'static [u8],
+    prior_key: Option<(usize, usize)>,
+    key_start: usize,
+    key_end: usize,
+    prior_start: usize,
+    prior_end: usize,
+    comparison: Ordering,
+    result: Result<(), CanonicalCborError>,
+}
+
 #[derive(Clone, Copy)]
 struct Head {
     major: u8,
@@ -423,11 +456,11 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    pub(crate) fn bounded_vec<T>(
+    pub(crate) fn bounded_vec<T, E: From<CanonicalCborError>>(
         &mut self,
         maximum: usize,
-        mut decode: impl FnMut(&mut Self) -> Result<T, CanonicalCborError>,
-    ) -> Result<Vec<T>, CanonicalCborError> {
+        mut decode: impl FnMut(&mut Self) -> Result<T, E>,
+    ) -> Result<Vec<T>, E> {
         let length = self.bounded_array_len(maximum)?;
         let mut values = Vec::with_capacity(length);
         for _ in 0..length {

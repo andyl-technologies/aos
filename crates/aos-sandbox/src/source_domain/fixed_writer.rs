@@ -5,6 +5,8 @@
 //! Q04 retains actual returned commits and terminates on unfinished custody.
 //! No field or construction scope grants new policy or effect authority.
 
+use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
+
 use std::path::Path;
 
 #[cfg(target_os = "linux")]
@@ -13,10 +15,13 @@ use aos_sandbox_core::ProjectId;
 #[cfg(target_os = "linux")]
 use crate::cache_residency::CacheV8SettledClearV1;
 use crate::journal::{
-    Journal, JournalError, JournalLimits, RecoveryReport, SourceDomainPolicyHoldV1,
+    Journal,
+    JournalError,
+    JournalLimits,
+    RecoveryReport,
 };
 #[cfg(target_os = "linux")]
-use crate::policy_compiler::RootV8SettledGrantV1;
+use aos_sandbox_broker::root_settlement::RootV8SettledGrantV1;
 
 use super::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT, source_domain_journal_limits,
@@ -30,142 +35,111 @@ pub struct ProtectedSourceDomainJournalOwnerV1 {
     journal: Journal,
 }
 
-/// Retains fixed Source opening originals for the paid Controller constructor.
-///
-/// This purpose-specific destination shares the existing protected opener and
-/// owns neither a new Source admission nor a per-operation resource permit.
+/// Retains the actual fixed Source construction through the same pre-Bank loan.
 #[cfg(target_os = "linux")]
 pub struct ControllerSourceJournalConstructionV1 {
-    opening: crate::journal::ControllerJournalOpenOriginalsV1,
+    original: crate::journal::SourceJournalConstructionOriginalsV1,
     source: Option<ProtectedSourceDomainJournalOwnerV1>,
-    before: Option<crate::controller_resource_reservation::ControllerResourcePreopenPostV1>,
-    post: Option<crate::controller_resource_reservation::ControllerResourcePreopenPostV1>,
-    names_post: Option<Result<(), JournalError>>,
-    attempted: bool,
     finished: bool,
 }
 
 #[cfg(target_os = "linux")]
 impl ControllerSourceJournalConstructionV1 {
-    /// Prearms empty partial custody without opening the fixed Source directory.
-    #[must_use]
+    /// Creates empty partial custody without entering the fixed Source interval.
     pub const fn new() -> Self {
-        Self {
-            opening: crate::journal::ControllerJournalOpenOriginalsV1::new(),
-            source: None,
-            before: None,
-            post: None,
-            names_post: None,
-            attempted: false,
-            finished: false,
-        }
+        Self { original: crate::journal::SourceJournalConstructionOriginalsV1::new(), source: None, finished: false }
     }
 
-    /// Opens the same fixed Source writer under the original bootstrap loan.
+    /// Opens the same fixed Source writer under the genuine pre-Bank loan.
     ///
     /// # Errors
-    /// Retains protected open/replay errors and all returned partial originals.
-    /// The enclosing Controller owns the independent before/after reports.
+    /// Retains native acquisition and complete semantic replay failure.
     pub fn open_once(
         &mut self,
-        loan: &crate::controller_resource_reservation::ControllerResourcePreopenLoanV1<'_>,
-        uid: u32,
+        loan: &mut aos_sandbox_broker::controller_receiving::ControllerSourcePreBankConstructionLoanV1<'_>,
     ) -> Result<(), ()> {
-        if self.attempted {
-            return Err(());
-        }
-        self.attempted = true;
-        self.before =
-            Some(crate::controller_resource_reservation::ControllerResourcePreopenPostV1::new());
-        loan.observe_into(self.before.as_mut().ok_or(())?);
-        self.before
-            .as_ref()
-            .ok_or(())?
-            .require_success()
-            .map_err(|_| ())?;
-        self.opening.open_once(
-            Path::new(PROTECTED_SOURCE_DOMAIN_ROOT),
-            PROTECTED_SOURCE_DOMAIN_JOURNAL,
-            source_domain_journal_limits(),
-            uid,
-        );
-        if self.opening.failure().is_some() {
-            return Err(());
-        }
-        let journal = self.opening.take_journal().ok_or(())?;
+        self.open_with_recipe_once(loan, false)
+    }
+
+    /// Opens existing fixed Source state under the same genuine C loan.
+    ///
+    /// Missing journals and interrupted tails refuse; no genesis or repair is
+    /// inferred from this administrative invocation.
+    ///
+    /// # Errors
+    /// Retains the same first acquisition/semantic cause and owed native posts.
+    pub fn open_existing_once(
+        &mut self,
+        loan: &mut aos_sandbox_broker::controller_receiving::ControllerSourcePreBankConstructionLoanV1<'_>,
+    ) -> Result<(), ()> {
+        self.open_with_recipe_once(loan, true)
+    }
+
+    fn open_with_recipe_once(
+        &mut self,
+        loan: &mut aos_sandbox_broker::controller_receiving::ControllerSourcePreBankConstructionLoanV1<'_>,
+        existing_only: bool,
+    ) -> Result<(), ()> {
+        if existing_only { self.original.open_existing_once(loan)?; }
+        else { self.original.open_once(loan)?; }
+        let journal = self.original.take_for_recovery_once().ok_or(())?;
         self.source = Some(ProtectedSourceDomainJournalOwnerV1 { journal });
         Ok(())
     }
 
-    /// Borrows the same resident fixed writer for existing lifecycle recovery.
-    #[must_use]
+    /// Borrows the same actual writer for existing lifecycle/project recovery.
     pub fn source_mut(&mut self) -> Option<&mut ProtectedSourceDomainJournalOwnerV1> {
-        if self.failure().is_some() {
-            return None;
-        }
-        self.source.as_mut()
+        if self.primary_failure().is_some() { None } else { self.source.as_mut() }
     }
 
-    /// Retains independent Source-name and bootstrap posts after any action Err.
+    /// Performs the actual names and independently armed Source/C posts.
     ///
     /// # Errors
-    /// Rejects repeated completion or any retained primary/post failure.
+    /// Retains every post failure and refuses a missing or repeated construction.
     pub fn finish_posts(
         &mut self,
-        loan: &crate::controller_resource_reservation::ControllerResourcePreopenLoanV1<'_>,
+        loan: &mut aos_sandbox_broker::controller_receiving::ControllerSourcePreBankConstructionLoanV1<'_>,
     ) -> Result<(), ()> {
-        if self.finished {
-            return Err(());
-        }
+        if self.finished { return Err(()); }
         self.finished = true;
-        if let Some(source) = self.source.as_ref() {
-            self.names_post = Some(source.journal.validate_held_protected_names());
-        }
-        self.post =
-            Some(crate::controller_resource_reservation::ControllerResourcePreopenPostV1::new());
-        loan.observe_into(self.post.as_mut().ok_or(())?);
-        if self.failure().is_some() || self.source.is_none() {
-            return Err(());
-        }
-        self.post
-            .as_ref()
-            .ok_or(())?
-            .require_success()
-            .map_err(|_| ())
+        let result = self.original.finish_posts(self.source.as_ref().map(|source| &source.journal), loan);
+        if result.is_err() || self.source.is_none() { Err(()) } else { Ok(()) }
     }
 
-    /// Moves the original into the infallible executor assembly after recovery.
-    #[must_use]
+    /// Moves the original fixed owner only after its successful actual posts.
     pub fn take_source(&mut self) -> Option<ProtectedSourceDomainJournalOwnerV1> {
-        if !self.finished || self.failure().is_some() {
-            return None;
-        }
-        self.source.take()
+        if !self.finished || self.failure().is_some() { None } else { self.source.take() }
     }
 
-    /// Borrows the actual first protected construction cause.
-    #[must_use]
+    /// Borrows the actual first construction or post failure.
     pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.primary_failure().or_else(|| self.postcheck_debt())
     }
 
-    /// Borrows the opening cause without projecting later name/profile debt.
-    #[must_use]
+    /// Borrows the actual primary native/semantic failure.
     pub fn primary_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.before
-            .as_ref()
-            .and_then(|post| post.failure())
-            .or_else(|| self.opening.failure())
+        self.original.primary_failure()
     }
 
-    /// Borrows the retained later Source-name or original-profile debt.
-    #[must_use]
+    /// Borrows later name/profile debt without changing primary chronology.
     pub fn postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.names_post
-            .as_ref()
-            .and_then(|result| result.as_ref().err())
-            .map(|error| error as &(dyn std::error::Error + 'static))
-            .or_else(|| self.post.as_ref().and_then(|post| post.failure()))
+        self.original.postcheck_debt()
+    }
+
+    /// Resolves a selected loan marker to its actual retained native cause.
+    pub fn primary_failure_with_loan<'cause>(
+        &'cause self,
+        loan: &'cause aos_sandbox_broker::controller_receiving::ControllerSourcePreBankConstructionLoanV1<'_>,
+    ) -> Option<&'cause (dyn std::error::Error + 'static)> {
+        self.original.primary_failure_with_loan(loan)
+    }
+
+    /// Preserves names-before-profile chronology through the still-held loan.
+    pub fn postcheck_debt_with_loan<'cause>(
+        &'cause self,
+        loan: &'cause aos_sandbox_broker::controller_receiving::ControllerSourcePreBankConstructionLoanV1<'_>,
+    ) -> Option<&'cause (dyn std::error::Error + 'static)> {
+        self.original.postcheck_debt_with_loan(loan)
     }
 }
 
@@ -602,6 +576,17 @@ impl ProtectedSourceDomainJournalOwnerV1 {
         Ok((Self { journal }, report))
     }
 
+    // This same held writer's in-memory sequence is comparison DATA only;
+    // original object/name joins remain at the actual receiving caller.
+    pub(crate) const fn snapshot_sequence_v1(&self) -> u64 {
+        self.journal.snapshot_sequence()
+    }
+
+    // Borrows the same held writer for observation; no mutable writer escapes.
+    pub(crate) fn journal_ref_v1(&self) -> &Journal {
+        &self.journal
+    }
+
     pub(crate) fn journal(&mut self) -> &mut Journal {
         &mut self.journal
     }
@@ -645,7 +630,7 @@ impl ProtectedSourceDomainJournalOwnerV1 {
     /// Rejects malformed or mismatched protected Source state.
     pub fn pending_closed_policy_source_v8_settlement_v1(
         &self,
-    ) -> Result<Option<crate::journal::SourceDomainPolicyV8PendingSettlementV1>, JournalError> {
+    ) -> Result<Option<aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyV8PendingSettlementV1>, JournalError> {
         self.journal.source_domain_policy_v8_pending_settlement_v1()
     }
 

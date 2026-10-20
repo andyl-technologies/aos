@@ -6,18 +6,28 @@
 //! malformed, oversized, noncanonical, or internally inconsistent output and
 //! converts it to the semantic kernel observation model.
 
+pub(crate) mod helper_recipe;
+pub(crate) mod observation_helpers_v2;
+
+mod artifact_hash;
+mod artifact_original;
+mod artifact_path;
+pub(crate) use artifact_hash::NetworkArtifactHashOriginalV4;
+pub(crate) use artifact_original::{
+    NetworkArtifactCurrentOriginalV4, NetworkArtifactOpeningOriginalV4,
+};
+pub(crate) use artifact_path::{NetworkArtifactPathOriginalV4, NetworkArtifactRoleV4};
+
 use std::ffi::OsString;
 use std::fs::File;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::FileExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::process::{FixedProcessOutcome, FixedProcessRequest, run_fixed_process};
 use serde::Deserialize;
-use sha2::{Digest as _, Sha256};
 
 use crate::kernel_observation::{
     ObservedBpfArtifactV1, ObservedBpfAttachmentV1, ObservedBpfBindingV1, ObservedBpfMapV1,
@@ -25,7 +35,11 @@ use crate::kernel_observation::{
     ObservedNetworkNamespaceV1,
 };
 
-const MAXIMUM_BPF_OBSERVATION_BYTES: usize = 64 * 1024;
+use observation_helpers_v2::{
+    ObservationAttestationV2, ObservationHelperPortV2, ObservationRecipeV2, finish_read_group_v2,
+};
+
+pub(crate) const MAXIMUM_BPF_OBSERVATION_BYTES: usize = 64 * 1024;
 const MAXIMUM_BPF_OBJECT_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_HELPER_STDERR_BYTES: usize = 16 * 1024;
 const HELPER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -69,6 +83,17 @@ pub struct FixedBpfObservationReader {
 }
 
 impl FixedBpfObservationReader {
+    pub(crate) fn from_original_v2(helper: PinnedArtifact, gate_object: PinnedArtifact) -> Self {
+        Self {
+            helper,
+            gate_object,
+        }
+    }
+
+    pub(crate) fn original_artifacts_v2(&self) -> (&PinnedArtifact, &PinnedArtifact) {
+        (&self.helper, &self.gate_object)
+    }
+
     /// Resolves and pins immutable helper and BPF object files in the Nix store.
     ///
     /// # Errors
@@ -100,21 +125,31 @@ impl FixedBpfObservationReader {
         &self,
         network_handle: [u8; 32],
     ) -> Result<ObservedLeaseGateV1, NetworkKernelReaderError> {
-        if network_handle == [0; 32] {
-            return Err(NetworkKernelReaderError::InvalidBpf(
-                "network handle is zero",
-            ));
-        }
-        self.gate_object.validate_current()?;
+        self.observe_with_port_v2(network_handle, &mut ObservationHelperPortV2::Local)
+    }
 
-        let pin_root = format!("{BPF_PIN_PREFIX}/{}", encode_hex(network_handle));
-        let output = self
-            .helper
-            .run(&[OsString::from(pin_root)], MAXIMUM_BPF_OBSERVATION_BYTES)?;
-        let stdout = successful_helper_stdout(output)?;
-
-        self.gate_object.validate_current()?;
-        decode_bpf_observation(&stdout, self.gate_object.digest)
+    pub(crate) fn observe_with_port_v2(
+        &self,
+        network_handle: [u8; 32],
+        port: &mut ObservationHelperPortV2<'_, '_, '_>,
+    ) -> Result<ObservedLeaseGateV1, NetworkKernelReaderError> {
+        let result = (|| {
+            if network_handle == [0; 32] {
+                return Err(NetworkKernelReaderError::InvalidBpf(
+                    "network handle is zero",
+                ));
+            }
+            let stdout = port.run_attested(
+                &self.helper,
+                (&self.gate_object, ObservationAttestationV2::LeaseObject),
+                ObservationRecipeV2::BpfGraph {
+                    handle: network_handle,
+                    absent: false,
+                },
+            )?;
+            decode_bpf_observation(&stdout, self.gate_object.digest)
+        })();
+        finish_read_group_v2(result, port)
     }
 
     /// Proves that the exact handle-derived BPF pin root is absent.
@@ -127,26 +162,36 @@ impl FixedBpfObservationReader {
     /// Returns [`NetworkKernelReaderError`] for a zero handle, changed helper,
     /// unsafe path ancestry, a present pin root, or an inconclusive lookup.
     pub fn observe_absent(&self, network_handle: [u8; 32]) -> Result<(), NetworkKernelReaderError> {
-        if network_handle == [0; 32] {
-            return Err(NetworkKernelReaderError::InvalidBpf(
-                "network handle is zero",
-            ));
-        }
-        self.gate_object.validate_current()?;
+        self.observe_absent_with_port_v2(network_handle, &mut ObservationHelperPortV2::Local)
+    }
 
-        let pin_root = format!("{BPF_PIN_PREFIX}/{}", encode_hex(network_handle));
-        let output = self.helper.run(
-            &[OsString::from("--expect-absent"), OsString::from(pin_root)],
-            MAXIMUM_BPF_OBSERVATION_BYTES,
-        )?;
-        let stdout = successful_helper_stdout(output)?;
-        self.gate_object.validate_current()?;
-        if stdout != b"{\"absent\":true}\n" {
-            return Err(NetworkKernelReaderError::InvalidBpf(
-                "BPF absence response is noncanonical",
-            ));
-        }
-        Ok(())
+    pub(crate) fn observe_absent_with_port_v2(
+        &self,
+        network_handle: [u8; 32],
+        port: &mut ObservationHelperPortV2<'_, '_, '_>,
+    ) -> Result<(), NetworkKernelReaderError> {
+        let result = (|| {
+            if network_handle == [0; 32] {
+                return Err(NetworkKernelReaderError::InvalidBpf(
+                    "network handle is zero",
+                ));
+            }
+            let stdout = port.run_attested(
+                &self.helper,
+                (&self.gate_object, ObservationAttestationV2::LeaseObject),
+                ObservationRecipeV2::BpfGraph {
+                    handle: network_handle,
+                    absent: true,
+                },
+            )?;
+            if stdout != b"{\"absent\":true}\n" {
+                return Err(NetworkKernelReaderError::InvalidBpf(
+                    "BPF absence response is noncanonical",
+                ));
+            }
+            Ok(())
+        })();
+        finish_read_group_v2(result, port)
     }
 }
 
@@ -209,56 +254,11 @@ struct ArtifactIdentity {
 
 impl PinnedArtifact {
     pub(crate) fn open(path: PathBuf, executable: bool) -> Result<Self, NetworkKernelReaderError> {
-        let components = validate_artifact_path(&path)?;
-        let (descriptor, ancestors) = open_store_artifact(&components)?;
-        let identity = ArtifactIdentity::from_descriptor(&descriptor, executable)?;
-        let digest = measure_file(&descriptor, identity.size)?;
-        let artifact = Self {
-            path,
-            descriptor,
-            ancestors,
-            identity,
-            digest,
-        };
-        artifact.validate_current()?;
-        Ok(artifact)
+        artifact_original::open_local_v4(path, executable)
     }
 
     pub(crate) fn validate_current(&self) -> Result<(), NetworkKernelReaderError> {
-        for ancestor in &self.ancestors {
-            let current =
-                DirectoryIdentity::from_descriptor(&ancestor.descriptor, ancestor.policy)?;
-            if current != ancestor.identity {
-                return Err(NetworkKernelReaderError::InvalidArtifact(
-                    "artifact ancestry changed",
-                ));
-            }
-        }
-
-        let executable = self.identity.mode & 0o111 != 0;
-        let current = ArtifactIdentity::from_descriptor(&self.descriptor, executable)?;
-        if current != self.identity || measure_file(&self.descriptor, current.size)? != self.digest
-        {
-            return Err(NetworkKernelReaderError::InvalidArtifact(
-                "artifact identity or contents changed",
-            ));
-        }
-
-        let components = validate_artifact_path(&self.path)?;
-        let (resolved, resolved_ancestors) = open_store_artifact(&components)?;
-        let resolved_identity = ArtifactIdentity::from_descriptor(&resolved, executable)?;
-        if resolved_identity != self.identity
-            || resolved_ancestors.len() != self.ancestors.len()
-            || resolved_ancestors
-                .iter()
-                .zip(&self.ancestors)
-                .any(|(current, retained)| current.identity != retained.identity)
-        {
-            return Err(NetworkKernelReaderError::InvalidArtifact(
-                "fixed artifact path no longer names its retained object",
-            ));
-        }
-        Ok(())
+        artifact_original::validate_local_v4(self, false)
     }
 
     pub(crate) const fn digest(&self) -> ObjectDigest {
@@ -270,22 +270,7 @@ impl PinnedArtifact {
     }
 
     pub(crate) fn validate_current_executable(&self) -> Result<(), NetworkKernelReaderError> {
-        self.validate_current()?;
-        let current = File::from(
-            rustix::fs::open(
-                "/proc/self/exe",
-                rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
-                rustix::fs::Mode::empty(),
-            )
-            .map_err(kernel_io)?,
-        );
-        let identity = ArtifactIdentity::from_descriptor(&current, true)?;
-        if identity != self.identity || measure_file(&current, identity.size)? != self.digest {
-            return Err(NetworkKernelReaderError::InvalidArtifact(
-                "enforcement artifact is not the current executable",
-            ));
-        }
-        Ok(())
+        artifact_original::validate_local_v4(self, true)
     }
 
     pub(crate) fn run(
@@ -293,16 +278,7 @@ impl PinnedArtifact {
         arguments: &[OsString],
         maximum_stdout_bytes: usize,
     ) -> Result<FixedProcessOutcome, NetworkKernelReaderError> {
-        self.validate_current()?;
-        let outcome = run_fixed_process(FixedProcessRequest {
-            executable: &self.path,
-            arguments,
-            timeout: HELPER_TIMEOUT,
-            maximum_stdout_bytes,
-            maximum_stderr_bytes: MAXIMUM_HELPER_STDERR_BYTES,
-        })?;
-        self.validate_current()?;
-        Ok(outcome)
+        helper_recipe::run_artifact_local_v4(self, arguments, maximum_stdout_bytes)
     }
 }
 
@@ -420,103 +396,6 @@ fn valid_store_entry(component: &std::ffi::OsStr) -> bool {
     bytes.len() > 33
         && bytes[32] == b'-'
         && bytes[..32].iter().all(|byte| NIX_BASE32.contains(byte))
-}
-
-fn open_store_artifact(
-    artifact_components: &[OsString],
-) -> Result<(File, Vec<ArtifactAncestor>), NetworkKernelReaderError> {
-    let root = rustix::fs::open(
-        "/",
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::DIRECTORY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(kernel_io)?;
-    let root_identity = DirectoryIdentity::from_descriptor(&root, DirectoryPolicy::Protected)?;
-    let mut ancestors = vec![ArtifactAncestor {
-        descriptor: root,
-        identity: root_identity,
-        policy: DirectoryPolicy::Protected,
-    }];
-    let mut components = vec![OsString::from("nix"), OsString::from("store")];
-    components.extend_from_slice(artifact_components);
-
-    for (index, component) in components.iter().enumerate() {
-        let final_component = index + 1 == components.len();
-        let flags = if final_component {
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::NONBLOCK
-                | rustix::fs::OFlags::CLOEXEC
-        } else {
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::CLOEXEC
-        };
-        let descriptor = rustix::fs::openat2(
-            ancestors
-                .last()
-                .ok_or(NetworkKernelReaderError::InvalidArtifact(
-                    "artifact ancestry is empty",
-                ))?
-                .descriptor
-                .as_fd(),
-            component,
-            flags,
-            rustix::fs::Mode::empty(),
-            rustix::fs::ResolveFlags::BENEATH
-                | rustix::fs::ResolveFlags::NO_MAGICLINKS
-                | rustix::fs::ResolveFlags::NO_SYMLINKS,
-        )
-        .map_err(kernel_io)?;
-        if final_component {
-            return Ok((File::from(descriptor), ancestors));
-        }
-
-        let policy = match index {
-            0 => DirectoryPolicy::Protected,
-            1 => DirectoryPolicy::StoreRoot,
-            _ => DirectoryPolicy::Immutable,
-        };
-        let identity = DirectoryIdentity::from_descriptor(&descriptor, policy)?;
-        ancestors.push(ArtifactAncestor {
-            descriptor,
-            identity,
-            policy,
-        });
-    }
-    Err(NetworkKernelReaderError::InvalidArtifact(
-        "artifact path has no final component",
-    ))
-}
-
-fn measure_file(file: &File, size: u64) -> Result<ObjectDigest, NetworkKernelReaderError> {
-    let length = usize::try_from(size).map_err(|_| {
-        NetworkKernelReaderError::InvalidArtifact("artifact size exceeds address space")
-    })?;
-    let mut bytes = vec![0; length];
-    let mut offset = 0;
-    while offset < bytes.len() {
-        let count = file.read_at(&mut bytes[offset..], offset as u64)?;
-        if count == 0 {
-            return Err(NetworkKernelReaderError::InvalidArtifact(
-                "artifact became shorter while measured",
-            ));
-        }
-        offset += count;
-    }
-    let mut trailing = [0];
-    if file.read_at(&mut trailing, size)? != 0 {
-        return Err(NetworkKernelReaderError::InvalidArtifact(
-            "artifact read was not exact",
-        ));
-    }
-    let mut digest = Sha256::new();
-    digest.update(bytes);
-    Ok(ObjectDigest::from_bytes(digest.finalize().into()))
 }
 
 fn kernel_io(error: rustix::io::Errno) -> NetworkKernelReaderError {

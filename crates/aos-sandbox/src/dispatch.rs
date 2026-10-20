@@ -31,7 +31,7 @@ use aos_sandbox_protocol::{
 use sha2::{Digest as _, Sha256};
 
 use crate::publication::{RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1};
-use crate::SignedOwnershipLease;
+use aos_sandbox_ownership_protocol::SignedOwnershipLease;
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 pub use aos_sandbox_protocol::dispatch_template::{
@@ -191,29 +191,11 @@ impl GuardianPlanRequestV1 {
             return Err(BrokerDispatchAttemptError::GuardianContextMismatch);
         }
 
-        let grant = BrokerGrant::new(
-            BrokerVerb::GuardianArm,
-            BrokerGrantTarget::Assignment,
-            self.commitment,
-            self.request_bytes,
-            0,
-        )
-        .map_err(|_| BrokerDispatchAttemptError::GuardianPlanMismatch)?;
-        BrokerAuthorizationPlan::new(
-            BrokerAudience::Guardian,
-            ProtocolId::Guardian,
-            ProtocolVersion::new(1, 0),
-            self.assignment,
-            self.node,
-            self.ownership_authority.clone(),
-            vec![grant],
-            self.policy_commitment,
-            self.revocation_scope,
-            now_seconds,
-            self.expires_seconds,
-            Vec::new(),
-        )
-        .map_err(|_| BrokerDispatchAttemptError::GuardianPlanMismatch)
+        aos_sandbox_protocol::authorization_artifact::guardian_arm_plan_data_v1(
+            self.assignment, self.node, self.ownership_authority.clone(),
+            self.commitment, self.request_bytes, self.policy_commitment,
+            self.revocation_scope, now_seconds, self.expires_seconds,
+        ).map_err(|_| BrokerDispatchAttemptError::GuardianPlanMismatch)
     }
 }
 /// Retains an attempt from the fixed signed/current Native construction recipes.
@@ -877,6 +859,32 @@ fn conservative_guardian_plan_deadline(
     conservative_guardian_plan_deadline_at(plan, clock.wall_seconds(), clock.boottime_nanoseconds())
 }
 
+// The caller retained these exact current signed bytes and the actual paired
+// origin. This computes only their original finite intersection; it neither
+// signs, verifies, renews nor authorizes an effect or receiving interval.
+pub(crate) fn current_host_stop_deadline_data_v4(
+    template: &RecoveredBrokerDispatchTemplateV1,
+    lease: &RecoveredOwnershipLeaseV1,
+    clock: RawPairedClockSample,
+) -> Result<u64, BrokerDispatchAttemptError> {
+    if template.audience() != BrokerAudience::Host
+        || template.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+        || template.semantics().verb() != BrokerVerb::HostStop
+        || !template.descriptor_roles().is_empty()
+    {
+        return Err(BrokerDispatchAttemptError::PlanGrantMismatch);
+    }
+    validate_recovered_lease_context(template.plan(), lease.lease())?;
+    validate_current_plan_at(template.plan(), clock.wall_seconds())?;
+    let lease = conservative_lease_deadline_fields(
+        lease.lease().authority_issued_seconds(), lease.lease().authority_expires_seconds(),
+        lease.lease().maximum_clock_skew_seconds(), clock,
+    )?;
+    let plan = conservative_guardian_plan_deadline_at(template.plan(),
+        clock.wall_seconds(), clock.boottime_nanoseconds())?;
+    Ok(lease.min(plan))
+}
+
 fn conservative_guardian_plan_deadline_at(
     plan: &BrokerAuthorizationPlan,
     wall_seconds: i64,
@@ -897,7 +905,9 @@ fn conservative_guardian_plan_deadline_at(
         .ok_or(BrokerDispatchAttemptError::PlanExpired)
 }
 
-fn conservative_lease_deadline(
+/// Computes the existing dispatcher fail-stop bound from the retained lease.
+/// This comparison neither verifies the lease nor grants a dispatch interval.
+pub(crate) fn conservative_lease_deadline(
     lease: &SignedOwnershipLease,
     clock: RawPairedClockSample,
 ) -> Result<u64, BrokerDispatchAttemptError> {
@@ -979,10 +989,7 @@ mod tests {
     use buffa::Message as _;
     use ed25519_dalek::SigningKey;
 
-    use crate::{
-        OwnershipAuthorityVerifier, OwnershipClaimV1, OwnershipTransactionReceiptV1,
-        UnverifiedOwnershipLeaseResponse,
-    };
+    use aos_sandbox_ownership_protocol::OwnershipAuthorityVerifier;
     use aos_sandbox_protocol::authorization_artifact::{
         BrokerPlanPreparation, ReturnedSignature, SigningAuthority,
     };
@@ -1605,4 +1612,191 @@ mod tests {
             Err(BrokerDispatchAttemptError::LeaseContextMismatch)
         );
     }
+
+    #[test]
+    fn root_intersection_preserves_the_real_dispatcher_fail_stop_bound() {
+        let fixture = fixture();
+        let current = lease(&fixture, 1, 190);
+        let opening = clock(150, 1_000);
+        let source_cutoff = 60_000_001_000;
+        let effective = source_cutoff.min(conservative_lease_deadline(&current, opening).unwrap());
+
+        // The fixture's five-second skew and five-second safety margin both
+        // shorten the signed authority's remaining forty seconds.
+        assert_eq!(effective, 30_000_001_000);
+        assert_eq!(BrokerDispatchAttemptV1::new(&fixture.template, &current, source_cutoff, opening),
+            Err(BrokerDispatchAttemptError::UnsafeDeadline));
+        let attempt = BrokerDispatchAttemptV1::new(&fixture.template, &current, effective, opening).unwrap();
+        assert_eq!(attempt.deadline_boottime_nanoseconds(), effective);
+
+        // A later wall step can make the same old D unsafe. Computing the Root
+        // intersection is not a waiver of the actual dispatcher's fresh check.
+        assert_eq!(BrokerDispatchAttemptV1::new(&fixture.template, &current, effective,
+            clock(152, 1_000_001_000)), Err(BrokerDispatchAttemptError::UnsafeDeadline));
+        assert_eq!(source_cutoff, 60_000_001_000);
+    }
+
+    #[test]
+    fn stop_cleanup_root_grant_enters_the_real_template_and_dispatcher() {
+        use aos_sandbox_core::model::{AssignmentManifestV1, SandboxAncestry};
+        use aos_sandbox_core::{
+            CanonicalAssignmentManifestV1, NamespaceGeneration,
+            ObjectDescriptor, ProjectId, ResourceVector,
+        };
+        use aos_sandbox_protocol::authorization_artifact::host_stop_cleanup_plan::{
+            host_stop_cleanup_request_body_data_v1, prepare_host_stop_cleanup_plan_v1,
+        };
+        use aos_sandbox_protocol::{
+            host_stop_cleanup::HostStopCleanupSubjectDataV1,
+            host_stopped_namespace::HostStoppedNamespaceDataV4,
+        };
+
+        let base = fixture();
+        let descriptor = |kind: PortableMediaType, byte: u8| {
+            ObjectDescriptor::new(
+                MediaType::new(kind.as_str()).unwrap(),
+                ObjectDigest::from_bytes([byte; 32]),
+                1,
+            )
+        };
+        let manifest = CanonicalAssignmentManifestV1::new(
+            AssignmentManifestV1::new(
+                base.assignment.sandbox(),
+                ProjectId::from_bytes([17; 16]),
+                SandboxAncestry::new(base.assignment.sandbox(), Vec::new()).unwrap(),
+                base.assignment.incarnation(),
+                base.node,
+                base.assignment.epoch(),
+                DesiredGeneration::new(4),
+                NamespaceGeneration::new(1),
+                descriptor(PortableMediaType::SandboxSpec, 18),
+                descriptor(PortableMediaType::Policy, 19),
+                descriptor(PortableMediaType::Environment, 20),
+                descriptor(PortableMediaType::View, 21),
+                Vec::new(),
+                ObjectDigest::from_bytes([22; 32]),
+                ResourceVector::ZERO,
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let assignment = manifest.broker_assignment().unwrap();
+        let lease = lease_for(&base, assignment, base.node, 1, 190);
+        let sample = clock(150, 1_000);
+        let cutoff = 20_000_001_000;
+        let mut old_request = ApplyRuntimeRequest::default();
+        let header = old_request.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.request_id = vec![28; 16];
+        header.maximum_response_bytes = 4096;
+        let fence = old_request.fence.get_or_insert_default();
+        fence.sandbox_id = assignment.sandbox().as_bytes().to_vec();
+        fence.incarnation_id = assignment.incarnation().as_bytes().to_vec();
+        fence.assignment_epoch = assignment.epoch().get();
+        fence.desired_generation = 4;
+        fence.assignment_digest = assignment.digest().as_bytes().to_vec();
+        old_request.action = RuntimeAction::RUNTIME_ACTION_STOP.into();
+        let old_template = aos_sandbox_protocol::decode_runtime_template_v1(
+            &old_request.encode_to_vec()).unwrap();
+        let historical = HostStoppedNamespaceDataV4::from_data_v4(
+            [23; 16],
+            *old_template.fence(),
+            [24; 32],
+            ([25; 16], [26; 32], [27; 32]),
+            ([28; 16], [29; 32], [30; 32]),
+        )
+        .unwrap();
+        let subject = HostStopCleanupSubjectDataV1::from_data_v1(
+            historical,
+            [31; 16],
+            [32; 16],
+            [33; 32],
+            sample.host_boot_id(),
+            [34; 32],
+            cutoff,
+        )
+        .unwrap();
+        let body = host_stop_cleanup_request_body_data_v1(&manifest, 7, subject).unwrap();
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let prepared = prepare_host_stop_cleanup_plan_v1(
+            &body,
+            &manifest,
+            7,
+            subject,
+            manifest.manifest().policy().digest(),
+            &lease,
+            sample,
+            cutoff,
+            190,
+            185,
+            signing_authority(&key),
+            RevocationScopeId::from_bytes([9; 16]),
+        )
+        .unwrap();
+        let maximum =
+            aos_sandbox_protocol::dispatch_template::deadline_free_template_request_bytes_v1(&body)
+                .unwrap();
+        assert_eq!(
+            prepared.preparation.plan_data_v1().grants()[0].maximum_request_bytes(),
+            maximum
+        );
+        assert!(prepared.request_body.len() < maximum as usize);
+        let live_body = prepared.request_body;
+        let signature = sign_statement(
+            prepared.preparation.signing_request().statement().clone(),
+            &key,
+        )
+        .unwrap();
+        let signed = prepared
+            .preparation
+            .complete(ReturnedSignature::Bytes(signature.signature()), 150)
+            .unwrap();
+        let template_data = aos_sandbox_protocol::decode_runtime_template_v1(&body).unwrap();
+        let semantics = canonical_host_template_semantics_v1(&template_data).unwrap();
+        assert!(matches!(semantics.target(), BrokerGrantTarget::Resource(_)));
+        assert_eq!(signed.plan().grants()[0].target(), semantics.target());
+        assert_eq!(signed.plan().expires_seconds(), 169);
+        let template = BrokerDispatchTemplateV1::new(
+            signed.clone(),
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            body,
+            Vec::new(),
+            BrokerDispatchSemanticIdentityV1::new(
+                semantics.verb(),
+                semantics.target(),
+                semantics.commitment(),
+            ),
+        )
+        .unwrap();
+
+        let attempt = BrokerDispatchAttemptV1::new(&template, &lease, cutoff, sample).unwrap();
+
+        assert_eq!(attempt.body(), live_body);
+        assert_eq!(template_data.fence().desired_generation(), 7);
+        assert_eq!(
+            subject
+                .historical_scope_v1()
+                .fence_v4()
+                .desired_generation(),
+            4
+        );
+        assert!(
+            BrokerDispatchTemplateV1::new(
+                signed,
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                live_body,
+                Vec::new(),
+                BrokerDispatchSemanticIdentityV1::new(
+                    semantics.verb(),
+                    semantics.target(),
+                    semantics.commitment()
+                )
+            )
+            .is_err()
+        );
+    }
 }
+
+use aos_sandbox_ownership_protocol::{OwnershipAuthority, OwnershipClaimV1, OwnershipTransactionReceiptV1, UnverifiedOwnershipLeaseResponse};

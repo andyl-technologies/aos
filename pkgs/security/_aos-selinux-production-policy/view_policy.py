@@ -10,6 +10,24 @@ SIGNER_DOMAINS = (
 )
 
 
+SOURCE_OBSERVER_SOCKET_TARGETS = {
+    "connect": frozenset(("aos_sandbox_source_signer_t",)),
+    "create": frozenset(("aos_sandbox_source_signer_t",)),
+    "connectto": frozenset(("system_dbusd_t",)),
+}
+
+
+def source_observer_socket_violations(rules, allowed):
+    """Checks every concrete target, including disabled conditional grants."""
+
+    forbidden = []
+    for rule in rules:
+        unexpected = {str(target) for target in rule.target.expand()} - allowed
+        if unexpected:
+            forbidden.append(f"{rule}; unexpected targets={sorted(unexpected)}")
+    return sorted(forbidden)
+
+
 def matrix(Access, Transition, accesses, roles):
     """Returns the exact producer/read-only/association matrix."""
 
@@ -103,6 +121,30 @@ def matrix(Access, Transition, accesses, roles):
         positive.append(Access(mount, "tmpfs_t", "filesystem", "associate"))
         positive.append(Access(credential, "tmpfs_t", "filesystem", "associate"))
         positive.append(Access(socket, "tmpfs_t", "filesystem", "associate"))
+
+    # The wildcard Source socket negatives remain in the matrix. The checker
+    # admits only the concrete same-role socket and status-only D-Bus targets,
+    # checking the full expanded rule rather than ignoring an attribute match.
+    source = "aos_sandbox_source_signer_t"
+    positive.extend(accesses(source, source, "unix_stream_socket", ("connect", "create")))
+    positive.append(Access(source, "system_dbusd_t", "unix_stream_socket", "connectto"))
+    positive.extend(accesses(source, "system_dbusd_var_run_t", "sock_file", ("getattr", "open", "read", "write")))
+    for peer in ("init_t", "system_dbusd_t"):
+        positive.extend((Access(source, peer, "dbus", "send_msg"), Access(peer, source, "dbus", "send_msg")))
+    positive.append(Access(source, "init_t", "system", "status"))
+    positive.append(Access(source, "systemd_unit_t", "service", "status"))
+    for target in ("usr_t", "aos_sandbox_policy_authority_profile_t", "aos_sandbox_policy_authority_exec_t", "init_exec_t", "cgroup_t", "security_t"):
+        positive.extend(accesses(source, target, "file", ("getattr", "open", "read")))
+    for target in ("fs_t", "tmpfs_t", "cgroup_t", "security_t"):
+        positive.append(Access(source, target, "filesystem", "getattr"))
+    positive.append(Access(source, "security_t", "security", "read_policy"))
+    positive.append(Access(source, source, "process", "fork"))
+    for target in (source, root, "init_t"):
+        positive.extend(accesses(source, target, "file", ("getattr", "ioctl")))
+    negative.extend(accesses(source, "*", "service", ("start", "stop", "reload", "enable", "disable")))
+    negative.extend(accesses(source, "*", "system", ("start", "stop", "reload", "reboot", "halt")))
+    negative.extend(accesses(source, "*", "process", ("ptrace", "dyntransition", "setexec", "setsockcreate")))
+    negative.append(Access(source, "*", "unix_stream_socket", "bind"))
 
     positive.append(Access(controller, "aos_sandbox_cache_signer_t", "unix_stream_socket", "connectto"))
     positive.append(Access(provisioner, provisioner, "capability", "dac_read_search"))

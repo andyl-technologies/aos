@@ -108,6 +108,7 @@ use resident_custody::{
 mod activation;
 mod effects;
 mod worker;
+mod initial_broker_sessions;
 mod argument_exchange;
 mod attach_credentials;
 mod attach_exchange;
@@ -129,6 +130,7 @@ mod plan_signer;
 mod project_admission;
 mod publication;
 mod resident_custody;
+mod runtime_receiving;
 
 mod attachment_desired;
 mod attachment_physical;
@@ -142,6 +144,7 @@ mod cache_unpin;
 )]
 mod consumer_read;
 pub(crate) mod execution;
+mod execution_authorize;
 pub(crate) mod execution_argument_observe;
 pub(crate) mod execution_capture_candidate;
 mod execution_output_effect;
@@ -152,6 +155,8 @@ pub(crate) mod execution_output_reserve;
 )]
 mod execution_output_storage_reserve;
 pub(crate) mod execution_output_storage_registration;
+mod execution_output_storage_capture;
+mod execution_lifetime;
 mod guest_root;
 #[cfg(target_os = "linux")]
 mod git_coverage;
@@ -186,6 +191,7 @@ use commands::{
 mod publisher_credential;
 mod publisher_ingress;
 mod publisher_policy_source;
+mod credential_receiving;
 mod cache_usage;
 mod cache_mutation;
 mod storage_snapshot;
@@ -219,6 +225,14 @@ type SnapshotOwnershipDonationV3 = Arc<OnceLock<ControllerOwnershipConfiguration
 /// Retains authenticated transports and their durable sequence owners across cycles.
 #[derive(Default)]
 struct ControllerBrokerSessions {
+    #[cfg(target_os = "linux")]
+    catalog_maintenance: Option<catalog_maintenance::CatalogMaintenanceWorkerOriginalV2>,
+    #[cfg(target_os = "linux")]
+    catalog_cold_completion: Option<aos_sandbox_broker_session_security::controller_composition::ControllerCatalogMaintenanceColdReceiptV2>,
+    #[cfg(target_os = "linux")]
+    catalog_refresh_completion: Option<aos_sandbox_broker_session_security::controller_composition::ControllerCatalogMaintenanceRefreshReceiptV2>,
+    initial_context: Option<initial_broker_sessions::OriginalContextV1>,
+    initial_slots: [initial_broker_sessions::InitialSessionSlotV1; 4],
     nix_generation_enabled: bool,
     #[cfg(feature = "online-nix")]
     nix_resolve: Option<nix_environment::NixResolveAttemptV1>,
@@ -230,6 +244,9 @@ struct ControllerBrokerSessions {
         Option<aos_sandbox_broker_session_security::controller_composition::Pid1LaunchImageV1>,
     host: Option<ControllerHostPublication>,
     mount: Option<crate::DormantMountLifecycleInventoryOwnerV1>,
+    // The transition fence runs before the actual old/new Session field drops.
+    storage_preparation_client: Option<inventory::OriginalStoragePreparationClientV1>,
+    storage_apply_client: Option<inventory::OriginalStoragePreparationClientV1>,
     storage: Option<crate::DormantStorageLifecycleInventoryOwnerV1>,
     storage_cold: Option<
         aos_sandbox_broker_session_security::controller_composition::RetainedStorageColdOpenV1,
@@ -403,3 +420,6 @@ mod qualification_mount_inventory;
 
 #[cfg(all(test, feature = "kernel-tests"))]
 mod qualification_host_inventory;
+
+#[cfg(target_os = "linux")]
+mod catalog_maintenance;

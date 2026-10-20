@@ -11,3 +11,6 @@
 //! capabilities, inventories, leases and snapshot recovery remain below this
 //! owner in `aos-proto`. There are no shared-type forwarding reexports here.
 include!(concat!(env!("OUT_DIR"), "/_connectrpc.rs"));
+
+/// Owns canonical, non-authorizing handshake DATA and session-field mapping.
+pub mod session_binding;

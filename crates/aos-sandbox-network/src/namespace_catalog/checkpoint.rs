@@ -15,7 +15,7 @@
 //! recreating reservation or response-send authority.
 
 use aos_proto::aos::sandbox::local::v1::InventoryNetworkResourcesResponse;
-use aos_sandbox::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::journal::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES,
     authenticated_session::{
@@ -67,7 +67,7 @@ const _: () = assert!(HEAD_BYTES == 136);
 pub enum BrokerNetworkInventoryCheckpointErrorV1 {
     /// The protected namespace journal failed validation or publication.
     #[error("authenticated Network inventory checkpoint journal failure")]
-    Journal(#[from] aos_sandbox::JournalError),
+    Journal(#[from] crate::journal::JournalError),
     /// The protected namespace catalog failed observation or revalidation.
     #[error("authenticated Network inventory checkpoint catalog failure")]
     Catalog(#[from] NetworkNamespaceCatalogError),
@@ -497,7 +497,7 @@ impl NetworkNamespaceCatalogV1 {
                     next_head.encode().to_vec(),
                 ),
             ],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(crate::journal::JournalError::from)?;
         self.journal.commit(&transaction)?;
         self.checkpoint_head = Some(next_head);
 
@@ -616,7 +616,7 @@ impl NetworkNamespaceCatalogV1 {
                     completed_head.encode().to_vec(),
                 ),
             ],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(crate::journal::JournalError::from)?;
         self.journal.commit(&transaction)?;
         self.checkpoint_head = Some(completed_head);
 

@@ -14,7 +14,7 @@
 //! The 64-byte metadata uses little-endian integers:
 //!
 //! ```text
-//! method:u8 | reserved[7]=0 | accepted-generation:u64 | observation-sequence:u64 |
+//! method:u8 | recovery-kind:u8 | reserved[6]=0 | accepted-generation:u64 | observation-sequence:u64 |
 //! audit-id[16] | accepted-wall:i64 | last-reconciliation-wall:i64 | completed-wall:i64
 //! ```
 //!
@@ -94,6 +94,8 @@ pub enum OperationState {
     CanceledBeforeCommit = 6,
     /// The operation failed before its commit boundary.
     FailedBeforeCommit = 7,
+    /// Desired Stop committed; native containment left explicit Capture cleanup debt.
+    CommittedWithResidualCleanup = 8,
 }
 
 impl OperationState {
@@ -110,6 +112,7 @@ impl OperationState {
             5 => Ok(Self::OwnershipPending),
             6 => Ok(Self::CanceledBeforeCommit),
             7 => Ok(Self::FailedBeforeCommit),
+            8 => Ok(Self::CommittedWithResidualCleanup),
             _ => Err(PublicOperationDataError::CorruptLedger(
                 "unknown operation state",
             )),
@@ -124,6 +127,7 @@ impl OperationState {
                 | Self::PermanentlyBlocked
                 | Self::CanceledBeforeCommit
                 | Self::FailedBeforeCommit
+                | Self::CommittedWithResidualCleanup
         )
     }
 }
@@ -185,10 +189,29 @@ pub const fn public_operation_method_record_code_v1(method: PublicOperationMetho
     method as u8
 }
 
+/// Distinguishes metadata reconciliation from the established recovery results.
+///
+/// The ordinary discriminant preserves existing Retry, Repair and Abandon bytes.
+/// Metadata completion is a separate zero-effect public operation; its stored
+/// tag never admits recovery, restores native custody or authorizes an effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum PublicRecoveryKindV1 {
+    /// Preserves the established operation semantics and wire projection.
+    Ordinary = 0,
+    /// Records a separately admitted metadata-only Create recovery.
+    MetadataComplete = 1,
+    /// Records a fresh Recover that may complete only its exact protected Stop.
+    StopCleanup = 2,
+    /// Records a new Recover for the exact protected Execution NoApply target.
+    ExecutionNoApply = 3,
+}
+
 /// Supplies immutable public fields when admitting an operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicOperationAdmissionV1 {
     method: PublicOperationMethodV1,
+    recovery_kind: PublicRecoveryKindV1,
     accepted_generation: u64,
     audit_id: [u8; 16],
     accepted_wall_seconds: i64,
@@ -254,6 +277,16 @@ impl PublicOperationAuthorizationV1 {
     #[must_use]
     pub const fn selector(&self) -> &Selector {
         &self.selector
+    }
+
+    /// Bounds the existing selector validation and encoding destinations.
+    ///
+    /// The genuine producer pays this passive bound before constructing its
+    /// authorization model. It uses the sole codec limit, including a complete
+    /// selector and encoded row, and grants no admission or capacity.
+    pub const fn maximum_receiving_bytes_v1() -> usize {
+        3 * (PUBLIC_OPERATION_AUTHORIZATION_FIXED_BYTES + MAXIMUM_AUTHORIZATION_SELECTOR_BYTES)
+            + 2 * std::mem::size_of::<Self>()
     }
 
     /// Encodes the canonical bounded authorization row and its digest.
@@ -388,6 +421,7 @@ impl PublicOperationAdmissionV1 {
 
         Ok(Self {
             method,
+            recovery_kind: PublicRecoveryKindV1::Ordinary,
             accepted_generation,
             audit_id,
             accepted_wall_seconds,
@@ -421,6 +455,7 @@ impl PublicOperationAdmissionV1 {
     pub const fn durable(&self) -> DurablePublicOperationV1 {
         DurablePublicOperationV1 {
             method: self.method,
+            recovery_kind: self.recovery_kind,
             accepted_generation: self.accepted_generation,
             observation_sequence: 1,
             audit_id: self.audit_id,
@@ -436,6 +471,7 @@ impl PublicOperationAdmissionV1 {
     pub const fn durable_completed(&self) -> DurablePublicOperationV1 {
         DurablePublicOperationV1 {
             method: self.method,
+            recovery_kind: self.recovery_kind,
             accepted_generation: self.accepted_generation,
             observation_sequence: 1,
             audit_id: self.audit_id,
@@ -453,6 +489,7 @@ impl PublicOperationAdmissionV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DurablePublicOperationV1 {
     method: PublicOperationMethodV1,
+    recovery_kind: PublicRecoveryKindV1,
     accepted_generation: u64,
     observation_sequence: u64,
     audit_id: [u8; 16],
@@ -462,9 +499,77 @@ pub struct DurablePublicOperationV1 {
 }
 
 impl DurablePublicOperationV1 {
+    /// Constructs fixed-width initial metadata-completion DATA without allocation.
+    ///
+    /// The actual protected owner separately authenticates and atomically admits
+    /// its observation, Operation and authorization; these bytes grant no authority.
+    ///
+    /// # Errors
+    /// Refuses a zero audit identity or invalid public timestamp.
+    pub fn metadata_complete_initial_v1(audit_id: [u8; 16], wall_seconds: i64)
+        -> Result<Self, PublicOperationDataError> {
+        Self::closed_recovery_initial_v1(audit_id, wall_seconds, PublicRecoveryKindV1::MetadataComplete)
+    }
+
+    /// Constructs a distinct accepted Stop-cleanup Recover as passive metadata.
+    ///
+    /// Its zero Effect count never permits generic reconciliation to complete
+    /// it. The actual cleanup driver must retain the new authorization, exact
+    /// old Pending target, native effects and terminal transaction separately.
+    ///
+    /// # Errors
+    /// Refuses a zero audit identity or invalid public timestamp.
+    pub fn stop_cleanup_initial_v1(audit_id: [u8; 16], wall_seconds: i64)
+        -> Result<Self, PublicOperationDataError> {
+        Self::closed_recovery_initial_v1(audit_id, wall_seconds, PublicRecoveryKindV1::StopCleanup)
+    }
+
+    /// Constructs a distinct zero-effect NoApply recovery metadata operation.
+    ///
+    /// # Errors
+    /// Refuses sentinel audit identity or invalid accepted wall time.
+    pub fn execution_no_apply_initial_v1(audit_id: [u8; 16], wall_seconds: i64)
+        -> Result<Self, PublicOperationDataError> {
+        Self::closed_recovery_initial_v1(audit_id, wall_seconds, PublicRecoveryKindV1::ExecutionNoApply)
+    }
+
+    fn closed_recovery_initial_v1(audit_id: [u8; 16], wall_seconds: i64,
+        recovery_kind: PublicRecoveryKindV1,
+    ) -> Result<Self, PublicOperationDataError> {
+        if audit_id == [0; 16] || !valid_timestamp(wall_seconds) {
+            return Err(PublicOperationDataError::InvalidPlan(
+                "invalid public operation admission metadata"));
+        }
+        Ok(Self {
+            method: PublicOperationMethodV1::OperatorRecover,
+            recovery_kind,
+            accepted_generation: 1,
+            observation_sequence: 1,
+            audit_id,
+            accepted_wall_seconds: wall_seconds,
+            last_reconciliation_wall_seconds: wall_seconds,
+            completed_wall_seconds: None,
+        })
+    }
+
     /// Returns the immutable public method stored in the durable metadata.
     pub const fn method(self) -> PublicOperationMethodV1 {
         self.method
+    }
+
+    /// Returns the explicit historical recovery kind without granting authority.
+    pub const fn recovery_kind_v1(self) -> PublicRecoveryKindV1 {
+        self.recovery_kind
+    }
+
+    /// Returns the original admission wall second preserved across transitions.
+    pub const fn accepted_wall_seconds_v1(self) -> i64 {
+        self.accepted_wall_seconds
+    }
+
+    /// Returns the recorded terminal wall second as historical DATA.
+    pub const fn completed_wall_seconds_v1(self) -> Option<i64> {
+        self.completed_wall_seconds
     }
 
     /// Returns the immutable generation fixed at original admission.
@@ -481,6 +586,7 @@ impl DurablePublicOperationV1 {
     ) -> PublicOperationAdmissionV1 {
         PublicOperationAdmissionV1 {
             method: self.method,
+            recovery_kind: self.recovery_kind,
             accepted_generation: self.accepted_generation,
             audit_id: self.audit_id,
             accepted_wall_seconds: self.accepted_wall_seconds,
@@ -502,6 +608,10 @@ impl DurablePublicOperationV1 {
         state: OperationState,
         wall_seconds: i64,
     ) -> Result<Self, PublicOperationDataError> {
+        if state == OperationState::CommittedWithResidualCleanup
+            && self.method != PublicOperationMethodV1::StopSandbox {
+            return Err(PublicOperationDataError::CorruptLedger("residual completion is not Stop"));
+        }
         if !valid_timestamp(wall_seconds) || wall_seconds < self.last_reconciliation_wall_seconds {
             return Err(PublicOperationDataError::PublicOperationClock);
         }
@@ -526,7 +636,8 @@ impl DurablePublicOperationV1 {
     /// Appends the exact 64-byte native metadata encoding to the supplied buffer.
     pub fn encode(self, bytes: &mut Vec<u8>) {
         bytes.push(public_operation_method_record_code_v1(self.method));
-        bytes.extend_from_slice(&[0; 7]);
+        bytes.push(self.recovery_kind as u8);
+        bytes.extend_from_slice(&[0; 6]);
         bytes.extend_from_slice(&self.accepted_generation.to_le_bytes());
         bytes.extend_from_slice(&self.observation_sequence.to_le_bytes());
         bytes.extend_from_slice(&self.audit_id);
@@ -553,7 +664,16 @@ impl DurablePublicOperationV1 {
         let method = public_operation_method_from_record_code_v1(bytes[0]).ok_or(
             PublicOperationDataError::CorruptLedger("unknown public operation method"),
         )?;
-        if bytes[1..8] != [0; 7] {
+        let recovery_kind = match (method, bytes[1]) {
+            (_, 0) => PublicRecoveryKindV1::Ordinary,
+            (PublicOperationMethodV1::OperatorRecover, 1) => PublicRecoveryKindV1::MetadataComplete,
+            (PublicOperationMethodV1::OperatorRecover, 2) => PublicRecoveryKindV1::StopCleanup,
+            (PublicOperationMethodV1::OperatorRecover, 3) => PublicRecoveryKindV1::ExecutionNoApply,
+            _ => return Err(PublicOperationDataError::CorruptLedger(
+                "invalid public operation recovery kind",
+            )),
+        };
+        if bytes[2..8] != [0; 6] {
             return Err(PublicOperationDataError::CorruptLedger(
                 "nonzero public operation reserved bytes",
             ));
@@ -567,7 +687,17 @@ impl DurablePublicOperationV1 {
         let last_reconciliation_wall_seconds = read_i64(&bytes[48..56])?;
         let completion = read_i64(&bytes[56..64])?;
         let completed_wall_seconds = (completion != NO_COMPLETION_TIMESTAMP).then_some(completion);
-        if accepted_generation == 0
+        if state == OperationState::CommittedWithResidualCleanup
+            && method != PublicOperationMethodV1::StopSandbox {
+            return Err(PublicOperationDataError::CorruptLedger("residual completion is not Stop"));
+        }
+        if (matches!(recovery_kind, PublicRecoveryKindV1::MetadataComplete | PublicRecoveryKindV1::StopCleanup | PublicRecoveryKindV1::ExecutionNoApply)
+                && !(matches!((state, observation_sequence),
+                    (OperationState::Accepted, 1) | (OperationState::Succeeded, 2))
+                    || (recovery_kind == PublicRecoveryKindV1::StopCleanup
+                        && state == OperationState::PermanentlyBlocked
+                        && observation_sequence == 2)))
+            || accepted_generation == 0
             || observation_sequence == 0
             || audit_id == [0; 16]
             || !valid_timestamp(accepted_wall_seconds)
@@ -587,6 +717,7 @@ impl DurablePublicOperationV1 {
 
         Ok(Self {
             method,
+            recovery_kind,
             accepted_generation,
             observation_sequence,
             audit_id,
@@ -634,6 +765,36 @@ impl DurablePublicOperationV1 {
         effect_records: &[&[u8]],
     ) -> Operation {
         let (phase, milestone, retry_class) = match (state, controller_orchestration) {
+            (OperationState::PermanentlyBlocked, _)
+                if self.recovery_kind == PublicRecoveryKindV1::StopCleanup => (
+                    OperationPhase::OPERATION_PHASE_PERMANENTLY_BLOCKED,
+                    "superseded-by-stop-completion",
+                    RetryClass::RETRY_CLASS_NEVER,
+                ),
+            (OperationState::Accepted, _)
+                if matches!(self.recovery_kind, PublicRecoveryKindV1::StopCleanup | PublicRecoveryKindV1::ExecutionNoApply) => (
+                    OperationPhase::OPERATION_PHASE_ACCEPTED,
+                    "reconciling",
+                    RetryClass::RETRY_CLASS_SAME_REQUEST,
+                ),
+            (OperationState::Succeeded, _)
+                if matches!(self.recovery_kind, PublicRecoveryKindV1::StopCleanup | PublicRecoveryKindV1::ExecutionNoApply) => (
+                    OperationPhase::OPERATION_PHASE_SUCCEEDED,
+                    "complete",
+                    RetryClass::RETRY_CLASS_NEVER,
+                ),
+            (OperationState::Accepted, _)
+                if self.recovery_kind == PublicRecoveryKindV1::MetadataComplete => (
+                    OperationPhase::OPERATION_PHASE_ACCEPTED,
+                    "metadata-verification-pending",
+                    RetryClass::RETRY_CLASS_SAME_REQUEST,
+                ),
+            (OperationState::Succeeded, _)
+                if self.recovery_kind == PublicRecoveryKindV1::MetadataComplete => (
+                    OperationPhase::OPERATION_PHASE_SUCCEEDED,
+                    "metadata-complete",
+                    RetryClass::RETRY_CLASS_NEVER,
+                ),
             (OperationState::Accepted, true) => (
                 OperationPhase::OPERATION_PHASE_ACCEPTED,
                 "accepted",
@@ -678,6 +839,11 @@ impl DurablePublicOperationV1 {
                 "complete",
                 RetryClass::RETRY_CLASS_NEVER,
             ),
+            (OperationState::CommittedWithResidualCleanup, _) => (
+                OperationPhase::OPERATION_PHASE_COMMITTED_WITH_RESIDUAL_CLEANUP,
+                "cleanup",
+                RetryClass::RETRY_CLASS_AFTER_STATE_CHANGE,
+            ),
             (OperationState::PermanentlyBlocked, _) => (
                 OperationPhase::OPERATION_PHASE_PERMANENTLY_BLOCKED,
                 "blocked",
@@ -717,6 +883,23 @@ impl DurablePublicOperationV1 {
 
 const fn valid_timestamp(seconds: i64) -> bool {
     seconds >= MINIMUM_PROTO_SECONDS && seconds <= MAXIMUM_PROTO_SECONDS
+}
+
+/// Measures the closed zero-effect MetadataComplete resource projection.
+///
+/// The same `project` body allocates three byte identities, the method and
+/// milestone strings, one progress message and three timestamp messages. This
+/// cost-only bound covers construction, retained response and return carriers;
+/// it grants no operation admission, observation or mutation authority.
+#[must_use]
+pub fn metadata_complete_projection_receiving_bytes_v1() -> Option<usize> {
+    let dynamic = 16_usize.checked_add(32)?.checked_add(16)?
+        .checked_add(PublicOperationMethodV1::OperatorRecover.as_str().len())?
+        .checked_add("metadata-verification-pending".len().max("metadata-complete".len())
+            .max("superseded-by-stop-completion".len()))?;
+    std::mem::size_of::<Operation>().checked_add(std::mem::size_of::<OperationProgress>())?
+        .checked_add(3 * std::mem::size_of::<Timestamp>())?
+        .checked_add(dynamic)?.checked_mul(3)
 }
 
 fn timestamp(seconds: i64) -> Timestamp {
@@ -845,6 +1028,7 @@ mod tests {
     fn completed_abandon_projects_an_acknowledgment_milestone() {
         let public = DurablePublicOperationV1 {
             method: PublicOperationMethodV1::OperatorRecover,
+            recovery_kind: PublicRecoveryKindV1::Ordinary,
             accepted_generation: 1,
             observation_sequence: 1,
             audit_id: [2; 16],
@@ -864,6 +1048,7 @@ mod tests {
             b"record",
             &[],
         );
+        crate::public_api::CheckedOperationResourceV1::try_from(acknowledgment.clone()).unwrap();
         assert_eq!(
             acknowledgment
                 .progress
@@ -892,4 +1077,146 @@ mod tests {
             "complete"
         );
     }
+
+    #[test]
+    fn cleanup_purposes_have_distinct_pending_and_terminal_metadata_without_effect_aliases() {
+        for kind in [
+            PublicRecoveryKindV1::StopCleanup,
+            PublicRecoveryKindV1::ExecutionNoApply,
+        ] {
+            use crate::domain_ledger::operation::{
+                OperationRecord, decode_operation, encode_operation_record,
+            };
+            let operation = OperationId::from_bytes([4; 16]);
+            let initial = match kind {
+                PublicRecoveryKindV1::StopCleanup => {
+                    DurablePublicOperationV1::stop_cleanup_initial_v1([4; 16], 100)
+                }
+                PublicRecoveryKindV1::ExecutionNoApply => {
+                    DurablePublicOperationV1::execution_no_apply_initial_v1([4; 16], 100)
+                }
+                _ => unreachable!(),
+            }
+            .unwrap();
+            let accepted =
+                OperationRecord::new(OperationState::Accepted, 0, false, None, Some(initial));
+            let encoded = encode_operation_record(accepted);
+            assert_eq!(encoded[41], kind as u8);
+            assert_eq!(decode_operation(&encoded).unwrap(), accepted);
+            assert_eq!(initial.recovery_kind_v1(), kind);
+            for invalid in [
+                OperationRecord::new(OperationState::Accepted, 1, false, None, Some(initial)),
+                OperationRecord::new(OperationState::Accepted, 0, true, None, Some(initial)),
+            ] {
+                assert!(decode_operation(&encode_operation_record(invalid)).is_err());
+            }
+            let pending = initial.project(
+                operation,
+                OperationState::Accepted,
+                0,
+                0,
+                false,
+                false,
+                &encoded,
+                &[],
+            );
+            assert_eq!(
+                pending.progress.as_option().unwrap().milestone,
+                "reconciling"
+            );
+            assert!(pending.completed_at.as_option().is_none());
+            crate::public_api::CheckedOperationResourceV1::try_from(pending.clone()).unwrap();
+            for replacement in 0..4 {
+                let mut changed = pending.clone();
+                match replacement {
+                    0 => changed.method = PublicOperationMethodV1::StopSandbox.as_str().to_owned(),
+                    1 => changed.progress.get_or_insert_default().total_units = 1,
+                    2 => changed.cancelable = true,
+                    _ => changed.retry_class = RetryClass::RETRY_CLASS_AFTER_STATE_CHANGE.into(),
+                }
+                assert!(crate::public_api::CheckedOperationResourceV1::try_from(changed).is_err());
+            }
+
+            let completed = initial.advance(OperationState::Succeeded, 101).unwrap();
+            let record =
+                OperationRecord::new(OperationState::Succeeded, 0, false, None, Some(completed));
+            let encoded = encode_operation_record(record);
+            assert_eq!(decode_operation(&encoded).unwrap(), record);
+            let result = completed.project(
+                operation,
+                OperationState::Succeeded,
+                0,
+                0,
+                false,
+                false,
+                &encoded,
+                &[],
+            );
+            assert_eq!(result.progress.as_option().unwrap().milestone, "complete");
+            crate::public_api::CheckedOperationResourceV1::try_from(result).unwrap();
+
+            let mut metadata = Vec::new();
+            initial.encode(&mut metadata);
+            assert!(DurablePublicOperationV1::decode(&metadata, OperationState::Applying).is_err());
+            metadata[0] = public_operation_method_record_code_v1(PublicOperationMethodV1::StopSandbox);
+            assert!(DurablePublicOperationV1::decode(&metadata, OperationState::Accepted).is_err());
+        }
+    }
+
+    #[test]
+    fn metadata_completion_is_pending_until_its_distinct_terminal_transition() {
+        use crate::domain_ledger::operation::{OperationRecord, decode_operation, encode_operation_record};
+        let operation = OperationId::from_bytes([4; 16]);
+        let initial = DurablePublicOperationV1::metadata_complete_initial_v1([4; 16], 100).unwrap();
+        let accepted = OperationRecord::new(OperationState::Accepted, 0, false, None, Some(initial));
+        let accepted_bytes = encode_operation_record(accepted);
+        assert_eq!(accepted_bytes.len(), 104);
+        assert_eq!(accepted_bytes[41], 1);
+        assert_eq!(decode_operation(&accepted_bytes).unwrap(), accepted);
+        let pending = initial.project(operation, OperationState::Accepted, 0, 0,
+            false, false, &accepted_bytes, &[]);
+        assert_eq!(pending.progress.as_option().unwrap().milestone, "metadata-verification-pending");
+        assert!(pending.completed_at.as_option().is_none());
+        crate::public_api::CheckedOperationResourceV1::try_from(pending.clone()).unwrap();
+
+        let completed = initial.advance(OperationState::Succeeded, 101).unwrap();
+        let succeeded = accepted.with_state_and_public_operation(OperationState::Succeeded, Some(completed));
+        let bytes = encode_operation_record(succeeded);
+        assert_eq!(decode_operation(&bytes).unwrap(), succeeded);
+        let projected = completed.project(operation, OperationState::Succeeded, 0, 0,
+            false, false, &bytes, &[]);
+        assert_eq!(projected.progress.as_option().unwrap().milestone, "metadata-complete");
+        assert_eq!(projected.completed_at.as_option().unwrap().seconds, 101);
+        let checked = crate::public_api::CheckedOperationResourceV1::try_from(projected.clone()).unwrap();
+        assert_eq!(checked.milestone(), crate::public_api::PublicMilestoneV1::MetadataComplete);
+
+        let mut wrong_method = projected.clone();
+        wrong_method.method = PublicOperationMethodV1::StartSandbox.as_str().to_owned();
+        assert!(crate::public_api::CheckedOperationResourceV1::try_from(wrong_method).is_err());
+        let mut wrong_units = pending.clone();
+        wrong_units.progress.as_option_mut().unwrap().total_units = 1;
+        assert!(crate::public_api::CheckedOperationResourceV1::try_from(wrong_units).is_err());
+        let mut cancelable = pending.clone();
+        cancelable.cancelable = true;
+        assert!(crate::public_api::CheckedOperationResourceV1::try_from(cancelable).is_err());
+        let mut wrong_retry = pending;
+        wrong_retry.retry_class = RetryClass::RETRY_CLASS_NEVER.into();
+        assert!(crate::public_api::CheckedOperationResourceV1::try_from(wrong_retry).is_err());
+
+        // Kinds2 and3 select genuine cleanup recovery. An unknown kind must
+        // remain refused without narrowing those independently tested branches.
+        for (offset, value) in [(40, 0), (41, u8::MAX), (42, 1), (4, 1), (1, OperationState::Applying as u8)] {
+            let mut substituted = accepted_bytes.clone();
+            substituted[offset] = value;
+            assert!(decode_operation(&substituted).is_err());
+        }
+        // Clearing the tag cannot make an ordinary empty Accepted operation valid.
+        let mut ordinary = accepted_bytes;
+        ordinary[41] = 0;
+        assert!(decode_operation(&ordinary).is_err());
+    }
+
 }
+
+#[cfg(test)]
+mod stop_residual_tests;

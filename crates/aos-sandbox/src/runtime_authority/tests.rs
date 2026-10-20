@@ -10,38 +10,42 @@ use crate::publication::tests::descriptor_free_activation_fixture;
 fn pending(state: RuntimeAuthorityStateV1) -> RuntimeAuthorityPendingV1 {
     let (draft, _) = descriptor_free_activation_fixture(1);
     RuntimeAuthorityPendingV1 {
-        operation: OperationId::from_bytes([31; 16]),
-        request_digest: [32; 32],
-        state,
-        holder: (state == RuntimeAuthorityStateV1::Bound)
-            .then_some(PrincipalId::from_bytes([33; 16])),
-        expected_revision: None,
-        revision: 1,
-        predecessor_digest: None,
-        manifest: draft.manifest().clone(),
-        source_draft_digest: draft.digest(),
+        data: runtime_data::RuntimeAuthorityPendingV1 {
+            operation: OperationId::from_bytes([31; 16]),
+            request_digest: [32; 32],
+            state,
+            holder: (state == RuntimeAuthorityStateV1::Bound)
+                .then_some(PrincipalId::from_bytes([33; 16])),
+            expected_revision: None,
+            revision: 1,
+            predecessor_digest: None,
+            manifest: draft.manifest().clone(),
+            source_draft_digest: draft.digest(),
+        },
     }
 }
 
 fn binding(state: RuntimeAuthorityStateV1) -> RuntimeAuthorityBindingV1 {
     let (draft, prepared) = descriptor_free_activation_fixture(1);
     let mut binding = RuntimeAuthorityBindingV1 {
-        operation: OperationId::from_bytes([41; 16]),
-        request_digest: [42; 32],
-        state,
-        holder: (state == RuntimeAuthorityStateV1::Bound)
-            .then_some(PrincipalId::from_bytes([43; 16])),
-        revision: 1,
-        predecessor_digest: None,
-        manifest: draft.manifest().clone(),
-        source_draft_digest: draft.digest(),
-        publication_digest: prepared.digest(),
-        lease_generation: prepared.lease_generation(),
-        lease_digest: prepared.lease_digest(),
-        digest: ObjectDigest::from_bytes([0; 32]),
+        data: runtime_data::RuntimeAuthorityBindingV1 {
+            operation: OperationId::from_bytes([41; 16]),
+            request_digest: [42; 32],
+            state,
+            holder: (state == RuntimeAuthorityStateV1::Bound)
+                .then_some(PrincipalId::from_bytes([43; 16])),
+            revision: 1,
+            predecessor_digest: None,
+            manifest: draft.manifest().clone(),
+            source_draft_digest: draft.digest(),
+            publication_digest: prepared.digest(),
+            lease_generation: prepared.lease_generation(),
+            lease_digest: prepared.lease_digest(),
+            digest: ObjectDigest::from_bytes([0; 32]),
+        },
     };
     let bytes = encode_binding(&binding).unwrap();
-    binding.digest = binding_digest(&bytes);
+    binding.data.digest = binding_digest(&bytes);
     binding
 }
 
@@ -111,7 +115,7 @@ fn pending_codec_rejects_holder_state_and_revision_substitution() {
     let original = pending(RuntimeAuthorityStateV1::Bound);
 
     let mut missing_holder = original.clone();
-    missing_holder.holder = None;
+    missing_holder.data.holder = None;
     let bytes = encode_pending(&missing_holder).unwrap();
     assert!(matches!(
         decode_pending(&bytes),
@@ -119,7 +123,7 @@ fn pending_codec_rejects_holder_state_and_revision_substitution() {
     ));
 
     let mut skipped_revision = original;
-    skipped_revision.revision = 2;
+    skipped_revision.data.revision = 2;
     let bytes = encode_pending(&skipped_revision).unwrap();
     assert!(matches!(
         decode_pending(&bytes),

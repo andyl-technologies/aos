@@ -22,9 +22,19 @@ use aos_sandbox_protocol::runtime_deployment::canary::{
     COMPOSITE_GENESIS_BYTES_V2, CanaryPurposeV2, GENESIS_KEY_V2,
     composite_genesis_transaction_v2,
 };
+use aos_sandbox_protocol::runtime_deployment::boot_preparation::{
+    BOOT_PREPARATION_COMPOSITE_GENESIS_BYTES_V1, BOOT_PREPARATION_GENESIS_KEY_V1,
+    SignedBootPreparationPurposeDataV1,
+    boot_preparation_genesis_transaction_data_v1,
+};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
+
+use super::startup_original::PublisherStartupOriginalRefV3;
+
+mod boot_preparation;
+pub(super) use boot_preparation::BootGenesisAssemblyV1;
 
 use crate::journal::RecordNamespace;
 use crate::public_api_session::RuntimeDeploymentCredentialCustodyV2;
@@ -58,12 +68,28 @@ const MODE_PATH: &str = "/etc/aos/runtime-deployment-tpm-floor/mode";
 /// The common physical owner still authenticates the complete main and sidecar
 /// against fresh NV; a signed historical phase cannot reconstruct a pidfd.
 pub(crate) struct VerifiedDeploymentGenesisV1<'startup> {
-    startup: &'startup ProductionRuntimeDeploymentStartupV1,
+    startup: PublisherStartupOriginalRefV3<'startup>,
     exact: Vec<u8>,
     provisioner: VerifyingKey,
     signer: SigningKey,
     genesis: DeploymentGenesisV1,
     canary: Option<CanaryGenesisCustodyV2>,
+    boot: Option<BootGenesisCustodyV1>,
+}
+
+struct BootGenesisCustodyV1 {
+    credentials: Mutex<RuntimeDeploymentCredentialCustodyV2>,
+    purpose: SignedBootPreparationPurposeDataV1,
+    journal_receiving: std::cell::RefCell<
+        crate::journal::runtime_deployment_receiving::BootJournalReceivingArchiveV1,
+    >,
+}
+
+#[derive(Clone, Copy)]
+enum BootCredentialPassV1 {
+    Current,
+    Owed,
+    Drain,
 }
 
 /// Keeps the actual protected originals, not a decoded replacement for custody.
@@ -132,7 +158,7 @@ impl<'startup> CanaryGenesisAssemblyV2<'startup> {
         credentials: RuntimeDeploymentCredentialCustodyV2,
     ) -> VerifiedDeploymentGenesisV1<'startup> {
         VerifiedDeploymentGenesisV1 {
-            startup: self.startup,
+            startup: PublisherStartupOriginalRefV3::Existing(self.startup),
             exact: self.exact,
             provisioner: self.provisioner,
             signer: self.signer,
@@ -141,11 +167,36 @@ impl<'startup> CanaryGenesisAssemblyV2<'startup> {
                 credentials: Mutex::new(credentials),
                 purpose: self.purpose,
             }),
+            boot: None,
         }
     }
 }
 
 impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
+    pub(crate) fn boot_journal_receiving_v1(
+        &self,
+    ) -> Option<
+        &std::cell::RefCell<
+            crate::journal::runtime_deployment_receiving::BootJournalReceivingArchiveV1,
+        >,
+    > {
+        Some(&self.boot.as_ref()?.journal_receiving)
+    }
+
+    pub(crate) fn admit_boot_journal_representation_v1(
+        &self,
+        demand: Option<aos_sandbox_core::ResourceVector>,
+    ) -> Result<(), super::RuntimeBootPreparationStartupClosedV1> {
+        let startup = self
+            .startup
+            .boot()
+            .ok_or(super::RuntimeBootPreparationStartupClosedV1)?;
+        if self.boot.is_none() {
+            return Err(super::RuntimeBootPreparationStartupClosedV1);
+        }
+        startup.fund_additional(demand)
+    }
+
     /// Admits the exact external genesis under original live startup custody.
     ///
     /// # Errors
@@ -171,12 +222,13 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
         }
 
         let owner = Self {
-            startup,
+            startup: PublisherStartupOriginalRefV3::Existing(startup),
             exact,
             provisioner,
             signer,
             genesis,
             canary: None,
+            boot: None,
         };
         owner.recheck()?;
         Ok(owner)
@@ -188,6 +240,9 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
     ///
     /// Rejects any startup drift or missing/substituted fixed credential.
     pub(crate) fn recheck(&self) -> Result<(), NvCustodyErrorV1> {
+        if let Some(boot) = &self.boot {
+            return self.recheck_boot(boot).map_err(|_| NvCustodyErrorV1::Provisioning);
+        }
         if let Some(canary) = &self.canary {
             return self.recheck_canary(canary).map_err(|_| NvCustodyErrorV1::Provisioning);
         }
@@ -201,8 +256,8 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
         let observed = decode_signed(&self.exact, &self.provisioner)?;
         require_bindings(
             &observed,
-            self.startup.profile_digest(),
-            self.startup.canonical_policy_digest(),
+            self.startup.profile_digest()?,
+            self.startup.canonical_policy_digest()?,
         )?;
         if observed != self.genesis {
             return Err(NvCustodyErrorV1::Provisioning);
@@ -210,7 +265,7 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
         self.startup.recheck().map_err(|_| NvCustodyErrorV1::Provisioning)
     }
 
-    pub(crate) fn startup(&self) -> &ProductionRuntimeDeploymentStartupV1 {
+    pub(super) fn startup(&self) -> PublisherStartupOriginalRefV3<'startup> {
         self.startup
     }
 
@@ -240,6 +295,13 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
     }
 
     pub(crate) fn scope(&self) -> [u8; 32] {
+        if self.boot.is_some() {
+            return Sha256::new()
+                .chain_update(b"aos.sandbox.tpm-floor.runtime-deployment.boot-scope.v1\0")
+                .chain_update(&self.exact)
+                .finalize()
+                .into();
+        }
         if self.canary.is_some() {
             return Sha256::new()
                 .chain_update(b"aos.sandbox.tpm-floor.runtime-deployment.canary-scope.v2\0")
@@ -258,15 +320,44 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
         self.canary.as_ref().map(|canary| &canary.purpose)
     }
 
+    pub(crate) fn boot_purpose(&self) -> Option<&SignedBootPreparationPurposeDataV1> {
+        self.boot.as_ref().map(|boot| &boot.purpose)
+    }
+
     pub(crate) fn compare_canary_signing_original(
+        &self,
+        directory: &std::fs::File,
+        signing_file: &std::fs::File,
+    ) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
+        if self.canary.is_none() { return Err(NvCustodyErrorV1::Provisioning.into()); }
+        self.compare_selected_signing_original(directory, signing_file)
+    }
+
+    pub(super) fn compare_boot_signing_original(
+        &self,
+        directory: &std::fs::File,
+        signing_file: &std::fs::File,
+    ) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
+        if self.boot.is_none() { return Err(NvCustodyErrorV1::Provisioning.into()); }
+        self.compare_selected_signing_original(directory, signing_file)
+    }
+
+    fn compare_selected_signing_original(
         &self,
         directory: &std::fs::File,
         signing_file: &std::fs::File,
     ) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
         self.recheck_selected()?;
         {
-            let canary = self.canary.as_ref().ok_or(NvCustodyErrorV1::Provisioning)?;
-            let mut credentials = canary.credentials.try_lock()
+            let original = match (&self.canary, &self.boot) {
+                (Some(canary), None) => &canary.credentials,
+                (None, Some(boot)) => &boot.credentials,
+                _ => return Err(NvCustodyErrorV1::Provisioning.into()),
+            };
+            if let Some(startup) = self.startup.boot() {
+                startup.fund_additional(RuntimeDeploymentCredentialCustodyV2::boot_preparation_receiving_demand_v1())?;
+            }
+            let mut credentials = original.try_lock()
                 .map_err(|_| NvCustodyErrorV1::Provisioning)?;
             if credentials.compare_signing_original(directory, signing_file).is_err() {
                 let cause = credentials.diagnostic();
@@ -280,19 +371,25 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
     }
 
     pub(crate) fn signed_genesis_bytes(&self) -> &[u8] {
-        if self.canary.is_some() { &self.exact[..SIGNED_GENESIS_BYTES] } else { &self.exact }
+        if self.canary.is_some() || self.boot.is_some() { &self.exact[..SIGNED_GENESIS_BYTES] } else { &self.exact }
     }
 
     pub(crate) fn main_key(&self) -> &'static [u8] {
+        if self.boot.is_some() { return BOOT_PREPARATION_GENESIS_KEY_V1; }
         if self.canary.is_some() { GENESIS_KEY_V2 } else { GENESIS_KEY }
     }
 
     pub(crate) fn main_limits(&self) -> crate::journal::JournalLimits {
+        if self.boot.is_some() { return super::preparation::boot_preparation::MAIN_LIMITS_V1; }
         if self.canary.is_some() { super::preparation::CANARY_MAIN_LIMITS_V2 }
         else { super::preparation::MAIN_LIMITS }
     }
 
     pub(crate) fn native_genesis_transaction(&self) -> Result<[u8; 16], NvCustodyErrorV1> {
+        if self.boot.is_some() {
+            let exact = self.exact.as_slice().try_into().map_err(|_| NvCustodyErrorV1::Encoding)?;
+            return Ok(boot_preparation_genesis_transaction_data_v1(exact));
+        }
         if self.canary.is_some() {
             composite_genesis_transaction_v2(&self.exact)
                 .map_err(|_| NvCustodyErrorV1::Encoding)
@@ -302,6 +399,7 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
     }
 
     pub(super) fn recheck_selected(&self) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
+        if let Some(boot) = &self.boot { return self.recheck_boot(boot); }
         let canary = self.canary.as_ref().ok_or(NvCustodyErrorV1::Provisioning)?;
         self.recheck_canary(canary)
     }
@@ -309,7 +407,7 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
     fn recheck_canary(&self, canary: &CanaryGenesisCustodyV2)
         -> Result<(), super::RuntimeDeploymentComparisonErrorV1>
     {
-        self.startup.recheck()?;
+        self.startup.recheck_comparison()?;
         let mut credentials = canary.credentials.try_lock()
             .map_err(|_| NvCustodyErrorV1::Provisioning)?;
         if credentials.recheck().is_err() {
@@ -335,10 +433,135 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
             credentials.fence();
             return Err(NvCustodyErrorV1::Provisioning.into());
         }
-        require_canary_contracts(self.startup, &canary.purpose)?;
+        require_canary_contracts(self.startup.existing().ok_or(NvCustodyErrorV1::Provisioning)?, &canary.purpose)?;
         drop(credentials);
-        self.startup.recheck().map_err(Into::into)
+        self.startup.recheck_comparison()
     }
+
+    fn recheck_boot(&self, boot: &BootGenesisCustodyV1)
+        -> Result<(), super::RuntimeDeploymentComparisonErrorV1>
+    {
+        self.startup.recheck_comparison()?;
+        let startup = self.startup.boot().ok_or(NvCustodyErrorV1::Provisioning)?;
+        // Reserve and park the distinct outer after before credential entry.
+        // A failed credential or later financial debit cannot consume or gate
+        // this native lane; the final process Source after remains separate.
+        let owed = startup.prepare_current_owed_v1()?;
+        let body = (|| {
+            startup.fund_additional(RuntimeDeploymentCredentialCustodyV2::boot_preparation_receiving_demand_v1())?;
+            self.recheck_boot_credential_body_v1(boot, startup, BootCredentialPassV1::Current)
+        })();
+        let after = startup.observe_current_owed_once_v1(owed).map_err(Into::into);
+        body.and(after)
+    }
+
+    // Native's real normal outer operation reserves this complete credential
+    // and startup bracket before effects. Neither function accepts a Source,
+    // role selector, seed, file, caller amount or replacement credential.
+    pub(super) fn prepare_boot_outer_recheck_v1(&self)
+        -> Result<usize, super::RuntimeDeploymentComparisonErrorV1>
+    {
+        if self.boot.is_none() { return Err(NvCustodyErrorV1::Provisioning.into()); }
+        let startup = self.startup.boot().ok_or(NvCustodyErrorV1::Provisioning)?;
+        let owed = startup.prepare_current_owed_v1()?;
+        let boot = self.boot.as_ref().ok_or(NvCustodyErrorV1::Provisioning)?;
+        let mut credentials = boot.credentials.try_lock().map_err(|_| NvCustodyErrorV1::Provisioning)?;
+        startup.fund_additional(credentials.boot_preparation_owed_recheck_receiving_demand_v1())?;
+        if credentials.prepare_boot_owed_recheck_v1().is_err() {
+            let cause = credentials.diagnostic();
+            return Err(super::RuntimeDeploymentComparisonErrorV1::credential_diagnostic(cause));
+        }
+        Ok(owed)
+    }
+
+    pub(super) fn observe_boot_credential_recheck_owed_once_v1(&self)
+        -> Result<(), super::RuntimeDeploymentComparisonErrorV1>
+    {
+        let startup = self.startup.boot().ok_or(NvCustodyErrorV1::Provisioning)?;
+        let boot = self.boot.as_ref().ok_or(NvCustodyErrorV1::Provisioning)?;
+        self.recheck_boot_credential_body_v1(boot, startup, BootCredentialPassV1::Owed)
+    }
+
+    pub(super) fn drain_boot_credential_recheck_after_unwind_once_v1(&self)
+        -> Result<(), super::RuntimeDeploymentComparisonErrorV1>
+    {
+        let startup = self.startup.boot().ok_or(NvCustodyErrorV1::Provisioning)?;
+        let boot = self.boot.as_ref().ok_or(NvCustodyErrorV1::Provisioning)?;
+        self.recheck_boot_credential_body_v1(boot, startup, BootCredentialPassV1::Drain)
+    }
+
+    pub(super) fn observe_boot_startup_recheck_owed_once_v1(&self, owed: usize)
+        -> Result<(), super::RuntimeBootPreparationStartupClosedV1>
+    {
+        self.startup.boot().ok_or(super::RuntimeBootPreparationStartupClosedV1)?
+            .observe_current_owed_once_v1(owed)
+    }
+
+    fn recheck_boot_credential_body_v1(
+        &self,
+        boot: &BootGenesisCustodyV1,
+        startup: &super::RuntimeBootPreparationStartupOriginalV1,
+        pass: BootCredentialPassV1,
+    ) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
+        // An unwind may poison the Rust Mutex while every native prefix stays
+        // in the same parked custody. Only this negative owed drain may recover
+        // that guard; Current and ordinary Owed entry preserve the poison gate.
+        let mut credentials = match boot.credentials.try_lock() {
+            Ok(credentials) => credentials,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) if matches!(pass, BootCredentialPassV1::Drain) => poisoned.into_inner(),
+            Err(_) => return Err(NvCustodyErrorV1::Provisioning.into()),
+        };
+        let observed = match pass {
+            BootCredentialPassV1::Current => credentials.recheck(),
+            BootCredentialPassV1::Owed => credentials.observe_boot_owed_recheck_once_v1(),
+            BootCredentialPassV1::Drain => credentials.drain_boot_owed_recheck_after_unwind_once_v1(),
+        };
+        if observed.is_err() {
+            let cause = credentials.diagnostic();
+            drop(credentials);
+            return Err(super::RuntimeDeploymentComparisonErrorV1::credential_diagnostic(cause));
+        }
+        let [signed, provisioner, seed, auth, purpose] = credentials.ready()
+            .ok_or(NvCustodyErrorV1::Provisioning)?;
+        if signed != self.signed_genesis_bytes()
+            || provisioner != self.provisioner.to_bytes()
+            || auth == [0; 32] || seed == [0; 32] || auth == seed
+            || purpose != boot.purpose.bytes_v1()
+        {
+            credentials.fence();
+            return Err(NvCustodyErrorV1::Provisioning.into());
+        }
+        let mut secret = Zeroizing::new([0; 32]);
+        secret.copy_from_slice(seed);
+        if SigningKey::from_bytes(&secret).verifying_key() != self.signer.verifying_key()
+            || decode_signed(signed, &self.provisioner)? != self.genesis
+        {
+            credentials.fence();
+            return Err(NvCustodyErrorV1::Provisioning.into());
+        }
+        require_boot_contracts(startup, &self.genesis, &boot.purpose)?;
+        drop(credentials);
+        Ok(())
+    }
+}
+
+fn require_boot_contracts(
+    startup: &super::RuntimeBootPreparationStartupOriginalV1,
+    genesis: &DeploymentGenesisV1,
+    purpose: &SignedBootPreparationPurposeDataV1,
+) -> Result<(), NvCustodyErrorV1> {
+    let profile = startup.profile_data_v1().map_err(|_| NvCustodyErrorV1::Provisioning)?;
+    let bytes = startup.profile_bytes_v1().map_err(|_| NvCustodyErrorV1::Provisioning)?;
+    aos_sandbox_broker::profile_data::runtime_deployment::require_boot_preparation_profile_data_v1(
+        bytes, profile, purpose,
+    ).map_err(|_| NvCustodyErrorV1::Provisioning)?;
+    let source = startup.origin_data_v1().map_err(|_| NvCustodyErrorV1::Provisioning)?;
+    if source.node != genesis.node || source.recipient_invocation == [0; 16]
+        || source.boot == [0; 16]
+    {
+        return Err(NvCustodyErrorV1::Provisioning);
+    }
+    Ok(())
 }
 
 fn require_canary_contracts(

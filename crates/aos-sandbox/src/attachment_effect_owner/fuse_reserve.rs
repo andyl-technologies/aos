@@ -21,7 +21,7 @@ use aos_sandbox_protocol::semantics::mount_fuse_reserve_intent::{
 
 use super::{PreparedCurrentFuseReserveIntentV1, ProtectedAttachmentEffectOwnerV1};
 use crate::attachment_state::{self, AttachmentDesiredStateError};
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentRuntimeScopeError, NamespaceTargetError};
 use crate::{Journal, JournalError, JournalLimits};
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;

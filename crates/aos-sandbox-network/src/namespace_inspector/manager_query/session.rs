@@ -784,8 +784,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let helper = directory.path().join("manager-query-helper");
         let substitute = directory.path().join("substitute-helper");
-        let current_executable = std::env::current_exe().unwrap();
-        std::fs::copy(&current_executable, &helper).unwrap();
+        // This test pins identity and bytes; it never executes the helper.
+        // The test binary itself may exceed the real 32 MiB artifact ceiling.
+        std::fs::write(&helper, b"retained helper artifact\n").unwrap();
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o555)).unwrap();
         let protected = ProtectedNamespaceInspectorDeploymentContractV1::for_test_with_helper(
             contract(),

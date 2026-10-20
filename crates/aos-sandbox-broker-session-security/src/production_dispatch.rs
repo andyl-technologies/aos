@@ -19,7 +19,7 @@ use crate::{
     DormantBrokerPublicationExecutionFailureV1, DormantHostBrokerEffectAdapterV1,
     DormantHostBrokerObservationAdapterV1, DormantHostCatalogPublicationRecoveryProgressV1,
     DormantMountBrokerEffectAdapterV1, DormantMountBrokerInventoryAdapterV1,
-    DormantMountCatalogPreparationAdapterV1, DormantNetworkBrokerEffectAdapterV1,
+    DormantMountCatalogPreparationAdapterV1,
     DormantReceivedBrokerDescriptorRequestV1, DormantReceivedBrokerRequestV1,
     DormantStorageBrokerEffectAdapterV1, ProductionBrokerRequestEventV1,
     ProductionBrokerResponseErrorV1, ProductionHostBrokerRequestEventV1,
@@ -31,6 +31,8 @@ use crate::{
 pub enum ProductionHostBrokerDispatchCommitV1 {
     /// The Host response contains no ancillary descriptors.
     Ordinary(ProtectedBrokerOutcomeCommitResultV1),
+    /// A paid Host argument interval stays pending through real response Sent.
+    HostArgument(ProtectedBrokerOutcomeCommitResultV1, DormantReceivedBrokerRequestV1),
     /// The Host response carries a protected descriptor table.
     Descriptor(DormantBrokerDescriptorCommitResultV1),
 }
@@ -69,6 +71,9 @@ pub enum ProductionHostBrokerDispatchFailureV1 {
 /// Classifies a failed Storage domain operation without erasing recovery custody.
 #[derive(Debug, thiserror::Error)]
 pub enum ProductionStorageBrokerDispatchErrorV1 {
+    /// The actual same-Session execution availability interval refused entry.
+    #[error("authenticated Storage execution availability failed: {0}")]
+    Availability(crate::BrokerSessionSecurityError),
     /// Apply, catalog preparation, or workspace-pin repair failed.
     #[error("authenticated Storage operation failed: {0}")]
     Operation(#[from] aos_sandbox_storage::DormantStorageBrokerCallErrorV1),
@@ -78,17 +83,6 @@ pub enum ProductionStorageBrokerDispatchErrorV1 {
     /// The exact original signed inventory or protected abandonment is unavailable.
     #[error("authenticated Storage inventory recovery failed: {0}")]
     Recovery(#[from] crate::BrokerSessionSecurityError),
-}
-
-/// Classifies a failed Network domain operation without erasing recovery custody.
-#[derive(Debug, thiserror::Error)]
-pub enum ProductionNetworkBrokerDispatchErrorV1 {
-    /// Apply admission or its protected physical observation failed.
-    #[error("authenticated Network operation failed: {0}")]
-    Operation(#[from] aos_sandbox_network::DormantNetworkBrokerCallErrorV1),
-    /// Authoritative Network inventory could not complete.
-    #[error("authenticated Network inventory failed: {0}")]
-    Inventory(#[from] aos_sandbox_network::NetworkNamespaceCatalogError),
 }
 
 /// Classifies a failed Mount domain operation without erasing recovery custody.
@@ -259,44 +253,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
         }
     }
 
-    /// Completes one normalized Network request or replay event.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error after consuming the session when durable Network
-    /// recovery, protected commit, or bounded response transport cannot finish.
-    pub fn complete_network_request_event(
-        self,
-        event: ProductionBrokerRequestEventV1,
-        network: &mut dyn aos_sandbox_network::DormantNetworkBrokerCallsiteV1,
-        deadline_boottime_nanoseconds: u64,
-    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
-        match event {
-            ProductionBrokerRequestEventV1::Request(request) => self
-                .dispatch_network_request_to_completion(
-                    request,
-                    network,
-                    deadline_boottime_nanoseconds,
-                ),
-            ProductionBrokerRequestEventV1::InFlightReplay(replay) => {
-                let request = replay
-                    .into_unobserved_request()
-                    .map_err(|_| ProductionBrokerResponseErrorV1::OutcomeRecovery)?;
-                self.dispatch_network_request_to_completion(
-                    request,
-                    network,
-                    deadline_boottime_nanoseconds,
-                )
-            }
-            ProductionBrokerRequestEventV1::TerminalReplay(replay) => {
-                self.finish_authenticated_terminal_replay(replay, deadline_boottime_nanoseconds)
-            }
-            ProductionBrokerRequestEventV1::DescriptorTerminalReplay(_) => {
-                Err(ProductionBrokerResponseErrorV1::DescriptorReplay)
-            }
-        }
-    }
-
     /// Completes one normalized Mount request or replay event.
     ///
     /// # Errors
@@ -373,6 +329,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
             Ok(ProductionHostBrokerDispatchCommitV1::Ordinary(committed)) => {
                 self.finish_authenticated_response(committed, deadline_boottime_nanoseconds)
             }
+            Ok(ProductionHostBrokerDispatchCommitV1::HostArgument(committed, request)) => {
+                self.finish_host_argument_response_v2(committed, request, host,
+                    deadline_boottime_nanoseconds)
+            }
             Ok(ProductionHostBrokerDispatchCommitV1::Descriptor(committed)) => {
                 let artifacts = artifacts
                     .as_ref()
@@ -435,6 +395,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
             },
             Err(ProductionHostBrokerDispatchFailureV1::Publication(failure)) => {
                 let committed = match failure {
+                    DormantBrokerPublicationExecutionFailureV1::NativeRefused { error, .. } => {
+                        eprintln!("Host catalog native publication refused: {error}; original: {}",
+                            host.catalog_publication_failure_view_v2());
+                        return Err(ProductionBrokerResponseErrorV1::OutcomeRecovery);
+                    }
                     DormantBrokerPublicationExecutionFailureV1::BeforeEffect {
                         request, ..
                     } => self.commit_authenticated_publication_error_response(
@@ -498,23 +463,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.finish_ordinary_dispatch(dispatched, deadline_boottime_nanoseconds)
     }
 
-    /// Dispatches and completes one Network request on the authenticated session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error after consuming the session when domain outcome
-    /// recovery, protected commit, or bounded response transport cannot finish
-    /// exactly. Reconnect and exact replay are then required.
-    pub fn dispatch_network_request_to_completion(
-        mut self,
-        request: DormantReceivedBrokerRequestV1,
-        network: &mut dyn aos_sandbox_network::DormantNetworkBrokerCallsiteV1,
-        deadline_boottime_nanoseconds: u64,
-    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
-        let dispatched = self.dispatch_network_request_and_commit(request, network);
-        self.finish_ordinary_dispatch(dispatched, deadline_boottime_nanoseconds)
-    }
-
     /// Dispatches and completes one Mount request on the authenticated session.
     ///
     /// # Errors
@@ -562,7 +510,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ) -> Result<ProductionHostBrokerDispatchCommitV1, ProductionHostBrokerDispatchFailureV1> {
         if request.method() == BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG {
             return self
-                .execute_host_catalog_publication_and_commit(request, publisher)
+                .execute_original_host_catalog_publication_and_commit_v2(request, host, publisher)
+                .await
                 .map(ProductionHostBrokerDispatchCommitV1::Ordinary)
                 .map_err(ProductionHostBrokerDispatchFailureV1::Publication);
         }
@@ -576,6 +525,19 @@ impl DormantAuthenticatedBrokerSessionV1 {
             else {
                 return Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request));
             };
+            let selected = ApplyHostExecutionRequestV1::decode_from_slice(execution_request.body()).ok()
+                .is_some_and(|request| request.spec_transfer_version == 5
+                    || (host.has_accepted_execution(execution_request.authenticated_original_v2()) && request.action.as_known() == Some(
+                        aos_proto::aos::sandbox::local::v1::HostExecutionActionV1::HOST_EXECUTION_ACTION_OBSERVE)));
+            if selected {
+                // Host owns the precharged real59 capsule and performs its
+                // bounded mapping before awaiting the existing native posts.
+                // No borrowed memfd slice crosses an await or escapes custody.
+                return self.execute_host_accepted_execution_and_commit_v2(execution_request,
+                    descriptor, host, agent, deadline_boottime_nanoseconds).await
+                    .map(|(committed, original)| ProductionHostBrokerDispatchCommitV1::HostArgument(committed, original))
+                    .map_err(|failure| ProductionHostBrokerDispatchFailureV1::ExecutionDescriptor { failure, request });
+            }
             let dispatched =
                 with_sealed_host_execution_content(content_bytes, descriptor, |content| {
                     self.execute_host_execution_and_commit(
@@ -629,19 +591,63 @@ impl DormantAuthenticatedBrokerSessionV1 {
                         before_effect_currentness(request),
                     ));
                 };
-                self.execute_host_apply_and_commit(
+                self.execute_host_apply_and_commit_retaining_v2(
                     request,
                     DormantHostBrokerEffectAdapterV1::new(host, &artifacts),
+                    agent.as_deref(),
                 )
                 .await
-                .map(ProductionHostBrokerDispatchCommitV1::Ordinary)
+                .map(|(committed, original)| ProductionHostBrokerDispatchCommitV1::HostArgument(committed, original))
                 .map_err(ProductionHostBrokerDispatchFailureV1::Ordinary)
             }
+            BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2
+            | BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2 => self
+                .execute_host_argument_and_commit_v2(request, host, agent, deadline_boottime_nanoseconds)
+                .await
+                .map(|(committed, request)| ProductionHostBrokerDispatchCommitV1::HostArgument(committed, request))
+                .map_err(ProductionHostBrokerDispatchFailureV1::Execution),
+            BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2 => self
+                .execute_host_execution_availability_and_commit_v2(request, host, deadline_boottime_nanoseconds)
+                .await
+                .map(|(committed, request)| ProductionHostBrokerDispatchCommitV1::HostArgument(committed, request))
+                .map_err(ProductionHostBrokerDispatchFailureV1::Execution),
+            BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+                if host.has_execution_availability() => self
+                .execute_host_execution_availability_and_commit_v2(request, host, deadline_boottime_nanoseconds)
+                .await
+                .map(|(committed, request)| ProductionHostBrokerDispatchCommitV1::HostArgument(committed, request))
+                .map_err(ProductionHostBrokerDispatchFailureV1::Execution),
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+                if request.authenticated_original_v2().host_execution_query_data_v3()
+                    .and_then(|query| query.monitor_v3()).is_some() => self
+                .execute_host_resident_query_and_commit_v3(request, host, deadline_boottime_nanoseconds)
+                .await
+                .map(|(committed, request)| ProductionHostBrokerDispatchCommitV1::HostArgument(committed, request))
+                .map_err(ProductionHostBrokerDispatchFailureV1::Execution),
+            BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+                if request.authenticated_original_v2().host_before_argument_no_apply_data_v2().is_some()
+                    && host.has_execution_availability() => self
+                .execute_host_execution_availability_and_commit_v2(request, host, deadline_boottime_nanoseconds)
+                .await
+                .map(|(committed, request)| ProductionHostBrokerDispatchCommitV1::HostArgument(committed, request))
+                .map_err(ProductionHostBrokerDispatchFailureV1::Execution),
+            BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+                if (host.has_execution_availability()
+                    || matches!(request.authenticated_original_v2().host_held_no_apply_settlement_data_v2()
+                        .map(|value| value.command_v2()),
+                        Some(aos_sandbox_protocol::host_execution_no_apply::held_settlement_transport::HostNoApplyHeldCommandV2::RecoveryPreliminary { .. })))
+                    && (request.authenticated_original_v2().host_held_no_apply_settlement_data_v2().is_some()
+                        || request.authenticated_original_v2().host_no_apply_current_lease_query_data_v2().is_some()) => self
+                .execute_host_execution_availability_and_commit_v2(request, host, deadline_boottime_nanoseconds)
+                .await
+                .map(|(committed, request)| ProductionHostBrokerDispatchCommitV1::HostArgument(committed, request))
+                .map_err(ProductionHostBrokerDispatchFailureV1::Execution),
             BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
-            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
@@ -710,6 +716,56 @@ impl DormantAuthenticatedBrokerSessionV1 {
         }
     }
 
+    pub(crate) fn dispatch_storage_lifecycle_request_and_commit_v1(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: Option<&mut aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1>,
+        logical: &mut crate::production_service::StorageOutputLifecycleOriginalV1,
+        availability: &mut crate::production_service::ProductionStorageExecutionAvailabilityOriginalV2,
+        receiving: &mut aos_sandbox::StorageLifecycleSessionLoanV1<'_, '_>,
+        native_admission: &mut Option<aos_sandbox::StorageReceivingClosedV1>,
+    ) -> Result<
+        ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<ProductionStorageBrokerDispatchErrorV1>,
+    > {
+        match request.method() {
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2 => self
+                .execute_storage_execution_availability_receiving_and_commit_v2(
+                    request, availability, receiving, native_admission)
+                .map_err(|failure| map_execution_failure(failure, ProductionStorageBrokerDispatchErrorV1::Availability)),
+            BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
+                let Some(output) = output else { return Err(before_effect_currentness(request)); };
+                self.execute_storage_capture_candidate_lifecycle_and_commit_v1(request, storage, output, receiving, native_admission)
+                    .map_err(|failure| map_execution_failure(failure, Into::into))
+            }
+            BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1 => {
+                let Some(output) = output else { return Err(before_effect_currentness(request)); };
+                self.execute_storage_logical_output_lifecycle_and_commit_v1(request, storage, output, logical, receiving, native_admission)
+                    .map_err(|failure| map_execution_failure(failure, Into::into))
+            }
+            BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1 => {
+                let Some(output) = output else { return Err(before_effect_currentness(request)); };
+                self.execute_storage_capture_query_lifecycle_and_commit_v3(request, storage, output, receiving, native_admission)
+                    .map_err(|failure| map_execution_failure(failure, Into::into))
+            }
+            BrokerMethod::BROKER_METHOD_STORAGE_APPLY => self
+                .execute_storage_apply_receiving_and_commit_v1(request, storage, receiving, native_admission)
+                .map_err(|failure| map_execution_failure(failure, Into::into)),
+            BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => self
+                .execute_storage_inventory_lifecycle_and_commit_v1(request, storage, receiving, native_admission)
+                .map_err(|failure| map_execution_failure(failure, Into::into)),
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+            | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
+            | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => self
+                .execute_storage_operation_lifecycle_and_commit_v1(request, storage, receiving, native_admission)
+                .map_err(|failure| map_execution_failure(failure, Into::into)),
+            _ => Err(before_effect_currentness(request)),
+        }
+    }
+
     /// Dispatches only the selected original candidate with the actual output loan.
     pub(crate) fn dispatch_storage_capture_candidate_and_commit_v1(
         &mut self,
@@ -722,6 +778,26 @@ impl DormantAuthenticatedBrokerSessionV1 {
     > {
         self.execute_storage_capture_candidate_and_commit_v1(request, storage, output)
             .map_err(|failure| map_execution_failure(failure, Into::into))
+    }
+
+    pub(crate) fn dispatch_storage_prepare_request_and_commit_v1(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<
+        ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<ProductionStorageBrokerDispatchErrorV1>,
+    > {
+        match request.method() {
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => self
+                .execute_storage_prepare_receiving_and_commit_v1(request, storage, receiving)
+                .map_err(|failure| map_execution_failure(failure, Into::into)),
+            BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => self
+                .execute_storage_inventory_with_storage_receiving_v1(request, storage, Some(receiving))
+                .map_err(|failure| map_execution_failure(failure, Into::into)),
+            _ => Err(before_effect_currentness(request)),
+        }
     }
 
     /// Dispatches every Storage protocol method through its sealed production owner.
@@ -860,44 +936,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
         }
     }
 
-    /// Dispatches every Network protocol method through its sealed production owner.
-    ///
-    /// Apply uses the sealed admission composition and signed artifacts;
-    /// inventory methods read the authoritative namespace catalog directly.
-    /// The caller cannot substitute a response body or route one Network method
-    /// through another adapter.
-    ///
-    /// # Errors
-    ///
-    /// Returns move-only request or outcome custody when method selection,
-    /// protected currentness, domain execution, or terminal commit cannot be
-    /// completed exactly. A caller must retain or explicitly recover it.
-    pub fn dispatch_network_request_and_commit(
-        &mut self,
-        request: DormantReceivedBrokerRequestV1,
-        network: &mut dyn aos_sandbox_network::DormantNetworkBrokerCallsiteV1,
-    ) -> Result<
-        ProtectedBrokerOutcomeCommitResultV1,
-        DormantBrokerExecutionFailureV1<ProductionNetworkBrokerDispatchErrorV1>,
-    > {
-        match request.method() {
-            BrokerMethod::BROKER_METHOD_NETWORK_APPLY => {
-                let Some(artifacts) = request.authorization_artifacts().cloned() else {
-                    return Err(before_effect_currentness(request));
-                };
-                self.execute_network_apply_and_commit(
-                    request,
-                    DormantNetworkBrokerEffectAdapterV1::new(network, &artifacts),
-                )
-                .map_err(|failure| map_execution_failure(failure, Into::into))
-            }
-            BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
-            | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => self
-                .execute_network_inventory_and_commit(request, network.namespace_catalog())
-                .map_err(|failure| map_execution_failure(failure, Into::into)),
-            _ => Err(before_effect_currentness(request)),
-        }
-    }
 }
 
 fn before_effect_currentness<Domain>(
@@ -918,9 +956,14 @@ fn current_boottime_nanoseconds() -> Option<u64> {
 
 fn host_execution_spec_content_bytes(body: &[u8]) -> Option<u64> {
     let request = ApplyHostExecutionRequestV1::decode_from_slice(body).ok()?;
-    let maximum = aos_sandbox_protocol::host_execution::MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64;
-    (request.spec_transfer_version == 1
-        && request.canonical_execution_spec.is_empty()
+    let maximum = match request.spec_transfer_version {
+        1 => aos_sandbox_protocol::host_execution::MAXIMUM_HOST_EXECUTION_SPEC_BYTES,
+        5 if request.action.as_known() == Some(
+            aos_proto::aos::sandbox::local::v1::HostExecutionActionV1::HOST_EXECUTION_ACTION_AUTHORIZE,
+        ) => aos_sandbox_protocol::host_execution::admission_content::MAXIMUM_ADMISSION_CONTENT_BYTES_V5,
+        _ => return None,
+    } as u64;
+    (request.canonical_execution_spec.is_empty()
         && request.spec_content_bytes != 0
         && request.spec_content_bytes <= maximum)
         .then_some(request.spec_content_bytes)
@@ -931,7 +974,7 @@ fn with_sealed_host_execution_content<R>(
     descriptor: &OwnedFd,
     use_content: impl for<'content> FnOnce(&'content [u8]) -> R,
 ) -> Option<R> {
-    let maximum = aos_sandbox_protocol::host_execution::MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64;
+    let maximum = aos_sandbox_protocol::host_execution::admission_content::MAXIMUM_ADMISSION_CONTENT_BYTES_V5 as u64;
     if content_bytes == 0 || content_bytes > maximum {
         return None;
     }
@@ -1141,11 +1184,37 @@ mod execution_spec_content_tests {
         changed_size.spec_content_bytes = MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64 + 1;
         assert!(host_execution_spec_content_bytes(&changed_size.encode_to_vec()).is_none());
         changed_size.spec_content_bytes = fields.bytes();
-        changed_size.spec_transfer_version = 2;
+        changed_size.spec_transfer_version = 4;
         assert!(host_execution_spec_content_bytes(&changed_size.encode_to_vec()).is_none());
         changed_size.spec_transfer_version = 1;
         changed_size.canonical_execution_spec = vec![0];
         assert!(host_execution_spec_content_bytes(&changed_size.encode_to_vec()).is_none());
+    }
+
+    #[test]
+    fn lifetime_descriptor_requires_authorize_and_its_complete_width() {
+        use aos_proto::aos::sandbox::local::v1::HostExecutionActionV1;
+        let maximum = aos_sandbox_protocol::host_execution::admission_content::MAXIMUM_ADMISSION_CONTENT_BYTES_V5;
+        let mut request = ApplyHostExecutionRequestV1 {
+            action: HostExecutionActionV1::HOST_EXECUTION_ACTION_AUTHORIZE.into(),
+            spec_transfer_version: 5,
+            spec_content_bytes: maximum as u64,
+            ..Default::default()
+        };
+
+        assert_eq!(host_execution_spec_content_bytes(&request.encode_to_vec()), Some(maximum as u64));
+        request.spec_content_bytes += 1;
+        assert!(host_execution_spec_content_bytes(&request.encode_to_vec()).is_none());
+        request.spec_content_bytes = maximum as u64;
+        request.action = HostExecutionActionV1::HOST_EXECUTION_ACTION_OBSERVE.into();
+        assert!(host_execution_spec_content_bytes(&request.encode_to_vec()).is_none());
+        request.action = HostExecutionActionV1::HOST_EXECUTION_ACTION_AUTHORIZE.into();
+        request.spec_transfer_version = 3;
+        assert!(host_execution_spec_content_bytes(&request.encode_to_vec()).is_none());
+        for version in [2, 4, 6] {
+            request.spec_transfer_version = version;
+            assert!(host_execution_spec_content_bytes(&request.encode_to_vec()).is_none());
+        }
     }
 
     #[test]

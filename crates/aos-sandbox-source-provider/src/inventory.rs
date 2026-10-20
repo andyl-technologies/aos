@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox::ProtectedJournalSnapshot;
+use aos_sandbox_source::provider_journal::ProtectedJournalSnapshot;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     InventoryLeaseStateV1, InventorySourceResponseV1, SourceProviderInventoryEntryV1,

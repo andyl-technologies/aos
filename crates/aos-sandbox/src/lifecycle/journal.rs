@@ -209,15 +209,24 @@ pub struct LifecycleJournalVerifierV1 {
 impl LifecycleJournalVerifierV1 {
     pub(crate) fn from_verified_authority(
         authority: ObjectDigest,
-        accepted_records: Vec<ObjectDigest>,
-        accepted_checkpoints: Vec<ObjectDigest>,
+        mut accepted_records: Vec<ObjectDigest>,
+        mut accepted_checkpoints: Vec<ObjectDigest>,
+    ) -> Result<Self, LifecycleModelError> {
+        Self::from_verified_authority_decode_parts(
+            authority, &mut accepted_records, &mut accepted_checkpoints,
+        )
+    }
+
+    /// Validates the original verifier catalogs before consuming either vector.
+    pub(crate) fn from_verified_authority_decode_parts(
+        authority: ObjectDigest,
+        accepted_records: &mut Vec<ObjectDigest>,
+        accepted_checkpoints: &mut Vec<ObjectDigest>,
     ) -> Result<Self, LifecycleModelError> {
         Ok(Self {
             authority,
-            replay: LifecycleReplayVerificationV1::from_verified_authority(
-                authority,
-                accepted_records,
-                accepted_checkpoints,
+            replay: LifecycleReplayVerificationV1::from_verified_authority_decode_parts(
+                authority, accepted_records, accepted_checkpoints,
             )?,
         })
     }
@@ -462,4 +471,13 @@ fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], LifecycleModelErro
     *bytes = tail;
     head.try_into()
         .map_err(|_| LifecycleModelError::CorruptEncoding)
+}
+
+impl LifecycleJournalVerifierV1 {
+    pub(crate) fn writer_clone_receiving_demand_v1(&self)->Option<aos_sandbox_core::ResourceVector> {
+        let bytes=std::mem::size_of::<Self>().checked_mul(2)?;
+        self.replay.writer_clone_receiving_demand_v1()?.checked_add(
+            aos_sandbox_core::ResourceVector::ZERO.with(aos_sandbox_core::ResourceDimension::MemoryBytes,
+                u64::try_from(bytes).ok()?)).ok()
+    }
 }

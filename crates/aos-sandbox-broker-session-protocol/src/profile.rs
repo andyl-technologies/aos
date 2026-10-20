@@ -18,6 +18,8 @@ use aos_sandbox_core::{
 use aos_sandbox_core::registry::GIT_UPLOAD_COVERAGE_FEATURE_NAMESPACE;
 
 mod fuse_worker;
+mod negotiation_capture;
+pub(crate) use negotiation_capture::NegotiationCapture;
 
 use crate::model::BrokerSessionProtocolV1;
 use crate::projection::{
@@ -84,6 +86,10 @@ const HOST_CONSUMER_CGROUP_RESPONSE_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 2] 
     BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_LEADER_PIDFD,
     BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_CGROUP,
 ];
+const NETWORK_PREPARATION_REQUEST_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 1] =
+    [BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_NETWORK_PREPARATION_V2];
+const NETWORK_PREPARATION_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition; 1] =
+    [BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED];
 const NO_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition; 0] = [];
 const HOST_CATALOG_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition; 1] =
     [BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED];
@@ -96,7 +102,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 55] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 63] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -152,10 +158,41 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 55] = [
     BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1,
     BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1,
     BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1,
+    BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2,
+    BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2,
+    BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1,
+    BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1,
+    BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1,
+    BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2,
+    BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2,
+    BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
 pub const AUTHENTICATED_BROKER_METHOD_COUNT_V1: usize = AUTHENTICATED_BROKER_METHODS_V1.len();
+
+#[cfg(test)]
+mod execution_availability_registration_tests {
+    use super::*;
+
+    #[test]
+    fn methods_above_sixty_three_keep_distinct_endpoint_roles_and_no_apply_grant() {
+        for (method, number, protocol) in [
+            (BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2, 64, BrokerSessionProtocolV1::Host),
+            (BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2, 65, BrokerSessionProtocolV1::Storage),
+        ] {
+            let profile = authenticated_broker_method_profile_v1(method).unwrap();
+            assert_eq!(method as i32, number);
+            assert_eq!(profile.protocol(), protocol);
+            assert_eq!(profile.audience(), Audience::AUDIENCE_NODE_CONTROLLER);
+            assert_eq!(profile.authorization(), BrokerSessionAuthorizationPresenceV1::Forbidden);
+            assert!(profile.request_descriptor_roles().is_empty());
+            assert!(AUTHENTICATED_BROKER_METHODS_V1.contains(&method));
+        }
+        assert_eq!(AUTHENTICATED_BROKER_METHOD_COUNT_V1, 63);
+        assert!(AUTHENTICATED_BROKER_METHODS_V1.windows(2).all(|pair| (pair[0] as i32) < pair[1] as i32));
+    }
+}
 
 /// Returns the complete canonical method profile for one endpoint role.
 ///
@@ -176,10 +213,14 @@ pub fn authenticated_broker_methods_for_role_v1(
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+                    | BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2
+                    | BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
                     | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
                     | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
+                    | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1
+                    | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1
                     | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
                     | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
@@ -188,6 +229,10 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
                     | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1
                     | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
+                    | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1
+                    | BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2
+                    | BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2
+                    | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2
             )
         })
         .filter(|method| {
@@ -270,6 +315,311 @@ pub fn production_broker_server_hello_v1(
         methods: methods.into_iter().map(Into::into).collect(),
         ..Default::default()
     })
+}
+
+/// Builds the exact Host catalog, launch and inventory client profile.
+///
+/// This roster is authenticated once during the catalog interval. Publishing
+/// precedes activation; the same Session is retained for launch and inventory.
+/// The profile itself supplies no publication or launch authority.
+///
+/// # Errors
+/// Returns the canonical role or response-ceiling negotiation error.
+pub fn start_host_catalog_launch_client_hello_v2() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    let mut hello = production_broker_client_hello_v1(
+        BrokerSessionProtocolV1::Host,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+    )?;
+    // The one installed Host listener advertises its ordinary complete roster.
+    // Existing argument/cgroup feature conditions cover that advertisement,
+    // even when this finite client requires only these three methods.
+    hello.required_methods = START_HOST_CATALOG_LAUNCH_METHODS.into_iter().map(Into::into).collect();
+    Ok(hello)
+}
+
+const START_HOST_CATALOG_LAUNCH_METHODS: [BrokerMethod; 3] = [
+    BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+    BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+    BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG,
+];
+
+/// Reconstructs the historical two-method Network client profile for comparison.
+///
+/// # Errors
+/// Returns the canonical role or response-ceiling negotiation error.
+pub fn network_preparation_client_hello_v2() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    selected_service_client_hello(BrokerSessionProtocolV1::Network, &NETWORK_PREPARATION_METHODS)
+}
+
+/// Reconstructs the historical two-method Network server profile for comparison.
+///
+/// # Errors
+/// Returns the canonical role or response-ceiling negotiation error.
+pub fn network_preparation_server_hello_v2() -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    selected_service_server_hello(BrokerSessionProtocolV1::Network, &NETWORK_PREPARATION_METHODS)
+}
+
+/// Builds only the selected Mount destination-inventory and attachment-anchor profile.
+///
+/// # Errors
+/// Returns the canonical role or response-ceiling negotiation error.
+pub fn mount_attachment_anchor_client_hello_v4() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    selected_service_client_hello(BrokerSessionProtocolV1::Mount, &MOUNT_ATTACHMENT_ANCHOR_METHODS)
+}
+
+/// Builds the matching selected Mount broker profile.
+///
+/// # Errors
+/// Returns the canonical role or response-ceiling negotiation error.
+pub fn mount_attachment_anchor_server_hello_v4() -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    selected_service_server_hello(BrokerSessionProtocolV1::Mount, &MOUNT_ATTACHMENT_ANCHOR_METHODS)
+}
+
+const NETWORK_PREPARATION_METHODS: [BrokerMethod; 2] = [
+    BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+    BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2,
+];
+
+const NETWORK_SERVICE_METHODS_V5: [BrokerMethod; 3] = [
+    BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
+    BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+    BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2,
+];
+
+/// Builds the complete normal Network9/19/63 client profile.
+///
+/// # Errors
+/// Refuses a noncanonical registered method or negotiation representation.
+pub fn network_service_client_hello_v5() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    selected_service_client_hello(BrokerSessionProtocolV1::Network, &NETWORK_SERVICE_METHODS_V5)
+}
+
+/// Builds the matching complete normal Network9/19/63 server profile.
+///
+/// # Errors
+/// Refuses a noncanonical registered method or negotiation representation.
+pub fn network_service_server_hello_v5() -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    selected_service_server_hello(BrokerSessionProtocolV1::Network, &NETWORK_SERVICE_METHODS_V5)
+}
+
+/// Builds a finite inventory-only client profile for physical reconciliation.
+///
+/// This DATA recipe selects no payer, native role or authority. The actual
+/// residual receiving owner independently fixes the permitted endpoint.
+///
+/// # Errors
+/// Refuses another protocol or a canonical negotiation error.
+pub fn controller_reconciliation_inventory_client_hello_v2(protocol: BrokerSessionProtocolV1)
+    -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    let method = match protocol {
+        BrokerSessionProtocolV1::Host => BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+        BrokerSessionProtocolV1::Mount => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
+        BrokerSessionProtocolV1::Network => BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+        _ => return Err(BrokerSessionNegotiationError::Methods),
+    };
+    selected_service_client_hello(protocol, &[method])
+}
+const MOUNT_ATTACHMENT_ANCHOR_METHODS: [BrokerMethod; 2] = [
+    BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
+    BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1,
+];
+
+const HOST_STOP_CLEANUP_METHODS_V1: [BrokerMethod; 2] = [
+    BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+    BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+];
+const HOST_NO_APPLY_CLEANUP_METHODS_V1: [BrokerMethod; 2] = [
+    BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2,
+    BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2,
+];
+
+/// Builds the fresh Stop cleanup client profile with only methods 1 and 3.
+///
+/// Negotiation supplies no payment, current grant, target or effect authority.
+/// The actual native recovery lender must independently select its own slot.
+///
+/// # Errors
+/// Returns the common canonical HELLO negotiation error.
+pub fn host_stop_cleanup_client_hello_v1() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    selected_service_client_hello(BrokerSessionProtocolV1::Host, &HOST_STOP_CLEANUP_METHODS_V1)
+}
+
+/// Builds the matching fresh Stop-cleanup server profile without other methods.
+///
+/// # Errors
+/// Returns the common canonical HELLO negotiation error.
+pub fn host_stop_cleanup_server_hello_v1() -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    selected_service_server_hello(BrokerSessionProtocolV1::Host, &HOST_STOP_CLEANUP_METHODS_V1)
+}
+
+/// Builds fresh NoApply cleanup with only its live 42/43 exchange roster.
+///
+/// Historical 64/39 records remain comparison material. This profile cannot
+/// prepare availability or accept an execution, and negotiation grants no
+/// cleanup effect or right to adopt an interrupted ordinary Session.
+///
+/// # Errors
+/// Returns the common canonical HELLO negotiation error.
+pub fn host_no_apply_cleanup_client_hello_v1() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    selected_service_client_hello(BrokerSessionProtocolV1::Host, &HOST_NO_APPLY_CLEANUP_METHODS_V1)
+}
+
+/// Builds the matching fresh NoApply server profile with only methods 42/43.
+///
+/// # Errors
+/// Returns the common canonical HELLO negotiation error.
+pub fn host_no_apply_cleanup_server_hello_v1() -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    selected_service_server_hello(BrokerSessionProtocolV1::Host, &HOST_NO_APPLY_CLEANUP_METHODS_V1)
+}
+
+/// Recognizes only the authenticated finite Stop-cleanup live roster.
+///
+/// This is comparison DATA and establishes no native or request permission.
+#[must_use]
+pub fn is_host_stop_cleanup_transcript_v1(transcript: &crate::VerifiedBrokerSessionTranscriptV1) -> bool {
+    host_cleanup_transcript_matches_v1(transcript, &HOST_STOP_CLEANUP_METHODS_V1)
+}
+
+/// Recognizes only the authenticated finite NoApply 42/43 live roster.
+///
+/// This never authorizes the historical 64/39 methods on the fresh Session.
+#[must_use]
+pub fn is_host_no_apply_cleanup_transcript_v1(transcript: &crate::VerifiedBrokerSessionTranscriptV1) -> bool {
+    host_cleanup_transcript_matches_v1(transcript, &HOST_NO_APPLY_CLEANUP_METHODS_V1)
+}
+
+fn host_cleanup_transcript_matches_v1(transcript: &crate::VerifiedBrokerSessionTranscriptV1,
+    methods: &[BrokerMethod],
+) -> bool {
+    transcript.protocol() == BrokerSessionProtocolV1::Host
+        && transcript.audience() == Audience::AUDIENCE_NODE_CONTROLLER
+        && transcript.required_methods() == methods
+        && transcript.negotiated_methods() == methods
+}
+
+fn selected_service_client_hello(
+    protocol: BrokerSessionProtocolV1,
+    methods: &[BrokerMethod],
+) -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    let mut hello = production_broker_client_hello_v1(
+        protocol, Audience::AUDIENCE_NODE_CONTROLLER, AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+    )?;
+    hello.required_features = production_features_for_methods(methods);
+    hello.required_methods = methods.iter().copied().map(Into::into).collect();
+    Ok(hello)
+}
+
+fn selected_service_server_hello(
+    protocol: BrokerSessionProtocolV1,
+    methods: &[BrokerMethod],
+) -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    let mut hello = production_broker_server_hello_v1(
+        protocol, Audience::AUDIENCE_NODE_CONTROLLER, AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+    )?;
+    hello.features = production_features_for_methods(methods);
+    hello.methods = methods.iter().copied().map(Into::into).collect();
+    Ok(hello)
+}
+
+/// Builds the closed Create Storage Inventory/Prepare client profile.
+///
+/// The ordinary broker may advertise its full method set. This client signs
+/// exactly these two requirements so the actual retained server can select
+/// its bounded preparation cycle without changing ordinary lifecycle sessions.
+///
+/// # Errors
+/// Returns the existing negotiation error for a role or response-ceiling failure.
+pub fn storage_preparation_client_hello_v1() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    let mut hello = production_broker_client_hello_v1(
+        BrokerSessionProtocolV1::Storage,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+    )?;
+    let methods = [
+        BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+    ];
+    hello.required_features = production_features_for_methods(&methods);
+    hello.required_methods = methods.into_iter().map(Into::into).collect();
+    Ok(hello)
+}
+
+/// Builds the recovery-only Storage Inventory18 client profile.
+///
+/// The ordinary Storage server may advertise its full method set. This client
+/// requires only Inventory18; HELLO does not authorize a request, restore an
+/// interrupted Create interval, or grant Prepare, Apply, or GuestRoot effects.
+///
+/// # Errors
+/// Returns the existing negotiation error for a role or response-ceiling failure.
+pub fn storage_operator_recover_client_hello_v1() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    let mut hello = production_broker_client_hello_v1(
+        BrokerSessionProtocolV1::Storage,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+    )?;
+    let methods = [BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES];
+    hello.required_features = production_features_for_methods(&methods);
+    hello.required_methods = methods.into_iter().map(Into::into).collect();
+    Ok(hello)
+}
+
+// These exact methods have same-F lifecycle receivers and domain adapters.
+// This roster never replaces the signed per-request authorization or floors.
+const STORAGE_LIFECYCLE_METHODS_V2: [BrokerMethod; 10] = [
+    BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+    BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+    BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+    BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN,
+    BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT,
+    BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE,
+    BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT,
+    BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT,
+    BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1,
+    BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1,
+];
+
+/// Builds the funded retained Storage lifecycle client profile.
+///
+/// The same server advertises its existing methods. This required-method DATA
+/// does not authorize either request, renew a cutoff, or construct a Session.
+///
+/// # Errors
+/// Returns the existing negotiation error for a role or response-ceiling failure.
+pub fn storage_lifecycle_client_hello_v2() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    let mut hello = production_broker_client_hello_v1(
+        BrokerSessionProtocolV1::Storage,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+    )?;
+    let methods = STORAGE_LIFECYCLE_METHODS_V2;
+    hello.required_features = production_features_for_methods(&methods);
+    hello.required_methods = methods.into_iter().map(Into::into).collect();
+    Ok(hello)
+}
+
+/// Builds the same funded Storage server's complete lifecycle advertisement.
+///
+/// The original production methods remain available for existing ordinary
+/// clients. Only the genuine paid Storage HELLO entrance selects this recipe;
+/// each additional method still enters its own signed same-F domain engine.
+///
+/// # Errors
+/// Returns the existing fixed Storage negotiation or response-ceiling refusal.
+pub fn storage_lifecycle_server_hello_v2() -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    let mut hello = production_broker_server_hello_v1(
+        BrokerSessionProtocolV1::Storage,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+    )?;
+    let methods: Vec<_> = AUTHENTICATED_BROKER_METHODS_V1.into_iter()
+        .filter(|method| hello.methods.contains(&(*method).into())
+            || STORAGE_LIFECYCLE_METHODS_V2.contains(method))
+        .collect();
+    hello.features = production_features_for_methods(&methods);
+    hello.methods = methods.into_iter().map(Into::into).collect();
+    Ok(hello)
 }
 
 /// Builds the opt-in Mount coverage client hello without altering defaults.
@@ -614,7 +964,10 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 => {
             BrokerSessionProtocolV1::Host
         }
-        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2
+        | BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2
+        | BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
@@ -623,6 +976,7 @@ pub const fn authenticated_broker_method_profile_v1(
             BrokerSessionProtocolV1::Host
         }
         BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
@@ -641,6 +995,7 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
         | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+        | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
         | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
         | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
@@ -653,6 +1008,7 @@ pub const fn authenticated_broker_method_profile_v1(
             BrokerSessionProtocolV1::MountFuse
         }
         BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+        | BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => {
             BrokerSessionProtocolV1::Network
@@ -663,7 +1019,9 @@ pub const fn authenticated_broker_method_profile_v1(
             BrokerSessionProtocolV1::Nix
         }
         BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
-        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT => {
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1 => {
             BrokerSessionProtocolV1::Storage
         }
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
@@ -701,6 +1059,8 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+            | BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2
+            | BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
@@ -718,12 +1078,16 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
             | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1
+            | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+            | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1
             | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
             | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
             | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
             | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+            | BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2
             | BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
             | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
             | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2
@@ -781,6 +1145,7 @@ pub const fn authenticated_broker_method_profile_v1(
         ),
     };
     let request_descriptor_roles: &'static [BrokerDescriptorRole] = match method {
+        BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2 => &NETWORK_PREPARATION_REQUEST_DESCRIPTOR_ROLES,
         BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 => {
             &fuse_worker::REQUEST_ROLES
         }
@@ -810,6 +1175,7 @@ pub const fn authenticated_broker_method_profile_v1(
         _ => &NO_DESCRIPTOR_ROLES,
     };
     let request_descriptor_dispositions: &'static [BrokerDescriptorDisposition] = match method {
+        BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2 => &NETWORK_PREPARATION_REQUEST_DESCRIPTOR_DISPOSITIONS,
         BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 => {
             &fuse_worker::DISPOSITIONS
         }
@@ -965,77 +1331,9 @@ pub(crate) fn validate_authenticated_negotiation_v1(
     context_minor: u16,
     context_audience: Audience,
 ) -> Result<ValidatedBrokerSessionNegotiationV1, BrokerSessionNegotiationError> {
-    if broker.error.as_option().is_some() {
-        return Err(BrokerSessionNegotiationError::Features);
-    }
-    let expected = supported_broker_session_version_v1(protocol);
-    if (context_major, context_minor) != expected
-        || client.protocol_major != u32::from(expected.0)
-        || client.protocol_minor != u32::from(expected.1)
-        || broker.protocol_major != u32::from(expected.0)
-        || broker.protocol_minor != u32::from(expected.1)
-        || client.audience.as_known() != Some(context_audience)
-    {
-        return Err(BrokerSessionNegotiationError::Version);
-    }
-    validate_role(context_audience, protocol)?;
-
-    let required_features = feature_refs(&client.required_features)?;
-    let advertised_features = feature_refs(&broker.features)?;
-    require_exact_authentication_feature(&required_features)?;
-    require_exact_authentication_feature(&advertised_features)?;
-    if required_features
-        .iter()
-        .any(|required| advertised_features.binary_search(required).is_err())
-    {
-        return Err(BrokerSessionNegotiationError::Features);
-    }
-
-    let required_methods = methods(&client.required_methods, protocol, context_audience)?;
-    let advertised_methods = methods(&broker.methods, protocol, context_audience)?;
-    if required_methods.iter().any(|required| {
-        advertised_methods
-            .binary_search_by_key(&method_number(*required), |method| method_number(*method))
-            .is_err()
-    }) {
-        return Err(BrokerSessionNegotiationError::Methods);
-    }
-    validate_feature_conditions(
-        protocol,
-        &required_features,
-        &advertised_features,
-        &required_methods,
-        &advertised_methods,
-    )?;
-
-    let response_maximum = u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
-        .map_err(|_| BrokerSessionNegotiationError::Ceiling)?;
-    if !(AUTHENTICATED_RESPONSE_MINIMUM_BYTES..=response_maximum)
-        .contains(&client.maximum_response_bytes)
-        || !(AUTHENTICATED_RESPONSE_MINIMUM_BYTES..=client.maximum_response_bytes)
-            .contains(&broker.maximum_response_bytes)
-    {
-        return Err(BrokerSessionNegotiationError::Ceiling);
-    }
-    let protocol_request_maximum = maximum_broker_session_request_bytes_v1(protocol);
-    let maximum_request_bytes = usize::try_from(broker.maximum_request_bytes)
-        .map_err(|_| BrokerSessionNegotiationError::Ceiling)?;
-    if maximum_request_bytes == 0 || maximum_request_bytes > protocol_request_maximum {
-        return Err(BrokerSessionNegotiationError::Ceiling);
-    }
-
-    Ok(ValidatedBrokerSessionNegotiationV1 {
-        protocol,
-        major: expected.0,
-        minor: expected.1,
-        audience: context_audience,
-        required_features,
-        advertised_features,
-        required_methods,
-        advertised_methods,
-        maximum_request_bytes,
-        maximum_response_bytes: broker.maximum_response_bytes,
-    })
+    let mut capture = negotiation_capture::NegotiationCapture::ordinary();
+    capture.capture(client, broker, protocol, context_major, context_minor, context_audience);
+    capture.into_ordinary_result()
 }
 
 fn feature_refs(features: &[Feature]) -> Result<Vec<FeatureRef>, BrokerSessionNegotiationError> {
@@ -1045,10 +1343,15 @@ fn feature_refs(features: &[Feature]) -> Result<Vec<FeatureRef>, BrokerSessionNe
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| BrokerSessionNegotiationError::Features)?;
     validate_required_features(&values).map_err(|_| BrokerSessionNegotiationError::Features)?;
+    require_feature_order(&values)?;
+    Ok(values)
+}
+
+fn require_feature_order(values: &[FeatureRef]) -> Result<(), BrokerSessionNegotiationError> {
     if values.windows(2).any(|window| window[0] >= window[1]) {
         return Err(BrokerSessionNegotiationError::Features);
     }
-    Ok(values)
+    Ok(())
 }
 
 fn require_exact_authentication_feature(
@@ -1077,12 +1380,23 @@ fn methods(
     let methods = source
         .iter()
         .map(|method| {
-            method
-                .as_known()
-                .filter(|method| method_matches_protocol(*method, protocol))
-                .ok_or(BrokerSessionNegotiationError::Methods)
+            known_method(method, protocol)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    require_method_order_and_role(&methods, audience)?;
+    Ok(methods)
+}
+
+fn known_method(
+    method: &buffa::EnumValue<BrokerMethod>, protocol: BrokerSessionProtocolV1,
+) -> Result<BrokerMethod, BrokerSessionNegotiationError> {
+    method.as_known().filter(|method| method_matches_protocol(*method, protocol))
+        .ok_or(BrokerSessionNegotiationError::Methods)
+}
+
+fn require_method_order_and_role(methods: &[BrokerMethod], audience: Audience)
+    -> Result<(), BrokerSessionNegotiationError>
+{
     if methods.is_empty()
         || methods
             .windows(2)
@@ -1091,7 +1405,7 @@ fn methods(
     {
         return Err(BrokerSessionNegotiationError::Methods);
     }
-    Ok(methods)
+    Ok(())
 }
 
 const fn validate_role(
@@ -1366,6 +1680,61 @@ const fn is_mount_source_acquisition_method(method: BrokerMethod) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_fixed_services_negotiate_only_their_closed_pair() {
+        for (protocol, selected_client, selected_server, methods) in [
+            (BrokerSessionProtocolV1::Network, network_preparation_client_hello_v2().unwrap(),
+                network_preparation_server_hello_v2().unwrap(), NETWORK_PREPARATION_METHODS),
+            (BrokerSessionProtocolV1::Mount, mount_attachment_anchor_client_hello_v4().unwrap(),
+                mount_attachment_anchor_server_hello_v4().unwrap(), MOUNT_ATTACHMENT_ANCHOR_METHODS),
+        ] {
+            let expected: Vec<buffa::EnumValue<BrokerMethod>> = methods.into_iter().map(Into::into).collect();
+            assert_eq!(selected_client.required_methods, expected);
+            assert_eq!(selected_server.methods, expected);
+            let ordinary = authenticated_broker_methods_for_role_v1(protocol, Audience::AUDIENCE_NODE_CONTROLLER);
+            assert!(!ordinary.contains(&methods[1]));
+            assert!(ordinary.contains(&methods[0]));
+        }
+    }
+
+    #[test]
+    fn start_host_negotiates_catalog_launch_and_inventory_on_one_session() {
+        let client = start_host_catalog_launch_client_hello_v2().unwrap();
+        let server = production_broker_server_hello_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+        ).unwrap();
+        let methods: Vec<buffa::EnumValue<BrokerMethod>> =
+            START_HOST_CATALOG_LAUNCH_METHODS.into_iter().map(Into::into).collect();
+
+        assert_eq!(client.required_methods, methods);
+        assert!(methods.iter().all(|method| server.methods.contains(method)));
+        let ordinary = production_broker_client_hello_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+        ).unwrap();
+        assert_eq!(client.required_features, ordinary.required_features);
+        validate_authenticated_negotiation_v1(&client, &server,
+            BrokerSessionProtocolV1::Host, 1, 0, Audience::AUDIENCE_NODE_CONTROLLER).unwrap();
+        assert!(client.required_features.iter().all(|feature| server.features.contains(feature)));
+        assert!(server.methods.contains(&BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION.into()));
+        assert_eq!(client.maximum_response_bytes, server.maximum_response_bytes);
+    }
+
+    #[test]
+    fn sealed_network_preparation_has_one_closed_descriptor_and_signed_authority() {
+        let profile = authenticated_broker_method_profile_v1(BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2).unwrap();
+        assert_eq!(profile.protocol(), BrokerSessionProtocolV1::Network);
+        assert_eq!(profile.audience(), Audience::AUDIENCE_NODE_CONTROLLER);
+        assert_eq!(profile.authorization(), BrokerSessionAuthorizationPresenceV1::Required);
+        assert_eq!(profile.request_descriptor_roles(), NETWORK_PREPARATION_REQUEST_DESCRIPTOR_ROLES);
+        assert_eq!(profile.request_descriptor_dispositions(), NETWORK_PREPARATION_REQUEST_DESCRIPTOR_DISPOSITIONS);
+        assert!(profile.success_response_descriptor_roles().is_empty());
+        assert!(authenticated_broker_method_profile_v1(BrokerMethod::BROKER_METHOD_NETWORK_APPLY).unwrap().request_descriptor_roles().is_empty());
+    }
 
     #[test]
     fn capture_client_support_does_not_require_output_custody() {
@@ -2330,6 +2699,26 @@ mod tests {
     }
 
     #[test]
+    fn fresh_cleanup_hellos_cannot_negotiate_sibling_or_historical_methods() {
+        let profiles = [
+            (host_stop_cleanup_client_hello_v1().unwrap(),
+                host_stop_cleanup_server_hello_v1().unwrap(),
+                HOST_STOP_CLEANUP_METHODS_V1),
+            (host_no_apply_cleanup_client_hello_v1().unwrap(),
+                host_no_apply_cleanup_server_hello_v1().unwrap(),
+                HOST_NO_APPLY_CLEANUP_METHODS_V1),
+        ];
+        for (client, server, expected) in profiles {
+            let required: Vec<_> = client.required_methods.iter().map(|method| method.as_known().unwrap()).collect();
+            let offered: Vec<_> = server.methods.iter().map(|method| method.as_known().unwrap()).collect();
+            assert_eq!(required, expected);
+            assert_eq!(offered, expected);
+            assert!(!offered.contains(&BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2));
+            assert!(!offered.contains(&BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY));
+        }
+    }
+
+    #[test]
     fn storage_capture_candidate_is_signed_read_only_and_not_advertised() {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE;
         let profile = authenticated_broker_method_profile_v1(method).unwrap();
@@ -2475,5 +2864,254 @@ mod tests {
             )
             .contains(&method)
         );
+    }
+}
+
+/// Recognizes the exact signed two-method Create preparation selection.
+///
+/// This compares only verified transcript DATA. It supplies no receiving
+/// budget, writer ownership, execution authority or positive completion.
+#[must_use]
+pub fn is_storage_preparation_transcript_v1(transcript: &crate::VerifiedBrokerSessionTranscriptV1) -> bool {
+    transcript.protocol() == BrokerSessionProtocolV1::Storage
+        && transcript.audience() == Audience::AUDIENCE_NODE_CONTROLLER
+        && transcript.required_methods() == [
+            BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+        ]
+}
+
+/// Recognizes only the verified funded retained Storage lifecycle selection.
+///
+/// This compares signed transcript DATA, never request authorization, resource
+/// payment, native ownership, readiness, or a Root plan and lease.
+#[must_use]
+pub fn is_storage_lifecycle_transcript_v2(transcript: &crate::VerifiedBrokerSessionTranscriptV1) -> bool {
+    transcript.protocol() == BrokerSessionProtocolV1::Storage
+        && transcript.audience() == Audience::AUDIENCE_NODE_CONTROLLER
+        && transcript.required_methods() == STORAGE_LIFECYCLE_METHODS_V2
+        && STORAGE_LIFECYCLE_METHODS_V2.iter().all(|method|
+            transcript.negotiated_methods().contains(method))
+}
+
+/// Recognizes only the verified recovery-only Inventory18 selection.
+///
+/// This compares authenticated transcript DATA. It supplies no recovery loan,
+/// journal custody, operation authorization, currentness, or receiving payment.
+#[must_use]
+pub fn is_storage_operator_recover_transcript_v1(transcript: &crate::VerifiedBrokerSessionTranscriptV1) -> bool {
+    transcript.protocol() == BrokerSessionProtocolV1::Storage
+        && transcript.audience() == Audience::AUDIENCE_NODE_CONTROLLER
+        && transcript.required_methods() == [
+            BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+        ]
+}
+
+#[cfg(test)]
+mod create_apply_profile_tests {
+    use super::*;
+
+    #[test]
+    fn recover_requires_only_inventory_and_negotiates_with_the_existing_server() {
+        let recover = storage_operator_recover_client_hello_v1().unwrap();
+        let server = production_broker_server_hello_v1(
+            BrokerSessionProtocolV1::Storage,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+        ).unwrap();
+
+        assert_eq!(recover.required_methods, Vec::<buffa::EnumValue<BrokerMethod>>::from([
+            BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES.into(),
+        ]));
+        assert_eq!(recover.required_features, production_features_for_methods(&[
+            BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+        ]));
+        validate_authenticated_negotiation_v1(&recover, &server,
+            BrokerSessionProtocolV1::Storage, 1, 0, Audience::AUDIENCE_NODE_CONTROLLER).unwrap();
+        assert_ne!(recover.required_methods, storage_preparation_client_hello_v1().unwrap().required_methods);
+        assert_ne!(recover.required_methods, storage_lifecycle_client_hello_v2().unwrap().required_methods);
+
+        let mut without_inventory = server;
+        without_inventory.methods.retain(|method|
+            *method != buffa::EnumValue::<BrokerMethod>::from(
+                BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES));
+        assert!(validate_authenticated_negotiation_v1(&recover, &without_inventory,
+            BrokerSessionProtocolV1::Storage, 1, 0, Audience::AUDIENCE_NODE_CONTROLLER).is_err());
+    }
+
+    #[test]
+    fn funded_lifecycle_requires_every_connected_method_on_the_same_session() {
+        let preparation = storage_preparation_client_hello_v1().unwrap();
+        let apply = storage_lifecycle_client_hello_v2().unwrap();
+
+        let methods = STORAGE_LIFECYCLE_METHODS_V2;
+        let expected: Vec<buffa::EnumValue<BrokerMethod>> = methods.into_iter().map(Into::into).collect();
+        assert_eq!(apply.required_methods, expected);
+        assert_ne!(preparation.required_methods, apply.required_methods);
+        assert_eq!(preparation.maximum_response_bytes, apply.maximum_response_bytes);
+        assert_eq!(apply.required_features, production_features_for_methods(&methods));
+
+        let server = storage_lifecycle_server_hello_v2().unwrap();
+        validate_authenticated_negotiation_v1(&apply, &server,
+            BrokerSessionProtocolV1::Storage, 1, 0, Audience::AUDIENCE_NODE_CONTROLLER).unwrap();
+        for method in methods {
+            let mut missing = server.clone();
+            missing.methods.retain(|value| *value != buffa::EnumValue::<BrokerMethod>::from(method));
+            assert!(validate_authenticated_negotiation_v1(&apply, &missing,
+                BrokerSessionProtocolV1::Storage, 1, 0, Audience::AUDIENCE_NODE_CONTROLLER).is_err());
+        }
+    }
+}
+
+/// Recognizes the exact authenticated Host catalog/launch/inventory transcript DATA.
+///
+/// Actual pending-child, activation and receiving loans remain independently
+/// mandatory. This comparison cannot adopt a Session or authorize launch.
+#[must_use]
+pub fn is_start_host_catalog_launch_transcript_v2(transcript: &crate::VerifiedBrokerSessionTranscriptV1) -> bool {
+    transcript.protocol() == BrokerSessionProtocolV1::Host
+        && transcript.audience() == Audience::AUDIENCE_NODE_CONTROLLER
+        && transcript.required_methods() == START_HOST_CATALOG_LAUNCH_METHODS
+        && START_HOST_CATALOG_LAUNCH_METHODS.iter().all(|method|
+            transcript.negotiated_methods().contains(method))
+}
+
+/// Recognizes only historical Network63/Inventory19 transcript DATA.
+#[must_use]
+pub fn is_network_preparation_transcript_v2(transcript: &crate::VerifiedBrokerSessionTranscriptV1) -> bool {
+    selected_service_transcript(transcript, BrokerSessionProtocolV1::Network, &NETWORK_PREPARATION_METHODS)
+}
+
+/// Recognizes only the complete normal Network9/19/63 transcript.
+#[must_use]
+pub fn is_network_service_transcript_v5(transcript: &crate::VerifiedBrokerSessionTranscriptV1) -> bool {
+    selected_service_transcript(transcript, BrokerSessionProtocolV1::Network, &NETWORK_SERVICE_METHODS_V5)
+}
+
+/// Recognizes only the separate read-only Network19 transcript.
+#[must_use]
+pub fn is_network_inventory_transcript_v5(transcript: &crate::VerifiedBrokerSessionTranscriptV1) -> bool {
+    transcript.protocol() == BrokerSessionProtocolV1::Network
+        && transcript.audience() == Audience::AUDIENCE_NODE_CONTROLLER
+        && transcript.required_methods() == [BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES]
+        && transcript.negotiated_methods() == NETWORK_SERVICE_METHODS_V5
+}
+
+/// Recognizes the exact selected Mount62/Inventory16 transcript DATA.
+#[must_use]
+pub fn is_mount_attachment_anchor_transcript_v4(transcript: &crate::VerifiedBrokerSessionTranscriptV1) -> bool {
+    selected_service_transcript(transcript, BrokerSessionProtocolV1::Mount, &MOUNT_ATTACHMENT_ANCHOR_METHODS)
+}
+
+fn selected_service_transcript(
+    transcript: &crate::VerifiedBrokerSessionTranscriptV1,
+    protocol: BrokerSessionProtocolV1,
+    methods: &[BrokerMethod],
+) -> bool {
+    transcript.protocol() == protocol
+        && transcript.audience() == Audience::AUDIENCE_NODE_CONTROLLER
+        && transcript.required_methods() == methods
+        && transcript.negotiated_methods() == methods
+}
+
+/// Recognizes the closed authenticated Start resource transcript DATA.
+///
+/// The genuine same-purpose native loan remains mandatory; this comparison
+/// cannot adopt a Session or lend a receiving account.
+#[must_use]
+pub fn is_start_resource_transcript_v2(transcript: &crate::VerifiedBrokerSessionTranscriptV1) -> bool {
+    is_start_host_catalog_launch_transcript_v2(transcript)
+        || is_network_service_transcript_v5(transcript)
+        || is_mount_attachment_anchor_transcript_v4(transcript)
+        || is_storage_lifecycle_transcript_v2(transcript)
+}
+
+#[cfg(test)]
+mod selected_maintenance_hello_tests {
+    use super::*;
+
+    #[test]
+    fn normal_network_requires_destroy_inventory_and_preparation_atomically() {
+        let protocol = BrokerSessionProtocolV1::Network;
+        let audience = Audience::AUDIENCE_NODE_CONTROLLER;
+        let client = network_service_client_hello_v5().unwrap();
+        let server = network_service_server_hello_v5().unwrap();
+        let methods = Vec::<buffa::EnumValue<BrokerMethod>>::from([
+            BrokerMethod::BROKER_METHOD_NETWORK_APPLY.into(),
+            BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES.into(),
+            BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2.into(),
+        ]);
+        assert_eq!(client.required_methods, methods);
+        assert_eq!(server.methods, methods);
+        let (major, minor) = supported_broker_session_version_v1(protocol);
+        validate_authenticated_negotiation_v1(&client, &server, protocol, major, minor, audience).unwrap();
+
+        // Historical two-method service cannot satisfy the new normal client.
+        let historical = network_preparation_server_hello_v2().unwrap();
+        assert!(validate_authenticated_negotiation_v1(
+            &client, &historical, protocol, major, minor, audience).is_err());
+        let inventory = controller_reconciliation_inventory_client_hello_v2(protocol).unwrap();
+        validate_authenticated_negotiation_v1(&inventory, &server, protocol, major, minor, audience).unwrap();
+    }
+
+    #[test]
+    fn maintenance_singletons_negotiate_against_unchanged_selected_servers() {
+        let audience = Audience::AUDIENCE_NODE_CONTROLLER;
+        for (protocol, server, inventory, effect) in [
+            (BrokerSessionProtocolV1::Mount, mount_attachment_anchor_server_hello_v4().unwrap(),
+                BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1),
+            (BrokerSessionProtocolV1::Network, network_service_server_hello_v5().unwrap(),
+                BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+                BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2),
+        ] {
+            let (major, minor) = supported_broker_session_version_v1(protocol);
+            let ordinary = production_broker_client_hello_v1(protocol, audience,
+                AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32).unwrap();
+            assert!(validate_authenticated_negotiation_v1(
+                &ordinary, &server, protocol, major, minor, audience).is_err());
+
+            // The same pure recipe is selected by a distinct actual ordinary
+            // funding owner. It proves no Recover or effect permission.
+            let maintenance = controller_reconciliation_inventory_client_hello_v2(protocol).unwrap();
+            assert_eq!(maintenance.required_methods,
+                Vec::<buffa::EnumValue<BrokerMethod>>::from([inventory.into()]));
+            assert_eq!(maintenance.required_features, production_features_for_methods(&[inventory]));
+            validate_authenticated_negotiation_v1(
+                &maintenance, &server, protocol, major, minor, audience).unwrap();
+            assert!(server.methods.contains(&effect.into()));
+            assert!(!maintenance.required_methods.contains(&effect.into()));
+
+            let mut missing_inventory = server.clone();
+            missing_inventory.methods.retain(|method|
+                *method != buffa::EnumValue::<BrokerMethod>::from(inventory));
+            assert!(validate_authenticated_negotiation_v1(
+                &maintenance, &missing_inventory, protocol, major, minor, audience).is_err());
+
+            let mut missing_feature = server;
+            missing_feature.features.clear();
+            assert!(validate_authenticated_negotiation_v1(
+                &maintenance, &missing_feature, protocol, major, minor, audience).is_err());
+        }
+    }
+
+    #[test]
+    fn ordinary_host_and_storage_keep_complete_required_rosters() {
+        let audience = Audience::AUDIENCE_NODE_CONTROLLER;
+        for protocol in [BrokerSessionProtocolV1::Host, BrokerSessionProtocolV1::Storage] {
+            let client = production_broker_client_hello_v1(protocol, audience,
+                AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32).unwrap();
+            let server = production_broker_server_hello_v1(protocol, audience,
+                AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32).unwrap();
+            let expected: Vec<buffa::EnumValue<BrokerMethod>> =
+                authenticated_broker_methods_for_role_v1(protocol, audience)
+                    .into_iter().map(Into::into).collect();
+            assert_eq!(client.required_methods, expected);
+            assert_eq!(client.required_methods, server.methods);
+            assert_eq!(client.required_features, server.features);
+            let (major, minor) = supported_broker_session_version_v1(protocol);
+            validate_authenticated_negotiation_v1(
+                &client, &server, protocol, major, minor, audience).unwrap();
+        }
     }
 }

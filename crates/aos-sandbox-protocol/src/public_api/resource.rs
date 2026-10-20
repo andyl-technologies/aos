@@ -259,6 +259,14 @@ pub enum PublicMilestoneV1 {
     Cleanup,
     /// Portable work is complete.
     Complete,
+    /// A zero-effect Recover awaits independent metadata verification.
+    MetadataVerificationPending,
+    /// A distinct zero-effect Recover completed its metadata-only transaction.
+    MetadataComplete,
+    /// The established zero-effect Recover acknowledged explicit abandonment.
+    AbandonAcknowledged,
+    /// Another completed Stop reconciliation superseded this pending Recover.
+    SupersededByStopCompletion,
     /// Progress awaits a dependency or operator action.
     Blocked,
 }
@@ -272,6 +280,10 @@ impl PublicMilestoneV1 {
             "reconciling" => Some(Self::Reconciling),
             "cleanup" => Some(Self::Cleanup),
             "complete" => Some(Self::Complete),
+            "metadata-verification-pending" => Some(Self::MetadataVerificationPending),
+            "metadata-complete" => Some(Self::MetadataComplete),
+            "abandon-acknowledged" => Some(Self::AbandonAcknowledged),
+            "superseded-by-stop-completion" => Some(Self::SupersededByStopCompletion),
             "blocked" => Some(Self::Blocked),
             _ => None,
         }
@@ -476,12 +488,13 @@ pub const fn operation_progress_stage(
     use PublicMilestoneV1 as M;
 
     match milestone {
-        M::Accepted => 0,
+        M::Accepted | M::MetadataVerificationPending => 0,
         M::Preparing => 1,
         M::Committing => 2,
         M::Reconciling => 3,
         M::Cleanup => 4,
-        M::Complete => 5,
+        M::Complete | M::MetadataComplete | M::AbandonAcknowledged
+            | M::SupersededByStopCompletion => 5,
         M::Blocked => match phase {
             P::Accepted => 0,
             P::Preparing => 1,
@@ -588,12 +601,25 @@ impl TryFrom<Operation> for CheckedOperationResourceV1 {
         {
             return Err(InvalidPublicResource::InvalidOperationState);
         }
+        // These exact labels describe closed zero-effect Recover outcomes.
+        // They do not extend the ordinary phase or work-unit grammar.
+        if matches!(milestone, PublicMilestoneV1::MetadataVerificationPending
+            | PublicMilestoneV1::MetadataComplete | PublicMilestoneV1::AbandonAcknowledged
+            | PublicMilestoneV1::SupersededByStopCompletion)
+            && (method != PublicOperationMethodV1::OperatorRecover
+                || progress.completed_units != 0 || progress.total_units != 0 || wire.cancelable
+                || (milestone == PublicMilestoneV1::MetadataVerificationPending
+                    && retry != CheckedRetryClassV1::SameRequest)) {
+            return Err(InvalidPublicResource::InvalidOperationState);
+        }
         validate_operation_semantics(
+            method,
             phase,
             milestone,
             retry,
             progress.completed_units,
             progress.total_units,
+            wire.cancelable,
         )?;
 
         let conditions = checked_conditions(&wire.conditions)?;
@@ -1057,28 +1083,45 @@ fn phase_allows_placement(phase: SandboxPhase, has_placement: bool) -> bool {
 }
 
 fn validate_operation_semantics(
+    method: PublicOperationMethodV1,
     phase: CheckedOperationPhaseV1,
     milestone: PublicMilestoneV1,
     retry: CheckedRetryClassV1,
     completed: u32,
     total: u32,
+    cancelable: bool,
 ) -> Result<(), InvalidPublicResource> {
     use CheckedOperationPhaseV1 as P;
     use PublicMilestoneV1 as M;
 
-    let milestone_matches = matches!(
+    // Closed Recover cleanup has no new Effect work or cancellation port.
+    let cleanup_pending = method == PublicOperationMethodV1::OperatorRecover
+        && phase == P::Accepted
+        && milestone == M::Reconciling
+        && completed == 0
+        && total == 0
+        && !cancelable
+        && retry == CheckedRetryClassV1::SameRequest;
+    let milestone_matches = cleanup_pending || matches!(
         (phase, milestone),
-        (P::Accepted, M::Accepted | M::Blocked)
+        (P::Accepted, M::Accepted | M::Blocked | M::MetadataVerificationPending)
             | (P::Preparing, M::Preparing | M::Blocked)
             | (P::Committing, M::Committing | M::Blocked)
             | (P::Committed, M::Reconciling | M::Cleanup | M::Blocked)
-            | (P::Succeeded, M::Complete)
+            | (P::Succeeded, M::Complete | M::MetadataComplete | M::AbandonAcknowledged)
             | (P::FailedBeforeCommit | P::CanceledBeforeCommit, M::Complete)
             | (P::CommittedWithResidualCleanup, M::Cleanup | M::Complete)
-            | (P::PermanentlyBlocked, M::Blocked)
+            | (P::PermanentlyBlocked, M::Blocked | M::SupersededByStopCompletion)
     );
+    let terminal_retry = if phase == P::CommittedWithResidualCleanup {
+        CheckedRetryClassV1::AfterStateChange
+    } else {
+        CheckedRetryClassV1::Never
+    };
     if !milestone_matches
-        || (phase.is_terminal() && retry != CheckedRetryClassV1::Never)
+        || (phase == P::CommittedWithResidualCleanup
+            && method != PublicOperationMethodV1::StopSandbox)
+        || (phase.is_terminal() && retry != terminal_retry)
         || (milestone == M::Complete && completed != total)
     {
         Err(InvalidPublicResource::InvalidOperationState)

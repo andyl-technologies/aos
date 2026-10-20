@@ -13,6 +13,8 @@
 //! actual-prospective-Source-reservation:136 | Ed25519-signature:64
 //! ```
 
+use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
+
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey};
 
@@ -22,7 +24,7 @@ use crate::reconciler::project_admission::{
 };
 
 use super::controller_project_terminal_readback::take;
-use super::{ControllerProjectAdmissionReadbackErrorV1, PinnedControllerHoldSignerV1};
+use super::ControllerProjectAdmissionReadbackErrorV1;
 
 const MAGIC: &[u8; 8] = b"AOSCTP05";
 const DOMAIN: &[u8] = b"aos.sandbox.controller-project-negative-dispatch.v1\0/var/lib/aos/sandboxd/controller.journal\0";

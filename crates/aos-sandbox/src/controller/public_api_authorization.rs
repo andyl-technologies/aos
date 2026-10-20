@@ -6,10 +6,8 @@
 //! its canonical authorization envelope from the exact body received on the
 //! retained stream.
 //!
-//! The same private owner binds authenticated local-session records through
-//! the shared protected capability evaluator. Its Journal and fixed clock stay
-//! together across both paths; transport evidence and current authorization
-//! remain separate inputs to exact request binding.
+//! The private owner keeps its Journal and fixed clock together across public
+//! request binding; transport evidence and current authorization remain separate.
 
 use aos_sandbox_core::CapabilityId;
 
@@ -23,16 +21,11 @@ use crate::cli_model::authorization_adapter::{
     DormantAuthenticatedCliRequestV1, PublicApiAuditMethodV1, canonical_public_audit_request_v2,
     canonical_public_mutation_request_v2,
 };
-use crate::cli_model::{
-    AuditAuthorizationV1, AuthorizedOperatorRecoveryV1, AuthorizedResolvedMutationV1,
-    DormantSandboxRequestV1, OperatorRecoveryRequestV1, PublicMutationAuthorizationV1,
-    RequestProvenanceV1, ResolvedPublicMutationV1,
-};
-use aos_sandbox_protocol::public_api::request::{DormantClientStatePlanV1, DormantSandboxOutputV1};
+use crate::cli_model::{AuditAuthorizationV1, PublicMutationAuthorizationV1};
 use crate::public_api_session::PublicApiPeer;
 use crate::public_mutation_compiler::ResolvedPublicMutationRequestV1;
-use crate::publisher_authority::PublisherAuthorityLimits;
-use crate::publisher_policy::PublisherPolicyLimits;
+use crate::publisher_admin::capabilities::PublisherAuthorityLimits;
+use crate::publisher_admin::policy::PublisherPolicyLimits;
 
 #[cfg(target_os = "linux")]
 const DORMANT_CLI_OBSERVATION_SCHEMA_V1: &[u8] = b"aos.sandbox.cli.observation-schema.v1\0";
@@ -50,123 +43,6 @@ const DORMANT_CLI_OBSERVATION_SCHEMA_V1: &[u8] = b"aos.sandbox.cli.observation-s
 pub(crate) struct DormantCliAuthorizationOwnerV1<'controller> {
     journal: &'controller mut crate::Journal,
     protected_clock: ControllerProtectedClockV1,
-}
-
-#[cfg(target_os = "linux")]
-impl DormantCliAuthorizationOwnerV1<'_> {
-    /// Authenticates and routes one mutation with retained sealed authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CliAuthorizationAdapterError`] unless the authenticated payload,
-    /// protected authorization head, resolver result, and routed protobuf agree.
-    pub(crate) fn authorize_routed_mutation<F>(
-        &mut self,
-        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
-        output: DormantSandboxOutputV1,
-        client_state: DormantClientStatePlanV1,
-        resolve: F,
-    ) -> Result<DormantSandboxRequestV1, CliAuthorizationAdapterError>
-    where
-        F: FnOnce(
-            &DecodedAuthenticatedCliRequestV1,
-            &RequestProvenanceV1,
-        ) -> ResolvedPublicMutationV1,
-    {
-        let authorized = self.authorize_mutation(authenticated, resolve)?;
-        DormantSandboxRequestV1::from_authorized_mutation(authorized, output, client_state)
-            .map_err(|_| CliAuthorizationAdapterError::MutationBindingMismatch)
-    }
-
-    /// Authenticates and authorizes one exact protected operator-recovery request.
-    pub(crate) fn authorize_operator_recovery(
-        &mut self,
-        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
-        request: OperatorRecoveryRequestV1,
-    ) -> Result<AuthorizedOperatorRecoveryV1, CliAuthorizationAdapterError> {
-        self.authenticate_request(authenticated)?
-            .authorize_operator_recovery(request)
-    }
-
-    /// Authenticates, currently authorizes, resolves, and seals one CLI mutation.
-    ///
-    /// The authenticated local record supplies every transport identity. The
-    /// resolver receives only the nonforgeable provenance created after exact
-    /// request and protected-state binding, allowing it to construct required
-    /// action-specific fences before the same one-shot authority is consumed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CliAuthorizationAdapterError`] when live transport rechecking,
-    /// protected current authorization, exact binding, or mutation fencing fails.
-    pub(crate) fn authorize_mutation<F>(
-        &mut self,
-        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
-        resolve: F,
-    ) -> Result<AuthorizedResolvedMutationV1, CliAuthorizationAdapterError>
-    where
-        F: FnOnce(
-            &DecodedAuthenticatedCliRequestV1,
-            &RequestProvenanceV1,
-        ) -> ResolvedPublicMutationV1,
-    {
-        let request = self.authenticate_request(authenticated)?;
-        let mutation = resolve(request.decoded_request(), request.mutation_provenance()?);
-        request.authorize_mutation(mutation)
-    }
-
-    /// Authenticates and currently authorizes one exact CLI audit request.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CliAuthorizationAdapterError`] when live transport rechecking,
-    /// protected current authorization, exact binding, or surface checks fail.
-    pub(crate) fn authorize_audit(
-        &mut self,
-        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
-    ) -> Result<AuditAuthorizationV1, CliAuthorizationAdapterError> {
-        self.authenticate_request(authenticated)?.authorize_audit()
-    }
-
-    fn authenticate_request(
-        &mut self,
-        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
-    ) -> Result<DormantAuthenticatedCliRequestV1, CliAuthorizationAdapterError> {
-        authenticated
-            .recheck_execution_scope()
-            .map_err(|_| CliAuthorizationAdapterError::InvalidAuthenticatedEvidence)?;
-
-        let principal = authenticated.scope().holder;
-        let session_id = authenticated.session_id();
-        let decoded =
-            DecodedAuthenticatedCliRequestV1::decode_authenticated(authenticated.payload())?;
-        let identity =
-            AuthenticatedCliIdentityEvidenceV1::from_verified_transport_identity(principal)?;
-        let session = AuthenticatedCliSessionEvidenceV1::from_verified_session(
-            principal,
-            session_id.as_bytes(),
-        )?;
-        let channel = AuthenticatedCliChannelEvidenceV1::from_verified_channel(
-            principal,
-            session_id.as_bytes(),
-            authenticated.channel_binding(),
-            authenticated.payload(),
-            DORMANT_CLI_OBSERVATION_SCHEMA_V1,
-        )?;
-        let authorization = CurrentProtectedCliAuthorizationV1::from_current_protected_capability(
-            self.journal,
-            PublisherAuthorityLimits::default(),
-            PublisherPolicyLimits::default(),
-            authenticated.capability_id(),
-            authenticated.scope().project,
-            &mut self.protected_clock,
-            &decoded,
-            &identity,
-            &channel,
-        )?;
-
-        DormantAuthenticatedCliRequestV1::bind(decoded, identity, session, channel, authorization)
-    }
 }
 
 /// Inspects an original fixed Gateway request against the sole protected engine.
@@ -194,7 +70,7 @@ pub(crate) fn prepare_original_gateway_git_read_v1(
     original: &mut crate::git::delegated_read::GitReadRequestOwnerV1,
     acceptor: &crate::public_api_session::PublicApiSessionAcceptor,
 ) -> Option<(CapabilityId, crate::git::delegated_read::ReadFactsV1)> {
-    use crate::publisher_authority::PublisherCapabilityRegistry;
+    use crate::publisher_admin::capabilities::PublisherCapabilityRegistry;
 
     let facts = match original.begin_evaluation(acceptor) {
         Ok(facts) => facts,
@@ -242,6 +118,60 @@ pub(crate) fn authorize_resolved_public_mutation_v1(
     (PublicMutationAuthorizationV1, CurrentCapabilityDecisionV1),
     CliAuthorizationAdapterError,
 > {
+    authorize_resolved_public_mutation_inner_v1(journal, peer, capability_id, request, None)
+}
+
+pub(crate) fn authorize_resolved_delete_retaining_v1(
+    journal: &mut crate::Journal,
+    peer: &PublicApiPeer,
+    capability_id: CapabilityId,
+    request: &ResolvedPublicMutationRequestV1,
+    native: &mut crate::public_mutation_compiler::delete_admission::DeleteAuthorizationNativeV1,
+) -> Result<(PublicMutationAuthorizationV1, CurrentCapabilityDecisionV1), CliAuthorizationAdapterError> {
+    if request.method() != PublicApiAuditMethodV1::DeleteSandbox {
+        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+    }
+    authorize_resolved_public_mutation_inner_v1(journal, peer, capability_id, request, Some(native))
+}
+
+// Only the genuine C23 Start owner supplies these retained native destinations.
+// The exact method check precedes the unchanged common grant/timefloor engine.
+pub(crate) fn authorize_resolved_start_retaining_v1(
+    journal: &mut crate::Journal,
+    peer: &PublicApiPeer,
+    capability_id: CapabilityId,
+    request: &ResolvedPublicMutationRequestV1,
+    native: &mut crate::public_mutation_compiler::PublicMutationAuthorizationNativeV1,
+) -> Result<(PublicMutationAuthorizationV1, CurrentCapabilityDecisionV1), CliAuthorizationAdapterError> {
+    if request.method() != PublicApiAuditMethodV1::StartSandbox {
+        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+    }
+    authorize_resolved_public_mutation_inner_v1(journal, peer, capability_id, request, Some(native))
+}
+
+// C18 is already entered before the shared canonical authorization engine.
+pub(crate) fn authorize_resolved_execution_retaining_v2(
+    journal: &mut crate::Journal,
+    peer: &PublicApiPeer,
+    capability_id: CapabilityId,
+    request: &ResolvedPublicMutationRequestV1,
+    native: &mut crate::public_mutation_compiler::PublicMutationAuthorizationNativeV1,
+) -> Result<(PublicMutationAuthorizationV1, CurrentCapabilityDecisionV1), CliAuthorizationAdapterError> {
+    if request.method() != PublicApiAuditMethodV1::CreateExecution {
+        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+    }
+    journal.require_execution_admission_current_v2()
+        .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+    authorize_resolved_public_mutation_inner_v1(journal, peer, capability_id, request, Some(native))
+}
+
+fn authorize_resolved_public_mutation_inner_v1(
+    journal: &mut crate::Journal,
+    peer: &PublicApiPeer,
+    capability_id: CapabilityId,
+    request: &ResolvedPublicMutationRequestV1,
+    mut native: Option<&mut crate::public_mutation_compiler::delete_admission::DeleteAuthorizationNativeV1>,
+) -> Result<(PublicMutationAuthorizationV1, CurrentCapabilityDecisionV1), CliAuthorizationAdapterError> {
     if request
         .target_project()
         .is_some_and(|project| project != peer.project())
@@ -249,13 +179,15 @@ pub(crate) fn authorize_resolved_public_mutation_v1(
         return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
     }
 
-    let protected_clock = ControllerProtectedClockV1::open_fixed()
-        .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+    let protected_clock = match native.as_deref_mut() {
+        Some(native) => ControllerProtectedClockV1::open_retaining_v1(&mut native.boot),
+        None => ControllerProtectedClockV1::open_fixed(),
+    }.map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
     let mut owner = DormantCliAuthorizationOwnerV1 {
         journal,
         protected_clock,
     };
-    owner.authorize_public_mutation_with_decision(
+    let authorized = owner.authorize_public_mutation_with_decision_inner(
         peer,
         capability_id,
         request.method(),
@@ -266,7 +198,26 @@ pub(crate) fn authorize_resolved_public_mutation_v1(
             .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?
             .clone(),
         request.protobuf_body(),
-    )
+        native.as_deref_mut(),
+    )?;
+    // The ordinary protected decision, floor and independent peer post keep
+    // their original order. Only then reject a concrete new use; the same
+    // accepted-request check is repeated by resumed effect owners.
+    match native {
+        Some(native) => {
+            if native.new_use.is_some() {
+                return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+            }
+            native.new_use = Some(owner.journal.require_public_mutation_targets_live_v2(
+                peer.project(), request.request()));
+            if !matches!(native.new_use, Some(Ok(()))) {
+                return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+            }
+        }
+        None => owner.journal.require_public_mutation_targets_live_v2(peer.project(), request.request())
+            .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?,
+    }
+    Ok(authorized)
 }
 
 /// Authorizes operator recovery after protected state resolves its target kind.
@@ -281,13 +232,30 @@ pub(crate) fn authorize_resolved_public_mutation_v1(
 /// revocation, project, selector, method, or body mismatch.
 #[cfg(target_os = "linux")]
 pub(crate) fn authorize_public_operator_recovery_v1(
-    journal: &mut crate::Journal,
-    peer: &PublicApiPeer,
-    capability_id: CapabilityId,
-    resource_kind: aos_sandbox_core::ResourceKind,
-    selector: aos_sandbox_core::Selector,
+    journal: &mut crate::Journal, peer: &PublicApiPeer, capability_id: CapabilityId,
+    resource_kind: aos_sandbox_core::ResourceKind, selector: aos_sandbox_core::Selector,
     protobuf_body: &[u8],
 ) -> Result<PublicMutationAuthorizationV1, CliAuthorizationAdapterError> {
+    authorize_public_operator_recovery_inner_v1(journal, peer, capability_id,
+        resource_kind, selector, protobuf_body, None).map(|(authorization, _)| authorization)
+}
+
+pub(crate) fn authorize_public_operator_recovery_retaining_v1(
+    journal: &mut crate::Journal, peer: &PublicApiPeer, capability_id: CapabilityId,
+    resource_kind: aos_sandbox_core::ResourceKind, selector: aos_sandbox_core::Selector,
+    protobuf_body: &[u8],
+    native: &mut crate::public_mutation_compiler::PublicMutationAuthorizationNativeV1,
+) -> Result<(PublicMutationAuthorizationV1, CurrentCapabilityDecisionV1), CliAuthorizationAdapterError> {
+    authorize_public_operator_recovery_inner_v1(journal, peer, capability_id,
+        resource_kind, selector, protobuf_body, Some(native))
+}
+
+fn authorize_public_operator_recovery_inner_v1(
+    journal: &mut crate::Journal, peer: &PublicApiPeer, capability_id: CapabilityId,
+    resource_kind: aos_sandbox_core::ResourceKind, selector: aos_sandbox_core::Selector,
+    protobuf_body: &[u8],
+    mut native: Option<&mut crate::public_mutation_compiler::PublicMutationAuthorizationNativeV1>,
+) -> Result<(PublicMutationAuthorizationV1, CurrentCapabilityDecisionV1), CliAuthorizationAdapterError> {
     if !matches!(
         resource_kind,
         aos_sandbox_core::ResourceKind::Sandbox | aos_sandbox_core::ResourceKind::Operation
@@ -295,13 +263,16 @@ pub(crate) fn authorize_public_operator_recovery_v1(
         return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
     }
 
-    let protected_clock = ControllerProtectedClockV1::open_fixed()
+    let protected_clock = match native.as_deref_mut() {
+        Some(native) => ControllerProtectedClockV1::open_retaining_v1(&mut native.boot),
+        None => ControllerProtectedClockV1::open_fixed(),
+    }
         .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
     let mut owner = DormantCliAuthorizationOwnerV1 {
         journal,
         protected_clock,
     };
-    owner.authorize_public_mutation(
+    owner.authorize_public_mutation_with_decision_inner(
         peer,
         capability_id,
         PublicApiAuditMethodV1::OperatorRecover,
@@ -309,6 +280,7 @@ pub(crate) fn authorize_public_operator_recovery_v1(
         aos_sandbox_core::Operation::LifecycleControl,
         selector,
         protobuf_body,
+        native,
     )
 }
 
@@ -332,6 +304,18 @@ impl DormantCliAuthorizationOwnerV1<'_> {
         scope: &PublicOperationAuthorizationV1,
         protobuf_body: &[u8],
     ) -> Result<AuditAuthorizationV1, CliAuthorizationAdapterError> {
+        self.authorize_public_operation_read_inner_v1(peer, capability_id, scope, protobuf_body, None)
+            .map(|(authorization, _)| authorization)
+    }
+
+    fn authorize_public_operation_read_inner_v1(
+        &mut self,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        scope: &PublicOperationAuthorizationV1,
+        protobuf_body: &[u8],
+        native: Option<&mut crate::public_mutation_compiler::PublicMutationAuthorizationNativeV1>,
+    ) -> Result<(AuditAuthorizationV1, CurrentCapabilityDecisionV1), CliAuthorizationAdapterError> {
         if peer.project() != scope.project() {
             return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
         }
@@ -342,8 +326,10 @@ impl DormantCliAuthorizationOwnerV1<'_> {
             scope.selector().clone(),
             protobuf_body,
         )?;
-        self.authenticate_public_request(peer, capability_id, &authorization_request)?
-            .authorize_audit()
+        let (authenticated, decision) = self.authenticate_public_request_with_decision_inner(
+            peer, capability_id, &authorization_request, native,
+        )?;
+        Ok((authenticated.authorize_audit()?, decision))
     }
 
     /// Reauthorizes one exact public read against current protected state.
@@ -432,6 +418,23 @@ impl DormantCliAuthorizationOwnerV1<'_> {
         (PublicMutationAuthorizationV1, CurrentCapabilityDecisionV1),
         CliAuthorizationAdapterError,
     > {
+        self.authorize_public_mutation_with_decision_inner(
+            peer, capability_id, method, resource_kind, operation, selector, protobuf_body, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn authorize_public_mutation_with_decision_inner(
+        &mut self,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        method: PublicApiAuditMethodV1,
+        resource_kind: aos_sandbox_core::ResourceKind,
+        operation: aos_sandbox_core::Operation,
+        selector: aos_sandbox_core::Selector,
+        protobuf_body: &[u8],
+        native: Option<&mut crate::public_mutation_compiler::delete_admission::DeleteAuthorizationNativeV1>,
+    ) -> Result<(PublicMutationAuthorizationV1, CurrentCapabilityDecisionV1), CliAuthorizationAdapterError> {
         let (authorization_request, mutation_fence) = canonical_public_mutation_request_v2(
             method,
             resource_kind,
@@ -439,10 +442,11 @@ impl DormantCliAuthorizationOwnerV1<'_> {
             selector,
             protobuf_body,
         )?;
-        let (authenticated, decision) = self.authenticate_public_request_with_decision(
+        let (authenticated, decision) = self.authenticate_public_request_with_decision_inner(
             peer,
             capability_id,
             &authorization_request,
+            native,
         )?;
         let authorization = authenticated.authorize_public_mutation(mutation_fence)?;
         Ok((authorization, decision))
@@ -485,8 +489,20 @@ impl DormantCliAuthorizationOwnerV1<'_> {
         ),
         CliAuthorizationAdapterError,
     > {
-        peer.recheck()
-            .map_err(|_| CliAuthorizationAdapterError::InvalidAuthenticatedEvidence)?;
+        self.authenticate_public_request_with_decision_inner(peer, capability_id, canonical_request, None)
+    }
+
+    fn authenticate_public_request_with_decision_inner(
+        &mut self,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        canonical_request: &[u8],
+        mut native: Option<&mut crate::public_mutation_compiler::delete_admission::DeleteAuthorizationNativeV1>,
+    ) -> Result<(DormantAuthenticatedCliRequestV1, CurrentCapabilityDecisionV1), CliAuthorizationAdapterError> {
+        match native.as_deref_mut() {
+            Some(native) => peer.recheck_retaining_v1(&mut native.peers[0]),
+            None => peer.recheck(),
+        }.map_err(|_| CliAuthorizationAdapterError::InvalidAuthenticatedEvidence)?;
 
         let decoded = DecodedAuthenticatedCliRequestV1::decode_authenticated(canonical_request)?;
         let principal = peer.principal();
@@ -502,22 +518,24 @@ impl DormantCliAuthorizationOwnerV1<'_> {
             canonical_request,
             DORMANT_CLI_OBSERVATION_SCHEMA_V1,
         )?;
-        let (authorization, decision) =
-            CurrentProtectedCliAuthorizationV1::from_current_protected_capability_with_decision(
-                self.journal,
-                PublisherAuthorityLimits::default(),
-                PublisherPolicyLimits::default(),
-                capability_id,
-                peer.project(),
-                &mut self.protected_clock,
-                &decoded,
-                &identity,
-                &channel,
-            )?;
+        let (authorization, decision) = match native.as_deref_mut() {
+            Some(native) => CurrentProtectedCliAuthorizationV1::from_current_protected_capability_retaining_v1(
+                self.journal, PublisherAuthorityLimits::default(), PublisherPolicyLimits::default(),
+                capability_id, peer.project(), &mut self.protected_clock,
+                &decoded, &identity, &channel, &mut native.time_floor,
+            ),
+            None => CurrentProtectedCliAuthorizationV1::from_current_protected_capability_with_decision(
+                self.journal, PublisherAuthorityLimits::default(), PublisherPolicyLimits::default(),
+                capability_id, peer.project(), &mut self.protected_clock,
+                &decoded, &identity, &channel,
+            ),
+        }?;
 
         // Protected journal reads must not extend the lifetime of transport proof.
-        peer.recheck()
-            .map_err(|_| CliAuthorizationAdapterError::InvalidAuthenticatedEvidence)?;
+        match native.as_deref_mut() {
+            Some(native) => peer.recheck_retaining_v1(&mut native.peers[1]),
+            None => peer.recheck(),
+        }.map_err(|_| CliAuthorizationAdapterError::InvalidAuthenticatedEvidence)?;
         let authenticated = DormantAuthenticatedCliRequestV1::bind(
             decoded,
             identity,
@@ -538,21 +556,35 @@ where
     ///
     /// This source-only factory registers no public command or route and grants
     /// no effect authority. The returned owner derives CLI provenance from
-    /// an authenticated local-session record or a live registered public TLS
-    /// peer, the fixed controller-owned paired clock, and current protected
-    /// state. Both paths bind the capability to the authenticated project.
+    /// a live registered public TLS peer, the fixed controller-owned paired
+    /// clock, and current protected state. The capability binds to that project.
     ///
     /// # Errors
     ///
-    /// Returns [`ProtectedOwnershipClockError`](crate::ProtectedOwnershipClockError)
+    /// Returns [`ProtectedOwnershipClockError`](aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError)
     /// when the fixed kernel boot identity cannot be read or validated.
     #[cfg(target_os = "linux")]
     pub(crate) fn dormant_cli_authorization(
         &mut self,
-    ) -> Result<DormantCliAuthorizationOwnerV1<'_>, crate::ProtectedOwnershipClockError> {
+    ) -> Result<DormantCliAuthorizationOwnerV1<'_>, aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError> {
         Ok(DormantCliAuthorizationOwnerV1 {
             journal: self.reconciler.journal_mut(),
             protected_clock: ControllerProtectedClockV1::open_fixed()?,
         })
     }
 }
+
+pub(super) fn authorize_public_operation_read_retaining_v1(
+    journal: &mut crate::Journal,
+    peer: &PublicApiPeer,
+    capability: CapabilityId,
+    scope: &PublicOperationAuthorizationV1,
+    protobuf_body: &[u8],
+    native: &mut crate::public_mutation_compiler::PublicMutationAuthorizationNativeV1,
+) -> Result<(AuditAuthorizationV1, CurrentCapabilityDecisionV1), CliAuthorizationAdapterError> {
+    let protected_clock = ControllerProtectedClockV1::open_retaining_v1(&mut native.boot)
+        .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+    DormantCliAuthorizationOwnerV1 { journal, protected_clock }
+        .authorize_public_operation_read_inner_v1(peer, capability, scope, protobuf_body, Some(native))
+}
+

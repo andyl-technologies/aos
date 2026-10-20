@@ -20,8 +20,15 @@
 //! requirements. This module never reconstructs custody from a path or durable
 //! bytes and does not publish Network Apply.
 
+pub(crate) mod acquisition_clock;
 mod format;
 mod systemd;
+mod retaining;
+mod opening;
+
+pub use opening::NetworkNamespaceStoreOpeningOriginalV4;
+
+pub use retaining::{NetworkNamespaceStoreFailureV4, NetworkNamespaceStoreMutationOriginalV4, NetworkNamespaceStoreRefusalV4};
 
 use std::collections::BTreeMap;
 use std::os::fd::BorrowedFd;
@@ -144,6 +151,9 @@ impl SystemdNetworkNamespaceStore {
         name: &NetworkNamespaceStoreName,
         namespace: &NamespaceFd,
     ) -> Result<NetworkNamespaceStoreOutcome, NetworkNamespaceStoreError> {
+        if self.core.backend.is_selected_v4() {
+            return Err(NetworkNamespaceStoreError::Poisoned);
+        }
         self.core.store(name, namespace)
     }
 
@@ -157,6 +167,9 @@ impl SystemdNetworkNamespaceStore {
         &self,
         name: &NetworkNamespaceStoreName,
     ) -> Result<NetworkNamespaceStoreOutcome, NetworkNamespaceStoreError> {
+        if self.core.backend.is_selected_v4() {
+            return Err(NetworkNamespaceStoreError::Poisoned);
+        }
         self.core.remove(name)
     }
 }
@@ -193,24 +206,20 @@ impl<B: StoreBackend> StoreCore<B> {
         maximum_entries: usize,
         host_network_identity: NamespaceIdentity,
     ) -> Result<Self, NetworkNamespaceStoreError> {
-        if maximum_entries == 0
-            || maximum_entries > MAXIMUM_RETAINED_NETWORK_NAMESPACES
-            || initial.len() > maximum_entries
-        {
-            return Err(NetworkNamespaceStoreError::Capacity);
-        }
-        if host_network_identity.device == 0 || host_network_identity.inode == 0 {
-            return Err(NetworkNamespaceStoreError::ReplayConflict);
-        }
-        if initial
-            .values()
-            .any(|identity| *identity == host_network_identity)
-        {
-            return Err(NetworkNamespaceStoreError::ReplayConflict);
-        }
+        validate_initial_store_inputs(&initial, maximum_entries, host_network_identity)?;
         let snapshot = backend
             .snapshot()
             .map_err(NetworkNamespaceStoreError::Systemd)?;
+        Self::finish_initial_observation(backend, initial, maximum_entries, host_network_identity, &snapshot)
+    }
+
+    fn finish_initial_observation(
+        backend: B,
+        initial: BTreeMap<NetworkNamespaceStoreName, NamespaceIdentity>,
+        maximum_entries: usize,
+        host_network_identity: NamespaceIdentity,
+        snapshot: &StoreSnapshot,
+    ) -> Result<Self, NetworkNamespaceStoreError> {
         validate_snapshot(&snapshot, &initial, maximum_entries)?;
 
         Ok(Self {
@@ -237,13 +246,22 @@ impl<B: StoreBackend> StoreCore<B> {
         name: &NetworkNamespaceStoreName,
         namespace: &NamespaceFd,
     ) -> Result<NetworkNamespaceStoreOutcome, NetworkNamespaceStoreError> {
+        self.store_using_v4(name, namespace, &self.backend)
+    }
+
+    fn store_using_v4(
+        &self,
+        name: &NetworkNamespaceStoreName,
+        namespace: &NamespaceFd,
+        backend: &impl StoreBackend,
+    ) -> Result<NetworkNamespaceStoreOutcome, NetworkNamespaceStoreError> {
         self.ensure_reconcilable()?;
         if namespace.kind() != NamespaceKind::Network {
             return Err(NetworkNamespaceStoreError::ReplayConflict);
         }
         let mut state = self.lock_state()?;
         self.ensure_reconcilable()?;
-        self.verify_current(&state)?;
+        self.verify_current_using_v4(&state, backend)?;
 
         let identity = namespace.identity();
         if identity == self.host_network_identity {
@@ -263,12 +281,12 @@ impl<B: StoreBackend> StoreCore<B> {
             return Err(NetworkNamespaceStoreError::Capacity);
         }
 
-        self.backend
+        backend
             .store(name, namespace.as_fd())
             .map_err(|error| self.backend_error(error))?;
         let mut expected = state.clone();
         expected.insert(name.clone(), identity);
-        match self.post_mutation_snapshot(&state, &expected)? {
+        match self.post_mutation_snapshot_using_v4(&state, &expected, backend)? {
             MutationReadback::Accepted => {
                 *state = expected;
                 Ok(NetworkNamespaceStoreOutcome::Stored)
@@ -281,20 +299,28 @@ impl<B: StoreBackend> StoreCore<B> {
         &self,
         name: &NetworkNamespaceStoreName,
     ) -> Result<NetworkNamespaceStoreOutcome, NetworkNamespaceStoreError> {
+        self.remove_using_v4(name, &self.backend)
+    }
+
+    fn remove_using_v4(
+        &self,
+        name: &NetworkNamespaceStoreName,
+        backend: &impl StoreBackend,
+    ) -> Result<NetworkNamespaceStoreOutcome, NetworkNamespaceStoreError> {
         self.ensure_reconcilable()?;
         let mut state = self.lock_state()?;
         self.ensure_reconcilable()?;
-        self.verify_current(&state)?;
+        self.verify_current_using_v4(&state, backend)?;
         if !state.contains_key(name) {
             return Ok(NetworkNamespaceStoreOutcome::Absent);
         }
 
-        self.backend
+        backend
             .remove(name)
             .map_err(|error| self.backend_error(error))?;
         let mut expected = state.clone();
         expected.remove(name);
-        match self.post_mutation_snapshot(&state, &expected)? {
+        match self.post_mutation_snapshot_using_v4(&state, &expected, backend)? {
             MutationReadback::Accepted => {
                 *state = expected;
                 Ok(NetworkNamespaceStoreOutcome::Removed)
@@ -303,24 +329,24 @@ impl<B: StoreBackend> StoreCore<B> {
         }
     }
 
-    fn verify_current(
+    fn verify_current_using_v4(
         &self,
         current: &BTreeMap<NetworkNamespaceStoreName, NamespaceIdentity>,
+        backend: &impl StoreBackend,
     ) -> Result<(), NetworkNamespaceStoreError> {
-        let snapshot = self
-            .backend
+        let snapshot = backend
             .snapshot()
             .map_err(NetworkNamespaceStoreError::Systemd)?;
         validate_snapshot(&snapshot, current, self.maximum_entries)
     }
 
-    fn post_mutation_snapshot(
+    fn post_mutation_snapshot_using_v4(
         &self,
         previous: &BTreeMap<NetworkNamespaceStoreName, NamespaceIdentity>,
         expected: &BTreeMap<NetworkNamespaceStoreName, NamespaceIdentity>,
+        backend: &impl StoreBackend,
     ) -> Result<MutationReadback, NetworkNamespaceStoreError> {
-        let snapshot = self
-            .backend
+        let snapshot = backend
             .snapshot()
             .map_err(|error| self.ambiguous(error))?;
         if snapshot.maximum_entries != self.maximum_entries
@@ -371,6 +397,29 @@ impl<B: StoreBackend> StoreCore<B> {
     }
 }
 
+fn validate_initial_store_inputs(
+    initial: &BTreeMap<NetworkNamespaceStoreName, NamespaceIdentity>,
+    maximum_entries: usize,
+    host_network_identity: NamespaceIdentity,
+) -> Result<(), NetworkNamespaceStoreError> {
+        if maximum_entries == 0
+            || maximum_entries > MAXIMUM_RETAINED_NETWORK_NAMESPACES
+            || initial.len() > maximum_entries
+        {
+            return Err(NetworkNamespaceStoreError::Capacity);
+        }
+        if host_network_identity.device == 0 || host_network_identity.inode == 0 {
+            return Err(NetworkNamespaceStoreError::ReplayConflict);
+        }
+        if initial
+            .values()
+            .any(|identity| *identity == host_network_identity)
+        {
+            return Err(NetworkNamespaceStoreError::ReplayConflict);
+        }
+    Ok(())
+}
+
 enum MutationReadback {
     Accepted,
     Rejected,
@@ -394,3 +443,15 @@ fn validate_snapshot(
 
 #[cfg(test)]
 mod tests;
+
+impl SystemdNetworkNamespaceStore {
+    pub(crate) fn inventory_is_empty_at_capacity_v2(&self, maximum_entries: u32)
+        -> Result<bool, NetworkNamespaceStoreError>
+    {
+        self.core.ensure_reconcilable()?;
+        let state = self.core.lock_state()?;
+        self.core.ensure_reconcilable()?;
+        Ok(self.core.backend.is_selected_v4() && state.is_empty()
+            && usize::try_from(maximum_entries).ok() == Some(self.core.maximum_entries))
+    }
+}

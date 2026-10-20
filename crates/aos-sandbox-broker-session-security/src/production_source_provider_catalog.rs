@@ -174,32 +174,13 @@ macro_rules! catalog_install_read_complete {
     (Selected, $bytes:ident) => { Ok::<(), ProductionSourceProviderCatalogInstallErrorV1>(()) };
 }
 
-macro_rules! read_systemd_catalog_recipe {
-    ($name:ident, $maximum:ident, $disposition:ident, $pending:ident) => {{
-        let directory = catalog_install_credential_directory!($disposition, $pending);
-        let directory = Path::new(&directory);
-        if !directory.is_absolute() {
-            return Err(ProductionSourceProviderCatalogInstallErrorV1::Credential("directory is not absolute"));
-        }
-        let directory_fd = catalog_install_step!(
-            $disposition, $pending, directory,
-            open(directory, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()),
-            ProductionSourceProviderCatalogInstallErrorV1::Credential("directory")
-        );
-        let directory_stat = catalog_install_step!(
-            $disposition, $pending, directory_stat, fstat(&directory_fd),
-            ProductionSourceProviderCatalogInstallErrorV1::Credential("directory metadata")
-        );
-        if FileType::from_raw_mode(directory_stat.st_mode) != FileType::Directory
-            || directory_stat.st_uid != 0
-            || !matches!(directory_stat.st_mode & 0o7777, 0o500 | 0o700)
-        {
-            return Err(ProductionSourceProviderCatalogInstallErrorV1::Credential("directory protection"));
-        }
-
+// The same bounded file read is used for delivered credentials and named
+// installed-file posts. Directory provenance remains with the closed caller.
+macro_rules! read_catalog_file_recipe {
+    ($directory_fd:ident, $name:ident, $maximum:ident, $disposition:ident, $pending:ident) => {{
         let descriptor = catalog_install_step!(
             $disposition, $pending, descriptor,
-            openat(&directory_fd, $name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty()),
+            openat(&$directory_fd, $name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty()),
             ProductionSourceProviderCatalogInstallErrorV1::Credential("publication file")
         );
         let before = catalog_install_step!(
@@ -240,6 +221,33 @@ macro_rules! read_systemd_catalog_recipe {
     }};
 }
 
+macro_rules! read_systemd_catalog_recipe {
+    ($name:ident, $maximum:ident, $disposition:ident, $pending:ident) => {{
+        let directory = catalog_install_credential_directory!($disposition, $pending);
+        let directory = Path::new(&directory);
+        if !directory.is_absolute() {
+            return Err(ProductionSourceProviderCatalogInstallErrorV1::Credential("directory is not absolute"));
+        }
+        let directory_fd = catalog_install_step!(
+            $disposition, $pending, directory,
+            open(directory, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()),
+            ProductionSourceProviderCatalogInstallErrorV1::Credential("directory")
+        );
+        let directory_stat = catalog_install_step!(
+            $disposition, $pending, directory_stat, fstat(&directory_fd),
+            ProductionSourceProviderCatalogInstallErrorV1::Credential("directory metadata")
+        );
+        if FileType::from_raw_mode(directory_stat.st_mode) != FileType::Directory
+            || directory_stat.st_uid != 0
+            || !matches!(directory_stat.st_mode & 0o7777, 0o500 | 0o700)
+        {
+            return Err(ProductionSourceProviderCatalogInstallErrorV1::Credential("directory protection"));
+        }
+
+        read_catalog_file_recipe!(directory_fd, $name, $maximum, $disposition, $pending)
+    }};
+}
+
 macro_rules! catalog_install_credential_directory {
     (Legacy, $pending:ident) => {
         std::env::var_os("CREDENTIALS_DIRECTORY").ok_or(
@@ -247,7 +255,12 @@ macro_rules! catalog_install_credential_directory {
         )?
     };
     (Selected, $pending:ident) => {{
-        $pending.directory_name = std::env::var_os("CREDENTIALS_DIRECTORY");
+        $pending.directory_name = match $pending.directory_role {
+            SelectedCatalogCredentialDirectoryV1::MountEndpoint
+            | SelectedCatalogCredentialDirectoryV1::NetworkEndpoint =>
+                Some(std::ffi::OsString::from($pending.directory_role.path())),
+            _ => std::env::var_os("CREDENTIALS_DIRECTORY"),
+        };
         let expected_directory = $pending.directory_role.path();
         match $pending.directory_name.as_ref() {
             Some(directory) if directory.as_os_str() == std::ffi::OsStr::new(expected_directory) => directory,
@@ -444,8 +457,44 @@ macro_rules! catalog_install_written_metadata {
     };
 }
 
+// File modes and replacement policy are closed native recipes. Source keeps
+// its existing replacement semantics; fixed endpoints only accept identical
+// already-installed bytes and never rotate custody during cold opening.
+macro_rules! catalog_install_mode {
+    (SourceCatalog) => { 0o600 };
+    (FixedEndpoint) => { 0o400 };
+}
+
+macro_rules! catalog_install_effect_gate {
+    (SourceCatalog, $gate:ident) => {};
+    (FixedEndpoint, $gate:ident) => { $gate()?; };
+}
+
+macro_rules! catalog_install_write {
+    (SourceCatalog, $pending:ident, $file:ident, $bytes:ident) => { $file.write_all($bytes) };
+    (FixedEndpoint, $pending:ident, $file:ident, $bytes:ident) => {{
+        // Fixed endpoint installation has one prepaid native attempt. A short
+        // write or EINTR remains a refusal; it never starts an unpriced retry.
+        $pending.fixed_write_native = Some($file.write($bytes));
+        match $pending.fixed_write_native.as_ref() {
+            Some(Ok(count)) if *count == $bytes.len() => Ok(()),
+            Some(Ok(_)) => Err(std::io::Error::new(std::io::ErrorKind::WriteZero,
+                "fixed endpoint credential short write")),
+            Some(Err(_)) | None => Err(std::io::Error::other(
+                "fixed endpoint credential native write retained")),
+        }
+    }};
+}
+
+macro_rules! catalog_install_fixed_existing {
+    (SourceCatalog, $pending:ident, $directory:ident, $name:ident, $bytes:ident) => {};
+    (FixedEndpoint, $pending:ident, $directory:ident, $name:ident, $bytes:ident) => {
+        return $pending.compare_existing_once_v4($directory, $name, $bytes);
+    };
+}
+
 macro_rules! install_catalog_file_recipe {
-    ($directory:ident, $name:ident, $bytes:ident, $uid:ident, $disposition:ident, $pending:ident) => {{
+    ($directory:ident, $name:ident, $bytes:ident, $uid:ident, $disposition:ident, $pending:ident, $recipe:ident, $gate:ident) => {{
         if $bytes.is_empty() || $bytes.len() > MAXIMUM_CATALOG_ROWS_BYTES {
             return Err(ProductionSourceProviderCatalogInstallErrorV1::Credential("publication length"));
         }
@@ -456,10 +505,11 @@ macro_rules! install_catalog_file_recipe {
                     ProductionSourceProviderCatalogInstallErrorV1::State("existing metadata")
                 );
                 if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
-                    || stat.st_uid != $uid || stat.st_nlink != 1 || stat.st_mode & 0o7777 != 0o600
+                    || stat.st_uid != $uid || stat.st_nlink != 1 || stat.st_mode & 0o7777 != catalog_install_mode!($recipe)
                 {
                     return Err(ProductionSourceProviderCatalogInstallErrorV1::State("existing publication protection"));
                 }
+                catalog_install_fixed_existing!($recipe, $pending, $directory, $name, $bytes);
             }
             Err(error) if catalog_install_missing!($disposition, error) => {}
             Err(_) => return Err(ProductionSourceProviderCatalogInstallErrorV1::State("existing publication")),
@@ -487,19 +537,22 @@ macro_rules! install_catalog_file_recipe {
                 ProductionSourceProviderCatalogInstallErrorV1::Publication("nonce format")
             );
         }
+        catalog_install_effect_gate!($recipe, $gate);
         let descriptor = catalog_install_step!(
             $disposition, $pending, descriptor,
-            openat($directory, temporary_name.as_str(), OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::from_raw_mode(0o600)),
+            openat($directory, temporary_name.as_str(), OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::from_raw_mode(catalog_install_mode!($recipe))),
             ProductionSourceProviderCatalogInstallErrorV1::Publication("temporary file")
         );
         let result = catalog_install_written_attempt!($disposition, {
+            catalog_install_effect_gate!($recipe, $gate);
             catalog_install_step!(
-                $disposition, $pending, mode_result, fchmod(&descriptor, Mode::from_raw_mode(0o600)),
+                $disposition, $pending, mode_result, fchmod(&descriptor, Mode::from_raw_mode(catalog_install_mode!($recipe))),
                 ProductionSourceProviderCatalogInstallErrorV1::Publication("file mode")
             );
             let mut file = catalog_install_file!($disposition, $pending, descriptor);
+            catalog_install_effect_gate!($recipe, $gate);
             catalog_install_step!(
-                $disposition, $pending, write_result, file.write_all($bytes),
+                $disposition, $pending, write_result, catalog_install_write!($recipe, $pending, file, $bytes),
                 ProductionSourceProviderCatalogInstallErrorV1::Publication("write")
             );
             let stat = catalog_install_step!(
@@ -508,19 +561,22 @@ macro_rules! install_catalog_file_recipe {
             );
             if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
                 || stat.st_uid != $uid || stat.st_nlink != 1
-                || stat.st_mode & 0o7777 != 0o600 || stat.st_size != $bytes.len() as i64
+                || stat.st_mode & 0o7777 != catalog_install_mode!($recipe) || stat.st_size != $bytes.len() as i64
             {
                 return Err(ProductionSourceProviderCatalogInstallErrorV1::Publication("temporary file changed"));
             }
+            catalog_install_effect_gate!($recipe, $gate);
             catalog_install_step!(
                 $disposition, $pending, file_sync, file.sync_all(),
                 ProductionSourceProviderCatalogInstallErrorV1::Publication("file sync")
             );
+            catalog_install_effect_gate!($recipe, $gate);
             catalog_install_step!(
                 $disposition, $pending, rename_result,
                 renameat($directory, temporary_name.as_str(), $directory, $name),
                 ProductionSourceProviderCatalogInstallErrorV1::Publication("rename")
             );
+            catalog_install_effect_gate!($recipe, $gate);
             catalog_install_step!(
                 $disposition, $pending, directory_sync, fsync($directory),
                 ProductionSourceProviderCatalogInstallErrorV1::Publication("directory sync")
@@ -539,8 +595,14 @@ fn install_in_directory(
     bytes: &[u8],
     expected_uid: u32,
 ) -> Result<(), ProductionSourceProviderCatalogInstallErrorV1> {
-    install_catalog_file_recipe!(directory, name, bytes, expected_uid, Legacy, unused)
+    install_catalog_file_recipe!(directory, name, bytes, expected_uid, Legacy, unused, SourceCatalog, unused)
 }
+
+mod fixed_endpoint;
+pub use fixed_endpoint::{
+    SelectedFixedEndpointInstallClosedV4, SelectedMountEndpointInstallOriginalV4,
+    SelectedNetworkEndpointInstallOriginalV4,
+};
 
 #[derive(Default)]
 struct SelectedCredentialReadV1 {
@@ -580,13 +642,16 @@ enum SelectedCatalogCredentialDirectoryV1 {
     #[default]
     Source,
     Mount,
+    MountEndpoint,
+    NetworkEndpoint,
 }
 
 impl SelectedCatalogCredentialDirectoryV1 {
     fn path(&self) -> &'static str {
         match self {
             Self::Source => "/run/credentials/aos-source-providerd.service",
-            Self::Mount => "/run/credentials/aos-sandbox-mountd.service",
+            Self::Mount | Self::MountEndpoint => "/run/credentials/aos-sandbox-mountd.service",
+            Self::NetworkEndpoint => "/run/credentials/aos-netd.service",
         }
     }
 }
@@ -714,6 +779,8 @@ struct SelectedCatalogWriteV1 {
     rename_result: Option<Result<(), rustix::io::Errno>>,
     directory_sync: Option<Result<(), rustix::io::Errno>>,
     published_stat: Option<Result<Stat, rustix::io::Errno>>,
+    fixed_existing: Option<Box<SelectedCredentialReadV1>>,
+    fixed_write_native: Option<std::io::Result<usize>>,
 }
 
 /// Lends a selected installer's actual retained cause without copying it.
@@ -755,7 +822,7 @@ pub struct SelectedSourceProviderCatalogInstallFailureV1 {
     manifest_name: Option<String>,
     manifest_write: SelectedCatalogWriteV1,
     publication_write: SelectedCatalogWriteV1,
-    readback: crate::production_source_provider::SelectedCatalogPairV1,
+    readback: crate::source_catalog_readback::SelectedCatalogPairV1,
     first_failure: Option<ProductionSourceProviderCatalogInstallErrorV1>,
 }
 
@@ -964,7 +1031,7 @@ impl SelectedSourceProviderCatalogInstallFailureV1 {
             return Some(error);
         }
         if let Some(error) = self.readback.failure() {
-            use crate::production_source_provider::CatalogReadFailureRefV1;
+            use crate::source_catalog_readback::CatalogReadFailureRefV1;
             return Some(match error {
                 CatalogReadFailureRefV1::Kernel(error) => SelectedSourceProviderCatalogFailureRefV1::Kernel(error),
                 CatalogReadFailureRefV1::Path(error) => SelectedSourceProviderCatalogFailureRefV1::Path(error),
@@ -987,7 +1054,7 @@ impl SelectedSourceProviderCatalogInstallFailureV1 {
             manifest_name: None,
             manifest_write: SelectedCatalogWriteV1::default(),
             publication_write: SelectedCatalogWriteV1::default(),
-            readback: crate::production_source_provider::SelectedCatalogPairV1::default(),
+            readback: crate::source_catalog_readback::SelectedCatalogPairV1::default(),
             first_failure: None,
         }
     }
@@ -1051,7 +1118,7 @@ impl SelectedSourceProviderCatalogInstallFailureV1 {
         let bytes = self.manifest.bytes.as_slice();
         let expected_uid = 0;
         let pending = &mut self.manifest_write;
-        install_catalog_file_recipe!(directory, name, bytes, expected_uid, Selected, pending)?;
+        install_catalog_file_recipe!(directory, name, bytes, expected_uid, Selected, pending, SourceCatalog, unused)?;
         self.bookend(2)?;
         self.bookend(3)?;
 
@@ -1062,7 +1129,7 @@ impl SelectedSourceProviderCatalogInstallFailureV1 {
         let name = CREDENTIAL_NAME;
         let bytes = self.publication.bytes.as_slice();
         let pending = &mut self.publication_write;
-        install_catalog_file_recipe!(directory, name, bytes, expected_uid, Selected, pending)?;
+        install_catalog_file_recipe!(directory, name, bytes, expected_uid, Selected, pending, SourceCatalog, unused)?;
         self.bookend(4)?;
         self.bookend(5)?;
 

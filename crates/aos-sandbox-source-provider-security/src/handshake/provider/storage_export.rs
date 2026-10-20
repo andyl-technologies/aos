@@ -84,7 +84,7 @@ impl CurrentProviderIngressSessionV1 {
     /// selected row, request, or validity interval.
     pub fn sign_recovered_storage_export_request(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         selected: &crate::ProtectedProviderCatalogSelectionV1<'_>,
         request: StorageLiveExportRequestV1,
     ) -> Result<SignedStorageLiveExportRequestV1, SourceProviderSecurityError> {
@@ -121,7 +121,7 @@ impl CurrentProviderIngressSessionV1 {
 
 fn validate_recovered_storage_plan(
     session: &CurrentProviderIngressSessionV1,
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     selected: &crate::ProtectedProviderCatalogSelectionV1<'_>,
     request: &StorageLiveExportRequestV1,
     now_seconds: i64,
@@ -239,7 +239,7 @@ fn validate_recovered_storage_plan(
 }
 
 fn validate_signed_storage_plan_basis(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     authorization: &ProviderOutcomeAuthorizationV1,
     selected: &crate::ProtectedProviderCatalogSelectionV1<'_>,
     request: &StorageLiveExportRequestV1,

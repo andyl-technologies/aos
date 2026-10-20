@@ -1159,6 +1159,7 @@ let
   factoryInventory = {
     "boot/aos-uki.nix" = "linux-only-package-factory";
     "build-support/trivial-builders.nix" = "native-build-helper-factory";
+    "security/aos-environment-provision.nix" = "target-independent-package-factory";
     "security/aos-nix-online-store-reader.nix" = "linux-only-package-factory";
     "system/dbus-conf.nix" = "target-independent-package-factory";
   };

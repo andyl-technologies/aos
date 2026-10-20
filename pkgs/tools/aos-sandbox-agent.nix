@@ -8,6 +8,8 @@
   protobuf,
   stdenv,
   buildPackages,
+  linux,
+  kernelCloneLayout ? linux.dev,
 }: let
   version = "0.1.0";
   buildProtobuf =
@@ -18,11 +20,12 @@
   inherit (workspaceCargo) src cargoDeps;
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
+    AOS_KERNEL_CLONE_LAYOUT_DIR = "${kernelCloneLayout}/share/aos-kernel-clone-layout-v1";
   };
   cargoArtifactContract = {
     family = "aos-sandbox-agent-native";
     checkType = "debug";
-    nativeInputs = map toString [buildProtobuf];
+    nativeInputs = map toString [buildProtobuf kernelCloneLayout];
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-sandbox-agent-artifacts";
@@ -35,9 +38,9 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-guest --bin aos-sandbox-guest-agent --bin aos-sandbox-guest-exec --bin aos-sandbox-guest-init --bin aos-sandbox-exec-gate --bin aos-sandbox-guest-root-builder --bin aos-sandbox-guest-root-tree-digest"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-guest --features aos-sandbox-guest/selected-kernel-clone-layout --bin aos-sandbox-guest-agent --bin aos-sandbox-guest-exec --bin aos-sandbox-guest-init --bin aos-sandbox-exec-gate --bin aos-sandbox-guest-root-builder --bin aos-sandbox-guest-root-tree-digest"
     ];
-    buildDeps = [buildProtobuf];
+    buildDeps = [buildProtobuf (toString kernelCloneLayout)];
     runtimeDeps = [];
   };
 in
@@ -45,9 +48,9 @@ in
     pname = "aos-sandbox-agent";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-guest --bin aos-sandbox-guest-agent --bin aos-sandbox-guest-exec --bin aos-sandbox-guest-init --bin aos-sandbox-exec-gate --bin aos-sandbox-guest-root-builder --bin aos-sandbox-guest-root-tree-digest";
+    cargoFlags = "-p aos-sandbox-guest --features aos-sandbox-guest/selected-kernel-clone-layout --bin aos-sandbox-guest-agent --bin aos-sandbox-guest-exec --bin aos-sandbox-guest-init --bin aos-sandbox-exec-gate --bin aos-sandbox-guest-root-builder --bin aos-sandbox-guest-root-tree-digest";
     doCheck = false;
-    buildDeps = [buildProtobuf];
+    buildDeps = [buildProtobuf (toString kernelCloneLayout)];
     runtimeDeps = [];
 
     postInstall = ''

@@ -225,7 +225,8 @@ impl<Kind: InventorySnapshotKind> SnapshotRecord<Kind> {
                 self.key(),
                 self.encode(),
             )],
-        ).map_err(crate::journal::JournalError::from)?)
+        )
+        .map_err(crate::journal::JournalError::from)?)
     }
 
     pub(crate) fn encoded_len(&self) -> usize {
@@ -417,29 +418,192 @@ impl<Kind: InventorySnapshotKind> SnapshotHistory<Kind> {
 /// # Errors
 ///
 /// Rejects conflicting history, commit failure, or failed post-commit readback.
+pub(crate) fn canonical_snapshot_carrier_geometry_data_v2<Kind: InventorySnapshotKind>()
+-> Option<(usize, usize)> {
+    let carriers = std::mem::size_of::<SnapshotRecord<Kind>>()
+        .checked_add(std::mem::size_of::<SnapshotHistory<Kind>>())?
+        .checked_add(std::mem::size_of::<Kind::Inventory>())?
+        .checked_add(std::mem::size_of::<MountInventoryCommitRecipeV2<'_>>())?
+        .checked_add(std::mem::size_of::<MountInventorySnapshotRetainedV2<Kind>>())?
+        .checked_mul(4)?
+        .checked_add(std::mem::size_of::<JournalTransaction>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<JournalRecord>().checked_mul(3)?)?;
+    Some((FIXED_RECORD_BYTES, carriers))
+}
+
+/// Borrows one exact canonical Mount snapshot and its unchanged latest row.
+pub(crate) struct MountInventoryCommitRecipeV2<'transaction> {
+    transaction: &'transaction JournalTransaction,
+    namespace: RecordNamespace,
+    method: BrokerMethod,
+    prior_digest: Option<[u8; 32]>,
+}
+
+impl<'transaction> MountInventoryCommitRecipeV2<'transaction> {
+    fn from_canonical_record_v2<Kind: InventorySnapshotKind>(
+        journal: &Journal,
+        transaction: &'transaction JournalTransaction,
+    ) -> Self {
+        Self {
+            transaction,
+            namespace: Kind::NAMESPACE,
+            method: Kind::METHOD,
+            prior_digest: journal
+                .get(Kind::NAMESPACE, KEY)
+                .map(|bytes| Sha256::digest(bytes).into()),
+        }
+    }
+
+    pub(crate) fn require_destination_transaction_v2(
+        &self,
+        journal: &Journal,
+        transaction: &JournalTransaction,
+    ) -> Result<(), crate::JournalError> {
+        if self.transaction != transaction
+            || self.method != BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
+            || self.namespace != RecordNamespace::DestinationSlotInventory
+            || self.prior_digest
+                != journal
+                    .get(self.namespace, KEY)
+                    .map(|bytes| <[u8; 32]>::from(Sha256::digest(bytes)))
+        {
+            return Err(crate::JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn persist_snapshot<Kind: InventorySnapshotKind>(
     journal: &mut Journal,
     history: SnapshotHistory<Kind>,
     record: SnapshotRecord<Kind>,
     inventory: Kind::Inventory,
 ) -> Result<(SnapshotRecord<Kind>, Kind::Inventory, bool), MountAttemptError> {
-    let (record, inventory, recorded) = match history.outcome(&record, &inventory)? {
-        SnapshotDecision::Replay => (record, inventory, false),
-        SnapshotDecision::Unchanged => {
-            let (current, current_inventory) =
-                history.record.ok_or(MountAttemptError::CorruptState)?;
-            (current, current_inventory, false)
-        }
-        SnapshotDecision::Record => {
-            journal.commit(&record.transaction()?)?;
-            (record, inventory, true)
-        }
-    };
-    let committed = SnapshotHistory::<Kind>::load(journal)?;
-    if committed.record.as_ref().map(|value| &value.0) != Some(&record) {
-        return Err(MountAttemptError::CorruptState);
+    persist_snapshot_with_commit_v2(
+        journal,
+        history,
+        record,
+        inventory,
+        |journal, transaction, _recipe| journal.commit(transaction).map_err(Into::into),
+    )
+}
+
+/// Retains the same canonical Mount reducer's constructed append prefixes.
+pub(crate) struct MountInventorySnapshotRetainedV2<Kind: InventorySnapshotKind> {
+    prior_digest: Option<[u8; 32]>,
+    history: Option<SnapshotHistory<Kind>>,
+    candidate: Option<(SnapshotRecord<Kind>, Kind::Inventory)>,
+    superseded: Option<(SnapshotRecord<Kind>, Kind::Inventory)>,
+    transaction: Option<JournalTransaction>,
+    readback: Option<SnapshotHistory<Kind>>,
+}
+
+impl<Kind: InventorySnapshotKind> MountInventorySnapshotRetainedV2<Kind> {
+    pub(crate) fn prior_record_digest_data_v2(&self) -> Option<[u8; 32]> {
+        self.prior_digest
     }
 
+    pub(crate) fn new() -> Self {
+        Self {
+            prior_digest: None,
+            history: None,
+            candidate: None,
+            superseded: None,
+            transaction: None,
+            readback: None,
+        }
+    }
+}
+
+pub(crate) fn persist_snapshot_with_commit_v2<Kind: InventorySnapshotKind>(
+    journal: &mut Journal,
+    history: SnapshotHistory<Kind>,
+    record: SnapshotRecord<Kind>,
+    inventory: Kind::Inventory,
+    commit: impl FnMut(
+        &mut Journal,
+        &JournalTransaction,
+        &MountInventoryCommitRecipeV2<'_>,
+    ) -> Result<crate::CommitResult, MountAttemptError>,
+) -> Result<(SnapshotRecord<Kind>, Kind::Inventory, bool), MountAttemptError> {
+    persist_snapshot_retaining_with_commit_v2(
+        journal,
+        history,
+        record,
+        inventory,
+        &mut MountInventorySnapshotRetainedV2::new(),
+        commit,
+    )
+}
+
+pub(crate) fn persist_snapshot_retaining_with_commit_v2<Kind: InventorySnapshotKind>(
+    journal: &mut Journal,
+    history: SnapshotHistory<Kind>,
+    record: SnapshotRecord<Kind>,
+    inventory: Kind::Inventory,
+    retained: &mut MountInventorySnapshotRetainedV2<Kind>,
+    mut commit: impl FnMut(
+        &mut Journal,
+        &JournalTransaction,
+        &MountInventoryCommitRecipeV2<'_>,
+    ) -> Result<crate::CommitResult, MountAttemptError>,
+) -> Result<(SnapshotRecord<Kind>, Kind::Inventory, bool), MountAttemptError> {
+    if retained.history.is_some() || retained.candidate.is_some() {
+        return Err(MountAttemptError::Conflict);
+    }
+    retained.prior_digest = history.record.as_ref().map(|(record, _)| record.digest);
+    retained.history = Some(history);
+    retained.candidate = Some((record, inventory));
+    let history = retained
+        .history
+        .as_mut()
+        .ok_or(MountAttemptError::CorruptState)?;
+    let (record, inventory) = retained
+        .candidate
+        .as_ref()
+        .ok_or(MountAttemptError::CorruptState)?;
+    let recorded = match history.outcome(record, inventory)? {
+        SnapshotDecision::Replay => false,
+        SnapshotDecision::Unchanged => {
+            let current = history
+                .record
+                .take()
+                .ok_or(MountAttemptError::CorruptState)?;
+            retained.superseded = retained.candidate.replace(current);
+            false
+        }
+        SnapshotDecision::Record => {
+            retained.transaction = Some(record.transaction()?);
+            let transaction = retained
+                .transaction
+                .as_ref()
+                .ok_or(MountAttemptError::CorruptState)?;
+            let recipe = MountInventoryCommitRecipeV2::from_canonical_record_v2::<Kind>(
+                journal,
+                transaction,
+            );
+            commit(journal, transaction, &recipe)?;
+            true
+        }
+    };
+    retained.readback = Some(SnapshotHistory::<Kind>::load(journal)?);
+    let (record, _) = retained
+        .candidate
+        .as_ref()
+        .ok_or(MountAttemptError::CorruptState)?;
+    if retained
+        .readback
+        .as_ref()
+        .and_then(|history| history.record.as_ref())
+        .map(|value| &value.0)
+        != Some(record)
+    {
+        return Err(MountAttemptError::CorruptState);
+    }
+    let (record, inventory) = retained
+        .candidate
+        .take()
+        .ok_or(MountAttemptError::CorruptState)?;
     Ok((record, inventory, recorded))
 }
 

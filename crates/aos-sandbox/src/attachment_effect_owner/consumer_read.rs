@@ -23,7 +23,7 @@ use super::ProtectedAttachmentEffectOwnerV1;
 use crate::attachment_slot_state::{self, DurableAttachmentSlotV1};
 use crate::attachment_state::{self, DurableAttachmentDesiredStateV1};
 use crate::filesystem_view_state::{self, DurableFilesystemViewRevisionV1};
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_authority::RuntimeAuthorityLimits;
 use crate::runtime_authority::{RuntimeAuthorityBindingV1, RuntimeAuthorityStore};
 use crate::runtime_scope::{
@@ -422,4 +422,16 @@ impl CurrentControllerConsumerResourceV1<'_> {
         }
         Ok(record)
     }
+}
+
+// A split Source context supplies only its actual historical view. Any reached
+// Controller graph transition still requires the genuine whole Controller.
+pub(crate) fn validate_consumer_resource_transaction_read_v1(
+    journal: Option<&Journal>,
+    history: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerReadViewV1<'_>,
+    transaction: &crate::JournalTransaction,
+    allow_capacity: bool,
+    settling: Option<[u8; 32]>,
+) -> Result<(), JournalError> {
+    attempt::require_transition_read_v1(journal, history, transaction, allow_capacity, settling)
 }

@@ -37,6 +37,10 @@ const SUPERVISOR_SERVICE_PROPERTIES: &[&str] = &[
     "DevicePolicy",
 ];
 
+pub(super) fn supervisor_policy_properties_v2() -> &'static [&'static str] {
+    SUPERVISOR_SERVICE_PROPERTIES
+}
+
 impl VerifiedPackagedRuntimeV1 {
     /// Checks one running nspawn supervisor's PID 1 service policy.
     ///
@@ -102,9 +106,31 @@ impl VerifiedPackagedRuntimeV1 {
             )
             .await
             .map_err(|error| HostError::State(format!("supervisor readback failed: {error}")))?;
-        verify_live_supervisor_properties(&values, policy)?;
+        let verified = self.verify_supervisor_policy_data_v2(
+            evidence, spec, supervisor_pid, &values,
+        )?;
         self.revalidate_origin(evidence, origin)?;
+        Ok(verified)
+    }
 
+    pub(in crate::plan) fn verify_supervisor_policy_data_v2(
+        &self,
+        evidence: &ProtectedBackendReadinessEvidence,
+        spec: &SandboxUnitSpec,
+        supervisor_pid: u32,
+        values: &[OwnedValue],
+    ) -> Result<VerifiedLiveSupervisorPolicyV1> {
+        let policy = spec.payload_root_continuity_policy();
+        if self.binding_identity != evidence.binding.identity
+            || spec.executable() != evidence.binding.executable_path
+            || policy.digest() != self.policy_digest
+            || supervisor_pid == 0
+        {
+            return Err(HostError::State(
+                "supervisor specification differs from packaged readiness".to_owned(),
+            ));
+        }
+        verify_live_supervisor_properties(values, policy)?;
         Ok(VerifiedLiveSupervisorPolicyV1 {
             binding_identity: self.binding_identity,
             unit_semantics_digest: spec.semantic_digest_v1(),

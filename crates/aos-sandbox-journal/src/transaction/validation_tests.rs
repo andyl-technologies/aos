@@ -4,6 +4,16 @@
 
 use super::*;
 
+// These ordinary-mode regressions must keep testing the original borrowed
+// keys, rather than adding test-only collection APIs to the production enum.
+fn borrowed_keys<'scope, 'keys>(validation: &'scope NativeRecordValidation<'keys>)
+    -> &'scope BTreeSet<(u8, &'keys [u8])> {
+    match &validation.keys {
+        NativeRecordKeysV1::Borrowed(keys) => keys,
+        NativeRecordKeysV1::Retained(_) => panic!("ordinary validator selected an owning index"),
+    }
+}
+
 fn bounds() -> NativeGeometryBounds {
     NativeGeometryBounds {
         maximum_journal_bytes: u64::MAX,
@@ -154,7 +164,7 @@ fn payload_checks_precede_aggregate_overflow_and_retain_reached_totals() {
         )),
     ));
     assert_eq!(aggregate.transaction_bytes, 16);
-    assert_eq!(aggregate.keys.len(), 1);
+    assert_eq!(borrowed_keys(&aggregate).len(), 1);
 }
 
 #[test]
@@ -167,8 +177,7 @@ fn duplicate_index_borrows_original_keys_and_compares_namespace_and_bytes() {
         for namespace in [0, 254, 255] {
             validation.observe_extent(&original, Some(0)).unwrap();
             validation.register_key(namespace, &original).unwrap();
-            let (_, stored) = validation
-                .keys
+            let (_, stored) = borrowed_keys(&validation)
                 .get(&(namespace, original.as_slice()))
                 .unwrap();
             assert_eq!(stored.as_ptr(), original.as_ptr());
@@ -179,7 +188,7 @@ fn duplicate_index_borrows_original_keys_and_compares_namespace_and_bytes() {
             validation.register_key(254, &equal_bytes),
             Err(NativeRecordValidationError::DuplicateRecordKey),
         ));
-        let (_, retained) = validation.keys.get(&(254, original.as_slice())).unwrap();
+        let (_, retained) = borrowed_keys(&validation).get(&(254, original.as_slice())).unwrap();
         assert_eq!(retained.as_ptr(), original.as_ptr());
     }
 
@@ -209,7 +218,7 @@ fn later_record_extent_refusal_precedes_duplicate_registration() {
             "record payload bytes"
         )),
     ));
-    assert_eq!(validation.keys.len(), 1);
+    assert_eq!(borrowed_keys(&validation).len(), 1);
     assert!(matches!(
         validation.register_key(1, b"k"),
         Err(NativeRecordValidationError::DuplicateRecordKey),

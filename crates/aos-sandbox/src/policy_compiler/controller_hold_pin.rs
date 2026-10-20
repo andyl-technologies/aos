@@ -4,24 +4,29 @@
 //! only after the deployment/project pins match; removal, rotation, and reuse
 //! of another policy role are closed without explicit reissuance.
 
+use aos_sandbox_policy::journal_keys::{
+    CONTROLLER_HOLD_PIN_KEY, SIGNER_PINS_KEY, SOURCE_HOLD_PIN_KEY,
+};
+
+use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
+
 use std::path::Path;
 
 use ed25519_dalek::VerifyingKey;
 
-use crate::cache_residency::PinnedCacheOwnerReadbackSignerV1;
+use aos_sandbox_protocol::cache_owner_readback::PinnedCacheOwnerReadbackSignerV1;
 use crate::journal::{Journal, JournalError, RecordNamespace};
 
 use super::cache_readback_pin::CACHE_PIN_KEY;
-use super::controller_hold_readback::PinnedControllerHoldSignerV1;
-use super::deployment_head::{SIGNER_PINS_KEY, encode_policy_signer_pins_v1};
+
+use super::deployment_head::encode_policy_signer_pins_v1;
 use super::owner_pin_transaction::owner_pin_transaction;
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
-use super::source_hold_pin::SOURCE_HOLD_PIN_KEY;
+
 use super::source_hold_readback::PinnedSourceHoldReadbackSignerV1;
 
-pub(super) const CONTROLLER_HOLD_PIN_KEY: &[u8] = b"\0aos-policy-controller-hold-pin-v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-controller-hold-pin-transaction.v1\0";
 
 /// Reports a rejected Controller-only signer pin admission.
@@ -77,6 +82,26 @@ pub(super) fn admit_controller_hold_pin_in_journal_v1(
     project_generation: u64,
     project_key: &VerifyingKey,
 ) -> Result<(), ControllerHoldPinErrorV1> {
+    admit_controller_hold_pin_in_journal_v1_with_root_receiving(
+        journal,
+        credential,
+        deployment_generation,
+        deployment_key,
+        project_generation,
+        project_key,
+        None,
+    )
+}
+
+pub(super) fn admit_controller_hold_pin_in_journal_v1_with_root_receiving(
+    journal: &mut Journal,
+    credential: Option<&[u8]>,
+    deployment_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_generation: u64,
+    project_key: &VerifyingKey,
+    original: Option<&aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'_>>,
+) -> Result<(), ControllerHoldPinErrorV1> {
     let policy_pins = encode_policy_signer_pins_v1(
         deployment_generation,
         deployment_key,
@@ -98,6 +123,7 @@ pub(super) fn admit_controller_hold_pin_in_journal_v1(
         };
     };
     let controller = PinnedControllerHoldSignerV1::decode(credential)
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
         .map_err(|_| ControllerHoldPinErrorV1::InvalidPin)?;
     if controller.verifying_key() == deployment_key || controller.verifying_key() == project_key {
         return Err(ControllerHoldPinErrorV1::InvalidPin);
@@ -124,7 +150,10 @@ pub(super) fn admit_controller_hold_pin_in_journal_v1(
 
     let transaction =
         owner_pin_transaction(TRANSACTION_DOMAIN, CONTROLLER_HOLD_PIN_KEY, credential)?;
-    authority.commit(&transaction)?;
+    match original {
+        Some(original) => authority.commit_root_credential_receiving_v1(&transaction, original)?,
+        None => authority.commit(&transaction)?,
+    };
     if authority.get(CONTROLLER_HOLD_PIN_KEY)? != Some(credential) {
         return Err(ControllerHoldPinErrorV1::StalePin);
     }
@@ -139,7 +168,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     use super::*;
-    use crate::cache_residency::encode_cache_owner_readback_signer_credential_v1;
+    use aos_sandbox_protocol::cache_owner_readback::encode_cache_owner_readback_signer_credential_v1;
     use crate::journal::JournalLimits;
     use crate::policy_compiler::cache_readback_pin::admit_cache_readback_pin_in_journal_v1;
     use crate::policy_compiler::deployment_head::admit_policy_signer_pins_in_journal_v1;
@@ -160,10 +189,11 @@ mod tests {
         let project = SigningKey::from_bytes(&[2; 32]).verifying_key();
         let controller = SigningKey::from_bytes(&[3; 32]).verifying_key();
         let pin =
-            super::super::controller_hold_readback::encode_controller_hold_signer_credential_v1(
+            aos_sandbox_policy::controller_readback::encode_controller_hold_signer_credential_v1(
                 4,
                 &controller,
             )
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
             .unwrap();
 
         assert!(
@@ -197,10 +227,11 @@ mod tests {
         );
 
         let rotated =
-            super::super::controller_hold_readback::encode_controller_hold_signer_credential_v1(
+            aos_sandbox_policy::controller_readback::encode_controller_hold_signer_credential_v1(
                 5,
                 &controller,
             )
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
             .unwrap();
         assert!(
             admit_controller_hold_pin_in_journal_v1(
@@ -214,10 +245,11 @@ mod tests {
             .is_err()
         );
         let reused =
-            super::super::controller_hold_readback::encode_controller_hold_signer_credential_v1(
+            aos_sandbox_policy::controller_readback::encode_controller_hold_signer_credential_v1(
                 4,
                 &deployment,
             )
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
             .unwrap();
         assert!(
             admit_controller_hold_pin_in_journal_v1(

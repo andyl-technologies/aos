@@ -5,6 +5,15 @@
 //! map or arbitrary service-manager operation.
 
 use std::collections::BTreeMap;
+
+mod credential_original;
+mod property_original;
+pub use property_original::GuardianUnitPropertyOriginalV2;
+#[cfg(target_os = "linux")]
+mod executable_original;
+#[cfg(target_os = "linux")]
+pub use executable_original::GuardianExecutableValidationOriginalV2;
+pub use credential_original::GuardianCredentialAcquisitionOriginalV2;
 use std::fs::File;
 use std::os::fd::{AsFd as _, BorrowedFd};
 use std::sync::Arc;
@@ -95,102 +104,57 @@ impl GuardianExecutableDescriptor {
     /// Returns an error if the descriptor no longer satisfies the protected
     /// executable contract or its exact metadata or content has changed.
     pub fn revalidate(&self) -> Result<()> {
-        if validate_guardian_executable(self.path.descriptor())? != self.snapshot {
-            return Err(invalid(
-                "guardian executable identity or content changed after admission",
-            ));
+        #[cfg(target_os = "linux")]
+        { executable_original::revalidate(self, None) }
+        #[cfg(not(target_os = "linux"))]
+        {
+            if validate_guardian_executable(self.path.descriptor())? != self.snapshot {
+                return Err(invalid("guardian executable identity or content changed after admission"));
+            }
+            Ok(())
         }
-        Ok(())
+    }
+
+    /// Revalidates the same pin while retaining failed native metadata/readback.
+    ///
+    /// # Errors
+    /// Rejects the same executable drift or native errors as [`Self::revalidate`],
+    /// or reentry. The caller prepays and retains the actual original.
+    #[cfg(target_os = "linux")]
+    pub fn revalidate_retaining_v2(
+        &self,
+        original: &mut GuardianExecutableValidationOriginalV2,
+    ) -> Result<()> {
+        executable_original::revalidate(self, Some(original))
     }
 
     fn transferred(&self) -> Result<(Fd<'static>, String)> {
-        self.revalidate()?;
-        let descriptor = self
-            .path
-            .descriptor()
-            .try_clone_to_owned()
-            .map_err(|error| invalid(format!("cannot transfer guardian executable: {error}")))?;
-        Ok((
-            Fd::from(descriptor),
-            GUARDIAN_EXECUTABLE_DESCRIPTOR_NAME.to_owned(),
-        ))
+        self.transferred_engine_v2(None)
     }
+
+    fn transferred_engine_v2(
+        &self,
+        destination: Option<(&mut GuardianExecutableValidationOriginalV2,
+            &mut Option<std::io::Result<std::os::fd::OwnedFd>>)>,
+    ) -> Result<(Fd<'static>, String)> {
+        let duplicate = match destination {
+            Some((original, duplicate)) => {
+                self.revalidate_retaining_v2(original)?;
+                Some(duplicate)
+            }
+            None => { self.revalidate()?; None }
+        };
+        let descriptor = property_original::duplicate(
+            self.path.descriptor(), duplicate, "cannot transfer guardian executable",
+        )?;
+        Ok((Fd::from(descriptor), GUARDIAN_EXECUTABLE_DESCRIPTOR_NAME.to_owned()))
+    }
+
 }
 
 #[cfg(target_os = "linux")]
 fn validate_guardian_executable(descriptor: BorrowedFd<'_>) -> Result<GuardianExecutableSnapshot> {
-    use std::os::unix::fs::FileExt as _;
-
-    use rustix::fs::{FileType, OFlags, fcntl_getfl, fstat};
-    use sha2::{Digest as _, Sha256};
-
-    let before = fstat(descriptor)
-        .map_err(|error| invalid(format!("cannot inspect guardian executable: {error}")))?;
-    let bytes = u64::try_from(before.st_size)
-        .ok()
-        .filter(|bytes| (1..=MAXIMUM_EXECUTABLE_BYTES).contains(bytes))
-        .ok_or_else(|| invalid("guardian executable size is invalid"))?;
-    if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
-        || before.st_uid != rustix::process::geteuid().as_raw()
-        || before.st_mode & 0o111 == 0
-        || before.st_mode & 0o022 != 0
-        || fcntl_getfl(descriptor)
-            .map_err(|error| invalid(format!("cannot read guardian executable flags: {error}")))?
-            & OFlags::ACCMODE
-            != OFlags::RDONLY
-    {
-        return Err(invalid("guardian executable descriptor is not protected"));
-    }
-
-    let length = usize::try_from(bytes)
-        .map_err(|_| invalid("guardian executable size does not fit memory"))?;
-    let file = File::from(
-        descriptor
-            .try_clone_to_owned()
-            .map_err(|error| invalid(format!("cannot duplicate guardian executable: {error}")))?,
-    );
-    let mut content = vec![0; length];
-    let mut offset = 0;
-    while offset < content.len() {
-        let read = file
-            .read_at(&mut content[offset..], offset as u64)
-            .map_err(|error| invalid(format!("cannot read guardian executable: {error}")))?;
-        if read == 0 {
-            return Err(invalid(
-                "guardian executable ended before its declared size",
-            ));
-        }
-        offset += read;
-    }
-    let after = fstat(descriptor)
-        .map_err(|error| invalid(format!("cannot recheck guardian executable: {error}")))?;
-    if after.st_dev != before.st_dev
-        || after.st_ino != before.st_ino
-        || after.st_size != before.st_size
-        || after.st_mtime != before.st_mtime
-        || after.st_mtime_nsec != before.st_mtime_nsec
-        || after.st_ctime != before.st_ctime
-        || after.st_ctime_nsec != before.st_ctime_nsec
-    {
-        return Err(invalid("guardian executable changed during exact readback"));
-    }
-    let modified_nanoseconds = i64::try_from(before.st_mtime_nsec)
-        .map_err(|_| invalid("guardian executable modification time is invalid"))?;
-    let changed_nanoseconds = i64::try_from(before.st_ctime_nsec)
-        .map_err(|_| invalid("guardian executable metadata-change time is invalid"))?;
-
-    Ok(GuardianExecutableSnapshot {
-        device: before.st_dev,
-        inode: before.st_ino,
-        bytes,
-        uid: before.st_uid,
-        mode: before.st_mode,
-        modified_seconds: before.st_mtime,
-        modified_nanoseconds,
-        changed_seconds: before.st_ctime,
-        changed_nanoseconds,
-        sha256_content: Sha256::digest(content).into(),
-    })
+    executable_original::validate_once(descriptor, None, |_| {})
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -316,55 +280,69 @@ impl GuardianCredentialDescriptors {
     pub fn from_descriptors(
         entries: Vec<(GuardianCredentialRole, BorrowedFd<'_>)>,
     ) -> Result<Self> {
-        if entries.len() != GuardianCredentialRole::ALL.len() {
-            return Err(invalid(
-                "guardian requires exactly ten authority descriptors",
-            ));
-        }
-        let mut descriptors = BTreeMap::new();
-        for (role, descriptor) in entries {
-            let snapshot = validate_guardian_descriptor(role, descriptor)?;
-            let owned = descriptor.try_clone_to_owned().map_err(|error| {
-                invalid(format!("cannot duplicate guardian descriptor: {error}"))
-            })?;
-            let retained = GuardianCredentialDescriptor {
-                descriptor: Arc::new(owned),
-                snapshot,
-            };
-            if descriptors.insert(role, retained).is_some() {
-                return Err(invalid("guardian authority descriptor role is duplicated"));
-            }
-        }
-        if !GuardianCredentialRole::ALL
-            .iter()
-            .all(|role| descriptors.contains_key(role))
-        {
-            return Err(invalid("guardian authority descriptor role is missing"));
-        }
-        Ok(Self { descriptors })
+        credential_original::construct(entries, None)
+    }
+
+    /// Duplicates the same ten roles while retaining failed native originals.
+    ///
+    /// The caller must prepay the passive acquisition geometry and retain this
+    /// destination through independently owed posts. This grants no authority.
+    ///
+    /// # Errors
+    /// Returns a stopping error after role/native validation failure or reentry.
+    /// The actual first cause remains borrowed from `original`.
+    pub fn from_descriptors_retaining_v2(
+        entries: Vec<(GuardianCredentialRole, BorrowedFd<'_>)>,
+        original: &mut GuardianCredentialAcquisitionOriginalV2,
+    ) -> Result<Self> {
+        credential_original::construct(entries, Some(original))
     }
 
     fn transferred(&self) -> Result<Vec<(Fd<'static>, String)>> {
-        GuardianCredentialRole::ALL
-            .iter()
-            .map(|role| {
-                let retained = self
-                    .descriptors
-                    .get(role)
+        self.transferred_engine_v2(None)
+    }
+
+    fn transferred_engine_v2(
+        &self,
+        destination: Option<&mut property_original::CredentialTransferOriginalV2>,
+    ) -> Result<Vec<(Fd<'static>, String)>> {
+        let retained = destination.is_some();
+        let mut local = property_original::CredentialTransferOriginalV2::new();
+        let original = destination.unwrap_or(&mut local);
+        if original.entered {
+            return Err(invalid("guardian credential transfer is already entered"));
+        }
+        original.entered = true;
+        original.descriptors = Vec::with_capacity(GuardianCredentialRole::ALL.len());
+        let result = (|| {
+            for (index, role) in GuardianCredentialRole::ALL.iter().enumerate() {
+                original.first_index = index;
+                let retained_descriptor = self.descriptors.get(role)
                     .ok_or_else(|| invalid("guardian descriptor set became incomplete"))?;
-                if validate_guardian_descriptor(*role, retained.descriptor.as_fd())?
-                    != retained.snapshot
-                {
-                    return Err(invalid(
-                        "guardian descriptor identity or content changed before transfer",
-                    ));
+                let snapshot = credential_original::validate_once(
+                    *role, retained_descriptor.descriptor.as_fd(),
+                    if retained { Some(&mut original.checks[index]) } else { None },
+                )?;
+                if snapshot != retained_descriptor.snapshot {
+                    return Err(invalid("guardian descriptor identity or content changed before transfer"));
                 }
-                let descriptor = retained.descriptor.try_clone().map_err(|error| {
-                    invalid(format!("cannot transfer guardian descriptor: {error}"))
-                })?;
-                Ok((Fd::from(descriptor), role.as_str().to_owned()))
-            })
-            .collect()
+                let descriptor = property_original::duplicate(
+                    retained_descriptor.descriptor.as_fd(),
+                    if retained { Some(&mut original.duplicates[index]) } else { None },
+                    "cannot transfer guardian descriptor",
+                )?;
+                original.descriptors.push((Fd::from(descriptor), role.as_str().to_owned()));
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok(std::mem::take(&mut original.descriptors)),
+            Err(cause) if retained => {
+                original.returned = Some(Err(cause));
+                Err(invalid("guardian credential transfer failed; original retained"))
+            }
+            Err(cause) => Err(cause),
+        }
     }
 }
 
@@ -373,98 +351,7 @@ fn validate_guardian_descriptor(
     role: GuardianCredentialRole,
     descriptor: BorrowedFd<'_>,
 ) -> Result<GuardianDescriptorSnapshot> {
-    use rustix::fs::{FileType, OFlags, SealFlags, fcntl_get_seals, fcntl_getfl, fstat};
-    use sha2::{Digest as _, Sha256};
-    use std::fs::File;
-
-    const REQUIRED_SEALS: SealFlags = SealFlags::SEAL
-        .union(SealFlags::SHRINK)
-        .union(SealFlags::GROW)
-        .union(SealFlags::WRITE);
-
-    let metadata = fstat(descriptor)
-        .map_err(|error| invalid(format!("cannot inspect guardian descriptor: {error}")))?;
-    let bytes = u64::try_from(metadata.st_size)
-        .ok()
-        .filter(|bytes| *bytes > 0 && *bytes <= role.maximum_bytes())
-        .ok_or_else(|| invalid("guardian descriptor size is invalid"))?;
-    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
-        || metadata.st_uid != rustix::process::geteuid().as_raw()
-        || fcntl_getfl(descriptor)
-            .map_err(|error| invalid(format!("cannot read guardian descriptor flags: {error}")))?
-            & OFlags::ACCMODE
-            != OFlags::RDONLY
-    {
-        return Err(invalid(
-            "guardian descriptor type, owner, or access mode is invalid",
-        ));
-    }
-    if role.is_dynamic() {
-        let seals = fcntl_get_seals(descriptor)
-            .map_err(|_| invalid("guardian dynamic descriptor is not a sealable memfd"))?;
-        if metadata.st_nlink != 0 || !seals.contains(REQUIRED_SEALS) {
-            return Err(invalid(
-                "guardian dynamic descriptor is not anonymous and fully sealed",
-            ));
-        }
-    } else if metadata.st_nlink != 1 || !matches!(metadata.st_mode & 0o7777, 0o400 | 0o600) {
-        return Err(invalid(
-            "guardian static descriptor is not a protected singly-linked file",
-        ));
-    }
-
-    let length = usize::try_from(bytes)
-        .map_err(|_| invalid("guardian descriptor size does not fit memory"))?;
-    let file = File::from(
-        descriptor
-            .try_clone_to_owned()
-            .map_err(|error| invalid(format!("cannot duplicate guardian descriptor: {error}")))?,
-    );
-    let content = read_guardian_descriptor(&file, length)?;
-    if !role.is_dynamic() && read_guardian_descriptor(&file, length)? != content {
-        return Err(invalid(
-            "guardian static descriptor changed during exact readback",
-        ));
-    }
-    let after = fstat(descriptor)
-        .map_err(|error| invalid(format!("cannot recheck guardian descriptor: {error}")))?;
-    if after.st_dev != metadata.st_dev
-        || after.st_ino != metadata.st_ino
-        || after.st_size != metadata.st_size
-        || after.st_mtime != metadata.st_mtime
-        || after.st_mtime_nsec != metadata.st_mtime_nsec
-        || after.st_ctime != metadata.st_ctime
-        || after.st_ctime_nsec != metadata.st_ctime_nsec
-    {
-        return Err(invalid("guardian descriptor changed during exact readback"));
-    }
-
-    Ok(GuardianDescriptorSnapshot {
-        device: metadata.st_dev,
-        inode: metadata.st_ino,
-        bytes,
-        sha256: Sha256::digest(content).into(),
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn read_guardian_descriptor(file: &std::fs::File, length: usize) -> Result<Vec<u8>> {
-    use std::os::unix::fs::FileExt as _;
-
-    let mut content = vec![0; length];
-    let mut offset = 0;
-    while offset < content.len() {
-        let read = file
-            .read_at(&mut content[offset..], offset as u64)
-            .map_err(|error| invalid(format!("cannot read guardian descriptor: {error}")))?;
-        if read == 0 {
-            return Err(invalid(
-                "guardian descriptor ended before its declared size",
-            ));
-        }
-        offset += read;
-    }
-    Ok(content)
+    credential_original::validate_once(role, descriptor, None)
 }
 
 #[cfg(all(not(target_os = "linux"), not(test)))]
@@ -596,110 +483,9 @@ impl GuardianUnitSpec {
     }
 
     fn properties(&self) -> Result<Vec<crate::manager_proxy::TransientProperty>> {
-        let environment = format!("{GUARDIAN_ENVIRONMENT_PREFIX}{}", self.incarnation_hex);
-        let binding = format!(
-            "{GUARDIAN_BINDING_PREFIX}{}",
-            super::encode_hex32(self.binding)
-        );
-        let mut descriptors = Vec::with_capacity(GuardianCredentialRole::ALL.len() + 1);
-        descriptors.push(self.executable.transferred()?);
-        descriptors.extend(self.credentials.transferred()?);
-        let state_directory = format!("{GUARDIAN_STATE_PREFIX}/{}", self.incarnation_hex);
-        let mut properties = vec![
-            string_property("Description", format!("AOS lease guardian {}", self.name)),
-            string_property("Type", "notify"),
-            string_property("NotifyAccess", "main"),
-            string_property("Slice", GUARDIAN_SLICE),
-            string_property("Restart", "no"),
-            u64_property("StartLimitIntervalUSec", u64::MAX),
-            u32_property("StartLimitBurst", 1),
-            string_property("CollectMode", "inactive-or-failed"),
-            bool_property("DynamicUser", true),
-            string_array_property("StateDirectory", vec![state_directory])?,
-            u32_property("StateDirectoryMode", 0o700),
-            u32_property("UMask", 0o077),
-            u64_property("CapabilityBoundingSet", 0),
-            u64_property("AmbientCapabilities", 0),
-            bool_property("NoNewPrivileges", true),
-            complex_property(
-                "RestrictAddressFamilies",
-                (
-                    true,
-                    GUARDIAN_ALLOWED_ADDRESS_FAMILIES
-                        .iter()
-                        .map(|value| (*value).to_owned())
-                        .collect::<Vec<_>>(),
-                ),
-            )?,
-            complex_property(
-                "SystemCallFilter",
-                (
-                    true,
-                    GUARDIAN_ALLOWED_SYSCALLS
-                        .iter()
-                        .map(|value| (*value).to_owned())
-                        .collect::<Vec<_>>(),
-                ),
-            )?,
-            complex_property(
-                "SystemCallFilter",
-                (
-                    false,
-                    GUARDIAN_DENIED_SOCKET_OPERATIONS
-                        .iter()
-                        .map(|value| (*value).to_owned())
-                        .collect::<Vec<_>>(),
-                ),
-            )?,
-            string_array_property("SystemCallArchitectures", vec!["native".to_owned()])?,
-            string_property("ProtectSystem", "strict"),
-            string_property("ProtectHome", "yes"),
-            bool_property("PrivateNetwork", true),
-            bool_property("PrivateIPC", true),
-            bool_property("PrivateTmp", true),
-            bool_property("PrivateDevices", true),
-            bool_property("ProtectKernelTunables", true),
-            bool_property("ProtectKernelModules", true),
-            bool_property("ProtectControlGroups", true),
-            bool_property("ProtectClock", true),
-            u64_property("RestrictNamespaces", 0),
-            bool_property("LockPersonality", true),
-            bool_property("MemoryDenyWriteExecute", true),
-            bool_property("RestrictRealtime", true),
-            bool_property("RestrictSUIDSGID", true),
-            string_array_property(
-                "InaccessiblePaths",
-                vec!["/run/dbus/system_bus_socket".to_owned()],
-            )?,
-            complex_property("ExtraFileDescriptors", descriptors)?,
-            string_array_property("Environment", vec![environment, binding])?,
-            bool_property("SetLoginEnvironment", false),
-            u64_property(
-                "TimeoutStartUSec",
-                duration_micros(self.timeout_start, "guardian start timeout")?,
-            ),
-            exec_property(
-                &self.executable_path,
-                vec![
-                    self.executable_path.clone(),
-                    GUARDIAN_EXECUTABLE_LAUNCH_ARGUMENT.to_owned(),
-                ],
-            )?,
-        ];
-        if let Some(limits) = self.host_canary_limits {
-            let cpu_per_second = limits[0].checked_mul(10)
-                .ok_or_else(|| invalid("Host canary Guardian CPU limit overflow"))?;
-            properties.extend([
-                u64_property("CPUQuotaPerSecUSec", cpu_per_second),
-                u64_property("CPUQuotaPeriodUSec", 100_000),
-                u64_property("MemoryMax", limits[1]),
-                u64_property("TasksMax", limits[2]),
-                u64_property("LimitNOFILE", limits[3]),
-                u64_property("LimitNOFILESoft", limits[3]),
-            ]);
-        }
-        Ok(properties)
+        property_original::construct(self)
     }
+
 }
 
 fn require_host_canary_limits(limits: [u64; 4]) -> Result<()> {
@@ -754,12 +540,50 @@ impl SystemdClient {
         spec: &GuardianUnitSpec,
         before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
     ) -> std::result::Result<JobOutcome, GuardianStartError<E>> {
-        let properties =
-            super::exact_unit::prepare_then_guard(|| spec.properties(), before_submission)?;
+        self.start_guardian_unit_engine_v2(spec, before_submission, None).await
+    }
+
+    /// Starts the same fixed Guardian with its actual retained FD properties.
+    ///
+    /// The enclosing genuine role pays and owns `original` before entry, and
+    /// retains it through native connection disposition and independently owed
+    /// posts. The original creates no role or financial permission.
+    ///
+    /// # Errors
+    /// Preserves the existing final guard, preparation, manager and job errors;
+    /// failed preparation keeps its actual native originals and first cause.
+    pub async fn start_guardian_unit_guarded_retaining_v2<E>(
+        &self,
+        spec: &GuardianUnitSpec,
+        original: &mut GuardianUnitPropertyOriginalV2,
+        before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
+    ) -> std::result::Result<JobOutcome, GuardianStartError<E>> {
+        self.start_guardian_unit_engine_v2(spec, before_submission, Some(original)).await
+    }
+
+    async fn start_guardian_unit_engine_v2<E>(
+        &self,
+        spec: &GuardianUnitSpec,
+        before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
+        mut original: Option<&mut GuardianUnitPropertyOriginalV2>,
+    ) -> std::result::Result<JobOutcome, GuardianStartError<E>> {
+        let local = if let Some(original) = original.as_deref_mut() {
+            original.prepare_once_v2(spec).map_err(GuardianStartError::Systemd)?;
+            before_submission().map_err(GuardianStartError::Guard)?;
+            None
+        } else {
+            Some(super::exact_unit::prepare_then_guard(|| spec.properties(), before_submission)?)
+        };
+        let properties = match local.as_ref() {
+            Some(properties) => properties.as_slice(),
+            None => original.as_deref()
+                .ok_or_else(|| GuardianStartError::Systemd(invalid("Guardian property original is absent")))?
+                .properties().map_err(GuardianStartError::Systemd)?,
+        };
         let auxiliary_units: Vec<AuxiliaryUnit> = Vec::new();
         let path = self
             .manager
-            .start_transient_unit(spec.name(), "fail", &properties, &auxiliary_units)
+            .start_transient_unit(spec.name(), "fail", properties, &auxiliary_units)
             .await
             .map_err(crate::Error::from)
             .map_err(GuardianStartError::Systemd)?;
@@ -938,6 +762,65 @@ mod tests {
                 .collect(),
         )
         .unwrap_or_else(|error| panic!("test credential set failed: {error}"))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retained_properties_keep_earlier_exact_transfers_after_a_later_role_changes() {
+        let (directory, spec) = spec();
+        let path = directory.path().join(GuardianCredentialRole::OwnershipLeasePolicy.as_str());
+        // Mutate the fixture as its owner, then restore the protected mode before
+        // revalidation so the test reaches content drift without root privileges.
+        std::fs::set_permissions(&path, Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(&path, b"changed").unwrap();
+        std::fs::set_permissions(&path, Permissions::from_mode(0o400)).unwrap();
+        let mut original = GuardianUnitPropertyOriginalV2::new();
+
+        let result = original.prepare_once_v2(&spec);
+
+        assert!(result.is_err());
+        assert_eq!(original.retained_transfer_counts_v2(), (1, 3));
+        let first = original.failure().unwrap() as *const dyn std::error::Error;
+        assert!(original.prepare_once_v2(&spec).is_err());
+        assert!(std::ptr::eq(first, original.failure().unwrap() as *const dyn std::error::Error));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retained_properties_have_the_same_closed_names_and_types_as_ordinary() {
+        let (_directory, spec) = spec();
+        let ordinary = spec.properties().unwrap();
+        let mut original = GuardianUnitPropertyOriginalV2::new();
+
+        original.prepare_once_v2(&spec).unwrap();
+
+        let expected = ordinary.iter().map(|(name, value)| (name, value.value_signature().to_string())).collect::<Vec<_>>();
+        let actual = original.properties().unwrap().iter()
+            .map(|(name, value)| (name, value.value_signature().to_string())).collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 40);
+        assert_eq!(original.retained_transfer_counts_v2(), (0, 0));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn guardian_request_bound_covers_the_actual_closed_property_wire() {
+        let (_directory, spec) = spec();
+        let properties = spec.properties().unwrap();
+        let auxiliary = Vec::<crate::manager_proxy::AuxiliaryUnit>::new();
+        let message = zbus::Message::method_call(
+            "/org/freedesktop/systemd1", "StartTransientUnit",
+        ).unwrap()
+            .destination("org.freedesktop.systemd1").unwrap()
+            .interface("org.freedesktop.systemd1.Manager").unwrap()
+            .build(&(spec.name.guardian(), "replace", &properties, &auxiliary)).unwrap();
+        let maximum = GuardianUnitPropertyOriginalV2::maximum_encoded_request_for_path_v2(
+            spec.executable_path.len(),
+        ).unwrap();
+
+        assert!(message.data().len() <= maximum);
+        assert_eq!(message.data().fds().len(), 11);
+        assert!(GuardianUnitPropertyOriginalV2::maximum_encoded_request_for_path_v2(usize::MAX).is_none());
     }
 
     #[test]

@@ -12,7 +12,7 @@ use aos_sandbox::attachment_state::{AttachmentDesiredMutationV1, AttachmentDesir
 use aos_sandbox::filesystem_view_state::{
     FilesystemViewRevisionPresenceV1, protected_current_filesystem_view_revision_v1,
 };
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::{CurrentNamespaceTarget, NamespaceTargetOutcome};
 use aos_sandbox_core::model::{
     AttachmentConsistency, AttachmentIntent, MountAttributes, ViewConsistency, ViewMutation,

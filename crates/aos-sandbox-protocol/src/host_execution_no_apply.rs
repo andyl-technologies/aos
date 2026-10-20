@@ -17,8 +17,36 @@
 use sha2::{Digest as _, Sha256};
 
 mod historical_recovery;
+mod before_argument;
+mod before_argument_transport;
+mod closed_terminal_archive;
+pub mod closed_controller;
+pub mod root_attestation;
+pub mod recovery_acquisition;
+pub mod current_lease;
+pub mod current_lease_transport;
+pub mod held_settlement_transport;
 mod settlement_transport;
 mod transport;
+
+pub use before_argument::{
+    BEFORE_ARGUMENT_NO_APPLY_SOURCE_BYTES_V2, BEFORE_ARGUMENT_NO_APPLY_RECORD_BYTES_V2,
+    BeforeArgumentNoApplySourceDataV2, BeforeArgumentNoApplySourceFieldsV2,
+    ClosedBeforeArgumentNoApplyRecordV2, ClosedBeforeArgumentNoApplyRecordFieldsV2,
+    HostExecutionNoApplyRecordV2,
+};
+pub use before_argument_transport::{
+    ValidatedHostBeforeArgumentNoApplyRequestV2,
+    decode_host_before_argument_no_apply_request_v2,
+    decode_host_before_argument_no_apply_query_request_v2,
+    decode_host_before_argument_no_apply_response_v2,
+    HostExecutionNoApplyRequestV2, decode_host_execution_no_apply_request_v2,
+    decode_host_execution_no_apply_query_request_v2,
+    decode_host_before_argument_no_apply_query_response_v2,
+    before_argument_no_apply_receiving_bytes_v2,
+};
+pub use closed_terminal_archive::{ClosedHostTerminalArchiveDataV2,
+    closed_host_terminal_archive_data_v2, closed_host_terminal_archive_receiving_bytes_v2};
 
 pub use historical_recovery::{
     HOST_HISTORICAL_RECOVERY_ENVELOPE_BYTES_V1, HostHistoricalRecoveryEnvelopeErrorV1,

@@ -7,20 +7,22 @@
 //! remains distinct from execution authority. Pending work never crosses the
 //! guest boundary without a separately authenticated AOSAGE route.
 
-use std::time::{Duration, Instant};
+use aos_sandbox_host::execution_effect::{
+    outcome, output_reservation_response, revoke_route_after_successful_cancel, validate_effect_identity,
+};
 
 use aos_proto::aos::sandbox::local::v1::{
     BrokerMethod, HostAttachGateReadinessV1, HostExecutionCompletionStatusV1,
-    HostExecutionNoApplyStatusV1, HostExecutionOutcomeV1, HostExecutionOutputReservationStatusV1,
-    HostExecutionOutputReservationV1, HostExecutionPhaseV1, HostNoApplySettlementStatusV2,
-    ObserveHostExecutionArgumentResponseV1, QueryHostExecutionArgumentNoApplyResponseV1,
+    HostExecutionNoApplyStatusV1, HostExecutionOutcomeV1, HostExecutionPhaseV1, HostNoApplySettlementStatusV2,
+    ObserveHostExecutionArgumentResponseV1,
+    QueryHostExecutionArgumentNoApplyResponseV1,
     QueryHostExecutionArgumentResponseV1, QueryHostExecutionNoApplySettlementResponseV2,
     SettleHostExecutionNoApplyResponseV2, TerminalHostExecutionArgumentNoApplyResponseV1,
 };
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
-    DormantRuntimeExecutionOwnerV1, ProtectedHostOutputReservationV1,
+    DormantRuntimeExecutionOwnerV1,
     decode_observe_completion_evidence_v1,
 };
 use aos_sandbox_agent::{AgentExecutionOperationV1, AgentExecutionPhaseV1};
@@ -47,7 +49,6 @@ use aos_sandbox_protocol::host_execution::{
     HostExecutionTerminalResultV1, decode_host_execution_terminal_result_v1,
 };
 use aos_sandbox_protocol::host_execution_no_apply::HostNoApplySettlementPhaseV2;
-use aos_sandbox_protocol::host_output::HostOutputReservationLocatorV1;
 use buffa::Message as _;
 
 #[cfg(all(test, target_os = "linux"))]
@@ -94,6 +95,25 @@ pub enum HostExecutionHandoffErrorV1 {
     Deadline,
 }
 
+impl From<aos_sandbox_host::execution_effect::HostExecutionEffectErrorV1>
+    for HostExecutionHandoffErrorV1
+{
+    fn from(error: aos_sandbox_host::execution_effect::HostExecutionEffectErrorV1) -> Self {
+        use aos_sandbox_host::execution_effect::HostExecutionEffectErrorV1 as E;
+        match error {
+            E::Owner(error) => Self::Owner(error),
+            E::Admission(error) => Self::Admission(error),
+            E::Effect(error) => Self::Effect(error),
+            E::RecoveryRequired => Self::RecoveryRequired,
+            E::Conflict => Self::Conflict,
+            E::MissingAdmission => Self::MissingAdmission,
+            E::Agent(error) => Self::Agent(error),
+            E::AttachGate(error) => Self::AttachGate(error),
+            E::Deadline => Self::Deadline,
+        }
+    }
+}
+
 /// Dispatches an authenticated Host execution method into the fixed owner.
 ///
 /// An Apply commits Pending, then dispatches only through an installed signed
@@ -121,6 +141,24 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     let peer = request.peer();
     let policy = request.peer_policy();
 
+    // The early branch requires its actual paid predurable Host owner. The
+    // legacy dormant opener below cannot adopt that native interval from DATA.
+    if request.host_before_argument_no_apply_data_v2().is_some() {
+        return Err(HostExecutionHandoffErrorV1::Conflict);
+    }
+    // Closed43 must use its genuine already-held lease receiver. The legacy
+    // historical opener cannot adopt that owner from comparison DATA.
+    if request.host_no_apply_current_lease_query_data_v2().is_some()
+        || request.host_held_no_apply_settlement_data_v2().is_some()
+    {
+        return Err(HostExecutionHandoffErrorV1::Conflict);
+    }
+
+    if matches!(method, BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2
+        | BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2)
+    {
+        return Err(HostExecutionHandoffErrorV1::Conflict);
+    }
     check_kernel_boot(protected_boot_id)?;
     let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
     let mut claim = owner.claim()?;
@@ -301,23 +339,9 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
 
     let result = match reservation.request() {
         HostExecutionGrantRequestV1::Apply(request) => {
-            let effect = apply_execution(&mut claim, request)?;
-            let effect = if effect.phase() == EffectPhaseV1::Pending {
-                match agent {
-                    Some(agent) => {
-                        let deadline = agent_dispatch_deadline(deadline_boottime_nanoseconds)?;
-                        agent.issue_pending_effect(
-                            &mut claim,
-                            &effect,
-                            deadline,
-                            deadline_boottime_nanoseconds,
-                        )?
-                    }
-                    None => effect,
-                }
-            } else {
-                effect
-            };
+            let effect = aos_sandbox_host::execution_effect::execute_reserved_effect_v1(
+                &reservation, &mut claim, agent, deadline_boottime_nanoseconds, None,
+            )?;
             revoke_route_after_successful_cancel(&effect)?;
             outcome(
                 request.operation_id(),
@@ -506,23 +530,11 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
             return Ok(encoded);
         }
         HostExecutionGrantRequestV1::ObserveArgument(_) => {
-            let agent = agent.ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?;
-            agent.validate_claim(&claim)?;
-            let deadline = agent_dispatch_deadline(deadline_boottime_nanoseconds)?;
-            let receipt = reservation.observe_argument_once(&claim, agent, deadline)?;
-            let encoded = ObserveHostExecutionArgumentResponseV1 {
-                canonical_receipt: receipt.canonical_bytes(),
-                ..Default::default()
-            }
-            .encode_to_vec();
-            claim.revalidate()?;
-            agent.validate_claim(&claim)?;
-            if !reservation.matches(method, request_id, body, &claim) {
-                return Err(HostExecutionHandoffErrorV1::Conflict);
-            }
-            check_kernel_boot(protected_boot_id)?;
-            host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
-            return Ok(encoded);
+            return Err(HostExecutionHandoffErrorV1::Conflict);
+        }
+        HostExecutionGrantRequestV1::PrepareArgumentV2(_)
+        | HostExecutionGrantRequestV1::AcceptArgumentV2(_) => {
+            return Err(HostExecutionHandoffErrorV1::Conflict);
         }
         HostExecutionGrantRequestV1::QueryArgument(_) => {
             let receipt = host.query_authenticated_argument_historical(&reservation, &claim)?;
@@ -599,6 +611,10 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
             check_kernel_boot(protected_boot_id)?;
             host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
             return Ok(encoded);
+        }
+        HostExecutionGrantRequestV1::TerminalBeforeArgumentNoApply(_)
+            | HostExecutionGrantRequestV1::QueryBeforeArgumentNoApply(_) => {
+            return Err(HostExecutionHandoffErrorV1::Conflict);
         }
     };
     claim.revalidate()?;
@@ -681,76 +697,9 @@ where
     )
 }
 
-pub(crate) fn output_reservation_response(
-    locator: HostOutputReservationLocatorV1,
-    receipt: Option<ProtectedHostOutputReservationV1>,
-) -> Result<Vec<u8>, HostExecutionHandoffErrorV1> {
-    let (status, plan, semantic, correlation, sequence) = match receipt {
-        Some(receipt) => {
-            if receipt.execution() != locator.execution()
-                || receipt.create_operation() != locator.create_operation()
-                || receipt.original_request_id() != locator.original_request_id()
-                || receipt.preissue_digest() != locator.preissue_digest()
-                || receipt.claim_digest() != locator.claim_digest()
-                || receipt.carrier_digest() != locator.carrier_digest()
-                || receipt.assignment_digest() != locator.assignment_digest()
-                || receipt.host_boot_id() != locator.host_boot_id()
-            {
-                return Err(HostExecutionHandoffErrorV1::Conflict);
-            }
-            (
-                HostExecutionOutputReservationStatusV1::HOST_EXECUTION_OUTPUT_RESERVATION_STATUS_COMMITTED,
-                receipt.plan_digest().as_bytes().to_vec(),
-                receipt.semantic_request_digest().as_bytes().to_vec(),
-                receipt.correlation_digest().as_bytes().to_vec(),
-                receipt.original_journal_sequence(),
-            )
-        }
-        None => (
-            HostExecutionOutputReservationStatusV1::HOST_EXECUTION_OUTPUT_RESERVATION_STATUS_ABSENT,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            0,
-        ),
-    };
-    Ok(HostExecutionOutputReservationV1 {
-        status: status.into(),
-        execution_id: locator.execution().as_bytes().to_vec(),
-        create_operation_id: locator.create_operation().as_bytes().to_vec(),
-        original_reserve_request_id: locator.original_request_id().to_vec(),
-        preissue_record_digest: locator.preissue_digest().as_bytes().to_vec(),
-        output_claim_digest: locator.claim_digest().as_bytes().to_vec(),
-        reserve_source_digest: locator.carrier_digest().as_bytes().to_vec(),
-        assignment_digest: locator.assignment_digest().as_bytes().to_vec(),
-        host_boot_id: locator.host_boot_id().to_vec(),
-        original_plan_digest: plan,
-        original_semantic_request_digest: semantic,
-        host_correlation_record_digest: correlation,
-        original_host_journal_sequence: sequence,
-        ..Default::default()
-    }
-    .encode_to_vec())
-}
 
-fn revoke_route_after_successful_cancel(
-    effect: &DurableExecutionEffectV1,
-) -> Result<(), HostExecutionHandoffErrorV1> {
-    if effect.issue().operation() != EffectOperationV1::Cancel
-        || !effect
-            .completion()
-            .is_some_and(|completion| completion.status() == EffectCompletionStatusV1::Succeeded)
-    {
-        return Ok(());
-    }
 
-    // The guest cancellation is durably complete, but an earlier OpenSSH
-    // certificate may still be valid. Close Host route replay and renewal
-    // before reporting the cancellation to its authenticated caller.
-    let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;
-    routes.revoke_execution_route_if_present(*effect.admission().execution().as_bytes())?;
-    Ok(())
-}
+
 
 fn check_kernel_boot(expected: [u8; 16]) -> Result<(), HostExecutionHandoffErrorV1> {
     let current = KernelBootId::current()
@@ -762,114 +711,11 @@ fn check_kernel_boot(expected: [u8; 16]) -> Result<(), HostExecutionHandoffError
     Ok(())
 }
 
-fn agent_dispatch_deadline(
-    deadline_boottime_nanoseconds: u64,
-) -> Result<Instant, HostExecutionHandoffErrorV1> {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let seconds = u64::try_from(now.tv_sec).map_err(|_| HostExecutionHandoffErrorV1::Deadline)?;
-    let nanoseconds =
-        u64::try_from(now.tv_nsec).map_err(|_| HostExecutionHandoffErrorV1::Deadline)?;
-    let now = seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|value| value.checked_add(nanoseconds))
-        .ok_or(HostExecutionHandoffErrorV1::Deadline)?;
-    let remaining = deadline_boottime_nanoseconds
-        .checked_sub(now)
-        .filter(|remaining| *remaining > 0)
-        .ok_or(HostExecutionHandoffErrorV1::Deadline)?;
-    Instant::now()
-        .checked_add(Duration::from_nanos(remaining))
-        .ok_or(HostExecutionHandoffErrorV1::Deadline)
-}
 
-fn apply_execution(
-    claim: &mut DormantRuntimeExecutionClaimV1<'_>,
-    request: &ValidatedHostExecutionApplyV1,
-) -> Result<DurableExecutionEffectV1, HostExecutionHandoffErrorV1> {
-    let operation =
-        aos_sandbox_core::runtime_backend::BackendOperationIdV1::new(request.operation_id())
-            .map_err(|_| HostExecutionHandoffErrorV1::Conflict)?;
-    if let Some(effect) = claim.load_effect(&request.operation_id())? {
-        let effect = validate_effect_identity(
-            effect,
-            claim,
-            request.operation_id(),
-            request.execution_id(),
-            request.source_commitment(),
-        )?;
-        if effect.issue().operation() != request.action() {
-            return Err(HostExecutionHandoffErrorV1::Conflict);
-        }
-        return Ok(effect);
-    }
 
-    let admission = match claim.load_admission(request.execution_id())? {
-        Some(admission) => {
-            if admission.currentness() != claim.currentness() {
-                return Err(HostExecutionHandoffErrorV1::Conflict);
-            }
-            if request.action() == EffectOperationV1::Observe
-                && admission.idempotency().request_digest() != request.source_commitment()
-            {
-                return Err(HostExecutionHandoffErrorV1::Conflict);
-            }
-            if let Some(specification) = request.specification() {
-                let proposed = aos_sandbox_core::encode_execution_spec_v1(specification);
-                if admission.specification_bytes() != proposed
-                    || admission.idempotency().operation() != operation
-                    || admission.idempotency().request_digest() != request.source_commitment()
-                {
-                    return Err(HostExecutionHandoffErrorV1::Conflict);
-                }
-            }
-            admission
-        }
-        None => {
-            let specification = request
-                .specification()
-                .ok_or(HostExecutionHandoffErrorV1::MissingAdmission)?;
-            let idempotency = AdmissionIdempotencyV1::new(operation, request.source_commitment())?;
-            let draft =
-                ExecutionAdmissionDraftV1::new(specification, idempotency, *claim.currentness())?;
-            match admit_execution(claim, draft)? {
-                ExecutionAdmissionOutcomeV1::Admitted(admission) => admission,
-                ExecutionAdmissionOutcomeV1::RecoveryRequired { .. }
-                | ExecutionAdmissionOutcomeV1::NotCommitted(_) => {
-                    return Err(HostExecutionHandoffErrorV1::RecoveryRequired);
-                }
-            }
-        }
-    };
 
-    let sequence = claim.next_effect_sequence()?;
-    let idempotency = EffectIdempotencyV1::new(operation, request.source_commitment())?;
-    let issue = EffectIssueV1::new(request.action(), sequence, idempotency)?;
-    let effect = match prepare_effect(claim, &admission, issue)? {
-        ExecutionEffectTransitionV1::Committed(effect) => effect,
-        ExecutionEffectTransitionV1::RecoveryRequired(_)
-        | ExecutionEffectTransitionV1::NotCommitted => {
-            return Err(HostExecutionHandoffErrorV1::RecoveryRequired);
-        }
-    };
-    Ok(effect)
-}
 
-fn validate_effect_identity(
-    effect: DurableExecutionEffectV1,
-    claim: &DormantRuntimeExecutionClaimV1<'_>,
-    operation_id: [u8; 16],
-    execution: ExecutionId,
-    source: ObjectDigest,
-) -> Result<DurableExecutionEffectV1, HostExecutionHandoffErrorV1> {
-    if effect.admission().currentness() != claim.currentness()
-        || effect.admission().execution() != execution
-        || effect.issue().idempotency().operation().as_bytes() != &operation_id
-        || effect.issue().idempotency().request_digest() != source
-    {
-        return Err(HostExecutionHandoffErrorV1::Conflict);
-    }
-    Ok(effect)
-}
+
 
 fn verify_query_content(
     requested: HostExecutionSpecContentFieldsV1,
@@ -895,121 +741,9 @@ fn verify_query_content(
     Ok(())
 }
 
-fn outcome(
-    operation_id: [u8; 16],
-    execution_id: ExecutionId,
-    source_commitment: ObjectDigest,
-    effect: Option<&DurableExecutionEffectV1>,
-    claim: &DormantRuntimeExecutionClaimV1<'_>,
-) -> Result<HostExecutionOutcomeV1, HostExecutionHandoffErrorV1> {
-    let mut result = HostExecutionOutcomeV1 {
-        operation_id: operation_id.to_vec(),
-        execution_id: execution_id.as_bytes().to_vec(),
-        source_operation_commitment: source_commitment.as_bytes().to_vec(),
-        ..Default::default()
-    };
-    let Some(effect) = effect else {
-        result.phase = HostExecutionPhaseV1::HOST_EXECUTION_PHASE_ABSENT.into();
-        return Ok(result);
-    };
-    result.effect_commitment = effect.record_commitment().as_bytes().to_vec();
-    result.phase = match effect.phase() {
-        EffectPhaseV1::Pending => HostExecutionPhaseV1::HOST_EXECUTION_PHASE_PENDING,
-        EffectPhaseV1::Issued => HostExecutionPhaseV1::HOST_EXECUTION_PHASE_ISSUED,
-        EffectPhaseV1::Indeterminate => HostExecutionPhaseV1::HOST_EXECUTION_PHASE_INDETERMINATE,
-        EffectPhaseV1::Complete => HostExecutionPhaseV1::HOST_EXECUTION_PHASE_COMPLETE,
-    }
-    .into();
-    if let Some(completion) = effect.completion() {
-        result.completion_digest = completion.result_digest().as_bytes().to_vec();
-        result.completion_bytes = completion.result_bytes().to_vec();
-        result.observation_sequence = completion.observation_sequence().get();
-        result.completion_status = match completion.status() {
-            EffectCompletionStatusV1::Succeeded => {
-                HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_SUCCEEDED
-            }
-            EffectCompletionStatusV1::RejectedBeforeEffect => {
-                HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_REJECTED_BEFORE_EFFECT
-            }
-            EffectCompletionStatusV1::FailedPermanent => {
-                HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_FAILED_PERMANENT
-            }
-        }.into();
-        result.terminal_guest_result = terminal_guest_result(claim, effect, completion)?;
-    }
-    Ok(result)
-}
 
-fn terminal_guest_result(
-    claim: &DormantRuntimeExecutionClaimV1<'_>,
-    effect: &DurableExecutionEffectV1,
-    completion: &aos_sandbox_core::runtime_backend::EffectCompletionV1,
-) -> Result<Vec<u8>, HostExecutionHandoffErrorV1> {
-    if effect.issue().operation() != EffectOperationV1::Observe
-        || completion.status() != EffectCompletionStatusV1::Succeeded
-    {
-        return Ok(Vec::new());
-    }
-    let operation_id = *effect.issue().idempotency().operation().as_bytes();
-    let observed = decode_observe_completion_evidence_v1(
-        completion.result_bytes(),
-        operation_id,
-        *effect.issue().idempotency().request_digest().as_bytes(),
-        *effect.admission().execution().as_bytes(),
-        effect.admission().specification_digest(),
-        completion.observation_sequence().get(),
-    )
-    .map_err(|_| HostExecutionHandoffErrorV1::Conflict)?;
-    let expected = match observed.phase() {
-        BackendExecutionPhaseV1::Exited => AgentExecutionPhaseV1::Exited,
-        BackendExecutionPhaseV1::Canceled => AgentExecutionPhaseV1::Canceled,
-        _ => return Ok(Vec::new()),
-    };
 
-    // The fixed completion records only a phase and commitment. Recover the
-    // original signed Guest packet under the same protected Host operation
-    // before returning an exit status to the Controller.
-    let committed = claim
-        .recover_committed_host_agent_outcome(&operation_id)?
-        .ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?;
-    let authenticated = committed.authenticated();
-    if committed.observation_sequence() != completion.observation_sequence()
-        || committed.observation_commitment() != observed.observation_commitment()
-        || !matches!(
-            authenticated.request().operation(),
-            AgentExecutionOperationV1::Observe { execution }
-                if *execution == effect.admission().execution()
-        )
-        || authenticated.outcome().phase() != expected
-    {
-        return Err(HostExecutionHandoffErrorV1::Conflict);
-    }
-    let bytes = authenticated.outcome().result_bytes();
-    let parsed = decode_host_execution_terminal_result_v1(bytes)
-        .map_err(|_| HostExecutionHandoffErrorV1::Conflict)?;
-    if !matches!(
-        (expected, parsed),
-        (
-            AgentExecutionPhaseV1::Exited,
-            HostExecutionTerminalResultV1::Exited(_)
-        ) | (
-            AgentExecutionPhaseV1::Canceled,
-            HostExecutionTerminalResultV1::Canceled
-        ) | (
-            AgentExecutionPhaseV1::Exited,
-            HostExecutionTerminalResultV1::Original {
-                canceled: false,
-                ..
-            }
-        ) | (
-            AgentExecutionPhaseV1::Canceled,
-            HostExecutionTerminalResultV1::Original { canceled: true, .. }
-        )
-    ) {
-        return Err(HostExecutionHandoffErrorV1::Conflict);
-    }
-    Ok(bytes.to_vec())
-}
+
 
 #[cfg(test)]
 mod tests {

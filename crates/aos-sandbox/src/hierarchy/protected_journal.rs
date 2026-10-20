@@ -1,561 +1,39 @@
-//! Dormant protected-journal adapter for hierarchy state and realization.
+//! Keeps actual Source journal custody and current ancestry observations.
 //!
-//! The adapter stores only canonical controller facts. No type in this module
-//! opens a broker, performs a mount, publishes a route, or activates a service.
+//! The complete seven-family canonical record schema lives in Source. This
+//! adapter joins it to the real protected journal and its native lifetime.
 
 use std::collections::{BTreeMap, BTreeSet};
-
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId, Revision, SandboxId};
-
 use crate::journal::{Journal, RecordNamespace};
-use aos_sandbox_protocol::domain_ledger::records::{
-    ProtectedDomainEnvelopeV1, ProtectedDomainKeyV1, ProtectedDomainProjectionV1,
-    ProtectedDomainReplayPhaseV1, ProtectedDomainReplayTransactionV1, ProtectedDomainSchemaV1,
-    ProtectedRecordRoleV1, ProtectedReducerPhaseV1, decode_reducer_payload_with_validator,
-    encode_reducer_payload_with_validator,
-};
-
-use crate::protected_domain_journal::{
-    AppliedDomainTransactionV1, DomainCommitOutcomeV1, DomainOutcomeUnknownV1,
-    DomainPostcommitCapabilityV1, DomainRecoveryV1, PreparedDomainTransactionV1,
-    ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1, ProtectedDomainSnapshotV1,
-    ReplayedDomainPostcommitV1, ValidatedDomainPostcommitV1,
-    protected_current_record_candidates_v1,
-};
+use aos_sandbox_protocol::domain_ledger::records::{decode_reducer_payload_with_validator, ProtectedDomainSchemaV1};
+use aos_sandbox_ledger_replay::replay::hierarchy_records::{HierarchyProtectedRecordKindV1, HierarchyProtectedJournalSchemaV1, HierarchyProtectedReplayValidatorV1, HierarchyProtectedJournalKeyV1, HierarchyProtectedJournalEnvelopeV1, HierarchyProtectedJournalProjectionV1, HierarchyJournalReplayTransactionV1, HierarchyJournalReplayPhaseV1, HierarchyReducerPhaseV1, HierarchyReducerRecordV1};
+use aos_sandbox_ledger_replay::replay::hierarchy_records::SourceTreeSchemaOriginalsV1;
+use aos_sandbox_ledger_replay::hierarchy::codec::{decode_tree_v1, tree_commitment_v1};
+use aos_sandbox_ledger_replay::hierarchy::graph::SandboxTreeV1;
+use crate::protected_domain_journal::{DomainCommitOutcomeV1, ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1, ProtectedDomainSnapshotV1, protected_current_record_candidates_v1};
 use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
-use super::artifact_codec::{
-    decode_detach_progress_v1, decode_protected_detach_head_v1,
-    decode_protected_realization_head_v1, decode_protected_transaction_head_v1,
-    decode_realization_plan_v1, decode_realization_progress_v1,
-    decode_realization_transaction_state_v1, encode_detach_progress_v1,
-    encode_protected_detach_head_v1, encode_protected_realization_head_v1,
-    encode_protected_transaction_head_v1, encode_realization_plan_v1,
-    encode_realization_progress_v1, encode_realization_transaction_state_v1,
-};
-use super::codec::{
-    decode_history_record_v1, decode_history_v1, decode_tree_v1, encode_history_record_v1,
-    encode_history_v1, encode_tree_v1, tree_commitment_v1,
-};
-use super::evidence::{
-    CurrentAssignmentEvidenceV1, CurrentLiveInspectionObservationV1,
-    CurrentSlotInventoryEvidenceV1, RetainedSnapshotManifestV1, RetainedViewSourceEvidenceV1,
-    VerifiedAttachmentAuthorityV1, VerifiedDetachAuthorityV1, VerifiedDetachCompletionV1,
-    VerifiedInspectionGrantV1, VerifiedRealizationTransactionCompletionV1,
-};
-use super::graph::SandboxTreeV1;
-use super::history::{HierarchyHistoryRecordV1, HierarchyHistoryV1};
-use super::protected_evidence::{
-    HierarchyProtectedEvidenceV1, decode_hierarchy_protected_evidence_v1,
-    encode_hierarchy_protected_evidence_v1,
-};
-use super::realizer::ViewRealizationPlanV1;
-use super::recovery::{
-    DurableDetachProgressV1, DurableRealizationProgressV1, DurableRealizationTransactionV1,
-    RebootRealizationInventoryV1, RetainedDetachHeadV1, RetainedRealizationHeadV1,
-    RetainedRealizationTransactionHeadV1, VerifiedDetachRebootInventoryV1,
-    VerifiedPreparedRealizationAuthorityV1, VerifiedPublishedRollbackAuthorityV1,
-    VerifiedSnapshotRecoveryAuthorityV1, VerifiedStageTransitionV1,
-};
-use super::tree_lineage::{ClosedTreeLineageRecordV1, decode_closed_tree_lineage_v1};
-
-const MAXIMUM_PROTECTED_CURRENT_HEADS: usize = 262_144;
-
-/// Selects one closed hierarchy journal family.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(u8)]
-pub enum HierarchyProtectedRecordKindV1 {
-    /// Stores the current canonical sandbox tree and attenuation state.
-    Tree = 1,
-    /// Stores a durable hierarchy-history head.
-    History = 2,
-    /// Stores a prepared or observed realization transaction.
-    RealizationEffect = 3,
-    /// Stores a prepared or observed detach transaction.
-    DetachEffect = 4,
-    /// Publishes a verified hierarchy replay checkpoint without compaction authority.
-    Checkpoint = 5,
-    /// Stores one opaque fact recovered only through protected-current replay.
-    Evidence = 6,
-    /// Retains one immutable, nonauthorizing Tree generation link.
-    TreeLineage = 7,
-}
-
-/// Defines the closed hierarchy adapter schema.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct HierarchyProtectedJournalSchemaV1;
-
-/// Authenticates retained heads against typed protected-current evidence.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HierarchyProtectedReplayValidatorV1 {
-    realization_heads: Vec<RetainedRealizationHeadV1>,
-    detach_heads: Vec<RetainedDetachHeadV1>,
-    transaction_heads: Vec<RetainedRealizationTransactionHeadV1>,
-}
-
-impl HierarchyProtectedReplayValidatorV1 {
-    /// Constructs replay evidence only from already typed retained heads.
-    pub(crate) fn from_protected_current_heads(
-        realization_heads: &[RetainedRealizationHeadV1],
-        detach_heads: &[RetainedDetachHeadV1],
-        transaction_heads: &[RetainedRealizationTransactionHeadV1],
-    ) -> Result<Self, HierarchyProtectedJournalErrorV1> {
-        let realization_count = realization_heads.len();
-        let detach_count = detach_heads.len();
-        let transaction_count = transaction_heads.len();
-        if realization_count
-            .checked_add(detach_count)
-            .and_then(|count| count.checked_add(transaction_count))
-            .is_none_or(|count| count > MAXIMUM_PROTECTED_CURRENT_HEADS)
-        {
-            return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-        let realization_commitments = realization_heads
-            .iter()
-            .map(|head| head.protected_head_commitment())
-            .collect::<BTreeSet<_>>();
-        let detach_commitments = detach_heads
-            .iter()
-            .map(|head| head.protected_head_commitment())
-            .collect::<BTreeSet<_>>();
-        let transaction_commitments = transaction_heads
-            .iter()
-            .map(|head| head.protected_head_commitment())
-            .collect::<BTreeSet<_>>();
-        let all_commitments = realization_commitments
-            .iter()
-            .chain(&detach_commitments)
-            .chain(&transaction_commitments)
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let exact = realization_commitments.len() == realization_count
-            && detach_commitments.len() == detach_count
-            && transaction_commitments.len() == transaction_count
-            && all_commitments.len() == realization_count + detach_count + transaction_count
-            && all_commitments
-                .iter()
-                .all(|digest| digest.as_bytes() != &[0; 32]);
-        if !exact {
-            return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-        Ok(Self {
-            realization_heads: realization_heads.to_vec(),
-            detach_heads: detach_heads.to_vec(),
-            transaction_heads: transaction_heads.to_vec(),
-        })
-    }
-
-    fn accepts_realization(&self, head: RetainedRealizationHeadV1) -> bool {
-        self.realization_heads.contains(&head)
-    }
-
-    fn accepts_detach(&self, head: RetainedDetachHeadV1) -> bool {
-        self.detach_heads.contains(&head)
-    }
-
-    fn accepts_transaction(&self, head: RetainedRealizationTransactionHeadV1) -> bool {
-        self.transaction_heads.contains(&head)
-    }
-}
-
-impl ProtectedDomainSchemaV1 for HierarchyProtectedJournalSchemaV1 {
-    type Kind = HierarchyProtectedRecordKindV1;
-    type ReplayValidator = HierarchyProtectedReplayValidatorV1;
-
-    const MAGIC: [u8; 8] = *b"AOSHTJ01";
-    const HASH_DOMAIN: &'static [u8] = b"aos.sandbox.hierarchy.protected-journal.v1\0";
-    const KEY_PREFIX: &'static [u8] = b"\0aos-hierarchy-v1\0";
-    const MAXIMUM_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
-
-    fn kind_code(kind: Self::Kind) -> u8 {
-        kind as u8
-    }
-
-    fn kind_from_code(code: u8) -> Option<Self::Kind> {
-        match code {
-            1 => Some(Self::Kind::Tree),
-            2 => Some(Self::Kind::History),
-            3 => Some(Self::Kind::RealizationEffect),
-            4 => Some(Self::Kind::DetachEffect),
-            5 => Some(Self::Kind::Checkpoint),
-            6 => Some(Self::Kind::Evidence),
-            7 => Some(Self::Kind::TreeLineage),
-            _ => None,
-        }
-    }
-
-    fn namespace(kind: Self::Kind) -> RecordNamespace {
-        match kind {
-            Self::Kind::Tree
-            | Self::Kind::History
-            | Self::Kind::Evidence
-            | Self::Kind::TreeLineage => RecordNamespace::DesiredState,
-            Self::Kind::RealizationEffect | Self::Kind::DetachEffect => RecordNamespace::Effect,
-            Self::Kind::Checkpoint => RecordNamespace::RuntimeGeneration,
-        }
-    }
-
-    fn order(kind: Self::Kind) -> u8 {
-        match kind {
-            Self::Kind::Tree => 1,
-            Self::Kind::History => 2,
-            Self::Kind::RealizationEffect => 3,
-            Self::Kind::DetachEffect => 4,
-            Self::Kind::Checkpoint => 5,
-            Self::Kind::Evidence => 6,
-            Self::Kind::TreeLineage => 7,
-        }
-    }
-
-    fn role(kind: Self::Kind) -> ProtectedRecordRoleV1 {
-        match kind {
-            Self::Kind::Tree
-            | Self::Kind::History
-            | Self::Kind::Evidence
-            | Self::Kind::TreeLineage => ProtectedRecordRoleV1::State,
-            Self::Kind::RealizationEffect | Self::Kind::DetachEffect => {
-                ProtectedRecordRoleV1::Effect
-            }
-            Self::Kind::Checkpoint => ProtectedRecordRoleV1::Publication,
-        }
-    }
-
-    fn is_checkpoint(kind: Self::Kind) -> bool {
-        matches!(kind, Self::Kind::Checkpoint)
-    }
-
-    fn family(kind: Self::Kind) -> u8 {
-        kind as u8
-    }
-
-    fn decode_reducer_phase(
-        validator: &Self::ReplayValidator,
-        kind: Self::Kind,
-        identity: &[u8],
-        body: &[u8],
-    ) -> Option<ProtectedReducerPhaseV1> {
-        if identity.len() != 48
-            || body.len() < 12
-            || (kind != Self::Kind::Evidence && body[8..12] != [0, 1, 0, 0])
-        {
-            return None;
-        }
-        match kind {
-            Self::Kind::Tree
-                if decode_tree_v1(body)
-                    .and_then(|decoded| encode_tree_v1(&decoded))
-                    .is_ok_and(|encoded| encoded == body)
-                    && body.get(12..28) == identity.get(..16)
-                    && identity.get(16..32) == identity.get(..16)
-                    && identity.get(32..48) == identity.get(..16) =>
-            {
-                Some(ProtectedReducerPhaseV1::Observed)
-            }
-            Self::Kind::History if canonical_history_body(body, identity) => {
-                Some(ProtectedReducerPhaseV1::Observed)
-            }
-            Self::Kind::RealizationEffect | Self::Kind::DetachEffect => {
-                canonical_hierarchy_artifact_phase(validator, kind, body, identity)
-            }
-            Self::Kind::Evidence => decode_hierarchy_protected_evidence_v1(body)
-                .filter(|evidence| evidence.identity().as_slice() == identity)
-                .map(|_| ProtectedReducerPhaseV1::Observed),
-            Self::Kind::TreeLineage => decode_closed_tree_lineage_v1(body)
-                .filter(|lineage| lineage.identity().as_slice() == identity)
-                .map(|_| ProtectedReducerPhaseV1::Observed),
-            Self::Kind::Tree | Self::Kind::History | Self::Kind::Checkpoint => None,
-        }
-    }
-
-    fn semantic_tuple(kind: Self::Kind, identity: &[u8], body: &[u8]) -> Option<[u8; 32]> {
-        let magic = body.get(..8)?;
-        let has_one_subject = match kind {
-            Self::Kind::History => magic == b"AOSHHI01",
-            Self::Kind::RealizationEffect => magic == b"AOSHRG01" || magic == b"AOSHRH01",
-            Self::Kind::DetachEffect => magic == b"AOSHDG01" || magic == b"AOSHDH01",
-            Self::Kind::Tree
-            | Self::Kind::Checkpoint
-            | Self::Kind::Evidence
-            | Self::Kind::TreeLineage => false,
-        };
-        if !has_one_subject {
-            return None;
-        }
-        identity.get(..32)?.try_into().ok()
-    }
-
-    fn validates_identity(kind: Self::Kind, identity: &[u8]) -> bool {
-        identity.len() == 48
-            && identity
-                .chunks_exact(16)
-                .all(|component| component != [0; 16])
-            && (!matches!(kind, Self::Kind::Tree | Self::Kind::Checkpoint)
-                || (identity[..16] == identity[16..32] && identity[..16] == identity[32..48]))
-    }
-}
-
-fn canonical_history_body(body: &[u8], identity: &[u8]) -> bool {
-    if body.starts_with(b"AOSHHI01") {
-        return decode_history_record_v1(body)
-            .and_then(encode_history_record_v1)
-            .is_ok_and(|encoded| encoded.as_slice() == body)
-            && body.get(12..28) == identity.get(..16)
-            && body.get(36..52) == identity.get(16..32)
-            && body.get(52..68) == identity.get(32..48);
-    }
-    if !body.starts_with(b"AOSHLG01")
-        || !decode_history_v1(body)
-            .and_then(|decoded| encode_history_v1(&decoded))
-            .is_ok_and(|encoded| encoded == body)
-        || body.get(12..28) != identity.get(..16)
-    {
-        return false;
-    }
-    let count = body
-        .get(28..32)
-        .and_then(|value| value.try_into().ok())
-        .map(u32::from_be_bytes)
-        .and_then(|value| usize::try_from(value).ok());
-    match count {
-        Some(0) => {
-            identity.get(16..32) == identity.get(..16) && identity.get(32..48) == identity.get(..16)
-        }
-        Some(count) => {
-            let Some(start) = count
-                .checked_sub(1)
-                .and_then(|index| index.checked_mul(262))
-                .and_then(|offset| 32_usize.checked_add(offset))
-            else {
-                return false;
-            };
-            body.get(start + 36..start + 52) == identity.get(16..32)
-                && body.get(start + 52..start + 68) == identity.get(32..48)
-        }
-        None => false,
-    }
-}
-
-fn canonical_hierarchy_artifact_phase(
-    validator: &HierarchyProtectedReplayValidatorV1,
-    kind: HierarchyProtectedRecordKindV1,
-    body: &[u8],
-    identity: &[u8],
-) -> Option<ProtectedReducerPhaseV1> {
-    let magic = body.get(..8)?;
-    match kind {
-        HierarchyProtectedRecordKindV1::RealizationEffect if magic == b"AOSHRP01" => {
-            let plan = decode_realization_plan_v1(body).ok()?;
-            (plan.project().as_bytes() == identity.get(..16)?
-                && plan.plan_commitment().as_bytes() == identity.get(16..48)?)
-            .then_some(ProtectedReducerPhaseV1::Prepared)
-        }
-        HierarchyProtectedRecordKindV1::RealizationEffect if magic == b"AOSHRG01" => {
-            let progress = decode_realization_progress_v1(body).ok()?;
-            if progress.project().as_bytes() != identity.get(..16)?
-                || progress.attachment().as_bytes() != identity.get(16..32)?
-                || progress.recipe_commitment().as_bytes().get(..16)? != identity.get(32..48)?
-            {
-                return None;
-            }
-            match progress.current_stage()? {
-                super::realizer::RealizationStageV1::Planned
-                | super::realizer::RealizationStageV1::Prepared => {
-                    Some(ProtectedReducerPhaseV1::Prepared)
-                }
-                super::realizer::RealizationStageV1::Published
-                | super::realizer::RealizationStageV1::Verified
-                | super::realizer::RealizationStageV1::Draining => {
-                    Some(ProtectedReducerPhaseV1::Observed)
-                }
-                super::realizer::RealizationStageV1::Reaped
-                | super::realizer::RealizationStageV1::Aborted
-                | super::realizer::RealizationStageV1::Faulted => {
-                    Some(ProtectedReducerPhaseV1::Terminal)
-                }
-            }
-        }
-        HierarchyProtectedRecordKindV1::DetachEffect if magic == b"AOSHDG01" => {
-            let progress = decode_detach_progress_v1(body).ok()?;
-            if progress.project().as_bytes() != identity.get(..16)?
-                || progress.attachment().as_bytes() != identity.get(16..32)?
-                || progress.detach_commitment().as_bytes().get(..16)? != identity.get(32..48)?
-            {
-                return None;
-            }
-            match progress.current_stage()? {
-                super::recovery::DetachStageV1::Planned => Some(ProtectedReducerPhaseV1::Prepared),
-                super::recovery::DetachStageV1::Detached
-                | super::recovery::DetachStageV1::Verified => {
-                    Some(ProtectedReducerPhaseV1::Observed)
-                }
-                super::recovery::DetachStageV1::Completed
-                | super::recovery::DetachStageV1::Aborted
-                | super::recovery::DetachStageV1::Faulted => {
-                    Some(ProtectedReducerPhaseV1::Terminal)
-                }
-            }
-        }
-        HierarchyProtectedRecordKindV1::RealizationEffect if magic == b"AOSHRH01" => {
-            let head = decode_protected_realization_head_v1(body).ok()?;
-            if head.project().as_bytes() != identity.get(..16)?
-                || head.attachment().as_bytes() != identity.get(16..32)?
-                || head.recipe_commitment().as_bytes().get(..16)? != identity.get(32..48)?
-                || !validator.accepts_realization(head)
-            {
-                return None;
-            }
-            match head.stage() {
-                super::realizer::RealizationStageV1::Planned
-                | super::realizer::RealizationStageV1::Prepared => {
-                    Some(ProtectedReducerPhaseV1::Prepared)
-                }
-                super::realizer::RealizationStageV1::Published
-                | super::realizer::RealizationStageV1::Verified
-                | super::realizer::RealizationStageV1::Draining => {
-                    Some(ProtectedReducerPhaseV1::Observed)
-                }
-                super::realizer::RealizationStageV1::Reaped
-                | super::realizer::RealizationStageV1::Aborted
-                | super::realizer::RealizationStageV1::Faulted => {
-                    Some(ProtectedReducerPhaseV1::Terminal)
-                }
-            }
-        }
-        HierarchyProtectedRecordKindV1::DetachEffect if magic == b"AOSHDH01" => {
-            let head = decode_protected_detach_head_v1(body).ok()?;
-            (head.project().as_bytes() == identity.get(..16)?
-                && head.attachment().as_bytes() == identity.get(16..32)?
-                && head.detach_commitment().as_bytes().get(..16)? == identity.get(32..48)?
-                && validator.accepts_detach(head))
-            .then_some(ProtectedReducerPhaseV1::Terminal)
-        }
-        HierarchyProtectedRecordKindV1::RealizationEffect if magic == b"AOSHTS01" => {
-            let state = decode_realization_transaction_state_v1(body).ok()?;
-            if state.project().as_bytes() != identity.get(..16)?
-                || state.plan_commitment().as_bytes() != identity.get(16..48)?
-            {
-                return None;
-            }
-            match state.actions().last().map(|action| action.outcome()) {
-                None => Some(ProtectedReducerPhaseV1::Prepared),
-                Some(super::recovery::TransactionActionOutcomeV1::Completed) => {
-                    Some(ProtectedReducerPhaseV1::Observed)
-                }
-                Some(
-                    super::recovery::TransactionActionOutcomeV1::Aborted
-                    | super::recovery::TransactionActionOutcomeV1::Faulted,
-                ) => Some(ProtectedReducerPhaseV1::Terminal),
-            }
-        }
-        HierarchyProtectedRecordKindV1::RealizationEffect if magic == b"AOSHTH01" => {
-            let head = decode_protected_transaction_head_v1(body).ok()?;
-            (head.project().as_bytes() == identity.get(..16)?
-                && head.plan_commitment().as_bytes() == identity.get(16..48)?
-                && validator.accepts_transaction(head))
-            .then_some(ProtectedReducerPhaseV1::Terminal)
-        }
-        _ => None,
-    }
-}
-
-/// Selects one typed canonical hierarchy reducer record.
-pub(crate) enum HierarchyReducerRecordV1<'record> {
-    /// Encodes one complete project tree.
-    Tree(&'record SandboxTreeV1),
-    /// Encodes one fixed hierarchy transition.
-    HistoryRecord(HierarchyHistoryRecordV1),
-    /// Encodes one complete hierarchy history.
-    History(&'record HierarchyHistoryV1),
-    /// Encodes one prepared multi-action realization plan.
-    RealizationPlan(&'record ViewRealizationPlanV1),
-    /// Encodes one observed realization progress record.
-    RealizationProgress(&'record DurableRealizationProgressV1),
-    /// Encodes one observed detach progress record.
-    DetachProgress(&'record DurableDetachProgressV1),
-    /// Encodes one terminal multi-action transaction state.
-    Transaction(&'record DurableRealizationTransactionV1),
-    /// Encodes one terminal retained realization head.
-    RealizationHead(RetainedRealizationHeadV1),
-    /// Encodes one terminal retained detach head.
-    DetachHead(RetainedDetachHeadV1),
-    /// Encodes one terminal retained transaction head.
-    TransactionHead(RetainedRealizationTransactionHeadV1),
-    /// Encodes one evidence value previously minted by this protected owner.
-    Evidence(&'record HierarchyProtectedEvidenceV1),
-    /// Encodes one immutable structural lineage link.
-    TreeLineage(&'record ClosedTreeLineageRecordV1),
-}
-
-/// Canonical hierarchy shared-journal key.
-pub type HierarchyProtectedJournalKeyV1 = ProtectedDomainKeyV1<HierarchyProtectedJournalSchemaV1>;
-/// Canonical hierarchy value and predecessor CAS.
-pub type HierarchyProtectedJournalEnvelopeV1 =
-    ProtectedDomainEnvelopeV1<HierarchyProtectedJournalSchemaV1>;
 /// Sealed hierarchy journal currentness snapshot.
 pub type HierarchyProtectedJournalSnapshotV1 =
     ProtectedDomainSnapshotV1<HierarchyProtectedJournalSchemaV1>;
-/// Replayed materialized hierarchy projection.
-pub type HierarchyProtectedJournalProjectionV1 =
-    ProtectedDomainProjectionV1<HierarchyProtectedJournalSchemaV1>;
-/// Hierarchy transaction group reconstructed during bounded cold replay.
-pub type HierarchyJournalReplayTransactionV1 =
-    ProtectedDomainReplayTransactionV1<HierarchyProtectedJournalSchemaV1>;
-/// Fail-closed hierarchy cold-replay phase.
-pub type HierarchyJournalReplayPhaseV1 = ProtectedDomainReplayPhaseV1;
-/// Semantic phase decoded from one hierarchy reducer body.
-pub type HierarchyReducerPhaseV1 = ProtectedReducerPhaseV1;
-/// Exact prepared hierarchy transaction.
-pub type PreparedHierarchyJournalTransactionV1 =
-    PreparedDomainTransactionV1<HierarchyProtectedJournalSchemaV1>;
-/// Exact ambiguous hierarchy transaction recovery token.
-pub type HierarchyJournalOutcomeUnknownV1 =
-    DomainOutcomeUnknownV1<HierarchyProtectedJournalSchemaV1>;
 /// Hierarchy transaction commit outcome.
 pub type HierarchyJournalCommitOutcomeV1 = DomainCommitOutcomeV1<HierarchyProtectedJournalSchemaV1>;
-/// Hierarchy outcome-unknown recovery classification.
-pub type HierarchyJournalRecoveryV1 = DomainRecoveryV1<HierarchyProtectedJournalSchemaV1>;
-/// Exact-readback hierarchy transaction result.
-pub type AppliedHierarchyJournalTransactionV1 =
-    AppliedDomainTransactionV1<HierarchyProtectedJournalSchemaV1>;
-/// Composite postcommit hierarchy transaction authority.
-pub type HierarchyPostcommitCapabilityV1 =
-    DomainPostcommitCapabilityV1<HierarchyProtectedJournalSchemaV1>;
-/// Current, consumed hierarchy transaction authority.
-pub type ValidatedHierarchyPostcommitV1<'current> =
-    ValidatedDomainPostcommitV1<'current, HierarchyProtectedJournalSchemaV1>;
-/// Current hierarchy postcommit authority reconstructed during cold replay.
-pub type ReplayedHierarchyPostcommitV1 =
-    ReplayedDomainPostcommitV1<HierarchyProtectedJournalSchemaV1>;
 /// Protected hierarchy journal owner.
 pub type HierarchyProtectedJournalV1<'journal> =
     ProtectedDomainJournalV1<'journal, HierarchyProtectedJournalSchemaV1>;
 /// Hierarchy adapter validation or durability failure.
 pub type HierarchyProtectedJournalErrorV1 = ProtectedDomainJournalErrorV1;
 
-/// Constructs the canonical key for a project sandbox's hierarchy record.
-///
-/// # Errors
-///
-/// Returns [`HierarchyProtectedJournalErrorV1`] only if the fixed typed
-/// identity cannot be represented by the bounded key schema.
+/// Constructs the canonical DATA key at the existing Native error boundary.
 pub fn hierarchy_protected_key_v1(
     kind: HierarchyProtectedRecordKindV1,
     project: ProjectId,
     sandbox: SandboxId,
     subject: ResourceId,
 ) -> Result<HierarchyProtectedJournalKeyV1, HierarchyProtectedJournalErrorV1> {
-    if project.as_bytes() == &[0; 16]
-        || sandbox.as_bytes() == &[0; 16]
-        || subject.as_bytes() == &[0; 16]
-    {
-        return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
-    }
-    let mut identity = Vec::with_capacity(48);
-    identity.extend_from_slice(project.as_bytes());
-    identity.extend_from_slice(sandbox.as_bytes());
-    identity.extend_from_slice(subject.as_bytes());
-    HierarchyProtectedJournalKeyV1::new(kind, identity).map_err(ProtectedDomainJournalErrorV1::from)
+    aos_sandbox_ledger_replay::replay::hierarchy_records::hierarchy_protected_key_v1(kind, project, sandbox, subject)
+        .map_err(HierarchyProtectedJournalErrorV1::from)
 }
 
 /// Claims the dormant hierarchy adapter over an already protected-open journal.
@@ -571,6 +49,34 @@ pub(crate) fn claim_hierarchy_protected_journal_v1(
 pub struct HierarchyProtectedJournalOwnerV1<'journal> {
     journal: HierarchyProtectedJournalV1<'journal>,
     validator: HierarchyProtectedReplayValidatorV1,
+}
+
+/// Holds one structurally empty generation-one Tree from the held Source map.
+///
+/// This copied DATA has no ancestry authority once the original loan ends.
+#[derive(Clone, Copy)]
+pub(crate) struct CreateStorageEmptyTreeDataV1 {
+    pub(crate) tree_head: ObjectDigest,
+    pub(crate) lineage_head: ObjectDigest,
+}
+
+// Reuses the sole complete lineage replay and tree codec. The genuine J owner
+// pays before this call and independently retains named/native before and after
+// samples; this helper performs no fresh named File IO or authority issuance.
+pub(crate) fn create_storage_empty_tree_data_v1(
+    journal: &Journal,
+    project: ProjectId,
+) -> Result<CreateStorageEmptyTreeDataV1, HierarchyProtectedJournalErrorV1> {
+    journal.ensure_healthy()?;
+    let heads = super::tree_lineage::replay_closed_tree_lineage_records_v2(journal.all_records())?;
+    let head = heads.get(&project).ok_or(HierarchyProtectedJournalErrorV1::StaleAuthority)?;
+    if head.tree.project() != project || head.tree.tree_generation().get() != 1
+        || head.tree.records().next().is_some() || head.tree.tombstones().next().is_some()
+        || head.tree_head.as_bytes() == &[0; 32] || head.lineage_head.as_bytes() == &[0; 32]
+    {
+        return Err(HierarchyProtectedJournalErrorV1::StaleAuthority);
+    }
+    Ok(CreateStorageEmptyTreeDataV1 { tree_head: head.tree_head, lineage_head: head.lineage_head })
 }
 
 /// Retains complete local Tree structure beside its original Source writer.
@@ -942,359 +448,15 @@ impl<'journal> HierarchyProtectedJournalOwnerV1<'journal> {
         let key =
             HierarchyProtectedJournalKeyV1::new(HierarchyProtectedRecordKindV1::Tree, identity)?;
         let projection = self.journal.replay()?;
-        let Some(record) = projection
-            .records()
-            .iter()
-            .find(|record| record.key() == &key)
-        else {
-            return Ok(None);
-        };
-        let payload = decode_reducer_payload_with_validator::<HierarchyProtectedJournalSchemaV1>(
-            &key,
-            record.payload(),
-            &self.validator,
-        )?;
-        let tree = decode_tree_v1(payload.body())
-            .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        if tree.project() != project {
-            return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-        let tree_commitment = tree_commitment_v1(&tree)
-            .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        Ok(Some(current(CurrentProjectAncestryHeadV1 {
-            project,
-            record_revision: record.revision(),
-            tree_generation: tree.tree_generation(),
-            tree_commitment,
-            head: record.digest(),
-        })))
+        let fields = aos_sandbox_ledger_replay::source_readback_queries::ancestry_fields_from_projection_v1(
+            &projection, &key, &self.validator, project,
+        ).map_err(HierarchyProtectedJournalErrorV1::from)?;
+        Ok(fields.map(|(record_revision, tree_generation, tree_commitment, head)|
+            current(CurrentProjectAncestryHeadV1 {
+                project, record_revision, tree_generation, tree_commitment, head,
+            })))
     }
 
-    /// Mints a descendant-inspection grant from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn inspection_grant(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, VerifiedInspectionGrantV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::InspectionGrant(value)) => Some(current(value)),
-            _ => None,
-        })
-    }
-
-    /// Mints a retained snapshot manifest from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn snapshot_manifest(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, RetainedSnapshotManifestV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::SnapshotManifest(value)) => Some(current(value)),
-            _ => None,
-        })
-    }
-
-    /// Mints a live inspection observation from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn live_inspection(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, CurrentLiveInspectionObservationV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::LiveInspection(value)) => Some(current(value)),
-            _ => None,
-        })
-    }
-
-    /// Mints assignment evidence from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn assignment(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, CurrentAssignmentEvidenceV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::Assignment(value)) => Some(current(value)),
-            _ => None,
-        })
-    }
-
-    /// Mints retained view-source evidence from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn view_source(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, RetainedViewSourceEvidenceV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::ViewSource(value)) => Some(current(value)),
-            _ => None,
-        })
-    }
-
-    /// Mints destination-slot inventory evidence from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn slot_inventory(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, CurrentSlotInventoryEvidenceV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::SlotInventory(value)) => Some(current(value)),
-            _ => None,
-        })
-    }
-
-    /// Mints attachment authority from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn attachment_authority(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, VerifiedAttachmentAuthorityV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::AttachmentAuthority(value)) => Some(current(value)),
-            _ => None,
-        })
-    }
-
-    /// Mints detach authority from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn detach_authority(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, VerifiedDetachAuthorityV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::DetachAuthority(value)) => Some(current(value)),
-            _ => None,
-        })
-    }
-
-    /// Mints terminal detach evidence from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn detach_completion(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, VerifiedDetachCompletionV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::DetachCompletion(value)) => Some(current(value)),
-            _ => None,
-        })
-    }
-
-    /// Mints terminal multi-action evidence from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn transaction_completion(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, VerifiedRealizationTransactionCompletionV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::TransactionCompletion(value)) => {
-                Some(current(value))
-            }
-            _ => None,
-        })
-    }
-
-    /// Mints snapshot recovery authority from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn snapshot_recovery_authority(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, VerifiedSnapshotRecoveryAuthorityV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::SnapshotRecoveryAuthority(value)) => {
-                Some(current(value))
-            }
-            _ => None,
-        })
-    }
-
-    /// Mints one verified realization-stage transition from a current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn stage_transition(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, VerifiedStageTransitionV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::StageTransition(value)) => Some(current(value)),
-            _ => None,
-        })
-    }
-
-    /// Mints realization reboot inventory from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn reboot_realization_inventory(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, RebootRealizationInventoryV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::RebootRealizationInventory(value)) => {
-                Some(current(value))
-            }
-            _ => None,
-        })
-    }
-
-    /// Mints published rollback authority from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn published_rollback_authority(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, VerifiedPublishedRollbackAuthorityV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::PublishedRollbackAuthority(value)) => {
-                Some(current(value))
-            }
-            _ => None,
-        })
-    }
-
-    /// Mints prepared-realization recovery authority from a current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn prepared_realization_authority(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, VerifiedPreparedRealizationAuthorityV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::PreparedRealizationAuthority(value)) => {
-                Some(current(value))
-            }
-            _ => None,
-        })
-    }
-
-    /// Mints detach reboot inventory from one exact current record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected-current replay or evidence decoding fails.
-    pub fn detach_reboot_inventory(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<
-        Option<CurrentHierarchyProtectedEvidenceV1<'_, VerifiedDetachRebootInventoryV1>>,
-        HierarchyProtectedJournalErrorV1,
-    > {
-        self.current_evidence(key).map(|value| match value {
-            Some(HierarchyProtectedEvidenceV1::DetachRebootInventory(value)) => {
-                Some(current(value))
-            }
-            _ => None,
-        })
-    }
-
-    fn current_evidence(
-        &self,
-        key: &HierarchyProtectedJournalKeyV1,
-    ) -> Result<Option<HierarchyProtectedEvidenceV1>, HierarchyProtectedJournalErrorV1> {
-        if key.kind() != HierarchyProtectedRecordKindV1::Evidence {
-            return Ok(None);
-        }
-        let projection = self.journal.replay()?;
-        let Some(record) = projection
-            .records()
-            .iter()
-            .find(|record| record.key() == key)
-        else {
-            return Ok(None);
-        };
-        let body = decode_reducer_payload_with_validator::<HierarchyProtectedJournalSchemaV1>(
-            key,
-            record.payload(),
-            &self.validator,
-        )?;
-        let evidence = decode_hierarchy_protected_evidence_v1(body.body())
-            .filter(|evidence| evidence.identity().as_slice() == key.identity())
-            .ok_or(HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        Ok(Some(evidence))
-    }
 }
 
 /// Replays the typed hierarchy projection without acquiring a Source writer.
@@ -1315,32 +477,13 @@ pub(crate) fn replay_project_ancestry_head_v1(
         identity.extend_from_slice(project.as_bytes());
     }
     let key = HierarchyProtectedJournalKeyV1::new(HierarchyProtectedRecordKindV1::Tree, identity)?;
-    let Some(record) = projection
-        .records()
-        .iter()
-        .find(|record| record.key() == &key)
-    else {
-        return Ok(None);
-    };
-    let payload = decode_reducer_payload_with_validator::<HierarchyProtectedJournalSchemaV1>(
-        &key,
-        record.payload(),
-        &validator,
-    )?;
-    let tree = decode_tree_v1(payload.body())
-        .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
-    if tree.project() != project {
-        return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
-    }
-    let tree_commitment = tree_commitment_v1(&tree)
-        .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
-    Ok(Some(CurrentProjectAncestryHeadV1 {
-        project,
-        record_revision: record.revision(),
-        tree_generation: tree.tree_generation(),
-        tree_commitment,
-        head: record.digest(),
-    }))
+    let fields = aos_sandbox_ledger_replay::source_readback_queries::ancestry_fields_from_projection_v1(
+        &projection, &key, &validator, project,
+    ).map_err(HierarchyProtectedJournalErrorV1::from)?;
+    Ok(fields.map(|(record_revision, tree_generation, tree_commitment, head)|
+        CurrentProjectAncestryHeadV1 {
+            project, record_revision, tree_generation, tree_commitment, head,
+        }))
 }
 
 pub(crate) fn recover_hierarchy_replay_validator_v1(
@@ -1361,41 +504,13 @@ fn recover_hierarchy_replay_validator_impl_v1(
 ) -> Result<HierarchyProtectedReplayValidatorV1, HierarchyProtectedJournalErrorV1> {
     let candidates =
         protected_current_record_candidates_v1::<HierarchyProtectedJournalSchemaV1>(journal)?;
-    let mut realization_heads = Vec::new();
-    let mut detach_heads = Vec::new();
-    let mut transaction_heads = Vec::new();
-    for candidate in &candidates {
-        if !allow_structural_tree
-            && matches!(
-                candidate.key().kind(),
-                HierarchyProtectedRecordKindV1::Tree | HierarchyProtectedRecordKindV1::TreeLineage
-            )
-        {
-            // Structural lineage does not establish Controller currentness or
-            // an independent rollback floor for the public ancestry readers.
-            return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-        match candidate.body().get(..8) {
-            Some(magic) if magic == b"AOSHRH01" => realization_heads.push(
-                decode_protected_realization_head_v1(candidate.body())
-                    .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?,
-            ),
-            Some(magic) if magic == b"AOSHDH01" => detach_heads.push(
-                decode_protected_detach_head_v1(candidate.body())
-                    .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?,
-            ),
-            Some(magic) if magic == b"AOSHTH01" => transaction_heads.push(
-                decode_protected_transaction_head_v1(candidate.body())
-                    .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?,
-            ),
-            _ => {}
-        }
+    if allow_structural_tree {
+        aos_sandbox_ledger_replay::replay::hierarchy_records::replay_validator_from_saved_rows_v1(&candidates)
+            .map_err(HierarchyProtectedJournalErrorV1::from)
+    } else {
+        aos_sandbox_ledger_replay::replay::hierarchy_records::ancestry_validator_from_saved_rows_v1(&candidates)
+            .map_err(HierarchyProtectedJournalErrorV1::from)
     }
-    HierarchyProtectedReplayValidatorV1::from_protected_current_heads(
-        &realization_heads,
-        &detach_heads,
-        &transaction_heads,
-    )
 }
 
 fn current<'current, T>(evidence: T) -> CurrentHierarchyProtectedEvidenceV1<'current, T> {
@@ -1405,7 +520,7 @@ fn current<'current, T>(evidence: T) -> CurrentHierarchyProtectedEvidenceV1<'cur
     }
 }
 
-/// Wraps one reducer-issued canonical hierarchy body for journal admission.
+/// Encodes the canonical reducer DATA at the existing Native error boundary.
 pub(crate) fn hierarchy_reducer_envelope_v1(
     key: HierarchyProtectedJournalKeyV1,
     revision: u64,
@@ -1413,136 +528,78 @@ pub(crate) fn hierarchy_reducer_envelope_v1(
     record: HierarchyReducerRecordV1<'_>,
     validator: &HierarchyProtectedReplayValidatorV1,
 ) -> Result<HierarchyProtectedJournalEnvelopeV1, HierarchyProtectedJournalErrorV1> {
-    let (required_kind, body) = match record {
-        HierarchyReducerRecordV1::Tree(value) => (
-            HierarchyProtectedRecordKindV1::Tree,
-            encode_tree_v1(value)
-                .map(Vec::from)
-                .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord),
-        ),
-        HierarchyReducerRecordV1::HistoryRecord(value) => (
-            HierarchyProtectedRecordKindV1::History,
-            encode_history_record_v1(value)
-                .map(Vec::from)
-                .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord),
-        ),
-        HierarchyReducerRecordV1::History(value) => (
-            HierarchyProtectedRecordKindV1::History,
-            encode_history_v1(value)
-                .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord),
-        ),
-        HierarchyReducerRecordV1::RealizationPlan(value) => (
-            HierarchyProtectedRecordKindV1::RealizationEffect,
-            encode_realization_plan_v1(value)
-                .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord),
-        ),
-        HierarchyReducerRecordV1::RealizationProgress(value) => (
-            HierarchyProtectedRecordKindV1::RealizationEffect,
-            encode_realization_progress_v1(value)
-                .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord),
-        ),
-        HierarchyReducerRecordV1::DetachProgress(value) => (
-            HierarchyProtectedRecordKindV1::DetachEffect,
-            encode_detach_progress_v1(value)
-                .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord),
-        ),
-        HierarchyReducerRecordV1::Transaction(value) => (
-            HierarchyProtectedRecordKindV1::RealizationEffect,
-            encode_realization_transaction_state_v1(value)
-                .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord),
-        ),
-        HierarchyReducerRecordV1::RealizationHead(value) => (
-            HierarchyProtectedRecordKindV1::RealizationEffect,
-            encode_protected_realization_head_v1(value)
-                .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord),
-        ),
-        HierarchyReducerRecordV1::DetachHead(value) => (
-            HierarchyProtectedRecordKindV1::DetachEffect,
-            encode_protected_detach_head_v1(value)
-                .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord),
-        ),
-        HierarchyReducerRecordV1::TransactionHead(value) => (
-            HierarchyProtectedRecordKindV1::RealizationEffect,
-            encode_protected_transaction_head_v1(value)
-                .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord),
-        ),
-        HierarchyReducerRecordV1::Evidence(value) => (
-            HierarchyProtectedRecordKindV1::Evidence,
-            encode_hierarchy_protected_evidence_v1(value)
-                .ok_or(HierarchyProtectedJournalErrorV1::NonCanonicalRecord),
-        ),
-        HierarchyReducerRecordV1::TreeLineage(value) => (
-            HierarchyProtectedRecordKindV1::TreeLineage,
-            Ok(value.encode()),
-        ),
-    };
-    if key.kind() != required_kind {
-        return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
-    }
-    let body = body?;
-    let payload = encode_reducer_payload_with_validator::<HierarchyProtectedJournalSchemaV1>(
-        &key, &body, validator,
-    )?;
-    HierarchyProtectedJournalEnvelopeV1::new_with_validator(
-        key,
-        revision,
-        predecessor,
-        payload,
-        validator,
-    ).map_err(ProtectedDomainJournalErrorV1::from)
+    aos_sandbox_ledger_replay::replay::hierarchy_records::hierarchy_reducer_envelope_v1(key, revision, predecessor, record, validator)
+        .map_err(HierarchyProtectedJournalErrorV1::from)
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod inventory_data_tests {
-    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
-    use super::*;
-    use crate::journal::JournalError;
-    use crate::source_domain::PROTECTED_SOURCE_DOMAIN_JOURNAL;
-
-    #[test]
-    fn structural_inventory_data_retains_the_original_empty_source_writer() {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-            .unwrap();
-        let uid = std::fs::metadata(directory.path()).unwrap().uid();
-        let journal = Journal::open_protected_at_uid(
-            directory.path(),
-            PROTECTED_SOURCE_DOMAIN_JOURNAL,
-            Default::default(),
-            uid,
-        )
-        .unwrap()
-        .0;
-        let sequence = journal.snapshot_sequence();
-        let mut source = ProtectedSourceDomainJournalOwnerV1::from_test_journal(journal);
-
-        let inventory = retained_tree_inventory_data_v1(&mut source).unwrap();
-
-        assert_eq!(inventory.journal_sequence(), sequence);
-        assert_eq!(inventory.trees().unwrap().len(), 0);
-        std::fs::rename(
-            directory.path().join(PROTECTED_SOURCE_DOMAIN_JOURNAL),
-            directory.path().join("retained-source.journal"),
-        )
-        .unwrap();
-        assert!(inventory.recheck().is_err());
-        assert!(inventory.trees().is_err());
+// Prices one additional structural replay from this SAME held map. Tree's
+// binary decoder checks 58-byte record/16-byte tombstone totals before reserve;
+// using 16 for either family also covers malformed reached prefixes. Generic
+// Native/Protocol replay and canonical byte lanes remain separately priced.
+pub(crate) fn create_storage_tree_model_demand_v1(
+    journal: &Journal,
+) -> Result<aos_sandbox_core::ResourceVector, crate::JournalError> {
+    use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+    use aos_sandbox_core::source_tree_model::SandboxTreeRecordV1;
+    let invalid = || crate::JournalError::JournalTooLarge;
+    let mut bytes = 0_usize;
+    let mut rows = 0_usize;
+    for (_, key, value) in journal.all_records() {
+        bytes = bytes.checked_add(key.len()).and_then(|n| n.checked_add(value.len())).ok_or_else(invalid)?;
+        rows = rows.checked_add(1).ok_or_else(invalid)?;
     }
+    let children = bytes.checked_div(16).and_then(|n| n.checked_add(rows)).ok_or_else(invalid)?;
+    let width = std::mem::size_of::<(SandboxTreeRecordV1, SandboxId, usize, [usize; 6])>();
+    let cells = children.checked_mul(8).and_then(|n| n.checked_add(8)).ok_or_else(invalid)?;
+    let maps = rows.checked_mul(8).and_then(|n| n.checked_mul(std::mem::size_of::<(
+        ProjectId, super::tree_lineage::ClosedTreeLineageHeadV1, [usize; 6],
+    )>())).ok_or_else(invalid)?;
+    let memory = cells.checked_mul(width).and_then(|n| n.checked_add(maps))
+        .and_then(|n| n.checked_add(bytes.checked_mul(32)?)).ok_or_else(invalid)?;
+    Ok(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(memory).map_err(|_| invalid())?)
+        .with(D::MetadataEntries, u64::try_from(cells).map_err(|_| invalid())?))
+}
 
-    #[test]
-    fn structural_inventory_data_rejects_an_unprotected_journal() {
-        let directory = tempfile::tempdir().unwrap();
-        let journal = Journal::open(directory.path().join("ordinary.journal"), Default::default())
-            .unwrap()
-            .0;
-        let mut source = ProtectedSourceDomainJournalOwnerV1::from_test_journal(journal);
+/// Selects the exact predecessor Tree row through the sole complete lineage replay.
+///
+/// The genuine Start/Root caller owns and prepays its actual Source native
+/// interval separately. This copied structural DATA grants no ancestry, lease
+/// or mutation authority and performs no additional physical observation.
+///
+/// # Errors
+/// Rejects an unhealthy Source, invalid complete lineage or missing exact target.
+pub(crate) fn start_assignment_source_tree_data_v2(
+    journal: &Journal,
+    project: ProjectId,
+    sandbox: SandboxId,
+) -> Result<(aos_sandbox_core::source_tree_model::SandboxTreeRecordV1, ObjectDigest, ObjectDigest),
+    HierarchyProtectedJournalErrorV1>
+{
+    journal.ensure_healthy()?;
+    let heads = super::tree_lineage::replay_closed_tree_lineage_records_v2(journal.all_records())?;
+    let head = heads.get(&project).ok_or(HierarchyProtectedJournalErrorV1::StaleAuthority)?;
+    let record = *head.tree.record(sandbox).ok_or(HierarchyProtectedJournalErrorV1::StaleAuthority)?;
+    Ok((record, head.tree_head, head.lineage_head))
+}
 
-        let result = retained_tree_inventory_data_v1(&mut source);
+/// Prices the same full structural replay with only actual named containers.
+///
+/// The existing decoder/model memory recipe remains unchanged. The canonical
+/// format owners separately count their keyed rows, maps and indices; parser
+/// cursors and vector headers do not create namespace entries.
+///
+/// # Errors
+/// Rejects malformed structural cardinalities or checked geometry overflow.
+pub(crate) fn start_assignment_tree_receiving_demand_v2(
+    journal: &Journal,
+) -> Result<aos_sandbox_core::ResourceVector, crate::JournalError> {
+    use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
 
-        assert!(matches!(
-            result,
-            Err(HierarchyProtectedJournalErrorV1::Journal(JournalError::ProtectedBoundary))
-        ));
-    }
+    let memory = create_storage_tree_model_demand_v1(journal)?.get(D::MemoryBytes);
+    let names = aos_sandbox_ledger_replay::replay::tree_lineage::retained::
+        closed_tree_lineage_named_entries_v2(journal.all_records())
+        .map_err(crate::JournalError::from)?;
+    Ok(ResourceVector::ZERO
+        .with(D::MemoryBytes, memory)
+        .with(D::MetadataEntries, names))
 }

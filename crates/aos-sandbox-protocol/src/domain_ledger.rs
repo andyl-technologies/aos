@@ -29,6 +29,8 @@
 //! [`execution_observe_reservation`] owns the complete canonical Observe binding;
 //! [`create_q04_history`] owns the closed Q04 historical record family and its
 //! shared private codec. Native signing, custody and continuation stay upper.
+//! [`create_storage_history`] checks initial V1 continuation envelopes only;
+//! complete nested phase schemas and Native receiving/currentness stay upper.
 //! [`resource_bank`] owns the complete passive account/claim codecs, inclusive
 //! replay, co-issuance and terminal history. Native resource loans stay upper.
 //! [`controller_history_relation`] owns complete atomic Delete metadata and
@@ -38,20 +40,35 @@ pub mod capacity;
 pub mod capacity_family;
 pub mod controller_history_relation;
 pub mod create_q04_history;
+pub mod create_storage_history;
 pub mod delete_batch;
 pub mod effect_history;
+pub mod floor_sidecar_geometry;
 pub mod execution_observe_reservation;
+pub mod execution_no_apply_floor;
 pub mod lifecycle_model;
+/// Borrows canonical lifecycle auxiliary framing without native authority.
+pub mod lifecycle_auxiliary;
+/// Retains exact ordinary Stop dispatch packets without effect authority.
+pub mod stop_dispatch;
+/// Retains fresh Stop cleanup completion comparisons without writer authority.
+pub mod stop_completion;
 pub mod operation;
 pub mod ownership_gate;
 pub mod project_admission_metadata;
 pub mod project_source;
 pub mod protected_names;
 pub mod public_operation;
+pub mod readonly;
 pub mod records;
+/// Shares canonical historical provisioning resources without Native authority.
+pub mod provisioning_resources;
 pub mod resource_bank;
+pub mod runtime_authority_history;
 pub mod root_project_history;
 pub mod source_project_history;
+pub mod source_policy_hold;
+pub mod cache_policy_hold;
 pub mod transaction;
 
 use aos_sandbox_journal::framing::FrameError;
@@ -118,3 +135,9 @@ pub enum DomainLedgerDataError {
     #[error(transparent)]
     Transaction(#[from] JournalTransactionDataError),
 }
+
+/// Contains passive Delete-purpose Root and Source exchange DATA.
+pub mod delete_root;
+
+/// Defines undeployed, purpose-specific Root provisioning exchange DATA.
+pub mod provisioning_root;

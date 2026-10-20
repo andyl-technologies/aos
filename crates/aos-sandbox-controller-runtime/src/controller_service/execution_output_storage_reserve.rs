@@ -24,7 +24,7 @@ use aos_sandbox::controller_storage_output_reserve_attempt::{
 use aos_sandbox::publication::{AuthorityPublicationError, CurrentAuthorityPublicationV1};
 use aos_sandbox::environment::EnvironmentProtectedJournalOwnerV1;
 use aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1;
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{AuthorityPublicationStore, EffectFailure, Journal};
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
@@ -234,7 +234,7 @@ fn retryable(message: &'static str) -> EffectFailure {
 
 // Both issuers compare the same recovered publication/lease/source tuple.
 // This is comparison DATA, not a detached currentness or signing permit.
-fn current_output_assignment_matches(
+pub(super) fn current_output_assignment_matches(
     current: &CurrentAuthorityPublicationV1,
     source: &ControllerExecutionReserveSourceV1,
     assignment: BrokerAssignment,
@@ -256,13 +256,13 @@ fn current_output_assignment_matches(
         || current.lease().lease().node() != source.node())
 }
 
-enum OutputPlanAudience {
+pub(super) enum OutputPlanAudience {
     Storage,
     Host,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn output_plan(
+pub(super) fn output_plan(
     purpose: OutputPlanAudience,
     assignment: BrokerAssignment,
     node: aos_sandbox_core::NodeId,
@@ -360,6 +360,14 @@ impl OriginalStorageOutputIssuerV1 {
     pub(super) fn body(&self) -> Option<&[u8]> {
         self.completed.then_some(())?;
         self.body.as_deref()
+    }
+
+    /// Borrows the same canonical records retained by the completed issuer.
+    pub(super) fn completed_records_for_capture_v3(
+        &self,
+    ) -> Option<&StorageOutputReserveRecordsV1> {
+        self.completed.then_some(())?;
+        self.records.as_ref()?.as_ref().ok()
     }
 
     pub(super) fn original_source(&self) -> Option<&ControllerExecutionReserveSourceV1> {
@@ -630,7 +638,41 @@ impl OriginalHostOutputIssuerV1 {
         if self.started { return; }
         self.started = true;
         let mut boundary = OriginalHostIssuerBoundaryV1 { issuer: self };
-        let result = boundary.issuer.sign_inner(controller, storage, original_request, nomination, signer, clock);
+        let result = boundary.issuer.sign_inner(controller, storage, original_request, nomination, signer, clock,
+            aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT);
+        if let Err(error) = result {
+            if boundary.issuer.failure().is_none() && boundary.issuer.postcheck_debt().is_none() {
+                boundary.issuer.validation_failure = Some(error);
+            }
+        }
+    }
+
+    /// Signs only a fresh Host readback for the actual pending Capture60.
+    pub(super) fn sign_capture_v3<T>(
+        &mut self, controller: &mut Journal,
+        registration: &super::execution_output_storage_registration::OriginalControllerOutputRegistrationV1,
+        original_request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        nomination: &aos_proto::aos::sandbox::local::v1::StorageOutputRegistrationPreparationV1,
+        signer: &ControllerBrokerPlanSignerV1, clock: &mut T,
+    ) where T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError> {
+        if self.started { return; }
+        self.started = true;
+        let mut boundary = OriginalHostIssuerBoundaryV1 { issuer: self };
+        let result = (|| {
+            let source = original_request.storage_execution_capture_source_ongoing_v2()
+                .ok_or_else(|| retryable("Capture60 source is absent"))?;
+            let source = source.original_source_v1();
+            let storage = registration.completed_host_readback_source_v3(
+                source.settlement().create_operation(), source.settlement().execution())
+                .ok_or_else(|| retryable("completed logical registration is absent"))?;
+            if original_request.storage_execution_capture_original_output_request_v2() != storage.body() {
+                return Err(retryable("Capture60 changed the completed original46 body"));
+            }
+            // The current request is60; its exact historical46 remains selected
+            // by this completed owner and the canonical Host readback inspector.
+            boundary.issuer.sign_inner(controller, storage, original_request, nomination, signer, clock,
+                aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1)
+        })();
         if let Err(error) = result {
             if boundary.issuer.failure().is_none() && boundary.issuer.postcheck_debt().is_none() {
                 boundary.issuer.validation_failure = Some(error);
@@ -646,6 +688,7 @@ impl OriginalHostOutputIssuerV1 {
         nomination: &aos_proto::aos::sandbox::local::v1::StorageOutputRegistrationPreparationV1,
         signer: &ControllerBrokerPlanSignerV1,
         clock: &mut T,
+        expected_method: aos_proto::aos::sandbox::local::v1::BrokerMethod,
     ) -> Result<(), EffectFailure>
     where T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError> {
         use aos_sandbox::controller_storage_output_reserve_attempt::load_captured_controller_storage_output_reserve_attempt_v1;
@@ -657,7 +700,7 @@ impl OriginalHostOutputIssuerV1 {
         let Some(Ok(original)) = &storage.retained else { return Err(closed()); };
         let Some(Ok(source)) = &storage.source else { return Err(closed()); };
         let Some(Ok(assignment)) = &storage.assignment else { return Err(closed()); };
-        if original_request.method() != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        if original_request.method() != expected_method
             || !aos_sandbox_protocol::storage_output_reserve::continuation::matches_original_request_v1(nomination, original_request)
         {
             return Err(closed());

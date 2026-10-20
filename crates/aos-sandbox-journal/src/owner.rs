@@ -280,6 +280,22 @@ impl<N: Ord + Copy, L: Copy + Into<NativeGeometryBounds>> NativeJournal<N, L> {
         )
     }
 
+    /// Retains the same projection's failed current lookup tuple as DATA.
+    ///
+    /// # Errors
+    /// Preserves the original projection order and refuses retained reentry.
+    pub fn projected_change_retaining_v1<'a>(
+        &self,
+        records: impl IntoIterator<Item = RecordMutationRef<'a, N>>,
+        original: &mut materialized::NativeMaterializedChangeOriginalsV1<N>,
+    ) -> Result<usize, FrameError> {
+        let limits = self.limits.into();
+        materialized::validate_change_retaining_v1(
+            &self.prefix.state, self.prefix.materialized_bytes, records,
+            limits.maximum_materialized_bytes, limits.maximum_materialized_records, original,
+        )
+    }
+
     /// Encodes supplied record DATA at the recorded native head without admission.
     ///
     /// # Errors
@@ -297,6 +313,23 @@ impl<N: Ord + Copy, L: Copy + Into<NativeGeometryBounds>> NativeJournal<N, L> {
         transaction::encode_transaction(transaction_id, self.prefix.next_sequence, records)
     }
 
+    /// Encodes through the same engine while retaining failed frame/payload prefixes.
+    ///
+    /// # Errors
+    /// Preserves count/layout/sequence error ordering and retained reentry refusal.
+    ///
+    /// # Panics
+    /// Preserves the ordinary encoder's allocation/count panic conditions.
+    pub fn encode_at_head_retaining_v1<'a>(
+        &self, transaction_id: [u8; 16],
+        records: impl ExactSizeIterator<Item = NativeRecordRef<'a>>,
+        original: &mut transaction::NativeTransactionEncodeOriginalsV1,
+    ) -> Result<Vec<Vec<u8>>, FrameError> {
+        transaction::encode_transaction_retaining_v1(
+            transaction_id, self.prefix.next_sequence, records, original,
+        )
+    }
+
     /// Computes resulting length from the actual file without reserving capacity.
     ///
     /// # Errors
@@ -305,6 +338,18 @@ impl<N: Ord + Copy, L: Copy + Into<NativeGeometryBounds>> NativeJournal<N, L> {
     pub fn expected_append_length(&self, frames: &[Vec<u8>]) -> Result<u64, FrameError> {
         self.storage
             .expected_append_length(frames, self.limits.into().maximum_journal_bytes)
+    }
+
+    /// Retains actual expected-length metadata beside the outer stage's result.
+    ///
+    /// # Errors
+    /// Preserves the original metadata/arithmetic/configured-bound order.
+    pub fn expected_append_length_retaining_v1(
+        &self, frames: &[Vec<u8>], metadata: &mut Option<std::fs::Metadata>,
+    ) -> Result<u64, FrameError> {
+        self.storage.expected_append_length_retaining_v1(
+            frames, self.limits.into().maximum_journal_bytes, metadata,
+        )
     }
 }
 

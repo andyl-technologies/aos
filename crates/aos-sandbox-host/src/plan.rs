@@ -26,6 +26,9 @@
 //! checks verify what they name. Ingestion is therefore necessary but
 //! deliberately insufficient to create [`BackendReadiness`].
 
+pub(crate) use readiness::component_original::PackagedNspawnOriginalV2;
+pub use deployment::component_phase0::HostComponentPhase0OriginalV2;
+
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,7 +39,7 @@ use aos_sandbox_linux::pidfd::NamespaceFd;
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimePlan};
 use aos_systemd::{
     GuardianCredentialDescriptors, GuardianExecutableDescriptor, GuardianExecutableSnapshot,
-    GuardianUnitSpec, SandboxDescriptorPath, SandboxResolvedPaths, SandboxResources,
+    GuardianUnitSpec, SandboxDescriptorPath, SandboxResolvedPaths,
     SandboxUnitName, SandboxUnitSpec,
 };
 use rustix::fs::fstat;
@@ -47,25 +50,43 @@ use crate::state::transition::{PayloadLaunchSnapshot, PinnedObjectSnapshot};
 use crate::{HostError, Result};
 
 mod deployment;
+pub(crate) use deployment::{HostComponentBackendPreparationV2, HostComponentBackendCompletionV2};
+mod launch_receiving;
+mod launch_compilation;
+use launch_compilation::{LaunchRecipeV1, compile_resolved_recipe};
 #[cfg(all(test, feature = "kernel-tests"))]
 mod kernel_tests;
 mod readiness;
+pub(crate) use readiness::supervisor_policy_properties_v2;
 mod selinux_policy;
 
 pub use deployment::{
     VerifiedPhase0ClaimV1, verify_optional_backend_deployment_v1, verify_optional_phase0_claim_v1,
 };
 pub use deployment::canary::HostCanaryStartupV1;
+pub use launch_receiving::HostLaunchCatalogReceivingV2;
+pub(crate) use launch_compilation::HostLaunchCompilationOriginalV2;
+pub(crate) use launch_compilation::HostLaunchCompilationDisposedV2;
 pub use deployment::control::{HostComponentControlHandoffErrorV2, HostComponentControlStartupV2};
+pub use deployment::control::{HostControlColdSessionOwnerV1, HostControlColdSessionAccessV1,
+    HostControlColdSessionLoanV1, HostControlColdSessionPurposeV1,
+    HostControlColdSessionNativeRetentionV1, HostControlColdSessionClosedV1};
+pub(crate) use deployment::control::catalogpub::{HostCatalogReceivingV2, CatalogClockOriginalV2};
+pub(crate) use deployment::control::{AcceptedContinuationV2, HostExecutionRequestBindingV2,
+    HostControlPreparationReceivingV5, HostControlCleanupTokenV1, HostControlCleanupDisposalV1,
+    HostTerminalStageDisposalV3,
+    HostExecutionReceivingLoanV2, HostCaptureNegativeControlV3, HostCaptureNegativeLoanV3,
+    ExecutionMonitorReservationV5, ExecutionQueryReservationV3};
 pub(crate) use deployment::canary::CanaryNspawnConfigV1;
 pub(crate) use deployment::verify_original_canary_phase0_claim_v1;
-pub use deployment::verify_original_host_control_phase0_claim_v2;
 pub use readiness::{
     BackendReadiness, BackendReadinessBlocker, ProtectedBackendReadinessEvidence,
     VerifiedCompiledSupervisorProfileV1, VerifiedLiveSupervisorPolicyV1, VerifiedPackagedRuntimeV1,
     verified_packaged_nspawn_digest,
 };
 pub use selinux_policy::VerifiedLiveSelinuxPolicyV1;
+
+pub use crate::catalog::HostLaunchCatalogOriginalV2;
 
 const PROCESSES: u8 = 2;
 const MEMORY: u8 = 3;
@@ -80,15 +101,31 @@ pub(crate) const ATTACHMENT_ANCHOR_PIN_PREFIX: &str = "/run/aos/sandbox-mount-ca
 #[cfg(test)]
 const TEST_NSPAWN_PATH: &str =
     "/nix/store/00000000000000000000000000000000-aos-readiness-absent/bin/systemd-nspawn";
-const SUPPORTED_BACKEND_FEATURES: &[(&str, u32, u32)] = &[
-    ("aos.sandbox.runtime.linux-systemd", 1, 0),
-    ("aos.sandbox.identity.posix32", 1, 0),
-    ("aos.sandbox.enforcement.cgroup-v2", 1, 0),
-    ("aos.sandbox.enforcement.broker-ledger", 1, 0),
-];
+const SUPPORTED_BACKEND_FEATURES: &[(&str, u32, u32)] =
+    aos_sandbox_protocol::host_resource_projection::HOST_IMPLEMENTED_FEATURES_V1;
 
 /// Names an opaque catalog handle carried only inside the local protocol.
 pub type OpaqueHandle = [u8; 32];
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CatalogPinConstructionCauseV2 {
+    #[error(transparent)] Native(#[from] rustix::io::Errno),
+    #[error(transparent)] Mount(#[from] aos_sandbox_linux::Error),
+    #[error("{0}")] Binding(&'static str),
+}
+
+/// Keeps a rejected original pin and the actual failed constructor observation.
+#[derive(Debug)]
+pub(crate) struct CatalogPinConstructionFailureV2<T> {
+    retained_original: T,
+    cause: CatalogPinConstructionCauseV2,
+}
+
+impl<T> CatalogPinConstructionFailureV2<T> {
+    pub(crate) fn failure(&self) -> &(dyn std::error::Error + 'static) { &self.cause }
+
+    pub(crate) fn into_ordinary_error(self) -> HostError { HostError::Catalog(self.cause.to_string()) }
+}
 
 /// Describes a broker-catalogued private root after identity verification.
 #[derive(Debug)]
@@ -120,19 +157,29 @@ impl ResolvedWorkspace {
         inode: u64,
         pin: OwnedFd,
     ) -> Result<Self> {
-        let identity =
-            rustix::fs::fstat(&pin).map_err(|error| HostError::Catalog(error.to_string()))?;
-        if identity.st_dev != device || identity.st_ino != inode {
-            return Err(HostError::Catalog(
-                "workspace descriptor identity changed".to_owned(),
-            ));
+        Self::from_pinned_retaining_v2(root_directory, device, inode, pin)
+            .map_err(CatalogPinConstructionFailureV2::into_ordinary_error)
+    }
+
+    pub(crate) fn from_pinned_retaining_v2(
+        root_directory: String,
+        device: u64,
+        inode: u64,
+        pin: OwnedFd,
+    ) -> std::result::Result<Self, CatalogPinConstructionFailureV2<OwnedFd>> {
+        let validation = (|| {
+            let identity = rustix::fs::fstat(&pin)?;
+            if identity.st_dev != device || identity.st_ino != inode {
+                return Err(CatalogPinConstructionCauseV2::Binding(
+                    "workspace descriptor identity changed"));
+            }
+            Ok(())
+        })();
+        if let Err(cause) = validation {
+            return Err(CatalogPinConstructionFailureV2 { retained_original: pin, cause });
         }
         Ok(Self {
-            root_directory,
-            device,
-            inode,
-            guest_root_publication: None,
-            pin,
+            root_directory, device, inode, guest_root_publication: None, pin,
         })
     }
 
@@ -196,25 +243,31 @@ impl ResolvedAttachmentAnchor {
         mount_id: u64,
         pin: OwnedFd,
     ) -> Result<Self> {
-        let identity =
-            rustix::fs::fstat(&pin).map_err(|error| HostError::Catalog(error.to_string()))?;
-        let actual_mount_id = aos_sandbox_linux::inventory::MountId::from_fd(pin.as_fd())
-            .map_err(|error| HostError::Catalog(error.to_string()))?;
-        if identity.st_dev != device
-            || identity.st_ino != inode
-            || actual_mount_id.get() != mount_id
-        {
-            return Err(HostError::Catalog(
-                "attachment-anchor descriptor identity changed".to_owned(),
-            ));
+        Self::from_pinned_retaining_v2(directory, device, inode, mount_id, pin)
+            .map_err(CatalogPinConstructionFailureV2::into_ordinary_error)
+    }
+
+    pub(crate) fn from_pinned_retaining_v2(
+        directory: String,
+        device: u64,
+        inode: u64,
+        mount_id: u64,
+        pin: OwnedFd,
+    ) -> std::result::Result<Self, CatalogPinConstructionFailureV2<OwnedFd>> {
+        let validation = (|| {
+            let identity = rustix::fs::fstat(&pin)?;
+            let actual_mount_id = aos_sandbox_linux::inventory::MountId::from_fd(pin.as_fd())?;
+            if identity.st_dev != device || identity.st_ino != inode
+                || actual_mount_id.get() != mount_id {
+                return Err(CatalogPinConstructionCauseV2::Binding(
+                    "attachment-anchor descriptor identity changed"));
+            }
+            Ok(())
+        })();
+        if let Err(cause) = validation {
+            return Err(CatalogPinConstructionFailureV2 { retained_original: pin, cause });
         }
-        Ok(Self {
-            directory,
-            device,
-            inode,
-            mount_id,
-            pin,
-        })
+        Ok(Self { directory, device, inode, mount_id, pin })
     }
 }
 
@@ -231,18 +284,24 @@ impl ResolvedNetwork {
         inode: u64,
         pin: NamespaceFd,
     ) -> Result<Self> {
+        Self::from_pinned_retaining_v2(namespace_path, device, inode, pin)
+            .map_err(CatalogPinConstructionFailureV2::into_ordinary_error)
+    }
+
+    pub(crate) fn from_pinned_retaining_v2(
+        namespace_path: String,
+        device: u64,
+        inode: u64,
+        pin: NamespaceFd,
+    ) -> std::result::Result<Self, CatalogPinConstructionFailureV2<NamespaceFd>> {
         let identity = pin.identity();
         if identity.device != device || identity.inode != inode {
-            return Err(HostError::Catalog(
-                "network descriptor identity changed".to_owned(),
-            ));
+            return Err(CatalogPinConstructionFailureV2 {
+                retained_original: pin,
+                cause: CatalogPinConstructionCauseV2::Binding("network descriptor identity changed"),
+            });
         }
-        Ok(Self {
-            namespace_path,
-            device,
-            inode,
-            pin,
-        })
+        Ok(Self { namespace_path, device, inode, pin })
     }
 }
 
@@ -352,6 +411,12 @@ pub struct GuardianConfig {
 }
 
 impl GuardianConfig {
+    // Intrinsic representation DATA from the same privately pinned path.
+    // This supplies no descriptor, factory or replacement executable choice.
+    pub(crate) fn worker_property_path_bytes_v2(&self) -> usize {
+        self.executable_path.len()
+    }
+
     /// Pins one fixed AOS Guardian store executable.
     ///
     /// # Errors
@@ -449,6 +514,19 @@ impl GuardianConfig {
 }
 
 impl PreparedLaunch {
+    pub(crate) fn pin_component_startup_report_v2(
+        &mut self,
+        report: BorrowedFd<'_>,
+        original: &mut Option<std::io::Result<aos_systemd::SandboxDescriptorPath>>,
+    ) -> std::result::Result<(), aos_systemd::Error> {
+        if !self.snapshot.agent_required {
+            return Err(aos_systemd::Error::HostLaunchRetained("component report requires the actual ordinary Agent roles"));
+        }
+        self.spec.bind_component_startup_report_retaining_v2(report, original)?;
+        self.snapshot.spec_semantic_digest = self.spec.semantic_digest_v1();
+        Ok(())
+    }
+
     pub(crate) fn prepare_canary_role_snapshot(&mut self) -> Result<()> {
         self.snapshot.spec_semantic_digest = self.spec.host_canary_semantic_preview_v1()
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
@@ -505,6 +583,19 @@ impl PreparedLaunch {
         Ok(self)
     }
 
+    pub(crate) fn bind_guest_agent_descriptors_receiving_v2(
+        &mut self,
+        claim: &aos_sandbox::runtime_execution::DormantRuntimeExecutionClaimV1<'_>,
+        assignment: &ValidatedAssignmentFence,
+        guest: &crate::live_agent::HostAgentGuestLaunchDescriptorsV1,
+        original: &mut aos_systemd::SandboxGuestAgentPinOriginalV2,
+    ) -> std::result::Result<(), crate::live_agent::HostAgentLiveErrorV1> {
+        guest.bind_unit_spec_receiving_v2(claim, assignment, &mut self.spec, original)?;
+        self.snapshot.spec_semantic_digest = self.spec.semantic_digest_v1();
+        self.snapshot.agent_required = true;
+        Ok(())
+    }
+
     pub(crate) fn into_parts(self) -> (SandboxUnitSpec, LaunchPins) {
         (self.spec, self.pins)
     }
@@ -518,11 +609,13 @@ impl PreparedLaunch {
     }
 
     pub(crate) fn bind(mut self, binding: [u8; 32]) -> Result<Self> {
-        self.spec = self
-            .spec
-            .into_bound(binding)
-            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        self.bind_retaining_v2(binding)?;
         Ok(self)
+    }
+
+    pub(crate) fn bind_retaining_v2(&mut self, binding: [u8; 32]) -> Result<()> {
+        self.spec.bind_launch_retaining_v2(binding)
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))
     }
 }
 
@@ -538,6 +631,39 @@ pub trait HostCatalog {
         fence: &ValidatedAssignmentFence,
         plan: &ValidatedRuntimePlan,
     ) -> Result<ResolvedLaunchResources>;
+
+    /// Resolves the same resources within the original authenticated Launch.
+    ///
+    /// Implementations must admit all native and decoder growth through this
+    /// borrower before entry, retain failed originals, and finish independent
+    /// posts before returning resource custody.
+    ///
+    /// # Errors
+    /// Refuses providers without an actual original-funded resolution path, or
+    /// any receiving, catalog, native identity or owed-post failure.
+    fn resolve_launch_v2(
+        &self,
+        _fence: &ValidatedAssignmentFence,
+        _plan: &ValidatedRuntimePlan,
+        _receiving: &mut HostLaunchCatalogReceivingV2<'_, '_>,
+        _original: &mut HostLaunchCatalogOriginalV2,
+    ) -> Result<ResolvedLaunchResources> {
+        Err(HostError::Catalog("original-funded launch catalog is unavailable".to_owned()))
+    }
+
+    /// Exports the resolved root within that same original Launch interval.
+    ///
+    /// # Errors
+    /// Refuses providers without a genuinely authenticated and funded Storage
+    /// export; the ordinary export path cannot substitute for this purpose.
+    fn export_root_mount_launch_v2(
+        &self,
+        _workspace: &ResolvedWorkspace,
+        _receiving: &mut HostLaunchCatalogReceivingV2<'_, '_>,
+        _original: &mut HostLaunchCatalogOriginalV2,
+    ) -> Result<DetachedMount> {
+        Err(HostError::Catalog("original-funded launch root export is unavailable".to_owned()))
+    }
 
     /// Exports the exact resolved workspace as a transferable detached mount.
     ///
@@ -692,43 +818,63 @@ impl NspawnConfig {
             plan,
             resolved,
             root_mount,
+            None,
+        )
+    }
+
+    pub(crate) fn compile_resolved_receiving_v2(
+        &self, fence: &ValidatedAssignmentFence, plan: &ValidatedRuntimePlan,
+        receiving: &HostLaunchCatalogReceivingV2<'_, '_>,
+        original: &mut HostLaunchCompilationOriginalV2,
+    ) -> Result<PreparedLaunch> {
+        compile_resolved_receiving_recipe_v2(
+            LaunchRecipeV1::Ready(self), fence, plan, receiving, original,
         )
     }
 }
 
-enum LaunchRecipeV1<'a> {
-    Ready(&'a NspawnConfig),
-    Canary(&'a deployment::canary::CanaryNspawnConfigV1),
+
+fn compile_resolved_receiving_recipe_v2(
+    recipe: LaunchRecipeV1<'_>,
+    fence: &ValidatedAssignmentFence,
+    plan: &ValidatedRuntimePlan,
+    receiving: &HostLaunchCatalogReceivingV2<'_, '_>,
+    original: &mut HostLaunchCompilationOriginalV2,
+) -> Result<PreparedLaunch> {
+    receiving.require_current_v2()?;
+    if original.entered {
+        return Err(HostError::Fence("Host launch compiler was already entered"));
+    }
+    if original.resolved.is_none() || original.root_mount.is_none() {
+        return Err(HostError::Fence("Host launch compiler has no held catalog inputs"));
+    }
+    original.entered = true;
+    original.revalidation = Some(readiness::NspawnRevalidationOriginalV2::new());
+    let (Some(resolved), Some(root_mount)) = (original.resolved.take(), original.root_mount.take())
+    else { std::process::abort(); };
+    // Only infallible owning moves follow this take until the common
+    // compiler reparks the SAME inputs before its first check.
+    match compile_resolved_recipe(recipe, fence, plan,
+        resolved, root_mount, Some(&mut *original))
+    {
+        Ok(prepared) => { original.returned = Some(Ok(())); Ok(prepared) }
+        Err(error) => {
+            original.returned = Some(Err(error));
+            Err(HostError::Fence("Host launch compilation failed; native originals retained"))
+        }
+    }
 }
 
-impl LaunchRecipeV1<'_> {
-    fn revalidate(&self) -> Result<()> {
-        match self {
-            Self::Ready(config) => config.revalidate(),
-            Self::Canary(config) => config.revalidate_executable(),
-        }
-    }
-
-    fn executable_pin(&self) -> BorrowedFd<'_> {
-        match self {
-            Self::Ready(config) => config.readiness.executable_pin(),
-            Self::Canary(config) => config.executable_pin(),
-        }
-    }
-
-    fn executable_pin_arc(&self) -> &Arc<OwnedFd> {
-        match self {
-            Self::Ready(config) => config.readiness.executable_pin_arc(),
-            Self::Canary(config) => config.executable_pin_arc(),
-        }
-    }
-
-    fn timeouts(&self) -> (Duration, Duration) {
-        match self {
-            Self::Ready(config) => (config.timeout_start, config.timeout_stop),
-            Self::Canary(config) => config.timeouts(),
-        }
-    }
+pub(crate) fn compile_component_backend_launch_v2(
+    config: &deployment::HostComponentBackendPreparationV2,
+    fence: &ValidatedAssignmentFence,
+    plan: &ValidatedRuntimePlan,
+    receiving: &HostLaunchCatalogReceivingV2<'_, '_>,
+    original: &mut HostLaunchCompilationOriginalV2,
+) -> Result<PreparedLaunch> {
+    compile_resolved_receiving_recipe_v2(
+        LaunchRecipeV1::Component(config), fence, plan, receiving, original,
+    )
 }
 
 pub(crate) fn compile_original_canary_launch(
@@ -738,174 +884,7 @@ pub(crate) fn compile_original_canary_launch(
     resolved: ResolvedLaunchResources,
     root_mount: DetachedMount,
 ) -> Result<PreparedLaunch> {
-    compile_resolved_recipe(LaunchRecipeV1::Canary(config), fence, plan, resolved, root_mount)
-}
-
-fn compile_resolved_recipe(
-    recipe: LaunchRecipeV1<'_>,
-    fence: &ValidatedAssignmentFence,
-    plan: &ValidatedRuntimePlan,
-    resolved: ResolvedLaunchResources,
-    root_mount: DetachedMount,
-) -> Result<PreparedLaunch> {
-        recipe.revalidate()?;
-        validate_backend_features(plan)?;
-        let workspace = resolved.workspace;
-        let guest_package_binding = workspace
-            .guest_root_publication()
-            .map(|proof| proof.package_binding);
-        let guest_feature_mask = workspace
-            .guest_root_publication()
-            .map(|proof| proof.feature_mask);
-        let network = resolved.network;
-        let attachment_anchor = resolved.attachment_anchor;
-        let root_identity =
-            fstat(root_mount.as_fd()).map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        if (root_identity.st_dev, root_identity.st_ino) != (workspace.device, workspace.inode) {
-            return Err(HostError::InvalidPlan(
-                "exported root mount differs from the resolved workspace".to_owned(),
-            ));
-        }
-        // Build the systemd descriptor path from the owned FD retained in
-        // LaunchPins, not the temporary export wrapper dropped on return.
-        let transferred_root = root_mount
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        validate_resolved_identity(&resolved.identity, plan)?;
-        validate_published_pin(
-            &workspace.root_directory,
-            WORKSPACE_PIN_PREFIX,
-            "workspace root",
-        )?;
-        validate_published_pin(
-            &network.namespace_path,
-            NETWORK_PIN_PREFIX,
-            "network namespace",
-        )?;
-
-        let memory_max = required_limit(plan, MEMORY, "memory")?;
-        let memory_high = memory_max.saturating_sub(memory_max / 10).max(1);
-        let tasks_max = required_limit(plan, PROCESSES, "process")?;
-        let cpu_weight = required_limit(plan, CPU_WEIGHT, "CPU weight")?;
-        let mut resources = SandboxResources::new(memory_high, memory_max, tasks_max, cpu_weight)
-            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        resources = resources
-            .with_open_file_limit(required_limit(plan, OPEN_FILES, "open-file")?)
-            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        if let Some(quota) = optional_limit(plan, CPU_QUOTA) {
-            if quota == 0 || quota > MICROS_PER_SECOND {
-                return Err(HostError::InvalidPlan(
-                    "CPU quota must be in 1..=1000000 microseconds".to_owned(),
-                ));
-            }
-            resources = resources
-                .with_cpu_quota(Duration::from_micros(quota))
-                .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        }
-        if let Some(weight) = optional_limit(plan, IO_WEIGHT) {
-            resources = resources
-                .with_io_weight(weight)
-                .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        }
-
-        let executable_path =
-            SandboxDescriptorPath::for_current_process(recipe.executable_pin())
-                .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let root_path = SandboxDescriptorPath::for_current_process(transferred_root.as_fd())
-            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let network_path = SandboxDescriptorPath::for_current_process(network.pin.as_fd())
-            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let command = aos_systemd::SandboxNspawnCommand::private_user_descriptor_v1(
-            executable_path,
-            *fence.incarnation_id(),
-            resolved.identity.range_start,
-            resolved.identity.range_size,
-        )
-        .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        validate_attachment_anchor_path(&attachment_anchor.directory)?;
-        let attachment_anchor_path =
-            SandboxDescriptorPath::for_current_process(attachment_anchor.pin.as_fd())
-                .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-
-        // The anchor is attached in this mount namespace. Pass that exact
-        // namespace alongside it so nspawn can clone the validated mount in a
-        // short-lived child without granting mount authority to Host itself.
-        let attachment_anchor_namespace = rustix::fs::open(
-            "/proc/self/ns/mnt",
-            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let attachment_anchor_namespace = NamespaceFd::from_owned(
-            attachment_anchor_namespace,
-            aos_sandbox_linux::pidfd::NamespaceKind::Mount,
-        )
-        .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let attachment_anchor_namespace_path =
-            SandboxDescriptorPath::for_current_process(attachment_anchor_namespace.as_fd())
-                .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let paths = SandboxResolvedPaths::from_descriptors(root_path, network_path)
-            .with_attachment_anchor(attachment_anchor_path, attachment_anchor_namespace_path);
-        let spec = SandboxUnitSpec::new_nspawn(
-            SandboxUnitName::from_incarnation(*fence.incarnation_id()),
-            command,
-            paths,
-            resources,
-            recipe.timeouts().0,
-            recipe.timeouts().1,
-        )
-        .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let nspawn_identity = fstat(recipe.executable_pin())
-            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let nspawn_mount_id =
-            aos_sandbox_linux::inventory::MountId::from_fd(recipe.executable_pin())
-                .map_err(|error| HostError::InvalidPlan(error.to_string()))?
-                .get();
-        // A detached clone receives a new mount ID on each export. Durable
-        // replay must bind the stable catalog source, while the exact exported
-        // descriptor stays live in the transient launch specification.
-        let workspace_mount_id =
-            aos_sandbox_linux::inventory::MountId::from_fd(workspace.pin.as_fd())
-                .map_err(|error| HostError::InvalidPlan(error.to_string()))?
-                .get();
-        let snapshot = PayloadLaunchSnapshot {
-            nspawn: PinnedObjectSnapshot {
-                device: nspawn_identity.st_dev,
-                inode: nspawn_identity.st_ino,
-                mount_id: nspawn_mount_id,
-            },
-            workspace: PinnedObjectSnapshot {
-                device: workspace.device,
-                inode: workspace.inode,
-                mount_id: workspace_mount_id,
-            },
-            network_device: network.device,
-            network_inode: network.inode,
-            identity_range_start: resolved.identity.range_start,
-            identity_range_size: resolved.identity.range_size,
-            identity_catalog_generation: resolved.identity.catalog_generation,
-            attachment_anchor: PinnedObjectSnapshot {
-                device: attachment_anchor.device,
-                inode: attachment_anchor.inode,
-                mount_id: attachment_anchor.mount_id,
-            },
-            spec_semantic_digest: spec.semantic_digest_v1(),
-            agent_required: false,
-        };
-        Ok(PreparedLaunch {
-            spec,
-            snapshot,
-            guest_package_binding,
-            guest_feature_mask,
-            pins: LaunchPins {
-                executable: Arc::clone(recipe.executable_pin_arc()),
-                workspace: workspace.pin,
-                transferred_root,
-                network: network.pin,
-                attachment_anchor: attachment_anchor.pin,
-            },
-        })
+    compile_resolved_recipe(LaunchRecipeV1::Canary(config), fence, plan, resolved, root_mount, None)
 }
 
 fn open_executable_pin(path: &str) -> Result<OwnedFd> {
@@ -930,8 +909,19 @@ fn open_executable_pin(path: &str) -> Result<OwnedFd> {
 }
 
 fn nspawn_executable_snapshot(descriptor: BorrowedFd<'_>) -> Result<NspawnExecutableSnapshot> {
-    let identity =
-        rustix::fs::fstat(descriptor).map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+    nspawn_executable_snapshot_engine_v2(descriptor, None)
+}
+
+fn nspawn_executable_snapshot_engine_v2(descriptor: BorrowedFd<'_>,
+    destination: Option<&mut Option<std::result::Result<rustix::fs::Stat, rustix::io::Errno>>>,
+) -> Result<NspawnExecutableSnapshot> {
+    let observed = aos_sandbox_core::retained::CaptureValueV1::new(
+        Some(rustix::fs::fstat(descriptor)), destination);
+    let identity = match observed.as_ref() {
+        Some(Ok(identity)) => identity,
+        Some(Err(error)) => return Err(HostError::InvalidPlan(error.to_string())),
+        None => return Err(HostError::Fence("nspawn executable metadata is absent")),
+    };
     Ok(NspawnExecutableSnapshot {
         device: identity.st_dev,
         inode: identity.st_ino,

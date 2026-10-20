@@ -5,8 +5,8 @@
 //! move-only readback tokens. This owner never clears previous-process history.
 
 use aos_proto::aos::sandbox::local::v1::{
-    BrokerAuthorizationArtifactsV1, BrokerDescriptorEntry, BrokerMethod, BrokerRequestEnvelope,
-    PublishHostCatalogRequest, RequestHeader, RuntimeAction,
+    BrokerAuthorizationArtifactsV1, BrokerMethod, BrokerRequestEnvelope,
+    RequestHeader, RuntimeAction,
 };
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox::controller_execution_preissue::ControllerExecutionOutputAttemptV1;
@@ -18,7 +18,7 @@ use aos_sandbox::lifecycle::{
     LifecycleBootInventoryBootstrapChallengeV1, LifecycleEffectObservationV1,
     LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{
     AuthorityEffectObservationV1, EffectFailure, PreparedAuthorityEffectV1,
@@ -26,13 +26,13 @@ use aos_sandbox::{
 };
 use aos_sandbox_core::RawPairedClockSample;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
-use aos_sandbox_protocol::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES;
-use buffa::Message as _;
+
+mod delete_queries;
 
 use super::lifecycle_runtime_effect::ControllerLifecycleRuntimeEffectOwnerV1;
 
 use crate::controller_service::argument_exchange::{
-    ControllerHostArgumentExchangeV1, ControllerHostArgumentOutcomeV1,
+    ControllerHostArgumentExchangeV1,
 };
 use crate::controller_service::attach_exchange::ControllerHostAttachGateExchangeV1;
 use crate::controller_service::authority_effect::ControllerAuthorityEffectExchangeV1;
@@ -48,7 +48,7 @@ use crate::controller_service::execution::{
     ControllerExecutionObservationV1,
 };
 use crate::controller_service::execution_argument_observe::{
-    SignedExecutionArgumentObserveV1, SignedExecutionArgumentQueryV1,
+    SignedExecutionArgumentRequestV2,
 };
 use crate::controller_service::execution_output_reserve::{
     SignedExecutionOutputReserveV1, sign_current_host_output_query_v1,
@@ -72,6 +72,7 @@ pub(crate) struct ControllerHostPublication {
     argument_observe: ControllerHostArgumentExchangeV1,
     no_apply_settlement: ControllerHostNoApplyExchangeV2,
     attach_gate: ControllerHostAttachGateExchangeV1,
+    accepted_execution: Option<super::execution_authorize::ExecutionAuthorizeOriginalV2>,
     poisoned: bool,
 }
 
@@ -103,6 +104,43 @@ pub(crate) enum ControllerHostPublicationError {
 }
 
 impl ControllerHostPublication {
+    /// Lends only the original pre-argument endpoint to the finite NoApply SDK.
+    pub(super) fn execution_no_apply_session_v2(&mut self)
+        -> Result<&mut DormantAuthenticatedBrokerSessionV1, aos_sandbox::ResourceReservationErrorV1> {
+        if !self.argument_observe.is_unentered_v2() {
+            return Err(aos_sandbox::ResourceReservationErrorV1::Conflict);
+        }
+        self.execution_availability_session_v2()
+    }
+
+    pub(crate) fn retire_no_apply_inputs_v2(&mut self,
+        completed: &aos_sandbox::controller_execution_operation::ControllerExecutionNoApplyDisposedOriginalV2,
+        disposal: &aos_sandbox::controller_execution_operation::ControllerExecutionPositiveDisposalV1<'_>,
+        execution: aos_sandbox_core::ExecutionId,
+    ) -> Result<(), EffectFailure> {
+        completed.require_resource_disposal_for_execution_v2(disposal, execution)
+            .map_err(|_| EffectFailure::Retryable("NoApply Host disposal differs from its actual owner".to_owned()))?;
+        if self.poisoned || self.pending.is_some() || self.authority_effects.has_pending()
+            || self.execution_effects.has_pending() || !self.argument_observe.is_unentered_v2()
+            || self.no_apply_settlement.has_pending() || self.attach_gate.has_pending()
+            || self.accepted_execution.is_some() {
+            return Err(EffectFailure::Retryable("Host retains another interval at NoApply disposal".to_owned()));
+        }
+        self.output_reserve.retire_no_apply_v2(completed, disposal, execution)
+    }
+
+    /// Lends this same idle endpoint to the closed paired-availability SDK.
+    pub(super) fn execution_availability_session_v2(&mut self)
+        -> Result<&mut DormantAuthenticatedBrokerSessionV1, aos_sandbox::ResourceReservationErrorV1> {
+        if self.poisoned || self.pending.is_some() || self.authority_effects.has_pending()
+            || self.execution_effects.has_pending() || self.output_reserve.has_pending()
+            || self.argument_observe.has_pending() || self.no_apply_settlement.has_pending()
+            || self.attach_gate.has_pending() || self.accepted_execution.is_some() {
+            return Err(aos_sandbox::ResourceReservationErrorV1::Conflict);
+        }
+        self.session.as_mut().ok_or(aos_sandbox::ResourceReservationErrorV1::Conflict)
+    }
+
     pub(crate) fn new(session: DormantAuthenticatedBrokerSessionV1) -> Self {
         Self {
             session: Some(session),
@@ -113,8 +151,49 @@ impl ControllerHostPublication {
             argument_observe: ControllerHostArgumentExchangeV1::default(),
             no_apply_settlement: ControllerHostNoApplyExchangeV2::default(),
             attach_gate: ControllerHostAttachGateExchangeV1::default(),
+            accepted_execution: None,
             poisoned: false,
         }
+    }
+
+
+    pub(super) fn execution_authorize_parts_v2(&mut self) -> Result<(
+        &mut super::execution_authorize::ExecutionAuthorizeOriginalV2,
+        &mut DormantAuthenticatedBrokerSessionV1,
+        &AuthenticatedBrokerMethodOutcomeV1,
+    ), EffectFailure> {
+        if self.poisoned || self.pending.is_some() || self.argument_observe.has_pending()
+            || self.output_reserve.has_pending() || self.authority_effects.has_pending()
+            || self.attach_gate.has_pending() || self.no_apply_settlement.has_pending()
+        { return Err(EffectFailure::Retryable("Host retains another failed interval".to_owned())); }
+        let original = self.accepted_execution.as_mut().ok_or_else(||
+            EffectFailure::Retryable("accepted execution original is absent".to_owned()))?;
+        let session = self.session.as_mut().ok_or_else(||
+            EffectFailure::Retryable("Host Session is absent".to_owned()))?;
+        let accepted = self.argument_observe.accepted_outcome().ok_or_else(||
+            EffectFailure::Retryable("actual completed59 original is absent".to_owned()))?;
+        Ok((original, session, accepted))
+    }
+
+    pub(super) fn install_execution_authorize_v2(&mut self,
+        original: super::execution_authorize::ExecutionAuthorizeOriginalV2,
+    ) -> Result<(), EffectFailure> {
+        if self.accepted_execution.is_some() || self.accepted_execution_argument_v2().is_none() {
+            return Err(EffectFailure::Retryable("actual completed59 owner is absent or already used".to_owned()));
+        }
+        self.accepted_execution = Some(original);
+        Ok(())
+    }
+
+    pub(crate) fn retire_execution_authorize_v2(&mut self,
+        disposal: &aos_sandbox::controller_execution_operation::ControllerExecutionPositiveDisposalV1<'_>,
+        execution: aos_sandbox_core::ExecutionId,
+    ) -> Result<(), EffectFailure> {
+        self.accepted_execution.as_ref().ok_or_else(||
+            EffectFailure::Retryable("execution original is absent".to_owned()))?
+            .require_positive_disposal_v2(disposal, execution)?;
+        drop(self.accepted_execution.take());
+        Ok(())
     }
 
     pub(crate) const fn needs_fresh_execution_authorization(&self) -> bool {
@@ -337,21 +416,35 @@ impl ControllerHostPublication {
 
     /// Reports actual occupied execution custody, never admission readiness.
     pub(crate) const fn has_execution_publication_debt(&self) -> bool {
-        self.execution_effects.has_publication_debt()
+        self.accepted_execution.is_some() || self.execution_effects.has_publication_debt()
     }
 
     /// Borrows this channel's retained execution publication cause.
     pub(crate) fn execution_publication_failure(
         &self,
     ) -> Option<crate::controller_service::execution::ExecutionPublicationCauseV1<'_>> {
-        self.execution_effects.publication_failure()
+        use super::execution::ExecutionPublicationCauseV1 as Cause;
+        let selected = self.accepted_execution.as_ref().and_then(|original| original.failure_v2())
+            .or_else(|| self.execution_effects.publication_failure())?;
+        let returned: Option<&(dyn std::error::Error + 'static)> = match &selected {
+            Cause::Session(cause) => Some(*cause),
+            Cause::Transport(cause) => Some(*cause),
+            _ => None,
+        };
+        if let (Some(session), Some(returned)) = (self.session.as_ref(), returned) {
+            if let Some(actual) = aos_sandbox_broker_session_security::controller_composition::execution_native_failure_for_v1(session, returned) {
+                return Some(Cause::Transport(actual));
+            }
+        }
+        Some(selected)
     }
 
     /// Borrows every entered execution publication post without another read.
     pub(crate) fn execution_publication_debts(
         &self,
     ) -> Option<crate::controller_service::execution::ExecutionPublicationDebtsV1<'_>> {
-        self.execution_effects.publication_debts()
+        self.accepted_execution.as_ref().and_then(|original| original.debts_v2())
+            .or_else(|| self.execution_effects.publication_debts())
     }
 
     /// Queries Host and publishes its result under the same currentness loan.
@@ -373,72 +466,155 @@ impl ControllerHostPublication {
             authorization, project, journal)
     }
 
+    /// Borrows this same channel for the genuine paid Stop Source/native turn.
+    ///
+    /// Earlier execution owners remain retained. A pending or failed SDK
+    /// exchange still refuses; this never reconnects or clears channel debt.
+    pub(crate) fn lifecycle_stop_session_v4(
+        &mut self,
+        original: &aos_sandbox::controller_lifecycle_stop::ControllerLifecycleStopOriginalV4,
+        controller: &Journal,
+    ) -> Result<&mut DormantAuthenticatedBrokerSessionV1, EffectFailure> {
+        original.require_host_stop_session_current_v4(controller)
+            .map_err(|_| EffectFailure::Retryable("Stop Source/native original is not current".to_owned()))?;
+        if !self.lifecycle_runtime_ready() {
+            return Err(EffectFailure::Retryable("Host retains an earlier channel exchange".to_owned()));
+        }
+        self.session.as_mut().ok_or_else(||
+            EffectFailure::Retryable("Host retains no usable Session".to_owned()))
+    }
+
+    /// Lends only the existing Session to a genuine periodic purpose18 read.
+    pub(crate) fn periodic_execution_session_v4(
+        &mut self,
+        _receiving: &aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+    ) -> Result<&mut DormantAuthenticatedBrokerSessionV1, EffectFailure> {
+        if self.accepted_execution.is_some() || self.execution_effects.has_publication_debt()
+            || self.execution_effects.has_pending()
+        { return Err(EffectFailure::Retryable("Host retains an earlier execution interval".to_owned())); }
+        let (_, session) = self.execution_exchange()?;
+        Ok(session)
+    }
+
+    /// Lends the exact Session representation for Authorize and first Observe.
+    pub(crate) fn execution_authorize_observe_demand_v2(
+        &mut self,
+        original: &mut aos_sandbox_broker_session_security::HostExecutionSessionReceivingOriginalV1,
+    ) -> Result<aos_sandbox_core::ResourceVector, BrokerSessionSecurityError> {
+        let (_, session) = self.execution_exchange()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        session.host_execution_authorize_observe_demand_v2(original)
+    }
+
     /// Sends only the original protected provisional Host output reserve.
     ///
     /// This closed adapter does not admit an ExecutionSpec or publish Create.
     pub(crate) fn reserve_execution_output(
         &mut self,
-        issue: impl FnOnce(
-            DormantBrokerRequestCoordinatesV1,
-        ) -> Result<SignedExecutionOutputReserveV1, EffectFailure>,
+        receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        controller: &mut Journal,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+        issue: impl FnOnce(DormantBrokerRequestCoordinatesV1, &mut Journal)
+            -> Result<SignedExecutionOutputReserveV1, EffectFailure>,
     ) -> Result<ControllerHostOutputObservationV1, EffectFailure> {
         let (exchange, session) = self.output_reserve_exchange()?;
-        exchange.reserve(session, issue)
+        exchange.reserve(session, receiving, bank, controller, profile, issue)
     }
 
     /// Queries only the original AOSCIA01 attempt under current Host authority.
     pub(crate) fn query_execution_output(
         &mut self,
+        receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
         controller: &mut Journal,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
         attempt: &ControllerExecutionOutputAttemptV1,
         signer: &ControllerBrokerPlanSignerV1,
     ) -> Result<ControllerHostOutputObservationV1, EffectFailure> {
         let (exchange, session) = self.output_reserve_exchange()?;
-        exchange.query(session, attempt, |coordinates| {
+        exchange.query(session, receiving, bank, controller, profile, attempt, |coordinates, controller| {
             sign_current_host_output_query_v1(controller, attempt, signer, coordinates)
         })
     }
 
-    /// Drains only the journal-loaded execution's retained output request.
+    /// Drains only the journal-loaded execution's prepaid output request.
     pub(crate) fn drain_execution_output_for(
         &mut self,
+        receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        controller: &mut Journal,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
         attempt: &ControllerExecutionOutputAttemptV1,
     ) -> Result<Option<ControllerHostOutputObservationV1>, EffectFailure> {
         let (exchange, session) = self.output_reserve_exchange()?;
-        exchange.drain_for(session, attempt)
+        exchange.drain_for(session, receiving, bank, controller, profile, attempt)
     }
 
-    /// Sends only the one protected original Host ARG_MAX observation attempt.
-    ///
-    /// The returned opaque outcome does not supply spec-admission authority.
-    pub(crate) fn observe_execution_argument(
+    /// Retires the exact completed informational output and argument owners.
+    pub(crate) fn retire_execution_inputs_v1(
         &mut self,
+        disposal: &aos_sandbox::controller_execution_operation::ControllerExecutionPositiveDisposalV1<'_>,
+        execution: aos_sandbox_core::ExecutionId,
+    ) -> Result<(), EffectFailure> {
+        if self.poisoned || self.pending.is_some() || self.authority_effects.has_pending()
+            || self.attach_gate.has_pending() || self.no_apply_settlement.has_pending()
+        {
+            return Err(EffectFailure::Retryable("Host retains another native interval".to_owned()));
+        }
+        self.argument_observe.retire_positive_v1(disposal, execution)?;
+        self.output_reserve.retire_positive_v1(disposal, execution)
+    }
+
+    /// Prepares an exact source on this live Host Session without consuming it.
+    pub(crate) fn prepare_execution_argument_v2(
+        &mut self,
+        receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        controller: &mut Journal,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+        issue: impl FnOnce(DormantBrokerRequestCoordinatesV1, &mut Journal)
+            -> Result<SignedExecutionArgumentRequestV2, EffectFailure>,
+    ) -> Result<(), EffectFailure> {
+        let (exchange, session) = self.argument_exchange()?;
+        exchange.prepare(session, receiving, bank, controller, profile, issue).map(|_| ())
+    }
+
+    /// Rejoins the completed Prepare before retaining and sending Accept.
+    pub(crate) fn accept_execution_argument_v2(
+        &mut self,
+        receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        controller: &mut Journal,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
         issue: impl FnOnce(
             DormantBrokerRequestCoordinatesV1,
-        ) -> Result<SignedExecutionArgumentObserveV1, EffectFailure>,
-    ) -> Result<ControllerHostArgumentOutcomeV1, EffectFailure> {
+            &aos_sandbox_protocol::host_execution_argument::preparation::HostArgumentPreparationV2,
+            &mut Journal,
+        ) -> Result<SignedExecutionArgumentRequestV2, EffectFailure>,
+    ) -> Result<(), EffectFailure> {
         let (exchange, session) = self.argument_exchange()?;
-        exchange.observe(session, issue)
+        exchange.accept(session, receiving, bank, controller, profile, issue)
     }
 
-    /// Queries only historical custody for the protected original attempt.
-    pub(crate) fn query_execution_argument(
-        &mut self,
-        attempt: &ControllerExecutionArgumentAttemptV1,
-        issue: impl FnOnce(
-            DormantBrokerRequestCoordinatesV1,
-        ) -> Result<SignedExecutionArgumentQueryV1, EffectFailure>,
-    ) -> Result<ControllerHostArgumentOutcomeV1, EffectFailure> {
-        let (exchange, session) = self.argument_exchange()?;
-        exchange.query(session, attempt, issue)
+    /// Borrows the first input failure through its exact retained Session cause.
+    pub(crate) fn execution_input_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        let returned = self.output_reserve.failure()
+            .or_else(|| self.argument_observe.failure())?;
+        Some(self.session.as_ref().and_then(|session| {
+            aos_sandbox_broker_session_security::controller_composition::execution_native_failure_for_v1(
+                session, returned,
+            )
+        }).unwrap_or(returned))
     }
 
-    /// Drains only the retained in-process method-37 request.
-    pub(crate) fn drain_execution_argument(
-        &mut self,
-    ) -> Result<Option<ControllerHostArgumentOutcomeV1>, EffectFailure> {
-        let (exchange, session) = self.argument_exchange()?;
-        exchange.drain(session)
+    /// Borrows the actual successful Accept terminal without granting execution.
+    pub(crate) fn accepted_execution_argument_v2(
+        &self,
+    ) -> Option<&AuthenticatedBrokerMethodOutcomeV1> {
+        self.argument_observe.accepted_outcome()
     }
 
     /// Issues only a signed, nonauthorizing preliminary Host settlement.
@@ -585,7 +761,7 @@ impl ControllerHostPublication {
             authorization, project, journal)?
         {
             ControllerExecutionObservationV1::Applied(completion) => Ok(completion),
-            ControllerExecutionObservationV1::Absent => Err(EffectFailure::Retryable(
+            ControllerExecutionObservationV1::Absent | ControllerExecutionObservationV1::Pending => Err(EffectFailure::Retryable(
                 "Host execution effect has not completed".to_owned(),
             )),
         }
@@ -658,7 +834,7 @@ impl ControllerHostPublication {
     }
 
     /// Reports whether no other Host exchange owns this protected session.
-    pub(crate) const fn lifecycle_runtime_ready(&self) -> bool {
+    pub(crate) fn lifecycle_runtime_ready(&self) -> bool {
         self.pending.is_none()
             && !self.authority_effects.has_pending()
             && !self.execution_effects.has_pending()
@@ -692,7 +868,7 @@ impl ControllerHostPublication {
     }
 
     /// Reports that the current authenticated session must be replaced.
-    pub(crate) const fn requires_reconnect(&self) -> bool {
+    pub(crate) fn requires_reconnect(&self) -> bool {
         self.poisoned
             || self.authority_effects.requires_reconnect()
             || self.execution_effects.requires_reconnect()
@@ -938,27 +1114,14 @@ fn publication_message(
     draft: &HostCatalogPublicationDraftV1,
     header: RequestHeader,
 ) -> BrokerRequestEnvelope {
-    let request = PublishHostCatalogRequest {
-        header: Some(header).into(),
-        catalog_generation: draft.expected_generation(),
-        catalog_bytes: draft.canonical_catalog().len() as u64,
-        catalog_sha256: draft.expected_digest().as_bytes().to_vec(),
-        ..Default::default()
-    };
-    BrokerRequestEnvelope {
-        method: BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG.into(),
-        body: request.encode_to_vec(),
-        descriptors: vec![BrokerDescriptorEntry {
-            index: 0,
-            role: HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES[0].into(),
-            ..Default::default()
-        }],
-        ..Default::default()
-    }
+    draft.request_envelope_data_v2(header)
 }
 
 #[cfg(test)]
 mod tests {
+    use aos_proto::aos::sandbox::local::v1::PublishHostCatalogRequest;
+    use aos_sandbox_protocol::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES;
+    use buffa::Message as _;
     use super::*;
     use std::os::fd::AsFd as _;
 
@@ -1011,5 +1174,17 @@ mod tests {
                 | rustix::fs::SealFlags::GROW
                 | rustix::fs::SealFlags::SEAL
         ));
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ControllerHostPublication {
+    pub(super) fn borrow_catalog_maintenance_session_v2<'held>(
+        &'held mut self,
+        capture: &'held aos_sandbox_broker_session_security::DormantControllerInitialSessionOpenV1,
+    ) -> Result<aos_sandbox_broker_session_security::DormantControllerInitialSessionCompletedBorrowV1<'held>, BrokerSessionSecurityError> {
+        if !self.lifecycle_runtime_ready() { return Err(BrokerSessionSecurityError::Currentness); }
+        let session = self.session.as_mut().ok_or(BrokerSessionSecurityError::Currentness)?;
+        capture.borrow_completed_session_v1(session)
     }
 }

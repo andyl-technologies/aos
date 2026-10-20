@@ -1,15 +1,40 @@
-//! Runs the fixed selected Host055 publisher after exclusive original capture.
+//! Runs the build-selected Host055 publisher after exclusive original capture.
 //!
-//! It performs one protected association attempt; it neither provisions missing
-//! state nor opens public runtime/Create gates. The original startup parts stay
-//! local through the operation's terminal observations and negative fence.
-//! Returning releases originals under ordinary Drop, not all-owner Drain.
+//! The normal feature performs one completed boot preparation and exits while
+//! its actual Source and reached originals remain resident through owed posts.
+//! The Canary feature preserves its existing association attempt and ordinary
+//! return. Neither recipe provisions missing state or opens a public runtime.
 
+#[cfg(not(feature = "runtime-boot-preparation"))]
 use std::process::ExitCode;
 
+#[cfg(not(feature = "runtime-boot-preparation"))]
 use aos_sandbox::ProductionRuntimeDeploymentStartupCaptureV1;
+#[cfg(not(feature = "runtime-boot-preparation"))]
 use aos_sandbox_broker_session_security::run_runtime_deployment_canary_once_v2;
 
+#[cfg(feature = "runtime-boot-preparation")]
+fn main() -> ! {
+    // The build-selected normal recipe captures the real initial four-entry
+    // Source before argv, credentials, runtime/thread or journal operations.
+    // The actual PID1 Source gate already fixes argc2 and the normal flag.
+    let mut startup = aos_sandbox::RuntimeBootPreparationStartupOriginalV1::new();
+    let admitted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        startup.capture_before_arguments_once_v1()?;
+        startup.admit_once_v1()?;
+        startup.require_arguments_once_v1()?;
+        Ok::<(), aos_sandbox::RuntimeBootPreparationStartupClosedV1>(())
+    }));
+    if !matches!(admitted, Ok(Ok(()))) {
+        let _after = startup.finish_source_after_owed_once_v1(Err(
+            aos_sandbox::RuntimeBootPreparationStartupClosedV1,
+        ));
+        std::process::exit(1);
+    }
+    aos_sandbox_broker_session_security::run_runtime_boot_preparation_once_v1(&startup)
+}
+
+#[cfg(not(feature = "runtime-boot-preparation"))]
 fn main() -> ExitCode {
     // This must precede argument collection, threads, runtimes, credentials and
     // journal opens. Later role names cannot reconstruct the original table.

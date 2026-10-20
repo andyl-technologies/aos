@@ -130,6 +130,39 @@ enum BrokerMethod {
   BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 = 56;
   // Selected Nix Start preparation; never an Apply or a completed Start.
   BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1 = 57;
+  // Versioned same-Session preparation; this creates no Guest challenge.
+  BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2 = 58;
+  // Consumes that preparation only with the same current live Guest session.
+  BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2 = 59;
+  // Distinct signed physical capture; logical output registration is insufficient.
+  BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1 = 60;
+  // Fresh authenticated read-only query of the original physical attempt.
+  BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1 = 61;
+  // Exact no-slot namespace ownership. Advertised only by a funded Mount owner.
+  BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1 = 62;
+  // Sole sealed-content Network preparation; method 9 is existing resources only.
+  BROKER_METHOD_NETWORK_PREPARE_V2 = 63;
+  BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2 = 64;
+  BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2 = 65;
+}
+
+// Both phases borrow one actual retained native receiver on the same Session.
+// A response is comparison DATA and cannot adopt or renew that receiver.
+enum ExecutionAvailabilityPhaseV2 {
+  EXECUTION_AVAILABILITY_PHASE_UNSPECIFIED = 0;
+  EXECUTION_AVAILABILITY_PHASE_PREACCEPT = 1;
+  EXECUTION_AVAILABILITY_PHASE_ACCEPTED_BIND = 2;
+}
+
+message PrepareExecutionAvailabilityRequestV2 {
+  RequestHeader header = 1;
+  ExecutionAvailabilityPhaseV2 phase = 2;
+  bytes canonical_proposal = 3; // Same endpoint-specific proposal in both phases.
+  bytes canonical_accepted_source = 4; // Empty before acceptance; exact accepted source when binding.
+}
+
+message PrepareExecutionAvailabilityResponseV2 {
+  bytes canonical_observation = 1; // Endpoint-specific current native observation, not a loan.
 }
 
 // One canonical zero-descriptor DATA carrier for the four fixed coverage flights.
@@ -293,7 +326,10 @@ message ApplyHostExecutionRequestV1 {
   uint32 signal_number = 8;
   bytes canonical_execution_spec = 9; // Legacy inline form; forbidden by descriptor transport v1.
   reserved 10; // Host derives effect sequence from its protected journal.
-  uint32 spec_transfer_version = 11; // Exactly 1 for sealed descriptor transport.
+  // Sealed content: 1 ordinary spec/control, 2 accepted execution admission,
+  // 3 physical Capture acquisition, 4 explicit original ongoing Capture lifetime.
+  // Each version has a distinct canonical attempt commitment and decoder.
+  uint32 spec_transfer_version = 11;
   uint64 spec_content_bytes = 12; // Exact sealed descriptor size.
   bytes spec_content_digest = 13; // SHA-256 of exact sealed bytes.
   bytes spec_attempt_commitment = 14; // Binds content to this request header and locator.
@@ -306,10 +342,15 @@ message QueryHostExecutionRequestV1 {
   bytes source_operation_commitment = 4;
   uint64 spec_content_bytes = 5; // Exact Apply content size for this operation.
   bytes spec_content_digest = 6; // Exact Apply content digest for this operation.
-  uint32 spec_transfer_version = 7; // Exactly 1 for sealed content readback.
+  uint32 spec_transfer_version = 7; // 1 ordinary readback; exactly5 for Query binding3.
   bytes spec_attempt_commitment = 8; // Binds this readback to its request header and locator.
-  uint32 query_binding_version = 9; // Exactly 2; binds the semantic execution-spec digest.
+  uint32 query_binding_version = 9; // 2 ordinary readback, 3 existing content5 monitor-family readback.
   bytes execution_spec_digest = 10; // Domain-separated digest of the admitted canonical spec.
+  // Binding v3 reads an existing deterministic ongoing child; it never issues one.
+  bytes monitor_runtime_handle = 11;
+  bytes monitor_first_observe_operation_id = 12;
+  bytes monitor_source_digest = 13; // Whole tagged Stream424 or Capture944 source.
+  uint32 monitor_source_kind = 14; // 1 Stream/PTY, 2 physical Capture; zero only for v2.
 }
 
 // Transport-only final Controller source for a future one-shot Guest ARG_MAX
@@ -352,6 +393,26 @@ message QueryHostExecutionOutputRequestV1 {
 // checksum is structural only; the Host must match a pinned Host-audience
 // signed plan, original session request ID, and current Host owner before a
 // Guest challenge can be sent. This method is not in production Host hello.
+// Prepare and Accept use distinct actual authenticated request IDs. Prepare
+// carries a non-consuming proposed source. Accept carries the exact Host
+// preparation and the final AOSCIA02 source bound to Accept's own request ID.
+message PrepareHostExecutionArgumentRequestV2 {
+  RequestHeader header = 1;
+  bytes proposed_attempt = 2;
+}
+
+// The Prepare outcome body is exact canonical AOSHAP02 DATA (544 bytes).
+
+message AcceptHostExecutionArgumentRequestV2 {
+  RequestHeader header = 1;
+  bytes canonical_attempt = 2;
+  bytes canonical_preparation = 3;
+}
+
+message AcceptHostExecutionArgumentResponseV2 {
+  bytes canonical_receipt = 1;
+}
+
 message ObserveHostExecutionArgumentRequestV1 {
   RequestHeader header = 1;
   bytes canonical_attempt = 2; // Exact 336-byte AOSCIA02.
@@ -552,6 +613,7 @@ message ObserveHostStorageOutputResponseV1 {
 message ReserveStorageExecutionCaptureRequestV1 {
   RequestHeader header = 1;
   bytes canonical_grant_source = 2; // Exact 512-byte AOSSCG01.
+  bytes canonical_original_storage_output_request = 3; // Canonical historical method-46 body.
 }
 
 // Read-only recovery of the original reserve source after ambiguous transport.
@@ -579,6 +641,7 @@ enum StorageExecutionCaptureAttemptStatusV1 {
   STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_UNSPECIFIED = 0;
   STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_ABSENT = 1;
   STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_EFFECT_POSSIBLE = 2;
+  STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_COMPLETE = 3;
 }
 
 // EFFECT_POSSIBLE is only a durable Storage journal fence, never proof of a
@@ -590,8 +653,10 @@ message StorageExecutionCaptureAttemptV1 {
   bytes original_reserve_request_id = 4;
   bytes grant_source_digest = 5;
   bytes output_record_digest = 6; // Exact AOSEOR03 protected record digest.
-  bytes attempt_id = 7; // Present only for EFFECT_POSSIBLE.
-  bytes durable_attempt_digest = 8; // Present only for EFFECT_POSSIBLE.
+  bytes attempt_id = 7; // Present for EFFECT_POSSIBLE or COMPLETE.
+  bytes durable_attempt_digest = 8; // Present for EFFECT_POSSIBLE or COMPLETE.
+  bytes canonical_complete_result = 9; // Exact AOSCRS02, only for COMPLETE Query61.
+  uint64 effective_deadline_boottime_nanoseconds = 10; // Original persisted effect horizon; zero only for ABSENT.
 }
 
 enum HostExecutionPhaseV1 {
@@ -621,6 +686,10 @@ message HostExecutionOutcomeV1 {
   HostExecutionCompletionStatusV1 completion_status = 8;
   uint64 observation_sequence = 9;
   bytes terminal_guest_result = 10; // From Host-verified signed Guest Observe; terminal COMPLETE only.
+  uint32 query_binding_version = 11; // Exactly 3 for monitor readback; zero for ordinary results.
+  uint64 backend_operation_sequence = 12; // Actual protected global sequence, never Agent observation sequence.
+  bytes capture_terminal_marker = 13; // Native-validated versioned original terminal marker + full676.
+  reserved 14; // No second terminal Observe child or duplicated capacity release.
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
@@ -644,6 +713,7 @@ enum BrokerDescriptorRole {
   BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CANCELLATION_V1 = 16;
   BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PIDFD_V1 = 17;
   BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CGROUP_V1 = 18;
+  BROKER_DESCRIPTOR_ROLE_NETWORK_PREPARATION_V2 = 19;
 }
 
 // Declares response-side ownership of a descriptor received with the request.
@@ -769,6 +839,9 @@ message RuntimePlan {
   repeated Feature required_features = 8;
   // Host 1.0: one broker-minted handle for the namespace-generation anchor.
   bytes attachment_anchor_handle = 9;
+  // Exact AOSGRC02 from signed Storage Inventory; required for new Start.
+  // Physical AOSGRP01 remains immutable creation evidence, not assignment2.
+  bytes current_guest_root_publication_v2 = 10;
 }
 
 // Host 1.0 launch-only carrier for the separately signed Guardian plan.
@@ -785,6 +858,8 @@ message ApplyRuntimeRequest {
   RuntimeAction action = 3;
   RuntimePlan launch_plan = 4; // Present only for launch.
   GuardianArmCompanionV1 guardian_arm = 5; // Host 1.0 launch only.
+  // Finite fresh OperatorRecover Stop cleanup subject; never a Launch owner.
+  bytes host_stop_cleanup_v1 = 6;
 }
 
 message RuntimeObservation {
@@ -794,6 +869,9 @@ message RuntimeObservation {
   uint64 observation_sequence = 4;
   bytes leader_handle = 5; // Opaque pidfd-backed handle, never a PID.
   BrokerError error = 6;
+  // Sole AOSCSR04 QuiescentIncomplete receipt, only on actual Stop containment.
+  // Absent preserves ordinary receipts; old strict readers reject this field.
+  bytes capture_stop_residual_v4 = 7;
 }
 
 enum RuntimeState {
@@ -890,7 +968,23 @@ message ObserveConsumerCgroupResponseV1 {
 }
 
 message InventoryRuntimeRequest { RequestHeader header = 1; }
-message InventoryRuntimeResponse { repeated RuntimeObservation runtimes = 1; }
+message InventoryRuntimeResponse {
+  repeated RuntimeObservation runtimes = 1;
+  // One first-local AOSHNS04 scope, emitted only by the same live Host after
+  // complete native Stop disposal. Empty after restart or a new Launch entry.
+  repeated bytes stopped_namespaces_v4 = 2;
+  // AOSHIC05 proves a complete same-request native empty census. An absent
+  // companion makes no total-discovery claim, even when runtimes is empty.
+  bytes native_absence_v5 = 3;
+  // AOSHIR07 preserves an old exact Stop scope and separately binds the fresh
+  // native census boot/request/interval and authenticated saved cleanup phase.
+  repeated bytes recovered_namespaces_v7 = 4;
+  // AOSHIP08 is a fresh native PresentOwned comparison for exact protected
+  // pending Stop history. It grants no absence, adoption or cleanup effect.
+  repeated bytes present_stop_cleanup_candidates_v1 = 5;
+  // Distinct authenticated cleanup-chain completion and fresh native absence DATA.
+  repeated bytes cleanup_lineages_v1 = 6;
+}
 
 // Queries one exact original ApplyRuntime transaction without admitting or
 // executing it. The outer envelope carries the same signed authorization
@@ -1048,6 +1142,7 @@ message PopulateStorageGuestRootRequestV1 {
 
 message PopulateStorageGuestRootResponseV1 {
   bytes publication_proof = 1; // Exact physically read-back 266-byte AOSGRP01.
+  bytes current_publication_v2 = 2; // Mandatory authenticated 304-byte AOSGRC02.
 }
 
 // Comparison selectors for a distinct population after the original birth
@@ -1119,6 +1214,7 @@ message StorageWorkspaceInventoryRecord {
   bytes resource_digest = 10; // Commitment to the complete broker observation.
   bytes creation_operation_id = 11; // Exactly 16 bytes; original committed Create/Clone operation.
   bytes guest_root_publication_proof = 12; // Empty until protected physical AOSGRP01 readback; otherwise exactly 266 bytes.
+  bytes current_guest_root_publication_v2 = 13; // Empty until protected method31 completion; otherwise exact304 AOSGRC02, separate from immutable creation fence/proof.
 }
 
 // One exact physical object from the protected Storage catalog. Resource and
@@ -1456,6 +1552,52 @@ message ApplyDestinationSlotResponse {
 
 message InventoryDestinationSlotsRequest { RequestHeader header = 1; }
 
+// Namespace ownership has no destination slot. Empty attachment specifications
+// still require this real broker-owned directory before Host launch.
+enum AttachmentAnchorActionV1 {
+  ATTACHMENT_ANCHOR_ACTION_V1_UNSPECIFIED = 0;
+  ATTACHMENT_ANCHOR_ACTION_V1_MATERIALIZE = 1;
+  ATTACHMENT_ANCHOR_ACTION_V1_REAP = 2;
+}
+
+message ApplyAttachmentAnchorRequestV1 {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  AttachmentAnchorActionV1 action = 3;
+  uint64 namespace_generation = 4;
+  Descriptor sandbox_spec = 5;
+  bytes sandbox_spec_bytes = 6;
+  bytes expected_resource_digest = 7;
+  AssignmentFence resource_fence = 8;
+}
+
+enum AttachmentAnchorLifecycleV1 {
+  ATTACHMENT_ANCHOR_LIFECYCLE_V1_UNSPECIFIED = 0;
+  ATTACHMENT_ANCHOR_LIFECYCLE_V1_MATERIALIZING = 1;
+  ATTACHMENT_ANCHOR_LIFECYCLE_V1_READY = 2;
+  ATTACHMENT_ANCHOR_LIFECYCLE_V1_REAPING = 3;
+  ATTACHMENT_ANCHOR_LIFECYCLE_V1_RELEASED = 4;
+}
+
+// The complete durable namespace resource. Physical identity survives release;
+// the ready digest is retained by the exact reap correlation.
+message AttachmentAnchorResourceRecordV1 {
+  MountAssignmentBinding binding = 1;
+  Descriptor sandbox_spec = 2;
+  AttachmentAnchorLifecycleV1 lifecycle = 3;
+  bytes resource_kernel_boot_id = 4;
+  MountOperationCorrelation materialization = 5;
+  DestinationSlotReapCorrelation reap = 6;
+  optional uint64 directory_device = 7;
+  optional uint64 directory_inode = 8;
+  optional uint64 anchor_unique_mount_id = 9;
+  bytes resource_digest = 10;
+}
+
+message ApplyAttachmentAnchorResponseV1 {
+  AttachmentAnchorResourceRecordV1 resource = 1;
+}
+
 // One current broker-owned namespace-generation anchor. The handle is derived
 // from every physical identity field and is the only value carried into a Host
 // launch plan. Paths remain a fixed local convention and never cross this
@@ -1477,8 +1619,12 @@ message InventoryDestinationSlotsResponse {
   repeated DestinationSlotInventoryRecord slots = 3; // At most 16384, strict key order.
   bytes broker_instance_id = 4; // Exactly 16 bytes; changes on broker start.
   // One strict logical-key-ordered row for every current
-  // anchor that contains at least one Ready destination slot.
+  // anchor owned by Ready destination slots or one Ready no-slot resource.
   repeated AttachmentAnchorInventoryRecord attachment_anchors = 5;
+  // Complete namespace resources, including interrupted and retired attempts.
+  repeated AttachmentAnchorResourceRecordV1 namespace_anchors = 6;
+  // AOSMIC02: selected16 full no-resource native census, absent on ordinary nonempty inventories.
+  bytes native_absence_v2 = 7;
 }
 
 message MountResult {
@@ -1677,6 +1823,7 @@ service MountBroker {
   rpc ApplyMount(ApplyMountRequest) returns (MountResult);
   rpc InventoryMountResources(InventoryMountsRequest) returns (InventoryMountResourcesResponse);
   rpc ApplyDestinationSlot(ApplyDestinationSlotRequest) returns (ApplyDestinationSlotResponse);
+  rpc ApplyAttachmentAnchorV1(ApplyAttachmentAnchorRequestV1) returns (ApplyAttachmentAnchorResponseV1);
   rpc InventoryDestinationSlots(InventoryDestinationSlotsRequest)
       returns (InventoryDestinationSlotsResponse);
   rpc AcquireSource(AcquireMountSourceRequest) returns (AcquireMountSourceResponse);
@@ -1704,6 +1851,10 @@ message ApplyNetworkRequest {
   bytes ownership_lease_digest = 6;
   uint64 lease_generation = 7;
   uint64 fail_stop_boottime_nanoseconds = 8;
+  // Prepare alone carries exactly one sealed NETWORK_PREPARATION_V2 descriptor.
+  uint32 prepare_content_version = 9; // Exactly 2; older Prepare is refused.
+  uint64 prepare_content_bytes = 10; // Exact AOSNPC02 sealed content length.
+  bytes prepare_content_digest = 11; // SHA-256 of the complete sealed content.
 }
 
 message NetworkResult {
@@ -1745,6 +1896,7 @@ message InventoryNetworkResourcesResponse {
   uint64 catalog_generation = 3; // Nonzero protected network catalog generation.
   repeated NetworkNamespaceInventoryRecord networks = 4; // At most 16384, strict handle order.
   bytes broker_instance_id = 5; // Exactly 16 bytes; changes on broker start.
+  bytes native_absence_v2 = 6; // Optional exact AOSNIC02 no-active native census companion.
 }
 
 service NetworkBroker {

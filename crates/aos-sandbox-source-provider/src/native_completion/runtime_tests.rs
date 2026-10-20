@@ -6,7 +6,8 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 
-use aos_sandbox::{Journal, JournalLimits};
+use aos_sandbox_source::provider_journal::SourceProviderJournalV1 as Journal;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalLimits;
 use aos_sandbox_core::{RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_source_provider_protocol::*;
 use ed25519_dalek::{Signer as _, SigningKey};

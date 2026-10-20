@@ -7,6 +7,10 @@
 }: let
   cfg = config.aos.sandbox.storageBroker;
   controller = config.aos.sandbox.controller;
+  resourcePolicy = config.aos.sandbox.resourceBank.policy;
+  storageReceiving = if resourcePolicy == null then null else resourcePolicy.storageReceiving;
+  storageCpuQuota = if storageReceiving == null then null
+    else "${toString (storageReceiving.cpu-micros-per-period / 1000)}%";
   worker = config.aos.sandbox.storageWorker;
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = [
@@ -185,7 +189,7 @@ in {
             && config.aos.sandbox.nixBroker.storageGenerationPrepare.enable
             && cfg.resolverPolicyDirectory != null
             && !coverageSelected
-            && config.systemd.package == pkgs.systemd
+            && (import ./_fixed-systemd-profile.nix {inherit config pkgs;})
             && config.aos.security.selinux.enable
             && config.aos.security.selinux.bootMode == "immutable-stage0"
             && config.aos.security.selinux.mode == "enforcing"
@@ -268,7 +272,7 @@ in {
               config.aos.sandbox.sourceProvider.enable
               && cfg.zfsHoldSigningKey != null
               && cfg.package == pkgs.aos-storaged
-              && config.systemd.package == pkgs.systemd
+              && (import ./_fixed-systemd-profile.nix {inherit config pkgs;})
               && config.aos.security.selinux.enable
               && config.aos.security.selinux.bootMode == "immutable-stage0"
               && config.aos.security.selinux.mode == "enforcing"
@@ -548,6 +552,10 @@ in {
         LimitCORE = 0;
         LockPersonality = true;
         MemoryMax = "512M";
+        MemorySwapMax = lib.mkIf (storageReceiving != null) 0;
+        CPUAccounting = lib.mkIf (storageReceiving != null) true;
+        CPUQuotaPeriodSec = lib.mkIf (storageReceiving != null) "100ms";
+        CPUQuota = lib.mkIf (storageReceiving != null) storageCpuQuota;
         MemoryDenyWriteExecute = true;
         NoNewPrivileges = true;
         PrivateDevices = !cfg.method46TpmFloor.required;

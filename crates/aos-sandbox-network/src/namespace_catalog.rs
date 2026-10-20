@@ -26,7 +26,7 @@ use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, BrokerError, BrokerErrorCode, InventoryNetworkResourcesResponse,
     InventoryNetworksResponse, NetworkNamespaceInventoryRecord, NetworkResult, NetworkState,
 };
-use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::journal::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::{BrokerAssignment, ObjectDigest};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::path::BeneathRoot;
@@ -44,6 +44,15 @@ use crate::{
     CommittedNetworkResultV1, NetworkCatalogBindingV1, NetworkNamespaceCustodyRequirementV1,
     ResolvedNetworkPreparationV1,
 };
+
+mod startup;
+pub(crate) use startup::NetworkNamespaceCatalogOpeningOriginalV4;
+mod retained_pin;
+pub(crate) use retained_pin::NetworkPinObservationOriginalV4;
+use retained_pin::NetworkPinRootOpeningOriginalV4;
+mod inventory_receiving;
+mod empty_root;
+pub(crate) use empty_root::NetworkPinRootAbsenceOriginalV2;
 
 mod checkpoint;
 mod lifecycle;
@@ -79,9 +88,12 @@ const MAXIMUM_MATERIALIZED_RECORDS: usize = 16_388;
 /// Reports protected namespace-catalog validation or publication failure.
 #[derive(Debug, thiserror::Error)]
 pub enum NetworkNamespaceCatalogError {
+    /// The selected retained receiving/effect gate refused before native commit.
+    #[error("network namespace selected receiving gate refused")]
+    Receiving,
     /// The protected journal failed validation, locking, or publication.
     #[error("network namespace journal failure: {0}")]
-    Journal(#[from] aos_sandbox::JournalError),
+    Journal(#[from] crate::journal::JournalError),
     /// Trusted inputs do not describe one exact current namespace.
     #[error("network namespace publication input is incomplete or inconsistent")]
     InvalidCandidate,
@@ -172,6 +184,24 @@ pub struct NetworkNamespaceCatalogV1 {
 }
 
 impl NetworkNamespaceCatalogV1 {
+    /// Forecasts the actual future two-record publication on this held writer.
+    ///
+    /// The native record limit bounds both canonical head and namespace value;
+    /// keys use the same fixed prefixes as the ordinary publication encoder.
+    pub(crate) fn publication_append_receiving_demand_v2(&self)
+        -> Result<aos_sandbox_core::ResourceVector, crate::journal::JournalAppendReceivingDemandErrorV1>
+    {
+        self.journal.append_receiving_demand_v1([
+            aos_sandbox_journal::geometry::RecordShape {
+                key_bytes: HEAD_KEY.len(), value_bytes: Some(MAXIMUM_RECORD_BYTES),
+            },
+            aos_sandbox_journal::geometry::RecordShape {
+                key_bytes: RECORD_KEY_PREFIX.len() + 32,
+                value_bytes: Some(MAXIMUM_RECORD_BYTES),
+            },
+        ].into_iter())
+    }
+
     /// Opens protected state and the fixed root-owned namespace pin root.
     ///
     /// Empty state receives a durable generation-one head. Every retained
@@ -227,47 +257,8 @@ impl NetworkNamespaceCatalogV1 {
             return Err(NetworkNamespaceCatalogError::InvalidCandidate);
         }
 
-        let mut head = None;
-        let mut records = BTreeMap::new();
-        for (key, value) in journal.records(RecordNamespace::NetworkResourceInventory) {
-            if key == HEAD_KEY {
-                if head.replace(decode_head(value)?).is_some() {
-                    return Err(NetworkNamespaceCatalogError::CorruptRecord);
-                }
-                continue;
-            }
-            if checkpoint::is_key(key) {
-                continue;
-            }
+        let (generation, records, checkpoint_head) = recover_models_v4(&mut journal)?;
 
-            let handle = decode_record_key(key)?;
-            let record = decode_record(value)?;
-            if record.network_handle != handle || records.insert(handle, record).is_some() {
-                return Err(NetworkNamespaceCatalogError::CorruptRecord);
-            }
-        }
-
-        let checkpoint_head = checkpoint::recover(&journal)
-            .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
-        let generation = match head {
-            Some(head) => {
-                let expected = records
-                    .values()
-                    .map(|record| record.catalog_generation)
-                    .max()
-                    .unwrap_or(1);
-                if head.generation != expected {
-                    return Err(NetworkNamespaceCatalogError::CorruptRecord);
-                }
-                head.generation
-            }
-            None if records.is_empty() && checkpoint_head.is_none() => {
-                initialize_head(&mut journal)?
-            }
-            None => return Err(NetworkNamespaceCatalogError::CorruptRecord),
-        };
-
-        validate_record_set(&records)?;
         for record in records.values() {
             if matches!(record.lifecycle, NamespaceLifecycleV1::Retired) {
                 pin_root.ensure_absent(&record.network_handle)?;
@@ -276,15 +267,7 @@ impl NetworkNamespaceCatalogV1 {
             }
         }
 
-        Ok(Self {
-            journal,
-            pin_root,
-            kernel_boot_id,
-            broker_instance_id,
-            generation,
-            records,
-            checkpoint_head,
-        })
+        Ok(Self { journal, pin_root, kernel_boot_id, broker_instance_id, generation, records, checkpoint_head })
     }
 
     /// Returns the cached namespace-catalog generation for diagnostics.
@@ -488,11 +471,49 @@ impl NetworkNamespaceCatalogV1 {
         &mut self,
         publication: NetworkNamespacePublicationV1,
     ) -> Result<NetworkNamespaceCatalogOutcomeV1, NetworkNamespaceCatalogError> {
+        self.publish_engine_v4(publication, None, None)
+    }
+
+    pub(crate) fn publish_retaining_v4(&mut self, publication: NetworkNamespacePublicationV1,
+        original: &mut NetworkPinObservationOriginalV4)
+        -> Result<NetworkNamespaceCatalogOutcomeV1, NetworkNamespaceCatalogError> {
+        self.publish_engine_v4(publication, Some(original), None)
+    }
+
+    /// Prices one new publication's native pin, record codec and named index.
+    pub(crate) fn publication_receiving_demand_v4()
+        -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError> {
+        use aos_sandbox_core::{AccountingError, ResourceDimension as D, ResourceVector};
+        let overflow = || AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes };
+        let pin = NetworkPinObservationOriginalV4::receiving_demand_v4(1).ok_or_else(overflow)?;
+        let nodes = aos_sandbox_journal::geometry::conservative_btree_node_bytes_v1::<[u8; 32], NamespaceRecordV1>(1)
+            .ok_or_else(overflow)?;
+        let memory = MAXIMUM_RECORD_BYTES.checked_mul(8)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<NamespaceRecordV1>().checked_mul(4)?))
+            .and_then(|bytes| bytes.checked_add(nodes))
+            .and_then(|bytes| u64::try_from(bytes).ok()).ok_or_else(overflow)?;
+        pin.checked_add(ResourceVector::ZERO.with(D::MemoryBytes, memory).with(D::MetadataEntries, 1))
+    }
+
+    pub(crate) fn publish_guarded_v4(&mut self, publication: NetworkNamespacePublicationV1,
+        original: &mut NetworkPinObservationOriginalV4,
+        gate: &mut dyn FnMut(&Journal, &JournalTransaction) -> Result<(), NetworkNamespaceCatalogError>,
+    ) -> Result<NetworkNamespaceCatalogOutcomeV1, NetworkNamespaceCatalogError> {
+        self.publish_engine_v4(publication, Some(original), Some(gate))
+    }
+
+    fn publish_engine_v4(&mut self, publication: NetworkNamespacePublicationV1,
+        original: Option<&mut NetworkPinObservationOriginalV4>,
+        gate: Option<&mut dyn FnMut(&Journal, &JournalTransaction) -> Result<(), NetworkNamespaceCatalogError>>)
+        -> Result<NetworkNamespaceCatalogOutcomeV1, NetworkNamespaceCatalogError> {
         self.journal.ensure_healthy()?;
         if publication.kernel_boot_id != self.kernel_boot_id {
             return Err(NetworkNamespaceCatalogError::InvalidCandidate);
         }
-        let pin = self.pin_root.observe(&publication.network_handle)?;
+        let pin = match original {
+            Some(original) => self.pin_root.observe_retaining_v4(&publication.network_handle, original)?,
+            None => self.pin_root.observe(&publication.network_handle)?,
+        };
         if (pin.device, pin.inode) != (publication.namespace_device, publication.namespace_inode) {
             return Err(NetworkNamespaceCatalogError::NamespacePin(
                 "pin device/inode identity disagrees with committed result".to_owned(),
@@ -543,7 +564,7 @@ impl NetworkNamespaceCatalogV1 {
         };
         record.refresh_digest()?;
         record.validate()?;
-        self.commit(record)?;
+        self.commit_engine_v4(record, gate)?;
 
         Ok(NetworkNamespaceCatalogOutcomeV1::Published)
     }
@@ -556,6 +577,30 @@ impl NetworkNamespaceCatalogV1 {
     /// a current pin changed or is no longer a Network namespace, or the
     /// encoded protobuf violates the bounded authoritative-inventory contract.
     pub fn inventory_resources(&self) -> Result<Vec<u8>, NetworkNamespaceCatalogError> {
+        self.inventory_resources_engine_v4(None, None)
+    }
+
+    pub(crate) fn inventory_resources_retaining_v4(&self,
+        originals: &mut Vec<NetworkPinObservationOriginalV4>)
+        -> Result<Vec<u8>, NetworkNamespaceCatalogError> {
+        self.inventory_resources_engine_v4(Some(originals), None)
+    }
+
+    pub(crate) fn inventory_resources_with_absence_retaining_v2(
+        &self,
+        originals: &mut Vec<NetworkPinObservationOriginalV4>,
+        absence: &aos_sandbox_protocol::fixed_service_inventory_absence::FixedServiceInventoryAbsenceDataV2,
+    ) -> Result<Vec<u8>, NetworkNamespaceCatalogError> {
+        if !self.records.is_empty() || absence.boot_v2() != &self.kernel_boot_id
+            || absence.recipient_invocation_v2() != &self.broker_instance_id {
+            return Err(NetworkNamespaceCatalogError::InvalidInventory);
+        }
+        self.inventory_resources_engine_v4(Some(originals), Some(absence))
+    }
+
+    fn inventory_resources_engine_v4(&self, mut originals: Option<&mut Vec<NetworkPinObservationOriginalV4>>,
+        absence: Option<&aos_sandbox_protocol::fixed_service_inventory_absence::FixedServiceInventoryAbsenceDataV2>)
+        -> Result<Vec<u8>, NetworkNamespaceCatalogError> {
         self.journal.ensure_healthy()?;
         validate_record_set(&self.records)?;
         for record in self
@@ -563,14 +608,31 @@ impl NetworkNamespaceCatalogV1 {
             .values()
             .filter(|record| matches!(record.lifecycle, NamespaceLifecycleV1::Retired))
         {
-            self.pin_root.ensure_absent(&record.network_handle)?;
+            match originals.as_deref_mut() {
+                Some(originals) => {
+                    originals.push(NetworkPinObservationOriginalV4::new());
+                    let original = originals.last_mut().ok_or(NetworkNamespaceCatalogError::InvalidInventory)?;
+                    self.pin_root.ensure_absent_retaining_v4(&record.network_handle, original)?;
+                }
+                None => self.pin_root.ensure_absent(&record.network_handle)?,
+            }
         }
         let mut networks = Vec::new();
         for record in self.records.values().filter(|record| {
             record.kernel_boot_id == self.kernel_boot_id
                 && !matches!(record.lifecycle, NamespaceLifecycleV1::Retired)
         }) {
-            self.pin_root.verify_record(record)?;
+            match originals.as_deref_mut() {
+                Some(originals) => {
+                    originals.push(NetworkPinObservationOriginalV4::new());
+                    let original = originals.last_mut().ok_or(NetworkNamespaceCatalogError::InvalidInventory)?;
+                    let pin = self.pin_root.observe_retaining_v4(&record.network_handle, original)?;
+                    if (pin.device, pin.inode) != (record.namespace_device, record.namespace_inode) {
+                        return Err(NetworkNamespaceCatalogError::NamespacePin("namespace pin device/inode identity changed".to_owned()));
+                    }
+                }
+                None => self.pin_root.verify_record(record)?,
+            }
             networks.push(record.inventory_record());
         }
 
@@ -580,6 +642,7 @@ impl NetworkNamespaceCatalogV1 {
             catalog_generation: self.generation,
             networks,
             broker_instance_id: self.broker_instance_id.to_vec(),
+            native_absence_v2: absence.map(|data| data.encode_v2().to_vec()).unwrap_or_default(),
             ..Default::default()
         };
         let bytes = response.encode_to_vec();
@@ -634,6 +697,12 @@ impl NetworkNamespaceCatalogV1 {
     }
 
     fn commit(&mut self, record: NamespaceRecordV1) -> Result<(), NetworkNamespaceCatalogError> {
+        self.commit_engine_v4(record, None)
+    }
+
+    fn commit_engine_v4(&mut self, record: NamespaceRecordV1,
+        gate: Option<&mut dyn FnMut(&Journal, &JournalTransaction) -> Result<(), NetworkNamespaceCatalogError>>,
+    ) -> Result<(), NetworkNamespaceCatalogError> {
         self.journal.ensure_healthy()?;
         let head = CatalogHeadV1 {
             generation: record.catalog_generation,
@@ -652,7 +721,8 @@ impl NetworkNamespaceCatalogV1 {
                     encode_record(&record)?,
                 ),
             ],
-        ).map_err(aos_sandbox::JournalError::from)?;
+        ).map_err(crate::journal::JournalError::from)?;
+        if let Some(gate) = gate { gate(&self.journal, &transaction)?; }
         self.journal.commit(&transaction)?;
         self.generation = record.catalog_generation;
         self.records.insert(record.network_handle, record);
@@ -750,6 +820,16 @@ impl PinRoot {
         }
     }
 
+    fn observe_retaining_v4(&self, handle: &[u8; 32], original: &mut NetworkPinObservationOriginalV4)
+        -> Result<PinIdentity, NetworkNamespaceCatalogError> {
+        original.observe_once_v4(self, handle)
+    }
+
+    fn ensure_absent_retaining_v4(&self, handle: &[u8; 32], original: &mut NetworkPinObservationOriginalV4)
+        -> Result<(), NetworkNamespaceCatalogError> {
+        original.absent_once_v4(self, handle)
+    }
+
     fn verify_record(
         &self,
         record: &NamespaceRecordV1,
@@ -784,7 +864,14 @@ fn open_pin_root(
     path: &Path,
     expected_owner: u32,
 ) -> Result<OwnedFd, NetworkNamespaceCatalogError> {
-    let descriptor = rustix::fs::open(
+    let descriptor = open_pin_root_candidate_v4(path).map_err(pin_error)?;
+    let metadata = rustix::fs::fstat(&descriptor).map_err(pin_error)?;
+    validate_pin_root_metadata_v4(&metadata, expected_owner)?;
+    Ok(descriptor)
+}
+
+fn open_pin_root_candidate_v4(path: &Path) -> Result<OwnedFd, rustix::io::Errno> {
+    rustix::fs::open(
         path,
         rustix::fs::OFlags::PATH
             | rustix::fs::OFlags::DIRECTORY
@@ -792,17 +879,32 @@ fn open_pin_root(
             | rustix::fs::OFlags::CLOEXEC,
         rustix::fs::Mode::empty(),
     )
-    .map_err(pin_error)?;
-    let metadata = rustix::fs::fstat(&descriptor).map_err(pin_error)?;
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("pin root is not an owner-controlled real directory")]
+struct NetworkPinRootProtectionErrorV2;
+
+fn require_pin_root_metadata_data_v2(metadata: &rustix::fs::Stat, expected_owner: u32)
+    -> Result<(), NetworkPinRootProtectionErrorV2>
+{
     if rustix::fs::FileType::from_raw_mode(metadata.st_mode) != rustix::fs::FileType::Directory
         || metadata.st_uid != expected_owner
         || metadata.st_mode & 0o022 != 0
     {
-        return Err(NetworkNamespaceCatalogError::NamespacePin(
-            "pin root is not an owner-controlled real directory".to_owned(),
-        ));
+        return Err(NetworkPinRootProtectionErrorV2);
     }
-    Ok(descriptor)
+    Ok(())
+}
+
+fn validate_pin_root_metadata_v4(metadata: &rustix::fs::Stat, expected_owner: u32)
+    -> Result<(), NetworkNamespaceCatalogError>
+{
+    require_pin_root_metadata_data_v2(metadata, expected_owner).map_err(|_| {
+        NetworkNamespaceCatalogError::NamespacePin(
+            "pin root is not an owner-controlled real directory".to_owned(),
+        )
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1066,7 +1168,7 @@ fn initialize_head(journal: &mut Journal) -> Result<u64, NetworkNamespaceCatalog
             HEAD_KEY.to_vec(),
             encode_head(&head)?,
         )],
-    ).map_err(aos_sandbox::JournalError::from)?;
+    ).map_err(crate::journal::JournalError::from)?;
     journal.commit(&transaction)?;
     Ok(head.generation)
 }
@@ -1512,6 +1614,53 @@ mod tests {
     }
 
     #[test]
+    fn guarded_destroy_requires_native_absence_and_preserves_rows_when_gate_refuses() {
+        let fixture = Fixture::new();
+        fixture.create_pin(1);
+        let mut catalog = fixture.open([81; 16]).unwrap();
+        catalog.publish(fixture.publication(1, 1, [81; 16])).unwrap();
+        let observation = lifecycle_observation(
+            &catalog, 1, 93, 94, NetworkNamespaceObservedStateV1::absent(),
+        );
+        let transition = NetworkNamespaceLifecycleTransitionV1::destroy(observation).unwrap();
+        let before = catalog.journal.get(
+            RecordNamespace::NetworkResourceInventory, &record_key(&[1; 32]),
+        ).unwrap().to_vec();
+        let generation = catalog.generation();
+        let mut entered = 0;
+
+        let mut present = NetworkPinObservationOriginalV4::new();
+        assert!(catalog.apply_destroy_transition_guarded_v2(
+            transition, &mut present, &mut |_, _| {
+                entered += 1;
+                Ok(())
+            },
+        ).is_err());
+        assert_eq!(entered, 0);
+
+        fs::remove_file(fixture.pin_path(1)).unwrap();
+        let mut absent = NetworkPinObservationOriginalV4::new();
+        assert!(catalog.apply_destroy_transition_guarded_v2(
+            transition, &mut absent, &mut |_, transaction| {
+                entered += 1;
+                assert_eq!(transaction.records().len(), 2);
+                Err(NetworkNamespaceCatalogError::Receiving)
+            },
+        ).is_err());
+        assert_eq!(entered, 1);
+        assert_eq!(catalog.generation(), generation);
+        assert_eq!(catalog.journal.get(
+            RecordNamespace::NetworkResourceInventory, &record_key(&[1; 32]),
+        ).unwrap(), before);
+
+        let mut final_absence = NetworkPinObservationOriginalV4::new();
+        assert_eq!(catalog.apply_destroy_transition_guarded_v2(
+            transition, &mut final_absence, &mut |_, _| Ok(()),
+        ).unwrap(), NetworkNamespaceLifecycleOutcomeV1::Applied);
+        assert_eq!(catalog.records.get(&[1; 32]).unwrap().lifecycle, NamespaceLifecycleV1::Retired);
+    }
+
+    #[test]
     fn observation_authority_requires_the_exact_retained_assignment() {
         let fixture = Fixture::new();
         fixture.create_pin(1);
@@ -1545,6 +1694,8 @@ mod tests {
         let mut current_boot = fixture.open([82; 16]).unwrap();
         assert_eq!(current_boot.generation(), 2);
         assert!(inventory(&current_boot).networks().is_empty());
+        // Empty current output does not erase the prior boot's resource history.
+        assert!(!current_boot.inventory_no_resource_history_v2().unwrap());
 
         fixture.create_pin(1);
         assert!(matches!(
@@ -2030,4 +2181,118 @@ mod tests {
             Err(NetworkNamespaceCatalogError::NamespacePin(_))
         ));
     }
+}
+
+/// Runs the sole protected namespace model replay before native pin census.
+fn recover_models_v4(journal: &mut Journal) -> Result<(u64,
+    BTreeMap<[u8; 32], NamespaceRecordV1>, Option<checkpoint::InventoryBsaCheckpointHeadV2>),
+    NetworkNamespaceCatalogError> {
+        let mut head = None;
+        let mut records = BTreeMap::new();
+        for (key, value) in journal.records(RecordNamespace::NetworkResourceInventory) {
+            if key == HEAD_KEY {
+                if head.replace(decode_head(value)?).is_some() {
+                    return Err(NetworkNamespaceCatalogError::CorruptRecord);
+                }
+                continue;
+            }
+            if checkpoint::is_key(key) {
+                continue;
+            }
+
+            let handle = decode_record_key(key)?;
+            let record = decode_record(value)?;
+            if record.network_handle != handle || records.insert(handle, record).is_some() {
+                return Err(NetworkNamespaceCatalogError::CorruptRecord);
+            }
+        }
+
+        let checkpoint_head = checkpoint::recover(&journal)
+            .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
+        let generation = match head {
+            Some(head) => {
+                let expected = records
+                    .values()
+                    .map(|record| record.catalog_generation)
+                    .max()
+                    .unwrap_or(1);
+                if head.generation != expected {
+                    return Err(NetworkNamespaceCatalogError::CorruptRecord);
+                }
+                head.generation
+            }
+            None if records.is_empty() && checkpoint_head.is_none() => {
+                initialize_head(journal)?
+            }
+            None => return Err(NetworkNamespaceCatalogError::CorruptRecord),
+        };
+
+        validate_record_set(&records)?;    Ok((generation, records, checkpoint_head))
+}
+
+impl NetworkNamespaceCatalogV1 {
+    // Only the private whole-service inventory callsite borrows this exact
+    // continuously held writer; the borrow creates no new claim or file.
+    pub(crate) fn inventory_native_identity_v2(&self) -> ([u8; 16], [u8; 16]) {
+        (self.kernel_boot_id, self.broker_instance_id)
+    }
+
+    pub(crate) fn inventory_journal_v2(&self) -> &Journal {
+        &self.journal
+    }
+
+    pub(crate) fn inventory_history_memory_v2(&self) -> Option<usize> {
+        // Existing maps stay in their already-paid owners. Only the sole
+        // canonical initialization-head decoder creates transient backing.
+        self.journal.get(RecordNamespace::NetworkResourceInventory, HEAD_KEY)
+            .map_or(Some(0), crate::service_original::journal::inventory_head_decode_memory_v2::<CatalogHeadV1>)
+    }
+}
+
+impl NetworkNamespaceCatalogV1 {
+    pub(crate) fn inventory_no_resource_history_v2(&self)
+        -> Result<bool, NetworkNamespaceCatalogError>
+    {
+        self.journal.ensure_healthy()?;
+        if !self.records.is_empty() || self.checkpoint_head.is_some()
+            || self.journal.all_records().any(|(namespace, key, _)| {
+                namespace != RecordNamespace::NetworkResourceInventory || key != HEAD_KEY
+            }) {
+            return Ok(false);
+        }
+        let head = decode_head(self.journal.get(RecordNamespace::NetworkResourceInventory, HEAD_KEY)
+            .ok_or(NetworkNamespaceCatalogError::CorruptRecord)?)?;
+        if head.generation != self.generation {
+            return Err(NetworkNamespaceCatalogError::CorruptRecord);
+        }
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod absence_history_tests {
+    use super::*;
+
+    #[test]
+    fn an_unknown_complete_journal_row_blocks_empty_history_even_when_the_typed_table_is_empty() {
+        let state = tempfile::tempdir().unwrap();
+        let pins = tempfile::tempdir().unwrap();
+        let mut catalog = NetworkNamespaceCatalogV1::open_for_test(
+            state.path(), pins.path(), [1; 16], [2; 16],
+        ).unwrap();
+        assert!(catalog.inventory_no_resource_history_v2().unwrap());
+        let transaction = JournalTransaction::new([3; 16], vec![JournalRecord::put(
+            RecordNamespace::Operation, b"unknown-complete-history".to_vec(), vec![4],
+        )]).unwrap();
+        catalog.journal.commit(&transaction).unwrap();
+
+        assert!(catalog.records.is_empty());
+        assert!(!catalog.inventory_no_resource_history_v2().unwrap());
+    }
+}
+
+/// Checks the actual namespace/checkpoint keys without authenticating a value.
+pub(crate) fn journal_key_data_v1(namespace: RecordNamespace, key: &[u8]) -> bool {
+    namespace == RecordNamespace::NetworkResourceInventory
+        && (key == HEAD_KEY || checkpoint::is_key(key) || decode_record_key(key).is_ok())
 }

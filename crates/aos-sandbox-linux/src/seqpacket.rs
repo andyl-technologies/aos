@@ -19,15 +19,16 @@
 //! equivalent record-provenance boundary. A consumed record can additionally
 //! be bound to the exact retained socket object through a private `SO_COOKIE`
 //! origin stamp. That binding is carrier continuity, not writer identity.
+//!
+//! Network's closed child-origin carrier separately admits exactly nine rights.
+//! Its later credentials-only PID1 replies borrow that initial authenticated
+//! subject and the same channel; they never construct a fresh record subject.
 
-use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path};
-
-use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
 
 use crate::Error;
 use crate::pidfd::{PidFd, PidFdInfo};
@@ -39,11 +40,39 @@ pub use listener::{
     RecordSubjectListenerAdmissionAttemptV1,
 };
 
+mod pair;
+pub use pair::RecordSubjectSeqpacketPairOriginalV2;
+
+mod zero_rights;
+use zero_rights::ZeroRightsNativeV1;
+pub use zero_rights::SeqpacketRightsRestrictionOriginalV6;
+
+mod connection_liveness;
+pub use connection_liveness::SeqpacketShutdownOriginalV4;
+pub use connection_liveness::SeqpacketOwnedShutdownOriginalV1;
+pub use connection_liveness::SeqpacketSendAfterOriginalV1;
 mod socket_binding;
 use socket_binding::{ConnectedSocketBinding, ReceivedSocketOrigin};
 
+mod network_worker;
+mod network_worker_completion;
+pub use network_worker::{NetworkWorkerNativeCutoffV4, NetworkWorkerRecordKindV4};
+
+mod network_pid1_reply;
+pub use network_pid1_reply::{
+    NetworkPid1ReplyAffinityOriginalV2,
+    NetworkPid1ReplyChannelV2, NetworkPid1ReplyOriginalV2,
+    NetworkPid1ReplyProfileOriginalV2, NetworkPid1RequestOriginalV2,
+};
+
 pub mod bounded;
+pub mod capture_stop;
 pub mod descriptor_subject;
+
+mod storage_session;
+pub use storage_session::{
+    LocalOwnershipSeqpacketEndAttemptV1, StorageSeqpacketEndAttemptV1, StorageSeqpacketSendAttemptV1, StorageSeqpacketSessionOriginV1,
+};
 
 pub(crate) mod receive_custody;
 pub use receive_custody::RetainedSeqpacketReceiveErrorV1;
@@ -74,6 +103,7 @@ pub struct SeqpacketSocket {
     fd: Option<OwnedFd>,
     peer: ConnectionPeerIdentity,
     retained_send_flight: Option<OwnedFd>,
+    zero_rights: Option<ZeroRightsNativeV1>,
 }
 
 impl std::fmt::Debug for SeqpacketSocket {
@@ -215,128 +245,10 @@ impl std::error::Error for RetainedSeqpacketAdmissionErrorV1 {
 pub(super) struct PendingSocketAdmissionV1 {
     fd: Option<OwnedFd>,
     peer: Option<ConnectionPeerIdentity>,
+    peer_capture: Option<PeerCaptureAttemptV1>,
     armed: bool,
     ended: bool,
     shutdown_failure: Option<std::io::Error>,
-}
-
-/// Retains the returned originals of one selected offline helper socket pair.
-///
-/// This is transport DATA only, not child, approval, Session or TPM authority.
-/// The caller keeps this owner resident on error or unwind. Prefixes which a
-/// lower constructor does not return are not retroactively captured here.
-pub struct NixOfflineSeqpacketPairV5 {
-    attempted: bool,
-    ready: bool,
-    pending: Option<PendingSocketAdmissionV1>,
-    socket: Option<SeqpacketSocket>,
-    endpoint: Option<OwnedFd>,
-    first_failure: Option<SeqpacketError>,
-}
-
-impl NixOfflineSeqpacketPairV5 {
-    /// Parks empty fixed pair slots without creating or admitting a descriptor.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            attempted: false,
-            ready: false,
-            pending: None,
-            socket: None,
-            endpoint: None,
-            first_failure: None,
-        }
-    }
-
-    /// Creates and admits one fixed nonblocking pair with record subjects.
-    ///
-    /// # Errors
-    /// Retains the first actual creation, option or connected-peer cause and
-    /// every returned original. Reuse and caught interruption remain closed.
-    pub fn prepare(&mut self) -> Result<(), &SeqpacketError> {
-        if self.attempted {
-            self.ready = false;
-            return Err(self.first_failure.get_or_insert(SeqpacketError::Closed));
-        }
-        self.attempted = true;
-        match self.prepare_inner() {
-            Ok(()) => {
-                self.ready = true;
-                Ok(())
-            }
-            Err(error) => {
-                if let Some(pending) = self.pending.as_mut() {
-                    pending.end_transport();
-                }
-                self.first_failure.get_or_insert(error);
-                Err(self.first_failure.get_or_insert(SeqpacketError::Closed))
-            }
-        }
-    }
-
-    fn prepare_inner(&mut self) -> Result<(), SeqpacketError> {
-        let (receiver, endpoint) = uapi::seqpacket_pair()?;
-        self.pending = Some(PendingSocketAdmissionV1::new(receiver));
-        self.endpoint = Some(endpoint);
-        let pending = self.pending.as_mut().ok_or(SeqpacketError::Closed)?;
-        pending.enable_subjects()?;
-        uapi::enable_seqpacket_identity(
-            self.endpoint.as_ref().ok_or(SeqpacketError::Closed)?.as_fd(),
-        )?;
-        pending.admit_peer()?;
-
-        // Admission has completed. Move both receiver owners infallibly before
-        // disarming; no post-return check drops either acquired original.
-        let originals = (pending.fd.take(), pending.peer.take());
-        let (fd, peer) = match originals {
-            (Some(fd), Some(peer)) => (fd, peer),
-            (fd, peer) => {
-                pending.fd = fd;
-                pending.peer = peer;
-                return Err(SeqpacketError::Closed);
-            }
-        };
-        pending.armed = false;
-        self.socket = Some(SeqpacketSocket {
-            fd: Some(fd),
-            peer,
-            retained_send_flight: None,
-        });
-        Ok(())
-    }
-
-    /// Transfers only the fully admitted child endpoint into the fixed launcher.
-    ///
-    /// # Errors
-    /// Refuses a failed, incomplete, interrupted or previously transferred pair.
-    pub fn take_child_endpoint(&mut self) -> Result<OwnedFd, SeqpacketError> {
-        if !self.ready {
-            return Err(SeqpacketError::Closed);
-        }
-        self.endpoint.take().ok_or(SeqpacketError::Closed)
-    }
-
-    /// Borrows the actual admitted parent socket without releasing pair custody.
-    ///
-    /// # Errors
-    /// Refuses an incomplete or fenced pair.
-    pub fn socket(&mut self) -> Result<&mut SeqpacketSocket, SeqpacketError> {
-        if !self.ready {
-            return Err(SeqpacketError::Closed);
-        }
-        self.socket.as_mut().ok_or(SeqpacketError::Closed)
-    }
-
-    /// Borrows the original first returned failure without cloning it.
-    pub fn failure(&self) -> Option<&SeqpacketError> {
-        self.first_failure.as_ref()
-    }
-}
-
-impl Default for NixOfflineSeqpacketPairV5 {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl PendingSocketAdmissionV1 {
@@ -344,6 +256,7 @@ impl PendingSocketAdmissionV1 {
         Self {
             fd: Some(fd),
             peer: None,
+            peer_capture: None,
             armed: true,
             ended: false,
             shutdown_failure: None,
@@ -366,7 +279,20 @@ impl PendingSocketAdmissionV1 {
     }
 
     pub(super) fn admit_peer(&mut self) -> Result<(), SeqpacketError> {
-        self.peer = Some(admit_connected_peer(self.borrow_fd()?)?);
+        self.admit_peer_observed_v1(false)
+    }
+
+    pub(super) fn admit_peer_retaining_raw_v1(&mut self) -> Result<(), SeqpacketError> {
+        self.admit_peer_observed_v1(true)
+    }
+
+    fn admit_peer_observed_v1(&mut self, retain_raw: bool) -> Result<(), SeqpacketError> {
+        uapi::prepare_seqpacket(self.borrow_fd()?)?;
+        self.peer_capture = Some(PeerCaptureAttemptV1::default());
+        let fd = self.fd.as_ref().ok_or(SeqpacketError::Closed)?.as_fd();
+        let capture = self.peer_capture.as_mut().ok_or(SeqpacketError::Closed)?;
+        capture.capture_observed_v1(fd, retain_raw)?;
+        self.peer = Some(capture.take_completed()?);
         Ok(())
     }
 
@@ -428,23 +354,78 @@ fn admit_connected_peer(fd: BorrowedFd<'_>) -> Result<ConnectionPeerIdentity, Se
 pub(super) fn connect_pending_seqpacket(
     path: &Path,
 ) -> Result<PendingSocketAdmissionV1, RetainedSeqpacketAdmissionErrorV1> {
-    let bytes = uapi::validate_seqpacket_connection_path(path)
-        .map_err(SeqpacketError::from)
-        .map_err(RetainedSeqpacketAdmissionErrorV1::before_creation)?;
-    let fd = uapi::unconnected_seqpacket_before_flags()
-        .map_err(SeqpacketError::from)
-        .map_err(RetainedSeqpacketAdmissionErrorV1::before_creation)?;
-    let pending = PendingSocketAdmissionV1::new(fd);
+    connect_pending_with_rights(path, false)
+}
 
-    let connected = (|| {
-        uapi::ensure_cloexec(pending.borrow_fd()?)?;
-        uapi::connect_seqpacket_borrowed(pending.borrow_fd()?, bytes)?;
-        Ok::<_, SeqpacketError>(())
+fn connect_pending_with_rights(
+    path: &Path,
+    zero_rights: bool,
+) -> Result<PendingSocketAdmissionV1, RetainedSeqpacketAdmissionErrorV1> {
+    connect_pending_with_gate_v4::<std::convert::Infallible>(path, zero_rights, None).0
+}
+
+pub(super) fn connect_pending_worker_guarded_v4<E>(
+    path: &Path,
+    before_native: &mut impl FnMut() -> std::result::Result<(), E>,
+) -> (
+    Result<PendingSocketAdmissionV1, RetainedSeqpacketAdmissionErrorV1>,
+    Option<E>,
+) {
+    connect_pending_with_gate_v4(path, false, Some(before_native))
+}
+
+fn connect_pending_with_gate_v4<E>(
+    path: &Path,
+    zero_rights: bool,
+    mut before_native: Option<&mut dyn FnMut() -> std::result::Result<(), E>>,
+) -> (
+    Result<PendingSocketAdmissionV1, RetainedSeqpacketAdmissionErrorV1>,
+    Option<E>,
+) {
+    let mut gate_failure = None;
+    let admission = (|| {
+        let bytes = uapi::validate_seqpacket_connection_path(path)
+            .map_err(SeqpacketError::from)
+            .map_err(RetainedSeqpacketAdmissionErrorV1::before_creation)?;
+        let fd = uapi::unconnected_seqpacket_before_flags()
+            .map_err(SeqpacketError::from)
+            .map_err(RetainedSeqpacketAdmissionErrorV1::before_creation)?;
+        let pending = PendingSocketAdmissionV1::new(fd);
+
+        let connected = (|| {
+            uapi::ensure_cloexec(pending.borrow_fd()?)?;
+            if zero_rights {
+                uapi::set_seqpacket_passrights(pending.borrow_fd()?, false)?;
+            }
+            if let Some(gate) = before_native.as_mut() {
+                let (native, refused) =
+                    uapi::connect_seqpacket_borrowed_guarded_v4(pending.borrow_fd()?, bytes, gate);
+                gate_failure = refused;
+                native?;
+            } else {
+                uapi::connect_seqpacket_borrowed(pending.borrow_fd()?, bytes)?;
+            }
+            Ok::<_, SeqpacketError>(())
+        })();
+        if let Err(source) = connected {
+            return Err(pending.fail(source));
+        }
+        Ok(pending)
     })();
-    if let Err(source) = connected {
-        return Err(pending.fail(source));
-    }
-    Ok(pending)
+    (admission, gate_failure)
+}
+
+// Concrete socket facades select only their own actual returned layout.
+// All pending/raw/peer native operands and the two FD slots are shared.
+fn raw_admission_obligations_v3<Socket>() -> Option<(usize, usize)> {
+    let carriers = std::mem::size_of::<PendingSocketAdmissionV1>()
+        .checked_add(std::mem::size_of::<Result<Socket, RetainedSeqpacketAdmissionErrorV1>>())?
+        .checked_add(std::mem::size_of::<Result<PidFdInfo, SeqpacketError>>())?
+        .checked_add(std::mem::size_of::<libc::ucred>())?
+        .checked_mul(3)?;
+    let bytes = carriers.checked_add(2 * std::mem::size_of::<libc::sockaddr_un>())?
+        .checked_add(2 * 256)?;
+    Some((bytes, 2))
 }
 
 impl SeqpacketSocket {
@@ -478,6 +459,21 @@ impl SeqpacketSocket {
         Self::require_connection_path(path)
             .map_err(RetainedSeqpacketAdmissionErrorV1::before_creation)?;
         Self::from_pending_retaining(connect_pending_seqpacket(path)?)
+    }
+
+    /// Connects the fixed Storage worker while retaining raw peer-adoption input.
+    ///
+    /// Uses the same path, creation, option, connect and peer engine. The whole
+    /// SO_PEERPIDFD remains owned if its typed admission fails. This mechanical
+    /// carrier neither authenticates a worker role nor grants financial entry.
+    ///
+    /// # Errors
+    /// Retains the original socket/raw peer and first native cause, with
+    /// independent shutdown debt, without descriptor extraction or retry.
+    pub fn connect_storage_worker_retaining_v3(path: &Path) -> Result<Self, RetainedSeqpacketAdmissionErrorV1> {
+        Self::require_connection_path(path)
+            .map_err(RetainedSeqpacketAdmissionErrorV1::before_creation)?;
+        Self::from_pending_raw_peer_retaining_v1(connect_pending_seqpacket(path)?)
     }
 
     fn require_connection_path(path: &Path) -> Result<(), SeqpacketError> {
@@ -530,6 +526,7 @@ impl SeqpacketSocket {
             fd: Some(fd),
             peer,
             retained_send_flight: None,
+            zero_rights: None,
         })
     }
 
@@ -546,10 +543,48 @@ impl SeqpacketSocket {
         Self::from_pending_retaining(PendingSocketAdmissionV1::new(fd))
     }
 
-    pub(super) fn from_pending_retaining(
-        mut pending: PendingSocketAdmissionV1,
+    /// Adopts the fixed Storage worker socket while retaining raw peer input.
+    ///
+    /// This runs the same pending-socket admission checks. It retains the
+    /// original SO_PEERPIDFD candidate if pidfd adoption fails; no descriptor
+    /// or retry capability can be recovered from its negative result.
+    ///
+    /// # Errors
+    /// Keeps rejected socket, raw peer descriptor and exact native causes.
+    pub fn from_owned_storage_worker_retaining_v3(
+        fd: OwnedFd,
     ) -> Result<Self, RetainedSeqpacketAdmissionErrorV1> {
-        if let Err(source) = pending.admit_peer() {
+        Self::from_pending_raw_peer_retaining_v1(PendingSocketAdmissionV1::new(fd))
+    }
+
+    /// Prices the fixed worker's raw incoming socket-admission carrier.
+    ///
+    /// Uses the same pending/raw peer arithmetic with this actual socket and
+    /// result layout. Cgroup/role checks and record reservoirs remain separate.
+    #[must_use]
+    pub fn storage_worker_admission_obligations_v3() -> Option<(usize, usize)> {
+        raw_admission_obligations_v3::<Self>()
+    }
+
+    pub(super) fn from_pending_retaining(
+        pending: PendingSocketAdmissionV1,
+    ) -> Result<Self, RetainedSeqpacketAdmissionErrorV1> {
+        Self::from_pending_observed_v1(pending, false)
+    }
+
+    pub(super) fn from_pending_raw_peer_retaining_v1(
+        pending: PendingSocketAdmissionV1,
+    ) -> Result<Self, RetainedSeqpacketAdmissionErrorV1> {
+        Self::from_pending_observed_v1(pending, true)
+    }
+
+    fn from_pending_observed_v1(
+        mut pending: PendingSocketAdmissionV1,
+        retain_raw: bool,
+    ) -> Result<Self, RetainedSeqpacketAdmissionErrorV1> {
+        let admitted = if retain_raw { pending.admit_peer_retaining_raw_v1() }
+            else { pending.admit_peer() };
+        if let Err(source) = admitted {
             return Err(pending.fail(source));
         }
         let (fd, peer) = pending.finish()?;
@@ -557,6 +592,7 @@ impl SeqpacketSocket {
             fd: Some(fd),
             peer,
             retained_send_flight: None,
+            zero_rights: None,
         })
     }
 
@@ -683,19 +719,14 @@ impl SeqpacketSocket {
         payload: &[u8],
         disposition: OriginalSenderDispositionV1,
     ) -> Result<(), SeqpacketError> {
-        if payload.is_empty() {
-            return Err(SeqpacketError::EmptyRecord);
-        }
-        let original = fd.as_ref().map(AsFd::as_fd).ok_or(SeqpacketError::Closed)?;
-        let sent = uapi::send_seqpacket(original, payload).map_err(map_kernel_error)?;
-        if sent != payload.len() {
+        let observed = storage_session::observe_original_send_v1(
+            fd.as_ref().map(AsFd::as_fd), payload,
+        );
+        let result = observed.into_legacy_result();
+        if matches!(&result, Err(SeqpacketError::PartialSend { .. })) {
             disposition.end(fd);
-            return Err(SeqpacketError::PartialSend {
-                expected: payload.len(),
-                actual: sent,
-            });
         }
-        Ok(())
+        result
     }
 
     /// Sends one atomic record with one to five owned-capability descriptors.
@@ -718,46 +749,13 @@ impl SeqpacketSocket {
         descriptors: &[BorrowedFd<'_>],
         disposition: OriginalSenderDispositionV1,
     ) -> Result<(), SeqpacketError> {
-        if payload.is_empty() || descriptors.is_empty() || descriptors.len() > 5 {
-            return Err(SeqpacketError::InvalidMaximum);
-        }
-        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(5))];
-        let mut control = SendAncillaryBuffer::new(&mut space);
-        if !control.push(SendAncillaryMessage::ScmRights(descriptors)) {
+        let (observed, _) = storage_session::observe_original_descriptor_send_v4::<std::convert::Infallible>(
+            fd.as_ref().map(AsFd::as_fd), payload, descriptors, None);
+        let result = observed.into_legacy_result();
+        if result.as_ref().is_err_and(SeqpacketError::is_fatal) {
             disposition.end(fd);
-            return Err(SeqpacketError::Ancillary(
-                "SCM_RIGHTS descriptor table exceeded its fixed buffer",
-            ));
         }
-        let result = sendmsg(
-            fd.as_ref().map(AsFd::as_fd).ok_or(SeqpacketError::Closed)?,
-            &[IoSlice::new(payload)],
-            &mut control,
-            SendFlags::DONTWAIT | SendFlags::NOSIGNAL,
-        )
-        .map_err(|source| {
-            map_kernel_error(Error::Syscall {
-                operation: "sendmsg(SCM_RIGHTS)",
-                source: source.into(),
-            })
-        });
-        let written = match result {
-            Ok(written) => written,
-            Err(error) => {
-                if error.is_fatal() {
-                    disposition.end(fd);
-                }
-                return Err(error);
-            }
-        };
-        if written != payload.len() {
-            disposition.end(fd);
-            return Err(SeqpacketError::PartialSend {
-                expected: payload.len(),
-                actual: written,
-            });
-        }
-        Ok(())
+        result
     }
 
     /// Receives one exactly sized record and its kernel-checked nominated subject.
@@ -816,7 +814,268 @@ impl SeqpacketSocket {
     pub fn receive_retaining(
         &mut self, maximum_bytes: usize,
     ) -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1> {
-        let mut attempt = self.receive_retaining_attempt(maximum_bytes, receive_custody::SubjectProfileV1::Ordinary)?;
+        self.receive_ordinary_retaining_with_control(maximum_bytes, uapi::ReceiveControlProfileV1::Standard)
+    }
+
+    /// Receives a zero-rights Host execution response through the same engine.
+    ///
+    /// Prepare, Accept, Apply and Query responses carry only kernel credentials
+    /// and their subject pidfd; Apply's sealed specification FD is request-only.
+    /// This selects the existing aligned authenticated control recipe without
+    /// changing its ordinary subject checks or payload limit. It creates no
+    /// Host role, financial original, connection or success proof.
+    ///
+    /// # Errors
+    /// Retains malformed/truncated control, unexpected rights, subject or native
+    /// failure. Only initial nonconsuming EAGAIN/EINTR permits the existing retry.
+    pub fn receive_host_execution_response_retaining_v1(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_ordinary_retaining_with_control(
+            maximum_bytes, uapi::ReceiveControlProfileV1::OrdinaryAuthenticated80,
+        )
+    }
+
+    /// Receives a Storage preparation record through the ordinary strict engine.
+    ///
+    /// Credentials and a correlated kernel pidfd fit the fixed 80-byte control
+    /// interval. SCM_RIGHTS and SCM_SECURITY remain forbidden by the ordinary
+    /// profile. Excess ancillary data retains the original truncation or native
+    /// failure. The caller supplies its existing protocol payload bound and
+    /// independently admits this receive before observation.
+    ///
+    /// # Errors
+    /// Retains complete native, ancillary, framing and subject failures. Only
+    /// an initial nonconsuming EAGAIN or EINTR preserves retry eligibility.
+    pub fn receive_storage_preparation_retaining_v1(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_ordinary_retaining_with_control(
+            maximum_bytes, uapi::ReceiveControlProfileV1::OrdinaryAuthenticated80,
+        )
+    }
+
+    pub(super) fn receive_zfs_worker_retaining_v1(
+        &mut self,
+        maximum: usize,
+    ) -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_ordinary_retaining_with_control(
+            maximum, uapi::ReceiveControlProfileV1::OrdinaryAuthenticated80,
+        )
+    }
+
+    pub(super) fn zfs_worker_receive_obligations_v1(maximum: usize) -> Option<(usize, usize)> {
+        Self::ordinary_authenticated_receive_obligations_v1(maximum)
+    }
+
+
+    /// Receives a local Ownership record through the same ordinary strict engine.
+    ///
+    /// The fixed 80-byte interval covers credentials and correlated pidfd;
+    /// ordinary SCM_RIGHTS and SCM_SECURITY refusal is unchanged. The payload
+    /// maximum is protocol DATA; no endpoint, process or funding is granted.
+    ///
+    /// # Errors
+    /// Retains original native, subject and truncation failures. Only proven
+    /// initial nonconsuming EAGAIN or EINTR permits another observation.
+    pub fn receive_local_ownership_retaining_v1(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_ordinary_retaining_with_control(
+            maximum_bytes, uapi::ReceiveControlProfileV1::OrdinaryAuthenticated80,
+        )
+    }
+
+    fn receive_ordinary_retaining_with_control(
+        &mut self,
+        maximum_bytes: usize,
+        control: uapi::ReceiveControlProfileV1,
+    ) -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_ordinary_retaining_with_disposition(
+            maximum_bytes, control, receive_custody::ReceiveFailureDispositionV4::Existing,
+        )
+    }
+
+    /// Receives the original Guest monitor's zero-rights control or terminal query.
+    ///
+    /// This selects the same authenticated80 native recipe and preserves the
+    /// original socket when its first custody duplication fails. It grants no
+    /// monitor, execution, financial or control permission.
+    ///
+    /// # Errors
+    /// Retains the actual native, record-subject, framing and ancillary prefix.
+    pub fn receive_guest_monitor_request_retaining_v1(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_ordinary_retaining_with_disposition(
+            maximum_bytes, uapi::ReceiveControlProfileV1::OrdinaryAuthenticated80,
+            receive_custody::ReceiveFailureDispositionV4::RetainUncapturedOriginal,
+        )
+    }
+
+    /// Captures the fixed original monitor registration with exactly one right.
+    ///
+    /// This is the same retained80 native/ancillary engine. It authenticates no
+    /// monitor, child or role and grants no receiving budget.
+    ///
+    /// # Errors
+    /// Preserves the whole actual native/subject/table prefix and the original
+    /// socket on an initial custody-duplication failure.
+    pub fn receive_guest_monitor_registration_retaining_v2(&mut self, maximum: usize)
+        -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1>
+    {
+        self.receive_descriptor_with_disposition(maximum,
+            receive_custody::SubjectProfileV1::Descriptors { expected: 1, allow_empty: false },
+            uapi::ReceiveControlProfileV1::OrdinaryAuthenticated80,
+            receive_custody::ReceiveFailureDispositionV4::RetainUncapturedOriginal)
+    }
+
+    /// Receives the original relay pidfd or a descriptor-free pre-relay control.
+    ///
+    /// This fixed one-or-zero table shares the retained80 engine. The caller
+    /// independently validates the measured root monitor and exact child.
+    ///
+    /// # Errors
+    /// Retains every reached native, subject, descriptor and original socket.
+    pub fn receive_guest_monitor_relay_or_control_retaining_v2(&mut self, maximum: usize)
+        -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1>
+    {
+        self.receive_descriptor_with_disposition(maximum,
+            receive_custody::SubjectProfileV1::Descriptors { expected: 1, allow_empty: true },
+            uapi::ReceiveControlProfileV1::OrdinaryAuthenticated80,
+            receive_custody::ReceiveFailureDispositionV4::RetainUncapturedOriginal)
+    }
+
+    /// Receives root control DATA only under this socket's completed restriction.
+    ///
+    /// # Errors
+    /// Refuses a missing, stale or foreign native mode proof before receiving,
+    /// or retains the actual fixed80 receive failure. Application checks remain
+    /// independently necessary after this mechanical receive.
+    pub fn receive_registered_guest_monitor_control_retaining_v2(&mut self, maximum: usize,
+        restriction: &SeqpacketRightsRestrictionOriginalV6)
+        -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1>
+    {
+        self.require_rights_restriction_current_v6(restriction)
+            .map_err(RetainedSeqpacketReceiveErrorV1::before_receive)?;
+        self.receive_guest_monitor_relay_or_control_retaining_v2(maximum)
+    }
+
+    /// Receives a terminal query only under the same completed restriction.
+    ///
+    /// # Errors
+    /// Refuses stale or foreign mode custody before entry and retains every
+    /// reached native/subject prefix of the unchanged fixed80 parser.
+    pub fn receive_registered_guest_monitor_request_retaining_v2(&mut self, maximum: usize,
+        restriction: &SeqpacketRightsRestrictionOriginalV6)
+        -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1>
+    {
+        self.require_rights_restriction_current_v6(restriction)
+            .map_err(RetainedSeqpacketReceiveErrorV1::before_receive)?;
+        self.receive_guest_monitor_request_retaining_v1(maximum)
+    }
+
+    /// Supplies the registered receive's native peak as passive cost DATA.
+    ///
+    /// The actual named receivers require a completed queue/mode proof before
+    /// IO. The full80 parser and payload allocation remain byte provisioned.
+    /// Returns `None` for invalid lengths or arithmetic overflow.
+    #[must_use]
+    pub fn registered_guest_monitor_receive_obligations_v2(maximum: usize) -> Option<(usize, usize)> {
+        Self::closed_zero_rights_receive_obligations_v1(maximum)
+    }
+
+    /// Receives active Guest controls under the same completed rights restriction.
+    ///
+    /// This mechanical port grants no operation permission. The Agent still
+    /// authenticates the original session, sequence, operation and runtime.
+    ///
+    /// # Errors
+    /// Refuses stale or foreign mode custody before receiving, or retains the
+    /// actual native/subject prefix of the unchanged authenticated80 engine.
+    pub fn receive_agent_active_control_retaining_v2(&mut self, maximum: usize,
+        restriction: &SeqpacketRightsRestrictionOriginalV6)
+        -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1>
+    {
+        self.require_rights_restriction_current_v6(restriction)
+            .map_err(RetainedSeqpacketReceiveErrorV1::before_receive)?;
+        self.receive_guest_monitor_request_retaining_v1(maximum)
+    }
+
+    /// Supplies the active Agent receiver's complete fixed80 native plane.
+    ///
+    /// This is passive DATA. The actual receiver independently requires its
+    /// completed same-socket restriction before every native sample. Returns
+    /// `None` for invalid lengths or checked arithmetic overflow.
+    #[must_use]
+    pub fn agent_active_control_receive_obligations_v2(maximum: usize) -> Option<(usize, usize)> {
+        Self::closed_zero_rights_receive_obligations_v1(maximum)
+    }
+
+    /// Receives the selected normal Guest handshake through retained80 custody.
+    ///
+    /// Ordinary rights are forbidden by the record grammar, while the native
+    /// hostile-prefix bound remains19 because Authorize still needs rights.
+    /// No irreversible restriction or application permission is introduced.
+    ///
+    /// # Errors
+    /// Retains the actual packet/native failure and original endpoint custody.
+    pub fn receive_guest_initial_handshake_retaining_v2(&mut self, maximum: usize)
+        -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1>
+    {
+        self.receive_guest_monitor_request_retaining_v1(maximum)
+    }
+
+    /// Supplies the selected Guest handshake's full native80 plane as cost DATA.
+    ///
+    /// Returns `None` for invalid lengths or checked arithmetic overflow.
+    #[must_use]
+    pub fn guest_initial_handshake_receive_obligations_v2(maximum: usize) -> Option<(usize, usize)> {
+        Self::ordinary_authenticated_receive_obligations_v1(maximum)
+    }
+
+    /// Compares the actual registration's same-socket origin while retaining cookie IO.
+    ///
+    /// This DATA check neither authenticates its subject nor admits its child.
+    ///
+    /// # Errors
+    /// Returns a binding refusal with the actual kernel cookie Result retained
+    /// in the caller's same original slot. The socket and packet stay owned.
+    pub fn require_guest_monitor_registration_origin_retaining_v2(&self,
+        record: &descriptor_subject::ReceivedDescriptorRecord,
+        native: &mut Option<Result<u64, crate::Error>>,
+    ) -> Result<(), RecordBindingError> {
+        let fd = self.fd.as_ref().map(AsFd::as_fd).ok_or_else(RecordBindingError::closed)?;
+        self.peer.binding.require_current_with_originals_v1(fd, Some(native))?;
+        record.require_origin(self.peer.binding)
+    }
+
+    /// Prices the actual fixed80 one-right registration and hostile native prefix.
+    ///
+    /// Returns `None` for invalid lengths or checked arithmetic overflow.
+    #[must_use]
+    pub fn guest_monitor_registration_obligations_v2(maximum: usize) -> Option<(usize, usize)> {
+        let (bytes, ordinary_files) = Self::ordinary_authenticated_receive_obligations_v1(maximum)?;
+        let bytes = bytes.checked_add(std::mem::size_of::<Result<descriptor_subject::ReceivedDescriptorRecord,
+            RetainedSeqpacketReceiveErrorV1>>())?;
+        // The successful preview can retain its one ordinary right in addition
+        // to its subject pin before the consumed hostile native sample.
+        Some((bytes, ordinary_files.checked_add(1)?))
+    }
+
+    fn receive_ordinary_retaining_with_disposition(
+        &mut self,
+        maximum_bytes: usize,
+        control: uapi::ReceiveControlProfileV1,
+        disposition: receive_custody::ReceiveFailureDispositionV4,
+    ) -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1> {
+        let mut attempt = self.receive_retaining_with_disposition(
+            maximum_bytes, receive_custody::SubjectProfileV1::Ordinary, control, disposition,
+        )?;
         let message = &mut attempt.messages[1];
         let Some(subject) = message.subject.take() else {
             let error = attempt.reject(SeqpacketError::Ancillary("missing SCM_PIDFD"));
@@ -848,6 +1107,172 @@ impl SeqpacketSocket {
         self.receive_descriptor_retaining_profile(maximum_bytes, profile)
     }
 
+    /// Receives a fixed normal startup report using its five-right schema.
+    ///
+    /// The same strict receiver retains both native samples and partial rights.
+    /// This closes only ancillary geometry; the actual Host Launch must bind
+    /// the report kind, subject, inherited carrier and protected request.
+    ///
+    /// # Errors
+    /// Retains native, truncation, subject or table failures. Only the fixed
+    /// one-, three- and five-right report shapes are accepted.
+    pub fn receive_component_startup_report_retaining_v2(
+        &mut self,
+        maximum_bytes: usize,
+        expected_descriptors: usize,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        if !matches!(expected_descriptors, 1 | 3 | 5) {
+            // No native receive was entered. Keep the original socket on its
+            // caller rather than discarding it for an unsupported schema.
+            return Err(RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::InvalidMaximum));
+        }
+        self.receive_descriptor_with_disposition(
+            maximum_bytes,
+            receive_custody::SubjectProfileV1::Descriptors {
+                expected: expected_descriptors, allow_empty: false,
+            },
+            uapi::ReceiveControlProfileV1::ComponentStartupReport5,
+            receive_custody::ReceiveFailureDispositionV4::RetainUncapturedOriginal,
+        )
+    }
+
+    /// Receives Network's fixed PID1 child-origin record and its nine native rights.
+    ///
+    /// This restricts the shared receiver's shape only. The actual child must
+    /// verify PID1, its live Source, each descriptor role and the same prepaid F.
+    ///
+    /// # Errors
+    /// Retains native, preview, subject, truncation and exact-nine-right failures.
+    pub fn receive_network_child_origin_retaining_v2(
+        &mut self,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_descriptor_with_disposition(
+            840,
+            receive_custody::SubjectProfileV1::Descriptors {
+                expected: 9, allow_empty: false,
+            },
+            uapi::ReceiveControlProfileV1::NetworkChildOrigin9,
+            receive_custody::ReceiveFailureDispositionV4::RetainUncapturedOriginal,
+        )
+    }
+
+    /// Receives only Network's fixed PID1 prebirth acknowledgement carrier.
+    ///
+    /// The same original Source owner checks the actual PID1 subject, original
+    /// request commitment and native Source state before any child acquisition.
+    ///
+    /// # Errors
+    /// Retains native, preview, subject, truncation and forbidden-rights failures.
+    pub fn receive_network_prebirth_prepared_retaining_v2(&mut self)
+        -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1>
+    {
+        self.receive_ordinary_retaining_with_disposition(144,
+            uapi::ReceiveControlProfileV1::OrdinaryAuthenticated80,
+            receive_custody::ReceiveFailureDispositionV4::RetainUncapturedOriginal)
+    }
+
+    /// Prices Network's exact fixed prebirth acknowledgement native carrier.
+    #[must_use]
+    pub fn network_prebirth_prepared_receive_obligations_v2() -> Option<(usize, usize)> {
+        Self::ordinary_authenticated_receive_obligations_v1(144)
+    }
+
+    /// Receives Network's fixed pre-READY birth custody and its three rights.
+    ///
+    /// The real parent separately validates every native role and the same
+    /// prepared Source. A receipt never proves leader death or Empty/Retired.
+    ///
+    /// # Errors
+    /// Retains every native sample, partial right, subject and framing failure.
+    pub fn receive_network_birth_handoff_retaining_v2(&mut self)
+        -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1>
+    {
+        self.receive_descriptor_with_disposition(160,
+            receive_custody::SubjectProfileV1::Descriptors { expected: 3, allow_empty: false },
+            uapi::ReceiveControlProfileV1::NetworkBirthHandoff3,
+            receive_custody::ReceiveFailureDispositionV4::RetainUncapturedOriginal)
+    }
+
+    /// Prices the exact three-right birth custody and its hostile native prefix.
+    #[must_use]
+    pub fn network_birth_handoff_receive_obligations_v2() -> Option<(usize, usize)> {
+        let control = uapi::ReceiveControlProfileV1::NetworkBirthHandoff3;
+        let bytes = Self::requested_receive_bytes(0, control, 2).checked_add(160)?
+            .checked_add(std::mem::size_of::<Result<descriptor_subject::ReceivedDescriptorRecord,
+                RetainedSeqpacketReceiveErrorV1>>())?;
+        let hostile = control.bytes().checked_sub(std::mem::size_of::<libc::cmsghdr>())?
+            / std::mem::size_of::<std::os::fd::RawFd>();
+        Some((bytes, hostile.checked_add(2)?.checked_add(1)?.checked_add(3)?))
+    }
+
+    /// Prices the actual fixed Network child-origin receive and retained prefix.
+    ///
+    /// The native ancillary expression follows the exact nine-right schema.
+    /// It grants neither a Source identity nor a financial subdivision.
+    #[must_use]
+    pub fn network_child_origin_receive_obligations_v2() -> Option<(usize, usize)> {
+        let control = uapi::ReceiveControlProfileV1::NetworkChildOrigin9;
+        let bytes = Self::requested_receive_bytes(0, control, 2)
+            .checked_add(840)?
+            .checked_add(std::mem::size_of::<Result<descriptor_subject::ReceivedDescriptorRecord,
+                RetainedSeqpacketReceiveErrorV1>>())?;
+        let hostile = control.bytes().checked_sub(std::mem::size_of::<libc::cmsghdr>())?
+            / std::mem::size_of::<std::os::fd::RawFd>();
+        let files = hostile.checked_add(2)?.checked_add(1)?.checked_add(9)?;
+        Some((bytes, files))
+    }
+
+    /// Receives the fixed descriptor-free normal loaded-program report.
+    ///
+    /// # Errors
+    /// Retains the unchanged authenticated80 parser's native, framing, subject
+    /// and forbidden-rights failures, including an uncaptured original socket.
+    pub fn receive_component_startup_program_retaining_v2(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_ordinary_retaining_with_disposition(
+            maximum_bytes,
+            uapi::ReceiveControlProfileV1::OrdinaryAuthenticated80,
+            receive_custody::ReceiveFailureDispositionV4::RetainUncapturedOriginal,
+        )
+    }
+
+    /// Prices the normal report's full native envelope and successful preview.
+    ///
+    /// No source extent grants receiving permission or changes a role budget.
+    /// Returns `None` for unsupported schema widths or arithmetic overflow.
+    #[must_use]
+    pub fn component_startup_report_receive_obligations_v2(
+        maximum_bytes: usize,
+        expected_descriptors: usize,
+    ) -> Option<(usize, usize)> {
+        if maximum_bytes == 0 || !matches!(expected_descriptors, 1 | 3 | 5) {
+            return None;
+        }
+        let control = uapi::ReceiveControlProfileV1::ComponentStartupReport5;
+        let bytes = Self::requested_receive_bytes(0, control, 2)
+            .checked_add(maximum_bytes)?
+            .checked_add(std::mem::size_of::<Result<descriptor_subject::ReceivedDescriptorRecord,
+                RetainedSeqpacketReceiveErrorV1>>())?;
+        let hostile = control.bytes().checked_sub(std::mem::size_of::<libc::cmsghdr>())?
+            / std::mem::size_of::<std::os::fd::RawFd>();
+        // The consumed hostile sample can coexist with the successful exact
+        // preview, its subject, and the original/duplicate endpoint pair.
+        let files = hostile.checked_add(2)?.checked_add(1)?.checked_add(expected_descriptors)?;
+        Some((bytes, files))
+    }
+
+    /// Prices the zero-right normal program report's same native envelope.
+    ///
+    /// Returns `None` for an invalid extent or checked arithmetic overflow.
+    #[must_use]
+    pub fn component_startup_program_receive_obligations_v2(maximum_bytes: usize)
+        -> Option<(usize, usize)>
+    {
+        Self::ordinary_authenticated_receive_obligations_v1(maximum_bytes)
+    }
+
     // Both closed descriptor adapters use the same success-only transfer. The
     // sole receive engine returns exactly preview/consumed samples on success.
     fn receive_descriptor_retaining_profile(
@@ -855,7 +1280,30 @@ impl SeqpacketSocket {
         maximum_bytes: usize,
         profile: receive_custody::SubjectProfileV1,
     ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
-        let mut attempt = self.receive_retaining_attempt(maximum_bytes, profile)?;
+        self.receive_descriptor_with_control(maximum_bytes, profile, uapi::ReceiveControlProfileV1::Standard)
+    }
+
+    fn receive_descriptor_with_control(
+        &mut self,
+        maximum_bytes: usize,
+        profile: receive_custody::SubjectProfileV1,
+        control: uapi::ReceiveControlProfileV1,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_descriptor_with_disposition(
+            maximum_bytes, profile, control, receive_custody::ReceiveFailureDispositionV4::Existing,
+        )
+    }
+
+    fn receive_descriptor_with_disposition(
+        &mut self,
+        maximum_bytes: usize,
+        profile: receive_custody::SubjectProfileV1,
+        control: uapi::ReceiveControlProfileV1,
+        disposition: receive_custody::ReceiveFailureDispositionV4,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        let mut attempt = self.receive_retaining_with_disposition(
+            maximum_bytes, profile, control, disposition,
+        )?;
         let message = &mut attempt.messages[1];
         let Some(subject) = message.subject.take() else {
             let error = attempt.reject(SeqpacketError::Ancillary("missing SCM_PIDFD"));
@@ -925,15 +1373,58 @@ impl SeqpacketSocket {
     fn receive_retaining_attempt(
         &mut self, maximum: usize, profile: receive_custody::SubjectProfileV1,
     ) -> Result<receive_custody::ReceiveAttemptV1, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_retaining_with_control(maximum, profile, uapi::ReceiveControlProfileV1::Standard)
+    }
+
+    fn receive_retaining_with_control(
+        &mut self,
+        maximum: usize,
+        profile: receive_custody::SubjectProfileV1,
+        control: uapi::ReceiveControlProfileV1,
+    ) -> Result<receive_custody::ReceiveAttemptV1, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_retaining_with_disposition(
+            maximum, profile, control, receive_custody::ReceiveFailureDispositionV4::Existing,
+        )
+    }
+
+    fn receive_retaining_with_disposition(
+        &mut self,
+        maximum: usize,
+        profile: receive_custody::SubjectProfileV1,
+        control: uapi::ReceiveControlProfileV1,
+        disposition: receive_custody::ReceiveFailureDispositionV4,
+    ) -> Result<receive_custody::ReceiveAttemptV1, RetainedSeqpacketReceiveErrorV1> {
         let mut result = (|| {
             if maximum == 0 { return Err(RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::InvalidMaximum)); }
             let fd = self.borrow_fd().map_err(RetainedSeqpacketReceiveErrorV1::before_receive)?;
-            let attempt = receive_custody::ReceiveAttemptV1::capture(fd, self.peer.socket_cookie())?;
+            let attempt = receive_custody::ReceiveAttemptV1::capture_with_control(fd, self.peer.socket_cookie(), control)?;
+            if let Some(original) = &self.zero_rights {
+                if matches!(original.restore, Some(Err(_))) {
+                    return Err(attempt.reject(SeqpacketError::Closed));
+                }
+                if original.restore.is_none() {
+                    if let Err(cause) = uapi::require_seqpacket_zero_rights(fd) {
+                        return Err(attempt.reject(SeqpacketError::from(cause)));
+                    }
+                }
+            }
             receive_custody::receive_packet(attempt, maximum, profile)
         })();
         if let Err(error) = &mut result {
             if !error.is_nonconsuming_would_block() && !error.is_nonconsuming_interrupted() {
-                error.record_shutdown_failure(self.shutdown_retaining_failure());
+                if disposition == receive_custody::ReceiveFailureDispositionV4::RetainUncapturedOriginal
+                    && error.needs_original_capture_v4()
+                {
+                    // Disable this same socket without discarding its only
+                    // owner when the initial duplicate could not be acquired.
+                    if let Some(endpoint) = self.fd.take() {
+                        let shutdown = rustix::net::shutdown(&endpoint, rustix::net::Shutdown::Both)
+                            .map_err(std::io::Error::from);
+                        error.retain_uncaptured_original_v4(endpoint, shutdown);
+                    }
+                } else {
+                    error.record_shutdown_failure(self.shutdown_retaining_failure());
+                }
             }
         }
         result
@@ -941,9 +1432,13 @@ impl SeqpacketSocket {
 
     fn shutdown_retaining_failure(&mut self) -> Option<std::io::Error> {
         let failure = self.fd.as_ref().and_then(|fd|
-            rustix::net::shutdown(fd, rustix::net::Shutdown::Both).err().map(std::io::Error::from));
+            Self::shutdown_owned_descriptor_v1(fd).err());
         self.fd.take();
         failure
+    }
+
+    fn shutdown_owned_descriptor_v1(fd: &OwnedFd) -> std::io::Result<()> {
+        rustix::net::shutdown(fd, rustix::net::Shutdown::Both).map_err(std::io::Error::from)
     }
 
     /// Receives one record carrying either no descriptor or exactly one descriptor.
@@ -995,6 +1490,376 @@ impl SeqpacketSocket {
             allow_empty: true,
         };
         self.receive_descriptor_retaining_profile(maximum_bytes, profile)
+    }
+
+    /// Receives the selected Mount/Network request's zero-or-one descriptor table.
+    ///
+    /// The fixed authenticated80 native engine retains both samples and every
+    /// failed prefix. The authenticated method separately checks the exact
+    /// role sequence; this carrier creates neither admission nor a budget.
+    ///
+    /// # Errors
+    /// Retains native, ancillary, subject and excess-descriptor failures. If
+    /// the first endpoint duplication fails, the error retains the original
+    /// socket and its shutdown result while disabling further socket IO.
+    pub fn receive_fixed_service_request_retaining_v4(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_descriptor_with_disposition(
+            maximum_bytes,
+            receive_custody::SubjectProfileV1::Descriptors { expected: 1, allow_empty: true },
+            uapi::ReceiveControlProfileV1::OrdinaryAuthenticated80,
+            receive_custody::ReceiveFailureDispositionV4::RetainUncapturedOriginal,
+        )
+    }
+
+    /// Prices the same fixed service receiver's actual native backing and FD peak.
+    ///
+    /// The descriptor-bearing result coexists with both retained raw samples.
+    /// Payload bounds do not grant receiving or semantic authority.
+    #[must_use]
+    pub fn fixed_service_request_receive_obligations_v4(maximum_bytes: usize) -> Option<(usize, usize)> {
+        let (bytes, files) = Self::ordinary_authenticated_receive_obligations_v1(maximum_bytes)?;
+        let bytes = bytes.checked_add(std::mem::size_of::<Result<
+            descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1,
+        >>())?;
+        // A successful descriptor-bearing preview retains its one transferred
+        // right beside the consumed sample's hostile raw-control FD peak.
+        Some((bytes, files.checked_add(1)?))
+    }
+
+    /// Compares a parked fixed-service descriptor record with its original carrier.
+    ///
+    /// This borrowed native comparison transfers no record, right or authority.
+    ///
+    /// # Errors
+    /// Refuses a closed socket, changed peer binding or foreign record origin.
+    pub fn require_fixed_service_descriptor_received_original_v4(
+        &self,
+        record: &descriptor_subject::ReceivedDescriptorRecord,
+    ) -> Result<(), RecordBindingError> {
+        self.require_descriptor_record_origin(record)
+    }
+
+    /// Receives the two ordered Capture pipe rights on the existing worker socket.
+    ///
+    /// The native custody engine preserves both samples, kernel subjects and
+    /// hostile descriptor prefixes. This transport result grants no worker or
+    /// pipe-role authority; the actual parent must verify its original worker.
+    ///
+    /// # Errors
+    /// Retains native, ancillary, subject and inexact-table failures. Only a
+    /// proven initial nonconsuming EAGAIN or EINTR permits retrying.
+    pub fn receive_capture_worker_pipes_retaining_v3(
+        &mut self,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_descriptor_with_control(
+            4096,
+            receive_custody::SubjectProfileV1::Descriptors { expected: 2, allow_empty: false },
+            uapi::ReceiveControlProfileV1::WorkerObserver,
+        )
+    }
+
+    /// Bounds both actual samples of the fixed two-rights worker reply.
+    #[must_use]
+    pub fn capture_worker_pipes_obligations_v3() -> Option<(usize, usize)> {
+        let control = uapi::ReceiveControlProfileV1::WorkerObserver;
+        let bytes = Self::requested_receive_bytes(4096, control, 2)
+            .checked_add(std::mem::size_of::<Result<descriptor_subject::ReceivedDescriptorRecord,
+                RetainedSeqpacketReceiveErrorV1>>())?;
+        let files = control.maximum_descriptor_slots().checked_mul(2)?;
+        Some((bytes, files))
+    }
+
+    /// Receives the fixed Agent control/spec/Capture descriptor shapes.
+    ///
+    /// Only zero, one or three descriptors are admitted by this closed sibling
+    /// of the same retained native engine. The authenticated upper frame still
+    /// selects and verifies every descriptor role before any effect.
+    ///
+    /// # Errors
+    /// Retains original native, subject and inexact-table failures. Only the
+    /// existing nonconsuming EAGAIN/EINTR class permits a retry.
+    pub fn receive_agent_authorize_retaining_v2(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_descriptor_with_control(
+            maximum_bytes, receive_custody::SubjectProfileV1::AgentAuthorizeV2,
+            uapi::ReceiveControlProfileV1::AgentAuthorize,
+        )
+    }
+
+    /// Bounds raw installed rights/probe slots for one fixed Agent sample.
+    ///
+    /// A retaining receive can hold two actual samples; the caller adds that
+    /// real coexistence and its own retained output/process owners separately.
+    #[must_use]
+    pub const fn maximum_agent_authorize_descriptor_slots_v2() -> usize {
+        uapi::ReceiveControlProfileV1::AgentAuthorize.maximum_descriptor_slots()
+    }
+
+    /// Supplies the maximum owning roles of a verified Authorize receipt.
+    ///
+    /// The sole native parser permits zero, one or three ordinary rights and
+    /// exactly one independently validated record-subject pidfd. Its raw
+    /// ReceiveAttempt is disposed before returning this successful receipt.
+    /// This passive bound grants no admission, mode or execution permission;
+    /// failed native receives still require their complete raw-slot bound.
+    #[must_use]
+    pub const fn agent_authorize_verified_retained_files_v2() -> usize {
+        3 + 1
+    }
+
+    /// Bounds descriptor slots reached by one fixed-control native receive.
+    ///
+    /// The existing raw control buffer can contain descriptor integers before
+    /// the caller rejects forbidden or malformed ancillary data. Its complete
+    /// byte count bounds every kernel-installed SCM_RIGHTS and SCM_PIDFD slot,
+    /// even before parsing or later disposal. The additional two slots cover
+    /// a retaining receive's duplicate endpoint and one transient proc-stat
+    /// descriptor used by record/peer identity checks. This is conservative
+    /// geometry DATA, not admission, custody, or an OS descriptor limit.
+    ///
+    /// This includes one raw recvmsg sample and its transient probes. Callers
+    /// separately pay their existing endpoint/listener/startup descriptors and
+    /// other samples that they retain concurrently. No future disposal is
+    /// deducted from this peak. The value accepts no caller-selected maximum.
+    #[must_use]
+    pub const fn maximum_receive_descriptor_slots_v1() -> usize {
+        uapi::ReceiveControlProfileV1::Standard.maximum_descriptor_slots()
+    }
+
+    /// Receives the fixed 128-byte, one-FD original service delivery profile.
+    ///
+    /// The raw control interval contains only the space required by credentials,
+    /// one kernel pidfd and one transferred FD. Excess ancillary data follows
+    /// the existing truncation, screening, subject and original-custody checks.
+    /// The caller independently authenticates PID1, packet role and all three
+    /// original files; this method grants no service or receiving authority.
+    ///
+    /// # Errors
+    /// Retains original native, ancillary, subject and exact-table failures.
+    pub fn receive_pid1_service_origin_descriptor_retaining_v1(
+        &mut self,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_descriptor_with_control(
+            128,
+            receive_custody::SubjectProfileV1::Descriptors { expected: 1, allow_empty: false },
+            uapi::ReceiveControlProfileV1::Pid1ServiceOrigin,
+        )
+    }
+
+    /// Returns requested heap/stack obligations and raw FD slots for this profile.
+    ///
+    /// The tuple contains requested source-level bytes and native descriptor
+    /// slots across BOTH retained samples. It includes ancillary/evidence cells,
+    /// bounded descriptor-link samples, and one endpoint/proc probe pair. Actual
+    /// allocator slack, arbitrary error backtraces and kernel objects remain
+    /// under the same independently admitted service hard backstop. The caller
+    /// separately prices its original endpoint, peer and surrounding owners.
+    #[must_use]
+    pub fn pid1_service_origin_receive_obligations_v1() -> (usize, usize) {
+        let control = uapi::ReceiveControlProfileV1::Pid1ServiceOrigin;
+        let requested_bytes = Self::requested_receive_bytes(128, control, 2);
+        let descriptor_slots = 2 * (control.bytes() / std::mem::size_of::<std::os::fd::RawFd>()) + 2;
+        (requested_bytes, descriptor_slots)
+    }
+
+    /// Receives the Controller's versioned prepaid-range launch record.
+    ///
+    /// This uses the same one-right native custody engine as the independent
+    /// service delivery. Only its closed payload width differs. The caller
+    /// must authenticate PID1, the actual range grant and all native originals.
+    ///
+    /// # Errors
+    /// Retains the original native, ancillary, subject and descriptor failures.
+    pub fn receive_pid1_controller_range_descriptor_retaining_v2(
+        &mut self,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_descriptor_with_control(
+            184,
+            receive_custody::SubjectProfileV1::Descriptors { expected: 1, allow_empty: false },
+            uapi::ReceiveControlProfileV1::Pid1ServiceOrigin,
+        )
+    }
+
+    /// Bounds the closed Controller range record's native receiving geometry.
+    ///
+    /// Both native samples and the full hostile ancillary descriptor prefix
+    /// remain priced. This DATA grants no recipient, range or receiving bank.
+    #[must_use]
+    pub fn pid1_controller_range_receive_obligations_v2() -> (usize, usize) {
+        let control = uapi::ReceiveControlProfileV1::Pid1ServiceOrigin;
+        let requested_bytes = Self::requested_receive_bytes(184, control, 2);
+        let descriptor_slots = 2 * (control.bytes() / std::mem::size_of::<std::os::fd::RawFd>()) + 2;
+        (requested_bytes, descriptor_slots)
+    }
+
+    /// Returns fixed strict Storage observer receive obligations as DATA.
+    ///
+    /// This prices the existing standard 512-byte control recipe with payload
+    /// at most 4096 bytes and an exact descriptor-subject table of zero or two
+    /// FDs. It changes no receive limit, parser, native order or admission.
+    /// The tuple contains requested source-level bytes and simultaneous FD
+    /// slots. The surrounding endpoint, peer and observer owners are separate.
+    /// Allocator slack, kernel objects and arbitrary error backtraces remain
+    /// under the independently admitted service hard backstop.
+    #[must_use]
+    pub fn storage_observer_receive_obligations_v1() -> (usize, usize) {
+        let control = uapi::ReceiveControlProfileV1::Standard;
+        // Rust 1.98.1 RawVec grows this non-byte/non-ZST Vec from empty to
+        // at most four cells across its fixed two pushes. Preserve the old
+        // allocation and native failure order rather than preallocating it.
+        let requested_bytes = Self::requested_receive_bytes(4096, control, 4);
+        // A failed preview never reaches consume. A successful strict preview
+        // retains at most its two ordinary FDs and one typed subject pidfd;
+        // the consumed syscall can then install all raw slots before rejection.
+        let descriptor_slots = Self::maximum_receive_descriptor_slots_v1() + 3;
+        (requested_bytes, descriptor_slots)
+    }
+
+    /// Bounds the fixed zero-rights Host response receive as passive DATA.
+    ///
+    /// The same authenticated control recipe admits kernel credentials and the
+    /// record subject pidfd. Unexpected rights/security/unknown control remain
+    /// errors, including their actual raw prefix and possible kernel truncation.
+    /// Payload bounds and receiving payment remain the caller's obligations.
+    /// Returns `None` for a zero payload bound or checked overflow.
+    #[must_use]
+    pub fn host_execution_response_receive_obligations_v1(maximum_bytes: usize) -> Option<(usize, usize)> {
+        Self::ordinary_authenticated_receive_obligations_v1(maximum_bytes)
+    }
+
+    /// Returns requested Storage preparation receive bytes and FD slots as DATA.
+    ///
+    /// The maximum is the caller's existing protocol payload bound. Both native
+    /// samples, two preallocated message cells and the owning result are priced;
+    /// a successful ordinary preview retains one subject pin while the consumed
+    /// sample can install every raw control slot before rejection. Endpoint,
+    /// peer and caller state remain separate obligations. Allocator slack and
+    /// kernel resources remain under the independently admitted hard backstop.
+    /// Returns `None` for a zero bound or arithmetic overflow without I/O.
+    #[must_use]
+    pub fn storage_preparation_receive_obligations_v1(maximum_bytes: usize) -> Option<(usize, usize)> {
+        Self::ordinary_authenticated_receive_obligations_v1(maximum_bytes)
+    }
+
+    /// Receives an Agent reply through the existing authenticated80 engine.
+    ///
+    /// # Errors
+    /// Preserves whole native, subject, forbidden-control and framing failures.
+    pub fn receive_host_agent_response_retaining_v2(
+        &mut self,
+        maximum: usize,
+    ) -> Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_ordinary_retaining_with_control(
+            maximum, uapi::ReceiveControlProfileV1::OrdinaryAuthenticated80,
+        )
+    }
+
+    /// Supplies the same authenticated80 native Agent reply footprint DATA.
+    ///
+    /// Returns `None` for a zero payload bound or checked overflow. The generic
+    /// hostile-control bound remains19FDs; no closed native-mode credit applies.
+    pub fn host_agent_response_receive_obligations_v2(maximum: usize) -> Option<(usize, usize)> {
+        Self::ordinary_authenticated_receive_obligations_v1(maximum)
+    }
+
+    /// Prices the same retained Guest monitor native receive, as passive DATA.
+    ///
+    /// Returns `None` for a zero payload bound or checked arithmetic overflow.
+    #[must_use]
+    pub fn guest_monitor_receive_obligations_v1(maximum: usize) -> Option<(usize, usize)> {
+        Self::ordinary_authenticated_receive_obligations_v1(maximum)
+    }
+
+    /// Returns the same strict local Ownership receive footprint as passive DATA.
+    ///
+    /// Native samples, original error custody and raw FD slots are included;
+    /// the actual endpoint, peer and original payer remain separate obligations.
+    /// Returns `None` for a zero bound or arithmetic overflow without IO.
+    #[must_use]
+    pub fn local_ownership_receive_obligations_v1(maximum_bytes: usize) -> Option<(usize, usize)> {
+        Self::ordinary_authenticated_receive_obligations_v1(maximum_bytes)
+    }
+
+    fn ordinary_authenticated_receive_obligations_v1(maximum_bytes: usize) -> Option<(usize, usize)> {
+        if maximum_bytes == 0 {
+            return None;
+        }
+        let control = uapi::ReceiveControlProfileV1::OrdinaryAuthenticated80;
+        let bytes = Self::requested_receive_bytes(0, control, 2)
+            .checked_add(maximum_bytes)?
+            .checked_add(std::mem::size_of::<Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1>>())?;
+        // Any installed descriptor-bearing native cmsg consumes its own
+        // header. Even wholly hostile rights cannot occupy those header bytes.
+        // Keep the existing two native/endpoint slots and preview subject.
+        let raw_files = control.bytes().checked_sub(std::mem::size_of::<libc::cmsghdr>())?
+            / std::mem::size_of::<std::os::fd::RawFd>();
+        let files = raw_files.checked_add(2)?.checked_add(1)?;
+        Some((bytes, files))
+    }
+
+    // Only fixed closed wrappers select these nonauthorizing layout values.
+    // Actual allocation/error/descriptor carriers remain owned by the shared
+    // receiver; this arithmetic creates no receiving or funding authority.
+    pub(crate) fn requested_receive_metadata_cells_v1(
+        control: uapi::ReceiveControlProfileV1,
+    ) -> Option<usize> {
+        receive_custody::requested_receive_metadata_cells_v1(control)
+    }
+
+    pub(crate) fn requested_receive_bytes(
+        maximum: usize,
+        control: uapi::ReceiveControlProfileV1,
+        sample_cells: usize,
+    ) -> usize {
+        std::mem::size_of::<receive_custody::ReceiveAttemptV1>()
+            + sample_cells * std::mem::size_of::<receive_custody::CapturedMessageV1>()
+            + maximum + 1
+            + 2 * uapi::RawReceiveObservationV1::requested_dynamic_bytes(control)
+            + 4097 + 32 + 2 * 256
+    }
+
+    /// Receives one original FD using the narrow PID1 control geometry.
+    ///
+    /// The payload bound is passive representation DATA. This uses the same
+    /// retained receive engine as the fixed original delivery; the caller must
+    /// independently validate its exact format, original peer and full flight.
+    /// No packet width grants a role, descriptor factory or resource account.
+    ///
+    /// # Errors
+    /// Retains invalid bounds, native, truncation, subject and table failures.
+    pub fn receive_pid1_service_origin_payload_retaining_v1(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<descriptor_subject::ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_descriptor_with_control(
+            maximum_bytes,
+            receive_custody::SubjectProfileV1::Descriptors { expected: 1, allow_empty: false },
+            uapi::ReceiveControlProfileV1::Pid1ServiceOrigin,
+        )
+    }
+
+    /// Returns the narrow receive's requested bytes and descriptor slots.
+    ///
+    /// Only the consumed payload allocation varies with the supplied bound.
+    /// The preview, native samples, probes and complete control interval match
+    /// the existing fixed delivery. Surrounding owners remain separately paid.
+    /// Returns `None` for zero or overflowing payload geometry, without I/O.
+    #[must_use]
+    pub fn pid1_service_origin_payload_receive_obligations_v1(
+        maximum_bytes: usize,
+    ) -> Option<(usize, usize)> {
+        if maximum_bytes == 0 {
+            return None;
+        }
+        let (fixed_bytes, descriptor_slots) = Self::pid1_service_origin_receive_obligations_v1();
+        let requested_bytes = fixed_bytes.checked_sub(129)?
+            .checked_add(maximum_bytes.checked_add(1)?)?;
+        Some((requested_bytes, descriptor_slots))
     }
 
     /// Describes only known storage terms of the retaining optional receive.
@@ -1135,6 +2000,96 @@ impl SeqpacketSocket {
         record: &ReceivedRecord,
     ) -> Result<(), RecordBindingError> {
         self.require_received_original(record)
+    }
+
+    /// Compares a parked Storage preparation record without disposing its socket.
+    ///
+    /// The selected caller owns the complete record and original endpoint and
+    /// must fence both in its failed owner after a refusal. This comparison
+    /// supplies only carrier continuity, never writer or protocol authority.
+    ///
+    /// # Errors
+    /// Returns the existing binding error for a closed, changed, or foreign
+    /// original socket. It does not move, close, or clone either original.
+    pub fn compare_storage_preparation_received_original_v1(
+        &self,
+        record: &ReceivedRecord,
+    ) -> Result<(), RecordBindingError> {
+        self.require_record_origin(record)
+    }
+
+    /// Retains the native cookie result while comparing the same parked record.
+    ///
+    /// # Errors
+    /// Refuses a closed, changed or foreign socket or repeated native slot.
+    /// Neither the actual record nor Socket is moved, closed or cloned.
+    #[doc(hidden)]
+    pub fn compare_storage_preparation_received_original_retaining_v4(
+        &self, record: &ReceivedRecord, native: &mut Option<Result<u64, crate::Error>>,
+    ) -> Result<(), RecordBindingError> {
+        self.require_record_origin_with_originals_v4(record, Some(native))
+    }
+
+    /// Compares a parked fixed-worker record with its actual original socket.
+    ///
+    /// This observes transport continuity only. The Native worker owner must
+    /// independently join the nominated process, held aggregate and payment.
+    /// Neither original is moved or disposed on a refusal.
+    ///
+    /// # Errors
+    /// Returns the existing binding error for a closed, changed or foreign
+    /// socket; the caller retains that error and the whole actual record.
+    pub fn compare_worker_received_original_v1(
+        &self,
+        record: &ReceivedRecord,
+    ) -> Result<(), RecordBindingError> {
+        self.require_record_origin(record)
+    }
+
+    /// Compares a retained Ownership record with this same original endpoint.
+    ///
+    /// This supplies carrier continuity DATA only; the actual paid service
+    /// separately validates its subject, transcript MAC and local authority.
+    ///
+    /// # Errors
+    /// Retains both originals in their caller on a closed or changed binding.
+    pub fn compare_local_ownership_received_original_v1(
+        &self, record: &ReceivedRecord,
+    ) -> Result<(), RecordBindingError> {
+        self.require_record_origin(record)
+    }
+
+    /// Returns common retained acceptance carrier obligations as DATA.
+    ///
+    /// Listener and upper role reservoirs remain separate. The shared peer
+    /// checker formats only bounded kernel inspection messages and opens one
+    /// accepted endpoint plus its same-socket SO_PEERPIDFD.
+    #[must_use]
+    pub const fn retained_accept_obligations_v1() -> (usize, usize) {
+        (std::mem::size_of::<PendingSocketAdmissionV1>()
+            + std::mem::size_of::<Result<Self, RetainedSeqpacketAdmissionErrorV1>>()
+            + 1024, 2)
+    }
+
+    /// Returns retaining connection carrier obligations as passive DATA.
+    ///
+    /// The fresh connect and accepted endpoints use the same pending peer
+    /// custody/kind checker and two descriptor slots. Unix socket addresses
+    /// are fixed inline kernel structures, not a second allocated path model.
+    #[must_use]
+    pub const fn retained_connect_obligations_v1() -> (usize, usize) {
+        Self::retained_accept_obligations_v1()
+    }
+
+    /// Counts fixed pending/peer capture and native constructor namespaces.
+    ///
+    /// This passive census grants no connection or application authority.
+    #[must_use]
+    pub const fn retained_connect_metadata_cells_v1() -> usize {
+        // Pending6, peer4+credentials3+pidfd1+info13+binding1, partial
+        // capture8+credentials3+pidfd1+info13+two bindings, returned error2,
+        // socket/address/option and conversion temporaries8.
+        6 + 4 + 3 + 1 + 5 + 8 + 1 + 8 + 3 + 1 + 5 + 8 + 2 + 2 + 8
     }
 
     /// Compares a parked output-registration record with this original socket.
@@ -1302,12 +2257,18 @@ impl SeqpacketSocket {
     }
 
     fn require_record_origin(&self, record: &ReceivedRecord) -> Result<(), RecordBindingError> {
+        self.require_record_origin_with_originals_v4(record, None)
+    }
+
+    fn require_record_origin_with_originals_v4(&self, record: &ReceivedRecord,
+        native: Option<&mut Option<Result<u64, crate::Error>>>,
+    ) -> Result<(), RecordBindingError> {
         let fd = self
             .fd
             .as_ref()
             .map(AsFd::as_fd)
             .ok_or_else(RecordBindingError::closed)?;
-        self.peer.binding.require_current(fd)?;
+        self.peer.binding.require_current_with_originals_v1(fd, native)?;
         record.origin.require_binding(self.peer.binding)
     }
 
@@ -1519,6 +2480,33 @@ impl GuestAncestorHostChannelV1 {
     /// Only an initial nonconsuming EAGAIN/EINTR can retry. Every other failure
     /// permanently ends this same socket before any retained originals drop.
     pub fn receive_retaining(&mut self, maximum: usize) -> Result<GuestAncestorHostRecordV1, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_with_control(maximum, uapi::ReceiveControlProfileV1::Standard)
+    }
+
+    /// Receives only the fixed startup report's 200-byte private challenge.
+    ///
+    /// The existing ancestor-Host subject reducer is unchanged. Its selected
+    /// native control reservoir covers credentials and one nominated pidfd;
+    /// rights, duplicate/foreign control and truncation remain fatal.
+    ///
+    /// # Errors
+    /// Retains native/subject/packet failures. Only initial nonconsuming
+    /// EAGAIN/EINTR preserves the same original receiver's retry eligibility.
+    pub(crate) fn receive_startup_report_retaining_v1(&mut self)
+        -> Result<GuestAncestorHostRecordV1, RetainedSeqpacketReceiveErrorV1>
+    {
+        self.receive_with_control(200, uapi::ReceiveControlProfileV1::WorkerObserver)
+    }
+
+    pub(crate) fn startup_report_receive_obligations_v1() -> Option<(usize, usize)> {
+        let control = uapi::ReceiveControlProfileV1::WorkerObserver;
+        Some((SeqpacketSocket::requested_receive_bytes(200, control, 2),
+            control.bytes() / std::mem::size_of::<std::os::fd::RawFd>() + 2 + 1))
+    }
+
+    fn receive_with_control(&mut self, maximum: usize, control: uapi::ReceiveControlProfileV1)
+        -> Result<GuestAncestorHostRecordV1, RetainedSeqpacketReceiveErrorV1>
+    {
         if self.closed {
             return Err(RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed));
         }
@@ -1530,7 +2518,7 @@ impl GuestAncestorHostChannelV1 {
             }
             let binding = self.binding.ok_or_else(|| RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed))?;
             let fd = self.fd.as_ref().ok_or_else(|| RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed))?.as_fd();
-            let attempt = receive_custody::ReceiveAttemptV1::capture(fd, binding.socket_cookie())?;
+            let attempt = receive_custody::ReceiveAttemptV1::capture_with_control(fd, binding.socket_cookie(), control)?;
             let profile = receive_custody::SubjectProfileV1::AncestorHost {
                 credentials: self.credentials.ok_or_else(|| RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed))?,
                 pin: self.pin.ok_or_else(|| RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed))?,
@@ -1822,6 +2810,64 @@ pub struct ConnectionPeerIdentity {
     binding: ConnectedSocketBinding,
 }
 
+// Ordinary and retained admission use the same checker/order. The retained
+// Pending owner keeps this destination before SO_PEERPIDFD; a later kind/info
+// or cookie refusal therefore cannot drop an acquired raw or typed process pin.
+#[derive(Default)]
+struct PeerCaptureAttemptV1 {
+    entered: bool,
+    complete: bool,
+    binding: Option<ConnectedSocketBinding>,
+    credentials: Option<PeerCredentials>,
+    raw_pidfd: Option<uapi::RawAncillary>,
+    pidfd: Option<PidFd>,
+    info: Option<PidFdInfo>,
+    after: Option<ConnectedSocketBinding>,
+}
+
+impl PeerCaptureAttemptV1 {
+    fn capture_once(&mut self, fd: BorrowedFd<'_>) -> Result<(), SeqpacketError> {
+        self.capture_observed_v1(fd, false)
+    }
+
+    fn capture_observed_v1(&mut self, fd: BorrowedFd<'_>, retain_raw: bool) -> Result<(), SeqpacketError> {
+        if self.entered { return Err(SeqpacketError::Closed); }
+        self.entered = true;
+        uapi::validate_connected_seqpacket(fd)?;
+        self.binding = Some(ConnectedSocketBinding::capture_peer(fd)?);
+        self.credentials = Some(PeerCredentials::from_raw(uapi::peer_credentials(fd)?)?);
+        if retain_raw {
+            uapi::peer_pidfd_retaining_into_v1(fd, &mut self.raw_pidfd)?;
+        } else {
+            self.raw_pidfd = Some(uapi::RawAncillary::PidFd(uapi::peer_pidfd(fd)?));
+        }
+        self.pidfd = Some(PidFd::adopt_received_slot(&mut self.raw_pidfd)?);
+        self.info = Some(self.pidfd.as_ref().ok_or(SeqpacketError::Closed)?.info()?);
+        self.after = Some(ConnectedSocketBinding::capture_peer(fd)?);
+        if self.info.ok_or(SeqpacketError::Closed)?.pid()
+            != self.credentials.ok_or(SeqpacketError::Closed)?.pid().get()
+        {
+            return Err(SeqpacketError::PeerIdentity("SO_PEERCRED and SO_PEERPIDFD identify different processes"));
+        }
+        if self.after != self.binding {
+            return Err(SeqpacketError::PeerIdentity("SO_COOKIE changed during sequenced-packet peer capture"));
+        }
+        self.complete = true;
+        Ok(())
+    }
+
+    fn take_completed(&mut self) -> Result<ConnectionPeerIdentity, SeqpacketError> {
+        if !self.complete { return Err(SeqpacketError::Closed); }
+        self.complete = false;
+        Ok(ConnectionPeerIdentity {
+            binding: self.binding.take().ok_or(SeqpacketError::Closed)?,
+            credentials: self.credentials.take().ok_or(SeqpacketError::Closed)?,
+            pidfd: self.pidfd.take().ok_or(SeqpacketError::Closed)?,
+            initial_info: self.info.take().ok_or(SeqpacketError::Closed)?,
+        })
+    }
+}
+
 impl ConnectionPeerIdentity {
     /// Pins the establisher of a connected Unix sequenced-packet socket.
     ///
@@ -1837,28 +2883,9 @@ impl ConnectionPeerIdentity {
     /// Rejects a wrong socket type/family, listener or unconnected socket,
     /// unavailable peer pidfd, invalid credentials, or inconsistent pidfd info.
     pub fn from_socket(fd: BorrowedFd<'_>) -> Result<Self, SeqpacketError> {
-        uapi::validate_connected_seqpacket(fd)?;
-        let binding = ConnectedSocketBinding::capture_peer(fd)?;
-        let credentials = PeerCredentials::from_raw(uapi::peer_credentials(fd)?)?;
-        let pidfd = PidFd::from_owned(uapi::peer_pidfd(fd)?)?;
-        let initial_info = pidfd.info()?;
-        let final_binding = ConnectedSocketBinding::capture_peer(fd)?;
-        if initial_info.pid() != credentials.pid().get() {
-            return Err(SeqpacketError::PeerIdentity(
-                "SO_PEERCRED and SO_PEERPIDFD identify different processes",
-            ));
-        }
-        if final_binding != binding {
-            return Err(SeqpacketError::PeerIdentity(
-                "SO_COOKIE changed during sequenced-packet peer capture",
-            ));
-        }
-        Ok(Self {
-            credentials,
-            pidfd,
-            initial_info,
-            binding,
-        })
+        let mut capture = PeerCaptureAttemptV1::default();
+        capture.capture_once(fd)?;
+        capture.take_completed()
     }
 
     /// Returns the peer credentials fixed at connection establishment.
@@ -2701,6 +3728,65 @@ mod tests {
     }
 
     #[test]
+    fn capture_worker_two_rights_preserves_order_and_rejects_an_excess_prefix() {
+        let (mut sender, mut receiver) = pair();
+        receiver.enable_record_subjects().unwrap();
+        let (_, stdout) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+        let (_, stderr) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+        let stdout_identity = rustix::fs::fstat(&stdout).unwrap();
+        let stderr_identity = rustix::fs::fstat(&stderr).unwrap();
+        sender.send_with_descriptors(b"mounted", &[stdout.as_fd(), stderr.as_fd()]).unwrap();
+
+        let record = receiver.receive_capture_worker_pipes_retaining_v3().unwrap();
+
+        assert_eq!(record.payload(), b"mounted");
+        assert_eq!(record.descriptors().len(), 2);
+        for (descriptor, expected) in record.descriptors().iter().zip([stdout_identity, stderr_identity]) {
+            let actual = rustix::fs::fstat(descriptor).unwrap();
+            assert_eq!((actual.st_dev, actual.st_ino), (expected.st_dev, expected.st_ino));
+        }
+
+        let (mut sender, mut receiver) = pair();
+        receiver.enable_record_subjects().unwrap();
+        sender.send_with_descriptors(b"hostile", &[stdout.as_fd(), stderr.as_fd(), stdout.as_fd()]).unwrap();
+
+        let failure = receiver.receive_capture_worker_pipes_retaining_v3().unwrap_err();
+
+        assert!(!failure.is_nonconsuming_would_block());
+        assert!(!failure.is_nonconsuming_interrupted());
+        assert!(std::error::Error::source(&failure).is_some());
+        assert!(receiver.as_fd().is_err());
+    }
+
+    #[test]
+    fn capture_agent_profile_admits_only_zero_one_or_three_rights() {
+        for count in 0..=4 {
+            let (mut sender, mut receiver) = pair();
+            receiver.enable_record_subjects().unwrap();
+            let file = std::fs::File::open("/dev/null").unwrap();
+            if count == 0 {
+                sender.send(b"agent").unwrap();
+            } else {
+                sender.send_with_descriptors(b"agent", &vec![file.as_fd(); count]).unwrap();
+            }
+
+            let result = receiver.receive_agent_authorize_retaining_v2(64);
+            if matches!(count, 0 | 1 | 3) {
+                assert_eq!(result.unwrap().descriptors().len(), count);
+            } else {
+                let failure = result.err().unwrap();
+                assert!(!failure.is_nonconsuming_would_block());
+                assert!(!failure.is_nonconsuming_interrupted());
+                assert!(receiver.as_fd().is_err());
+            }
+        }
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(SeqpacketSocket::maximum_agent_authorize_descriptor_slots_v2(), 24);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(SeqpacketSocket::maximum_agent_authorize_descriptor_slots_v2(), 18);
+    }
+
+    #[test]
     fn optional_descriptor_receive_admits_only_zero_or_one_right() {
         let (mut ordinary_sender, mut ordinary_receiver) = pair();
         ordinary_receiver
@@ -2852,5 +3938,271 @@ mod tests {
                 source,
             })) if source.raw_os_error() == Some(libc::ENOTCONN)
         ));
+    }
+}
+
+#[cfg(test)]
+mod pid1_service_origin_transport_tests {
+    use super::*;
+    use std::os::fd::AsFd as _;
+
+    #[test]
+    fn fixed_service_profile_retains_one_real_transferred_descriptor() {
+        let (mut receiver, sender) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
+        let original = std::fs::File::open("/dev/null").unwrap();
+        sender.send_with_descriptors(&[7; 128], &[original.as_fd()]).unwrap();
+
+        let record = receiver.receive_pid1_service_origin_descriptor_retaining_v1().unwrap();
+
+        assert_eq!(record.payload(), &[7; 128]);
+        assert_eq!(record.descriptors().len(), 1);
+        assert_eq!(record.subject().credentials().pid().get(), std::process::id());
+        let transferred = rustix::fs::fstat(&record.descriptors()[0]).unwrap();
+        let expected = rustix::fs::fstat(&original).unwrap();
+        assert_eq!((transferred.st_dev, transferred.st_ino), (expected.st_dev, expected.st_ino));
+    }
+
+    #[test]
+    fn fixed_service_refuses_excess_rights_while_ordinary_profile_keeps_its_width() {
+        let original = std::fs::File::open("/dev/null").unwrap();
+        let descriptors = [original.as_fd(), original.as_fd(), original.as_fd()];
+        let (mut fixed, sender) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
+        sender.send_with_descriptors(&[9; 128], &descriptors).unwrap();
+
+        let rejected = fixed.receive_pid1_service_origin_descriptor_retaining_v1();
+
+        assert!(rejected.is_err());
+        assert!(fixed.as_fd().is_err());
+
+        let (mut ordinary, sender) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
+        sender.send_with_descriptors(&[9; 128], &descriptors).unwrap();
+
+        let accepted = ordinary.receive_with_descriptors_retaining(128, 3).unwrap();
+
+        assert_eq!(accepted.descriptors().len(), 3);
+        assert_eq!(accepted.payload(), &[9; 128]);
+    }
+}
+
+#[cfg(test)]
+mod storage_preparation_transport_tests {
+    use super::*;
+    use std::os::fd::AsFd as _;
+
+    #[test]
+    fn preparation_profile_retains_real_ordinary_subject_and_payload() {
+        let (mut receiver, sender) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
+        sender.send(b"HELLO:bounded").unwrap();
+
+        let record = receiver.receive_storage_preparation_retaining_v1(4096).unwrap();
+
+        assert_eq!(record.payload(), b"HELLO:bounded");
+        assert_eq!(record.subject().credentials().pid().get(), std::process::id());
+    }
+
+    #[test]
+    fn preparation_profile_rejects_rights_with_original_failure_custody() {
+        let (mut receiver, sender) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
+        let original = std::fs::File::open("/dev/null").unwrap();
+        sender.send_with_descriptors(b"Prepare", &[original.as_fd()]).unwrap();
+
+        let error = receiver.receive_storage_preparation_retaining_v1(4096).unwrap_err();
+
+        assert!(!error.is_nonconsuming_would_block());
+        assert!(!error.is_nonconsuming_interrupted());
+        assert!(receiver.as_fd().is_err());
+        assert!(matches!(std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<SeqpacketError>()),
+            Some(SeqpacketError::Ancillary("SCM_RIGHTS is forbidden"))));
+    }
+
+    #[test]
+    fn preparation_excess_control_fences_only_selected_receiver() {
+        let original = std::fs::File::open("/dev/null").unwrap();
+        let rights = [original.as_fd(), original.as_fd(), original.as_fd()];
+        let (mut selected, sender) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
+        sender.send_with_descriptors(b"Prepare", &rights).unwrap();
+
+        let rejected = selected.receive_storage_preparation_retaining_v1(4096);
+
+        assert!(rejected.is_err());
+        assert!(selected.as_fd().is_err());
+
+        let (mut standard, sender) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
+        sender.send_with_descriptors(b"unchanged", &rights).unwrap();
+
+        let record = standard.receive_with_descriptors_retaining(4096, 3).unwrap();
+
+        assert_eq!(record.descriptors().len(), 3);
+        assert_eq!(record.payload(), b"unchanged");
+    }
+}
+
+#[cfg(test)]
+mod host_execution_response_control_tests {
+    use super::*;
+    use std::os::fd::AsFd as _;
+
+    #[test]
+    fn legitimate_host_response_keeps_the_same_kernel_subject() {
+        let (mut receiver, sender) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
+        sender.send(b"Host:authenticated-response").unwrap();
+
+        let response = receiver.receive_host_execution_response_retaining_v1(4096).unwrap();
+
+        assert_eq!(response.payload(), b"Host:authenticated-response");
+        assert_eq!(response.subject().credentials().pid().get(), std::process::id());
+        assert!(response.subject().is_alive().unwrap());
+        let (_, files) = SeqpacketSocket::host_execution_response_receive_obligations_v1(4096).unwrap();
+        assert!(files < SeqpacketSocket::maximum_receive_descriptor_slots_v1());
+    }
+
+    #[test]
+    fn excess_host_rights_keep_the_original_truncation_and_fence() {
+        let (mut receiver, sender) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
+        let original = std::fs::File::open("/dev/null").unwrap();
+        let rights = [original.as_fd(); 32];
+        // The production sender correctly refuses more than five rights.
+        // This existing raw fixture reaches the hostile recvmsg/CTRUNC prefix.
+        crate::uapi::send_seqpacket_rights(sender.as_fd().unwrap(), b"Host:forbidden-rights", &rights).unwrap();
+
+        let error = receiver.receive_host_execution_response_retaining_v1(4096).unwrap_err();
+
+        assert!(receiver.as_fd().is_err());
+        assert!(!error.is_nonconsuming_would_block());
+        assert!(!error.is_nonconsuming_interrupted());
+        assert!(matches!(std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<SeqpacketError>()),
+            Some(SeqpacketError::ControlTruncated)));
+        // The owning error stays resident until this actual negative test ends.
+        assert!(std::error::Error::source(&error).is_some());
+    }
+}
+
+
+#[cfg(test)]
+mod storage_worker_inherited_admission_tests {
+    use super::*;
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+
+    #[test]
+    fn rejected_worker_input_keeps_the_same_native_descriptor_and_cause() {
+        let descriptor = rustix::fs::open(
+            "/dev/null",
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        ).unwrap();
+        let number = descriptor.as_raw_fd();
+        let before = rustix::fs::fstat(&descriptor).unwrap();
+
+        let failure = SeqpacketSocket::from_owned_storage_worker_retaining_v3(descriptor)
+            .unwrap_err();
+
+        assert!(failure.retains_descriptor());
+        assert!(failure.shutdown_attempted());
+        let original = failure.attempt.as_ref().unwrap().fd.as_ref().unwrap();
+        assert_eq!(original.as_raw_fd(), number);
+        let after = rustix::fs::fstat(original.as_fd()).unwrap();
+        assert_eq!((after.st_dev, after.st_ino), (before.st_dev, before.st_ino));
+        // The later shutdown refusal has independent custody and cannot
+        // replace the actual earlier socket-admission cause.
+        assert!(failure.shutdown_failure().is_some());
+        assert!(matches!(failure.cause(), SeqpacketError::Kernel(_)));
+    }
+}
+
+#[cfg(test)]
+mod network_activation_gate_tests {
+    use super::*;
+    use descriptor_subject::{DescriptorSubjectSocket, NetworkWorkerConnectionKindV4};
+
+    #[test]
+    fn refused_final_gate_keeps_original_socket_and_never_connects_the_listener() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("network-activation.sock");
+        let listener = RecordSubjectListener::bind(&path, 4).unwrap();
+        let mut attempts = 0;
+        let (native, gate_failure) = connect_pending_worker_guarded_v4(&path, &mut || {
+            attempts += 1;
+            Err(17_u32)
+        });
+        let failure = native.err().unwrap();
+
+        assert_eq!(attempts, 1);
+        assert_eq!(gate_failure, Some(17));
+        assert!(failure.retains_descriptor());
+        assert!(failure.shutdown_attempted());
+        assert!(matches!(
+            rustix::net::accept(listener.as_fd()),
+            Err(rustix::io::Errno::AGAIN)
+        ));
+        let original = failure.attempt.as_ref().unwrap().fd.as_ref().unwrap();
+        assert!(rustix::fs::fstat(original).is_ok());
+        assert!(
+            rustix::fs::fcntl_getfl(original)
+                .unwrap()
+                .contains(rustix::fs::OFlags::NONBLOCK)
+        );
+    }
+
+    #[test]
+    fn positive_final_gate_connects_once_through_the_same_raw_peer_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("network-activation.sock");
+        let mut listener = RecordSubjectListener::bind(&path, 4).unwrap();
+        let mut attempts = 0;
+        let (pending, gate_failure) = connect_pending_worker_guarded_v4(&path, &mut || {
+            attempts += 1;
+            Ok::<_, u32>(())
+        });
+        let client =
+            DescriptorSubjectSocket::from_pending_retaining_raw_v2(pending.unwrap()).unwrap();
+        let server = listener.accept_storage_root_export_retaining_v2().unwrap();
+
+        assert_eq!(attempts, 1);
+        assert_eq!(gate_failure, None);
+        assert_eq!(client.peer().credentials().pid().get(), std::process::id());
+        assert_eq!(server.peer().credentials().pid().get(), std::process::id());
+        assert!(client.peer().is_alive().unwrap());
+    }
+
+    #[test]
+    fn connection_recipe_is_fixed_and_precreation_refusal_does_not_consume_a_gate() {
+        assert_eq!(
+            NetworkWorkerConnectionKindV4::Preparation.path_v4(),
+            Path::new("/run/aos/sandbox-network-worker/control.sock")
+        );
+        assert_eq!(
+            NetworkWorkerConnectionKindV4::Observation.path_v4(),
+            Path::new("/run/aos/sandbox-network-observation-worker/control.sock")
+        );
+        let mut attempts = 0;
+        let too_long = Path::new(
+            "/aos/network/activation/filename/that/is/intentionally/longer/than/the/native/unix/domain/socket/path/operand/ceiling/to/refuse",
+        );
+        let (native, refused) = connect_pending_worker_guarded_v4(too_long, &mut || {
+            attempts += 1;
+            Ok::<_, u32>(())
+        });
+        let failure = native.err().unwrap();
+
+        assert_eq!(attempts, 0);
+        assert_eq!(refused, None);
+        assert!(!failure.retains_descriptor());
+        assert_eq!(
+            DescriptorSubjectSocket::network_worker_admission_obligations_v4::<u32>()
+                .unwrap()
+                .1,
+            2
+        );
     }
 }

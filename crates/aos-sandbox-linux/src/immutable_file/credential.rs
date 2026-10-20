@@ -17,6 +17,14 @@ use rustix::fs::{
 };
 use zeroize::Zeroizing;
 
+mod retained;
+
+pub use retained::{
+    SealedReadOnlyCredentialCreateClosedV1, SealedReadOnlyCredentialCreateFootprintV1,
+    SealedReadOnlyCredentialCreateOriginalsV1,
+};
+use retained::{CreateDestinationsV1, CreationSlotV1};
+
 use super::ImmutableFileError;
 use crate::Error;
 
@@ -37,6 +45,13 @@ pub struct SealedReadOnlyCredential {
 }
 
 impl SealedReadOnlyCredential {
+    /// Moves the same descriptor into an existing owning transfer API.
+    ///
+    /// This performs no duplication, native IO, validation or authority grant.
+    /// It preserves the descriptor's read-only mode, seals and exact content.
+    #[must_use]
+    pub fn into_owned_fd_v2(self) -> OwnedFd { self.descriptor }
+
     /// Creates, seals, reopens, and reads back one bounded credential.
     ///
     /// # Errors
@@ -67,14 +82,26 @@ impl SealedReadOnlyCredential {
         maximum_bytes: usize,
         context: Option<&str>,
     ) -> Result<Self, ImmutableFileError> {
+        Self::create_labelled_engine(name, bytes, maximum_bytes, context, None)
+    }
+
+    fn create_labelled_engine(
+        name: &str,
+        bytes: &[u8],
+        maximum_bytes: usize,
+        context: Option<&str>,
+        original: Option<&mut SealedReadOnlyCredentialCreateOriginalsV1>,
+    ) -> Result<Self, ImmutableFileError> {
+        let mut destinations = CreateDestinationsV1::new(original);
         if bytes.is_empty() || bytes.len() > maximum_bytes {
             return Err(ImmutableFileError::MappingLimitExceeded);
         }
 
         let publisher = memfd_create(name, MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING)
             .map_err(|error| linux("memfd_create", error))?;
-        let mut writer = File::from(publisher);
+        let mut writer = CreationSlotV1::new(File::from(publisher), destinations.writer);
         writer
+            .get_mut()
             .write_all(bytes)
             .map_err(|error| std_io("write sealed credential", error))?;
         if let Some(context) = context {
@@ -95,8 +122,12 @@ impl SealedReadOnlyCredential {
         let publisher_metadata = fstat(&writer).map_err(|error| linux("fstat", error))?;
         let reader = OpenOptions::new()
             .read(true)
-            .open(format!("/proc/self/fd/{}", writer.as_raw_fd()))
+            .open(CreationSlotV1::new(
+                format!("/proc/self/fd/{}", writer.as_raw_fd()),
+                destinations.proc_alias,
+            ))
             .map_err(|error| std_io("reopen sealed credential read-only", error))?;
+        let reader = CreationSlotV1::new(reader, destinations.reader);
         let reader_metadata = fstat(&reader).map_err(|error| linux("fstat", error))?;
         if publisher_metadata.st_dev != reader_metadata.st_dev
             || publisher_metadata.st_ino != reader_metadata.st_ino
@@ -109,14 +140,31 @@ impl SealedReadOnlyCredential {
             u64::try_from(bytes.len()).map_err(|_| ImmutableFileError::MappingLimitExceeded)?;
         let maximum_bytes =
             u64::try_from(maximum_bytes).map_err(|_| ImmutableFileError::MappingLimitExceeded)?;
-        let credential = Self::from_owned(reader.into(), expected_bytes, maximum_bytes)?;
-        let mut observed = Zeroizing::new(vec![0; bytes.len()]);
-        read_exact_at(credential.descriptor.as_fd(), &mut observed)?;
-        if observed.as_slice() != bytes {
+        let credential = Self::from_owned_engine(
+            reader.take().into(),
+            expected_bytes,
+            maximum_bytes,
+            destinations.credential.as_deref_mut(),
+            destinations.native_validation_error.as_deref_mut(),
+        )?;
+        let credential = CreationSlotV1::new(credential, destinations.credential);
+        let mut observed = CreationSlotV1::new(
+            Zeroizing::new(vec![0; bytes.len()]),
+            destinations.observed,
+        );
+        match destinations.duplicate {
+            Some(destination) => read_exact_at_engine(
+                credential.get().descriptor.as_fd(),
+                observed.get_mut(),
+                Some(destination),
+            ),
+            None => read_exact_at(credential.get().descriptor.as_fd(), observed.get_mut()),
+        }?;
+        if observed.get().as_slice() != bytes {
             return Err(ImmutableFileError::AdmissionRace);
         }
-        credential.revalidate()?;
-        Ok(credential)
+        credential.get().revalidate_engine(destinations.native_validation_error)?;
+        Ok(credential.take())
     }
 
     /// Adopts an already opened, fully sealed read-only memfd.
@@ -132,15 +180,33 @@ impl SealedReadOnlyCredential {
         expected_bytes: u64,
         maximum_bytes: u64,
     ) -> Result<Self, ImmutableFileError> {
+        Self::from_owned_engine(descriptor, expected_bytes, maximum_bytes, None, None)
+    }
+
+    fn from_owned_engine(
+        descriptor: OwnedFd,
+        expected_bytes: u64,
+        maximum_bytes: u64,
+        destination: Option<&mut Option<Self>>,
+        native_validation_error: Option<&mut Option<ImmutableFileError>>,
+    ) -> Result<Self, ImmutableFileError> {
         if expected_bytes == 0 || expected_bytes > maximum_bytes {
+            if let Some(destination) = destination {
+                // An invalid candidate stays private; only a completed creation
+                // can lend or transfer a credential from its retained owner.
+                if destination.is_some() {
+                    std::process::abort();
+                }
+                *destination = Some(Self { descriptor, bytes: expected_bytes });
+            }
             return Err(ImmutableFileError::MappingLimitExceeded);
         }
-        let credential = Self {
+        let credential = CreationSlotV1::new(Self {
             descriptor,
             bytes: expected_bytes,
-        };
-        credential.revalidate()?;
-        Ok(credential)
+        }, destination);
+        credential.get().revalidate_engine(native_validation_error)?;
+        Ok(credential.take())
     }
 
     /// Borrows the sealed read-only descriptor for a bounded transfer.
@@ -172,6 +238,13 @@ impl SealedReadOnlyCredential {
     /// fail, or the file's type, owner, anonymity, access mode, exact length, or
     /// complete seal set no longer meets the original admission contract.
     pub fn revalidate(&self) -> Result<(), ImmutableFileError> {
+        self.revalidate_engine(None)
+    }
+
+    fn revalidate_engine(
+        &self,
+        native_validation_error: Option<&mut Option<ImmutableFileError>>,
+    ) -> Result<(), ImmutableFileError> {
         let metadata = fstat(&self.descriptor).map_err(|error| linux("fstat", error))?;
         if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile {
             return Err(ImmutableFileError::NotRegular);
@@ -193,8 +266,16 @@ impl SealedReadOnlyCredential {
         if observed_bytes != self.bytes {
             return Err(ImmutableFileError::SizeMismatch);
         }
-        let seals =
-            fcntl_get_seals(&self.descriptor).map_err(|_| ImmutableFileError::MissingSeals)?;
+        let seals = fcntl_get_seals(&self.descriptor).map_err(|cause| {
+            // Ordinary admission preserves MissingSeals. A retained creation
+            // additionally keeps the actual syscall cause beside that class.
+            if let Some(destination) = native_validation_error {
+                if destination.is_none() {
+                    *destination = Some(linux("fcntl(F_GET_SEALS)", cause));
+                }
+            }
+            ImmutableFileError::MissingSeals
+        })?;
         if !seals.contains(REQUIRED_SEALS) {
             return Err(ImmutableFileError::MissingSeals);
         }
@@ -203,14 +284,23 @@ impl SealedReadOnlyCredential {
 }
 
 fn read_exact_at(descriptor: BorrowedFd<'_>, output: &mut [u8]) -> Result<(), ImmutableFileError> {
-    let file = File::from(
+    read_exact_at_engine(descriptor, output, None)
+}
+
+fn read_exact_at_engine(
+    descriptor: BorrowedFd<'_>,
+    output: &mut [u8],
+    destination: Option<&mut Option<File>>,
+) -> Result<(), ImmutableFileError> {
+    let file = CreationSlotV1::new(File::from(
         descriptor
             .try_clone_to_owned()
             .map_err(|error| std_io("duplicate sealed credential", error))?,
-    );
+    ), destination);
     let mut offset = 0;
     while offset < output.len() {
         let read = file
+            .get()
             .read_at(&mut output[offset..], offset as u64)
             .map_err(|error| std_io("read sealed credential", error))?;
         if read == 0 {

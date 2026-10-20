@@ -9,6 +9,9 @@
 //!          || authorization-receipt:40 || record-digest:32
 //! ```
 
+/// Holds complete signed first-Observe historical completion DATA.
+pub mod completion;
+
 use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId};
 use sha2::{Digest as _, Sha256};
@@ -34,6 +37,20 @@ pub enum ObserveReservationCodecErrorV1 {
     /// The record framing, checksum, identity, or journal key is inconsistent.
     CorruptRecord,
 }
+
+impl std::fmt::Display for ObserveReservationCodecErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::ReceiptLength => "execution Observe authorization receipt has an invalid length",
+            Self::InvalidBinding => "execution Observe authorization binding is invalid",
+            Self::InvalidOperation => "execution Observe operation cannot be represented",
+            Self::NotDistinct => "execution Observe operation is not distinct from Create",
+            Self::CorruptRecord => "execution Observe reservation record is corrupt",
+        })
+    }
+}
+
+impl std::error::Error for ObserveReservationCodecErrorV1 {}
 
 /// Binds one derived Observe ID to exact retained Create and Host evidence.
 ///
@@ -130,6 +147,12 @@ impl ControllerExecutionObserveReservationV1 {
     #[must_use]
     pub const fn source_operation_commitment(&self) -> [u8; 32] {
         self.source_operation_commitment
+    }
+
+    /// Borrows the exact original authenticated Authorize receipt commitment.
+    #[must_use]
+    pub const fn authorization_receipt(&self) -> &[u8; RECEIPT_BYTES] {
+        &self.authorization_receipt
     }
 
     /// Encodes the checksummed versioned reservation record.

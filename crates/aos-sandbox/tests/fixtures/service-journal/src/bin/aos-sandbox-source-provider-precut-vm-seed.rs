@@ -10,11 +10,14 @@ use std::fmt::Write as _;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aos_sandbox::{
-    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
-    GlobalCapacityReservationRequestV1, Journal, JournalLimits, JournalRecord, JournalTransaction,
-    RecordNamespace,
-};
+use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationPurposeV1;
+use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationRecoveryBindingV1;
+use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationRequestV1;
+use aos_sandbox_source::provider_journal::SourceProviderJournalV1 as Journal;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalLimits;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalRecord;
+use aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction;
+use aos_sandbox_core::RecordNamespace;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::identity::{
     acquire_effect_id_v1, acquire_native_no_dispatch_id_v1,
@@ -105,7 +108,7 @@ fn run() -> Result<()> {
         .collect();
     journal_records.push(prepared.record().clone());
     let transaction = JournalTransaction::new(transaction_id, journal_records)
-        .map_err(aos_sandbox::JournalError::from)?;
+        .map_err(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::from)?;
     let preflight = authority.preflight_global_capacity_reservation_v1(&prepared, &transaction)?;
     let (_, reserved_capacity) =
         authority.commit_global_capacity_reservation_v1(&preflight, prepared, &transaction)?;

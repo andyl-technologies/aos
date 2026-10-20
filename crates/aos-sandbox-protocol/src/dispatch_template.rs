@@ -118,16 +118,7 @@ impl BrokerDispatchTemplateV1 {
         validate_method_semantics(method, semantics.verb())?;
         validate_descriptor_roles(&descriptor_roles)?;
 
-        let maximum_body = body_without_deadline
-            .len()
-            .checked_add(MAXIMUM_DEADLINE_FIELD_BYTES)
-            .ok_or(BrokerDispatchTemplateError::BodyTooLarge)?;
-        if maximum_body > MAXIMUM_REQUEST_BYTES {
-            return Err(BrokerDispatchTemplateError::BodyTooLarge);
-        }
-        locate_deadline_free_header(&body_without_deadline)?;
-        let request_bytes =
-            u32::try_from(maximum_body).map_err(|_| BrokerDispatchTemplateError::BodyTooLarge)?;
+        let request_bytes = deadline_free_template_request_bytes_v1(&body_without_deadline)?;
         let descriptor_count = u16::try_from(descriptor_roles.len())
             .map_err(|_| BrokerDispatchTemplateError::DescriptorTable)?;
         match_plan_grant(
@@ -221,6 +212,7 @@ fn validate_method(
             method,
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY
                 | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+                | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1
                 | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
                 | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
         ),
@@ -229,7 +221,11 @@ fn validate_method(
             BrokerMethod::BROKER_METHOD_STORAGE_APPLY
                 | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
         ),
-        ProtocolId::NetworkBroker => method == BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
+        ProtocolId::NetworkBroker => matches!(
+            method,
+            BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+                | BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2
+        ),
         _ => return Err(BrokerDispatchTemplateError::MethodMismatch),
     };
     if !method_matches_protocol
@@ -252,6 +248,12 @@ fn validate_method_semantics(
         BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => {
             verb == BrokerVerb::MountReleaseSourceAcquisition
         }
+        BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2 => verb == BrokerVerb::NetworkPrepare,
+        BrokerMethod::BROKER_METHOD_NETWORK_APPLY => matches!(
+            verb,
+            BrokerVerb::NetworkArmLease | BrokerVerb::NetworkRenewLease
+                | BrokerVerb::NetworkDisarm | BrokerVerb::NetworkDestroy
+        ),
         _ => true,
     };
     if semantics_match {
@@ -408,16 +410,34 @@ fn locate_deadline_free_header(body: &[u8]) -> Result<(usize, usize), BrokerDisp
     Ok((start, end))
 }
 
+/// Returns the existing template contract's complete request-byte ceiling.
+///
+/// This shares the exact deadline-free framing and eleven-byte deadline-field
+/// allowance used by dispatch templates. It supplies comparison DATA only;
+/// method semantics, currentness and a signed matching grant remain separate.
+///
+/// # Errors
+/// Rejects malformed deadline-free framing, checked length overflow, or a
+/// request above the protocol ceiling, preserving the template check order.
+pub fn deadline_free_template_request_bytes_v1(
+    body: &[u8],
+) -> Result<u32, BrokerDispatchTemplateError> {
+    let maximum_body = body.len().checked_add(MAXIMUM_DEADLINE_FIELD_BYTES)
+        .ok_or(BrokerDispatchTemplateError::BodyTooLarge)?;
+    if maximum_body > MAXIMUM_REQUEST_BYTES {
+        return Err(BrokerDispatchTemplateError::BodyTooLarge);
+    }
+    locate_deadline_free_header(body)?;
+    u32::try_from(maximum_body).map_err(|_| BrokerDispatchTemplateError::BodyTooLarge)
+}
+
 /// Checks deadline-free protobuf framing and room for the maximum deadline field.
 ///
 /// The check requires one first common header without a deadline, valid remaining
 /// wire fields and the fixed request-byte ceiling. It does not derive method
 /// semantics or authenticate the request.
 pub fn validate_durable_deadline_free_body(body: &[u8]) -> bool {
-    body.len()
-        .checked_add(MAXIMUM_DEADLINE_FIELD_BYTES)
-        .is_some_and(|size| size <= MAXIMUM_REQUEST_BYTES)
-        && locate_deadline_free_header(body).is_ok()
+    deadline_free_template_request_bytes_v1(body).is_ok()
 }
 
 /// Checks exact equality with the supplied deadline's injected attempt bytes.
@@ -906,12 +926,30 @@ mod tests {
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT,
             BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
-            BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
         ] {
             assert_eq!(
                 validate_method_semantics(method, BrokerVerb::MountCreate),
                 Ok(())
             );
+        }
+    }
+
+    #[test]
+    fn network_prepare_cannot_use_the_descriptor_free_lifecycle_method() {
+        assert_eq!(validate_method_semantics(
+            BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2, BrokerVerb::NetworkPrepare), Ok(()));
+        assert_eq!(validate_method_semantics(
+            BrokerMethod::BROKER_METHOD_NETWORK_APPLY, BrokerVerb::NetworkPrepare),
+            Err(BrokerDispatchTemplateError::PlanGrantMismatch));
+
+        for verb in [BrokerVerb::NetworkArmLease, BrokerVerb::NetworkRenewLease,
+            BrokerVerb::NetworkDisarm, BrokerVerb::NetworkDestroy]
+        {
+            assert_eq!(validate_method_semantics(
+                BrokerMethod::BROKER_METHOD_NETWORK_APPLY, verb), Ok(()));
+            assert_eq!(validate_method_semantics(
+                BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2, verb),
+                Err(BrokerDispatchTemplateError::PlanGrantMismatch));
         }
     }
     #[test]
@@ -978,5 +1016,33 @@ mod tests {
             ),
             Err(BrokerDispatchTemplateError::BodyTooLarge)
         );
+    }
+}
+
+#[cfg(test)]
+mod template_request_bound_tests {
+    use super::*;
+
+    #[test]
+    fn a_short_actual_deadline_still_requires_the_same_full_template_allowance() {
+        let body = [0x0a, 0x02, 0x08, 0x01, 0x12, 0x02, 0xaa, 0xbb];
+        let actual = inject_deadline(&body, 1).unwrap();
+        let maximum = deadline_free_template_request_bytes_v1(&body).unwrap();
+
+        assert_eq!(maximum as usize, body.len() + MAXIMUM_DEADLINE_FIELD_BYTES);
+        assert!(actual.len() < maximum as usize);
+        assert!(validate_durable_deadline_free_body(&body));
+        assert!(!validate_durable_deadline_free_body(&actual));
+    }
+
+    #[test]
+    fn malformed_framing_and_protocol_ceiling_remain_closed() {
+        assert!(matches!(deadline_free_template_request_bytes_v1(&[0x0a, 4, 0x08]),
+            Err(BrokerDispatchTemplateError::InvalidBody)));
+        let oversized = vec![0; MAXIMUM_REQUEST_BYTES];
+
+        assert!(matches!(deadline_free_template_request_bytes_v1(&oversized),
+            Err(BrokerDispatchTemplateError::BodyTooLarge)));
+        assert!(!validate_durable_deadline_free_body(&oversized));
     }
 }

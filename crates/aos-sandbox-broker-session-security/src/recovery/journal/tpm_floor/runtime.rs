@@ -8,7 +8,17 @@
 //! any retained execution-output (46/47/48) history. Public method 46 remains
 //! closed pending installed physical TPM/use-boundary qualification.
 
+mod legacy_cold;
+
+mod presence;
+pub(crate) use presence::{ModePresenceOriginalV1, mode_presence_receiving_demand_v1};
+
+mod initial;
+pub(in crate::recovery::journal) use initial::InitialFloorConfigurationOriginalV1;
+
 use std::path::Path;
+
+use legacy_cold::LegacyColdIntervalV1;
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::{JournalTransaction, RecordNamespace};
@@ -37,9 +47,13 @@ pub(in crate::recovery::journal) struct BrokerFloorV1 {
 
 enum FloorStateV1 {
     NotScoped,
+    ClientColdNotScoped {
+        cold: LegacyColdIntervalV1,
+    },
     Unavailable,
     Legacy {
         mode: ModePinV1,
+        cold: LegacyColdIntervalV1,
     },
     Required {
         mode: ModePinV1,
@@ -57,6 +71,88 @@ enum FloorStateV1 {
 }
 
 impl BrokerFloorV1 {
+    pub(in crate::recovery::journal) fn reserve_storage_availability_receiving_v3(&self,
+        owner: &ProtectedBrokerSessionJournalV1,
+        receiving: &mut dyn super::storage_receiving::StorageFloorFinancialSourceV2,
+        complete: aos_sandbox_core::ResourceVector,
+    ) -> Result<(), FloorErrorV1> {
+        let FloorStateV1::Required { provision, attached, .. } = &self.state else {
+            return Err(FloorErrorV1::Unavailable);
+        };
+        if provision.profile().endpoint() != FloorEndpointV1::StorageBroker {
+            return Err(FloorErrorV1::Provisioning);
+        }
+        attached.reserve_storage_availability_receiving_v3(owner, receiving, complete)
+    }
+
+    pub(in crate::recovery::journal) fn observe_storage_availability_receiving_v3(&mut self,
+        owner: &mut ProtectedBrokerSessionJournalV1,
+        receiving: &mut dyn super::storage_receiving::StorageFloorFinancialSourceV2,
+    ) -> Result<(super::FloorProfileV1, super::FloorCheckpointV1), FloorErrorV1> {
+        if matches!(&self.state, FloorStateV1::Required { attached, .. } if attached.has_controller_owed_v1()) {
+            // The failed primary still owes its already-paid mode/provision,
+            // main, sidecar and physical observations. Reuse that exact shared
+            // continuation before refusing a new availability observation.
+            self.check_with_storage_receiving_v2(owner, Some(receiving))?;
+            return Err(FloorErrorV1::Unavailable);
+        }
+        let FloorStateV1::Required { mode, provision, attached, .. } = &mut self.state else {
+            return Err(FloorErrorV1::Unavailable);
+        };
+        let profile = provision.profile();
+        if profile.endpoint() != FloorEndpointV1::StorageBroker {
+            return Err(FloorErrorV1::Provisioning);
+        }
+        let operation = attached.begin(BrokerAttachmentPhaseV1::Ready)?;
+        let result = (|| {
+            mode.revalidate()?;
+            provision.revalidate()?;
+            let checkpoint = operation.attempt.current_checkpoint_with_storage_receiving_v3(
+                owner, profile, Some(receiving))?;
+            provision.revalidate()?;
+            mode.revalidate()?;
+            match checkpoint {
+                crate::tpm_nv_custody::FloorCheckpointDataV1::Broker(checkpoint) => Ok((profile, checkpoint)),
+                _ => Err(FloorErrorV1::Provisioning),
+            }
+        })();
+        operation.finish(result)
+    }
+
+    pub(in crate::recovery::journal) fn install_initial_broker_currentness_archive_v2(
+        &mut self,
+        archive: crate::recovery::journal::floor_revalidation::FloorCurrentnessSharedV1,
+    ) -> Result<(), FloorErrorV1> {
+        match &mut self.state {
+            FloorStateV1::Required { mode, provision, attached, .. } => {
+                // The same B/main association and shape debit precede this
+                // private call. No sidecar or physical owner exists yet; its
+                // actual later capture inherits the SAME archive from main.
+                if !attached.is_fresh_for_controller_v1() { return Err(FloorErrorV1::Unavailable); }
+                mode.install_currentness_archive_v1(&archive)?;
+                provision.install_currentness_archive_v1(&archive)
+            }
+            _ => self.install_currentness_archive_v1(archive),
+        }
+    }
+
+    pub(in crate::recovery::journal) fn install_currentness_archive_v1(
+        &mut self,
+        archive: crate::recovery::journal::floor_revalidation::FloorCurrentnessSharedV1,
+    ) -> Result<(), FloorErrorV1> {
+        match &mut self.state {
+            FloorStateV1::Legacy { mode, .. } => mode.install_currentness_archive_v1(&archive),
+            FloorStateV1::Required { mode, provision, attached, .. } => {
+                mode.install_currentness_archive_v1(&archive)?;
+                provision.install_currentness_archive_v1(&archive)?;
+                attached.install_currentness_archive_v1(archive)
+            }
+            // Arming is only for the already-held fixed Storage owner; it
+            // cannot provision a physical floor or select an online profile.
+            _ => Err(FloorErrorV1::Unavailable),
+        }
+    }
+
     #[cfg(feature = "online-nix")]
     pub(in crate::recovery::journal) fn online(provision: crate::nix_service::floor::OnlineProvisionV1) -> Self {
         Self { state: FloorStateV1::Online {
@@ -102,11 +198,58 @@ impl BrokerFloorV1 {
         Ok(())
     }
 
+    pub(in crate::recovery::journal) fn finish_storage_initial_program_v2(&mut self,
+        main: &aos_sandbox::Journal, receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<(), FloorErrorV1> {
+        match &mut self.state {
+            FloorStateV1::Required { attached, .. } => attached.finish_storage_initial_program_v2(main, receiving),
+            _ => Ok(()),
+        }
+    }
+
+    pub(in crate::recovery::journal) fn storage_physical_failure_v2(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        match &self.state {
+            FloorStateV1::Required { attached, .. } => attached.storage_physical_failure_v2(),
+            _ => None,
+        }
+    }
+
+    pub(in crate::recovery::journal) fn storage_sidecar_failure_v2(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        match &self.state {
+            FloorStateV1::Required { attached, .. } => attached.storage_sidecar_failure_v2(),
+            _ => None,
+        }
+    }
+
+    pub(in crate::recovery::journal) fn controller_physical_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        match &self.state {
+            FloorStateV1::Required { attached, .. } => attached.controller_physical_failure_v1(),
+            _ => None,
+        }
+    }
+
+    pub(in crate::recovery::journal) fn controller_property_failure_view_v1(&self)
+        -> Option<aos_systemd::FixedPid1PropertyFailureViewV1<'_>>
+    {
+        match &self.state {
+            FloorStateV1::Required { attached, .. } => attached.controller_property_failure_view_v1(),
+            _ => None,
+        }
+    }
+
     pub(in crate::recovery::journal) fn check_cold_deadline(&mut self) -> Result<(), FloorErrorV1> {
         match &mut self.state {
             FloorStateV1::Required { attached, .. } => attached.check_cold_deadline(),
             #[cfg(feature = "online-nix")]
             FloorStateV1::Online { attached, .. } => attached.check_cold_deadline(),
+            FloorStateV1::Legacy { cold, .. }
+            | FloorStateV1::ClientColdNotScoped { cold } => cold.require_current(),
             _ => Ok(()),
         }
     }
@@ -131,6 +274,8 @@ impl BrokerFloorV1 {
             FloorStateV1::Required { attached, .. } => attached.retire_cold_deadline(deadline),
             #[cfg(feature = "online-nix")]
             FloorStateV1::Online { attached, .. } => attached.retire_cold_deadline(deadline),
+            FloorStateV1::Legacy { cold, .. }
+            | FloorStateV1::ClientColdNotScoped { cold } => cold.retire(deadline),
             _ => Err(FloorErrorV1::Unavailable),
         }
     }
@@ -154,68 +299,12 @@ impl BrokerFloorV1 {
         role: BrokerSessionDurableEndpointV1,
         launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
     ) -> Result<Self, FloorErrorV1> {
-        if protocol != BrokerSessionProtocolV1::Storage {
-            if launch_image.is_some() {
-                return Err(FloorErrorV1::Provisioning);
-            }
-            // A different protected role cannot bypass the two fixed Storage
-            // directories by opening their journal as an unrelated protocol.
-            if matches!(
-                directory.to_str(),
-                Some(
-                    "/var/lib/aos/sandboxd/broker-session/storage"
-                        | "/var/lib/aos/sandbox-storage/broker-session"
-                )
-            ) {
-                return Err(FloorErrorV1::Provisioning);
-            }
-            return Ok(Self {
-                state: FloorStateV1::NotScoped,
-            });
-        }
-        let endpoint = match role {
-            BrokerSessionDurableEndpointV1::Client => FloorEndpointV1::ControllerStorageClient,
-            BrokerSessionDurableEndpointV1::Broker => FloorEndpointV1::StorageBroker,
-        };
-        let fixed = match endpoint {
-            FloorEndpointV1::ControllerStorageClient => {
-                "/var/lib/aos/sandboxd/broker-session/storage"
-            }
-            FloorEndpointV1::StorageBroker => "/var/lib/aos/sandbox-storage/broker-session",
-        };
-        if directory != Path::new(fixed) {
-            #[cfg(test)]
-            {
-                return Ok(Self::test_not_scoped());
-            }
-            #[cfg(not(test))]
-            {
-                return Err(FloorErrorV1::Provisioning);
-            }
-        }
-        let mode = ModePinV1::open(endpoint)?;
-        match mode.mode() {
-            ImageFloorModeV1::LegacyClosed => {
-                if launch_image.is_some() {
-                    return Err(FloorErrorV1::Provisioning);
-                }
-                require_no_floor_names(directory)?;
-                Ok(Self {
-                    state: FloorStateV1::Legacy { mode },
-                })
-            }
-            ImageFloorModeV1::Required => {
-                super::backend::confinement::require_owner(endpoint)?;
-                Ok(Self {
-                    state: FloorStateV1::Required {
-                        mode,
-                        provision: ProvisionPinV1::open(endpoint)?,
-                        launch_image: launch_image.ok_or(FloorErrorV1::Unavailable)?,
-                        attached: BrokerAttachmentAttemptV1::fresh(),
-                    },
-                })
-            }
-        }
+        let mut original = InitialFloorConfigurationOriginalV1::new();
+        original.configure_with_custody_once(
+            directory, protocol, role, launch_image,
+            super::provisioning::CredentialReadCustodyV1::Ordinary,
+        )?;
+        original.take_floor_once().ok_or(FloorErrorV1::Unavailable)
     }
 
     pub(in crate::recovery::journal) fn requires_existing(&self) -> bool {
@@ -237,6 +326,137 @@ impl BrokerFloorV1 {
             return true;
         }
         matches!(&self.state, FloorStateV1::Required { .. })
+    }
+
+    /// Binds ordinary cold custody while borrowing the genuine receiving loan.
+    ///
+    /// The MainOpen caller selects the exact fixed Storage broker role. This
+    /// comparison neither spends the loan nor selects physical-floor authority.
+    ///
+    /// # Errors
+    /// Rejects unpaid/stale Native custody, another mode, repeated/expired
+    /// custody, or changed mode/sidecars.
+    pub(in crate::recovery::journal) fn bind_storage_receiving_cold(
+        &mut self,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        receiving.require_session_fixed_current_v1()
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+        let FloorStateV1::Legacy { mode, cold } = &mut self.state else {
+            return Err(FloorErrorV1::Unavailable);
+        };
+        cold.bind(deadline)?;
+        mode.revalidate()?;
+        require_no_floor_names(Path::new("/var/lib/aos/sandbox-storage/broker-session"))?;
+        mode.revalidate()?;
+        cold.check()
+    }
+
+    // The non-Storage Host client has no TPM floor. It still binds and
+    // retires the same immutable cold deadline through the existing engine.
+    pub(in crate::recovery::journal) fn bind_storage_host_cold_v1(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.bind_unscoped_cold_v4(deadline)
+    }
+
+    pub(in crate::recovery::journal) fn bind_fixed_service_cold_v4(
+        &mut self, deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.bind_unscoped_cold_v4(deadline)
+    }
+
+    fn bind_unscoped_cold_v4(
+        &mut self, deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        if matches!(self.state, FloorStateV1::NotScoped) {
+            self.state = FloorStateV1::ClientColdNotScoped { cold: LegacyColdIntervalV1::new() };
+        }
+        let FloorStateV1::ClientColdNotScoped { cold } = &mut self.state else {
+            return Err(FloorErrorV1::Unavailable);
+        };
+        cold.bind(deadline)
+    }
+
+    /// Binds the same initial Controller cutoff after actual main take/arming.
+    ///
+    /// The closed Main caller joins role, node, root and actual Journal before
+    /// this call. Required remains unavailable until its distinct sidecar phase.
+    pub(in crate::recovery::journal) fn bind_controller_initial_cold_v1(
+        &mut self,
+        receiving: &mut aos_sandbox::ControllerInitialBrokerSessionReceivingLoanV1<'_>,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        use aos_sandbox::ControllerInitialBrokerSessionRoleV1 as Role;
+
+        let role = receiving.role_v1();
+        receiving.require_fixed_capture_current_v1(role)
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+        if matches!(&self.state, FloorStateV1::NotScoped) {
+            if role == Role::Storage {
+                return Err(FloorErrorV1::Unavailable);
+            }
+            self.state = FloorStateV1::ClientColdNotScoped {
+                cold: LegacyColdIntervalV1::new(),
+            };
+        }
+        match &mut self.state {
+            FloorStateV1::ClientColdNotScoped { cold } if role != Role::Storage => {
+                cold.bind(deadline)
+            }
+            FloorStateV1::Required { mode, attached, .. } if role == Role::Storage => {
+                if !mode.has_currentness_archive_v1() { return Err(FloorErrorV1::Unavailable); }
+                attached.bind_cold_deadline(deadline)
+            }
+            FloorStateV1::Legacy { mode, cold } if role == Role::Storage => {
+                // No consuming comparison is permitted on this selected path.
+                // The actual same-B shape/Journal join installed this archive.
+                if !mode.has_currentness_archive_v1() {
+                    return Err(FloorErrorV1::Unavailable);
+                }
+                cold.bind(deadline)?;
+                mode.revalidate()?;
+                mode.require_no_floor_names(Path::new(
+                    "/var/lib/aos/sandboxd/broker-session/storage",
+                ))?;
+                mode.revalidate()?;
+                cold.check()
+            }
+            _ => Err(FloorErrorV1::Unavailable),
+        }
+    }
+
+    /// Reports unfinished cold custody for guard restoration, never admission.
+    pub(in crate::recovery::journal) fn has_resident_cold_attempt(&self) -> bool {
+        self.has_resident_required_attempt()
+            || matches!(&self.state,
+                FloorStateV1::Legacy { cold, .. } | FloorStateV1::ClientColdNotScoped { cold }
+                    if cold.requires_retention())
+    }
+
+    /// Fences the original retained cold owner without changing its image mode.
+    pub(in crate::recovery::journal) fn fence_retained_cold(&mut self) {
+        self.fence_required();
+        if let FloorStateV1::Legacy { cold, .. }
+            | FloorStateV1::ClientColdNotScoped { cold } = &mut self.state
+        {
+            if cold.requires_retention() {
+                cold.fence();
+            }
+        }
+    }
+
+    /// Borrows the original ordinary cold refusal without consuming its owner.
+    pub(in crate::recovery::journal) fn ordinary_cold_failure(
+        &self,
+    ) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.state {
+            FloorStateV1::Legacy { cold, .. }
+            | FloorStateV1::ClientColdNotScoped { cold } => cold.failure(),
+            _ => None,
+        }
     }
 
     pub(in crate::recovery::journal) fn revalidate_endpoint_for_reopen(
@@ -269,6 +489,62 @@ impl BrokerFloorV1 {
             }
             _ => endpoint.revalidate(),
         }
+    }
+
+    pub(in crate::recovery::journal) fn attach_controller_initial_v1(
+        &mut self, owner: &mut ProtectedBrokerSessionJournalV1,
+        receiving: &mut aos_sandbox::ControllerInitialBrokerSessionReceivingLoanV1<'_>,
+    ) -> Result<(), FloorErrorV1> {
+        let FloorStateV1::Required { mode, provision, launch_image, attached } = &mut self.state
+            else { return self.attach(owner); };
+        attached.arm_controller_initial_v1(owner, receiving)?;
+        let operation = attached.begin(BrokerAttachmentPhaseV1::Fresh)?;
+        let result = (|| {
+            mode.revalidate()?;
+            let profile = provision.profile();
+            if owner.endpoint.protected_protocol_and_node().1 != profile.node() {
+                return Err(FloorErrorV1::Provisioning);
+            }
+            let auth = provision.current_auth()?;
+            let salt_name = provision.salt_name();
+            operation.attempt.admit_controller_initial_v1(
+                owner, profile, salt_name, &auth, launch_image, receiving,
+            )?;
+            provision.revalidate()?;
+            mode.revalidate()?;
+            operation.attempt.finish_controller_initial_once_v1()
+        })();
+        operation.attempt.controller_primary = Some(result);
+        operation.finish(result)
+    }
+
+    pub(in crate::recovery::journal) fn attach_storage_initial_v2(
+        &mut self,
+        owner: &mut ProtectedBrokerSessionJournalV1,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<(), FloorErrorV1> {
+        let FloorStateV1::Required { mode, provision, launch_image, attached } = &mut self.state else {
+            return self.attach(owner);
+        };
+        attached.storage_selected = true;
+        let operation = attached.begin(BrokerAttachmentPhaseV1::Fresh)?;
+        let result = (|| {
+            operation.attempt.check_cold_deadline()?;
+            mode.revalidate()?;
+            let profile = provision.profile();
+            if owner.endpoint.protected_protocol_and_node().1 != profile.node() {
+                return Err(FloorErrorV1::Provisioning);
+            }
+            let auth = provision.current_auth()?;
+            let salt_name = provision.salt_name();
+            operation.attempt.admit_storage_initial_v2(
+                owner, profile, salt_name, &auth, launch_image, receiving,
+            )?;
+            provision.revalidate()?;
+            mode.revalidate()?;
+            operation.attempt.check_cold_deadline()
+        })();
+        operation.finish(result)
     }
 
     pub(in crate::recovery::journal) fn attach(
@@ -332,12 +608,53 @@ impl BrokerFloorV1 {
         }
     }
 
+    pub(in crate::recovery::journal) fn storage_initial_failure_post_is_owed_v2(&self) -> bool {
+        matches!(&self.state, FloorStateV1::Required { attached, .. }
+            if attached.storage_selected && !attached.controller_owed_consumed)
+    }
+
+    pub(in crate::recovery::journal) fn observe_storage_initial_failure_post_v2(
+        &mut self, owner: &mut ProtectedBrokerSessionJournalV1,
+    ) -> Result<(), FloorErrorV1> {
+        let FloorStateV1::Required { attached, .. } = &mut self.state else {
+            return Err(FloorErrorV1::Unavailable);
+        };
+        if !attached.storage_selected || attached.controller_owed_consumed {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        attached.fence();
+        self.check(owner)
+    }
+
+    pub(in crate::recovery::journal) fn observe_controller_initial_failure_post_v1(
+        &mut self, owner: &mut ProtectedBrokerSessionJournalV1,
+    ) -> Result<(), FloorErrorV1> {
+        let FloorStateV1::Required { attached, .. } = &mut self.state
+            else { return Err(FloorErrorV1::Unavailable); };
+        if !attached.controller_selected || attached.controller_owed_consumed {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        // The actual initial Cold owner already parked its primary error.
+        // Fencing here cannot turn an outer semantic refusal into a healthy
+        // TPM command, reset Checking or mint a fresh role/operation loan.
+        attached.fence();
+        self.check(owner)
+    }
+
     pub(in crate::recovery::journal) fn check(
         &mut self,
         owner: &mut ProtectedBrokerSessionJournalV1,
     ) -> Result<(), FloorErrorV1> {
+        self.check_with_storage_receiving_v2(owner, None)
+    }
+
+    pub(in crate::recovery::journal) fn check_with_storage_receiving_v2(&mut self,
+        owner: &mut ProtectedBrokerSessionJournalV1,
+        mut receiving: Option<&mut dyn super::storage_receiving::StorageFloorFinancialSourceV2>,
+    ) -> Result<(), FloorErrorV1> {
         match &mut self.state {
             FloorStateV1::NotScoped => Ok(()),
+            FloorStateV1::ClientColdNotScoped { cold } => cold.require_current(),
             FloorStateV1::Unavailable => Err(FloorErrorV1::Unavailable),
             #[cfg(feature = "online-nix")]
             FloorStateV1::Online { provision, attached, .. } => {
@@ -349,11 +666,13 @@ impl BrokerFloorV1 {
                 })();
                 operation.finish(result)
             }
-            FloorStateV1::Legacy { mode } => {
+            FloorStateV1::Legacy { mode, cold } => {
+                cold.require_current()?;
                 mode.revalidate()?;
-                require_no_floor_names(&owner.directory)?;
+                mode.require_no_floor_names(&owner.directory)?;
                 require_no_output_history(owner)?;
-                mode.revalidate()
+                mode.revalidate()?;
+                cold.require_current()
             }
             FloorStateV1::Required {
                 mode,
@@ -361,11 +680,32 @@ impl BrokerFloorV1 {
                 attached,
                 ..
             } => {
+                if attached.has_controller_owed_v1() {
+                    // This is the one genuinely prearmed continuation after a
+                    // failed primary. Every available native post runs despite
+                    // an earlier refusal; the healthy begin gate stays closed.
+                    attached.controller_owed_consumed = true;
+                    let mode_post = mode.revalidate();
+                    let provision_post = provision.revalidate();
+                    let (main, sidecar, physical) = attached.observe_controller_attachment_post_v1(owner);
+                    attached.controller_posts = Some([mode_post, provision_post, main, sidecar, physical]);
+                    // Comparison success never discharges an ambiguous TPM
+                    // command or restores the original attachment's readiness.
+                    return Err(attached.failure_projection());
+                }
+                // A selected Storage owner has exactly one original F. Every
+                // real caller must lend it; an absent financial borrower cannot
+                // silently select the ordinary floor reader or writer. The
+                // independently owed continuation above remains available.
+                if attached.storage_selected && receiving.is_none() {
+                    return Err(FloorErrorV1::Unavailable);
+                }
                 let operation = attached.begin(BrokerAttachmentPhaseV1::Ready)?;
                 let result = (|| {
                     mode.revalidate()?;
                     provision.revalidate()?;
-                    operation.attempt.check(owner, provision.profile())?;
+                    operation.attempt.check_with_storage_receiving_v2(owner, provision.profile(),
+                        receiving.as_mut().map(|source| &mut **source as &mut dyn super::storage_receiving::StorageFloorFinancialSourceV2))?;
                     provision.revalidate()?;
                     mode.revalidate()
                 })();
@@ -379,7 +719,15 @@ impl BrokerFloorV1 {
         owner: &mut ProtectedBrokerSessionJournalV1,
         transaction: &JournalTransaction,
     ) -> Result<(), FloorErrorV1> {
-        self.check(owner)?;
+        self.commit_with_storage_receiving_v2(owner, transaction, None)
+    }
+
+    pub(in crate::recovery::journal) fn commit_with_storage_receiving_v2(&mut self,
+        owner: &mut ProtectedBrokerSessionJournalV1, transaction: &JournalTransaction,
+        mut receiving: Option<&mut dyn super::storage_receiving::StorageFloorFinancialSourceV2>,
+    ) -> Result<(), FloorErrorV1> {
+        self.check_with_storage_receiving_v2(owner, receiving.as_mut()
+            .map(|source| &mut **source as &mut dyn super::storage_receiving::StorageFloorFinancialSourceV2))?;
         let legacy = matches!(&self.state, FloorStateV1::Legacy { .. });
 
         match &mut self.state {
@@ -400,13 +748,15 @@ impl BrokerFloorV1 {
             } => {
                 let operation = attached.begin(BrokerAttachmentPhaseV1::Ready)?;
                 let result = (|| {
-                    operation.attempt.commit(owner, provision.profile(), transaction)?;
+                    operation.attempt.commit_with_storage_receiving_v2(owner, provision.profile(), transaction,
+                        receiving.as_mut().map(|source| &mut **source as &mut dyn super::storage_receiving::StorageFloorFinancialSourceV2))?;
                     provision.revalidate()?;
                     mode.revalidate()
                 })();
                 operation.finish(result)
             }
-            FloorStateV1::NotScoped | FloorStateV1::Legacy { .. } => {
+            FloorStateV1::NotScoped | FloorStateV1::Legacy { .. }
+            | FloorStateV1::ClientColdNotScoped { .. } => {
                 // Prospective legacy history cannot introduce a hidden 46 row.
                 if legacy {
                     require_no_output_transaction(transaction)?;
@@ -422,6 +772,11 @@ impl BrokerFloorV1 {
         &self,
         method: BrokerMethod,
     ) -> Result<(), FloorErrorV1> {
+        if method == BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2
+            && !matches!(&self.state, FloorStateV1::Required { attached, .. } if attached.is_ready())
+        {
+            return Err(FloorErrorV1::Unavailable);
+        }
         #[cfg(feature = "online-nix")]
         if let FloorStateV1::Online { attached, .. } = &self.state {
             if crate::recovery::journal::online_nix_verb(method).is_none() || !attached.is_ready()
@@ -442,8 +797,14 @@ impl BrokerFloorV1 {
                 return Err(FloorErrorV1::Unavailable);
             }
         }
-        if matches!(self.state, FloorStateV1::Legacy { .. }) && is_output_method(method) {
-            return Err(FloorErrorV1::Unavailable);
+        if let FloorStateV1::ClientColdNotScoped { cold } = &self.state {
+            cold.require_healthy()?;
+        }
+        if let FloorStateV1::Legacy { cold, .. } = &self.state {
+            cold.require_healthy()?;
+            if is_output_method(method) {
+                return Err(FloorErrorV1::Unavailable);
+            }
         }
         Ok(())
     }
@@ -493,6 +854,11 @@ impl BrokerFloorV1 {
         }
         if matches!(&self.state, FloorStateV1::Required { attached, .. } if attached.is_failed()) {
             return Err(FloorErrorV1::Unavailable);
+        }
+        if let FloorStateV1::Legacy { cold, .. }
+            | FloorStateV1::ClientColdNotScoped { cold } = &self.state
+        {
+            cold.require_reopen_allowed()?;
         }
         Ok(())
     }
@@ -561,11 +927,22 @@ fn require_launch_image_presence_with_mode(
     mode: &ModePinV1,
     supplied: bool,
 ) -> Result<(), FloorErrorV1> {
-    require_mode_image_presence(mode.mode(), supplied)?;
-    if mode.mode() == ImageFloorModeV1::Required {
-        super::backend::confinement::require_owner(endpoint)?;
-    }
-    mode.revalidate()
+    ModePresenceOriginalV1::new().capture_once(
+        endpoint, mode, supplied, super::provisioning::CredentialReadCustodyV1::Ordinary,
+    )
+}
+
+pub(super) fn require_storage_worker_launch_image_presence_retaining(
+    mode: &ModePinV1,
+    supplied: bool,
+    original: &mut ModePresenceOriginalV1,
+) -> Result<(), FloorErrorV1> {
+    original.capture_once(
+        FloorEndpointV1::StorageBroker,
+        mode,
+        supplied,
+        super::provisioning::CredentialReadCustodyV1::Retained,
+    )
 }
 
 fn require_mode_image_presence(mode: ImageFloorModeV1, supplied: bool) -> Result<(), FloorErrorV1> {
@@ -576,17 +953,7 @@ fn require_mode_image_presence(mode: ImageFloorModeV1, supplied: bool) -> Result
 }
 
 fn require_no_floor_names(directory: &Path) -> Result<(), FloorErrorV1> {
-    for name in [
-        "session-floor.journal",
-        "session-floor.journal.lock",
-        "session-floor.journal.compact.tmp",
-    ] {
-        match std::fs::symlink_metadata(directory.join(name)) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            _ => return Err(FloorErrorV1::Provisioning),
-        }
-    }
-    Ok(())
+    super::super::floor_revalidation::validate_absent(None, directory)
 }
 
 fn require_no_output_history(
@@ -706,5 +1073,21 @@ mod tests {
         assert!(require_mode_image_presence(ImageFloorModeV1::Required, true).is_ok());
         assert!(require_mode_image_presence(ImageFloorModeV1::Required, false).is_err());
         assert!(require_mode_image_presence(ImageFloorModeV1::LegacyClosed, true).is_err());
+    }
+}
+
+impl BrokerFloorV1 {
+    pub(in crate::recovery::journal) fn retire_completed_initial_native_v1(
+        &mut self,
+        completed: &aos_sandbox::ControllerInitialSessionCompletedNativeBorrowV1<'_>,
+        main: &aos_sandbox::Journal,
+    ) -> Result<(), FloorErrorV1> {
+        match &mut self.state {
+            FloorStateV1::Required { attached, .. } =>
+                attached.retire_completed_initial_native_v1(completed, main),
+            FloorStateV1::NotScoped | FloorStateV1::ClientColdNotScoped { .. }
+            | FloorStateV1::Legacy { .. } => Ok(()),
+            _ => Err(FloorErrorV1::Unavailable),
+        }
     }
 }

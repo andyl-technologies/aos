@@ -8,8 +8,18 @@
       type = lib.types.listOf lib.types.anything;
       default = [];
     };
+    options.systemd.package = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.systemd;
+    };
     options.systemd.services = lib.mkOption {
-      type = lib.types.attrsOf lib.types.anything;
+      type = lib.types.attrsOf (lib.types.submodule {
+        freeformType = lib.types.attrsOf lib.types.anything;
+        options.serviceConfig = lib.mkOption {
+          type = lib.types.attrsOf lib.types.anything;
+          default = {};
+        };
+      });
       default = {};
     };
     options.systemd.sockets = lib.mkOption {
@@ -37,7 +47,22 @@
     specialArgs = {inherit pkgs;};
     modules = [
       systemdOptions
-      ({lib, ...}: {
+      ({
+        config,
+        lib,
+        ...
+      }: let
+        parentModule = import ../../modules/sandbox/component-parent-enclosure.nix {inherit config lib pkgs;};
+      in {
+        # The fixture imports the real nullable Parent schema and evaluates
+        # service directives. These DATA do not enroll a running process.
+        options.aos.sandbox.resourceBank.parentEnclosure = parentModule.options.aos.sandbox.resourceBank.parentEnclosure;
+        options.aos.sandbox.policyAuthority._normalStartupProfile = lib.mkOption {
+          type = lib.types.nullOr lib.types.package;
+          internal = true;
+          readOnly = true;
+          default = null;
+        };
         options.aos.sandbox.controller.uid = lib.mkOption {type = lib.types.int;};
         options.aos.sandbox.controller.gid = lib.mkOption {type = lib.types.int;};
         options.aos.sandbox.controllerService.enable = lib.mkOption {type = lib.types.bool;};
@@ -65,8 +90,19 @@
             gid = 811;
           };
           controllerService.enable = true;
+          resourceBank.parentEnclosure = {
+            manager = {};
+            fixedServices = {};
+            managerOpenFilesPerProcess = 1;
+            fixedOpenFilesPerProcess = 1;
+            cacheSignerReceiving = {};
+            cacheSignerSender = {};
+            journal = lib.genAttrs ["systemMaxUse" "systemMaxFileSize" "runtimeMaxUse" "runtimeMaxFileSize"] (_: 1);
+            audit = lib.genAttrs ["maxLogFileMiB" "numLogs" "maximumRules" "maximumRuleBytes" "maximumBacklog"] (_: 1);
+          };
           policyAuthority = {
             enable = true;
+            _normalStartupProfile = pkgs.aos-sandboxd;
             credentials.cacheOwnerReadbackPublicKey = "cache-public-pin";
           };
           cacheSignerView.enable = true;
@@ -126,6 +162,26 @@
       })
     ];
   };
+  missingParent = evaluation.extendModules {
+    modules = [{aos.sandbox.resourceBank.parentEnclosure = lib.mkForce null;}];
+  };
+  missingReceiving = evaluation.extendModules {
+    modules = [{aos.sandbox.resourceBank.parentEnclosure.cacheSignerReceiving = lib.mkForce null;}];
+  };
+  missingSender = evaluation.extendModules {
+    modules = [{aos.sandbox.resourceBank.parentEnclosure.cacheSignerSender = lib.mkForce null;}];
+  };
+  missingProfile = evaluation.extendModules {
+    modules = [{aos.sandbox.policyAuthority._normalStartupProfile = lib.mkForce null;}];
+  };
+  wrongSystemd = evaluation.extendModules {
+    modules = [{systemd.package = lib.mkForce pkgs.coreutils;}];
+  };
+  refuses = message: result:
+    lib.any (check: check.message == message && !check.assertion) result.config.assertions;
+  parentMessage = "installed Cache signer requires its genuine Parent and distinct explicit Cache receiving/sender F/M slices";
+  profileMessage = "installed Cache signer requires its exact image-delivered Root profile and all PID1 pre-listen subject options";
+  signerMessage = "protected Cache signer requires the immutable selected image and its exact single signer role without helper commands or namespaces";
   exactPackageAssertion = check:
     check.message == "confined Cache signer requires the exact evaluated policy-labelled AOS executable";
 in
@@ -136,9 +192,12 @@ in
   assert lib.any (check: !check.assertion) missingMemory.config.assertions;
   assert lib.length (lib.filter exactPackageAssertion config.assertions) == 1;
   assert lib.any (check: !check.assertion) (lib.filter exactPackageAssertion wrongPackage.config.assertions);
-  # The lightweight service attrset fixture retains nested mkIf as data.
-  assert serviceConfig.SELinuxContext._condition;
-  assert serviceConfig.SELinuxContext._value == "system_u:system_r:aos_sandbox_cache_signer_t";
+  assert refuses parentMessage missingParent;
+  assert refuses parentMessage missingReceiving;
+  assert refuses parentMessage missingSender;
+  assert refuses profileMessage missingProfile;
+  assert refuses signerMessage wrongSystemd;
+  assert serviceConfig.SELinuxContext == "system_u:system_r:aos_sandbox_cache_signer_t";
   assert serviceConfig.ExecStart == "${pkgs.aos-sandboxd}/bin/aos-sandbox-cache-signerd 811 811 813 813";
   assert config.aos.users.users.aos-cache-signer.uid == 813;
   assert config.aos.users.users.aos-cache-signer.extraGroups == [];

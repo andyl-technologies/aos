@@ -6,6 +6,17 @@
   ...
 }: let
   cfg = config.aos.sandbox.hostBroker;
+  confined = config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0";
+  bootPreparation = config.aos.sandbox.runtimeDeploymentPublisher.enable
+    && config.aos.sandbox.runtimeDeploymentPublisher.bootPreparation;
+  bootPreparationReceiving =
+    if !bootPreparation then null
+    else if config.aos.sandbox.resourceBank.parentEnclosure == null
+      || config.aos.sandbox.resourceBank.parentEnclosure.hostBootPreparationReceiving == null
+    then throw "normal BootPreparation requires its actual HostService receiving subdivision"
+    else lib.map
+      (dimension: config.aos.sandbox.resourceBank.parentEnclosure.hostBootPreparationReceiving.${dimension})
+      config.aos.sandbox.resourceBank._dimensionOrder;
   controller = config.aos.sandbox.controller;
   canonicalReadback =
     if cfg.componentControl
@@ -74,6 +85,7 @@
       phase0ProbePublicKey = "phase0-probe-public-key-v1";
       canaryApprovalPublicKey = "host-canary-approval-public-key-v1";
       canaryJob = "host-canary-job-v1";
+      rootNoApplyFloorPublicKey = "root-noapply-floor-public";
     };
   configuredCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
@@ -165,6 +177,8 @@
     guardianServiceLimitsContract = builtins.toJSON cfg.canaryGuardianServiceLimits;
   } // lib.optionalAttrs cfg.componentControl {
     resourcePolicyContract = builtins.toJSON hostPolicy;
+    executionReceivingContract = builtins.toJSON cfg.executionReceiving;
+    bootPreparationReceivingContract = builtins.toJSON bootPreparationReceiving;
     resourcePolicyPath = "${config.aos.sandbox.resourceBank._imagePolicy}/bootstrap.bin";
     dimensionContract = builtins.toJSON config.aos.sandbox.resourceBank._dimensionOrder;
   }) ''
@@ -233,6 +247,34 @@
           "host_service": service,
           "host_control": control,
       })
+      execution_receiving = json.loads(os.environ["executionReceivingContract"])
+      boot_receiving = json.loads(os.environ["bootPreparationReceivingContract"])
+      if boot_receiving is not None and execution_receiving is None:
+          raise ValueError("BootPreparation requires the selected real Host baseline receiving ledger")
+      if execution_receiving is not None:
+          if (set(execution_receiving) != {"prepare", "accept", "launch"}
+                  or any(len(execution_receiving[name]) != 22 for name in ("prepare", "accept", "launch"))
+                  or any(type(value) is not int or value < 0
+                         for name in ("prepare", "accept", "launch") for value in execution_receiving[name])
+                  or any(prepare + accept + launch > bound for prepare, accept, launch, bound in zip(
+                      execution_receiving["prepare"], execution_receiving["accept"],
+                      execution_receiving["launch"], service))):
+              raise ValueError("Host execution receiving must fit the same HostService subdivision")
+          profile["version"] = 5
+          if boot_receiving is not None:
+              if (len(boot_receiving) != 22
+                      or any(type(value) is not int or value < 0 or value > (1 << 64) - 1 for value in boot_receiving)
+                      or any(boot_receiving[index] == 0 for index in (0, 1, 2, 3))
+                      or boot_receiving[21] != 1):
+                  raise ValueError("BootPreparation requires its complete finite one-shot subdivision")
+              combined = [sum(parts) for parts in zip(boot_receiving,
+                  execution_receiving["prepare"], execution_receiving["accept"], execution_receiving["launch"])]
+              if (any(used > whole for used, whole in zip(combined, service))
+                      or any(service[index] - combined[index] == 0 for index in (1, 2, 3))):
+                  raise ValueError("BootPreparation overlaps the Host baseline or execution subdivisions")
+              execution_receiving["boot_preparation"] = boot_receiving
+              profile["version"] = 6
+          profile["host_execution_receiving"] = execution_receiving
     ''}
     encoded = json.dumps(profile, separators=(",", ":")).encode()
     if len(encoded) > 1048576:
@@ -263,6 +305,25 @@ in {
       "the independently approved private startup canary, not public runtime activation";
     componentControl = lib.mkEnableOption
       "the original image-owned Host service/control subdivision, not live effects";
+
+    executionReceiving = lib.mkOption {
+      type = lib.types.nullOr (lib.types.submodule {
+        options = lib.genAttrs ["prepare" "accept" "launch"] (name: lib.mkOption {
+          type = lib.types.listOf (lib.types.addCheck lib.types.int
+            (value: value >= 0 && value <= 9223372036854775807));
+          description = "Explicit finite 22-resource ${name} capacity inside the original HostService allocation.";
+        });
+      });
+      default = null;
+      description = ''
+        Independently configured Prepare, Accept and Launch receiving capacities in
+        ResourceDimension::ALL order. All are carved from the authenticated
+        HostService allocation; they add no parent capacity and cannot reuse
+        the separate boot Control interval. The image-bound Launch subdivision
+        is removed from the remaining Host baseline before either is admitted.
+        Absence keeps preparation and production launch closed.
+      '';
+    };
 
     nodeParentResources = lib.mkOption {
       type = lib.types.listOf (lib.types.addCheck lib.types.int
@@ -331,6 +392,8 @@ in {
             then "Dedicated external Ed25519 signing seed available only to the fixed shifted-target phase-0 inspector."
             else if name == "phase0ProbePublicKey"
             then "Independent external Ed25519 verifier pin for the boot-local shifted-target phase-0 report."
+            else if name == "rootNoApplyFloorPublicKey"
+            then "Optional independently provisioned dedicated 80-byte AOSRNP02 Root NoApply floor public pin with nonzero generation, Ed25519 public key and checksum. PID 1 delivers its immutable root-only copy as ${credentialFile}; it contains no signing seed."
             else "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
         })
       credentialFields
@@ -346,6 +409,15 @@ in {
       authorityCredentialFields
       ++ brokerSessionConfiguration.assertions
       ++ [
+        {
+          assertion = cfg.credentials.rootNoApplyFloorPublicKey == null
+            || (cfg.componentControl && confined
+              && config.aos.sandbox.policyAuthority.enable
+              && config.aos.sandbox.policyAuthority.credentials.rootNoApplyFloorSigningKey != null
+              && cfg.credentials.rootNoApplyFloorPublicKey
+                != config.aos.sandbox.policyAuthority.credentials.rootNoApplyFloorSigningKey);
+          message = "Host Root NoApply floor pin requires confined component control and the paired dedicated normal Root signing credential under a distinct external name";
+        }
         {
           assertion = pkgs.systemd.version == hostSyscallProfile.systemdVersion;
           message = "Host seccomp profile requires systemd ${hostSyscallProfile.systemdVersion}";
@@ -375,6 +447,44 @@ in {
             && cfg.credentials.opensshAttachTrust != null
             && cfg.credentials.opensshAttachGrantPublicKey != null);
           message = "Host canary requires independent original job/key, phase-0 and Guest attach inputs";
+        }
+        {
+          assertion = hostPolicy == null || (
+            (cfg.executionReceiving == null) == (hostPolicy.hostExecutionPrepare == null)
+            && (cfg.executionReceiving == null || (
+              hostPolicy.hostExecutionAccept != null
+              && cfg.executionReceiving.prepare == map
+                (dimension: hostPolicy.hostExecutionPrepare.${dimension})
+                config.aos.sandbox.resourceBank._dimensionOrder
+              && cfg.executionReceiving.accept == map
+                (dimension: hostPolicy.hostExecutionAccept.${dimension})
+                config.aos.sandbox.resourceBank._dimensionOrder
+            ))
+          );
+          message = "Host receiving profile must match the same image Bank's paired execution reservations exactly.";
+        }
+        {
+          assertion = cfg.executionReceiving == null || (
+            cfg.componentControl
+            && hostPolicy != null && hostPolicy.hostService != null
+            && lib.all (name: builtins.length cfg.executionReceiving.${name} == 22) ["prepare" "accept" "launch"]
+            && lib.all (index:
+              builtins.elemAt cfg.executionReceiving.prepare index
+              + builtins.elemAt cfg.executionReceiving.accept index
+              + builtins.elemAt cfg.executionReceiving.launch index
+              <= hostPolicy.hostService.${builtins.elemAt config.aos.sandbox.resourceBank._dimensionOrder index})
+              (lib.range 0 21)
+            && lib.all (name:
+              lib.all (index: builtins.elemAt cfg.executionReceiving.${name} index > 0) [1 3 21])
+              ["prepare" "accept" "launch"]
+            && lib.all (index:
+              builtins.elemAt cfg.executionReceiving.prepare index
+              + builtins.elemAt cfg.executionReceiving.accept index
+              + builtins.elemAt cfg.executionReceiving.launch index
+              < hostPolicy.hostService.${builtins.elemAt config.aos.sandbox.resourceBank._dimensionOrder index})
+              [1 2 3]
+          );
+          message = "Host execution receiving requires three explicit 22-resource capacities inside the same HostService, with a finite service complement.";
         }
         {
           assertion = !cfg.componentControl || (

@@ -1,0 +1,1168 @@
+//! Encodes all sixteen canonical saved hierarchy evidence claim variants.
+//!
+//! Saved assertions are comparison DATA, never live evidence or authority.
+//!
+//! ```text
+//! AOSHPE01 | version:u16 | evidence-kind:u8 | reserved:u8 | typed fields
+//! ```
+
+use aos_sandbox_core::bounded_codec::BoundedReader;
+use aos_sandbox_core::{
+    AssignmentEpoch, AttachmentId, AttachmentSlotId, DesiredGeneration, ExportId, IncarnationId,
+    MediaType, NamespaceGeneration, NodeId, ObjectDescriptor, ObjectDigest, ProjectId, Revision,
+    SandboxId, SnapshotId, ViewId,
+};
+
+use super::claims::{
+    RecordedAssignmentEvidenceV1, RecordedLiveInspectionObservationV1,
+    RecordedSlotInventoryEvidenceV1, InspectionGrantModeV1, RecordedSnapshotManifestV1,
+    RecordedViewSourceEvidenceV1, SlotInventoryStateV1, RecordedAttachmentAuthorityV1,
+    RecordedDetachAuthorityV1, RecordedDetachCompletionV1, RecordedInspectionGrantV1,
+    RecordedRealizationTransactionCompletionV1,
+};
+use super::realization::{RealizationStageV1, ReplacementTransactionV1};
+use super::recovery::{
+    DetachStageV1, PreparedRealizationRecoveryDecisionV1, PreparedSnapshotRecoveryDecisionV1,
+    RebootInventoryStateV1, RecordedRebootRealizationInventoryV1, RecordedDetachRebootInventoryV1,
+    RecordedPreparedRealizationAuthorityV1, RecordedPublishedRollbackAuthorityV1,
+    RecordedSnapshotRecoveryAuthorityV1, RecordedStageTransitionV1,
+};
+
+const MAGIC: &[u8; 8] = b"AOSHPE01";
+const VERSION: u16 = 1;
+const MAXIMUM_MEDIA_TYPE_BYTES: usize = 255;
+
+/// Selects one journal-authenticated hierarchy evidence body.
+pub enum HierarchyProtectedEvidenceV1 {
+    /// Retains one typed historical claim without authenticating it.
+    InspectionGrant(RecordedInspectionGrantV1),
+    /// Retains one typed historical claim without authenticating it.
+    SnapshotManifest(RecordedSnapshotManifestV1),
+    /// Retains one typed historical claim without authenticating it.
+    LiveInspection(RecordedLiveInspectionObservationV1),
+    /// Retains one typed historical claim without authenticating it.
+    Assignment(RecordedAssignmentEvidenceV1),
+    /// Retains one typed historical claim without authenticating it.
+    ViewSource(RecordedViewSourceEvidenceV1),
+    /// Retains one typed historical claim without authenticating it.
+    SlotInventory(RecordedSlotInventoryEvidenceV1),
+    /// Retains one typed historical claim without authenticating it.
+    AttachmentAuthority(RecordedAttachmentAuthorityV1),
+    /// Retains one typed historical claim without authenticating it.
+    DetachAuthority(RecordedDetachAuthorityV1),
+    /// Retains one typed historical claim without authenticating it.
+    DetachCompletion(RecordedDetachCompletionV1),
+    /// Retains one typed historical claim without authenticating it.
+    TransactionCompletion(RecordedRealizationTransactionCompletionV1),
+    /// Retains one typed historical claim without authenticating it.
+    SnapshotRecoveryAuthority(RecordedSnapshotRecoveryAuthorityV1),
+    /// Retains one typed historical claim without authenticating it.
+    StageTransition(RecordedStageTransitionV1),
+    /// Retains one typed historical claim without authenticating it.
+    RebootRealizationInventory(RecordedRebootRealizationInventoryV1),
+    /// Retains one typed historical claim without authenticating it.
+    PublishedRollbackAuthority(RecordedPublishedRollbackAuthorityV1),
+    /// Retains one typed historical claim without authenticating it.
+    PreparedRealizationAuthority(RecordedPreparedRealizationAuthorityV1),
+    /// Retains one typed historical claim without authenticating it.
+    DetachRebootInventory(RecordedDetachRebootInventoryV1),
+}
+
+impl HierarchyProtectedEvidenceV1 {
+    /// Returns the fixed saved record discriminant.
+    pub const fn tag(&self) -> u8 {
+        match self {
+            Self::InspectionGrant(_) => 1,
+            Self::SnapshotManifest(_) => 2,
+            Self::LiveInspection(_) => 3,
+            Self::Assignment(_) => 4,
+            Self::ViewSource(_) => 5,
+            Self::SlotInventory(_) => 6,
+            Self::AttachmentAuthority(_) => 7,
+            Self::DetachAuthority(_) => 8,
+            Self::DetachCompletion(_) => 9,
+            Self::TransactionCompletion(_) => 10,
+            Self::SnapshotRecoveryAuthority(_) => 11,
+            Self::StageTransition(_) => 12,
+            Self::RebootRealizationInventory(_) => 13,
+            Self::PublishedRollbackAuthority(_) => 14,
+            Self::PreparedRealizationAuthority(_) => 15,
+            Self::DetachRebootInventory(_) => 16,
+        }
+    }
+
+    /// Returns the exact saved journal comparison identity.
+    pub fn identity(&self) -> [u8; 48] {
+        let mut identity = [0; 48];
+        match self {
+            Self::InspectionGrant(value) => {
+                copy_id(&mut identity, 0, value.project().as_bytes());
+                copy_id(&mut identity, 16, value.observer().as_bytes());
+                copy_id(&mut identity, 32, value.descendant().as_bytes());
+            }
+            Self::SnapshotManifest(value) => {
+                copy_id(&mut identity, 0, value.project().as_bytes());
+                copy_id(&mut identity, 16, value.sandbox().as_bytes());
+                copy_id(&mut identity, 32, value.snapshot().as_bytes());
+            }
+            Self::LiveInspection(value) => {
+                copy_id(&mut identity, 0, value.project().as_bytes());
+                copy_id(&mut identity, 16, value.sandbox().as_bytes());
+                copy_id(&mut identity, 32, value.incarnation().as_bytes());
+            }
+            Self::Assignment(value) => {
+                copy_id(&mut identity, 0, value.project().as_bytes());
+                copy_id(&mut identity, 16, value.sandbox().as_bytes());
+                copy_id(&mut identity, 32, value.incarnation().as_bytes());
+            }
+            Self::ViewSource(value) => {
+                copy_id(&mut identity, 0, value.project().as_bytes());
+                copy_id(&mut identity, 16, value.owner().as_bytes());
+                copy_id(&mut identity, 32, value.view().as_bytes());
+            }
+            Self::SlotInventory(value) => {
+                copy_id(&mut identity, 0, value.sandbox().as_bytes());
+                copy_id(&mut identity, 16, value.incarnation().as_bytes());
+                copy_id(&mut identity, 32, value.destination_slot().as_bytes());
+            }
+            Self::AttachmentAuthority(value) => {
+                copy_id(&mut identity, 0, value.attachment().as_bytes());
+                identity[16..32].copy_from_slice(&value.request_commitment().as_bytes()[..16]);
+                identity[32..48].copy_from_slice(&value.lease_commitment().as_bytes()[..16]);
+            }
+            Self::DetachAuthority(value) => {
+                copy_id(&mut identity, 0, value.attachment().as_bytes());
+                identity[16..32].copy_from_slice(&value.request_commitment().as_bytes()[..16]);
+                identity[32..48].copy_from_slice(&value.policy_commitment().as_bytes()[..16]);
+            }
+            Self::DetachCompletion(value) => {
+                copy_id(&mut identity, 0, value.project().as_bytes());
+                copy_id(&mut identity, 16, value.attachment().as_bytes());
+                identity[32..48].copy_from_slice(&value.detach_commitment().as_bytes()[..16]);
+            }
+            Self::TransactionCompletion(value) => {
+                copy_id(&mut identity, 0, value.project().as_bytes());
+                identity[16..32].copy_from_slice(&value.plan_commitment().as_bytes()[..16]);
+                identity[32..48]
+                    .copy_from_slice(&value.transaction_state_commitment().as_bytes()[..16]);
+            }
+            Self::SnapshotRecoveryAuthority(value) => {
+                copy_id(&mut identity, 0, value.project().as_bytes());
+                copy_id(&mut identity, 16, value.snapshot().as_bytes());
+                identity[32..48].copy_from_slice(&value.preparation_commitment().as_bytes()[..16]);
+            }
+            Self::StageTransition(value) => {
+                copy_id(&mut identity, 0, value.attachment().as_bytes());
+                identity[16..32].copy_from_slice(&value.recipe_commitment().as_bytes()[..16]);
+                identity[32..48].copy_from_slice(&value.inventory_commitment().as_bytes()[..16]);
+            }
+            Self::RebootRealizationInventory(value) => {
+                copy_id(&mut identity, 0, value.attachment().as_bytes());
+                identity[16..32].copy_from_slice(&value.recipe_commitment().as_bytes()[..16]);
+                identity[32..48].copy_from_slice(&value.inventory_commitment().as_bytes()[..16]);
+            }
+            Self::PublishedRollbackAuthority(value) => {
+                copy_id(&mut identity, 0, value.attachment().as_bytes());
+                identity[16..32].copy_from_slice(&value.recipe_commitment().as_bytes()[..16]);
+                identity[32..48].copy_from_slice(&value.authority_commitment().as_bytes()[..16]);
+            }
+            Self::PreparedRealizationAuthority(value) => {
+                copy_id(&mut identity, 0, value.attachment().as_bytes());
+                identity[16..32].copy_from_slice(&value.recipe_commitment().as_bytes()[..16]);
+                identity[32..48].copy_from_slice(&value.authority_commitment().as_bytes()[..16]);
+            }
+            Self::DetachRebootInventory(value) => {
+                copy_id(&mut identity, 0, value.attachment().as_bytes());
+                identity[16..32].copy_from_slice(&value.detach_commitment().as_bytes()[..16]);
+                identity[32..48].copy_from_slice(&value.inventory_commitment().as_bytes()[..16]);
+            }
+        }
+        identity
+    }
+}
+
+/// Encodes the exact canonical saved claim fields and discriminant.
+pub fn encode_hierarchy_protected_evidence_v1(
+    evidence: &HierarchyProtectedEvidenceV1,
+) -> Option<Vec<u8>> {
+    if !canonical_evidence(evidence) {
+        return None;
+    }
+    let mut writer = Writer::new(evidence.tag());
+    match evidence {
+        HierarchyProtectedEvidenceV1::InspectionGrant(value) => {
+            writer.id(value.project().as_bytes());
+            writer.id(value.observer().as_bytes());
+            writer.u64(value.observer_generation().get());
+            writer.id(value.descendant().as_bytes());
+            writer.u8(match value.mode() {
+                InspectionGrantModeV1::Stable => 1,
+                InspectionGrantModeV1::LiveKernelCoupled => 2,
+            });
+            writer.u64(value.revocation_generation().get());
+            writer.digest(value.grant_commitment());
+        }
+        HierarchyProtectedEvidenceV1::SnapshotManifest(value) => {
+            writer.id(value.project().as_bytes());
+            writer.id(value.sandbox().as_bytes());
+            writer.id(value.snapshot().as_bytes());
+            writer.u64(value.captured_generation().get());
+            writer.descriptor(value.manifest())?;
+            writer.digest(value.export_closure_commitment());
+            writer.digest(value.retention_plan_commitment());
+            writer.digest(value.preparation_commitment());
+            writer.digest(value.retention_proof_commitment());
+        }
+        HierarchyProtectedEvidenceV1::LiveInspection(value) => {
+            writer.id(value.project().as_bytes());
+            writer.id(value.sandbox().as_bytes());
+            writer.u64(value.desired_generation().get());
+            writer.id(value.incarnation().as_bytes());
+            writer.u64(value.namespace_generation().get());
+            writer.u64(value.assignment_epoch().get());
+            writer.id(value.node().as_bytes());
+            writer.digest(value.observation_set_commitment());
+            writer.digest(value.observation_commitment());
+        }
+        HierarchyProtectedEvidenceV1::Assignment(value) => {
+            writer.id(value.project().as_bytes());
+            writer.id(value.sandbox().as_bytes());
+            writer.u64(value.desired_generation().get());
+            writer.id(value.incarnation().as_bytes());
+            writer.u64(value.namespace_generation().get());
+            writer.u64(value.assignment_epoch().get());
+            writer.id(value.node().as_bytes());
+            writer.digest(value.observation_set_commitment());
+            writer.digest(value.assignment_commitment());
+        }
+        HierarchyProtectedEvidenceV1::ViewSource(value) => {
+            writer.id(value.project().as_bytes());
+            writer.id(value.owner().as_bytes());
+            writer.u64(value.owner_generation().get());
+            writer.id(value.export().as_bytes());
+            writer.id(value.view().as_bytes());
+            writer.u64(value.view_revision().get());
+            writer.descriptor(value.view_descriptor())?;
+            writer.digest(value.source_handle_commitment());
+            writer.digest(value.retention_proof_commitment());
+            match (
+                value.source_incarnation(),
+                value.source_node(),
+                value.source_namespace_generation(),
+                value.source_assignment_epoch(),
+                value.current_observation_set_commitment(),
+            ) {
+                (None, None, None, None, None) => writer.u8(0),
+                (
+                    Some(incarnation),
+                    Some(node),
+                    Some(namespace),
+                    Some(epoch),
+                    Some(observation),
+                ) => {
+                    writer.u8(1);
+                    writer.id(incarnation.as_bytes());
+                    writer.id(node.as_bytes());
+                    writer.u64(namespace.get());
+                    writer.u64(epoch.get());
+                    writer.digest(observation);
+                }
+                _ => return None,
+            }
+        }
+        HierarchyProtectedEvidenceV1::SlotInventory(value) => {
+            writer.id(value.sandbox().as_bytes());
+            writer.id(value.incarnation().as_bytes());
+            writer.u64(value.namespace_generation().get());
+            writer.id(value.node().as_bytes());
+            writer.u64(value.assignment_epoch().get());
+            writer.digest(value.observation_set_commitment());
+            writer.id(value.destination_slot().as_bytes());
+            match value.state() {
+                SlotInventoryStateV1::Empty => writer.u8(1),
+                SlotInventoryStateV1::ImmediatePredecessor {
+                    attachment,
+                    generation,
+                    recipe_commitment,
+                } => {
+                    writer.u8(2);
+                    writer.id(attachment.as_bytes());
+                    writer.u64(generation.get());
+                    writer.digest(*recipe_commitment);
+                }
+            }
+            writer.digest(value.inventory_commitment());
+        }
+        HierarchyProtectedEvidenceV1::AttachmentAuthority(value) => {
+            writer.id(value.attachment().as_bytes());
+            writer.u64(value.desired_generation().get());
+            writer.digest(value.request_commitment());
+            writer.digest(value.policy_commitment());
+            writer.digest(value.lease_commitment());
+        }
+        HierarchyProtectedEvidenceV1::DetachAuthority(value) => {
+            writer.id(value.attachment().as_bytes());
+            writer.u64(value.attachment_generation().get());
+            writer.digest(value.request_commitment());
+            writer.digest(value.policy_commitment());
+        }
+        HierarchyProtectedEvidenceV1::DetachCompletion(value) => {
+            writer.id(value.project().as_bytes());
+            writer.u64(value.tree_generation().get());
+            writer.id(value.attachment().as_bytes());
+            writer.u64(value.attachment_generation().get());
+            writer.digest(value.detach_commitment());
+            writer.digest(value.detach_history_commitment());
+            writer.digest(value.inventory_commitment());
+            writer.digest(value.completion_commitment());
+        }
+        HierarchyProtectedEvidenceV1::TransactionCompletion(value) => {
+            writer.id(value.project().as_bytes());
+            writer.u64(value.tree_generation().get());
+            writer.digest(value.plan_commitment());
+            writer.digest(value.transaction_state_commitment());
+            writer.digest(value.terminal_heads_commitment());
+            writer.digest(value.completion_commitment());
+        }
+        HierarchyProtectedEvidenceV1::SnapshotRecoveryAuthority(value) => {
+            writer.id(value.project().as_bytes());
+            writer.id(value.snapshot().as_bytes());
+            writer.digest(value.preparation_commitment());
+            writer.u8(match value.decision() {
+                PreparedSnapshotRecoveryDecisionV1::Continue => 1,
+                PreparedSnapshotRecoveryDecisionV1::Rollback => 2,
+            });
+            writer.digest(value.authority_commitment());
+        }
+        HierarchyProtectedEvidenceV1::StageTransition(value) => {
+            writer.id(value.attachment().as_bytes());
+            writer.u64(value.attachment_generation().get());
+            writer.digest(value.recipe_commitment());
+            writer.u8(value.from() as u8);
+            writer.u8(value.to() as u8);
+            writer.digest(value.inventory_commitment());
+        }
+        HierarchyProtectedEvidenceV1::RebootRealizationInventory(value) => {
+            writer.id(value.attachment().as_bytes());
+            writer.u64(value.attachment_generation().get());
+            writer.digest(value.recipe_commitment());
+            writer.u8(reboot_inventory_state_code(value.state()));
+            writer.replacement(value.recoverable_predecessor());
+            writer.digest(value.inventory_commitment());
+        }
+        HierarchyProtectedEvidenceV1::PublishedRollbackAuthority(value) => {
+            writer.id(value.attachment().as_bytes());
+            writer.u64(value.attachment_generation().get());
+            writer.digest(value.recipe_commitment());
+            writer.digest(value.authority_commitment());
+        }
+        HierarchyProtectedEvidenceV1::PreparedRealizationAuthority(value) => {
+            writer.id(value.attachment().as_bytes());
+            writer.u64(value.attachment_generation().get());
+            writer.digest(value.recipe_commitment());
+            writer.u8(match value.decision() {
+                PreparedRealizationRecoveryDecisionV1::Continue => 1,
+                PreparedRealizationRecoveryDecisionV1::Rollback => 2,
+            });
+            writer.digest(value.authority_commitment());
+        }
+        HierarchyProtectedEvidenceV1::DetachRebootInventory(value) => {
+            writer.id(value.attachment().as_bytes());
+            writer.u64(value.attachment_generation().get());
+            writer.digest(value.detach_commitment());
+            writer.u8(value.stage() as u8);
+            writer.digest(value.inventory_commitment());
+        }
+    }
+    Some(writer.finish())
+}
+
+/// Decodes one complete canonical saved claim without issuing live evidence.
+pub fn decode_hierarchy_protected_evidence_v1(
+    bytes: &[u8],
+) -> Option<HierarchyProtectedEvidenceV1> {
+    let mut cursor = Cursor::new(bytes)?;
+    let evidence = match cursor.tag {
+        1 => HierarchyProtectedEvidenceV1::InspectionGrant(
+            RecordedInspectionGrantV1::from_recorded_parts(
+                cursor.project()?,
+                cursor.sandbox()?,
+                cursor.desired_generation()?,
+                cursor.sandbox()?,
+                match cursor.reader.u8().ok()? {
+                    1 => InspectionGrantModeV1::Stable,
+                    2 => InspectionGrantModeV1::LiveKernelCoupled,
+                    _ => return None,
+                },
+                cursor.revision()?,
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        2 => HierarchyProtectedEvidenceV1::SnapshotManifest(
+            RecordedSnapshotManifestV1::from_recorded_parts(
+                cursor.project()?,
+                cursor.sandbox()?,
+                SnapshotId::from_bytes(cursor.reader.array().ok()?),
+                cursor.desired_generation()?,
+                cursor.descriptor()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        3 => HierarchyProtectedEvidenceV1::LiveInspection(
+            RecordedLiveInspectionObservationV1::from_recorded_parts(
+                cursor.project()?,
+                cursor.sandbox()?,
+                cursor.desired_generation()?,
+                IncarnationId::from_bytes(cursor.reader.array().ok()?),
+                NamespaceGeneration::new(cursor.reader.u64().ok()?),
+                AssignmentEpoch::new(cursor.reader.u64().ok()?),
+                NodeId::from_bytes(cursor.reader.array().ok()?),
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        4 => HierarchyProtectedEvidenceV1::Assignment(
+            RecordedAssignmentEvidenceV1::from_recorded_parts(
+                cursor.project()?,
+                cursor.sandbox()?,
+                cursor.desired_generation()?,
+                IncarnationId::from_bytes(cursor.reader.array().ok()?),
+                NamespaceGeneration::new(cursor.reader.u64().ok()?),
+                AssignmentEpoch::new(cursor.reader.u64().ok()?),
+                NodeId::from_bytes(cursor.reader.array().ok()?),
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        5 => {
+            let project = cursor.project()?;
+            let owner = cursor.sandbox()?;
+            let owner_generation = cursor.desired_generation()?;
+            let export = ExportId::from_bytes(cursor.reader.array().ok()?);
+            let view = ViewId::from_bytes(cursor.reader.array().ok()?);
+            let view_revision = cursor.revision()?;
+            let descriptor = cursor.descriptor()?;
+            let source_handle = cursor.reader.digest().ok()?;
+            let retention = cursor.reader.digest().ok()?;
+            let live = cursor.reader.u8().ok()?;
+            let (incarnation, node, namespace_generation, assignment_epoch, observation) =
+                match live {
+                    0 => (None, None, None, None, None),
+                    1 => (
+                        Some(IncarnationId::from_bytes(cursor.reader.array().ok()?)),
+                        Some(NodeId::from_bytes(cursor.reader.array().ok()?)),
+                        Some(NamespaceGeneration::new(cursor.reader.u64().ok()?)),
+                        Some(AssignmentEpoch::new(cursor.reader.u64().ok()?)),
+                        Some(cursor.reader.digest().ok()?),
+                    ),
+                    _ => return None,
+                };
+            HierarchyProtectedEvidenceV1::ViewSource(
+                RecordedViewSourceEvidenceV1::from_recorded_parts(
+                            project,
+                    owner,
+                    owner_generation,
+                    export,
+                    view,
+                    view_revision,
+                    descriptor,
+                    source_handle,
+                    retention,
+                    incarnation,
+                    node,
+                    namespace_generation,
+                    assignment_epoch,
+                    observation,
+                ),
+            )
+        }
+        6 => {
+            let sandbox = cursor.sandbox()?;
+            let incarnation = IncarnationId::from_bytes(cursor.reader.array().ok()?);
+            let namespace_generation = NamespaceGeneration::new(cursor.reader.u64().ok()?);
+            let node = NodeId::from_bytes(cursor.reader.array().ok()?);
+            let assignment_epoch = AssignmentEpoch::new(cursor.reader.u64().ok()?);
+            let observation = cursor.reader.digest().ok()?;
+            let slot = AttachmentSlotId::from_bytes(cursor.reader.array().ok()?);
+            let state = match cursor.reader.u8().ok()? {
+                1 => SlotInventoryStateV1::Empty,
+                2 => SlotInventoryStateV1::ImmediatePredecessor {
+                    attachment: AttachmentId::from_bytes(cursor.reader.array().ok()?),
+                    generation: cursor.desired_generation()?,
+                    recipe_commitment: cursor.reader.digest().ok()?,
+                },
+                _ => return None,
+            };
+            HierarchyProtectedEvidenceV1::SlotInventory(
+                RecordedSlotInventoryEvidenceV1::from_recorded_parts(
+                            sandbox,
+                    incarnation,
+                    namespace_generation,
+                    node,
+                    assignment_epoch,
+                    observation,
+                    slot,
+                    state,
+                    cursor.reader.digest().ok()?,
+                ),
+            )
+        }
+        7 => HierarchyProtectedEvidenceV1::AttachmentAuthority(
+            RecordedAttachmentAuthorityV1::from_recorded_parts(
+                    AttachmentId::from_bytes(cursor.reader.array().ok()?),
+                cursor.desired_generation()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        8 => HierarchyProtectedEvidenceV1::DetachAuthority(
+            RecordedDetachAuthorityV1::from_recorded_parts(
+                    AttachmentId::from_bytes(cursor.reader.array().ok()?),
+                cursor.desired_generation()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        9 => HierarchyProtectedEvidenceV1::DetachCompletion(
+            RecordedDetachCompletionV1::from_recorded_parts(
+                cursor.project()?,
+                cursor.revision()?,
+                AttachmentId::from_bytes(cursor.reader.array().ok()?),
+                cursor.desired_generation()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        10 => HierarchyProtectedEvidenceV1::TransactionCompletion(
+            RecordedRealizationTransactionCompletionV1::from_recorded_parts(
+                cursor.project()?,
+                cursor.revision()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        11 => HierarchyProtectedEvidenceV1::SnapshotRecoveryAuthority(
+            RecordedSnapshotRecoveryAuthorityV1::from_recorded_parts(
+                cursor.project()?,
+                SnapshotId::from_bytes(cursor.reader.array().ok()?),
+                cursor.reader.digest().ok()?,
+                match cursor.reader.u8().ok()? {
+                    1 => PreparedSnapshotRecoveryDecisionV1::Continue,
+                    2 => PreparedSnapshotRecoveryDecisionV1::Rollback,
+                    _ => return None,
+                },
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        12 => HierarchyProtectedEvidenceV1::StageTransition(
+            RecordedStageTransitionV1::from_recorded_parts(
+                    AttachmentId::from_bytes(cursor.reader.array().ok()?),
+                cursor.desired_generation()?,
+                cursor.reader.digest().ok()?,
+                realization_stage(cursor.reader.u8().ok()?)?,
+                realization_stage(cursor.reader.u8().ok()?)?,
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        13 => HierarchyProtectedEvidenceV1::RebootRealizationInventory(
+            RecordedRebootRealizationInventoryV1::from_recorded_parts(
+                    AttachmentId::from_bytes(cursor.reader.array().ok()?),
+                cursor.desired_generation()?,
+                cursor.reader.digest().ok()?,
+                reboot_inventory_state(cursor.reader.u8().ok()?)?,
+                cursor.replacement()?,
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        14 => HierarchyProtectedEvidenceV1::PublishedRollbackAuthority(
+            RecordedPublishedRollbackAuthorityV1::from_recorded_parts(
+                    AttachmentId::from_bytes(cursor.reader.array().ok()?),
+                cursor.desired_generation()?,
+                cursor.reader.digest().ok()?,
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        15 => HierarchyProtectedEvidenceV1::PreparedRealizationAuthority(
+            RecordedPreparedRealizationAuthorityV1::from_recorded_parts(
+                    AttachmentId::from_bytes(cursor.reader.array().ok()?),
+                cursor.desired_generation()?,
+                cursor.reader.digest().ok()?,
+                match cursor.reader.u8().ok()? {
+                    1 => PreparedRealizationRecoveryDecisionV1::Continue,
+                    2 => PreparedRealizationRecoveryDecisionV1::Rollback,
+                    _ => return None,
+                },
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        16 => HierarchyProtectedEvidenceV1::DetachRebootInventory(
+            RecordedDetachRebootInventoryV1::from_recorded_parts(
+                    AttachmentId::from_bytes(cursor.reader.array().ok()?),
+                cursor.desired_generation()?,
+                cursor.reader.digest().ok()?,
+                detach_stage(cursor.reader.u8().ok()?)?,
+                cursor.reader.digest().ok()?,
+            ),
+        ),
+        _ => return None,
+    };
+    cursor.reader.finish().ok()?;
+    (encode_hierarchy_protected_evidence_v1(&evidence)?.as_slice() == bytes).then_some(evidence)
+}
+
+fn canonical_evidence(evidence: &HierarchyProtectedEvidenceV1) -> bool {
+    let identity = evidence.identity();
+    identity.chunks_exact(16).all(|part| part != [0; 16])
+        && evidence_digests(evidence)
+            .into_iter()
+            .all(|digest| digest.as_bytes() != &[0; 32])
+        && evidence_generations(evidence)
+            .into_iter()
+            .all(|generation| generation != 0 && generation != u64::MAX)
+        && canonical_recovery_evidence(evidence)
+}
+
+fn canonical_recovery_evidence(evidence: &HierarchyProtectedEvidenceV1) -> bool {
+    match evidence {
+        HierarchyProtectedEvidenceV1::StageTransition(value) => matches!(
+            (value.from(), value.to()),
+            (RealizationStageV1::Planned, RealizationStageV1::Prepared)
+                | (RealizationStageV1::Prepared, RealizationStageV1::Published)
+                | (RealizationStageV1::Published, RealizationStageV1::Verified)
+                | (RealizationStageV1::Verified, RealizationStageV1::Draining)
+                | (RealizationStageV1::Draining, RealizationStageV1::Reaped)
+                | (RealizationStageV1::Verified, RealizationStageV1::Reaped)
+                | (
+                    RealizationStageV1::Planned | RealizationStageV1::Prepared,
+                    RealizationStageV1::Aborted
+                )
+                | (
+                    RealizationStageV1::Published
+                        | RealizationStageV1::Verified
+                        | RealizationStageV1::Draining,
+                    RealizationStageV1::Faulted
+                )
+        ),
+        HierarchyProtectedEvidenceV1::RebootRealizationInventory(value) => {
+            value.recoverable_predecessor().is_none_or(|replacement| {
+                replacement.successor() == value.attachment()
+                    && replacement.predecessor().as_bytes() != &[0; 16]
+                    && replacement.predecessor() != replacement.successor()
+                    && replacement.predecessor_recipe_commitment().as_bytes() != &[0; 32]
+                    && replacement.transaction_commitment().as_bytes() != &[0; 32]
+            })
+        }
+        _ => true,
+    }
+}
+
+fn evidence_digests(evidence: &HierarchyProtectedEvidenceV1) -> Vec<ObjectDigest> {
+    match evidence {
+        HierarchyProtectedEvidenceV1::InspectionGrant(value) => vec![value.grant_commitment()],
+        HierarchyProtectedEvidenceV1::SnapshotManifest(value) => vec![
+            value.manifest().digest(),
+            value.export_closure_commitment(),
+            value.retention_plan_commitment(),
+            value.preparation_commitment(),
+            value.retention_proof_commitment(),
+        ],
+        HierarchyProtectedEvidenceV1::LiveInspection(value) => vec![
+            value.observation_set_commitment(),
+            value.observation_commitment(),
+        ],
+        HierarchyProtectedEvidenceV1::Assignment(value) => vec![
+            value.observation_set_commitment(),
+            value.assignment_commitment(),
+        ],
+        HierarchyProtectedEvidenceV1::ViewSource(value) => {
+            let mut values = vec![
+                value.view_descriptor().digest(),
+                value.source_handle_commitment(),
+                value.retention_proof_commitment(),
+            ];
+            values.extend(value.current_observation_set_commitment());
+            values
+        }
+        HierarchyProtectedEvidenceV1::SlotInventory(value) => vec![
+            value.observation_set_commitment(),
+            value.inventory_commitment(),
+        ],
+        HierarchyProtectedEvidenceV1::AttachmentAuthority(value) => vec![
+            value.request_commitment(),
+            value.policy_commitment(),
+            value.lease_commitment(),
+        ],
+        HierarchyProtectedEvidenceV1::DetachAuthority(value) => {
+            vec![value.request_commitment(), value.policy_commitment()]
+        }
+        HierarchyProtectedEvidenceV1::DetachCompletion(value) => vec![
+            value.detach_commitment(),
+            value.detach_history_commitment(),
+            value.inventory_commitment(),
+            value.completion_commitment(),
+        ],
+        HierarchyProtectedEvidenceV1::TransactionCompletion(value) => vec![
+            value.plan_commitment(),
+            value.transaction_state_commitment(),
+            value.terminal_heads_commitment(),
+            value.completion_commitment(),
+        ],
+        HierarchyProtectedEvidenceV1::SnapshotRecoveryAuthority(value) => {
+            vec![value.preparation_commitment(), value.authority_commitment()]
+        }
+        HierarchyProtectedEvidenceV1::StageTransition(value) => {
+            vec![value.recipe_commitment(), value.inventory_commitment()]
+        }
+        HierarchyProtectedEvidenceV1::RebootRealizationInventory(value) => {
+            let mut digests = vec![value.recipe_commitment(), value.inventory_commitment()];
+            if let Some(replacement) = value.recoverable_predecessor() {
+                digests.push(replacement.predecessor_recipe_commitment());
+                digests.push(replacement.transaction_commitment());
+            }
+            digests
+        }
+        HierarchyProtectedEvidenceV1::PublishedRollbackAuthority(value) => {
+            vec![value.recipe_commitment(), value.authority_commitment()]
+        }
+        HierarchyProtectedEvidenceV1::PreparedRealizationAuthority(value) => {
+            vec![value.recipe_commitment(), value.authority_commitment()]
+        }
+        HierarchyProtectedEvidenceV1::DetachRebootInventory(value) => {
+            vec![value.detach_commitment(), value.inventory_commitment()]
+        }
+    }
+}
+
+fn evidence_generations(evidence: &HierarchyProtectedEvidenceV1) -> Vec<u64> {
+    match evidence {
+        HierarchyProtectedEvidenceV1::InspectionGrant(value) => vec![
+            value.observer_generation().get(),
+            value.revocation_generation().get(),
+        ],
+        HierarchyProtectedEvidenceV1::SnapshotManifest(value) => {
+            vec![value.captured_generation().get()]
+        }
+        HierarchyProtectedEvidenceV1::LiveInspection(value) => vec![
+            value.desired_generation().get(),
+            value.namespace_generation().get(),
+            value.assignment_epoch().get(),
+        ],
+        HierarchyProtectedEvidenceV1::Assignment(value) => vec![
+            value.desired_generation().get(),
+            value.namespace_generation().get(),
+            value.assignment_epoch().get(),
+        ],
+        HierarchyProtectedEvidenceV1::ViewSource(value) => {
+            let mut values = vec![value.owner_generation().get(), value.view_revision().get()];
+            values.extend(
+                value
+                    .source_namespace_generation()
+                    .map(NamespaceGeneration::get),
+            );
+            values.extend(value.source_assignment_epoch().map(AssignmentEpoch::get));
+            values
+        }
+        HierarchyProtectedEvidenceV1::SlotInventory(value) => vec![
+            value.namespace_generation().get(),
+            value.assignment_epoch().get(),
+        ],
+        HierarchyProtectedEvidenceV1::AttachmentAuthority(value) => {
+            vec![value.desired_generation().get()]
+        }
+        HierarchyProtectedEvidenceV1::DetachAuthority(value) => {
+            vec![value.attachment_generation().get()]
+        }
+        HierarchyProtectedEvidenceV1::DetachCompletion(value) => vec![
+            value.tree_generation().get(),
+            value.attachment_generation().get(),
+        ],
+        HierarchyProtectedEvidenceV1::TransactionCompletion(value) => {
+            vec![value.tree_generation().get()]
+        }
+        HierarchyProtectedEvidenceV1::SnapshotRecoveryAuthority(_) => Vec::new(),
+        HierarchyProtectedEvidenceV1::StageTransition(value) => {
+            vec![value.attachment_generation().get()]
+        }
+        HierarchyProtectedEvidenceV1::RebootRealizationInventory(value) => {
+            let mut generations = vec![value.attachment_generation().get()];
+            if let Some(replacement) = value.recoverable_predecessor() {
+                generations.push(replacement.predecessor_generation().get());
+            }
+            generations
+        }
+        HierarchyProtectedEvidenceV1::PublishedRollbackAuthority(value) => {
+            vec![value.attachment_generation().get()]
+        }
+        HierarchyProtectedEvidenceV1::PreparedRealizationAuthority(value) => {
+            vec![value.attachment_generation().get()]
+        }
+        HierarchyProtectedEvidenceV1::DetachRebootInventory(value) => {
+            vec![value.attachment_generation().get()]
+        }
+    }
+}
+
+fn copy_id(target: &mut [u8; 48], offset: usize, value: &[u8; 16]) {
+    target[offset..offset + 16].copy_from_slice(value);
+}
+
+fn reboot_inventory_state_code(state: RebootInventoryStateV1) -> u8 {
+    match state {
+        RebootInventoryStateV1::Absent => 1,
+        RebootInventoryStateV1::Prepared => 2,
+        RebootInventoryStateV1::Published => 3,
+        RebootInventoryStateV1::Verified => 4,
+        RebootInventoryStateV1::Draining => 5,
+        RebootInventoryStateV1::Reaped => 6,
+        RebootInventoryStateV1::Aborted => 7,
+        RebootInventoryStateV1::Faulted => 8,
+    }
+}
+
+fn reboot_inventory_state(code: u8) -> Option<RebootInventoryStateV1> {
+    match code {
+        1 => Some(RebootInventoryStateV1::Absent),
+        2 => Some(RebootInventoryStateV1::Prepared),
+        3 => Some(RebootInventoryStateV1::Published),
+        4 => Some(RebootInventoryStateV1::Verified),
+        5 => Some(RebootInventoryStateV1::Draining),
+        6 => Some(RebootInventoryStateV1::Reaped),
+        7 => Some(RebootInventoryStateV1::Aborted),
+        8 => Some(RebootInventoryStateV1::Faulted),
+        _ => None,
+    }
+}
+
+fn realization_stage(code: u8) -> Option<RealizationStageV1> {
+    match code {
+        0 => Some(RealizationStageV1::Planned),
+        1 => Some(RealizationStageV1::Prepared),
+        2 => Some(RealizationStageV1::Published),
+        3 => Some(RealizationStageV1::Verified),
+        4 => Some(RealizationStageV1::Draining),
+        5 => Some(RealizationStageV1::Reaped),
+        6 => Some(RealizationStageV1::Aborted),
+        7 => Some(RealizationStageV1::Faulted),
+        _ => None,
+    }
+}
+
+fn detach_stage(code: u8) -> Option<DetachStageV1> {
+    match code {
+        0 => Some(DetachStageV1::Planned),
+        1 => Some(DetachStageV1::Detached),
+        2 => Some(DetachStageV1::Verified),
+        3 => Some(DetachStageV1::Completed),
+        4 => Some(DetachStageV1::Aborted),
+        5 => Some(DetachStageV1::Faulted),
+        _ => None,
+    }
+}
+
+// Header and typed evidence semantics stay here; Core owns byte boundaries.
+struct Cursor<'a> {
+    reader: BoundedReader<'a, ()>,
+    tag: u8,
+}
+
+struct Writer {
+    bytes: Vec<u8>,
+}
+
+impl Writer {
+    fn new(tag: u8) -> Self {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&VERSION.to_be_bytes());
+        bytes.extend_from_slice(&[tag, 0]);
+        Self { bytes }
+    }
+
+    fn finish(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    fn u8(&mut self, value: u8) {
+        self.bytes.push(value);
+    }
+
+    fn u64(&mut self, value: u64) {
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn id(&mut self, value: &[u8; 16]) {
+        self.bytes.extend_from_slice(value);
+    }
+
+    fn digest(&mut self, value: ObjectDigest) {
+        self.bytes.extend_from_slice(value.as_bytes());
+    }
+
+    fn descriptor(&mut self, value: &ObjectDescriptor) -> Option<()> {
+        let media = value.media_type().as_str().as_bytes();
+        let length = u16::try_from(media.len()).ok()?;
+        self.bytes.extend_from_slice(&length.to_be_bytes());
+        self.bytes.extend_from_slice(media);
+        self.digest(value.digest());
+        self.u64(value.encoded_size());
+        Some(())
+    }
+
+    fn replacement(&mut self, value: Option<ReplacementTransactionV1>) {
+        let Some(value) = value else {
+            self.u8(0);
+            return;
+        };
+        self.u8(1);
+        self.id(value.predecessor().as_bytes());
+        self.id(value.successor().as_bytes());
+        self.u64(value.predecessor_generation().get());
+        self.digest(value.predecessor_recipe_commitment());
+        self.digest(value.transaction_commitment());
+    }
+}
+
+impl<'a> Cursor<'a> {
+    fn new(bytes: &'a [u8]) -> Option<Self> {
+        if bytes.len() < 12
+            || &bytes[..8] != MAGIC
+            || u16::from_be_bytes(bytes[8..10].try_into().ok()?) != VERSION
+            || bytes[11] != 0
+        {
+            return None;
+        }
+        Some(Self {
+            reader: BoundedReader::new(&bytes[12..], |_| ()),
+            tag: bytes[10],
+        })
+    }
+
+    fn project(&mut self) -> Option<ProjectId> {
+        Some(ProjectId::from_bytes(self.reader.array().ok()?))
+    }
+
+    fn sandbox(&mut self) -> Option<SandboxId> {
+        Some(SandboxId::from_bytes(self.reader.array().ok()?))
+    }
+
+    fn revision(&mut self) -> Option<Revision> {
+        Some(Revision::new(self.reader.u64().ok()?))
+    }
+
+    fn desired_generation(&mut self) -> Option<DesiredGeneration> {
+        Some(DesiredGeneration::new(self.reader.u64().ok()?))
+    }
+
+    fn descriptor(&mut self) -> Option<ObjectDescriptor> {
+        let media_length = usize::from(self.reader.u16().ok()?);
+        if media_length == 0 || media_length > MAXIMUM_MEDIA_TYPE_BYTES {
+            return None;
+        }
+        let media_type =
+            MediaType::new(std::str::from_utf8(self.reader.bytes(media_length).ok()?).ok()?)
+                .ok()?;
+        Some(ObjectDescriptor::new(
+            media_type,
+            self.reader.digest().ok()?,
+            self.reader.u64().ok()?,
+        ))
+    }
+
+    fn replacement(&mut self) -> Option<Option<ReplacementTransactionV1>> {
+        match self.reader.u8().ok()? {
+            0 => Some(None),
+            1 => Some(Some(ReplacementTransactionV1::from_durable_parts(
+                AttachmentId::from_bytes(self.reader.array().ok()?),
+                AttachmentId::from_bytes(self.reader.array().ok()?),
+                self.desired_generation()?,
+                self.reader.digest().ok()?,
+                self.reader.digest().ok()?,
+            ))),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod saved_claim_tests {
+    use super::*;
+
+    // These are canonical historical assertions, deliberately detached from
+    // native owners. Neither this fixture nor the decoder emits live evidence.
+    fn all_claims() -> Vec<HierarchyProtectedEvidenceV1> {
+        vec![
+            HierarchyProtectedEvidenceV1::InspectionGrant(RecordedInspectionGrantV1::from_recorded_parts(
+                ProjectId::from_bytes([1; 16]),
+                SandboxId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                SandboxId::from_bytes([1; 16]),
+                InspectionGrantModeV1::Stable,
+                Revision::new(1),
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::SnapshotManifest(RecordedSnapshotManifestV1::from_recorded_parts(
+                ProjectId::from_bytes([1; 16]),
+                SandboxId::from_bytes([1; 16]),
+                SnapshotId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                aos_sandbox_core::descriptor_for_bytes(MediaType::new("application/x.aos.snapshot").unwrap(), b"saved data"),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::LiveInspection(RecordedLiveInspectionObservationV1::from_recorded_parts(
+                ProjectId::from_bytes([1; 16]),
+                SandboxId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                IncarnationId::from_bytes([1; 16]),
+                NamespaceGeneration::new(1),
+                AssignmentEpoch::new(1),
+                NodeId::from_bytes([1; 16]),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::Assignment(RecordedAssignmentEvidenceV1::from_recorded_parts(
+                ProjectId::from_bytes([1; 16]),
+                SandboxId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                IncarnationId::from_bytes([1; 16]),
+                NamespaceGeneration::new(1),
+                AssignmentEpoch::new(1),
+                NodeId::from_bytes([1; 16]),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::ViewSource(RecordedViewSourceEvidenceV1::from_recorded_parts(
+                ProjectId::from_bytes([1; 16]),
+                SandboxId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                ExportId::from_bytes([1; 16]),
+                ViewId::from_bytes([1; 16]),
+                Revision::new(1),
+                aos_sandbox_core::descriptor_for_bytes(MediaType::new("application/x.aos.snapshot").unwrap(), b"saved data"),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32]),
+                None,
+                None,
+                None,
+                None,
+                None
+            )),
+            HierarchyProtectedEvidenceV1::SlotInventory(RecordedSlotInventoryEvidenceV1::from_recorded_parts(
+                SandboxId::from_bytes([1; 16]),
+                IncarnationId::from_bytes([1; 16]),
+                NamespaceGeneration::new(1),
+                NodeId::from_bytes([1; 16]),
+                AssignmentEpoch::new(1),
+                ObjectDigest::from_bytes([3; 32]),
+                AttachmentSlotId::from_bytes([1; 16]),
+                SlotInventoryStateV1::Empty,
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::AttachmentAuthority(RecordedAttachmentAuthorityV1::from_recorded_parts(
+                AttachmentId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::DetachAuthority(RecordedDetachAuthorityV1::from_recorded_parts(
+                AttachmentId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::DetachCompletion(RecordedDetachCompletionV1::from_recorded_parts(
+                ProjectId::from_bytes([1; 16]),
+                Revision::new(1),
+                AttachmentId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::TransactionCompletion(RecordedRealizationTransactionCompletionV1::from_recorded_parts(
+                ProjectId::from_bytes([1; 16]),
+                Revision::new(1),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::SnapshotRecoveryAuthority(RecordedSnapshotRecoveryAuthorityV1::from_recorded_parts(
+                ProjectId::from_bytes([1; 16]),
+                SnapshotId::from_bytes([1; 16]),
+                ObjectDigest::from_bytes([3; 32]),
+                PreparedSnapshotRecoveryDecisionV1::Continue,
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::StageTransition(RecordedStageTransitionV1::from_recorded_parts(
+                AttachmentId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                ObjectDigest::from_bytes([3; 32]),
+                RealizationStageV1::Planned,
+                RealizationStageV1::Prepared,
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::RebootRealizationInventory(RecordedRebootRealizationInventoryV1::from_recorded_parts(
+                AttachmentId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                ObjectDigest::from_bytes([3; 32]),
+                RebootInventoryStateV1::Absent,
+                None,
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::PublishedRollbackAuthority(RecordedPublishedRollbackAuthorityV1::from_recorded_parts(
+                AttachmentId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::PreparedRealizationAuthority(RecordedPreparedRealizationAuthorityV1::from_recorded_parts(
+                AttachmentId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                ObjectDigest::from_bytes([3; 32]),
+                PreparedRealizationRecoveryDecisionV1::Continue,
+                ObjectDigest::from_bytes([3; 32])
+            )),
+            HierarchyProtectedEvidenceV1::DetachRebootInventory(RecordedDetachRebootInventoryV1::from_recorded_parts(
+                AttachmentId::from_bytes([1; 16]),
+                DesiredGeneration::new(1),
+                ObjectDigest::from_bytes([3; 32]),
+                DetachStageV1::Planned,
+                ObjectDigest::from_bytes([3; 32])
+            )),
+        ]
+    }
+
+    #[test]
+    fn all_sixteen_historical_claim_families_keep_their_exact_canonical_bytes() {
+        for (index, claim) in all_claims().into_iter().enumerate() {
+            let bytes = encode_hierarchy_protected_evidence_v1(&claim).unwrap();
+            let decoded = decode_hierarchy_protected_evidence_v1(&bytes).unwrap();
+
+            assert_eq!(decoded.tag(), u8::try_from(index + 1).unwrap());
+            assert_eq!(decoded.identity(), claim.identity());
+            assert_eq!(encode_hierarchy_protected_evidence_v1(&decoded).unwrap(), bytes);
+            assert!(decode_hierarchy_protected_evidence_v1(&bytes[..bytes.len() - 1]).is_none());
+
+            let mut trailing = bytes.clone();
+            trailing.push(0);
+            assert!(decode_hierarchy_protected_evidence_v1(&trailing).is_none());
+
+            let mut reserved = bytes;
+            reserved[11] = 1;
+            assert!(decode_hierarchy_protected_evidence_v1(&reserved).is_none());
+        }
+    }
+}

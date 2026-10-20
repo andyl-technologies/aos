@@ -8,6 +8,8 @@
   aos-selinux-kernel-policy-readback,
   unitContract,
   identities,
+  cacheSignerGid,
+  environmentProvision ? null,
 }: let
   support = ./_aos-selinux-production-policy;
   sourcePolicy = "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
@@ -18,17 +20,19 @@
 in
   mkDerivation {
     pname = "aos-normal-root-startup-profile";
-    version = "1";
+    version = if environmentProvision == null then "2" else "3";
     src = ./aos-normal-root-profile.py;
     buildDeps = [buildPackages.python3 buildPackages.patchelf buildPackages.binutils buildPackages.setools];
     runtimeDeps = [];
     propagatedDeps = [];
     outputChecks = {};
     inherit unitContract;
+    environmentProvisionRoot = if environmentProvision == null then "" else toString environmentProvision;
     identitiesJson = builtins.toJSON identities;
     passAsFile = ["unitContract" "identitiesJson"];
     exportReferencesGraph.normalRootRuntimeClosure = [aos-sandboxd];
-    nukeRefsKeep = [aos-sandboxd systemd aos-selinux-production-policy aos-selinux-kernel-policy-readback];
+    nukeRefsKeep = [aos-sandboxd systemd aos-selinux-production-policy aos-selinux-kernel-policy-readback]
+      ++ (if environmentProvision == null then [] else [environmentProvision]);
 
     phases = [
       {
@@ -55,6 +59,11 @@ in
           # as a read-only profile evidence file; do not weaken shared immutable
           # measurement or grant Root generic access to other policy packages.
           install -m 0444 ${sourcePolicy} "$out/source-policy.33"
+          if test -n "$environmentProvisionRoot"; then
+            set -- --environment-provision-root "$environmentProvisionRoot"
+          else
+            set --
+          fi
           ${buildPackages.python3}/bin/python3 -B "$src" \
             --attrs "$NIX_ATTRS_JSON_FILE" \
             --helpers ${./aos-selinux-runtime-manifest.py} \
@@ -64,9 +73,10 @@ in
             --source-policy "$out/source-policy.33" \
             --effective-matrix "$out/effective-policy.tsv" \
             --unit-contract "$unitContractPath" --identities "$identitiesJsonPath" \
+            --cache-signer-gid ${toString cacheSignerGid} \
             --patchelf ${buildPackages.patchelf}/bin/patchelf \
             --readelf ${buildPackages.binutils}/bin/readelf \
-            --output "$out/profile.json"
+            --output "$out/profile.json" "$@"
           chmod 0444 "$out/profile.json"
         '';
       }

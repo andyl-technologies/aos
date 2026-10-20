@@ -181,3 +181,16 @@ fn packet_commitment_selects_framing_only_without_adding_claim_or_signature_auth
     assert!(packet_body_bytes(&bytes).is_ok());
     assert!(project_authorization_packet_digest(&bytes).is_ok());
 }
+
+#[test]
+fn consuming_claims_preserve_all_dimensions_and_late_sentinel_refusal() {
+    let mut bytes = resource_packet();
+    let claims = parse_unverified_project_authorization_claims_v2(&bytes).unwrap();
+    let vector = claims.resource_envelope().unwrap();
+    for (index, dimension) in ResourceDimension::ALL.into_iter().enumerate() {
+        assert_eq!(vector.get(dimension), index as u64);
+    }
+    bytes[108..124].fill(0);
+    assert!(matches!(parse_unverified_project_authorization_claims_v2(&bytes), Err(ProjectAuthorizationSourceDataErrorV2::NonCanonical)));
+    assert!(parse_unverified_project_authorization_claims_v2(&legacy_packet()).unwrap().resource_envelope().is_none());
+}

@@ -8,6 +8,9 @@
 /// Errors surfaced by [`crate::SystemdClient`].
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// A selected original retains the actual native/SDK failure at this frontier.
+    #[error("retained Host Systemd {0} did not complete")]
+    HostLaunchRetained(&'static str),
     /// A retained kernel pin for the fixed worker private transport failed.
     #[cfg(target_os = "linux")]
     #[error("worker private transport kernel pin failed: {0}")]
@@ -55,6 +58,7 @@ impl Error {
             #[cfg(target_os = "linux")]
             Self::WorkerPrivateKernel(_) => false,
             Self::Zbus(err) => is_no_such_unit(err),
+            Self::HostLaunchRetained(_) => false,
             Self::SystemdUnavailable(_)
             | Self::Fdo(_)
             | Self::JobSenderDropped(_)

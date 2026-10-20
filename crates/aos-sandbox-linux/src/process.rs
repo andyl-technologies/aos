@@ -18,6 +18,33 @@ use crate::pidfd::PidFd;
 use crate::uapi;
 use crate::{Error, Result};
 
+mod child_lifetime;
+mod guest_ssh;
+pub(crate) use guest_ssh::GuestSshProcessOriginalV1;
+pub use child_lifetime::{ExecutionChildLifetimeOriginalV1, ExecutionChildLifetimeClosedV1,
+    require_child_lifetime_data_v1};
+
+mod run_original;
+pub(crate) use run_original::task_directory_representation_bytes_v3;
+pub use run_original::{
+    FixedProcessRunOriginalV3, FixedProcessRunRefusalV3,
+    run_fixed_descriptor_process_retaining_v4,
+    run_fixed_descriptor_process_observing_network_fork_retaining_v4,
+    run_fixed_process_retaining_v3, run_fixed_process_observing_storage_fork_retaining_v3, run_fixed_capture_process_retaining_v3,
+};
+
+mod spawn_original;
+pub use spawn_original::FixedProcessSpawnFailureV2;
+
+mod storage_fork;
+pub use storage_fork::{NetworkWorkerForkObservationV4, StorageWorkerForkObservationV1};
+use storage_fork::WorkerForkObservationBorrowV4;
+
+mod worker_inherited_limit;
+pub use worker_inherited_limit::{
+    StorageWorkerInheritedLimitOriginalV1, StorageWorkerInheritedLimitRefusalV1,
+};
+
 mod capture;
 mod session;
 pub use capture::{
@@ -41,6 +68,9 @@ pub use session::{
     prepare_fixed_process_driven_invocation_v1,
 };
 
+pub(crate) mod capture_cut;
+pub use capture_cut::FixedProcessCaptureCutV3;
+
 const MAXIMUM_EXECUTABLE_BYTES: usize = 4096;
 const MAXIMUM_ARGUMENTS: usize = 64;
 const MAXIMUM_ARGUMENT_BYTES: usize = 64 * 1024;
@@ -58,6 +88,17 @@ pub(crate) const MAXIMUM_INHERITED_DESCRIPTORS: usize = 4;
 /// Returns an error if Linux cannot disable or verify process dumpability.
 pub fn disable_core_dumps() -> Result<()> {
     uapi::disable_process_dumpability()
+}
+
+/// Observes the calling process's current native descriptor limits.
+///
+/// This read-only observation grants no worker role or resource authority.
+///
+/// # Errors
+///
+/// Returns the actual native error if Linux refuses the fixed limit query.
+pub fn observe_nofile_limit_v1() -> Result<rustix::process::Rlimit> {
+    uapi::observe_nofile_limit_v1()
 }
 
 /// Configures one exact, bounded child invocation.
@@ -177,21 +218,31 @@ fn run_fixed_process_owned(
 }
 
 fn validate_exclusive_reaping_owner() -> Result<()> {
+    let mut original = run_original::ReapingOriginalV3::new();
+    validate_exclusive_reaping_owner_into(&mut original)
+}
+
+fn validate_exclusive_reaping_owner_into(
+    original: &mut run_original::ReapingOriginalV3,
+) -> Result<()> {
     uapi::validate_child_reaping_disposition()?;
 
-    let mut tasks = std::fs::read_dir("/proc/self/task").map_err(|source| Error::Syscall {
+    original.tasks = Some(std::fs::read_dir("/proc/self/task").map_err(|source| Error::Syscall {
         operation: "open process task directory",
         source,
-    })?;
-    let first = tasks.next().transpose().map_err(|source| Error::Syscall {
+    })?);
+    let tasks = original.tasks.as_mut().ok_or_else(|| Error::invalid(
+        "fixed process task directory", "capture is absent",
+    ))?;
+    original.first = tasks.next().transpose().map_err(|source| Error::Syscall {
         operation: "read process task directory",
         source,
     })?;
-    let second = tasks.next().transpose().map_err(|source| Error::Syscall {
+    original.second = tasks.next().transpose().map_err(|source| Error::Syscall {
         operation: "read process task directory",
         source,
     })?;
-    if first.is_none() || second.is_some() {
+    if original.first.is_none() || original.second.is_some() {
         return Err(Error::invalid(
             "fixed process reaping ownership",
             "requires an exactly single-threaded calling process",
@@ -244,7 +295,7 @@ impl PreparedInvocation {
         stdin: Option<BorrowedFd<'_>>,
         inherited: &[BorrowedFd<'_>],
     ) -> Result<SpawnedProcess> {
-        self.spawn_internal(stdin, inherited, SpawnExecution::Path)
+        self.spawn_internal(stdin, inherited, SpawnExecution::Path, None)
     }
 
     fn spawn_from_executable_descriptor(
@@ -253,7 +304,7 @@ impl PreparedInvocation {
         stdin: Option<BorrowedFd<'_>>,
         inherited: &[BorrowedFd<'_>],
     ) -> Result<SpawnedProcess> {
-        self.spawn_internal(stdin, inherited, SpawnExecution::Descriptor(executable))
+        self.spawn_internal(stdin, inherited, SpawnExecution::Descriptor(executable), None)
     }
 
     fn begin_from_executable_descriptor(
@@ -270,6 +321,7 @@ impl PreparedInvocation {
                 uapi::FixedDescriptorExecRecipeV1::LockedNorootV1,
                 None,
             ),
+            None,
         )
     }
 
@@ -286,6 +338,7 @@ impl PreparedInvocation {
             SpawnExecution::PendingDescriptor(
                 executable, uapi::FixedDescriptorExecRecipeV1::LockedNorootV1, Some(cut),
             ),
+            None,
         )
     }
 
@@ -303,6 +356,7 @@ impl PreparedInvocation {
                 uapi::FixedDescriptorExecRecipeV1::NixOfflineNnpV1,
                 None,
             ),
+            None,
         )
     }
 
@@ -311,115 +365,15 @@ impl PreparedInvocation {
         stdin: Option<BorrowedFd<'_>>,
         inherited: &[BorrowedFd<'_>],
         execution: SpawnExecution<'_>,
+        storage_observation: Option<&mut StorageWorkerForkObservationV1>,
     ) -> Result<SpawnedProcess> {
-        let null = rustix::fs::open(
-            "/dev/null",
-            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|error| kernel_error("open(/dev/null)", error))?;
-        let (stdout_read, stdout_write) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)
-            .map_err(|error| kernel_error("pipe(fixed stdout)", error))?;
-        let (stderr_read, stderr_write) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)
-            .map_err(|error| kernel_error("pipe(fixed stderr)", error))?;
-        let null = duplicate_high(null.as_fd())?;
-        let stdout_write = duplicate_high(stdout_write.as_fd())?;
-        let stderr_write = duplicate_high(stderr_write.as_fd())?;
-        let supplied_stdin = stdin.map(duplicate_high).transpose()?;
-        let inherited = inherited
-            .iter()
-            .copied()
-            .map(duplicate_high)
-            .collect::<Result<Vec<_>>>()?;
-        let executable_descriptor = match execution {
-            SpawnExecution::Path => None,
-            SpawnExecution::Descriptor(descriptor)
-            | SpawnExecution::PendingDescriptor(descriptor, _, _) => {
-                Some(duplicate_high(descriptor)?)
-            }
-        };
-        let stdin = supplied_stdin
-            .as_ref()
-            .map_or_else(|| null.as_fd(), |descriptor| descriptor.as_fd());
-        let inherited = inherited
-            .iter()
-            .map(|descriptor| descriptor.as_fd())
-            .collect::<Vec<_>>();
-
-        let (mut guard, exec_status) = match (execution, executable_descriptor.as_ref()) {
-            (SpawnExecution::PendingDescriptor(_, recipe, cut), Some(executable)) => {
-                // Selected driving checks again after high-FD setup and before
-                // entering the unchanged raw recipe/pipe/fork engine. Ordinary
-                // and Nix callers carry None and make no extra clock syscall.
-                if let Some(cut) = cut {
-                    cut.check()?;
-                }
-                let pending = uapi::begin_fixed_execveat_with_recipe(
-                    executable.as_fd(),
-                    &self.argument_zero,
-                    &self.arguments,
-                    stdin,
-                    stdout_write.as_fd(),
-                    stderr_write.as_fd(),
-                    &inherited,
-                    recipe,
-                )?;
-                let (mut raw_guard, status) = pending.into_parts();
-                let guard = ChildGuard::new(raw_guard.pid()?);
-                // The upper guard is armed before the real lower owner disarms.
-                // There is no fallible operation between these two statements.
-                raw_guard.disarm();
-                (guard, Some(status))
-            }
-            (_, Some(executable)) => {
-                let pid = uapi::fork_execveat_fixed_without_authority(
-                    executable.as_fd(),
-                    &self.argument_zero,
-                    &self.arguments,
-                    stdin,
-                    stdout_write.as_fd(),
-                    stderr_write.as_fd(),
-                    &inherited,
-                )?;
-                (ChildGuard::new(pid), None)
-            }
-            (_, None) => {
-                let pid = uapi::posix_spawn_fixed(
-                    &self.executable,
-                    &self.argument_zero,
-                    &self.arguments,
-                    stdin,
-                    stdout_write.as_fd(),
-                    stderr_write.as_fd(),
-                    &inherited,
-                )?;
-                (ChildGuard::new(pid), None)
-            }
-        };
-
-        drop(null);
-        drop(stdout_write);
-        drop(stderr_write);
-        if exec_status.is_some() {
-            return Ok(SpawnedProcess {
-                guard,
-                stdout: stdout_read,
-                stderr: stderr_read,
-                exec_status,
-            });
+        let mut original = spawn_original::FixedProcessSpawnFailureV2::new();
+        match spawn_original::spawn_into_original_v2(
+            self, stdin, inherited, execution, storage_observation, &mut original,
+        ) {
+            Ok(spawned) => Ok(spawned),
+            Err(()) => Err(original.into_ordinary_error()),
         }
-        let raw_pid = u32::try_from(guard.pid.as_raw_nonzero().get())
-            .ok()
-            .and_then(NonZeroU32::new)
-            .ok_or_else(|| Error::invalid("fixed process PID", "must be a positive u32"))?;
-        let pidfd = PidFd::open(raw_pid)?;
-        guard.attach_pidfd(pidfd);
-        Ok(SpawnedProcess {
-            guard,
-            stdout: stdout_read,
-            stderr: stderr_read,
-            exec_status: None,
-        })
     }
 }
 
@@ -437,9 +391,24 @@ struct OutputStream {
     closed: bool,
 }
 
+const FIXED_OUTPUT_CHUNK_BYTES_V3: usize = 8192;
+
 impl OutputStream {
     fn new(descriptor: OwnedFd, maximum: usize) -> Result<Self> {
-        set_nonblocking(&descriptor)?;
+        Self::new_retaining(descriptor, maximum, None)
+    }
+
+    fn new_retaining(
+        descriptor: OwnedFd,
+        maximum: usize,
+        retained: Option<&mut Option<OwnedFd>>,
+    ) -> Result<Self> {
+        if let Err(error) = set_nonblocking(&descriptor) {
+            if let Some(retained) = retained {
+                *retained = Some(descriptor);
+            }
+            return Err(error);
+        }
         Ok(Self {
             descriptor,
             bytes: Vec::with_capacity(maximum.min(8192)),
@@ -449,9 +418,46 @@ impl OutputStream {
     }
 
     fn drain(&mut self) -> Result<bool> {
-        let mut chunk = [0_u8; 8192];
+        self.drain_retaining(None)
+    }
+
+    fn drain_retaining(
+        &mut self,
+        mut rejected: Option<&mut Option<([u8; 8192], usize)>>,
+    ) -> Result<bool> {
+        self.drain_capture_retaining_v3(rejected, None)
+    }
+
+    fn drain_capture_retaining_v3(
+        &mut self,
+        mut rejected: Option<&mut Option<([u8; 8192], usize)>>,
+        mut capture: Option<(FixedProcessCaptureCutV3, &mut capture_cut::CaptureProcessCutOriginalV3)>,
+    ) -> Result<bool> {
+        let mut chunk = [0_u8; FIXED_OUTPUT_CHUNK_BYTES_V3];
         loop {
-            match rustix::io::read(&self.descriptor, &mut chunk) {
+            if let Some((cut, original)) = capture.as_mut() { original.observe(*cut)?; }
+            let native = rustix::io::read(&self.descriptor, &mut chunk);
+            if let Some((_, original)) = capture.as_mut() { original.retain_read_v3(native); }
+            let after = match capture.as_mut() {
+                Some((cut, original)) => original.observe(*cut).map(|_| ()),
+                None => Ok(()),
+            };
+            if after.is_err() {
+                match native {
+                    Ok(count) => {
+                        // Retain the actual positive prefix before selecting
+                        // the failed after sample, including a zero-byte EOF.
+                        if let Some(rejected) = rejected.as_deref_mut() {
+                            *rejected = Some((chunk, count));
+                        }
+                        return Err(capture_cut::marker());
+                    }
+                    Err(error) if capture_cut::read_errno_is_primary_v3(error) =>
+                        return Err(kernel_error("read fixed process output", error)),
+                    Err(_) => return Err(capture_cut::marker()),
+                }
+            }
+            match native {
                 Ok(0) => {
                     self.closed = true;
                     return Ok(false);
@@ -463,6 +469,9 @@ impl OutputStream {
                         .checked_add(count)
                         .is_none_or(|length| length > self.maximum);
                     if exceeds {
+                        if let Some(rejected) = rejected.as_deref_mut() {
+                            *rejected = Some((chunk, count));
+                        }
                         return Ok(true);
                     }
                     self.bytes.extend_from_slice(&chunk[..count]);
@@ -479,81 +488,179 @@ fn supervise(
     spawned: SpawnedProcess,
     request: FixedProcessRequest<'_>,
 ) -> Result<FixedProcessOutcome> {
+    supervise_retaining(spawned, request, None)
+}
+
+fn supervise_retaining(
+    spawned: SpawnedProcess,
+    request: FixedProcessRequest<'_>,
+    retained: Option<&mut run_original::SupervisionOriginalV3>,
+) -> Result<FixedProcessOutcome> {
+    supervise_capture_retaining_v3(spawned, request, retained, None)
+}
+
+fn supervise_capture_retaining_v3(
+    spawned: SpawnedProcess,
+    request: FixedProcessRequest<'_>,
+    mut retained: Option<&mut run_original::SupervisionOriginalV3>,
+    capture: Option<FixedProcessCaptureCutV3>,
+) -> Result<FixedProcessOutcome> {
     let started = monotonic_now();
     let mut guard = spawned.guard;
-    let mut stdout = OutputStream::new(spawned.stdout, request.maximum_stdout_bytes)?;
-    let mut stderr = OutputStream::new(spawned.stderr, request.maximum_stderr_bytes)?;
+    let mut stdout = match OutputStream::new_retaining(
+        spawned.stdout,
+        request.maximum_stdout_bytes,
+        retained.as_deref_mut().map(|original| &mut original.stdout_pending),
+    ) {
+        Ok(stdout) => stdout,
+        Err(error) => {
+            if let Some(original) = retained {
+                original.guard = Some(guard);
+                original.stderr_pending = Some(spawned.stderr);
+                original.exec_status = spawned.exec_status;
+            }
+            return Err(error);
+        }
+    };
+    let mut stderr = match OutputStream::new_retaining(
+        spawned.stderr,
+        request.maximum_stderr_bytes,
+        retained.as_deref_mut().map(|original| &mut original.stderr_pending),
+    ) {
+        Ok(stderr) => stderr,
+        Err(error) => {
+            if let Some(original) = retained {
+                original.stdout = Some(stdout);
+                original.guard = Some(guard);
+                original.exec_status = spawned.exec_status;
+            }
+            return Err(error);
+        }
+    };
     let mut leader_exited = false;
+    let mut stdout_rejected = None;
+    let mut stderr_rejected = None;
+    let retain_chunks = retained.is_some();
+    let mut capture_clock = capture_cut::CaptureProcessCutOriginalV3::default();
 
-    loop {
-        if leader_exited && stdout.closed && stderr.closed {
-            // The unreaped leader pins the process-group ID while any residual
-            // same-group descendants are killed before ownership is released.
-            let status = guard.cancel_and_reap()?;
-            return Ok(FixedProcessOutcome::Completed(FixedProcessOutput {
-                exit_code: status.exit_code,
-                signal: status.signal,
-                stdout: stdout.bytes,
-                stderr: stderr.bytes,
-            }));
-        }
+    let result = (|| {
+        loop {
+            let capture_remaining = match capture {
+                Some(cut) => Some(capture_clock.observe(cut)?),
+                None => None,
+            };
+            if leader_exited && stdout.closed && stderr.closed {
+                // The unreaped leader pins the process-group ID while any residual
+                // same-group descendants are killed before ownership is released.
+                let status = guard.cancel_and_reap()?;
+                if let Some(cut) = capture { capture_clock.observe(cut)?; }
+                return Ok(FixedProcessOutcome::Completed(FixedProcessOutput {
+                    exit_code: status.exit_code,
+                    signal: status.signal,
+                    stdout: std::mem::take(&mut stdout.bytes),
+                    stderr: std::mem::take(&mut stderr.bytes),
+                }));
+            }
 
-        let elapsed = monotonic_now().saturating_sub(started);
-        let Some(remaining) = request.timeout.checked_sub(elapsed) else {
-            guard.cancel_and_reap()?;
-            return Ok(FixedProcessOutcome::TimedOut);
-        };
-        let timeout = rustix::event::Timespec::try_from(remaining)
-            .map_err(|_| Error::invalid("fixed process timeout", "does not fit timespec"))?;
-        let leader_ready = {
-            let pidfd = guard.pidfd()?.as_fd();
-            let stdout_fd = stdout.descriptor.as_fd();
-            let stderr_fd = stderr.descriptor.as_fd();
-            let mut descriptors = Vec::with_capacity(3);
-            let leader_index = (!leader_exited).then(|| {
-                descriptors.push(rustix::event::PollFd::new(
-                    &pidfd,
-                    rustix::event::PollFlags::IN,
-                ));
-                descriptors.len() - 1
-            });
-            if !stdout.closed {
-                descriptors.push(rustix::event::PollFd::new(
-                    &stdout_fd,
-                    rustix::event::PollFlags::IN | rustix::event::PollFlags::HUP,
-                ));
+            let elapsed = monotonic_now().saturating_sub(started);
+            let Some(remaining) = request.timeout.checked_sub(elapsed) else {
+                guard.cancel_and_reap()?;
+                return Ok(FixedProcessOutcome::TimedOut);
+            };
+            let remaining = capture_remaining.map_or(remaining, |absolute| remaining.min(absolute));
+            let timeout = rustix::event::Timespec::try_from(remaining)
+                .map_err(|_| Error::invalid("fixed process timeout", "does not fit timespec"))?;
+            let leader_ready = {
+                let pidfd = guard.pidfd()?.as_fd();
+                let stdout_fd = stdout.descriptor.as_fd();
+                let stderr_fd = stderr.descriptor.as_fd();
+                let mut descriptors = Vec::with_capacity(3);
+                let leader_index = (!leader_exited).then(|| {
+                    descriptors.push(rustix::event::PollFd::new(
+                        &pidfd,
+                        rustix::event::PollFlags::IN,
+                    ));
+                    descriptors.len() - 1
+                });
+                if !stdout.closed {
+                    descriptors.push(rustix::event::PollFd::new(
+                        &stdout_fd,
+                        rustix::event::PollFlags::IN | rustix::event::PollFlags::HUP,
+                    ));
+                }
+                if !stderr.closed {
+                    descriptors.push(rustix::event::PollFd::new(
+                        &stderr_fd,
+                        rustix::event::PollFlags::IN | rustix::event::PollFlags::HUP,
+                    ));
+                }
+                // Descriptor setup is complete. Reobserve the same original
+                // cut here so none of that time becomes a newly armed wait.
+                let timeout = match capture {
+                    Some(cut) => rustix::event::Timespec::try_from(
+                        capture_cut::limit_wait_v3(remaining, capture_clock.observe(cut)?))
+                        .map_err(|_| Error::invalid("fixed process timeout", "does not fit timespec"))?,
+                    None => timeout,
+                };
+                let native = rustix::event::poll(&mut descriptors, Some(&timeout));
+                if capture.is_some() {
+                    capture_clock.retain_poll_v3(native, &descriptors);
+                }
+                let after = match capture {
+                    Some(cut) => capture_clock.observe(cut).map(|_| ()),
+                    None => Ok(()),
+                };
+                if let Err(error) = native {
+                    if capture_cut::poll_errno_is_primary_v3(error) {
+                        return Err(kernel_error("poll fixed process", error));
+                    }
+                }
+                after?;
+                match native {
+                    Ok(_) => leader_index.is_some_and(|index| {
+                        descriptors[index]
+                            .revents()
+                            .contains(rustix::event::PollFlags::IN)
+                    }),
+                    Err(rustix::io::Errno::INTR) => continue,
+                    Err(error) => return Err(kernel_error("poll fixed process", error)),
+                }
+            };
+            if leader_ready && !leader_exited {
+                leader_exited = true;
+                // Once the leader is known exited, stop residual same-group
+                // descendants before waiting for their inherited pipes to close.
+                guard.cancel()?;
             }
-            if !stderr.closed {
-                descriptors.push(rustix::event::PollFd::new(
-                    &stderr_fd,
-                    rustix::event::PollFlags::IN | rustix::event::PollFlags::HUP,
-                ));
+            if !stdout.closed && stdout.drain_capture_retaining_v3(retain_chunks.then_some(&mut stdout_rejected),
+                capture.map(|cut| (cut, &mut capture_clock)))? {
+                guard.cancel_and_reap()?;
+                return Ok(FixedProcessOutcome::OutputLimitExceeded);
             }
-            match rustix::event::poll(&mut descriptors, Some(&timeout)) {
-                Ok(_) => leader_index.is_some_and(|index| {
-                    descriptors[index]
-                        .revents()
-                        .contains(rustix::event::PollFlags::IN)
-                }),
-                Err(rustix::io::Errno::INTR) => continue,
-                Err(error) => return Err(kernel_error("poll fixed process", error)),
+            if !stderr.closed && stderr.drain_capture_retaining_v3(retain_chunks.then_some(&mut stderr_rejected),
+                capture.map(|cut| (cut, &mut capture_clock)))? {
+                guard.cancel_and_reap()?;
+                return Ok(FixedProcessOutcome::OutputLimitExceeded);
             }
-        };
-        if leader_ready && !leader_exited {
-            leader_exited = true;
-            // Once the leader is known exited, stop residual same-group
-            // descendants before waiting for their inherited pipes to close.
-            guard.cancel()?;
         }
-        if !stdout.closed && stdout.drain()? {
-            guard.cancel_and_reap()?;
-            return Ok(FixedProcessOutcome::OutputLimitExceeded);
-        }
-        if !stderr.closed && stderr.drain()? {
-            guard.cancel_and_reap()?;
-            return Ok(FixedProcessOutcome::OutputLimitExceeded);
-        }
+    })();
+    // A cutoff refusal denies further positive reads/waits, but the same
+    // already-owned child still owes its original negative containment. Keep
+    // both the first clock cause and any cleanup error before returning.
+    let cleanup = if capture.is_some() && capture_clock.failure().is_some() && guard.armed {
+        Some(guard.cancel_and_reap())
+    } else { None };
+    if let Some(original) = retained {
+        original.capture_clock = capture_clock;
+        original.capture_cleanup = cleanup;
+        original.stdout_rejected = stdout_rejected;
+        original.stderr_rejected = stderr_rejected;
+        original.stderr = Some(stderr);
+        original.stdout = Some(stdout);
+        original.guard = Some(guard);
+        original.exec_status = spawned.exec_status;
     }
+    result
 }
 
 #[derive(Clone, Copy)]
@@ -609,6 +716,7 @@ struct ChildGuard {
     pid: rustix::process::Pid,
     pidfd: Option<PidFd>,
     armed: bool,
+    leader_only: bool,
 }
 
 #[cfg(test)]
@@ -645,7 +753,14 @@ impl ChildGuard {
             pid,
             pidfd: None,
             armed: true,
+            leader_only: false,
         }
+    }
+
+    // The SSH subtree's separate cgroup original owns descendant cleanup.
+    // Its actual unreaped child grants only this direct leader fallback.
+    const fn new_owned_leader(pid: rustix::process::Pid) -> Self {
+        Self { pid, pidfd: None, armed: true, leader_only: true }
     }
 
     fn attach_pidfd(&mut self, pidfd: PidFd) {
@@ -681,7 +796,9 @@ impl ChildGuard {
     }
 
     fn cancel_with_disposition(&self, mut disposition: CleanupDisposition<'_>) -> Result<()> {
-        disposition.observe(kill_group(self.pid))?;
+        if !self.leader_only {
+            disposition.observe(kill_group(self.pid))?;
+        }
         disposition.observe(kill_leader(self.pid, self.pidfd.as_ref()))?;
         Ok(())
     }

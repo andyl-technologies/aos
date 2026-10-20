@@ -29,7 +29,7 @@ use aos_sandbox_core::{
 };
 use sha2::{Digest as _, Sha256};
 
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentAssignmentTarget, CurrentNamespaceTarget, NamespaceTargetError};
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 

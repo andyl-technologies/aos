@@ -675,7 +675,7 @@ in {
             -e "s|@util-linux@|${pkgs.util-linux}|g" \
             -e "s|@erofs-utils@|${pkgs.erofs-utils}|g" \
             -e "s|@apm@|${pkgs.aos.packageRuntime}|g" \
-            -e "s|@systemd@|${pkgs.systemd}|g" \
+            -e "s|@systemd@|${config.systemd.package}|g" \
             ${./activate.sh.in} > "$out"
           chmod +x "$out"
         '';
@@ -1112,7 +1112,7 @@ in {
       pkgs.sed
       pkgs.gawk
       pkgs.util-linux
-      pkgs.systemd
+      config.systemd.package
       pkgs.kmod
       pkgs.e2fsprogs
       pkgs.less

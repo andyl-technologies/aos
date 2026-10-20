@@ -16,6 +16,9 @@ use rustix::fs::{
     lsetxattr, open, openat, statat,
 };
 
+mod read_original;
+pub use read_original::{GuestRootLabelReadOriginalV1, GuestRootLabelReadFootprintV1, GuestRootLabelReadClosedV1, GuestRootLabelReadReachedDataV2};
+
 const XATTR_NAME: &str = "security.selinux";
 const MAXIMUM_LABEL_BYTES: usize = 128;
 const GUEST_BOOTSTRAP_PATH: &str = "usr/libexec/aos-sandbox-guest-init";
@@ -128,10 +131,7 @@ pub fn label_copied_guest_executables_before_v1(
 pub fn verify_copied_guest_executable_labels_fd_v1(
     root_fd: BorrowedFd<'_>,
 ) -> Result<(), GuestRootLabelErrorV1> {
-    let root = BeneathRoot::from_owned(rustix::io::fcntl_dupfd_cloexec(root_fd, 0)?)?;
-    verify_root(root.as_fd())?;
-
-    project(root.as_fd(), false, &mut || true)
+    read_original::verify_ordinary(root_fd)
 }
 
 /// Protects the actual fresh manager subtree before the first Guest child.
@@ -193,81 +193,7 @@ fn project(
     install: bool,
     before_deadline: &mut impl FnMut() -> bool,
 ) -> Result<(), GuestRootLabelErrorV1> {
-    label_descriptor(root, ANCHOR_LABEL, install, before_deadline)?;
-    for path in ANCHORS {
-        let directory = open_directory(root, Path::new(path))?;
-        label_descriptor(directory.as_fd(), ANCHOR_LABEL, install, before_deadline)?;
-    }
-    for (paths, expected) in [
-        (CONFIG_DIRECTORIES, CONFIG_LABEL),
-        (PRIVATE_DIRECTORIES, PRIVATE_LABEL),
-    ] {
-        for path in paths {
-            let directory = open_directory(root, Path::new(path))?;
-            label_descriptor(directory.as_fd(), expected, install, before_deadline)?;
-        }
-    }
-    // The fixed marker owner publishes after this projection. Keep its exact
-    // subtree distinct from Guest-private trust/ledger and immutable config.
-    // Parent anchors are labeled separately, not recursively across this cut.
-    for (paths, expected) in [
-        (CONFIG_DIRECTORIES, CONFIG_LABEL),
-        (
-            &[
-                "etc/aos/sandbox-agent",
-                "etc/aos/sandbox-attach",
-                "var/lib/aos-sandbox-agent",
-                "var/empty",
-                "run/systemd",
-            ][..],
-            PRIVATE_LABEL,
-        ),
-        (&[PUBLICATION_DIRECTORY][..], PUBLICATION_LABEL),
-    ] {
-        for path in paths {
-            let directory = open_directory(root, Path::new(path))?;
-            let mut count = 0;
-            project_tree(
-                directory.as_fd(),
-                0,
-                &mut count,
-                expected,
-                true,
-                install,
-                before_deadline,
-            )?;
-        }
-    }
-    let root = BeneathRoot::from_owned(rustix::io::fcntl_dupfd_cloexec(root, 0)?)?;
-    for (paths, expected) in [
-        (CONFIG_FILES, CONFIG_LABEL),
-        (RUNTIME_METADATA_FILES, RUNTIME_METADATA_LABEL),
-    ] {
-        for path in paths {
-            let file = root.open_regular(Path::new(path))?;
-            verify_root(file.as_fd())?;
-            label_descriptor(file.as_fd(), expected, install, before_deadline)?;
-        }
-    }
-    for (path, expected) in EXECUTABLE_LABELS {
-        let file = root.open_regular(Path::new(path))?;
-        verify_executable(file.as_fd())?;
-        label_descriptor(file.as_fd(), expected, install, before_deadline)?;
-    }
-    let credential = root.open_regular(Path::new("etc/aos/sandbox-agent/guest-executable-v1"))?;
-    label_descriptor(credential.as_fd(), PRIVATE_LABEL, install, before_deadline)?;
-
-    let store = open_directory(root.as_fd(), Path::new("nix/store"))?;
-    let mut count = 0;
-    project_tree(
-        store.as_fd(),
-        0,
-        &mut count,
-        STORE_LABEL,
-        true,
-        install,
-        before_deadline,
-    )
+    read_original::project_engine(root, install, before_deadline, None, MAXIMUM_PATH_BYTES / 2, MAXIMUM_ENTRIES, None)
 }
 
 fn project_tree(
@@ -279,112 +205,18 @@ fn project_tree(
     install: bool,
     before_deadline: &mut impl FnMut() -> bool,
 ) -> Result<(), GuestRootLabelErrorV1> {
-    verify_root(directory)?;
-    label_descriptor(directory, expected, install, before_deadline)?;
-    let root = BeneathRoot::from_owned(rustix::io::fcntl_dupfd_cloexec(directory, 0)?)?;
-    let anchor = format!("/proc/self/fd/{}", directory.as_raw_fd());
-    let entries = std::fs::read_dir(&anchor)?;
-    for entry in entries {
-        check_deadline(before_deadline)?;
-        *count = count
-            .checked_add(1)
-            .filter(|value| *value <= MAXIMUM_ENTRIES)
-            .ok_or(GuestRootLabelErrorV1::UnsafeInode)?;
-        let name = entry?.file_name();
-        let child_bytes = path_bytes
-            .checked_add(name.as_bytes().len() + 1)
-            .filter(|length| *length <= MAXIMUM_PATH_BYTES)
-            .ok_or(GuestRootLabelErrorV1::UnsafeInode)?;
-        let stat = statat(directory, &name, AtFlags::SYMLINK_NOFOLLOW)?;
-        if stat.st_uid != 0 {
-            return Err(GuestRootLabelErrorV1::UnsafeInode);
-        }
-        match FileType::from_raw_mode(stat.st_mode) {
-            FileType::Directory => {
-                // Every edge needs NO_XDEV, including same-filesystem bind
-                // mounts: the child's device/inode alone cannot prove this.
-                let child = open_directory(root.as_fd(), Path::new(&name))?;
-                require_same_inode(child.as_fd(), &stat)?;
-                project_tree(
-                    child.as_fd(),
-                    child_bytes,
-                    count,
-                    expected,
-                    permit_symlinks,
-                    install,
-                    before_deadline,
-                )?;
-            }
-            FileType::RegularFile => {
-                let child = root.open_regular(Path::new(&name))?;
-                require_same_inode(child.as_fd(), &stat)?;
-                verify_root(child.as_fd())?;
-                label_descriptor(child.as_fd(), expected, install, before_deadline)?;
-            }
-            FileType::Symlink => {
-                if !permit_symlinks {
-                    return Err(GuestRootLabelErrorV1::UnsafeInode);
-                }
-                // The final symlink is never followed. The parent remains the
-                // retained directory and the publication caller holds this tree
-                // quiescent. Restat joins both xattr operations to that inode.
-                let path = Path::new(&anchor).join(&name);
-                let mut actual = [0_u8; MAXIMUM_LABEL_BYTES];
-                if install
-                    && !lgetxattr(&path, XATTR_NAME, &mut actual[..])
-                        .is_ok_and(|length| actual[..length] == *expected)
-                {
-                    lsetxattr(&path, XATTR_NAME, expected, XattrFlags::empty())?;
-                }
-                let length = lgetxattr(&path, XATTR_NAME, &mut actual[..])?;
-                let after = statat(directory, &name, AtFlags::SYMLINK_NOFOLLOW)?;
-                if actual[..length] != *expected
-                    || stat.st_dev != after.st_dev
-                    || stat.st_ino != after.st_ino
-                {
-                    return Err(GuestRootLabelErrorV1::WrongLabel);
-                }
-            }
-            _ => return Err(GuestRootLabelErrorV1::UnsafeInode),
-        }
-    }
-    if install {
-        fsync(directory)?;
-    }
-    check_deadline(before_deadline)
+    read_original::project_tree_engine(directory, path_bytes, count, expected, permit_symlinks, install, before_deadline, None, 0, MAXIMUM_PATH_BYTES / 2, MAXIMUM_ENTRIES, None)
 }
 
 fn open_directory(root: BorrowedFd<'_>, path: &Path) -> Result<OwnedFd, GuestRootLabelErrorV1> {
-    let root = BeneathRoot::from_owned(rustix::io::fcntl_dupfd_cloexec(root, 0)?)?;
-    let pinned = root.resolve(
-        path,
-        aos_sandbox_linux::path::ResolveOptions {
-            no_mount_crossing: true,
-            require_directory: true,
-        },
-    )?;
-    let readable = openat(
-        pinned.as_fd(),
-        ".",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    verify_root(readable.as_fd())?;
-    Ok(readable)
+    read_original::open_directory_ordinary(root, path)
 }
 
 fn require_same_inode(
     fd: BorrowedFd<'_>,
     expected: &rustix::fs::Stat,
 ) -> Result<(), GuestRootLabelErrorV1> {
-    let actual = fstat(fd)?;
-    if actual.st_dev != expected.st_dev
-        || actual.st_ino != expected.st_ino
-        || actual.st_mode != expected.st_mode
-    {
-        return Err(GuestRootLabelErrorV1::UnsafeInode);
-    }
-    Ok(())
+    read_original::require_same_inode_engine(fd, expected, None)
 }
 
 fn label_descriptor(
@@ -393,12 +225,7 @@ fn label_descriptor(
     install: bool,
     before_deadline: &mut impl FnMut() -> bool,
 ) -> Result<(), GuestRootLabelErrorV1> {
-    check_deadline(before_deadline)?;
-    if install && verify_one_label(fd, expected).is_err() {
-        fsetxattr(fd, XATTR_NAME, expected, XattrFlags::empty())?;
-        fsync(fd)?;
-    }
-    verify_one_label(fd, expected)
+    read_original::label(fd, expected, install, before_deadline, None)
 }
 
 fn check_deadline(before_deadline: &mut impl FnMut() -> bool) -> Result<(), GuestRootLabelErrorV1> {
@@ -409,23 +236,11 @@ fn check_deadline(before_deadline: &mut impl FnMut() -> bool) -> Result<(), Gues
 }
 
 fn verify_root(fd: BorrowedFd<'_>) -> Result<(), GuestRootLabelErrorV1> {
-    let stat = fstat(fd)?;
-    if stat.st_uid != 0 || stat.st_mode & 0o022 != 0 {
-        return Err(GuestRootLabelErrorV1::UnsafeInode);
-    }
-    Ok(())
+    read_original::verify_root_engine(fd, None)
 }
 
 fn verify_executable(fd: BorrowedFd<'_>) -> Result<(), GuestRootLabelErrorV1> {
-    let stat = fstat(fd)?;
-    if stat.st_uid != 0
-        || stat.st_mode & 0o022 != 0
-        || stat.st_mode & 0o100 == 0
-        || stat.st_nlink != 1
-    {
-        return Err(GuestRootLabelErrorV1::UnsafeInode);
-    }
-    Ok(())
+    read_original::verify_executable_engine(fd, None)
 }
 
 fn verify_one_label(fd: BorrowedFd<'_>, expected: &[u8]) -> Result<(), GuestRootLabelErrorV1> {
@@ -437,17 +252,18 @@ fn verify_attribute(
     attribute: &str,
     expected: &[u8],
 ) -> Result<(), GuestRootLabelErrorV1> {
-    let mut actual = [0_u8; MAXIMUM_LABEL_BYTES];
-    let actual_bytes = fgetxattr(fd, attribute, &mut actual[..])?;
-    if actual[..actual_bytes] != *expected {
-        return Err(GuestRootLabelErrorV1::WrongLabel);
-    }
-    Ok(())
+    read_original::attribute(fd, attribute, expected, None)
 }
 
 /// Reports an unsafe or unverified workspace executable label.
 #[derive(Debug, thiserror::Error)]
 pub enum GuestRootLabelErrorV1 {
+    /// The retained traversal exceeded its already-admitted recursion ceiling.
+    #[error("guest-root label receiving depth is exhausted")]
+    ReceivingDepth,
+    /// The enclosing actual payer denied the next reached native prefix.
+    #[error("guest root confinement reached-prefix admission refused")]
+    ReceivingAdmission,
     /// The authenticated publication effect expired before labeling completed.
     #[error("guest-root label effect deadline expired")]
     Deadline,

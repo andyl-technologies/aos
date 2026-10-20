@@ -18,6 +18,13 @@
 //! and [`HostCatalogSnapshot::decode_canonical`] validate the complete bounded,
 //! strictly ordered snapshot and are the only supported wire encoders.
 
+mod receiving;
+pub use receiving::{
+    host_catalog_canonical_decode_receiving_bytes_v2,
+    host_catalog_projection_model_receiving_bytes_v2,
+    host_catalog_counting_carrier_bytes_v2,
+};
+
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_core::ObjectDescriptor;
 use serde::{Deserialize, Serialize};
@@ -246,6 +253,16 @@ pub struct GuestRootCatalogPublicationV1 {
     creation_operation_id: [u8; 16],
     dataset_guid: u64,
     proof: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    current_publication_v2: Option<CurrentGuestRootCatalogDataV2>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CurrentGuestRootCatalogDataV2 {
+    creation_assignment: CatalogAssignment,
+    creation_resource_digest: [u8; 32],
+    binding: Vec<u8>,
 }
 
 impl GuestRootCatalogPublicationV1 {
@@ -272,7 +289,66 @@ impl GuestRootCatalogPublicationV1 {
             creation_operation_id,
             dataset_guid,
             proof,
+            current_publication_v2: None,
         })
+    }
+
+    /// Constructs current provenance beside an unchanged creation workspace.
+    ///
+    /// The caller must authenticate the complete Storage Inventory under its
+    /// real native Session. This constructor preserves comparison DATA only.
+    ///
+    /// # Errors
+    /// Refuses missing or mismatched physical proof, creation tuple or current
+    /// publication record before encoding the strict catalog representation.
+    pub fn from_current_workspace_v2(
+        workspace: &crate::storage_inventory::ValidatedStorageWorkspace,
+    ) -> Result<Self, HostCatalogSnapshotError> {
+        let current = workspace.current_guest_root_publication_v2()
+            .ok_or_else(|| HostCatalogSnapshotError::new("current guest-root publication is absent"))?;
+        current.require_workspace_v2(workspace)
+            .map_err(|cause| HostCatalogSnapshotError::new(cause.to_string()))?;
+        let physical = workspace.guest_root_publication_proof()
+            .ok_or_else(|| HostCatalogSnapshotError::new("physical guest-root publication is absent"))?;
+        let fence = workspace.fence();
+        let creation_assignment = CatalogAssignment::new(
+            *fence.sandbox_id(), *fence.incarnation_id(), fence.assignment_epoch(),
+            fence.desired_generation(), *fence.assignment_digest(),
+        )?;
+        let mut result = Self::new(*workspace.creation_operation_id(), workspace.dataset_guid(), physical)?;
+        result.current_publication_v2 = Some(CurrentGuestRootCatalogDataV2 {
+            creation_assignment,
+            creation_resource_digest: *workspace.resource_digest(),
+            binding: current.encode_v2().to_vec(),
+        });
+        result.current_publication_v2()?;
+        Ok(result)
+    }
+
+    /// Decodes current assignment provenance while preserving physical proof1.
+    ///
+    /// # Errors
+    /// Refuses a substituted record, creation tuple, resource digest or physical
+    /// root. Absence represents only the original creation-assignment format.
+    pub fn current_publication_v2(&self) -> Result<
+        Option<crate::semantics::storage_guest_root::StorageGuestRootCurrentPublicationDataV2>,
+        HostCatalogSnapshotError,
+    > {
+        let Some(data) = &self.current_publication_v2 else { return Ok(None); };
+        let current = crate::semantics::storage_guest_root::StorageGuestRootCurrentPublicationDataV2::
+            decode_v2(&data.binding)
+            .map_err(|cause| HostCatalogSnapshotError::new(cause.to_string()))?;
+        let creation = data.creation_assignment;
+        let assignment = aos_sandbox_core::BrokerAssignment::new(
+            aos_sandbox_core::SandboxId::from_bytes(*creation.sandbox_id()),
+            aos_sandbox_core::IncarnationId::from_bytes(*creation.incarnation_id()),
+            aos_sandbox_core::AssignmentEpoch::new(creation.assignment_epoch()),
+            aos_sandbox_core::DesiredGeneration::new(creation.desired_generation()),
+            aos_sandbox_core::ObjectDigest::from_bytes(*creation.assignment_digest()),
+        ).map_err(|cause| HostCatalogSnapshotError::new(cause.to_string()))?;
+        current.require_creation_data_v2(assignment, self.proof()?, &data.creation_resource_digest)
+            .map_err(|cause| HostCatalogSnapshotError::new(cause.to_string()))?;
+        Ok(Some(current))
     }
 
     /// Decodes the canonical physical publication proof.
@@ -423,13 +499,28 @@ impl WorkspaceCatalogEntry {
             if proof.sandbox != *self.assignment.sandbox_id()
                 || proof.incarnation != *self.assignment.incarnation_id()
                 || proof.assignment_epoch != self.assignment.assignment_epoch()
-                || proof.assignment_digest != *self.assignment.assignment_digest()
                 || proof.workspace_handle != self.handle
                 || proof.root_image_digest != *self.root_image.digest().as_bytes()
             {
                 return Err(HostCatalogSnapshotError::new(
                     "guest-root proof does not bind the exact workspace assignment",
                 ));
+            }
+            match publication.current_publication_v2()? {
+                Some(current) => {
+                    let assignment = current.current_assignment_v2()
+                        .map_err(|cause| HostCatalogSnapshotError::new(cause.to_string()))?;
+                    if assignment.sandbox().as_bytes() != self.assignment.sandbox_id()
+                        || assignment.incarnation().as_bytes() != self.assignment.incarnation_id()
+                        || assignment.epoch().get() != self.assignment.assignment_epoch()
+                        || assignment.desired_generation().get() != self.assignment.desired_generation()
+                        || assignment.digest().as_bytes() != self.assignment.assignment_digest()
+                    {
+                        return Err(HostCatalogSnapshotError::new("current guest-root publication differs from catalog assignment"));
+                    }
+                }
+                None if proof.assignment_digest == *self.assignment.assignment_digest() => {}
+                None => return Err(HostCatalogSnapshotError::new("advanced workspace lacks current guest-root publication")),
             }
         }
 
@@ -1113,4 +1204,23 @@ mod tests {
         corrupted.proof[150] ^= 1;
         assert!(workspace(1).with_guest_root_publication(corrupted).is_err());
     }
+    #[test]
+    fn canonical_encoding_quote_follows_the_actual_shared_json_encoder() {
+        let small = HostCatalogSnapshot::new(1, Vec::new(), Vec::new()).unwrap();
+        let large = HostCatalogSnapshot::new(u64::MAX,
+            vec![workspace(u64::MAX)], vec![network()]).unwrap()
+            .with_retired_identity_allocations(vec![
+                CatalogIdentityAllocation::new(131_072, 65_536, 1).unwrap(),
+            ]).unwrap();
+
+        let small_bytes = small.encode().unwrap();
+        let large_bytes = large.encode().unwrap();
+        let small_quote = small.canonical_encoding_receiving_bytes_v2().unwrap();
+        let large_quote = large.canonical_encoding_receiving_bytes_v2().unwrap();
+
+        assert!(small_quote >= small_bytes.len() * 4);
+        assert_eq!(large_quote - small_quote, (large_bytes.len() - small_bytes.len()) * 4);
+        assert_eq!(HostCatalogSnapshot::decode_canonical(&large_bytes).unwrap(), large);
+    }
+
 }

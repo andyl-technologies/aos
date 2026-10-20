@@ -12,10 +12,17 @@ use std::fs::File;
 use std::io;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rustix::fs::{
     AtFlags, CWD, FileType, Mode, OFlags, ResolveFlags, fstat, fsync, openat2, renameat, statat,
 };
+
+mod readonly_archive;
+pub use readonly_archive::{ReadonlyNameArchiveGeometryV1, ReadonlyNameArchiveV1};
+
+mod writer_witness;
+pub use writer_witness::{FileIdentityOriginalsV1, FileIdentityReceivingFootprintV1, WriterWitnessOriginalsV1, WriterWitnessReceivingFootprintV1};
 
 /// Supplies only the original static physical refusal categories.
 ///
@@ -64,9 +71,24 @@ impl FileIdentity {
     ///
     /// # Errors
     /// Returns the original metadata I/O failure.
-    pub fn of<E: ProtectedFailure>(file: &File) -> Result<Self, E> {
-        let metadata = file.metadata()?;
-        Ok(Self {
+    pub fn of<E: From<io::Error>>(file: &File) -> Result<Self, E> {
+        let metadata = writer_witness::observe_metadata_once(file, writer_witness::OrdinaryMetadata)?;
+        Ok(Self::from_metadata(&metadata))
+    }
+
+    /// Projects comparison fields from one already observed metadata sample.
+    ///
+    /// This performs no IO and supplies no file, native owner, currentness,
+    /// protected name, or role authority. Mechanical callers can reuse their
+    /// actual metadata sample without performing a second observation.
+    #[must_use]
+    pub fn from_metadata_data_v1(metadata: &std::fs::Metadata) -> Self {
+        Self::from_metadata(metadata)
+    }
+
+    // One projection body serves ordinary and retained metadata dispositions.
+    fn from_metadata(metadata: &std::fs::Metadata) -> Self {
+        Self {
             device: metadata.dev(),
             inode: metadata.ino(),
             size: metadata.len(),
@@ -74,7 +96,7 @@ impl FileIdentity {
             modified_nanoseconds: metadata.mtime_nsec(),
             changed_seconds: metadata.ctime(),
             changed_nanoseconds: metadata.ctime_nsec(),
-        })
+        }
     }
 }
 
@@ -139,9 +161,9 @@ impl ReadOnlyJournalNameWitness {
     /// # Errors
     /// Preserves the original native failure or fixed physical refusal.
     pub fn check_named_currentness<E: ProtectedFailure>(&self) -> Result<(), E> {
-        let directory =
-            resolve_protected_directory_from_root::<E>(&self.directory_path, self.expected_uid)?;
-        self.check_in_directory::<E>(&directory)
+        let originals = ReadOnlyJournalNamesOriginalsV1::new();
+        originals.capture_rooted(self, false, None);
+        originals.into_result()
     }
 
     #[cfg(any(test, feature = "test-fixtures"))]
@@ -173,21 +195,9 @@ impl ReadOnlyJournalNameWitness {
     /// # Errors
     /// Preserves the original native failure or fixed physical refusal.
     pub fn check_in_directory<E: ProtectedFailure>(&self, directory: &File) -> Result<(), E> {
-        if FileIdentity::of::<E>(&directory)? != self.directory_identity {
-            return Err(E::BOUNDARY);
-        }
-        let lock = open_read_only_protected_file::<E>(
-            directory,
-            &format!("{}.lock", self.name),
-            self.expected_uid,
-        )?;
-        let file = open_read_only_protected_file::<E>(directory, &self.name, self.expected_uid)?;
-        if FileIdentity::of::<E>(&lock)? != self.lock_identity
-            || FileIdentity::of::<E>(&file)? != self.file_identity
-        {
-            return Err(E::STALE_NAME);
-        }
-        Ok(())
+        let originals = ReadOnlyJournalNamesOriginalsV1::new();
+        originals.capture_in_directory(self, directory);
+        originals.into_result()
     }
 }
 
@@ -332,6 +342,28 @@ impl<P> ProtectedJournalLocation<P> {
         )
     }
 
+    /// Parks the same Lock, Journal and metadata checks in their resident owner.
+    ///
+    /// Reentry leaves the first result and every reached descriptor unchanged.
+    pub fn observe_names_once<E: ProtectedFailure>(
+        &self,
+        lock: &File,
+        file: &File,
+        originals: &mut ProtectedFileNamesCurrentOriginalsV1<E>,
+    ) {
+        originals.capture_once(&self.directory, &self.name, self.expected_uid, lock, file);
+    }
+
+    /// Retains the same requested pre-materialization Lock and Journal checks.
+    ///
+    /// This selects no authority; the enclosing original owns the fixed names.
+    pub fn observe_named_files_once<E: ProtectedFailure>(
+        &self, name: &str, uid: u32, lock: &File, file: &File,
+        originals: &mut ProtectedFileNamesCurrentOriginalsV1<E>,
+    ) {
+        originals.capture_once(&self.directory, name, uid, lock, file);
+    }
+
     /// Samples Directory, Journal, and Lock in the original writer order.
     ///
     /// # Errors
@@ -341,11 +373,7 @@ impl<P> ProtectedJournalLocation<P> {
         file: &File,
         lock: &File,
     ) -> Result<ProtectedWriterNameWitness, E> {
-        Ok(ProtectedWriterNameWitness {
-            directory: FileIdentity::of::<E>(&self.directory)?,
-            file: FileIdentity::of::<E>(file)?,
-            lock: FileIdentity::of::<E>(lock)?,
-        })
+        writer_witness::sample_ordinary(&self.directory, file, lock)
     }
 
     /// Checks the original writer observations after the caller's name check.
@@ -358,13 +386,7 @@ impl<P> ProtectedJournalLocation<P> {
         lock: &File,
         witness: &ProtectedWriterNameWitness,
     ) -> Result<(), E> {
-        if FileIdentity::of::<E>(&self.directory)? != witness.directory
-            || FileIdentity::of::<E>(file)? != witness.file
-            || FileIdentity::of::<E>(lock)? != witness.lock
-        {
-            return Err(E::STALE_NAME);
-        }
-        Ok(())
+        writer_witness::compare_ordinary(&self.directory, file, lock, witness)
     }
 
     /// Begins replacement with the original name, File, and borrowed cleanup.
@@ -374,21 +396,60 @@ impl<P> ProtectedJournalLocation<P> {
     pub fn begin_replacement<E: ProtectedFailure>(
         &self,
     ) -> Result<(String, File, ProtectedTemporary<'_>), E> {
-        let temporary = protected_compaction_name(&self.name);
-        let replacement = open_protected_file::<E>(
-            &self.directory,
-            &temporary,
-            self.expected_uid,
-            true,
-            true,
-            true,
-        )?;
+        let (temporary, replacement) = self.begin_replacement_parts::<E>()?;
         let cleanup = ProtectedTemporary {
             directory: &self.directory,
             name: temporary.clone(),
             armed: true,
         };
         Ok((temporary, replacement, cleanup))
+    }
+
+    fn begin_replacement_parts<E: ProtectedFailure>(&self) -> Result<(String, File), E> {
+        let temporary = protected_compaction_name(&self.name);
+        let mut replacement = None;
+        self.open_replacement_into::<E>(&temporary, &mut replacement, None)?;
+        Ok((temporary, replacement.ok_or(E::BOUNDARY)?))
+    }
+
+
+    fn open_replacement_into<E: ProtectedFailure>(
+        &self,
+        name: &str,
+        file: &mut Option<File>,
+        native_error: Option<&mut Option<rustix::io::Errno>>,
+    ) -> Result<(), E> {
+        open_protected_file_into_original::<E>(
+            &self.directory, name, self.expected_uid, true, true, true,
+            file, native_error,
+        )
+    }
+
+    /// Prepares owned cleanup before retaining the actual replacement open.
+    ///
+    /// The mutable File destination keeps a successfully opened description
+    /// even when its following native validation fails. A failed exclusive open
+    /// never arms cleanup for someone else's existing temporary name.
+    ///
+    /// # Errors
+    /// Retains the original native/opening refusal beside its actual partials.
+    pub fn begin_owned_replacement_retaining_v1<E: ProtectedFailure>(
+        self: &Arc<Self>,
+        temporary: &mut Option<String>,
+        cleanup: &mut Option<OwnedProtectedTemporaryV1<P>>,
+        file: &mut Option<File>,
+        native_error: &mut Option<rustix::io::Errno>,
+    ) -> Result<(), E> {
+        if temporary.is_some() || cleanup.is_some() || file.is_some() {
+            return Err(E::BOUNDARY);
+        }
+        let name = temporary.insert(protected_compaction_name(&self.name));
+        let debt = cleanup.insert(OwnedProtectedTemporaryV1 {
+            location: Arc::clone(self), name: name.clone(), armed: false,
+        });
+        let result = self.open_replacement_into::<E>(name, file, Some(native_error));
+        debt.armed = file.is_some();
+        result
     }
 
     /// Installs the replacement while the same cleanup loan remains alive.
@@ -400,29 +461,92 @@ impl<P> ProtectedJournalLocation<P> {
         temporary: &str,
         cleanup: &mut ProtectedTemporary<'_>,
     ) -> Result<File, E> {
+        self.rename_replacement::<E>(temporary)?;
+        cleanup.disarm();
+        self.sync_and_reopen_replacement::<E>()
+    }
+}
+
+impl<P> ProtectedJournalLocation<P> {
+    fn rename_replacement<E: ProtectedFailure>(&self, temporary: &str) -> Result<(), E> {
         renameat(
             &self.directory,
             temporary,
             &self.directory,
             self.name.as_str(),
         )
-        .map_err(rustix_io::<E>)?;
-        cleanup.disarm();
+        .map_err(rustix_io::<E>)
+    }
+
+    fn sync_and_reopen_replacement<E: ProtectedFailure>(&self) -> Result<File, E> {
+        let mut file = None;
+        self.sync_and_open_replacement_into::<E>(&mut file, None)?;
+        file.ok_or(E::BOUNDARY)
+    }
+
+    fn sync_and_open_replacement_into<E: ProtectedFailure>(
+        &self,
+        file: &mut Option<File>,
+        native_error: Option<&mut Option<rustix::io::Errno>>,
+    ) -> Result<(), E> {
         fsync(&self.directory).map_err(rustix_io::<E>)?;
-        open_protected_file::<E>(
-            &self.directory,
-            &self.name,
-            self.expected_uid,
-            false,
-            false,
-            false,
+        open_protected_file_into_original::<E>(
+            &self.directory, &self.name, self.expected_uid, false, false, false,
+            file, native_error,
         )
     }
+
+    /// Installs owned cleanup while retaining a reached reopened description.
+    ///
+    /// # Errors
+    /// Preserves original rename/sync/open failures or rejects foreign debt.
+    pub fn install_owned_replacement_retaining_v1<E: ProtectedFailure>(
+        self: &Arc<Self>,
+        temporary: &str,
+        cleanup: &mut OwnedProtectedTemporaryV1<P>,
+        file: &mut Option<File>,
+        native_error: &mut Option<rustix::io::Errno>,
+    ) -> Result<(), E> {
+        if !Arc::ptr_eq(self, &cleanup.location) || !cleanup.armed
+            || temporary != cleanup.name || file.is_some()
+        {
+            return Err(E::BOUNDARY);
+        }
+        self.rename_replacement::<E>(temporary)?;
+        cleanup.armed = false;
+        self.sync_and_open_replacement_into::<E>(file, Some(native_error))
+    }
+
 }
+
+/// Retains cleanup debt against the original physical directory allocation.
+///
+/// An unfinished selected owner can park this complete carrier beside the
+/// replacement File without borrowing itself. It duplicates no descriptor and
+/// exposes no directory or mutation API. The closed caller owns disposition.
+pub struct OwnedProtectedTemporaryV1<P> {
+    location: Arc<ProtectedJournalLocation<P>>,
+    name: String,
+    armed: bool,
+}
+
+impl<P> Drop for OwnedProtectedTemporaryV1<P> {
+    fn drop(&mut self) {
+        opening::retire_temporary(&self.location.directory, &self.name, self.armed);
+    }
+}
+
+mod names;
+pub use names::ProtectedFileNamesCurrentOriginalsV1;
+
+mod readonly_names;
+pub use readonly_names::ReadOnlyJournalNamesOriginalsV1;
 
 mod opening;
 pub use opening::{
     ProtectedAncestry, ProtectedTemporary, protected_directory_flags,
+    WriterAcquisitionRetentionV1, WriterAcquisitionSlotsV1, acquire_writer_originals_v1,
+    acquire_writer_originals_ordinary_v1, acquire_empty_writer_originals_ordinary_v1, writer_acquisition_temporary_shape_v1,
     resolve_protected_directory_from_root, resolve_protected_directory_from_root_original,
     traverse_protected_directory, validate_basename, rustix_io, protected_open_error,
     protected_compaction_name, reject_operator_provisioning_history,
@@ -646,3 +770,37 @@ impl<P> ProtectedJournalLocation<P> {
         require_protected_file_names_current::<E>(&self.directory, name, uid, lock, file)
     }
 }
+
+mod readonly_acquisition;
+mod readonly_prefix;
+
+pub use readonly_prefix::CapturedReplayPrefixPostV1;
+pub use readonly_acquisition::{
+    CompletedReadOnlyAcquisitionV1, ReadOnlyAcquisitionOriginalsV1, ReadOnlyAcquisitionSlotsV1,
+    acquire_readonly_directory_originals_v1, acquire_readonly_files_originals_v1,
+};
+
+/// Fills the existing Nix child/HELLO pair from one supplied actual lock file.
+///
+/// This mechanical recipe accepts an already-owned native capability, not a
+/// path, original, payment or role proof. Selected private writers invoke it
+/// only through their sealed operation port; actual callers retain each slot.
+///
+/// # Errors
+/// Preserves duplicate, duplicate, then original metadata order. A reached
+/// duplicate remains in its real destination if the following step fails.
+pub fn duplicate_nix_lock_pair_original_v1(
+    original: &File,
+    child: &mut Option<std::os::fd::OwnedFd>,
+    hello: &mut Option<std::os::fd::OwnedFd>,
+) -> io::Result<OriginalFileMetadataV1> {
+    *child = Some(rustix::io::fcntl_dupfd_cloexec(original, 3)
+        .map_err(|cause| io::Error::from_raw_os_error(cause.raw_os_error()))?);
+    *hello = Some(rustix::io::fcntl_dupfd_cloexec(original, 3)
+        .map_err(|cause| io::Error::from_raw_os_error(cause.raw_os_error()))?);
+    inspect_original_file_metadata(original)
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use opening::{acquire_writer_fixture_originals_ordinary_v1,
+    acquire_writer_fixture_originals_retaining_v1};

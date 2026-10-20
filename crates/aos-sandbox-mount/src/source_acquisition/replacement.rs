@@ -4,7 +4,7 @@
 //! projection, and holder-wide acquisition sequence. Only session-scoped
 //! request/response heads reset to one, and cached reconciliation is invalidated.
 
-use aos_sandbox::journal::ProtectedJournalAuthority;
+use aos_sandbox_mount_native::ProtectedJournalAuthority;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::mount_source_acquisition_state::{
     MountSourceAcquisitionStateError, prepare_dead_replacement_v2,

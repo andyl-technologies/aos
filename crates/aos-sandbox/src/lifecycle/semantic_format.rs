@@ -181,16 +181,8 @@ pub(super) fn encode_semantic_fact_with_layout(
         }
         LifecycleSemanticFactLayoutV1::Current | LifecycleSemanticFactLayoutV1::DeleteBatch => CURRENT_SEMANTIC_EVIDENCE_BYTES,
     };
-    let length = 24_usize
-        .checked_add(evidence_bytes)
-        .and_then(|total| total.checked_add(variant_bytes))
-        .and_then(|total| total.checked_add(reads.len().checked_mul(68)?))
-        .and_then(|total| total.checked_add(writes.len().checked_mul(148)?))
-        .and_then(|total| total.checked_add(assignments.len().checked_mul(40)?))
-        .and_then(|total| total.checked_add(reservations.len().checked_mul(56)?))
-        .and_then(|total| total.checked_add(retention.len().checked_mul(193)?))
-        .filter(|total| *total <= MAXIMUM_SEMANTIC_FACT_BYTES)
-        .ok_or(LifecycleModelError::InvalidModel)?;
+    let length = semantic_fact_encoded_length_from_counts_v1(evidence_bytes, variant_bytes,
+        reads.len(), writes.len(), assignments.len(), reservations.len(), retention.len())?;
     bytes
         .try_reserve_exact(length)
         .map_err(|_| LifecycleModelError::Allocation)?;
@@ -378,6 +370,17 @@ pub(super) fn decode_semantic_fact_with_layout(
     layout: LifecycleSemanticFactLayoutV1,
 ) -> Result<Option<(LifecycleSemanticCommitFactV1, LifecycleSemanticEvidenceV1)>, LifecycleModelError>
 {
+    let mut original = super::format::decode_original::SemanticDecodeParts::default();
+    decode_semantic_fact_into(bytes, witness, layout, &mut original)
+}
+
+pub(super) fn decode_semantic_fact_into(
+    bytes: &[u8],
+    witness: Option<LifecycleSemanticCommitV1>,
+    layout: LifecycleSemanticFactLayoutV1,
+    original: &mut super::format::decode_original::SemanticDecodeParts,
+) -> Result<Option<(LifecycleSemanticCommitFactV1, LifecycleSemanticEvidenceV1)>, LifecycleModelError>
+{
     if bytes.is_empty() {
         return Ok(None);
     }
@@ -394,7 +397,7 @@ pub(super) fn decode_semantic_fact_with_layout(
     let reservation_count = bounded_fact_count(&mut remaining)?;
     let retention_count = bounded_fact_count(&mut remaining)?;
     let evidence = decode_semantic_evidence(&mut remaining, layout)?;
-    let batch = if kind == 5 && matches!(layout, LifecycleSemanticFactLayoutV1::DeleteBatch) {
+    original.batch = if kind == 5 && matches!(layout, LifecycleSemanticFactLayoutV1::DeleteBatch) {
         let length = remaining.get(4..8)
             .and_then(|value| value.try_into().ok())
             .map(u32::from_be_bytes)
@@ -414,11 +417,14 @@ pub(super) fn decode_semantic_fact_with_layout(
     } else {
         None
     };
-    let cascade = if kind == 3 {
+    if kind == 3 {
         let root = SandboxId::from_bytes(take(&mut remaining)?);
         let transaction =
             LifecycleTransactionIdV1::new(ResourceId::from_bytes(take(&mut remaining)?))
-                .map_err(|_| LifecycleModelError::CorruptEncoding)?;
+                .map_err(|error| {
+                    original.model_failure.get_or_insert(error);
+                    LifecycleModelError::CorruptEncoding
+                })?;
         let stored_plan = LifecycleCascadePlanDigestV1::from_stored(ObjectDigest::from_bytes(
             take(&mut remaining)?,
         ))?;
@@ -437,43 +443,45 @@ pub(super) fn decode_semantic_fact_with_layout(
         ))?;
         let edge_count = bounded_fact_count(&mut remaining)?;
         let postorder_count = bounded_fact_count(&mut remaining)?;
-        let mut dependency_edges = Vec::new();
-        dependency_edges
+        original.edges
             .try_reserve_exact(edge_count)
             .map_err(|_| LifecycleModelError::Allocation)?;
         for _ in 0..edge_count {
-            dependency_edges.push(
+            original.edges.push(
                 LifecycleDependencyEdgeV1::new(
                     decode_resource(&mut remaining)?,
                     decode_resource(&mut remaining)?,
                 )
-                .map_err(|_| LifecycleModelError::CorruptEncoding)?,
+                .map_err(|error| {
+                    original.model_failure.get_or_insert(error);
+                    LifecycleModelError::CorruptEncoding
+                })?,
             );
         }
-        let mut postorder = Vec::new();
-        postorder
+        original.postorder
             .try_reserve_exact(postorder_count)
             .map_err(|_| LifecycleModelError::Allocation)?;
         for _ in 0..postorder_count {
-            postorder.push(decode_resource(&mut remaining)?);
+            original.postorder.push(decode_resource(&mut remaining)?);
         }
-        let cascade = LifecycleCascadeTombstonePlanV1::new(
+        let cascade = LifecycleCascadeTombstonePlanV1::new_from_decode_parts(
             transaction,
             dependency_snapshot,
             coordination_record,
             dataset_transaction,
             manifest,
-            dependency_edges,
-            postorder,
+            &mut original.edges,
+            &mut original.postorder,
         )
-        .map_err(|_| LifecycleModelError::CorruptEncoding)?;
-        if cascade.plan() != stored_plan {
+        .map_err(|error| {
+                    original.model_failure.get_or_insert(error);
+                    LifecycleModelError::CorruptEncoding
+                })?;
+        original.cascade = Some((root, cascade));
+        if original.cascade.as_ref().is_none_or(|(_, cascade)| cascade.plan() != stored_plan) {
             return Err(LifecycleModelError::CorruptEncoding);
         }
-        Some((root, cascade))
-    } else {
-        None
-    };
+    }
     let snapshot_deletion = if kind == 4 {
         let snapshot = SnapshotId::from_bytes(take(&mut remaining)?);
         let tombstone = LifecycleSnapshotTombstoneDigestV1::from_stored(ObjectDigest::from_bytes(
@@ -498,16 +506,14 @@ pub(super) fn decode_semantic_fact_with_layout(
     } else {
         None
     };
-    let mut reads = Vec::new();
-    reads
+    original.reads
         .try_reserve_exact(read_count)
         .map_err(|_| LifecycleModelError::Allocation)?;
     for _ in 0..read_count {
         let (resource, expected) = decode_expected_resource(&mut remaining)?;
-        reads.push(LifecycleReadCommitFactV1::new(resource, expected));
+        original.reads.push(LifecycleReadCommitFactV1::new(resource, expected));
     }
-    let mut writes = Vec::new();
-    writes
+    original.writes
         .try_reserve_exact(write_count)
         .map_err(|_| LifecycleModelError::Allocation)?;
     for _ in 0..write_count {
@@ -526,7 +532,7 @@ pub(super) fn decode_semantic_fact_with_layout(
             1 => Some(DesiredStateCasDigestV1::from_stored(desired_digest)?),
             _ => return Err(LifecycleModelError::CorruptEncoding),
         };
-        writes.push(
+        original.writes.push(
             LifecycleCommittedResourceV1::new(
                 resource,
                 predecessor,
@@ -534,29 +540,33 @@ pub(super) fn decode_semantic_fact_with_layout(
                 state,
                 desired_state_transition,
             )
-            .map_err(|_| LifecycleModelError::CorruptEncoding)?,
+            .map_err(|error| {
+                    original.model_failure.get_or_insert(error);
+                    LifecycleModelError::CorruptEncoding
+                })?,
         );
     }
-    let mut assignments = Vec::new();
-    assignments
+    original.assignments
         .try_reserve_exact(assignment_count)
         .map_err(|_| LifecycleModelError::Allocation)?;
     for _ in 0..assignment_count {
-        assignments.push(
+        original.assignments.push(
             LifecycleAssignmentCommitFactV1::new(
                 SandboxId::from_bytes(take(&mut remaining)?),
                 ResourceId::from_bytes(take(&mut remaining)?),
                 AssignmentEpoch::new(u64::from_be_bytes(take(&mut remaining)?)),
             )
-            .map_err(|_| LifecycleModelError::CorruptEncoding)?,
+            .map_err(|error| {
+                    original.model_failure.get_or_insert(error);
+                    LifecycleModelError::CorruptEncoding
+                })?,
         );
     }
-    let mut reservations = Vec::new();
-    reservations
+    original.reservations
         .try_reserve_exact(reservation_count)
         .map_err(|_| LifecycleModelError::Allocation)?;
     for _ in 0..reservation_count {
-        reservations.push(
+        original.reservations.push(
             LifecycleReservationCommitFactV1::new(
                 ResourceId::from_bytes(take(&mut remaining)?),
                 Revision::new(u64::from_be_bytes(take(&mut remaining)?)),
@@ -564,11 +574,13 @@ pub(super) fn decode_semantic_fact_with_layout(
                     &mut remaining,
                 )?))?,
             )
-            .map_err(|_| LifecycleModelError::CorruptEncoding)?,
+            .map_err(|error| {
+                    original.model_failure.get_or_insert(error);
+                    LifecycleModelError::CorruptEncoding
+                })?,
         );
     }
-    let mut retention = Vec::new();
-    retention
+    original.retention
         .try_reserve_exact(retention_count)
         .map_err(|_| LifecycleModelError::Allocation)?;
     for _ in 0..retention_count {
@@ -576,7 +588,7 @@ pub(super) fn decode_semantic_fact_with_layout(
         if take::<4>(&mut remaining)? != [0; 4] {
             return Err(LifecycleModelError::CorruptEncoding);
         }
-        retention.push(
+        original.retention.push(
             LifecycleRetentionAcknowledgementV1::from_stored(
                 claim_index,
                 SnapshotId::from_bytes(take(&mut remaining)?),
@@ -594,58 +606,73 @@ pub(super) fn decode_semantic_fact_with_layout(
                     &mut remaining,
                 )?))?,
             )
-            .map_err(|_| LifecycleModelError::CorruptEncoding)?,
+            .map_err(|error| {
+                    original.model_failure.get_or_insert(error);
+                    LifecycleModelError::CorruptEncoding
+                })?,
         );
     }
     if !remaining.is_empty() {
         return Err(LifecycleModelError::CorruptEncoding);
     }
-    let facts = match (kind, snapshot, cascade, snapshot_deletion) {
-        (5, None, None, None) if retention.is_empty() => {
+    let branch_valid = match kind {
+        5 | 1 => snapshot.is_none() && original.cascade.is_none() && snapshot_deletion.is_none() && original.retention.is_empty(),
+        2 => snapshot.is_some() && original.cascade.is_none() && snapshot_deletion.is_none(),
+        3 => snapshot.is_none() && original.cascade.is_some() && snapshot_deletion.is_none() && original.retention.is_empty(),
+        4 => snapshot.is_none() && original.cascade.is_none() && snapshot_deletion.is_some()
+            && original.retention.is_empty() && original.assignments.is_empty() && original.reservations.is_empty(),
+        _ => false,
+    };
+    if !branch_valid {
+        return Err(LifecycleModelError::CorruptEncoding);
+    }
+    let facts = match (kind, snapshot, original.cascade.take(), snapshot_deletion) {
+        (5, None, None, None) if original.retention.is_empty() => {
             LifecycleSemanticCommitFactV1::DeleteBatch {
-                cas, reads, resources: writes, assignments, reservations,
-                batch: batch.ok_or(LifecycleModelError::CorruptEncoding)?,
+                cas, reads: std::mem::take(&mut original.reads), resources: std::mem::take(&mut original.writes),
+                assignments: std::mem::take(&mut original.assignments), reservations: std::mem::take(&mut original.reservations),
+                batch: original.batch.take().ok_or(LifecycleModelError::CorruptEncoding)?,
             }
         }
-        (1, None, None, None) if retention.is_empty() => {
+        (1, None, None, None) if original.retention.is_empty() => {
             LifecycleSemanticCommitFactV1::DesiredState {
                 cas,
-                reads,
-                resources: writes,
-                assignments,
-                reservations,
+                reads: std::mem::take(&mut original.reads),
+                resources: std::mem::take(&mut original.writes),
+                assignments: std::mem::take(&mut original.assignments),
+                reservations: std::mem::take(&mut original.reservations),
             }
         }
         (2, Some((snapshot, manifest)), None, None) => LifecycleSemanticCommitFactV1::Snapshot {
             cas,
-            reads,
+            reads: std::mem::take(&mut original.reads),
             snapshot,
             manifest,
-            resources: writes,
-            assignments,
-            reservations,
-            retention,
+            resources: std::mem::take(&mut original.writes),
+            assignments: std::mem::take(&mut original.assignments),
+            reservations: std::mem::take(&mut original.reservations),
+            retention: std::mem::take(&mut original.retention),
         },
-        (3, None, Some((root, cascade)), None) if retention.is_empty() => {
+        (3, None, Some((root, cascade)), None) if original.retention.is_empty() => {
             LifecycleSemanticCommitFactV1::CascadeDelete {
                 cas,
-                reads,
+                reads: std::mem::take(&mut original.reads),
                 root,
                 cascade,
-                resources: writes,
-                assignments,
-                reservations,
+                resources: std::mem::take(&mut original.writes),
+                assignments: std::mem::take(&mut original.assignments),
+                reservations: std::mem::take(&mut original.reservations),
             }
         }
         (4, None, None, Some((retention_release, tombstone)))
-            if retention.is_empty() && assignments.is_empty() && reservations.is_empty() =>
+            if original.retention.is_empty() && original.assignments.is_empty() && original.reservations.is_empty() =>
         {
             LifecycleSemanticCommitFactV1::DeleteSnapshot {
                 cas,
-                reads,
+                reads: std::mem::take(&mut original.reads),
                 snapshot: retention_release.snapshot(),
                 tombstone,
-                resources: writes,
+                resources: std::mem::take(&mut original.writes),
                 retention_release,
             }
         }
@@ -1076,4 +1103,38 @@ fn bounded_fact_count(bytes: &mut &[u8]) -> Result<usize, LifecycleModelError> {
 fn push_count(bytes: &mut Vec<u8>, count: usize) {
     let encoded = count.to_be_bytes();
     bytes.extend_from_slice(&encoded[encoded.len() - 4..]);
+}
+
+// The encoder and the actual closed Create forecast share this checked recipe.
+#[allow(clippy::too_many_arguments)]
+fn semantic_fact_encoded_length_from_counts_v1(evidence_bytes: usize, variant_bytes: usize,
+    reads: usize, writes: usize, assignments: usize, reservations: usize, retention: usize,
+) -> Result<usize, LifecycleModelError> {
+    24_usize
+        .checked_add(evidence_bytes)
+        .and_then(|total| total.checked_add(variant_bytes))
+        .and_then(|total| total.checked_add(reads.checked_mul(68)?))
+        .and_then(|total| total.checked_add(writes.checked_mul(148)?))
+        .and_then(|total| total.checked_add(assignments.checked_mul(40)?))
+        .and_then(|total| total.checked_add(reservations.checked_mul(56)?))
+        .and_then(|total| total.checked_add(retention.checked_mul(193)?))
+        .filter(|total| *total <= MAXIMUM_SEMANTIC_FACT_BYTES)
+        .ok_or(LifecycleModelError::InvalidModel)
+}
+
+pub(super) fn create_semantic_fact_encoded_length_v1() -> Result<usize, LifecycleModelError> {
+    semantic_fact_encoded_length_from_counts_v1(CURRENT_SEMANTIC_EVIDENCE_BYTES, 0, 0, 1, 1, 1, 0)
+}
+
+// Public Stop's desired-state witness writes one Sandbox and adds no separate
+// read, assignment, reservation or retention fact. The encoder uses this same
+// checked count recipe for the actual canonical semantic body.
+pub(super) fn stop_semantic_fact_encoded_length_v4() -> Result<usize, LifecycleModelError> {
+    semantic_fact_encoded_length_from_counts_v1(CURRENT_SEMANTIC_EVIDENCE_BYTES, 0, 0, 1, 0, 0, 0)
+}
+
+// The actual first Start preserves the current incarnation and records one
+// assignment/write, with no new reservation or incarnation-origin evidence.
+pub(super) fn start_semantic_fact_encoded_length_v2() -> Result<usize, LifecycleModelError> {
+    semantic_fact_encoded_length_from_counts_v1(CURRENT_SEMANTIC_EVIDENCE_BYTES, 0, 0, 1, 1, 0, 0)
 }

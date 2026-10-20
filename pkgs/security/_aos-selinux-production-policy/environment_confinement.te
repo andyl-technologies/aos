@@ -1,0 +1,33 @@
+# Public immutable Environment instruction/object bytes and one fixed GC root.
+# These types deliberately have no file_type membership or execution grant.
+# The selected image supplies the exact package path in its context roster.
+require {
+    type setfiles_t;
+}
+
+type aos_environment_provision_t;
+type aos_environment_gcroot_t;
+
+allow aos_sandbox_policy_authority_t aos_environment_provision_t:dir { getattr open search };
+allow aos_sandbox_policy_authority_t aos_environment_provision_t:file { getattr open read };
+allow aos_sandbox_policy_authority_t aos_environment_gcroot_t:lnk_file { getattr read };
+
+# The existing privileged image/Nix installer labels only the fixed host link.
+# It runs as init_t; confined Online Nix receives no host GC-root authority.
+allow init_t aos_environment_gcroot_t:lnk_file { create getattr read relabelto rename setattr unlink };
+
+# The existing fixed provisioner can create/check the selected UID0 evidence
+# directory. It gains no file open/read/append permission or general path API.
+allow aos_sandbox_runtime_roots_t aos_sandbox_policy_authority_state_t:dir { add_name create getattr open search setattr write };
+
+# Pinned refpolicy selinuxutil.fc maps restorecon to setfiles_exec_t and its
+# init_system_domain transition selects setfiles_t. The exact installer also
+# works when its existing privileged invocation retains init_t. Neither domain
+# gains access to Root evidence files through this public-link label.
+allow setfiles_t aos_environment_gcroot_t:lnk_file { getattr relabelto setattr };
+
+# Registering the booted immutable store closure may inspect its public DATA.
+# The permanent GC root keeps it live; no deletion, mutation or execution grant
+# is needed for this selected package's instruction and copied objects.
+allow init_t aos_environment_provision_t:dir { getattr open read search };
+allow init_t aos_environment_provision_t:file { getattr open read };

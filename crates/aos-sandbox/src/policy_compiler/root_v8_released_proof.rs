@@ -22,9 +22,7 @@ use super::{ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootV8EffectAckV1};
 const REPLY_MAGIC: &[u8; 8] = b"AOSPHR8X";
 const REPLY_BYTES: usize = 129 + ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1;
 
-/// Names the sole Root authority socket allowed to mint released evidence.
-pub const POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2: &str =
-    "/run/aos/sandbox-policy-authority/current-head.sock";
+pub use aos_sandbox_protocol::root_settlement::POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2;
 
 /// Retains a released Root terminal and the replay-validated AOSPC88L digest.
 ///
@@ -165,7 +163,9 @@ fn decode_ack_and_terminal(
     if frame[397..429] == [0; 32] {
         return Err(invalid_reply());
     }
-    let ack = RootV8EffectAckV1::from_record_bytes(&frame[65..397]).map_err(io::Error::other)?;
+    let ack = RootV8EffectAckV1::from_record_bytes(&frame[65..397])
+        .map_err(crate::policy_compiler::RootV8EffectAckErrorV1::from)
+        .map_err(io::Error::other)?;
     if ack.binding() != binding || ack.epoch() != epoch {
         return Err(invalid_reply());
     }

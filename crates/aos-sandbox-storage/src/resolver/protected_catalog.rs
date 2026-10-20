@@ -15,7 +15,8 @@
 //! byte under a domain separator. Entries are strictly ordered by the complete
 //! canonical assignment, so the caller cannot select policy by sandbox alone.
 
-use std::io::Read as _;
+mod opening;
+pub(crate) use opening::{ResolverPolicyDirectoryOriginalV1, ResolverPolicyReadOriginalV1};
 use std::os::fd::OwnedFd;
 use std::path::Path;
 
@@ -145,6 +146,27 @@ pub(crate) struct ProtectedStorageResolverPolicyDirectoryV1 {
 }
 
 impl ProtectedStorageResolverPolicyDirectoryV1 {
+    /// Prices this fixed binary catalog's raw, entry and selected-policy copies.
+    ///
+    /// No file, authority key or catalog is opened by this DATA supplier.
+    pub(crate) fn receiving_demand_v1()
+        -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>
+    {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        use crate::receiving_demand::count;
+        let read = ResolverPolicyReadOriginalV1::receiving_demand_v3()
+            .ok_or(aos_sandbox_core::AccountingError::ArithmeticOverflow {
+                dimension: D::MemoryBytes,
+            })?;
+        // One new directory and its opening original coexist with the read.
+        // The catalog's assignment rows are typed model backing, not extra
+        // filesystem names or fees for each native/error carrier.
+        let directory = count(std::mem::size_of::<Self>()
+            + std::mem::size_of::<ResolverPolicyDirectoryOriginalV1>())?;
+        read.checked_add(ResourceVector::ZERO.with(D::MemoryBytes, directory)
+            .with(D::MetadataEntries, 1).with(D::OpenFiles, 1))
+    }
+
     /// Lends only the original directory to the fixed capture-policy reader.
     /// The runtime supplies its private configuration binding, not this
     /// catalog's distinct public authority binding.
@@ -168,28 +190,26 @@ impl ProtectedStorageResolverPolicyDirectoryV1 {
         authority_binding: ObjectDigest,
         expected_uid: u32,
     ) -> Result<Self, StorageResolverPolicyError> {
-        if authority_binding.as_bytes() == &[0; 32] {
-            return Err(StorageResolverPolicyError::AuthorityMismatch);
-        }
-        let directory = open(
-            path,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|_| StorageResolverPolicyError::ProtectedPath)?;
-        let metadata = fstat(&directory).map_err(|_| StorageResolverPolicyError::ProtectedPath)?;
-        if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
-            || metadata.st_uid != expected_uid
-            || !matches!(metadata.st_mode & 0o7777, 0o500 | 0o700)
-        {
-            return Err(StorageResolverPolicyError::ProtectedPath);
-        }
+        let mut original = ResolverPolicyDirectoryOriginalV1::new();
+        Self::open_with_original_v1(path, authority_binding, expected_uid, &mut original)
+    }
 
-        Ok(Self {
-            directory,
-            authority_binding,
-            expected_uid,
-        })
+    pub(crate) fn open_root_owned_retaining_v1(
+        path: &Path,
+        authority_binding: ObjectDigest,
+        original: &mut ResolverPolicyDirectoryOriginalV1,
+    ) -> Result<Self, StorageResolverPolicyError> {
+        Self::open_with_original_v1(path, authority_binding, 0, original)
+    }
+
+    fn open_with_original_v1(
+        path: &Path,
+        authority_binding: ObjectDigest,
+        expected_uid: u32,
+        original: &mut ResolverPolicyDirectoryOriginalV1,
+    ) -> Result<Self, StorageResolverPolicyError> {
+        original.open_once(path, authority_binding, expected_uid)?;
+        Ok(Self { directory: original.take_directory()?, authority_binding, expected_uid })
     }
 
     #[cfg(test)]
@@ -205,58 +225,18 @@ impl ProtectedStorageResolverPolicyDirectoryV1 {
     pub(crate) fn load(
         &self,
     ) -> Result<LoadedStorageResolverPolicyCatalogV1, StorageResolverPolicyError> {
-        let directory_metadata =
-            fstat(&self.directory).map_err(|_| StorageResolverPolicyError::ProtectedPath)?;
-        if FileType::from_raw_mode(directory_metadata.st_mode) != FileType::Directory
-            || directory_metadata.st_uid != self.expected_uid
-            || !matches!(directory_metadata.st_mode & 0o7777, 0o500 | 0o700)
-        {
-            return Err(StorageResolverPolicyError::ProtectedPath);
-        }
-        let descriptor = openat(
-            &self.directory,
-            FILE_NAME,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-            Mode::empty(),
-        )
-        .map_err(|_| StorageResolverPolicyError::ProtectedPath)?;
-        let metadata = fstat(&descriptor).map_err(|_| StorageResolverPolicyError::ProtectedPath)?;
-        let declared_size = usize::try_from(metadata.st_size)
-            .map_err(|_| StorageResolverPolicyError::ProtectedPath)?;
-        if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
-            || metadata.st_uid != self.expected_uid
-            || metadata.st_nlink != 1
-            || !matches!(metadata.st_mode & 0o7777, 0o400 | 0o600)
-            || !(HEADER_BYTES..=MAXIMUM_CATALOG_BYTES).contains(&declared_size)
-        {
-            return Err(StorageResolverPolicyError::ProtectedPath);
-        }
-
-        let mut bytes = Vec::with_capacity(declared_size);
-        let mut file = std::fs::File::from(descriptor);
-        (&mut file)
-            .take((MAXIMUM_CATALOG_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|_| StorageResolverPolicyError::ProtectedPath)?;
-        let current = fstat(&file).map_err(|_| StorageResolverPolicyError::ProtectedPath)?;
-        if bytes.len() != declared_size
-            || current.st_dev != metadata.st_dev
-            || current.st_ino != metadata.st_ino
-            || current.st_size != metadata.st_size
-            || current.st_mode != metadata.st_mode
-            || current.st_uid != metadata.st_uid
-            || current.st_gid != metadata.st_gid
-            || current.st_nlink != metadata.st_nlink
-            || current.st_mtime != metadata.st_mtime
-            || current.st_mtime_nsec != metadata.st_mtime_nsec
-            || current.st_ctime != metadata.st_ctime
-            || current.st_ctime_nsec != metadata.st_ctime_nsec
-        {
-            return Err(StorageResolverPolicyError::ProtectedPath);
-        }
-
-        LoadedStorageResolverPolicyCatalogV1::decode(&bytes, self.authority_binding)
+        let mut original = ResolverPolicyReadOriginalV1::new();
+        self.load_retaining_v1(&mut original)
     }
+
+    pub(crate) fn load_retaining_v1(
+        &self,
+        original: &mut ResolverPolicyReadOriginalV1,
+    ) -> Result<LoadedStorageResolverPolicyCatalogV1, StorageResolverPolicyError> {
+        original.read_once(self)?;
+        original.take_catalog()
+    }
+
 }
 
 /// Carries one freshly validated canonical policy snapshot.

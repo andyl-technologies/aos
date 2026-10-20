@@ -1,6 +1,6 @@
 //! Durable Mount settlement of a Provider-terminal native no-dispatch Acquire.
 
-use aos_sandbox::journal::ProtectedJournalAuthority;
+use aos_sandbox_mount_native::ProtectedJournalAuthority;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::mount_source_acquisition_state::{
     MutationTagV2, native_recovery_settlement_digest_v2, validate_mount_source_state_graph_v2,

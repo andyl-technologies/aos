@@ -12,9 +12,19 @@
 //! transaction = AOSJPT01, exact existing ordered JournalTransaction
 //! ```
 
+mod physical_slot;
+use physical_slot::AttachmentPhysicalV1;
+
+mod controller_initial;
+mod storage_initial;
+mod storage_forwarding;
+use storage_forwarding::BorrowedFinalSuffixV2;
+pub(super) mod controller_pair;
 mod store;
+pub(in crate::recovery::journal) use store::NAME as FLOOR_SIDECAR_NAME;
 pub(crate) use store::BrokerSidecarCustodyV1;
 mod traffic;
+pub(super) use traffic::commit_traffic_transaction_retaining_v3;
 
 use aos_sandbox::{JournalTransaction, ProtectedJournalLockCustodyV1};
 
@@ -40,6 +50,10 @@ pub(super) enum BrokerAttachmentPhaseV1 {
 enum BrokerAttachmentFailureV1 {
     Floor(FloorErrorV1),
     Sidecar(BrokerSidecarOpenErrorV1),
+    ControllerSidecar,
+    StorageSidecar,
+    ControllerPayment,
+    StoragePayment,
     Native(aos_sandbox::JournalError),
     Endpoint(crate::BrokerSessionSecurityError),
     Unfinished,
@@ -48,12 +62,23 @@ enum BrokerAttachmentFailureV1 {
 
 /// Keeps genuine partial attachment owners resident before each later gate.
 pub(super) struct BrokerAttachmentAttemptV1 {
-    // Preserve carrier/backend before sidecar destruction; traffic remains on
-    // the whole original Journal owner, never borrowed into a sibling field.
-    backend: Option<TpmNvExtendFloorBackendV1<PhysicalTpmNvIoV1>>,
-    physical: Option<PhysicalTpmNvIoV1>,
+    // Capture and backend promotion own the SAME physical original in exclusive
+    // phases. Preserve that owner before sidecar destruction; traffic remains
+    // on the whole original Journal owner, never borrowed into a sibling field.
+    physical: AttachmentPhysicalV1,
+    controller_payment: Option<crate::tpm_nv_custody::physical::BrokerPhysicalPaymentOriginalV2>,
+    storage_payment: Option<crate::tpm_nv_custody::physical::BrokerPhysicalPaymentOriginalV2>,
+    pub(super) controller_selected: bool,
+    pub(super) storage_selected: bool,
+    pub(super) controller_owed_consumed: bool,
+    pub(super) controller_primary: Option<Result<(), FloorErrorV1>>,
+    pub(super) controller_posts: Option<[Result<(), FloorErrorV1>; 5]>,
     store: Option<FloorStoreV1>,
     opening: Option<BrokerSidecarOpenV1>,
+    controller_fixed: Option<Result<(), aos_sandbox::ControllerInitialBrokerSessionClosedV1>>,
+    controller_opening: Option<Box<store::ControllerSidecarOpenOriginalV1>>,
+    storage_opening: Option<Box<store::StorageSidecarOpenOriginalV2>>,
+    storage_fixed: Option<(Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>, Result<(), aos_sandbox::StorageReceivingClosedV1>)>,
     main_lock: Option<ProtectedJournalLockCustodyV1>,
     sidecar_lock: Option<ProtectedJournalLockCustodyV1>,
     phase: BrokerAttachmentPhaseV1,
@@ -69,6 +94,20 @@ pub(super) struct BrokerAttachmentAttemptV1 {
 }
 
 impl BrokerAttachmentAttemptV1 {
+    pub(super) fn install_currentness_archive_v1(
+        &mut self,
+        archive: super::super::floor_revalidation::FloorCurrentnessSharedV1,
+    ) -> Result<(), FloorErrorV1> {
+        if self.phase != BrokerAttachmentPhaseV1::Ready || self.first_failure.is_some()
+            || self.cold_failure.is_some() || self.native_failure.is_some()
+            || self.opening.is_some()
+        {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        self.store.as_mut().ok_or(FloorErrorV1::Unavailable)?
+            .install_currentness_archive_v1(archive)
+    }
+
     #[cfg(feature = "online-nix")]
     pub(super) fn bind_online_request_deadline(
         &mut self,
@@ -80,7 +119,7 @@ impl BrokerAttachmentAttemptV1 {
                 return Err(FloorErrorV1::Unavailable);
             }
             operation.attempt.cold_deadline = Some(deadline);
-            operation.attempt.backend.as_mut().ok_or(FloorErrorV1::Unavailable)?
+            operation.attempt.physical.backend_mut().ok_or(FloorErrorV1::Unavailable)?
                 .bind_online_request_deadline(deadline)?;
             operation.attempt.check_cold_deadline()
         })();
@@ -121,8 +160,8 @@ impl BrokerAttachmentAttemptV1 {
             self.fence();
             return Err(FloorErrorV1::Unavailable);
         }
-        let result = self.backend
-            .as_mut()
+        let result = self.physical
+            .backend_mut()
             .ok_or(FloorErrorV1::Unavailable)?
             .require_cold_retirement(deadline);
         if let Err(cause) = result {
@@ -131,7 +170,7 @@ impl BrokerAttachmentAttemptV1 {
         }
         self.check_cold_deadline()?;
         // No fallible work follows the final original-D observation.
-        if let Some(backend) = self.backend.as_mut() {
+        if let Some(backend) = self.physical.backend_mut() {
             backend.clear_cold_deadline();
         }
         self.cold_deadline = None;
@@ -140,10 +179,20 @@ impl BrokerAttachmentAttemptV1 {
 
     pub(super) const fn fresh() -> Self {
         Self {
-            backend: None,
-            physical: None,
+            physical: AttachmentPhysicalV1::Empty,
+            controller_payment: None,
+            storage_payment: None,
+            controller_selected: false,
+            storage_selected: false,
+            controller_owed_consumed: false,
+            controller_primary: None,
+            controller_posts: None,
             store: None,
             opening: None,
+            controller_fixed: None,
+            controller_opening: None,
+            storage_opening: None,
+            storage_fixed: None,
             main_lock: None,
             sidecar_lock: None,
             phase: BrokerAttachmentPhaseV1::Fresh,
@@ -171,9 +220,9 @@ impl BrokerAttachmentAttemptV1 {
             Some(store) => store.validate_held_native(),
             None => Err(aos_sandbox::JournalError::ProtectedBoundary),
         };
-        *physical = if let Some(backend) = self.backend.as_mut() {
+        *physical = if let Some(backend) = self.physical.backend_mut() {
             backend.observe_online_postflight()
-        } else if let Some(physical) = self.physical.as_mut() {
+        } else if let Some(physical) = self.physical.captured_mut() {
             physical.observe_online_postflight()
         } else {
             Err(FloorErrorV1::Unavailable)
@@ -185,6 +234,102 @@ impl BrokerAttachmentAttemptV1 {
             return Err(FloorErrorV1::Unavailable);
         }
         Ok(())
+    }
+
+    pub(super) fn is_fresh_for_controller_v1(&self) -> bool {
+        self.phase == BrokerAttachmentPhaseV1::Fresh && self.first_failure.is_none()
+            && self.store.is_none() && self.opening.is_none()
+            && self.controller_opening.is_none() && self.controller_payment.is_none()
+            && self.physical.is_empty()
+    }
+
+    pub(super) fn arm_controller_initial_v1(
+        &mut self, owner: &super::super::ProtectedBrokerSessionJournalV1,
+        receiving: &aos_sandbox::ControllerInitialBrokerSessionReceivingLoanV1<'_>,
+    ) -> Result<(), FloorErrorV1> {
+        if self.phase != BrokerAttachmentPhaseV1::Fresh || self.controller_selected
+            || receiving.role_v1() != aos_sandbox::ControllerInitialBrokerSessionRoleV1::Storage
+        { return Err(FloorErrorV1::Unavailable); }
+        receiving.require_opened_journal_v1(owner.journal.as_ref().ok_or(FloorErrorV1::Unavailable)?)
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+        self.controller_selected = true;
+        Ok(())
+    }
+
+    pub(super) fn controller_physical_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        match self.first_failure.as_ref()? {
+            BrokerAttachmentFailureV1::ControllerPayment => self.controller_payment.as_ref()?.failure(),
+            BrokerAttachmentFailureV1::Floor(FloorErrorV1::RetainedControllerPhysical) => {
+                self.physical.backend_ref().and_then(|backend| backend.controller_physical_failure_v1())
+                    .or_else(|| self.physical.captured_ref()?.controller_physical_failure_v1())
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn controller_property_failure_view_v1(&self)
+        -> Option<aos_systemd::FixedPid1PropertyFailureViewV1<'_>>
+    {
+        if !matches!(self.first_failure,
+            Some(BrokerAttachmentFailureV1::Floor(FloorErrorV1::RetainedControllerPhysical)))
+        { return None; }
+        self.physical.backend_ref().and_then(|backend| backend.controller_property_failure_view_v1())
+            .or_else(|| self.physical.captured_ref()?.controller_property_failure_view_v1())
+    }
+
+    pub(super) fn has_controller_owed_v1(&self) -> bool {
+        (self.controller_selected || self.storage_selected) && !self.controller_owed_consumed && self.is_failed()
+    }
+
+    pub(super) fn observe_controller_attachment_post_v1(
+        &mut self, owner: &super::super::ProtectedBrokerSessionJournalV1,
+    ) -> (Result<(), FloorErrorV1>, Result<(), FloorErrorV1>, Result<(), FloorErrorV1>) {
+        // The real journals remain owned by this same main/attachment. This
+        // path never opens names independently or rewrites the healthy phase.
+        let main = match owner.journal.as_ref() {
+            Some(journal) => super::super::floor_revalidation::validate_rooted(
+                owner.floor_currentness.as_ref(), owner.owner, journal,
+                &owner.directory, &owner.name,
+            ),
+            None => Err(FloorErrorV1::Unavailable),
+        };
+        let sidecar = match self.store.as_ref() {
+            Some(store) => store.validate_held(),
+            None => Err(FloorErrorV1::Unavailable),
+        };
+        let physical = if let Some(backend) = self.physical.backend_mut() {
+            backend.observe_controller_floor_post_v1()
+        } else if let Some(physical) = self.physical.captured_mut() {
+            physical.observe_controller_floor_post_v1()
+        } else {
+            // No helper/service primitive is entered before its actual fixed
+            // debit. Existing partial payment/sidecar owners stay resident.
+            Err(FloorErrorV1::Unavailable)
+        };
+        (main, sidecar, physical)
+    }
+
+    pub(super) fn finish_storage_initial_program_v2(&mut self,
+        main: &aos_sandbox::Journal, receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<(), FloorErrorV1> {
+        let sidecar = self.store.as_ref().ok_or(FloorErrorV1::Unavailable)?.original_controller_pair_journal_v1();
+        self.physical.backend_mut().ok_or(FloorErrorV1::Unavailable)?
+            .finish_storage_initial_program_v2(receiving, main, sidecar)
+    }
+
+    pub(super) fn storage_physical_failure_v2(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if matches!(self.first_failure, Some(BrokerAttachmentFailureV1::StoragePayment)) {
+            return self.storage_payment.as_ref()?.failure();
+        }
+        self.physical.backend_ref().and_then(|backend| backend.controller_physical_failure_v1())
+            .or_else(|| self.physical.captured_ref()?.controller_physical_failure_v1())
+    }
+
+    pub(super) fn finish_controller_initial_once_v1(&mut self) -> Result<(), FloorErrorV1> {
+        self.physical.backend_mut().ok_or(FloorErrorV1::Unavailable)?
+            .finish_controller_initial_once_v1()
     }
 
     pub(super) fn is_failed(&self) -> bool {
@@ -213,9 +358,10 @@ impl BrokerAttachmentAttemptV1 {
         self.record(BrokerAttachmentFailureV1::Endpoint(cause));
     }
 
-    fn failure_projection(&self) -> FloorErrorV1 {
+    pub(super) fn failure_projection(&self) -> FloorErrorV1 {
         match &self.first_failure {
             Some(BrokerAttachmentFailureV1::Floor(error)) => *error,
+            Some(BrokerAttachmentFailureV1::ControllerPayment) => FloorErrorV1::RetainedControllerPhysical,
             Some(BrokerAttachmentFailureV1::Sidecar(error)) => error.projection(),
             // Endpoint and unfinished failures keep their actual cause here;
             // the original Broker facade has always projected Unavailable.
@@ -254,35 +400,125 @@ impl BrokerAttachmentAttemptV1 {
         auth: &[u8; 32],
         launch_image: &crate::production_startup::Pid1LaunchImageV1,
     ) -> Result<(), FloorErrorV1> {
+        self.admit_with_controller_v1(owner, profile, salt_name, auth, launch_image, None, None)
+    }
+
+    pub(super) fn admit_controller_initial_v1(
+        &mut self, owner: &mut super::super::ProtectedBrokerSessionJournalV1,
+        profile: FloorProfileV1, salt_name: [u8; 34], auth: &[u8; 32],
+        launch_image: &crate::production_startup::Pid1LaunchImageV1,
+        receiving: &mut aos_sandbox::ControllerInitialBrokerSessionReceivingLoanV1<'_>,
+    ) -> Result<(), FloorErrorV1> {
+        self.admit_with_controller_v1(owner, profile, salt_name, auth, launch_image, Some(receiving), None)
+    }
+
+    pub(super) fn admit_storage_initial_v2(
+        &mut self,
+        owner: &mut super::super::ProtectedBrokerSessionJournalV1,
+        profile: FloorProfileV1,
+        salt_name: [u8; 34],
+        auth: &[u8; 32],
+        launch_image: &crate::production_startup::Pid1LaunchImageV1,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<(), FloorErrorV1> {
+        self.admit_with_controller_v1(owner, profile, salt_name, auth, launch_image, None, Some(receiving))
+    }
+
+    fn admit_with_controller_v1(
+        &mut self, owner: &mut super::super::ProtectedBrokerSessionJournalV1,
+        profile: FloorProfileV1, salt_name: [u8; 34], auth: &[u8; 32],
+        launch_image: &crate::production_startup::Pid1LaunchImageV1,
+        receiving: Option<&mut aos_sandbox::ControllerInitialBrokerSessionReceivingLoanV1<'_>>,
+        storage: Option<&mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>>,
+    ) -> Result<(), FloorErrorV1> {
+        if self.phase != BrokerAttachmentPhaseV1::Checking {
+            return Err(self.failure_projection());
+        }
+        let selected = storage.is_some();
+        if selected { owner.begin_storage_floor_main_programme_v3()?; }
+        let result = self.admit_engine_with_controller_v3(owner, profile, salt_name, auth,
+            launch_image, receiving, storage);
+        if selected { owner.finish_storage_floor_main_programme_v3(result) }
+        else { result }
+    }
+
+    fn admit_engine_with_controller_v3(
+        &mut self, owner: &mut super::super::ProtectedBrokerSessionJournalV1,
+        profile: FloorProfileV1, salt_name: [u8; 34], auth: &[u8; 32],
+        launch_image: &crate::production_startup::Pid1LaunchImageV1,
+        mut receiving: Option<&mut aos_sandbox::ControllerInitialBrokerSessionReceivingLoanV1<'_>>,
+        mut storage: Option<&mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>>,
+    ) -> Result<(), FloorErrorV1> {
         if self.phase != BrokerAttachmentPhaseV1::Checking {
             return Err(self.failure_projection());
         }
         self.check_cold_deadline()?;
-        traffic::BrokerTrafficWriterV1::borrow(owner).cuts(profile, None)?;
+        match storage.as_deref_mut() {
+            Some(source) => traffic::BrokerTrafficWriterV1::borrow(owner)
+                .cuts_storage_receiving_v3(profile, None, source)?,
+            None => traffic::BrokerTrafficWriterV1::borrow(owner).cuts(profile, None)?,
+        };
         self.check_cold_deadline()?;
         self.require_endpoint(owner)?;
-        self.opening = Some(BrokerSidecarOpenV1::prepare(
-            owner.owner,
-            &owner.directory,
-            owner.limits,
-        )?);
-        self.check_cold_deadline()?;
-        let result = self.opening.as_mut()
-            .ok_or(FloorErrorV1::Unavailable)?
-            .open();
-        if let Err(cause) = result {
-            let projection = cause.projection();
-            self.record(BrokerAttachmentFailureV1::Sidecar(cause));
-            return Err(projection);
+        if let Some(receiving) = receiving.as_deref_mut() {
+            self.capture_controller_sidecar_once_v1(owner, receiving)?;
+        } else if let Some(receiving) = storage.as_deref_mut() {
+            self.capture_storage_sidecar_once_v2(owner, receiving)?;
+            self.storage_payment = Some(crate::tpm_nv_custody::physical::BrokerPhysicalPaymentOriginalV2::new());
+            let result = self.storage_payment.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                .prepare_storage_once_v2(receiving,
+                    owner.journal.as_ref().ok_or(FloorErrorV1::Unavailable)?,
+                    self.store.as_ref().ok_or(FloorErrorV1::Unavailable)?.original_controller_pair_journal_v1(),
+                    launch_image);
+            if let Err(cause) = result {
+                self.record(BrokerAttachmentFailureV1::StoragePayment);
+                return Err(cause);
+            }
+        } else {
+            self.opening = Some(BrokerSidecarOpenV1::prepare(
+                owner.owner,
+                &owner.directory,
+                owner.limits,
+            )?);
+            if let Some(currentness) = owner.floor_currentness.as_ref() {
+                self.opening.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                    .inherit_currentness_archive_v1(currentness)?;
+            }
+            self.check_cold_deadline()?;
+            let result = self.opening.as_mut()
+                .ok_or(FloorErrorV1::Unavailable)?
+                .open();
+            if let Err(cause) = result {
+                let projection = cause.projection();
+                self.record(BrokerAttachmentFailureV1::Sidecar(cause));
+                return Err(projection);
+            }
+            self.opening.as_mut()
+                .ok_or(FloorErrorV1::Unavailable)?
+                .finish_into(&mut self.store)?;
+            // Only the empty opening shell moves away; the actual sidecar is now
+            // resident BEFORE traffic's original endpoint postcheck.
+            self.opening = None;
         }
-        self.opening.as_mut()
-            .ok_or(FloorErrorV1::Unavailable)?
-            .finish_into(&mut self.store)?;
-        // Only the empty opening shell moves away; the actual sidecar is now
-        // resident BEFORE traffic's original endpoint postcheck.
-        self.opening = None;
         self.check_cold_deadline()?;
         self.require_endpoint(owner)?;
+
+        if let Some(receiving) = receiving.as_deref_mut() {
+            // Park the entire same-C handoff and all arithmetic before lock
+            // duplication, physical-owner construction, helper or PID1 work.
+            self.controller_payment = Some(
+                crate::tpm_nv_custody::physical::BrokerPhysicalPaymentOriginalV2::new(),
+            );
+            let result = self.controller_payment.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                .prepare_once(receiving,
+                    owner.journal.as_ref().ok_or(FloorErrorV1::Unavailable)?,
+                    self.store.as_ref().ok_or(FloorErrorV1::Unavailable)?
+                        .original_controller_pair_journal_v1(), launch_image);
+            if let Err(cause) = result {
+                self.record(BrokerAttachmentFailureV1::ControllerPayment);
+                return Err(FloorErrorV1::RetainedControllerPhysical);
+            }
+        }
 
         self.main_lock = Some(
             traffic::BrokerTrafficWriterV1::borrow(owner).loan_lock_custody()?,
@@ -297,13 +533,16 @@ impl BrokerAttachmentAttemptV1 {
             (Some(main), Some(sidecar)) => {
                 // Retain is infallible on the restricted actual inputs. No gate
                 // or callback can run between the OFD move and its owning slot.
-                self.physical = Some(PhysicalTpmNvIoV1::retain(
-                    profile,
-                    salt_name,
-                    auth,
-                    [main, sidecar],
-                    launch_image,
-                ));
+                let payment = self.controller_payment.take()
+                    .or_else(|| self.storage_payment.take());
+                self.physical = AttachmentPhysicalV1::Captured(match payment {
+                    Some(payment) => PhysicalTpmNvIoV1::retain_funded_v2(
+                        profile, salt_name, auth, [main, sidecar], launch_image, payment,
+                    ),
+                    None => PhysicalTpmNvIoV1::retain(
+                        profile, salt_name, auth, [main, sidecar], launch_image,
+                    ),
+                });
             }
             (main, sidecar) => {
                 self.main_lock = main;
@@ -312,31 +551,68 @@ impl BrokerAttachmentAttemptV1 {
             }
         }
         if let Some(deadline) = self.cold_deadline {
-            self.physical.as_mut().ok_or(FloorErrorV1::Unavailable)?
+            self.physical.captured_mut().ok_or(FloorErrorV1::Unavailable)?
                 .bind_cold_deadline(deadline)?;
         }
         self.check_cold_deadline()?;
-        self.physical.as_mut()
-            .ok_or(FloorErrorV1::Unavailable)?
-            .admit()?;
+        if receiving.is_some() || storage.is_some() {
+            self.physical.captured_mut().ok_or(FloorErrorV1::Unavailable)?
+                .admit_funded_v2(
+                    owner.journal.as_ref().ok_or(FloorErrorV1::Unavailable)?,
+                    self.store.as_ref().ok_or(FloorErrorV1::Unavailable)?
+                        .original_controller_pair_journal_v1(),
+                )?;
+        } else {
+            self.physical.captured_mut()
+                .ok_or(FloorErrorV1::Unavailable)?
+                .admit()?;
+        }
         self.check_cold_deadline()?;
-        if let Some(physical) = self.physical.take() {
-            self.backend = Some(TpmNvExtendFloorBackendV1::retain(profile, physical));
+        if let Some(physical) = self.physical.take_captured() {
+            self.physical = AttachmentPhysicalV1::Backend(
+                TpmNvExtendFloorBackendV1::retain(profile, physical),
+            );
         } else {
             return Err(FloorErrorV1::Unavailable);
         }
         // Keep both original READs: physical admission's READ precedes this
         // backend READ; both execute only after their actual owners are parked.
-        self.backend.as_mut()
-            .ok_or(FloorErrorV1::Unavailable)?
-            .read()?;
-        let mut traffic = traffic::BrokerTrafficWriterV1::borrow(owner);
-        let mut floor = self.borrow(&mut traffic, profile)?;
-        floor.classify()?;
-        if floor.recover()? != FloorProgressV1::Current {
-            return Err(FloorErrorV1::Diverged);
+        if receiving.is_some() || storage.is_some() {
+            let pair = controller_pair::HeldControllerFloorPairV1::from_actual_attachment_v1(
+                owner.journal.as_ref().ok_or(FloorErrorV1::Unavailable)?,
+                self.store.as_ref().ok_or(FloorErrorV1::Unavailable)?,
+            );
+            self.physical.backend_mut().ok_or(FloorErrorV1::Unavailable)?
+                .read_with_pair_v1(Some(&pair))?;
+        } else {
+            self.physical.backend_mut()
+                .ok_or(FloorErrorV1::Unavailable)?
+                .read()?;
         }
-        Ok(())
+        let selected = storage.is_some();
+        if let Some(source) = storage.as_deref_mut() {
+            let main = owner.journal.as_ref().ok_or(FloorErrorV1::Unavailable)?;
+            self.store.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                .begin_storage_read_programme_v2(main, source)?;
+        }
+        let result = (|| {
+            let mut traffic = traffic::BrokerTrafficWriterV1::borrow(owner);
+            let mut floor = self.borrow(&mut traffic, profile)?;
+            // The initial Cold suffix uses the same F as capture and physical
+            // admission. Source None must never select ordinary sidecar IO.
+            floor.storage_receiving = storage.map(|source| {
+                source as &mut dyn super::storage_receiving::StorageFloorFinancialSourceV2
+            });
+            floor.classify()?;
+            if floor.recover()? != FloorProgressV1::Current {
+                return Err(FloorErrorV1::Diverged);
+            }
+            Ok(())
+        })();
+        if selected {
+            self.store.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                .finish_storage_read_programme_v2(result)
+        } else { result }
     }
 
     #[cfg(feature = "online-nix")]
@@ -382,7 +658,7 @@ impl BrokerAttachmentAttemptV1 {
             preparation.take_original_origin(),
         ) {
             (Some(main), Some(sidecar), Some(origin)) => {
-                self.physical = Some(PhysicalTpmNvIoV1::retain_online(
+                self.physical = AttachmentPhysicalV1::Captured(PhysicalTpmNvIoV1::retain_online(
                     &preparation, [main, sidecar], origin, deadline,
                 ));
                 preparation.finish_original_transfer();
@@ -399,23 +675,26 @@ impl BrokerAttachmentAttemptV1 {
         if self.online_admission_result.is_some() {
             return Err(FloorErrorV1::Unavailable);
         }
-        let result = self.physical.as_mut().ok_or(FloorErrorV1::Unavailable)?.admit_online();
+        let result = self.physical.captured_mut().ok_or(FloorErrorV1::Unavailable)?.admit_online();
         self.online_admission_result = Some(result);
         if let Some(Err(cause)) = self.online_admission_result {
             return Err(cause);
         }
 
         self.check_cold_deadline()?;
-        if let Some(physical) = self.physical.take() {
-            self.backend = Some(TpmNvExtendFloorBackendV1::retain_online(profile, physical));
+        if let Some(physical) = self.physical.take_captured() {
+            self.physical = AttachmentPhysicalV1::Backend(
+                TpmNvExtendFloorBackendV1::retain_online(profile, physical),
+            );
         } else {
             return Err(FloorErrorV1::Unavailable);
         }
         // Physical admission's READ and this backend READ remain distinct.
-        self.backend.as_mut().ok_or(FloorErrorV1::Unavailable)?.read()?;
+        self.physical.backend_mut().ok_or(FloorErrorV1::Unavailable)?.read()?;
         let mut traffic = traffic::OnlineTrafficWriterV1::borrow(owner, &mut self.native_failure);
         let mut floor = BorrowedDurableFloorV1 {
-            backend: self.backend.as_mut().ok_or(FloorErrorV1::Unavailable)?,
+            storage_receiving: None,
+            backend: self.physical.backend_mut().ok_or(FloorErrorV1::Unavailable)?,
             store: self.store.as_mut().ok_or(FloorErrorV1::Unavailable)?,
             traffic: &mut traffic,
             profile: FloorProfileDataV1::Online(profile),
@@ -440,7 +719,8 @@ impl BrokerAttachmentAttemptV1 {
         }
         let mut traffic = traffic::OnlineTrafficWriterV1::borrow(owner, &mut self.native_failure);
         let mut floor = BorrowedDurableFloorV1 {
-            backend: self.backend.as_mut().ok_or(FloorErrorV1::Unavailable)?,
+            storage_receiving: None,
+            backend: self.physical.backend_mut().ok_or(FloorErrorV1::Unavailable)?,
             store: self.store.as_mut().ok_or(FloorErrorV1::Unavailable)?,
             traffic: &mut traffic,
             profile: FloorProfileDataV1::Online(profile),
@@ -497,8 +777,59 @@ impl BrokerAttachmentAttemptV1 {
         owner: &mut super::super::ProtectedBrokerSessionJournalV1,
         profile: FloorProfileV1,
     ) -> Result<(), FloorErrorV1> {
-        let mut traffic = traffic::BrokerTrafficWriterV1::borrow(owner);
-        self.borrow(&mut traffic, profile)?.require_current()
+        self.check_with_storage_receiving_v2(owner, profile, None)
+    }
+
+    pub(super) fn reserve_storage_availability_receiving_v3(&self,
+        owner: &super::super::ProtectedBrokerSessionJournalV1,
+        receiving: &mut dyn super::storage_receiving::StorageFloorFinancialSourceV2,
+        complete: aos_sandbox_core::ResourceVector,
+    ) -> Result<(), FloorErrorV1> {
+        if self.phase != BrokerAttachmentPhaseV1::Ready || self.first_failure.is_some() {
+            return Err(self.failure_projection());
+        }
+        let main = owner.journal.as_ref().ok_or(FloorErrorV1::Unavailable)?;
+        let sidecar = self.store.as_ref().ok_or(FloorErrorV1::Unavailable)?
+            .original_controller_pair_journal_v1();
+        receiving.reserve_availability_v3(main, sidecar, complete).map_err(|_| FloorErrorV1::Unavailable)
+    }
+
+    pub(super) fn check_with_storage_receiving_v2<'operation>(&'operation mut self,
+        owner: &'operation mut super::super::ProtectedBrokerSessionJournalV1, profile: FloorProfileV1,
+        receiving: Option<&'operation mut dyn super::storage_receiving::StorageFloorFinancialSourceV2>,
+    ) -> Result<(), FloorErrorV1> {
+        self.current_checkpoint_with_storage_receiving_v3(owner, profile, receiving).map(|_| ())
+    }
+
+    pub(super) fn current_checkpoint_with_storage_receiving_v3<'operation>(&'operation mut self,
+        owner: &'operation mut super::super::ProtectedBrokerSessionJournalV1, profile: FloorProfileV1,
+        receiving: Option<&'operation mut dyn super::storage_receiving::StorageFloorFinancialSourceV2>,
+    ) -> Result<crate::tpm_nv_custody::FloorCheckpointDataV1, FloorErrorV1> {
+        if self.phase != BrokerAttachmentPhaseV1::Checking {
+            return Err(self.failure_projection());
+        }
+        let mut receiving = receiving;
+        let selected = receiving.is_some();
+        if selected { owner.begin_storage_floor_main_programme_v3()?; }
+        let result = (|| {
+            if let Some(source) = receiving.as_mut() {
+                let main = owner.journal.as_ref().ok_or(FloorErrorV1::Unavailable)?;
+                self.store.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                    .begin_storage_read_programme_v2(main, &mut **source)?;
+            }
+            let mut traffic = traffic::BrokerTrafficWriterV1::borrow(owner);
+            let mut floor = self.borrow(&mut traffic, profile)?;
+            floor.storage_receiving = receiving;
+            floor.current_checkpoint_v3()
+        })();
+        let result = if selected {
+            match self.store.as_mut() {
+                Some(store) => store.finish_storage_read_programme_v2(result),
+                None => Err(FloorErrorV1::Unavailable),
+            }
+        } else { result };
+        if selected { owner.finish_storage_floor_main_programme_v3(result) }
+        else { result }
     }
 
     pub(super) fn commit(
@@ -507,25 +838,56 @@ impl BrokerAttachmentAttemptV1 {
         profile: FloorProfileV1,
         transaction: &JournalTransaction,
     ) -> Result<(), FloorErrorV1> {
-        let mut traffic = traffic::BrokerTrafficWriterV1::borrow(owner);
-        let mut floor = self.borrow(&mut traffic, profile)?;
-        floor.prepare(transaction)?;
-        if floor.recover()? != FloorProgressV1::Current {
-            return Err(FloorErrorV1::Diverged);
-        }
-        Ok(())
+        self.commit_with_storage_receiving_v2(owner, profile, transaction, None)
     }
 
-    fn borrow<'operation, Traffic: HeldTrafficWriterV1>(
+    pub(super) fn commit_with_storage_receiving_v2<'operation>(&'operation mut self,
+        owner: &'operation mut super::super::ProtectedBrokerSessionJournalV1,
+        profile: FloorProfileV1, transaction: &JournalTransaction,
+        receiving: Option<&'operation mut dyn super::storage_receiving::StorageFloorFinancialSourceV2>,
+    ) -> Result<(), FloorErrorV1> {
+        if self.phase != BrokerAttachmentPhaseV1::Checking {
+            return Err(self.failure_projection());
+        }
+        let mut receiving = receiving;
+        let selected = receiving.is_some();
+        if selected { owner.begin_storage_floor_main_programme_v3()?; }
+        let result = (|| {
+            if let Some(source) = receiving.as_mut() {
+                let main = owner.journal.as_ref().ok_or(FloorErrorV1::Unavailable)?;
+                self.store.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                    .begin_storage_read_programme_v2(main, &mut **source)?;
+            }
+            let mut traffic = traffic::BrokerTrafficWriterV1::borrow(owner);
+            let mut floor = self.borrow(&mut traffic, profile)?;
+            floor.storage_receiving = receiving;
+            floor.prepare(transaction)?;
+            if floor.recover()? != FloorProgressV1::Current {
+                return Err(FloorErrorV1::Diverged);
+            }
+            Ok(())
+        })();
+        let result = if selected {
+            match self.store.as_mut() {
+                Some(store) => store.finish_storage_read_programme_v2(result),
+                None => Err(FloorErrorV1::Unavailable),
+            }
+        } else { result };
+        if selected { owner.finish_storage_floor_main_programme_v3(result) }
+        else { result }
+    }
+
+    fn borrow<'operation, 'receiving, Traffic: HeldTrafficWriterV1>(
         &'operation mut self,
         traffic: &'operation mut Traffic,
         profile: FloorProfileV1,
-    ) -> Result<BorrowedDurableFloorV1<'operation, Traffic, PhysicalTpmNvIoV1>, FloorErrorV1> {
+    ) -> Result<BorrowedDurableFloorV1<'operation, 'receiving, Traffic, PhysicalTpmNvIoV1>, FloorErrorV1> {
         if self.phase != BrokerAttachmentPhaseV1::Checking {
             return Err(self.failure_projection());
         }
         Ok(BorrowedDurableFloorV1 {
-            backend: self.backend.as_mut().ok_or(FloorErrorV1::Unavailable)?,
+            storage_receiving: None,
+            backend: self.physical.backend_mut().ok_or(FloorErrorV1::Unavailable)?,
             store: self.store.as_mut().ok_or(FloorErrorV1::Unavailable)?,
             traffic,
             profile: FloorProfileDataV1::Broker(profile),
@@ -625,10 +987,7 @@ pub(super) fn commit_unfloored_broker_v1(
         .endpoint
         .revalidate()
         .map_err(|_| FloorErrorV1::Unavailable)?;
-    traffic::commit_traffic_transaction(
-        owner.journal_mut().map_err(|_| FloorErrorV1::Unavailable)?,
-        transaction,
-    )?;
+    traffic::commit_owned_traffic_transaction_v1(owner, transaction, None)?;
     owner
         .validate_schema_only()
         .map_err(|_| FloorErrorV1::Unavailable)?;
@@ -685,8 +1044,9 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1> DurableTpmFloorV1
 
     // Owning compatibility callers and resident production callers execute
     // this same algorithm through references to their exact original fields.
-    fn borrow(&mut self) -> BorrowedDurableFloorV1<'_, Traffic, Io> {
+    fn borrow(&mut self) -> BorrowedDurableFloorV1<'_, '_, Traffic, Io> {
         BorrowedDurableFloorV1 {
+            storage_receiving: None,
             backend: &mut self.backend,
             store: &mut self.store,
             traffic: &mut self.traffic,
@@ -732,8 +1092,35 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1> DurableTpmFloorV1
     }
 }
 
+enum BorrowedSidecarModelV2 {
+    Ordinary(StoredFloorDataV1),
+    Storage(std::sync::Arc<StoredFloorDataV1>),
+}
+
+impl std::ops::Deref for BorrowedSidecarModelV2 {
+    type Target = StoredFloorDataV1;
+
+    fn deref(&self) -> &Self::Target {
+        match self { Self::Ordinary(stored) => stored, Self::Storage(stored) => stored }
+    }
+}
+
+impl BorrowedSidecarModelV2 {
+    fn into_broker(self) -> Result<StoredFloorV1, FloorErrorV1> {
+        match self {
+            Self::Ordinary(stored) => stored.into_broker(),
+            // Owning compatibility callers never borrow the selected F source.
+            Self::Storage(_) => Err(FloorErrorV1::Unavailable),
+        }
+    }
+}
+
 // A temporary borrow, never a second owner, cached authority or policy factory.
-pub(super) struct BorrowedDurableFloorV1<'operation, Traffic, Io> {
+// The local traffic adapter and the genuine financial source have independent
+// borrow durations. A stack-local traffic adapter never extends to the source's
+// outer borrow; neither reference nor the original-F receipt escapes this turn.
+pub(super) struct BorrowedDurableFloorV1<'operation, 'receiving, Traffic, Io> {
+    storage_receiving: Option<&'receiving mut dyn super::storage_receiving::StorageFloorFinancialSourceV2>,
     backend: &'operation mut TpmNvExtendFloorBackendV1<Io>,
     store: &'operation mut FloorStoreV1,
     traffic: &'operation mut Traffic,
@@ -743,8 +1130,31 @@ pub(super) struct BorrowedDurableFloorV1<'operation, Traffic, Io> {
 }
 
 impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
-    BorrowedDurableFloorV1<'_, Traffic, Io>
+    BorrowedDurableFloorV1<'_, '_, Traffic, Io>
 {
+    fn read_sidecar_v2(&mut self) -> Result<BorrowedSidecarModelV2, FloorErrorV1> {
+        match self.storage_receiving.as_mut() {
+            Some(receiving) => {
+                let FloorProfileDataV1::Broker(profile) = self.profile else {
+                    return Err(FloorErrorV1::Provisioning);
+                };
+                let main = self.traffic.original_controller_pair_journal_v1()
+                    .ok_or(FloorErrorV1::Unavailable)?;
+                self.store.read_storage_receiving_v2(main, &mut **receiving, profile)
+                    .map(BorrowedSidecarModelV2::Storage)
+            }
+            None => self.store.read_data(self.profile).map(BorrowedSidecarModelV2::Ordinary),
+        }
+    }
+
+    fn require_same_sidecar_v2(&mut self, stored: &StoredFloorDataV1) -> Result<(), FloorErrorV1> {
+        if self.storage_receiving.is_none() {
+            return self.store.require_same_data(stored, self.profile);
+        }
+        if self.read_sidecar_v2()?.view() == stored.view() { Ok(()) }
+        else { Err(FloorErrorV1::Diverged) }
+    }
+
     fn check_cold_deadline(&mut self) -> Result<(), FloorErrorV1> {
         check_borrowed_cold_deadline(self.cold_deadline, &mut self.cold_failure)
     }
@@ -755,35 +1165,35 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
     /// consuming compatibility owner must be reopened; Required production
     /// keeps its failed originals resident and refuses reopening that owner.
     pub(super) fn prepare(&mut self, transaction: &JournalTransaction) -> Result<(), FloorErrorV1> {
+        self.require_storage_programme_originals_v3()?;
         self.check_cold_deadline()?;
-        let stored = self.store.read_data(self.profile)?;
+        let stored = self.read_sidecar_v2()?;
         self.check_cold_deadline()?;
         if stored.prepared.is_some() {
             return Err(FloorErrorV1::Diverged);
         }
         self.check_cold_deadline()?;
-        let (current, target) = self.traffic.purpose_cuts(self.profile, Some(transaction))?;
+        let (current, target) = self.main_cuts_v3(Some(transaction))?;
         self.check_cold_deadline()?;
         if current != stored.checkpoint.cut()
-            || self.backend.read()? != stored.checkpoint.nv_value()
+            || self.read_backend_with_pair_v1()? != stored.checkpoint.nv_value()
         {
             return Err(FloorErrorV1::Diverged);
         }
         let target = target.ok_or(FloorErrorV1::Successor)?;
-        let intent = FloorIntentDataV1::new(self.profile, stored.checkpoint, target, transaction)?;
+        let intent = self.new_sidecar_intent_v2(stored.checkpoint, target, transaction)?;
         self.check_cold_deadline()?;
-        self.store
-            .prepare_data(self.profile, &stored, intent, transaction)?;
+        self.prepare_sidecar_v2(&stored, intent, transaction)?;
         self.check_cold_deadline()?;
 
         // A changed traffic name/cut after durable prepare closes recovery. It
         // does not replace the retained target or roll the preparation back.
-        let (after, prospective) = self.traffic.purpose_cuts(self.profile, Some(transaction))?;
+        let (after, prospective) = self.main_cuts_v3(Some(transaction))?;
         if after != current || prospective != Some(target) {
             return Err(FloorErrorV1::Diverged);
         }
         self.check_cold_deadline()?;
-        let retained = self.store.read_data(self.profile)?;
+        let retained = self.read_sidecar_v2()?;
         self.check_cold_deadline()?;
         if retained.checkpoint != stored.checkpoint
             || !retained
@@ -795,8 +1205,8 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
         {
             return Err(FloorErrorV1::Diverged);
         }
-        self.store.require_same_data(&retained, self.profile)?;
-        if self.backend.read()? != stored.checkpoint.nv_value() {
+        self.require_same_sidecar_v2(&retained)?;
+        if self.read_backend_with_pair_v1()? != stored.checkpoint.nv_value() {
             return Err(FloorErrorV1::Diverged);
         }
         Ok(())
@@ -804,6 +1214,7 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
 
     /// Finishes only the exact persisted transaction; no new request/nonce is allocated.
     pub(super) fn recover(&mut self) -> Result<FloorProgressV1, FloorErrorV1> {
+        self.require_storage_programme_originals_v3()?;
         let (stored, phase) = self.classify()?;
         let Some((intent, transaction)) = stored.prepared.as_ref() else {
             return if phase == FloorRecoveryV1::Current {
@@ -812,21 +1223,13 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
                 Err(FloorErrorV1::Diverged)
             };
         };
-        intent.require_transaction(transaction)?;
+        self.require_sidecar_transaction_v2(*intent, transaction)?;
 
         if phase == FloorRecoveryV1::ExtendPrepared {
             let suffix = self.require_prospective(&stored, *intent, transaction)?;
-            let profile = self.profile;
-            let traffic = &mut *self.traffic;
-            let store = &mut *self.store;
-            let deadline = self.cold_deadline;
-            let cold_failure = &mut self.cold_failure;
-            let advanced = self.backend.advance_purpose_with_held_cut(*intent, || {
-                check_borrowed_cold_deadline(deadline, cold_failure)?;
-                require_prospective_cut(traffic, profile, *intent, transaction)?;
-                store.validate_final_preflight_data(&suffix, &stored, profile)?;
-                check_borrowed_cold_deadline(deadline, cold_failure)
-            })?;
+            let advanced = self.advance_backend_with_pair_v1(
+                *intent, &suffix, &stored, transaction,
+            )?;
             if advanced == FloorAdvanceV1::NotAdvanced {
                 self.classify()?;
                 return Ok(FloorProgressV1::NvNotAdvanced);
@@ -836,15 +1239,13 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
         let (intent, transaction) = stored.prepared.as_ref().ok_or(FloorErrorV1::Diverged)?;
         if phase == FloorRecoveryV1::CommitPrepared {
             let suffix = self.require_prospective(&stored, *intent, transaction)?;
-            if self.backend.read()? != intent.target().nv_value() {
+            if self.read_backend_with_pair_v1()? != intent.target().nv_value() {
                 return Err(FloorErrorV1::Diverged);
             }
-            require_prospective_cut(&mut *self.traffic, self.profile, *intent, transaction)?;
-            self.store
-                .validate_final_preflight_data(&suffix, &stored, self.profile)?;
+            self.require_prospective_cut_v2(*intent, transaction)?;
+            self.validate_sidecar_preflight_v2(&suffix, &stored)?;
             self.check_cold_deadline()?;
-            self.traffic
-                .commit_purpose_exact(self.profile, *intent, transaction)?;
+            self.commit_main_v3(*intent, transaction)?;
             self.check_cold_deadline()?;
         }
 
@@ -853,11 +1254,11 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
             return Err(FloorErrorV1::Diverged);
         }
         let (intent, _) = stored.prepared.as_ref().ok_or(FloorErrorV1::Diverged)?;
-        if self.backend.read()? != intent.target().nv_value() {
+        if self.read_backend_with_pair_v1()? != intent.target().nv_value() {
             return Err(FloorErrorV1::Diverged);
         }
         self.check_cold_deadline()?;
-        self.store.finalize_data(self.profile, &stored)?;
+        self.finalize_sidecar_v2(&stored)?;
         self.check_cold_deadline()?;
         let (_, phase) = self.classify()?;
         if phase != FloorRecoveryV1::Current {
@@ -868,24 +1269,29 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
 
     /// Rejects pending recovery at ordinary read/use boundaries.
     pub(super) fn require_current(&mut self) -> Result<(), FloorErrorV1> {
-        if self.classify()?.1 == FloorRecoveryV1::Current {
-            Ok(())
+        self.current_checkpoint_v3().map(|_| ())
+    }
+
+    fn current_checkpoint_v3(&mut self) -> Result<crate::tpm_nv_custody::FloorCheckpointDataV1, FloorErrorV1> {
+        let (stored, phase) = self.classify()?;
+        if phase == FloorRecoveryV1::Current {
+            Ok(stored.checkpoint)
         } else {
             Err(FloorErrorV1::Diverged)
         }
     }
 
-    fn classify(&mut self) -> Result<(StoredFloorDataV1, FloorRecoveryV1), FloorErrorV1> {
+    fn classify(&mut self) -> Result<(BorrowedSidecarModelV2, FloorRecoveryV1), FloorErrorV1> {
         self.check_cold_deadline()?;
-        let stored = self.store.read_data(self.profile)?;
+        let stored = self.read_sidecar_v2()?;
         self.check_cold_deadline()?;
-        let (cut, _) = self.traffic.purpose_cuts(self.profile, None)?;
+        let (cut, _) = self.main_cuts_v3(None)?;
         self.check_cold_deadline()?;
-        let nv = self.backend.read()?;
+        let nv = self.read_backend_with_pair_v1()?;
         self.check_cold_deadline()?;
-        self.store.require_same_data(&stored, self.profile)?;
+        self.require_same_sidecar_v2(&stored)?;
         self.check_cold_deadline()?;
-        let (after, _) = self.traffic.purpose_cuts(self.profile, None)?;
+        let (after, _) = self.main_cuts_v3(None)?;
         self.check_cold_deadline()?;
         if after != cut {
             return Err(FloorErrorV1::Diverged);
@@ -905,12 +1311,12 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
         stored: &StoredFloorDataV1,
         intent: FloorIntentDataV1,
         transaction: &JournalTransaction,
-    ) -> Result<FinalSuffixPreflightV1, FloorErrorV1> {
-        require_prospective_cut(&mut *self.traffic, self.profile, intent, transaction)?;
+    ) -> Result<BorrowedFinalSuffixV2, FloorErrorV1> {
+        self.require_prospective_cut_v2(intent, transaction)?;
         self.check_cold_deadline()?;
-        let suffix = self.store.preflight_final_data(stored, self.profile)?;
+        let suffix = self.preflight_sidecar_final_v2(stored)?;
         self.check_cold_deadline()?;
-        self.store.require_same_data(stored, self.profile)?;
+        self.require_same_sidecar_v2(stored)?;
         self.check_cold_deadline()?;
         Ok(suffix)
     }
@@ -940,6 +1346,15 @@ fn require_prospective_cut(
     transaction: &JournalTransaction,
 ) -> Result<(), FloorErrorV1> {
     intent.require_transaction(transaction)?;
+    require_prospective_cut_after_binding_v2(traffic, profile, intent, transaction)
+}
+
+fn require_prospective_cut_after_binding_v2(
+    traffic: &mut impl HeldTrafficWriterV1,
+    profile: FloorProfileDataV1,
+    intent: FloorIntentDataV1,
+    transaction: &JournalTransaction,
+) -> Result<(), FloorErrorV1> {
     let (current, target) = traffic.purpose_cuts(profile, Some(transaction))?;
     if current != intent.predecessor().cut() || target != Some(intent.target().cut()) {
         return Err(FloorErrorV1::Diverged);
@@ -1035,5 +1450,44 @@ mod resident_attempt_tests {
             Some(BrokerAttachmentFailureV1::Native(aos_sandbox::JournalError::ProtectedBoundary))
         ));
         assert_eq!(attempt.failure_projection(), FloorErrorV1::Unavailable);
+    }
+
+    #[test]
+    fn refused_empty_physical_phase_preserves_native_cause_and_owed_posts() {
+        let mut attempt = BrokerAttachmentAttemptV1::fresh();
+        attempt.controller_selected = true;
+        attempt.record_native_failure(aos_sandbox::JournalError::ProtectedBoundary);
+        let first = attempt.first_failure.as_ref().unwrap() as *const _;
+
+        assert!(attempt.physical.take_captured().is_none());
+        assert!(attempt.physical.backend_mut().is_none());
+        assert!(attempt.begin(BrokerAttachmentPhaseV1::Fresh).is_err());
+
+        assert!(attempt.physical.is_empty());
+        assert_eq!(attempt.first_failure.as_ref().unwrap() as *const _, first);
+        assert!(attempt.has_controller_owed_v1());
+        assert!(!attempt.controller_owed_consumed);
+        assert!(attempt.controller_posts.is_none());
+        assert_eq!(attempt.failure_projection(), FloorErrorV1::Unavailable);
+    }
+}
+
+impl BrokerAttachmentAttemptV1 {
+    pub(super) fn retire_completed_initial_native_v1(
+        &mut self,
+        completed: &aos_sandbox::ControllerInitialSessionCompletedNativeBorrowV1<'_>,
+        main: &aos_sandbox::Journal,
+    ) -> Result<(), FloorErrorV1> {
+        if !self.is_ready() || self.first_failure.is_some() || self.cold_failure.is_some()
+            || self.native_failure.is_some() || !self.controller_selected
+            || !matches!(self.controller_primary, Some(Ok(())))
+            || self.controller_posts.is_some()
+        {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        let sidecar = self.store.as_ref().ok_or(FloorErrorV1::Unavailable)?
+            .original_controller_pair_journal_v1();
+        self.physical.backend_mut().ok_or(FloorErrorV1::Unavailable)?
+            .retire_completed_initial_native_v1(completed, main, sidecar)
     }
 }

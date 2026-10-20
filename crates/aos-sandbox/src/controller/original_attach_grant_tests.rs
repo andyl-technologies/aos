@@ -4,11 +4,12 @@
 //! They do not qualify the installed SSH monitor or downstream consume socket.
 
 use super::*;
-use crate::publisher_authority::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
-use crate::publisher_policy::{
-    PreparedPublisherPolicyRevisionV1, PublisherControllerHeadV1, PublisherPolicyLimits,
+use crate::publisher_admin::capabilities::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
+use crate::publisher_admin::policy::{
+    PublisherControllerHeadV1, PublisherPolicyLimits,
     PublisherPolicyStore, PublisherRevocationHeadV1,
 };
+use aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1;
 use crate::{JournalLimits, JournalTransaction};
 use aos_sandbox_core::{
     CapabilityRecord, DecodeLimits, PrincipalId, ProjectId, RawClockProvenance, ResourceId,
@@ -99,7 +100,7 @@ fn original_attach_grant_current_policy_holder_scope_and_revocation_survive_reop
         .sample()
         .unwrap()
         .wall_seconds();
-    let seed = crate::publisher_authority::tests::capability(
+    let seed = crate::publisher_admin::capabilities::tests::capability(
         CapabilityId::from_bytes([31; 16]),
         now + 300,
     );

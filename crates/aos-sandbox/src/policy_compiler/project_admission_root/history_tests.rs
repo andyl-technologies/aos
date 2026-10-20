@@ -4,6 +4,8 @@
 //! semantics only. They do not qualify the installed Controller issuer, Source
 //! genesis/antirollback, fixed peer transport, or public Create completion.
 
+use aos_sandbox_policy::controller_readback::encode_controller_hold_signer_credential_v1;
+
 use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -21,7 +23,7 @@ use crate::policy_compiler::controller_project_terminal_readback::sign_synthetic
 use crate::policy_compiler::source_project_admission_readback::sign_test_source_project_completed_terminal_readback_v1;
 use crate::policy_compiler::{
     RootProjectAdmissionIntentV1, RootProjectReservationCancellationProofV1,
-    encode_controller_hold_signer_credential_v1, encode_source_hold_readback_signer_credential_v1,
+    encode_source_hold_readback_signer_credential_v1,
 };
 use crate::reconciler::project_admission::AcceptedControllerProjectTerminalV1;
 
@@ -91,6 +93,7 @@ impl Fixture {
             CONTROLLER_GENERATION,
             &controller_key.verifying_key(),
         )
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
         .unwrap();
         let source_pin = encode_source_hold_readback_signer_credential_v1(
             SOURCE_GENERATION,
@@ -103,12 +106,12 @@ impl Fixture {
                 vec![
                     JournalRecord::put(
                         RecordNamespace::DesiredState,
-                        super::super::CONTROLLER_HOLD_PIN_KEY.to_vec(),
+                        aos_sandbox_policy::journal_keys::CONTROLLER_HOLD_PIN_KEY.to_vec(),
                         controller_pin.to_vec(),
                     ),
                     JournalRecord::put(
                         RecordNamespace::DesiredState,
-                        super::super::SOURCE_HOLD_PIN_KEY.to_vec(),
+                        aos_sandbox_policy::journal_keys::SOURCE_HOLD_PIN_KEY.to_vec(),
                         source_pin.to_vec(),
                     ),
                 ],
@@ -305,21 +308,23 @@ fn negative_history_lost_intent_and_decision_replies_recover_before_real_source_
                 reservation.project(),
             );
             assert!(
-                crate::policy_compiler::verify_policy_deployment_head_v1(
+                aos_sandbox_policy::signed_inputs::verify_policy_deployment_head_v1(
                     &expired.deployment,
                     &expired.deployment_inputs(),
                     &deployment_key.verifying_key(),
                     30,
                 )
+                .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
                 .is_err()
             );
             assert!(
-                crate::policy_compiler::verify_signed_project_policy_source_v2(
+                aos_sandbox_policy::signed_inputs::verify_signed_project_policy_source_v2(
                     &expired.project,
                     &expired.project_input,
                     &project_key.verifying_key(),
                     30,
                 )
+                .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
                 .is_err()
             );
             assert!(exact.is_retirement_only());

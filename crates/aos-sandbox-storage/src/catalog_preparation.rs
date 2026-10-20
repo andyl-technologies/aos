@@ -46,8 +46,52 @@ const RECEIPT_MAGIC: &[u8; 8] = b"AOSSPRC1";
 const RECEIPT_VERSION: u16 = 1;
 const MAXIMUM_CANONICAL_REQUEST_BYTES: usize = 32 * 1024;
 const MAXIMUM_RESOLVED_CATALOG_BYTES: usize = 64 * 1024;
-const MAXIMUM_RECEIPT_BYTES: usize = 4 * 1024;
+use aos_sandbox_protocol::semantics::storage_prepare::
+    STORAGE_CATALOG_PREPARATION_RECEIPT_MAXIMUM_BYTES_V1 as MAXIMUM_RECEIPT_BYTES;
 const MAXIMUM_AUTHORITY_RECORD_BYTES: usize = 16 * 1024;
+
+/// Prices only this Prepare decoder, fixed retained record and catalog family.
+///
+/// The actual request byte length bounds its unknown-field tree; this does not
+/// multiply a union of unrelated protocol models by every wire byte. Policy and
+/// current protected-journal projections have their own shared suppliers.
+pub(crate) fn receiving_preparation_demand_v1(
+    request_bytes: usize,
+    artifacts: &aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts,
+) -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError> {
+    use aos_proto::aos::sandbox::local::v1::{AssignmentFence, PrepareStorageCatalogRequest, RequestHeader};
+    use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+    use crate::receiving_demand::{add, count, multiply};
+
+    let request = count(request_bytes)?;
+    // Every minimal unknown field/empty group takes two wire bytes. Eight
+    // reached cells cover child-Vec floors/growth and canonicalization scratch;
+    // three overlapping DTO/validated/canonical views are conservative here.
+    let unknown = (request / 2).min(count(buffa::DEFAULT_UNKNOWN_FIELD_LIMIT)?);
+    let unknown_cells = add(multiply(unknown, 8)?, 8)?;
+    let unknown_bytes = multiply(multiply(unknown_cells, 3)?, count(std::mem::size_of::<buffa::UnknownField>())?)?;
+    let fixed_models = count(std::mem::size_of::<PrepareStorageCatalogRequest>()
+        + std::mem::size_of::<RequestHeader>()
+        + std::mem::size_of::<AssignmentFence>()
+        + std::mem::size_of::<CanonicalStoragePreparationSemanticsV1>()
+        + std::mem::size_of::<RetainedStorageCatalogPreparationV1>()
+        + std::mem::size_of::<NewStorageCatalogPreparationV1>()
+        + std::mem::size_of::<StorageCatalogPreparationOutcomeV1>()
+        + std::mem::size_of::<ResolvedCatalogCommitmentV1>())?;
+    // These are the real existing fixed-format caps, not a configured journal
+    // transaction maximum. Oversized authenticated records can still refuse;
+    // their complete sealing/parse negative interval is paid before entry.
+    let retained = count(MAXIMUM_CANONICAL_REQUEST_BYTES + MAXIMUM_RESOLVED_CATALOG_BYTES
+        + 3 * MAXIMUM_AUTHORITY_RECORD_BYTES + MAXIMUM_RECEIPT_BYTES + 4096)?;
+    let memory = add(unknown_bytes, multiply(request, 16)?)?;
+    let memory = add(memory, multiply(fixed_models, 16)?)?;
+    let memory = add(memory, multiply(retained, 32)?)?;
+    let authority_cells = count(aos_sandbox_core::broker_authorization::MAX_BROKER_PLAN_GRANTS)?;
+    let memory = add(memory, crate::authorization::receiving_authorization_memory_v1(artifacts)?)?;
+    Ok(ResourceVector::ZERO.with(D::MemoryBytes, memory)
+        .with(D::MetadataEntries, add(add(multiply(unknown_cells, 3)?,
+            multiply(authority_cells, 16)?)?, 128)?))
+}
 
 /// Reports fail-closed catalog preparation resolution or retention failure.
 #[derive(Debug, thiserror::Error)]
@@ -396,6 +440,21 @@ impl RetainedStorageCatalogPreparationV1 {
         Ok(self)
     }
 
+    fn payload_capacity_v1(&self) -> Option<usize> {
+        // The existing six length-prefixed operands and fixed v1/v2 fields.
+        [self.sealed_fence.len(), self.sealed_effect.len(), self.sealed_operation_fence.len(),
+            self.canonical_request.len(), self.catalog.canonical_bytes().len(), self.receipt.len()]
+            .into_iter().try_fold(564_usize + 106, usize::checked_add)
+    }
+
+    pub(crate) fn receiving_payload_bytes_v1(&self) -> Option<usize> {
+        // Actual consumed-record clone plus payload/local-record/envelope
+        // backings remain simultaneous during the unchanged sealing recipe.
+        self.payload_capacity_v1()?.checked_mul(3)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+            .and_then(|bytes| bytes.checked_add(4 * std::mem::size_of::<Vec<u8>>() + 16 + 64))
+    }
+
     pub(crate) fn encode_payload(&self) -> Result<Vec<u8>, StorageCatalogPreparationError> {
         if self.canonical_request.is_empty()
             || self.canonical_request.len() > MAXIMUM_CANONICAL_REQUEST_BYTES
@@ -413,16 +472,8 @@ impl RetainedStorageCatalogPreparationV1 {
         {
             return Err(StorageCatalogPreparationError::CorruptRecord);
         }
-        let format_bytes = 106;
-        let mut encoder = Encoder::with_capacity(
-            564 + format_bytes
-                + self.sealed_fence.len()
-                + self.sealed_effect.len()
-                + self.sealed_operation_fence.len()
-                + self.canonical_request.len()
-                + self.catalog.canonical_bytes().len()
-                + self.receipt.len(),
-        );
+        let capacity = self.payload_capacity_v1().ok_or(StorageCatalogPreparationError::CorruptRecord)?;
+        let mut encoder = Encoder::with_capacity(capacity);
         encoder.fixed(RECORD_MAGIC);
         encoder.fixed(&self.version.to_be_bytes());
         encoder.fixed(&self.operation_id);

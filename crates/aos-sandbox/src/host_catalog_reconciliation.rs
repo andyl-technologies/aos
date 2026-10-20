@@ -12,16 +12,41 @@
 //!     -> durable confirmed current catalog
 //! ```
 //!
+//! Historical records retain version1 and its original digest domain. Selected
+//! NoSlots16 records use version2, require flag bit1, and domain-separate the
+//! third comparison digest from their actual fourth DestinationSlots16 digest.
+//! A historical Current record is re-published at the next generation before
+//! the NoSlots16 producer can use its Current shortcut.
+//!
 //! A pending catalog is never replaced by another projection. After an
 //! indeterminate publication attempt, recovery must send the exact same bytes
 //! until Host confirms either publication or replay. Catalog entries carry no
 //! effect authority; Host still requires a separately signed, leased launch
 //! plan whose assignment and resource selectors match the published rows.
 
+// The private Controller record keeps its established fixed framing:
+// version1 retains historical source semantics; version2 requires flag bit1
+// and the domain-separated actual NoSlots16 digest beside that actual16 row.
+// Both versions retain bit0 for the prior-catalog presence field. New records
+// never infer source provenance from an opaque hash array.
+
 pub(crate) mod authenticated;
+mod source_receiving;
+mod retained_population;
+pub(crate) use retained_population::{
+    retained_population_receiving_demand_v1, retained_population_model_receiving_demand_v1,
+    require_retained_stopped_resources_data_v1, StoppedRetentionComparisonV1,
+};
+pub(crate) mod publication_recipe;
+pub(crate) mod start_publication;
+pub use start_publication::CatalogMaintenancePublicationStatusV2;
+pub use start_publication::{StartHostCatalogPublicationClosedV2, StartHostCatalogPublicationOriginalV2};
+mod start_projection;
+pub(crate) use start_projection::{project_start_successor_catalog_data_v2,
+    start_projection_receiving_demand_data_v2};
 
 use aos_proto::aos::sandbox::local::v1::DestinationSlotLifecycle;
-use aos_sandbox_core::{ObjectDescriptor, ObjectDigest};
+use aos_sandbox_core::{CanonicalAssignmentManifestV1, ObjectDescriptor, ObjectDigest};
 use aos_sandbox_protocol::{
     ATTACHMENT_ANCHOR_PIN_PREFIX, AttachmentAnchorCatalogEntry, CatalogAssignment,
     CatalogIdentityAllocation, GuestRootCatalogPublicationV1, HostCatalogSnapshot,
@@ -32,7 +57,7 @@ use aos_sandbox_protocol::{
 use sha2::{Digest as _, Sha256};
 
 use crate::host_catalog_publication::{
-    HostCatalogPublicationClient, HostCatalogPublicationDraftV1, HostCatalogPublicationError,
+    HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
 use crate::runtime_authority::{
     RuntimeAuthorityBindingV1, RuntimeAuthorityError, RuntimeAuthorityLimits,
@@ -46,6 +71,7 @@ use crate::{
 
 const MAGIC: &[u8; 8] = b"AOSHCR01";
 const VERSION: u16 = 1;
+const NO_SLOTS_VERSION: u16 = 2;
 const PENDING_KEY: &[u8] = b"pending";
 const CURRENT_KEY: &[u8] = b"current";
 const FIXED_RECORD_BYTES: usize = 272;
@@ -55,6 +81,8 @@ const MAXIMUM_RECORD_VALUE_BYTES: usize =
     JOURNAL_RECORD_BYTES - JOURNAL_RECORD_HEADER_BYTES - PENDING_KEY.len();
 const MAXIMUM_DURABLE_CATALOG_BYTES: usize = MAXIMUM_RECORD_VALUE_BYTES - FIXED_RECORD_BYTES;
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.host-catalog-reconciliation.record.v1\0";
+const NO_SLOTS_RECORD_DOMAIN: &[u8] = b"aos.sandbox.host-catalog-reconciliation.record.v2.no-slots16\0";
+const NO_SLOTS_SOURCE_DOMAIN: &[u8] = b"aos.sandbox.catalog.mount.no-slots16.v2\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.host-catalog-reconciliation.transaction.v1\0";
 
 /// Describes whether catalog reconciliation needs Host publication.
@@ -192,8 +220,19 @@ impl CatalogRecordState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CatalogMountSourceVersionV2 {
+    HistoricalV1,
+    NoSlots16V2,
+}
+
+fn no_slots16_source_digest_data_v2(destination: [u8; 32]) -> [u8; 32] {
+    Sha256::new().chain_update(NO_SLOTS_SOURCE_DOMAIN).chain_update(destination).finalize().into()
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CatalogRecord {
+    mount_source: CatalogMountSourceVersionV2,
     state: CatalogRecordState,
     controller_state_digest: [u8; 32],
     inventory_digests: [[u8; 32]; 4],
@@ -211,12 +250,24 @@ impl CatalogRecord {
         prior: Option<&CatalogRecord>,
         catalog: HostCatalogSnapshot,
     ) -> Result<Self, HostCatalogReconciliationError> {
+        Self::pending_with_mount_source_v2(controller_state_digest, inventory_digests, prior, catalog,
+            CatalogMountSourceVersionV2::HistoricalV1)
+    }
+
+    fn pending_with_mount_source_v2(
+        controller_state_digest: ObjectDigest,
+        inventory_digests: [ObjectDigest; 4],
+        prior: Option<&CatalogRecord>,
+        catalog: HostCatalogSnapshot,
+        mount_source: CatalogMountSourceVersionV2,
+    ) -> Result<Self, HostCatalogReconciliationError> {
         let canonical_catalog = catalog.encode()?;
         if canonical_catalog.len() > MAXIMUM_DURABLE_CATALOG_BYTES {
             return Err(HostCatalogReconciliationError::Capacity);
         }
         let catalog_digest = Sha256::digest(&canonical_catalog).into();
         let mut record = Self {
+            mount_source,
             state: CatalogRecordState::Pending,
             controller_state_digest: *controller_state_digest.as_bytes(),
             inventory_digests: inventory_digests.map(|digest| *digest.as_bytes()),
@@ -253,7 +304,10 @@ impl CatalogRecord {
 
     fn compute_digest(&self) -> [u8; 32] {
         let mut digest = Sha256::new();
-        digest.update(RECORD_DOMAIN);
+        digest.update(match self.mount_source {
+            CatalogMountSourceVersionV2::HistoricalV1 => RECORD_DOMAIN,
+            CatalogMountSourceVersionV2::NoSlots16V2 => NO_SLOTS_RECORD_DOMAIN,
+        });
         digest.update([self.state as u8]);
         digest.update(self.controller_state_digest);
         for inventory_digest in self.inventory_digests {
@@ -269,6 +323,8 @@ impl CatalogRecord {
     fn validate(&self) -> Result<(), HostCatalogReconciliationError> {
         if self.controller_state_digest == [0; 32]
             || self.inventory_digests.contains(&[0; 32])
+            || (self.mount_source == CatalogMountSourceVersionV2::NoSlots16V2
+                && self.inventory_digests[2] != no_slots16_source_digest_data_v2(self.inventory_digests[3]))
             || self.prior_catalog_digest == Some([0; 32])
             || (self.catalog.generation() == 1) != self.prior_catalog_digest.is_none()
             || self.canonical_catalog.is_empty()
@@ -286,9 +342,13 @@ impl CatalogRecord {
     fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.encoded_len());
         bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(&VERSION.to_be_bytes());
+        let (version, source_flag) = match self.mount_source {
+            CatalogMountSourceVersionV2::HistoricalV1 => (VERSION, 0),
+            CatalogMountSourceVersionV2::NoSlots16V2 => (NO_SLOTS_VERSION, 2),
+        };
+        bytes.extend_from_slice(&version.to_be_bytes());
         bytes.push(self.state as u8);
-        bytes.push(u8::from(self.prior_catalog_digest.is_some()));
+        bytes.push(u8::from(self.prior_catalog_digest.is_some()) | source_flag);
         bytes.extend_from_slice(&self.controller_state_digest);
         for digest in self.inventory_digests {
             bytes.extend_from_slice(&digest);
@@ -307,13 +367,15 @@ impl CatalogRecord {
         }
 
         let mut bytes = bytes;
-        if take::<8>(&mut bytes)? != *MAGIC || u16::from_be_bytes(take(&mut bytes)?) != VERSION {
+        if take::<8>(&mut bytes)? != *MAGIC {
             return Err(HostCatalogReconciliationError::CorruptState);
         }
+        let version = u16::from_be_bytes(take(&mut bytes)?);
         let state = CatalogRecordState::from_byte(take::<1>(&mut bytes)?[0])?;
-        let prior_present = match take::<1>(&mut bytes)?[0] {
-            0 => false,
-            1 => true,
+        let flags = take::<1>(&mut bytes)?[0];
+        let (mount_source, prior_present) = match (version, flags) {
+            (VERSION, 0 | 1) => (CatalogMountSourceVersionV2::HistoricalV1, flags == 1),
+            (NO_SLOTS_VERSION, 2 | 3) => (CatalogMountSourceVersionV2::NoSlots16V2, flags == 3),
             _ => return Err(HostCatalogReconciliationError::CorruptState),
         };
         let controller_state_digest = take(&mut bytes)?;
@@ -341,6 +403,7 @@ impl CatalogRecord {
         }
         let catalog = HostCatalogSnapshot::decode_canonical(&canonical_catalog)?;
         let record = Self {
+            mount_source,
             state,
             controller_state_digest,
             inventory_digests,
@@ -499,6 +562,38 @@ struct ProjectedRows {
     anchors: Vec<ProjectedAnchor>,
 }
 
+// The finite Mount input names its real provenance. NoSlots never creates a
+// lifecycle inventory; its current-C predicates are checked for every binding.
+enum CatalogMountInputV2 {
+    Lifecycle13(crate::mount_attempt::DurableMountInventorySnapshotV1),
+    NoSlots16,
+}
+
+impl CatalogMountInputV2 {
+    fn recheck_v2(&self, journal: &mut Journal) -> Result<(), HostCatalogReconciliationError> {
+        match self {
+            Self::Lifecycle13(snapshot) => snapshot.recheck(journal).map_err(Into::into),
+            Self::NoSlots16 => Ok(()),
+        }
+    }
+
+    fn source_digest_v2(&self, destinations: &DurableDestinationSlotInventorySnapshotV1)
+        -> ObjectDigest {
+        match self {
+            Self::Lifecycle13(snapshot) => snapshot.record_digest(),
+            Self::NoSlots16 => ObjectDigest::from_bytes(no_slots16_source_digest_data_v2(
+                *destinations.record_digest().as_bytes())) ,
+        }
+    }
+}
+
+// Both consumers retain this SAME projection result before a separately
+// admitted append. A projected catalog is DATA and cannot authorize IO.
+enum PreparedHostCatalogDataV2 {
+    Current(DurableCurrentHostCatalogV1),
+    Pending(CatalogRecord),
+}
+
 /// Prepares an exact successor catalog from mutually current durable snapshots.
 pub(crate) fn prepare(
     journal: &mut Journal,
@@ -507,22 +602,93 @@ pub(crate) fn prepare(
     mounts: crate::mount_attempt::DurableMountInventorySnapshotV1,
     destinations: DurableDestinationSlotInventorySnapshotV1,
 ) -> Result<HostCatalogReconciliationV1, HostCatalogReconciliationError> {
+    let pending = match prepare_projection_data_v2(
+        journal, storage, network, CatalogMountInputV2::Lifecycle13(mounts), destinations,
+    )? {
+        PreparedHostCatalogDataV2::Current(current) => {
+            return Ok(HostCatalogReconciliationV1::Current(current));
+        }
+        PreparedHostCatalogDataV2::Pending(pending) => pending,
+    };
+    journal.commit(&pending.transaction()?)?;
+
+    let committed = CatalogHistory::load(journal)?;
+    if committed.pending.as_ref() != Some(&pending) {
+        return Err(HostCatalogReconciliationError::CorruptState);
+    }
+
+    Ok(HostCatalogReconciliationV1::Publish(
+        DurablePendingHostCatalogV1 { record: pending },
+    ))
+}
+
+enum PreparedHostCatalogModelDataV2 {
+    Current(DurableCurrentHostCatalogV1),
+    Pending {
+        mount_source: CatalogMountSourceVersionV2,
+        controller_state: ObjectDigest,
+        inventory_digests: [ObjectDigest; 4],
+        prior: Option<CatalogRecord>,
+        catalog: HostCatalogSnapshot,
+    },
+}
+
+fn prepare_projection_data_v2(
+    journal: &mut Journal,
+    storage: DurableStorageResourceInventorySnapshotV1,
+    network: DurableNetworkResourceInventorySnapshotV1,
+    mounts: CatalogMountInputV2,
+    destinations: DurableDestinationSlotInventorySnapshotV1,
+) -> Result<PreparedHostCatalogDataV2, HostCatalogReconciliationError> {
+    match prepare_projection_model_data_v2(journal, storage, network, mounts, destinations)? {
+        PreparedHostCatalogModelDataV2::Current(current) => Ok(PreparedHostCatalogDataV2::Current(current)),
+        PreparedHostCatalogModelDataV2::Pending { mount_source, controller_state, inventory_digests, prior, catalog } => {
+            CatalogRecord::pending_with_mount_source_v2(controller_state, inventory_digests, prior.as_ref(), catalog, mount_source)
+                .map(PreparedHostCatalogDataV2::Pending)
+        }
+    }
+}
+
+fn prepare_projection_model_data_v2(
+    journal: &mut Journal,
+    storage: DurableStorageResourceInventorySnapshotV1,
+    network: DurableNetworkResourceInventorySnapshotV1,
+    mounts: CatalogMountInputV2,
+    destinations: DurableDestinationSlotInventorySnapshotV1,
+) -> Result<PreparedHostCatalogModelDataV2, HostCatalogReconciliationError> {
     let history = CatalogHistory::load(journal)?;
-    if history.pending.is_some() {
-        return Err(HostCatalogReconciliationError::PendingPublication);
+    prepare_projection_model_with_history_v2(journal, storage, network, mounts, destinations, history, None)
+}
+
+fn prepare_projection_model_with_history_v2(
+    journal: &mut Journal,
+    storage: DurableStorageResourceInventorySnapshotV1,
+    network: DurableNetworkResourceInventorySnapshotV1,
+    mounts: CatalogMountInputV2,
+    destinations: DurableDestinationSlotInventorySnapshotV1,
+    history: CatalogHistory,
+    prior_mount: Option<[u8; 32]>,
+) -> Result<PreparedHostCatalogModelDataV2, HostCatalogReconciliationError> {
+    if let Some(pending) = history.pending.as_ref() {
+        // Only the selected native owner can supply a prior digest captured
+        // from this same canonical16 row before its fresh comparison append.
+        // Historical V1 remains decodable, but cannot impersonate NoSlots16.
+        if !matches!(mounts, CatalogMountInputV2::NoSlots16)
+            || pending.mount_source != CatalogMountSourceVersionV2::NoSlots16V2
+            || prior_mount != Some(pending.inventory_digests[3]) {
+            return Err(HostCatalogReconciliationError::PendingPublication);
+        }
     }
 
     storage.recheck(journal)?;
     network.recheck(journal)?;
-    mounts.recheck(journal)?;
+    mounts.recheck_v2(journal)?;
     destinations.recheck(journal)?;
     if storage.controller_state_digest() != network.controller_state_digest()
-        || !same_boot(
-            storage.inventory(),
-            network.inventory(),
-            mounts.inventory(),
-            destinations.inventory(),
-        )
+        || storage.inventory().kernel_boot_id() != network.inventory().kernel_boot_id()
+        || storage.inventory().kernel_boot_id() != destinations.inventory().kernel_boot_id()
+        || matches!(&mounts, CatalogMountInputV2::Lifecycle13(snapshot)
+            if snapshot.inventory().kernel_boot_id() != storage.inventory().kernel_boot_id())
     {
         return Err(HostCatalogReconciliationError::InventoryConflict);
     }
@@ -530,12 +696,12 @@ pub(crate) fn prepare(
     let bindings = RuntimeAuthorityStore::load(journal, RuntimeAuthorityLimits::default())?
         .current_bindings()?;
     crate::sandbox_spec_state::validate_namespace(journal)?;
-    let rows = collect_rows(
+    let rows = collect_rows_with_mount_input_v2(
         journal,
         &bindings,
         storage.inventory(),
         network.inventory(),
-        mounts.inventory(),
+        &mounts,
         destinations.inventory(),
         history.current.as_ref().map(|record| &record.catalog),
     )?;
@@ -543,11 +709,16 @@ pub(crate) fn prepare(
         .current
         .as_ref()
         .map(|record| record.catalog.generation());
-    if let Some(current) = &history.current {
+    if let Some(current) = history.current.as_ref().filter(|current| {
+        history.pending.is_none() && match &mounts {
+            CatalogMountInputV2::Lifecycle13(_) => true,
+            CatalogMountInputV2::NoSlots16 => current.mount_source == CatalogMountSourceVersionV2::NoSlots16V2,
+        }
+    }) {
         let unchanged =
             materialize_catalog(current.catalog.generation(), &rows, Some(&current.catalog))?;
         if unchanged == current.catalog {
-            return Ok(HostCatalogReconciliationV1::Current(
+            return Ok(PreparedHostCatalogModelDataV2::Current(
                 DurableCurrentHostCatalogV1 {
                     record: current.clone(),
                 },
@@ -562,27 +733,24 @@ pub(crate) fn prepare(
         &rows,
         history.current.as_ref().map(|record| &record.catalog),
     )?;
-    let pending = CatalogRecord::pending(
-        storage.controller_state_digest(),
-        [
+    if history.pending.as_ref().is_some_and(|pending| pending.catalog != catalog) {
+        return Err(HostCatalogReconciliationError::InventoryConflict);
+    }
+    Ok(PreparedHostCatalogModelDataV2::Pending {
+        mount_source: match &mounts {
+            CatalogMountInputV2::Lifecycle13(_) => CatalogMountSourceVersionV2::HistoricalV1,
+            CatalogMountInputV2::NoSlots16 => CatalogMountSourceVersionV2::NoSlots16V2,
+        },
+        controller_state: storage.controller_state_digest(),
+        inventory_digests: [
             storage.record_digest(),
             network.record_digest(),
-            mounts.record_digest(),
+            mounts.source_digest_v2(&destinations),
             destinations.record_digest(),
         ],
-        history.current.as_ref(),
+        prior: history.current,
         catalog,
-    )?;
-    journal.commit(&pending.transaction()?)?;
-
-    let committed = CatalogHistory::load(journal)?;
-    if committed.pending.as_ref() != Some(&pending) {
-        return Err(HostCatalogReconciliationError::CorruptState);
-    }
-
-    Ok(HostCatalogReconciliationV1::Publish(
-        DurablePendingHostCatalogV1 { record: pending },
-    ))
+    })
 }
 
 /// Recovers an exact pending Host effect without reconstructing its inputs.
@@ -592,29 +760,6 @@ pub(crate) fn recover_pending(
     Ok(CatalogHistory::load(journal)?
         .pending
         .map(|record| DurablePendingHostCatalogV1 { record }))
-}
-
-/// Publishes one durable pending catalog and commits Host confirmation.
-pub(crate) fn dispatch(
-    journal: &mut Journal,
-    pending: DurablePendingHostCatalogV1,
-    client: HostCatalogPublicationClient,
-    deadline_boottime_nanoseconds: u64,
-) -> Result<DurableCurrentHostCatalogV1, HostCatalogReconciliationError> {
-    let history = CatalogHistory::load(journal)?;
-    if history.pending.as_ref() != Some(&pending.record) {
-        return Err(HostCatalogReconciliationError::InventoryConflict);
-    }
-    let draft = HostCatalogPublicationDraftV1::new(
-        pending.record.canonical_catalog.clone(),
-        pending.record.catalog.generation(),
-    )?;
-    if draft.expected_digest().as_bytes() != &pending.record.catalog_digest {
-        return Err(HostCatalogReconciliationError::CorruptState);
-    }
-
-    let _status = client.publish(&draft, deadline_boottime_nanoseconds)?;
-    commit_confirmation(journal, pending)
 }
 
 /// Commits only the exact still-pending catalog after its receipt is validated.
@@ -628,17 +773,19 @@ fn commit_confirmation(
     journal.commit(&pending.record.completion_transaction()?)?;
 
     let committed = CatalogHistory::load(journal)?;
-    let current = committed
-        .current
-        .ok_or(HostCatalogReconciliationError::CorruptState)?;
-    if committed.pending.is_some()
-        || current.catalog_digest != pending.record.catalog_digest
-        || current.catalog != pending.record.catalog
-    {
+    require_confirmation_readback_v2(&committed, &pending.record)?;
+    let current = committed.current.ok_or(HostCatalogReconciliationError::CorruptState)?;
+    Ok(DurableCurrentHostCatalogV1 { record: current })
+}
+
+fn require_confirmation_readback_v2(history: &CatalogHistory, pending: &CatalogRecord)
+    -> Result<(), HostCatalogReconciliationError> {
+    let current = history.current.as_ref().ok_or(HostCatalogReconciliationError::CorruptState)?;
+    if history.pending.is_some() || current.catalog_digest != pending.catalog_digest
+        || current.catalog != pending.catalog {
         return Err(HostCatalogReconciliationError::CorruptState);
     }
-
-    Ok(DurableCurrentHostCatalogV1 { record: current })
+    Ok(())
 }
 
 pub(crate) fn validate_namespace(
@@ -656,6 +803,36 @@ fn collect_rows(
     destinations: &ValidatedDestinationSlotInventory,
     previous: Option<&HostCatalogSnapshot>,
 ) -> Result<ProjectedRows, HostCatalogReconciliationError> {
+    collect_rows_with_mount_view_v2(journal, bindings, storage, network,
+        Some(mounts), destinations, previous)
+}
+
+fn collect_rows_with_mount_input_v2(
+    journal: &mut Journal,
+    bindings: &[RuntimeAuthorityBindingV1],
+    storage: &ValidatedStorageInventory,
+    network: &ValidatedNetworkInventory,
+    mounts: &CatalogMountInputV2,
+    destinations: &ValidatedDestinationSlotInventory,
+    previous: Option<&HostCatalogSnapshot>,
+) -> Result<ProjectedRows, HostCatalogReconciliationError> {
+    let lifecycle = match mounts {
+        CatalogMountInputV2::Lifecycle13(snapshot) => Some(snapshot.inventory()),
+        CatalogMountInputV2::NoSlots16 => None,
+    };
+    collect_rows_with_mount_view_v2(journal, bindings, storage, network,
+        lifecycle, destinations, previous)
+}
+
+fn collect_rows_with_mount_view_v2(
+    journal: &mut Journal,
+    bindings: &[RuntimeAuthorityBindingV1],
+    storage: &ValidatedStorageInventory,
+    network: &ValidatedNetworkInventory,
+    mounts: Option<&ValidatedMountInventory>,
+    destinations: &ValidatedDestinationSlotInventory,
+    previous: Option<&HostCatalogSnapshot>,
+) -> Result<ProjectedRows, HostCatalogReconciliationError> {
     let mut rows = ProjectedRows::default();
 
     for binding in bindings
@@ -663,47 +840,52 @@ fn collect_rows(
         .filter(|binding| binding.state() == RuntimeAuthorityStateV1::Bound)
     {
         let assignment = binding.manifest().manifest();
-        let workspace = unique_matching(storage.workspaces(), |workspace| {
-            fence_matches_binding(workspace.fence(), binding)
-        })?;
-        let network_row = unique_matching(network.networks(), |network| {
-            network.is_launchable() && fence_matches_binding(network.fence(), binding)
-        })?;
-        let previously_published = previous.is_some_and(|catalog| {
-            catalog.workspaces().iter().any(|workspace| {
-                catalog_assignment_matches_binding(workspace.assignment(), binding)
-            })
-        });
-        let (Some(workspace), Some(network_row)) = (workspace, network_row) else {
-            if previously_published {
+        // The selected finite service supports the actual no-slot grammar.
+        // Unsupported current Source attachments refuse even when another
+        // resource is temporarily missing; they cannot silently disappear.
+        let no_slots_specification = if mounts.is_none() {
+            let specification = crate::sandbox_spec_state::get_in_validated_namespace(
+                journal, assignment.sandbox_spec(),
+            )?.ok_or(HostCatalogReconciliationError::CorruptState)?;
+            if !specification.spec().attachment_slots().is_empty() {
                 return Err(HostCatalogReconciliationError::IncompleteResources);
             }
-            continue;
-        };
-        if workspace.root_image() != assignment.root_view() {
-            return Err(HostCatalogReconciliationError::CorruptState);
-        }
+            crate::attachment_verification::require_empty_namespace_for_manifest_data_v2(
+                journal, binding.manifest(),
+            )?;
+            if destinations.slots().iter().any(|slot|
+                slot.fence().sandbox_id() == assignment.sandbox().as_bytes()
+                    && slot.fence().incarnation_id() == assignment.incarnation().as_bytes()
+                    && slot.namespace_generation() == assignment.namespace_generation().get()) {
+                return Err(HostCatalogReconciliationError::InventoryConflict);
+            }
+            Some(specification)
+        } else { None };
+        let Some(selected) = select_assignment_resources_data_v2(
+            binding.manifest(), storage, network, previous,
+        )? else { continue; };
+        let previously_published = selected.previously_published;
 
-        let Some(specification) = crate::sandbox_spec_state::get_in_validated_namespace(
-            journal,
-            assignment.sandbox_spec(),
-        )?
-        else {
-            return Err(HostCatalogReconciliationError::CorruptState);
+        let specification = match no_slots_specification {
+            Some(specification) => specification,
+            None => crate::sandbox_spec_state::get_in_validated_namespace(
+                journal, assignment.sandbox_spec(),
+            )?.ok_or(HostCatalogReconciliationError::CorruptState)?,
         };
         let anchor = ready_anchor(
             binding,
             specification.spec().attachment_slots(),
             destinations,
         )?;
-        if !specification.spec().attachment_slots().is_empty() && anchor.is_none() {
+        if anchor.is_none() {
             if previously_published {
                 return Err(HostCatalogReconciliationError::IncompleteResources);
             }
             continue;
         }
-        let attachment_handles =
-            match crate::attachment_verification::verified_handles_for_current_assignment(
+        let attachment_handles = match mounts {
+            None => Vec::new(),
+            Some(mounts) => match crate::attachment_verification::verified_handles_for_current_assignment(
                 journal, binding, mounts,
             ) {
                 Ok(handles) => handles,
@@ -714,49 +896,141 @@ fn collect_rows(
                     return Err(HostCatalogReconciliationError::IncompleteResources);
                 }
                 Err(error) => return Err(error.into()),
-            };
-        let catalog_assignment = catalog_assignment(binding)?;
-
-        rows.workspaces.push(ProjectedWorkspace {
-            handle: *workspace.workspace_handle(),
-            assignment: catalog_assignment,
-            root_image: workspace.root_image().clone(),
-            root_directory: workspace.root_directory().to_owned(),
-            device: workspace.root_device(),
-            inode: workspace.root_inode(),
-            uid_range_start: workspace.uid_range_start(),
-            uid_range_size: workspace.uid_range_size(),
-            attachment_handles,
-            guest_root_publication: workspace
-                .guest_root_publication_proof()
-                .map(|proof| {
-                    GuestRootCatalogPublicationV1::new(
-                        *workspace.creation_operation_id(),
-                        workspace.dataset_guid(),
-                        proof,
-                    )
-                })
-                .transpose()?,
-        });
-        rows.networks.push(ProjectedNetwork {
-            handle: *network_row.network_handle(),
-            assignment: catalog_assignment,
-            namespace_path: network_row.namespace_path().to_owned(),
-            device: network_row.namespace_device(),
-            inode: network_row.namespace_inode(),
-        });
-        if let Some(anchor) = anchor {
-            rows.anchors.push(ProjectedAnchor {
-                handle: *anchor.handle(),
-                assignment: catalog_assignment,
-                namespace_generation: anchor.namespace_generation(),
-                device: anchor.directory_device(),
-                inode: anchor.directory_inode(),
-                mount_id: anchor.unique_mount_id(),
-            });
-        }
+            },
+        };
+        append_assignment_rows_data_v2(&mut rows, binding.manifest(), selected,
+            anchor, attachment_handles)?;
     }
 
+    finish_projected_rows_data_v2(rows, previous,
+        bindings.iter().filter(|binding| binding.state() == RuntimeAuthorityStateV1::Bound)
+            .map(RuntimeAuthorityBindingV1::manifest))
+}
+
+// These passive views project exact caller-validated models. They create no
+// current-assignment, authenticated-inventory or effect authority.
+struct SelectedHostCatalogResourcesDataV2<'inventory> {
+    workspace: &'inventory aos_sandbox_protocol::ValidatedStorageWorkspace,
+    network: &'inventory aos_sandbox_protocol::ValidatedNetworkNamespace,
+    previously_published: bool,
+}
+
+fn select_assignment_resources_data_v2<'inventory>(
+    manifest: &CanonicalAssignmentManifestV1,
+    storage: &'inventory ValidatedStorageInventory,
+    network: &'inventory ValidatedNetworkInventory,
+    previous: Option<&HostCatalogSnapshot>,
+) -> Result<Option<SelectedHostCatalogResourcesDataV2<'inventory>>, HostCatalogReconciliationError> {
+    select_assignment_resources_with_profile_data_v1(manifest, storage, network, previous,
+        ResourceSelectionProfileV1::Launchable)
+}
+
+// A catalog row carries physical identity, never Network lease authority. Only
+// the closed completed-Stop comparison selects retained Fenced resources.
+#[derive(Clone, Copy)]
+enum ResourceSelectionProfileV1 {
+    Launchable,
+    StoppedRetention,
+}
+
+fn select_assignment_resources_with_profile_data_v1<'inventory>(
+    manifest: &CanonicalAssignmentManifestV1,
+    storage: &'inventory ValidatedStorageInventory,
+    network: &'inventory ValidatedNetworkInventory,
+    previous: Option<&HostCatalogSnapshot>,
+    profile: ResourceSelectionProfileV1,
+) -> Result<Option<SelectedHostCatalogResourcesDataV2<'inventory>>, HostCatalogReconciliationError> {
+    let assignment = manifest.manifest();
+    let workspace = unique_matching(storage.workspaces(), |workspace| {
+        if let Some(current) = workspace.current_guest_root_publication_v2() {
+            current.require_workspace_v2(workspace).is_ok()
+                && current.current_assignment_v2().is_ok_and(|assignment|
+                    manifest.broker_assignment().is_ok_and(|expected| assignment == expected))
+        } else {
+            fence_matches_manifest_data_v2(workspace.fence(), manifest)
+        }
+    })?;
+    let network_row = unique_matching(network.networks(), |network| {
+        let permitted = match profile {
+            ResourceSelectionProfileV1::Launchable => network.is_launchable(),
+            ResourceSelectionProfileV1::StoppedRetention => network.is_launchable()
+                || network.state() == aos_proto::aos::sandbox::local::v1::NetworkState::NETWORK_STATE_FENCED,
+        };
+        permitted && fence_matches_manifest_data_v2(network.fence(), manifest)
+    })?;
+    let previously_published = previous.is_some_and(|catalog| {
+        catalog.workspaces().iter().any(|workspace| {
+            catalog_assignment_matches_manifest_data_v2(workspace.assignment(), manifest)
+        })
+    });
+    let (Some(workspace), Some(network_row)) = (workspace, network_row) else {
+        if previously_published {
+            return Err(HostCatalogReconciliationError::IncompleteResources);
+        }
+        return Ok(None);
+    };
+    if workspace.root_image() != assignment.root_view() {
+        return Err(HostCatalogReconciliationError::CorruptState);
+    }
+
+    Ok(Some(SelectedHostCatalogResourcesDataV2 { workspace, network: network_row, previously_published }))
+}
+
+fn append_assignment_rows_data_v2(
+    rows: &mut ProjectedRows,
+    manifest: &CanonicalAssignmentManifestV1,
+    selected: SelectedHostCatalogResourcesDataV2<'_>,
+    anchor: Option<&aos_sandbox_protocol::ValidatedAttachmentAnchorInventoryRecord>,
+    attachment_handles: Vec<[u8; 32]>,
+) -> Result<(), HostCatalogReconciliationError> {
+    let workspace = selected.workspace;
+    let network_row = selected.network;
+    let catalog_assignment = catalog_assignment_manifest_data_v2(manifest)?;
+
+    rows.workspaces.push(ProjectedWorkspace {
+        handle: *workspace.workspace_handle(),
+        assignment: catalog_assignment,
+        root_image: workspace.root_image().clone(),
+        root_directory: workspace.root_directory().to_owned(),
+        device: workspace.root_device(),
+        inode: workspace.root_inode(),
+        uid_range_start: workspace.uid_range_start(),
+        uid_range_size: workspace.uid_range_size(),
+        attachment_handles,
+        guest_root_publication: if workspace.current_guest_root_publication_v2().is_some() {
+            Some(GuestRootCatalogPublicationV1::from_current_workspace_v2(workspace)?)
+        } else {
+            workspace.guest_root_publication_proof()
+                .map(|proof| GuestRootCatalogPublicationV1::new(
+                    *workspace.creation_operation_id(), workspace.dataset_guid(), proof,
+                )).transpose()?
+        },
+    });
+    rows.networks.push(ProjectedNetwork {
+        handle: *network_row.network_handle(),
+        assignment: catalog_assignment,
+        namespace_path: network_row.namespace_path().to_owned(),
+        device: network_row.namespace_device(),
+        inode: network_row.namespace_inode(),
+    });
+    if let Some(anchor) = anchor {
+        rows.anchors.push(ProjectedAnchor {
+            handle: *anchor.handle(),
+            assignment: catalog_assignment,
+            namespace_generation: anchor.namespace_generation(),
+            device: anchor.directory_device(),
+            inode: anchor.directory_inode(),
+            mount_id: anchor.unique_mount_id(),
+        });
+    }
+    Ok(())
+}
+
+fn finish_projected_rows_data_v2<'manifest>(
+    mut rows: ProjectedRows,
+    previous: Option<&HostCatalogSnapshot>,
+    manifests: impl Iterator<Item = &'manifest CanonicalAssignmentManifestV1> + Clone,
+) -> Result<ProjectedRows, HostCatalogReconciliationError> {
     rows.workspaces.sort_unstable_by_key(|row| row.handle);
     rows.networks.sort_unstable_by_key(|row| row.handle);
     rows.anchors.sort_unstable_by_key(|row| row.handle);
@@ -775,9 +1049,8 @@ fn collect_rows(
                     && candidate.assignment.incarnation_id()
                         == workspace.assignment().incarnation_id()
             });
-            let incarnation_still_current = bindings.iter().any(|binding| {
-                binding.state() == RuntimeAuthorityStateV1::Bound
-                    && catalog_incarnation_matches_binding(workspace.assignment(), binding)
+            let incarnation_still_current = manifests.clone().any(|manifest| {
+                catalog_incarnation_matches_manifest_data_v2(workspace.assignment(), manifest)
             });
             if !retained && incarnation_still_current {
                 return Err(HostCatalogReconciliationError::IncompleteResources);
@@ -787,6 +1060,7 @@ fn collect_rows(
 
     Ok(rows)
 }
+
 
 fn materialize_catalog(
     generation: u64,
@@ -877,13 +1151,24 @@ fn ready_anchor<'a>(
     Option<&'a aos_sandbox_protocol::ValidatedAttachmentAnchorInventoryRecord>,
     HostCatalogReconciliationError,
 > {
-    let assignment = binding.manifest().manifest();
+    ready_anchor_manifest_data_v2(binding.manifest(), required_slots, inventory)
+}
+
+fn ready_anchor_manifest_data_v2<'a>(
+    manifest: &CanonicalAssignmentManifestV1,
+    required_slots: &[aos_sandbox_core::AttachmentSlotId],
+    inventory: &'a ValidatedDestinationSlotInventory,
+) -> Result<
+    Option<&'a aos_sandbox_protocol::ValidatedAttachmentAnchorInventoryRecord>,
+    HostCatalogReconciliationError,
+> {
+    let assignment = manifest.manifest();
     let slots = inventory
         .slots()
         .iter()
         .filter(|slot| {
             slot.namespace_generation() == assignment.namespace_generation().get()
-                && fence_matches_binding(slot.fence(), binding)
+                && fence_matches_manifest_data_v2(slot.fence(), manifest)
         })
         .collect::<Vec<_>>();
     if slots.iter().any(|slot| {
@@ -903,15 +1188,19 @@ fn ready_anchor<'a>(
         return Ok(None);
     }
     if required_slots.is_empty() {
-        let unexpected_anchor = inventory.attachment_anchors().iter().any(|anchor| {
-            anchor.sandbox_id() == assignment.sandbox().as_bytes()
-                && anchor.incarnation_id() == assignment.incarnation().as_bytes()
-                && anchor.namespace_generation() == assignment.namespace_generation().get()
+        let mut rows = inventory.namespace_anchors_v1().iter().filter(|row| {
+            row.namespace_generation() == assignment.namespace_generation().get()
+                && fence_matches_manifest_data_v2(row.fence(), manifest)
         });
-        if unexpected_anchor {
+        let Some(row) = rows.next() else { return Ok(None); };
+        if rows.next().is_some() || row.sandbox_spec() != assignment.sandbox_spec() {
             return Err(HostCatalogReconciliationError::CorruptState);
         }
-        return Ok(None);
+        if row.lifecycle() != aos_proto::aos::sandbox::local::v1::AttachmentAnchorLifecycleV1::ATTACHMENT_ANCHOR_LIFECYCLE_V1_READY
+            || row.resource_kernel_boot_id() != inventory.kernel_boot_id()
+        { return Ok(None); }
+        // The sole inventory decoder already crosslinks this exact physical
+        // row to its real current anchor. No absent slot supplies a handle.
     }
 
     let anchors = inventory.attachment_anchors().iter().filter(|anchor| {
@@ -941,35 +1230,56 @@ fn exactly_one<T>(mut values: impl Iterator<Item = T>) -> Option<T> {
     values.next().is_none().then_some(first)
 }
 
-fn fence_matches_binding(
+pub(crate) fn fence_matches_binding(
     fence: &ValidatedAssignmentFence,
     binding: &RuntimeAuthorityBindingV1,
 ) -> bool {
-    let assignment = binding.manifest().manifest();
+    fence_matches_manifest_data_v2(fence, binding.manifest())
+}
+
+fn fence_matches_manifest_data_v2(
+    fence: &ValidatedAssignmentFence,
+    manifest: &CanonicalAssignmentManifestV1,
+) -> bool {
+    let assignment = manifest.manifest();
     fence.sandbox_id() == assignment.sandbox().as_bytes()
         && fence.incarnation_id() == assignment.incarnation().as_bytes()
         && fence.assignment_epoch() == assignment.epoch().get()
         && fence.desired_generation() == assignment.desired_generation().get()
-        && fence.assignment_digest() == binding.assignment_digest().as_bytes()
+        && fence.assignment_digest() == manifest.digest().as_bytes()
 }
 
 fn catalog_assignment_matches_binding(
     catalog: CatalogAssignment,
     binding: &RuntimeAuthorityBindingV1,
 ) -> bool {
-    let assignment = binding.manifest().manifest();
+    catalog_assignment_matches_manifest_data_v2(catalog, binding.manifest())
+}
+
+fn catalog_assignment_matches_manifest_data_v2(
+    catalog: CatalogAssignment,
+    manifest: &CanonicalAssignmentManifestV1,
+) -> bool {
+    let assignment = manifest.manifest();
     catalog.sandbox_id() == assignment.sandbox().as_bytes()
         && catalog.incarnation_id() == assignment.incarnation().as_bytes()
         && catalog.assignment_epoch() == assignment.epoch().get()
         && catalog.desired_generation() == assignment.desired_generation().get()
-        && catalog.assignment_digest() == binding.assignment_digest().as_bytes()
+        && catalog.assignment_digest() == manifest.digest().as_bytes()
 }
 
 fn catalog_incarnation_matches_binding(
     catalog: CatalogAssignment,
     binding: &RuntimeAuthorityBindingV1,
 ) -> bool {
-    let assignment = binding.manifest().manifest();
+    catalog_incarnation_matches_manifest_data_v2(catalog, binding.manifest())
+}
+
+fn catalog_incarnation_matches_manifest_data_v2(
+    catalog: CatalogAssignment,
+    manifest: &CanonicalAssignmentManifestV1,
+) -> bool {
+    let assignment = manifest.manifest();
     catalog.sandbox_id() == assignment.sandbox().as_bytes()
         && catalog.incarnation_id() == assignment.incarnation().as_bytes()
 }
@@ -977,13 +1287,19 @@ fn catalog_incarnation_matches_binding(
 fn catalog_assignment(
     binding: &RuntimeAuthorityBindingV1,
 ) -> Result<CatalogAssignment, HostCatalogReconciliationError> {
-    let assignment = binding.manifest().manifest();
+    catalog_assignment_manifest_data_v2(binding.manifest())
+}
+
+fn catalog_assignment_manifest_data_v2(
+    manifest: &CanonicalAssignmentManifestV1,
+) -> Result<CatalogAssignment, HostCatalogReconciliationError> {
+    let assignment = manifest.manifest();
     Ok(CatalogAssignment::new(
         *assignment.sandbox().as_bytes(),
         *assignment.incarnation().as_bytes(),
         assignment.epoch().get(),
         assignment.desired_generation().get(),
-        *binding.assignment_digest().as_bytes(),
+        *manifest.digest().as_bytes(),
     )?)
 }
 
@@ -1224,7 +1540,7 @@ mod tests {
             catalog_generation: 10,
             networks: vec![NetworkNamespaceInventoryRecord {
                 network_handle: network_handle.to_vec(),
-                fence: Some(fence).into(),
+                fence: Some(fence.clone()).into(),
                 resource_kernel_boot_id: vec![30; 16],
                 namespace_device: 50,
                 namespace_inode: 51,
@@ -1240,10 +1556,46 @@ mod tests {
             journal_sequence: 11,
             ..Default::default()
         };
+        let anchor = aos_sandbox_protocol::mount_attachment_anchor::seal_attachment_anchor_resource_v1(
+            aos_proto::aos::sandbox::local::v1::AttachmentAnchorResourceRecordV1 {
+                binding: Some(aos_proto::aos::sandbox::local::v1::MountAssignmentBinding {
+                    fence: Some(fence).into(),
+                    namespace_generation: assignment.namespace_generation().get(),
+                    ..Default::default()
+                }).into(),
+                sandbox_spec: Some(Descriptor {
+                    media_type: assignment.sandbox_spec().media_type().as_str().to_owned(),
+                    sha256: assignment.sandbox_spec().digest().as_bytes().to_vec(),
+                    encoded_size: assignment.sandbox_spec().encoded_size(),
+                    ..Default::default()
+                }).into(),
+                lifecycle: aos_proto::aos::sandbox::local::v1::AttachmentAnchorLifecycleV1::ATTACHMENT_ANCHOR_LIFECYCLE_V1_READY.into(),
+                resource_kernel_boot_id: vec![30; 16],
+                materialization: Some(aos_proto::aos::sandbox::local::v1::MountOperationCorrelation {
+                    operation_id: vec![81; 16], request_digest: vec![82; 32], ..Default::default()
+                }).into(),
+                directory_device: Some(83), directory_inode: Some(84), anchor_unique_mount_id: Some(85),
+                ..Default::default()
+            },
+        ).unwrap();
+        let handle = aos_sandbox_protocol::attachment_anchor_handle_v1(
+            assignment.sandbox().as_bytes(), assignment.incarnation().as_bytes(),
+            assignment.namespace_generation().get(), &[30; 16], 83, 84, 85,
+        );
         let destinations = InventoryDestinationSlotsResponse {
             kernel_boot_id: vec![30; 16],
             broker_instance_id: vec![34; 16],
             journal_sequence: 12,
+            namespace_anchors: vec![anchor.wire_v1()],
+            attachment_anchors: vec![aos_proto::aos::sandbox::local::v1::AttachmentAnchorInventoryRecord {
+                attachment_anchor_handle: handle.to_vec(),
+                sandbox_id: assignment.sandbox().as_bytes().to_vec(),
+                incarnation_id: assignment.incarnation().as_bytes().to_vec(),
+                namespace_generation: assignment.namespace_generation().get(),
+                resource_kernel_boot_id: vec![30; 16],
+                directory_device: 83, directory_inode: 84, unique_mount_id: 85,
+                ..Default::default()
+            }],
             ..Default::default()
         };
 
@@ -1269,6 +1621,250 @@ mod tests {
         let mut request_id = [domain; 16];
         request_id[..8].copy_from_slice(&cycle.to_be_bytes());
         request_id
+    }
+
+    fn retained_stopped_models() -> (
+        RuntimeAuthorityBindingV1,
+        ValidatedStorageInventory,
+        ValidatedNetworkInventory,
+        ValidatedDestinationSlotInventory,
+        aos_sandbox_protocol::host_stopped_namespace::HostStoppedNamespaceDataV4,
+        HostCatalogSnapshot,
+    ) {
+        let spec = crate::sandbox_spec_state::slot_spec_publication_for_test(Vec::new(), 61);
+        let binding = current_binding(
+            spec.descriptor().clone(),
+            descriptor_for(PortableMediaType::View, 62),
+            4,
+        );
+        let (storage, network, _, destinations) = projection_inventories(&binding);
+        let anchor = ready_anchor_manifest_data_v2(binding.manifest(), &[], &destinations)
+            .unwrap()
+            .unwrap();
+        let scope =
+            aos_sandbox_protocol::host_stopped_namespace::HostStoppedNamespaceDataV4::from_data_v4(
+                [30; 16],
+                network.networks()[0].fence().clone(),
+                *anchor.handle(),
+                ([70; 16], [71; 32], [72; 32]),
+                ([73; 16], [74; 32], [75; 32]),
+            )
+            .unwrap();
+        let selected =
+            select_assignment_resources_data_v2(binding.manifest(), &storage, &network, None)
+                .unwrap()
+                .unwrap();
+        let mut rows = ProjectedRows::default();
+        append_assignment_rows_data_v2(
+            &mut rows,
+            binding.manifest(),
+            selected,
+            Some(anchor),
+            Vec::new(),
+        )
+        .unwrap();
+        let catalog = materialize_catalog(1, &rows, None).unwrap();
+        (binding, storage, network, destinations, scope, catalog)
+    }
+
+    #[test]
+    fn retained_stop_rows_match_exact_protected_catalog_and_refuse_foreign_anchor() {
+        let (binding, storage, network, destinations, scope, catalog) = retained_stopped_models();
+        let require = retained_population::require_retained_inventory_rows_data_v1;
+        require(
+            binding.manifest(),
+            &scope,
+            &storage,
+            &network,
+            &destinations,
+            &catalog,
+        )
+        .unwrap();
+
+        let foreign =
+            aos_sandbox_protocol::host_stopped_namespace::HostStoppedNamespaceDataV4::from_data_v4(
+                *scope.boot_v4(),
+                scope.fence_v4().clone(),
+                [99; 32],
+                scope.launch_v4(),
+                scope.stop_v4(),
+            )
+            .unwrap();
+        assert!(
+            require(
+                binding.manifest(),
+                &foreign,
+                &storage,
+                &network,
+                &destinations,
+                &catalog
+            )
+            .is_err()
+        );
+        assert_eq!(catalog.workspaces().len(), 1);
+        assert_eq!(destinations.namespace_anchors_v1().len(), 1);
+    }
+
+    #[test]
+    fn retained_stop_rows_refuse_missing_namespace_and_changed_network_identity() {
+        let (binding, storage, network, destinations, scope, catalog) = retained_stopped_models();
+        let require = retained_population::require_retained_inventory_rows_data_v1;
+        let absent = decode_destination_slot_inventory_response(
+            &InventoryDestinationSlotsResponse {
+                kernel_boot_id: vec![30; 16],
+                broker_instance_id: vec![34; 16],
+                journal_sequence: 12,
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            15 * 1024 * 1024,
+        )
+        .unwrap();
+        assert!(
+            require(
+                binding.manifest(),
+                &scope,
+                &storage,
+                &network,
+                &absent,
+                &catalog
+            )
+            .is_err()
+        );
+
+        let old = &catalog.networks()[0];
+        let changed = NetworkCatalogEntry::new(
+            *old.handle(),
+            old.assignment(),
+            old.namespace_path().to_owned(),
+            old.device(),
+            old.inode() + 1,
+        )
+        .unwrap();
+        let different = HostCatalogSnapshot::new(
+            catalog.generation(),
+            catalog.workspaces().to_vec(),
+            vec![changed],
+        )
+        .unwrap()
+        .with_attachment_anchors(catalog.attachment_anchors().to_vec())
+        .unwrap();
+        assert!(
+            require(
+                binding.manifest(),
+                &scope,
+                &storage,
+                &network,
+                &destinations,
+                &different
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn retained_stop_rows_refuse_additional_canonical_network_population() {
+        let (binding, storage, network, destinations, scope, catalog) = retained_stopped_models();
+        let row = &network.networks()[0];
+        let fence = AssignmentFence {
+            sandbox_id: row.fence().sandbox_id().to_vec(),
+            incarnation_id: row.fence().incarnation_id().to_vec(),
+            assignment_epoch: row.fence().assignment_epoch(),
+            desired_generation: row.fence().desired_generation(),
+            assignment_digest: row.fence().assignment_digest().to_vec(),
+            ..Default::default()
+        };
+        let rows = [[22; 32], [23; 32]]
+            .into_iter()
+            .enumerate()
+            .map(|(index, handle)| NetworkNamespaceInventoryRecord {
+                network_handle: handle.to_vec(),
+                fence: Some(fence.clone()).into(),
+                resource_kernel_boot_id: vec![30; 16],
+                namespace_device: row.namespace_device(),
+                namespace_inode: row.namespace_inode() + index as u64,
+                state: row.state().into(),
+                resource_digest: row.resource_digest().to_vec(),
+                ..Default::default()
+            })
+            .collect();
+        let additional = decode_network_resource_inventory_response(
+            &InventoryNetworkResourcesResponse {
+                kernel_boot_id: vec![30; 16],
+                broker_instance_id: vec![32; 16],
+                journal_sequence: 9,
+                catalog_generation: 10,
+                networks: rows,
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            15 * 1024 * 1024,
+        )
+        .unwrap();
+        assert!(
+            retained_population::require_retained_inventory_rows_data_v1(
+                binding.manifest(),
+                &scope,
+                &storage,
+                &additional,
+                &destinations,
+                &catalog
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn stopped_retention_preserves_fenced_network_without_opening_launchable_selection() {
+        let (binding, storage, network, destinations, scope, catalog) = retained_stopped_models();
+        let row = &network.networks()[0];
+        let fence = AssignmentFence {
+            sandbox_id: row.fence().sandbox_id().to_vec(),
+            incarnation_id: row.fence().incarnation_id().to_vec(),
+            assignment_epoch: row.fence().assignment_epoch(),
+            desired_generation: row.fence().desired_generation(),
+            assignment_digest: row.fence().assignment_digest().to_vec(),
+            ..Default::default()
+        };
+        let fenced = decode_network_resource_inventory_response(
+            &InventoryNetworkResourcesResponse {
+                kernel_boot_id: vec![30; 16],
+                broker_instance_id: vec![32; 16],
+                journal_sequence: 10,
+                catalog_generation: 11,
+                networks: vec![NetworkNamespaceInventoryRecord {
+                    network_handle: row.network_handle().to_vec(),
+                    fence: Some(fence).into(),
+                    resource_kernel_boot_id: vec![30; 16],
+                    namespace_device: row.namespace_device(),
+                    namespace_inode: row.namespace_inode(),
+                    state: NetworkState::NETWORK_STATE_FENCED.into(),
+                    lease_generation: 1,
+                    fail_stop_boottime_nanoseconds: 100,
+                    resource_digest: vec![91; 32],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            15 * 1024 * 1024,
+        )
+        .unwrap();
+
+        retained_population::require_retained_inventory_rows_data_v1(
+            binding.manifest(),
+            &scope,
+            &storage,
+            &fenced,
+            &destinations,
+            &catalog,
+        )
+        .unwrap();
+        assert!(
+            select_assignment_resources_data_v2(binding.manifest(), &storage, &fenced, Some(&catalog))
+                .is_err()
+        );
+        assert!(!fenced.networks()[0].is_launchable());
     }
 
     fn record_empty_inventory_cycle(
@@ -1377,6 +1973,39 @@ mod tests {
                 assert!(CatalogRecord::decode(&changed).is_err());
             }
         }
+    }
+
+    #[test]
+    fn no_slots_catalog_records_have_explicit_versioned_provenance() {
+        let historical = record(CatalogRecordState::Pending, 1);
+        let historical_bytes = historical.encode();
+        assert_eq!(&historical_bytes[8..10], &VERSION.to_be_bytes());
+        assert_eq!(CatalogRecord::decode(&historical_bytes).unwrap(), historical);
+
+        let mut no_slots = historical.clone();
+        no_slots.mount_source = CatalogMountSourceVersionV2::NoSlots16V2;
+        no_slots.inventory_digests[2] = no_slots16_source_digest_data_v2(no_slots.inventory_digests[3]);
+        no_slots.digest = no_slots.compute_digest();
+        no_slots.validate().unwrap();
+        let bytes = no_slots.encode();
+
+        assert_eq!(&bytes[8..10], &NO_SLOTS_VERSION.to_be_bytes());
+        assert_eq!(bytes[11], 2);
+        assert_eq!(CatalogRecord::decode(&bytes).unwrap(), no_slots);
+        assert_ne!(historical.digest, no_slots.digest);
+
+        let mut missing_source_flag = bytes.clone();
+        missing_source_flag[11] = 0;
+        assert!(CatalogRecord::decode(&missing_source_flag).is_err());
+
+        let mut downgrade = bytes;
+        downgrade[8..10].copy_from_slice(&VERSION.to_be_bytes());
+        downgrade[11] = 0;
+        assert!(CatalogRecord::decode(&downgrade).is_err());
+
+        no_slots.inventory_digests[2] = [11; 32];
+        no_slots.digest = no_slots.compute_digest();
+        assert!(CatalogRecord::decode(&no_slots.encode()).is_err());
     }
 
     #[test]
@@ -1563,7 +2192,44 @@ mod tests {
 
         assert_eq!(catalog.workspaces().len(), 1);
         assert_eq!(catalog.networks().len(), 1);
-        assert!(catalog.attachment_anchors().is_empty());
+        assert_eq!(catalog.attachment_anchors().len(), 1);
+        // An empty Spec has no slot from which a namespace can be inferred.
+        // Removing both real counterparts leaves a valid empty inventory,
+        // but must prevent this current assignment from becoming Host-ready.
+        let absent = decode_destination_slot_inventory_response(
+            &InventoryDestinationSlotsResponse {
+                kernel_boot_id: vec![30; 16], broker_instance_id: vec![34; 16],
+                journal_sequence: 12, ..Default::default()
+            }.encode_to_vec(), 15 * 1024 * 1024,
+        ).unwrap();
+        let deferred = collect_rows(
+            &mut journal,
+            std::slice::from_ref(&binding),
+            &storage,
+            &network,
+            &mounts,
+            &absent,
+            None,
+        )
+        .unwrap();
+        assert!(deferred.workspaces.is_empty());
+        assert!(deferred.networks.is_empty());
+        assert!(deferred.anchors.is_empty());
+
+        // Once published, the same missing namespace must instead refuse the
+        // complete projection so no current allocation silently disappears.
+        assert!(matches!(
+            collect_rows(
+                &mut journal,
+                std::slice::from_ref(&binding),
+                &storage,
+                &network,
+                &mounts,
+                &absent,
+                Some(&catalog),
+            ),
+            Err(HostCatalogReconciliationError::IncompleteResources)
+        ));
         assert_eq!(catalog.workspaces()[0].root_image(), &root_view);
         assert_eq!(catalog.workspaces()[0].handle(), &[21; 32]);
         assert_eq!(catalog.networks()[0].handle(), &[22; 32]);

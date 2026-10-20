@@ -122,6 +122,10 @@ static int view_fixed_name_matches(const char *path, const struct directory_spec
         return result;
 }
 
+#ifndef AOS_ENVIRONMENT_EVIDENCE_REQUIRED
+#define AOS_ENVIRONMENT_EVIDENCE_REQUIRED 0
+#endif
+
 static const struct directory_spec view_parent_spec = {
         "sandbox", "/var/lib/aos/sandbox", "system_u:object_r:aos_sandbox_view_parent_t", 0755, 0, 0,
 };
@@ -132,9 +136,15 @@ static const struct directory_spec view_source_specs[] = {
          "system_u:object_r:aos_sandbox_cache_journal_t", 0700, AOS_CONTROLLER_UID, AOS_CONTROLLER_GID},
         {"cache-residency-objects", "/var/lib/aos/sandbox/cache-residency-objects",
          "system_u:object_r:aos_sandbox_cache_object_t", 0700, AOS_CONTROLLER_UID, AOS_CONTROLLER_GID},
+        /* This existing evidence recipe remains Root-owned. The same exact
+         * fresh-create/check engine never adopts or relabels a foreign root. */
+        {"source-evidence", "/var/lib/aos/sandbox/source-evidence",
+         "system_u:object_r:aos_sandbox_policy_authority_state_t", 0700, 0, 0},
 };
 static const bool view_source_enabled[] = {
-        AOS_SOURCE_VIEW_REQUIRED, AOS_CACHE_VIEW_REQUIRED, AOS_CACHE_SIGNER_VIEW_REQUIRED,
+        AOS_SOURCE_VIEW_REQUIRED || AOS_CACHE_VIEW_REQUIRED, AOS_CACHE_VIEW_REQUIRED,
+        AOS_CACHE_SIGNER_VIEW_REQUIRED || AOS_CACHE_VIEW_REQUIRED,
+        AOS_ENVIRONMENT_EVIDENCE_REQUIRED,
 };
 static const struct directory_spec view_run_parent_spec = {
         "aos", "/run/aos", "system_u:object_r:var_run_t", 0755, 0, 0,
@@ -148,11 +158,36 @@ static const struct directory_spec view_target_specs[] = {
          "system_u:object_r:aos_sandbox_cache_view_mount_t", 0700, 0, 0},
         {"sandbox-cache-signer-objects", "/run/aos/sandbox-cache-signer-objects",
          "system_u:object_r:aos_sandbox_cache_view_mount_t", 0700, 0, 0},
+        {"sandbox-root-controller", "/run/aos/sandbox-root-controller",
+         "system_u:object_r:aos_sandbox_cache_view_mount_t", 0700, 0, 0},
+        {"sandbox-root-storage-session", "/run/aos/sandbox-root-storage-session",
+         "system_u:object_r:aos_sandbox_cache_view_mount_t", 0700, 0, 0},
+        {"sandbox-root-host-session", "/run/aos/sandbox-root-host-session",
+         "system_u:object_r:aos_sandbox_cache_view_mount_t", 0700, 0, 0},
+        {"sandbox-root-mount-session", "/run/aos/sandbox-root-mount-session",
+         "system_u:object_r:aos_sandbox_cache_view_mount_t", 0700, 0, 0},
+        {"sandbox-root-network-session", "/run/aos/sandbox-root-network-session",
+         "system_u:object_r:aos_sandbox_cache_view_mount_t", 0700, 0, 0},
+        {"sandbox-root-source", "/run/aos/sandbox-root-source",
+         "system_u:object_r:aos_sandbox_source_view_mount_t", 0700, 0, 0},
+        {"sandbox-root-cache-bootstrap", "/run/aos/sandbox-root-cache-bootstrap",
+         "system_u:object_r:aos_sandbox_cache_view_mount_t", 0700, 0, 0},
+        {"sandbox-root-cache-objects", "/run/aos/sandbox-root-cache-objects",
+         "system_u:object_r:aos_sandbox_cache_view_mount_t", 0700, 0, 0},
 };
 static const bool view_target_enabled[] = {
         AOS_SOURCE_VIEW_REQUIRED, AOS_CACHE_VIEW_REQUIRED,
         AOS_CACHE_SIGNER_VIEW_REQUIRED, AOS_CACHE_SIGNER_VIEW_REQUIRED,
+        /* Controller, Storage, Host, Mount and Network fixed Root mappings. */
+        AOS_CACHE_VIEW_REQUIRED, AOS_CACHE_VIEW_REQUIRED, AOS_CACHE_VIEW_REQUIRED,
+        AOS_CACHE_VIEW_REQUIRED, AOS_CACHE_VIEW_REQUIRED,
+        /* Source, Cache bootstrap and Cache objects. */
+        AOS_CACHE_VIEW_REQUIRED, AOS_CACHE_VIEW_REQUIRED, AOS_CACHE_VIEW_REQUIRED,
 };
+
+_Static_assert(sizeof(view_target_specs) / sizeof(view_target_specs[0]) ==
+               sizeof(view_target_enabled) / sizeof(view_target_enabled[0]),
+               "fixed view targets and enablement must have the same extent");
 
 /* Existing checked view scripts are serialized by their fixed unit order.
  * EEXIST during a just-missing creation remains refusal, never adoption. */
@@ -192,6 +227,76 @@ out:
         if (child >= 0)
                 close(child);
         close(parent);
+        return result;
+}
+
+/* Private Controller ancestry uses the same fixed owner-tree engine. The
+ * protected Session siblings and bootstrap child have no caller-supplied name;
+ * existing foreign ownership or labels remain refusal. */
+static int walk_root_private_view_sources(int aos_fd, uint64_t mount_id,
+                                           dev_t device, bool create) {
+        static const struct directory_spec bootstrap = {
+                "cache-residency-authority", "/var/lib/aos/sandboxd/cache-residency-authority",
+                "system_u:object_r:aos_sandbox_controller_state_t",
+                0700, AOS_CONTROLLER_UID, AOS_CONTROLLER_GID,
+        };
+        static const struct directory_spec sessions[] = {
+                {"host", "/var/lib/aos/sandboxd/broker-session/host",
+                 "system_u:object_r:aos_sandbox_controller_state_t",
+                 0700, AOS_CONTROLLER_UID, AOS_CONTROLLER_GID},
+                {"mount", "/var/lib/aos/sandboxd/broker-session/mount",
+                 "system_u:object_r:aos_sandbox_controller_state_t",
+                 0700, AOS_CONTROLLER_UID, AOS_CONTROLLER_GID},
+                {"network", "/var/lib/aos/sandboxd/broker-session/network",
+                 "system_u:object_r:aos_sandbox_controller_state_t",
+                 0700, AOS_CONTROLLER_UID, AOS_CONTROLLER_GID},
+        };
+        struct directory_identity identity;
+        int controller = -1, broker = -1, child = -1;
+        int result = -1;
+
+        if (!AOS_CACHE_VIEW_REQUIRED)
+                return 0;
+        if (walk_owner_tree(aos_fd, &owner_trees[0], mount_id, device, create) < 0)
+                return -1;
+        if (open_existing_directory(aos_fd, &owner_trees[0].root,
+                                    mount_id, device, &controller) < 0)
+                return -1;
+        if (controller < 0)
+                return create ? -1 : 0;
+        if (open_existing_directory(controller, &owner_trees[0].broker,
+                                    mount_id, device, &broker) < 0)
+                goto out;
+        if (broker < 0) {
+                result = create ? -1 : 0;
+                goto out;
+        }
+        for (size_t index = 0; index < sizeof(sessions) / sizeof(sessions[0]); ++index) {
+                child = owner_directory_step(broker, &sessions[index], mount_id, device,
+                                             create, &identity);
+                if (child == -1 && !create)
+                        continue;
+                if (child < 0 || inspect_directory(child, &sessions[index], mount_id,
+                                                  device, &identity) < 0 ||
+                    reopen_matches(broker, &sessions[index], mount_id,
+                                              device, &identity) < 0)
+                        goto out;
+                close(child);
+                child = -1;
+        }
+        child = owner_directory_step(controller, &bootstrap, mount_id, device, create, &identity);
+        if (child == -1 && !create)
+                result = 0;
+        else if (child >= 0 &&
+                 inspect_directory(child, &bootstrap, mount_id, device, &identity) == 0 &&
+                 reopen_matches(controller, &bootstrap, mount_id, device, &identity) == 0)
+                result = 0;
+out:
+        if (child >= 0)
+                close(child);
+        if (broker >= 0)
+                close(broker);
+        close(controller);
         return result;
 }
 
@@ -249,8 +354,11 @@ static int provision_view_roots(void) {
         if (aos_fd >= 0 && walk_view_tree(aos_fd, &view_parent_spec, view_source_specs,
                                         view_source_enabled, 3, lib_mount, lib_stat.st_dev, false) < 0)
                 goto out;
+        if (aos_fd >= 0 && walk_root_private_view_sources(aos_fd, lib_mount, lib_stat.st_dev, false) < 0)
+                goto out;
         if (walk_view_tree(run_fd, &view_run_parent_spec, view_target_specs, view_target_enabled,
-                           4, run_mount, run_stat.st_dev, false) < 0)
+                           sizeof(view_target_specs) / sizeof(view_target_specs[0]),
+                           run_mount, run_stat.st_dev, false) < 0)
                 goto out;
 
         /* Both state and temporary peers were preflighted before first creation. */
@@ -260,8 +368,10 @@ static int provision_view_roots(void) {
         if (aos_fd < 0 ||
             walk_view_tree(aos_fd, &view_parent_spec, view_source_specs, view_source_enabled,
                            3, lib_mount, lib_stat.st_dev, true) < 0 ||
+            walk_root_private_view_sources(aos_fd, lib_mount, lib_stat.st_dev, true) < 0 ||
             walk_view_tree(run_fd, &view_run_parent_spec, view_target_specs, view_target_enabled,
-                           4, run_mount, run_stat.st_dev, true) < 0 ||
+                           sizeof(view_target_specs) / sizeof(view_target_specs[0]),
+                           run_mount, run_stat.st_dev, true) < 0 ||
             verify_view_mount(lib_mount, lib_stat.st_dev, AOS_VIEW_ZFS_STATE) < 0 ||
             reopen_matches(lib_fd, &aos_spec, lib_mount, lib_stat.st_dev, &aos_identity) < 0 ||
             verify_view_temporary_mount(run_mount, run_stat.st_dev) < 0 ||

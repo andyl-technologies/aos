@@ -50,7 +50,16 @@ impl ProductionHostReadinessV1 {
 
 /// Retains the exact three-listener Host activation profile.
 #[must_use = "retain the fixed listeners while serving Host sessions"]
-pub struct ProductionHostActivationV1(ProductionBrokerSessionActivationV1);
+pub struct ProductionHostActivationV1 {
+    inner: ProductionBrokerSessionActivationV1,
+    controller_cold: Option<Box<HostColdActivationOriginalV1>>,
+    controller_failed: bool,
+}
+
+struct HostColdActivationOriginalV1 {
+    cold: Box<crate::FixedServiceSessionOpenOriginalV4>,
+    journal: Box<aos_sandbox::journal::HostBrokerSessionCapturedJournalOpenV1>,
+}
 
 impl ProductionBrokerSessionActivationV1 {
     /// Retains all three ordered Host listeners behind fixed admission ports.
@@ -79,11 +88,71 @@ impl ProductionBrokerSessionActivationV1 {
                 "Host scheduling requires all three fixed role listeners",
             ));
         }
-        Ok(ProductionHostActivationV1(self))
+        Ok(ProductionHostActivationV1 { inner: self, controller_cold: None, controller_failed: false })
     }
 }
 
 impl ProductionHostActivationV1 {
+    /// Borrows the selected SDK native cause while the complete attempt stays held.
+    ///
+    /// Financial causes remain on the same actual Host Control owner; the SDK's
+    /// `original_failure_selected_v4` selector identifies that retained branch.
+    #[must_use]
+    pub fn controller_cold_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.controller_cold.as_ref()?.cold.failure()
+    }
+
+    /// Accepts the Controller role through its actual current-Control lender.
+    ///
+    /// Bootstrap finances the common native prefix before any new cold IO.
+    /// Only the verified signed HELLO selects ordinary, Stop or NoApply history.
+    /// A failed attempt remains retained; a positive transfer leaves the same
+    /// Session graph charged while dropping only completed temporary shells.
+    ///
+    /// # Errors
+    /// Refuses repeated failed entry, unavailable actual Control, financial or
+    /// native failure, or incomplete Source/native posts and prefix disposal.
+    pub async fn accept_current_controller_once_v1(&mut self,
+        host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+        transport_cutoff: u64,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
+        if self.controller_failed || self.controller_cold.is_some() {
+            return Err(aos_sandbox_host::HostControlColdSessionClosedV1.into());
+        }
+        let owner = host.borrow_control_cold_session_owner_v1()?;
+        let mut access = owner.lock_original_v1()?;
+        let fixed = crate::FixedServiceSessionOpenOriginalV4::host_cleanup_opening_demand_v1()
+            .ok_or(ProductionBrokerSessionActivationErrorV1::Activation("Host cold geometry overflow"))?;
+        let carrier = std::mem::size_of::<HostColdActivationOriginalV1>().checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<Self>()))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(ProductionBrokerSessionActivationErrorV1::Activation("Host cold carrier overflow"))?;
+        let complete = fixed.checked_add(
+            aos_sandbox::journal::HostBrokerSessionCapturedJournalOpenV1::fixed_preparation_demand()?)?
+            .checked_add(aos_sandbox_core::ResourceVector::ZERO.with(
+                aos_sandbox_core::ResourceDimension::MemoryBytes, carrier))?;
+        let loan = match access.begin_cold_session_v1(
+            aos_sandbox_host::HostControlColdSessionPurposeV1::Bootstrap, complete,
+        ) {
+            Ok(loan) => loan,
+            Err(error) => { self.controller_failed = true; return Err(error.into()); }
+        };
+        self.controller_cold = Some(Box::new(HostColdActivationOriginalV1 {
+            cold: Box::new(crate::FixedServiceSessionOpenOriginalV4::new()),
+            journal: Box::new(aos_sandbox::journal::HostBrokerSessionCapturedJournalOpenV1::new()),
+        }));
+        let original = match self.controller_cold.as_mut() { Some(original) => original, None => std::process::abort() };
+        let result = original.cold.open_host_cleanup_once_v1(loan, &mut original.journal,
+            &mut self.inner.listeners[ProductionHostRoleV1::Controller.index()].listener,
+            transport_cutoff).await;
+        if let Err(error) = result { self.controller_failed = true; return Err(error.into()); }
+        let session = original.cold.take_completed_host_session_v1()?;
+        drop(self.controller_cold.take());
+        // The existing wrapper retains the whole transferred Session and starts
+        // its protected Host replay-ticket roster empty, as for every new Session.
+        Ok(DormantAuthenticatedBrokerSessionV1::from_retained_storage_inner_v1(session))
+    }
+
     /// Polls retained sessions or their corresponding fixed listeners once.
     ///
     /// Session references are borrowed only for polling. Descriptor readiness
@@ -124,7 +193,7 @@ impl ProductionHostActivationV1 {
         deadline: u64,
     ) -> Result<Option<DormantAuthenticatedBrokerSessionV1>, ProductionBrokerSessionActivationErrorV1>
     {
-        let fixed = &mut self.0.listeners[role.index()];
+        let fixed = &mut self.inner.listeners[role.index()];
         fixed.listener.validate_current()?;
         let socket = match fixed.listener.accept() {
             Ok(socket) => socket,
@@ -165,7 +234,7 @@ impl ProductionHostActivationV1 {
         let fd = match &sessions[role.index()] {
             Some(session) => session.as_fd()?,
             None => {
-                let listener = &self.0.listeners[role.index()].listener;
+                let listener = &self.inner.listeners[role.index()].listener;
                 listener.validate_current()?;
                 listener.as_fd()
             }

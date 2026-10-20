@@ -36,7 +36,7 @@ use crate::mount_preparation::transport;
 use crate::mount_preparation::{
     MountCatalogPreparationError, MountServiceIdentity, ServiceExecution,
 };
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
 mod format;

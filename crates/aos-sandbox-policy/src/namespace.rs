@@ -22,8 +22,9 @@ use super::authority::AuthorityPlanV1;
 use super::model::{
     ExplanationDecisionV1, ExplanationEntryV1, ExplanationReasonV1, ExplanationStageV1,
     InputSourceV1, NamespaceBackendFeatureV1, NamespacePlanCommitmentV1, PolicyCompilerInputV1,
-    PolicyModelError, RedactedSubjectV1, canonical_bytes, digest,
+    PolicyModelError, RedactedSubjectV1,
 };
+use aos_sandbox_protocol::policy_data::{canonical_bytes, digest};
 
 /// Identifies the closed semantics of a logical source.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -116,6 +117,7 @@ impl AuthenticatedExecutableSourceV1 {
                 NamespaceExecutionClassV1::VerifiedPackageOrTool,
             ),
         )
+        .map_err(crate::PolicyModelError::from)
         .map_err(NamespaceModelError::Model)?;
         let media = MediaType::new(PortableMediaType::Content.as_str())
             .map_err(|_| NamespaceModelError::InvalidExecutableSource)?;
@@ -434,6 +436,7 @@ pub fn canonical_namespace_catalog_v1(
         b"aos.sandbox.namespace-destination-catalog.v2",
         &destinations,
     )
+    .map_err(crate::PolicyModelError::from)
     .map_err(|_| NamespaceCatalogError::InvalidCatalog)?;
     let media = MediaType::new(PortableMediaType::Content.as_str())
         .map_err(|_| NamespaceCatalogError::InvalidCatalog)?;
@@ -485,7 +488,8 @@ impl PortableNamespaceGraphV1 {
         let bytes = canonical_bytes(
             b"aos.sandbox.portable-namespace-graph.v1",
             &(schema, &rules),
-        )?;
+        )
+        .map_err(crate::PolicyModelError::from)?;
         let media = MediaType::new(PortableMediaType::Content.as_str())
             .map_err(|_| PolicyModelError::RegisteredMediaType)?;
         let descriptor = descriptor_for_bytes(media, &bytes);
@@ -778,17 +782,20 @@ pub(crate) fn compile_namespace(
     let reachable_sources = reachable_sources.into_iter().collect::<Vec<_>>();
     let destination_catalog = input.destinations().descriptor().clone();
     let graph = PortableNamespaceGraphV1::new(ordered.clone())?;
-    let commitment = NamespacePlanCommitmentV1::new(digest(
-        b"aos.sandbox.namespace-plan.v2",
-        &(
-            &ordered,
-            &core_actions,
-            &required_features,
-            &destination_catalog,
-            graph.descriptor(),
-            &reachable_sources,
-        ),
-    )?);
+    let commitment = NamespacePlanCommitmentV1::new(
+        digest(
+            b"aos.sandbox.namespace-plan.v2",
+            &(
+                &ordered,
+                &core_actions,
+                &required_features,
+                &destination_catalog,
+                graph.descriptor(),
+                &reachable_sources,
+            ),
+        )
+        .map_err(crate::PolicyModelError::from)?,
+    );
     Ok((
         NamespacePlanV1 {
             commitment,

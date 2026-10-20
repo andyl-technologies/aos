@@ -6,7 +6,14 @@
 //! policy. The closed operator Repair path may durably reserve the session's
 //! own selected request identifier before that exact query is prepared.
 
+pub(super) mod delete_queries;
 mod operator_repair;
+mod storage_preparation_client;
+mod provisioning_io;
+mod create_storage_driver;
+pub(super) use create_storage_driver::{OriginalCreateStorageDriverV1, OriginalCreateStorageDriverClosedV1};
+
+pub(crate) use storage_preparation_client::{OriginalStoragePreparationClientV1, StoragePreparationClientClosedV1};
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerMethod, BrokerRequestEnvelope, InventoryDestinationSlotsRequest,
@@ -33,7 +40,7 @@ use aos_sandbox::lifecycle::{
 use aos_sandbox::mount_attempt::DurableCurrentMountAttemptV1;
 use aos_sandbox::mount_preparation::PreparedCurrentMountCatalogQueryV1;
 use aos_sandbox::{
-    DurableCurrentDestinationSlotAttemptV1, EffectFailure, PreparedAuthorityEffectV1,
+    DurableCurrentDestinationSlotAttemptV1, EffectFailure, Journal, PreparedAuthorityEffectV1,
     SingleNodeEffectExecutor, ValidatedAuthorityEffectReceiptV1,
 };
 use aos_sandbox_core::OperationId;
@@ -240,6 +247,7 @@ macro_rules! domain_inventory_owner {
                     session,
                     pending: None,
                     authority_effects: ControllerAuthorityEffectExchangeV1::default(),
+                    capture_admission: None, capture_admission_construction: None,
                     output_registration: None,
                     capture_candidate: None,
                     #[cfg(feature = "online-nix")]
@@ -510,6 +518,8 @@ pub enum DormantLifecycleInventoryQueryProgressV1 {
 
 struct DormantLifecycleInventorySessionV1 {
     // The selected original's fence must run before the actual Session drops.
+    capture_admission: Option<crate::controller_service::execution_output_storage_capture::OriginalControllerStorageCaptureV3>,
+    capture_admission_construction: Option<Result<(), aos_sandbox::ResourceReservationErrorV1>>,
     capture_candidate: Option<crate::controller_service::capture_candidate_exchange::ControllerStorageCaptureCandidateExchangeV1>,
     session: DormantAuthenticatedBrokerSessionV1,
     pending: Option<DormantLifecycleInventoryQueryRecoveryV1>,
@@ -916,7 +926,9 @@ impl DormantLifecycleInventorySessionV1 {
     // beside the original session prevents another exchange from replacing a
     // failed output attempt after a durable local terminal or postcheck debt.
     fn has_pending_output_registration(&self) -> bool {
-        if self.capture_candidate.is_some() { return true; }
+        if self.capture_candidate.is_some() || self.capture_admission_construction.is_some() {
+            return true;
+        }
         #[cfg(feature = "online-nix")]
         if self.nix_generation.is_some() { return true; }
         self.output_registration.as_ref().is_some_and(|attempt| attempt.has_pending())
@@ -1503,6 +1515,7 @@ impl DormantHostRuntimeInventoryOwnerV1 {
             session,
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
+            capture_admission: None, capture_admission_construction: None,
             output_registration: None,
             capture_candidate: None,
             #[cfg(feature = "online-nix")]
@@ -1729,6 +1742,39 @@ pub(crate) enum DormantAtomicStorageInventoryColdRecoveryV1 {
 }
 
 impl DormantStorageLifecycleInventoryOwnerV1 {
+    pub(crate) fn retire_no_apply_output_inputs_v2(&mut self,
+        completed: &aos_sandbox::controller_execution_operation::ControllerExecutionNoApplyDisposedOriginalV2,
+        disposal: &aos_sandbox::controller_execution_operation::ControllerExecutionPositiveDisposalV1<'_>,
+        execution: aos_sandbox_core::ExecutionId,
+    ) -> Result<(), EffectFailure> {
+        completed.require_resource_disposal_for_execution_v2(disposal, execution)
+            .map_err(|_| output_registration_pending())?;
+        if self.0.pending.is_some() || self.0.authority_effects.has_pending()
+            || self.0.git_coverage.is_some() || self.has_pending_nix_generation()
+            || self.0.capture_candidate.is_some() || self.0.capture_admission.is_some()
+            || self.0.capture_admission_construction.is_some() {
+            return Err(output_registration_pending());
+        }
+        if let Some(original) = &self.0.output_registration {
+            original.require_no_apply_disposable_v2(disposal.operation_v1(), execution)?;
+        }
+        drop(self.0.output_registration.take());
+        Ok(())
+    }
+
+    /// Lends the same live local ControllerStorageClient to the closed pair SDK.
+    /// The remote StorageBroker/F remains independently held by protocol65.
+    pub(super) fn execution_availability_session_v2(&mut self)
+        -> Result<&mut DormantAuthenticatedBrokerSessionV1, aos_sandbox::ResourceReservationErrorV1> {
+        if self.0.pending.is_some() || self.0.authority_effects.has_pending()
+            || self.0.output_registration.is_some() || self.0.git_coverage.is_some()
+            || self.has_pending_nix_generation() || self.0.capture_admission.is_some()
+            || self.0.capture_candidate.is_some() || self.0.capture_admission_construction.is_some() {
+            return Err(aos_sandbox::ResourceReservationErrorV1::Conflict);
+        }
+        Ok(&mut self.0.session)
+    }
+
     /// Resolves a pending original post-group inventory through Method32.
     ///
     /// # Errors
@@ -1983,6 +2029,175 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         self.exclusive_effect_session()
     }
 
+    /// Borrows explicit ongoing admission only after both issuance checks and native C77.
+    pub(crate) fn completed_capture_admission_v4(&self, operation: OperationId,
+        execution: aos_sandbox_core::ExecutionId)
+        -> Option<super::execution_output_storage_capture::AuthenticatedControllerStorageCaptureObservationV4<'_>>
+    {
+        if !matches!(self.0.capture_admission_construction, Some(Ok(()))) { return None; }
+        self.0.capture_admission.as_ref()?.completed_admission_v4(operation, execution)
+    }
+
+    /// Captures actual physical admission on the same logical46/candidate41 Session.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reserve_current_capture_v4<T>(
+        &mut self, controller: &mut Journal,
+        assignment: &aos_sandbox::runtime_scope::CurrentAssignmentTarget,
+        environment: &mut aos_sandbox::environment::EnvironmentProtectedJournalOwnerV1<'_, '_>,
+        parent: &aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1,
+        preissue: &aos_sandbox::controller_execution_preissue::ControllerExecutionPreissueV1,
+        specification: &aos_sandbox::controller_execution_spec_attempt::ControllerExecutionSpecAttemptV1,
+        signer: &super::plan_signer::ControllerBrokerPlanSignerV1,
+        receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+        clock: &mut T,
+    ) -> Result<(), EffectFailure>
+    where T: FnMut() -> Result<aos_sandbox_core::RawPairedClockSample,
+        aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError>
+    {
+        let completed = self.completed_capture_admission_v4(preissue.create_operation(), preissue.execution()).is_some();
+        if completed { return Ok(()); }
+        self.admit_capture_construction_v3(controller, receiving, bank, profile)?;
+        let registration = self.0.output_registration.as_ref().ok_or_else(output_registration_pending)?;
+        let candidate = self.0.capture_candidate.as_ref().and_then(|original| original.observation())
+            .ok_or_else(output_registration_pending)?;
+        let original = self.0.capture_admission.as_mut().ok_or_else(output_registration_pending)?;
+        original.reserve_once_v4(&mut self.0.session, registration, candidate,
+            controller, assignment, environment, parent, preissue, specification, signer,
+            receiving, bank, profile, clock)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn query_original_capture_historical_v4<T>(
+        &mut self, controller: &mut Journal,
+        assignment: &aos_sandbox::runtime_scope::CurrentAssignmentTarget,
+        historical: &aos_sandbox::environment::HistoricalEnvironmentExecutionOwnerV4<'_>,
+        parent: &aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1,
+        preissue: &aos_sandbox::controller_execution_preissue::ControllerExecutionPreissueV1,
+        signer: &super::plan_signer::ControllerBrokerPlanSignerV1,
+        receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+        clock: &mut T,
+    ) -> Result<(), EffectFailure>
+    where T: FnMut() -> Result<aos_sandbox_core::RawPairedClockSample,
+        aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError>
+    {
+        historical.require_historical_binding_v4().map_err(|_| output_registration_pending())?;
+        if self.completed_capture_query_v3(receiving.operation_v1(), preissue.execution()).is_some() {
+            return Ok(());
+        }
+        // Cold recovery never borrows or rebuilds logical46/candidate41 owners.
+        if self.0.output_registration.is_some() || self.0.capture_candidate.is_some() {
+            return Err(output_registration_pending());
+        }
+        self.admit_capture_construction_v3(controller, receiving, bank, profile)?;
+        self.0.capture_admission.as_mut().ok_or_else(output_registration_pending)?.query_original_historical_once_v4(
+            &mut self.0.session, controller, assignment, historical, parent, preissue,
+            signer, receiving, bank, profile, clock)
+    }
+
+    /// Borrows the real signed Query61 only after all its native posts complete.
+    pub(crate) fn completed_capture_query_v3(&self, operation: OperationId,
+        execution: aos_sandbox_core::ExecutionId)
+        -> Option<super::execution_output_storage_capture::AuthenticatedControllerStorageCaptureQueryObservationV3<'_>>
+    {
+        if !matches!(self.0.capture_admission_construction, Some(Ok(()))) { return None; }
+        self.0.capture_admission.as_ref()?.completed_query_v3(operation, execution)
+    }
+
+    fn admit_capture_construction_v3(
+        &mut self, controller: &mut Journal,
+        receiving: &mut aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &aos_sandbox::ControllerResourceBankOpeningV1,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), EffectFailure> {
+        if self.0.pending.is_some() || self.0.authority_effects.has_pending()
+            || self.0.git_coverage.is_some() || self.has_pending_nix_generation()
+            || self.0.capture_admission_construction.is_some() || self.0.capture_admission.is_some()
+        { return Err(output_registration_pending()); }
+        let demand = super::execution_output_storage_capture::OriginalControllerStorageCaptureV3::construction_demand_v3()
+            .ok_or_else(output_registration_pending)?;
+        self.0.capture_admission_construction = Some(receiving.admit_stage_v1(bank, controller, profile,
+            aos_sandbox_broker::controller_receiving::bank_launch::ControllerOperationIntakeDemandDataV1::from_demand_v1(demand)));
+        if !matches!(self.0.capture_admission_construction, Some(Ok(()))) {
+            return Err(output_registration_pending());
+        }
+        self.0.capture_admission = Some(Default::default());
+        Ok(())
+    }
+
+    pub(crate) fn capture_admission_failure_v3(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.capture_admission_construction.as_ref().and_then(|value| value.as_ref().err())
+            .map(|cause| cause as _)
+            .or_else(|| self.0.capture_admission.as_ref().and_then(|original| original.failure_with_session_v3(&self.0.session)))
+    }
+
+    /// Borrows the same completed registration terminal without extracting it.
+    ///
+    /// This read supplies historical signed DATA, never an OUTPUT-ledger head,
+    /// live Storage hold, Ready proof or replacement Session authority.
+    pub(crate) fn completed_registration_outcome_v1(
+        &self, operation: OperationId, execution: aos_sandbox_core::ExecutionId,
+    ) -> Option<(&aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1)>
+    {
+        let original = self.0.output_registration.as_ref()?;
+        if original.failure(&self.0.session).is_some()
+            || original.postcheck_debt(&self.0.session).is_some()
+        {
+            return None;
+        }
+        original.completed_registration_outcome_v1(operation, execution)
+    }
+
+    /// Retires only completed registration DATA during its real outer disposal.
+    pub(crate) fn retire_execution_output_inputs_v1(
+        &mut self,
+        disposal: &aos_sandbox::controller_execution_operation::ControllerExecutionPositiveDisposalV1<'_>,
+        execution: aos_sandbox_core::ExecutionId,
+    ) -> Result<(), EffectFailure> {
+        let operation = disposal.operation_v1();
+        if self.completed_registration_outcome_v1(operation, execution).is_none()
+            || self.0.pending.is_some() || self.0.authority_effects.has_pending()
+            || self.0.git_coverage.is_some() || self.has_pending_nix_generation()
+            || self.0.capture_candidate.as_ref().is_some_and(|candidate|
+                candidate.has_pending() || candidate.failure(&self.0.session).is_some())
+        {
+            return Err(output_registration_pending());
+        }
+        if let Some(capture) = self.0.capture_admission.as_mut() {
+            capture.retire_positive_v3(disposal, execution)?;
+        }
+        self.0.capture_admission = None;
+        self.0.capture_admission_construction = None;
+        if let Some(candidate) = self.0.capture_candidate.as_mut() {
+            candidate.retire_positive_v1(disposal, execution, &self.0.session)?;
+        }
+        self.0.capture_candidate = None;
+        self.0.output_registration = None;
+        Ok(())
+    }
+
+    /// Retires only a completed query during its actual Source/C disposal.
+    pub(crate) fn retire_execution_capture_query_v4(
+        &mut self,
+        disposal: &aos_sandbox::controller_execution_operation::ControllerExecutionPositiveDisposalV1<'_>,
+        execution: aos_sandbox_core::ExecutionId,
+    ) -> Result<(), EffectFailure> {
+        if self.completed_capture_query_v3(disposal.operation_v1(), execution).is_none()
+            || self.0.output_registration.is_some() || self.0.capture_candidate.is_some()
+            || self.0.pending.is_some() || self.0.authority_effects.has_pending()
+            || self.0.git_coverage.is_some() || self.has_pending_nix_generation()
+        { return Err(output_registration_pending()); }
+        self.0.capture_admission.as_mut().ok_or_else(output_registration_pending)?
+            .retire_positive_v3(disposal, execution)?;
+        drop(self.0.capture_admission.take());
+        self.0.capture_admission_construction = None;
+        Ok(())
+    }
+
     /// Lends disjoint request custody and the same original Storage session.
     ///
     /// This excludes inventory and other authority effects but grants no
@@ -1996,7 +2211,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         if self.0.pending.is_some() || self.0.authority_effects.has_pending()
             || self.0.git_coverage.is_some()
             || self.has_pending_nix_generation()
-            || self.0.capture_candidate.is_some()
+            || self.0.capture_candidate.is_some() || self.0.capture_admission_construction.is_some()
         {
             return Err(EffectFailure::Retryable(
                 "Storage session retains another exact exchange".to_owned(),
@@ -2022,6 +2237,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         {
             return Err(output_registration_pending());
         }
+        if self.0.capture_admission_construction.is_some() { return Err(output_registration_pending()); }
         let registration = self.0.output_registration.as_ref().ok_or_else(output_registration_pending)?;
         if registration.has_pending() { return Err(output_registration_pending()); }
         Ok((registration, &mut self.0.capture_candidate, &mut self.0.session))
@@ -2048,7 +2264,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     }
 
     fn require_no_capture_candidate(&self) -> Result<(), EffectFailure> {
-        if self.0.capture_candidate.is_some() {
+        if self.0.capture_candidate.is_some() || self.0.capture_admission_construction.is_some() {
             return Err(EffectFailure::Permanent("Storage retains its original capture query".to_owned()));
         }
         Ok(())
@@ -2062,7 +2278,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         // The shared inner gate also blocks unrelated work after a completed
         // candidate. The reconnect coordinator distinguishes that retained
         // success from an unfinished/failed registration or candidate.
-        self.has_pending_nix_generation()
+        self.has_pending_nix_generation() || self.0.capture_admission_construction.is_some()
             || self.0.output_registration.as_ref().is_some_and(|attempt| attempt.has_pending())
     }
 
@@ -2083,7 +2299,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     ), EffectFailure> {
         if self.0.pending.is_some() || self.0.authority_effects.has_pending()
             || self.0.output_registration.is_some() || self.0.git_coverage.is_some()
-            || self.0.capture_candidate.is_some()
+            || self.0.capture_candidate.is_some() || self.0.capture_admission_construction.is_some()
         {
             return Err(EffectFailure::Permanent("Storage original Session is occupied".to_owned()));
         }
@@ -2126,7 +2342,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             || self.0.output_registration.is_some()
             || self.0.git_coverage.is_some()
             || self.has_pending_nix_generation()
-            || self.0.capture_candidate.is_some()
+            || self.0.capture_candidate.is_some() || self.0.capture_admission_construction.is_some()
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
@@ -2628,6 +2844,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             session,
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
+            capture_admission: None, capture_admission_construction: None,
             output_registration: None,
             capture_candidate: None,
             #[cfg(feature = "online-nix")]
@@ -2855,3 +3072,6 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         ))
     }
 }
+
+#[cfg(target_os = "linux")]
+mod maintenance;

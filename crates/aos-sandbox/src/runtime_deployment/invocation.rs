@@ -18,9 +18,10 @@ use aos_sandbox_linux::cgroup::{CgroupPopulationMonitor, CgroupPopulationState};
 use aos_sandbox_linux::pidfd::PidFd;
 
 use super::{
-    ProductionRuntimeDeploymentStartupV1, RuntimeDeploymentComparisonErrorV1,
+    RuntimeDeploymentComparisonErrorV1,
     RuntimeDeploymentComparisonOriginsV1, RuntimeDeploymentStartupErrorV1,
 };
+use super::startup_original::PublisherStartupOriginalRefV3;
 
 /// Reports a physical-invocation refusal with its first retained typed cause.
 ///
@@ -46,6 +47,8 @@ impl Error for HostPhysicalInvocationErrorV1 {
 enum InvocationFailureV1 {
     #[error("deployment original startup differs")]
     Startup(#[source] RuntimeDeploymentStartupErrorV1),
+    #[error("deployment original normal Source startup differs")]
+    BootStartup(#[source] super::RuntimeBootPreparationStartupClosedV1),
     #[error("deployment original genesis custody differs")]
     Origins(#[source] RuntimeDeploymentComparisonErrorV1),
     #[error("deployment original population monitor failed")]
@@ -246,7 +249,7 @@ pub struct HostPhysicalInvocationLeaseV1<'origin, 'startup> {
     // Field drop order fences the shared original before releasing the monitor.
     claim: InvocationClaimV1<'origin>,
     origins: &'origin RuntimeDeploymentComparisonOriginsV1<'startup>,
-    startup: &'origin ProductionRuntimeDeploymentStartupV1,
+    startup: PublisherStartupOriginalRefV3<'startup>,
     population: CgroupPopulationMonitor,
 }
 
@@ -255,12 +258,15 @@ impl<'origin, 'startup> HostPhysicalInvocationLeaseV1<'origin, 'startup> {
         origins: &'origin RuntimeDeploymentComparisonOriginsV1<'startup>,
     ) -> Result<Self, HostPhysicalInvocationErrorV1> {
         let startup = origins.host_physical_invocation_startup();
-        let mut claim = startup.host_physical_invocation_state().claim()?;
+        let mut claim = startup.physical_invocation_state().claim()?;
         let result = (|| {
             recheck_originals(origins, startup)?;
-            let population = startup
-                .retain_host_invocation_population()
-                .map_err(InvocationFailureV1::Population)?;
+            let population = match startup {
+                PublisherStartupOriginalRefV3::Existing(original) => original
+                    .retain_host_invocation_population().map_err(InvocationFailureV1::Population)?,
+                PublisherStartupOriginalRefV3::Boot(original) => original
+                    .retain_population_v1().map_err(InvocationFailureV1::BootStartup)?,
+            };
             require_populated(&population)?;
             recheck_originals(origins, startup)?;
             require_populated(&population)?;
@@ -317,7 +323,12 @@ impl<'origin, 'startup> HostPhysicalInvocationLeaseV1<'origin, 'startup> {
         let result = (|| {
             recheck_originals(origins, startup)?;
             require_populated(population)?;
-            startup.require_child(child).map_err(InvocationFailureV1::Startup)?;
+            match startup {
+                PublisherStartupOriginalRefV3::Existing(original) => original
+                    .require_child(child).map_err(InvocationFailureV1::Startup)?,
+                PublisherStartupOriginalRefV3::Boot(original) => original
+                    .require_child_v1(child).map_err(InvocationFailureV1::BootStartup)?,
+            }
             recheck_originals(origins, startup)?;
             require_populated(population)
         })();
@@ -327,11 +338,16 @@ impl<'origin, 'startup> HostPhysicalInvocationLeaseV1<'origin, 'startup> {
 
 fn recheck_originals(
     origins: &RuntimeDeploymentComparisonOriginsV1<'_>,
-    startup: &ProductionRuntimeDeploymentStartupV1,
+    startup: PublisherStartupOriginalRefV3<'_>,
 ) -> Result<(), InvocationFailureV1> {
     // Preserve the actual startup cause before the existing genesis engine's
     // narrower provisioning error; reuse both engines rather than reparse.
-    startup.recheck().map_err(InvocationFailureV1::Startup)?;
+    match startup {
+        PublisherStartupOriginalRefV3::Existing(original) => original
+            .recheck().map_err(InvocationFailureV1::Startup)?,
+        PublisherStartupOriginalRefV3::Boot(original) => original
+            .require_current_v1().map_err(InvocationFailureV1::BootStartup)?,
+    }
     origins.recheck().map_err(InvocationFailureV1::Origins)
 }
 

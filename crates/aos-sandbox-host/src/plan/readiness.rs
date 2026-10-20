@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_protocol::runtime_deployment::readiness_preparation::BackendReadinessPreparationDataV1 as BackendReadinessArtifact;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_systemd::{OwnedValue, PayloadRootContinuityPolicyV1, SystemdClient};
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
@@ -22,14 +23,21 @@ use super::{NspawnExecutableSnapshot, nspawn_executable_snapshot, validate_fixed
 use crate::{HostError, Result};
 
 mod live_supervisor;
+mod watermark_original;
+pub(in crate::plan) use watermark_original::{ReadinessWatermarkClosedV2, ReadinessWatermarkOriginalV2};
+pub(in crate::plan) mod component_original;
+pub(in crate::plan) mod boot_preparation_original;
+
+pub(crate) fn supervisor_policy_properties_v2() -> &'static [&'static str] {
+    live_supervisor::supervisor_policy_properties_v2()
+}
 
 pub use live_supervisor::VerifiedLiveSupervisorPolicyV1;
 
 const READINESS_CREDENTIAL_FILE: &str = "backend-readiness.json";
-const READINESS_SCHEMA: &str = "aos.sandbox.host-backend-readiness.v1";
-const MAXIMUM_READINESS_BYTES: usize = 16 * 1024;
+const READINESS_SCHEMA: &str = aos_sandbox_protocol::runtime_deployment::readiness_preparation::BACKEND_READINESS_PREPARATION_SCHEMA_V1;
+const MAXIMUM_READINESS_BYTES: usize = aos_sandbox_protocol::runtime_deployment::readiness_preparation::MAXIMUM_BACKEND_READINESS_PREPARATION_BYTES_V1;
 const READINESS_WATERMARK_FILE: &str = "backend-readiness-watermark.json";
-const READINESS_WATERMARK_NEXT: &str = "backend-readiness-watermark.next";
 const READINESS_WATERMARK_SCHEMA: &str = "aos.sandbox.host-backend-readiness-watermark.v1";
 const MAXIMUM_WATERMARK_BYTES: usize = 4096;
 const MAXIMUM_NSPAWN_EXECUTABLE_BYTES: i64 = 256 * 1024 * 1024;
@@ -38,14 +46,14 @@ const BACKEND_POLICY_ARTIFACT_BYTES: usize = 9 + 65 * 4;
 const BACKEND_POLICY_MAGIC: &[u8; 9] = b"AOSBPA02\n";
 const PAYLOAD_FILTER_SOURCE: &str = "share/aos/nspawn-seccomp-source-v1";
 const MAXIMUM_PAYLOAD_FILTER_SOURCE_BYTES: usize = 256 * 1024;
-const EXECUTABLE_HASH_BUFFER_BYTES: usize = 64 * 1024;
+const EXECUTABLE_HASH_BUFFER_BYTES: usize = aos_sandbox_linux::protected_file::positional_hash::POSITIONAL_HASH_BUFFER_BYTES_V2;
 const READINESS_BINDING_DOMAIN: &[u8] = b"aos.sandbox.host-readiness-binding.v1\0";
 
 #[derive(Clone, Copy)]
 enum Pid1PackageOriginV1<'owner> {
     ExecutedManager,
     OriginalHostLaunch(&'owner super::deployment::canary::HostCanaryStartupV1),
-    OriginalHostControl(&'owner super::deployment::control::HostComponentControlStartupV2),
+    ComponentPinned(BorrowedFd<'owner>),
 }
 
 /// Measures the fixed packaged nspawn executable against its policy artifact.
@@ -59,16 +67,9 @@ enum Pid1PackageOriginV1<'owner> {
 /// Rejects a foreign path, malformed artifact, invalid executable, metadata
 /// drift during hashing, or a digest different from the package declaration.
 pub fn verified_packaged_nspawn_digest(path: &str) -> Result<[u8; 32]> {
-    validate_fixed_nspawn_path(path)?;
-    let declared = read_backend_policy_artifact(path)?.nspawn_digest;
-    let pin = super::open_executable_pin(path)?;
-    let (_, actual) = snapshot_and_hash_executable(pin.as_fd())?;
-    if actual != declared {
-        return Err(HostError::State(
-            "packaged nspawn digest differs from the live executable".to_owned(),
-        ));
-    }
-    Ok(actual)
+    let mut original = component_original::PackagedNspawnOriginalV2::new();
+    let _closed = original.observe_once_v2(path);
+    original.into_ordinary_result_v2()
 }
 
 /// Proves that the exact node-local nspawn backend passed all executable gates.
@@ -93,6 +94,12 @@ impl BackendReadiness {
     }
 
     pub(super) fn revalidate_for_nspawn(&self) -> Result<()> {
+        self.revalidate_for_nspawn_engine_v2(None)
+    }
+
+    pub(super) fn revalidate_for_nspawn_engine_v2(
+        &self, mut original: Option<&mut NspawnRevalidationOriginalV2>,
+    ) -> Result<()> {
         validate_fixed_nspawn_path(&self.binding.executable_path)?;
         if self.mac_policy_digest == [0; 32]
             || self.supervisor_profile_digest == [0; 32]
@@ -103,9 +110,13 @@ impl BackendReadiness {
             ));
         }
 
-        let current_boot_id = current_boot_id()?;
-        self.binding
-            .revalidate(current_boot_id)
+        let current_boot_id = match original.as_deref_mut() {
+            Some(original) => original.boot.observe_once()
+                .map(|boot| boot.into_bytes())
+                .map_err(|_| HostError::State("nspawn retained boot identity failed".to_owned()))?,
+            None => current_boot_id()?,
+        };
+        self.binding.revalidate_engine_v2(current_boot_id, original)
             .map_err(|error| HostError::InvalidPlan(error.to_string()))
     }
 
@@ -196,17 +207,6 @@ impl VerifiedPackagedRuntimeV1 {
         ).await
     }
 
-    pub(super) async fn verify_control_pid1_service(
-        &self,
-        evidence: &ProtectedBackendReadinessEvidence,
-        systemd: &SystemdClient,
-        original: &super::deployment::control::HostComponentControlStartupV2,
-    ) -> Result<()> {
-        self.verify_live_pid1_service_origin(
-            evidence, systemd, Pid1PackageOriginV1::OriginalHostControl(original),
-        ).await
-    }
-
     async fn verify_live_pid1_service_origin(
         &self,
         evidence: &ProtectedBackendReadinessEvidence,
@@ -252,20 +252,16 @@ impl VerifiedPackagedRuntimeV1 {
         self.revalidate_origin(evidence, Pid1PackageOriginV1::OriginalHostLaunch(original))
     }
 
-    pub(super) fn revalidate_control(
-        &self,
-        evidence: &ProtectedBackendReadinessEvidence,
-        original: &super::deployment::control::HostComponentControlStartupV2,
-    ) -> Result<()> {
-        self.revalidate_origin(evidence, Pid1PackageOriginV1::OriginalHostControl(original))
-    }
-
     fn revalidate_origin(
         &self,
         evidence: &ProtectedBackendReadinessEvidence,
         origin: Pid1PackageOriginV1<'_>,
     ) -> Result<()> {
         let current = evidence.verify_packaged_runtime_origin(origin)?;
+        self.require_same_observed_v2(&current)
+    }
+
+    pub(in crate::plan) fn require_same_observed_v2(&self, current: &Self) -> Result<()> {
         if current.binding_identity != self.binding_identity
             || current.pid1_snapshot != self.pid1_snapshot
             || current.pid1_digest != self.pid1_digest
@@ -280,7 +276,7 @@ impl VerifiedPackagedRuntimeV1 {
     }
 }
 
-fn verify_host_service_hardening(values: &[OwnedValue]) -> Result<()> {
+pub(in crate::plan) fn verify_host_service_hardening(values: &[OwnedValue]) -> Result<()> {
     let [
         no_new_privileges,
         private_devices,
@@ -316,26 +312,6 @@ struct BackendPolicyArtifactV2 {
     nspawn_digest: [u8; 32],
     policy_digest: [u8; 32],
     payload_filter_digest: [u8; 32],
-}
-
-fn read_backend_policy_artifact(nspawn_path: &str) -> Result<BackendPolicyArtifactV2> {
-    let package_root = Path::new(nspawn_path)
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| HostError::State("nspawn package root is invalid".to_owned()))?;
-    let artifact_path = package_root.join(BACKEND_POLICY_ARTIFACT);
-    let descriptor = open(
-        &artifact_path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map_err(|error| HostError::State(error.to_string()))?;
-    let bytes = read_protected_descriptor(
-        descriptor,
-        BACKEND_POLICY_ARTIFACT,
-        BACKEND_POLICY_ARTIFACT_BYTES,
-    )?;
-    parse_backend_policy_artifact(&bytes)
 }
 
 fn parse_backend_policy_artifact(bytes: &[u8]) -> Result<BackendPolicyArtifactV2> {
@@ -410,6 +386,7 @@ struct UntrustedPhase0ClaimsV1 {
 }
 
 impl ReadinessBindingV1 {
+    #[cfg(test)]
     fn new(
         publisher_generation: NonZeroU64,
         boot_id: [u8; 16],
@@ -441,6 +418,11 @@ impl ReadinessBindingV1 {
     }
 
     pub(super) fn revalidate(&self, current_boot_id: [u8; 16]) -> Result<()> {
+        self.revalidate_engine_v2(current_boot_id, None)
+    }
+
+    fn revalidate_engine_v2(&self, current_boot_id: [u8; 16],
+        original: Option<&mut NspawnRevalidationOriginalV2>) -> Result<()> {
         if current_boot_id != self.boot_id
             || self.artifact_sha256 == [0; 32]
             || self.executable_sha256 == [0; 32]
@@ -459,7 +441,7 @@ impl ReadinessBindingV1 {
         }
 
         let (current_snapshot, current_sha256) =
-            snapshot_and_hash_executable(self.executable_pin.as_fd())?;
+            snapshot_and_hash_executable_engine_v2(self.executable_pin.as_fd(), |_| {}, original)?;
         if current_snapshot != self.executable_snapshot || current_sha256 != self.executable_sha256
         {
             return Err(HostError::State(
@@ -470,7 +452,37 @@ impl ReadinessBindingV1 {
     }
 }
 
+enum PhysicalBackendOriginV2<'owner> {
+    Canary(&'owner super::HostCanaryStartupV1),
+    Component([u8; 32]),
+}
+
+impl PhysicalBackendOriginV2<'_> {
+    fn mac_policy_digest(self) -> Result<[u8; 32]> {
+        match self {
+            Self::Canary(startup) => startup.original_policy_digest(),
+            Self::Component(digest) if digest != [0; 32] => Ok(digest),
+            Self::Component(_) => Err(HostError::State(
+                "component backend MAC provenance is absent".to_owned(),
+            )),
+        }
+    }
+}
+
 impl ProtectedBackendReadinessEvidence {
+    pub(in crate::plan) fn revalidate_preparation_v2(
+        &self,
+        mut original: Option<&mut NspawnRevalidationOriginalV2>,
+    ) -> Result<()> {
+        let boot = match original.as_deref_mut() {
+            Some(original) => original.boot.observe_once()
+                .map(|boot| boot.into_bytes())
+                .map_err(|_| HostError::State("component backend boot observation failed".to_owned()))?,
+            None => current_boot_id()?,
+        };
+        self.binding.revalidate_engine_v2(boot, original)
+    }
+
     pub(in crate::plan) fn complete_original_canary(
         &self,
         packaged: &VerifiedPackagedRuntimeV1,
@@ -481,6 +493,32 @@ impl ProtectedBackendReadinessEvidence {
     ) -> Result<BackendReadiness> {
         packaged.revalidate_canary(self, startup)?;
         let proof = readback.verified()?;
+        self.complete_physical_payload_origin_v2(
+            packaged, live, payload, proof, PhysicalBackendOriginV2::Canary(startup),
+        )
+    }
+
+    pub(in crate::plan) fn complete_component_physical_payload_v2(
+        &self,
+        packaged: &VerifiedPackagedRuntimeV1,
+        live: &VerifiedLiveSupervisorPolicyV1,
+        payload: &super::PreparedLaunch,
+        proof: &crate::worker::BoundPayloadVerification,
+        mac_policy_digest: [u8; 32],
+    ) -> Result<BackendReadiness> {
+        self.complete_physical_payload_origin_v2(
+            packaged, live, payload, proof, PhysicalBackendOriginV2::Component(mac_policy_digest),
+        )
+    }
+
+    fn complete_physical_payload_origin_v2(
+        &self,
+        packaged: &VerifiedPackagedRuntimeV1,
+        live: &VerifiedLiveSupervisorPolicyV1,
+        payload: &super::PreparedLaunch,
+        proof: &crate::worker::BoundPayloadVerification,
+        origin: PhysicalBackendOriginV2<'_>,
+    ) -> Result<BackendReadiness> {
         if proof.binding != payload.spec().launch_binding()
             || proof.binding.is_none() || proof.invocation_id == [0; 16]
             || proof.proof.host_boot_id != self.binding.boot_id
@@ -504,7 +542,7 @@ impl ProtectedBackendReadinessEvidence {
         };
         Ok(BackendReadiness {
             binding,
-            mac_policy_digest: startup.original_policy_digest()?,
+            mac_policy_digest: origin.mac_policy_digest()?,
             supervisor_profile_digest: payload.spec().payload_root_continuity_policy().digest(),
             payload_filter_digest: packaged.payload_filter_digest,
         })
@@ -559,28 +597,11 @@ impl ProtectedBackendReadinessEvidence {
         state_directory: impl AsRef<Path>,
         expected_executable: &str,
     ) -> Result<Option<Self>> {
-        validate_fixed_nspawn_path(expected_executable)?;
-        let Some(artifact_bytes) = read_protected_artifact_optional(credential_directory.as_ref())?
-        else {
-            return Ok(None);
-        };
-        let artifact_digest: [u8; 32] = Sha256::digest(&artifact_bytes).into();
-        let wire: BackendReadinessArtifact = serde_json::from_slice(&artifact_bytes)
-            .map_err(|_| HostError::State("backend readiness artifact is malformed".to_owned()))?;
-        let current_boot_id = current_boot_id()?;
-        let evidence =
-            verify_readiness(wire, current_boot_id, artifact_digest, expected_executable)?;
-
-        persist_readiness_watermark(
-            state_directory.as_ref(),
-            ReadinessWatermark {
-                schema: READINESS_WATERMARK_SCHEMA.to_owned(),
-                publisher_generation: evidence.binding.publisher_generation.get(),
-                boot_id: evidence.binding.boot_id,
-                artifact_sha256: artifact_digest,
-            },
-        )?;
-        Ok(Some(evidence))
+        let mut original = component_original::ReadinessLoadOriginalV2::new();
+        let _closed = original.load_once_v2(
+            credential_directory.as_ref(), state_directory.as_ref(), expected_executable,
+        );
+        original.into_ordinary_result_v2()
     }
 
     /// Returns the monotonic publisher generation accepted at startup.
@@ -632,88 +653,13 @@ impl ProtectedBackendReadinessEvidence {
         self.verify_packaged_runtime_origin(Pid1PackageOriginV1::OriginalHostLaunch(original))
     }
 
-    pub(super) fn verify_control_packaged_runtime(
-        &self,
-        original: &super::deployment::control::HostComponentControlStartupV2,
-    ) -> Result<VerifiedPackagedRuntimeV1> {
-        self.verify_packaged_runtime_origin(Pid1PackageOriginV1::OriginalHostControl(original))
-    }
-
     fn verify_packaged_runtime_origin(
         &self,
         origin: Pid1PackageOriginV1<'_>,
     ) -> Result<VerifiedPackagedRuntimeV1> {
-        let policy = PayloadRootContinuityPolicyV1::fixed();
-        let compiler = self.verify_compiled_supervisor_profile(policy)?;
-        let artifact = read_backend_policy_artifact(&self.binding.executable_path)?;
-        let package_root = Path::new(&self.binding.executable_path)
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| HostError::State("nspawn package root is invalid".to_owned()))?;
-        let source = open(
-            package_root.join(PAYLOAD_FILTER_SOURCE),
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-            Mode::empty(),
-        )
-        .map_err(|error| HostError::State(format!("packaged payload filter is absent: {error}")))?;
-        let payload_filter_source = read_protected_descriptor(
-            source,
-            PAYLOAD_FILTER_SOURCE,
-            MAXIMUM_PAYLOAD_FILTER_SOURCE_BYTES,
-        )?;
-        let payload_filter_digest = verify_packaged_filter_source(
-            &payload_filter_source,
-            artifact.payload_filter_digest,
-            self.claims.payload_filter_digest,
-        )?;
-        if artifact.nspawn_digest != self.binding.executable_sha256
-            || artifact.policy_digest != compiler.policy_digest
-        {
-            return Err(HostError::State(
-                "packaged backend policy differs from protected readiness".to_owned(),
-            ));
-        }
-
-        let current = match origin {
-            Pid1PackageOriginV1::ExecutedManager => Some(open(
-                "/proc/1/exe",
-                OFlags::RDONLY | OFlags::CLOEXEC,
-                Mode::empty(),
-            ).map_err(|error| HostError::State(error.to_string()))?),
-            Pid1PackageOriginV1::OriginalHostLaunch(_) => None,
-            Pid1PackageOriginV1::OriginalHostControl(_) => None,
-        };
-        let pid1 = match origin {
-            Pid1PackageOriginV1::ExecutedManager => current.as_ref()
-                .ok_or_else(|| HostError::State("PID 1 descriptor is absent".to_owned()))?
-                .as_fd(),
-            Pid1PackageOriginV1::OriginalHostLaunch(original) => original.pid1_original()?,
-            Pid1PackageOriginV1::OriginalHostControl(original) => original.pid1_original()?,
-        };
-        let pid1_stat = fstat(pid1).map_err(|error| HostError::State(error.to_string()))?;
-        if FileType::from_raw_mode(pid1_stat.st_mode) != FileType::RegularFile
-            || pid1_stat.st_uid != 0
-            || pid1_stat.st_mode & 0o022 != 0
-        {
-            return Err(HostError::State(
-                "live PID 1 executable is not a protected binary".to_owned(),
-            ));
-        }
-        let (pid1_snapshot, pid1_digest) = snapshot_and_hash_executable(pid1.as_fd())?;
-        if pid1_digest != artifact.pid1_digest {
-            return Err(HostError::State(
-                "live PID 1 differs from the packaged backend policy".to_owned(),
-            ));
-        }
-        self.binding.revalidate(current_boot_id()?)?;
-
-        Ok(VerifiedPackagedRuntimeV1 {
-            binding_identity: compiler.binding_identity,
-            pid1_snapshot,
-            pid1_digest,
-            policy_digest: compiler.policy_digest,
-            payload_filter_digest,
-        })
+        let mut original = component_original::PackagedRuntimeOriginalV2::new();
+        let _closed = original.capture_once_v2(self, origin);
+        original.into_ordinary_result_v2()
     }
 
     /// Returns the current blockers which keep phase-0 evidence from authorizing launch.
@@ -760,19 +706,6 @@ fn verify_packaged_filter_source(
     Ok(actual)
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BackendReadinessArtifact {
-    schema: String,
-    publisher_generation: u64,
-    boot_id: [u8; 16],
-    nspawn_store_path: String,
-    nspawn_device: u64,
-    nspawn_inode: u64,
-    probe_digest: [u8; 32],
-    supervisor_profile_digest: [u8; 32],
-    payload_filter_digest: [u8; 32],
-}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -783,22 +716,7 @@ struct ReadinessWatermark {
     artifact_sha256: [u8; 32],
 }
 
-fn verify_readiness(
-    artifact: BackendReadinessArtifact,
-    current_boot_id: [u8; 16],
-    artifact_sha256: [u8; 32],
-    expected_executable: &str,
-) -> Result<ProtectedBackendReadinessEvidence> {
-    let executable_pin = super::open_executable_pin(expected_executable)?;
-    verify_readiness_with_pin(
-        artifact,
-        current_boot_id,
-        artifact_sha256,
-        expected_executable,
-        executable_pin,
-    )
-}
-
+#[cfg(test)]
 fn verify_readiness_with_pin(
     artifact: BackendReadinessArtifact,
     current_boot_id: [u8; 16],
@@ -806,7 +724,21 @@ fn verify_readiness_with_pin(
     expected_executable: &str,
     executable_pin: OwnedFd,
 ) -> Result<ProtectedBackendReadinessEvidence> {
-    let Some(publisher_generation) = NonZeroU64::new(artifact.publisher_generation) else {
+    validate_readiness_fields_v2(&artifact, current_boot_id, artifact_sha256, expected_executable)?;
+    let measured = snapshot_and_hash_executable(executable_pin.as_fd())?;
+    let parts = readiness_measurement_parts_v2(
+        &artifact, current_boot_id, artifact_sha256, expected_executable, measured,
+    )?;
+    Ok(readiness_from_verified_parts_v2(artifact, artifact_sha256, executable_pin, measured, parts))
+}
+
+fn validate_readiness_fields_v2(
+    artifact: &BackendReadinessArtifact,
+    current_boot_id: [u8; 16],
+    artifact_sha256: [u8; 32],
+    expected_executable: &str,
+) -> Result<()> {
+    let Some(_) = NonZeroU64::new(artifact.publisher_generation) else {
         return Err(HostError::State(
             "backend readiness artifact contradicts required deployment evidence".to_owned(),
         ));
@@ -827,8 +759,17 @@ fn verify_readiness_with_pin(
         ));
     }
 
-    let (executable_snapshot, executable_sha256) =
-        snapshot_and_hash_executable(executable_pin.as_fd())?;
+    Ok(())
+}
+
+fn readiness_measurement_parts_v2(
+    artifact: &BackendReadinessArtifact,
+    current_boot_id: [u8; 16],
+    artifact_sha256: [u8; 32],
+    expected_executable: &str,
+    (executable_snapshot, executable_sha256): (NspawnExecutableSnapshot, [u8; 32]),
+) -> Result<(NonZeroU64, ReadinessBindingIdentityV1)> {
+    validate_readiness_fields_v2(artifact, current_boot_id, artifact_sha256, expected_executable)?;
     if executable_snapshot.device != artifact.nspawn_device
         || executable_snapshot.inode != artifact.nspawn_inode
     {
@@ -837,29 +778,89 @@ fn verify_readiness_with_pin(
         ));
     }
 
-    let binding = ReadinessBindingV1::new(
+    let publisher_generation = NonZeroU64::new(artifact.publisher_generation)
+        .ok_or(HostError::Fence("verified readiness publisher generation disappeared"))?;
+    let identity = readiness_binding_identity(
         publisher_generation,
         artifact.boot_id,
         artifact_sha256,
-        artifact.nspawn_store_path,
-        executable_pin,
+        &artifact.nspawn_store_path,
         executable_snapshot,
         executable_sha256,
     )?;
-    Ok(ProtectedBackendReadinessEvidence {
-        binding,
+    Ok((publisher_generation, identity))
+}
+
+fn readiness_from_verified_parts_v2(
+    artifact: BackendReadinessArtifact,
+    artifact_sha256: [u8; 32],
+    executable_pin: OwnedFd,
+    (executable_snapshot, executable_sha256): (NspawnExecutableSnapshot, [u8; 32]),
+    (publisher_generation, identity): (NonZeroU64, ReadinessBindingIdentityV1),
+) -> ProtectedBackendReadinessEvidence {
+    ProtectedBackendReadinessEvidence {
+        binding: ReadinessBindingV1 {
+            publisher_generation,
+            boot_id: artifact.boot_id,
+            artifact_sha256,
+            executable_path: artifact.nspawn_store_path,
+            executable_pin: Arc::new(executable_pin),
+            executable_snapshot,
+            executable_sha256,
+            identity,
+        },
         claims: UntrustedPhase0ClaimsV1 {
             probe_digest: artifact.probe_digest,
             supervisor_profile_digest: artifact.supervisor_profile_digest,
             payload_filter_digest: artifact.payload_filter_digest,
         },
-    })
+    }
 }
 
 fn current_boot_id() -> Result<[u8; 16]> {
     KernelBootId::current()
         .map(KernelBootId::into_bytes)
         .map_err(|error| HostError::State(error.to_string()))
+}
+
+
+pub(super) struct NspawnRevalidationOriginalV2 {
+    pub(super) boot: aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1,
+    pub(super) metadata: [Option<std::result::Result<rustix::fs::Stat, rustix::io::Errno>>; 2],
+    read_error: Option<rustix::io::Errno>,
+    hash: aos_sandbox_linux::protected_file::positional_hash::PositionalHashOriginalV2,
+}
+
+impl NspawnRevalidationOriginalV2 {
+    // The sole positional hash loop requests exactly the bounded extent. It
+    // does not issue the separate EOF byte used by packaged executable probes.
+    pub(super) const fn maximum_requested_read_bytes_v2() -> u64 {
+        MAXIMUM_NSPAWN_EXECUTABLE_BYTES as u64
+    }
+
+    pub(super) fn new() -> Self {
+        Self { boot: aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::new(),
+            metadata: std::array::from_fn(|_| None), read_error: None,
+            hash: aos_sandbox_linux::protected_file::positional_hash::PositionalHashOriginalV2::new() }
+    }
+
+    pub(super) fn requested_bytes_v2() -> Option<usize> {
+        // The same lower positional reader retains its actual fixed buffer.
+        // There is no whole executable allocation or second hash engine.
+        std::mem::size_of::<Self>().checked_mul(2)?
+            .checked_add(aos_sandbox_linux::protected_file::positional_hash::PositionalHashOriginalV2::receiving_bytes_v2()?)?
+            .checked_add(aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?)
+    }
+
+    pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.boot.failure()
+            .or_else(|| self.metadata[0].as_ref()?.as_ref().err().map(|cause| cause as _))
+            .or_else(|| self.hash.failure().map(|cause| match cause {
+                aos_sandbox_linux::protected_file::positional_hash::PositionalHashFailureV2::Read(error) => error as _,
+                _ => cause as _,
+            }))
+            .or_else(|| self.metadata[1].as_ref()?.as_ref().err().map(|cause| cause as _))
+    }
 }
 
 pub(super) fn snapshot_and_hash_executable(
@@ -875,7 +876,20 @@ fn snapshot_and_hash_executable_with_progress<F>(
 where
     F: FnMut(u64),
 {
-    let before = nspawn_executable_snapshot(descriptor)?;
+    snapshot_and_hash_executable_engine_v2(descriptor, after_chunk, None)
+}
+
+fn snapshot_and_hash_executable_engine_v2<F>(
+    descriptor: BorrowedFd<'_>, mut after_chunk: F,
+    mut original: Option<&mut NspawnRevalidationOriginalV2>,
+) -> Result<(NspawnExecutableSnapshot, [u8; 32])>
+where F: FnMut(u64),
+{
+    if original.as_ref().is_some_and(|original| original.metadata[0].is_some()) {
+        return Err(HostError::State("backend readiness executable hash is already entered".to_owned()));
+    }
+    let before = super::nspawn_executable_snapshot_engine_v2(descriptor,
+        original.as_deref_mut().map(|original| &mut original.metadata[0]))?;
     if !(1..=MAXIMUM_NSPAWN_EXECUTABLE_BYTES).contains(&before.bytes) {
         return Err(HostError::State(
             "backend readiness executable has an invalid size".to_owned(),
@@ -885,42 +899,39 @@ where
     let expected_bytes = u64::try_from(before.bytes).map_err(|_| {
         HostError::State("backend readiness executable has an invalid size".to_owned())
     })?;
-    let mut hash = Sha256::new();
-    let mut offset = 0_u64;
-    let mut buffer = [0_u8; EXECUTABLE_HASH_BUFFER_BYTES];
-    while offset < expected_bytes {
-        let remaining = expected_bytes - offset;
-        let limit = usize::try_from(remaining)
-            .map_err(|_| HostError::State("backend readiness executable is oversized".to_owned()))?
-            .min(buffer.len());
-        let read = rustix::io::pread(descriptor, &mut buffer[..limit], offset)
-            .map_err(|error| HostError::State(error.to_string()))?;
-        if read == 0 {
-            return Err(HostError::State(
-                "backend readiness executable ended while being hashed".to_owned(),
-            ));
-        }
+    use aos_sandbox_linux::protected_file::positional_hash::{
+        PositionalHashFailureV2, PositionalHashOriginalV2,
+    };
+    let mut local = PositionalHashOriginalV2::new();
+    let destination = match original.as_deref_mut() {
+        Some(original) => &mut original.hash,
+        None => &mut local,
+    };
+    let digest = destination.hash_once_v2(descriptor, expected_bytes, after_chunk);
+    let cause = match destination.failure() {
+        Some(PositionalHashFailureV2::Read(error)) => Some(HostError::State(error.to_string())),
+        Some(PositionalHashFailureV2::EarlyEnd) => Some(HostError::State(
+            "backend readiness executable ended while being hashed".to_owned(),
+        )),
+        Some(PositionalHashFailureV2::Extent) => Some(HostError::State(
+            "backend readiness executable is oversized".to_owned(),
+        )),
+        None => None,
+    };
+    let native = destination.native_errno_v2();
+    if let Some(original) = original.as_deref_mut() { original.read_error = native; }
+    let digest = digest.map_err(|_| cause.unwrap_or_else(|| HostError::State(
+        "backend readiness executable hash is already entered".to_owned(),
+    )))?;
 
-        hash.update(&buffer[..read]);
-        offset = offset
-            .checked_add(u64::try_from(read).map_err(|_| {
-                HostError::State("backend readiness executable is oversized".to_owned())
-            })?)
-            .ok_or_else(|| {
-                HostError::State("backend readiness executable is oversized".to_owned())
-            })?;
-        // The generic no-op monomorphizes away in production. Tests use this
-        // point to exercise mutation handling without timing or global state.
-        after_chunk(offset);
-    }
-
-    let after = nspawn_executable_snapshot(descriptor)?;
+    let after = super::nspawn_executable_snapshot_engine_v2(descriptor,
+        original.as_deref_mut().map(|original| &mut original.metadata[1]))?;
     if after != before {
         return Err(HostError::State(
             "backend readiness executable metadata changed while being hashed".to_owned(),
         ));
     }
-    Ok((before, hash.finalize().into()))
+    Ok((before, digest))
 }
 
 fn readiness_binding_identity(
@@ -975,42 +986,9 @@ fn update_binding_field(hash: &mut Sha256, tag: u16, value: &[u8]) -> Result<()>
     Ok(())
 }
 
-fn read_protected_artifact_optional(directory_path: &Path) -> Result<Option<Vec<u8>>> {
-    let directory = open(
-        directory_path,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|error| HostError::State(error.to_string()))?;
-    validate_protected_directory(&directory, "credential directory")?;
-    match openat(
-        &directory,
-        READINESS_CREDENTIAL_FILE,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    ) {
-        Ok(descriptor) => read_protected_descriptor(
-            descriptor,
-            READINESS_CREDENTIAL_FILE,
-            MAXIMUM_READINESS_BYTES,
-        )
-        .map(Some),
-        Err(rustix::io::Errno::NOENT) => Ok(None),
-        Err(error) => Err(HostError::State(error.to_string())),
-    }
-}
-
 fn validate_protected_directory(directory: &OwnedFd, label: &str) -> Result<()> {
     let metadata = fstat(directory).map_err(|error| HostError::State(error.to_string()))?;
-    if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
-        || metadata.st_uid != 0
-        || !protected_directory_permissions(metadata.st_mode)
-    {
-        return Err(HostError::State(format!(
-            "backend readiness {label} is not a protected root-owned directory"
-        )));
-    }
-    Ok(())
+    watermark_original::validate_directory_metadata_v2(&metadata, label)
 }
 
 #[cfg(test)]
@@ -1034,113 +1012,12 @@ fn read_protected_descriptor(
     name: &'static str,
     maximum_bytes: usize,
 ) -> Result<Vec<u8>> {
-    let metadata = fstat(&descriptor).map_err(|error| HostError::State(error.to_string()))?;
-    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
-        || metadata.st_uid != 0
-        || metadata.st_nlink != 1
-        || !protected_file_permissions(metadata.st_mode)
-    {
-        return Err(HostError::State(format!(
-            "backend readiness {name} is not a protected root-owned file"
-        )));
-    }
-    let declared_size = usize::try_from(metadata.st_size)
-        .map_err(|_| HostError::State(format!("backend readiness {name} is oversized")))?;
-    if declared_size == 0 || declared_size > maximum_bytes {
-        return Err(HostError::State(format!(
-            "backend readiness {name} has an invalid size"
-        )));
-    }
-    let mut bytes = Vec::with_capacity(declared_size);
-    File::from(descriptor)
-        .take((maximum_bytes + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|error| HostError::State(error.to_string()))?;
-    if bytes.len() != declared_size || bytes.len() > maximum_bytes {
-        return Err(HostError::State(format!(
-            "backend readiness {name} changed while being read"
-        )));
-    }
-    Ok(bytes)
+    watermark_original::read_protected_descriptor_ordinary_v2(descriptor, name, maximum_bytes)
 }
 
 fn persist_readiness_watermark(directory_path: &Path, proposed: ReadinessWatermark) -> Result<()> {
-    let directory = open(
-        directory_path,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|error| HostError::State(error.to_string()))?;
-    validate_protected_directory(&directory, "state directory")?;
-    let current = match openat(
-        &directory,
-        READINESS_WATERMARK_FILE,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    ) {
-        Ok(descriptor) => {
-            let bytes = read_protected_descriptor(
-                descriptor,
-                READINESS_WATERMARK_FILE,
-                MAXIMUM_WATERMARK_BYTES,
-            )?;
-            Some(
-                serde_json::from_slice::<ReadinessWatermark>(&bytes).map_err(|_| {
-                    HostError::State("backend readiness watermark is malformed".to_owned())
-                })?,
-            )
-        }
-        Err(rustix::io::Errno::NOENT) => None,
-        Err(error) => return Err(HostError::State(error.to_string())),
-    };
-    validate_watermark_transition(current.as_ref(), &proposed)?;
-    if current.as_ref() == Some(&proposed) {
-        return Ok(());
-    }
-
-    let bytes = serde_json::to_vec(&proposed)
-        .map_err(|_| HostError::State("backend readiness watermark cannot encode".to_owned()))?;
-    match rustix::fs::unlinkat(
-        &directory,
-        READINESS_WATERMARK_NEXT,
-        rustix::fs::AtFlags::empty(),
-    ) {
-        Ok(()) => {}
-        Err(rustix::io::Errno::NOENT) => {}
-        Err(error) => return Err(HostError::State(error.to_string())),
-    }
-    let descriptor = openat(
-        &directory,
-        READINESS_WATERMARK_NEXT,
-        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::RUSR | Mode::WUSR,
-    )
-    .map_err(|error| HostError::State(error.to_string()))?;
-    let mut output = File::from(descriptor);
-    let result = output
-        .write_all(&bytes)
-        .and_then(|()| output.sync_all())
-        .map_err(|error| HostError::State(error.to_string()))
-        .and_then(|()| {
-            rustix::fs::renameat(
-                &directory,
-                READINESS_WATERMARK_NEXT,
-                &directory,
-                READINESS_WATERMARK_FILE,
-            )
-            .map_err(|error| HostError::State(error.to_string()))
-        })
-        .and_then(|()| {
-            rustix::fs::fsync(&directory).map_err(|error| HostError::State(error.to_string()))
-        });
-    if result.is_err() {
-        let _ = rustix::fs::unlinkat(
-            &directory,
-            READINESS_WATERMARK_NEXT,
-            rustix::fs::AtFlags::empty(),
-        );
-    }
-    result
+    let mut original = ReadinessWatermarkOriginalV2::new();
+    original.persist_ordinary_once_v2(directory_path, proposed)
 }
 
 fn validate_watermark_transition(
@@ -1214,6 +1091,51 @@ pub(super) fn backend_readiness_for_tests(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+
+    #[test]
+    fn retained_executable_read_error_keeps_the_actual_stat_and_native_errno() {
+        use std::io::Write as _;
+        use std::os::fd::{AsFd as _, AsRawFd as _};
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"executable-prefix").unwrap();
+        let pin = rustix::fs::open(file.path(), rustix::fs::OFlags::PATH | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty()).unwrap();
+        let descriptor = pin.as_raw_fd();
+        let mut original = NspawnRevalidationOriginalV2::new();
+
+        let returned = snapshot_and_hash_executable_engine_v2(pin.as_fd(), |_| {}, Some(&mut original));
+
+        assert!(returned.is_err());
+        assert!(matches!(original.metadata[0], Some(Ok(_))));
+        assert_eq!(original.read_error, Some(rustix::io::Errno::BADF));
+        assert!(original.metadata[1].is_none());
+        assert_eq!(pin.as_raw_fd(), descriptor);
+        assert!(original.failure().is_some());
+    }
+
+    #[test]
+    fn retained_executable_drift_keeps_both_actual_metadata_observations() {
+        use std::io::Write as _;
+        use std::os::fd::AsFd as _;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"before").unwrap();
+        let mut original = NspawnRevalidationOriginalV2::new();
+        let mut mutated = false;
+
+        let returned = snapshot_and_hash_executable_engine_v2(file.as_file().as_fd(), |_| {
+            if !mutated {
+                file.as_file().set_len(7).unwrap();
+                mutated = true;
+            }
+        }, Some(&mut original));
+
+        assert!(returned.is_err());
+        let before = original.metadata[0].as_ref().unwrap().as_ref().unwrap();
+        let after = original.metadata[1].as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(before.st_size, 6);
+        assert_eq!(after.st_size, 7);
+        assert!(original.read_error.is_none());
+    }
 
     use std::io::{Seek as _, SeekFrom};
     use std::os::unix::fs::FileExt as _;

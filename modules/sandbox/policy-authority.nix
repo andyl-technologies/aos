@@ -9,6 +9,40 @@
   resourcePolicy = config.aos.sandbox.resourceBank.policy;
   rootReceiving = if resourcePolicy == null then null else resourcePolicy.rootReceiving;
   controller = config.aos.sandbox.controller;
+  ownershipTrust = config.aos.sandbox.hostBroker.credentials;
+  mountPlanTrust = config.aos.sandbox.mountBroker.credentials;
+  ownershipTrustSelected = rootReceiving != null;
+  environmentProvisionSelected = cfg.environmentProvision != null;
+  ownershipTrustCredentials = lib.optionals ownershipTrustSelected (
+    lib.optional (ownershipTrust.ownershipLeasePolicy != null)
+    "ownership-lease-policy.cbor:/run/credentials/@system/${ownershipTrust.ownershipLeasePolicy}"
+    ++ lib.optional (ownershipTrust.ownershipLeasePublicKey != null)
+    "ownership-lease-public-key:/run/credentials/@system/${ownershipTrust.ownershipLeasePublicKey}"
+  );
+  # The same public AOSCSM01 artifact configures both physical interpreters.
+  # It supplies no receiving allowance and contains no signing material.
+  cacheMemoryCredentials = lib.optionals ownershipTrustSelected (
+    lib.optional (cacheSignerService.credentials.memoryCeiling != null)
+    "cache-signer-v2-memory-ceiling:/run/credentials/@system/${cacheSignerService.credentials.memoryCeiling}"
+  );
+  brokerPlanCredentials = lib.optionals ownershipTrustSelected (
+    lib.optional (ownershipTrust.brokerPlanPolicy != null)
+    "broker-plan-policy.cbor:/run/credentials/@system/${ownershipTrust.brokerPlanPolicy}"
+    ++ lib.optional (ownershipTrust.brokerPlanPublicKey != null)
+    "broker-plan-public-key:/run/credentials/@system/${ownershipTrust.brokerPlanPublicKey}"
+    ++ lib.optional (ownershipTrust.brokerRevocationScope != null)
+    "broker-revocation-scope:/run/credentials/@system/${ownershipTrust.brokerRevocationScope}"
+  );
+  # Root reads Mount's public triplet through the same native custody engine.
+  # These aliases reference the exact credential sources used by Mount itself.
+  mountBrokerPlanCredentials = lib.optionals ownershipTrustSelected (
+    lib.optional (mountPlanTrust.brokerPlanPolicy != null)
+    "mount-broker-plan-policy.cbor:/run/credentials/@system/${mountPlanTrust.brokerPlanPolicy}"
+    ++ lib.optional (mountPlanTrust.brokerPlanPublicKey != null)
+    "mount-broker-plan-public-key:/run/credentials/@system/${mountPlanTrust.brokerPlanPublicKey}"
+    ++ lib.optional (mountPlanTrust.brokerRevocationScope != null)
+    "mount-broker-revocation-scope:/run/credentials/@system/${mountPlanTrust.brokerRevocationScope}"
+  );
   confined = config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0";
   normalUnit = config.systemd.services.aos-sandbox-policy-authorityd;
   systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
@@ -43,6 +77,8 @@
     aos-selinux-kernel-policy-readback = config.aos.security.selinux._canonicalReadback;
     unitContract = materializedNormalUnit;
     identities = [controller.uid controller.gid cacheSignerUid sourceSignerUid];
+    inherit cacheSignerGid;
+    environmentProvision = cfg.environmentProvision;
   };
   preparer = import ./_view-preparer.nix {inherit config pkgs;};
   cacheRecovery = config.systemd.services.aos-sandbox-policy-cache-recovery;
@@ -54,6 +90,10 @@
   cacheSignerUid =
     if cacheSignerView.enable && cacheSignerService.enable
     then cacheSignerView.uid
+    else 0;
+  cacheSignerGid =
+    if cacheSignerView.enable && cacheSignerService.enable
+    then cacheSignerView.gid
     else 0;
   sourceSignerUid =
     if sourceSignerView.enable && sourceSignerService.enable
@@ -85,6 +125,27 @@
     sourceTreeSeedIssuer = "controller-source-tree-seed-issuer-v1";
     projectAuthorizationIssuer = "project-authorization-issuer-v2";
   };
+  storageCredentials = {
+    createStorageSessionManifest = "create-storage-session-manifest-v1";
+  };
+  deleteBrokerCredentials = {
+    deleteHostSessionManifest = "delete-host-session-manifest-v2";
+    deleteMountSessionManifest = "delete-mount-session-manifest-v2";
+    deleteNetworkSessionManifest = "delete-network-session-manifest-v2";
+  };
+  deleteBrokerControllerOptions = {
+    deleteHostSessionManifest = "brokerSessionHostManifest";
+    deleteMountSessionManifest = "brokerSessionMountManifest";
+    deleteNetworkSessionManifest = "brokerSessionNetworkManifest";
+  };
+  deleteBrokerTrustSelected = lib.any
+    (option: cfg.credentials.${option} != null)
+    (builtins.attrNames deleteBrokerCredentials);
+  executionNoApplyCredentials = {
+    rootNoApplyFloorSigningKey = "root-noapply-floor-signing";
+  };
+  executionNoApplySelected = cfg.credentials.rootNoApplyFloorSigningKey != null
+    || ownershipTrust.rootNoApplyFloorPublicKey != null;
   gitEvidenceCredentials = {
     gitEvidenceProvision = "git-evidence-provision-v1";
   };
@@ -95,7 +156,7 @@
     gitCoverageStorageSessionManifest = "git-upload-storage-session-manifest-v1";
   };
   coverageSelected = cfg.credentials.gitCoverageEnrollment != null;
-  credentialFiles = requiredCredentials // projectCredentials // cacheCredentials // controllerCredentials // sourceCredentials // genesisCredentials // gitEvidenceCredentials // gitCoverageCredentials;
+  credentialFiles = requiredCredentials // projectCredentials // cacheCredentials // controllerCredentials // sourceCredentials // genesisCredentials // storageCredentials // deleteBrokerCredentials // executionNoApplyCredentials // gitEvidenceCredentials // gitCoverageCredentials;
   cacheJournalSource = "/var/lib/aos/sandbox/cache-residency-journals";
   cacheJournalView = "/run/aos/sandbox-policy-cache-journals";
   prepareCacheJournalView = preparer.writeScript "aos-sandbox-cache-journal-view" ''
@@ -189,7 +250,67 @@
         *) exit 1 ;;
       esac
     done
+    # Map only this fixed roster. The existing immutable provisioner creates
+    # missing protected roots before this script; no source path is supplied by
+    # a caller and no mutable existing ownership is repaired here.
+    mounted_root_views=${cacheJournalView}
+    cleanup_root_views() {
+      # Only successful mounts from this invocation are eligible for cleanup.
+      for target in $mounted_root_views; do
+        if ${preparer.utilLinux}/findmnt --mountpoint "$target" --noheadings >/dev/null; then
+          ${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize "$target" || :
+        fi
+      done
+    }
+    trap cleanup_root_views EXIT
+    for pair in \
+      /var/lib/aos/sandboxd:/run/aos/sandbox-root-controller \
+      /var/lib/aos/sandboxd/broker-session/storage:/run/aos/sandbox-root-storage-session \
+      /var/lib/aos/sandboxd/broker-session/host:/run/aos/sandbox-root-host-session \
+      /var/lib/aos/sandboxd/broker-session/mount:/run/aos/sandbox-root-mount-session \
+      /var/lib/aos/sandboxd/broker-session/network:/run/aos/sandbox-root-network-session \
+      /var/lib/aos/sandbox/source-domains:/run/aos/sandbox-root-source \
+      /var/lib/aos/sandboxd/cache-residency-authority:/run/aos/sandbox-root-cache-bootstrap \
+      /var/lib/aos/sandbox/cache-residency-objects:/run/aos/sandbox-root-cache-objects; do
+      source="''${pair%%:*}"
+      view="''${pair#*:}"
+      test ! -L "$source"
+      test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a' "$source")" = "directory:$controller_uid:$controller_gid:700"
+      test ! -L "$view"
+      test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a' "$view")" = directory:0:0:700
+      if ${preparer.utilLinux}/findmnt --mountpoint "$view" --noheadings >/dev/null; then
+        exit 1
+      fi
+      ${preparer.utilLinux}/mount --internal-only --no-mtab --bind \
+        --map-users "$controller_uid:0:1" --map-groups "$controller_gid:0:1" \
+        --options ro,nosuid,nodev,noexec,nosymfollow "$source" "$view"
+      mounted_root_views="$view $mounted_root_views"
+      test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a' "$view")" = directory:0:0:700
+      test "$(${preparer.coreutils}/stat --format='%d:%i' "$source")" = \
+        "$(${preparer.coreutils}/stat --format='%d:%i' "$view")"
+      mount_options="$(${preparer.utilLinux}/findmnt --noheadings --mountpoint "$view" --output VFS-OPTIONS)"
+      for option in ro nosuid nodev noexec nosymfollow; do
+        case ",$mount_options," in
+          *,$option,*) ;;
+          *) exit 1 ;;
+        esac
+      done
+    done
     trap - EXIT
+  '';
+  stopRootJournalViews = preparer.writeScript "aos-sandbox-cache-journal-view-stop" ''
+    set -u
+    status=0
+    for view in /run/aos/sandbox-root-cache-objects /run/aos/sandbox-root-cache-bootstrap \
+      /run/aos/sandbox-root-source /run/aos/sandbox-root-network-session \
+      /run/aos/sandbox-root-mount-session /run/aos/sandbox-root-host-session \
+      /run/aos/sandbox-root-storage-session \
+      /run/aos/sandbox-root-controller ${cacheJournalView}; do
+      if ! ${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize "$view"; then
+        status=1
+      fi
+    done
+    exit "$status"
   '';
 in {
   options.aos.sandbox.policyAuthority = {
@@ -199,6 +320,13 @@ in {
       readOnly = true;
       default = prepareCacheJournalView;
       description = "Exact immutable checked cache view entrypoint selected by the production policy.";
+    };
+    _stopPreparerPackage = lib.mkOption {
+      type = lib.types.package;
+      internal = true;
+      readOnly = true;
+      default = stopRootJournalViews;
+      description = "Exact fixed Root readonly-view disposal entrypoint.";
     };
     _normalStartupProfile = lib.mkOption {
       type = lib.types.nullOr lib.types.package;
@@ -217,6 +345,12 @@ in {
       default = pkgs.aos-sandboxd;
       defaultText = "pkgs.aos-sandboxd";
       description = "The package containing the independent policy authority executable.";
+    };
+
+    environmentProvision = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      description = "Explicit AOSENVT1 immutable Environment generation template and complete objects directory. Use aosEnvironmentProvisionWith with an actual canonical generation manifest and digest-named object inputs. The selected system roots these bytes; Root independently checks the fixed view, current profile, manifest and every closure object before any activation or lease publication.";
     };
 
     credentials = lib.mapAttrs (option: _:
@@ -238,6 +372,12 @@ in {
           then "Optional existing 80-byte AOSCSK01 administrative Source Tree seed issuer pin. Genesis requires this and the independent project authorization issuer together; this is not a readback key."
           else if option == "projectAuthorizationIssuer"
           then "Optional existing 80-byte AOSPAK02 administrative project authorization issuer pin for exact signed seven-limit genesis inputs; no readback role or inferred grant is added."
+          else if option == "createStorageSessionManifest"
+          then "Optional independently provisioned public Controller Storage session manifest. Storage Create requires this fixed credential, independently of Git coverage."
+          else if builtins.hasAttr option deleteBrokerCredentials
+          then "Optional public Controller session manifest for independent Root Delete verification. Provision Host, Mount and Network together with the same respective configured Controller manifests; these files contain no signing keys."
+          else if option == "rootNoApplyFloorSigningKey"
+          then "Optional externally provisioned dedicated 80-byte AOSRNK02 Root NoApply floor signing credential with nonzero generation, signing seed and checksum. PID 1 delivers its bytes only to the normal Root service; no seed is generated or stored by Nix. Provision the matching AOSRNP02 Host public pin independently."
           else if option == "gitEvidenceProvision"
           then "Optional bounded AOSGEP01 trusted Root-administration Git evidence instruction, not a dynamic validator attestation or Git activation."
           else if option == "projectHeadPacketV2" || option == "projectLayerV2"
@@ -249,12 +389,75 @@ in {
 
   config = lib.mkIf cfg.enable {
     assertions =
-      lib.mapAttrsToList (option: _: {
+      lib.optional environmentProvisionSelected {
+        assertion = confined && rootReceiving != null && cfg.package == pkgs.aos-sandboxd;
+        message = "policyAuthority.environmentProvision requires the selected confined Root profile and its actual Root receiving original";
+      }
+      ++ lib.mapAttrsToList (option: _: {
         assertion = cfg.credentials.${option} != null;
         message = "aos.sandbox.policyAuthority.credentials.${option} is required";
       })
       requiredCredentials
       ++ [
+        {
+          assertion = !executionNoApplySelected
+            || (cfg.credentials.rootNoApplyFloorSigningKey != null
+              && ownershipTrust.rootNoApplyFloorPublicKey != null
+              && cfg.credentials.rootNoApplyFloorSigningKey != ownershipTrust.rootNoApplyFloorPublicKey);
+          message = "Root NoApply floor signing and Host public pin require distinct external credential names provisioned together";
+        }
+        {
+          assertion = !executionNoApplySelected
+            || (confined && ownershipTrustSelected && cfg.package == pkgs.aos-sandboxd
+              && config.aos.sandbox.hostBroker.enable
+              && config.aos.sandbox.hostBroker.componentControl);
+          message = "Root NoApply floor credentials require the selected confined normal Root receiving owner and Host component control";
+        }
+        {
+          assertion = !ownershipTrustSelected || cacheSignerService.credentials.memoryCeiling != null;
+          message = "selected Root current physical Cache reads require the same public Cache memory-ceiling credential as the Cache signer";
+        }
+        {
+          assertion = !ownershipTrustSelected
+            || (ownershipTrust.brokerPlanPolicy != null
+              && ownershipTrust.brokerPlanPublicKey != null
+              && ownershipTrust.brokerRevocationScope != null);
+          message = "selected Root receiving requires the independently installed Controller broker-plan public policy, key and revocation scope";
+        }
+        {
+          assertion = !deleteBrokerTrustSelected
+            || (mountPlanTrust.brokerPlanPolicy != null
+              && mountPlanTrust.brokerPlanPublicKey != null
+              && mountPlanTrust.brokerRevocationScope != null);
+          message = "Root broker comparison requires Mount's same public broker-plan policy, key, and revocation scope";
+        }
+        {
+          assertion = !ownershipTrustSelected
+            || (ownershipTrust.ownershipLeasePolicy != null
+              && ownershipTrust.ownershipLeasePublicKey != null);
+          message = "selected Root receiving requires its own installed public Ownership lease policy and key from the existing Host trust configuration";
+        }
+        {
+          assertion = cfg.credentials.createStorageSessionManifest == null
+            || cfg.credentials.createStorageSessionManifest
+              == config.aos.sandbox.controllerService.credentials.brokerSessionStorageManifest;
+          message = "Root Storage Create requires the same independently provisioned public Controller Storage session manifest";
+        }
+        {
+          assertion = lib.all
+            (option: (cfg.credentials.${option} != null) == deleteBrokerTrustSelected)
+            (builtins.attrNames deleteBrokerCredentials);
+          message = "Root Delete requires the Host, Mount and Network public session manifests together";
+        }
+        {
+          assertion = !deleteBrokerTrustSelected
+            || (confined && ownershipTrustSelected && cfg.package == pkgs.aos-sandboxd
+              && lib.all
+                (option: cfg.credentials.${option}
+                  == config.aos.sandbox.controllerService.credentials.${deleteBrokerControllerOptions.${option}})
+                (builtins.attrNames deleteBrokerCredentials));
+          message = "Root Delete requires the selected confined Root and the same independently provisioned Controller broker manifests";
+        }
         {
           assertion = lib.all (option: (cfg.credentials.${option} != null) == coverageSelected)
             (builtins.attrNames gitCoverageCredentials);
@@ -326,7 +529,7 @@ in {
       ];
 
     systemd.services.aos-sandbox-cache-journal-view = {
-      description = "AOS root-only idmapped Cache journal view";
+      description = "AOS fixed readonly Root Controller, Session, Source and Cache views";
       wantedBy = ["multi-user.target"];
       before = ["aos-sandboxd.service" "aos-sandbox-policy-authorityd.service"];
       after = ["local-fs.target"];
@@ -342,7 +545,7 @@ in {
           # reviewed preparation role; neither accepts a caller-selected path.
           ExecStartPre = lib.mkIf preparer.confined "${config.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots --root / --prepare-sandbox-view-roots";
           ExecStart = "${prepareCacheJournalView}/bin/aos-sandbox-cache-journal-view";
-          ExecStop = "${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${cacheJournalView}";
+          ExecStop = "${stopRootJournalViews}/bin/aos-sandbox-cache-journal-view-stop";
           User = "root";
           Group = "root";
           UMask = "0077";
@@ -357,15 +560,34 @@ in {
         };
     };
 
+    # The existing privileged Nix database installer publishes this actual
+    # immutable package as a durable, directly scanned Nix GC root. Root only
+    # reads and verifies the fixed link; it receives no Nix write permission.
+    systemd.services.aos-nix-db.script = lib.mkAfter (lib.optionalString environmentProvisionSelected ''
+      ${pkgs.coreutils}/bin/mkdir --parents /nix/var/nix/gcroots
+      # restorecon is nonrecursive here: only these three fixed public host
+      # directories change label, never the Nix database or other GC roots.
+      ${pkgs.policycoreutils}/sbin/restorecon -F \
+        /nix/var /nix/var/nix /nix/var/nix/gcroots
+      ${pkgs.coreutils}/bin/ln --symbolic --force --no-target-directory \
+        ${lib.escapeShellArg (toString cfg.environmentProvision)} \
+        /nix/var/nix/gcroots/aos-selected-environment-v1
+      ${pkgs.policycoreutils}/sbin/restorecon -F \
+        /nix/var/nix/gcroots/aos-selected-environment-v1
+      ${pkgs.coreutils}/bin/sync --file-system /nix/var/nix/gcroots
+    '');
+
     systemd.services.aos-sandbox-policy-authorityd = {
       description = "AOS signed deployment policy input authority";
       wantedBy = ["multi-user.target"];
       requires =
         ["aos-sandbox-cache-journal-view.service"]
+        ++ lib.optional environmentProvisionSelected "aos-nix-db.service"
         ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
         ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
       after =
         ["local-fs.target" "aos-sandbox-cache-journal-view.service"]
+        ++ lib.optional environmentProvisionSelected "aos-nix-db.service"
         ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
         ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
       unitConfig.BindsTo =
@@ -390,10 +612,19 @@ in {
           "${normalRootProfile}/profile.json:aos-normal-root-profile:read-only"
         ];
         # Zero identities disable signer flights unless their separate services and views are enabled.
-        ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid} ${toString cacheSignerUid} ${toString sourceSignerUid}";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid} ${toString cacheSignerUid} ${toString sourceSignerUid} ${toString cacheSignerGid}";
         LoadCredential =
           lib.mapAttrsToList (option: name: "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
-          (lib.filterAttrs (option: _: cfg.credentials.${option} != null) credentialFiles);
+          (lib.filterAttrs (option: _: cfg.credentials.${option} != null) credentialFiles)
+          ++ ownershipTrustCredentials
+          ++ brokerPlanCredentials
+          ++ mountBrokerPlanCredentials
+          ++ cacheMemoryCredentials;
+        # The active system unit co-retains this actual immutable package and
+        # its copied closure bytes. The compiled Root profile commits the exact
+        # selected source/target binding; absence grants no default Environment.
+        ReadOnlyPaths = lib.optional environmentProvisionSelected
+          (toString cfg.environmentProvision);
         StateDirectory = "aos/sandbox/policy-compiler";
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandbox-policy-authority";
@@ -425,7 +656,7 @@ in {
         ProtectProc = "invisible";
         ProtectSystem = "strict";
         # Administration must preprovision this exact labelled Root directory.
-        ReadWritePaths = lib.mkIf (cfg.credentials.gitEvidenceProvision != null) [
+        ReadWritePaths = lib.mkIf (cfg.credentials.gitEvidenceProvision != null || environmentProvisionSelected) [
           "/var/lib/aos/sandbox/source-evidence"
         ];
         RestrictAddressFamilies = ["AF_UNIX"];

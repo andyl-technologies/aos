@@ -877,3 +877,86 @@ fn old_plans_missing_observation_grants_and_wrong_trust_keys_are_rejected() {
     let short = prepare(reconciler.journal_mut(), selection, &policy(), clock(179)).unwrap();
     assert_eq!(short.validity.deadline(), 1_000_001_000);
 }
+
+
+fn source_check_sample_v4() -> RawPairedClockSample {
+    RawPairedClockSample::new_untrusted(
+        RawClockProvenance::new_untrusted([91; 16]).unwrap(),
+        KernelBootId::current().unwrap().into_bytes(),
+        150, transport::boottime().unwrap(),
+    ).unwrap()
+}
+
+#[test]
+fn capture_source_checks_reuse_only_completed_positive_temporaries() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
+    let selection = activate(&mut reconciler, 1, bind(None), false);
+    let sample = source_check_sample_v4();
+    let target = prepare_assignment(reconciler.journal_mut(), selection, policy(), sample).unwrap();
+    let demand = target.capture_source_checks_receiving_demand_v4(reconciler.journal_mut()).unwrap();
+    let mut original = target.prepare_capture_source_checks_v4(reconciler.journal_mut()).unwrap();
+    let mut clock = || Ok(sample);
+
+    original.recheck_v4(&target, reconciler.journal_mut(), &mut clock).unwrap();
+    let (lease, observed) = original.verified_plan_lease_v4(&target, reconciler.journal_mut(), &mut clock).unwrap();
+    original.recheck_v4(&target, reconciler.journal_mut(), &mut clock).unwrap();
+
+    assert_eq!(lease.digest(), target.binding.lease_digest());
+    assert_eq!(observed, sample);
+    assert!(original.failure_v4().is_none());
+    assert!(original.retained_lease_for_test_v4().is_none());
+    assert_eq!(target.capture_source_checks_receiving_demand_v4(reconciler.journal_mut()), Some(demand));
+}
+
+#[test]
+fn capture_source_verifier_refusal_keeps_actual_cause_and_cannot_heal() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
+    let selection = activate(&mut reconciler, 1, bind(None), false);
+    let sample = source_check_sample_v4();
+    let mut target = prepare_assignment(reconciler.journal_mut(), selection, policy(), sample).unwrap();
+    let mut original = target.prepare_capture_source_checks_v4(reconciler.journal_mut()).unwrap();
+    target.policy.ownership_verifier = policy_keys(40, 42).ownership_verifier;
+    let mut clock_calls = 0;
+    let mut clock = || { clock_calls += 1; Ok(sample) };
+
+    assert!(original.recheck_v4(&target, reconciler.journal_mut(), &mut clock).is_err());
+    let first = original.failure_v4().unwrap() as *const dyn std::error::Error;
+    drop(clock);
+    let before = clock_calls;
+    target.policy.ownership_verifier = policy().ownership_verifier;
+    let mut clock = || { clock_calls += 1; Ok(sample) };
+    assert!(original.recheck_v4(&target, reconciler.journal_mut(), &mut clock).is_err());
+    assert!(std::ptr::eq(first, original.failure_v4().unwrap()));
+    drop(clock);
+    assert_eq!(clock_calls, before);
+}
+
+#[test]
+fn capture_source_late_clock_refusal_retains_the_preceding_verified_lease() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
+    let selection = activate(&mut reconciler, 1, bind(None), false);
+    let sample = source_check_sample_v4();
+    let target = prepare_assignment(reconciler.journal_mut(), selection, policy(), sample).unwrap();
+    let mut original = target.prepare_capture_source_checks_v4(reconciler.journal_mut()).unwrap();
+    let mut calls = 0;
+    let mut clock = || {
+        calls += 1;
+        Ok(if calls == 4 {
+            RawPairedClockSample::new_untrusted(RawClockProvenance::new_untrusted([93; 16]).unwrap(),
+                sample.host_boot_id(), sample.wall_seconds(), sample.boottime_nanoseconds()).unwrap()
+        } else { sample })
+    };
+
+    assert!(original.verified_plan_lease_v4(&target, reconciler.journal_mut(), &mut clock).is_err());
+    assert!(original.failure_v4().is_some());
+    drop(clock);
+    assert_eq!(calls, 4);
+    assert_eq!(original.retained_lease_for_test_v4().unwrap().digest(), target.binding.lease_digest());
+    let first = original.failure_v4().unwrap() as *const dyn std::error::Error;
+    let mut fresh = || panic!("a failed selected source must not sample again");
+    assert!(original.verified_plan_lease_v4(&target, reconciler.journal_mut(), &mut fresh).is_err());
+    assert!(std::ptr::eq(first, original.failure_v4().unwrap()));
+}

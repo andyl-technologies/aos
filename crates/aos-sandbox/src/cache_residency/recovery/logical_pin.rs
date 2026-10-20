@@ -7,6 +7,9 @@
 //! and independent physical settlement stay with the native Cache owners.
 
 use super::*;
+use crate::cache_residency::pin::{CachePinV1, CachePinLedgerV1,
+    PinCompactionFloorV1, PinDrainEvidenceV1, ReleasedCachePinV1};
+use aos_sandbox_protocol::cache_state::pin_ledger::ReleasedCachePinDataV1;
 
 // Release retains its already-required family head; acquisition and renewal
 // can begin the Pin family. This selector carries historical references only.
@@ -66,12 +69,15 @@ impl CacheRecoveryInventoryV1 {
         let mut active = Vec::new();
         let mut released = Vec::new();
         for payload in &self.reconstructed {
-            active.extend(payload.pins.iter().cloned());
-            released.extend(payload.released_pins.iter().cloned());
+            active.extend(payload.pins.iter().cloned().map(CachePinV1::from_parsed_history_data_v1));
+            released.extend(payload.released_pins.iter().map(|released| ReleasedCachePinV1 {
+                pin: CachePinV1::from_parsed_history_data_v1(released.pin.clone()),
+                drain: PinDrainEvidenceV1::from_parsed_history_data_v1(released.drain),
+            }));
         }
         let mut ledger = CachePinLedgerV1::replay(
             limits.maximum_records,
-            self.global.pin_floor,
+            self.global.pin_floor.map(PinCompactionFloorV1::from_parsed_history_data_v1),
             active,
             released,
         )?;
@@ -104,7 +110,7 @@ impl CacheRecoveryInventoryV1 {
                 .binary_search_by_key(&pin.id, |candidate| candidate.id),
             existing.as_ref(),
         ) {
-            (Ok(index), Some(previous_pin)) if state == 3 && &next.pins[index] == previous_pin => {
+            (Ok(index), Some(previous_pin)) if state == 3 && &next.pins[index] == previous_pin.historical_data_v1() => {
                 index
             }
             (Ok(_), _) => return Err(RecoveryError::IdentityConflict),
@@ -112,9 +118,9 @@ impl CacheRecoveryInventoryV1 {
             (Err(_), _) => return Err(RecoveryError::PayloadMismatch),
         };
         if state == 3 {
-            next.pins[pin_index] = pin.clone();
+            next.pins[pin_index] = pin.historical_data_v1().clone();
         } else {
-            next.pins.insert(pin_index, pin.clone());
+            next.pins.insert(pin_index, pin.historical_data_v1().clone());
         }
         next.global_after = Some(self.global.clone());
 
@@ -178,7 +184,7 @@ impl CacheRecoveryInventoryV1 {
         let pin_index = previous
             .pins
             .iter()
-            .position(|candidate| candidate == pin)
+            .position(|candidate| candidate == pin.historical_data_v1())
             .ok_or(RecoveryError::PayloadMismatch)?;
         let family_head = self
             .family_heads
@@ -209,7 +215,10 @@ impl CacheRecoveryInventoryV1 {
             Ok(_) => return Err(RecoveryError::IdentityConflict),
             Err(index) => index,
         };
-        next.released_pins.insert(tombstone_index, released.clone());
+        next.released_pins.insert(tombstone_index, ReleasedCachePinDataV1 {
+            pin: released.pin.historical_data_v1().clone(),
+            drain: released.drain.historical_data_v1(),
+        });
         next.global_after = Some(self.global.clone());
 
         let mut subjects = BTreeMap::new();

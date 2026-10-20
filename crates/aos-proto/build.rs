@@ -115,7 +115,45 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // request/response DATA carrier; all earlier declarations remain exact.
     // The committed schema plus two Nix population comparison messages forms
     // this baseline. No population method or request route is registered here.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x9b6c_f5f3_4a69_e3dd;
+    // Reviewed additive Host argument V2: methods58/59 and three new messages.
+    // Every preceding declaration/tag/RPC remains exact; no RPC is added.
+    // Reviewed physical Capture60/61 reuse existing request/attempt messages.
+    // Physical Reserve additionally binds the canonical original method-46 body.
+    // Reviewed Query61 durable Complete: status3 and full canonical result tag9.
+    // Prior declarations/tags/RPCs are exact; Reserve60 remains fence-only.
+    // Reviewed namespace-only Mount62 and sealed-content Network63 add distinct
+    // methods, descriptor role19, full namespace inventory and Prepare2 binding.
+    // Existing tags and RPCs remain exact; method9 cannot prepare new resources.
+    // Query27 version3 adds the existing global sequence and same-terminal
+    // Capture marker. Tag14 stays reserved; no second terminal effect exists.
+    // Host Inventory adds the fixed same-live-process Stop disposal evidence.
+    // Existing runtime observations and broker method numbers stay exact.
+    // Reviewed native Host absence3 and Mount destination absence7 add only
+    // same-request fixed companion DATA; old empty bodies prove no absence.
+    // Reviewed additive current-publication V2 DATA: RuntimePlan10,
+    // PopulateStorageGuestRootResponse2 and Storage workspace Inventory13.
+    // Immutable physical proof1/12 and every previous declaration remain exact.
+    // AOSGRC02 has its own strict versioned codec; no old bytes are reinterpreted.
+    // Reviewed additive Network19 tag6 carries only its fixed native companion.
+    // Removing exactly this declaration restores the prior complete schema.
+    // Reviewed optional RuntimeObservation7 adds the strict Stop residual DATA.
+    // Reviewed additive execution availability: distinct Host64/Storage65,
+    // strict PREACCEPT/ACCEPTED_BIND phase enum and two comparison messages.
+    // These DATA declarations add no RPC or descriptor/loan authority. Removing
+    // exactly them restores 0x113a_964f_81f1_2a81; all old declarations are exact.
+    // Reviewed Host Inventory tag4 adds canonical AOSHIR07 historical DATA.
+    // Its old Stop scope stays immutable; a separate current native census
+    // binds the observation boot/request/interval and saved Stop phase. It
+    // grants neither a recovered native owner nor new cleanup authority.
+    // Removing exactly tag4 restores 0x4ba9_75f1_c7fe_5113.
+    // Fresh Stop cleanup adds only ApplyRuntimeRequest tag6. Canonical subject
+    // AOSHSC01 binds new Recover/cleanup identities and immutable old scope;
+    // removing exactly tag6 restores 0x927d_edd4_cca9_724e.
+    // Host3 tag5 is explicit PresentOwned pending-Stop comparison DATA, never
+    // absence/adoption/effect authority. Removing only it restores b38f8700.
+    // Host3 tag6 keeps authenticated cleanup lineage separate from legacy
+    // absence. Removing only it restores 0x9ef1_88c8_2090_ff19.
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0xf26b_6973_6ea0_3a99;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -233,7 +271,109 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1 = 54;",
             "BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1 = 55;",
             "BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 = 56;",
+            "BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2 = 58;",
+            "BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2 = 59;",
+            "BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1 = 60;",
+            "BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1 = 61;",
+            "BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2 = 64;",
+            "BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2 = 65;",
         ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "enum ExecutionAvailabilityPhaseV2 {",
+        &[
+            "EXECUTION_AVAILABILITY_PHASE_UNSPECIFIED = 0;",
+            "EXECUTION_AVAILABILITY_PHASE_PREACCEPT = 1;",
+            "EXECUTION_AVAILABILITY_PHASE_ACCEPTED_BIND = 2;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message PrepareExecutionAvailabilityRequestV2 {",
+        &[
+            "RequestHeader header = 1;",
+            "ExecutionAvailabilityPhaseV2 phase = 2;",
+            "bytes canonical_proposal = 3;",
+            "bytes canonical_accepted_source = 4;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message PrepareExecutionAvailabilityResponseV2 {",
+        &["bytes canonical_observation = 1;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message ReserveStorageExecutionCaptureRequestV1 {",
+        &[
+            "RequestHeader header = 1;",
+            "bytes canonical_grant_source = 2;",
+            "bytes canonical_original_storage_output_request = 3;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message QueryStorageExecutionCaptureRequestV1 {",
+        &["RequestHeader header = 1;", "bytes canonical_grant_source = 2;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message StorageExecutionCaptureAttemptV1 {",
+        &[
+            "StorageExecutionCaptureAttemptStatusV1 status = 1;",
+            "bytes execution_id = 2;", "bytes create_operation_id = 3;",
+            "bytes original_reserve_request_id = 4;", "bytes grant_source_digest = 5;",
+            "bytes output_record_digest = 6;", "bytes attempt_id = 7;",
+            "bytes durable_attempt_digest = 8;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message HostExecutionOutcomeV1 {",
+        &[
+            "uint32 query_binding_version = 11;",
+            "uint64 backend_operation_sequence = 12;",
+            "bytes capture_terminal_marker = 13;",
+            "reserved 14;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message InventoryRuntimeResponse {",
+        &[
+            "repeated RuntimeObservation runtimes = 1;",
+            "repeated bytes stopped_namespaces_v4 = 2;",
+            "bytes native_absence_v5 = 3;",
+            "repeated bytes recovered_namespaces_v7 = 4;",
+            "repeated bytes present_stop_cleanup_candidates_v1 = 5;",
+            "repeated bytes cleanup_lineages_v1 = 6;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message ApplyRuntimeRequest {",
+        &[
+            "RequestHeader header = 1;", "AssignmentFence fence = 2;",
+            "RuntimeAction action = 3;", "RuntimePlan launch_plan = 4;",
+            "GuardianArmCompanionV1 guardian_arm = 5;", "bytes host_stop_cleanup_v1 = 6;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message PrepareHostExecutionArgumentRequestV2 {",
+        &["RequestHeader header = 1;", "bytes proposed_attempt = 2;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message AcceptHostExecutionArgumentRequestV2 {",
+        &["RequestHeader header = 1;", "bytes canonical_attempt = 2;",
+            "bytes canonical_preparation = 3;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message AcceptHostExecutionArgumentResponseV2 {",
+        &["bytes canonical_receipt = 1;"],
     )?;
     verify_scoped_declarations(
         &source_declarations,
@@ -419,7 +559,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     verify_scoped_declarations(
         &source_declarations,
         "message PopulateStorageGuestRootResponseV1 {",
-        &["bytes publication_proof = 1;"],
+        &["bytes publication_proof = 1;", "bytes current_publication_v2 = 2;"],
     )?;
     verify_scoped_declarations(
         &source_declarations,
@@ -427,6 +567,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
         &[
             "bytes creation_operation_id = 11;",
             "bytes guest_root_publication_proof = 12;",
+            "bytes current_guest_root_publication_v2 = 13;",
         ],
     )?;
     verify_scoped_declarations(

@@ -125,6 +125,10 @@ pub enum BrokerVerb {
     HostQueryExecutionOutput,
     /// Observes one fresh Guest runtime argument limit for a signed Create attempt.
     HostObserveExecutionArgument,
+    /// Prepares an exact source on the current live Guest without a challenge.
+    HostPrepareExecutionArgumentV2,
+    /// Accepts the same prepared source before its sole Guest challenge.
+    HostAcceptExecutionArgumentV2,
     /// Reads only historical custody of the original argument observation.
     HostQueryExecutionArgument,
     /// Settles one original Host argument attempt as terminal before Apply.
@@ -157,6 +161,10 @@ pub enum BrokerVerb {
     MountReapDestinationSlot,
     /// Recreates an exact stale destination-slot anchor after host reboot.
     MountRematerializeDestinationSlot,
+    /// Materializes the actual no-slot payload attachment namespace.
+    MountMaterializeAttachmentAnchor,
+    /// Retires one exact unused attachment namespace resource.
+    MountReapAttachmentAnchor,
     /// Acquires one provider-backed source for a prospective Mount Create.
     MountAcquireSource,
     /// Releases one exact Mount source acquisition.
@@ -301,6 +309,10 @@ impl BrokerVerb {
             59 => Ok(Self::NixRealizeAuthorizedDerivation),
             60 => Ok(Self::NixQueryAuthorizedPathInfo),
             61 => Ok(Self::StoragePopulateNixGenerationRoot),
+            62 => Ok(Self::HostPrepareExecutionArgumentV2),
+            63 => Ok(Self::HostAcceptExecutionArgumentV2),
+            64 => Ok(Self::MountMaterializeAttachmentAnchor),
+            65 => Ok(Self::MountReapAttachmentAnchor),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -370,6 +382,10 @@ impl BrokerVerb {
             Self::NixRealizeAuthorizedDerivation => 59,
             Self::NixQueryAuthorizedPathInfo => 60,
             Self::StoragePopulateNixGenerationRoot => 61,
+            Self::HostPrepareExecutionArgumentV2 => 62,
+            Self::HostAcceptExecutionArgumentV2 => 63,
+            Self::MountMaterializeAttachmentAnchor => 64,
+            Self::MountReapAttachmentAnchor => 65,
         }
     }
 
@@ -389,6 +405,8 @@ impl BrokerVerb {
             | Self::HostReserveExecutionOutput
             | Self::HostQueryExecutionOutput
             | Self::HostObserveExecutionArgument
+            | Self::HostPrepareExecutionArgumentV2
+            | Self::HostAcceptExecutionArgumentV2
             | Self::HostQueryExecutionArgument
             | Self::HostTerminalNoApply
             | Self::HostQueryNoApply
@@ -409,6 +427,8 @@ impl BrokerVerb {
             | Self::MountMaterializeDestinationSlot
             | Self::MountReapDestinationSlot
             | Self::MountRematerializeDestinationSlot
+            | Self::MountMaterializeAttachmentAnchor
+            | Self::MountReapAttachmentAnchor
             | Self::MountAcquireSource
             | Self::MountReleaseSourceAcquisition => BrokerAudience::Mount,
             Self::StorageCreateWorkspace
@@ -451,6 +471,8 @@ impl BrokerVerb {
             | Self::HostReserveExecutionOutput
             | Self::HostQueryExecutionOutput
             | Self::HostObserveExecutionArgument
+            | Self::HostPrepareExecutionArgumentV2
+            | Self::HostAcceptExecutionArgumentV2
             | Self::HostQueryExecutionArgument
             | Self::HostTerminalNoApply
             | Self::HostQueryNoApply
@@ -462,6 +484,7 @@ impl BrokerVerb {
             | Self::MountInventorySummary
             | Self::MountInventoryResources
             | Self::MountMaterializeDestinationSlot
+            | Self::MountMaterializeAttachmentAnchor
             | Self::MountAcquireSource
             | Self::StorageCreateWorkspace
             | Self::StorageInventory
@@ -492,6 +515,7 @@ impl BrokerVerb {
             | Self::MountRelease
             | Self::MountReapDestinationSlot
             | Self::MountRematerializeDestinationSlot
+            | Self::MountReapAttachmentAnchor
             | Self::MountReleaseSourceAcquisition
             | Self::StorageSnapshot
             | Self::StorageHoldSnapshot
@@ -817,6 +841,39 @@ impl BrokerAuthorizationPlan {
         expires_seconds: i64,
         required_features: Vec<FeatureRef>,
     ) -> Result<Self, InvalidBrokerAuthorizationPlan> {
+        Self::validate_parts_v1(audience, protocol, protocol_version, assignment, node,
+            &ownership_authority, &grants, policy_commitment, revocation_scope,
+            issued_seconds, expires_seconds, &required_features)?;
+        Ok(Self {
+            audience,
+            protocol,
+            protocol_version,
+            assignment,
+            node,
+            ownership_authority,
+            grants,
+            policy_commitment,
+            revocation_scope,
+            issued_seconds,
+            expires_seconds,
+            required_features,
+        })
+    }
+
+    fn validate_parts_v1(
+        audience: BrokerAudience,
+        protocol: ProtocolId,
+        protocol_version: ProtocolVersion,
+        assignment: BrokerAssignment,
+        node: NodeId,
+        ownership_authority: &KeyReference,
+        grants: &[BrokerGrant],
+        policy_commitment: ObjectDigest,
+        revocation_scope: RevocationScopeId,
+        issued_seconds: i64,
+        expires_seconds: i64,
+        required_features: &[FeatureRef],
+    ) -> Result<(), InvalidBrokerAuthorizationPlan> {
         if grants.is_empty()
             || grants.len() > MAX_BROKER_PLAN_GRANTS
             || !grants
@@ -904,20 +961,7 @@ impl BrokerAuthorizationPlan {
         if policy_commitment.as_bytes() == &[0; 32] || revocation_scope.as_bytes() == &[0; 16] {
             return Err(InvalidBrokerAuthorizationPlan::UnspecifiedAuthorityCommitment);
         }
-        Ok(Self {
-            audience,
-            protocol,
-            protocol_version,
-            assignment,
-            node,
-            ownership_authority,
-            grants,
-            policy_commitment,
-            revocation_scope,
-            issued_seconds,
-            expires_seconds,
-            required_features,
-        })
+        Ok(())
     }
 
     /// Returns the sole receiving broker audience.
@@ -1050,6 +1094,23 @@ impl BrokerPlanTrustAnchor {
             revocation_scope,
         })
     }
+
+    /// Bounds one verification using this actual pinned policy and artifact extent.
+    ///
+    /// This returns representation DATA without exposing the anchor's private
+    /// policy or accepting signer facts. `None` reports checked byte overflow.
+    #[must_use]
+    pub fn verification_receiving_bytes_v1(&self, artifact_bytes: usize) -> Option<usize> {
+        use crate::format::{TrustPolicyDecodeCaptureV1, authorization_capture};
+        let policy = TrustPolicyDecodeCaptureV1::receiving_carrier_bytes_v1(self.canonical_policy.len())?
+            .checked_add(TrustPolicyDecodeCaptureV1::receiving_construction_bytes_v1()?)?;
+        let (artifact, _) = authorization_capture::authorization_artifact_dynamic_footprint_v1(artifact_bytes)?;
+        let messages = artifact_bytes.checked_mul(6)?.checked_add(crate::crypto::SIGNATURE_DOMAIN.len())?;
+        usize::try_from(artifact).ok()?.checked_add(policy)?.checked_add(messages)?
+            .checked_add(std::mem::size_of::<crate::crypto::retained::SignatureVerificationCaptureV1>())?
+            .checked_add(std::mem::size_of::<VerifiedBrokerPlan>().checked_mul(3)?)
+    }
+
 }
 
 /// Supplies local facts that an authentic plan must exactly match.
@@ -1894,6 +1955,10 @@ mod tests {
             (59, BrokerVerb::NixRealizeAuthorizedDerivation),
             (60, BrokerVerb::NixQueryAuthorizedPathInfo),
             (61, BrokerVerb::StoragePopulateNixGenerationRoot),
+            (62, BrokerVerb::HostPrepareExecutionArgumentV2),
+            (63, BrokerVerb::HostAcceptExecutionArgumentV2),
+            (64, BrokerVerb::MountMaterializeAttachmentAnchor),
+            (65, BrokerVerb::MountReapAttachmentAnchor),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1902,7 +1967,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(62),
+            BrokerVerb::from_code(66),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(

@@ -66,6 +66,28 @@ impl PreparedOperatorRecoveryCurrentV1 {
             .is_some_and(|current| validate_recovery_current(request, current).is_ok())
     }
 
+    /// Compares the canonical version/evidence for the closed finality reader.
+    ///
+    /// This DATA predicate does not permit an ordinary Retry action. Only the
+    /// separate paid Create finality entrance consumes it, after establishing
+    /// the actual Applying parent and its preserved Applied effect.
+    pub(crate) fn validates_create_finality_fence_v1(&self,
+        request: &OperatorRecoveryRequestV1,
+    ) -> bool {
+        self.validates_closed_recovery_fence_v2(request)
+    }
+
+    /// Compares exact Retry/version/evidence DATA for a finite native driver.
+    ///
+    /// This bypasses no authorization: Create finality and Stop cleanup each
+    /// independently prove their own protected target before consuming it.
+    pub(crate) fn validates_closed_recovery_fence_v2(&self,
+        request: &OperatorRecoveryRequestV1,
+    ) -> bool {
+        self.record.value().is_some_and(|current|
+            records::validate_closed_recovery_fence_v2(request, current).is_ok())
+    }
+
     /// Consumes the preparation into its atomic journal record.
     pub(crate) fn into_record(self) -> JournalRecord {
         self.record

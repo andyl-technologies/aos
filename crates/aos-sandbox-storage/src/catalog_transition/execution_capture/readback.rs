@@ -91,34 +91,7 @@ impl CaptureZfsPreflightPlanV1 {
             return Err(CaptureZfsReadbackErrorV1::InvalidRequirement);
         }
 
-        let commands = [
-            CaptureZfsReadbackCommandV1 {
-                tool: CaptureZfsToolV1::Zpool,
-                arguments: [
-                    "list",
-                    "-H",
-                    "-p",
-                    "-o",
-                    "name,guid,checkpoint,available,health",
-                    requirement.root.pool(),
-                ]
-                .map(str::to_owned)
-                .to_vec(),
-            },
-            CaptureZfsReadbackCommandV1 {
-                tool: CaptureZfsToolV1::Zfs,
-                arguments: [
-                    "list",
-                    "-H",
-                    "-p",
-                    "-o",
-                    "name,type,guid,available",
-                    requirement.root.dataset_prefix(),
-                ]
-                .map(str::to_owned)
-                .to_vec(),
-            },
-        ];
+        let commands = capture_preflight_commands_v1(requirement.root());
 
         Ok(Self {
             requirement: requirement.clone(),
@@ -127,6 +100,8 @@ impl CaptureZfsPreflightPlanV1 {
             commands,
         })
     }
+
+    pub(crate) fn root_data_v1(&self) -> &crate::ManagedDatasetRoot { self.requirement.root() }
 
     pub(crate) const fn commands(&self) -> &[CaptureZfsReadbackCommandV1; 2] {
         &self.commands
@@ -285,8 +260,39 @@ impl CaptureZfsCreateCommandV1 {
 /// not establish exclusive custody. The measured metadata allowance remains
 /// an input from a future Storage-owned policy, not a value inferred from the
 /// output-byte ceiling or supplied by a public execution request.
+enum CaptureReadbackTargetV3 {
+    Catalogued(VerifiedCaptureDatasetV1),
+    Created {
+        requirement: CaptureDatasetRequirementV1,
+        attempt_digest: ObjectDigest,
+    },
+}
+
+impl CaptureReadbackTargetV3 {
+    fn requirement(&self) -> &CaptureDatasetRequirementV1 {
+        match self {
+            Self::Catalogued(verified) => &verified.requirement,
+            Self::Created { requirement, .. } => requirement,
+        }
+    }
+
+    fn binding(&self) -> ObjectDigest {
+        match self {
+            Self::Catalogued(verified) => verified.binding(),
+            Self::Created { attempt_digest, .. } => *attempt_digest,
+        }
+    }
+
+    fn expected_guid(&self) -> Option<u64> {
+        match self {
+            Self::Catalogued(verified) => Some(verified.guid()),
+            Self::Created { .. } => None,
+        }
+    }
+}
+
 pub(crate) struct CaptureZfsReadbackPlanV1 {
-    verified: VerifiedCaptureDatasetV1,
+    target: CaptureReadbackTargetV3,
     record_digest: ObjectDigest,
     minimum_remaining_bytes: u64,
     metadata_headroom_bytes: u64,
@@ -304,7 +310,44 @@ impl CaptureZfsReadbackPlanV1 {
         metadata_headroom_bytes: u64,
         minimum_remaining_bytes: u64,
     ) -> Result<Self, CaptureZfsReadbackErrorV1> {
-        let requirement = &verified.requirement;
+        Self::new_target_v3(CaptureReadbackTargetV3::Catalogued(verified.clone()),
+            retained, metadata_headroom_bytes, minimum_remaining_bytes)
+    }
+
+    /// Compiles the same probes after one actual entered create attempt.
+    ///
+    /// Its result is observed GUID DATA, not a verified catalog row or writer
+    /// grant. The real worker/caller must still retain native command provenance
+    /// and commit/read back the dedicated row through the protected catalog.
+    pub(crate) fn after_create_v3(
+        requirement: &CaptureDatasetRequirementV1,
+        retained: &ProtectedRetainedCaptureV1,
+        attempted: &crate::execution_capture_zfs_worker::CaptureCreateAttemptedV1,
+        metadata_headroom_bytes: u64,
+        minimum_remaining_bytes: u64,
+    ) -> Result<Self, CaptureZfsReadbackErrorV1> {
+        if attempted.record_digest != retained.record_digest()
+            || attempted.storage_create_operation != requirement.storage_create_operation()
+            || attempted.attempt_digest.as_bytes() == &[0; 32]
+            || attempted.command_digest.as_bytes() == &[0; 32]
+            || attempted.preflight_digest.as_bytes() == &[0; 32]
+        { return Err(CaptureZfsReadbackErrorV1::InvalidRequirement); }
+        let mut plan = Self::new_target_v3(CaptureReadbackTargetV3::Created {
+            requirement: requirement.clone(), attempt_digest: attempted.attempt_digest,
+        }, retained, metadata_headroom_bytes, minimum_remaining_bytes)?;
+        // Existing catalogued before/after phases remain1/2. This new phase
+        // cannot be confused with their previously observed digests.
+        plan.phase = 0;
+        Ok(plan)
+    }
+
+    fn new_target_v3(
+        target: CaptureReadbackTargetV3,
+        retained: &ProtectedRetainedCaptureV1,
+        metadata_headroom_bytes: u64,
+        minimum_remaining_bytes: u64,
+    ) -> Result<Self, CaptureZfsReadbackErrorV1> {
+        let requirement = target.requirement();
         if !retained.matches_capture_requirement(
             *requirement.execution.as_bytes(),
             *requirement.create_operation.as_bytes(),
@@ -326,7 +369,7 @@ impl CaptureZfsReadbackPlanV1 {
 
         let pool = requirement.root.pool();
         let root = requirement.root.dataset_prefix();
-        let dataset = verified.dataset_name();
+        let dataset = requirement.dataset_name();
         let required_dataset_available_bytes = requirement
             .admitted_bytes
             .checked_add(metadata_headroom_bytes)
@@ -363,7 +406,7 @@ impl CaptureZfsReadbackPlanV1 {
         ];
 
         Ok(Self {
-            verified: verified.clone(),
+            target,
             record_digest: retained.record_digest(),
             minimum_remaining_bytes,
             metadata_headroom_bytes,
@@ -433,7 +476,34 @@ impl CaptureZfsReadbackPlanV1 {
         &self,
         outputs: [&[u8]; 3],
     ) -> Result<CaptureZfsReadbackV1, CaptureZfsReadbackErrorV1> {
-        let requirement = &self.verified.requirement;
+        if !matches!(&self.target, CaptureReadbackTargetV3::Catalogued(_)) {
+            return Err(CaptureZfsReadbackErrorV1::InvalidRequirement);
+        }
+        self.evaluate_inner_v3(outputs).map(|(readback, _)| readback)
+    }
+
+    /// Returns pre-catalog create observation DATA from the same strict parser.
+    pub(crate) fn evaluate_created_v3(
+        &self,
+        outputs: [&[u8]; 3],
+    ) -> Result<CaptureCreatedDatasetReadbackV3, CaptureZfsReadbackErrorV1> {
+        let CaptureReadbackTargetV3::Created { attempt_digest, .. } = &self.target else {
+            return Err(CaptureZfsReadbackErrorV1::InvalidRequirement);
+        };
+        let (readback, guid) = self.evaluate_inner_v3(outputs)?;
+        Ok(CaptureCreatedDatasetReadbackV3 {
+            record_digest: readback.record_digest, attempt_digest: *attempt_digest,
+            guid, observation_digest: readback.observation_digest,
+            dataset_available_bytes: readback.dataset_available_bytes,
+            observed_headroom_bytes: readback.observed_headroom_bytes,
+        })
+    }
+
+    fn evaluate_inner_v3(
+        &self,
+        outputs: [&[u8]; 3],
+    ) -> Result<(CaptureZfsReadbackV1, u64), CaptureZfsReadbackErrorV1> {
+        let requirement = self.target.requirement();
         let pool = parse_row::<4>(outputs[0])?;
         if pool[0] != requirement.root.pool()
             || pool[1] != "-"
@@ -454,9 +524,17 @@ impl CaptureZfsReadbackPlanV1 {
 
         let dataset = parse_row::<10>(outputs[2])?;
         let dataset_available = decimal(dataset[9])?;
-        if dataset[0] != self.verified.dataset_name()
+        let mut observed_guid = None;
+        if dataset[0] != requirement.dataset_name()
             || dataset[1] != "filesystem"
-            || decimal(dataset[2])? != self.verified.guid()
+            || {
+                let guid = decimal(dataset[2])?;
+                observed_guid = Some(guid);
+                match self.target.expected_guid() {
+                    Some(expected) => guid != expected,
+                    None => guid == 0,
+                }
+            }
             || dataset[3] != "-"
             || decimal(dataset[4])? != requirement.allocation_bytes
             || decimal(dataset[5])? != requirement.allocation_bytes
@@ -472,7 +550,7 @@ impl CaptureZfsReadbackPlanV1 {
         digest.update(OBSERVATION_DOMAIN);
         digest.update([self.phase]);
         digest.update(self.record_digest.as_bytes());
-        digest.update(self.verified.binding().as_bytes());
+        digest.update(self.target.binding().as_bytes());
         if let Some(write_result_digest) = self.write_result_digest {
             digest.update(write_result_digest.as_bytes());
         }
@@ -489,15 +567,27 @@ impl CaptureZfsReadbackPlanV1 {
             digest.update(output);
         }
 
-        Ok(CaptureZfsReadbackV1 {
+        let guid = observed_guid.ok_or(CaptureZfsReadbackErrorV1::InvalidOutput)?;
+        Ok((CaptureZfsReadbackV1 {
             record_digest: self.record_digest,
-            catalog_binding: self.verified.binding(),
+            catalog_binding: self.target.binding(),
             observation_digest: ObjectDigest::from_bytes(digest.finalize().into()),
             dataset_available_bytes: dataset_available,
             observed_headroom_bytes: dataset_available
                 - (self.required_dataset_available_bytes - self.metadata_headroom_bytes),
-        })
+        }, guid))
     }
+}
+
+/// Carries observed creation facts without catalog verification or native grant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureCreatedDatasetReadbackV3 {
+    pub(crate) record_digest: ObjectDigest,
+    pub(crate) attempt_digest: ObjectDigest,
+    pub(crate) guid: u64,
+    pub(crate) observation_digest: ObjectDigest,
+    pub(crate) dataset_available_bytes: u64,
+    pub(crate) observed_headroom_bytes: u64,
 }
 
 /// Carries parsed readback data without worker provenance or effect authority.
@@ -545,4 +635,39 @@ fn decimal(value: &str) -> Result<u64, CaptureZfsReadbackErrorV1> {
     value
         .parse()
         .map_err(|_| CaptureZfsReadbackErrorV1::InvalidOutput)
+}
+
+// The exact two readonly argv recipes have one source for local and fixed-worker
+// callers. The argument is a validated managed root, never caller-supplied argv.
+pub(crate) fn capture_preflight_commands_v1(root: &crate::ManagedDatasetRoot)
+    -> [CaptureZfsReadbackCommandV1; 2]
+{
+    [
+            CaptureZfsReadbackCommandV1 {
+                tool: CaptureZfsToolV1::Zpool,
+                arguments: [
+                    "list",
+                    "-H",
+                    "-p",
+                    "-o",
+                    "name,guid,checkpoint,available,health",
+                    root.pool(),
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+            },
+            CaptureZfsReadbackCommandV1 {
+                tool: CaptureZfsToolV1::Zfs,
+                arguments: [
+                    "list",
+                    "-H",
+                    "-p",
+                    "-o",
+                    "name,type,guid,available",
+                    root.dataset_prefix(),
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+            },
+        ]
 }

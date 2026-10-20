@@ -33,6 +33,13 @@ pub enum DormantBrokerPublicationExecutionFailureV1<Domain> {
         error: BrokerSessionSecurityError,
         request: DormantReceivedBrokerDescriptorRequestV1,
     },
+    /// The genuine native callee refused; its whole owner remains on Host.
+    NativeRefused {
+        /// Preserves the coarse call boundary while Host keeps the exact cause.
+        error: DormantBrokerExecutionErrorV1<Domain>,
+        /// Keeps the actual authenticated request and received descriptor.
+        request: DormantReceivedBrokerDescriptorRequestV1,
+    },
     /// Publication dispatch began; only protected readback may resolve the request.
     OutcomeUnknown {
         error: DormantBrokerExecutionErrorV1<Domain>,
@@ -44,7 +51,8 @@ pub enum DormantBrokerPublicationExecutionFailureV1<Domain> {
 #[must_use = "resolve the exact physical publication or retain its custody"]
 pub struct DormantHostCatalogPublicationUnknownV1 {
     request: DormantReceivedBrokerRequestV1,
-    descriptor: OwnedFd,
+    descriptor: Option<OwnedFd>,
+    native_completed: Option<aos_sandbox_host::catalog::HostCatalogPublicationCompletedV2>,
     snapshot: aos_sandbox_protocol::HostCatalogSnapshot,
     intended_bytes: u64,
     intended_generation: u64,
@@ -114,6 +122,109 @@ fn publication_response_body(
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+
+    /// Executes the installed publication through the real consumed Host owner.
+    ///
+    /// # Errors
+    /// Keeps the exact request on native refusal and the actual completed
+    /// publication on response-commit refusal. It never invokes ordinary
+    /// unpriced ambiguity readback after an entered Host native failure.
+    pub async fn execute_original_host_catalog_publication_and_commit_v2(
+        &mut self, request: DormantReceivedBrokerDescriptorRequestV1,
+        host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+        publisher: &aos_sandbox_host::catalog::FileHostCatalogPublisher,
+    ) -> Result<ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerPublicationExecutionFailureV1<aos_sandbox_host::DormantHostBrokerCallErrorV1>>
+    {
+        if request.request.method() != BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
+            || request.request.authorization().is_some() || request.descriptors.len() != 1
+            || request.request.host_catalog_publication_data_v2().is_none()
+        {
+            return Err(DormantBrokerPublicationExecutionFailureV1::BeforeEffect {
+                error: BrokerSessionSecurityError::Currentness, request,
+            });
+        }
+        let mut currentness: Option<Result<(), BrokerSessionSecurityError>> = None;
+        let mut pending_guard = || {
+            currentness = Some((|| {
+                let (gate, context) = self.0.reopen_broker_outcome(&request.request)?;
+                drop(gate);
+                let publication = request.request.host_catalog_publication_data_v2()
+                    .ok_or(BrokerSessionSecurityError::Currentness)?;
+                if publication.header().request_id() != &request.request.request_id()
+                    || publication.header().protocol_version() !=
+                        ProtocolVersion::new(context.protocol_major(), context.protocol_minor())
+                {
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+                // The callee's retained paired samples enforce the same
+                // absolute Header deadline before write/rename and after posts.
+                Ok(())
+            })());
+            if matches!(currentness, Some(Ok(()))) { Ok(()) }
+            else { Err(aos_sandbox_host::HostError::Fence(
+                "Host catalog pending Session refused; exact Security cause retained")) }
+        };
+        let outcome = match host.borrow_catalog_publication_v2() {
+            Ok(mut original) => original.publish_once_v2(
+                &request.request, publisher, &request.descriptors[0], &mut pending_guard).await,
+            Err(cause) => {
+                drop(pending_guard);
+                return Err(DormantBrokerPublicationExecutionFailureV1::NativeRefused {
+                    error: DormantBrokerExecutionErrorV1::Domain(cause), request,
+                });
+            }
+        };
+        drop(pending_guard);
+        let mut completed = match outcome {
+            Ok(completed) => completed,
+            Err(cause) => return Err(DormantBrokerPublicationExecutionFailureV1::NativeRefused {
+                error: match currentness {
+                    Some(Err(cause)) => DormantBrokerExecutionErrorV1::Currentness(cause),
+                    _ => DormantBrokerExecutionErrorV1::Domain(cause.into()),
+                },
+                request,
+            }),
+        };
+        let publication = match request.request.host_catalog_publication_data_v2() {
+            Some(publication) => publication,
+            None => return Err(DormantBrokerPublicationExecutionFailureV1::BeforeEffect {
+                error: BrokerSessionSecurityError::Currentness, request,
+            }),
+        };
+        let intended_bytes = publication.catalog_bytes();
+        let intended_generation = publication.catalog_generation();
+        let intended_digest = publication.catalog_digest();
+        let status = match completed.outcome_v2() {
+            aos_sandbox_host::catalog::HostCatalogPublicationOutcome::Published =>
+                HostCatalogPublicationStatus::HOST_CATALOG_PUBLICATION_STATUS_PUBLISHED,
+            aos_sandbox_host::catalog::HostCatalogPublicationOutcome::Replay =>
+                HostCatalogPublicationStatus::HOST_CATALOG_PUBLICATION_STATUS_REPLAY,
+        };
+        let snapshot = match completed.take_snapshot_v2() {
+            Some(snapshot) => snapshot,
+            None => return Err(DormantBrokerPublicationExecutionFailureV1::NativeRefused {
+                error: DormantBrokerExecutionErrorV1::Domain(
+                    aos_sandbox_host::HostError::Fence("Host catalog completion was already consumed").into()),
+                request,
+            }),
+        };
+        let DormantReceivedBrokerDescriptorRequestV1 { request, descriptors } = request;
+        // All local copies of this sole received role are physically closed
+        // before signing its CLOSED disposition. The native owner already
+        // unmapped and closed its own positively validated input duplicate.
+        drop(descriptors);
+        let custody = DormantHostCatalogPublicationUnknownV1 {
+            request: DormantReceivedBrokerRequestV1(request),
+            descriptor: None, native_completed: Some(completed), snapshot,
+            intended_bytes, intended_generation, intended_digest, known_status: Some(status),
+        };
+        self.commit_host_catalog_publication(&custody, status)
+            .map_err(|error| DormantBrokerPublicationExecutionFailureV1::OutcomeUnknown {
+                error: DormantBrokerExecutionErrorV1::Currentness(error), recovery: custody,
+            })
+    }
+
     /// Publishes one sealed Host catalog before signing its exact result.
     ///
     /// # Errors
@@ -202,7 +313,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let descriptor = descriptors.remove(0);
         let mut custody = DormantHostCatalogPublicationUnknownV1 {
             request: DormantReceivedBrokerRequestV1(authenticated_request),
-            descriptor,
+            descriptor: Some(descriptor),
+            native_completed: None,
             snapshot,
             intended_bytes: publication.catalog_bytes(),
             intended_generation: publication.catalog_generation(),
@@ -247,13 +359,24 @@ impl DormantAuthenticatedBrokerSessionV1 {
         DormantHostCatalogPublicationRecoveryProgressV1,
         DormantBrokerPublicationExecutionFailureV1<aos_sandbox_host::DormantHostBrokerCallErrorV1>,
     > {
-        if validated_publication_snapshot(
-            &recovery.descriptor,
-            recovery.intended_bytes,
-            recovery.intended_generation,
-            recovery.intended_digest,
-        )
-        .is_err()
+        if recovery.native_completed.is_some() {
+            // Only this private completed native owner can omit the already
+            // closed input descriptor. It authorizes response recovery only.
+            let Some(status) = recovery.known_status else {
+                return Err(DormantBrokerPublicationExecutionFailureV1::OutcomeUnknown {
+                    error: DormantBrokerExecutionErrorV1::Currentness(BrokerSessionSecurityError::Currentness),
+                    recovery,
+                });
+            };
+            return self.commit_host_catalog_publication(&recovery, status)
+                .map(DormantHostCatalogPublicationRecoveryProgressV1::ResponseCommit)
+                .map_err(|error| DormantBrokerPublicationExecutionFailureV1::OutcomeUnknown {
+                    error: DormantBrokerExecutionErrorV1::Currentness(error), recovery,
+                });
+        }
+        if recovery.descriptor.as_ref().is_none_or(|descriptor| validated_publication_snapshot(
+            descriptor, recovery.intended_bytes, recovery.intended_generation, recovery.intended_digest,
+        ).is_err())
         {
             return Err(DormantBrokerPublicationExecutionFailureV1::OutcomeUnknown {
                 error: DormantBrokerExecutionErrorV1::Currentness(
@@ -356,7 +479,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
                     error,
                     request: DormantReceivedBrokerDescriptorRequestV1 {
                         request: custody.request.0,
-                        descriptors: vec![custody.descriptor],
+                        descriptors: custody.descriptor.into_iter().collect(),
                     },
                 });
             }
@@ -366,7 +489,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 error,
                 request: DormantReceivedBrokerDescriptorRequestV1 {
                     request: custody.request.0,
-                    descriptors: vec![custody.descriptor],
+                    descriptors: custody.descriptor.into_iter().collect(),
                 },
             });
         }

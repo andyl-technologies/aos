@@ -4,6 +4,10 @@
 //! broker session proves the sender; the fixed Host execution owner supplies
 //! currentness, admission, effect, and outcome authority.
 
+pub mod admission_content;
+pub mod monitor;
+pub mod capture_terminal;
+
 use aos_proto::aos::sandbox::local::v1::{
     ApplyHostExecutionRequestV1, HostExecutionActionV1, HostExecutionCompletionStatusV1,
     HostExecutionOutcomeV1, HostExecutionPhaseV1, QueryHostExecutionRequestV1,
@@ -37,6 +41,11 @@ pub enum HostExecutionTerminalResultV1 {
     Exited(i32),
     /// The guest observed cancellation of the child.
     Canceled,
+    /// The Guest timeout owner reaped the original tree and retained its waitstatus.
+    ///
+    /// This result is terminal evidence only inside its authenticated Failed
+    /// response and matching FailedPermanent completion, never from a clock.
+    TimedOut(aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4),
     /// The v2 Guest producer retained the exact original Linux waitstatus.
     Original {
         /// Original leader status, never a relay exit or synthetic sentinel.
@@ -57,10 +66,10 @@ pub enum HostExecutionTerminalResultV1 {
 pub fn decode_host_execution_terminal_result_v1(
     bytes: &[u8],
 ) -> Result<HostExecutionTerminalResultV1, ProtocolValidationError> {
-    if bytes.get(..8) == Some(b"AOSGER02".as_slice()) {
+    if matches!(bytes.get(..8), Some(magic) if magic == b"AOSGER02" || magic == b"AOSGER03") {
         if bytes.len() != GUEST_RESULT_HEADER_BYTES + 4
             || bytes[9..13] != 4_u32.to_be_bytes()
-            || !matches!(bytes[8], 6 | 7)
+            || if bytes.get(..8) == Some(b"AOSGER03".as_slice()) { bytes[8] != 8 } else { !matches!(bytes[8], 6 | 7) }
         {
             return Err(ProtocolValidationError::InvalidField(
                 "terminal guest result v2",
@@ -73,6 +82,9 @@ pub fn decode_host_execution_terminal_result_v1(
         );
         let status = aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(raw)
             .map_err(|_| ProtocolValidationError::InvalidField("terminal guest result v2"))?;
+        if bytes.get(..8) == Some(b"AOSGER03".as_slice()) {
+            return Ok(HostExecutionTerminalResultV1::TimedOut(status));
+        }
         return Ok(HostExecutionTerminalResultV1::Original {
             status,
             canceled: bytes[8] == 7,
@@ -109,6 +121,8 @@ pub fn decode_host_execution_terminal_result_v1(
     }
 }
 
+const SPEC_LIFETIME_ADMISSION_ATTEMPT_DOMAIN_V5: &[u8] =
+    b"aos.sandbox.host.execution-lifetime-admission-attempt.v5\0";
 const SPEC_ATTEMPT_DOMAIN: &[u8] = b"aos.sandbox.host.execution-spec-attempt.v1\0";
 const QUERY_SPEC_ATTEMPT_DOMAIN: &[u8] = b"aos.sandbox.host.execution-query-spec-attempt.v1\0";
 const QUERY_SPEC_ATTEMPT_DOMAIN_V2: &[u8] = b"aos.sandbox.host.execution-query-spec-attempt.v2\0";
@@ -151,6 +165,25 @@ impl HostExecutionSpecContentFieldsV1 {
                 action,
                 self.bytes,
                 self.digest,
+            ),
+            ..self
+        }
+    }
+
+    /// Binds the complete tagged lifetime content to one version-five Apply.
+    #[must_use]
+    pub fn bind_lifetime_admission_attempt_v5(
+        self,
+        request_id: [u8; 16],
+        operation_id: [u8; 16],
+        execution_id: ExecutionId,
+        source_commitment: ObjectDigest,
+    ) -> Self {
+        Self {
+            attempt_commitment: spec_attempt_commitment_with_domain(
+                SPEC_LIFETIME_ADMISSION_ATTEMPT_DOMAIN_V5, request_id, operation_id,
+                execution_id, source_commitment, EffectOperationV1::AuthorizeExecution,
+                self.bytes, self.digest,
             ),
             ..self
         }
@@ -200,6 +233,25 @@ impl HostExecutionSpecContentFieldsV1 {
             ),
             ..self
         }
+    }
+
+    /// Binds a content5 monitor read to the exact request and original lineage selectors.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn bind_query_attempt_v3(self, request_id: [u8; 16], create: [u8; 16],
+        execution: ExecutionId, source: ObjectDigest, specification: ObjectDigest,
+        selector: monitor::HostExecutionMonitorSelectorV3) -> Self {
+        let mut hash = Sha256::new();
+        hash.update(b"aos.sandbox.host.execution-query-spec-attempt.v3\0");
+        hash.update(request_id);
+        hash.update(create);
+        hash.update(execution.as_bytes());
+        hash.update(source.as_bytes());
+        hash.update(self.bytes.to_be_bytes());
+        hash.update(self.digest);
+        hash.update(specification.as_bytes());
+        selector.append_comparison_bytes_v3(&mut hash);
+        Self { attempt_commitment: hash.finalize().into(), ..self }
     }
 
     /// Returns the exact expected sealed descriptor size.
@@ -269,8 +321,18 @@ fn spec_attempt_commitment_v1(
     bytes: u64,
     digest: [u8; 32],
 ) -> [u8; 32] {
+    spec_attempt_commitment_with_domain(SPEC_ATTEMPT_DOMAIN, request_id,
+        operation_id, execution_id, source_commitment, action, bytes, digest)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spec_attempt_commitment_with_domain(
+    domain: &[u8], request_id: [u8; 16], operation_id: [u8; 16],
+    execution_id: ExecutionId, source_commitment: ObjectDigest,
+    action: EffectOperationV1, bytes: u64, digest: [u8; 32],
+) -> [u8; 32] {
     let mut attempt = Sha256::new();
-    attempt.update(SPEC_ATTEMPT_DOMAIN);
+    attempt.update(domain);
     attempt.update(request_id);
     attempt.update(operation_id);
     attempt.update(execution_id.as_bytes());
@@ -330,6 +392,9 @@ pub struct ValidatedHostExecutionApplyV1 {
     execution_id: ExecutionId,
     source_commitment: ObjectDigest,
     action: EffectOperationV1,
+    content_version: u32,
+    admission_accepted_request: Option<ObjectDigest>,
+    admission_source: Option<admission_content::LifetimeSourceDataV5>,
     specification: Option<aos_sandbox_core::ExecutionSpecV1>,
     content: Option<HostExecutionSpecContentFieldsV1>,
 }
@@ -373,9 +438,29 @@ impl ValidatedHostExecutionApplyV1 {
         }
     }
 
+    /// Returns the version bound to the signed complete descriptor contents.
+    #[must_use]
+    pub const fn content_version(&self) -> u32 { self.content_version }
+
     /// Returns the signed content reference for grant matching.
     pub const fn content_fields(&self) -> Option<HostExecutionSpecContentFieldsV1> {
         self.content
+    }
+
+    /// Returns the exact version-five accepted-request DATA after full content validation.
+    ///
+    /// This field grants no native claim or execution permission on its own.
+    #[must_use]
+    pub const fn admission_accepted_request_digest_v5(&self) -> Option<ObjectDigest> {
+        self.admission_accepted_request
+    }
+
+    /// Copies source DATA only after the same complete sealed-content validation.
+    ///
+    /// A signed admission and native original remain independently mandatory.
+    #[must_use]
+    pub const fn admission_source_data_v5(&self) -> Option<admission_content::LifetimeSourceDataV5> {
+        self.admission_source
     }
 
     /// Validates one pinned sealed descriptor against this exact Apply attempt.
@@ -388,14 +473,27 @@ impl ValidatedHostExecutionApplyV1 {
         let expected = self.content.ok_or(ProtocolValidationError::InvalidField(
             "spec transfer version",
         ))?;
-        let actual = host_execution_spec_content_fields_v1(
-            *self.header.request_id(),
-            self.operation_id,
-            self.execution_id,
-            self.source_commitment,
-            self.action,
-            bytes,
-        )?;
+        let (actual, specification_bytes, admission_accepted_request, admission_source) = if self.content_version == 5 {
+            let admission = admission_content::HostExecutionAdmissionContentV5::decode(bytes)?;
+            let fields = crate::execution_spec_attempt::ExecutionSpecAttemptFieldsV1::decode(
+                admission.attempt_bytes(),
+            ).map_err(|_| ProtocolValidationError::InvalidField("admission attempt"))?;
+            if self.action != EffectOperationV1::AuthorizeExecution
+                || fields.execution != self.execution_id
+                || fields.create_operation.as_bytes() != &self.operation_id
+            {
+                return Err(ProtocolValidationError::InvalidField("admission identity"));
+            }
+            let actual = HostExecutionSpecContentFieldsV1::for_grant(bytes)
+                .bind_lifetime_admission_attempt_v5(*self.header.request_id(),
+                    self.operation_id, self.execution_id, self.source_commitment);
+            (actual, fields.specification_bytes, Some(fields.accepted_request_digest), Some(admission.source_data_v5()))
+        } else {
+            (host_execution_spec_content_fields_v1(
+                *self.header.request_id(), self.operation_id, self.execution_id,
+                self.source_commitment, self.action, bytes,
+            )?, bytes, None, None)
+        };
         if actual != expected {
             return Err(ProtocolValidationError::InvalidField("spec content"));
         }
@@ -404,13 +502,15 @@ impl ValidatedHostExecutionApplyV1 {
                 maximum_bytes: MAXIMUM_HOST_EXECUTION_SPEC_BYTES,
                 ..DecodeLimits::default()
             };
-            let specification = decode_execution_spec_v1(bytes, limits)
+            let specification = decode_execution_spec_v1(specification_bytes, limits)
                 .map_err(|_| ProtocolValidationError::InvalidField("spec content"))?;
             if specification.execution() != self.execution_id {
                 return Err(ProtocolValidationError::InvalidField("execution_id"));
             }
             self.specification = Some(specification);
         }
+        self.admission_accepted_request = admission_accepted_request;
+        self.admission_source = admission_source;
         Ok(())
     }
 }
@@ -424,9 +524,16 @@ pub struct ValidatedHostExecutionQueryV1 {
     source_commitment: ObjectDigest,
     content: HostExecutionSpecContentFieldsV1,
     specification_digest: ObjectDigest,
+    monitor: Option<monitor::HostExecutionMonitorSelectorV3>,
 }
 
 impl ValidatedHostExecutionQueryV1 {
+    /// Borrows the exact signed monitor selector, without admitting a child.
+    #[must_use]
+    pub const fn monitor_v3(&self) -> Option<&monitor::HostExecutionMonitorSelectorV3> {
+        self.monitor.as_ref()
+    }
+
     /// Returns the validated broker request header.
     pub const fn header(&self) -> &ValidatedHeader {
         &self.header
@@ -545,10 +652,16 @@ pub fn decode_host_execution_apply_v1(
             ));
         }
     };
-    let content = if request.spec_transfer_version == 1 {
+    let content = if matches!(request.spec_transfer_version, 1 | 5) {
+        let maximum = if request.spec_transfer_version == 5 {
+            if action != EffectOperationV1::AuthorizeExecution {
+                return Err(ProtocolValidationError::InvalidField("admission action"));
+            }
+            admission_content::MAXIMUM_ADMISSION_CONTENT_BYTES_V5
+        } else { MAXIMUM_HOST_EXECUTION_SPEC_BYTES };
         if !request.canonical_execution_spec.is_empty()
             || request.spec_content_bytes == 0
-            || request.spec_content_bytes > MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64
+            || request.spec_content_bytes > maximum as u64
         {
             return Err(ProtocolValidationError::InvalidField("spec content"));
         }
@@ -561,8 +674,12 @@ pub fn decode_host_execution_apply_v1(
         {
             return Err(ProtocolValidationError::InvalidField("spec content"));
         }
-        if spec_attempt_commitment_v1(
-            *header.request_id(),
+        let domain = match request.spec_transfer_version {
+            5 => SPEC_LIFETIME_ADMISSION_ATTEMPT_DOMAIN_V5,
+            _ => SPEC_ATTEMPT_DOMAIN,
+        };
+        if spec_attempt_commitment_with_domain(
+            domain, *header.request_id(),
             operation_id,
             execution_id,
             source_commitment,
@@ -592,6 +709,9 @@ pub fn decode_host_execution_apply_v1(
         execution_id,
         source_commitment,
         action,
+        content_version: request.spec_transfer_version,
+        admission_accepted_request: None,
+        admission_source: None,
         specification: None,
         content: Some(content),
     })
@@ -627,12 +747,22 @@ pub fn decode_host_execution_query_v1(
         now_boottime_nanoseconds,
     )?;
     let content_bytes = request.spec_content_bytes;
-    if request.spec_transfer_version != 1 {
-        return Err(ProtocolValidationError::InvalidField(
-            "spec transfer version",
-        ));
-    }
-    if content_bytes == 0 || content_bytes > MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64 {
+    let monitor = match request.query_binding_version {
+        2 if request.spec_transfer_version == 1
+            && request.monitor_runtime_handle.is_empty()
+            && request.monitor_first_observe_operation_id.is_empty()
+            && request.monitor_source_digest.is_empty() && request.monitor_source_kind == 0 => None,
+        3 if request.spec_transfer_version == 5 => Some(monitor::HostExecutionMonitorSelectorV3::new(
+            ObjectDigest::from_bytes(exact_nonzero::<32>(&request.monitor_runtime_handle, "monitor runtime")?),
+            aos_sandbox_core::runtime_backend::BackendOperationIdV1::new(exact_nonzero::<16>(
+                &request.monitor_first_observe_operation_id, "first Observe")?).map_err(|_| monitor::invalid())?,
+            ObjectDigest::from_bytes(exact_nonzero::<32>(&request.monitor_source_digest, "monitor source")?),
+            request.monitor_source_kind)?),
+        _ => return Err(ProtocolValidationError::InvalidField("query binding version")),
+    };
+    let maximum = if monitor.is_some() { admission_content::MAXIMUM_ADMISSION_CONTENT_BYTES_V5 }
+        else { MAXIMUM_HOST_EXECUTION_SPEC_BYTES };
+    if content_bytes == 0 || content_bytes > maximum as u64 {
         return Err(ProtocolValidationError::InvalidField("spec_content_bytes"));
     }
     let content_digest = exact_nonzero::<32>(&request.spec_content_digest, "spec_content_digest")?;
@@ -645,11 +775,6 @@ pub fn decode_host_execution_query_v1(
         &request.source_operation_commitment,
         "source_operation_commitment",
     )?);
-    if request.query_binding_version != 2 {
-        return Err(ProtocolValidationError::InvalidField(
-            "query binding version",
-        ));
-    }
     let specification_digest = ObjectDigest::from_bytes(exact_nonzero::<32>(
         &request.execution_spec_digest,
         "execution_spec_digest",
@@ -658,14 +783,13 @@ pub fn decode_host_execution_query_v1(
         bytes: content_bytes,
         digest: content_digest,
         attempt_commitment: [0; 32],
-    }
-    .bind_query_attempt_v2(
-        *header.request_id(),
-        operation_id,
-        execution_id,
-        source_commitment,
-        specification_digest,
-    );
+    };
+    let content = match monitor {
+        Some(selector) => content.bind_query_attempt_v3(*header.request_id(), operation_id,
+            execution_id, source_commitment, specification_digest, selector),
+        None => content.bind_query_attempt_v2(*header.request_id(), operation_id,
+            execution_id, source_commitment, specification_digest),
+    };
     if content.attempt_commitment() != attempt_commitment {
         return Err(ProtocolValidationError::InvalidField(
             "spec attempt commitment",
@@ -678,6 +802,7 @@ pub fn decode_host_execution_query_v1(
         source_commitment,
         content,
         specification_digest,
+        monitor,
     })
 }
 
@@ -692,11 +817,32 @@ pub fn decode_host_execution_outcome_v1(
     execution_id: ExecutionId,
     source_commitment: ObjectDigest,
 ) -> Result<HostExecutionOutcomeV1, ProtocolValidationError> {
+    let outcome = decode_canonical_execution_outcome_v3(bytes)?;
+    require_ordinary_outcome_shape_v3(&outcome)?;
+    validate_execution_outcome_fields_v3(outcome, operation_id, execution_id, source_commitment)
+}
+
+fn decode_canonical_execution_outcome_v3(bytes: &[u8])
+    -> Result<HostExecutionOutcomeV1, ProtocolValidationError> {
     let outcome = HostExecutionOutcomeV1::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
     if !outcome.__buffa_unknown_fields.is_empty() || outcome.encode_to_vec() != bytes {
         return Err(ProtocolValidationError::UnknownFields);
     }
+    Ok(outcome)
+}
+
+fn require_ordinary_outcome_shape_v3(outcome: &HostExecutionOutcomeV1)
+    -> Result<(), ProtocolValidationError> {
+    if outcome.query_binding_version != 0 || outcome.backend_operation_sequence != 0
+        || !outcome.capture_terminal_marker.is_empty()
+    { return Err(monitor::invalid()); }
+    Ok(())
+}
+
+fn validate_execution_outcome_fields_v3(outcome: HostExecutionOutcomeV1,
+    operation_id: [u8; 16], execution_id: ExecutionId, source_commitment: ObjectDigest)
+    -> Result<HostExecutionOutcomeV1, ProtocolValidationError> {
     if outcome.operation_id != operation_id
         || outcome.execution_id != execution_id.as_bytes()
         || outcome.source_operation_commitment != source_commitment.as_bytes()
@@ -738,6 +884,7 @@ pub fn decode_host_execution_outcome_v1(
     if !outcome.terminal_guest_result.is_empty() {
         let terminal = decode_host_execution_terminal_result_v1(&outcome.terminal_guest_result)?;
         let expected_phase = match terminal {
+            HostExecutionTerminalResultV1::TimedOut(_) => 6,
             HostExecutionTerminalResultV1::Exited(_) => 4,
             HostExecutionTerminalResultV1::Canceled => 5,
             HostExecutionTerminalResultV1::Original { canceled, .. } => {
@@ -750,7 +897,9 @@ pub fn decode_host_execution_outcome_v1(
         };
         if outcome.phase.as_known() != Some(HostExecutionPhaseV1::HOST_EXECUTION_PHASE_COMPLETE)
             || outcome.completion_status.as_known()
-                != Some(HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_SUCCEEDED)
+                != Some(if matches!(terminal, HostExecutionTerminalResultV1::TimedOut(_)) {
+                    HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_FAILED_PERMANENT
+                } else { HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_SUCCEEDED })
             || outcome.completion_bytes.len() != 298
             || outcome.completion_bytes[8] != EffectOperationV1::Observe.code()
             || outcome.completion_bytes[225] != expected_phase
@@ -761,6 +910,107 @@ pub fn decode_host_execution_outcome_v1(
         }
     }
     Ok(outcome)
+}
+
+/// Retains validated historical monitor outcome DATA without native authority.
+pub struct ValidatedHostExecutionMonitorOutcomeV3 {
+    outcome: HostExecutionOutcomeV1,
+    lineage: Option<monitor::ExecutionMonitorLineageDataV5>,
+    capture_complete: Option<crate::storage_capture_result::CaptureCompleteRecordDataV2>,
+}
+
+impl ValidatedHostExecutionMonitorOutcomeV3 {
+    /// Borrows the exact canonical Host outcome.
+    #[must_use]
+    pub const fn outcome_v3(&self) -> &HostExecutionOutcomeV1 { &self.outcome }
+
+    /// Borrows ordinary monitor lineage; initial firstObserve and Absent carry none.
+    #[must_use]
+    pub const fn lineage_v3(&self) -> Option<&monitor::ExecutionMonitorLineageDataV5> { self.lineage.as_ref() }
+
+    /// Borrows full676 DATA after exact versioned original-marker comparison.
+    ///
+    /// Actual native Host read scope/currentness and independent fresh Source61
+    /// equality are required before Controller can publish physical completion.
+    #[must_use]
+    pub const fn capture_complete_v3(&self) -> Option<&crate::storage_capture_result::CaptureCompleteRecordDataV2> {
+        self.capture_complete.as_ref()
+    }
+}
+
+/// Validates Query3's actual existing terminal child and same-key Capture extension.
+///
+/// # Errors
+/// Rejects foreign sequence/source/runtime/result, unknown grammar, or a marker
+/// that changes C1's actual Complete or already-settled process reservation.
+pub fn decode_host_execution_monitor_outcome_v3(bytes: &[u8],
+    query: &ValidatedHostExecutionQueryV1) -> Result<ValidatedHostExecutionMonitorOutcomeV3, ProtocolValidationError> {
+    use aos_sandbox_core::runtime_backend::BackendOperationSequenceV1;
+    let selector = query.monitor_v3().copied().ok_or_else(monitor::invalid)?;
+    let outcome = decode_canonical_execution_outcome_v3(bytes)?;
+    if outcome.query_binding_version != 3 { return Err(monitor::invalid()); }
+    if outcome.phase.as_known() == Some(HostExecutionPhaseV1::HOST_EXECUTION_PHASE_ABSENT) {
+        if outcome.backend_operation_sequence != 0 || !outcome.capture_terminal_marker.is_empty() {
+            return Err(monitor::invalid());
+        }
+        let outcome = validate_execution_outcome_fields_v3(outcome, query.operation_id(),
+            query.execution_id(), query.source_commitment())?;
+        return Ok(ValidatedHostExecutionMonitorOutcomeV3 { outcome, lineage: None, capture_complete: None });
+    }
+    let sequence = BackendOperationSequenceV1::new(outcome.backend_operation_sequence)
+        .map_err(|_| monitor::invalid())?;
+    let initial = outcome.operation_id == selector.first_observe_v3().as_bytes();
+    let lineage = if initial { None } else {
+        Some(selector.lineage_for_sequence_v3(aos_sandbox_core::OperationId::from_bytes(query.operation_id()),
+            query.execution_id(), sequence)?)
+    };
+    let (operation, source) = match &lineage {
+        Some(lineage) => (*lineage.operation_v5().as_bytes(), lineage.commitment_v5()),
+        None => (*selector.first_observe_v3().as_bytes(), query.source_commitment()),
+    };
+    let outcome = validate_execution_outcome_fields_v3(outcome, operation, query.execution_id(), source)?;
+    require_observed_completion_binding_v3(&outcome, operation, query.execution_id(), source,
+        sequence.get(), selector.runtime_v3(), query.specification_digest())?;
+    let capture_complete = if outcome.capture_terminal_marker.is_empty() { None } else {
+        if selector.source_kind_v3() != 2 || outcome.terminal_guest_result.is_empty()
+            || outcome.phase.as_known() != Some(HostExecutionPhaseV1::HOST_EXECUTION_PHASE_COMPLETE)
+        { return Err(monitor::invalid()); }
+        let marker = capture_terminal::HostExecutionTerminalMarkerDataV3::decode_v3(&outcome.capture_terminal_marker)?;
+        let original = marker.original_bytes_v3();
+        let complete = *marker.capture_complete_v3().ok_or_else(monitor::invalid)?;
+        if original.get(..32) != outcome.completion_bytes.get(113..145)
+            || original.get(32..48) != Some(operation.as_slice())
+            || original.get(48..80) != Some(outcome.effect_commitment.as_slice())
+            || complete.source_digest != selector.source_v3()
+            || complete.execution != *query.execution_id().as_bytes()
+            || complete.create_operation != query.operation_id()
+        { return Err(monitor::invalid()); }
+        Some(complete)
+    };
+    Ok(ValidatedHostExecutionMonitorOutcomeV3 { outcome, lineage, capture_complete })
+}
+
+fn require_observed_completion_binding_v3(outcome: &HostExecutionOutcomeV1,
+    operation: [u8; 16], execution: ExecutionId, source: ObjectDigest,
+    sequence: u64, runtime: ObjectDigest, specification: ObjectDigest)
+    -> Result<(), ProtocolValidationError> {
+    if outcome.phase.as_known() != Some(HostExecutionPhaseV1::HOST_EXECUTION_PHASE_COMPLETE) { return Ok(()); }
+    let phase = crate::execution_evidence::decode_observe_completion_phase_v1(&outcome.completion_bytes,
+        operation, *source.as_bytes(), *execution.as_bytes(), specification, outcome.observation_sequence)
+        .map_err(|_| monitor::invalid())?;
+    use aos_sandbox_core::runtime_backend::BackendExecutionPhaseV1;
+    let status = match phase {
+        BackendExecutionPhaseV1::Running | BackendExecutionPhaseV1::Exited | BackendExecutionPhaseV1::Canceled =>
+            HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_SUCCEEDED,
+        BackendExecutionPhaseV1::Failed | BackendExecutionPhaseV1::Lost =>
+            HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_FAILED_PERMANENT,
+        _ => return Err(monitor::invalid()),
+    };
+    if outcome.completion_status.as_known() != Some(status) { return Err(monitor::invalid()); }
+    if outcome.completion_bytes.get(25..33) != Some(sequence.to_be_bytes().as_slice())
+        || outcome.completion_bytes.get(177..209) != Some(runtime.as_bytes().as_slice())
+    { return Err(monitor::invalid()); }
+    Ok(())
 }
 
 fn execution_result_digest(bytes: &[u8]) -> [u8; 32] {
@@ -977,6 +1227,51 @@ mod content_tests {
         }
     }
 
+    #[test]
+    fn monitor_query3_binds_every_original_selector_and_refuses_cross_version_fields() {
+        let selector = monitor::HostExecutionMonitorSelectorV3::new(
+            ObjectDigest::from_bytes([6; 32]),
+            aos_sandbox_core::runtime_backend::BackendOperationIdV1::new([7; 16]).unwrap(),
+            ObjectDigest::from_bytes([8; 32]), 2).unwrap();
+        let mut request = query(b"original content5 bytes");
+        request.query_binding_version = 3;
+        request.spec_transfer_version = 5;
+        request.monitor_runtime_handle = selector.runtime_v3().as_bytes().to_vec();
+        request.monitor_first_observe_operation_id = selector.first_observe_v3().as_bytes().to_vec();
+        request.monitor_source_digest = selector.source_v3().as_bytes().to_vec();
+        request.monitor_source_kind = selector.source_kind_v3();
+        request.spec_attempt_commitment = HostExecutionSpecContentFieldsV1::for_grant(b"original content5 bytes")
+            .bind_query_attempt_v3([1; 16], [2; 16], ExecutionId::from_bytes([3; 16]),
+                ObjectDigest::from_bytes([4; 32]), ObjectDigest::from_bytes([5; 32]), selector)
+            .attempt_commitment().to_vec();
+        let valid = decode_query(&request).unwrap();
+        assert_eq!(valid.monitor_v3(), Some(&selector));
+
+        for changed in 0..6 {
+            let mut foreign = request.clone();
+            match changed {
+                0 => foreign.monitor_runtime_handle[0] ^= 1,
+                1 => foreign.monitor_first_observe_operation_id[0] ^= 1,
+                2 => foreign.monitor_source_digest[0] ^= 1,
+                3 => foreign.monitor_source_kind = 1,
+                4 => foreign.query_binding_version = 2,
+                _ => foreign.spec_transfer_version = 1,
+            }
+            assert!(decode_query(&foreign).is_err());
+        }
+        let mut absent = HostExecutionOutcomeV1 {
+            operation_id: vec![2; 16], execution_id: vec![3; 16],
+            source_operation_commitment: vec![4; 32],
+            phase: HostExecutionPhaseV1::HOST_EXECUTION_PHASE_ABSENT.into(),
+            query_binding_version: 3, ..Default::default()
+        };
+        assert!(decode_host_execution_monitor_outcome_v3(&absent.encode_to_vec(), &valid).is_ok());
+        assert!(decode_host_execution_outcome_v1(&absent.encode_to_vec(), [2; 16],
+            ExecutionId::from_bytes([3; 16]), ObjectDigest::from_bytes([4; 32])).is_err());
+        absent.query_binding_version = 0;
+        assert!(decode_host_execution_monitor_outcome_v3(&absent.encode_to_vec(), &valid).is_err());
+    }
+
     fn decode_query(
         request: &QueryHostExecutionRequestV1,
     ) -> Result<ValidatedHostExecutionQueryV1, ProtocolValidationError> {
@@ -1104,16 +1399,16 @@ mod content_tests {
         assert!(matches!(
             decode_query(&legacy),
             Err(ProtocolValidationError::InvalidField(
-                "spec transfer version"
+                "query binding version"
             ))
         ));
 
         let mut unknown_version = request.clone();
-        unknown_version.spec_transfer_version = 2;
+        unknown_version.spec_transfer_version = 3;
         assert!(matches!(
             decode_query(&unknown_version),
             Err(ProtocolValidationError::InvalidField(
-                "spec transfer version"
+                "query binding version"
             ))
         ));
 
@@ -1263,5 +1558,30 @@ mod content_tests {
                 "spec transfer version"
             ))
         ));
+    }
+}
+
+#[cfg(test)]
+mod monitor_timeout_result_tests {
+    use super::*;
+
+    #[test]
+    fn original_timeout_waitstatus_requires_exact_new_magic_kind_and_width() {
+        let mut bytes = b"AOSGER03".to_vec();
+        bytes.push(8);
+        bytes.extend_from_slice(&4_u32.to_be_bytes());
+        bytes.extend_from_slice(&9_u32.to_be_bytes());
+        assert!(matches!(decode_host_execution_terminal_result_v1(&bytes),
+            Ok(HostExecutionTerminalResultV1::TimedOut(status)) if status == aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(9).unwrap()));
+        for width in 0..bytes.len() {
+            assert!(decode_host_execution_terminal_result_v1(&bytes[..width]).is_err());
+        }
+        for kind in [5, 6, 7, 9] {
+            let mut changed = bytes.clone();
+            changed[8] = kind;
+            assert!(decode_host_execution_terminal_result_v1(&changed).is_err());
+        }
+        bytes.push(0);
+        assert!(decode_host_execution_terminal_result_v1(&bytes).is_err());
     }
 }

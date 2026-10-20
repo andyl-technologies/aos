@@ -42,6 +42,9 @@ const MAXIMUM_CACHE_REPLAY_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
 /// It starts no listener or worker and sends no READY notification. After its
 /// original resources are acquired, failure terminates with custody resident
 /// instead of returning an ordinary runtime error.
+/// `--operator-recover-only` suppresses ordinary startup mutations and effects.
+/// It requires the public API and an actual confirmed PID 1 successor; the flag
+/// itself grants no recovery authority and sends no READY notification.
 /// The node identity is read from
 /// `CREDENTIALS_DIRECTORY/node-id`; broker endpoints,
 /// cgroups, journal location, and root-only diagnostic socket are fixed
@@ -90,6 +93,9 @@ fn run_ordinary_controller<A: ControllerServerAssembly>(
         startup.terminate_failed();
     }
     let normal_root_profile = startup.profile_share();
+    if configuration.operator_recover_only && normal_root_profile.is_none() {
+        startup.fail_runtime(ControllerRuntimeError::InvalidCredential);
+    }
     if configuration.create_q04_policy_subgate && normal_root_profile.is_none() {
         startup.fail_runtime(ControllerRuntimeError::InvalidCredential);
     }
@@ -300,7 +306,33 @@ fn run_retained_controller<A: ControllerServerAssembly>(
     profile: Option<Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
     launch: Option<aos_sandbox_broker_session_security::controller_composition::Pid1LaunchImageV1>,
 ) -> ! {
-    let mut parent = ControllerParentCustodyV1::<A>::new(profile, launch);
+    // The actual initial C pair already supplied the residual B ledger
+    // during selected profile admission. Fund concrete startup carriers
+    // before constructing the first Arc, credential reader or runtime.
+    let mut resource_opening = startup.take_resource_opening();
+    if configuration.operator_recover_only && resource_opening.is_none() {
+        startup.fail_runtime(ControllerRuntimeError::InvalidCredential);
+    }
+    let _prefix_unwind = AbortControllerCustodyUnwindV1;
+    if let Some(opening) = resource_opening.as_mut() {
+        let Some(profile) = profile.as_deref() else {
+            startup.terminate_failed();
+        };
+        if opening.admit_runtime_startup_once(
+            profile, runtime_receiving::startup_shape::<A>(
+                configuration.public_api, configuration.publisher_ingress,
+            ),
+            runtime_receiving::credential_shape::<A>(
+                configuration.public_api, !configuration.git_upload_bootstrap,
+                configuration.publisher_ingress,
+            ),
+        ).is_err() {
+            startup.fail_resource_opening(opening);
+        }
+    }
+    let mut parent = ControllerParentCustodyV1::<A>::new(
+        profile, launch, resource_opening,
+    );
     let worker = Arc::clone(&parent.worker);
     let Ok(mut originals) = worker.originals.lock() else {
         worker.terminate(ControllerResidentCauseV1::Closed("Controller owner lock poisoned"));
@@ -364,7 +396,9 @@ fn run_retained_controller<A: ControllerServerAssembly>(
     complete!(Publisher);
 
     begin!(Node);
-    originals.node = Some(checked!(read_node_id()));
+    originals.node = Some(checked!(if parent.runtime_receiving {
+        runtime_receiving::read_node_once(&mut parent.node_read)
+    } else { read_node_id() }));
     let node_id = required!(originals.node);
     complete!(Node);
 
@@ -387,19 +421,70 @@ fn run_retained_controller<A: ControllerServerAssembly>(
     complete!(Nix);
 
     begin!(GenesisInput);
-    originals.genesis = Some(checked!(
-        ProvisionedControllerSourceGenesisInputV1::from_systemd_credentials_optional()
-            .map_err(ControllerRuntimeError::from)
-    ));
+    if parent.runtime_receiving {
+        let profile = Arc::clone(required!(required!(originals.profile.as_ref()).as_ref()));
+        let opening = required!(parent.resource_opening.as_mut());
+        if opening.prepare_source_credentials_once(profile).is_err() {
+            worker.terminate(ControllerResidentCauseV1::Closed(
+                "original Source-genesis receiving preparation refused",
+            ));
+        }
+        parent.genesis_startup = Some(required!(opening.take_source_credentials_once()));
+        let receiver = required!(parent.genesis_startup.as_mut());
+        parent.genesis_capture = Some(receiver.capture_once());
+        if !matches!(parent.genesis_capture, Some(Ok(()))) {
+            // Original native/semantic causes and failed prefixes stay in the
+            // actual parent, before any later TLS input can be reached.
+            worker.terminate(ControllerResidentCauseV1::Closed(
+                "original Source-genesis startup input refused",
+            ));
+        }
+        originals.genesis = Some(required!(receiver.take_success()));
+    } else {
+        originals.genesis = Some(checked!(
+            ProvisionedControllerSourceGenesisInputV1::from_systemd_credentials_optional()
+                .map_err(ControllerRuntimeError::from)
+        ));
+    }
     complete!(GenesisInput);
+
+    begin!(RuntimePreparation);
+    if parent.runtime_receiving {
+        // SAME original prepay has completed and the actual parent parks the
+        // main reactor before any fallible Publisher registration work.
+        let envelope = {
+            let bank = required!(originals.resource_bank.as_ref());
+            let opening = match bank.lock() {
+                Ok(opening) => opening,
+                Err(_) => worker.terminate(ControllerResidentCauseV1::Closed(
+                    "original Runtime task envelope lock refused",
+                )),
+            };
+            required!(opening.admitted_runtime_task_envelope_v1())
+        };
+        // The actual admitted image mode reserves the persistent helper's
+        // own task before the pool exists. No idle thread is counted as gone.
+        let runtime = Arc::new(checked!(runtime_receiving::build_runtime(Some(envelope))));
+        // The same already-paid reactor is kept by both real startup owners.
+        // Sharing it adds no task, driver, role or admission permission.
+        originals.shared_runtime = Some(Arc::clone(&runtime));
+        parent.runtime = Some(resident_custody::ControllerParentRuntimeV1::Shared(runtime));
+    }
+    complete!(RuntimePreparation);
 
     begin!(PublisherRegistration);
     originals.publisher_registration = Some(None);
     if let Some(attempt) = &mut originals.publisher_attempt {
-        if attempt
-            .construct_registration_once(NodeId::from_bytes(node_id))
-            .is_err()
-        {
+        let constructed = if parent.runtime_receiving {
+            attempt.construct_registration_with_runtime_once(
+                NodeId::from_bytes(node_id),
+                required!(parent.runtime.as_ref()).handle().clone(),
+                Arc::downgrade(&worker),
+            )
+        } else {
+            attempt.construct_registration_once(NodeId::from_bytes(node_id))
+        };
+        if constructed.is_err() {
             worker.terminate(ControllerResidentCauseV1::Publisher);
         }
         originals.publisher_registration = Some(Some(required!(
@@ -413,15 +498,36 @@ fn run_retained_controller<A: ControllerServerAssembly>(
         // ExistingResident never imports or creates its own Source authority.
         originals.cache_bundle = Some(None);
     } else {
-        originals.cache_bundle = Some(checked!(read_cache_replay_bundle()));
-        if let Some(bundle) = required!(originals.cache_bundle.as_ref()) {
-            checked!(
-                CacheReplayControllerBootstrapOwnerV1::import_fixed_bundle_for_uid(
-                    configuration.uid,
-                    bundle,
-                )
-                .map_err(ControllerRuntimeError::CacheReplaySource)
-            );
+        originals.cache_bundle = Some(checked!(if parent.runtime_receiving {
+            runtime_receiving::read_bundle_once(&mut parent.cache_bundle_read)
+        } else { read_cache_replay_bundle() }));
+        if let Some(bundle) = required!(originals.cache_bundle.as_ref())
+            .as_ref().filter(|_| !configuration.operator_recover_only)
+        {
+            if parent.runtime_receiving {
+                let profile = required!(required!(originals.profile.as_ref()).as_deref());
+                let opening = required!(parent.resource_opening.as_mut());
+                if opening.import_selected_cache_bundle_once(
+                    profile, configuration.uid, bundle,
+                ).is_err() {
+                    // The actual importer/native/profile/resource cause stays
+                    // in the SAME original opening on this parent stack.
+                    worker.terminate(ControllerResidentCauseV1::Closed(
+                        "original Cache Replay source import failed",
+                    ));
+                }
+                checked!(runtime_receiving::retire_imported_bundle_read_v1(
+                    &mut parent.cache_bundle_read,
+                ));
+            } else {
+                checked!(
+                    CacheReplayControllerBootstrapOwnerV1::import_fixed_bundle_for_uid(
+                        configuration.uid,
+                        bundle,
+                    )
+                    .map_err(ControllerRuntimeError::CacheReplaySource)
+                );
+            }
         }
     }
     complete!(Cache);
@@ -429,8 +535,19 @@ fn run_retained_controller<A: ControllerServerAssembly>(
     begin!(Ownership);
     originals.snapshot_ownership = Some(Arc::new(OnceLock::new()));
     let ownership = checked!(
-        ControllerOwnershipConfigurationV1::from_process_credentials_optional()
-            .map_err(|_| ControllerRuntimeError::InvalidOwnershipCredential)
+        if parent.runtime_receiving {
+            if !parent.ownership_credentials.capture_once(|source| {
+                ControllerOwnershipConfigurationV1::from_process_credentials_with_source(source)
+            }) {
+                worker.terminate(ControllerResidentCauseV1::Closed(
+                    "original optional credential construction refused",
+                ));
+            }
+            Ok(required!(parent.ownership_credentials.take_completed()))
+        } else {
+            ControllerOwnershipConfigurationV1::from_process_credentials_optional()
+                .map_err(|_| ControllerRuntimeError::InvalidOwnershipCredential)
+        }
     );
     originals.ownership = Some(match ownership {
         None => None,
@@ -451,22 +568,55 @@ fn run_retained_controller<A: ControllerServerAssembly>(
 
     begin!(Attach);
     originals.attach = Some(checked!(
-        ControllerAttachCredentialsV1::from_process_credentials_optional()
-            .map_err(|_| ControllerRuntimeError::InvalidAttachCredential)
+        if parent.runtime_receiving {
+            if !parent.attach_credentials.capture_once(|source| {
+                ControllerAttachCredentialsV1::from_process_credentials_with_source(source)
+            }) {
+                worker.terminate(ControllerResidentCauseV1::Closed(
+                    "original optional credential construction refused",
+                ));
+            }
+            Ok(required!(parent.attach_credentials.take_completed()))
+        } else {
+            ControllerAttachCredentialsV1::from_process_credentials_optional()
+                .map_err(|_| ControllerRuntimeError::InvalidAttachCredential)
+        }
     ));
     complete!(Attach);
 
     begin!(Signer);
     originals.signer = Some(checked!(
-        ControllerBrokerPlanSignerV1::from_process_credentials_optional()
-            .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential)
+        if parent.runtime_receiving {
+            if !parent.worker_signer_credentials.capture_once(|source| {
+                ControllerBrokerPlanSignerV1::from_create_process_credentials_with_source(source)
+            }) {
+                worker.terminate(ControllerResidentCauseV1::Closed(
+                    "original optional credential construction refused",
+                ));
+            }
+            Ok(required!(parent.worker_signer_credentials.take_completed()))
+        } else {
+            ControllerBrokerPlanSignerV1::from_process_credentials_optional()
+                .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential)
+        }
     ));
     complete!(Signer);
 
     begin!(Pins);
     originals.pins = Some(checked!(
-        load_guest_root_template_pins_optional()
-            .map_err(|_| ControllerRuntimeError::InvalidGuestRootCredential)
+        if parent.runtime_receiving {
+            if !parent.pins_credentials.capture_once(|source| {
+                super::guest_root_credentials::load_guest_root_template_pins_with_source(source)
+            }) {
+                worker.terminate(ControllerResidentCauseV1::Closed(
+                    "original optional credential construction refused",
+                ));
+            }
+            Ok(required!(parent.pins_credentials.take_completed()))
+        } else {
+            load_guest_root_template_pins_optional()
+                .map_err(|_| ControllerRuntimeError::InvalidGuestRootCredential)
+        }
     ));
     complete!(Pins);
 
@@ -488,18 +638,35 @@ fn run_retained_controller<A: ControllerServerAssembly>(
     complete!(Sessions);
 
     begin!(Runtime);
-    parent.runtime = Some(checked!(
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(ControllerRuntimeError::Runtime)
-    ));
+    if !parent.runtime_receiving {
+        parent.runtime = Some(resident_custody::ControllerParentRuntimeV1::Ordinary(
+            checked!(runtime_receiving::build_runtime(None)),
+        ));
+    }
+    required!(parent.runtime.as_ref());
     complete!(Runtime);
 
     begin!(Host);
-    parent.host = Some(match required!(parent.runtime.as_ref())
-        .block_on(attachment_target::observe_host_service_identity())
-    {
+    let host_identity = if parent.runtime_receiving {
+        // Prepare the partial destination before its first bounded transport
+        // or native read. Every reached failure remains in this same parent.
+        parent.host_startup = Some(
+            attachment_target::startup_identity::ControllerAttachmentStartupV1::host(),
+        );
+        let attempt = required!(parent.host_startup.as_mut());
+        match required!(parent.runtime.as_ref()).block_on(attempt.observe_once()) {
+            Ok(()) => attempt.take_cgroup().map(|cgroup| aos_sandbox::runtime_scope::HostServiceIdentity {
+                uid: 0,
+                gid: 0,
+                cgroup,
+            }).ok_or(attachment_target::ControllerServiceIdentityErrorV1::Changed),
+            Err(cause) => Err(cause),
+        }
+    } else {
+        required!(parent.runtime.as_ref())
+            .block_on(attachment_target::observe_host_service_identity())
+    };
+    parent.host = Some(match host_identity {
         Ok(identity) => Some(identity),
         Err(error) => {
             eprintln!("aos-sandboxd: Host attachment identity unavailable: {error}");
@@ -509,9 +676,26 @@ fn run_retained_controller<A: ControllerServerAssembly>(
     complete!(Host);
 
     begin!(Mount);
-    parent.mount = Some(match required!(parent.runtime.as_ref())
-        .block_on(attachment_target::observe_mount_service_identity())
-    {
+    let mount_identity = if parent.runtime_receiving {
+        // Prepare the partial destination before its first bounded transport
+        // or native read. Every reached failure remains in this same parent.
+        parent.mount_startup = Some(
+            attachment_target::startup_identity::ControllerAttachmentStartupV1::mount(),
+        );
+        let attempt = required!(parent.mount_startup.as_mut());
+        match required!(parent.runtime.as_ref()).block_on(attempt.observe_once()) {
+            Ok(()) => attempt.take_cgroup().map(|cgroup| aos_sandbox::mount_preparation::MountServiceIdentity {
+                uid: 0,
+                gid: 0,
+                cgroup,
+            }).ok_or(attachment_target::ControllerServiceIdentityErrorV1::Changed),
+            Err(cause) => Err(cause),
+        }
+    } else {
+        required!(parent.runtime.as_ref())
+            .block_on(attachment_target::observe_mount_service_identity())
+    };
+    parent.mount = Some(match mount_identity {
         Ok(identity) => Some(identity),
         Err(error) => {
             eprintln!("aos-sandboxd: Mount attachment identity unavailable: {error}");
@@ -523,7 +707,6 @@ fn run_retained_controller<A: ControllerServerAssembly>(
     begin!(Controller);
     // The actual selected capture transfers its originals into an already
     // prepared parent before either attachment identity can leave custody.
-    parent.resource_opening = startup.take_resource_opening();
     if let Some(opening) = parent.resource_opening.as_mut() {
         let profile = required!(required!(originals.profile.as_ref()).as_deref());
         if opening.admit_preopen_once(profile).is_err() {
@@ -534,24 +717,80 @@ fn run_retained_controller<A: ControllerServerAssembly>(
                 Ok(loan) => loan,
                 Err(_) => worker.terminate(ControllerResidentCauseV1::Closed("original bootstrap loan unavailable")),
             };
+            let mut source_loan = match loan.arm_source_construction_once_v1() {
+                Ok(loan) => loan,
+                Err(_) => worker.terminate(ControllerResidentCauseV1::Closed("Source construction loan unavailable")),
+            };
             parent.construction = Some((|| {
-                parent.controller_journal.open_once(
-                    &loan, &configuration.state_directory, configuration.uid, node_id,
-                ).map_err(|_| ControllerRuntimeError::Journal(JournalError::ProtectedBoundary))?;
+                let controller_open = if configuration.operator_recover_only {
+                    parent.controller_journal.open_existing_once(
+                        &loan, &configuration.state_directory, configuration.uid, node_id,
+                    )
+                } else {
+                    parent.controller_journal.open_once(
+                        &loan, &configuration.state_directory, configuration.uid, node_id,
+                    )
+                };
+                controller_open.map_err(|_| ControllerRuntimeError::Journal(JournalError::ProtectedBoundary))?;
                 let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
                 let limits = NodeControllerLimits::new(1024 * 1024, 65_536, 1)?;
-                parent.executor_signer = Some(ControllerBrokerPlanSignerV1::from_process_credentials_optional()
-                    .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential));
+                if parent.runtime_receiving {
+                    if !parent.executor_signer_credentials.capture_once(|source| {
+                        ControllerBrokerPlanSignerV1::from_create_process_credentials_with_source(source)
+                    }) {
+                        return Err(ControllerRuntimeError::InvalidBrokerPlanCredential);
+                    }
+                    let signer = parent.executor_signer_credentials.take_completed()
+                        .ok_or(ControllerRuntimeError::InvalidBrokerPlanCredential)?;
+                    parent.executor_signer = Some(Ok(signer));
+                } else {
+                    parent.executor_signer = Some(
+                        ControllerBrokerPlanSignerV1::from_process_credentials_optional()
+                            .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential),
+                    );
+                }
                 let signer = parent.executor_signer.as_ref().and_then(|result| result.as_ref().ok())
                     .ok_or(ControllerRuntimeError::InvalidBrokerPlanCredential)?;
-                validate_process_cache_readback_credentials_v1(
-                    signer.as_ref().map(ControllerBrokerPlanSignerV1::verifying_key_bytes),
-                ).map_err(|_| ControllerRuntimeError::InvalidCacheReadbackCredential)?;
-                validate_process_controller_hold_credentials_v1(
-                    signer.as_ref().map(ControllerBrokerPlanSignerV1::verifying_key_bytes),
-                ).map_err(|_| ControllerRuntimeError::InvalidControllerHoldCredential)?;
-                parent.source_journal.open_once(&loan, configuration.uid)
-                    .map_err(|_| ControllerRuntimeError::Journal(JournalError::ProtectedBoundary))?;
+                if parent.runtime_receiving {
+                    if !parent.cache_readback_credentials.capture_once(|source| {
+                        super::cache_readback_credential::validate_process_cache_readback_credentials_with_source(
+                            signer.as_ref().map(ControllerBrokerPlanSignerV1::verifying_key_bytes), source,
+                        ).map(|()| Some(()))
+                    }) {
+                        return Err(ControllerRuntimeError::InvalidCacheReadbackCredential);
+                    }
+                    parent.cache_readback_credentials.take_completed()
+                        .ok_or(ControllerRuntimeError::InvalidCacheReadbackCredential)?;
+                } else {
+                    validate_process_cache_readback_credentials_v1(
+                        signer.as_ref().map(ControllerBrokerPlanSignerV1::verifying_key_bytes),
+                    ).map_err(|_| ControllerRuntimeError::InvalidCacheReadbackCredential)?;
+                }
+                if parent.runtime_receiving {
+                    if !parent.hold_credentials.capture_once(|source| {
+                        super::hold_credential::validate_process_controller_hold_credentials_with_source(
+                            signer.as_ref().map(ControllerBrokerPlanSignerV1::verifying_key_bytes), source,
+                        ).map(|()| Some(()))
+                    }) {
+                        return Err(ControllerRuntimeError::InvalidControllerHoldCredential);
+                    }
+                    parent.hold_credentials.take_completed()
+                        .ok_or(ControllerRuntimeError::InvalidControllerHoldCredential)?;
+                } else {
+                    validate_process_controller_hold_credentials_v1(
+                        signer.as_ref().map(ControllerBrokerPlanSignerV1::verifying_key_bytes),
+                    ).map_err(|_| ControllerRuntimeError::InvalidControllerHoldCredential)?;
+                }
+                let source_open = if configuration.operator_recover_only {
+                    parent.source_journal.open_existing_once(&mut source_loan)
+                } else {
+                    parent.source_journal.open_once(&mut source_loan)
+                };
+                source_open.map_err(|_| ControllerRuntimeError::Journal(JournalError::ProtectedBoundary))?;
+                if configuration.operator_recover_only {
+                    parent.controller_journal.validate_existing_after_source_once()
+                        .map_err(|_| ControllerRuntimeError::Journal(JournalError::ProtectedBoundary))?;
+                }
                 let source = parent.source_journal.source_mut()
                     .ok_or(ControllerRuntimeError::Journal(JournalError::ProtectedBoundary))?;
                 // The old semantic engines and their borrowing owners remain
@@ -566,33 +805,38 @@ fn run_retained_controller<A: ControllerServerAssembly>(
                 }
                 let journal = parent.controller_journal.journal_mut()
                     .ok_or(ControllerRuntimeError::Journal(JournalError::ProtectedBoundary))?;
-                parent.project_recovery = Some(crate::controller_service::project_admission::recover_source_project_admission_v1(
-                    journal, source, scope,
-                ));
-                if !matches!(parent.project_recovery, Some(Ok(()))) {
-                    return Err(ControllerRuntimeError::Journal(JournalError::ProtectedBoundary));
+                if !configuration.operator_recover_only {
+                    parent.project_recovery = Some(crate::controller_service::project_admission::recover_source_project_admission_v1(
+                        journal, source, scope,
+                    ));
+                    if !matches!(parent.project_recovery, Some(Ok(()))) {
+                        return Err(ControllerRuntimeError::Journal(JournalError::ProtectedBoundary));
+                    }
                 }
                 Ok((scope, limits))
             })());
             // These two independently available posts are attempted even
             // after a constructor action Err. The original action fields are
             // never replaced by the later negative dispositions.
-            let source_post = parent.source_journal.finish_posts(&loan);
+            let source_post = parent.source_journal.finish_posts(&mut source_loan);
             let controller_post = parent.controller_journal.finish_posts(&loan);
             if !matches!(parent.construction, Some(Ok(_)))
                 || source_post.is_err() || controller_post.is_err()
             {
                 let _first = parent.controller_journal.primary_failure()
+                    .or_else(|| parent.executor_signer_credentials.failure())
+                    .or_else(|| parent.cache_readback_credentials.failure())
+                    .or_else(|| parent.hold_credentials.failure())
                     .or_else(|| parent.executor_signer.as_ref().and_then(|result| result.as_ref().err())
                         .map(|cause| cause as &(dyn std::error::Error + 'static)))
-                    .or_else(|| parent.source_journal.primary_failure())
+                    .or_else(|| parent.source_journal.primary_failure_with_loan(&source_loan))
                     .or_else(|| parent.lifecycle_replay.as_ref().and_then(|result| result.as_ref().err())
                         .map(|cause| cause as &(dyn std::error::Error + 'static)))
                     .or_else(|| parent.project_recovery.as_ref().and_then(|result| result.as_ref().err())
                         .map(|cause| cause as &(dyn std::error::Error + 'static)))
                     .or_else(|| parent.construction.as_ref().and_then(|result| result.as_ref().err())
                         .map(|cause| cause as &(dyn std::error::Error + 'static)))
-                    .or_else(|| parent.source_journal.postcheck_debt())
+                    .or_else(|| parent.source_journal.postcheck_debt_with_loan(&source_loan))
                     .or_else(|| parent.controller_journal.postcheck_debt());
                 worker.terminate(ControllerResidentCauseV1::Closed("resident Controller construction refused"));
             }
@@ -628,6 +872,14 @@ fn run_retained_controller<A: ControllerServerAssembly>(
             configuration.uid, NodeId::from_bytes(node_id), process_start,
         );
         executor.resource_bank = originals.resource_bank.as_ref().map(Arc::clone);
+        executor.execution_profile = Some(Arc::clone(
+            required!(required!(originals.profile.as_ref()).as_ref()),
+        ));
+        // Move the successful startup attempt's SAME already-owned locator.
+        // No environment reread, path allocation or directory authority occurs
+        // here; later execution loans price their actual credential path copies.
+        executor.execution_credential_directory =
+            parent.ownership_credentials.take_completed_directory_v1();
         executor.snapshot_ownership = Some(Arc::clone(required!(originals.snapshot_ownership.as_ref())))
             .filter(|donation| donation.get().is_some());
         let nix_start = required!(originals.nix_selector.as_ref()).clone();
@@ -662,10 +914,50 @@ fn run_retained_controller<A: ControllerServerAssembly>(
             Some(Arc::clone(required!(originals.snapshot_ownership.as_ref()))),
         )));
     }
+    if parent.runtime_receiving {
+        // Both actual output anchors have moved into originals.controller in
+        // the private assembly above. Keep their exact producer originals in
+        // that SAME custody graph; optional failures remain whole and resident.
+        originals.foundations = Some(Arc::new(
+            resident_custody::ControllerFoundationOriginalsV1::new(
+                required!(parent.host_startup.take()),
+                required!(parent.mount_startup.take()),
+            ),
+        ));
+    }
     complete!(Controller);
 
+    // This is a deny-only disposition from the actual enrolled, confirmed
+    // successor. A historical bank row or image-family selection cannot enter
+    // recovery or reconstruct any lost initial first-use interval.
+    let operator_recover_only = match originals.resource_bank.as_ref() {
+        Some(bank) => {
+            let opening = match bank.lock() {
+                Ok(opening) => opening,
+                Err(_) => worker.terminate(ControllerResidentCauseV1::Closed(
+                    "operator recovery startup bank lock poisoned",
+                )),
+            };
+            match opening.selects_operator_recover_only_v1() {
+                Ok(selected) => selected,
+                Err(_) => worker.terminate(ControllerResidentCauseV1::Closed(
+                    "operator recovery startup selection refused",
+                )),
+            }
+        }
+        None => false,
+    };
+    if operator_recover_only != configuration.operator_recover_only {
+        // Explicit recovery may only restrict a real successor. Conversely a
+        // successor cannot enter ordinary first-use startup through this mode.
+        worker.terminate(ControllerResidentCauseV1::Closed(
+            "Controller startup purpose does not match confirmed recipient",
+        ));
+    }
+    originals.operator_recover_only = operator_recover_only;
+
     begin!(ControllerStartup);
-    {
+    if !operator_recover_only {
         let ControllerWorkerOriginalsV1 {
             controller,
             genesis,
@@ -920,7 +1212,7 @@ fn run_retained_controller<A: ControllerServerAssembly>(
     }
     complete!(ControllerStartup);
 
-    if configuration.create_q04_policy_subgate {
+    if configuration.create_q04_policy_subgate && !operator_recover_only {
         // The SAME admitted profile and whole Controller remain parked in the
         // existing worker before selected Cache opens or the first cycle.
         let ControllerWorkerOriginalsV1 { controller, profile, .. } = &mut *originals;
@@ -950,26 +1242,60 @@ fn run_retained_controller<A: ControllerServerAssembly>(
 
     begin!(Public);
     if configuration.public_api {
+        if parent.runtime_receiving {
+            let profile = Arc::clone(required!(required!(originals.profile.as_ref()).as_ref()));
+            let bank = required!(originals.resource_bank.as_ref());
+            // Only the genuine phase handoff runs under this short lock.
+            // No guard crosses credential I/O or the async bind boundary.
+            let mut opening = match bank.lock() {
+                Ok(opening) => opening,
+                Err(_) => worker.terminate(ControllerResidentCauseV1::Closed(
+                    "original public receiving bank lock refused",
+                )),
+            };
+            if opening.prepare_public_credentials_once(profile).is_err() {
+                worker.terminate(ControllerResidentCauseV1::Closed(
+                    "original public receiving preparation refused",
+                ));
+            }
+            parent.public_credentials = Some(required!(opening.take_public_credentials_once()));
+        }
         let ControllerParentCustodyV1 {
             runtime,
             public_startup,
+            public_credentials,
             public,
             ..
         } = &mut parent;
         required!(runtime.as_ref()).block_on(async {
             A::bind_public_retained(
                 configuration.uid,
+                public_credentials.as_mut(),
                 public_startup,
                 public,
                 worker.as_ref(),
             );
         });
     } else {
+        if parent.runtime_receiving {
+            let bank = required!(originals.resource_bank.as_ref());
+            let mut opening = match bank.lock() {
+                Ok(opening) => opening,
+                Err(_) => worker.terminate(ControllerResidentCauseV1::Closed(
+                    "original non-public serving bank lock refused",
+                )),
+            };
+            if opening.finish_startup_without_public_once().is_err() {
+                worker.terminate(ControllerResidentCauseV1::Closed(
+                    "original non-public serving disposition refused",
+                ));
+            }
+        }
         parent.public = Some(None);
     }
     complete!(Public);
 
-    if let Some(gateway) = configuration.git_read_inspection {
+    if let Some(gateway) = configuration.git_read_inspection.filter(|_| !operator_recover_only) {
         parent.git_read.bind(configuration.uid, configuration.gid, gateway, &worker);
         let Some(Some(public)) = parent.public.as_ref() else {
             worker.terminate(ControllerResidentCauseV1::GitRead);
@@ -1016,10 +1342,15 @@ fn run_retained_controller<A: ControllerServerAssembly>(
     begin!(Spawn);
     drop(originals);
     let thread_worker = Arc::clone(&worker);
+    let mut worker_builder = std::thread::Builder::new()
+        .name("aos-sandboxd-reconciler".to_owned());
+    if parent.runtime_receiving {
+        worker_builder = worker_builder.stack_size(
+            aos_sandbox::CONTROLLER_RUNTIME_STACK_BYTES_V1,
+        );
+    }
     parent.thread = Some(checked!(
-        std::thread::Builder::new()
-            .name("aos-sandboxd-reconciler".to_owned())
-            .spawn(move || retained_controller_worker(&thread_worker))
+        worker_builder.spawn(move || retained_controller_worker(&thread_worker))
             .map_err(ControllerRuntimeError::WorkerSpawn)
     ));
     complete!(Spawn);
@@ -1029,7 +1360,9 @@ fn run_retained_controller<A: ControllerServerAssembly>(
     begin!(Readiness);
     match worker.receive() {
         ControllerMonitorOutcomeV1::Event(WorkerEvent::Ready)
-            if !worker.ended.load(Ordering::Acquire) => {}
+            if !operator_recover_only && !worker.ended.load(Ordering::Acquire) => {}
+        ControllerMonitorOutcomeV1::Event(WorkerEvent::RecoveryListening)
+            if operator_recover_only && !worker.ended.load(Ordering::Acquire) => {}
         ControllerMonitorOutcomeV1::Event(WorkerEvent::Fatal(message)) => {
             worker.terminate(ControllerResidentCauseV1::Worker(message))
         }
@@ -1044,10 +1377,14 @@ fn run_retained_controller<A: ControllerServerAssembly>(
     }
     complete!(Profile);
     begin!(Notifier);
-    parent.notifier = Some(checked!(SystemdReadyNotifier::from_environment()));
+    if !operator_recover_only {
+        parent.notifier = Some(checked!(SystemdReadyNotifier::from_environment()));
+    }
     complete!(Notifier);
     begin!(Notify);
-    checked!(required!(parent.notifier.as_ref()).notify_ready());
+    if !operator_recover_only {
+        checked!(required!(parent.notifier.as_ref()).notify_ready());
+    }
     complete!(Notify);
 
     // These are the same routers and service sharing points as Legacy.
@@ -1097,6 +1434,9 @@ fn run_retained_controller<A: ControllerServerAssembly>(
     let _serve_unwind = AbortControllerCustodyUnwindV1;
     let runtime = required!(parent.runtime.as_ref());
     let monitor = required!(parent.monitor.as_mut());
+    // firstReady -> Parent/profile/notifier/application posts -> this gate ->
+    // main block_on. No Publisher Handle I/O starts against an undriven reactor.
+    worker.serving.store(true, Ordering::Release);
     let _stopped: () = runtime.block_on(async {
         let mut public = public;
         let mut diagnostic = diagnostic;
@@ -1168,7 +1508,7 @@ async fn serve_until_worker_failure<A: ControllerServerAssembly>(
         result = worker => {
             match result.map_err(ControllerRuntimeError::WorkerJoin)? {
                 Ok(WorkerEvent::Fatal(message)) => Err(ControllerRuntimeError::Worker(message)),
-                Ok(WorkerEvent::Ready) => Err(ControllerRuntimeError::Worker(
+                Ok(WorkerEvent::Ready | WorkerEvent::RecoveryListening) => Err(ControllerRuntimeError::Worker(
                     "controller worker emitted duplicate readiness".to_owned(),
                 )),
                 Ok(WorkerEvent::ResidentFailure) => Err(ControllerRuntimeError::Worker(
@@ -1268,6 +1608,10 @@ pub(super) fn read_node_id() -> Result<[u8; 16], ControllerRuntimeError> {
         .ok_or(ControllerRuntimeError::InvalidCredential)?;
     let bytes = std::fs::read(Path::new(&directory).join(NODE_ID_CREDENTIAL))
         .map_err(ControllerRuntimeError::CredentialRead)?;
+    parse_node_id(&bytes)
+}
+
+pub(super) fn parse_node_id(bytes: &[u8]) -> Result<[u8; 16], ControllerRuntimeError> {
     let node_id: [u8; 16] = bytes
         .try_into()
         .map_err(|_| ControllerRuntimeError::InvalidCredential)?;
@@ -1296,6 +1640,9 @@ fn wait_for_initial_readiness(
 ) -> Result<(), ControllerRuntimeError> {
     match events.recv() {
         Ok(WorkerEvent::Ready) => Ok(()),
+        Ok(WorkerEvent::RecoveryListening) => Err(ControllerRuntimeError::Worker(
+            "ordinary Controller received recovery-only startup".to_owned(),
+        )),
         Ok(WorkerEvent::Fatal(message)) => Err(ControllerRuntimeError::Worker(message)),
         Ok(WorkerEvent::ResidentFailure) => Err(ControllerRuntimeError::Worker(
             "controller worker retained its original failure".to_owned(),

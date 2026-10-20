@@ -123,6 +123,49 @@ pub struct NetworkLifecycleExecutionAuthorizationV1 {
 }
 
 impl NetworkLifecycleExecutionAuthorizationV1 {
+    /// Borrows plan DATA for the already-paid finite receiving comparison.
+    ///
+    /// Only an actual pending step can enter the mutation recipe. This borrow
+    /// neither issues a step nor heals poison or authorizes helper execution.
+    pub(crate) fn receiving_plan_data_v2(&self) -> &NetworkKernelPlanV1 {
+        &self.authenticated.request.kernel_plan
+    }
+
+    /// Reports the original signed body extent without copying or admitting it.
+    pub(crate) fn original_request_body_bytes_data_v2(&self) -> usize {
+        self.authenticated.request.request_body.len()
+    }
+
+    /// Borrows completed original effect and lease DATA for the result gate.
+    pub(crate) fn completed_result_inputs_v2(
+        &self,
+    ) -> Option<(
+        &aos_sandbox_broker::BrokerEffectIntentV1,
+        &aos_sandbox_core::LocalLeaseRecord,
+    )> {
+        self.is_complete().then_some((
+            &self.authenticated.effect,
+            self.authenticated.effect.local_lease_record(),
+        ))
+    }
+
+    /// Reuses the unchanged currentness engine after all genuine steps complete.
+    pub(crate) fn require_current_before_result_v2<C, F>(
+        &self,
+        authority: &NetworkAuthorityV1,
+        current: &mut C,
+        clock: &mut F,
+    ) -> Result<(), NetworkWorkerProtocolError>
+    where
+        C: FnMut() -> Result<Vec<u8>, NetworkAdmissionError>,
+        F: FnMut() -> Result<RawPairedClockSample, NetworkAdmissionError>,
+    {
+        if !self.is_complete() {
+            return Err(NetworkWorkerProtocolError::ExecutionPoisoned);
+        }
+        check_execution_freshness(authority, &self.authenticated, current, clock)
+    }
+
     /// Authorizes the next exact step after another fresh authority check.
     ///
     /// The returned token must be completed explicitly. It is never safe to
@@ -201,6 +244,64 @@ pub struct NetworkLifecycleAuthorizedStepV1<'a> {
 }
 
 impl NetworkLifecycleAuthorizedStepV1<'_> {
+    /// Borrows the original sealed effect for this exact pending helper step.
+    ///
+    /// This borrow creates no new authority or deadline. The helper must run
+    /// the currentness gate before entry and complete this same step afterward.
+    pub(crate) const fn original_effect_v2(&self) -> &aos_sandbox_broker::BrokerEffectIntentV1 {
+        &self.authorization.authenticated.effect
+    }
+
+    /// Borrows the effect's existing local lease without renewing its horizon.
+    pub(crate) const fn original_local_lease_v2(&self) -> &aos_sandbox_core::LocalLeaseRecord {
+        self.authorization.authenticated.effect.local_lease_record()
+    }
+
+    /// Rechecks the same pending step's protected fence and actual effect clock.
+    ///
+    /// The fence callback must borrow the authenticated current protected
+    /// source; it must not echo the dispatch's claimed fence. A refusal poisons
+    /// this attempt before any helper may enter. This does not advance a step.
+    pub(crate) fn require_current_before_helper_v2<C, F>(
+        &mut self,
+        authority: &NetworkAuthorityV1,
+        trusted_current_fence: &mut C,
+        trusted_clock: &mut F,
+    ) -> Result<(), NetworkWorkerProtocolError>
+    where
+        C: FnMut() -> Result<Vec<u8>, NetworkAdmissionError>,
+        F: FnMut() -> Result<RawPairedClockSample, NetworkAdmissionError>,
+    {
+        if self.resolved
+            || self.authorization.poisoned
+            || self.authorization.pending_step != Some(self.step_index)
+            || self.authorization.next_step != self.step_index
+        {
+            self.poison();
+            return Err(NetworkWorkerProtocolError::ExecutionPoisoned);
+        }
+        if let Err(error) = check_execution_freshness(
+            authority,
+            &self.authorization.authenticated,
+            trusted_current_fence,
+            trusted_clock,
+        ) {
+            self.poison();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Borrows correlation DATA from this same genuine pending signed9 step.
+    pub(crate) const fn original_request_effect_data_v2(
+        &self,
+    ) -> ([u8; 16], aos_sandbox_core::ObjectDigest) {
+        (
+            self.authorization.authenticated.request.request_id,
+            self.authorization.authenticated.request.effect_digest,
+        )
+    }
+
     /// Returns the one operation authorized by this pending token.
     #[must_use]
     pub const fn step(&self) -> NetworkLifecycleExecutionStepV1 {

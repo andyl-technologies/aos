@@ -8,9 +8,12 @@
 //! replacement or an exact absence-tolerant removal. A reused request ID with
 //! different effect bytes always rejects.
 
+mod retained;
+pub use retained::{NetworkWorkerReplayOpeningOriginalV4, NetworkWorkerReplayClaimOriginalV4};
+
 use std::path::Path;
 
-use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::journal::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
@@ -45,6 +48,8 @@ const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.network.worker-replay.v1\0";
 pub struct NetworkWorkerReplayLedger {
     journal: Journal,
     maximum_claims: usize,
+    retained_native: bool,
+    claim_original: Option<NetworkWorkerReplayClaimOriginalV4>,
 }
 
 impl NetworkWorkerReplayLedger {
@@ -84,8 +89,19 @@ impl NetworkWorkerReplayLedger {
         journal: Journal,
         maximum_claims: usize,
     ) -> Result<Self, NetworkWorkerProtocolError> {
+        let ledger = Self {
+            journal,
+            maximum_claims,
+            retained_native: false,
+            claim_original: None,
+        };
+        ledger.validate_claims_v4()?;
+        Ok(ledger)
+    }
+
+    fn validate_claims_v4(&self) -> Result<(), NetworkWorkerProtocolError> {
         let mut count = 0_usize;
-        for (key, value) in journal.records(RecordNamespace::Effect) {
+        for (key, value) in self.journal.records(RecordNamespace::Effect) {
             count = count
                 .checked_add(1)
                 .ok_or(NetworkWorkerProtocolError::ReplayStore)?;
@@ -97,13 +113,10 @@ impl NetworkWorkerReplayLedger {
                 return Err(NetworkWorkerProtocolError::ReplayStore);
             }
         }
-        if count > maximum_claims {
+        if count > self.maximum_claims {
             return Err(NetworkWorkerProtocolError::ReplayStore);
         }
-        Ok(Self {
-            journal,
-            maximum_claims,
-        })
+        Ok(())
     }
 
     pub(crate) fn claim(
@@ -113,40 +126,143 @@ impl NetworkWorkerReplayLedger {
         kernel_plan_digest: ObjectDigest,
         dispatch_digest: ObjectDigest,
     ) -> Result<(), NetworkWorkerProtocolError> {
-        if self
-            .journal
-            .get(RecordNamespace::Effect, &request_id)
-            .is_some()
-        {
-            return Err(NetworkWorkerProtocolError::Replay);
+        if self.retained_native {
+            return self.claim_retaining_v4(request_id, effect_digest, kernel_plan_digest, dispatch_digest);
         }
-        if self.journal.records(RecordNamespace::Effect).count() >= self.maximum_claims {
+        let mut original = NetworkWorkerReplayClaimOriginalV4::new();
+        Self::claim_engine_v4(&mut self.journal, self.maximum_claims, false,
+            request_id, effect_digest, kernel_plan_digest, dispatch_digest, &mut original)
+    }
+
+    /// Prices the actual held prefix before any claim encoder or TX allocation.
+    ///
+    /// # Errors
+    /// Preserves the actual metadata/native geometry and accounting error.
+    pub fn claim_receiving_demand_v4(&self) -> Result<aos_sandbox_core::ResourceVector,
+        crate::journal::JournalAppendReceivingDemandErrorV1>
+    {
+        Self::claim_demand_v4(&self.journal)
+    }
+
+    fn claim_demand_v4(journal: &Journal) -> Result<aos_sandbox_core::ResourceVector,
+        crate::journal::JournalAppendReceivingDemandErrorV1>
+    {
+        journal.append_receiving_demand_v1(std::iter::once(
+            aos_sandbox_journal::geometry::RecordShape {
+                key_bytes: CLAIM_KEY_BYTES,
+                value_bytes: Some(CLAIM_BYTES),
+            },
+        ))
+    }
+
+    /// Claims once in the inline slot owned by this same fixed worker ledger.
+    ///
+    /// The parent has funded the complete compiled child source before issue.
+    /// This mechanical method grants no namespace or link mutation permission.
+    ///
+    /// # Errors
+    /// Refuses ordinary/lifecycle ledgers, replay, reentry or any actual native,
+    /// codec, TX, commit or readback error without dropping reached custody.
+    pub fn claim_retaining_v4(
+        &mut self,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+        kernel_plan_digest: ObjectDigest,
+        dispatch_digest: ObjectDigest,
+    ) -> Result<(), NetworkWorkerProtocolError> {
+        if let Some(original) = self.claim_original.as_mut() {
+            original.reentry.get_or_insert(NetworkWorkerProtocolError::ReplayStore);
             return Err(NetworkWorkerProtocolError::ReplayStore);
+        }
+        self.claim_original = Some(NetworkWorkerReplayClaimOriginalV4::new());
+        let Some(original) = self.claim_original.as_mut() else {
+            return Err(NetworkWorkerProtocolError::ReplayStore);
+        };
+        if !self.retained_native {
+            original.entered = true;
+            original.entry = Some(Err(NetworkWorkerProtocolError::ReplayStore));
+            return Err(NetworkWorkerProtocolError::ReplayStore);
+        }
+        Self::claim_engine_v4(&mut self.journal, self.maximum_claims, true,
+            request_id, effect_digest, kernel_plan_digest, dispatch_digest, original)
+    }
+
+    /// Borrows this same ledger's sole actual claim attempt, including failures.
+    #[must_use]
+    pub fn claim_original_v4(&self) -> Option<&NetworkWorkerReplayClaimOriginalV4> {
+        self.claim_original.as_ref()
+    }
+
+    /// Borrows the earliest whole claim error without selecting a later cause.
+    #[must_use]
+    pub fn failure_v4(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.claim_original.as_ref().and_then(NetworkWorkerReplayClaimOriginalV4::failure)
+    }
+
+    fn claim_engine_v4(
+        journal: &mut Journal,
+        maximum_claims: usize,
+        selected: bool,
+        request_id: [u8; 16],
+        effect_digest: ObjectDigest,
+        kernel_plan_digest: ObjectDigest,
+        dispatch_digest: ObjectDigest,
+        original: &mut NetworkWorkerReplayClaimOriginalV4,
+    ) -> Result<(), NetworkWorkerProtocolError> {
+        if original.entered {
+            return Err(NetworkWorkerProtocolError::ReplayStore);
+        }
+        original.entered = true;
+        original.entry = Some(if journal.get(RecordNamespace::Effect, &request_id).is_some() {
+            Err(NetworkWorkerProtocolError::Replay)
+        } else if journal.records(RecordNamespace::Effect).count() >= maximum_claims {
+            Err(NetworkWorkerProtocolError::ReplayStore)
+        } else {
+            Ok(())
+        });
+        if let Some(Err(error)) = &original.entry {
+            return Err(if matches!(error, NetworkWorkerProtocolError::Replay) {
+                NetworkWorkerProtocolError::Replay
+            } else {
+                NetworkWorkerProtocolError::ReplayStore
+            });
         }
 
+        if selected {
+            original.forecast = Some(Self::claim_demand_v4(journal));
+            if !matches!(original.forecast, Some(Ok(_))) {
+                return Err(NetworkWorkerProtocolError::ReplayStore);
+            }
+        }
         let claim = WorkerClaimV1 {
-            request_id,
-            effect_digest,
-            kernel_plan_digest,
-            dispatch_digest,
+            request_id, effect_digest, kernel_plan_digest, dispatch_digest,
         };
-        let bytes = encode_claim(claim)?;
-        let transaction = JournalTransaction::new(
-            transaction_id(claim),
-            vec![JournalRecord::put(
-                RecordNamespace::Effect,
-                request_id.to_vec(),
-                bytes.to_vec(),
-            )],
-        )
-        .map_err(|_| NetworkWorkerProtocolError::ReplayStore)?;
-        self.journal
-            .commit(&transaction)
-            .map_err(|_| NetworkWorkerProtocolError::ReplayStore)?;
-        if self.journal.get(RecordNamespace::Effect, &request_id) != Some(bytes.as_slice()) {
+        original.encoded = Some(encode_claim(claim));
+        let bytes = match original.encoded.as_ref() {
+            Some(Ok(bytes)) => bytes,
+            _ => return Err(NetworkWorkerProtocolError::ReplayStore),
+        };
+        original.transaction = Some(JournalTransaction::new(transaction_id(claim), vec![
+            JournalRecord::put(RecordNamespace::Effect, request_id.to_vec(), bytes.to_vec()),
+        ]));
+        let transaction = match original.transaction.as_ref() {
+            Some(Ok(transaction)) => transaction,
+            _ => return Err(NetworkWorkerProtocolError::ReplayStore),
+        };
+        original.commit = Some(journal.commit(transaction));
+        if !matches!(original.commit, Some(Ok(_))) {
             return Err(NetworkWorkerProtocolError::ReplayStore);
         }
-        Ok(())
+        original.readback = Some(if journal.get(RecordNamespace::Effect, &request_id) == Some(bytes.as_slice()) {
+            Ok(())
+        } else {
+            Err(NetworkWorkerProtocolError::ReplayStore)
+        });
+        if matches!(original.readback, Some(Ok(()))) {
+            Ok(())
+        } else {
+            Err(NetworkWorkerProtocolError::ReplayStore)
+        }
     }
 
     /// Claims a fresh effect or admits an exact idempotent lifecycle replay.
@@ -161,6 +277,9 @@ impl NetworkWorkerReplayLedger {
         kernel_plan_digest: ObjectDigest,
         dispatch_digest: ObjectDigest,
     ) -> Result<(), NetworkWorkerProtocolError> {
+        if self.retained_native {
+            return Err(NetworkWorkerProtocolError::ReplayStore);
+        }
         let claim = WorkerClaimV1 {
             request_id,
             effect_digest,

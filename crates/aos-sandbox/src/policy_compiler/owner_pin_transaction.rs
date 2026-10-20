@@ -1,5 +1,7 @@
 //! Domain-separated transactions for protected owner signer pin admission.
 
+use aos_sandbox_policy::journal_keys::{CONTROLLER_HOLD_PIN_KEY, SOURCE_HOLD_PIN_KEY};
+
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{JournalError, JournalRecord, JournalTransaction, RecordNamespace};
@@ -30,10 +32,7 @@ pub(super) fn owner_pin_transaction(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy_compiler::{
-        cache_readback_pin::CACHE_PIN_KEY, controller_hold_pin::CONTROLLER_HOLD_PIN_KEY,
-        source_hold_pin::SOURCE_HOLD_PIN_KEY,
-    };
+    use crate::policy_compiler::cache_readback_pin::CACHE_PIN_KEY;
 
     #[test]
     fn owner_pin_transactions_preserve_each_domain_and_exact_record() {

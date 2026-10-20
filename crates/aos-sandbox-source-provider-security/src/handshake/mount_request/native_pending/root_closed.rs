@@ -78,7 +78,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// Checks genuine original custody under the distinct current Query cut.
     pub(in crate::handshake::mount_request) fn require_original_root_closed_for_inventory_v6(
         &mut self,
-        writer: &aos_sandbox::MountOriginalInventoryJournalAuthorityV6<'_>,
+        writer: &aos_sandbox_mount_native::MountOriginalInventoryJournalAuthorityV6<'_>,
         original: (
             &AuthorizedMountProviderOutcomeV2,
             &OriginalNativeReceivedOutcomeV5,

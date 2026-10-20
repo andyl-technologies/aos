@@ -5,6 +5,9 @@
 //! current runtime-authority publication, attenuates it with a fresh deadline,
 //! and returns the request consumed by the authenticated session owner.
 
+mod stop;
+pub(crate) use stop::RuntimeStopAuthorityOriginalV4;
+
 use aos_proto::aos::sandbox::local::v1::{
     ApplyAtomicStorageSnapshotRequest, AssignmentFence, Audience, BrokerMethod, RequestHeader,
     RuntimeAction,
@@ -25,7 +28,7 @@ use crate::{
     AuthorityEffectAttemptTimingV1, AuthorityPublicationError, AuthorityPublicationProposalV1,
     AuthorityPublicationStore, BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, Journal,
     PreparedAuthorityEffectV1, PreparedAuthorityPublicationV1, ReconcilerError,
-    SignedOwnershipLease,
+    
 };
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
@@ -271,7 +274,7 @@ pub fn prepare_snapshot_derived_storage_v3(
     predecessor_outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
     checkpoint: ObjectDigest,
     timing: AuthorityEffectAttemptTimingV1,
-    verifier: &crate::OwnershipAuthorityVerifier,
+    verifier: &aos_sandbox_ownership_protocol::OwnershipAuthorityVerifier,
 ) -> Result<SnapshotDerivedStoragePreparationV3, ReconcilerError> {
     use aos_sandbox_core::{BrokerGrant, BrokerAuthorizationPlan};
     let fence = coordination.coordination().transaction().live_fence();
@@ -303,7 +306,7 @@ pub fn prepare_snapshot_derived_storage_v3(
         || publication.lease_digest() != binding.lease_digest()
     { return Err(ReconcilerError::InvalidPlan("Snapshot binding/publication differs")); }
     let lease_bytes = publication.lease();
-    let response = crate::UnverifiedOwnershipLeaseResponse::from_transport(
+    let response = aos_sandbox_ownership_protocol::UnverifiedOwnershipLeaseResponse::from_transport(
         lease_bytes.canonical_lease().to_vec(), lease_bytes.canonical_signature().to_vec(),
         lease_bytes.canonical_receipt().to_vec(), lease_bytes.canonical_receipt_signature().to_vec(),
     ).map_err(|_| ReconcilerError::InvalidPlan("Snapshot original lease quartet is invalid"))?;
@@ -522,15 +525,9 @@ pub fn compile_storage_create_preparation_template_v1(
         ));
     }
 
-    let request_digest = Sha256::new()
-        .chain_update(b"aos.sandbox.storage.create-preparation-request-id.v1\0")
-        .chain_update(protected.argument_commitment().digest().as_bytes())
-        .chain_update(signed_plan.digest().as_bytes())
-        .chain_update((signed_plan.canonical_signature().len() as u64).to_be_bytes())
-        .chain_update(signed_plan.canonical_signature())
-        .finalize();
-    let mut request_id = [0; 16];
-    request_id.copy_from_slice(&request_digest[..16]);
+    let request_id = protected.signed_request_id_v1(
+        signed_plan.digest(), signed_plan.canonical_signature(),
+    );
     let body = protected
         .deadline_free_request_body(request_id)
         .map_err(|_| ReconcilerError::InvalidPlan("Storage Create preparation body is invalid"))?;
@@ -611,28 +608,8 @@ pub fn prepare_runtime_lifecycle_authority_effect_v1(
         ));
     }
 
-    let mut matching_templates = current.templates().iter().filter(|template| {
-        if template.audience() != BrokerAudience::Host
-            || template.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
-            || !template.descriptor_roles().is_empty()
-        {
-            return false;
-        }
-        let Ok(runtime) =
-            aos_sandbox_protocol::decode_runtime_template_v1(template.body_without_deadline())
-        else {
-            return false;
-        };
-        let template_fence = runtime.fence();
-        runtime.action() == action
-            && runtime.launch_plan().is_none()
-            && runtime.guardian_arm().is_none()
-            && template_fence.sandbox_id() == fence.sandbox().as_bytes()
-            && template_fence.incarnation_id() == fence.incarnation().as_bytes()
-            && template_fence.assignment_epoch() == fence.assignment_epoch().get()
-            && template_fence.desired_generation() == desired.expected_generation().get()
-            && template_fence.assignment_digest() == desired.resource_state().digest().as_bytes()
-    });
+    let mut matching_templates = current.templates().iter().filter(|template|
+        runtime_template_matches_v4(template, fence, action));
     let template_digest = matching_templates
         .next()
         .ok_or(ReconcilerError::InvalidPlan(
@@ -783,4 +760,37 @@ pub fn prepare_atomic_storage_lifecycle_authority_effect_v1(
         timing.clock(),
         attempt,
     ))
+}
+
+use aos_sandbox_ownership_protocol::{SignedOwnershipLease};
+
+// Both ordinary lifecycle dispatch and retained Stop use this exact template
+// comparison. The privileged Host independently verifies every signed artifact.
+fn runtime_template_matches_v4(
+    template: &crate::publication::RecoveredBrokerDispatchTemplateV1,
+    fence: LiveRuntimeFenceV1,
+    action: RuntimeAction,
+) -> bool {
+        if template.audience() != BrokerAudience::Host
+            || template.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+            || !template.descriptor_roles().is_empty()
+        {
+            return false;
+        }
+        let Ok(runtime) =
+            aos_sandbox_protocol::decode_runtime_template_v1(template.body_without_deadline())
+        else {
+            return false;
+        };
+        let template_fence = runtime.fence();
+        let desired = fence.desired();
+        runtime.action() == action
+            && runtime.host_stop_cleanup_v1().is_none()
+            && runtime.launch_plan().is_none()
+            && runtime.guardian_arm().is_none()
+            && template_fence.sandbox_id() == fence.sandbox().as_bytes()
+            && template_fence.incarnation_id() == fence.incarnation().as_bytes()
+            && template_fence.assignment_epoch() == fence.assignment_epoch().get()
+            && template_fence.desired_generation() == desired.expected_generation().get()
+            && template_fence.assignment_digest() == desired.resource_state().digest().as_bytes()
 }

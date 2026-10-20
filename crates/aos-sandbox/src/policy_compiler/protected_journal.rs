@@ -41,7 +41,7 @@ use crate::protected_domain_journal::{
     ValidatedDomainPostcommitV1,
 };
 
-use aos_sandbox_policy::compiled_policy_candidate_digest_v1;
+use aos_sandbox_protocol::policy_data::compiled_policy_candidate_digest_v1;
 use aos_sandbox_policy::{
     CandidateAuthorityV1, CompiledPolicyCandidateV1, PolicyCompilerInputV1, PolicyModelError,
 };
@@ -294,6 +294,10 @@ pub struct PolicyCompilerEffectHandoffV1<'handoff> {
 /// Reports policy verification, framing, currentness, or durability failures.
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyCompilerJournalErrorV1 {
+    /// Retains the portable Q04 packet comparison failure.
+    #[error(transparent)]
+    Q04Data(aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::Q04DataErrorV1),
+
     /// A verifier rejected the exact candidate and prerequisite tuple.
     #[error("compiled policy candidate lacks authenticated publication authority")]
     UnauthenticatedCandidate,
@@ -650,7 +654,11 @@ pub(super) fn q04_independent_publication_data_v1(
     let sandbox = input.sandbox();
     let normalized_input = normalized_policy_input_digest_v1(input)
         .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    let diagnostics = aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+    let diagnostics = aos_sandbox_protocol::policy_data::canonical_bytes(
+        DIAGNOSTICS_DOMAIN,
+        candidate.explanation(),
+    )
+    .map_err(aos_sandbox_policy::PolicyModelError::from)?;
     if candidate.authority_status() != CandidateAuthorityV1::NonAuthoritativeAncestry {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
@@ -716,8 +724,11 @@ impl VerifiedPolicyPublicationV1 {
         let normalized_input = normalized_policy_input_digest_v1(input)
             .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let candidate_digest = candidate.commitment().digest();
-        let diagnostics =
-            aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+        let diagnostics = aos_sandbox_protocol::policy_data::canonical_bytes(
+            DIAGNOSTICS_DOMAIN,
+            candidate.explanation(),
+        )
+        .map_err(aos_sandbox_policy::PolicyModelError::from)?;
         if project.as_bytes() == &[0; 16]
             || sandbox.as_bytes() == &[0; 16]
             || candidate.authority_status() != CandidateAuthorityV1::NonAuthoritativeAncestry
@@ -1040,8 +1051,11 @@ impl<'journal> PolicyCompilerProtectedJournalV1<'journal> {
         let sandbox = input.sandbox();
         let normalized_input = normalized_policy_input_digest_v1(input)
             .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-        let canonical_diagnostics =
-            aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+        let canonical_diagnostics = aos_sandbox_protocol::policy_data::canonical_bytes(
+            DIAGNOSTICS_DOMAIN,
+            candidate.explanation(),
+        )
+        .map_err(aos_sandbox_policy::PolicyModelError::from)?;
         if candidate.authority_status() != CandidateAuthorityV1::NonAuthoritativeAncestry
             || !self.validator.contains(prerequisites)
         {
@@ -2815,7 +2829,8 @@ pub(super) fn validated_candidate_body(
                 header.outputs[3].1,
             ),
         ];
-        if compiled_policy_candidate_digest_v1(header.preimage, descriptors.each_ref())?
+        if compiled_policy_candidate_digest_v1(header.preimage, descriptors.each_ref())
+            .map_err(aos_sandbox_policy::PolicyModelError::from)?
             != header.candidate
         {
             return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
@@ -2844,7 +2859,11 @@ pub(super) fn compare_recompiled_candidate_derivation_v1(
     prerequisites: &PolicyPublicationPrerequisitesV1,
 ) -> Result<(), PolicyCompilerJournalErrorV1> {
     let (header, outputs) = validated_candidate_body(bytes)?;
-    let diagnostics = aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+    let diagnostics = aos_sandbox_protocol::policy_data::canonical_bytes(
+        DIAGNOSTICS_DOMAIN,
+        candidate.explanation(),
+    )
+    .map_err(aos_sandbox_policy::PolicyModelError::from)?;
     if header.project != input.project().project()
         || header.sandbox != input.sandbox()
         || header.generation != generation
@@ -3090,6 +3109,16 @@ mod canonical_diagnostics_tests {
                 validate_canonical_diagnostics(&invalid),
                 Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication)
             ));
+        }
+    }
+}
+
+impl From<aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::Q04DataErrorV1> for PolicyCompilerJournalErrorV1 {
+    fn from(error: aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::Q04DataErrorV1) -> Self {
+        use aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::Q04DataErrorV1 as Data;
+        match error {
+            Data::UnauthenticatedCandidate => Self::UnauthenticatedCandidate,
+            other => Self::Q04Data(other),
         }
     }
 }

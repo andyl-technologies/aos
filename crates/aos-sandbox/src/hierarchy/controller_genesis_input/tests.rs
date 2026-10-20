@@ -4,12 +4,15 @@
 //! No test creates a provisioned input token from scalars, changes the process
 //! credential environment, fabricates a fixed Controller owner or opens Create.
 
+use aos_sandbox_protocol::publisher_project_authorization::{
+    encode_project_authorization_issuer_credential_v2,
+};
+
 use ed25519_dalek::{Signer as _, SigningKey};
 
 use super::*;
 use crate::hierarchy::source_genesis::tests as source_fixture;
-use crate::hierarchy::source_seed::encode_controller_source_tree_seed_credential_v1;
-use crate::publisher_policy::encode_project_authorization_issuer_credential_v2;
+use aos_sandbox_protocol::controller_source_seed::encode_controller_source_tree_seed_credential_v1;
 
 struct Pair {
     seed: [u8; CONTROLLER_SOURCE_TREE_SEED_BYTES_V1],

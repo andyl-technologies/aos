@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
-use aos_sandbox::journal::{Journal, JournalLimits};
+use aos_sandbox_mount_native::{JournalLimits, MountJournalV1 as Journal};
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_mount::DormantMountBrokerCompositionV1;
 use aos_sandbox_mount::authorization::MountAuthorityV1;
@@ -34,7 +34,6 @@ use crate::{
 
 const SOCKET: &str = "/run/aos/sandbox-mount/control.sock";
 const CATALOG_ROOT: &str = "/run/aos/sandbox-mount-catalog";
-const STATE_ROOT: &str = "/var/lib/aos/sandbox-mount";
 const CLIENT_DONE: &str = "/run/aos/controller-qualification/mount-inventory-complete";
 
 fn wait_for_client_completion(path: &Path, timeout: Duration) -> bool {
@@ -66,12 +65,7 @@ fn fixed_mount_inventory_broker() {
         ProductionBrokerSessionActivationV1::adopt_mount_listener(listener_fd).unwrap();
     drop(listener);
 
-    let (journal, _) = Journal::open_protected_at(
-        Path::new(STATE_ROOT),
-        "mount.journal",
-        JournalLimits::default(),
-    )
-    .unwrap();
+    let (journal, _) = Journal::open_fixed_protected_v1(JournalLimits::default()).unwrap();
     let catalog =
         PreparedMountCatalog::new(FileMountCatalog::open_root_owned(CATALOG_ROOT).unwrap());
     let helper = PosixSpawnNamespaceHelper::new(PathBuf::from(

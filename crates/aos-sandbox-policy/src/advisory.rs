@@ -21,8 +21,8 @@ use super::authority::AuthorityPlanV1;
 use super::model::{
     AdvisoryPlanCommitmentV1, ExplanationDecisionV1, ExplanationEntryV1, ExplanationReasonV1,
     ExplanationStageV1, InputSourceV1, PolicyCompilerInputV1, PolicyModelError, RedactedSubjectV1,
-    canonical_bytes, digest,
 };
+use aos_sandbox_protocol::policy_data::{canonical_bytes, digest};
 use super::namespace::NamespacePlanV1;
 
 /// Names all eight portable optimization kinds.
@@ -206,7 +206,8 @@ pub struct PortableAdvisoryProgramV1 {
 }
 impl PortableAdvisoryProgramV1 {
     fn new(decisions: Vec<AdvisoryDecisionV1>) -> Result<Self, PolicyModelError> {
-        let bytes = canonical_bytes(b"aos.sandbox.portable-advisory-program.v1", &decisions)?;
+        let bytes = canonical_bytes(b"aos.sandbox.portable-advisory-program.v1", &decisions)
+            .map_err(crate::PolicyModelError::from)?;
         let media = MediaType::new(PortableMediaType::Content.as_str())
             .map_err(|_| PolicyModelError::RegisteredMediaType)?;
         let descriptor = descriptor_for_bytes(media, &bytes);
@@ -271,7 +272,8 @@ pub fn canonicalize_advisory_actions(
         let identity = digest(
             b"aos.sandbox.advisory-semantic-key.v1",
             &(action.kind(), action.target(), action.priority()),
-        )?;
+        )
+        .map_err(crate::PolicyModelError::from)?;
         if !identities.insert(identity) {
             return Err(PolicyModelError::AmbiguousAdvisoryRule);
         }
@@ -410,10 +412,13 @@ pub(crate) fn compile_advisory(
     let core_profile =
         OptimizationProfile::new(core).map_err(|_| AdvisoryCompilationError::CoreModel)?;
     let program = PortableAdvisoryProgramV1::new(decisions.clone())?;
-    let commitment = AdvisoryPlanCommitmentV1::new(digest(
-        b"aos.sandbox.advisory-plan.v2",
-        &(&decisions, program.descriptor()),
-    )?);
+    let commitment = AdvisoryPlanCommitmentV1::new(
+        digest(
+            b"aos.sandbox.advisory-plan.v2",
+            &(&decisions, program.descriptor()),
+        )
+        .map_err(crate::PolicyModelError::from)?,
+    );
     Ok((
         AdvisoryPlanV1 {
             commitment,
@@ -439,7 +444,8 @@ fn advisory_key(
         action.kind(),
         u16::MAX - specificity,
         u16::MAX - action.priority(),
-        digest(b"aos.sandbox.advisory-tiebreak.v1", action)?,
+        digest(b"aos.sandbox.advisory-tiebreak.v1", action)
+            .map_err(crate::PolicyModelError::from)?,
     ))
 }
 fn selector_specificity(selector: &Selector) -> Result<u16, PolicyModelError> {

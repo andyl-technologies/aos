@@ -24,7 +24,7 @@ use sha2::{Digest as _, Sha256};
 use crate::controller_execution_argument_receipt::AuthenticatedControllerHostArgumentObservationV1;
 use crate::environment::EnvironmentProtectedJournalOwnerV1;
 use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_execution::{
     ControllerExecutionSpecPreviewV1, ControllerExecutionSpecSourceHeadsV1,
     ProtectedExecutionSpecProducerErrorV1, prepare_controller_execution_spec_preview_v1,
@@ -32,27 +32,20 @@ use crate::runtime_execution::{
 use crate::runtime_scope::CurrentAssignmentTarget;
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
-const MAGIC: &[u8; 8] = b"AOSCSI01";
-const RECORD_DOMAIN: &[u8] = b"aos.sandbox.controller-execution-spec-attempt.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.controller-execution-spec-attempt-tx.v1\0";
-const SPEC_DOMAIN: &[u8] = b"aos-sandbox-execution-spec-v1\0";
-const HEAD_BYTES: usize = 10 * 32 + 3 * 8;
-const PREFIX_BYTES: usize = 8 + 16 + 16 + 32 + HEAD_BYTES + 8 + 4 + 32;
-const MINIMUM_RECORD_BYTES: usize = PREFIX_BYTES + 1 + 32;
-const MAXIMUM_RECORD_BYTES: usize = PREFIX_BYTES + MAXIMUM_HOST_EXECUTION_SPEC_BYTES + 32;
-
-/// Hashes the accepted Create request as recorded by an AOSCSI01 attempt.
-///
-/// The Controller's accepted operation separately binds caller and project.
-/// The AOSCER01 reserve source uses a different domain-separated digest.
-#[must_use]
-pub fn execution_spec_attempt_request_digest_v1(canonical_request: &[u8]) -> ObjectDigest {
-    ObjectDigest::from_bytes(Sha256::digest(canonical_request).into())
-}
+use aos_sandbox_protocol::execution_spec_attempt::{
+    ExecutionSpecAttemptFieldsV1, ExecutionSpecAttemptDataErrorV1,
+    PREFIX_BYTES, MINIMUM_RECORD_BYTES, MAXIMUM_RECORD_BYTES,
+    valid_spec_size, digest_spec, digest_record,
+};
+pub use aos_sandbox_protocol::execution_spec_attempt::execution_spec_attempt_request_digest_v1;
 
 /// Reports stale, equivocal, corrupt, or ambiguous protected attempt custody.
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerExecutionSpecAttemptErrorV1 {
+    /// The genuine SAME18 scope refused the exact reached append requirement.
+    #[error(transparent)]
+    Receiving(#[from] crate::ResourceReservationErrorV1),
     /// The exact source cut, record, or canonical spec bytes differ.
     #[error("execution specification attempt differs from its protected source")]
     Mismatch,
@@ -148,24 +141,7 @@ impl ControllerExecutionSpecAttemptV1 {
     pub fn decoded_specification(
         &self,
     ) -> Result<ExecutionSpecV1, ControllerExecutionSpecAttemptErrorV1> {
-        let limits = DecodeLimits {
-            maximum_bytes: MAXIMUM_HOST_EXECUTION_SPEC_BYTES,
-            ..DecodeLimits::default()
-        };
-        let specification = decode_execution_spec_v1(&self.specification_bytes, limits)
-            .map_err(|_| ControllerExecutionSpecAttemptErrorV1::Mismatch)?;
-        if specification.execution() != self.execution
-            || specification.audit().as_bytes() != self.create_operation.as_bytes()
-            || specification.target().assignment_digest() != self.source_heads.assignment_digest
-            || specification.target().assignment_epoch().get() != self.source_heads.assignment_epoch
-            || specification.environment_generation().get()
-                != self.source_heads.environment_generation
-            || encode_execution_spec_v1(&specification) != self.specification_bytes
-            || execution_spec_digest_v1(&specification) != self.specification_digest
-        {
-            return Err(ControllerExecutionSpecAttemptErrorV1::Mismatch);
-        }
-        Ok(specification)
+        self.fields_v1().decoded_specification().map_err(Into::into)
     }
 
     /// Returns the complete immutable record commitment.
@@ -218,198 +194,48 @@ impl ControllerExecutionSpecAttemptV1 {
             && self.specification_bytes == preview.canonical_bytes()
     }
 
+    fn fields_v1(&self) -> ExecutionSpecAttemptFieldsV1<'_> {
+        ExecutionSpecAttemptFieldsV1 {
+            execution: self.execution, create_operation: self.create_operation,
+            accepted_request_digest: self.accepted_request_digest,
+            source_heads: self.source_heads, controller_sequence: self.controller_sequence,
+            specification_digest: self.specification_digest,
+            specification_bytes: &self.specification_bytes, record_digest: self.record_digest,
+        }
+    }
+
     fn encode_without_digest(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(PREFIX_BYTES + self.specification_bytes.len());
-        bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(self.execution.as_bytes());
-        bytes.extend_from_slice(self.create_operation.as_bytes());
-        bytes.extend_from_slice(self.accepted_request_digest.as_bytes());
-        self.source_heads.encode_into(&mut bytes);
-        bytes.extend_from_slice(&self.controller_sequence.to_be_bytes());
-        bytes.extend_from_slice(&(self.specification_bytes.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(self.specification_digest.as_bytes());
-        bytes.extend_from_slice(&self.specification_bytes);
-        bytes
+        self.fields_v1().encode_without_digest()
     }
 
     fn encode(&self) -> Vec<u8> {
-        let mut bytes = self.encode_without_digest();
-        bytes.extend_from_slice(self.record_digest.as_bytes());
-        bytes
+        self.fields_v1().encode()
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, ControllerExecutionSpecAttemptErrorV1> {
-        if bytes.len() < MINIMUM_RECORD_BYTES
-            || bytes.len() > MAXIMUM_RECORD_BYTES
-            || bytes.get(..8) != Some(MAGIC.as_slice())
-        {
-            return Err(ControllerExecutionSpecAttemptErrorV1::Mismatch);
-        }
-        let mut cursor = 8;
-        let execution = ExecutionId::from_bytes(read_array::<16>(bytes, &mut cursor)?);
-        let create_operation = OperationId::from_bytes(read_array::<16>(bytes, &mut cursor)?);
-        let accepted_request_digest = ObjectDigest::from_bytes(read_array(bytes, &mut cursor)?);
-        let source_heads = ControllerExecutionSpecSourceHeadsV1::decode_from(bytes, &mut cursor)?;
-        let controller_sequence = u64::from_be_bytes(read_array(bytes, &mut cursor)?);
-        let specification_length =
-            u32::from_be_bytes(read_array::<4>(bytes, &mut cursor)?) as usize;
-        let specification_digest = ObjectDigest::from_bytes(read_array(bytes, &mut cursor)?);
-        if !valid_spec_size(specification_length)
-            || bytes.len() != PREFIX_BYTES + specification_length + 32
-        {
-            return Err(ControllerExecutionSpecAttemptErrorV1::Mismatch);
-        }
-        let specification_bytes = bytes[cursor..cursor + specification_length].to_vec();
-        cursor += specification_length;
-        let record_digest = ObjectDigest::from_bytes(read_array(bytes, &mut cursor)?);
-        let record = Self {
-            execution,
-            create_operation,
-            accepted_request_digest,
-            source_heads,
-            controller_sequence,
-            specification_digest,
-            specification_bytes,
-            record_digest,
-        };
-        if cursor != bytes.len()
-            || record.execution.as_bytes() == &[0; 16]
-            || record.create_operation.as_bytes() == &[0; 16]
-            || record.accepted_request_digest.as_bytes() == &[0; 32]
-            || record.controller_sequence == 0
-            || digest_spec(&record.specification_bytes) != record.specification_digest
-            || digest_record(&bytes[..bytes.len() - 32]) != record.record_digest
-        {
-            return Err(ControllerExecutionSpecAttemptErrorV1::Mismatch);
-        }
-        record.decoded_specification()?;
-        Ok(record)
+        let fields = ExecutionSpecAttemptFieldsV1::decode(bytes)?;
+        Ok(Self {
+            execution: fields.execution, create_operation: fields.create_operation,
+            accepted_request_digest: fields.accepted_request_digest,
+            source_heads: fields.source_heads, controller_sequence: fields.controller_sequence,
+            specification_digest: fields.specification_digest,
+            specification_bytes: fields.specification_bytes.to_vec(), record_digest: fields.record_digest,
+        })
     }
-}
 
-impl ControllerExecutionSpecSourceHeadsV1 {
-    /// Encodes the independently named source heads in AOSCSI01 field order.
-    ///
-    /// These bytes are historical identifiers, not a cross-owner barrier.
+    /// Encodes this historical record without granting Host admission.
     #[must_use]
-    pub fn canonical_bytes(self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(HEAD_BYTES);
-        self.encode_into(&mut bytes);
-        bytes
+    pub fn canonical_bytes_v1(&self) -> Vec<u8> {
+        self.encode()
     }
+}
 
-    fn encode_into(self, bytes: &mut Vec<u8>) {
-        bytes.extend_from_slice(self.assignment_digest.as_bytes());
-        bytes.extend_from_slice(&self.assignment_epoch.to_be_bytes());
-        bytes.extend_from_slice(self.parent_binding.as_bytes());
-        bytes.extend_from_slice(self.parent_projection.as_bytes());
-        bytes.extend_from_slice(self.sandbox_spec_record.as_bytes());
-        bytes.extend_from_slice(self.environment_activation.as_bytes());
-        bytes.extend_from_slice(self.environment_manifest.as_bytes());
-        bytes.extend_from_slice(&self.environment_generation.to_be_bytes());
-        bytes.extend_from_slice(self.output_claim.as_bytes());
-        bytes.extend_from_slice(self.output_settlement.as_bytes());
-        bytes.extend_from_slice(self.argument_receipt.as_bytes());
-        bytes.extend_from_slice(self.host_argument_custody.as_bytes());
-        bytes.extend_from_slice(&self.host_argument_sequence.to_be_bytes());
-    }
-
-    fn decode_from(
-        bytes: &[u8],
-        cursor: &mut usize,
-    ) -> Result<Self, ControllerExecutionSpecAttemptErrorV1> {
-        let read_digest =
-            |cursor: &mut usize| read_array(bytes, cursor).map(ObjectDigest::from_bytes);
-        let assignment_digest = read_digest(cursor)?;
-        let assignment_epoch = u64::from_be_bytes(read_array(bytes, cursor)?);
-        let parent_binding = read_digest(cursor)?;
-        let parent_projection = read_digest(cursor)?;
-        let sandbox_spec_record = read_digest(cursor)?;
-        let environment_activation = read_digest(cursor)?;
-        let environment_manifest = read_digest(cursor)?;
-        let environment_generation = u64::from_be_bytes(read_array(bytes, cursor)?);
-        let output_claim = read_digest(cursor)?;
-        let output_settlement = read_digest(cursor)?;
-        let argument_receipt = read_digest(cursor)?;
-        let host_argument_custody = read_digest(cursor)?;
-        let host_argument_sequence = u64::from_be_bytes(read_array(bytes, cursor)?);
-        let heads = Self {
-            assignment_digest,
-            assignment_epoch,
-            parent_binding,
-            parent_projection,
-            sandbox_spec_record,
-            environment_activation,
-            environment_manifest,
-            environment_generation,
-            output_claim,
-            output_settlement,
-            argument_receipt,
-            host_argument_custody,
-            host_argument_sequence,
-        };
-        if heads.assignment_epoch == 0
-            || heads.environment_generation == 0
-            || heads.host_argument_sequence == 0
-            || [
-                assignment_digest,
-                parent_binding,
-                parent_projection,
-                sandbox_spec_record,
-                environment_activation,
-                environment_manifest,
-                output_claim,
-                output_settlement,
-                argument_receipt,
-                host_argument_custody,
-            ]
-            .iter()
-            .any(|digest| digest.as_bytes() == &[0; 32])
-        {
-            return Err(ControllerExecutionSpecAttemptErrorV1::Mismatch);
+impl From<ExecutionSpecAttemptDataErrorV1> for ControllerExecutionSpecAttemptErrorV1 {
+    fn from(error: ExecutionSpecAttemptDataErrorV1) -> Self {
+        match error {
+            ExecutionSpecAttemptDataErrorV1::Mismatch => Self::Mismatch,
         }
-        Ok(heads)
     }
-}
-
-fn read_array<const N: usize>(
-    bytes: &[u8],
-    cursor: &mut usize,
-) -> Result<[u8; N], ControllerExecutionSpecAttemptErrorV1> {
-    let end = cursor
-        .checked_add(N)
-        .ok_or(ControllerExecutionSpecAttemptErrorV1::Mismatch)?;
-    let value = bytes
-        .get(*cursor..end)
-        .ok_or(ControllerExecutionSpecAttemptErrorV1::Mismatch)?
-        .try_into()
-        .map_err(|_| ControllerExecutionSpecAttemptErrorV1::Mismatch)?;
-    *cursor = end;
-    Ok(value)
-}
-
-fn valid_spec_size(size: usize) -> bool {
-    size != 0 && size <= MAXIMUM_HOST_EXECUTION_SPEC_BYTES
-}
-
-fn digest_spec(bytes: &[u8]) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(SPEC_DOMAIN)
-            .chain_update(bytes)
-            .finalize()
-            .into(),
-    )
-}
-
-fn digest_record(bytes: &[u8]) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(RECORD_DOMAIN)
-            .chain_update(bytes)
-            .finalize()
-            .into(),
-    )
 }
 
 /// Constructs and durably retains one nonauthorizing spec attempt.
@@ -433,6 +259,9 @@ pub fn retain_controller_execution_spec_attempt_v1<T>(
     execution: ExecutionId,
     create_operation: OperationId,
     clock: &mut T,
+    receiving: &mut crate::controller_execution_operation::ControllerExecutionReadReceivingLoanV1<'_, '_>,
+    bank: &crate::ControllerResourceBankOpeningV1,
+    profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
 ) -> Result<ControllerExecutionSpecAttemptV1, ControllerExecutionSpecAttemptErrorV1>
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
@@ -460,6 +289,15 @@ where
         create_operation,
         controller.snapshot_sequence(),
     )?;
+    // The pure builder is bounded by the already admitted model/encoding
+    // peak. Its actual canonical width now prices the SAME native writer
+    // before record encoding, frame construction or append begins.
+    let record_bytes = PREFIX_BYTES.checked_add(attempt.specification_bytes().len())
+        .and_then(|bytes| bytes.checked_add(32))
+        .ok_or(ControllerExecutionSpecAttemptErrorV1::Mismatch)?;
+    receiving.admit_controller_append_v1(bank, controller, profile, std::iter::once(
+        aos_sandbox_journal::geometry::RecordShape { key_bytes: attempt.execution().as_bytes().len(), value_bytes: Some(record_bytes) },
+    ))?;
     append_attempt(controller, &attempt)?;
     Ok(attempt)
 }
@@ -858,4 +696,268 @@ mod tests {
         );
         assert!(MAXIMUM_RECORD_BYTES + 7 + 16 < JournalLimits::default().maximum_record_bytes);
     }
+
+    fn storage_registration_fixture(record: &ControllerExecutionSpecAttemptV1) -> Vec<u8> {
+        use aos_proto::aos::sandbox::local::v1::StorageOutputRegistrationResponseV1;
+        use buffa::Message as _;
+
+        let mut row = vec![1; 177];
+        row[..8].copy_from_slice(b"AOSEOR03");
+        row[8..24].copy_from_slice(record.execution().as_bytes());
+        row[24..40].copy_from_slice(record.create_operation().as_bytes());
+        row[40..72].copy_from_slice(record.source_heads().assignment_digest.as_bytes());
+        row[72..104].copy_from_slice(record.source_heads().output_claim.as_bytes());
+        row[104..128].fill(0);
+        row[128] = 1;
+        row[129..145].fill(0);
+        let mut marker = vec![2; 184];
+        marker[..8].copy_from_slice(b"AOSEOS01");
+        marker[24..40].copy_from_slice(&row[8..24]);
+        marker[40..56].copy_from_slice(&row[24..40]);
+        marker[120..152].copy_from_slice(&Sha256::digest(&row));
+        StorageOutputRegistrationResponseV1 { canonical_reservation: row,
+            canonical_original_marker: marker, ..Default::default() }.encode_to_vec()
+    }
+
+    #[test]
+    fn versioned_host_content_rejects_another_exact_width_storage_claim() {
+        use aos_proto::aos::sandbox::local::v1::StorageOutputRegistrationResponseV1;
+        use aos_sandbox_protocol::host_execution::admission_content::HostExecutionAdmissionContentV5;
+        use aos_sandbox_protocol::storage_capture_grant::StorageCaptureGrantSourceV2;
+        use buffa::Message as _;
+        let mut record = fixture_record(257);
+        let capture_source = physical_capture_source_fixture(&mut record);
+        let capture_response = physical_capture_attempt_response_fixture(&capture_source);
+        let capture_source = StorageCaptureGrantSourceV2::from_canonical_bytes_v2(&capture_source).unwrap();
+        let attempt = record.canonical_bytes_v1();
+        let mut storage = StorageOutputRegistrationResponseV1::decode_from_slice(&storage_registration_fixture(&record)).unwrap();
+        storage.canonical_reservation[72..104].fill(99);
+        storage.canonical_original_marker[120..152].copy_from_slice(&Sha256::digest(&storage.canonical_reservation));
+
+        assert!(HostExecutionAdmissionContentV5::new_capture_v5(&attempt, &storage.encode_to_vec(), &capture_source, &capture_response).is_err());
+    }
+
+    #[test]
+    fn versioned_host_content_rejects_changed_lengths_and_checksum() {
+        use aos_sandbox_protocol::host_execution::admission_content::HostExecutionAdmissionContentV5;
+        use aos_sandbox_protocol::storage_capture_grant::StorageCaptureGrantSourceV2;
+        let mut record = fixture_record(257);
+        let capture_source = physical_capture_source_fixture(&mut record);
+        let capture_response = physical_capture_attempt_response_fixture(&capture_source);
+        let capture_source = StorageCaptureGrantSourceV2::from_canonical_bytes_v2(&capture_source).unwrap();
+        let attempt = record.canonical_bytes_v1();
+        let storage = storage_registration_fixture(&record);
+        let original = HostExecutionAdmissionContentV5::new_capture_v5(&attempt, &storage, &capture_source, &capture_response).unwrap().encode().unwrap();
+        let mut length = original.clone();
+        length[8..12].copy_from_slice(&u32::MAX.to_be_bytes());
+        let mut checksum = original;
+        let last = checksum.len() - 1;
+        checksum[last] ^= 1;
+
+        assert!(HostExecutionAdmissionContentV5::decode(&length).is_err());
+        assert!(HostExecutionAdmissionContentV5::decode(&checksum).is_err());
+    }
+
+    #[test]
+    fn actual_host_apply_decoder_verifies_the_complete_version_five_descriptor() {
+        use aos_proto::aos::sandbox::local::v1::{ApplyHostExecutionRequestV1,
+            HostExecutionActionV1, RequestHeader, Audience};
+        use aos_sandbox_protocol::host_execution::{HostExecutionSpecContentFieldsV1,
+            decode_host_execution_apply_v1};
+        use aos_sandbox_protocol::host_execution::admission_content::HostExecutionAdmissionContentV5;
+        use aos_sandbox_protocol::storage_capture_grant::StorageCaptureGrantSourceV2;
+        use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
+        use buffa::Message as _;
+
+        let mut record = fixture_record(70_000);
+        let capture_source = physical_capture_source_fixture(&mut record);
+        let capture_response = physical_capture_attempt_response_fixture(&capture_source);
+        let capture_source = StorageCaptureGrantSourceV2::from_canonical_bytes_v2(&capture_source).unwrap();
+        let attempt = record.canonical_bytes_v1();
+        let storage = storage_registration_fixture(&record);
+        let content = HostExecutionAdmissionContentV5::new_capture_v5(&attempt, &storage, &capture_source, &capture_response).unwrap().encode().unwrap();
+        let source = ObjectDigest::from_bytes([91; 32]);
+        let fields = HostExecutionSpecContentFieldsV1::for_grant(&content)
+            .bind_lifetime_admission_attempt_v5([81; 16], *record.create_operation().as_bytes(),
+                record.execution(), source);
+        let request = ApplyHostExecutionRequestV1 {
+            header: Some(RequestHeader { protocol_major: 1, request_id: vec![81; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 100, maximum_response_bytes: 4096,
+                ..Default::default() }).into(),
+            operation_id: record.create_operation().as_bytes().to_vec(),
+            execution_id: record.execution().as_bytes().to_vec(),
+            action: HostExecutionActionV1::HOST_EXECUTION_ACTION_AUTHORIZE.into(),
+            source_operation_commitment: source.as_bytes().to_vec(),
+            spec_transfer_version: 5, spec_content_bytes: fields.bytes(),
+            spec_content_digest: fields.digest().to_vec(),
+            spec_attempt_commitment: fields.attempt_commitment().to_vec(),
+            ..Default::default()
+        };
+        let peer = PeerCredentials { pid: Some(1), uid: 0, gid: 0 };
+        let policy = PeerPolicy { uid: 0, gid: Some(0), audience: Audience::AUDIENCE_NODE_CONTROLLER };
+        let mut decoded = decode_host_execution_apply_v1(&request.encode_to_vec(), peer, policy, 1).unwrap();
+        decoded.verify_content(&content).unwrap();
+        assert_eq!(decoded.content_version(), 5);
+        assert_eq!(decoded.specification().unwrap(), &record.decoded_specification().unwrap());
+
+        let mut relabeled = request;
+        relabeled.spec_transfer_version = 1;
+        assert!(decode_host_execution_apply_v1(&relabeled.encode_to_vec(), peer, policy, 1).is_err());
+        let mut corrupt = content;
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 1;
+        assert!(decoded.verify_content(&corrupt).is_err());
+    }
+
+
+    fn physical_capture_source_fixture(record: &mut ControllerExecutionSpecAttemptV1) -> [u8; 944] {
+        use aos_sandbox_protocol::storage_capture_grant::ControllerOutputSettlementPreimageV1;
+        let mut settlement = [9; 208];
+        settlement[..8].copy_from_slice(b"AOSCIS01");
+        settlement[8..24].copy_from_slice(record.execution.as_bytes());
+        settlement[24..40].copy_from_slice(record.create_operation.as_bytes());
+        settlement[104..112].copy_from_slice(&1_u64.to_be_bytes());
+        let checksum = Sha256::new().chain_update(b"aos.sandbox.controller-output-settlement.v1\0")
+            .chain_update(&settlement[..176]).finalize();
+        settlement[176..].copy_from_slice(&checksum);
+        record.source_heads.output_settlement = ControllerOutputSettlementPreimageV1::from_canonical_bytes(
+            &settlement).unwrap().record_digest();
+        record.record_digest = digest_record(&record.encode_without_digest());
+
+        let specification = decode_execution_spec_v1(&record.specification_bytes,
+            DecodeLimits::default()).unwrap();
+        let assignment = specification.resources().output_bytes().assignment().broker_assignment().unwrap();
+        let storage = aos_sandbox_protocol::storage_output_reserve::continuation
+            ::decode_storage_output_registration_response_data_v1(&storage_registration_fixture(record)).unwrap();
+        let mut source = [0; 512];
+        source[..8].copy_from_slice(b"AOSSCG01");
+        source[8..216].copy_from_slice(&settlement);
+        source[216..248].copy_from_slice(&Sha256::digest(&storage.canonical_reservation));
+        source[248..280].copy_from_slice(record.source_heads.output_claim.as_bytes());
+        source[280..296].fill(3);
+        source[296..312].copy_from_slice(assignment.sandbox().as_bytes());
+        source[312..328].copy_from_slice(assignment.incarnation().as_bytes());
+        source[328..336].copy_from_slice(&assignment.epoch().get().to_be_bytes());
+        source[336..344].copy_from_slice(&assignment.desired_generation().get().to_be_bytes());
+        source[344..376].copy_from_slice(assignment.digest().as_bytes());
+        source[376..392].fill(4);
+        source[392..408].fill(5);
+        source[408..440].fill(6);
+        // This is genuine typed zero-byte Capture, not a Stream surrogate.
+        source[464..472].copy_from_slice(&4096_u64.to_be_bytes());
+        source[472..480].copy_from_slice(&512_u64.to_be_bytes());
+        source[480..488].copy_from_slice(&4096_u64.to_be_bytes());
+        source[488..496].copy_from_slice(&1_000_000_000_u64.to_be_bytes());
+        source[496..512].fill(7);
+        use aos_sandbox_protocol::storage_capture_grant::StorageCaptureGrantSourceV2;
+        use aos_sandbox_protocol::storage_capture_lifetime::{StorageCaptureExecutionLifetimeDataV2,
+            StorageCaptureLifetimeOriginsDataV2};
+        use aos_sandbox_core::{RawClockProvenance, RawPairedClockSample};
+        let sample = |boot| RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            [4; 16], 100, boot).unwrap();
+        let target = sample(1);
+        let lease_expiry = 1000;
+        let plan_expiry = 900;
+        let original_deadline = target.conservative_lease_expiry_deadline_data_v2(lease_expiry, 0).unwrap()
+            .min(target.conservative_expiry_deadline_data_v1(plan_expiry).unwrap());
+        let origins = StorageCaptureLifetimeOriginsDataV2 {
+            original_target_clock: target,
+            original_lease_digest: ObjectDigest::from_bytes([20; 32]),
+            original_lease_generation: 1,
+            original_lease_authority_expires_seconds: lease_expiry,
+            original_lease_maximum_clock_skew_seconds: 0,
+            original_root_plan_expires_seconds: Some(plan_expiry),
+            original_residency_deadline_boottime_nanoseconds: original_deadline,
+            first_pre_spawn_clock: sample(2),
+            execution_parent_plan_expires_seconds: plan_expiry,
+        };
+        let lifetime = StorageCaptureExecutionLifetimeDataV2::from_pre_spawn_sources_data_v2(
+            &specification, record.create_operation(), record.create_operation(),
+            record.accepted_request_digest(), assignment, &origins).unwrap();
+        let mut full = [0; 944];
+        full[..8].copy_from_slice(b"AOSSCG02");
+        full[8..520].copy_from_slice(&source);
+        full[520..].copy_from_slice(lifetime.canonical_bytes_v2());
+        *StorageCaptureGrantSourceV2::from_canonical_bytes_v2(&full).unwrap().canonical_bytes_v2()
+    }
+
+    fn physical_capture_attempt_response_fixture(source: &[u8]) -> Vec<u8> {
+        use aos_proto::aos::sandbox::local::v1::{StorageExecutionCaptureAttemptV1,
+            StorageExecutionCaptureAttemptStatusV1};
+        use aos_sandbox_protocol::storage_capture_grant::StorageCaptureGrantSourceV2;
+        use buffa::Message as _;
+        let source = StorageCaptureGrantSourceV2::from_canonical_bytes_v2(source).unwrap();
+        let locator = source.locator_v2();
+        StorageExecutionCaptureAttemptV1 {
+            execution_id: locator.execution().as_bytes().to_vec(),
+            create_operation_id: locator.create_operation().as_bytes().to_vec(),
+            original_reserve_request_id: locator.original_reserve_request_id().to_vec(),
+            grant_source_digest: locator.source_digest().as_bytes().to_vec(),
+            output_record_digest: locator.output_record_digest().as_bytes().to_vec(),
+            status: StorageExecutionCaptureAttemptStatusV1::STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_EFFECT_POSSIBLE.into(),
+            attempt_id: vec![8; 16], durable_attempt_digest: vec![9; 32],
+            effective_deadline_boottime_nanoseconds: source.effective_execution_deadline_v2(),
+            ..Default::default()
+        }.encode_to_vec()
+    }
+
+    #[test]
+    fn physical_content_preserves_full_spec_and_zero_capture_without_ready_claim() {
+        use aos_sandbox_protocol::host_execution::admission_content::HostExecutionAdmissionContentV5;
+        use aos_sandbox_protocol::storage_capture_grant::StorageCaptureGrantSourceV2;
+        let mut record = fixture_record(70_000);
+        let source = physical_capture_source_fixture(&mut record);
+        let response = physical_capture_attempt_response_fixture(&source);
+        let attempt = record.canonical_bytes_v1();
+        let storage = storage_registration_fixture(&record);
+
+
+        let source_data = StorageCaptureGrantSourceV2::from_canonical_bytes_v2(&source).unwrap();
+        let bytes = HostExecutionAdmissionContentV5::new_capture_v5(&attempt, &storage, &source_data, &response)
+            .unwrap().encode().unwrap();
+        assert_eq!(aos_sandbox_protocol::host_execution::admission_content::capture_encoded_widths_v5(
+            attempt.len(), storage.len(), response.len()), Some(bytes.len()));
+        let decoded = HostExecutionAdmissionContentV5::decode(&bytes).unwrap();
+
+        assert!(decoded.specification_bytes().unwrap().len() > 65_536);
+        assert_eq!(decoded.attempt_bytes(), attempt);
+        assert_eq!(decoded.storage_response_bytes(), storage);
+        assert_eq!(decoded.specification_bytes().unwrap(), record.specification_bytes());
+        assert_eq!(decoded.capture_source_v2().unwrap().canonical_bytes_v2(), &source);
+        assert_eq!(decoded.capture_source_v2().unwrap().original_source_v1().output_limits(), (0, 0, 0));
+        assert_eq!(decoded.capture_attempt_v1().unwrap().attempt(), Some([8; 16]));
+        let mut changed = bytes;
+        let last = changed.len() - 1;
+        changed[last] ^= 1;
+        assert!(HostExecutionAdmissionContentV5::decode(&changed).is_err());
+    }
+
+    #[test]
+    fn physical_content_rejects_valid_but_foreign_source_or_attempt() {
+        use aos_sandbox_protocol::host_execution::admission_content::HostExecutionAdmissionContentV5;
+        use aos_sandbox_protocol::storage_capture_grant::StorageCaptureGrantSourceV2;
+        let mut record = fixture_record(32);
+        let source = physical_capture_source_fixture(&mut record);
+        let response = physical_capture_attempt_response_fixture(&source);
+        let attempt = record.canonical_bytes_v1();
+        let storage = storage_registration_fixture(&record);
+
+        let mut changed = source;
+        changed[8 + 216] ^= 1;
+        let changed_response = physical_capture_attempt_response_fixture(&changed);
+        let changed_data = StorageCaptureGrantSourceV2::from_canonical_bytes_v2(&changed).unwrap();
+        assert!(HostExecutionAdmissionContentV5::new_capture_v5(&attempt, &storage, &changed_data, &changed_response).is_err());
+        assert!(HostExecutionAdmissionContentV5::new_capture_v5(&attempt, &storage, &changed_data, &response).is_err());
+        // Matching response, valid total and allocation still cannot change
+        // the actual spec's per-stream Capture ceilings.
+        changed = source;
+        changed[8 + 440..8 + 448].copy_from_slice(&1_u64.to_be_bytes());
+        changed[8 + 448..8 + 456].copy_from_slice(&1_u64.to_be_bytes());
+        let changed_response = physical_capture_attempt_response_fixture(&changed);
+        let changed_data = StorageCaptureGrantSourceV2::from_canonical_bytes_v2(&changed).unwrap();
+        assert!(HostExecutionAdmissionContentV5::new_capture_v5(&attempt, &storage, &changed_data, &changed_response).is_err());
+    }
+
 }

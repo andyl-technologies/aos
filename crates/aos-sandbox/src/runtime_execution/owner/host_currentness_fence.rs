@@ -19,7 +19,7 @@ pub(super) fn load_host_currentness_fence_v1(
     let Some(bytes) = authority.get(HOST_CURRENTNESS_FENCE_KEY)? else {
         return Ok(None);
     };
-    let fence = HostCurrentnessFenceV1::decode(bytes)?;
+    let fence = HostCurrentnessFenceV1::decode(bytes).map_err(JournalError::from)?;
     let actual_cut = cut_v1(
         authority.records()?,
         fence.store_binding,
@@ -46,7 +46,9 @@ pub(crate) fn validate_host_currentness_pair_v1(
             if hoststate.store_binding == store_binding
                 && effect.store_binding == store_binding
                 && hoststate.effect_fence_digest
-                    == ObjectDigest::from_bytes(Sha256::digest(effect.encode()?).into()) =>
+                    == ObjectDigest::from_bytes(
+                        Sha256::digest(effect.encode().map_err(JournalError::from)?).into(),
+                    ) =>
         {
             Ok(())
         }
@@ -341,7 +343,7 @@ fn append_host_currentness_hold_v1(
     )?;
     peer_authority.validate_snapshot_for_effect(&snapshot)?;
 
-    let effect_bytes = effect_fence.encode()?;
+    let effect_bytes = effect_fence.encode().map_err(JournalError::from)?;
     let fence = HostCurrentnessFenceV1 {
         store_binding,
         effect_fence_digest: ObjectDigest::from_bytes(Sha256::digest(effect_bytes).into()),
@@ -352,7 +354,7 @@ fn append_host_currentness_hold_v1(
             .checked_add(2)
             .ok_or(JournalRuntimeExecutionError::SettlementOutcomeUnknown)?,
     };
-    let bytes = fence.encode()?;
+    let bytes = fence.encode().map_err(JournalError::from)?;
     let transaction_digest = Sha256::new()
         .chain_update(b"aos.sandbox.host-currentness-fence-transaction.v1\0")
         .chain_update(bytes)

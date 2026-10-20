@@ -3,8 +3,7 @@
 //! The [`journal`] module owns the append-only desired-state and operation
 //! journal. It validates and replays durable transactions before a future
 //! reconciler is allowed to issue effects. Protected publisher stores retain
-//! current policy and capabilities; Linux local provisioning commits issuance
-//! before activating process-local holder channels. [`publisher_ingress`] owns
+//! current policy and capabilities. [`publisher_admin::audit`] owns
 //! inert execution/challenge audit records; Linux publisher control and sessions
 //! bind their registration to the original live process without granting effects.
 //! [`cli_model`] owns CLI grammar and the Controller's adopted request envelope;
@@ -13,12 +12,9 @@
 //! checked public models, reducers, and holder-key signature profiles live in
 //! `aos_sandbox_protocol::public_api`. [`environment`],
 //! [`git`], [`hierarchy`],
-//! [`lifecycle`], [`local_inventory`], [`policy_compiler`], and
-//! [`publisher_admission`] own inert RFC-0021 domain models and
-//! protected-journal seams. [`source_domain`] owns the live fixed Source journal
-//! custody and original Q04 loans. [`publisher_roots`] owns
-//! the portable root registry and retains live root custody only on Linux,
-//! without activating it.
+//! [`lifecycle`], [`local_inventory`], and [`policy_compiler`] own RFC-0021
+//! domain models and protected-journal seams. [`source_domain`] owns the live
+//! fixed Source journal custody and original Q04 loans.
 //! [`execution_output_reservation`] owns accepted-Create-derived, protected
 //! pre-Host output-byte claims while execution authorization remains closed.
 //! [`execution_guest_identity`] reads back private-namespace credential
@@ -54,15 +50,25 @@ pub mod attachment_verification;
 pub mod cache_residency;
 pub mod cli_model;
 pub mod controller;
+mod controller_inventory_absence;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_argument_attempt;
 pub mod controller_execution_argument_receipt;
 pub mod controller_execution_observe_reservation;
 pub mod controller_execution_output_settlement;
 #[cfg(target_os = "linux")]
+pub mod controller_execution_operation;
+#[cfg(target_os = "linux")]
+mod closed_controller_append;
+#[cfg(target_os = "linux")]
+pub mod controller_lifecycle_stop;
+#[cfg(target_os = "linux")]
 pub mod controller_execution_preissue;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_spec_attempt;
+/// Retains original Capture60 admission on the actual Controller writer.
+#[cfg(target_os = "linux")]
+pub mod controller_storage_capture_admission;
 #[cfg(target_os = "linux")]
 pub mod controller_fuse_admission;
 pub mod controller_no_apply_settlement_cursor;
@@ -98,21 +104,9 @@ pub mod journal;
 pub mod lifecycle;
 mod lifecycle_authority;
 #[cfg(target_os = "linux")]
-mod local_channel;
-#[cfg(target_os = "linux")]
-pub mod local_ownership;
-#[cfg(target_os = "linux")]
-pub mod local_provisioning;
-#[cfg(target_os = "linux")]
-pub mod local_sessions;
-#[cfg(target_os = "linux")]
 pub mod mount_attempt;
 #[cfg(target_os = "linux")]
 mod mount_inventory_snapshot;
-#[cfg(target_os = "linux")]
-pub mod mount_manager_source_inventory;
-#[cfg(target_os = "linux")]
-pub mod mount_manager_startup;
 #[cfg(target_os = "linux")]
 pub mod mount_observation_state;
 #[cfg(target_os = "linux")]
@@ -122,10 +116,21 @@ pub mod mount_source_acquisition_inventory;
 pub mod local_inventory;
 #[cfg(target_os = "linux")]
 pub mod normal_root;
+#[cfg(target_os = "linux")]
+pub use normal_root::{
+    StoragePhysicalWorkerLoanV1, StorageBoundPhysicalWorkerLoanV1, StoragePhysicalWorkerDisposalV1,
+    StorageResidentCaptureWorkerV2, StorageCaptureWorkerBorrowV2, StorageCaptureWorkerDisposalV2,
+    StorageCaptureStopQuiescenceV4,
+    StorageRootLaunchExportReceivingLoanV2, StorageRootLaunchExportDisposalV2,
+    StorageInitialSessionHelloDisposalV1, StorageSessionHelloDisposalErrorV1,
+    StorageOutputOwedAfterOriginalV1,
+    StorageFloorPhysicalProgramReceivingV2,
+    StorageLifecycleSessionLoanV1, StorageLifecyclePositiveDisposalV1, StorageLifecycleDisposalErrorV1,
+    StorageStateRecoveryEncodingLoanV1, StorageInitialPinQuiescenceLoanV1,
+    StorageGuestRootTemplateReceivingLoanV1, StoragePrepareReceivingLoanV1, StoragePrepareSessionReplayLoanV1, StoragePrepareStartupJournalLoanV1, StorageReceivingClosedV1,
+};
 mod operator_abandon_ack;
-pub mod ownership_authority;
 pub mod ownership_resume;
-pub mod ownership_service;
 pub mod policy_compiler;
 pub(crate) mod protected_domain_journal;
 #[cfg(target_os = "linux")]
@@ -145,20 +150,16 @@ pub mod public_capability_issuance;
 pub mod public_mutation_compiler;
 #[cfg(target_os = "linux")]
 pub mod public_policy_planner;
+#[cfg(target_os = "linux")]
+pub mod cold_launch_publication;
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use cold_launch_publication::{OriginalPublicationActionV1, OriginalPublicationActionClosedV1};
 pub mod publication;
-pub mod publisher_admission;
-pub mod publisher_authority;
-#[cfg(target_os = "linux")]
-pub mod publisher_control;
-pub mod publisher_ingress;
-pub mod publisher_policy;
-pub mod publisher_roots;
-#[cfg(target_os = "linux")]
-pub mod publisher_sessions;
+pub mod publisher_admin;
 pub mod reconciler;
 #[cfg(target_os = "linux")]
 pub mod resource_inventory;
-mod role_credential;
 pub mod runtime_authority;
 #[cfg(target_os = "linux")]
 mod runtime_deployment;
@@ -177,10 +178,36 @@ pub mod tpm_nv_custody;
 
 #[cfg(target_os = "linux")]
 pub use controller_resource_reservation::{
-    ControllerFirstGlobalPrefixAttemptV1, ControllerResourceBankOpeningV1,
-    ControllerResourceEnrollmentCaptureV1, NixOriginalStartIntakeAttemptV1,
+    ControllerAttachmentStartupV1, ControllerFirstGlobalPrefixAttemptV1, ControllerResourceBankOpeningV1,
+    ControllerPublisherBusEnvironmentV1, ControllerPublisherBusEnvironmentErrorV1,
+    ControllerPublisherReceivingV1, ControllerPublisherStartupDataV1,
+    ControllerSourceGenesisReceivingV1, ControllerPublicTlsReceivingV1,
+    ControllerInitialBrokerSessionRoleV1, ControllerInitialBrokerSessionCaptureShapeV1,
+    ControllerInitialBrokerSessionShapeV1, ControllerInitialBrokerSessionClosedV1,
+    ControllerInitialBrokerSessionReceivingV1, ControllerInitialBrokerSessionReceivingLoanV1,
+    ControllerInitialSessionCompletedNativeBorrowV1,
+    ControllerRuntimeStartupShapeV1, ControllerRuntimeCredentialShapeV1,
+    ControllerRuntimeRequestedCountsV1, ControllerRuntimeTaskEnvelopeV1,
+    CONTROLLER_RUNTIME_TASKS_V1, CONTROLLER_RUNTIME_ROLE_TASKS_V1,
+    CONTROLLER_RUNTIME_BLOCKING_THREADS_V1, CONTROLLER_RUNTIME_STACK_BYTES_V1,
+    CreateContinuationIntakeAttemptV1,
+    CreateProvisioningOriginalsV1, OriginalCreateProvisioningRootLoanV1,
+    CreateProvisioningStorageIoOriginalV1, CreateProvisioningStorageIoLoanV1,
+    CreateProvisioningStorageIoErrorV1,
+    StorageProvisioningIoDisposalV1, StorageProvisioningWorkspaceOriginalV1, StorageProvisioningSessionIoShapeDataV1, DeleteStoragePreparationIoOriginalV3, DeleteStorageApplyIoOriginalV3, DeleteNetworkApplyIoOriginalV4, DeleteMountReapIoOriginalV4,
+    CreateProvisioningClientSessionAssociationErrorV1, StorageProvisioningSessionPostShapeDataV1,
+    OriginalCreateStorageReadyV1, CreateStorageReadyClosedV1,
+    OriginalCreateStorageRootExchangeV1, CreateStorageRootExchangeClosedV1, CreateStorageControllerDriverShapeDataV1,
+    OriginalCreateStorageUseSigningV1,
+    OriginalCreateStorageClientSessionV1, CreateStorageClientSessionClosedV1,
+    CreateStorageClientSessionShapeDataV1, CreateStorageEndpointRevalidationShapeDataV1,
+    CreateStorageClientPositiveDisposalV1,
+    OriginalCreateStorageInventoryV1, CreateStorageInventoryClosedV1,
+    CreateStorageInventoryShapeDataV1, CreateStorageInventoryPendingDisposalV1,
+    NixOriginalStartIntakeAttemptV1,
     NixOriginalStartIntakeLoanV1, ProjectPreparationReservationAttemptV1,
-    StorageComponentEnvelopeLoanV1, StorageComponentEnvelopeOriginalV1, StorageComponentPostV1,
+    StorageComponentEnvelopeOriginalV1,
+    CreateStorageOwnershipProgressV1,
 };
 
 #[cfg(target_os = "linux")]
@@ -195,6 +222,10 @@ pub use runtime_deployment::{
     HeldRuntimeDeploymentPairComparisonV1, HostPhysicalInvocationErrorV1,
     HostPhysicalInvocationLeaseV1, ProductionRuntimeDeploymentStartupCaptureV1,
     ProductionRuntimeDeploymentStartupPartsV1, ProductionRuntimeDeploymentStartupV1,
+    RuntimeBootPreparationStartupClosedV1, RuntimeBootPreparationStartupFailureViewV1,
+    RuntimeBootPreparationStartupOriginalV1,
+    RuntimeBootPreparationOriginsClosedV1, RuntimeBootPreparationOriginsOriginalV1,
+    RuntimeBootPreparationNativeFailureViewV1, RuntimeBootPreparationNativeOriginalV1,
     RuntimeDeploymentCanaryFailureV2, RuntimeDeploymentComparisonErrorV1,
     RuntimeDeploymentComparisonOriginsV1, RuntimeDeploymentNativeTransactionDataV1,
     RuntimeDeploymentOriginalClockCauseV3, RuntimeDeploymentOriginalClockRangeV3,
@@ -281,25 +312,15 @@ pub use host_catalog_reconciliation::{
     HostCatalogReconciliationV1,
 };
 pub use journal::{
-    CommitResult, ControllerPolicyHoldV1, FixedSourceProviderJournalHandoffV1,
+    CommitResult, ControllerPolicyHoldV1,
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
     GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1, IdempotencyKey,
     IdempotencyOutcome, Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction,
-    Kind2ProtectedReadbackV4, Kind5ProtectedReadbackV4,
-    MountBarrierIdleReplacementJournalAuthorityV4, MountDeadReplacementJournalAuthorityV4,
-    MountManagerStartupPolicyReceiptV1, MountOriginalInventoryJournalAuthorityV6,
-    MountOriginalNativeJournalAuthorityV5, MountSourceAcquisitionJournalAuthorityV2,
-    MountSourceConsumptionCommitReceipt, MountSourceConsumptionCompanionProjectionV2,
-    MountSourceConsumptionJournalAuthorityV1, MountSourceConsumptionPreflight,
-    OriginalInventoryProtectedReadbackV6, OriginalRootProtectedReadbackV5,
-    OriginalSourceProtectedReadbackV5, PreparedBarrierIdleReplacementV4, PreparedDeadReplacementV4,
-    PreparedGlobalCapacityReservationV1, PreparedOriginalInventoryAppendV6,
-    PreparedOriginalRootAppendV5, PreparedOriginalSourceAppendV5, ProtectedJournalAuthority,
+    ProtectedJournalCurrentnessOriginalsV1,
+    PreparedGlobalCapacityReservationV1,
+    ProtectedJournalAuthority,
     ProtectedJournalLockCustodyV1, ProtectedJournalPreflight, ProtectedJournalSnapshot,
-    RecordNamespace, RecoveryReport, SourceOriginalAppendSubjectV5,
-    SourceOriginalChallengeCheckpointV5, SourceOriginalChallengeHistoryViewV5,
-    SourceOriginalNativeJournalAuthorityV5, SourceOriginalPhysicalCutV5,
-    SourceOriginalReplayViewV5, SourceProviderHeldReadOnlyJournalAuthorityV1,
+    RecordNamespace, RecoveryReport,
 };
 #[cfg(target_os = "linux")]
 pub use journal::{
@@ -322,16 +343,6 @@ pub use mount_attempt::{
     MountInventorySnapshotOutcomeV1,
 };
 #[cfg(target_os = "linux")]
-pub use mount_manager_source_inventory::{
-    CapturedMountManagerStartupV1, MountManagerActivationDescriptorKindV1,
-    MountManagerActivationDescriptorV1, MountManagerActivationDescriptorsV1,
-    MountManagerExecutionDeathKindV1, MountManagerSourceAbsenceProjectionV1,
-    MountManagerSourceAbsenceV1, MountManagerSourceControlSessionV1,
-    MountManagerSourceInventoryError, MountManagerStartupCaptureOutcomeV1,
-    MountManagerStartupJournalBorrowV1, MountManagerStartupProtectedOpenReportV1,
-    MountManagerStartupProtectedOwnerV1,
-};
-#[cfg(target_os = "linux")]
 pub use mount_observation_state::{
     CurrentMountFilesystemInventoryV1, MountFilesystemInventoryError,
     MountJournalObservationIdentityV1,
@@ -341,19 +352,8 @@ pub use mount_source_acquisition_inventory::{
     DurableMountSourceAcquisitionInventorySnapshotV1, MountSourceAcquisitionInventoryClient,
     MountSourceAcquisitionInventoryError, MountSourceAcquisitionInventorySnapshotOutcomeV1,
 };
-pub use ownership_authority::{
-    DurableOwnershipAuthority, DurableOwnershipAuthorityError, DurableOwnershipBeginOutcome,
-    DurableOwnershipQueryOutcome, ExpectedOwnershipLease, OwnershipAuthority,
-    OwnershipAuthorityError, OwnershipAuthorityVerifier, OwnershipClaimAction, OwnershipClaimError,
-    OwnershipClaimV1, OwnershipLeaseAcquisitionError, OwnershipTransactionReceiptV1,
-    ProtectedOwnershipClockError, RecoveredOwnershipLease, SignedOwnershipLease,
-    UnverifiedOwnershipLeaseResponse,
-};
 pub use ownership_resume::{
-    OwnershipClockObservationError, OwnershipResumeError, OwnershipResumeOutcomeV1,
-};
-pub use ownership_service::{
-    DurableOwnershipProtocolService, InProcessOwnershipSessionClient, OwnershipProtocolServiceError,
+    OwnershipResumeError, OwnershipResumeOutcomeV1,
 };
 pub use publication::{
     prepare_authority_publication, bind_authority_publication_lease, AuthorityPublicationDraftV1,
@@ -361,6 +361,9 @@ pub use publication::{
     AuthorityPublicationStore, CurrentAuthorityPublicationV1, PreparedAuthorityPublicationV1,
     RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1,
 };
+#[cfg(target_os = "linux")]
+pub use reconciler::OperatorCleanupRecoveryCompletionV2;
+
 pub use reconciler::{
     AcceptOutcome, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV1, EffectFailure,
     EffectObservation, OperationPlan, OperatorStorageRepairReconcileV1,
@@ -382,3 +385,107 @@ pub use sandbox_spec_state::{
     DurableSandboxSpecV1, SandboxSpecCommitOutcomeV1, SandboxSpecPublicationV1,
     SandboxSpecStateError,
 };
+
+#[cfg(target_os = "linux")]
+
+#[cfg(test)]
+mod ownership_composition_tests;
+
+#[doc(hidden)]
+pub use controller_resource_reservation::{CreateStorageReadyNativeInputsV1,
+    CreateStorageBundleShapeDataV1, CreateStorageBundleClosedV1, OriginalCreateStorageBundleV1};
+
+pub use controller_resource_reservation::ControllerStorageFloorPhysicalReceivingV1;
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use journal::{DeleteInventorySessionAppendOriginalV1, DeleteInventorySessionAppendDisposalV1, DeleteInventoryIoDisposalV1, DeleteInventorySecurityShapeDataV1};
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use public_mutation_compiler::delete_admission::{
+    ControllerDeleteAuthorizationOriginalV1, ControllerDeleteAuthorizedScopeV1,
+    ControllerDeleteCandidateOriginalV2, ControllerDeleteSourceAuthorizedScopeV1,
+    ControllerDeletePendingOriginalV2, OriginalDeleteStoragePreparationLoanV3, OriginalDeleteStorageApplyLoanV3, OriginalDeleteNetworkApplyLoanV4, OriginalDeleteMountReapLoanV4,
+};
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use controller_resource_reservation::{ControllerDeletePlanningRootOriginalV1, ControllerDeletePlanningRootLoanV1};
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use controller_resource_reservation::{ControllerDeleteFinalDisposalOriginalV4, ControllerDeletePendingRootClientOriginalV2,
+    ControllerDeletePendingRootChallengeLoanV2, ControllerDeletePendingRootFailureViewV2, OriginalDeleteResourceSigningV2};
+
+#[doc(hidden)]
+pub use controller_resource_reservation::{CreateProvisioningSourceWorkspaceContextV1,
+    CreateStoppedCompletionAttemptV1, CreateStoppedPreAckContextV1,
+    CreateStoppedCompletionAssociationV1, CreateStoppedPreAckOriginalV1,
+    CreateStoppedPostAckContextV1, CreateStoppedTerminalOriginalV1, CreateStoppedTerminalCustodyV1};
+
+#[doc(hidden)]
+pub use controller_resource_reservation::AcceptedStartEntryOriginalV1;
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use controller_resource_reservation::operator_create_recovery::{OperatorRecoverInventoryLoanV1,
+    OperatorRecoverInventoryDisposalV1};
+#[cfg(target_os = "linux")]
+pub use controller_resource_reservation::{OperatorCreateRecoveryOriginalV1,
+    OperatorCreateRecoveryLoanV1, OperatorCreateRecoveryClosedV1, OperatorStopCleanupObservationLoanV1};
+pub use controller_resource_reservation::OperatorExecutionNoApplyRecoveryCompletedHandoffV2;
+pub use controller_resource_reservation::OperatorStopCleanupRecoveryCompletedHandoffV1;
+#[doc(hidden)]
+pub use controller_resource_reservation::OperatorRecoveredStoppedCreateSeedV1;
+
+#[doc(hidden)]
+pub use controller_resource_reservation::OriginalStartHostRootLoanV1;
+#[doc(hidden)]
+pub use controller_resource_reservation::{OriginalStartAssignmentInputsLoanV2,
+    StartAssignmentInputsCompletedTurnV2};
+
+
+#[doc(hidden)]
+pub use controller_resource_reservation::{PreparedStartResourceRequestOriginalV2,
+    PreparedStartResourceRequestClosedV2, StartHostCatalogPublicationLoanV2, StartHostCatalogIoLoanV2, StartHostCatalogNativeCompletionV2, StartHostCatalogCompletionRefusalV2, StartHostSessionRejoinOriginalV2, StartHostCatalogProjectionOriginalV2, StartHostCatalogProjectionClosedV2, StartResourceUpperDisposalV2, StartResourceSessionOpeningOriginalV2,
+    StartResourceSessionOpeningLoanV2, StartResourceSessionOpeningOwnerLinkV2,
+    StartResourceColdCompletionOriginalV4,
+    StartResourceSessionAssociationV4, StartResourceHelloDisposalV4, StartResourceHelloDisposalErrorV4, StartResourceSessionCurrentnessErrorV4,
+    StartResourceProvisioningIoLoanV2, StartResourcePreparedRequestBorrowV2, StartResourceSessionPostShapeDataV2,
+    StartResourceSessionResidentShapeDataV4};
+
+#[doc(hidden)]
+pub use controller_resource_reservation::{OperatorReconciliationObservationCustodyV2,
+    OperatorFirstLocalOrdinaryEnrollmentOriginalV2,
+    OperatorFirstLocalReconciliationCompleteV2, OperatorReconciliationInventoryProofV2,
+    OperatorReconciliationInventoryLoanV2, ControllerRecoveryInventoryLoanV2,
+    OperatorReconciliationObservationEntryRefusalV2, OperatorReconciliationObservationOriginalV2,
+    OperatorReconciliationObservationLoanV2, ControllerReconciliationInventoryRoleV2};
+
+#[cfg(target_os = "linux")]
+pub use controller_resource_reservation::{CatalogMaintenanceClosedV2, CatalogMaintenanceOriginalV2, ControllerCatalogMaintenanceLoanV2};
+#[doc(hidden)]
+pub use controller_resource_reservation::ControllerCatalogMaintenanceSigningBorrowV3;
+#[doc(hidden)]
+pub use controller_resource_reservation::ControllerMaintenanceStorageRequestOriginalV3;
+#[doc(hidden)]
+pub use controller_resource_reservation::ControllerMaintenanceStorageIoLoanV3;
+#[doc(hidden)]
+pub use controller_resource_reservation::ControllerMaintenanceStorageSdkDisposalV3;
+
+#[doc(hidden)]
+pub use controller_resource_reservation::{ControllerCatalogMaintenanceIoLoanV2, ControllerCatalogMaintenanceSessionCurrentnessErrorV2};
+
+#[doc(hidden)]
+pub use controller_resource_reservation::{ControllerCatalogMaintenanceCompletionRefusalV2, ControllerCatalogMaintenanceCatalogDisposalV2};
+
+#[doc(hidden)]
+pub use controller_resource_reservation::CatalogMaintenanceColdCompletedNativeBorrowV2;
+pub use controller_resource_reservation::CatalogMaintenanceRefreshCompletedNativeBorrowV2;
+
+#[doc(hidden)]
+pub use controller_resource_reservation::CatalogMaintenanceSdkShapeDataV2;
+
+#[doc(hidden)]
+pub use controller_resource_reservation::CatalogMaintenanceSourceBorrowV2;

@@ -667,8 +667,30 @@ impl LifecycleCascadeTombstonePlanV1 {
         coordination_record: LifecycleCoordinationRecordDigestV1,
         dataset_transaction: LifecycleDatasetTransactionDigestV1,
         manifest: LifecycleSnapshotManifestDigestV1,
-        dependency_edges: Vec<LifecycleDependencyEdgeV1>,
-        postorder: Vec<LifecycleResourceV1>,
+        mut dependency_edges: Vec<LifecycleDependencyEdgeV1>,
+        mut postorder: Vec<LifecycleResourceV1>,
+    ) -> Result<Self, LifecycleModelError> {
+        Self::new_from_decode_parts(
+            transaction,
+            dependency_snapshot,
+            coordination_record,
+            dataset_transaction,
+            manifest,
+            &mut dependency_edges,
+            &mut postorder,
+        )
+    }
+
+    /// Validates the same model while retaining borrowed graph inputs on refusal.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_from_decode_parts(
+        transaction: LifecycleTransactionIdV1,
+        dependency_snapshot: ObjectDigest,
+        coordination_record: LifecycleCoordinationRecordDigestV1,
+        dataset_transaction: LifecycleDatasetTransactionDigestV1,
+        manifest: LifecycleSnapshotManifestDigestV1,
+        dependency_edges: &mut Vec<LifecycleDependencyEdgeV1>,
+        postorder: &mut Vec<LifecycleResourceV1>,
     ) -> Result<Self, LifecycleModelError> {
         if postorder.is_empty()
             || dependency_snapshot.as_bytes() == &[0; 32]
@@ -699,8 +721,8 @@ impl LifecycleCascadeTombstonePlanV1 {
                 dataset_transaction,
                 manifest,
                 plan,
-                dependency_edges,
-                postorder,
+                dependency_edges: std::mem::take(dependency_edges),
+                postorder: std::mem::take(postorder),
             })
         }
     }
@@ -987,12 +1009,32 @@ impl LifecycleMethodSemanticCommitV1 {
         intent: &LifecycleIntentV1,
         expectations: &[ResourceExpectationV1],
     ) -> Result<Self, LifecycleModelError> {
+        Self::new_retaining_decode(witness, facts, evidence, intent, expectations, None)
+    }
+
+    /// Retains the actual refused semantic graph without cloning its inputs.
+    pub(super) fn new_retaining_decode(
+        witness: LifecycleSemanticCommitV1,
+        facts: LifecycleSemanticCommitFactV1,
+        evidence: LifecycleSemanticEvidenceV1,
+        intent: &LifecycleIntentV1,
+        expectations: &[ResourceExpectationV1],
+        failed: Option<&mut Option<Self>>,
+    ) -> Result<Self, LifecycleModelError> {
         if facts.cas() != witness.desired_state_cas()
             || !intent_semantic_cas_is_valid(intent, witness)
             || !facts_are_valid(&facts, intent, expectations)
             || !evidence.matches_intent(intent, witness.desired_state_cas())
             || !semantic_evidence_matches_facts(&facts, &evidence)
         {
+            if let Some(failed) = failed {
+                *failed = Some(Self {
+                witness,
+                facts,
+                evidence,
+                digest: LifecycleMethodSemanticCommitDigestV1(ObjectDigest::from_bytes([0; 32])),
+            });
+            }
             return Err(LifecycleModelError::InvalidModel);
         }
         let mut value = Self {
@@ -1001,7 +1043,15 @@ impl LifecycleMethodSemanticCommitV1 {
             evidence,
             digest: LifecycleMethodSemanticCommitDigestV1(ObjectDigest::from_bytes([0; 32])),
         };
-        let facts = super::semantic_format::encode_semantic_fact(&value)?;
+        let facts = match super::semantic_format::encode_semantic_fact(&value) {
+            Ok(facts) => facts,
+            Err(error) => {
+                if let Some(failed) = failed {
+                    *failed = Some(value);
+                }
+                return Err(error);
+            }
+        };
         value.digest = LifecycleMethodSemanticCommitDigestV1(ObjectDigest::from_bytes(
             Sha256::new()
                 .chain_update(b"aos.sandbox.lifecycle.method-semantic-commit.v1\0")

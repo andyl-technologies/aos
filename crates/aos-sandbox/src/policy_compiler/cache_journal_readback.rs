@@ -4,14 +4,23 @@
 //! verification to the Cache owner code. It does not issue policy binding or
 //! public Create authority.
 
+use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+
 use crate::cache_residency::{
-    CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1,
-    CacheResidencyProtectedJournalErrorV1, CacheResidencyRootReadOnlyPolicyHoldV1,
-    CacheResidencyRootReadOnlyReplayV1, PinnedCacheOwnerReadbackSignerV1,
-    VerifiedClosedCacheOwnerReadbackV2, replay_fixed_root_read_only_cache_journals_v1,
-    replay_fixed_root_read_only_cache_policy_hold_v1, verify_closed_cache_owner_readback_v2,
+    CacheOwnerReadbackErrorV1,
+    CacheResidencyProtectedJournalErrorV1,
+    CacheResidencyRootReadOnlyPolicyHoldV1,
+    CacheResidencyRootReadOnlyReplayV1,
+    replay_fixed_root_read_only_cache_journals_v1,
+    replay_fixed_root_read_only_cache_policy_hold_v1,
 };
-use crate::journal::CachePolicyHoldV1;
+use aos_sandbox_protocol::cache_owner_readback::{
+    CacheOwnerReadbackChallengeV1,
+    PinnedCacheOwnerReadbackSignerV1,
+    VerifiedClosedCacheOwnerReadbackV2,
+    verify_closed_cache_owner_readback_v2,
+};
+
 
 /// Reports a rejected joined Cache receipt under root's read-only replay.
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +34,15 @@ pub enum ClosedCacheJoinedReadbackErrorV2 {
     /// The fixed read-only Cache view failed typed replay or name checks.
     #[error(transparent)]
     Journal(#[from] CacheResidencyProtectedJournalErrorV1),
+}
+
+// Preserve the existing upper flattened packet-error lane after the pure codec move.
+impl From<aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackDataErrorV1>
+    for ClosedCacheJoinedReadbackErrorV2
+{
+    fn from(cause: aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackDataErrorV1) -> Self {
+        Self::Receipt(crate::cache_residency::CacheOwnerReadbackErrorV1::from(cause))
+    }
 }
 
 /// Replays the root policy Cache view as nonauthorizing diagnostic evidence.
@@ -111,9 +129,10 @@ mod tests {
 
     use super::*;
     use crate::cache_residency::{
-        CacheResidencyProtectedOpenReportV1, encode_cache_owner_readback_signer_credential_v1,
+        CacheResidencyProtectedOpenReportV1,
         sign_test_cache_owner_readback_v2,
     };
+    use aos_sandbox_protocol::cache_owner_readback::encode_cache_owner_readback_signer_credential_v1;
     use crate::journal::RecoveryReport;
 
     #[test]

@@ -5,7 +5,15 @@
 //! Its private `original_q04` child owns the retained Q04 cut and clearance;
 //! local initialization, pin recovery, and Git coverage still share this owner.
 
+use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+
 pub(super) mod original_q04;
+#[cfg(target_os = "linux")]
+pub(super) mod create_storage;
+#[cfg(target_os = "linux")]
+pub(in crate::cache_residency) mod baseline;
+#[cfg(target_os = "linux")]
+pub(super) mod q04_capture_pricing;
 
 use super::*;
 use original_q04::Q04ResidentCacheProgressV1;
@@ -38,13 +46,18 @@ impl std::fmt::Display for CacheResidentUnavailableV1 {
 impl std::error::Error for CacheResidentUnavailableV1 {}
 
 #[derive(Debug, thiserror::Error)]
-enum InitializationCauseV1 {
+pub(in crate::cache_residency) enum InitializationCauseV1 {
+    #[cfg(target_os = "linux")]
+    #[error("selected Cache baseline admission failed")]
+    Baseline,
     #[error(transparent)]
     Journal(#[from] JournalError),
     #[error(transparent)]
     Source(#[from] CacheReplayControllerBootstrapErrorV1),
     #[error(transparent)]
     Target(#[from] CacheResidencyProtectedJournalErrorV1),
+    #[error(transparent)]
+    Recovery(#[from] crate::cache_residency::RecoveryError),
     #[error("existing Cache provisioning is required")]
     ProvisioningRequired,
     #[error("resident Cache initialization is closed")]
@@ -69,6 +82,12 @@ enum InitializationCauseV1 {
     #[cfg(target_os = "linux")]
     #[error("resident Q04 Cache continuation is unresolved")]
     Q04,
+    #[cfg(target_os = "linux")]
+    #[error("resident new Create Storage Cache Held continuation is unresolved")]
+    CreateStorageHeld,
+    #[cfg(target_os = "linux")]
+    #[error("original Q04 Cache pricing capture is unresolved")]
+    Q04Preflight,
     #[cfg(target_os = "linux")]
     #[error(transparent)]
     CoverageData(#[from] GitCoverageDataErrorV1),
@@ -152,6 +171,10 @@ struct CacheResidentTargetsV1 {
     authority_journal: Option<Journal>,
     authority_report: Option<RecoveryReport>,
     authority: Option<Arc<ProtectedCacheResidencyReplayAuthorityV1>>,
+    // Keeps the actual initialized authority allocation alive after ownership
+    // moves into the returned Cache. Later closed loans compare this original.
+    #[cfg(target_os = "linux")]
+    initialized_authority: Option<Arc<ProtectedCacheResidencyReplayAuthorityV1>>,
     state_journal: Option<Journal>,
     state_report: Option<RecoveryReport>,
     replay: Option<Result<CacheResidencyProtectedJournalProjectionV1, CacheResidencyProtectedJournalErrorV1>>,
@@ -165,6 +188,10 @@ struct CacheResidentTargetsV1 {
 /// account, operation permission, physical funding or drain evidence.
 #[derive(Default)]
 pub struct CacheResidentInitializationV1 {
+    #[cfg(target_os = "linux")]
+    selected_baseline: Option<baseline::CacheSelectedInitializationV1>,
+    #[cfg(target_os = "linux")]
+    construction_entries: [Option<Result<(), crate::controller_resource_reservation::ResourceReservationErrorV1>>; 2],
     #[cfg(target_os = "linux")]
     coverage_inputs: Option<CacheGitCoverageInputsV1>,
     #[cfg(target_os = "linux")]
@@ -206,7 +233,19 @@ pub struct CacheResidentInitializationV1 {
     #[cfg(target_os = "linux")]
     pin_inventory: Option<Result<Vec<CacheRecoveryInventoryV1>, CacheResidencyProtectedJournalErrorV1>>,
     #[cfg(target_os = "linux")]
+    q04_capture_shape: Option<q04_capture_pricing::ShapeResult>,
+    #[cfg(target_os = "linux")]
+    q04_capture_posts: [Option<q04_capture_pricing::ShapeResult>; q04_capture_pricing::SHAPE_POSTS],
+    #[cfg(target_os = "linux")]
+    q04_capture_post_count: usize,
+    #[cfg(target_os = "linux")]
+    q04_capture_changed: Option<CacheReplayControllerBootstrapErrorV1>,
+    #[cfg(target_os = "linux")]
+    q04_paid_intake: Option<Result<(), crate::controller_resource_reservation::ResourceReservationErrorV1>>,
+    #[cfg(target_os = "linux")]
     q04: Q04ResidentCacheProgressV1,
+    #[cfg(target_os = "linux")]
+    create_storage_held: create_storage::CacheHeldProgressV1,
 }
 
 impl CacheResidentInitializationV1 {
@@ -371,8 +410,8 @@ impl CacheResidentInitializationV1 {
         source_domains: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         controller: &mut Journal,
         original_inputs: &mut GitCoverageCredentialCustodyV1,
-        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
@@ -504,8 +543,8 @@ impl CacheResidentInitializationV1 {
         source_domains: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         controller: &mut Journal,
         original_inputs: &mut GitCoverageCredentialCustodyV1,
-        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
@@ -621,6 +660,88 @@ impl CacheResidentInitializationV1 {
         &mut self,
         owner: &mut CacheResidencyProtectedOwnerV1,
     ) -> Result<&[CacheRecoveryInventoryV1], CacheResidentUnavailableV1> {
+        self.existing_pin_inventories_priced::<()>(owner, None, None)
+    }
+
+    /// Selects retained logical pins under this original's protected replay.
+    ///
+    /// The returned Native wrappers retain historical pin bindings only. Each
+    /// release still requires the existing protected mutation and physical
+    /// observation; this selection grants neither operation.
+    ///
+    /// # Errors
+    /// Returns an error for unavailable original custody, duplicate partition
+    /// pins, or a release tombstone outside its reconstructed partition.
+    #[cfg(target_os = "linux")]
+    pub fn existing_consumer_logical_pins_v1(
+        &mut self,
+        owner: &mut CacheResidencyProtectedOwnerV1,
+        consumer: &aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1,
+    ) -> Result<(Vec<CachePinV1>, Vec<CachePinV1>), CacheResidencyProtectedJournalErrorV1> {
+        let inventories = self.existing_pin_inventories(owner)
+            .map_err(|_| CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
+        let mut active = Vec::new();
+        let mut released = Vec::new();
+        for inventory in inventories {
+            let mut partition_pin = None;
+            for payload in &inventory.reconstructed {
+                if &payload.plan.descriptor != consumer.object()
+                    || payload.plan.project != consumer.project()
+                {
+                    continue;
+                }
+                for pin in &payload.pins {
+                    if pin.partition != payload.plan.partition
+                        || !pin_lookup::logical_pin_matches_consumer(
+                            pin,
+                            payload.plan.partition,
+                            consumer.object(),
+                            consumer.project(),
+                            consumer.view(),
+                            consumer.attachment(),
+                        )
+                    {
+                        continue;
+                    }
+                    if partition_pin
+                            .replace(CachePinV1::from_parsed_history_data_v1(pin.clone()))
+                            .is_some()
+                        {
+                        return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+                    }
+                }
+                for tombstone in &payload.released_pins {
+                    if tombstone.pin.partition != payload.plan.partition {
+                        return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+                    }
+                    if pin_lookup::logical_pin_matches_consumer(
+                        &tombstone.pin,
+                        payload.plan.partition,
+                        consumer.object(),
+                        consumer.project(),
+                        consumer.view(),
+                        consumer.attachment(),
+                    ) {
+                        released.push(CachePinV1::from_parsed_history_data_v1(
+                            tombstone.pin.clone(),
+                        ));
+                    }
+                }
+            }
+            if let Some(pin) = partition_pin {
+                active.push(pin);
+            }
+        }
+        Ok((active, released))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn existing_pin_inventories_priced<P>(
+        &mut self,
+        owner: &mut CacheResidencyProtectedOwnerV1,
+        baseline: Option<&baseline::CacheConstructionOriginalsV1>,
+        receiving: Option<&baseline::CacheConstructionReceivingV1<'_, '_, '_, '_, P>>,
+    ) -> Result<&[CacheRecoveryInventoryV1], CacheResidentUnavailableV1> {
         self.recheck(owner)?;
         self.complete = false;
         let clock = self.clock.as_ref().ok_or(CacheResidentUnavailableV1)?;
@@ -633,8 +754,10 @@ impl CacheResidentInitializationV1 {
         };
         let hold = self.hold.as_mut().ok_or(CacheResidentUnavailableV1)?;
         let state = owner.state_journal.as_mut().ok_or(CacheResidentUnavailableV1)?;
-        let returned = owner.authority.with_borrowed_mutable_authority_v1(
+        let returned = owner.authority.with_borrowed_mutable_authority_priced_v1(
             state, &mut hold.0, &guard,
+            baseline.or_else(|| self.selected_baseline.as_ref().map(|selected| &selected.originals)),
+            receiving,
             |session, state| session.while_current_records(&[], |_, _, _, validator, refresh| {
                 self.pin_inventory = Some((|| {
                     let projection = CacheResidencyProtectedJournalV1::claim(state, validator.clone())?.replay()?;
@@ -676,7 +799,7 @@ impl CacheResidentInitializationV1 {
         &mut self,
         owner: &mut CacheResidencyProtectedOwnerV1,
         physical: &mut super::super::DormantCacheOwnerV1,
-        consumer: &crate::production_operation_compiler::RecheckedCacheConsumerV1,
+        consumer: &aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1,
         operation: OperationId,
         transaction_id: [u8; 16],
         source_journal: &Journal,
@@ -703,7 +826,7 @@ impl CacheResidentInitializationV1 {
         &mut self,
         owner: &mut CacheResidencyProtectedOwnerV1,
         physical: &mut super::super::DormantCacheOwnerV1,
-        consumer: &crate::production_operation_compiler::RecheckedCacheConsumerV1,
+        consumer: &aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1,
         pin: &super::super::CachePinV1,
         operation: OperationId,
         transaction_id: [u8; 16],
@@ -713,7 +836,7 @@ impl CacheResidentInitializationV1 {
         let inventories = self.existing_pin_inventories(owner)?;
         let retained = inventories.iter().flat_map(|inventory| &inventory.reconstructed)
             .flat_map(|payload| &payload.released_pins)
-            .any(|tombstone| &tombstone.pin == pin);
+            .any(|tombstone| &tombstone.pin == pin.historical_data_v1());
         if consumer.acquisition_fence().is_some() || !retained
             || !pin_lookup::logical_pin_matches_consumer(pin, pin.partition, consumer.object(), consumer.project(), consumer.view(), consumer.attachment())
         {
@@ -747,9 +870,36 @@ impl CacheResidentInitializationV1 {
         node: aos_sandbox_core::NodeId,
         maximum_memory_bytes: u64,
     ) -> Result<(), CacheResidentUnavailableV1> {
+        self.prepare_existing_physical_owner_priced::<()>(
+            owner, destination, node, maximum_memory_bytes, None, None,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_existing_physical_owner_priced<P>(
+        &mut self,
+        owner: &mut CacheResidencyProtectedOwnerV1,
+        destination: &mut Option<super::super::DormantCacheOwnerV1>,
+        node: aos_sandbox_core::NodeId,
+        maximum_memory_bytes: u64,
+        baseline: Option<&baseline::CacheConstructionOriginalsV1>,
+        receiving: Option<&baseline::CacheConstructionReceivingV1<'_, '_, '_, '_, P>>,
+    ) -> Result<(), CacheResidentUnavailableV1> {
+        if let Some(receiving) = receiving {
+            let demand = super::super::effect_owner::ResidentCachePhysicalOpenV1::selected_preparation_demand_v1(
+                maximum_memory_bytes,
+            ).map_err(|cause| {
+                self.first_failure.get_or_insert(InitializationCauseV1::Physical(cause));
+                CacheResidentUnavailableV1
+            })?;
+            if let Err(cause) = receiving.require_physical_complete(demand) {
+                self.first_failure.get_or_insert(cause);
+                return Err(CacheResidentUnavailableV1);
+            }
+        }
         // Derive quotas from the complete selected inventory already retained
         // under the original clock/gate recipe, not another legacy full query.
-        self.existing_pin_inventories(owner)?;
+        self.existing_pin_inventories_priced(owner, baseline, receiving)?;
         self.complete = false;
         let Some(clock) = self.clock.as_ref() else {
             self.first_failure.get_or_insert(InitializationCauseV1::Closed);
@@ -785,7 +935,14 @@ impl CacheResidentInitializationV1 {
                 return Err(InitializationCauseV1::Closed);
             }
             self.physical_limits = Some(limits);
-            if self.physical_open.open_once(destination, limits).is_err() {
+            let opened = if let Some(receiving) = receiving {
+                self.physical_open.open_selected_once(destination, limits, receiving)
+            } else if self.selected_baseline.is_some() {
+                return Err(InitializationCauseV1::Baseline);
+            } else {
+                self.physical_open.open_once(destination, limits)
+            };
+            if opened.is_err() {
                 return Err(InitializationCauseV1::PhysicalOpen);
             }
             Ok(())
@@ -844,7 +1001,7 @@ impl CacheResidentInitializationV1 {
         &mut self,
         owner: &mut CacheResidencyProtectedOwnerV1,
         physical: &mut super::super::DormantCacheOwnerV1,
-        consumer: &crate::production_operation_compiler::RecheckedCacheConsumerV1,
+        consumer: &aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1,
         pin: &super::super::CachePinV1,
         operation: OperationId,
         transaction_id: [u8; 16],
@@ -1067,7 +1224,23 @@ impl CacheResidentInitializationV1 {
         destination: &mut Option<CacheResidencyProtectedOwnerV1>,
         owner_uid: u32,
     ) -> Result<(), CacheResidentUnavailableV1> {
-        if let Err(cause) = self.capture_before_clock(owner_uid) {
+        self.initialize_after_prearm_priced::<()>(destination, owner_uid,
+            #[cfg(target_os = "linux")] None,
+            #[cfg(target_os = "linux")] None)
+    }
+
+    fn initialize_after_prearm_priced<P>(
+        &mut self,
+        destination: &mut Option<CacheResidencyProtectedOwnerV1>,
+        owner_uid: u32,
+        #[cfg(target_os = "linux")]
+        receiving: Option<&baseline::CacheConstructionReceivingV1<'_, '_, '_, '_, P>>,
+        #[cfg(target_os = "linux")]
+        mut stages: Option<&mut [baseline::CacheNativeStageV1; 5]>,
+    ) -> Result<(), CacheResidentUnavailableV1> {
+        if let Err(cause) = self.capture_before_clock::<P>(owner_uid,
+            #[cfg(target_os = "linux")] stages.as_deref_mut(),
+            #[cfg(target_os = "linux")] receiving) {
             self.first_failure = Some(cause);
             return Err(CacheResidentUnavailableV1);
         }
@@ -1097,8 +1270,12 @@ impl CacheResidentInitializationV1 {
                     return Err(InitializationCauseV1::CoverageInputs);
                 }
             }
-            self.targets.capture_existing(
+            self.targets.capture_existing::<P>(
                 destination, clock, self.source.as_mut(), owner_uid,
+                #[cfg(target_os = "linux")]
+                stages.as_deref_mut(),
+                #[cfg(target_os = "linux")]
+                receiving,
             )
         })();
         // Park the action's first cause before any final clock or source check.
@@ -1134,17 +1311,37 @@ impl CacheResidentInitializationV1 {
         Ok(())
     }
 
-    fn capture_before_clock(&mut self, owner_uid: u32) -> Result<(), InitializationCauseV1> {
-        self.source_open = Some(open_existing_controller_cache_source(owner_uid)?);
+    fn capture_before_clock<P>(
+        &mut self, owner_uid: u32,
+        #[cfg(target_os = "linux")]
+        mut stages: Option<&mut [baseline::CacheNativeStageV1; 5]>,
+        #[cfg(target_os = "linux")]
+        receiving: Option<&baseline::CacheConstructionReceivingV1<'_, '_, '_, '_, P>>,
+    ) -> Result<(), InitializationCauseV1> {
+        self.source_open = Some(open_initializer_cache_journal::<P>(
+            InitializerJournal::Source, owner_uid,
+            #[cfg(target_os = "linux")]
+            stages.as_deref_mut(),
+            #[cfg(target_os = "linux")]
+            receiving,
+        )?);
+        #[cfg(target_os = "linux")]
+        if let Some(receiving) = receiving {
+            receiving.require_manifest(&self.source_open.as_ref()
+                .ok_or(InitializationCauseV1::Closed)?.0, true)?;
+        }
         self.source_report = self.source_open.as_ref().map(|(_journal, report)| *report);
         CacheReplayControllerBootstrapOwnerV1::capture_existing(
             &mut self.source_open, &mut self.source, owner_uid,
         )?;
         reject_legacy_cache_journals()?;
         let root = Path::new(PROTECTED_CACHE_ROOT);
-        self.hold = Some(open_cache_journal_file(
-            root, CACHE_POLICY_HOLD_JOURNAL, Journal::cache_policy_hold_limits(),
-            owner_uid, CacheOpenProfileV1::ExistingOnly,
+        self.hold = Some(open_initializer_cache_journal::<P>(
+            InitializerJournal::Hold, owner_uid,
+            #[cfg(target_os = "linux")]
+            stages.as_deref_mut(),
+            #[cfg(target_os = "linux")]
+            receiving,
         )?);
         let hold = self.hold.as_mut().ok_or(InitializationCauseV1::Closed)?;
         #[cfg(target_os = "linux")]
@@ -1162,9 +1359,12 @@ impl CacheResidentInitializationV1 {
             self.original_hold = Some(hold.0.cache_policy_hold_for_writer()?);
         }
 
-        self.clock_open = Some(open_cache_journal_file(
-            root, CACHE_CLOCK_JOURNAL, cache_clock_journal_limits(),
-            owner_uid, CacheOpenProfileV1::ExistingOnly,
+        self.clock_open = Some(open_initializer_cache_journal::<P>(
+            InitializerJournal::Clock, owner_uid,
+            #[cfg(target_os = "linux")]
+            stages.as_deref_mut(),
+            #[cfg(target_os = "linux")]
+            receiving,
         )?);
         let opened = self.clock_open.as_mut().ok_or(InitializationCauseV1::Closed)?;
         let retained = read_cache_clock_floor(&mut opened.0)?;
@@ -1849,7 +2049,19 @@ impl CacheResidentInitializationV1 {
         let cause = self.first_failure.as_ref().or(self.postcheck.as_ref());
         match cause {
             #[cfg(target_os = "linux")]
+            Some(InitializationCauseV1::Baseline) => self.construction_entries.iter()
+                .find_map(|returned| returned.as_ref().and_then(|returned| returned.as_ref().err())
+                    .map(|cause| cause as &(dyn std::error::Error + 'static)))
+                .or_else(|| self.selected_baseline.as_ref().and_then(baseline::CacheSelectedInitializationV1::failure))
+                .or_else(|| cause.map(|cause| cause as &(dyn std::error::Error + 'static))),
+            #[cfg(target_os = "linux")]
             Some(InitializationCauseV1::ReadMetadata) => self.read_metadata.failure()
+                .or_else(|| cause.map(|cause| cause as &(dyn std::error::Error + 'static))),
+            #[cfg(target_os = "linux")]
+            Some(InitializationCauseV1::CreateStorageHeld) => self.create_storage_held.failure()
+                .or_else(|| cause.map(|cause| cause as &(dyn std::error::Error + 'static))),
+            #[cfg(target_os = "linux")]
+            Some(InitializationCauseV1::Q04Preflight) => self.q04_capture_failure()
                 .or_else(|| cause.map(|cause| cause as &(dyn std::error::Error + 'static))),
             #[cfg(target_os = "linux")]
             Some(InitializationCauseV1::Q04) => self.q04.failure()
@@ -1866,8 +2078,9 @@ impl CacheResidentInitializationV1 {
                 .or_else(|| self.mutations.iter().find_map(|progress| progress.failure()))
                 .or_else(|| self.first_failure.as_ref().map(|cause| cause as &(dyn std::error::Error + 'static))),
             #[cfg(target_os = "linux")]
-            Some(InitializationCauseV1::PhysicalOpen) => self.physical_open.failure()
-                .map(|cause| cause as &(dyn std::error::Error + 'static)),
+            Some(InitializationCauseV1::PhysicalOpen) => self.selected_baseline.as_ref()
+                .and_then(|selected| selected.originals.failure())
+                .or_else(|| self.physical_open.failure()),
             Some(InitializationCauseV1::Replay) => self.targets.replay.as_ref()?.as_ref().err()
                 .map(|cause| cause as &(dyn std::error::Error + 'static)),
             Some(InitializationCauseV1::Evidence) => self.targets.evidence.as_ref()?.as_ref().err()
@@ -1904,24 +2117,93 @@ fn require_original_hold(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum InitializerJournal {
+    Source,
+    Hold,
+    Clock,
+    Authority,
+    State,
+}
+
+impl InitializerJournal {
+    pub(crate) fn recipe(self) -> (&'static Path, &'static str, JournalLimits) {
+        use aos_sandbox_protocol::cache_state::fixed_journals::CacheJournalRecipeRoleV1 as Role;
+        let role = match self {
+            Self::Source => Role::Bootstrap,
+            Self::Hold => Role::Hold,
+            Self::Clock => Role::Clock,
+            Self::Authority => Role::Authority,
+            Self::State => Role::State,
+        };
+        (Path::new(role.writer_directory_v1()), role.basename_v1(), role.limits_v1())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn owner(self) -> baseline::CacheConstructionOwnerV1 {
+        use baseline::CacheConstructionOwnerV1;
+
+        match self {
+            Self::Source => CacheConstructionOwnerV1::CacheBootstrapNative,
+            Self::Hold => CacheConstructionOwnerV1::CacheHoldNative,
+            Self::Clock => CacheConstructionOwnerV1::CacheClockNative,
+            Self::Authority => CacheConstructionOwnerV1::CacheAuthorityNative,
+            Self::State => CacheConstructionOwnerV1::CacheStateNative,
+        }
+    }
+}
+
+fn open_initializer_cache_journal<P>(
+    role: InitializerJournal,
+    uid: u32,
+    #[cfg(target_os = "linux")]
+    stages: Option<&mut [baseline::CacheNativeStageV1; 5]>,
+    #[cfg(target_os = "linux")]
+    receiving: Option<&baseline::CacheConstructionReceivingV1<'_, '_, '_, '_, P>>,
+) -> Result<(Journal, RecoveryReport), InitializationCauseV1> {
+    let (root, name, limits) = role.recipe();
+    #[cfg(target_os = "linux")]
+    if let Some(stages) = stages {
+        return stages[role as usize].open_once(
+            receiving.ok_or(InitializationCauseV1::Baseline)?, role.owner(), root, name, limits, uid, false,
+        );
+    }
+    if matches!(role, InitializerJournal::Source) {
+        return open_existing_controller_cache_source(uid).map_err(InitializationCauseV1::from);
+    }
+    open_cache_journal_file(root, name, limits, uid, CacheOpenProfileV1::ExistingOnly)
+        .map_err(InitializationCauseV1::from)
+}
+
 impl CacheResidentTargetsV1 {
-    fn capture_existing(
+    fn capture_existing<P>(
         &mut self,
         destination: &mut Option<CacheResidencyProtectedOwnerV1>,
         clock: &Arc<ProtectedCacheClockV1>,
         source: Option<&mut CacheReplayControllerBootstrapOwnerV1>,
         owner_uid: u32,
+        #[cfg(target_os = "linux")]
+        mut stages: Option<&mut [baseline::CacheNativeStageV1; 5]>,
+        #[cfg(target_os = "linux")]
+        receiving: Option<&baseline::CacheConstructionReceivingV1<'_, '_, '_, '_, P>>,
     ) -> Result<(), InitializationCauseV1> {
         let source = source.ok_or(InitializationCauseV1::Closed)?;
         let root = Path::new(PROTECTED_CACHE_ROOT);
-        let (journal, report) = open_cache_journal_file(
-            root, CACHE_AUTHORITY_JOURNAL, cache_authority_journal_limits(),
-            owner_uid, CacheOpenProfileV1::ExistingOnly,
+        let (journal, report) = open_initializer_cache_journal::<P>(
+            InitializerJournal::Authority, owner_uid,
+            #[cfg(target_os = "linux")]
+            stages.as_deref_mut(),
+            #[cfg(target_os = "linux")]
+            receiving,
         )?;
         self.authority_journal = Some(journal);
         self.authority_report = Some(report);
         let journal = self.authority_journal.as_mut().ok_or(InitializationCauseV1::Closed)?;
         enable_cache_journal_gate(journal, root, CACHE_AUTHORITY_JOURNAL, owner_uid)?;
+        #[cfg(target_os = "linux")]
+        if let Some(receiving) = receiving {
+            receiving.require_manifest(journal, false)?;
+        }
         let evidence = recover_cache_replay_evidence(
             journal, cache_owner_scope(), CacheRecoveryLimitsV1::default(),
         )?;
@@ -1930,9 +2212,12 @@ impl CacheResidentTargetsV1 {
             &mut self.authority_journal, &mut self.authority, cache_owner_scope(),
             MAXIMUM_AUTHORITY_RECORD_BYTES, evidence, CacheRecoveryLimitsV1::default(), current_time,
         )?;
-        let (journal, report) = open_cache_journal_file(
-            root, CACHE_STATE_JOURNAL, cache_state_journal_limits(),
-            owner_uid, CacheOpenProfileV1::ExistingOnly,
+        let (journal, report) = open_initializer_cache_journal::<P>(
+            InitializerJournal::State, owner_uid,
+            #[cfg(target_os = "linux")]
+            stages.as_deref_mut(),
+            #[cfg(target_os = "linux")]
+            receiving,
         )?;
         self.state_journal = Some(journal);
         self.state_report = Some(report);
@@ -1946,6 +2231,10 @@ impl CacheResidentTargetsV1 {
         let Some(authority) = self.authority.take() else {
             return Err(InitializationCauseV1::Closed);
         };
+        #[cfg(target_os = "linux")]
+        if receiving.is_some() {
+            self.initialized_authority = Some(Arc::clone(&authority));
+        }
         *destination = Some(CacheResidencyProtectedOwnerV1 {
             state_journal: Some(state_journal),
             authority,
@@ -1955,6 +2244,19 @@ impl CacheResidentTargetsV1 {
         });
         let target = destination.as_mut().ok_or(InitializationCauseV1::Closed)?;
         let state = target.state_journal.as_mut().ok_or(InitializationCauseV1::Closed)?;
+        #[cfg(target_os = "linux")]
+        if let Some(receiving) = receiving {
+            target.authority.while_initializer_current_resident(
+                state, receiving, &mut self.replay, &mut self.postcheck,
+                |state, _owner, _now, validator| CacheResidencyProtectedJournalV1::claim(state, validator)?.replay(),
+            );
+        } else {
+            target.authority.while_authority_current_resident(
+                &mut self.replay, &mut self.postcheck,
+                |_owner, _now, validator| CacheResidencyProtectedJournalV1::claim(state, validator)?.replay(),
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
         target.authority.while_authority_current_resident(
             &mut self.replay, &mut self.postcheck,
             |_owner, _now, validator| CacheResidencyProtectedJournalV1::claim(state, validator)?.replay(),

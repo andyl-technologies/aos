@@ -430,6 +430,10 @@ pub(crate) fn record_snapshot(
     persist_snapshot(journal, history, record, inventory)
 }
 
+pub(crate) fn canonical_snapshot_carrier_geometry_data_v2() -> Option<(usize, usize)> {
+    crate::mount_inventory_snapshot::canonical_snapshot_carrier_geometry_data_v2::<DestinationSlotInventoryKind>()
+}
+
 fn persist_snapshot(
     journal: &mut Journal,
     history: SnapshotHistory,

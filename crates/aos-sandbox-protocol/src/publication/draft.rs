@@ -488,28 +488,48 @@ pub(super) fn encode_proposal(
     Ok(bytes)
 }
 
-pub(super) fn validate_encoded_size(
-    proposal: &AuthorityPublicationProposalV1,
-) -> Result<(), PublicationHistoryError> {
-    let mut size = 64_usize
-        .checked_add(proposal.manifest.canonical_bytes().len())
-        .and_then(|value| value.checked_add(proposal.lease.canonical_lease().len()))
-        .and_then(|value| value.checked_add(proposal.lease.canonical_signature().len()))
-        .and_then(|value| value.checked_add(proposal.lease.canonical_receipt().len()))
-        .and_then(|value| value.checked_add(proposal.lease.canonical_receipt_signature().len()))
+/// Bounds the existing complete publication encoding from borrowed lengths.
+///
+/// The fixed outer/template allowances are the original publication validator's
+/// bounds. This counter performs no model construction or canonical decoding.
+///
+/// # Errors
+/// Rejects the same checked overflow and complete-publication ceiling.
+pub fn publication_construction_encoded_bound_v1(
+    manifest_bytes: usize,
+    lease_artifact_bytes: [usize; 4],
+    templates: impl IntoIterator<Item = (usize, usize, usize, usize)>,
+) -> Result<usize, PublicationHistoryError> {
+    let mut size = 64usize.checked_add(manifest_bytes)
         .ok_or(PublicationHistoryError::PublicationTooLarge)?;
-    for template in &proposal.templates {
-        size = size
-            .checked_add(128)
-            .and_then(|value| value.checked_add(template.signed_plan().canonical_plan().len()))
-            .and_then(|value| value.checked_add(template.signed_plan().canonical_signature().len()))
-            .and_then(|value| value.checked_add(template.body_without_deadline().len()))
-            .and_then(|value| value.checked_add(template.descriptor_roles().len() * 4))
+    for artifact in lease_artifact_bytes {
+        size = size.checked_add(artifact).ok_or(PublicationHistoryError::PublicationTooLarge)?;
+    }
+    for (plan, signature, body, roles) in templates {
+        size = size.checked_add(128)
+            .and_then(|value| value.checked_add(plan))
+            .and_then(|value| value.checked_add(signature))
+            .and_then(|value| value.checked_add(body))
+            .and_then(|value| value.checked_add(roles.checked_mul(4)?))
             .ok_or(PublicationHistoryError::PublicationTooLarge)?;
         if size > MAXIMUM_PUBLICATION_BYTES {
             return Err(PublicationHistoryError::PublicationTooLarge);
         }
     }
+    Ok(size)
+}
+
+pub(super) fn validate_encoded_size(
+    proposal: &AuthorityPublicationProposalV1,
+) -> Result<(), PublicationHistoryError> {
+    publication_construction_encoded_bound_v1(proposal.manifest.canonical_bytes().len(), [
+        proposal.lease.canonical_lease().len(), proposal.lease.canonical_signature().len(),
+        proposal.lease.canonical_receipt().len(), proposal.lease.canonical_receipt_signature().len(),
+    ], proposal.templates.iter().map(|template| (
+        template.signed_plan().canonical_plan().len(),
+        template.signed_plan().canonical_signature().len(),
+        template.body_without_deadline().len(), template.descriptor_roles().len(),
+    )))?;
     Ok(())
 }
 

@@ -6,9 +6,27 @@
 //! intent, and storage transaction intent in one journal transaction. It does
 //! not cross the ambiguous-mutation boundary and exposes no ZFS invocation.
 
+enum StoragePreparationNativeTargetV1<'call, 'cut, 'owner> {
+    Legacy,
+    Nix(crate::nix_generation::StorageGenerationNativeLoanV1<'call>),
+    Receiving(
+        &'call mut aos_sandbox::StoragePrepareReceivingLoanV1<'owner>,
+        [u8; 16],
+        &'call mut crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1,
+    ),
+    State(
+        &'call mut crate::state::encoding::StateEncodingLoanV1<'cut, 'owner>,
+        [u8; 16],
+        &'call mut crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1,
+    ),
+}
+
 use std::collections::BTreeMap;
 
 mod held_snapshot_readback;
+mod recovery_authentication;
+mod guest_root_publication;
+pub(crate) use guest_root_publication::GuestRootAdmissionOriginalV2;
 
 pub(crate) use held_snapshot_readback::{
     StorageHeldSnapshotCatalogCutV1, StorageHeldSnapshotSelectorV1,
@@ -46,7 +64,7 @@ use crate::catalog_preparation::{
     RetainedStorageCatalogPreparationV1, StoragePreparationAuthorityRecordsV1,
 };
 use crate::catalog_transition::VerifiedPhysicalCatalogSnapshotV1;
-use crate::guest_root_attempt::{GuestRootAttemptPhaseV1, GuestRootPublicationAttemptV1};
+use crate::guest_root_attempt::{GuestRootAttemptPhaseV2, GuestRootPublicationAttemptV2};
 use crate::guest_root_worker::encode_request as encode_guest_root_worker_request;
 use crate::helper::{
     PreobservedZfsMutation, StorageMutationHelper, ZfsHelperError, ZfsHelperOutcome,
@@ -126,6 +144,12 @@ pub enum StorageBrokerError {
     /// Workspace publication inputs failed closed validation.
     #[error("storage workspace catalog input was rejected: {0}")]
     WorkspaceCatalog(#[from] StorageWorkspaceCatalogError),
+    /// The actual protected creation fence failed authentication or origin comparison.
+    #[error("storage creation authority was rejected: {0}")]
+    GuestRootCreationAuthority(crate::StorageAdmissionError),
+    /// The actual protected current-publication fence or sealed effect was rejected.
+    #[error("storage current guest-root authority was rejected: {0}")]
+    GuestRootCurrentAuthority(#[source] crate::StorageAdmissionError),
 }
 
 /// Classifies a durable admission without implying that mutation is runnable.
@@ -197,6 +221,7 @@ impl AuthenticatedWorkspaceCatalogPhysicalPlanV1 {
 pub struct StorageAdmissionCoordinator {
     authority: StorageAuthorityV1,
     transactions: StorageTransactionStore,
+    recovery_authentication: recovery_authentication::RecoveryAuthenticationCaptureV1,
 }
 
 /// Retains one signed read-only request and a cold-verified Storage owner cut.
@@ -381,6 +406,14 @@ impl FreshWorkspacePinRepairDispatchV1 {
         &self.attempt
     }
 
+    pub(crate) fn worker_request_bytes_receiving_v1(
+        &self,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<Vec<u8>, ZfsHelperError> {
+        crate::workspace_repair_worker::encode_request_receiving_v1(&self.request, receiving)
+            .map_err(ZfsHelperError::Backend)
+    }
+
     pub(crate) fn worker_request_bytes(&self) -> Result<Vec<u8>, ZfsHelperError> {
         encode_repair_worker_request(&self.request).map_err(ZfsHelperError::Backend)
     }
@@ -389,6 +422,14 @@ impl FreshWorkspacePinRepairDispatchV1 {
 impl WorkspacePinRepairAdmissionDispatchV1 {
     pub(crate) const fn probe(&self) -> &WorkspacePinRepairAdmissionProbeV1 {
         &self.probe
+    }
+
+    pub(crate) fn request_bytes_receiving_v1(
+        &self,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<Vec<u8>, ZfsHelperError> {
+        crate::workspace_repair_admission::encode_request_receiving_v1(&self.request, receiving)
+            .map_err(ZfsHelperError::Backend)
     }
 
     pub(crate) fn request_bytes(&self) -> Result<Vec<u8>, ZfsHelperError> {
@@ -405,6 +446,14 @@ impl WorkspacePinRepairObservationDispatchV1 {
         &self.probe
     }
 
+    pub(crate) fn request_bytes_receiving_v1(
+        &self,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<Vec<u8>, ZfsHelperError> {
+        crate::workspace_repair_observer::encode_request_receiving_v1(&self.request, receiving)
+            .map_err(ZfsHelperError::Backend)
+    }
+
     pub(crate) fn request_bytes(&self) -> Result<Vec<u8>, ZfsHelperError> {
         encode_repair_observer_request(&self.request).map_err(ZfsHelperError::Backend)
     }
@@ -413,6 +462,16 @@ impl WorkspacePinRepairObservationDispatchV1 {
 impl WorkspacePinObservationDispatchV1 {
     pub(crate) fn attempt(&self) -> &WorkspacePinAttemptV1 {
         &self.attempt
+    }
+
+    pub(crate) fn request_bytes_receiving_v1(
+        &self,
+        contract: &crate::ZfsHelperContract,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<Vec<u8>, ZfsHelperError> {
+        crate::pin_worker::encode_request_receiving_v1(
+            contract, &self.catalog, &self.observer_authority, receiving,
+        ).map_err(ZfsHelperError::Backend)
     }
 
     pub(crate) fn request_bytes(
@@ -427,6 +486,16 @@ impl WorkspacePinObservationDispatchV1 {
 impl FreshWorkspacePinDispatchV1 {
     pub(crate) fn attempt(&self) -> &WorkspacePinAttemptV1 {
         &self.attempt
+    }
+
+    pub(crate) fn worker_request_bytes_receiving_v1(
+        &self,
+        contract: &crate::ZfsHelperContract,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<Vec<u8>, ZfsHelperError> {
+        crate::pin_worker::encode_request_receiving_v1(
+            contract, &self.catalog, &self.worker_authority, receiving,
+        ).map_err(ZfsHelperError::Backend)
     }
 
     pub(crate) fn worker_request_bytes(
@@ -477,6 +546,16 @@ impl FreshWorkspaceRemoveDispatchV1 {
 
     pub(crate) fn into_parts(self) -> (WorkspacePinAttemptV1, PreobservedZfsMutation) {
         (self.attempt, self.prepared)
+    }
+
+    pub(crate) fn worker_request_bytes_receiving_v1(
+        &self,
+        contract: &crate::ZfsHelperContract,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<Vec<u8>, ZfsHelperError> {
+        crate::pin_worker::encode_request_receiving_v1(
+            contract, &self.catalog, &self.worker_authority, receiving,
+        ).map_err(ZfsHelperError::Backend)
     }
 
     pub(crate) fn worker_request_bytes(
@@ -552,108 +631,17 @@ impl StorageAdmissionCoordinator {
                 .transactions
                 .into_protected_metadata_fixture(state_directory, uid)?,
             authority: self.authority,
+            recovery_authentication: self.recovery_authentication,
         })
     }
 
-    /// Commits a fresh signed root-publication effect before the one-shot worker can run.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn begin_guest_root_publication(
-        &mut self,
-        semantics: &CanonicalStorageGuestRootSemanticsV1,
-        request_body: &[u8],
-        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
-        protocol_version: ProtocolVersion,
-        peer: PeerCredentials,
-        policy: PeerPolicy,
-        clock: &RawPairedClockSample,
-        workspace: &ValidatedStorageWorkspace,
-        expected_proof: GuestRootPublicationProofV1,
-    ) -> Result<(Vec<u8>, u64), StorageBrokerError> {
-        self.transactions.ensure_authority_readable()?;
-        let sandbox = *semantics.fence().sandbox_id();
-        let request_id = *semantics.header().request_id();
-        let operation = semantics.operation_id();
-        if workspace.fence() != semantics.fence()
-            || workspace.workspace_handle() != &semantics.workspace_handle()
-            || workspace.creation_operation_id() != &semantics.creation_operation_id()
-            || workspace.guest_root_publication_proof().is_some()
-            || expected_proof.sandbox != sandbox
-            || expected_proof.incarnation != *semantics.fence().incarnation_id()
-            || expected_proof.assignment_epoch != semantics.fence().assignment_epoch()
-            || expected_proof.assignment_digest != *semantics.fence().assignment_digest()
-            || expected_proof.creation_operation != semantics.creation_operation_id()
-            || expected_proof.workspace_handle != semantics.workspace_handle()
-            || expected_proof.dataset_guid != workspace.dataset_guid()
-            || expected_proof.root_image_digest != *workspace.root_image().digest().as_bytes()
-            || workspace.resource_kernel_boot_id() != &clock.host_boot_id()
-        {
-            return Err(StorageBrokerError::Request);
-        }
-        let pin = self
-            .transactions
-            .satisfied_workspace_ensure_pin_for_active_creation(
-                semantics.creation_operation_id(),
-                semantics.workspace_handle(),
-            )?;
-        if pin.dataset_guid() != workspace.dataset_guid()
-            || pin.root_device() != workspace.root_device()
-            || pin.root_inode() != workspace.root_inode()
-        {
-            return Err(StorageBrokerError::Request);
-        }
-        let prior_fence = self
-            .transactions
-            .authority_record(RecordNamespace::DesiredState, &sandbox)?
-            .map(<[u8]>::to_vec);
-        let admission = self
-            .authority
-            .admit_guest_root_publication(
-                artifacts,
-                semantics,
-                request_body,
-                protocol_version,
-                peer,
-                policy,
-                clock,
-                prior_fence.as_deref(),
-            )
-            .map_err(|_| StorageBrokerError::Authority)?;
-        let sealed = self
-            .authority
-            .seal(&sandbox, &request_id, &operation, &admission)
-            .map_err(|_| StorageBrokerError::Authority)?;
-        let deadline = admission.effect.effect_deadline_boottime_nanoseconds();
-        let attempt = GuestRootPublicationAttemptV1 {
-            effect_operation: operation,
-            request_id,
-            sealed_effect_digest: Sha256::digest(&sealed.effect).into(),
-            operation_fence_digest: Sha256::digest(&sealed.operation_fence).into(),
-            expected_proof,
-            root_device: workspace.root_device(),
-            root_inode: workspace.root_inode(),
-            kernel_boot: clock.host_boot_id(),
-            effect_deadline_boottime_nanoseconds: deadline,
-            phase: GuestRootAttemptPhaseV1::Ambiguous,
-        };
-        let request = encode_guest_root_worker_request(
-            operation,
-            &self.transactions.begin_guest_root_publication_attempt(
-                attempt,
-                &sealed,
-                clock.boottime_nanoseconds(),
-            )?,
-            &sealed.effect,
-            &sealed.operation_fence,
-        )
-        .map_err(|_| StorageBrokerError::Request)?;
-        Ok((request, deadline))
-    }
     /// Constructs a coordinator from complete protected authority and state.
     #[must_use]
     pub const fn new(authority: StorageAuthorityV1, transactions: StorageTransactionStore) -> Self {
         Self {
             authority,
             transactions,
+            recovery_authentication: recovery_authentication::RecoveryAuthenticationCaptureV1::new(),
         }
     }
 
@@ -670,6 +658,44 @@ impl StorageAdmissionCoordinator {
     /// Reports a retained, authenticated Repair hold before startup observers run.
     pub(crate) fn has_held_repair_guard(&self) -> bool {
         self.transactions.has_held_repair_guard()
+    }
+
+    pub(crate) fn receiving_preparation_append_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        self.transactions.receiving_preparation_append_failure_v1()
+    }
+
+    pub(crate) fn prepare_startup_mutations_v1(
+        &mut self,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<(), StorageBrokerError> {
+        self.transactions.prepare_startup_mutations_v1(receiving).map_err(Into::into)
+    }
+
+    pub(crate) fn finish_startup_mutations_v1(
+        &mut self,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+    ) -> Result<(), StorageBrokerError> {
+        self.transactions.finish_startup_mutations_v1(receiving).map_err(Into::into)
+    }
+
+    pub(crate) fn startup_mutation_primary_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.transactions.startup_mutation_primary_failure_v1()
+    }
+
+    pub(crate) fn startup_mutation_post_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.transactions.startup_mutation_post_failure_v1()
+    }
+
+    pub(crate) fn startup_mutation_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.transactions.startup_mutation_failure_v1()
+    }
+
+    pub(crate) fn receiving_inventory_geometry_v1(&self)
+        -> Result<crate::receiving_demand::StorageInventoryGeometryV1, aos_sandbox_core::AccountingError>
+    {
+        self.transactions.receiving_inventory_geometry_v1()
     }
 
     pub(crate) fn lifecycle_inventory_journal(
@@ -1185,6 +1211,31 @@ impl StorageAdmissionCoordinator {
             .map_err(Into::into)
     }
 
+    pub(crate) fn commit_atomic_dataset_snapshot_receiving_v1(
+        &mut self,
+        operation: [u8; 16],
+        program: ObjectDigest,
+        observation: ObjectDigest,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<(), StorageBrokerError> {
+        self.transactions.commit_atomic_dataset_snapshot_receiving_v1(
+            operation, program, observation, receiving,
+        ).map_err(Into::into)
+    }
+
+    pub(crate) fn commit_atomic_dataset_snapshot_with_evidence_receiving_v1(
+        &mut self,
+        operation: [u8; 16],
+        program: ObjectDigest,
+        observation: ObjectDigest,
+        member_guids: &[u64],
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<(), StorageBrokerError> {
+        self.transactions.commit_atomic_dataset_snapshot_with_evidence_receiving_v1(
+            operation, program, observation, member_guids, receiving,
+        ).map_err(Into::into)
+    }
+
     pub(crate) fn admit_trusted_resolver_policy(
         &mut self,
         binding: StorageResolverPolicyCatalogBindingV1,
@@ -1192,6 +1243,14 @@ impl StorageAdmissionCoordinator {
         self.transactions
             .admit_resolver_policy_catalog(binding)
             .map_err(Into::into)
+    }
+
+    pub(crate) fn admit_recovery_resolver_policy_v1(
+        &mut self,
+        binding: StorageResolverPolicyCatalogBindingV1,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<StorageResolverPolicyAdmissionOutcomeV1, StorageBrokerError> {
+        self.transactions.admit_recovery_resolver_policy_v1(binding, receiving).map_err(Into::into)
     }
 
     /// Resolves and retains one production Prepare from freshly loaded policy and state.
@@ -1216,18 +1275,84 @@ impl StorageAdmissionCoordinator {
     where
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
+        self.prepare_catalog_with_original(
+            request_body, artifacts, resolver_policies, protocol_version, peer,
+            policy, trusted_clock, StoragePreparationNativeTargetV1::Legacy,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_catalog_receiving_from_protected_policy<F>(
+        &mut self,
+        request_body: &[u8],
+        expected_request_id: [u8; 16],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        resolver_policies: &ProtectedStorageResolverPolicyDirectoryV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+        receiving: &mut aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+        policy_read: &mut crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageBrokerError>
+    where F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        self.prepare_catalog_with_original(
+            request_body, artifacts, resolver_policies, protocol_version, peer,
+            policy, trusted_clock, StoragePreparationNativeTargetV1::Receiving(receiving, expected_request_id, policy_read),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_catalog_state_from_protected_policy_v1<F>(
+        &mut self,
+        request_body: &[u8],
+        expected_request_id: [u8; 16],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        resolver_policies: &ProtectedStorageResolverPolicyDirectoryV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+        policy_read: &mut crate::resolver::protected_catalog::ResolverPolicyReadOriginalV1,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageBrokerError>
+    where F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        self.prepare_catalog_with_original(
+            request_body, artifacts, resolver_policies, protocol_version, peer,
+            policy, trusted_clock, StoragePreparationNativeTargetV1::State(receiving, expected_request_id, policy_read),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_catalog_with_original<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        resolver_policies: &ProtectedStorageResolverPolicyDirectoryV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+        native: StoragePreparationNativeTargetV1<'_, '_, '_>,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageBrokerError>
+    where F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
         self.transactions.ensure_authority_readable()?;
         let initial_clock = trusted_clock().map_err(|_| StorageBrokerError::Authority)?;
         let semantics = CanonicalStoragePreparationSemanticsV1::decode(
-            request_body,
-            peer,
-            policy,
-            initial_clock.boottime_nanoseconds(),
-        )
-        .map_err(|_| StorageBrokerError::Request)?;
+            request_body, peer, policy, initial_clock.boottime_nanoseconds(),
+        ).map_err(|_| StorageBrokerError::Request)?;
+        if matches!(&native, StoragePreparationNativeTargetV1::Receiving(_, expected, _)
+            | StoragePreparationNativeTargetV1::State(_, expected, _)
+            if semantics.header().request_id() != expected)
+        {
+            return Err(StorageBrokerError::Request);
+        }
         self.prepare_catalog_fields(
             request_body, artifacts, resolver_policies, protocol_version,
-            peer, policy, trusted_clock, &semantics, initial_clock, None, None,
+            peer, policy, trusted_clock, &semantics, initial_clock, None, native,
         )
     }
 
@@ -1244,7 +1369,7 @@ impl StorageAdmissionCoordinator {
         semantics: &CanonicalStoragePreparationSemanticsV1,
         initial_clock: RawPairedClockSample,
         generation: Option<&aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1>,
-        native: Option<crate::nix_generation::StorageGenerationNativeLoanV1<'_>>,
+        mut native: StoragePreparationNativeTargetV1<'_, '_, '_>,
     ) -> Result<StorageCatalogPreparationOutcomeV1, StorageBrokerError>
     where
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
@@ -1312,14 +1437,30 @@ impl StorageAdmissionCoordinator {
             return retained.record.outcome().map_err(Into::into);
         }
 
-        let loaded_policy = resolver_policies
-            .load()
-            .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
+        let loaded_policy = match &mut native {
+            StoragePreparationNativeTargetV1::Receiving(_, _, original)
+                | StoragePreparationNativeTargetV1::State(_, _, original) =>
+                resolver_policies.load_retaining_v1(original),
+            StoragePreparationNativeTargetV1::Legacy | StoragePreparationNativeTargetV1::Nix(_) =>
+                resolver_policies.load(),
+        }.map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
         let policy_catalog_binding = loaded_policy
             .binding()
             .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
         if generation.is_none() {
-            self.transactions.admit_resolver_policy_catalog(policy_catalog_binding)?;
+            match &mut native {
+                StoragePreparationNativeTargetV1::Receiving(receiving, _, _) => {
+                    self.transactions.admit_prepare_resolver_policy_receiving_v1(
+                        policy_catalog_binding, receiving)?;
+                }
+                StoragePreparationNativeTargetV1::State(receiving, _, _) => {
+                    self.transactions.admit_recovery_resolver_policy_v1(policy_catalog_binding, receiving)?;
+                }
+                StoragePreparationNativeTargetV1::Legacy => {
+                    self.transactions.admit_resolver_policy_catalog(policy_catalog_binding)?;
+                }
+                StoragePreparationNativeTargetV1::Nix(_) => return Err(StorageBrokerError::Authority),
+            }
         }
         let selected_policy = loaded_policy
             .select(admission.resolution().assignment())
@@ -1405,11 +1546,19 @@ impl StorageAdmissionCoordinator {
             sealed_record,
             policy_binding,
             match (native, generation) {
-                (Some(original), Some(selected)) => Some((
-                    original,
-                    self.authority.borrow_preparation_native_admission(&admission, selected),
-                )),
-                (None, None) => None,
+                (StoragePreparationNativeTargetV1::Nix(original), Some(selected)) => Some(
+                    crate::state::StorageCatalogPreparationNativeV1::Nix(original,
+                        self.authority.borrow_preparation_native_admission(&admission, selected)),
+                ),
+                (StoragePreparationNativeTargetV1::Receiving(original, _, _), None) => Some(
+                    crate::state::StorageCatalogPreparationNativeV1::Receiving(original,
+                        self.authority.borrow_ordinary_preparation_native_admission(&admission, semantics)),
+                ),
+                (StoragePreparationNativeTargetV1::State(original, _, _), None) => Some(
+                    crate::state::StorageCatalogPreparationNativeV1::State(original,
+                        self.authority.borrow_ordinary_preparation_native_admission(&admission, semantics)),
+                ),
+                (StoragePreparationNativeTargetV1::Legacy, None) => None,
                 _ => return Err(StorageBrokerError::Authority),
             },
         )?;
@@ -1469,7 +1618,7 @@ impl StorageAdmissionCoordinator {
                     };
                     let result = self.prepare_catalog_fields(
                         bytes, artifacts, resolver_policies, protocol_version, peer, policy,
-                        trusted_clock, selected.prepare(), initial, Some(selected), Some(loan),
+                        trusted_clock, selected.prepare(), initial, Some(selected), StoragePreparationNativeTargetV1::Nix(loan),
                     );
                     // No result-return gap: this same parent retains the whole
                     // Preparation Err/Ok before the independent final clock.
@@ -1718,6 +1867,28 @@ impl StorageAdmissionCoordinator {
     where
         F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
     {
+        self.retire_inactive_prepared_inner_v1(trusted_clock, None)
+    }
+
+    pub(crate) fn retire_inactive_prepared_receiving_v1<F>(
+        &mut self,
+        trusted_clock: &mut F,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<Vec<PreparedStorageRetirementV1>, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        self.retire_inactive_prepared_inner_v1(trusted_clock, Some(receiving))
+    }
+
+    fn retire_inactive_prepared_inner_v1<F>(
+        &mut self,
+        trusted_clock: &mut F,
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<Vec<PreparedStorageRetirementV1>, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
         let entries = self.recovery_entries()?;
         let mut retired = Vec::new();
         let mut cached_clock = None;
@@ -1750,7 +1921,10 @@ impl StorageAdmissionCoordinator {
                 }
             };
 
-            self.transactions.abort_prepared_exact(entry, &catalog)?;
+            match receiving.as_deref_mut() {
+                Some(receiving) => self.transactions.abort_prepared_exact_receiving_v1(entry, &catalog, receiving)?,
+                None => self.transactions.abort_prepared_exact(entry, &catalog)?,
+            }
             retired.push(PreparedStorageRetirementV1 {
                 operation_id: entry.operation_id(),
                 mutation_digest: entry.mutation_digest(),
@@ -2193,6 +2367,50 @@ impl StorageAdmissionCoordinator {
     where
         F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
     {
+        self.begin_workspace_pin_repair_inner_v1(
+            dispatch, fresh_observation, request_body, artifacts, protocol_version,
+            peer, policy, contract, trusted_clock, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_workspace_pin_repair_receiving_v1<F>(
+        &mut self,
+        dispatch: WorkspacePinRepairAdmissionDispatchV1,
+        fresh_observation: FreshWorkspacePinRepairObservationV1,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        contract: &ZfsHelperContract,
+        trusted_clock: &mut F,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<AuthorizedWorkspacePinRepairAttemptV1, ZfsHelperError>
+    where F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        self.begin_workspace_pin_repair_inner_v1(
+            dispatch, fresh_observation, request_body, artifacts, protocol_version,
+            peer, policy, contract, trusted_clock, Some(receiving),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn begin_workspace_pin_repair_inner_v1<F>(
+        &mut self,
+        dispatch: WorkspacePinRepairAdmissionDispatchV1,
+        fresh_observation: FreshWorkspacePinRepairObservationV1,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        contract: &ZfsHelperContract,
+        trusted_clock: &mut F,
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<AuthorizedWorkspacePinRepairAttemptV1, ZfsHelperError>
+    where F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
         if !fresh_observation.matches_probe(&dispatch.probe) {
             return Err(ZfsHelperError::Authority);
         }
@@ -2303,6 +2521,13 @@ impl StorageAdmissionCoordinator {
             .transactions
             .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
             .map(<[u8]>::to_vec);
+        if let Some(receiving) = receiving.as_deref_mut() {
+            let bytes = crate::authorization::receiving_authorization_memory_v1(artifacts)
+                .ok().and_then(|bytes| usize::try_from(bytes).ok())
+                .ok_or(crate::StorageStateError::InvalidValue)?;
+            receiving.reserve_encoded_capacity_v1(bytes, 0)
+                .map_err(|_| crate::StorageStateError::Receiving)?;
+        }
         let admission = self
             .authority
             .admit_workspace_pin_repair(
@@ -2335,6 +2560,13 @@ impl StorageAdmissionCoordinator {
             .check_before_effect(&admission.effect, trusted_clock)
             .map_err(|_| ZfsHelperError::Authority)?;
 
+        if let Some(receiving) = receiving.as_deref_mut() {
+            let bytes = aos_sandbox_broker::storage_admission_sealing_bytes_v1(
+                &admission.fence, &admission.effect,
+            ).ok_or(crate::StorageStateError::InvalidValue)?;
+            receiving.reserve_encoded_capacity_v1(bytes, 0)
+                .map_err(|_| crate::StorageStateError::Receiving)?;
+        }
         let sealed = self
             .authority
             .seal(
@@ -2373,6 +2605,14 @@ impl StorageAdmissionCoordinator {
                 )?
             }
         };
+        if let Some(receiving) = receiving.as_deref_mut() {
+            // This fixed receipt payload is 291 wire bytes; its old 250-byte
+            // initial Vec can grow to 500, beside the real sealed envelope.
+            let bytes = aos_sandbox_broker::local_record_sealing_bytes_v1(500)
+                .ok_or(crate::StorageStateError::InvalidValue)?;
+            receiving.reserve_encoded_capacity_v1(bytes, 0)
+                .map_err(|_| crate::StorageStateError::Receiving)?;
+        }
         let sealed_receipt = self
             .authority
             .seal_pin_attempt_receipt(
@@ -2429,21 +2669,42 @@ impl StorageAdmissionCoordinator {
                 )?
             }
         };
+        if let Some(receiving) = receiving.as_deref_mut() {
+            let bytes = aos_sandbox_broker::storage_effect_completion_sealing_bytes_v1(
+                &admission.effect, 58,
+            ).ok_or(crate::StorageStateError::InvalidValue)?;
+            receiving.reserve_encoded_capacity_v1(bytes, 0)
+                .map_err(|_| crate::StorageStateError::Receiving)?;
+        }
         let sealed_completed_effect = self
             .authority
             .seal_workspace_pin_repair_completion(&admission.effect, &attempt)
             .map_err(|_| ZfsHelperError::Authority)?;
-        let outcome = self.transactions.begin_workspace_pin_repair(
-            sandbox_id,
-            &current_predecessor,
-            repair_intent,
-            attempt,
-            sealed.current_fence,
-            sealed.effect,
-            sealed_completed_effect,
-            sealed.operation_fence,
-            authority,
-        )?;
+        let outcome = match receiving.as_deref_mut() {
+            Some(receiving) => self.transactions.begin_workspace_pin_repair_receiving_v1(
+                sandbox_id,
+                &current_predecessor,
+                repair_intent,
+                attempt,
+                sealed.current_fence,
+                sealed.effect,
+                sealed_completed_effect,
+                sealed.operation_fence,
+                authority,
+                receiving,
+            ),
+            None => self.transactions.begin_workspace_pin_repair(
+                sandbox_id,
+                &current_predecessor,
+                repair_intent,
+                attempt,
+                sealed.current_fence,
+                sealed.effect,
+                sealed_completed_effect,
+                sealed.operation_fence,
+                authority,
+            ),
+        }?;
         let BeginWorkspacePinAttemptV1::Dispatch(attempt) = outcome else {
             return Ok(AuthorizedWorkspacePinRepairAttemptV1::ObserveOnly);
         };
@@ -2620,6 +2881,24 @@ impl StorageAdmissionCoordinator {
         dispatch: WorkspacePinRepairObservationDispatchV1,
         result: WorkspacePinRepairObserverResultV1,
     ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        self.complete_workspace_pin_repair_observation_inner_v1(dispatch, result, None)
+    }
+
+    pub(crate) fn complete_workspace_pin_repair_observation_receiving_v1(
+        &mut self,
+        dispatch: WorkspacePinRepairObservationDispatchV1,
+        result: WorkspacePinRepairObserverResultV1,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        self.complete_workspace_pin_repair_observation_inner_v1(dispatch, result, Some(receiving))
+    }
+
+    fn complete_workspace_pin_repair_observation_inner_v1(
+        &mut self,
+        dispatch: WorkspacePinRepairObservationDispatchV1,
+        result: WorkspacePinRepairObserverResultV1,
+        receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
         if result.probe_digest() != dispatch.probe.digest()
             || result.observation().attempt_id() != dispatch.attempt.attempt_id()
             || self
@@ -2668,10 +2947,8 @@ impl StorageAdmissionCoordinator {
         }
 
         let observation = result.into_observation();
-        let disposition = self.complete_workspace_pin_repair_attempt(
-            &dispatch.attempt,
-            observation.dataset(),
-            observation.pin(),
+        let disposition = self.complete_workspace_pin_repair_attempt_inner_v1(
+            &dispatch.attempt, observation.dataset(), observation.pin(), receiving,
         )?;
         if disposition == WorkspacePinRecoveryDispositionV1::Mismatch {
             return Err(ZfsHelperError::Authority);
@@ -2684,6 +2961,24 @@ impl StorageAdmissionCoordinator {
         attempt: &WorkspacePinAttemptV1,
         result: &crate::pin_worker::WorkspacePinWorkerResultV1,
     ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        self.complete_workspace_pin_repair_execution_inner_v1(attempt, result, None)
+    }
+
+    pub(crate) fn complete_workspace_pin_repair_execution_receiving_v1(
+        &mut self,
+        attempt: &WorkspacePinAttemptV1,
+        result: &crate::pin_worker::WorkspacePinWorkerResultV1,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        self.complete_workspace_pin_repair_execution_inner_v1(attempt, result, Some(receiving))
+    }
+
+    fn complete_workspace_pin_repair_execution_inner_v1(
+        &mut self,
+        attempt: &WorkspacePinAttemptV1,
+        result: &crate::pin_worker::WorkspacePinWorkerResultV1,
+        receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
         if result.attempt_id() != attempt.attempt_id()
             || self
                 .transactions
@@ -2695,7 +2990,7 @@ impl StorageAdmissionCoordinator {
         {
             return Err(ZfsHelperError::Authority);
         }
-        self.complete_workspace_pin_repair_attempt(attempt, result.dataset(), result.pin())
+        self.complete_workspace_pin_repair_attempt_inner_v1(attempt, result.dataset(), result.pin(), receiving)
     }
 
     fn complete_workspace_pin_repair_attempt(
@@ -2704,20 +2999,39 @@ impl StorageAdmissionCoordinator {
         dataset: &crate::workspace_pin::WorkspaceDatasetObservationV1,
         pin: &crate::workspace_pin::WorkspacePinObservationV1,
     ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        self.complete_workspace_pin_repair_attempt_inner_v1(attempt, dataset, pin, None)
+    }
+
+    fn complete_workspace_pin_repair_attempt_inner_v1(
+        &mut self,
+        attempt: &WorkspacePinAttemptV1,
+        dataset: &crate::workspace_pin::WorkspaceDatasetObservationV1,
+        pin: &crate::workspace_pin::WorkspacePinObservationV1,
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
         let admitted_effect = self.authenticate_workspace_pin_repair(attempt)?;
         self.authority
             .verify_pin_attempt_receipt(attempt, &admitted_effect, attempt.effect_operation_id())
             .map_err(|_| ZfsHelperError::Authority)?;
+        if let Some(receiving) = receiving.as_deref_mut() {
+            let bytes = aos_sandbox_broker::storage_effect_completion_sealing_bytes_v1(
+                &admitted_effect, 58,
+            ).ok_or(crate::StorageStateError::InvalidValue)?;
+            receiving.reserve_encoded_capacity_v1(bytes, 0)
+                .map_err(|_| crate::StorageStateError::Receiving)?;
+        }
         let sealed_completed_effect = self
             .authority
             .seal_workspace_pin_repair_completion(&admitted_effect, attempt)
             .map_err(|_| ZfsHelperError::Authority)?;
-        let disposition = self.transactions.complete_workspace_pin_repair_attempt(
-            attempt.attempt_id(),
-            dataset,
-            pin,
-            sealed_completed_effect,
-        )?;
+        let disposition = match receiving {
+            Some(receiving) => self.transactions.complete_workspace_pin_repair_attempt_receiving_v1(
+                attempt.attempt_id(), dataset, pin, sealed_completed_effect, receiving,
+            ),
+            None => self.transactions.complete_workspace_pin_repair_attempt(
+                attempt.attempt_id(), dataset, pin, sealed_completed_effect,
+            ),
+        }?;
         if disposition != WorkspacePinRecoveryDispositionV1::CompletePublication {
             return Ok(disposition);
         }
@@ -2746,6 +3060,24 @@ impl StorageAdmissionCoordinator {
         attempt: &WorkspacePinAttemptV1,
         result: &crate::pin_worker::WorkspacePinWorkerResultV1,
     ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        self.complete_workspace_pin_observation_inner_v1(attempt, result, None)
+    }
+
+    pub(crate) fn complete_workspace_pin_observation_receiving_v1(
+        &mut self,
+        attempt: &WorkspacePinAttemptV1,
+        result: &crate::pin_worker::WorkspacePinWorkerResultV1,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
+        self.complete_workspace_pin_observation_inner_v1(attempt, result, Some(receiving))
+    }
+
+    fn complete_workspace_pin_observation_inner_v1(
+        &mut self,
+        attempt: &WorkspacePinAttemptV1,
+        result: &crate::pin_worker::WorkspacePinWorkerResultV1,
+        receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<WorkspacePinRecoveryDispositionV1, ZfsHelperError> {
         if result.attempt_id() != attempt.attempt_id()
             || self
                 .transactions
@@ -2757,9 +3089,96 @@ impl StorageAdmissionCoordinator {
         {
             return Err(ZfsHelperError::Authority);
         }
-        self.transactions
-            .complete_workspace_pin_attempt(attempt.attempt_id(), result.dataset(), result.pin())
-            .map_err(Into::into)
+        match receiving {
+            Some(receiving) => self.transactions.complete_workspace_pin_attempt_receiving_v1(
+                attempt.attempt_id(), result.dataset(), result.pin(), receiving,
+            ),
+            None => self.transactions.complete_workspace_pin_attempt(
+                attempt.attempt_id(), result.dataset(), result.pin(),
+            ),
+        }.map_err(Into::into)
+    }
+
+    pub(crate) fn borrow_state_recovery_encoding_v1<'cut, 'original>(
+        &self,
+        receiving: &'cut mut aos_sandbox::StoragePrepareReceivingLoanV1<'original>,
+    ) -> Result<aos_sandbox::StorageStateRecoveryEncodingLoanV1<'cut, 'original>,
+        aos_sandbox::StorageReceivingClosedV1>
+    {
+        receiving.borrow_state_recovery_encoding_once_v1(self.transactions.recovery_encoding_journal_v1())
+    }
+
+    // Only the closed root-export receiver borrows the actual configured
+    // Storage verifier for representation pricing and signed Host comparison.
+    pub(crate) fn root_export_authority_v2(&self) -> &aos_sandbox_broker::BrokerAuthority {
+        self.authority.root_export_authority_v2()
+    }
+
+    pub(crate) fn recovery_encoding_journal_v1(&self) -> &aos_sandbox::Journal {
+        self.transactions.recovery_encoding_journal_v1()
+    }
+
+    pub(crate) fn recovery_row_counts_v1(&self) -> (usize, usize) {
+        self.transactions.recovery_row_counts_v1()
+    }
+
+    pub(crate) fn prepare_recovery_models_v1(
+        &mut self,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<(), StorageBrokerError> {
+        self.transactions.prepare_recovery_models_v1(receiving).map_err(Into::into)
+    }
+
+    pub(crate) fn finish_recovery_posts_v1(
+        &mut self,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<(), aos_sandbox::StorageReceivingClosedV1> {
+        receiving.finish_once_v1(self.transactions.recovery_encoding_journal_v1())
+    }
+
+    pub(crate) fn complete_recovery_disposition_v1(&mut self) {
+        self.transactions.complete_positive_recovery_mutations_v1();
+        self.recovery_authentication.complete_positive_disposal();
+    }
+
+    pub(crate) fn prepare_recovery_disposition_v1(&mut self)
+        -> Result<StorageBrokerRecoveryDispositionV1<'_>, StorageBrokerError>
+    {
+        self.recovery_authentication.require_positive()?;
+        self.transactions.require_positive_recovery_mutations_v1()?;
+        Ok(StorageBrokerRecoveryDispositionV1 { coordinator: self })
+    }
+
+    pub(crate) fn dispose_positive_recovery_mutations_v1(&mut self)
+        -> Result<(), StorageBrokerError>
+    {
+        self.prepare_recovery_disposition_v1()?.complete_after_disposal_v1();
+        Ok(())
+    }
+
+    pub(crate) fn recovery_receiving_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        self.recovery_authentication.failure()
+            .or_else(|| self.transactions.recovery_mutation_failure_v1())
+    }
+
+    pub(crate) fn reconcile_recovery_receiving_v1<B: ZfsProcessBackend>(
+        &mut self,
+        helper: &mut StorageMutationHelper<B>,
+        entry: crate::StorageRecoveryEntry,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError> {
+        if self.recovery_receiving_failure_v1().is_some() {
+            return Err(crate::StorageStateError::Receiving.into());
+        }
+        self.recovery_authentication.prepare(receiving)?;
+        let mut original = recovery_authentication::RecoveryAuthenticationOriginalV1::new();
+        original.run(self, entry, true);
+        if !self.recovery_authentication.park(original) {
+            return Err(crate::StorageStateError::Receiving.into());
+        }
+        helper.observe_only_receiving_v1(&mut self.transactions, entry.operation_id(), receiving)
     }
 
     pub(crate) fn reconcile_recovery<B: ZfsProcessBackend>(
@@ -2794,11 +3213,33 @@ impl StorageAdmissionCoordinator {
         helper.preobserve(&self.transactions, operation_id)
     }
 
+    pub(crate) fn preobserve_receiving_v1<B: ZfsProcessBackend>(
+        &self,
+        helper: &mut StorageMutationHelper<B>,
+        operation_id: [u8; 16],
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<PreobservedZfsMutation, ZfsHelperError> {
+        helper.preobserve_receiving_v1(&self.transactions, operation_id, receiving)
+    }
+
     pub(crate) fn begin_workspace_pin_ensure<F>(
         &mut self,
         result: CommittedStorageResultV1,
         host_scope: WorkspacePinHostScopeV1,
         trusted_clock: &mut F,
+    ) -> Result<AuthorizedWorkspacePinAttemptV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        self.begin_workspace_pin_ensure_inner_v1(result, host_scope, trusted_clock, None)
+    }
+
+    fn begin_workspace_pin_ensure_inner_v1<F>(
+        &mut self,
+        result: CommittedStorageResultV1,
+        host_scope: WorkspacePinHostScopeV1,
+        trusted_clock: &mut F,
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
     ) -> Result<AuthorizedWorkspacePinAttemptV1, ZfsHelperError>
     where
         F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
@@ -2828,6 +3269,15 @@ impl StorageAdmissionCoordinator {
             *effect.clock_provenance(),
             effect.effect_deadline_boottime_nanoseconds(),
         )?;
+        if let Some(receiving) = receiving.as_deref_mut() {
+            // The existing payload writes291 bytes from its250-byte initial
+            // backing. Five hundred covers its actual next growth capacity;
+            // the shared Broker formula adds the simultaneously live frames.
+            let bytes = aos_sandbox_broker::local_record_sealing_bytes_v1(500)
+                .ok_or(crate::StorageStateError::InvalidValue)?;
+            receiving.reserve_encoded_capacity_v1(bytes, 0)
+                .map_err(|_| crate::StorageStateError::Receiving)?;
+        }
         let sealed_receipt = self
             .authority
             .seal_pin_attempt_receipt(
@@ -2843,9 +3293,12 @@ impl StorageAdmissionCoordinator {
             attempt_digest: attempt.authority_digest()?,
             sealed_receipt,
         };
-        let outcome = self
-            .transactions
-            .begin_workspace_pin_attempt(attempt, authority)?;
+        let outcome = match receiving.as_deref_mut() {
+            Some(receiving) => self.transactions.begin_workspace_pin_attempt_receiving_v1(
+                attempt, authority, receiving,
+            )?,
+            None => self.transactions.begin_workspace_pin_attempt(attempt, authority)?,
+        };
         match outcome {
             BeginWorkspacePinAttemptV1::Dispatch(attempt) => {
                 // The distinct attempt grant is already durably consumed. A
@@ -2886,6 +3339,20 @@ impl StorageAdmissionCoordinator {
     where
         F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
     {
+        self.begin_workspace_pin_remove_and_destroy_inner_v1(prepared, host_scope, expected_pin, trusted_clock, None)
+    }
+
+    fn begin_workspace_pin_remove_and_destroy_inner_v1<F>(
+        &mut self,
+        prepared: PreobservedZfsMutation,
+        host_scope: WorkspacePinHostScopeV1,
+        expected_pin: WorkspaceRootPinProofV1,
+        trusted_clock: &mut F,
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<AuthorizedWorkspaceRemoveAttemptV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
         let entry = prepared.entry();
         let current_entry = self
             .transactions
@@ -2894,7 +3361,9 @@ impl StorageAdmissionCoordinator {
             return Err(crate::StorageStateError::InvalidTransition.into());
         }
         let PreparedStorageEffectAuthorizationV1::Fresh(context) =
-            self.authorize_or_retire_prepared(entry, prepared.catalog(), trusted_clock)?
+            self.authorize_or_retire_prepared_inner_v1(
+                entry, prepared.catalog(), trusted_clock, receiving.as_deref_mut(),
+            )?
         else {
             return Ok(AuthorizedWorkspaceRemoveAttemptV1::Aborted {
                 mutation_digest: entry.mutation_digest(),
@@ -2910,6 +3379,15 @@ impl StorageAdmissionCoordinator {
             context.effect.effect_deadline_boottime_nanoseconds(),
             expected_pin,
         )?;
+        if let Some(receiving) = receiving.as_deref_mut() {
+            // The existing payload writes291 bytes from its250-byte initial
+            // backing. Five hundred covers its actual next growth capacity;
+            // the shared Broker formula adds the simultaneously live frames.
+            let bytes = aos_sandbox_broker::local_record_sealing_bytes_v1(500)
+                .ok_or(crate::StorageStateError::InvalidValue)?;
+            receiving.reserve_encoded_capacity_v1(bytes, 0)
+                .map_err(|_| crate::StorageStateError::Receiving)?;
+        }
         let sealed_receipt = self
             .authority
             .seal_pin_attempt_receipt(
@@ -2925,11 +3403,14 @@ impl StorageAdmissionCoordinator {
             attempt_digest: attempt.authority_digest()?,
             sealed_receipt,
         };
-        let outcome = self.transactions.begin_workspace_pin_remove_and_destroy(
-            attempt,
-            entry.mutation_digest(),
-            authority,
-        )?;
+        let outcome = match receiving.as_deref_mut() {
+            Some(receiving) => self.transactions.begin_workspace_pin_remove_and_destroy_receiving_v1(
+                attempt, entry.mutation_digest(), authority, receiving,
+            )?,
+            None => self.transactions.begin_workspace_pin_remove_and_destroy(
+                attempt, entry.mutation_digest(), authority,
+            )?,
+        };
         match outcome {
             BeginWorkspacePinAttemptV1::Dispatch(attempt) => {
                 self.authority
@@ -2967,16 +3448,89 @@ impl StorageAdmissionCoordinator {
     where
         F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
     {
+        self.execute_workspace_pin_ensure_with_io_inner_v1(pin_io, contract, result, trusted_clock, None, None)
+    }
+
+    pub(crate) fn execute_workspace_pin_ensure_with_io_receiving_v1<F>(
+        &mut self,
+        pin_io: &mut dyn WorkspacePinRuntimeIo,
+        contract: &ZfsHelperContract,
+        result: CommittedStorageResultV1,
+        trusted_clock: &mut F,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+        result_original: &mut Option<Result<crate::pin_worker::WorkspacePinWorkerResultV1, crate::ZfsWorkerError>>,
+    ) -> Result<WorkspacePinExecutionOutcomeV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        receiving.require_models_current_v1(self.transactions.recovery_encoding_journal_v1())
+            .map_err(|_| crate::StorageStateError::Receiving)?;
+        self.execute_workspace_pin_ensure_with_io_inner_v1(
+            pin_io, contract, result, trusted_clock, Some(receiving), Some(result_original),
+        )
+    }
+
+    fn execute_workspace_pin_ensure_with_io_inner_v1<F>(
+        &mut self,
+        pin_io: &mut dyn WorkspacePinRuntimeIo,
+        contract: &ZfsHelperContract,
+        result: CommittedStorageResultV1,
+        trusted_clock: &mut F,
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+        result_original: Option<&mut Option<Result<crate::pin_worker::WorkspacePinWorkerResultV1, crate::ZfsWorkerError>>>,
+    ) -> Result<WorkspacePinExecutionOutcomeV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
         let host_scope = pin_io.host_scope()?;
-        match self.begin_workspace_pin_ensure(result, host_scope, trusted_clock)? {
+        match self.begin_workspace_pin_ensure_inner_v1(
+            result, host_scope, trusted_clock, receiving.as_deref_mut(),
+        )? {
             AuthorizedWorkspacePinAttemptV1::Dispatch(dispatch) => {
-                let request = dispatch.worker_request_bytes(contract)?;
-                let result = pin_io.execute(&request, dispatch.attempt())?;
-                let disposition = self.transactions.complete_workspace_pin_attempt(
-                    result.attempt_id(),
-                    result.dataset(),
-                    result.pin(),
-                )?;
+                let ordinary_request;
+                let ordinary_result;
+                let result = match receiving.as_deref_mut() {
+                    Some(receiving) => {
+                        let Some(result_original) = result_original else {
+                            return Err(crate::StorageStateError::Receiving.into());
+                        };
+                        if result_original.is_some() {
+                            return Err(crate::StorageStateError::Receiving.into());
+                        }
+                        let model = crate::pin_worker::pin_returned_model_demand_v1()
+                            .and_then(|shape| usize::try_from(shape.get(
+                                aos_sandbox_core::ResourceDimension::MemoryBytes,
+                            )).ok())
+                            .ok_or(crate::StorageStateError::InvalidValue)?;
+                        receiving.reserve_encoded_capacity_v1(model, 0)
+                            .map_err(|_| crate::StorageStateError::Receiving)?;
+                        let request = dispatch.worker_request_bytes_receiving_v1(contract, receiving)?;
+                        let mut stage = crate::process::receiving_stage::StoragePhysicalWorkerStageV1::state(
+                            receiving, self.transactions.recovery_encoding_journal_v1(),
+                        );
+                        *result_original = Some(pin_io.execute_receiving_v1(
+                            &request, dispatch.attempt(),
+                            dispatch.attempt().effect_deadline_boottime_nanoseconds(), &mut stage,
+                        ));
+                        let Some(Ok(result)) = result_original.as_ref() else {
+                            return Err(crate::StorageStateError::Receiving.into());
+                        };
+                        result
+                    }
+                    None => {
+                        ordinary_request = dispatch.worker_request_bytes(contract)?;
+                        ordinary_result = pin_io.execute(&ordinary_request, dispatch.attempt())?;
+                        &ordinary_result
+                    }
+                };
+                let disposition = match receiving.as_deref_mut() {
+                    Some(receiving) => self.transactions.complete_workspace_pin_attempt_receiving_v1(
+                        result.attempt_id(), result.dataset(), result.pin(), receiving,
+                    )?,
+                    None => self.transactions.complete_workspace_pin_attempt(
+                        result.attempt_id(), result.dataset(), result.pin(),
+                    )?,
+                };
                 if disposition != WorkspacePinRecoveryDispositionV1::CompletePublication {
                     return Err(ZfsHelperError::PostconditionMismatch);
                 }
@@ -3050,26 +3604,91 @@ impl StorageAdmissionCoordinator {
         prepared: PreobservedZfsMutation,
         expected_pin: WorkspaceRootPinProofV1,
         trusted_clock: &mut F,
-    ) -> Result<
-        (
-            WorkspacePinExecutionOutcomeV1,
-            Option<CommittedStorageResultV1>,
-        ),
-        ZfsHelperError,
-    >
+    ) -> Result<(WorkspacePinExecutionOutcomeV1, Option<CommittedStorageResultV1>), ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        self.execute_workspace_remove_and_destroy_with_io_inner_v1(pin_io, contract, prepared, expected_pin, trusted_clock, None, None)
+    }
+
+    pub(crate) fn execute_workspace_remove_and_destroy_with_io_receiving_v1<F>(
+        &mut self,
+        pin_io: &mut dyn WorkspacePinRuntimeIo,
+        contract: &ZfsHelperContract,
+        prepared: PreobservedZfsMutation,
+        expected_pin: WorkspaceRootPinProofV1,
+        trusted_clock: &mut F,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+        result_original: &mut Option<Result<crate::pin_worker::WorkspacePinWorkerResultV1, crate::ZfsWorkerError>>,
+    ) -> Result<(WorkspacePinExecutionOutcomeV1, Option<CommittedStorageResultV1>), ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        receiving.require_models_current_v1(self.transactions.recovery_encoding_journal_v1())
+            .map_err(|_| crate::StorageStateError::Receiving)?;
+        self.execute_workspace_remove_and_destroy_with_io_inner_v1(
+            pin_io, contract, prepared, expected_pin, trusted_clock, Some(receiving), Some(result_original),
+        )
+    }
+
+    fn execute_workspace_remove_and_destroy_with_io_inner_v1<F>(
+        &mut self,
+        pin_io: &mut dyn WorkspacePinRuntimeIo,
+        contract: &ZfsHelperContract,
+        prepared: PreobservedZfsMutation,
+        expected_pin: WorkspaceRootPinProofV1,
+        trusted_clock: &mut F,
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+        result_original: Option<&mut Option<Result<crate::pin_worker::WorkspacePinWorkerResultV1, crate::ZfsWorkerError>>>,
+    ) -> Result<(WorkspacePinExecutionOutcomeV1, Option<CommittedStorageResultV1>), ZfsHelperError>
     where
         F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
     {
         let host_scope = pin_io.host_scope()?;
-        match self.begin_workspace_pin_remove_and_destroy(
+        match self.begin_workspace_pin_remove_and_destroy_inner_v1(
             prepared,
             host_scope,
             expected_pin,
             trusted_clock,
+            receiving.as_deref_mut(),
         )? {
             AuthorizedWorkspaceRemoveAttemptV1::Dispatch(dispatch) => {
-                let request = dispatch.worker_request_bytes(contract)?;
-                let result = pin_io.execute(&request, dispatch.attempt())?;
+                let ordinary_request;
+                let ordinary_result;
+                let result = match receiving.as_deref_mut() {
+                    Some(receiving) => {
+                        let Some(result_original) = result_original else {
+                            return Err(crate::StorageStateError::Receiving.into());
+                        };
+                        if result_original.is_some() {
+                            return Err(crate::StorageStateError::Receiving.into());
+                        }
+                        let model = crate::pin_worker::pin_returned_model_demand_v1()
+                            .and_then(|shape| usize::try_from(shape.get(
+                                aos_sandbox_core::ResourceDimension::MemoryBytes,
+                            )).ok())
+                            .ok_or(crate::StorageStateError::InvalidValue)?;
+                        receiving.reserve_encoded_capacity_v1(model, 0)
+                            .map_err(|_| crate::StorageStateError::Receiving)?;
+                        let request = dispatch.worker_request_bytes_receiving_v1(contract, receiving)?;
+                        let mut stage = crate::process::receiving_stage::StoragePhysicalWorkerStageV1::state(
+                            receiving, self.transactions.recovery_encoding_journal_v1(),
+                        );
+                        *result_original = Some(pin_io.execute_receiving_v1(
+                            &request, dispatch.attempt(),
+                            dispatch.attempt().effect_deadline_boottime_nanoseconds(), &mut stage,
+                        ));
+                        let Some(Ok(result)) = result_original.as_ref() else {
+                            return Err(crate::StorageStateError::Receiving.into());
+                        };
+                        result
+                    }
+                    None => {
+                        ordinary_request = dispatch.worker_request_bytes(contract)?;
+                        ordinary_result = pin_io.execute(&ordinary_request, dispatch.attempt())?;
+                        &ordinary_result
+                    }
+                };
                 if dispatch.attempt().classify(result.dataset(), result.pin())
                     != WorkspacePinRecoveryDispositionV1::CompleteRetirement
                 {
@@ -3080,20 +3699,26 @@ impl StorageAdmissionCoordinator {
                 let transaction =
                     ZfsTransaction::from_catalog(prepared.operation(), prepared.catalog())?;
                 let entry = prepared.entry();
-                let committed = self.transactions.commit_observed_with_supplement(
-                    entry.operation_id(),
-                    entry.mutation_digest(),
-                    prepared.catalog(),
-                    transaction.postcondition(),
-                    None,
-                    result.observation_digest(),
-                    crate::snapshot_metadata::CatalogCommitSupplementV1::None,
-                )?;
-                let disposition = self.transactions.complete_workspace_pin_attempt(
-                    attempt.attempt_id(),
-                    result.dataset(),
-                    result.pin(),
-                )?;
+                let committed = match receiving.as_deref_mut() {
+                    Some(receiving) => self.transactions.commit_observed_with_supplement_receiving_v1(
+                        entry.operation_id(), entry.mutation_digest(), prepared.catalog(),
+                        transaction.postcondition(), None, result.observation_digest(),
+                        crate::snapshot_metadata::CatalogCommitSupplementV1::None, receiving,
+                    )?,
+                    None => self.transactions.commit_observed_with_supplement(
+                        entry.operation_id(), entry.mutation_digest(), prepared.catalog(),
+                        transaction.postcondition(), None, result.observation_digest(),
+                        crate::snapshot_metadata::CatalogCommitSupplementV1::None,
+                    )?,
+                };
+                let disposition = match receiving.as_deref_mut() {
+                    Some(receiving) => self.transactions.complete_workspace_pin_attempt_receiving_v1(
+                        attempt.attempt_id(), result.dataset(), result.pin(), receiving,
+                    )?,
+                    None => self.transactions.complete_workspace_pin_attempt(
+                        attempt.attempt_id(), result.dataset(), result.pin(),
+                    )?,
+                };
                 if disposition != WorkspacePinRecoveryDispositionV1::CompleteRetirement {
                     return Err(ZfsHelperError::PostconditionMismatch);
                 }
@@ -3175,6 +3800,7 @@ impl StorageAdmissionCoordinator {
             policy,
             current_clock,
             None,
+            None,
         )
     }
 
@@ -3215,7 +3841,25 @@ impl StorageAdmissionCoordinator {
             policy,
             current_clock,
             Some((identity_range_start, manifest, sandbox_spec)),
+            None,
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_apply_intent_receiving_v1(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        catalog: &ResolvedCatalogCommitmentV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        publication_inputs: Option<(u32, &CanonicalAssignmentManifestV1, &SandboxSpec)>,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<StorageAdmissionOutcome, StorageBrokerError> {
+        self.admit_apply_intent_inner(request_body, artifacts, catalog, protocol_version,
+            peer, policy, current_clock, publication_inputs, Some(receiving))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3229,6 +3873,7 @@ impl StorageAdmissionCoordinator {
         policy: PeerPolicy,
         current_clock: &RawPairedClockSample,
         publication_inputs: Option<(u32, &CanonicalAssignmentManifestV1, &SandboxSpec)>,
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
     ) -> Result<StorageAdmissionOutcome, StorageBrokerError> {
         self.transactions.ensure_authority_readable()?;
         let semantics = decode_resolved(
@@ -3296,6 +3941,13 @@ impl StorageAdmissionCoordinator {
                 crate::StorageStateError::MissingAuthorityLink,
             ));
         }
+        if let Some(receiving) = receiving.as_deref_mut() {
+            let memory = crate::authorization::receiving_authorization_memory_v1(artifacts)
+                .map_err(|_| crate::StorageStateError::InvalidValue)?;
+            let memory = usize::try_from(memory).map_err(|_| crate::StorageStateError::InvalidValue)?;
+            receiving.reserve_encoded_capacity_v1(memory, 0)
+                .map_err(|_| crate::StorageStateError::Receiving)?;
+        }
         let admission = self
             .authority
             .admit(
@@ -3360,6 +4012,13 @@ impl StorageAdmissionCoordinator {
                 ));
             }
         }
+        if let Some(receiving) = receiving.as_deref_mut() {
+            let bytes = aos_sandbox_broker::storage_admission_sealing_bytes_v1(
+                &admission.fence, &admission.effect,
+            ).ok_or(crate::StorageStateError::InvalidValue)?;
+            receiving.reserve_encoded_capacity_v1(bytes, 0)
+                .map_err(|_| crate::StorageStateError::Receiving)?;
+        }
         let sealed = self
             .authority
             .seal(&sandbox_id, &request_id, &operation_id, &admission)
@@ -3377,18 +4036,24 @@ impl StorageAdmissionCoordinator {
             {
                 return Err(crate::StorageStateError::AuthorityLinkMismatch.into());
             }
-            self.transactions.begin_authorized_with_publication(
-                operation_id,
-                request_digest,
-                catalog,
-                sandbox_id,
-                request_id,
-                sealed.current_fence,
-                sealed.effect,
-                sealed.operation_fence,
-                publication_intent,
-            )?
+            match receiving.as_deref_mut() {
+                Some(receiving) => self.transactions.begin_authorized_receiving_v1(
+                    operation_id, request_digest, catalog, sandbox_id, request_id,
+                    sealed.current_fence, sealed.effect, sealed.operation_fence,
+                    publication_intent, None, receiving,
+                ),
+                None => self.transactions.begin_authorized_with_publication(
+                    operation_id, request_digest, catalog, sandbox_id, request_id,
+                    sealed.current_fence, sealed.effect, sealed.operation_fence, publication_intent,
+                ),
+            }?
         } else {
+            if let Some(receiving) = receiving.as_deref_mut() {
+                let bytes = preparation.record.receiving_payload_bytes_v1()
+                    .ok_or(crate::StorageStateError::InvalidValue)?;
+                receiving.reserve_encoded_capacity_v1(bytes, 0)
+                    .map_err(|_| crate::StorageStateError::Receiving)?;
+            }
             let consumed = preparation.record.consume(
                 request_id,
                 request_digest,
@@ -3405,19 +4070,18 @@ impl StorageAdmissionCoordinator {
                 preparation.sealed_record,
                 sealed_consumed,
             )?;
-            self.transactions
-                .begin_authorized_with_consumed_preparation(
-                    operation_id,
-                    request_digest,
-                    catalog,
-                    sandbox_id,
-                    request_id,
-                    sealed.current_fence,
-                    sealed.effect,
-                    sealed.operation_fence,
-                    publication_intent,
-                    transition,
-                )?
+            match receiving.as_deref_mut() {
+                Some(receiving) => self.transactions.begin_authorized_receiving_v1(
+                    operation_id, request_digest, catalog, sandbox_id, request_id,
+                    sealed.current_fence, sealed.effect, sealed.operation_fence,
+                    publication_intent, Some(transition), receiving,
+                ),
+                None => self.transactions.begin_authorized_with_consumed_preparation(
+                    operation_id, request_digest, catalog, sandbox_id, request_id,
+                    sealed.current_fence, sealed.effect, sealed.operation_fence,
+                    publication_intent, transition,
+                ),
+            }?
         };
         Ok(match outcome {
             BeginStorageTransaction::Prepared { mutation_digest } => {
@@ -3455,6 +4119,36 @@ impl StorageAdmissionCoordinator {
         B: ZfsProcessBackend,
         F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
     {
+        self.execute_preobserved_inner_v1(helper, prepared, trusted_clock, None)
+    }
+
+    pub(crate) fn execute_preobserved_receiving_v1<B, F>(
+        &mut self,
+        helper: &mut StorageMutationHelper<B>,
+        prepared: PreobservedZfsMutation,
+        trusted_clock: &mut F,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError>
+    where
+        B: ZfsProcessBackend,
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        receiving.require_models_current_v1(self.transactions.recovery_encoding_journal_v1())
+            .map_err(|_| crate::StorageStateError::Receiving)?;
+        self.execute_preobserved_inner_v1(helper, prepared, trusted_clock, Some(receiving))
+    }
+
+    fn execute_preobserved_inner_v1<B, F>(
+        &mut self,
+        helper: &mut StorageMutationHelper<B>,
+        prepared: PreobservedZfsMutation,
+        trusted_clock: &mut F,
+        mut receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+    ) -> Result<ZfsHelperOutcome, ZfsHelperError>
+    where
+        B: ZfsProcessBackend,
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
         let entry = prepared.entry();
         let current_entry = self
             .transactions
@@ -3463,7 +4157,7 @@ impl StorageAdmissionCoordinator {
             return Err(crate::StorageStateError::InvalidTransition.into());
         }
         let PreparedStorageEffectAuthorizationV1::Fresh(context) =
-            self.authorize_or_retire_prepared(entry, prepared.catalog(), trusted_clock)?
+            self.authorize_or_retire_prepared_inner_v1(entry, prepared.catalog(), trusted_clock, receiving.as_deref_mut())?
         else {
             return Ok(ZfsHelperOutcome::Aborted {
                 mutation_digest: entry.mutation_digest(),
@@ -3472,11 +4166,15 @@ impl StorageAdmissionCoordinator {
 
         let authority = FreshStorageEffectAuthority { entry };
         let protected_authority = &self.authority;
-        helper.execute_preobserved(&mut self.transactions, prepared, authority, || {
-            protected_authority
-                .check_before_effect(&context.effect, trusted_clock)
-                .map_err(|_| ZfsHelperError::Authority)
-        })
+        let check = || protected_authority
+            .check_before_effect(&context.effect, trusted_clock)
+            .map_err(|_| ZfsHelperError::Authority);
+        match receiving {
+            Some(receiving) => helper.execute_preobserved_receiving_v1(
+                &mut self.transactions, prepared, authority, check, receiving,
+            ),
+            None => helper.execute_preobserved(&mut self.transactions, prepared, authority, check),
+        }
     }
 
     fn authorize_or_retire_prepared<F>(
@@ -3484,6 +4182,19 @@ impl StorageAdmissionCoordinator {
         entry: crate::StorageRecoveryEntry,
         catalog: &ResolvedCatalogCommitmentV1,
         trusted_clock: &mut F,
+    ) -> Result<PreparedStorageEffectAuthorizationV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        self.authorize_or_retire_prepared_inner_v1(entry, catalog, trusted_clock, None)
+    }
+
+    fn authorize_or_retire_prepared_inner_v1<F>(
+        &mut self,
+        entry: crate::StorageRecoveryEntry,
+        catalog: &ResolvedCatalogCommitmentV1,
+        trusted_clock: &mut F,
+        receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
     ) -> Result<PreparedStorageEffectAuthorizationV1, ZfsHelperError>
     where
         F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
@@ -3505,7 +4216,10 @@ impl StorageAdmissionCoordinator {
             PreparedStorageHeadV1::Superseded => {}
         }
 
-        self.transactions.abort_prepared_exact(entry, catalog)?;
+        match receiving {
+            Some(receiving) => self.transactions.abort_prepared_exact_receiving_v1(entry, catalog, receiving),
+            None => self.transactions.abort_prepared_exact(entry, catalog),
+        }?;
         Ok(PreparedStorageEffectAuthorizationV1::Retired)
     }
 
@@ -3708,83 +4422,9 @@ impl StorageAdmissionCoordinator {
         &self,
         entry: crate::StorageRecoveryEntry,
     ) -> Result<(BrokerAuthorizationFenceV1, BrokerEffectIntentV1), ZfsHelperError> {
-        if self
-            .transactions
-            .current_recovery_entry(entry.operation_id())?
-            != entry
-        {
-            return Err(crate::StorageStateError::InvalidTransition.into());
-        }
-        let catalog = self.transactions.recover_catalog(entry)?;
-        let operation = catalog.plan().operation();
-        let operation_fence_bytes = self
-            .transactions
-            .authority_record(RecordNamespace::AuthorityPublication, &entry.operation_id())?
-            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
-            .to_vec();
-        let effect_bytes = self
-            .transactions
-            .authority_record(RecordNamespace::Effect, &entry.request_id())?
-            .ok_or(crate::StorageStateError::MissingAuthorityLink)?
-            .to_vec();
-        let operation_fence = self
-            .authority
-            .open_operation_fence(&entry.operation_id(), &operation_fence_bytes)
-            .map_err(|_| ZfsHelperError::Authority)?;
-        self.authority
-            .check_current_fence(&operation_fence)
-            .map_err(|_| ZfsHelperError::Authority)?;
-        let effect = self
-            .authority
-            .open_admission_intent(&entry.request_id(), &effect_bytes)
-            .map_err(|_| ZfsHelperError::Authority)?;
-        let semantic_commitment = match self
-            .transactions
-            .workspace_publication_intent(entry.operation_id())?
-            .map(|intent| intent.portable_metadata().clone())
-        {
-            Some(metadata) => {
-                if metadata.request_id() != entry.request_id()
-                    || metadata.request_digest() != entry.request_digest()
-                    || metadata.assignment() != operation_fence.assignment()
-                    || metadata.node() != operation_fence.node()
-                    || catalog.root_policy() != Some(metadata.root_policy())
-                {
-                    return Err(ZfsHelperError::Authority);
-                }
-                operation.persisted_workspace_argument_commitment(
-                    operation_fence.assignment(),
-                    entry.operation_id(),
-                    catalog.binding(),
-                    metadata.manifest_bytes(),
-                    metadata.sandbox_spec_bytes(),
-                )
-            }
-            None => operation.persisted_argument_commitment(
-                operation_fence.assignment(),
-                entry.operation_id(),
-                catalog.binding(),
-            ),
-        }
-        .map_err(|_| ZfsHelperError::Authority)?;
-        let grant_target = operation
-            .grant_target()
-            .map_err(|_| ZfsHelperError::Authority)?;
-        if operation_fence.assignment().sandbox().as_bytes() != &entry.sandbox_id()
-            || effect.status() != aos_sandbox_broker::BrokerEffectStatusV1::Pending
-            || effect.request_id() != &entry.request_id()
-            || effect.transport_request_digest() != entry.request_digest()
-            || effect.request_digest() != semantic_commitment.digest()
-            || effect.verb() != operation.broker_verb()
-            || effect.target() != grant_target
-            || effect.plan_digest() != operation_fence.plan_digest()
-            || effect.plan_expires_seconds() != operation_fence.plan_expires_seconds()
-            || effect.local_lease_record() != operation_fence.local_lease_record()
-            || effect.lease_digest() != operation_fence.local_lease_record().lease_digest()
-        {
-            return Err(ZfsHelperError::Authority);
-        }
-        Ok((operation_fence, effect))
+        let mut original = recovery_authentication::RecoveryAuthenticationOriginalV1::new();
+        original.run(self, entry, false);
+        original.take_ordinary_result()
     }
 
     fn pin_worker_authority(
@@ -4377,6 +5017,19 @@ pub(crate) fn native_runtime_fixture_for_test(
         transaction_directory,
         workspace_directory,
     )
+}
+
+
+/// Borrows all actual append/authentication owners after their final checks.
+#[must_use]
+pub(crate) struct StorageBrokerRecoveryDispositionV1<'coordinator> {
+    coordinator: &'coordinator mut StorageAdmissionCoordinator,
+}
+
+impl StorageBrokerRecoveryDispositionV1<'_> {
+    pub(crate) fn complete_after_disposal_v1(self) {
+        self.coordinator.complete_recovery_disposition_v1();
+    }
 }
 
 #[cfg(test)]
@@ -14730,4 +15383,54 @@ mod tests {
                 .contains(&BrokerMethod::BROKER_METHOD_STORAGE_APPLY)
         );
     }
+
+    #[test]
+    fn retained_persisted_authentication_keeps_completed_models_on_later_effect_failure() {
+        let directory = TempDir::new().unwrap();
+        let fixture = Fixture::new();
+        let request = request(7, 8);
+        let catalog = catalog(8, 9);
+        let artifacts = fixture.artifacts(
+            &request, &catalog, 300, BrokerAudience::Storage, ProtocolId::StorageBroker,
+        );
+        let mut broker = initialized_coordinator(&directory, &fixture, &catalog);
+        prepare_for_apply(&mut broker, &request, &artifacts, &catalog, &clock());
+        broker.admit_apply_intent(
+            &request, &artifacts, &catalog, ProtocolVersion::new(1, 0),
+            peer(), peer_policy(), &clock(),
+        ).unwrap();
+        let entry = broker.transactions.current_recovery_entry([7; 16]).unwrap();
+        broker.transactions.put_authority_record_for_test(
+            RecordNamespace::Effect, &entry.request_id(), b"damaged sealed effect".to_vec(),
+        );
+        let mut original = recovery_authentication::RecoveryAuthenticationOriginalV1::new();
+
+        // This is a real ordinary authenticated fixture and inert destination,
+        // not a fabricated selected State loan or financial authority.
+        original.run(&broker, entry, false);
+
+        let (held_catalog, held_fence, held_effect) = original.held_models_for_test();
+        assert_eq!(held_catalog, catalog.canonical_bytes());
+        assert!(held_fence.is_some());
+        assert_eq!(held_effect, b"damaged sealed effect");
+        let catalog_address = held_catalog.as_ptr();
+        let effect_address = held_effect.as_ptr();
+        let cause = original.failure().unwrap().downcast_ref::<StorageAdmissionError>().unwrap();
+        let actual_cause = cause as *const StorageAdmissionError;
+
+        original.run(&broker, entry, false);
+        let (held_catalog, held_fence, held_effect) = original.held_models_for_test();
+        assert_eq!(held_catalog.as_ptr(), catalog_address);
+        assert_eq!(held_effect.as_ptr(), effect_address);
+        assert!(held_fence.is_some());
+        assert_eq!(original.failure().unwrap().downcast_ref::<StorageAdmissionError>().unwrap()
+            as *const StorageAdmissionError, actual_cause);
+        assert!(matches!(original.take_ordinary_result(), Err(ZfsHelperError::Authority)));
+        assert!(matches!(broker.authenticate_recovery_entry(entry), Err(ZfsHelperError::Authority)));
+    }
 }
+
+mod capture_query;
+mod capture_reserve;
+pub(crate) use capture_reserve::CaptureReserveCutV3;
+pub(crate) use capture_query::CaptureQueryCutV3;

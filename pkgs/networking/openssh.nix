@@ -67,6 +67,7 @@ in
               ${patch}/bin/patch -p1 < ${./openssh-patches/0003-original-terminal-status-v4.patch}
               ${patch}/bin/patch -p1 < ${./openssh-patches/0004-original-held-controls-v5.patch}
               ${patch}/bin/patch --fuzz=0 -p1 < ${./openssh-patches/0005-shared-session-client-link.patch}
+              ${patch}/bin/patch --fuzz=0 -p1 < ${./openssh-patches/0006-owned-listener-bootstrap-v1.patch}
               cp ${./openssh-patches/aos-attach-monitor.c} aos-attach-monitor.c
               cp ${./openssh-patches/aos-attach-monitor.h} aos-attach-monitor.h
               cp ${./openssh-patches/aos-attach-confinement.c} aos-attach-confinement.c
@@ -74,6 +75,9 @@ in
               cp ${./openssh-patches/aos-attach-relay.c} aos-attach-relay.c
               cp ${./openssh-patches/aos-attach-relay.h} aos-attach-relay.h
               cp ${./openssh-patches/aos-attach-client.c} aos-attach-client.c
+              cp ${./openssh-patches/aos-attach-bootstrap.c} aos-attach-bootstrap.c
+              cp ${./openssh-patches/aos-attach-bootstrap.h} aos-attach-bootstrap.h
+              cp ${./openssh-patches/aos-attach-bootstrap-test.c} aos-attach-bootstrap-test.c
             ''
             else ""
           }

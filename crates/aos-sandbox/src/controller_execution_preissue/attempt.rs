@@ -60,6 +60,15 @@ pub struct ControllerExecutionOutputAttemptV1 {
 }
 
 impl ControllerExecutionOutputAttemptV1 {
+    // This is the sole encoder's exact width (or bounded receipt width).
+    // It is passive requirement DATA, never an append or Native authority.
+    pub(crate) const fn receiving_record_shape_v1() -> aos_sandbox_journal::geometry::RecordShape {
+        aos_sandbox_journal::geometry::RecordShape {
+            key_bytes: 16,
+            value_bytes: Some(RECORD_BYTES),
+        }
+    }
+
     /// Borrows the exact Controller source frozen before the first Host send.
     #[must_use]
     pub const fn source(&self) -> &ControllerExecutionReserveSourceV1 {

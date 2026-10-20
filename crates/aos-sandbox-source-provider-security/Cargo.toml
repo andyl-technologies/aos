@@ -9,9 +9,12 @@ default = []
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 
 [dependencies]
-aos-sandbox.workspace = true
+aos-sandbox-broker.workspace = true
+aos-sandbox-source.workspace = true
+aos-sandbox-ledger-replay.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
+aos-sandbox-mount-native.workspace = true
 aos-sandbox-protocol.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 aos-sandbox-source-provider-ledger.workspace = true
@@ -24,6 +27,8 @@ thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+aos-sandbox-mount-native = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-source = { workspace = true, features = ["test-fixtures"] }
 tempfile.workspace = true
 
 [lints]

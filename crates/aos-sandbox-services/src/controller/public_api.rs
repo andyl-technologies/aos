@@ -86,8 +86,8 @@ impl PublicListenerStartupV1 {
 ///
 /// Called inside that parent's existing runtime. Actual errors enter its
 /// terminal before the runtime returns; this helper never returns a failure.
-/// Lower credential/bind prefixes and accepted TLS tasks remain separate
-/// functional custody obligations.
+/// The selected initial TLS holder keeps credential/native prefixes resident.
+/// Bind prefixes and accepted TLS tasks retain their independent obligations.
 ///
 /// # Panics
 ///
@@ -95,6 +95,7 @@ impl PublicListenerStartupV1 {
 /// The existing parent unwind fence remains responsible for termination.
 pub(super) fn bind_retained(
     uid: u32,
+    credentials: Option<&mut aos_sandbox::ControllerPublicTlsReceivingV1>,
     partial: &mut PublicListenerStartupV1,
     destination: &mut Option<Option<PublicListener>>,
     terminal: &dyn ControllerServerTerminal,
@@ -103,9 +104,19 @@ pub(super) fn bind_retained(
         terminal.closed("Controller public startup destination occupied");
     }
 
-    let acceptor = match PublicApiSessionAcceptor::from_systemd_credentials() {
-        Ok(acceptor) => acceptor,
-        Err(cause) => terminal.runtime(ControllerRuntimeError::PublicSession(cause)),
+    let acceptor = if let Some(initial) = credentials {
+        if initial.capture_once().is_err() {
+            terminal.closed("original Controller public credential receiving failed");
+        }
+        match initial.take_success() {
+            Some(acceptor) => acceptor,
+            None => terminal.closed("Controller public credential handoff incomplete"),
+        }
+    } else {
+        match PublicApiSessionAcceptor::from_systemd_credentials() {
+            Ok(acceptor) => acceptor,
+            Err(cause) => terminal.runtime(ControllerRuntimeError::PublicSession(cause)),
+        }
     };
     partial.acceptor = Some(Arc::new(acceptor));
 

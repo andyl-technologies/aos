@@ -14,8 +14,8 @@ mod disposition;
 use aos_proto::aos::sandbox::local::v1::{
     AcquireMountSourceRequest, ApplyMountRequest, Audience, MountAction, MountSourceConsistency,
 };
-use aos_sandbox::journal::{
-    Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
+use aos_sandbox_mount_native::{
+    MountJournalV1 as Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
 };
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_core::{MediaType, ObjectDescriptor, encode_view_source, model::ViewSource};

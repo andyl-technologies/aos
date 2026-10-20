@@ -333,6 +333,10 @@ pub(super) fn validate_all_floors(journal: &Journal) -> Result<(), ReconcilerErr
     // A recorded floor is authority-bearing; an empty legacy journal is not.
     journal.ensure_protected_authority()?;
     for (key, bytes) in journal.records(RecordNamespace::ControllerCreateFailurePrepare) {
+        if bytes.starts_with(aos_sandbox_protocol::host_execution_no_apply::closed_controller::CLOSED_CREATE_FAILURE_PREPARE_MAGIC_V2) {
+            super::closed_v2::validate_floor_v2(journal, key, bytes)?;
+            continue;
+        }
         let floor = CreateFailurePrepareV1::decode(key, bytes)?;
         let operation_bytes = journal
             .get(RecordNamespace::Operation, key)

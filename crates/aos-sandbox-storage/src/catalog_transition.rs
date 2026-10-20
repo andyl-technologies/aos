@@ -30,19 +30,61 @@ use crate::{
 };
 
 pub(crate) mod execution_capture;
+mod group_preparation;
+pub(crate) use group_preparation::AtomicGroupPreparationOriginalV1;
+
 mod format;
 mod provider;
+mod preparation;
+mod physical_preparation;
+mod singular_application;
+mod capture_resolution;
+pub(crate) use capture_resolution::CaptureCatalogResolutionV3;
+use capture_resolution::CatalogResolutionRecipeV3;
+mod wire_custody;
 mod validation;
 
 pub(crate) use provider::StorageCatalogTransitionProvider;
+pub(crate) use preparation::CatalogTransitionPreparationOriginalV1;
+pub(crate) use singular_application::{
+    CatalogPhysicalApplicationOriginalV1, SINGULAR_APPLICATION_CALL_CELLS,
+};
+pub(crate) use physical_preparation::{
+    PHYSICAL_APPLICATION_CALL_CELLS, PHYSICAL_APPLICATION_OWNED_CELLS,
+};
+pub(crate) use wire_custody::CatalogWireGeometryV1;
 use validation::normalize_and_validate;
 
 use format::{
     decode_head_payload, decode_reservation_payload, decode_transition_payload, digest_bytes,
-    encode_head_payload, encode_reservation_payload, encode_transition_payload,
-    encoded_transition_size, transition_digest, transition_payload, validate_catalog_chain,
+    encode_head_payload, encode_head_payload_receiving_v1, encode_reservation_payload,
+    encode_transition_payload, encode_transition_payload_receiving_v1,
+    encoded_transition_size, transition_digest, transition_digest_receiving_v1,
+    transition_payload, validate_catalog_chain,
     validate_head, validate_reserved_transition_bound,
 };
+
+/// Counts only related catalog projection/transition model cells.
+///
+/// Encoded bytes and live row counts are supplied independently from the same
+/// held State map. This is layout DATA, never an account or catalog authority.
+pub(crate) fn recovery_model_cell_bytes_v1() -> usize {
+    std::mem::size_of::<PhysicalStateWire>()
+        + std::mem::size_of::<PhysicalStateWireV1>()
+        + std::mem::size_of::<PhysicalCatalogState>()
+        + std::mem::size_of::<RootWire>()
+        + std::mem::size_of::<DatasetWire>()
+        + std::mem::size_of::<SnapshotWire>()
+        + std::mem::size_of::<SnapshotWireV1>()
+        + std::mem::size_of::<HoldWire>()
+        + std::mem::size_of::<TombstoneWire>()
+        + std::mem::size_of::<ReservationPayload>()
+        + std::mem::size_of::<GroupReservationPayloadV2>()
+        + std::mem::size_of::<TransitionPayload>()
+        + std::mem::size_of::<GroupTransitionPayloadV2>()
+        + std::mem::size_of::<HeadPayload>()
+        + std::mem::size_of::<PreparedCatalogTransition>()
+}
 
 const STATE_MAGIC: &str = "AOSSCS01";
 const RESERVATION_MAGIC: &str = "AOSSCR01";
@@ -54,9 +96,30 @@ const STATE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.catalog-state.v1\0";
 const RECORD_MAC_DOMAIN: &[u8] = b"aos.sandbox.storage.catalog-record.v1\0";
 const TRANSITION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.catalog-transition.v1\0";
 const HEAD_KEY: &[u8] = b"physical-head";
+
+// Shares the actual encoded key width with the pre-encoding startup forecast.
+pub(crate) const fn bootstrap_head_key_bytes_v1() -> usize {
+    HEAD_KEY.len()
+}
+
 const MAXIMUM_STATE_BYTES: usize = 48 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = 64 * 1024;
 const MAXIMUM_HEAD_BYTES: usize = 4 * 1024;
+// Bounds catalog namespace cardinality before decoding the captured source.
+// Each root/dataset/snapshot/hold/tombstone is one JSON compound value, with
+// at least its opening and closing delimiters. This also covers noncanonical
+// sequence-form structs and over-limit negative prefixes before validation.
+// Snapshot metadata creates one additional keyed index entry per snapshot.
+// Count those two actual keyspaces; fields and parser tokens create no entries.
+pub(crate) fn startup_namespace_entries_bound_v1(
+    encoded_bytes: u64,
+) -> Result<u64, aos_sandbox_core::AccountingError> {
+    let compound_delimiters = b"{}".len() as u64;
+    let catalog_objects = encoded_bytes / compound_delimiters;
+    let snapshot_metadata_keys = encoded_bytes / compound_delimiters;
+    crate::receiving_demand::add(catalog_objects, snapshot_metadata_keys)
+}
+
 const MAXIMUM_OBJECTS: usize = 256;
 const MAXIMUM_HOLDS: usize = 512;
 const MAXIMUM_TOMBSTONES: usize = 256;
@@ -636,19 +699,12 @@ impl PhysicalCatalogState {
         mut wire: PhysicalStateWire,
         snapshot_metadata: BTreeMap<(String, u64), SnapshotMetadataWireV1>,
     ) -> Result<Self, StorageStateError> {
-        normalize_and_validate(&mut wire)?;
-        validate_snapshot_metadata_set(&wire, &snapshot_metadata)?;
-        let bytes = serde_json::to_vec(&persistent_wire(&wire, &snapshot_metadata)?)
-            .map_err(|_| StorageStateError::CorruptRecord)?;
-        if bytes.len() > MAXIMUM_STATE_BYTES {
-            return Err(StorageStateError::InvalidValue);
+        let mut original = physical_preparation::CanonicalStateOriginalV1::new();
+        let result = original.run(&mut wire, &snapshot_metadata, None);
+        if let Err(cause) = result {
+            return Err(original.take_failure().unwrap_or(cause));
         }
-        let mut hash = Sha256::new();
-        hash.update(STATE_DIGEST_DOMAIN);
-        hash.update(&bytes);
-        let digest = ObjectDigest::from_bytes(hash.finalize().into());
-        let binding = CatalogBindingV1::from_publisher(wire.generation, digest)
-            .map_err(|_| StorageStateError::InvalidValue)?;
+        let (bytes, binding) = original.take_positive();
         Ok(Self {
             wire,
             snapshot_metadata,
@@ -677,53 +733,11 @@ impl PhysicalCatalogState {
         object_guid: Option<u64>,
         snapshot_metadata: Option<CheckedSnapshotMetadataRecordV1>,
     ) -> Result<Self, StorageStateError> {
-        if self.binding.generation().checked_add(1) != Some(catalog.generation()) {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        if catalog.format_version() != FORMAT_VERSION {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        let mut wire = self.wire.clone();
-        wire.version = FORMAT_VERSION;
-        let mut metadata = self.snapshot_metadata.clone();
-        ingest_plan_inputs(&mut wire, catalog.plan(), false)?;
-        apply_postcondition(&mut wire, operation_id, catalog.plan(), object_guid)?;
-        match (catalog.plan(), snapshot_metadata) {
-            (CatalogPlanV1::Snapshot { destination, .. }, Some(metadata_record)) => {
-                let guid = object_guid.ok_or(StorageStateError::InvalidValue)?;
-                validate_snapshot_metadata_record(
-                    metadata_record,
-                    operation_id,
-                    guid,
-                    destination.dataset().guid(),
-                    Some(destination.dataset().storage_handle()),
-                )?;
-                let metadata_wire = snapshot_metadata_wire(metadata_record);
-                if metadata
-                    .insert((destination.name().to_owned(), guid), metadata_wire)
-                    .is_some()
-                {
-                    return Err(StorageStateError::InvalidTransition);
-                }
-            }
-            (CatalogPlanV1::Snapshot { .. }, None) => {
-                return Err(StorageStateError::InvalidValue);
-            }
-            (_, Some(_)) => {
-                return Err(StorageStateError::InvalidValue);
-            }
-            _ => {}
-        }
-        if let CatalogPlanV1::DestroySnapshot { snapshot } = catalog.plan() {
-            metadata.remove(&(snapshot.name().to_owned(), snapshot.guid()));
-        }
-        wire.generation = catalog
-            .generation()
-            .checked_add(1)
-            .ok_or(StorageStateError::InvalidValue)?;
-        wire.predecessor_state = Some(self.binding.into());
-        wire.resolution = Some(catalog.binding().into());
-        Self::canonicalize(wire, metadata)
+        let mut original = CatalogPhysicalApplicationOriginalV1::new();
+        let result = original.apply(
+            self, operation_id, catalog, object_guid, snapshot_metadata, None,
+        );
+        result.map_err(|cause| original.take_failure().unwrap_or(cause))
     }
 
     fn apply_atomic_snapshot_group(
@@ -731,40 +745,9 @@ impl PhysicalCatalogState {
         program: &crate::DormantAtomicDatasetSnapshotV1,
         member_guids: &[u64],
     ) -> Result<Self, StorageStateError> {
-        if program.format_version() != 2
-            || self.binding.generation() != program.catalog_generation()
-            || self.binding.digest() != program.catalog_head()
-            || member_guids.len() != program.member_count()
-            || member_guids.contains(&0)
-        {
-            return Err(StorageStateError::InvalidTransition);
-        }
-        let next_generation = self
-            .binding
-            .generation()
-            .checked_add(1)
-            .ok_or(StorageStateError::InvalidTransition)?;
-        let resolution = CatalogBindingV1::from_publisher(next_generation, program.commitment())
-            .map_err(|_| StorageStateError::InvalidTransition)?;
+        let (next_generation, resolution) = atomic_group_successor(self, program, member_guids)?;
         let mut wire = self.wire.clone();
-        for (member, guid) in program.members().iter().zip(member_guids) {
-            if !wire.datasets.iter().any(|dataset| {
-                dataset.name == member.source_name() && dataset.guid == member.source_guid()
-            }) || wire.snapshots.iter().any(|snapshot| {
-                snapshot.name == member.destination_name() || snapshot.guid == *guid
-            }) {
-                return Err(StorageStateError::InvalidTransition);
-            }
-            wire.snapshots.push(SnapshotWire {
-                name: member.destination_name().to_owned(),
-                guid: *guid,
-                source_name: member.source_name().to_owned(),
-                source_guid: member.source_guid(),
-                // Group ownership is proved by the protected atomic record;
-                // the singular catalog creator index is one-to-one.
-                created_by: None,
-            });
-        }
+        apply_atomic_group_members(&mut wire, program, member_guids)?;
         wire.generation = next_generation;
         wire.predecessor_state = Some(self.binding.into());
         wire.resolution = Some(resolution.into());
@@ -800,6 +783,56 @@ impl PhysicalCatalogState {
         projection.sort_unstable();
         projection
     }
+}
+
+fn atomic_group_successor(
+    source: &PhysicalCatalogState,
+    program: &crate::DormantAtomicDatasetSnapshotV1,
+    member_guids: &[u64],
+) -> Result<(u64, CatalogBindingV1), StorageStateError> {
+    if program.format_version() != 2
+        || source.binding.generation() != program.catalog_generation()
+        || source.binding.digest() != program.catalog_head()
+        || member_guids.len() != program.member_count()
+        || member_guids.contains(&0)
+    {
+        return Err(StorageStateError::InvalidTransition);
+    }
+    let next_generation = source
+        .binding
+        .generation()
+        .checked_add(1)
+        .ok_or(StorageStateError::InvalidTransition)?;
+    let resolution = CatalogBindingV1::from_publisher(next_generation, program.commitment())
+        .map_err(|_| StorageStateError::InvalidTransition)?;
+    Ok((next_generation, resolution))
+}
+
+/// Mutates the same caller-owned graph in the original member order.
+fn apply_atomic_group_members(
+    wire: &mut PhysicalStateWire,
+    program: &crate::DormantAtomicDatasetSnapshotV1,
+    member_guids: &[u64],
+) -> Result<(), StorageStateError> {
+    for (member, guid) in program.members().iter().zip(member_guids) {
+        if !wire.datasets.iter().any(|dataset| {
+            dataset.name == member.source_name() && dataset.guid == member.source_guid()
+        }) || wire.snapshots.iter().any(|snapshot| {
+            snapshot.name == member.destination_name() || snapshot.guid == *guid
+        }) {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        wire.snapshots.push(SnapshotWire {
+            name: member.destination_name().to_owned(),
+            guid: *guid,
+            source_name: member.source_name().to_owned(),
+            source_guid: member.source_guid(),
+            // Group ownership is proved by the protected atomic record;
+            // the singular catalog creator index is one-to-one.
+            created_by: None,
+        });
+    }
+    Ok(())
 }
 
 fn split_wire(
@@ -1162,6 +1195,25 @@ impl PreparedCatalogTransition {
 
     pub(crate) const fn snapshot_metadata(&self) -> Option<CheckedSnapshotMetadataRecordV1> {
         self.snapshot_metadata
+    }
+
+    /// Pays the actual two-record clone before constructing its owned carrier.
+    pub(crate) fn records_receiving_v1(
+        &self,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+    ) -> Result<Vec<JournalRecord>, StorageStateError> {
+        let bytes = std::mem::size_of::<JournalRecord>().checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(self.operation_id.len()))
+            .and_then(|bytes| bytes.checked_add(HEAD_KEY.len()))
+            .and_then(|bytes| bytes.checked_add(self.transition_bytes.len()))
+            .and_then(|bytes| bytes.checked_add(self.head_bytes.len()))
+            .ok_or(StorageStateError::Receiving)?;
+        // This Vec owns two records and their buffers, all priced in bytes.
+        // It adds no map/index/path namespace; the actual Journal append
+        // supplier independently prices its two protected record keys.
+        receiving.reserve_encoded_capacity_v1(bytes, 0)
+            .map_err(|_| StorageStateError::Receiving)?;
+        Ok(self.records())
     }
 
     pub(crate) fn records(&self) -> Vec<JournalRecord> {

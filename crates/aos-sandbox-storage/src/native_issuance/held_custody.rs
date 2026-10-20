@@ -374,6 +374,10 @@ fn require_funding(after: &Values, cut: &Geometry, prospective: Option<&JournalT
     Ok(())
 }
 
+pub(super) fn staged_held_limits_v1() -> JournalLimits {
+    held_limits()
+}
+
 fn held_limits() -> JournalLimits {
     JournalLimits {
         maximum_journal_bytes: 256 * 1024 * 1024,

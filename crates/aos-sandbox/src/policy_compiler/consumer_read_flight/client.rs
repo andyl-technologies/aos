@@ -16,7 +16,7 @@ use super::transport::{Deadline, Flight};
 use super::wire::{Correlation, Phase, STATE_PREFIX_BYTES, take};
 use crate::attachment_effect_owner::CurrentControllerConsumerResourceV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 
 /// Borrows canonical Policy comparison DATA received on the original flight.
 ///
@@ -76,7 +76,7 @@ where
     let deadline = Deadline::capture(cutoff)?;
     profile.recheck()?;
     deadline.require_current()?;
-    let nonce = super::super::root_nonce::fresh_root_nonce()?;
+    let nonce = aos_sandbox_broker::root_nonce::fresh_root_nonce()?;
     let correlation = Correlation::from_bootstrap(
         &Correlation {
             nonce,

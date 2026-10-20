@@ -5,11 +5,31 @@
 //! partial packets and the first typed cause. No reconstructed Preview or
 //! copied floor can replace the short genuine completed-gen1 owner loans.
 
-use std::os::fd::OwnedFd;
+use aos_sandbox_protocol::source_genesis_wire as genesis_wire;
+
+use aos_sandbox_protocol::source_genesis_wire::{
+    ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1,
+    RootCreateQ04TransferKindV1,
+    RootSourceGenesisFrameKindV1,
+    decode_root_create_q04_transfer_v1,
+    encode_root_source_genesis_frame_v2,
+};
+
+use crate::hierarchy::genesis_profile::project_source_genesis_wire_error_v1;
+
+use crate::policy_compiler::create_q04::project_q04_wire_error_v1;
+
+use aos_sandbox_policy::controller_readback::{
+    CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1, ControllerHoldReadbackChallengeV1,
+};
+use aos_sandbox_policy::controller_project_readback::{
+    CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1, ControllerProjectAdmissionChallengeV1,
+};
+use aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackChallengeV1;
 
 use aos_sandbox_core::ProjectId;
 use aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1;
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
+use aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootReceivedChunkV1 as RootReceivedChunkV1;
 use ed25519_dalek::SigningKey;
 use sha2::Digest as _;
 
@@ -18,26 +38,21 @@ use crate::hierarchy::controller_genesis::hold_existing_completed_source_genesis
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::hierarchy::protected_journal::retained_tree_inventory_data_v1;
 use crate::hierarchy::source_genesis::observe_retained_source_genesis_v1;
-use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
 use super::super::source_genesis_root::{
     ControllerGenesisReadbackPacketV2, OriginalRootGenesisFlightV1,
-    ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1, RootCreateQ04TransferKindV1,
-    RootSourceGenesisFrameKindV1, decode_root_create_q04_transfer_v1,
-    encode_root_source_genesis_frame_v2,
 };
 use super::super::{
-    CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1, CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1,
-    ControllerHoldReadbackChallengeV1, ControllerProjectAdmissionChallengeV1,
     StagedClosedPolicyRootBaseV2, StagedClosedPolicySignerChallengeV2,
     staged_closed_policy_signer_challenge_v2,
 };
 use super::{
-    CLAIM_CHUNK_BYTES, CLAIM_CHUNK_PREFIX_BYTES, CreateQ04ErrorV1, PREVIEW_INDEX_BYTES,
-    Q04PreviewChunkV1, Q04PreviewTransferRecipeV1, Q04PreviewV1, preview_index_shape,
-    PREHOLD_METADATA_BYTES, PREHOLD_RESPONSE_BYTES, Q04PreholdInputDataV1,
+    CLAIM_CHUNK_BYTES, CLAIM_CHUNK_PREFIX_BYTES, CreateQ04ErrorV1, PREHOLD_METADATA_BYTES,
+    PREHOLD_RESPONSE_BYTES, PREVIEW_INDEX_BYTES, Q04PreholdInputDataV1,
     Q04PreholdPublicationDataV1, Q04PreholdTransferRecipeV1,
+    Q04PreviewChunkV1, Q04PreviewTransferRecipeV1, Q04PreviewV1, preview_index_shape,
 };
 
 // This pre-completion borrower admits only conservative preparation payment.
@@ -89,7 +104,7 @@ impl OriginalQ04ProjectPreparationLoanV1<'_, '_, '_, '_> {
         let (tree, _, _) = self.inventory.trees()?
             .find(|(tree, _, _)| tree.project() == project)
             .ok_or(SourceGenesisErrorV1::Conflict)?;
-        let tree = crate::hierarchy::codec::tree_commitment_v1(tree)
+        let tree = aos_sandbox_ledger_replay::hierarchy::codec::tree_commitment_v1(tree)
             .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
         let floor = self.root.floor();
         let deadline = self.original.boottime_nanoseconds().checked_add(60_000_000_000)
@@ -113,9 +128,11 @@ impl OriginalQ04ProjectPreparationLoanV1<'_, '_, '_, '_> {
     }
 }
 
-pub(crate) struct OriginalQ04CompletedPreparationLoanV1<'cut, 'controller, 'source, 'completed, 'flight> {
+pub(crate) struct OriginalQ04CompletedPreparationLoanV1<'cut, 'controller, 'source, 'completed, 'flight,
+> {
     original: OriginalQ04ProjectPreparationLoanV1<'cut, 'controller, 'source, 'flight>,
-    completed: &'cut super::super::source_genesis_root::CompletedRootSourceGenesisFloorV1<'completed, 'flight>,
+    completed: &'cut super::super::source_genesis_root::CompletedRootSourceGenesisFloorV1<'completed, 'flight,
+    >,
 }
 
 impl OriginalQ04CompletedPreparationLoanV1<'_, '_, '_, '_, '_> {
@@ -189,16 +206,21 @@ impl Q04ControllerPreparationV1 {
     }
 }
 
+mod retained_policy_sources;
+
+pub(crate) use retained_policy_sources::RetainedCreatePolicySourcesDataV1;
+
 pub(crate) struct OriginalCreateQ04InvocationV1<'profile> {
     profile: &'profile ProductionControllerNormalRootProfileV1,
-    resource_bank: Option<std::sync::Arc<std::sync::Mutex<crate::controller_resource_reservation::ControllerResourceBankOpeningV1>>>,
+    resource_bank: Option<std::sync::Arc<std::sync::Mutex<crate::controller_resource_reservation::ControllerResourceBankOpeningV1,
+            >,
+        >,
+    >,
     preparation_operation: Option<aos_sandbox_core::OperationId>,
     resource_preparation: Option<crate::controller_resource_reservation::ProjectPreparationReservationAttemptV1>,
     component_admission: Option<Result<(), crate::controller_resource_reservation::ResourceReservationErrorV1>>,
-    raw: Option<OwnedFd>,
-    adopted: Option<RetainedUnixStream>,
     flight: Option<OriginalRootGenesisFlightV1<'profile>>,
-    received: Option<Result<UnixStreamSubjectChunk, RetainedSeqpacketReceiveErrorV1>>,
+    received: Option<Result<RootReceivedChunkV1, RetainedSeqpacketReceiveErrorV1>>,
     hello: Vec<u8>,
     sent: Vec<u8>,
     floor_frame: Vec<u8>,
@@ -220,14 +242,17 @@ pub(crate) struct OriginalCreateQ04InvocationV1<'profile> {
     claim: Vec<u8>,
     claim_chunk: Vec<u8>,
     decision_frame: Vec<u8>,
-    acknowledgements: Vec<Vec<u8>>,
-    root_phase_frames: Vec<Vec<u8>>,
+    acknowledgement: Vec<u8>,
+    accepted_acknowledgement_count: usize,
+    root_phase_frame: Vec<u8>,
+    received_root_phase_count: usize,
     shutdown_observation: Option<Result<usize, rustix::io::Errno>>,
     shutdown_byte: [u8; 1],
     phase: Q04ClientPhaseV1,
     first: Option<CreateQ04ErrorV1>,
     postcheck_debt: Option<CreateQ04ErrorV1>,
     cleared: bool,
+    policy_sources_taken: bool,
 }
 
 // This short loan comes only from the same successful prehold exchange. It
@@ -236,6 +261,7 @@ pub(crate) struct OriginalCreateQ04InvocationV1<'profile> {
 pub(crate) struct OriginalQ04RootCacheLoanV1<'invocation, 'profile, 'cut> {
     invocation: &'invocation OriginalCreateQ04InvocationV1<'profile>,
     identity: &'cut super::Q04CutIdentityV1,
+    native: aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootQ04CacheLoanV1<'invocation, 'profile, 'cut>,
 }
 
 // This is only a short terminal observation on the actual original invocation.
@@ -244,9 +270,15 @@ pub(crate) struct OriginalQ04RootCacheLoanV1<'invocation, 'profile, 'cut> {
 pub(crate) struct OriginalQ04FinalRootObservationV1<'invocation, 'profile, 'cut> {
     invocation: &'invocation OriginalCreateQ04InvocationV1<'profile>,
     identity: &'cut super::Q04CutIdentityV1,
+    native: aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootQ04FinalObservationLoanV1<'invocation, 'profile, 'cut>,
 }
 
 impl OriginalQ04FinalRootObservationV1<'_, '_, '_> {
+    /// Borrows the same actual native continuation without another observation.
+    pub(crate) fn native_original_v1(&self) -> &aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootQ04FinalObservationLoanV1<'_, '_, '_> {
+        &self.native
+    }
+
     pub(crate) fn identity(&self) -> &super::Q04CutIdentityV1 {
         self.identity
     }
@@ -262,8 +294,8 @@ impl OriginalQ04FinalRootObservationV1<'_, '_, '_> {
         if self.invocation.phase != Q04ClientPhaseV1::FinalObservation
             || !matches!(self.invocation.shutdown_observation, Some(Ok(0)))
             || self.invocation.first.is_some() || self.invocation.postcheck_debt.is_some()
-            || self.invocation.refresh_complete.len() != 11
-            || self.invocation.refresh_source_frames.len() != 11
+            || self.invocation.refresh_complete.len() != aos_sandbox_protocol::domain_ledger::create_q04_history::Q04_ORIGINAL_SOURCE_REFRESH_COUNT_V1
+            || self.invocation.refresh_source_frames.len() != aos_sandbox_protocol::domain_ledger::create_q04_history::Q04_ORIGINAL_SOURCE_REFRESH_COUNT_V1
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
@@ -273,7 +305,7 @@ impl OriginalQ04FinalRootObservationV1<'_, '_, '_> {
         let preview = Q04PreviewV1::decode(&self.invocation.preview, nonce)?;
         let response = decode_root_create_q04_transfer_v1(
             &self.invocation.prehold_response, RootCreateQ04TransferKindV1::PreholdRecipe, nonce,
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         let response = Q04PreholdPublicationDataV1::decode(response, nonce)?;
         require_original_identity_data(self.identity, clock, nonce, &preview, &response)?;
         if self.invocation.root_phase(self.identity, 3)?.phase() != 7 {
@@ -291,27 +323,22 @@ fn require_original_identity_data(
     preview: &Q04PreviewV1<'_>,
     response: &Q04PreholdPublicationDataV1,
 ) -> Result<(), CreateQ04ErrorV1> {
-    let metadata = preview.fields()[0];
-    let cut = identity.bytes();
-    let reply = response.bytes();
-    if identity.nonce() != nonce
-        || cut[112..128] != original.host_boot_id()
-        || cut[128..136] != original.boottime_nanoseconds().to_be_bytes()
-        || cut[112..128] != metadata[..16]
-        || cut[144..160] != metadata[16..32]
-        || cut[168..200] != reply[128..160]
-        || cut[296..328] != reply[288..320]
-        || cut[328..392] != reply[320..384]
-        || cut[392..424] != reply[64..96]
-        || cut[520..584] != reply[160..224]
-        || cut[616..648] != reply[256..288]
-    {
+    let metadata = preview.fields()[0].get(..32).ok_or(CreateQ04ErrorV1::ChangedCut)?;
+    let metadata = metadata.try_into().map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
+    if !aos_sandbox_protocol::domain_ledger::create_q04_history::matches_original_q04_cut_context_data_v1(
+        identity, original, nonce, metadata, response,
+    ) {
         return Err(CreateQ04ErrorV1::ChangedCut);
     }
     Ok(())
 }
 
 impl OriginalQ04RootCacheLoanV1<'_, '_, '_> {
+    /// Borrows the same actual native continuation without another observation.
+    pub(crate) fn native_original_v1(&self) -> &aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootQ04CacheLoanV1<'_, '_, '_> {
+        &self.native
+    }
+
     pub(crate) fn identity(&self) -> &super::Q04CutIdentityV1 {
         self.identity
     }
@@ -331,13 +358,13 @@ impl OriginalQ04RootCacheLoanV1<'_, '_, '_> {
         &self,
         staged: StagedClosedPolicyRootBaseV2,
         proposed: &[u8],
-    ) -> Result<crate::cache_residency::CacheOwnerReadbackChallengeV1, CreateQ04ErrorV1> {
+    ) -> Result<CacheOwnerReadbackChallengeV1, CreateQ04ErrorV1> {
         self.recheck()?;
         if super::super::closed_policy_binding_digest_v2(proposed)? != self.identity.binding() {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
         let challenge = self.invocation.signing_challenge(staged, proposed)?;
-        let challenge = crate::cache_residency::CacheOwnerReadbackChallengeV1::new(
+        let challenge = CacheOwnerReadbackChallengeV1::new(
             challenge.nonce(), challenge.cut(),
         )?;
         self.recheck()?;
@@ -386,11 +413,10 @@ impl OriginalQ04RootCacheLoanV1<'_, '_, '_> {
             _ => None,
         };
         if let Some(index) = acknowledgement_index {
-            let actual = self.invocation.acknowledgements.get(index)
-                .ok_or(CreateQ04ErrorV1::ChangedCut)?;
-            if phase.acknowledgement().as_bytes()
-                != sha2::Sha256::digest(actual).as_slice()
-            {
+            let flight = self.invocation.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
+            let actual = flight.q04_sent_acknowledgement_digest_data_v1(index)
+                .map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
+            if phase.acknowledgement() != actual {
                 return Err(CreateQ04ErrorV1::ChangedCut);
             }
         }
@@ -478,8 +504,6 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             preparation_operation: None,
             resource_preparation: None,
             component_admission: None,
-            raw: None,
-            adopted: None,
             flight: None,
             received: None,
             hello: Vec::new(),
@@ -503,14 +527,17 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             claim: Vec::new(),
             claim_chunk: Vec::new(),
             decision_frame: Vec::new(),
-            acknowledgements: Vec::new(),
-            root_phase_frames: Vec::new(),
+            acknowledgement: Vec::new(),
+            accepted_acknowledgement_count: 0,
+            root_phase_frame: Vec::new(),
+            received_root_phase_count: 0,
             shutdown_observation: None,
             shutdown_byte: [0; 1],
             phase: Q04ClientPhaseV1::Prehold,
             first: None,
             postcheck_debt: None,
             cleared: false,
+            policy_sources_taken: false,
         }
     }
 
@@ -530,8 +557,11 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         &mut self,
         journal: &mut Journal,
         source: &mut ProtectedSourceDomainJournalOwnerV1,
-        bank: &std::sync::Arc<std::sync::Mutex<crate::controller_resource_reservation::ControllerResourceBankOpeningV1>>,
+        bank: &std::sync::Arc<std::sync::Mutex<crate::controller_resource_reservation::ControllerResourceBankOpeningV1,
+            >,
+        >,
         operation: aos_sandbox_core::OperationId,
+        cache: &mut crate::cache_residency::OriginalQ04CachePreflightLoanV1<'_>,
     ) -> Result<(), CreateQ04ErrorV1> {
         if self.flight.is_some() || self.resource_preparation.is_some() {
             return Err(CreateQ04ErrorV1::ChangedCut);
@@ -541,12 +571,26 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         self.resource_preparation = Some(crate::controller_resource_reservation::ProjectPreparationReservationAttemptV1::new());
         self.component_admission = Some(self.resource_preparation.as_mut()
             .ok_or(crate::controller_resource_reservation::ResourceReservationErrorV1::Conflict)
-            .and_then(|preparation| preparation.prepare_original_intake_once(journal, source, bank, self.profile))
-            .and_then(|()| crate::controller_resource_reservation::require_controller_interval(
+            .and_then(|preparation| {
+                    preparation.prepare_original_intake_once(journal, source, bank, self.profile, cache)
+                })
+            .and_then(|()| {
+                    crate::controller_resource_reservation::require_controller_interval(
                 bank, journal, self.profile,
-            )));
+            )
+                }));
         if matches!(self.component_admission, Some(Ok(()))) { Ok(()) }
         else { Err(CreateQ04ErrorV1::ChangedCut) }
+    }
+
+    pub(crate) fn begin_original_cache_capture<'cache>(
+        &self,
+        cache: crate::cache_residency::OriginalQ04CachePreflightLoanV1<'cache>,
+    ) -> Result<crate::cache_residency::OriginalQ04CacheOwnerCutV1<'cache>, crate::cache_residency::CacheResidentUnavailableV1,
+    > {
+        let paid = self.resource_preparation.as_ref()
+            .ok_or(crate::cache_residency::CacheResidentUnavailableV1)?;
+        cache.begin(paid, self.profile)
     }
 
     pub(crate) fn require_resource_preparation(&self) -> Result<(), CreateQ04ErrorV1> {
@@ -584,9 +628,27 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
 
     pub(crate) fn take_resource_preparation(
         &mut self,
-    ) -> Result<crate::controller_resource_reservation::ProjectPreparationReservationAttemptV1, CreateQ04ErrorV1> {
+    ) -> Result<crate::controller_resource_reservation::ProjectPreparationReservationAttemptV1, CreateQ04ErrorV1,
+    > {
         if !self.cleared { return Err(CreateQ04ErrorV1::ChangedCut); }
         self.resource_preparation.take().ok_or(CreateQ04ErrorV1::ChangedCut)
+    }
+
+    // Moves only the already-received historical bytes after the old exchange
+    // and all terminal posts have completed. No old observation loan escapes.
+    pub(crate) fn take_retained_create_policy_sources_once(
+        &mut self,
+    ) -> RetainedCreatePolicySourcesDataV1 {
+        let nonce = if self.policy_sources_taken || !self.cleared
+            || self.first.is_some() || self.postcheck_debt.is_some()
+        {
+            Err(CreateQ04ErrorV1::ChangedCut)
+        } else {
+            self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)
+                .map(|flight| flight.nonce())
+        };
+        self.policy_sources_taken = true;
+        RetainedCreatePolicySourcesDataV1::capture(std::mem::take(&mut self.preview), nonce)
     }
 
     pub(crate) fn resource_terminal_observation<'invocation, 'cut>(
@@ -594,7 +656,11 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         identity: &'cut super::Q04CutIdentityV1,
     ) -> Result<OriginalQ04FinalRootObservationV1<'invocation, 'profile, 'cut>, CreateQ04ErrorV1> {
         if !self.cleared { return Err(CreateQ04ErrorV1::ChangedCut); }
-        let original = OriginalQ04FinalRootObservationV1 { invocation: self, identity };
+        let original = OriginalQ04FinalRootObservationV1 {
+            invocation: self, identity,
+            native: self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?
+                .q04_final_observation_loan(identity),
+        };
         original.recheck()?;
         Ok(original)
     }
@@ -617,7 +683,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         controller.recheck_completed_source_ack(&acknowledged)?;
 
         OriginalRootGenesisFlightV1::connect_q04_parked(
-            self.profile, &mut self.raw, &mut self.adopted, &mut self.flight,
+            self.profile, &mut self.flight,
             &mut self.hello, &mut self.received,
         )?;
         let flight = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
@@ -634,7 +700,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             }
         }
         let prepare = self.prepare.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        self.sent = encode_root_source_genesis_frame_v2(RootSourceGenesisFrameKindV1::Prepare, nonce, prepare.as_ref())?;
+        self.sent = encode_root_source_genesis_frame_v2(RootSourceGenesisFrameKindV1::Prepare, nonce, prepare.as_ref()).map_err(project_source_genesis_wire_error_v1)?;
         flight.q04_send_original(&self.sent)?;
         flight.receive_q04_exact(
             ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1
@@ -692,7 +758,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             }
         }
         let complete = self.complete.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        self.sent = encode_root_source_genesis_frame_v2(RootSourceGenesisFrameKindV1::Complete, nonce, complete.as_ref())?;
+        self.sent = encode_root_source_genesis_frame_v2(RootSourceGenesisFrameKindV1::Complete, nonce, complete.as_ref()).map_err(project_source_genesis_wire_error_v1)?;
         flight.q04_send_original(&self.sent)?;
         flight.receive_q04_exact(
             ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + RootSourceGenesisFrameKindV1::Completed.payload_bytes(),
@@ -727,7 +793,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
                 },
             &mut self.source_frame, &mut self.received,
         )?;
-        decode_root_create_q04_transfer_v1(&self.source_frame, RootCreateQ04TransferKindV1::SourceObservation, nonce)?;
+        decode_root_create_q04_transfer_v1(&self.source_frame, RootCreateQ04TransferKindV1::SourceObservation, nonce).map_err(project_q04_wire_error_v1)?;
         completed.recheck()?;
         controller.recheck()?;
         source.require_fixed_named_writer_v1().map_err(SourceGenesisErrorV1::from)?;
@@ -837,9 +903,9 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         }
         let complete = self.refresh_complete.last().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         self.sent.clear();
-        super::super::source_genesis_root::encode_root_create_q04_transfer_v1(
+        genesis_wire::encode_root_create_q04_transfer_v1(
             &mut self.sent, RootCreateQ04TransferKindV1::SourceRefresh, nonce, complete.as_ref(),
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         flight.q04_send_original(&self.sent)?;
         let response = self.refresh_source_frames.last_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         if final_source_observation {
@@ -858,7 +924,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
                 response, &mut self.received,
             )?;
         }
-        decode_root_create_q04_transfer_v1(response, RootCreateQ04TransferKindV1::SourceObservation, nonce)?;
+        decode_root_create_q04_transfer_v1(response, RootCreateQ04TransferKindV1::SourceObservation, nonce).map_err(project_q04_wire_error_v1)?;
         if journal.q04_controller_refresh_bookend_v1(ledger, transitions)? != before {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
@@ -892,7 +958,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         )?;
         let original_index = decode_root_create_q04_transfer_v1(
             &self.preview_index_frame, RootCreateQ04TransferKindV1::PreviewIndex, nonce,
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         let (total, count) = preview_index_shape(original_index)?;
         for index in 0..count {
             let offset = usize::from(index).checked_mul(CLAIM_CHUNK_BYTES)
@@ -903,7 +969,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             flight.receive_q04_exact(length, &mut self.preview_chunk_frame, &mut self.received)?;
             let payload = decode_root_create_q04_transfer_v1(
                 &self.preview_chunk_frame, RootCreateQ04TransferKindV1::PreviewChunk, nonce,
-            )?;
+            ).map_err(project_q04_wire_error_v1)?;
             Q04PreviewChunkV1::decode(payload, original_index)?.append_to(&mut self.preview)?;
             flight.q04_original_clock()?;
             self.preview_chunk_frame.clear();
@@ -919,7 +985,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
         let flight = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        Q04PreviewV1::decode(&self.preview, flight.q04_nonce()?)
+        Q04PreviewV1::decode(&self.preview, flight.q04_nonce()?).map_err(Into::into)
     }
 
     // This is the pre-C1 compiler action, not a new Stage or a held-current
@@ -985,17 +1051,17 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
         let fields = preview.fields();
-        let inputs = super::super::PolicyDeploymentInputsV1 {
-            node: fields[3], site: fields[4], backend: fields[5], catalogs: fields[6],
+        let inputs = aos_sandbox_policy::signed_inputs::PolicyDeploymentInputsV1 {
+            node: fields[3],
+            site: fields[4],
+            backend: fields[5],
+            catalogs: fields[6],
         };
         let now = flight.q04_current_clock()?.wall_seconds();
-        let deployment_head = super::super::verify_policy_deployment_head_v1(
-            fields[2], &inputs, deployment_pin, now,
-        )?;
-        let deployment = super::super::decode_policy_deployment_sources_v1(&inputs, deployment_head)?;
-        let project = super::super::verify_signed_project_policy_source_v2(
-            fields[7], fields[8], project_pin, now,
-        )?;
+        let (project, deployment_head, deployment) =
+            super::super::root_signed_sources::verify_signed_project_input_data_v2(
+                fields[2], &inputs, fields[7], fields[8], deployment_pin, project_pin, now,
+            )?;
         if project.head().deployment_signer_generation() != staged.base().deployment_signer_generation()
             || project.head().project_signer_generation() != staged.base().project_signer_generation()
         {
@@ -1170,16 +1236,16 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let flight = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let nonce = flight.q04_nonce()?;
         self.sent.clear();
-        super::super::source_genesis_root::encode_root_create_q04_transfer_v1(
+        genesis_wire::encode_root_create_q04_transfer_v1(
             &mut self.sent, RootCreateQ04TransferKindV1::PreholdIndex, nonce, transfer.index_bytes(),
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         flight.q04_send_original(&self.sent)?;
         for index in 0..transfer.chunk_count() {
             transfer.encode_chunk(index, &mut self.prehold_chunk)?;
             self.sent.clear();
-            super::super::source_genesis_root::encode_root_create_q04_transfer_v1(
+            genesis_wire::encode_root_create_q04_transfer_v1(
                 &mut self.sent, RootCreateQ04TransferKindV1::PreholdChunk, nonce, &self.prehold_chunk,
-            )?;
+            ).map_err(project_q04_wire_error_v1)?;
             flight.q04_send_original(&self.sent)?;
             self.prehold_chunk.clear();
         }
@@ -1189,7 +1255,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         )?;
         let payload = decode_root_create_q04_transfer_v1(
             &self.prehold_response, RootCreateQ04TransferKindV1::PreholdRecipe, nonce,
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         let response = Q04PreholdPublicationDataV1::decode(payload, nonce)?;
         if response.request_digest() != request.digest() {
             return Err(CreateQ04ErrorV1::ChangedCut);
@@ -1206,7 +1272,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let nonce = flight.q04_nonce()?;
         let payload = decode_root_create_q04_transfer_v1(
             &self.prehold_response, RootCreateQ04TransferKindV1::PreholdRecipe, nonce,
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         Q04PreholdPublicationDataV1::decode(payload, nonce).map_err(CreateQ04ErrorV1::from)
     }
 
@@ -1228,7 +1294,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let complete = self.complete.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let source = decode_root_create_q04_transfer_v1(
             &self.source_frame, RootCreateQ04TransferKindV1::SourceObservation, nonce,
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         let precut = super::q04_original_precut_digest_v1(
             &request, &preview, complete.as_ref(), source,
             crate::journal::ProtectedJournalNamesV1::from_bytes(&reply[400..448])
@@ -1244,7 +1310,9 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let expected_claim_length = request.fields()[1..4].iter()
             .chain(preview.fields()[3..7].iter())
             .chain(std::iter::once(&preview.fields()[8]))
-            .try_fold(2504_usize + source.len(), |sum, field| sum.checked_add(field.len()).ok_or(CreateQ04ErrorV1::Bounds))?;
+            .try_fold(2504_usize + source.len(), |sum, field| {
+                sum.checked_add(field.len()).ok_or(CreateQ04ErrorV1::Bounds)
+            })?;
         if request.fields()[0] != prepared.metadata.as_slice()
             || request.fields()[4] != prepared.proposed.as_slice()
             || preview.staged()? != prepared.staged
@@ -1297,7 +1365,9 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         identity: &'cut super::Q04CutIdentityV1,
     ) -> Result<OriginalQ04RootCacheLoanV1<'invocation, 'profile, 'cut>, CreateQ04ErrorV1> {
         self.require_cache_terminal_original(identity)?;
-        Ok(OriginalQ04RootCacheLoanV1 { invocation: self, identity })
+        let native = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?
+            .q04_cache_loan(identity)?;
+        Ok(OriginalQ04RootCacheLoanV1 { invocation: self, identity, native })
     }
 
     fn require_cache_terminal_original(
@@ -1328,7 +1398,10 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             let first = transitions.first().ok_or(CreateQ04ErrorV1::ChangedCut)?;
             first.require_signing_binding(proposed)?;
             let challenge = self.signing_challenge(staged, proposed)?;
-            Ok(ControllerHoldReadbackChallengeV1::new(challenge.nonce(), challenge.cut())?)
+            Ok(
+                ControllerHoldReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
+                    .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)?,
+            )
         })();
         let challenge = match checked {
             Ok(challenge) => challenge,
@@ -1380,7 +1453,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let frame = self.refresh_source_frames.last().unwrap_or(&self.source_frame);
         let source = decode_root_create_q04_transfer_v1(
             frame, RootCreateQ04TransferKindV1::SourceObservation, flight.q04_nonce()?,
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         let current = self.controller_current.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let held = self.controller_hold.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         Ok((current.as_slice(), held.as_slice(), source))
@@ -1420,7 +1493,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let inputs = preview.fields();
         let rows = ledger.original_rows();
         let source_frame = self.refresh_source_frames.last().unwrap_or(&self.source_frame);
-        let source = decode_root_create_q04_transfer_v1(source_frame, RootCreateQ04TransferKindV1::SourceObservation, nonce)?;
+        let source = decode_root_create_q04_transfer_v1(source_frame, RootCreateQ04TransferKindV1::SourceObservation, nonce).map_err(project_q04_wire_error_v1)?;
         let controller = self.controller_current.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let held = self.controller_hold.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         super::encode_q04_claim_body_v1(&mut self.claim, [
@@ -1432,16 +1505,16 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let claim = super::Q04ClaimV1::decode(&self.claim, identity)?;
         let storage = super::Q04ClaimStorageRecipeV1::new(&claim, identity)?;
         self.sent.clear();
-        super::super::source_genesis_root::encode_root_create_q04_transfer_v1(
+        genesis_wire::encode_root_create_q04_transfer_v1(
             &mut self.sent, RootCreateQ04TransferKindV1::ClaimIndex, nonce, storage.index_bytes(),
-        )?;
+        ).map_err(project_q04_wire_error_v1)?;
         flight.q04_send_original(&self.sent)?;
         for index in 0..storage.chunk_count() {
             storage.encode_chunk(index, &mut self.claim_chunk)?;
             self.sent.clear();
-            super::super::source_genesis_root::encode_root_create_q04_transfer_v1(
+            genesis_wire::encode_root_create_q04_transfer_v1(
                 &mut self.sent, RootCreateQ04TransferKindV1::ClaimChunk, nonce, &self.claim_chunk,
-            )?;
+            ).map_err(project_q04_wire_error_v1)?;
             flight.q04_send_original(&self.sent)?;
             self.claim_chunk.clear();
         }
@@ -1463,7 +1536,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let flight = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         flight.receive_q04_exact(32 + super::DECISION_BYTES, &mut self.decision_frame, &mut self.received)?;
         let bytes = decode_root_create_q04_transfer_v1(&self.decision_frame,
-            RootCreateQ04TransferKindV1::Decision, flight.q04_nonce()?)?;
+            RootCreateQ04TransferKindV1::Decision, flight.q04_nonce()?).map_err(project_q04_wire_error_v1)?;
         let decision = super::Q04RootDecisionV1::decode(bytes, identity)?;
         let response = self.prehold_data()?;
         if decision.state_sequence() != u64::from_be_bytes(super::fixed(response.bytes(), 392))
@@ -1472,6 +1545,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
         self.require_cache_terminal_original(identity)?;
+        self.decision_frame.clear();
         self.phase = Q04ClientPhaseV1::Decided;
         Ok(())
     }
@@ -1479,9 +1553,8 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
     pub(crate) fn decision(&self, identity: &super::Q04CutIdentityV1) -> Result<super::Q04RootDecisionV1, CreateQ04ErrorV1> {
         self.require_cache_terminal_original(identity)?;
         let flight = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        let bytes = decode_root_create_q04_transfer_v1(&self.decision_frame,
-            RootCreateQ04TransferKindV1::Decision, flight.q04_nonce()?)?;
-        super::Q04RootDecisionV1::decode(bytes, identity).map_err(Into::into)
+        let bytes = flight.q04_received_decision_body_data_v1().map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
+        super::Q04RootDecisionV1::decode(&*bytes, identity).map_err(Into::into)
     }
 
     pub(crate) fn consumed_gate(
@@ -1532,39 +1605,36 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
                 Q04ClientPhaseV1::FinalClearance, RootCreateQ04TransferKindV1::ClearanceAcknowledgement, RootCreateQ04TransferKindV1::FinalClearance),
         };
         if self.first.is_some() || self.postcheck_debt.is_some() || self.phase != before
-            || self.acknowledgements.len() != index || self.root_phase_frames.len() != index
+            || self.accepted_acknowledgement_count != index || self.received_root_phase_count != index
             || packet.len() != kind.body_bytes() + 64
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
-        self.acknowledgements.try_reserve_exact(1)?;
-        self.acknowledgements.push(Vec::new());
-        let stored = self.acknowledgements.last_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        stored.try_reserve_exact(packet.len())?;
-        stored.extend_from_slice(packet);
+        if !self.acknowledgement.is_empty() { return Err(CreateQ04ErrorV1::ChangedCut); }
+        self.acknowledgement.try_reserve_exact(packet.len())?;
+        self.acknowledgement.extend_from_slice(packet);
         self.require_cache_terminal_original(identity)?;
-        self.root_phase_frames.try_reserve_exact(1)?;
-        self.root_phase_frames.push(Vec::new());
+        if !self.root_phase_frame.is_empty() { return Err(CreateQ04ErrorV1::ChangedCut); }
         let flight = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         self.sent.clear();
-        super::super::source_genesis_root::encode_root_create_q04_transfer_v1(
-            &mut self.sent, request, flight.q04_nonce()?, &self.acknowledgements[index],
-        )?;
+        genesis_wire::encode_root_create_q04_transfer_v1(
+            &mut self.sent, request, flight.q04_nonce()?, &self.acknowledgement,
+        ).map_err(project_q04_wire_error_v1)?;
         flight.q04_send_original(&self.sent)?;
         flight.receive_q04_exact(32 + super::PHASE_BYTES,
-            self.root_phase_frames.last_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?, &mut self.received)?;
+            &mut self.root_phase_frame, &mut self.received)?;
         let bytes = decode_root_create_q04_transfer_v1(
-            self.root_phase_frames.get(index).ok_or(CreateQ04ErrorV1::ChangedCut)?, response, identity.nonce(),
-        )?;
+            &self.root_phase_frame, response, identity.nonce(),
+        ).map_err(project_q04_wire_error_v1)?;
         let phase = super::Q04PhaseRecordV1::decode(super::Q04PhaseOwnerV1::Root, bytes, identity)?;
         let decision = self.decision(identity)?;
         let gate = super::root::root_consumed_gate_record(identity, &decision)?;
-        if phase.phase() != kind.phase() + 3 || phase.bytes()[96..128] != *decision.digest().as_bytes()
-            || phase.bytes()[128..160] != *gate.digest().as_bytes()
-            || phase.acknowledgement().as_bytes() != sha2::Sha256::digest(&self.acknowledgements[index]).as_slice()
-            || phase.native_transaction_id() != super::Q04TransactionOwnerV1::Root.transaction_id(
-                identity, phase.phase(), aos_sandbox_core::ObjectDigest::from_bytes(super::fixed(phase.bytes(), 64)),
-            )?
+        let acknowledgement = aos_sandbox_core::ObjectDigest::from_bytes(
+            sha2::Sha256::digest(&self.acknowledgement).into(),
+        );
+        if !aos_sandbox_protocol::domain_ledger::create_q04_history::matches_original_q04_root_phase_data_v1(
+            &phase, kind.phase() + 3, identity, &decision, &gate, acknowledgement, None,
+        )?
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
@@ -1572,6 +1642,12 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             phase.require_successor(&self.root_phase(identity, index - 1)?)?;
         }
         self.require_cache_terminal_original(identity)?;
+        self.received_root_phase_count = self.received_root_phase_count.checked_add(1)
+            .ok_or(CreateQ04ErrorV1::Bounds)?;
+        self.root_phase_frame.clear();
+        self.accepted_acknowledgement_count = self.accepted_acknowledgement_count.checked_add(1)
+            .ok_or(CreateQ04ErrorV1::Bounds)?;
+        self.acknowledgement.clear();
         self.phase = after;
         Ok(())
     }
@@ -1586,9 +1662,11 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
     ) -> Result<(), CreateQ04ErrorV1> {
         if self.first.is_some() || self.postcheck_debt.is_some()
             || !matches!(self.phase, Q04ClientPhaseV1::FinalClearance | Q04ClientPhaseV1::FinalObservation)
-            || transitions.len() != 8 || self.root_phase_frames.len() != 4
-            || transitions.iter().any(|transition| !std::ptr::eq(transition.ledger(), ledger)
-                || transition.identity() != identity)
+            || transitions.len() != 8 || self.received_root_phase_count != 4
+            || transitions.iter().any(|transition| {
+                !std::ptr::eq(transition.ledger(), ledger)
+                || transition.identity() != identity
+            })
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
@@ -1642,9 +1720,9 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
 
         let flight = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let nonce = flight.q04_terminal_nonce()?;
-        let floor_payload = super::super::source_genesis_root::decode_root_source_genesis_frame_v2(
+        let floor_payload = genesis_wire::decode_root_source_genesis_frame_v2(
             &self.floor_frame, RootSourceGenesisFrameKindV1::Anchored, nonce,
-        )?;
+        ).map_err(project_source_genesis_wire_error_v1)?;
         let floor = super::super::SourceHierarchyFloorRecordV1::from_record_bytes(floor_payload)?;
         let controller = hold_existing_completed_source_genesis_v2(journal, identity.project())?;
         let inventory = retained_tree_inventory_data_v1(source).map_err(SourceGenesisErrorV1::from)?;
@@ -1706,7 +1784,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             let returned = self.refresh_source_frames.last().ok_or(CreateQ04ErrorV1::ChangedCut)?;
             decode_root_create_q04_transfer_v1(
                 returned, RootCreateQ04TransferKindV1::SourceObservation, flight.q04_terminal_nonce()?,
-            )?;
+            ).map_err(project_q04_wire_error_v1)?;
             flight.q04_terminal_clock()?;
             Ok(())
         })();
@@ -1723,7 +1801,13 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         self.retain_result(checked)?;
         self.phase = Q04ClientPhaseV1::FinalObservation;
 
-        let original = OriginalQ04FinalRootObservationV1 { invocation: self, identity };
+        let native = match self.flight.as_ref() {
+            Some(flight) => flight.q04_final_observation_loan(identity),
+            None => return self.retain_result(Err(CreateQ04ErrorV1::ChangedCut)),
+        };
+        let original = OriginalQ04FinalRootObservationV1 {
+            invocation: self, identity, native,
+        };
         cache.finish_original_clearance(cache_recipes, &original)?;
         let checked = (|| {
             source.journal().readback_source_q04_original_v1(source_recipes, 3)?;
@@ -1737,17 +1821,10 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
     }
 
     fn root_phase(&self, identity: &super::Q04CutIdentityV1, index: usize) -> Result<super::Q04PhaseRecordV1, CreateQ04ErrorV1> {
-        let response = match index {
-            0 => RootCreateQ04TransferKindV1::PolicyAccepted,
-            1 => RootCreateQ04TransferKindV1::ReleaseAuthorized,
-            2 => RootCreateQ04TransferKindV1::Settled,
-            3 => RootCreateQ04TransferKindV1::FinalClearance,
-            _ => return Err(CreateQ04ErrorV1::ChangedCut),
-        };
-        let bytes = decode_root_create_q04_transfer_v1(
-            self.root_phase_frames.get(index).ok_or(CreateQ04ErrorV1::ChangedCut)?, response, identity.nonce(),
-        )?;
-        super::Q04PhaseRecordV1::decode(super::Q04PhaseOwnerV1::Root, bytes, identity).map_err(Into::into)
+        if index >= self.received_root_phase_count { return Err(CreateQ04ErrorV1::ChangedCut); }
+        let flight = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        let bytes = flight.q04_received_phase_body_data_v1(index).map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
+        super::Q04PhaseRecordV1::decode(super::Q04PhaseOwnerV1::Root, &*bytes, identity).map_err(Into::into)
     }
 
     pub(crate) fn first_cause(&self) -> Option<&CreateQ04ErrorV1> {

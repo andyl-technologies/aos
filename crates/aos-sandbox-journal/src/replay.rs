@@ -162,6 +162,11 @@ impl NativeReplayBookkeeping {
         Ok(())
     }
 
+    /// Borrows the recorded identity set as nonauthorizing bookkeeping DATA.
+    pub fn transaction_ids(&self) -> &BTreeSet<[u8; 16]> {
+        &self.transaction_ids
+    }
+
     /// Moves the original ID set out, leaving an empty set in its place.
     ///
     /// This handoff does not reconstruct or clone identities and conveys no

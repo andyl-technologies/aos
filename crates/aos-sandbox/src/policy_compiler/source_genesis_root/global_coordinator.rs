@@ -6,6 +6,10 @@
 //! engine while the genuine Completed Root and Source ACK loans remain held.
 //! A completion digest is provenance, not a paid operation permit.
 
+use aos_sandbox_protocol::source_genesis_wire as genesis_wire;
+
+use aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootReceivedChunkV1 as RootReceivedChunkV1;
+
 use aos_sandbox_core::ObjectDigest;
 use ed25519_dalek::SigningKey;
 
@@ -19,11 +23,11 @@ use crate::hierarchy::protected_journal::retained_tree_inventory_data_v1;
 use crate::hierarchy::source_genesis::{
     observe_retained_source_genesis_v1, observe_source_genesis_attempt_v1,
 };
-use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
 use super::flight::{OriginalRootGenesisFlightV1, OriginalRootGenesisOpeningClockV2};
-use super::wire::RootSourceGenesisFrameKindV1 as Phase;
+use aos_sandbox_protocol::source_genesis_wire::RootSourceGenesisFrameKindV1 as Phase;
 
 /// Parks the real configured pair and writers before the existing signer callback.
 ///
@@ -39,9 +43,8 @@ pub struct OriginalConfiguredGlobalGenesisInvocationV2<'writers, 'profile> {
     controller: Option<Result<
         crate::hierarchy::controller_genesis::HeldControllerSourceGenesisV1<'writers>,
         ControllerSourceGenesisInputErrorV1,
-    >>,
-    raw: Option<std::os::fd::OwnedFd>,
-    adopted: Option<aos_sandbox_linux::unix_stream::RetainedUnixStream>,
+    >,
+    >,
     flight: Option<OriginalRootGenesisFlightV1<'profile>>,
     opening_clock: OriginalRootGenesisOpeningClockV2,
     negative_clock: Option<Result<aos_sandbox_core::RawPairedClockSample, SourceGenesisErrorV1>>,
@@ -49,14 +52,15 @@ pub struct OriginalConfiguredGlobalGenesisInvocationV2<'writers, 'profile> {
 
     hello: Vec<u8>,
     hello_received: Option<Result<
-        aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk,
+            RootReceivedChunkV1,
         aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1,
-    >>,
+    >,
+    >,
     connection: Option<Result<(), SourceGenesisErrorV1>>,
     signatures: [Option<Result<
         super::controller_readback::ControllerGenesisReadbackPacketV2,
-        SourceGenesisErrorV1,
-    >>; 3],
+        SourceGenesisErrorV1>,
+    >; 3],
     signature_posts: [Vec<Result<(), SourceGenesisErrorV1>>; 3],
     io: [super::flight::ProjectGenesisFlightIoV3; 8],
     append: crate::hierarchy::source_genesis::SourceProjectGenesisMutationV3,
@@ -66,9 +70,12 @@ pub struct OriginalConfiguredGlobalGenesisInvocationV2<'writers, 'profile> {
 
     resource_bank: Option<std::sync::Arc<std::sync::Mutex<
         crate::controller_resource_reservation::ControllerResourceBankOpeningV1,
-    >>>,
+    >,
+        >,
+    >,
     resource_grant: crate::controller_resource_reservation::ProjectResourceGrantAttemptV1,
-    prefix: Option<crate::controller_resource_reservation::service_interval::FirstGlobalPrefixLoan<'writers>>,
+    prefix: Option<crate::controller_resource_reservation::service_interval::FirstGlobalPrefixLoan<'writers>,
+    >,
     prefix_admission: Option<Result<(), crate::ResourceReservationErrorV1>>,
     prefix_duplicate: Option<crate::ResourceReservationErrorV1>,
 
@@ -114,7 +121,8 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
     // These are DATA extents of the entered fixed family, not an admission
     // constructor. The bank joins them before this owner or its buffers exist.
     pub(crate) fn first_global_allocation_shape(
-    ) -> Result<crate::controller_resource_reservation::service_interval::GlobalShape, SourceGenesisErrorV1> {
+    ) -> Result<crate::controller_resource_reservation::service_interval::GlobalShape, SourceGenesisErrorV1,
+    > {
         let phases = [
             Phase::Prepare,
             Phase::Prepared,
@@ -125,7 +133,7 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
             Phase::Finish,
             Phase::Finish,
         ];
-        let header = super::wire::ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1;
+        let header = genesis_wire::ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1;
         let mut wire_bytes = 32_usize.checked_add(56)
             .ok_or(SourceGenesisErrorV1::NonCanonical)?;
         let mut largest_payload = 0;
@@ -143,6 +151,7 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
         let retained_bytes = std::mem::size_of::<Self>()
             .checked_add(wire_bytes.checked_mul(3).ok_or(SourceGenesisErrorV1::NonCanonical)?)
             .and_then(|bytes| bytes.checked_add(packet_bytes.checked_mul(2)?))
+            .and_then(|bytes| bytes.checked_add(OriginalRootGenesisFlightV1::additional_control_bytes_v1()?))
             .ok_or(SourceGenesisErrorV1::NonCanonical)?;
         Ok(crate::controller_resource_reservation::service_interval::GlobalShape {
             retained_bytes,
@@ -172,7 +181,9 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
         profile: &'profile ProductionControllerNormalRootProfileV1,
         bank: Option<std::sync::Arc<std::sync::Mutex<
             crate::controller_resource_reservation::ControllerResourceBankOpeningV1,
-        >>>,
+        >,
+            >,
+        >,
     ) -> Self {
         let mut original = Self::park(journal, source, input, profile);
         original.resource_bank = bank;
@@ -191,8 +202,6 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
             input,
             profile,
             controller: None,
-            raw: None,
-            adopted: None,
             flight: None,
             hello: Vec::new(),
             hello_received: None,
@@ -253,8 +262,9 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
             self.journal.as_deref(),
             self.source.as_deref_mut(),
         ) {
-            (Some(bank), Some(controller), Some(source)) =>
-                original.borrow_for(bank, controller, source, self.profile),
+            (Some(bank), Some(controller), Some(source)) => {
+                original.borrow_for(bank, controller, source, self.profile)
+            }
             _ => Err(crate::ResourceReservationErrorV1::EnrollmentUnavailable),
         };
         self.prefix_admission = Some(match borrowed {
@@ -429,8 +439,6 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
         self.connection = Some(OriginalRootGenesisFlightV1::connect_global_genesis_parked_v2(
             self.profile,
             &mut self.opening_clock,
-            &mut self.raw,
-            &mut self.adopted,
             &mut self.flight,
             &mut self.hello,
             &mut self.hello_received,
@@ -716,8 +724,7 @@ impl<'writers, 'profile> OriginalConfiguredGlobalGenesisInvocationV2<'writers, '
         mut self,
     ) -> Result<
         ObjectDigest,
-        FailedConfiguredGlobalGenesisInvocationV2<'writers, 'profile>,
-    > {
+        FailedConfiguredGlobalGenesisInvocationV2<'writers, 'profile>> {
         if self.first_failure.is_none() {
             if let Some(Ok(digest)) = &self.action {
                 let digest = *digest;
@@ -734,12 +741,15 @@ fn signature_failure_site_v2(
     site: super::controller_readback::ProjectGenesisSignatureFailureV3,
 ) -> ConfiguredGlobalGenesisSiteV2 {
     match site {
-        super::controller_readback::ProjectGenesisSignatureFailureV3::Signature =>
-            ConfiguredGlobalGenesisSiteV2::Signature(index),
-        super::controller_readback::ProjectGenesisSignatureFailureV3::Post(post) =>
-            ConfiguredGlobalGenesisSiteV2::SignaturePost(index, post),
-        super::controller_readback::ProjectGenesisSignatureFailureV3::Refused =>
-            ConfiguredGlobalGenesisSiteV2::Action,
+        super::controller_readback::ProjectGenesisSignatureFailureV3::Signature => {
+            ConfiguredGlobalGenesisSiteV2::Signature(index)
+        }
+        super::controller_readback::ProjectGenesisSignatureFailureV3::Post(post) => {
+            ConfiguredGlobalGenesisSiteV2::SignaturePost(index, post)
+        }
+        super::controller_readback::ProjectGenesisSignatureFailureV3::Refused => {
+            ConfiguredGlobalGenesisSiteV2::Action
+        }
     }
 }
 
@@ -748,12 +758,13 @@ impl FailedConfiguredGlobalGenesisInvocationV2<'_, '_> {
     pub fn first_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
         let original = &self.original;
         match original.first_failure? {
-            ConfiguredGlobalGenesisSiteV2::Action =>
+            ConfiguredGlobalGenesisSiteV2::Action => {
                 original.action
                     .as_ref()?
                     .as_ref()
                     .err()
-                    .map(|e| e as _),
+                    .map(|e| e as _)
+            }
             ConfiguredGlobalGenesisSiteV2::Signer =>
                 original.signer_admission
                     .as_ref()?
@@ -770,19 +781,18 @@ impl FailedConfiguredGlobalGenesisInvocationV2<'_, '_> {
                             .and_then(|r| r.as_ref().err())
                             .map(|e| e as _)
                     })
-                    .or_else(|| {
-                        original.connection
+                    .or_else(|| original.connection
                             .as_ref()?
                             .as_ref()
                             .err()
-                            .map(|e| e as _)
-                    }),
-            ConfiguredGlobalGenesisSiteV2::Controller =>
+                            .map(|e| e as _)),
+            ConfiguredGlobalGenesisSiteV2::Controller => {
                 original.controller
                     .as_ref()?
                     .as_ref()
                     .err()
-                    .map(|e| e as _),
+                    .map(|e| e as _)
+            }
             ConfiguredGlobalGenesisSiteV2::Signature(index) =>
                 original.signatures
                     .get(index)?
@@ -811,8 +821,9 @@ impl FailedConfiguredGlobalGenesisInvocationV2<'_, '_> {
                 original.resource_grant.error(),
             ConfiguredGlobalGenesisSiteV2::Prefix =>
                 original.prefix_admission.as_ref()?.as_ref().err().map(|error| error as _),
-            ConfiguredGlobalGenesisSiteV2::PrefixDuplicate =>
-                original.prefix_duplicate.as_ref().map(|error| error as _),
+            ConfiguredGlobalGenesisSiteV2::PrefixDuplicate => {
+                original.prefix_duplicate.as_ref().map(|error| error as _)
+            }
             ConfiguredGlobalGenesisSiteV2::OwnerPost(index) =>
                 original.owner_posts
                     .get(index)?

@@ -30,9 +30,63 @@ use super::request::{
     PublicSandboxRequestDataV1,
 };
 
+mod execution_receiving;
+pub use execution_receiving::create_execution_model_receiving_bytes_v2;
+
 const MAGIC: &[u8; 8] = b"AOSPMR01";
 const HEADER_BYTES: usize = MAGIC.len() + 2 + 4;
 const MAXIMUM_PROTOBUF_BODY_BYTES: usize = 64 * 1024;
+
+/// Borrows exact canonical mutation framing without decoding or allocating its body.
+///
+/// This projection carries input DATA only. It supplies no peer, protected
+/// authorization, receiving original, clock or effect permission.
+#[derive(Clone, Copy, Debug)]
+pub struct PublicMutationEnvelopeDataV1<'input> {
+    method: PublicApiAuditMethodV1,
+    protobuf_body: &'input [u8],
+}
+
+impl<'input> PublicMutationEnvelopeDataV1<'input> {
+    /// Checks the sole canonical envelope framing and bounded method/body DATA.
+    ///
+    /// # Errors
+    /// Rejects invalid magic, method, lengths, empty/oversized body or trailing bytes.
+    pub fn decode_v1(encoded: &'input [u8]) -> Result<Self, PublicMutationRequestError> {
+        let header = encoded
+            .get(..HEADER_BYTES)
+            .ok_or(PublicMutationRequestError::MalformedEnvelope)?;
+        if header.get(..MAGIC.len()) != Some(MAGIC.as_slice()) {
+            return Err(PublicMutationRequestError::MalformedEnvelope);
+        }
+        let method_bytes: [u8; 2] = header[MAGIC.len()..MAGIC.len() + 2]
+            .try_into()
+            .map_err(|_| PublicMutationRequestError::MalformedEnvelope)?;
+        let length_bytes: [u8; 4] = header[MAGIC.len() + 2..HEADER_BYTES]
+            .try_into()
+            .map_err(|_| PublicMutationRequestError::MalformedEnvelope)?;
+        let body_length = usize::try_from(u32::from_be_bytes(length_bytes))
+            .map_err(|_| PublicMutationRequestError::MalformedEnvelope)?;
+        let protobuf_body = encoded
+            .get(HEADER_BYTES..)
+            .filter(|body| body.len() == body_length)
+            .ok_or(PublicMutationRequestError::MalformedEnvelope)?;
+
+        let method = mutation_method(u16::from_be_bytes(method_bytes))?;
+        if protobuf_body.is_empty() || protobuf_body.len() > MAXIMUM_PROTOBUF_BODY_BYTES {
+            return Err(PublicMutationRequestError::InvalidBody);
+        }
+        Ok(Self { method, protobuf_body })
+    }
+}
+
+impl<'input> PublicMutationEnvelopeDataV1<'input> {
+    /// Returns the historical method selected by the canonical envelope.
+    pub const fn method_v1(self) -> PublicApiAuditMethodV1 { self.method }
+
+    /// Borrows the unchanged protobuf body without method-shape validation.
+    pub const fn protobuf_body_v1(self) -> &'input [u8] { self.protobuf_body }
+}
 
 /// Carries one mutation RPC method and its exact received protobuf body.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,29 +126,8 @@ impl PublicMutationRequestV1 {
     /// Returns [`PublicMutationRequestError`] for an invalid magic, method,
     /// length, body bound, or trailing bytes.
     pub fn decode(encoded: &[u8]) -> Result<Self, PublicMutationRequestError> {
-        let header = encoded
-            .get(..HEADER_BYTES)
-            .ok_or(PublicMutationRequestError::MalformedEnvelope)?;
-        if header.get(..MAGIC.len()) != Some(MAGIC.as_slice()) {
-            return Err(PublicMutationRequestError::MalformedEnvelope);
-        }
-        let method_bytes: [u8; 2] = header[MAGIC.len()..MAGIC.len() + 2]
-            .try_into()
-            .map_err(|_| PublicMutationRequestError::MalformedEnvelope)?;
-        let length_bytes: [u8; 4] = header[MAGIC.len() + 2..HEADER_BYTES]
-            .try_into()
-            .map_err(|_| PublicMutationRequestError::MalformedEnvelope)?;
-        let body_length = usize::try_from(u32::from_be_bytes(length_bytes))
-            .map_err(|_| PublicMutationRequestError::MalformedEnvelope)?;
-        let protobuf_body = encoded
-            .get(HEADER_BYTES..)
-            .filter(|body| body.len() == body_length)
-            .ok_or(PublicMutationRequestError::MalformedEnvelope)?;
-
-        Self::new(
-            mutation_method(u16::from_be_bytes(method_bytes))?,
-            protobuf_body,
-        )
+        let envelope = PublicMutationEnvelopeDataV1::decode_v1(encoded)?;
+        Self::new(envelope.method_v1(), envelope.protobuf_body_v1())
     }
 
     /// Encodes the canonical envelope without changing the protobuf body.
@@ -327,6 +360,45 @@ impl ResolvedPublicMutationRequestV1 {
         capability_id: Option<CapabilityId>,
     ) -> Result<Self, PublicMutationResolutionErrorV1> {
         let envelope = PublicMutationRequestV1::decode(encoded)?;
+        Self::from_envelope(envelope, capability_id)
+    }
+
+    /// Resolves only Delete through the ordinary envelope and body validator.
+    ///
+    /// The family check precedes protobuf decoding, so a Delete-funded bounded
+    /// receiver never grows another method's model. This supplies DATA only.
+    ///
+    /// # Errors
+    /// Rejects a different method or the same malformed envelope/body/semantics
+    /// as ordinary mutation resolution. It authenticates no request or payer.
+    pub fn decode_delete(encoded: &[u8]) -> Result<Self, PublicMutationResolutionErrorV1> {
+        let envelope = PublicMutationRequestV1::decode(encoded)?;
+        if envelope.method() != PublicApiAuditMethodV1::DeleteSandbox {
+            return Err(PublicMutationRequestError::InvalidBody.into());
+        }
+        Self::from_envelope(envelope, None)
+    }
+
+    /// Resolves only Execution Create through the sole body/endpoint validator.
+    ///
+    /// The closed family check precedes protobuf allocation. This is comparison
+    /// DATA; current authorization and the genuine C18 owner remain separate.
+    ///
+    /// # Errors
+    /// Rejects another method or the same framing, canonical body, field,
+    /// feature, holder-key shape and concurrency-fence errors as ordinary decode.
+    pub fn decode_execution_v2(encoded: &[u8]) -> Result<Self, PublicMutationResolutionErrorV1> {
+        let envelope = PublicMutationRequestV1::decode(encoded)?;
+        if envelope.method() != PublicApiAuditMethodV1::CreateExecution {
+            return Err(PublicMutationRequestError::InvalidBody.into());
+        }
+        Self::from_envelope(envelope, None)
+    }
+
+    fn from_envelope(
+        envelope: PublicMutationRequestV1,
+        capability_id: Option<CapabilityId>,
+    ) -> Result<Self, PublicMutationResolutionErrorV1> {
         let method = envelope.method();
         let protobuf_body = envelope.protobuf_body().to_vec();
         let request = envelope.decode_validated_kind()?;
@@ -776,4 +848,100 @@ pub fn object_descriptor(
         ObjectDigest::from_bytes(digest),
         value.encoded_size,
     ))
+}
+
+
+#[cfg(test)]
+mod delete_resolution_tests {
+    use super::*;
+    use buffa::Message as _;
+
+    fn mutation() -> wire::MutationContext {
+        wire::MutationContext {
+            idempotency_key: vec![2; 16],
+            expected_resource_version: vec![3; 32],
+            operation_timeout: Some(wire::Duration {
+                nanoseconds: 1, ..Default::default()
+            }).into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn delete_selected_decoder_preserves_the_original_canonical_semantics() {
+        let body = wire::DeleteSandboxRequest {
+            sandbox_id: vec![1; 16],
+            expected_plan_digest: vec![4; 32],
+            mutation: Some(mutation()).into(),
+            ..Default::default()
+        }.encode_to_vec();
+        let encoded = PublicMutationRequestV1::new(
+            PublicApiAuditMethodV1::DeleteSandbox, &body,
+        ).unwrap().encode();
+
+        let ordinary = ResolvedPublicMutationRequestV1::decode(&encoded).unwrap();
+        let selected = ResolvedPublicMutationRequestV1::decode_delete(&encoded).unwrap();
+
+        assert_eq!(ordinary, selected);
+        assert_eq!(selected.protobuf_body(), body);
+    }
+
+    #[test]
+    fn valid_stop_does_not_enter_the_delete_selected_body_family() {
+        let body = wire::SandboxLifecycleRequest {
+            sandbox_id: vec![1; 16],
+            mutation: Some(wire::MutationContext {
+                expected_incarnation_id: vec![5; 16],
+                ..mutation()
+            }).into(),
+            ..Default::default()
+        }.encode_to_vec();
+        let encoded = PublicMutationRequestV1::new(
+            PublicApiAuditMethodV1::StopSandbox, &body,
+        ).unwrap().encode();
+
+        assert!(ResolvedPublicMutationRequestV1::decode(&encoded).is_ok());
+        assert_eq!(ResolvedPublicMutationRequestV1::decode_delete(&encoded),
+            Err(PublicMutationResolutionErrorV1::Malformed));
+    }
+}
+
+#[cfg(test)]
+mod borrowed_envelope_tests {
+    use super::*;
+
+    #[test]
+    fn closed_method_selection_borrows_the_original_body() {
+        for method in [PublicApiAuditMethodV1::StartSandbox, PublicApiAuditMethodV1::OperatorRecover] {
+            let bytes = PublicMutationRequestV1::new(method, &[8, 1]).unwrap().encode();
+            let borrowed = PublicMutationEnvelopeDataV1::decode_v1(&bytes).unwrap();
+            let owned = PublicMutationRequestV1::decode(&bytes).unwrap();
+
+            assert_eq!(borrowed.method_v1(), owned.method());
+            assert_eq!(borrowed.protobuf_body_v1(), owned.protobuf_body());
+            assert_eq!(borrowed.protobuf_body_v1().as_ptr(), bytes[HEADER_BYTES..].as_ptr());
+            assert!(owned.decode_validated_kind().is_err());
+        }
+    }
+
+    #[test]
+    fn malformed_framing_retains_the_owned_decoders_exact_refusal() {
+        let valid = PublicMutationRequestV1::new(PublicApiAuditMethodV1::StartSandbox, &[8, 1])
+            .unwrap().encode();
+        let mut trailing = valid.clone();
+        trailing.push(0);
+        let mut unsupported = valid.clone();
+        unsupported[8..10].copy_from_slice(&u16::MAX.to_be_bytes());
+        let mut empty = valid[..HEADER_BYTES].to_vec();
+        empty[10..14].copy_from_slice(&0_u32.to_be_bytes());
+        let mut oversized = valid[..HEADER_BYTES].to_vec();
+        oversized[10..14].copy_from_slice(&u32::try_from(MAXIMUM_PROTOBUF_BODY_BYTES + 1).unwrap().to_be_bytes());
+        oversized.resize(HEADER_BYTES + MAXIMUM_PROTOBUF_BODY_BYTES + 1, 1);
+
+        for malformed in [valid[..13].to_vec(), trailing, unsupported, empty, oversized] {
+            assert_eq!(PublicMutationEnvelopeDataV1::decode_v1(&malformed).map(|_| ()),
+                PublicMutationRequestV1::decode(&malformed).map(|_| ()));
+            assert!(PublicMutationRequestV1::decode(&malformed).is_err());
+        }
+    }
 }

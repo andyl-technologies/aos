@@ -9,7 +9,7 @@ use aos_sandbox_core::{ObjectDigest, ProjectId};
 
 use crate::hierarchy::controller_genesis::HeldControllerSourceGenesisV1;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
-use crate::hierarchy::graph::SandboxTreeV1;
+use aos_sandbox_ledger_replay::hierarchy::graph::SandboxTreeV1;
 use crate::hierarchy::protected_journal::RetainedTreeInventoryDataV1;
 use crate::hierarchy::source_genesis::HeldSourceTreeGenesisObservationV1;
 use crate::policy_compiler::source_genesis_root::CompletedRootSourceGenesisFloorV1;

@@ -461,7 +461,7 @@ fn recovery_required<'lifecycle>(
     LifecycleRuntimeEffectProgressV1::RecoveryRequired(LifecycleRuntimeEffectRecoveryV1 { stage })
 }
 
-fn inventory_envelope(coordinates: DormantBrokerRequestCoordinatesV1) -> BrokerRequestEnvelope {
+pub(super) fn inventory_envelope(coordinates: DormantBrokerRequestCoordinatesV1) -> BrokerRequestEnvelope {
     let version = coordinates.protocol_version();
     let header = Some(RequestHeader {
         protocol_major: version.major().into(),

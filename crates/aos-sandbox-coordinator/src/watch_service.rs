@@ -11,8 +11,10 @@ use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use aos_sandbox::local_inventory::{
-    CanonicalNodeSemanticCodecV1, InvalidMultiNodeProtocol, MAX_WATCH_EVENTS, NodeWatchBindingV1,
-    NodeWatchBootstrapV1, NodeWatchCursorV1, NodeWatchEventBodyV1, NodeWatchEventV1,
+    CanonicalNodeSemanticCodecV1, NodeWatchBootstrapV1, NodeWatchEventBodyV1, NodeWatchEventV1,
+};
+use aos_sandbox_core::{
+    InvalidMultiNodeProtocol, MAX_WATCH_EVENTS, NodeWatchBindingV1, NodeWatchCursorV1,
     stable_watch_event_uid,
 };
 
@@ -395,7 +397,7 @@ fn validate_generated_batch(
 ) -> Result<(), InvalidMultiNodeProtocol> {
     if batch.compute_size(&mut buffa::SizeCache::new()) == 0
         || batch.compute_size(&mut buffa::SizeCache::new())
-            > aos_sandbox::local_inventory::MAX_NODE_RESPONSE_BYTES
+            > aos_sandbox_core::MAX_NODE_RESPONSE_BYTES
         || (batch.resync_binding.is_set()
             && (!batch.events.is_empty() || batch.next_cursor.is_set()))
         || (batch.resync_binding.is_unset() && batch.next_cursor.is_unset())

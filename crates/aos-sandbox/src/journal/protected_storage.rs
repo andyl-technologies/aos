@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{self, Seek as _, SeekFrom};
+use std::io;
 use std::os::fd::{AsFd as _, BorrowedFd};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -22,17 +22,22 @@ use rustix::fs::{OFlags, fcntl_getfl};
 #[cfg(target_os = "linux")]
 use super::runtime_deployment_history;
 use super::{
-    Journal, JournalError, JournalLimits, RecordNamespace, ReplayState, replay, write_compacted,
+    Journal, JournalError, JournalLimits, RecordNamespace,
 };
 
 mod opening;
+mod ordinary_readonly;
+mod readonly_names;
+mod currentness;
+pub use currentness::ProtectedJournalCurrentnessOriginalsV1;
+
+use readonly_names::ReadonlyNameArchiveV1;
 
 pub(crate) use opening::{
-    ControllerJournalOpenOriginalsV1, ProtectedWriterOpenOriginalsV1,
+    ProtectedWriterOpenOriginalsV1,
     ReadOnlyJournalOpenOriginalsV1,
 };
-#[cfg(test)]
-pub(super) use opening::{ProtectedJournalOpenMode, ProtectedOwnerPolicy};
+pub(super) use opening::{STORAGE_OPERATOR_JOURNAL_NAME, STORAGE_OPERATOR_STATE_DIRECTORY};
 
 pub(super) use aos_sandbox_journal::protected_storage::{
     FileIdentity, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
@@ -132,6 +137,7 @@ fn names_from_identities(
 pub(crate) struct ReadOnlyProtectedJournal {
     pub(super) journal: Journal,
     pub(super) witness: ReadOnlyJournalNameWitness,
+    named_receiving: Option<ReadonlyNameArchiveV1>,
 }
 
 /// Keeps the original role-private read-only witness API over physical custody.
@@ -147,11 +153,17 @@ impl ReadOnlyProtectedJournal {
 
     /// Re-resolves the directory and both physical names independently.
     pub(crate) fn check_named_currentness(&self) -> Result<(), JournalError> {
+        if let Some(archive) = &self.named_receiving {
+            return archive.observe(&self.witness, self.journal.native.ordinary_readonly_held_v1()?);
+        }
         self.witness.check_named_currentness()?;
-        self.witness
-            .physical
-            .require_file_identity::<JournalError>(self.journal.native.file())?;
+        self.journal.native.ordinary_readonly_held_v1()?
+            .require_readonly_identity_v1::<JournalError>(&self.witness.physical)?;
         Ok(())
+    }
+
+    pub(in crate::journal) fn named_receiving_failure(&self, index: u8) -> Option<&JournalError> {
+        self.named_receiving.as_ref()?.failure_at(index)
     }
 
     /// Returns only the fixed names observed by this read-only replay.
@@ -164,9 +176,8 @@ impl ReadOnlyProtectedJournal {
     /// Checks the retained name using the test fixture's exact UID.
     pub(crate) fn check_named_currentness_at_uid_for_test(&self) -> Result<(), JournalError> {
         self.witness.check_named_currentness_at_uid_for_test()?;
-        self.witness
-            .physical
-            .require_file_identity::<JournalError>(self.journal.native.file())?;
+        self.journal.native.ordinary_readonly_held_v1()?
+            .require_readonly_identity_v1::<JournalError>(&self.witness.physical)?;
         Ok(())
     }
 
@@ -210,9 +221,23 @@ impl Journal {
         expected_uid: u32,
         limits: JournalLimits,
     ) -> Result<(), JournalError> {
+        self.require_protected_location_with_originals(directory, name, expected_uid, limits, None)
+    }
+
+    fn require_protected_location_with_originals(
+        &self, directory: &Path, name: &str, expected_uid: u32, limits: JournalLimits,
+        originals: Option<&mut ProtectedJournalCurrentnessOriginalsV1>,
+    ) -> Result<(), JournalError> {
+        self.require_protected_location_engine_v6(directory, name, expected_uid, limits, originals, None)
+    }
+
+    fn require_protected_location_engine_v6(
+        &self, directory: &Path, name: &str, expected_uid: u32, limits: JournalLimits,
+        originals: Option<&mut ProtectedJournalCurrentnessOriginalsV1>,
+        shared: Option<&ProtectedJournalCurrentnessOriginalsV1>,
+    ) -> Result<(), JournalError> {
         let retained = self
-            .protected
-            .as_ref()
+            .native.protected_view()
             .ok_or(JournalError::ProtectedBoundary)?;
         if retained.name() != name
             || retained.expected_uid() != expected_uid
@@ -221,10 +246,35 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
 
-        // Keep the independent current description through the health bookend.
-        let _current = retained.require_directory::<JournalError>(directory, expected_uid)?;
+        #[cfg(target_os = "linux")]
+        if originals.is_none() {
+            if let super::native_backing::JournalNativeBackingV1::Ordinary(ordinary) = &self.native {
+                if let Some(owner) = ordinary.captured_append.as_ref() {
+                    return owner.observe_guard_v1(self.native.read_view(),
+                        super::native_interval::captured::CapturedGuardRecipeV1::Directory(directory, expected_uid));
+                }
+            }
+        }
 
-        self.ensure_healthy()
+        // Keep the independent current description through the health bookend.
+        match originals {
+            Some(originals) => {
+                if let Some(shared) = shared {
+                    self.native.read_view().observe_shared_directory_binding_into_v6(
+                        directory, expected_uid, originals, shared,
+                    )?;
+                } else {
+                    self.native.read_view().observe_directory_binding_into(
+                        directory, expected_uid, originals,
+                    )?;
+                }
+                self.ensure_healthy()
+            }
+            None => {
+                let _current = retained.require_directory::<JournalError>(directory, expected_uid)?;
+                self.ensure_healthy()
+            }
+        }
     }
 
     /// Rechecks the fixed directory and both names against this retained writer.
@@ -246,10 +296,9 @@ impl Journal {
         &self,
     ) -> Result<ProtectedWriterNameWitness, JournalError> {
         let location = self
-            .protected
-            .as_ref()
+            .native.protected_view()
             .ok_or(JournalError::ProtectedBoundary)?;
-        location.writer_witness::<JournalError>(self.native.file(), self.native.lock_file())
+        location.writer_witness::<JournalError>()
     }
 
     /// Returns the retained writer's physical names after fixed-name revalidation.
@@ -258,11 +307,10 @@ impl Journal {
     ) -> Result<ProtectedJournalNamesV1, JournalError> {
         self.require_protected_names_current()?;
         let location = self
-            .protected
-            .as_ref()
+            .native.protected_view()
             .ok_or(JournalError::ProtectedBoundary)?;
         let witness =
-            location.writer_witness::<JournalError>(self.native.file(), self.native.lock_file())?;
+            location.writer_witness::<JournalError>()?;
         Ok(names_from_identities(
             witness.directory(),
             witness.file(),
@@ -275,15 +323,10 @@ impl Journal {
         witness: &ProtectedWriterNameWitness,
     ) -> Result<(), JournalError> {
         let location = self
-            .protected
-            .as_ref()
+            .native.protected_view()
             .ok_or(JournalError::ProtectedBoundary)?;
         self.require_protected_names_current()?;
-        location.require_writer_witness::<JournalError>(
-            self.native.file(),
-            self.native.lock_file(),
-            witness,
-        )
+        location.require_writer_witness::<JournalError>(witness)
     }
 
     #[cfg(any(test, all(feature = "test-fixtures", debug_assertions)))]
@@ -295,8 +338,7 @@ impl Journal {
         limits: JournalLimits,
     ) -> Result<(), JournalError> {
         let retained = self
-            .protected
-            .as_ref()
+            .native.protected_view()
             .ok_or(JournalError::ProtectedBoundary)?;
         if retained.name() != name
             || retained.expected_uid() != expected_uid
@@ -312,18 +354,32 @@ impl Journal {
 
     /// Returns the owner UID retained by this protected journal opener.
     pub(crate) fn protected_owner_uid(&self) -> Result<u32, JournalError> {
-        self.protected
-            .as_ref()
+        self.native.protected_view()
             .map(|location| location.expected_uid())
             .ok_or(JournalError::ProtectedBoundary)
     }
 
     pub(super) fn require_protected_names_current(&self) -> Result<(), JournalError> {
-        let retained = self
-            .protected
-            .as_ref()
-            .ok_or(JournalError::ProtectedBoundary)?;
-        retained.require_names::<JournalError>(self.native.lock_file(), self.native.file())
+        self.require_protected_names_with_originals(None)
+    }
+
+    fn require_protected_names_with_originals(
+        &self, originals: Option<&mut ProtectedJournalCurrentnessOriginalsV1>,
+    ) -> Result<(), JournalError> {
+        let retained = self.native.protected_view().ok_or(JournalError::ProtectedBoundary)?;
+        #[cfg(target_os = "linux")]
+        if originals.is_none() {
+            if let super::native_backing::JournalNativeBackingV1::Ordinary(ordinary) = &self.native {
+                if let Some(owner) = ordinary.captured_append.as_ref() {
+                    return owner.observe_guard_v1(self.native.read_view(),
+                        super::native_interval::captured::CapturedGuardRecipeV1::Names);
+                }
+            }
+        }
+        match originals {
+            Some(originals) => self.native.read_view().observe_names_into(originals),
+            None => retained.require_names::<JournalError>(),
+        }
     }
 
     #[cfg(test)]
@@ -360,7 +416,9 @@ impl Journal {
         &self,
     ) -> Result<ProtectedJournalLockCustodyV1, JournalError> {
         self.validate_held_protected_names()?;
-        let lock = self.native.lock_file().try_clone()?;
+        let mut lock = None;
+        self.native.native_operations().copy_confined_lock_description_into(&mut lock)?;
+        let lock = lock.ok_or(JournalError::ProtectedBoundary)?;
         self.validate_held_protected_names()?;
         let custody = ProtectedJournalLockCustodyV1 { lock };
         custody.identity()?;
@@ -443,28 +501,4 @@ pub(super) fn require_empty_operator_provisioning_state(
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
-}
-
-pub(super) fn compact_protected(
-    location: &ProtectedJournalLocation,
-    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    limits: JournalLimits,
-) -> Result<(File, ReplayState), JournalError> {
-    let (temporary, mut replacement, mut cleanup) = location.begin_replacement::<JournalError>()?;
-    write_compacted(&mut replacement, state, limits)?;
-    replacement.sync_all()?;
-    if replacement.metadata()?.len() > limits.maximum_journal_bytes {
-        return Err(JournalError::JournalTooLarge);
-    }
-    drop(replacement);
-    let mut file =
-        location.install_replacement::<JournalError>(temporary.as_str(), &mut cleanup)?;
-    let replay = replay(&mut file, limits)?;
-    if replay.durable_end != file.metadata()?.len() {
-        return Err(JournalError::MalformedTransaction(
-            "compacted journal has an uncommitted tail",
-        ));
-    }
-    file.seek(SeekFrom::End(0))?;
-    Ok((file, replay))
 }

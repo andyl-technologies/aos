@@ -11,7 +11,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     pub(in crate::handshake::mount_request) fn authorize_historical_mount_acquisition_v2(
         &mut self,
         journal: &impl MountSourceAcquisitionJournalViewV2,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         acquisition_key: Vec<u8>,
         acquisition_record: Vec<u8>,
         predecessor_session_key: Vec<u8>,
@@ -155,8 +155,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[allow(clippy::too_many_arguments)]
     pub fn authorize_historical_mount_release_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         acquisition_key: Vec<u8>,
         acquisition_record: Vec<u8>,
         predecessor_session_key: Vec<u8>,
@@ -204,8 +204,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[allow(clippy::too_many_arguments)]
     pub fn authorize_historical_mount_inventory_v2(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox_mount_native::ProtectedJournalSnapshot,
         acquisition_key: Vec<u8>,
         acquisition_record: Vec<u8>,
         predecessor_session_key: Vec<u8>,

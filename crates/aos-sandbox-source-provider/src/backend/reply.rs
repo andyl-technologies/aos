@@ -5,7 +5,7 @@
 //! a comparison identity; their original observation and sealed outcome remain
 //! in the fixed owner's one-slot custody after its single send attempt.
 
-use aos_sandbox::ProtectedJournalSnapshot;
+use aos_sandbox_source::provider_journal::ProtectedJournalSnapshot;
 use aos_sandbox_core::ObjectDigest;
 
 use super::{ObservedBackendAcquisitionV1, ProviderPhysicalSourceRootV1};
@@ -47,7 +47,7 @@ impl DurableProviderReplyV1 {
     pub(crate) fn send_retained_native(
         self,
         session: &mut aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         observed: &ObservedBackendAcquisitionV1,
         committed: &aos_sandbox_source_provider_security::CommittedProviderOutcomeV1,
     ) -> Result<(), crate::ProviderLedgerError> {
@@ -90,7 +90,7 @@ impl DurableProviderReplyV1 {
     pub(crate) fn send(
         self,
         session: &mut aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     ) -> Result<(), crate::ProviderLedgerError> {
         if self.native_identity().is_some() {
             return Err(crate::ProviderLedgerError::Unavailable);

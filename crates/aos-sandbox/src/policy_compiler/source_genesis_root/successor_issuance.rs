@@ -5,31 +5,30 @@
 //! remain resident across every failed crossing. Only this implementation can
 //! mark success, after exact durable delivery and SAME-flight Finish.
 
-use std::os::fd::OwnedFd;
+use aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootReceivedChunkV1 as RootReceivedChunkV1;
 
 use aos_sandbox_core::{DesiredGeneration, RawPairedClockSample};
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
 use ed25519_dalek::SigningKey;
 
 use crate::Journal;
-use crate::hierarchy::codec::tree_commitment_v1;
 use crate::hierarchy::controller_genesis::{
     HeldControllerSourceGenesisV1, hold_existing_completed_source_genesis_v2,
 };
 use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, take};
-use aos_sandbox_core::source_tree_model::SandboxTreeRecordV1;
 use crate::hierarchy::protected_journal::{
     RetainedTreeInventoryDataV1, retained_tree_inventory_data_v1,
 };
 use crate::hierarchy::source_genesis::observe_retained_source_genesis_v1;
-use crate::hierarchy::source_successor::{
-    BODY_BYTES, SourceSuccessorApprovalDataV2, SourceSuccessorIntentDataV2,
-};
 use crate::journal::controller_source_successor_issuance::PublicationCustodyV2;
-use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::{
     ProductionControllerNormalRootProfileV1, SourceSuccessorCredentialCustodyV2,
     SourceSuccessorCredentialErrorV2,
+};
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
+use aos_sandbox_core::source_tree_model::SandboxTreeRecordV1;
+use aos_sandbox_ledger_replay::hierarchy::codec::tree_commitment_v1;
+use aos_sandbox_ledger_replay::successor::{
+    BODY_BYTES, SourceSuccessorApprovalDataV2, SourceSuccessorIntentDataV2,
 };
 
 use super::controller_readback::{
@@ -37,10 +36,10 @@ use super::controller_readback::{
     sign_controller_source_genesis_readback_v1,
 };
 use super::flight::{
-    CompletedRootSourceGenesisFloorV1, OriginalRootGenesisFlightV1, OriginalRootGenesisReplyV1,
-    CompletedRootSourceProjectGenesisFloorV3,
+    CompletedRootSourceGenesisFloorV1, CompletedRootSourceProjectGenesisFloorV3,
+    OriginalRootGenesisFlightV1, OriginalRootGenesisReplyV1,
 };
-use super::wire::RootSourceGenesisFrameKindV1 as WirePhase;
+use aos_sandbox_protocol::source_genesis_wire::RootSourceGenesisFrameKindV1 as WirePhase;
 
 /// Identifies the first failed original issuance boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +68,12 @@ enum IssuerCause {
     Credential(#[from] SourceSuccessorCredentialErrorV2),
 }
 
+impl From<aos_sandbox_ledger_replay::data::SourceSuccessorDataErrorV2> for IssuerCause {
+    fn from(error: aos_sandbox_ledger_replay::data::SourceSuccessorDataErrorV2) -> Self {
+        Self::Owner(SourceGenesisErrorV1::from(error))
+    }
+}
+
 /// Parks a new project issuer only after the configured genesis flight ended.
 ///
 /// Its credentials and Root connection are fresh originals. The completed
@@ -80,13 +85,16 @@ pub struct OriginalSourceProjectSuccessorInvocationV3<'writers, 'profile, 'crede
     profile: &'profile ProductionControllerNormalRootProfileV1,
     credentials: &'credentials mut SourceSuccessorCredentialCustodyV2<'profile>,
     controller: Option<Result<HeldControllerSourceGenesisV1<'writers>, SourceGenesisErrorV1>>,
-    raw: Option<OwnedFd>,
-    adopted: Option<RetainedUnixStream>,
     flight: Option<OriginalRootGenesisFlightV1<'profile>>,
     hello: Vec<u8>,
-    hello_received: Option<Result<aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
+    hello_received: Option<Result<
+            RootReceivedChunkV1, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1,
+        >,
+    >,
     connection: Option<Result<(), SourceGenesisErrorV1>>,
-    signatures: [Option<Result<super::controller_readback::ControllerProjectGenesisReadbackPacketV4, SourceGenesisErrorV1>>; 2],
+    signatures: [Option<Result<super::controller_readback::ControllerProjectGenesisReadbackPacketV4, SourceGenesisErrorV1,
+        >,
+    >; 2],
     signature_posts: [Vec<Result<(), SourceGenesisErrorV1>>; 2],
     io: [super::flight::ProjectGenesisFlightIoV3; 6],
     signing: Option<Result<SourceSuccessorApprovalDataV2, SourceSuccessorCredentialErrorV2>>,
@@ -131,8 +139,7 @@ impl<'writers, 'profile, 'credentials> OriginalSourceProjectSuccessorInvocationV
         credentials: &'credentials mut SourceSuccessorCredentialCustodyV2<'profile>,
     ) -> Self {
         Self {
-            journal: Some(journal), source, profile, credentials, controller: None,
-            raw: None, adopted: None, flight: None, hello: Vec::new(), hello_received: None, connection: None,
+            journal: Some(journal), source, profile, credentials, controller: None, flight: None, hello: Vec::new(), hello_received: None, connection: None,
             signatures: std::array::from_fn(|_| None), signature_posts: std::array::from_fn(|_| Vec::new()),
             io: std::array::from_fn(|_| super::flight::ProjectGenesisFlightIoV3::default()),
             signing: None, contexts: std::array::from_fn(|_| None), stages: std::array::from_fn(|_| None),
@@ -211,7 +218,7 @@ impl<'writers, 'profile, 'credentials> OriginalSourceProjectSuccessorInvocationV
         // This is a NEW Root-last flight after genesis Finish and fresh issuer
         // credential park. No earlier completed proof or deadline is accepted.
         self.connection = Some(OriginalRootGenesisFlightV1::connect_project_genesis_parked_v3(
-            self.profile, &mut self.raw, &mut self.adopted, &mut self.flight, &mut self.hello, &mut self.hello_received, uid,
+            self.profile, &mut self.flight, &mut self.hello, &mut self.hello_received, uid,
         ));
         if self.connection.as_ref().is_some_and(Result::is_err) {
             self.first_failure = Some(ProjectIssuerSiteV3::Connection); return Err(SourceGenesisErrorV1::Stale.into());
@@ -241,13 +248,11 @@ impl<'writers, 'profile, 'credentials> OriginalSourceProjectSuccessorInvocationV
         let clock = completed.signing_boundary_clock()?;
         let body = derive_body_with_completed(controller, &inventory, CompletedGenesisRecipeV3::ProjectV3(&completed), intent, issuer_generation, clock)?;
         self.signing = Some(match controller.retained_project_successor_approval_v3()? {
-            Some(packet) => {
-                (|| {
+            Some(packet) => (|| {
                     self.credentials.verify_saved(&packet)?;
                     require_saved_context(&packet, &body, clock)?;
                     Ok(packet)
-                })()
-            }
+                })(),
             None => {
                 let cut = SourceSuccessorSigningCutV3 { controller, inventory: &inventory, completed: &completed };
                 self.credentials.sign_project_approval_v3(&body, &cut)
@@ -304,7 +309,8 @@ impl<'writers, 'profile, 'credentials> OriginalSourceProjectSuccessorInvocationV
     ///
     /// # Errors
     /// Retains every incomplete flight, original writer and negative result.
-    pub fn into_outcome(mut self) -> Result<SourceSuccessorApprovalDataV2, FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
+    pub fn into_outcome(mut self) -> Result<SourceSuccessorApprovalDataV2, FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>,
+    > {
         if self.first_failure.is_none() {
             if let Some(Ok(packet)) = &self.action { let packet = packet.clone(); self.armed = false; return Ok(packet); }
         }
@@ -351,9 +357,15 @@ fn project_issuer_signature_site(
     index: usize, site: super::controller_readback::ProjectGenesisSignatureFailureV3,
 ) -> ProjectIssuerSiteV3 {
     match site {
-        super::controller_readback::ProjectGenesisSignatureFailureV3::Signature => ProjectIssuerSiteV3::Signature(index),
-        super::controller_readback::ProjectGenesisSignatureFailureV3::Post(post) => ProjectIssuerSiteV3::SignaturePost(index, post),
-        super::controller_readback::ProjectGenesisSignatureFailureV3::Refused => ProjectIssuerSiteV3::Action,
+        super::controller_readback::ProjectGenesisSignatureFailureV3::Signature => {
+            ProjectIssuerSiteV3::Signature(index)
+        }
+        super::controller_readback::ProjectGenesisSignatureFailureV3::Post(post) => {
+            ProjectIssuerSiteV3::SignaturePost(index, post)
+        }
+        super::controller_readback::ProjectGenesisSignatureFailureV3::Refused => {
+            ProjectIssuerSiteV3::Action
+        }
     }
 }
 
@@ -363,17 +375,23 @@ impl FailedSourceProjectSuccessorInvocationV3<'_, '_, '_> {
         let original = &self.original;
         match original.first_failure? {
             ProjectIssuerSiteV3::Action => original.action.as_ref()?.as_ref().err().map(|e| e as _),
-            ProjectIssuerSiteV3::Controller => original.controller.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectIssuerSiteV3::Controller => {
+                original.controller.as_ref()?.as_ref().err().map(|e| e as _)
+            }
             ProjectIssuerSiteV3::Connection => original.hello_received.as_ref().and_then(|r| r.as_ref().err()).map(|e| e as _)
                 .or_else(|| original.connection.as_ref()?.as_ref().err().map(|e| e as _)),
             ProjectIssuerSiteV3::Signature(index) => original.signatures.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
             ProjectIssuerSiteV3::SignaturePost(index, post) => original.signature_posts.get(index)?.get(post)?.as_ref().err().map(|e| e as _),
             ProjectIssuerSiteV3::Io(index) => original.io.get(index)?.error(),
-            ProjectIssuerSiteV3::Signing => original.signing.as_ref()?.as_ref().err().map(|e| e as _),
+            ProjectIssuerSiteV3::Signing => {
+                original.signing.as_ref()?.as_ref().err().map(|e| e as _)
+            }
             ProjectIssuerSiteV3::Context(index) => original.contexts.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
             ProjectIssuerSiteV3::Stage(index) => original.stages.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
             ProjectIssuerSiteV3::Saved => original.saved.error(), ProjectIssuerSiteV3::Delivered => original.delivered.error(),
-            ProjectIssuerSiteV3::OwnerPost(index) => original.posts.get(index)?.as_ref().err().map(|e| e as _),
+            ProjectIssuerSiteV3::OwnerPost(index) => {
+                original.posts.get(index)?.as_ref().err().map(|e| e as _)
+            }
             ProjectIssuerSiteV3::CredentialPost(index) => original.credential_posts.get(index)?.as_ref().err().map(|e| e as _),
             ProjectIssuerSiteV3::Signer => original.signer_admission.as_ref()?.as_ref().err().map(|e| e as _),
         }
@@ -409,8 +427,6 @@ pub struct OriginalSourceSuccessorInvocationV2<'writers, 'profile, 'credentials>
     source: Option<&'writers mut ProtectedSourceDomainJournalOwnerV1>,
     profile: &'profile ProductionControllerNormalRootProfileV1,
     credentials: &'credentials mut SourceSuccessorCredentialCustodyV2<'profile>,
-    raw: Option<OwnedFd>,
-    adopted: Option<RetainedUnixStream>,
     flight: Option<OriginalRootGenesisFlightV1<'profile>>,
     publication: PublicationCustodyV2,
     phase: SourceSuccessorIssuancePhaseV2,
@@ -531,8 +547,6 @@ impl<'writers, 'profile, 'credentials>
             source,
             profile,
             credentials,
-            raw: None,
-            adopted: None,
             flight: None,
             publication: PublicationCustodyV2::new(),
             phase: SourceSuccessorIssuancePhaseV2::Admission,
@@ -598,9 +612,6 @@ impl<'writers, 'profile, 'credentials>
         if self.cleanup_debt.is_none() {
             let result = if let Some(flight) = &self.flight {
                 flight.end_failed()
-            } else if let Some(raw) = &self.raw {
-                rustix::net::shutdown(raw, rustix::net::Shutdown::Both)
-                    .map_err(|error| SourceGenesisErrorV1::Transport(std::io::Error::from(error)))
             } else {
                 Ok(())
             };
@@ -629,7 +640,7 @@ impl<'writers, 'profile, 'credentials>
 
         self.phase = SourceSuccessorIssuancePhaseV2::Root;
         OriginalRootGenesisFlightV1::connect_parked(
-            self.profile, &mut self.raw, &mut self.adopted, &mut self.flight,
+            self.profile, &mut self.flight,
         )?;
         let flight = self.flight.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
         let prepare = sign_controller_source_genesis_readback_v1(
@@ -733,8 +744,8 @@ impl Drop for OriginalSourceSuccessorInvocationV2<'_, '_, '_> {
                 self.first_cause = Some((self.phase, SourceGenesisErrorV1::AdmissionClosed.into()));
             }
             self.credentials.end_failed();
-            if let Some(raw) = &self.raw {
-                let _ = rustix::net::shutdown(raw, rustix::net::Shutdown::Both);
+            if let Some(flight) = &self.flight {
+                let _ = flight.end_failed();
             }
             std::process::abort();
         }
@@ -852,7 +863,7 @@ fn derive_body_with_completed(
     body[joins + 200..joins + 208].copy_from_slice(&issued.to_be_bytes());
     body[joins + 208..joins + 216].copy_from_slice(&expires.to_be_bytes());
     body[joins + 216..].copy_from_slice(intent.as_bytes());
-    crate::hierarchy::source_successor::validate_body(&body)?;
+    aos_sandbox_ledger_replay::successor::validate_body(&body)?;
     controller.recheck()?;
     completed.recheck()?;
     Ok(body)
@@ -873,7 +884,7 @@ fn require_body_context(
 ) -> Result<(), SourceGenesisErrorV1> {
     let current_wall = u64::try_from(clock.wall_seconds())
         .map_err(|_| SourceGenesisErrorV1::AdmissionClosed)?;
-    if !matches!(saved.len(), BODY_BYTES | crate::hierarchy::source_successor::RESOURCE_BODY_BYTES)
+    if !matches!(saved.len(), BODY_BYTES | aos_sandbox_ledger_replay::successor::RESOURCE_BODY_BYTES)
         || current.len() != saved.len()
     {
         return Err(SourceGenesisErrorV1::Stale);
@@ -924,7 +935,7 @@ fn recheck_current_context(
 mod tests {
     use super::*;
     use aos_sandbox_core::RawClockProvenance;
-    use crate::hierarchy::source_successor::tests::approval_fixture;
+    use aos_sandbox_ledger_replay::successor::tests::approval_fixture;
 
     fn clock(boot: u8, wall: i64, boottime: u64) -> RawPairedClockSample {
         RawPairedClockSample::new_untrusted(

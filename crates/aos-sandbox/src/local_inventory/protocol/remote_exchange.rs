@@ -11,7 +11,7 @@ use aos_sandbox_core::{NodeId, ObjectDigest, OperationId};
 use super::super::assignment::{
     AuthenticatedSnapshotChunkV1, AuthenticatedSnapshotDependencyRangeV1,
 };
-use super::super::capability::{CarrierValidatedCapabilityObservationV1, NodeBootLineageV1};
+use super::super::capability::CarrierValidatedCapabilityObservationV1;
 use super::super::carrier_authority::{AuthenticatedFrameSealV1, CarrierResponseGrantV1};
 use super::super::evidence::AuthenticatedEvidenceContextV1;
 use super::{
@@ -20,6 +20,7 @@ use super::{
     NodeWatchCursorV1, NodeWatchEventBodyV1, NodeWatchEventV1, ResyncInventoryV1,
     carrier_binding_digest, stable_watch_bootstrap_uid,
 };
+use aos_sandbox_core::NodeBootLineageV1;
 
 /// Commits a complete bootstrap from which an exact watch may resume.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

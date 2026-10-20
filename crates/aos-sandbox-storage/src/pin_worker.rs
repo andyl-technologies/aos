@@ -39,6 +39,13 @@ use aos_sandbox_linux::seqpacket::descriptor_subject::{
 };
 use sha2::{Digest as _, Sha256};
 
+pub(crate) mod frame_send;
+pub(crate) mod readiness;
+mod result_original;
+pub(crate) mod result_envelope;
+pub(crate) mod subject_observation;
+pub(crate) use result_original::PinResultDecodeOriginalV1;
+
 use crate::authorization::StorageAuthorityV1;
 use crate::root_policy::PortableRootAttributesV1;
 use crate::state::MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES;
@@ -249,6 +256,21 @@ pub(crate) struct WorkspacePinWorkerResultV1 {
     dataset: WorkspaceDatasetObservationV1,
     pin: WorkspacePinObservationV1,
     observation_digest: ObjectDigest,
+}
+
+/// Prices one complete returned pin model through its upper handoff.
+///
+/// The existing protocol bounds one dataset name and four proof strings by
+/// 4096 bytes each. This is the retained model and construction footprint;
+/// decoder/canonical/native scratch is a separate physical-stage obligation.
+pub(crate) fn pin_returned_model_demand_v1() -> Option<aos_sandbox_core::ResourceVector> {
+    use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+    let memory = std::mem::size_of::<WorkspacePinWorkerResultV1>().checked_mul(2)?
+        .checked_add(std::mem::size_of::<WorkspaceRootPinProofV1>())?
+        .checked_add(5 * MAXIMUM_RESULT_STRING_BYTES)?;
+    // A returned observation does not install a resident namespace entry.
+    Some(ResourceVector::ZERO
+        .with(D::MemoryBytes, u64::try_from(memory).ok()?))
 }
 
 impl WorkspacePinWorkerResultV1 {
@@ -537,6 +559,34 @@ pub(crate) fn encode_request(
     catalog: &ResolvedCatalogCommitmentV1,
     authority: &WorkspacePinWorkerAuthorityV1,
 ) -> Result<Vec<u8>, ZfsWorkerError> {
+    encode_request_inner_v1(contract, catalog, authority, None)
+}
+
+pub(crate) fn encode_request_receiving_v1(
+    contract: &ZfsHelperContract,
+    catalog: &ResolvedCatalogCommitmentV1,
+    authority: &WorkspacePinWorkerAuthorityV1,
+    receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+) -> Result<Vec<u8>, ZfsWorkerError> {
+    encode_request_inner_v1(contract, catalog, authority, Some(receiving))
+}
+
+fn encode_request_inner_v1(
+    contract: &ZfsHelperContract,
+    catalog: &ResolvedCatalogCommitmentV1,
+    authority: &WorkspacePinWorkerAuthorityV1,
+    receiving: Option<&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>>,
+) -> Result<Vec<u8>, ZfsWorkerError> {
+    if let Some(receiving) = receiving {
+        let lengths = [contract.executable().as_os_str().as_bytes().len(),
+            catalog.canonical_bytes().len(), authority.attempt_record.len(),
+            authority.current_fence.len(), authority.effect.len(),
+            authority.operation_fence.len(), authority.publication_intent.as_ref().map_or(0, Vec::len)];
+        let bytes = lengths.into_iter().try_fold(64_usize, usize::checked_add)
+            .ok_or(ZfsWorkerError::Protocol("workspace pin request length overflow"))?;
+        receiving.reserve_encoded_capacity_v1(bytes, 0)
+            .map_err(|_| ZfsWorkerError::PhysicalAdmission(crate::process::PhysicalWorkerAdmissionFailureV1::from_native_refusal_v1(aos_sandbox::StorageReceivingClosedV1)))?;
+    }
     authority.validate()?;
     let executable = contract.executable().as_os_str().as_bytes();
     let executable_length = u16::try_from(executable.len())
@@ -668,6 +718,15 @@ pub(crate) fn decode_request(bytes: &[u8]) -> Result<WorkspacePinWorkerRequestV1
 pub(crate) fn encode_result(
     result: &WorkspacePinWorkerResultV1,
 ) -> Result<Vec<u8>, ZfsWorkerError> {
+    let mut bytes = Vec::new();
+    encode_result_into_v1(result, &mut bytes)?;
+    Ok(bytes)
+}
+
+pub(super) fn encode_result_into_v1(
+    result: &WorkspacePinWorkerResultV1,
+    bytes: &mut Vec<u8>,
+) -> Result<(), ZfsWorkerError> {
     if result.attempt_id == [0; 16]
         || result.observation_digest.as_bytes() == &[0; 32]
         || matches!(
@@ -680,7 +739,7 @@ pub(crate) fn encode_result(
             "workspace pin result identity is invalid",
         ));
     }
-    let mut bytes = Vec::with_capacity(256);
+    *bytes = Vec::with_capacity(256);
     bytes.extend_from_slice(RESULT_MAGIC);
     bytes.extend_from_slice(&WIRE_VERSION.to_be_bytes());
     bytes.extend_from_slice(&0_u16.to_be_bytes());
@@ -689,7 +748,7 @@ pub(crate) fn encode_result(
     match &result.dataset {
         WorkspaceDatasetObservationV1::Exact { name, guid } => {
             bytes.push(1);
-            append_result_string(&mut bytes, name)?;
+            append_result_string(bytes, name)?;
             bytes.extend_from_slice(&guid.to_be_bytes());
         }
         WorkspaceDatasetObservationV1::Absent => bytes.push(2),
@@ -704,10 +763,10 @@ pub(crate) fn encode_result(
             bytes.extend_from_slice(&proof.mount_namespace_device().to_be_bytes());
             bytes.extend_from_slice(&proof.mount_namespace_inode().to_be_bytes());
             bytes.extend_from_slice(&proof.mount_id().to_be_bytes());
-            append_result_string(&mut bytes, proof.mount_root())?;
-            append_result_string(&mut bytes, proof.mount_point())?;
-            append_result_string(&mut bytes, proof.filesystem_type())?;
-            append_result_string(&mut bytes, proof.superblock_source())?;
+            append_result_string(bytes, proof.mount_root())?;
+            append_result_string(bytes, proof.mount_point())?;
+            append_result_string(bytes, proof.filesystem_type())?;
+            append_result_string(bytes, proof.superblock_source())?;
             bytes.extend_from_slice(&proof.dataset_guid().to_be_bytes());
             bytes.extend_from_slice(&proof.root_device().to_be_bytes());
             bytes.extend_from_slice(&proof.root_inode().to_be_bytes());
@@ -723,96 +782,13 @@ pub(crate) fn encode_result(
             "workspace pin result exceeds byte ceiling",
         ));
     }
-    Ok(bytes)
+    Ok(())
 }
 
 pub(crate) fn decode_result(bytes: &[u8]) -> Result<WorkspacePinWorkerResultV1, ZfsWorkerError> {
-    if bytes.len() > MAXIMUM_PIN_WORKER_RESULT_BYTES {
-        return Err(ZfsWorkerError::Protocol(
-            "workspace pin result exceeds byte ceiling",
-        ));
-    }
-    let mut decoder = Decoder::new(bytes);
-    if decoder.take(RESULT_MAGIC.len())? != RESULT_MAGIC {
-        return Err(ZfsWorkerError::Protocol(
-            "workspace pin result header is invalid",
-        ));
-    }
-    if decoder.u16()? != WIRE_VERSION || decoder.u16()? != 0 {
-        return Err(ZfsWorkerError::Protocol(
-            "workspace pin result header is invalid",
-        ));
-    }
-    let attempt_id = decoder.array()?;
-    let observation_digest = ObjectDigest::from_bytes(decoder.array()?);
-    let dataset = match decoder.byte()? {
-        1 => WorkspaceDatasetObservationV1::Exact {
-            name: decoder.result_string()?,
-            guid: decoder.u64()?,
-        },
-        2 => WorkspaceDatasetObservationV1::Absent,
-        3 => WorkspaceDatasetObservationV1::Mismatch,
-        _ => {
-            return Err(ZfsWorkerError::Protocol(
-                "workspace dataset result is invalid",
-            ));
-        }
-    };
-    let pin = match decoder.byte()? {
-        1 => WorkspacePinObservationV1::Absent,
-        2 => WorkspacePinObservationV1::Mismatch,
-        3 => {
-            let kernel_boot_id = decoder.array()?;
-            let mount_namespace_device = decoder.u64()?;
-            let mount_namespace_inode = decoder.u64()?;
-            let mount_id = decoder.u64()?;
-            let mount_root = decoder.result_string()?;
-            let mount_point = decoder.result_string()?;
-            let filesystem_type = decoder.result_string()?;
-            let superblock_source = decoder.result_string()?;
-            let dataset_guid = decoder.u64()?;
-            let root_device = decoder.u64()?;
-            let root_inode = decoder.u64()?;
-            if decoder.byte()? != 1 {
-                return Err(ZfsWorkerError::Protocol(
-                    "workspace root attributes are invalid",
-                ));
-            }
-            let root_attributes = PortableRootAttributesV1::new(
-                decoder.u32()?,
-                decoder.u32()?,
-                u32::from(decoder.u16()?),
-            )
-            .map_err(|_| ZfsWorkerError::Protocol("workspace root attributes are invalid"))?;
-            let proof = WorkspaceRootPinProofV1::new(
-                kernel_boot_id,
-                mount_namespace_device,
-                mount_namespace_inode,
-                mount_id,
-                mount_root,
-                mount_point,
-                filesystem_type,
-                superblock_source,
-                dataset_guid,
-                root_device,
-                root_inode,
-                root_attributes,
-            )
-            .map_err(|_| ZfsWorkerError::Protocol("workspace pin proof is invalid"))?;
-            WorkspacePinObservationV1::Present(proof)
-        }
-        _ => {
-            return Err(ZfsWorkerError::Protocol("workspace pin result is invalid"));
-        }
-    };
-    decoder.finish()?;
-    let result = WorkspacePinWorkerResultV1::new(attempt_id, dataset, pin, observation_digest);
-    if encode_result(&result)? != bytes {
-        return Err(ZfsWorkerError::Protocol(
-            "workspace pin result is not canonical",
-        ));
-    }
-    Ok(result)
+    let mut original = PinResultDecodeOriginalV1::new();
+    let _completed = original.capture_once(bytes);
+    original.into_ordinary_result_v1()
 }
 
 fn append_result_string(destination: &mut Vec<u8>, value: &str) -> Result<(), ZfsWorkerError> {
@@ -1095,17 +1071,7 @@ pub(crate) fn verify_same_live_subject(
     expected: &KernelAuthorizedRecordSubject,
     actual: &KernelAuthorizedRecordSubject,
 ) -> Result<(), ZfsWorkerError> {
-    if !expected.is_alive()? || !actual.is_alive()? {
-        return Err(ZfsWorkerError::PeerMismatch);
-    }
-    if expected.credentials() != actual.credentials()
-        || expected.initial_info().pid() != actual.initial_info().pid()
-        || expected.initial_info().thread_group_id() != actual.initial_info().thread_group_id()
-        || expected.initial_info().cgroup_id() != actual.initial_info().cgroup_id()
-    {
-        return Err(ZfsWorkerError::PeerMismatch);
-    }
-    Ok(())
+    subject_observation::verify_with_originals_v1(expected, actual, None)
 }
 
 /// Sends one logical request before one absolute `CLOCK_BOOTTIME` deadline.
@@ -1134,28 +1100,9 @@ fn send_request_inner(
 ) -> Result<(), ZfsWorkerError> {
     socket.provision_packet_capacity(MAXIMUM_PIN_WORKER_PACKET_BYTES)?;
     let mut frames = WorkspacePinRequestFrameEncoder::new(request)?;
-    let mut first = true;
-    while let Some(frame) = frames.next_frame() {
-        loop {
-            ensure_before_deadline(deadline_boottime_nanoseconds)?;
-            let result = if first {
-                socket.send_with_descriptors(&frame, &descriptors)
-            } else {
-                socket.send(&frame)
-            };
-            match result {
-                Ok(()) => break,
-                Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => wait_before(
-                    socket.as_fd()?,
-                    rustix::event::PollFlags::OUT,
-                    deadline_boottime_nanoseconds,
-                )?,
-                Err(error) => return Err(error.into()),
-            }
-        }
-        first = false;
-    }
-    ensure_before_deadline(deadline_boottime_nanoseconds)
+    frame_send::send_frames_before_v1(
+        socket, &mut frames, descriptors, deadline_boottime_nanoseconds, None,
+    )
 }
 
 /// Receives one complete logical request before an absolute deadline.
@@ -1216,31 +1163,24 @@ pub(crate) fn wait_before(
     events: rustix::event::PollFlags,
     deadline_boottime_nanoseconds: u64,
 ) -> Result<(), ZfsWorkerError> {
-    loop {
-        let remaining = deadline_boottime_nanoseconds
-            .checked_sub(boottime_now_nanoseconds()?)
-            .filter(|remaining| *remaining != 0)
-            .ok_or(ZfsWorkerError::Protocol(
-                "workspace pin whole-transfer deadline elapsed",
-            ))?;
-        let timeout = rustix::event::Timespec::try_from(std::time::Duration::from_nanos(remaining))
-            .map_err(|_| ZfsWorkerError::Protocol("workspace pin transfer deadline is invalid"))?;
-        let mut descriptors = [rustix::event::PollFd::new(&descriptor, events)];
-        match rustix::event::poll(&mut descriptors, Some(&timeout)) {
-            Ok(0) => {
-                return Err(ZfsWorkerError::Protocol(
-                    "workspace pin whole-transfer deadline elapsed",
-                ));
-            }
-            Ok(_) => return ensure_before_deadline(deadline_boottime_nanoseconds),
-            Err(rustix::io::Errno::INTR) => continue,
-            Err(error) => return Err(error.into()),
-        }
-    }
+    readiness::wait_with_originals_v1(descriptor, events, deadline_boottime_nanoseconds, None)
 }
 
 pub(crate) fn boottime_now_nanoseconds() -> Result<u64, ZfsWorkerError> {
+    boottime_with_original_v3(None)
+}
+
+pub(crate) fn boottime_with_original_v3(
+    original: Option<&mut Option<rustix::time::Timespec>>,
+) -> Result<u64, ZfsWorkerError> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    if let Some(original) = original { *original = Some(now); }
+    boottime_from_timespec_v1(now)
+}
+
+pub(crate) fn boottime_from_timespec_v1(
+    now: rustix::time::Timespec,
+) -> Result<u64, ZfsWorkerError> {
     let seconds = u64::try_from(now.tv_sec)
         .map_err(|_| ZfsWorkerError::Protocol("CLOCK_BOOTTIME seconds are invalid"))?;
     let nanoseconds = u64::try_from(now.tv_nsec)

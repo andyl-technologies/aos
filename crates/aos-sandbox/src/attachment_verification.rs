@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::{MountLifecycle, MountSourceConsistency};
 use aos_sandbox_core::model::{AttachmentConsistency, AttachmentIntent, ViewMutation};
-use aos_sandbox_core::{AttachmentId, ObjectDigest, RawPairedClockSample, encode_view_source};
+use aos_sandbox_core::{AttachmentId, CanonicalAssignmentManifestV1, ObjectDigest, RawPairedClockSample, encode_view_source};
 use aos_sandbox_protocol::{
     ValidatedMountInventoryRecord, ValidatedMountKernelObservation, ValidatedMountRecipe,
 };
@@ -31,7 +31,7 @@ use crate::attachment_reconciliation::{
 use crate::attachment_state::{
     self, AttachmentDesiredPresenceV1, AttachmentDesiredStateError, DurableAttachmentDesiredStateV1,
 };
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_authority::RuntimeAuthorityBindingV1;
 use crate::runtime_scope::{
     CurrentNamespaceTarget, DurableNamespaceTargetReferenceV1, NamespaceTargetError,
@@ -353,7 +353,16 @@ impl Record {
         binding: &RuntimeAuthorityBindingV1,
         resource: &ValidatedMountInventoryRecord,
     ) -> bool {
-        let assignment = binding.manifest().manifest();
+        self.matches_assignment_manifest_data_v2(desired, binding.manifest(), resource)
+    }
+
+    fn matches_assignment_manifest_data_v2(
+        &self,
+        desired: &DurableAttachmentDesiredStateV1,
+        manifest: &CanonicalAssignmentManifestV1,
+        resource: &ValidatedMountInventoryRecord,
+    ) -> bool {
+        let assignment = manifest.manifest();
         let resource_binding = resource.binding();
         let resource_fence = resource_binding.fence();
 
@@ -365,7 +374,7 @@ impl Record {
             && self.namespace_target.target_generation() == assignment.namespace_generation().get()
             && self.assignment_epoch == assignment.epoch().get()
             && self.assignment_generation == assignment.desired_generation().get()
-            && self.assignment_digest == *binding.assignment_digest().as_bytes()
+            && self.assignment_digest == *manifest.digest().as_bytes()
             && self.assignment_epoch == resource_fence.assignment_epoch()
             && self.assignment_generation == resource_fence.desired_generation()
             && self.assignment_digest == *resource_fence.assignment_digest()
@@ -568,7 +577,17 @@ pub(crate) fn verified_handles_for_current_assignment(
     binding: &RuntimeAuthorityBindingV1,
     inventory: &aos_sandbox_protocol::ValidatedMountInventory,
 ) -> Result<Vec<[u8; 32]>, AttachmentVerificationError> {
-    let assignment = binding.manifest().manifest();
+    verified_handles_for_manifest_data_v2(journal, binding.manifest(), inventory)
+}
+
+// Shared comparison DATA for an already authorized exact canonical assignment.
+// No current binding, ready resource or authority is constructed by this fold.
+pub(crate) fn verified_handles_for_manifest_data_v2(
+    journal: &mut Journal,
+    manifest: &CanonicalAssignmentManifestV1,
+    inventory: &aos_sandbox_protocol::ValidatedMountInventory,
+) -> Result<Vec<[u8; 32]>, AttachmentVerificationError> {
+    let assignment = manifest.manifest();
     let desired = attachment_state::current_for_consumer(
         journal,
         assignment.sandbox(),
@@ -592,7 +611,7 @@ pub(crate) fn verified_handles_for_current_assignment(
             .iter()
             .find(|resource| resource.mount_handle() == &record.mount_handle)
             .ok_or(AttachmentVerificationError::NotVerifiable)?;
-        if !record.matches_assignment_resource(desired, binding, resource) {
+        if !record.matches_assignment_manifest_data_v2(desired, manifest, resource) {
             return Err(AttachmentVerificationError::Conflict);
         }
 
@@ -610,7 +629,7 @@ pub(crate) fn verified_handles_for_current_assignment(
             && fence.incarnation_id() == assignment.incarnation().as_bytes()
             && fence.assignment_epoch() == assignment.epoch().get()
             && fence.desired_generation() == assignment.desired_generation().get()
-            && fence.assignment_digest() == binding.assignment_digest().as_bytes()
+            && fence.assignment_digest() == manifest.digest().as_bytes()
             && resource.binding().namespace_generation() == assignment.namespace_generation().get()
             && resource.lifecycle() == MountLifecycle::MOUNT_LIFECYCLE_INSTALLED
             && handles.binary_search(resource.mount_handle()).is_err()
@@ -620,6 +639,25 @@ pub(crate) fn verified_handles_for_current_assignment(
     }
 
     Ok(handles)
+}
+
+// The already supported no-slot namespace profile must derive emptiness from
+// complete canonical histories, never from a caller bool or absent DTO field.
+pub(crate) fn require_empty_namespace_for_manifest_data_v2(
+    journal: &mut Journal, manifest: &CanonicalAssignmentManifestV1,
+) -> Result<(), AttachmentVerificationError> {
+    let assignment = manifest.manifest();
+    let desired = attachment_state::current_for_consumer(journal, assignment.sandbox(),
+        assignment.incarnation(), assignment.namespace_generation().get())?;
+    let history = History::load(journal)?;
+    if !desired.is_empty() || history.records.values().any(|record| {
+        record.namespace_target.sandbox() == assignment.sandbox()
+            && record.namespace_target.incarnation() == assignment.incarnation()
+            && record.namespace_target.target_generation() == assignment.namespace_generation().get()
+    }) {
+        return Err(AttachmentVerificationError::NotVerifiable);
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_namespace(journal: &mut Journal) -> Result<(), AttachmentVerificationError> {

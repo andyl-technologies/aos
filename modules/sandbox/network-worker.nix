@@ -14,6 +14,26 @@
   pinParent = "/sys/fs/bpf/aos/sandbox-network";
   mountBpffs = config.aos.config.artifacts.sandbox-network-mount-bpffs;
   preparePinRoot = config.aos.config.artifacts.sandbox-network-worker-ready;
+  workerProfileNames = [
+    "aos-sandbox-network-worker@"
+    "aos-sandbox-network-observation-worker@"
+  ];
+  workerProfileInput = map (name: {
+    unit = "${name}.service";
+    rendered = config.systemd.units."${name}.service".text;
+    service = let selected = config.systemd.services.${name}.serviceConfig; in {
+      inherit (selected) ExecStart LimitNOFILE MemoryMax TasksMax;
+    };
+  }) workerProfileNames;
+  # This contains final selected unit DATA. It neither grants a child budget
+  # nor changes any unit limit; the protected Netd programme prices its use.
+  workerProfile = pkgs.runCommand "aos-network-worker-profile-v2" {
+    nativeBuildInputs = [pkgs.python3];
+    inputJson = builtins.toJSON workerProfileInput;
+    passAsFile = ["inputJson"];
+  } ''
+    ${pkgs.python3}/bin/python3 -B ${./_network-worker-profile.py} "$inputJsonPath" "$out"
+  '';
 in {
   options.aos.sandbox.networkWorker = {
     enable = lib.mkEnableOption "the authenticated one-shot Network preparation worker";
@@ -33,7 +53,16 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    environment.etc."aos/sandbox-network-worker-profile-v2" = {
+      source = workerProfile;
+      mode = "0444";
+    };
+
     assertions = [
+      {
+        assertion = config.systemd.package == pkgs.systemd;
+        message = "Network worker PID 1 must use the canonical per-system Systemd package bound to the selected boot kernel";
+      }
       {
         assertion = loaderEnvironment.renderedUnitMatchesSourcePolicy renderedLifecycleUnit;
         message = "${lifecycleUnitName} must render the inherited-environment scrub without EnvironmentFile or PassEnvironment";
@@ -476,7 +505,10 @@ in {
         RestrictNamespaces = true;
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
-        Slice = "aos-control.slice";
+        Slice =
+          if config.aos.sandbox.resourceBank.parentEnclosure != null && config.aos.sandbox.networkBroker.enable
+          then "aoscomponents-network.slice"
+          else "aos-control.slice";
         SystemCallArchitectures = ["native"];
         SystemCallFilter = [
           "@system-service"
@@ -608,18 +640,23 @@ in {
         RestrictNamespaces = ["net"];
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
-        Slice = "aos-control.slice";
+        Slice =
+          if config.aos.sandbox.resourceBank.parentEnclosure != null && config.aos.sandbox.networkBroker.enable
+          then "aoscomponents-network.slice"
+          else "aos-control.slice";
         SystemCallArchitectures = ["native"];
         SystemCallFilter = [
           "@system-service"
           "bpf"
           "mount"
           "setns"
+          # The same signed Destroy P programme removes its exact bind pin.
+          # @system-service excludes @mount, so this needs a positive entry.
+          "umount2"
           "~@reboot"
           "~@swap"
           "~@module"
           "~@raw-io"
-          "~umount2"
           "~io_uring_setup"
           "~io_uring_enter"
           "~io_uring_register"

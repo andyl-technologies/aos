@@ -21,7 +21,7 @@ use super::planning::{
 use crate::attachment_state;
 use crate::attachment_state::{AttachmentDesiredPresenceV1, DurableAttachmentDesiredStateV1};
 use crate::mount_source_acquisition_inventory::DurableMountSourceAcquisitionInventorySnapshotV1;
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::CurrentNamespaceTarget;
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 

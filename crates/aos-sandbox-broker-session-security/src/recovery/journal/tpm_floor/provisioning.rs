@@ -10,6 +10,22 @@
 //! broker-method46-tpm-index-auth-v1 = exact 32 secret bytes (no header)
 //! ```
 
+mod initial;
+pub(crate) use initial::{InitialModeOriginalV1, mode_initial_receiving_demand_v1};
+pub(in crate::recovery::journal) use initial::{
+    InitialProvisionOriginalV1, INITIAL_MODE_RESULT_CELLS_V1,
+    INITIAL_PROVISION_RESULT_CELLS_V1,
+};
+
+mod receiving;
+pub(crate) use receiving::{ModeRevalidationOriginalV1, mode_revalidation_receiving_demand_v1};
+pub(in crate::recovery::journal) use receiving::{
+    AbsentFloorNamesOriginalV1, CredentialReadCustodyV1,
+    ProvisionRevalidationOriginalV1, MAXIMUM_MODE_PATH_BYTES_V1,
+    auxiliary_currentness_work_bytes_v1, canonical_currentness_work_bytes_v1,
+    MODE_REVALIDATION_RESULT_CELLS_V1,
+};
+
 use std::fs::File;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -38,6 +54,7 @@ pub(super) enum ImageFloorModeV1 {
 
 /// Retains one fixed immutable mode through the shared file-admission engine.
 pub(crate) struct ModePinV1 {
+    currentness: Option<super::super::floor_revalidation::FloorCurrentnessSharedV1>,
     path: PathBuf,
     target: PathBuf,
     file: File,
@@ -47,12 +64,7 @@ pub(crate) struct ModePinV1 {
 
 impl ModePinV1 {
     pub(super) fn open(endpoint: FloorEndpointV1) -> Result<Self, FloorErrorV1> {
-        let basename = match endpoint {
-            FloorEndpointV1::ControllerStorageClient => "controller-mode",
-            FloorEndpointV1::StorageBroker => "storage-mode",
-        };
-        let path = Path::new("/etc/aos/method46-tpm-floor").join(basename);
-        Self::open_fixed(path)
+        Self::open_fixed(mode_path(endpoint))
     }
 
     /// Retains the fixed Storage mode for worker-only startup image routing.
@@ -64,6 +76,45 @@ impl ModePinV1 {
     /// Rejects absent, unsafe, noncanonical or changed fixed Storage mode data.
     pub(crate) fn open_storage_worker_image_mode() -> Result<Self, FloorErrorV1> {
         Self::open(FloorEndpointV1::StorageBroker)
+    }
+
+    /// Captures fixed Storage mode data into the prepaid original destination.
+    ///
+    /// # Errors
+    /// Rejects a repeated capture or unsafe, absent, changed or malformed mode.
+    pub(crate) fn open_storage_worker_image_mode_retaining(
+        original: &mut InitialModeOriginalV1,
+    ) -> Result<Self, FloorErrorV1> {
+        Self::open_retaining(FloorEndpointV1::StorageBroker, original)
+    }
+
+    /// Compares this exact pin while retaining reached native observations.
+    ///
+    /// # Errors
+    /// Rejects repeated observation, changed identity, mount or mode data.
+    pub(crate) fn revalidate_retaining(
+        &self,
+        original: &mut ModeRevalidationOriginalV1,
+    ) -> Result<(), FloorErrorV1> {
+        original.observe_once(self, CredentialReadCustodyV1::Retained)
+    }
+
+    /// Compares fixed Storage launch presence into its prepaid original owner.
+    ///
+    /// # Errors
+    /// Rejects another fixed mode purpose, mismatched launch presence or any
+    /// failed original confinement/mode observation. Reentry stays closed.
+    pub(crate) fn require_storage_worker_launch_image_presence_retaining(
+        &self,
+        supplied: bool,
+        original: &mut super::runtime::ModePresenceOriginalV1,
+    ) -> Result<(), FloorErrorV1> {
+        if self.path != Path::new("/etc/aos/method46-tpm-floor/storage-mode") {
+            return Err(FloorErrorV1::Provisioning);
+        }
+        super::runtime::require_storage_worker_launch_image_presence_retaining(
+            self, supplied, original,
+        )
     }
 
     /// Checks Storage launch presence through this same fixed original mode.
@@ -91,49 +142,55 @@ impl ModePinV1 {
         Self::open_fixed(PathBuf::from("/etc/aos/runtime-deployment-tpm-floor/mode"))
     }
 
+    /// Captures the same compiled Host mode into its already parked owner.
+    pub(crate) fn open_runtime_deployment_retaining(
+        original: &mut InitialModeOriginalV1,
+    ) -> Result<Self, FloorErrorV1> {
+        original.capture_once(
+            PathBuf::from("/etc/aos/runtime-deployment-tpm-floor/mode"),
+            CredentialReadCustodyV1::Retained,
+        )?;
+        original.take_pin_once().ok_or(FloorErrorV1::Provisioning)
+    }
+
+    /// Supplies the same fixed Host mode's initial read and final readback.
+    pub(crate) fn runtime_deployment_initial_receiving_demand_v1(
+    ) -> Option<aos_sandbox_core::ResourceVector> {
+        let input = u64::try_from(LEGACY_MODE.len().checked_add(1)?).ok()?.checked_mul(2)?;
+        Some(mode_initial_receiving_demand_v1()?
+            .with(aos_sandbox_core::ResourceDimension::OutputBytes, input))
+    }
+
+    /// Supplies this same fixed mode's bounded retained comparison input.
+    pub(crate) fn runtime_deployment_revalidation_receiving_demand_v1(
+        &self,
+    ) -> Option<aos_sandbox_core::ResourceVector> {
+        if self.path != Path::new("/etc/aos/runtime-deployment-tpm-floor/mode") {
+            return None;
+        }
+        let input = u64::try_from(LEGACY_MODE.len().checked_add(1)?).ok()?;
+        Some(mode_revalidation_receiving_demand_v1()?
+            .with(aos_sandbox_core::ResourceDimension::OutputBytes, input))
+    }
+
     // Both fixed entries use this same retained-file engine. No caller path
     // crosses the module boundary or selects a provisioning purpose.
     fn open_fixed(path: PathBuf) -> Result<Self, FloorErrorV1> {
-        let target = std::fs::canonicalize(&path).map_err(|_| FloorErrorV1::Provisioning)?;
-        if !target.starts_with("/nix/store") {
-            return Err(FloorErrorV1::Provisioning);
-        }
-        let file = File::from(
-            rustix::fs::openat(
-                rustix::fs::CWD,
-                &target,
-                rustix::fs::OFlags::RDONLY
-                    | rustix::fs::OFlags::NOFOLLOW
-                    | rustix::fs::OFlags::CLOEXEC
-                    | rustix::fs::OFlags::NONBLOCK,
-                rustix::fs::Mode::empty(),
-            )
-            .map_err(|_| FloorErrorV1::Provisioning)?,
-        );
-        let metadata = file.metadata().map_err(|_| FloorErrorV1::Provisioning)?;
-        if !metadata.is_file()
-            || metadata.uid() != 0
-            || metadata.gid() != 0
-            || metadata.nlink() != 1
-            || metadata.mode() & 0o7222 != 0
-            || !fstatvfs(&file)
-                .map_err(|_| FloorErrorV1::Provisioning)?
-                .f_flag
-                .contains(StatVfsMountFlags::RDONLY)
-        {
-            return Err(FloorErrorV1::Provisioning);
-        }
-        let bytes = read_mode(&target)?;
-        let mode = decode_mode(&bytes)?;
-        let pin = Self {
-            path,
-            target,
-            file,
-            identity: (metadata.dev(), metadata.ino()),
-            mode,
-        };
-        pin.revalidate()?;
-        Ok(pin)
+        let mut original = InitialModeOriginalV1::new();
+        original.capture_once(path, CredentialReadCustodyV1::Ordinary)?;
+        original.take_pin_once().ok_or(FloorErrorV1::Provisioning)
+    }
+
+    pub(super) fn open_retaining(
+        endpoint: FloorEndpointV1,
+        original: &mut InitialModeOriginalV1,
+    ) -> Result<Self, FloorErrorV1> {
+        original.capture_once(mode_path(endpoint), CredentialReadCustodyV1::Retained)?;
+        original.take_pin_once().ok_or(FloorErrorV1::Provisioning)
+    }
+
+    pub(super) fn has_currentness_archive_v1(&self) -> bool {
+        self.currentness.is_some()
     }
 
     pub(super) const fn mode(&self) -> ImageFloorModeV1 {
@@ -150,36 +207,38 @@ impl ModePinV1 {
     /// # Errors
     /// Rejects any path, metadata, mount or content drift.
     pub(crate) fn revalidate(&self) -> Result<(), FloorErrorV1> {
-        if std::fs::canonicalize(&self.path).map_err(|_| FloorErrorV1::Provisioning)? != self.target
+        match self.currentness.as_ref() {
+            Some(archive) => super::super::floor_revalidation::validate_mode(archive, self),
+            None => {
+                let mut original = ModeRevalidationOriginalV1::new();
+                original.observe_once(self, CredentialReadCustodyV1::Ordinary)
+            }
+        }
+    }
+
+    pub(super) fn require_no_floor_names(&self, directory: &Path) -> Result<(), FloorErrorV1> {
+        super::super::floor_revalidation::validate_absent(self.currentness.as_ref(), directory)
+    }
+
+    pub(super) fn install_currentness_archive_v1(
+        &mut self,
+        archive: &super::super::floor_revalidation::FloorCurrentnessSharedV1,
+    ) -> Result<(), FloorErrorV1> {
+        // The installed closed mode paths are bounded before new native work;
+        // this is comparison DATA, not a new owner or a path-derived grant.
+        if self.currentness.is_some()
+            || self.path.as_os_str().as_encoded_bytes().len() > MAXIMUM_MODE_PATH_BYTES_V1
+            || self.target.as_os_str().as_encoded_bytes().len() > MAXIMUM_MODE_PATH_BYTES_V1
         {
             return Err(FloorErrorV1::Provisioning);
         }
-        let retained = self
-            .file
-            .metadata()
-            .map_err(|_| FloorErrorV1::Provisioning)?;
-        let named =
-            std::fs::symlink_metadata(&self.target).map_err(|_| FloorErrorV1::Provisioning)?;
-        if !named.is_file()
-            || named.uid() != 0
-            || named.gid() != 0
-            || named.nlink() != 1
-            || named.mode() & 0o7222 != 0
-            || (named.dev(), named.ino()) != self.identity
-            || (retained.dev(), retained.ino()) != self.identity
-            || !fstatvfs(&self.file)
-                .map_err(|_| FloorErrorV1::Provisioning)?
-                .f_flag
-                .contains(StatVfsMountFlags::RDONLY)
-            || decode_mode(&read_mode(&self.target)?)? != self.mode
-        {
-            return Err(FloorErrorV1::Provisioning);
-        }
+        self.currentness = Some(archive.clone());
         Ok(())
     }
 }
 
-pub(super) struct ProvisionPinV1 {
+pub(in crate::recovery::journal) struct ProvisionPinV1 {
+    currentness: Option<super::super::floor_revalidation::FloorCurrentnessSharedV1>,
     endpoint: FloorEndpointV1,
     bytes: [u8; PROVISION_BYTES],
     auth_digest: [u8; 32],
@@ -189,16 +248,17 @@ pub(super) struct ProvisionPinV1 {
 
 impl ProvisionPinV1 {
     pub(super) fn open(endpoint: FloorEndpointV1) -> Result<Self, FloorErrorV1> {
-        let bytes = read_public(endpoint)?;
-        let (profile, salt_name) = decode_provision(&bytes, endpoint)?;
-        let auth = read_auth(endpoint)?;
-        Ok(Self {
-            endpoint,
-            bytes,
-            auth_digest: Sha256::digest(&auth[..]).into(),
-            profile,
-            salt_name,
-        })
+        let mut original = InitialProvisionOriginalV1::new();
+        original.capture_once(endpoint, CredentialReadCustodyV1::Ordinary)?;
+        original.take_pin_once().ok_or(FloorErrorV1::Provisioning)
+    }
+
+    pub(super) fn open_retaining(
+        endpoint: FloorEndpointV1,
+        original: &mut InitialProvisionOriginalV1,
+    ) -> Result<Self, FloorErrorV1> {
+        original.capture_once(endpoint, CredentialReadCustodyV1::Retained)?;
+        original.take_pin_once().ok_or(FloorErrorV1::Provisioning)
     }
 
     pub(super) const fn profile(&self) -> FloorProfileV1 {
@@ -210,20 +270,40 @@ impl ProvisionPinV1 {
     }
 
     pub(super) fn current_auth(&self) -> Result<Zeroizing<[u8; 32]>, FloorErrorV1> {
-        if read_public(self.endpoint)? != self.bytes {
+        match &self.currentness {
+            Some(archive) => super::super::floor_revalidation::validate_provision(archive, self),
+            None => {
+                let mut original = ProvisionRevalidationOriginalV1::new();
+                original.observe_once(self, CredentialReadCustodyV1::Ordinary)?;
+                original.take_completed().map(|(_, auth)| auth)
+                    .ok_or(FloorErrorV1::Provisioning)
+            }
+        }
+    }
+
+    pub(super) fn install_currentness_archive_v1(
+        &mut self,
+        archive: &super::super::floor_revalidation::FloorCurrentnessSharedV1,
+    ) -> Result<(), FloorErrorV1> {
+        if self.currentness.is_some() {
             return Err(FloorErrorV1::Provisioning);
         }
-        let auth = read_auth(self.endpoint)?;
-        if Sha256::digest(&auth[..]).as_slice() != self.auth_digest {
-            return Err(FloorErrorV1::Provisioning);
-        }
-        Ok(auth)
+        self.currentness = Some(archive.clone());
+        Ok(())
     }
 
     pub(super) fn revalidate(&self) -> Result<(), FloorErrorV1> {
         drop(self.current_auth()?);
         Ok(())
     }
+}
+
+fn mode_path(endpoint: FloorEndpointV1) -> PathBuf {
+    let basename = match endpoint {
+        FloorEndpointV1::ControllerStorageClient => "controller-mode",
+        FloorEndpointV1::StorageBroker => "storage-mode",
+    };
+    Path::new("/etc/aos/method46-tpm-floor").join(basename)
 }
 
 fn decode_mode(bytes: &[u8]) -> Result<ImageFloorModeV1, FloorErrorV1> {

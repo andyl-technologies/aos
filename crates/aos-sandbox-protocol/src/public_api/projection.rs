@@ -17,6 +17,8 @@
 use aos_proto::aos::sandbox::v1::{
     Attachment, CacheStatus, Capability, Execution, FilesystemView, Sandbox, Snapshot,
 };
+pub mod dependencies;
+
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, RecordNamespace, SandboxId};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -533,6 +535,20 @@ pub enum PublicProjectionError {
     CorruptRecord,
 }
 
+/// Decodes the selected complete reserved prefix from supplied historical rows.
+///
+/// Rows and returned models are DATA only. Native callers retain their own
+/// currentness and payment before entry. An absent kind selects every reserved
+/// public row, including unknown/malformed kinds which must be rejected.
+pub fn iter_public_projection_rows_data_v2<'row>(
+    rows: impl Iterator<Item = (&'row [u8], &'row [u8])>,
+    kind: Option<PublicProjectionKindV1>,
+) -> impl Iterator<Item = Result<PublicProjectionRecordV1, PublicProjectionError>> {
+    rows.filter(move |(key, _)| key.starts_with(PROJECTION_KEY_PREFIX)
+        && kind.is_none_or(|kind| key.get(PROJECTION_KEY_PREFIX.len()) == Some(&(kind as u8))))
+        .map(|(key, value)| decode_record(key, value))
+}
+
 /// Returns the reserved key prefix for one closed projection schema.
 pub fn projection_kind_prefix(kind: PublicProjectionKindV1) -> Vec<u8> {
     let mut key = Vec::with_capacity(PROJECTION_KEY_PREFIX.len() + 1);
@@ -694,5 +710,81 @@ mod tests {
             select_parentless_create_sandbox(&[wrong_resource], operation, project),
             None
         );
+    }
+}
+
+/// Prices complete operation-list decoding from the actual reserved row roster.
+///
+/// All reserved rows are decoded before the operation filter. The model/backing
+/// sum covers retained matching rows and a refused current decoder; vector
+/// growth or sort scratch uses the actual reached row count. This is passive
+/// Memory DATA, not a public projection or currentness proof.
+#[must_use]
+pub fn operation_list_receiving_bytes_v3<'row>(
+    rows: impl Iterator<Item = (&'row [u8], &'row [u8])>,
+) -> Option<usize> {
+    let mut count = 0usize;
+    let mut retained = 0usize;
+    let mut transient = 0usize;
+    for (key, value) in rows {
+        if !key.starts_with(PROJECTION_KEY_PREFIX) {
+            continue;
+        }
+        count = count.checked_add(1)?;
+        let reached = value.len().min(MAXIMUM_PUBLIC_RESOURCE_BYTES);
+        let model = aos_sandbox_broker_session_protocol::receiving_geometry::protobuf_carriers_v1(
+            u64::try_from(reached).ok()?,
+            u64::try_from(std::mem::size_of::<PublicProjectionResourceV1>()).ok()?,
+        )
+        .ok()?;
+        let model = usize::try_from(model).ok()?;
+        retained = retained.checked_add(model)?;
+        // decode_checked retains its owned model during canonical reencode;
+        // checked conversion's condition/result vectors coexist with that input.
+        let key_growth = PROJECTION_KEY_PREFIX
+            .len()
+            .checked_add(1)?
+            .checked_add(PROJECTION_KEY_PREFIX.len().checked_add(1 + 16)?)?;
+        transient = transient.max(model.checked_add(reached)?.checked_add(key_growth)?);
+    }
+    let vector = if count == 0 {
+        0
+    } else {
+        // Vec growth retains old+new allocations. The same bound also covers
+        // the final retained vector and at most one full-length sort scratch.
+        count
+            .checked_mul(3)?
+            .checked_add(4)?
+            .checked_mul(std::mem::size_of::<PublicProjectionRecordV1>())?
+    };
+    retained.checked_add(transient)?.checked_add(vector)
+}
+
+#[cfg(test)]
+mod operation_receiving_tests {
+    use super::*;
+
+    #[test]
+    fn operation_list_quote_uses_only_reserved_rows_and_their_reached_bytes() {
+        let ignored = operation_list_receiving_bytes_v3(std::iter::once((
+            b"unrelated".as_slice(),
+            b"payload".as_slice(),
+        )))
+        .unwrap();
+        assert_eq!(ignored, 0);
+
+        let key = PROJECTION_KEY_PREFIX;
+        let one =
+            operation_list_receiving_bytes_v3(std::iter::once((key, b"a".as_slice()))).unwrap();
+        let larger =
+            operation_list_receiving_bytes_v3(std::iter::once((key, b"larger payload".as_slice())))
+                .unwrap();
+        let two = operation_list_receiving_bytes_v3(
+            [(key, b"a".as_slice()), (key, b"a".as_slice())].into_iter(),
+        )
+        .unwrap();
+        assert!(one > std::mem::size_of::<PublicProjectionRecordV1>());
+        assert!(larger > one);
+        assert!(two > one);
     }
 }

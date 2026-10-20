@@ -49,7 +49,7 @@ pub(in crate::policy_compiler) fn consume_completed_first_successor_ancestry_v2(
         || tree.tombstones().next().is_some() || records.next().is_some()
         || record.sandbox() != intent.sandbox() || record.parent().is_some()
         || record.incarnation().is_some() || record.desired_generation().get() != 1
-        || crate::hierarchy::codec::tree_commitment_v1(tree)
+        || aos_sandbox_ledger_replay::hierarchy::codec::tree_commitment_v1(tree)
             .map_err(|_| SourceGenesisErrorV1::NonCanonical)? != receipt.next_tree_commit()
     {
         return Err(SourceGenesisErrorV1::Conflict);
@@ -99,7 +99,7 @@ pub(in crate::policy_compiler) fn consume_completed_project_successor_ancestry_v
         || tree.tombstones().next().is_some() || records.next().is_some()
         || record.sandbox() != intent.sandbox() || record.parent().is_some()
         || record.incarnation().is_some() || record.desired_generation().get() != 1
-        || crate::hierarchy::codec::tree_commitment_v1(tree)
+        || aos_sandbox_ledger_replay::hierarchy::codec::tree_commitment_v1(tree)
             .map_err(|_| SourceGenesisErrorV1::NonCanonical)? != receipt.next_tree_commit()
     {
         return Err(SourceGenesisErrorV1::Conflict);

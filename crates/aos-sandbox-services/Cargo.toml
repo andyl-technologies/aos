@@ -7,6 +7,7 @@ autobins = false
 
 [features]
 default = []
+selected-kernel-clone-layout = ["dep:aos-sandbox-linux", "aos-sandbox-linux/selected-kernel-clone-layout"]
 controller = [
     "dep:aos-proto",
     "dep:aos-sandbox-controller-runtime",
@@ -16,6 +17,14 @@ controller = [
     "dep:http-body-util",
     "dep:rustix",
     "dep:tokio",
+    "dep:aos-sandbox-broker",
+    "dep:aos-sandbox-core",
+    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-protocol",
+    "dep:aos-sandbox-ledger-replay",
+    "dep:ed25519-dalek",
+    "dep:thiserror",
+    "dep:zeroize",
 ]
 git = ["dep:aos-sandbox"]
 entitlement = [
@@ -25,25 +34,40 @@ entitlement = [
 ]
 policy = [
     "dep:aos-sandbox",
+    "dep:aos-sandbox-broker",
     "dep:aos-sandbox-broker-session-security",
     "dep:aos-sandbox-cache-signer",
     "dep:aos-sandbox-core",
     "dep:aos-sandbox-policy",
-    "dep:aos-sandbox-source-signer",
+    "dep:aos-sandbox-protocol",
+    "dep:aos-sandbox-ledger-replay",
     "dep:ed25519-dalek",
     "dep:rustix",
     "dep:sha2",
+    "dep:aos-sandbox-linux",
+    "dep:thiserror",
+    "dep:zeroize",
 ]
 # Selects only the existing offline helper; installed CLI availability is unchanged.
 policy-key-pin = [
+    "dep:aos-sandbox-protocol",
     "dep:aos-sandbox",
     "dep:aos-sandbox-policy",
     "dep:ed25519-dalek",
     "dep:rustix",
 ]
-cache-signer = ["dep:aos-sandbox-cache-signer"]
+cache-signer = [
+    "dep:aos-sandbox-cache-signer",
+    "dep:aos-sandbox-broker",
+    "dep:aos-sandbox-core",
+    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-protocol",
+    "dep:ed25519-dalek",
+    "dep:rustix",
+    "dep:thiserror",
+    "dep:zeroize",
+]
 source-signer = ["dep:aos-sandbox-source-signer"]
-publisher = ["dep:aos-sandbox-linux"]
 host = [
     "dep:aos-sandbox",
     "dep:aos-sandbox-broker-session-security",
@@ -64,6 +88,8 @@ storage = [
     "dep:thiserror",
 ]
 network = [
+    "dep:aos-sandbox-broker",
+    "dep:aos-sandbox-core",
     "dep:aos-sandbox-broker-session-security",
     "dep:aos-sandbox-linux",
     "dep:aos-sandbox-network",
@@ -72,17 +98,22 @@ network = [
 ]
 mount = [
     "dep:aos-sandbox",
+    "dep:aos-sandbox-broker",
     "dep:aos-sandbox-broker-session-security",
+    "dep:aos-sandbox-core",
     "dep:aos-sandbox-linux",
     "dep:aos-sandbox-mount",
+    "dep:aos-sandbox-mount-native",
     "dep:aos-sandbox-protocol",
     "dep:aos-sandbox-source-provider-security",
     "dep:rustix",
     "dep:sha2",
     "dep:thiserror",
 ]
-ownership = ["dep:aos-sandbox-broker-session-security"]
+ownership = ["dep:aos-sandbox-ownership"]
 source-provider = [
+    "dep:aos-sandbox",
+    "dep:aos-sandbox-linux",
     "dep:aos-sandbox-broker-session-security",
     "dep:aos-sandbox-core",
     "dep:aos-sandbox-source-provider",
@@ -91,6 +122,7 @@ source-provider = [
     "dep:thiserror",
 ]
 runtime-publisher = ["dep:aos-sandbox", "dep:aos-sandbox-broker-session-security"]
+runtime-boot-preparation = ["runtime-publisher"]
 nix-provision = ["dep:aos-sandbox", "dep:aos-sandbox-broker-session-security"]
 nix = ["dep:aos-sandbox-broker-session-security", "aos-sandbox-broker-session-security/online-nix"]
 online-nix = [
@@ -110,8 +142,10 @@ kernel-tests = [
 ]
 
 [dependencies]
+aos-sandbox-ownership = { workspace = true, optional = true }
 aos-proto = { workspace = true, optional = true }
 aos-sandbox = { workspace = true, optional = true }
+aos-sandbox-broker = { workspace = true, optional = true }
 aos-sandbox-broker-session-security = { workspace = true, optional = true }
 aos-sandbox-cache-signer = { workspace = true, optional = true }
 aos-sandbox-controller-runtime = { workspace = true, optional = true }
@@ -119,9 +153,11 @@ aos-sandbox-core = { workspace = true, optional = true }
 aos-sandbox-host = { workspace = true, optional = true }
 aos-sandbox-linux = { workspace = true, optional = true }
 aos-sandbox-mount = { workspace = true, optional = true }
+aos-sandbox-mount-native = { workspace = true, optional = true }
 aos-sandbox-network = { workspace = true, optional = true }
 aos-sandbox-policy = { workspace = true, optional = true }
 aos-sandbox-protocol = { workspace = true, optional = true }
+aos-sandbox-ledger-replay = { workspace = true, optional = true }
 aos-sandbox-source-provider = { workspace = true, optional = true }
 aos-sandbox-source-provider-security = { workspace = true, optional = true }
 aos-sandbox-source-signer = { workspace = true, optional = true }
@@ -130,7 +166,7 @@ aos-systemd = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 buffa = { workspace = true, optional = true }
 connectrpc = { workspace = true, optional = true }
-ed25519-dalek = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true, features = ["zeroize"] }
 http-body-util = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["http2"] }
@@ -142,6 +178,8 @@ tokio = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
+aos-sandbox-mount-native = { workspace = true, features = ["test-fixtures"] }
+serde_json.workspace = true
 tempfile = "3"
 tower = { workspace = true }
 
@@ -179,11 +217,6 @@ required-features = ["cache-signer"]
 name = "aos-sandbox-source-signerd"
 path = "src/bin/aos-sandbox-source-signerd.rs"
 required-features = ["source-signer"]
-
-[[bin]]
-name = "aos-view-publisher"
-path = "src/bin/aos-view-publisher.rs"
-required-features = ["publisher"]
 
 [[bin]]
 name = "aos-sandbox-hostd"

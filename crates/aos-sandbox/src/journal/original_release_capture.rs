@@ -9,81 +9,26 @@ use super::{
     JournalLimits, JournalRecord, JournalTransaction, NativeReleaseReplayWorkV1,
     OriginalReleaseControllerCutCaptureV1, OriginalReleaseControllerCutFailureV1,
     OriginalReleaseControllerNativeHistoryV1, OriginalReleaseNativeCutPurposeV1,
-    OriginalReleaseSourceCutCaptureV1, OriginalReleaseSourceCutFailureV1, PendingTransaction,
-    RecordNamespace, ReplayState, encoded_transaction_append_bytes, replay_original_observed,
-    runtime_deployment_history, source_original_native,
+    RecordNamespace, ObservedReplayStateV1, encoded_transaction_append_bytes, replay_coordinator_observed_v1,
+    runtime_deployment_history,
 };
 
 pub(super) fn native_release_replay_work_v1(
     physical: usize,
     limits: JournalLimits,
 ) -> Result<NativeReleaseReplayWorkV1, JournalError> {
-    let limit = || JournalError::LimitExceeded("original Release replay copy");
-    let historical_frames = physical / HEADER_BYTES;
-    let historical_rows = historical_frames.min(limits.maximum_materialized_records);
-    let historical_transactions = historical_frames.min(limits.maximum_transactions);
-    let map_entry = std::mem::size_of::<((RecordNamespace, Vec<u8>), Vec<u8>)>();
-    let idempotency_entry = std::mem::size_of::<(Vec<u8>, IdempotencyDecision)>();
-
-    // Two native maps cover the replay and its prospective materialization;
-    // the third payload allowance covers idempotency and pending records.
-    let replay_indexes = physical
-        .checked_mul(3)
-        .and_then(|bytes| {
-            bytes.checked_add(historical_rows.checked_mul(map_entry)?.checked_mul(2)?)
-        })
-        .and_then(|bytes| bytes.checked_add(historical_rows.checked_mul(idempotency_entry)?))
-        .and_then(|bytes| bytes.checked_add(historical_transactions.checked_mul(16)?))
-        .and_then(|bytes| {
-            bytes
-                .checked_add(historical_frames.checked_mul(std::mem::size_of::<RecordNamespace>())?)
-        })
-        .ok_or_else(limit)?;
-    let pending_records = historical_frames
-        .min(limits.maximum_records_per_transaction)
-        .checked_mul(std::mem::size_of::<JournalRecord>())
-        .ok_or_else(limit)?;
-    let advertised_payload = limits
-        .maximum_record_bytes
-        .checked_add(7)
-        .ok_or_else(limit)?;
-    // The shared frame reader grows only after bytes are actually read. The
-    // same capacity/scratch bound must cover direct Release-copy callers and
-    // initial captured-prefix receiving, not only the latter's correction.
-    let frame_payload = aos_sandbox_journal::framing::reached_frame_read_memory_bound_v1(
-        advertised_payload,
-        physical,
-    )
-    .map_err(|_| limit())?;
-
+    let work = aos_sandbox_broker::canonical_journal::ordinary_reread_wire_work_data_v1(
+        physical, limits,
+    ).ok_or(JournalError::LimitExceeded("original Release replay copy"))?;
     Ok(NativeReleaseReplayWorkV1 {
-        replay_indexes,
-        pending_records,
-        frame_payload,
+        replay_indexes: work.replay_indexes,
+        pending_records: work.pending_records,
+        frame_payload: work.frame_payload,
     })
 }
 
 // The private union descriptor has these fields. Preserve the existing four
 // alignment allowances instead of exposing or duplicating that private type.
-pub(super) fn source_release_historical_descriptor_bytes_v1() -> Result<usize, JournalError> {
-    use aos_sandbox_source_provider_ledger::ledger::source_capacity::OriginalSourceRetirementComparisonV5;
-    use source_original_native::SourceOriginalAdmissionDataV5;
-
-    std::mem::size_of::<[u8; 16]>()
-        .checked_add(std::mem::size_of::<bool>())
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_core::ObjectDigest>()))
-        .and_then(|bytes| {
-            bytes.checked_add(std::mem::size_of::<
-                std::sync::Arc<OriginalSourceRetirementComparisonV5>,
-            >())
-        })
-        .and_then(|bytes| {
-            bytes.checked_add(4 * std::mem::align_of::<SourceOriginalAdmissionDataV5>())
-        })
-        .ok_or(JournalError::LimitExceeded(
-            "Source original Release replay copy",
-        ))
-}
 
 impl OriginalReleaseControllerNativeHistoryV1 {
     pub(super) fn observe(
@@ -161,41 +106,6 @@ mod reached_frame_memory_tests {
     }
 }
 
-impl OriginalReleaseSourceCutCaptureV1 {
-    pub(super) fn postcheck_debt(&self) -> Option<&JournalError> {
-        self.native
-            .named_post
-            .as_ref()
-            .and_then(|returned| returned.as_ref().err())
-            .or_else(|| {
-                self.challenge_post
-                    .as_ref()
-                    .and_then(|returned| returned.as_ref().err())
-            })
-    }
-
-    pub(super) fn transfer_first_error(&mut self) -> Option<JournalError> {
-        if self.error_transferred {
-            return None;
-        }
-        let error = match self.first? {
-            OriginalReleaseSourceCutFailureV1::Readback
-                if matches!(self.readback, Some(Err(_))) =>
-            {
-                self.readback.take().and_then(Result::err)
-            }
-            OriginalReleaseSourceCutFailureV1::Native => self.native.transfer_first_error(),
-            OriginalReleaseSourceCutFailureV1::ChallengePost
-                if matches!(self.challenge_post, Some(Err(_))) =>
-            {
-                self.challenge_post.take().and_then(Result::err)
-            }
-            _ => None,
-        };
-        self.error_transferred = error.is_some();
-        error
-    }
-}
 
 impl OriginalReleaseControllerCutCaptureV1 {
     // Move only a proven parked first Err into the containing selected action
@@ -314,9 +224,6 @@ impl Journal {
                 0,
                 self.native.limits(),
             ),
-            OriginalReleaseNativeCutPurposeV1::Source => {
-                source_original_native::writer::require_fixed(self)
-            }
         }
     }
 
@@ -366,56 +273,36 @@ impl Journal {
                 .get_or_insert(OriginalReleaseControllerCutFailureV1::CopyBound);
         }
 
-        self.observe_original_release_native_cut_v1(&mut captured, None, None);
+        self.observe_original_release_native_cut_v1(&mut captured);
         captured
     }
 
-    // Both routes use this exact ReadAt/parser/result-parking sequence. The
-    // Source route supplies its real held challenge view, never another witness.
+    // These non-Provider routes use the same native read and result parking.
     pub(super) fn observe_original_release_native_cut_v1(
         &self,
         captured: &mut OriginalReleaseControllerCutCaptureV1,
-        challenges: Option<&source_original_native::SourceOriginalChallengeHistoryViewV5<'_>>,
-        readback: Option<&Result<(), JournalError>>,
     ) {
-        if captured.first.is_none() && readback.is_none_or(Result::is_ok) {
+        if captured.first.is_none() {
             if let Some(Ok(witness)) = captured.protection.as_ref() {
-                let mut reader = runtime_deployment_history::ReadAtCursorV1::new(
-                    self.native.file(),
-                    witness.file().byte_len(),
-                );
+                let reader = self.native.captured_reader(witness.file().byte_len());
                 // The original native Result is parked before projecting its
                 // full-map comparison, including partial-replay failure.
-                let observer = match challenges {
-                    Some(_) => DeploymentHistoryObserverV1::OriginalReleaseSource {
-                        history: &mut captured.history,
-                        remaining: self.native.committed_transactions(),
-                    },
-                    None => DeploymentHistoryObserverV1::OriginalRelease(&mut captured.history),
-                };
-                captured.native = Some(replay_original_observed(
-                    &mut reader,
+                let observer = DeploymentHistoryObserverV1::OriginalRelease(&mut captured.history);
+                captured.native = Some(replay_coordinator_observed_v1(
+                    reader,
                     self.native.limits(),
-                    challenges,
+                    None,
                     Some(observer),
                 ));
                 if matches!(captured.native, Some(Err(_))) {
                     captured.first = Some(OriginalReleaseControllerCutFailureV1::Native);
                 }
                 if let Some(Ok(replayed)) = captured.native.as_ref() {
-                    captured.comparison = Some(match challenges {
-                        Some(challenges) => self.require_original_release_source_replay_v1(
-                            replayed,
-                            &captured.history,
-                            witness.file().byte_len(),
-                            challenges,
-                        ),
-                        None => self.require_original_release_controller_replay_v1(
-                            replayed,
-                            &captured.history,
-                            witness.file().byte_len(),
-                        ),
-                    });
+                    captured.comparison = Some(self.require_original_release_controller_replay_v1(
+                        replayed,
+                        &captured.history,
+                        witness.file().byte_len(),
+                    ));
                     if matches!(captured.comparison, Some(Err(_))) {
                         captured
                             .first
@@ -437,110 +324,6 @@ impl Journal {
         }
     }
 
-    pub(super) fn observe_original_release_source_cut_into_v1(
-        &self,
-        challenges: &source_original_native::SourceOriginalChallengeHistoryViewV5<'_>,
-        readback: Result<(), JournalError>,
-        destination: &mut Option<OriginalReleaseSourceCutCaptureV1>,
-    ) -> Result<(), JournalError> {
-        if destination.is_some() {
-            std::process::abort();
-        }
-        let captured = OriginalReleaseControllerCutCaptureV1 {
-            purpose: OriginalReleaseNativeCutPurposeV1::Source,
-            protection: None,
-            copy_bound: None,
-            native: None,
-            comparison: None,
-            named_post: None,
-            history: OriginalReleaseControllerNativeHistoryV1::default(),
-            first: None,
-            error_transferred: false,
-        };
-        *destination = Some(OriginalReleaseSourceCutCaptureV1 {
-            readback: Some(readback),
-            native: captured,
-            challenge_post: None,
-            first: None,
-            error_transferred: false,
-        });
-        let Some(source) = destination.as_mut() else {
-            std::process::abort();
-        };
-        if matches!(source.readback, Some(Err(_))) {
-            source.first = Some(OriginalReleaseSourceCutFailureV1::Readback);
-        }
-        let captured = &mut source.native;
-        captured.protection = Some((|| {
-            self.require_original_release_cut_location_v1(captured.purpose)?;
-            self.source_original_replay
-                .validate_challenges(challenges)?;
-            self.protected_writer_name_witness()
-        })());
-        if matches!(captured.protection, Some(Err(_))) {
-            captured
-                .first
-                .get_or_insert(OriginalReleaseControllerCutFailureV1::Protection);
-        }
-
-        captured.copy_bound = Some((|| {
-            let witness = captured
-                .protection
-                .as_ref()
-                .and_then(|returned| returned.as_ref().ok())
-                .ok_or(JournalError::ProtectedBoundary)?;
-            let bytes = self.original_release_source_replay_copy_bytes_v1(
-                witness.file().byte_len(),
-                challenges,
-            )?;
-            if bytes > self.native.limits().maximum_materialized_bytes {
-                return Err(JournalError::LimitExceeded(
-                    "Source original Release replay copy",
-                ));
-            }
-            Ok(())
-        })());
-        if matches!(captured.copy_bound, Some(Err(_))) {
-            captured
-                .first
-                .get_or_insert(OriginalReleaseControllerCutFailureV1::CopyBound);
-        }
-
-        self.observe_original_release_native_cut_v1(
-            &mut source.native,
-            Some(challenges),
-            source.readback.as_ref(),
-        );
-        if source.native.named_post.is_none() {
-            source.native.named_post = Some(self.require_original_release_cut_location_v1(
-                OriginalReleaseNativeCutPurposeV1::Source,
-            ));
-            if matches!(source.native.named_post, Some(Err(_))) {
-                source
-                    .native
-                    .first
-                    .get_or_insert(OriginalReleaseControllerCutFailureV1::NamedPost);
-            }
-        }
-        if source.native.first.is_some() {
-            source
-                .first
-                .get_or_insert(OriginalReleaseSourceCutFailureV1::Native);
-        }
-        source.challenge_post = Some(challenges.validate_current());
-        if matches!(source.challenge_post, Some(Err(_))) {
-            source
-                .first
-                .get_or_insert(OriginalReleaseSourceCutFailureV1::ChallengePost);
-        }
-        if source.first.is_some() {
-            return match source.transfer_first_error() {
-                Some(cause) => Err(cause),
-                None => std::process::abort(),
-            };
-        }
-        Ok(())
-    }
 
     // The captured physical prefix bounds all historical payloads, including
     // rows larger than today's materialized map. It is not a second quota or
@@ -584,11 +367,10 @@ impl Journal {
                 )
             })
             .and_then(|bytes| {
-                bytes.checked_add(self.idempotency.len().checked_mul(idempotency_entry)?)
+                bytes.checked_add(self.native.idempotency().len().checked_mul(idempotency_entry)?)
             })
             .ok_or_else(limit)?;
-        let original_indexes = self
-            .idempotency
+        let original_indexes = self.native.idempotency()
             .keys()
             .try_fold(original_indexes, |bytes, key| {
                 bytes.checked_add(key.len()).ok_or_else(limit)
@@ -604,96 +386,19 @@ impl Journal {
             .checked_add(replay_indexes)
             .and_then(|bytes| bytes.checked_add(pending_records))
             .and_then(|bytes| bytes.checked_add(frame_payload))
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ReplayState>()))
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PendingTransaction>()))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ObservedReplayStateV1>()))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(Vec<JournalRecord>, aos_sandbox_journal::transaction::NativePendingTransaction)>()))
+            .and_then(|bytes| bytes.checked_add(super::ordinary_reread::receiving_control_bytes_v1()?))
             .and_then(|bytes| {
                 bytes.checked_add(std::mem::size_of::<OriginalReleaseControllerCutCaptureV1>())
             })
             .ok_or_else(limit)
     }
 
-    pub(super) fn original_release_source_replay_copy_bytes_v1(
-        &self,
-        physical_end: u64,
-        challenges: &source_original_native::SourceOriginalChallengeHistoryViewV5<'_>,
-    ) -> Result<usize, JournalError> {
-        use source_original_native::{SourceOriginalAdmissionDataV5, SourceOriginalPhysicalCutV5};
-
-        let limit = || JournalError::LimitExceeded("Source original Release replay copy");
-        let physical = usize::try_from(physical_end).map_err(|_| limit())?;
-        // The fixed Source observer rejects an extra COMMIT before any Source
-        // retention. Price actual original metadata, not a guessed count from
-        // the serialized width of today's large carriers.
-        let transactions = self.native.committed_transactions();
-        if transactions == 0 || transactions > self.native.limits().maximum_transactions {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let pairs = transactions.checked_mul(transactions).ok_or_else(limit)?;
-        // A historical reference contains these four fields. Four maximum
-        // alignment allowances conservatively cover its padding without
-        // exposing that private representation outside its owning module.
-        let historical_descriptor = source_release_historical_descriptor_bytes_v1()?;
-
-        // Each physical transaction can retain two cut maps, one four-payload
-        // Applying seed and one three-payload current retirement. Historical
-        // retirements contribute at most one three-payload copy per origin pair.
-        // This bounds the existing retained_bytes charge, not allocator RAM.
-        let source_payload = transactions
-            .checked_mul(9)
-            .and_then(|linear| {
-                pairs
-                    .checked_mul(3)
-                    .and_then(|square| linear.checked_add(square))
-            })
-            .and_then(|factor| physical.checked_mul(factor))
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    transactions.checked_mul(
-                        std::mem::size_of::<SourceOriginalAdmissionDataV5>()
-                            .checked_add(std::mem::size_of::<SourceOriginalPhysicalCutV5>())?,
-                    )?,
-                )
-            })
-            .and_then(|bytes| {
-                bytes.checked_add(pairs.checked_mul(2)?.checked_mul(historical_descriptor)?)
-            })
-            .ok_or_else(limit)?
-            .min(self.native.limits().maximum_materialized_bytes);
-        let resident = self
-            .source_original_replay
-            .original_release_resident_copy_bytes_v1()?;
-        let representation = std::mem::size_of::<Option<OriginalReleaseSourceCutCaptureV1>>()
-            .checked_sub(std::mem::size_of::<OriginalReleaseControllerCutCaptureV1>())
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<std::cell::Cell<bool>>()))
-            .ok_or_else(limit)?;
-        // The live challenge Journal's original Vec and the cached Arc witness
-        // coexist. Charge both payloads independently; borrowing does not
-        // eliminate the original Vec's residence or its separate native owner.
-        let challenge_resident = challenges.checkpoints()?.try_fold(0_usize, |bytes, row| {
-            bytes
-                .checked_add(std::mem::size_of::<
-                    source_original_native::SourceOriginalChallengeCheckpointV5,
-                >())
-                .and_then(|bytes| bytes.checked_add(row.key().len()))
-                .and_then(|bytes| bytes.checked_add(row.value().len()))
-                .ok_or_else(limit)
-        })?;
-
-        // Retain the fresh independent cache AND guard an additional logical
-        // comparison allowance. The shared parser's original limits stay
-        // unchanged; nested allocator/validator peaks remain funding debt.
-        self.original_release_native_replay_copy_bytes_v1(physical_end)?
-            .checked_add(resident)
-            .and_then(|bytes| bytes.checked_add(challenge_resident))
-            .and_then(|bytes| bytes.checked_add(source_payload.checked_mul(2)?))
-            .and_then(|bytes| bytes.checked_add(physical.checked_mul(6)?))
-            .and_then(|bytes| bytes.checked_add(representation))
-            .ok_or_else(limit)
-    }
 
     pub(super) fn require_original_release_controller_replay_v1(
         &self,
-        replayed: &ReplayState,
+        replayed: &ObservedReplayStateV1,
         history: &OriginalReleaseControllerNativeHistoryV1,
         physical_end: u64,
     ) -> Result<(), JournalError> {
@@ -705,30 +410,13 @@ impl Journal {
         )
     }
 
-    pub(super) fn require_original_release_source_replay_v1(
-        &self,
-        replayed: &ReplayState,
-        history: &OriginalReleaseControllerNativeHistoryV1,
-        physical_end: u64,
-        challenges: &source_original_native::SourceOriginalChallengeHistoryViewV5<'_>,
-    ) -> Result<(), JournalError> {
-        self.require_original_release_native_replay_v1(
-            replayed,
-            history,
-            physical_end,
-            OriginalReleaseNativeCutPurposeV1::Source,
-        )?;
-        source_original_native::writer::require_original_release_source_replay_v1(
-            self, replayed, challenges,
-        )
-    }
 
     pub(super) fn require_original_release_native_replay_v1(
         &self,
-        replayed: &ReplayState,
+        replayed: &ObservedReplayStateV1,
         history: &OriginalReleaseControllerNativeHistoryV1,
         physical_end: u64,
-        purpose: OriginalReleaseNativeCutPurposeV1,
+        _purpose: OriginalReleaseNativeCutPurposeV1,
     ) -> Result<(), JournalError> {
         self.ensure_protected_authority()?;
         if history.head.is_none_or(|head| head == [0; 32])
@@ -739,16 +427,15 @@ impl Journal {
             || replayed.durable_end != physical_end
             || replayed.next_sequence != self.native.next_sequence()
             || replayed.committed_transactions != self.native.committed_transactions()
-            || replayed.transaction_ids != *self.native.transaction_ids()
-            || replayed.committed_namespaces != *self.native.committed_namespaces()
-            || replayed.state != *self.native.state()
-            || replayed.materialized_bytes != self.native.materialized_bytes()
-            || replayed.idempotency != self.idempotency
-            || (!matches!(purpose, OriginalReleaseNativeCutPurposeV1::Source)
-                && (!replayed.source_challenge_history.is_empty()
-                    || !self.source_challenge_history.is_empty()
-                    || replayed.source_original_replay.has_dependencies()
-                    || self.source_original_replay.has_dependencies()))
+            || replayed.native.transaction_ids_data_v1() != self.native.transaction_ids()
+            || replayed.native.committed_namespaces_data_v1() != self.native.committed_namespaces()
+            || replayed.native.state_data_v1() != self.native.state()
+            || replayed.native.materialized_bytes_data_v1() != self.native.materialized_bytes()
+            || replayed.native.idempotency_data_v1() != self.native.idempotency()
+            || !replayed.source_challenge_history.is_empty()
+            || !self.source_challenge_history.is_empty()
+            || replayed.source_original_replay.has_dependencies()
+            || self.source_original_replay.has_dependencies()
             || replayed.source_history_compacted != self.source_history_compacted
             || replayed.q04_lower_history_present != self.q04_lower_history_present
         {

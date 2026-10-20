@@ -41,7 +41,39 @@ enum AttachedIo {
     },
 }
 
+/// Retains the exact startup descriptors until the existing registry accepts them.
+pub(super) struct AttachIoRegistrationOriginalV1 {
+    input: Option<ChildStdin>,
+    output: Option<ChildStdout>,
+    error: Option<ChildStderr>,
+    duplicate: Option<rustix::io::Result<OwnedFd>>,
+    result: Option<Result<(), GuestProcessEffectErrorV1>>,
+    entered: bool,
+}
+
+impl AttachIoRegistrationOriginalV1 {
+    pub(super) fn new(input: Option<ChildStdin>, output: Option<ChildStdout>,
+        error: Option<ChildStderr>) -> Self
+    {
+        Self { input, output, error, duplicate: None, result: None, entered: false }
+    }
+
+    pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.duplicate.as_ref().and_then(|result| result.as_ref().err())
+            .map(|cause| cause as _)
+            .or_else(|| self.result.as_ref().and_then(|result| result.as_ref().err())
+                .map(|cause| cause as _))
+    }
+}
+
 type PtyRegistry = Arc<Mutex<BTreeMap<[u8; 16], AttachedIo>>>;
+
+/// Distinguishes retained original terminal channels from physical retirement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum OriginalIoDispositionV1 {
+    Pending,
+    Disposed,
+}
 
 pub(super) struct AttachBridge {
     masters: PtyRegistry,
@@ -160,6 +192,12 @@ impl AttachBridge {
         })
     }
 
+    pub(super) fn prune_original_disconnects_v1(&self, ledger: &Ledger)
+        -> Result<Option<[u8; 16]>, GuestProcessEffectErrorV1>
+    {
+        self.monitors.prune_closed(ledger)
+    }
+
     pub(super) fn bind_monitor_v2(
         &self,
         runtime: crate::openssh_gate_linux::OpenSshMonitorRuntimeV2,
@@ -178,20 +216,9 @@ impl AttachBridge {
         execution: [u8; 16],
         master: &OwnedFd,
     ) -> Result<(), GuestProcessEffectErrorV1> {
-        if self.server.is_finished() {
-            return Err(GuestProcessEffectErrorV1::Unavailable(
-                "attach bridge stopped",
-            ));
-        }
-        let duplicate = rustix::io::dup(master)?;
-        let mut masters = self.masters.lock().map_err(|_| {
-            GuestProcessEffectErrorV1::Unavailable("attach bridge registry poisoned")
-        })?;
-        if masters.contains_key(&execution) {
-            return Err(GuestProcessEffectErrorV1::LedgerConflict);
-        }
-        masters.insert(execution, AttachedIo::Pty(duplicate));
-        Ok(())
+        let mut original = AttachIoRegistrationOriginalV1::new(None, None, None);
+        let _ = self.register_original_once(execution, Some(master), &mut original);
+        original.result.take().ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?
     }
 
     pub(super) fn register_stream(
@@ -201,24 +228,65 @@ impl AttachBridge {
         output: ChildStdout,
         error: ChildStderr,
     ) -> Result<(), GuestProcessEffectErrorV1> {
-        if self.server.is_finished() {
-            return Err(GuestProcessEffectErrorV1::Unavailable(
-                "attach bridge stopped",
-            ));
+        let mut original = AttachIoRegistrationOriginalV1::new(Some(input), Some(output), Some(error));
+        let _ = self.register_original_once(execution, None, &mut original);
+        original.result.take().ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?
+    }
+
+    pub(super) fn register_original_once(
+        &self,
+        execution: [u8; 16],
+        master: Option<&OwnedFd>,
+        original: &mut AttachIoRegistrationOriginalV1,
+    ) -> Result<(), GuestProcessEffectErrorV1> {
+        if original.entered {
+            return Err(GuestProcessEffectErrorV1::AmbiguousEffect);
         }
-        let descriptors = AttachedIo::Stream {
-            input: input.into(),
-            output: output.into(),
-            error: error.into(),
-        };
-        let mut masters = self.masters.lock().map_err(|_| {
-            GuestProcessEffectErrorV1::Unavailable("attach bridge registry poisoned")
-        })?;
-        if masters.contains_key(&execution) {
-            return Err(GuestProcessEffectErrorV1::LedgerConflict);
-        }
-        masters.insert(execution, descriptors);
-        Ok(())
+        original.entered = true;
+        let result = (|| {
+            if self.server.is_finished() {
+                return Err(GuestProcessEffectErrorV1::Unavailable("attach bridge stopped"));
+            }
+            if let Some(master) = master {
+                original.duplicate = Some(rustix::io::dup(master));
+                if let Some(Err(cause)) = original.duplicate.as_ref() {
+                    return Err((*cause).into());
+                }
+            } else if original.input.is_none() || original.output.is_none() || original.error.is_none() {
+                return Err(GuestProcessEffectErrorV1::AmbiguousEffect);
+            }
+            let mut masters = self.masters.lock().map_err(|_| {
+                GuestProcessEffectErrorV1::Unavailable("attach bridge registry poisoned")
+            })?;
+            if masters.contains_key(&execution) {
+                return Err(GuestProcessEffectErrorV1::LedgerConflict);
+            }
+            // No fallible native work follows these moves. The SAME owners
+            // enter the existing registry only after its complete acceptance.
+            let descriptors = if master.is_some() {
+                match original.duplicate.take() {
+                    Some(Ok(duplicate)) => AttachedIo::Pty(duplicate),
+                    _ => return Err(GuestProcessEffectErrorV1::AmbiguousEffect),
+                }
+            } else {
+                match (original.input.take(), original.output.take(), original.error.take()) {
+                    (Some(input), Some(output), Some(error)) => AttachedIo::Stream {
+                        input: input.into(), output: output.into(), error: error.into(),
+                    },
+                    (input, output, error) => {
+                        original.input = input;
+                        original.output = output;
+                        original.error = error;
+                        return Err(GuestProcessEffectErrorV1::AmbiguousEffect);
+                    }
+                }
+            };
+            masters.insert(execution, descriptors);
+            Ok(())
+        })();
+        let positive = result.is_ok();
+        original.result = Some(result);
+        if positive { Ok(()) } else { Err(GuestProcessEffectErrorV1::AmbiguousEffect) }
     }
 
     /// Closes the I/O factory without discarding consumed terminal-data custody.
@@ -228,27 +296,25 @@ impl AttachBridge {
     pub(super) fn finish_execution(
         &self,
         execution: [u8; 16],
-    ) -> Result<(), GuestProcessEffectErrorV1> {
+    ) -> Result<OriginalIoDispositionV1, GuestProcessEffectErrorV1> {
         // Owner effects already retain the shared barrier. Preserve lock order
         // for the later held consume: barrier, monitor custody, I/O registry.
-        self.monitors.finish_execution(execution)?;
+        let monitors_disposed = self.monitors.finish_execution(execution)?;
         let mut masters = self.masters.lock().map_err(|_| {
             GuestProcessEffectErrorV1::Unavailable("attach bridge registry poisoned")
         })?;
         masters.remove(&execution);
-        Ok(())
+        drop(masters);
+        // The consumed original channel learns durable waitstatus through
+        // MonitorRegistry's terminal-data path before the signed Agent reply.
+        // Keep its Process/gate charged until that exact channel is pruned.
+        if monitors_disposed {
+            Ok(OriginalIoDispositionV1::Disposed)
+        } else {
+            Ok(OriginalIoDispositionV1::Pending)
+        }
     }
 
-    /// Reports retained consumed-session data ownership, not attach permission.
-    ///
-    /// # Errors
-    /// Rejects a poisoned monitor ownership lock.
-    pub(super) fn has_original_session(
-        &self,
-        execution: [u8; 16],
-    ) -> Result<bool, GuestProcessEffectErrorV1> {
-        self.monitors.has_original_session(execution)
-    }
 }
 
 /// Narrows a local wait by current wall-clock expiry and the admitted BOOTTIME cut.
@@ -364,6 +430,7 @@ fn transfer_original_io_v3(
         // Keep the same barrier and registry custody through kernel-identified
         // receipt. Neither reflected bytes nor an ACK can nominate another child.
         let reply = loop {
+            let _ = crate::process::poll_original_execution_timeouts_v1(ledger);
             crate::process::check_deadline(deadline)?;
             original_authority_deadline(
                 authority_expires_at,
@@ -459,25 +526,24 @@ fn serve(
     masters: PtyRegistry,
     monitors: crate::monitor::MonitorRegistry,
 ) {
+    let mut listener_current = None;
     loop {
-        // One held barrier covers the real disconnect sample, subtree kill,
-        // recursive-empty/leader-exit evidence and durable terminal record.
-        let barrier = ledger.effect_barrier();
-        if let Ok(_current) = barrier.lock() {
-            match monitors.prune_closed(&ledger) {
-                Ok(Some(execution)) => {
-                    if let Ok(mut masters) = masters.lock() {
-                        masters.remove(&execution);
-                    }
-                }
-                Ok(None) => {}
-                Err(_) => {} // The canceled durable row already forecloses IO.
-            }
-        } else {
-            break;
+        // A standing execution timeout is independent of fresh Host/monitor
+        // traffic and its global effect barrier. This step only advances fixed
+        // native kill/population/reap destinations; the actor publishes later.
+        let _ = crate::process::poll_original_execution_timeouts_v1(&ledger);
+        if monitors.registration_refused() {
+            // Keep the entered failed registration and listener in this sole
+            // actor. Do not accept a replacement or accumulate failed sockets.
+            thread::sleep(Duration::from_millis(5));
+            continue;
         }
-        if listener.validate_current().is_err() {
-            break;
+        if !listener_current.as_ref().is_some_and(Result::is_err) {
+            listener_current = Some(listener.validate_current());
+        }
+        if listener_current.as_ref().is_some_and(Result::is_err) {
+            thread::sleep(Duration::from_millis(5));
+            continue;
         }
         match listener.accept() {
             Ok(socket) => {
@@ -485,7 +551,7 @@ fn serve(
                     // Only the measured live monitor can retain a binding.
                     // Registration exposes no I/O and never reaches reserve.
                     let barrier = ledger.effect_barrier();
-                    if let Ok(_current) = barrier.lock() {
+                    if let Ok(_current) = lock_effect_barrier_with_deadlines(&barrier, &ledger) {
                         let _ = monitors.register(socket, &ledger);
                     }
                     continue;
@@ -513,7 +579,22 @@ fn serve(
             Err(_) => thread::sleep(Duration::from_millis(5)),
         }
     }
-    monitors.close();
+}
+
+pub(super) fn lock_effect_barrier_with_deadlines<'barrier>(
+    barrier: &'barrier Mutex<()>, ledger: &Ledger,
+) -> Result<std::sync::MutexGuard<'barrier, ()>, GuestProcessEffectErrorV1> {
+    loop {
+        match barrier.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(_)) =>
+                return Err(GuestProcessEffectErrorV1::LedgerConflict),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                let _ = crate::process::poll_original_execution_timeouts_v1(ledger);
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+    }
 }
 
 fn read_gate_claim() -> Result<OpenSshGateClaimV1, GuestProcessEffectErrorV1> {
@@ -584,4 +665,61 @@ pub(super) fn request_matches(
         && request.process_start_ticks == claim.process_start_ticks
         && request.process_start_ticks == process.start_ticks
         && claim.pty == process.pty
+}
+
+#[cfg(test)]
+mod startup_registration_tests {
+    use super::*;
+    use std::os::fd::AsRawFd as _;
+
+    #[test]
+    fn refused_registry_retains_actual_duplicate_until_original_is_disposed() {
+        let master: OwnedFd = std::fs::File::open(std::env::current_exe().unwrap()).unwrap().into();
+        let execution = [7; 16];
+        let mut entries = BTreeMap::new();
+        entries.insert(execution, AttachedIo::Pty(rustix::io::dup(&master).unwrap()));
+        let (release, wait) = std::sync::mpsc::channel();
+        let bridge = AttachBridge {
+            masters: Arc::new(Mutex::new(entries)),
+            monitors: crate::monitor::MonitorRegistry::default(),
+            server: std::thread::spawn(move || { let _ = wait.recv(); }),
+        };
+        let mut original = AttachIoRegistrationOriginalV1::new(None, None, None);
+
+        assert!(bridge.register_original_once(execution, Some(&master), &mut original).is_err());
+        assert!(matches!(original.result, Some(Err(GuestProcessEffectErrorV1::LedgerConflict))));
+        let duplicate = original.duplicate.as_ref().unwrap().as_ref().unwrap();
+        assert!(rustix::io::fcntl_getfd(duplicate).is_ok());
+        let native_path = format!("/proc/self/fd/{}", duplicate.as_raw_fd());
+        assert!(std::fs::read_link(&native_path).is_ok());
+        assert!(original.failure().is_some());
+
+        drop(original);
+        assert!(std::fs::read_link(native_path).is_err());
+        release.send(()).unwrap();
+        bridge.server.join().unwrap();
+    }
+
+    #[test]
+    fn no_session_disposition_closes_the_actual_io_master_before_completing() {
+        let descriptor: OwnedFd = std::fs::File::open(std::env::current_exe().unwrap()).unwrap().into();
+        let path = format!("/proc/self/fd/{}", descriptor.as_raw_fd());
+        let execution = [8; 16];
+        let mut entries = BTreeMap::new();
+        entries.insert(execution, AttachedIo::Pty(descriptor));
+        let (release, wait) = std::sync::mpsc::channel();
+        let bridge = AttachBridge {
+            masters: Arc::new(Mutex::new(entries)),
+            monitors: crate::monitor::MonitorRegistry::default(),
+            server: std::thread::spawn(move || { let _ = wait.recv(); }),
+        };
+
+        assert!(std::fs::read_link(&path).is_ok());
+        assert_eq!(bridge.finish_execution(execution).unwrap(), OriginalIoDispositionV1::Disposed);
+        assert!(std::fs::read_link(path).is_err());
+        assert!(bridge.masters.lock().unwrap().is_empty());
+
+        release.send(()).unwrap();
+        bridge.server.join().unwrap();
+    }
 }

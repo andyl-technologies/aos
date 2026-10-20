@@ -27,8 +27,10 @@ use super::{
     open_history_archive_frame, protocol_key, successful_terminal,
 };
 
-const MAGIC: &[u8; 8] = b"AOSHTA01";
-const DOMAIN: &[u8] = b"aos.sandbox.broker-session.host-terminal-archive.v1\0";
+const MAGIC: &[u8; 8] = aos_sandbox_protocol::authenticated_session::history_archive::HOST_TERMINAL_ARCHIVE_MAGIC_V1;
+const DOMAIN: &[u8] = aos_sandbox_protocol::authenticated_session::history_archive::HOST_TERMINAL_ARCHIVE_DOMAIN_V1;
+
+mod closed;
 
 #[cfg(test)]
 mod signed_tests;
@@ -39,21 +41,17 @@ impl ProtectedBrokerSessionJournalV1 {
         original_request_id: [u8; 16],
     ) -> Result<Option<AuthenticatedOriginalHostNoApplyJoinV1>, BrokerSessionSecurityError> {
         let value = {
-            let authority = self
-                .journal_mut()?
-                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let mut authority = self.schema_authority_v3()?;
             authority
                 .get(&host_terminal_archive_key(original_request_id))
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?
                 .map(<[u8]>::to_vec)
         };
-        let Some(value) = value else {
+        let Some(value) = self.schema_retain_value_v3(value)? else {
             return Ok(None);
         };
         let bytes = open_history_archive_frame(original_request_id, &value, MAGIC, DOMAIN)?;
-        let stored =
-            StoredProtocolHistoryV1::decode(&protocol_key(BrokerSessionProtocolV1::Host), bytes)?;
+        let stored = self.schema_decode_stored_v3(&protocol_key(BrokerSessionProtocolV1::Host), bytes)?;
         self.verify_host_terminal_archive(&stored, Some(original_request_id))
             .map(Some)
     }
@@ -66,8 +64,16 @@ impl ProtectedBrokerSessionJournalV1 {
             MAXIMUM_HOST_TERMINAL_ARCHIVES,
         )?;
         for request_id in &keys {
-            self.read_host_terminal_archive(*request_id)?
-                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            let scope = self.schema_scope_v3();
+            let result = (|| {
+                if self.read_closed_host_terminal_archive_v2(*request_id)?.is_some() {
+                    return Ok(());
+                }
+                self.read_host_terminal_archive(*request_id)?
+                    .ok_or(BrokerSessionSecurityError::Currentness).map(|_| ())
+            })();
+            self.schema_complete_scope_v3(scope, &result);
+            result?;
         }
         Ok(keys.len())
     }
@@ -76,6 +82,9 @@ impl ProtectedBrokerSessionJournalV1 {
         &mut self,
         stored: &StoredProtocolHistoryV1,
     ) -> Result<Option<JournalRecord>, BrokerSessionSecurityError> {
+        if let Some(archive) = self.prepare_closed_host_terminal_archive_v2(stored)? {
+            return Ok(Some(archive));
+        }
         if stored.protocol != BrokerSessionProtocolV1::Host
             || stored.endpoint != BrokerSessionDurableEndpointV1::Client
         {

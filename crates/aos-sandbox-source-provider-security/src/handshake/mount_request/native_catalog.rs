@@ -75,7 +75,7 @@ pub(super) struct NativeAcquireCurrentnessGuardV3 {
 impl NativeAcquireCurrentnessGuardV3 {
     pub(super) const fn original_planning_snapshot(
         &self,
-    ) -> &aos_sandbox::ProtectedJournalSnapshot {
+    ) -> &aos_sandbox_mount_native::ProtectedJournalSnapshot {
         &self.preparation.plan.journal_snapshot
     }
 
@@ -166,7 +166,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[allow(clippy::too_many_arguments)]
     pub fn begin_native_acquire_v3(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         plan: CurrentMountProviderSessionPlanV2,
         request: AcquireSourceRequestV1,
         live_mount_request: &aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest,
@@ -197,7 +197,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn begin_original_native_acquire_retaining_v5(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         plan: CurrentMountProviderSessionPlanV2,
         request: AcquireSourceRequestV1,
         live_mount_request: &aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest,
@@ -230,7 +230,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn begin_original_native_acquire_from_parked_v5(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         plan_slot: &mut Option<CurrentMountProviderSessionPlanV2>,
         request_slot: &mut Option<AcquireSourceRequestV1>,
         live_mount_request: &aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest,
@@ -395,7 +395,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// time, mismatched catalog artifacts, stale Mount state, or signing failure.
     pub fn prepare_native_acquire_v3(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         pending: &mut PendingNativeMountAcquireV3,
     ) -> Result<Option<PreparedMountProviderRequestV2>, SourceProviderSecurityError> {
         let mut prepared = None;
@@ -415,7 +415,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn prepare_original_native_acquire_retaining_v5(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         pending: &mut PendingNativeMountAcquireV3,
         prepared_slot: &mut Option<PreparedMountProviderRequestV2>,
     ) -> Result<bool, SourceProviderSecurityError> {
@@ -580,7 +580,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn revalidate_native_acquire_preparation_v3(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         prepared: &PreparedMountProviderRequestV2,
     ) -> Result<(), SourceProviderSecurityError> {
         OriginalBoundaryV5::new(self, ()).run(|owner, _| {
@@ -607,7 +607,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn revalidate_native_acquire_reservation_v3(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         reservation: &ReservedMountProviderRequestV2,
     ) -> Result<(), SourceProviderSecurityError> {
         self.revalidate_native_acquire_reservation_with_view(journal, reservation)
@@ -654,7 +654,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     #[doc(hidden)]
     pub fn confirm_native_acquire_reservation_v3(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
         prepared: PreparedMountProviderRequestV2,
         attempt_key: Vec<u8>,
         attempt_record: Vec<u8>,
@@ -763,7 +763,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         head_key: &[u8],
         head_record: &[u8],
     ) -> Result<
-        (aos_sandbox::ProtectedJournalSnapshot, [u8; 32], [u8; 32]),
+        (aos_sandbox_mount_native::ProtectedJournalSnapshot, [u8; 32], [u8; 32]),
         SourceProviderSecurityError,
     > {
         let guard = prepared.native_currentness.as_ref()

@@ -24,25 +24,39 @@ use aos_sandbox_core::{
     AttachmentId, ObjectDescriptor, ObjectDigest, OperationId, ProjectId, ViewId,
 };
 
+pub use aos_sandbox_protocol::cache_state::admission_progress::{
+    AdmissionProgressV1, AdmissionStageV1, WatermarkRequirementV1,
+};
+
+use aos_sandbox_protocol::cache_state::admission_data::{
+    SourceAuthorizationDataV1, ImmutableAdmissionPlanDataV1, source_authority_subject,
+};
+
 mod digest;
 
 pub use digest::initial_pin_set_digest;
-use digest::{
-    admission_digest, admission_progress_digest, prepared_artifact_subject,
-    source_authority_subject, stage_rank,
-};
+use digest::prepared_artifact_subject;
 
 const MAXIMUM_INITIAL_PINS: usize = 65_536;
 
-/// Commits admission to an independently verified immutable source revision.
+/// Retains verifier-issued source authority over its canonical historical DATA.
+///
+/// Historical DATA cannot construct this Native wrapper.
+///
+/// ```compile_fail
+/// fn issue(data: aos_sandbox_protocol::cache_state::admission_data::SourceAuthorizationDataV1) {
+///     let _ = aos_sandbox::cache_residency::admission::SourceAuthorizationV1(data);
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SourceAuthorizationV1 {
-    pub(crate) release_digest: ObjectDigest,
-    pub(crate) source_revision: ObjectDigest,
-    pub(crate) descriptor: ObjectDescriptor,
-    pub(crate) source_seal: ObjectDigest,
-    pub(crate) authority_generation: u64,
-    pub(crate) valid_until: u64,
+pub struct SourceAuthorizationV1(SourceAuthorizationDataV1);
+
+impl std::ops::Deref for SourceAuthorizationV1 {
+    type Target = SourceAuthorizationDataV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl SourceAuthorizationV1 {
@@ -50,16 +64,9 @@ impl SourceAuthorizationV1 {
         &self,
         partition: PhysicalPartitionId,
     ) -> Result<(CacheAuthorityScopeV1, ObjectDigest), AdmissionError> {
-        let scope = CacheAuthorityScopeV1::new(
-            partition,
-            source_authority_subject(&self.descriptor, self.source_revision, self.source_seal),
-            None,
-            self.source_revision,
-            partition.backing().root(),
-            self.authority_generation,
-            self.valid_until,
-        )?;
-        Ok((scope, self.release_digest))
+        self.0
+            .authority_binding(partition)
+            .map_err(|error| AdmissionError::Authority(error.into()))
     }
 
     pub(crate) fn recover_historical(
@@ -70,16 +77,10 @@ impl SourceAuthorizationV1 {
         authority_generation: u64,
         valid_until: u64,
     ) -> Result<Self, AdmissionError> {
-        let source = Self {
-            release_digest,
-            source_revision,
-            descriptor,
-            source_seal,
-            authority_generation,
-            valid_until,
-        };
-        source.validate()?;
-        Ok(source)
+        Ok(Self(SourceAuthorizationDataV1::recover_historical(
+            release_digest, source_revision, descriptor, source_seal,
+            authority_generation, valid_until,
+        )?))
     }
 
     /// Issues source authorization only from a current protected capability.
@@ -101,7 +102,7 @@ impl SourceAuthorizationV1 {
         now: u64,
     ) -> Result<Self, AdmissionError> {
         validate_object_descriptor(&descriptor).map_err(|_| AdmissionError::InvalidPlan)?;
-        let scope = CacheAuthorityScopeV1::new(
+        let scope = crate::cache_residency::domain::new_cache_authority_scope_v1(
             partition,
             source_authority_subject(&descriptor, source_revision, source_seal),
             None,
@@ -111,7 +112,7 @@ impl SourceAuthorizationV1 {
             valid_until,
         )?;
         owner.validate_for_effect_at(capability, CacheAuthorityPurposeV1::Source, scope, now)?;
-        let authorization = Self {
+        let authorization = SourceAuthorizationDataV1 {
             release_digest: capability.record_digest(),
             source_revision,
             descriptor,
@@ -120,7 +121,7 @@ impl SourceAuthorizationV1 {
             valid_until,
         };
         authorization.validate()?;
-        Ok(authorization)
+        Ok(Self(authorization))
     }
 
     /// Validates complete, non-sentinel source authority.
@@ -130,86 +131,43 @@ impl SourceAuthorizationV1 {
     /// Returns [`AdmissionError::InvalidPlan`] for missing commitments or a
     /// zero authority generation/lifetime.
     pub fn validate(&self) -> Result<(), AdmissionError> {
-        if self.release_digest.as_bytes() == &[0; 32]
-            || self.source_revision.as_bytes() == &[0; 32]
-            || validate_object_descriptor(&self.descriptor).is_err()
-            || self.source_seal.as_bytes() == &[0; 32]
-            || self.authority_generation == 0
-            || self.valid_until == 0
-        {
-            return Err(AdmissionError::InvalidPlan);
-        }
-        Ok(())
-    }
-
-    fn validate_current(
-        &self,
-        owner: &CacheAuthorityOwner<'_, '_>,
-        capability: &VerifiedCacheCapabilityV1,
-        partition: PhysicalPartitionId,
-        now: u64,
-    ) -> Result<(), AdmissionError> {
-        let scope = CacheAuthorityScopeV1::new(
-            partition,
-            source_authority_subject(&self.descriptor, self.source_revision, self.source_seal),
-            None,
-            self.source_revision,
-            partition.backing().root(),
-            self.authority_generation,
-            self.valid_until,
-        )?;
-        owner.validate_for_effect_at(capability, CacheAuthorityPurposeV1::Source, scope, now)?;
-        if capability.record_digest() != self.release_digest {
-            return Err(AdmissionError::InvalidPlan);
-        }
-        Ok(())
+        self.0.validate().map_err(AdmissionError::from)
     }
 }
 
-/// Describes a completely authorized immutable admission before effects.
+/// Retains a Native admission plan constructed from its source-authority wrapper.
+///
+/// Historical DATA cannot construct this Native wrapper.
+///
+/// ```compile_fail
+/// fn issue(data: aos_sandbox_protocol::cache_state::admission_data::ImmutableAdmissionPlanDataV1) {
+///     let _ = aos_sandbox::cache_residency::admission::ImmutableAdmissionPlanV1(data);
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ImmutableAdmissionPlanV1 {
-    /// Idempotent admission operation.
-    pub operation: OperationId,
-    /// Exact capacity reservation.
-    pub reservation: CacheReservationId,
-    /// Attributed project.
-    pub project: ProjectId,
-    /// Exact physical isolation partition.
-    pub partition: PhysicalPartitionId,
-    /// Complete portable object identity and exact size.
-    pub descriptor: ObjectDescriptor,
-    /// Independently resolved immutable source authority.
-    pub source: SourceAuthorizationV1,
-    /// Seal that the prepared destination must produce.
-    pub expected_seal: ImmutableSealV1,
-    /// Worst-case allocation charged before any effect.
-    pub reserved_bytes: u64,
-    /// Current admission policy revision.
-    pub policy_revision: ObjectDigest,
-    /// Current protected root generation.
-    pub root_generation: u64,
-    /// Exact protected root custody record digest.
-    pub root_custody: ObjectDigest,
-    /// Commitment to the exact ordered initial pin set.
-    pub initial_pins_digest: ObjectDigest,
-    /// Digest of the complete normalized request.
-    pub request_digest: ObjectDigest,
-    /// Domain-separated digest of this plan.
-    pub digest: ObjectDigest,
+pub struct ImmutableAdmissionPlanV1(ImmutableAdmissionPlanDataV1);
+
+impl std::ops::Deref for ImmutableAdmissionPlanV1 {
+    type Target = ImmutableAdmissionPlanDataV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl ImmutableAdmissionPlanV1 {
+    pub(crate) const fn historical_data_v1(&self) -> &ImmutableAdmissionPlanDataV1 {
+        &self.0
+    }
+
+    pub(crate) fn into_historical_data_v1(self) -> ImmutableAdmissionPlanDataV1 {
+        self.0
+    }
+
     pub(crate) fn authority_scope(&self) -> Result<CacheAuthorityScopeV1, AdmissionError> {
-        Ok(CacheAuthorityScopeV1::new(
-            self.partition,
-            self.digest,
-            Some(self.operation),
-            self.digest,
-            self.root_custody,
-            self.root_generation,
-            self.source.valid_until,
-        )?)
+        self.0
+            .authority_scope()
+            .map_err(|error| AdmissionError::Authority(error.into()))
     }
 
     /// Constructs a validated immutable admission plan.
@@ -234,27 +192,11 @@ impl ImmutableAdmissionPlanV1 {
         initial_pins_digest: ObjectDigest,
         request_digest: ObjectDigest,
     ) -> Result<Self, AdmissionError> {
-        source.validate()?;
-        expected_seal.validate()?;
-        let mut plan = Self {
-            operation,
-            reservation,
-            project,
-            partition,
-            descriptor,
-            source,
-            expected_seal,
-            reserved_bytes,
-            policy_revision,
-            root_generation,
-            root_custody,
-            initial_pins_digest,
-            request_digest,
-            digest: ObjectDigest::from_bytes([0; 32]),
-        };
-        plan.digest = admission_digest(&plan);
-        plan.validate()?;
-        Ok(plan)
+        Ok(Self(ImmutableAdmissionPlanDataV1::new(
+            operation, reservation, project, partition, descriptor, source.0,
+            expected_seal, reserved_bytes, policy_revision, root_generation,
+            root_custody, initial_pins_digest, request_digest,
+        )?))
     }
 
     /// Validates an externally decoded admission plan.
@@ -264,23 +206,7 @@ impl ImmutableAdmissionPlanV1 {
     /// Returns [`AdmissionError::InvalidPlan`] when any immutable binding is
     /// absent or the digest is not the canonical derived value.
     pub fn validate(&self) -> Result<(), AdmissionError> {
-        self.source.validate()?;
-        self.expected_seal.validate()?;
-        if self.operation.as_bytes() == &[0; 16]
-            || self.project.as_bytes() == &[0; 16]
-            || validate_object_descriptor(&self.descriptor).is_err()
-            || self.source.descriptor != self.descriptor
-            || self.reserved_bytes < self.descriptor.encoded_size()
-            || self.policy_revision.as_bytes() == &[0; 32]
-            || self.root_generation == 0
-            || self.root_custody.as_bytes() == &[0; 32]
-            || self.initial_pins_digest.as_bytes() == &[0; 32]
-            || self.request_digest.as_bytes() == &[0; 32]
-            || self.digest != admission_digest(self)
-        {
-            return Err(AdmissionError::InvalidPlan);
-        }
-        Ok(())
+        self.0.validate().map_err(AdmissionError::from)
     }
 }
 
@@ -335,7 +261,7 @@ impl PreparedArtifactV1 {
             root_custody,
             canonical_name,
         );
-        let authority_scope = CacheAuthorityScopeV1::new(
+        let authority_scope = crate::cache_residency::domain::new_cache_authority_scope_v1(
             plan.partition,
             subject,
             Some(plan.operation),
@@ -402,7 +328,7 @@ impl PreparedArtifactV1 {
             self.root_custody,
             self.canonical_name,
         );
-        let scope = CacheAuthorityScopeV1::new(
+        let scope = crate::cache_residency::domain::new_cache_authority_scope_v1(
             plan.partition,
             subject,
             Some(plan.operation),
@@ -414,226 +340,6 @@ impl PreparedArtifactV1 {
         owner.validate_for_effect_at(capability, CacheAuthorityPurposeV1::Admission, scope, now)?;
         if capability.record_digest() != self.preparation_evidence {
             return Err(AdmissionError::ArtifactMismatch);
-        }
-        Ok(())
-    }
-}
-
-/// Selects the closed immutable-publication effect sequence.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum AdmissionStageV1 {
-    /// Capacity and immutable plan are durable; no allocation occurred.
-    Reserved = 1,
-    /// A fresh private destination was created beneath protected root custody.
-    PrivateDestinationCreated = 2,
-    /// Exact bounded source bytes were transferred into the private destination.
-    ContentTransferred = 3,
-    /// Digest, size, media type, source, and tree relationship were verified.
-    ContentVerified = 4,
-    /// Every writable description was authoritatively closed.
-    WritersClosed = 5,
-    /// Immutability was enabled and its exact measurement re-observed.
-    SealEnabledAndVerified = 6,
-    /// The immutable destination inode or snapshot was durably synchronized.
-    InodeSynced = 7,
-    /// Canonical naming completed with no-replace semantics.
-    CanonicalNamePublished = 8,
-    /// The canonical parent directory was durably synchronized.
-    ParentSynced = 9,
-    /// Catalog visibility, pins, and residency accounting committed atomically.
-    CatalogCommitted = 10,
-    /// Interruption left the exact physical effect outcome unknown.
-    Uncertain = 11,
-    /// A mismatched artifact was isolated from consumers.
-    Quarantined = 12,
-    /// A proved pre-effect or safely removed artifact released its reservation.
-    Aborted = 13,
-}
-
-/// Tracks exact immutable-publication progress without granting effect authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AdmissionProgressV1 {
-    /// Exact immutable admission plan.
-    pub plan_digest: ObjectDigest,
-    /// Current closed publication stage.
-    pub stage: AdmissionStageV1,
-    /// Last non-uncertain stage, used to prevent recovery rollback.
-    pub last_certain_stage: AdmissionStageV1,
-    /// Monotone progress generation.
-    pub generation: u64,
-    /// Exact predecessor progress digest, absent only at generation one.
-    pub predecessor: Option<ObjectDigest>,
-    /// Trusted effect or observation evidence for this stage.
-    pub evidence: ObjectDigest,
-    /// Digest of this complete progress record.
-    pub digest: ObjectDigest,
-}
-
-impl AdmissionProgressV1 {
-    /// Constructs the no-effect durable state for an admitted plan.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AdmissionError::InvalidProgress`] for sentinel plan/evidence.
-    pub fn reserved(
-        plan_digest: ObjectDigest,
-        admission_evidence: ObjectDigest,
-    ) -> Result<Self, AdmissionError> {
-        let mut progress = Self {
-            plan_digest,
-            stage: AdmissionStageV1::Reserved,
-            last_certain_stage: AdmissionStageV1::Reserved,
-            generation: 1,
-            predecessor: None,
-            evidence: admission_evidence,
-            digest: ObjectDigest::from_bytes([0; 32]),
-        };
-        progress.digest = admission_progress_digest(&progress);
-        progress.validate()?;
-        Ok(progress)
-    }
-
-    /// Advances one exact adjacent publication stage.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AdmissionError::InvalidProgress`] for non-adjacent, terminal,
-    /// or evidence-free transitions.
-    pub fn advance(
-        &self,
-        next_stage: AdmissionStageV1,
-        evidence: ObjectDigest,
-    ) -> Result<Self, AdmissionError> {
-        if self.stage == AdmissionStageV1::Uncertain
-            || stage_rank(next_stage) != stage_rank(self.stage).saturating_add(1)
-            || stage_rank(next_stage) > stage_rank(AdmissionStageV1::ParentSynced)
-        {
-            return Err(AdmissionError::InvalidProgress);
-        }
-        self.successor(next_stage, next_stage, evidence)
-    }
-
-    /// Marks an entered effect as ambiguous without releasing capacity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AdmissionError::InvalidProgress`] for no-effect or terminal
-    /// states and sentinel evidence.
-    pub fn mark_uncertain(&self, evidence: ObjectDigest) -> Result<Self, AdmissionError> {
-        if matches!(
-            self.stage,
-            AdmissionStageV1::Reserved
-                | AdmissionStageV1::CatalogCommitted
-                | AdmissionStageV1::Uncertain
-                | AdmissionStageV1::Quarantined
-                | AdmissionStageV1::Aborted
-        ) {
-            return Err(AdmissionError::InvalidProgress);
-        }
-        self.successor(AdmissionStageV1::Uncertain, self.stage, evidence)
-    }
-
-    /// Resolves ambiguity from fresh exact physical observation.
-    ///
-    /// Recovery may retain or advance the last certain stage, quarantine a
-    /// mismatch, or prove an abort. It may not move physical history backwards
-    /// or declare catalog commitment on its own.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AdmissionError::InvalidProgress`] for an unsafe resolution.
-    pub fn resolve_uncertainty(
-        &self,
-        observed_stage: AdmissionStageV1,
-        evidence: ObjectDigest,
-    ) -> Result<Self, AdmissionError> {
-        if self.stage != AdmissionStageV1::Uncertain
-            || observed_stage == AdmissionStageV1::Uncertain
-            || observed_stage == AdmissionStageV1::CatalogCommitted
-            || (stage_rank(observed_stage) < stage_rank(self.last_certain_stage)
-                && !matches!(
-                    observed_stage,
-                    AdmissionStageV1::Quarantined | AdmissionStageV1::Aborted
-                ))
-        {
-            return Err(AdmissionError::InvalidProgress);
-        }
-        self.successor(observed_stage, observed_stage, evidence)
-    }
-
-    /// Terminates before catalog commit after proving no reachable artifact remains.
-    ///
-    /// Reserved progress needs only a no-effect decision. Any later stage needs
-    /// authoritative cleanup/absence evidence; the evidence digest is retained.
-    /// Uncertain progress may abort only after recovery establishes absence.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AdmissionError::InvalidProgress`] after catalog commit or from
-    /// an already terminal state.
-    pub(crate) fn abort(&self, absence_evidence: ObjectDigest) -> Result<Self, AdmissionError> {
-        if matches!(
-            self.stage,
-            AdmissionStageV1::CatalogCommitted
-                | AdmissionStageV1::Quarantined
-                | AdmissionStageV1::Aborted
-        ) {
-            return Err(AdmissionError::InvalidProgress);
-        }
-        self.successor(
-            AdmissionStageV1::Aborted,
-            AdmissionStageV1::Aborted,
-            absence_evidence,
-        )
-    }
-
-    fn catalog_committed(&self, evidence: ObjectDigest) -> Result<Self, AdmissionError> {
-        if self.stage != AdmissionStageV1::ParentSynced {
-            return Err(AdmissionError::InvalidProgress);
-        }
-        self.successor(
-            AdmissionStageV1::CatalogCommitted,
-            AdmissionStageV1::CatalogCommitted,
-            evidence,
-        )
-    }
-
-    fn successor(
-        &self,
-        stage: AdmissionStageV1,
-        last_certain_stage: AdmissionStageV1,
-        evidence: ObjectDigest,
-    ) -> Result<Self, AdmissionError> {
-        let generation = self
-            .generation
-            .checked_add(1)
-            .ok_or(AdmissionError::InvalidProgress)?;
-        let mut next = Self {
-            plan_digest: self.plan_digest,
-            stage,
-            last_certain_stage,
-            generation,
-            predecessor: Some(self.digest),
-            evidence,
-            digest: ObjectDigest::from_bytes([0; 32]),
-        };
-        next.digest = admission_progress_digest(&next);
-        next.validate()?;
-        Ok(next)
-    }
-
-    pub(crate) fn validate(&self) -> Result<(), AdmissionError> {
-        if self.plan_digest.as_bytes() == &[0; 32]
-            || self.generation == 0
-            || (self.generation == 1) != self.predecessor.is_none()
-            || self.evidence.as_bytes() == &[0; 32]
-            || (self.stage != AdmissionStageV1::Uncertain && self.stage != self.last_certain_stage)
-            || (self.stage == AdmissionStageV1::Uncertain
-                && !(2..=9).contains(&stage_rank(self.last_certain_stage)))
-            || self.digest != admission_progress_digest(self)
-        {
-            return Err(AdmissionError::InvalidProgress);
         }
         Ok(())
     }
@@ -670,18 +376,6 @@ pub struct CacheAdmissionStateV1 {
     watermark_requirements: BTreeMap<CacheReservationId, WatermarkRequirementV1>,
 }
 
-/// Retains the exact low-water reclamation gate created by a reservation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct WatermarkRequirementV1 {
-    /// Reservation that first crossed high water.
-    pub reservation: CacheReservationId,
-    /// Exact admission plan owning the reservation.
-    pub plan_digest: ObjectDigest,
-    /// Bytes that had to be reclaimed to reach low water.
-    pub required_bytes: u64,
-    /// Exact physically observed reclaimed bytes applied so far.
-    pub credited_bytes: u64,
-}
 
 /// Bounds retained catalog tombstones and immutable admission plans.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -873,8 +567,7 @@ impl CacheAdmissionStateV1 {
         if now == 0 || now >= plan.source.valid_until {
             return Err(AdmissionError::SourceAuthorityExpired);
         }
-        plan.source
-            .validate_current(owner, source_capability, plan.partition, now)?;
+        validate_source_current(&plan.source, owner, source_capability, plan.partition, now)?;
         let admission_scope = plan.authority_scope()?;
         owner.validate_for_effect_at(
             admission_capability,
@@ -1038,6 +731,7 @@ impl CacheAdmissionStateV1 {
             next.pins.acquire(owner, &pin_capability, pin, now)?;
         }
         next.refresh_pin_accounting()?;
+        let plan = plan.0;
         let entry = CatalogEntryV1::committed(
             plan.partition,
             plan.descriptor,
@@ -1119,7 +813,7 @@ impl CacheAdmissionStateV1 {
         {
             return Err(AdmissionError::InvalidProgress);
         }
-        let scope = CacheAuthorityScopeV1::new(
+        let scope = crate::cache_residency::domain::new_cache_authority_scope_v1(
             plan.partition,
             progress.digest,
             Some(plan.operation),
@@ -1458,4 +1152,58 @@ pub enum AdmissionError {
     /// Admission attempted to commit before its reserve-to-low-water gate.
     #[error("cache admission violates reserve, evict, reclaim ordering")]
     InvalidWatermarkOrder,
+}
+
+impl From<aos_sandbox_protocol::cache_state::admission_progress::AdmissionProgressErrorV1>
+    for AdmissionError
+{
+    fn from(_: aos_sandbox_protocol::cache_state::admission_progress::AdmissionProgressErrorV1) -> Self {
+        Self::InvalidProgress
+    }
+}
+
+fn validate_source_current(
+    source: &SourceAuthorizationDataV1,
+    owner: &CacheAuthorityOwner<'_, '_>,
+    capability: &VerifiedCacheCapabilityV1,
+    partition: PhysicalPartitionId,
+    now: u64,
+) -> Result<(), AdmissionError> {
+    let scope = crate::cache_residency::domain::new_cache_authority_scope_v1(
+        partition,
+        source_authority_subject(&source.descriptor, source.source_revision, source.source_seal),
+        None,
+        source.source_revision,
+        partition.backing().root(),
+        source.authority_generation,
+        source.valid_until,
+    )?;
+    owner.validate_for_effect_at(capability, CacheAuthorityPurposeV1::Source, scope, now)?;
+    if capability.record_digest() != source.release_digest {
+        return Err(AdmissionError::InvalidPlan);
+    }
+    Ok(())
+}
+
+impl From<aos_sandbox_protocol::cache_state::admission_data::AdmissionDataErrorV1> for AdmissionError {
+    fn from(error: aos_sandbox_protocol::cache_state::admission_data::AdmissionDataErrorV1) -> Self {
+        use aos_sandbox_protocol::cache_state::admission_data::AdmissionDataErrorV1;
+        match error {
+            AdmissionDataErrorV1::InvalidPlan => Self::InvalidPlan,
+            AdmissionDataErrorV1::Catalog(error) => Self::Catalog(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod historical_representation_tests {
+    use super::*;
+
+    #[test]
+    fn native_wrappers_keep_exact_inline_historical_representation() {
+        assert_eq!(std::mem::size_of::<SourceAuthorizationV1>(), std::mem::size_of::<SourceAuthorizationDataV1>());
+        assert_eq!(std::mem::align_of::<SourceAuthorizationV1>(), std::mem::align_of::<SourceAuthorizationDataV1>());
+        assert_eq!(std::mem::size_of::<ImmutableAdmissionPlanV1>(), std::mem::size_of::<ImmutableAdmissionPlanDataV1>());
+        assert_eq!(std::mem::align_of::<ImmutableAdmissionPlanV1>(), std::mem::align_of::<ImmutableAdmissionPlanDataV1>());
+    }
 }

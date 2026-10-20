@@ -12,17 +12,26 @@ mod attempt;
 mod auxiliary_checkpoint;
 mod auxiliary_payload;
 mod boot_reconcile;
+pub(crate) use boot_reconcile::{SelectedDeleteStoragePreparationDataV2,
+    SelectedDeleteResourceDataV4, select_first_local_delete_network_data_v4,
+    DeleteStorageSelectionErrorV2, select_first_local_delete_storage_preparation_data_v2};
 mod cancel;
 mod codec;
 mod coordination;
 mod create_placement_join;
 mod deletion;
+#[cfg(target_os = "linux")]
+pub(crate) mod delete_batch_comparison;
+#[cfg(target_os = "linux")]
+pub(crate) mod delete_pending;
 #[cfg(test)]
 mod delete_batch_tests;
 mod digest;
 mod durable;
 mod evidence;
 mod format;
+pub use format::LifecycleOperationDecodeOriginalV1;
+pub use durable::LifecycleAuxiliaryDecodeOriginalV1;
 mod history;
 mod idempotency;
 mod incarnation_rebuild;
@@ -34,8 +43,20 @@ mod phase6;
 mod projection;
 pub mod protected_journal;
 mod protected_owner;
+pub(crate) use protected_owner::completed_stop;
+pub(crate) use protected_owner::{LifecycleHistoricalReadOriginalV1,
+    stop_source_receiving_demand_v4, stop_inventory_challenge_receiving_bytes_v5,
+    stop_cleanup_completion_receiving_demand_v1};
+pub(crate) use protected_owner::{PreparedSourceLifecycleAdmissionV1, SourceLifecycleAdmissionCommitV1,
+    create_provisioning_admission_receiving_demand_v1,
+    create_provisioning_uncommitted_source_receiving_demand_v1};
 mod public_admission;
 mod public_operation;
+#[cfg(target_os = "linux")]
+pub(crate) use public_admission::{
+    DeleteCandidateOperationErrorV2, authorized_delete_operation_data_v2,
+    delete_candidate_projection_generation_data_v2,
+};
 mod recovery;
 mod replay_validation;
 mod runtime_admission;
@@ -47,6 +68,8 @@ mod snapshot_availability;
 mod snapshot_barrier;
 mod suspension;
 mod verification;
+
+pub use crate::controller_lifecycle_stop::StopCleanupSourceAppendOriginalV1;
 
 pub use atomic_snapshot_source::{
     LifecycleAtomicSnapshotSourceAdmissionV1, LifecycleAtomicSnapshotSourceCompletionV1,
@@ -66,6 +89,8 @@ pub use auxiliary_payload::{
     decode_lifecycle_auxiliary_payload_v1, encode_lifecycle_auxiliary_payload_v1,
 };
 pub use boot_reconcile::{
+    DeletePlanningBrokerInventoryDataV2, DeletePlanningMountInventoryDataV2, delete_planning_broker_inventory_receiving_demand_v2,
+    delete_planning_broker_inventory_role_receiving_demand_v2,
     CurrentLifecycleBootDomainInventoriesV1, LifecycleAuthenticatedAtomicStorageSuccessorV1,
     LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
     LifecycleAuthenticatedBrokerDomainInventorySuccessorV1,
@@ -171,6 +196,10 @@ pub use protected_journal::{
     AppliedLifecycleJournalTransactionV1, LifecycleProtectedJournalErrorV1,
     LifecycleProtectedJournalKeyV1, LifecycleProtectedRecordKindV1, lifecycle_protected_key_v1,
 };
+pub(crate) use protected_owner::{
+    retained_lifecycle_replay_receiving_demand_v1, LifecycleVerifierRecoveryOriginalV1,
+    LifecycleCurrentOperationSelectionOriginalV1,
+};
 pub use protected_owner::{
     LifecycleCurrentAuxiliaryPublicationV1, LifecycleOperationAdmissionV1,
     LifecycleProgressCommitOutcomeV1, LifecycleProgressOutcomeUnknownV1,
@@ -216,3 +245,28 @@ pub use suspension::{
     LifecycleSuspensionActionV1, LifecycleSuspensionModeV1, LifecycleSuspensionPlanV1,
 };
 pub use verification::LifecycleReplayVerificationV1;
+
+mod progress_identity;
+#[doc(hidden)]
+pub use progress_identity::{
+    lifecycle_plan_resource_id_v5,
+    lifecycle_initial_reservation_transaction_id_v1,
+    lifecycle_plan_binding_transaction_id_v1,
+    lifecycle_progress_transaction_id_v1,
+};
+
+
+pub(crate) use protected_owner::{
+    operation_record_kind as provisioning_operation_record_kind_v1,
+    require_same_lifecycle_admission_v1,
+};
+
+pub(crate) use public_admission::{lifecycle_desired_state_semantic_commit_with_facts_v1, start_semantic_commit_receiving_demand_v2};
+
+pub(crate) use protected_owner::create_provisioning_committed_source_receiving_demand_v1;
+
+pub(crate) use phase6::lifecycle_phase6_bind_controller_anchor_v1;
+
+pub(crate) use model::create_operation_resident_bytes_v1;
+
+pub(crate) use protected_owner::{start_provisioning_admission_receiving_demand_v1, start_provisioning_source_receiving_demand_v2};

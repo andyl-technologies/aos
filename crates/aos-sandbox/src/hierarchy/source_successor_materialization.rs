@@ -20,24 +20,18 @@ use crate::source_domain::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT,
     ProtectedSourceDomainJournalOwnerV1, source_domain_journal_limits,
 };
+use aos_sandbox_ledger_replay::replay::phase_records::{
+    ControllerFirstSourceSuccessorAnchoredFieldsV2, ControllerFirstSourceSuccessorAnchoredV2, RootFirstSourceSuccessorFloorFieldsV2, RootFirstSourceSuccessorFloorV2, RootFirstSourceSuccessorIntentV2, SourceFirstSuccessorAckFieldsV2, SourceFirstSuccessorAckV2, SourceFirstSuccessorPendingFieldsV2, SourceFirstSuccessorPendingV2, SourceFirstSuccessorReceiptFieldsV2, SourceFirstSuccessorReceiptV2,
+};
 use crate::policy_compiler::{
-    ControllerFirstSourceSuccessorAnchoredFieldsV2, ControllerFirstSourceSuccessorAnchoredV2,
-    HeldControllerFirstSourceSuccessorV2, HeldRootFirstSourceSuccessorIntentV2,
-    RootFirstSourceSuccessorFloorFieldsV2, RootFirstSourceSuccessorFloorProofV2,
-    RootFirstSourceSuccessorFloorV2, RootFirstSourceSuccessorIntentV2,
-    SourceFirstSuccessorAckFieldsV2, SourceFirstSuccessorAckV2,
-    SourceFirstSuccessorPendingFieldsV2, SourceFirstSuccessorPendingV2,
-    SourceFirstSuccessorReceiptFieldsV2, SourceFirstSuccessorReceiptV2,
-    HeldControllerProjectSuccessorV3, HeldRootProjectSuccessorIntentV3,
-    RootProjectSuccessorFloorProofV3, ControllerSuccessorOwnerViewV3,
-    RootSuccessorIntentViewV3, RootSuccessorFloorViewV3,
+    HeldControllerFirstSourceSuccessorV2, HeldRootFirstSourceSuccessorIntentV2, RootFirstSourceSuccessorFloorProofV2, HeldControllerProjectSuccessorV3, HeldRootProjectSuccessorIntentV3, RootProjectSuccessorFloorProofV3, ControllerSuccessorOwnerViewV3, RootSuccessorIntentViewV3, RootSuccessorFloorViewV3,
 };
 
-use super::codec::tree_commitment_v1;
+use aos_sandbox_ledger_replay::hierarchy::codec::tree_commitment_v1;
 use super::genesis_profile::SourceGenesisErrorV1;
 use aos_sandbox_core::source_tree_model::SandboxTreeRecordV1;
 use super::protected_journal::RetainedTreeInventoryDataV1;
-use super::source_genesis::SourceTreeGenesisReceiptV1;
+use aos_sandbox_ledger_replay::genesis::SourceTreeGenesisReceiptV1;
 use super::tree_lineage::{
     PreparedSourceFirstSuccessorPairV2, prepare_source_first_successor_pair_v2,
     replay_closed_tree_lineage_v1,
@@ -63,7 +57,7 @@ pub struct HeldSourceFirstSuccessorObservationV2<'source> {
     names: ProtectedJournalNamesV1,
     sequence: u64,
     state: SourceFirstSuccessorStateV2,
-    genesis: crate::journal::source_tree_genesis::SourceGenesisRowsV1,
+    genesis: aos_sandbox_ledger_replay::replay::source_tree_genesis::SourceGenesisRowsV1,
     successor: SourceFirstSuccessorRowsV2,
     tree_head: ObjectDigest,
     lineage_head: ObjectDigest,
@@ -220,7 +214,7 @@ struct SourceProjectContinuationDataV3 {
     names: ProtectedJournalNamesV1,
     sequence: u64,
     state: SourceFirstSuccessorStateV2,
-    genesis: crate::journal::source_tree_genesis::SourceGenesisRowsV1,
+    genesis: aos_sandbox_ledger_replay::replay::source_tree_genesis::SourceGenesisRowsV1,
     successor: SourceFirstSuccessorRowsV2,
     tree_head: ObjectDigest,
     lineage_head: ObjectDigest,
@@ -487,10 +481,10 @@ pub enum SourceFirstSuccessorMutationFailureV2<'failure> {
 #[derive(Default)]
 pub struct SourceFirstSuccessorMutationResultsV2 {
     attempted: bool,
-    tree: Option<super::graph::SandboxTreeV1>,
+    tree: Option<aos_sandbox_ledger_replay::hierarchy::graph::SandboxTreeV1>,
     pair: Option<PreparedSourceFirstSuccessorPairV2>,
     initial_rows: Option<SourceFirstSuccessorRowsV2>,
-    genesis: Option<crate::journal::source_tree_genesis::SourceGenesisRowsV1>,
+    genesis: Option<aos_sandbox_ledger_replay::replay::source_tree_genesis::SourceGenesisRowsV1>,
     heads: Option<std::collections::BTreeMap<ProjectId, super::tree_lineage::ClosedTreeLineageHeadV1>>,
     receipt: Option<SourceFirstSuccessorReceiptV2>,
     pending: Option<SourceFirstSuccessorPendingV2>,
@@ -769,13 +763,13 @@ fn prepare_append_with_recipe(
         next_tree_head: pair.tree_head, next_lineage_head: pair.lineage_head,
         next_tree_commit: context.next_tree_commit(), roles: context.roles(),
         begin: controller.begin().digest(), root_intent: context.digest(), source_names: context.source_names(),
-    })?);
+    }).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?);
     let receipt = results.receipt.as_ref().ok_or(SourceGenesisErrorV1::NonCanonical)?;
     results.pending = Some(SourceFirstSuccessorPendingV2::new(SourceFirstSuccessorPendingFieldsV2 {
         instance: receipt.instance(), project: receipt.project(), request: receipt.request(),
         approval: receipt.approval(), root_intent: receipt.root_intent(), receipt: receipt.digest(),
         source_names: receipt.source_names(),
-    })?);
+    }).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?);
     // These are canonical prospective DATA, not a fabricated held floor or ACK.
     // Actual ACK still requires the real Root floor and Controller Anchored loans.
     results.ack = Some(expected_ack(receipt)?);
@@ -929,7 +923,7 @@ fn prepare_ack_with_recipe(
     results.ack = Some(SourceFirstSuccessorAckV2::new(SourceFirstSuccessorAckFieldsV2 {
         instance: receipt.instance(), project: receipt.project(), receipt: receipt.digest(),
         root_floor: floor.digest(), controller_anchored: anchored.digest(),
-    })?);
+    }).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?);
     results.initial_rows = Some(selected_source_rows(journal, recipe)?);
     let rows = results.initial_rows.as_ref().ok_or(SourceGenesisErrorV1::NonCanonical)?;
     if rows.receipts.get(&receipt.project()) != Some(receipt) {
@@ -986,14 +980,14 @@ fn expected_ack(
     let floor = RootFirstSourceSuccessorFloorV2::new(RootFirstSourceSuccessorFloorFieldsV2 {
         predecessor_floor: receipt.predecessor_floor(), approval: receipt.approval(),
         receipt: receipt.clone(), roles: receipt.roles(),
-    })?;
+    }).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
     let anchored = ControllerFirstSourceSuccessorAnchoredV2::new(ControllerFirstSourceSuccessorAnchoredFieldsV2 {
         approval: receipt.approval(), receipt: receipt.digest(), floor: floor.digest(),
-    })?;
+    }).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
     SourceFirstSuccessorAckV2::new(SourceFirstSuccessorAckFieldsV2 {
         instance: receipt.instance(), project: receipt.project(), receipt: receipt.digest(),
         root_floor: floor.digest(), controller_anchored: anchored.digest(),
-    })
+    }).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)
 }
 
 fn ack_transaction(
@@ -1015,20 +1009,12 @@ fn ack_transaction(
     ).map_err(JournalError::from)
 }
 
-/// Compares canonical receipt DATA with the actual saved intent, not authority.
+/// Compares the sole canonical receipt/intent DATA predicate.
+///
+/// Native currentness and authority checks remain with the actual owner.
 pub(crate) fn require_first_successor_context_v2(
     receipt: &SourceFirstSuccessorReceiptV2, context: &RootFirstSourceSuccessorIntentV2,
 ) -> Result<(), SourceGenesisErrorV1> {
-    if receipt.instance() != context.instance() || receipt.project() != context.project()
-        || receipt.request() != context.request() || receipt.approval() != context.approval()
-        || receipt.epoch() != context.epoch() || receipt.predecessor_floor() != context.predecessor_floor()
-        || receipt.old_tree_head() != context.old_tree_head() || receipt.old_lineage_head() != context.old_lineage_head()
-        || receipt.old_tree_commit() != context.approval_packet().old_tree_commit()
-        || receipt.next_tree_commit() != context.next_tree_commit() || receipt.roles() != context.roles()
-        || receipt.begin() != context.begin() || receipt.root_intent() != context.digest()
-        || receipt.source_names() != context.source_names()
-    {
-        return Err(SourceGenesisErrorV1::Conflict);
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::source_signer_data::source_successor_readback::require_first_successor_context_v2(receipt, context)
+        .map_err(SourceGenesisErrorV1::from)
 }

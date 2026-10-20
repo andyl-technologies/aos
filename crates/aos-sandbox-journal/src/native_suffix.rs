@@ -30,6 +30,96 @@ pub struct NativeBeforeAfterRef<'rows> {
     pub after: Option<&'rows [u8]>,
 }
 
+/// Borrows exact bytes or an exactly represented zero-padded forecast value.
+///
+/// The compact form describes bytes, not a canonical record or authority.
+/// Equality preserves full byte semantics, including comparisons with actual
+/// before images; equal widths alone never establish predecessor identity.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeSuffixValueRef<'rows> {
+    value: SuffixValue<'rows>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SuffixValue<'rows> {
+    Bytes(&'rows [u8]),
+    ZeroPadded { prefix: &'rows [u8], bytes: usize },
+}
+
+impl<'rows> NativeSuffixValueRef<'rows> {
+    /// Borrows an actual complete before or after image.
+    pub const fn from_bytes(bytes: &'rows [u8]) -> Self {
+        Self {
+            value: SuffixValue::Bytes(bytes),
+        }
+    }
+
+    /// Describes a prefix followed by exactly enough zero bytes to fill a value.
+    ///
+    /// # Errors
+    /// Refuses a prefix wider than the represented value.
+    pub fn zero_padded(prefix: &'rows [u8], bytes: usize) -> Result<Self, NativeSuffixError> {
+        if prefix.len() > bytes {
+            return Err(NativeSuffixError::InvalidTransaction);
+        }
+        Ok(Self {
+            value: SuffixValue::ZeroPadded { prefix, bytes },
+        })
+    }
+
+    /// Returns the complete represented width without materializing padding.
+    #[must_use]
+    pub const fn len(self) -> usize {
+        match self.value {
+            SuffixValue::Bytes(bytes) => bytes.len(),
+            SuffixValue::ZeroPadded { bytes, .. } => bytes,
+        }
+    }
+
+    /// Reports whether the complete represented value is empty.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl PartialEq for NativeSuffixValueRef<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        match (self.value, other.value) {
+            (SuffixValue::Bytes(left), SuffixValue::Bytes(right)) => left == right,
+            (SuffixValue::Bytes(bytes), SuffixValue::ZeroPadded { prefix, .. })
+            | (SuffixValue::ZeroPadded { prefix, .. }, SuffixValue::Bytes(bytes)) => {
+                bytes.starts_with(prefix) && bytes[prefix.len()..].iter().all(|byte| *byte == 0)
+            }
+            (
+                SuffixValue::ZeroPadded { prefix: left, .. },
+                SuffixValue::ZeroPadded { prefix: right, .. },
+            ) => {
+                let shared = left.len().min(right.len());
+                left[..shared] == right[..shared]
+                    && left[shared..].iter().all(|byte| *byte == 0)
+                    && right[shared..].iter().all(|byte| *byte == 0)
+            }
+        }
+    }
+}
+
+impl Eq for NativeSuffixValueRef<'_> {}
+
+/// Borrows exact mutation images, allowing compact noncanonical forecast bytes.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeBeforeAfterValueRef<'rows> {
+    /// Borrows the original logical key.
+    pub key: &'rows [u8],
+    /// Borrows the exact prior image, or records absence.
+    pub before: Option<NativeSuffixValueRef<'rows>>,
+    /// Borrows the exact successor image, or records deletion.
+    pub after: Option<NativeSuffixValueRef<'rows>>,
+}
+
 /// Carries one ordered raw record's encoding extents without copying its value.
 #[derive(Clone, Copy, Debug)]
 pub struct NativeRecordExtentRef<'record> {
@@ -127,7 +217,7 @@ impl From<NativeRecordValidationError> for NativeSuffixError {
 pub struct NativeSuffixMeasurement<'rows> {
     // Prefix allocation precedes the map so disposal follows the original fold.
     prefixes: Vec<NativeSuffixPrefix>,
-    states: BTreeMap<&'rows [u8], Option<&'rows [u8]>>,
+    states: BTreeMap<&'rows [u8], Option<NativeSuffixValueRef<'rows>>>,
     original_bytes: u64,
     current_bytes: u64,
     original_records: u32,
@@ -160,6 +250,32 @@ impl<'rows> NativeSuffixMeasurement<'rows> {
         &mut self,
         transaction_id: [u8; 16],
         changes: impl IntoIterator<Item = NativeBeforeAfterRef<'rows>>,
+        records: &[NativeRecordExtentRef<'_>],
+        final_append: bool,
+        bounds: NativeGeometryBounds,
+    ) -> Result<(), NativeSuffixError> {
+        self.observe_value_append(
+            transaction_id,
+            changes.into_iter().map(|change| NativeBeforeAfterValueRef {
+                key: change.key,
+                before: change.before.map(NativeSuffixValueRef::from_bytes),
+                after: change.after.map(NativeSuffixValueRef::from_bytes),
+            }),
+            records,
+            final_append,
+            bounds,
+        )
+    }
+
+    /// Observes complete byte-equivalent images through the same ordered fold.
+    ///
+    /// # Errors
+    /// Preserves the exact before-image, transaction, duplicate, bounds and
+    /// arithmetic failures of [`Self::observe_append`] in the same order.
+    pub fn observe_value_append(
+        &mut self,
+        transaction_id: [u8; 16],
+        changes: impl IntoIterator<Item = NativeBeforeAfterValueRef<'rows>>,
         records: &[NativeRecordExtentRef<'_>],
         final_append: bool,
         bounds: NativeGeometryBounds,
@@ -261,7 +377,10 @@ fn record_layout(record: &NativeRecordExtentRef<'_>) -> Result<EncodedRecordLayo
     EncodedRecordLayout::new(record.key.len(), record.value_bytes)
 }
 
-fn retained(key: &[u8], value: Option<&[u8]>) -> Result<(u64, u32), NativeSuffixError> {
+fn retained(
+    key: &[u8],
+    value: Option<NativeSuffixValueRef<'_>>,
+) -> Result<(u64, u32), NativeSuffixError> {
     match value {
         Some(value) => Ok((add(key.len() as u64, value.len() as u64)?, 1)),
         None => Ok((0, 0)),
@@ -280,3 +399,6 @@ fn add_records(left: u32, right: u32) -> Result<u32, NativeSuffixError> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod forecast_tests;

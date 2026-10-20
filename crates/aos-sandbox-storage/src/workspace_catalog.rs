@@ -21,6 +21,7 @@
     reason = "pending typestate awaits the physical-evidence activation boundary"
 )]
 mod pending;
+pub(crate) use pending::StorageWorkspaceStartupV1;
 
 #[allow(
     dead_code,
@@ -33,7 +34,8 @@ mod activation;
     reason = "activation typestate is re-exported for runtime integration"
 )]
 pub(crate) use activation::{
-    ActivatedStorageWorkspaceCatalogV1, StorageWorkspaceCatalogActivationCandidateV1,
+    ActivatedStorageWorkspaceCatalogV1,
+    StorageWorkspaceCatalogActivationCandidateV1,
     StorageWorkspaceCatalogActivationPreparationFailureV1,
     StorageWorkspaceCatalogActivationPromotionFailureV1,
 };
@@ -386,6 +388,9 @@ fn portable_decode_limits(maximum_bytes: usize) -> DecodeLimits {
 /// Reports protected workspace-catalog validation or publication failure.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageWorkspaceCatalogError {
+    /// The same original retains the actual receiving refusal.
+    #[error(transparent)]
+    Receiving(#[from] aos_sandbox::StorageReceivingClosedV1),
     /// The protected journal failed validation, locking, or publication.
     #[error("storage workspace journal failure: {0}")]
     Journal(#[from] aos_sandbox::JournalError),

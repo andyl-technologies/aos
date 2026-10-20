@@ -23,8 +23,9 @@ use sha2::{Digest as _, Sha256};
 use ssh_key::{Algorithm, PublicKey};
 use zeroize::Zeroizing;
 
-use aos_sandbox_linux::credential::{
-    CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
+use aos_sandbox_linux::credential::CredentialOwnerPolicyV1;
+use super::credential_receiving::{
+    CredentialMetadataV1, CredentialSourceV1, OrdinaryCredentialSourceV1,
 };
 
 const GRANT_SIGNING_KEY: &str = "openssh-attach-grant-signing-key";
@@ -74,17 +75,24 @@ impl ControllerAttachCredentialsV1 {
     /// set. An entirely absent set leaves public ATTACH unavailable.
     pub(crate) fn from_process_credentials_optional()
     -> Result<Option<Self>, ControllerAttachCredentialErrorV1> {
+        Self::from_process_credentials_with_source(&mut OrdinaryCredentialSourceV1)
+    }
+
+    pub(super) fn from_process_credentials_with_source(
+        source: &mut impl CredentialSourceV1,
+    ) -> Result<Option<Self>, ControllerAttachCredentialErrorV1> {
         let Some(directory) = std::env::var_os("CREDENTIALS_DIRECTORY") else {
             return Ok(None);
         };
+        source.directory(&directory);
         let directory = Path::new(&directory);
         if !directory.is_absolute() {
             return Err(ControllerAttachCredentialErrorV1::Invalid);
         }
-        let Some(grant_seed) = read_credential(directory, GRANT_SIGNING_KEY, 32)? else {
-            if read_credential(directory, GRANT_PUBLIC_KEY, 32)?.is_some()
-                || read_credential(directory, CA_SIGNING_KEY, MAXIMUM_CA_BYTES)?.is_some()
-                || read_credential(directory, TRUST, MAXIMUM_TRUST_BYTES)?.is_some()
+        let Some(grant_seed) = read_credential(source, directory, GRANT_SIGNING_KEY, 32)? else {
+            if read_credential(source, directory, GRANT_PUBLIC_KEY, 32)?.is_some()
+                || read_credential(source, directory, CA_SIGNING_KEY, MAXIMUM_CA_BYTES)?.is_some()
+                || read_credential(source, directory, TRUST, MAXIMUM_TRUST_BYTES)?.is_some()
             {
                 return Err(ControllerAttachCredentialErrorV1::Invalid);
             }
@@ -93,12 +101,18 @@ impl ControllerAttachCredentialsV1 {
         let grant_seed: [u8; 32] = grant_seed
             .as_slice()
             .try_into()
-            .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
+            .map_err(|cause| {
+                source.retain(cause);
+                ControllerAttachCredentialErrorV1::Invalid
+            })?;
         let grant_seed = Zeroizing::new(grant_seed);
-        let expected_public: [u8; 32] = read_required(directory, GRANT_PUBLIC_KEY, 32)?
+        let expected_public: [u8; 32] = read_required(source, directory, GRANT_PUBLIC_KEY, 32)?
             .as_slice()
             .try_into()
-            .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
+            .map_err(|cause| {
+                source.retain(cause);
+                ControllerAttachCredentialErrorV1::Invalid
+            })?;
         if SigningKey::from_bytes(&grant_seed)
             .verifying_key()
             .to_bytes()
@@ -107,11 +121,14 @@ impl ControllerAttachCredentialsV1 {
             return Err(ControllerAttachCredentialErrorV1::Invalid);
         }
 
-        let ca_key = Zeroizing::new(read_required(directory, CA_SIGNING_KEY, MAXIMUM_CA_BYTES)?);
-        let issuer = OpenSshAttachRouteIssuerV1::new(&ca_key)
-            .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
-        let trust_bytes = read_required(directory, TRUST, MAXIMUM_TRUST_BYTES)?;
-        let trust = parse_deployment_trust(&trust_bytes)?;
+        let ca_key = Zeroizing::new(read_required(source, directory, CA_SIGNING_KEY, MAXIMUM_CA_BYTES)?);
+        let issuer = OpenSshAttachRouteIssuerV1::new_with_original_error(&ca_key)
+            .map_err(|cause| {
+                source.retain(cause);
+                ControllerAttachCredentialErrorV1::Invalid
+            })?;
+        let trust_bytes = read_required(source, directory, TRUST, MAXIMUM_TRUST_BYTES)?;
+        let trust = parse_deployment_trust_with_source(&trust_bytes, source)?;
         let trust_digest = Sha256::digest(&trust_bytes).into();
 
         Ok(Some(Self {
@@ -185,18 +202,32 @@ impl ControllerAttachCredentialsV1 {
     }
 }
 
+#[cfg(test)]
 fn parse_deployment_trust(
     bytes: &[u8],
 ) -> Result<DeploymentTrustV1, ControllerAttachCredentialErrorV1> {
+    parse_deployment_trust_with_source(bytes, &mut OrdinaryCredentialSourceV1)
+}
+
+fn parse_deployment_trust_with_source(
+    bytes: &[u8],
+    source: &mut impl CredentialSourceV1,
+) -> Result<DeploymentTrustV1, ControllerAttachCredentialErrorV1> {
     let trust: DeploymentTrustV1 =
-        serde_json::from_slice(bytes).map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
+        serde_json::from_slice(bytes).map_err(|cause| {
+            source.retain(cause);
+            ControllerAttachCredentialErrorV1::Invalid
+        })?;
     if trust.magic != TRUST_MAGIC
         || !valid_host(&trust.host)
         || trust.port == 0
         || !valid_user(&trust.user)
-        || !canonical_ed25519_key(&trust.host_public_key)
-        || !canonical_ed25519_key(&trust.trusted_user_ca_public_key)
-        || serde_json::to_vec(&trust).map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?
+        || !canonical_ed25519_key(source, &trust.host_public_key)
+        || !canonical_ed25519_key(source, &trust.trusted_user_ca_public_key)
+        || serde_json::to_vec(&trust).map_err(|cause| {
+            source.retain(cause);
+            ControllerAttachCredentialErrorV1::Invalid
+        })?
             != bytes
     {
         return Err(ControllerAttachCredentialErrorV1::Invalid);
@@ -221,40 +252,52 @@ fn valid_user(user: &str) -> bool {
         })
 }
 
-fn canonical_ed25519_key(line: &str) -> bool {
+fn canonical_ed25519_key(source: &mut impl CredentialSourceV1, line: &str) -> bool {
     if line.len() > MAXIMUM_KEY_BYTES {
         return false;
     }
-    let Ok(key) = PublicKey::from_openssh(line) else {
-        return false;
+    let key = match PublicKey::from_openssh(line) {
+        Ok(key) => key,
+        Err(cause) => {
+            source.retain(cause);
+            return false;
+        }
     };
-    key.algorithm() == Algorithm::Ed25519
-        && key.comment().is_empty()
-        && key.to_openssh().is_ok_and(|encoded| encoded == line)
+    if key.algorithm() != Algorithm::Ed25519 || !key.comment().is_empty() {
+        return false;
+    }
+    match key.to_openssh() {
+        Ok(encoded) => encoded == line,
+        Err(cause) => {
+            source.retain(cause);
+            false
+        }
+    }
 }
 
 fn read_required(
+    source: &mut impl CredentialSourceV1,
     directory: &Path,
-    name: &str,
+    name: &'static str,
     maximum: usize,
 ) -> Result<Vec<u8>, ControllerAttachCredentialErrorV1> {
-    read_credential(directory, name, maximum)?.ok_or(ControllerAttachCredentialErrorV1::Invalid)
+    read_credential(source, directory, name, maximum)?
+        .ok_or(ControllerAttachCredentialErrorV1::Invalid)
 }
 
 fn read_credential(
+    source: &mut impl CredentialSourceV1,
     directory: &Path,
-    name: &str,
+    name: &'static str,
     maximum: usize,
 ) -> Result<Option<Vec<u8>>, ControllerAttachCredentialErrorV1> {
-    read_optional_bounded_role_credential_v1(
-        directory,
-        name,
-        1,
-        maximum,
-        true,
-        CredentialOwnerPolicyV1::Any,
-    )
-    .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)
+    source.read(
+        directory, name, 1, maximum,
+        CredentialMetadataV1::Protected {
+            private: true,
+            owner: CredentialOwnerPolicyV1::Any,
+        },
+    ).map_err(|_| ControllerAttachCredentialErrorV1::Invalid)
 }
 
 #[cfg(test)]

@@ -13,6 +13,8 @@
 //! process and an independently updated SourceProvider verifier manifest. A
 //! signature from this key alone never authorizes LocalLive acquisition.
 
+pub(crate) mod initial_read;
+
 use std::fs::File;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::fs::FileExt as _;
@@ -164,36 +166,7 @@ pub(crate) fn open_protected_directory(
     path: &Path,
     expected_owner: u32,
 ) -> Result<OwnedFd, StorageLiveExportKeyErrorV1> {
-    if !path.is_absolute()
-        || path == Path::new("/")
-        || path
-            .components()
-            .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
-    {
-        return Err(StorageLiveExportKeyErrorV1::Custody);
-    }
-    for ancestor in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
-        let descriptor = rustix::fs::open(
-            ancestor,
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|_| StorageLiveExportKeyErrorV1::Custody)?;
-        let identity =
-            rustix::fs::fstat(&descriptor).map_err(|_| StorageLiveExportKeyErrorV1::Custody)?;
-        if FileType::from_raw_mode(identity.st_mode) != FileType::Directory
-            || (identity.st_uid != 0 && identity.st_uid != expected_owner)
-            || identity.st_mode & 0o022 != 0
-            || (ancestor == path
-                && (identity.st_uid != expected_owner || identity.st_mode & 0o777 != 0o700))
-        {
-            return Err(StorageLiveExportKeyErrorV1::Custody);
-        }
-        if ancestor == path {
-            return Ok(descriptor);
-        }
-    }
-    Err(StorageLiveExportKeyErrorV1::Custody)
+    initial_read::open_directory(path, expected_owner)
 }
 
 /// Refuses to forget a pre-relocation mutable journal in read-only trust custody.
@@ -225,38 +198,9 @@ fn read_key_record(
     directory: &OwnedFd,
     expected_owner: u32,
 ) -> Result<(Zeroizing<[u8; KEY_BYTES]>, u64, u64), StorageLiveExportKeyErrorV1> {
-    let descriptor = rustix::fs::openat(
-        directory.as_fd(),
-        KEY_FILE,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|_| StorageLiveExportKeyErrorV1::Custody)?;
-    let before =
-        rustix::fs::fstat(&descriptor).map_err(|_| StorageLiveExportKeyErrorV1::Custody)?;
-    if FileType::from_raw_mode(before.st_mode) != FileType::RegularFile
-        || before.st_uid != expected_owner
-        || before.st_mode & 0o777 != 0o600
-        || before.st_nlink != 1
-        || before.st_size != KEY_BYTES as i64
-        || before.st_dev == 0
-        || before.st_ino == 0
-    {
-        return Err(StorageLiveExportKeyErrorV1::Custody);
-    }
-
-    let file = File::from(descriptor);
-    let mut record = Zeroizing::new([0; KEY_BYTES]);
-    file.read_exact_at(&mut *record, 0)
-        .map_err(|_| StorageLiveExportKeyErrorV1::Custody)?;
-    let mut repeated = Zeroizing::new([0; KEY_BYTES]);
-    file.read_exact_at(&mut *repeated, 0)
-        .map_err(|_| StorageLiveExportKeyErrorV1::Custody)?;
-    let after = rustix::fs::fstat(&file).map_err(|_| StorageLiveExportKeyErrorV1::Custody)?;
-    if !same_stable_file_metadata(&before, &after) || *record != *repeated {
-        return Err(StorageLiveExportKeyErrorV1::Custody);
-    }
-    Ok((record, before.st_dev, before.st_ino))
+    let mut original = initial_read::ProtectedExportFileOriginalV1::<KEY_BYTES>::new();
+    original.capture_once(directory.as_fd(), KEY_FILE, expected_owner)?;
+    original.take_record().ok_or(StorageLiveExportKeyErrorV1::Custody)
 }
 
 // A double-read is valid only while the exact protected file identity and

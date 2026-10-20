@@ -42,6 +42,7 @@
       "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services --bin aos-sandbox-mountd"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount --bin aos-sandbox-mount-helper"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount-native"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services"
     ];
     buildDeps = [buildProtobuf];
@@ -57,7 +58,7 @@ in
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount --bin aos-sandbox-mount-helper"
     ];
     checkType = "debug";
-    cargoTestFlags = "--no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services -p aos-sandbox-mount";
+    cargoTestFlags = "--no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services -p aos-sandbox-mount -p aos-sandbox-mount-native";
     cargoNextest = true;
     doCheck = true;
     buildDeps = [buildProtobuf elfutils];

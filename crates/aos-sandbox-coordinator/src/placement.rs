@@ -18,23 +18,21 @@ use aos_sandbox_core::{
 };
 
 pub use aos_sandbox::local_inventory::AffinityPlacementV1;
-pub use aos_sandbox::local_inventory::InvalidPlacementInput;
-use aos_sandbox::local_inventory::assignment::{
-    AssignmentIntentV1, InvalidAssignmentModel, SelectedCapabilityBindingV1,
-};
+use aos_sandbox::local_inventory::capability::CarrierValidatedCapabilityObservationV1;
 pub use aos_sandbox::local_inventory::capability::PlacementCandidateV1;
-use aos_sandbox::local_inventory::capability::{
-    CarrierValidatedCapabilityObservationV1, NodeAdmissionStateV1, NodeBootId, NodeBootLineageV1,
-    NodeCapabilitySnapshotV1, NodeProtocolV1,
+pub use aos_sandbox_core::InvalidPlacementInput;
+use aos_sandbox_core::{AssignmentIntentV1, InvalidAssignmentModel, SelectedCapabilityBindingV1};
+use aos_sandbox_core::{
+    NodeAdmissionStateV1, NodeBootId, NodeBootLineageV1, NodeCapabilitySnapshotV1, NodeProtocolV1,
 };
 
 /// Maximum candidate nodes considered by one placement decision.
 pub const MAX_PLACEMENT_CANDIDATES: usize = 4_096;
 /// Maximum complete affinity observations supplied to one placement decision.
-pub const MAX_AFFINITY_PLACEMENTS: usize = aos_sandbox::local_inventory::MAX_ASSIGNMENT_AFFINITIES;
+pub const MAX_AFFINITY_PLACEMENTS: usize = aos_sandbox_core::MAX_ASSIGNMENT_AFFINITIES;
 /// Maximum required features accepted from one semantic placement request.
 pub const MAX_PLACEMENT_REQUIRED_FEATURES: usize =
-    aos_sandbox::local_inventory::assignment::MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES;
+    aos_sandbox_core::MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES;
 
 /// Explains why one candidate could not satisfy placement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -121,7 +119,7 @@ impl PlacementSelectionV1 {
         }
 
         let selected_capability =
-            SelectedCapabilityBindingV1::from_observation(self.capability_observation())?;
+            aos_sandbox::local_inventory::assignment::selected_capability_binding_from_observation_v1(self.capability_observation())?;
 
         AssignmentIntentV1::from_canonical_binding(
             assignment,

@@ -27,6 +27,26 @@ use super::capacity::{
 };
 use super::transaction::{JournalRecord, JournalTransaction};
 
+/// Shares allocation-free canonical framing with the retained schema decoder.
+pub mod borrowed;
+
+mod transaction_data;
+pub use transaction_data::{
+    DomainPostcommitRecordDataV1, DomainPreparedTransactionDataV1,
+    ResidentCanonicalPayloadBudgetDataV1,
+};
+
+mod replay_capture;
+pub use replay_capture::{
+    CurrentRecordCandidatesCaptureV1, current_record_candidates_with_capture_v1,
+    ReducerPayloadDecodeCaptureV1, ReplayProjectionRecordsCaptureV1,
+    DomainKeyDecodeCaptureV1, decode_domain_key_retaining_v1,
+    DurableMemberCaptureV1, decode_durable_member_with_schema_capture_v1,
+    ProtectedDomainSchemaReplayCaptureV1,
+    decode_reducer_payload_retaining_v1, decode_reducer_payload_with_schema_capture_v1,
+    replay_projection_records_retaining_v1, replay_projection_records_with_schema_capture_v1,
+};
+
 const ENVELOPE_VERSION: u16 = 1;
 const MAXIMUM_DOMAIN_IDENTITY_BYTES: usize = 512;
 const CHECKPOINT_MAGIC: &[u8; 8] = b"AOSDCP01";
@@ -183,27 +203,22 @@ impl<S: ProtectedDomainSchemaV1> ProtectedDomainKeyV1<S> {
     /// Returns [`DomainLedgerDataError::NonCanonicalRecord`] when the
     /// identity is empty or exceeds the fixed domain-key ceiling.
     pub fn new(kind: S::Kind, identity: Vec<u8>) -> Result<Self, DomainLedgerDataError> {
-        if identity.is_empty()
-            || identity.len() > MAXIMUM_DOMAIN_IDENTITY_BYTES
-            || !S::validates_identity(kind, &identity)
-        {
+        replay_capture::new_key(kind, identity)
+    }
+
+    /// Measures canonical key bytes before its identity or encoding is copied.
+    ///
+    /// This supplies representation DATA only; a width cannot validate an
+    /// identity, choose a record family or authorize a protected mutation.
+    ///
+    /// # Errors
+    /// Refuses an empty/oversized identity or checked key-width overflow.
+    pub fn encoded_bytes_for_identity_v1(identity_bytes: usize) -> Result<usize, DomainLedgerDataError> {
+        if identity_bytes == 0 || identity_bytes > MAXIMUM_DOMAIN_IDENTITY_BYTES {
             return Err(DomainLedgerDataError::NonCanonicalRecord);
         }
-        let identity_length =
-            u16::try_from(identity.len()).map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?;
-        let mut encoded = Vec::with_capacity(S::KEY_PREFIX.len() + 4 + identity.len());
-        encoded.extend_from_slice(S::KEY_PREFIX);
-        encoded.push(ENVELOPE_VERSION as u8);
-        encoded.push(S::kind_code(kind));
-        encoded.extend_from_slice(&identity_length.to_be_bytes());
-        encoded.extend_from_slice(&identity);
-
-        Ok(Self {
-            kind,
-            identity,
-            encoded,
-            marker: PhantomData,
-        })
+        S::KEY_PREFIX.len().checked_add(4).and_then(|bytes| bytes.checked_add(identity_bytes))
+            .ok_or(DomainLedgerDataError::NonCanonicalRecord)
     }
 
     /// Returns the closed domain record kind.
@@ -230,30 +245,7 @@ impl<S: ProtectedDomainSchemaV1> ProtectedDomainKeyV1<S> {
     ///
     /// Rejects an unknown kind, invalid identity, version, length, or alternate encoding.
     pub fn decode(encoded: &[u8]) -> Result<Self, DomainLedgerDataError> {
-        let header = S::KEY_PREFIX.len() + 4;
-        if encoded.len() < header || !encoded.starts_with(S::KEY_PREFIX) {
-            return Err(DomainLedgerDataError::NonCanonicalRecord);
-        }
-        let version = encoded[S::KEY_PREFIX.len()];
-        let kind = S::kind_from_code(encoded[S::KEY_PREFIX.len() + 1])
-            .ok_or(DomainLedgerDataError::NonCanonicalRecord)?;
-        let length_offset = S::KEY_PREFIX.len() + 2;
-        let identity_length = usize::from(u16::from_be_bytes([
-            encoded[length_offset],
-            encoded[length_offset + 1],
-        ]));
-        if version != ENVELOPE_VERSION as u8
-            || identity_length == 0
-            || identity_length > MAXIMUM_DOMAIN_IDENTITY_BYTES
-            || encoded.len() != header + identity_length
-        {
-            return Err(DomainLedgerDataError::NonCanonicalRecord);
-        }
-        Self::new(kind, encoded[header..].to_vec()).and_then(|key| {
-            (key.as_bytes() == encoded)
-                .then_some(key)
-                .ok_or(DomainLedgerDataError::NonCanonicalRecord)
-        })
+        replay_capture::ordinary_decode_key(encoded)
     }
 }
 
@@ -287,32 +279,8 @@ impl<S: ProtectedDomainSchemaV1> ProtectedDomainEnvelopeV1<S> {
         payload: Vec<u8>,
         validator: &S::ReplayValidator,
     ) -> Result<Self, DomainLedgerDataError> {
-        let validated_phase = if S::is_checkpoint(key.kind) {
-            valid_checkpoint_payload::<S>(&payload).then_some(ProtectedReducerPhaseV1::Terminal)
-        } else {
-            decode_reducer_payload_with_validator::<S>(&key, &payload, validator)
-                .ok()
-                .map(|payload| payload.phase())
-        };
-        if revision == 0
-            || revision == u64::MAX
-            || (revision == 1) != predecessor.is_none()
-            || predecessor.is_some_and(|digest| digest.as_bytes() == &[0; 32])
-            || payload.is_empty()
-            || payload.len() > S::MAXIMUM_PAYLOAD_BYTES
-            || validated_phase.is_none()
-        {
-            return Err(DomainLedgerDataError::NonCanonicalRecord);
-        }
-        let digest = envelope_digest::<S>(&key, revision, predecessor, &payload);
-        Ok(Self {
-            key,
-            revision,
-            predecessor,
-            payload,
-            digest,
-            validated_phase: validated_phase.ok_or(DomainLedgerDataError::NonCanonicalRecord)?,
-        })
+        replay_capture::new_envelope(key, revision, predecessor, payload, validator,
+            &mut replay_capture::MemberDecodeWorkV1::new(), &mut replay_capture::OrdinarySchemaReplayV1)
     }
 
     /// Returns the canonical journal key.
@@ -380,54 +348,8 @@ impl<S: ProtectedDomainSchemaV1> ProtectedDomainEnvelopeV1<S> {
         bytes: &[u8],
         validator: &S::ReplayValidator,
     ) -> Result<Self, DomainLedgerDataError> {
-        if bytes.len() < 88 || bytes.len() > 88 + S::MAXIMUM_PAYLOAD_BYTES {
-            return Err(DomainLedgerDataError::NonCanonicalRecord);
-        }
-        if bytes[..8] != S::MAGIC
-            || u16::from_be_bytes([bytes[8], bytes[9]]) != ENVELOPE_VERSION
-            || bytes[10] != S::kind_code(key.kind)
-            || bytes[11] != 0
-        {
-            return Err(DomainLedgerDataError::NonCanonicalRecord);
-        }
-        let revision = u64::from_be_bytes(
-            bytes[12..20]
-                .try_into()
-                .map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?,
-        );
-        let predecessor_bytes: [u8; 32] = bytes[20..52]
-            .try_into()
-            .map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?;
-        let predecessor =
-            (predecessor_bytes != [0; 32]).then_some(ObjectDigest::from_bytes(predecessor_bytes));
-        let payload_length = usize::try_from(u32::from_be_bytes(
-            bytes[52..56]
-                .try_into()
-                .map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?,
-        ))
-        .map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?;
-        let payload_end = 56_usize
-            .checked_add(payload_length)
-            .ok_or(DomainLedgerDataError::NonCanonicalRecord)?;
-        if payload_length == 0
-            || payload_length > S::MAXIMUM_PAYLOAD_BYTES
-            || bytes.len() != payload_end + 32
-        {
-            return Err(DomainLedgerDataError::NonCanonicalRecord);
-        }
-        let candidate = Self::new_with_validator(
-            key,
-            revision,
-            predecessor,
-            bytes[56..payload_end].to_vec(),
-            validator,
-        )?;
-        if candidate.digest.as_bytes() != &bytes[payload_end..]
-            || candidate.encode().as_slice() != bytes
-        {
-            return Err(DomainLedgerDataError::NonCanonicalRecord);
-        }
-        Ok(candidate)
+        replay_capture::decode_envelope(key, bytes, validator,
+            &mut replay_capture::MemberDecodeWorkV1::new(), &mut replay_capture::OrdinarySchemaReplayV1)
     }
 }
 
@@ -443,41 +365,8 @@ pub fn encode_durable_member<S: ProtectedDomainSchemaV1>(
     set_digest: ObjectDigest,
     envelope: ProtectedDomainEnvelopeV1<S>,
 ) -> Result<DurableDomainMemberV1<S>, DomainLedgerDataError> {
-    if transaction_id == [0; 16]
-        || member_count == 0
-        || member_index >= member_count
-        || set_digest.as_bytes() == &[0; 32]
-    {
-        return Err(DomainLedgerDataError::NonCanonicalRecord);
-    }
-    let inner = envelope.encode();
-    let inner_length =
-        u32::try_from(inner.len()).map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?;
-    let mut encoded = Vec::with_capacity(DURABLE_MEMBER_FIXED_BYTES + inner.len());
-    encoded.extend_from_slice(DURABLE_MEMBER_MAGIC);
-    encoded.extend_from_slice(&ENVELOPE_VERSION.to_be_bytes());
-    encoded.extend_from_slice(&[0; 2]);
-    encoded.extend_from_slice(&transaction_id);
-    encoded.extend_from_slice(&member_index.to_be_bytes());
-    encoded.extend_from_slice(&member_count.to_be_bytes());
-    encoded.extend_from_slice(set_digest.as_bytes());
-    encoded.extend_from_slice(&inner_length.to_be_bytes());
-    encoded.extend_from_slice(&inner);
-    let digest: [u8; 32] = Sha256::new()
-        .chain_update(S::HASH_DOMAIN)
-        .chain_update(b"durable-member\0")
-        .chain_update(&encoded)
-        .finalize()
-        .into();
-    encoded.extend_from_slice(&digest);
-    Ok(DurableDomainMemberV1 {
-        transaction_id,
-        member_index,
-        member_count,
-        set_digest,
-        envelope,
-        encoded,
-    })
+    replay_capture::encode_member(transaction_id, member_index, member_count, set_digest,
+        envelope, &mut replay_capture::MemberDecodeWorkV1::new())
 }
 
 /// Decodes and round-trips one durable member under borrowed schema evidence.
@@ -490,62 +379,8 @@ pub fn decode_durable_member<S: ProtectedDomainSchemaV1>(
     bytes: &[u8],
     validator: &S::ReplayValidator,
 ) -> Result<DurableDomainMemberV1<S>, DomainLedgerDataError> {
-    if bytes.len() < 189
-        || bytes.len() > 188 + S::MAXIMUM_PAYLOAD_BYTES
-        || &bytes[..8] != DURABLE_MEMBER_MAGIC
-        || u16::from_be_bytes([bytes[8], bytes[9]]) != ENVELOPE_VERSION
-        || bytes[10..12] != [0; 2]
-    {
-        return Err(DomainLedgerDataError::NonCanonicalRecord);
-    }
-    let transaction_id: [u8; 16] = bytes[12..28]
-        .try_into()
-        .map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?;
-    let member_index = u16::from_be_bytes([bytes[28], bytes[29]]);
-    let member_count = u16::from_be_bytes([bytes[30], bytes[31]]);
-    let set_digest = ObjectDigest::from_bytes(
-        bytes[32..64]
-            .try_into()
-            .map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?,
-    );
-    let inner_length = usize::try_from(u32::from_be_bytes(
-        bytes[64..68]
-            .try_into()
-            .map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?,
-    ))
-    .map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?;
-    let inner_end = 68_usize
-        .checked_add(inner_length)
-        .ok_or(DomainLedgerDataError::NonCanonicalRecord)?;
-    if transaction_id == [0; 16]
-        || member_count == 0
-        || member_index >= member_count
-        || set_digest.as_bytes() == &[0; 32]
-        || bytes.len() != inner_end + 32
-    {
-        return Err(DomainLedgerDataError::NonCanonicalRecord);
-    }
-    let expected: [u8; 32] = Sha256::new()
-        .chain_update(S::HASH_DOMAIN)
-        .chain_update(b"durable-member\0")
-        .chain_update(&bytes[..inner_end])
-        .finalize()
-        .into();
-    if bytes[inner_end..] != expected {
-        return Err(DomainLedgerDataError::NonCanonicalRecord);
-    }
-    let envelope = ProtectedDomainEnvelopeV1::<S>::decode(key, &bytes[68..inner_end], validator)?;
-    let member = encode_durable_member(
-        transaction_id,
-        member_index,
-        member_count,
-        set_digest,
-        envelope,
-    )?;
-    if member.encoded.as_slice() != bytes {
-        return Err(DomainLedgerDataError::NonCanonicalRecord);
-    }
-    Ok(member)
+    replay_capture::decode_member(key, bytes, validator,
+        &mut replay_capture::MemberDecodeWorkV1::new(), &mut replay_capture::OrdinarySchemaReplayV1)
 }
 
 /// Carries a replayed, closed materialized domain projection.
@@ -782,50 +617,7 @@ pub fn replay_projection_records<'records, S: ProtectedDomainSchemaV1>(
     records: impl Iterator<Item = (RecordNamespace, &'records [u8], &'records [u8])>,
     validator: &S::ReplayValidator,
 ) -> Result<ProtectedDomainProjectionV1<S>, DomainLedgerDataError> {
-    let mut members = Vec::new();
-    let mut seen = BTreeSet::new();
-    for (namespace, key_bytes, value) in records {
-        if !key_bytes.starts_with(S::KEY_PREFIX) {
-            continue;
-        }
-        let key = ProtectedDomainKeyV1::<S>::decode(key_bytes)?;
-        if namespace != S::namespace(key.kind) || !seen.insert(key_bytes.to_vec()) {
-            return Err(DomainLedgerDataError::NonCanonicalRecord);
-        }
-        if members.len() >= MAXIMUM_COLD_REPLAY_MEMBERS {
-            return Err(DomainLedgerDataError::NonCanonicalRecord);
-        }
-        members.push(decode_durable_member::<S>(key, value, validator)?);
-    }
-    members.sort_by(|left, right| {
-        (
-            S::namespace(left.envelope.key.kind) as u8,
-            left.envelope.key.as_bytes(),
-        )
-            .cmp(&(
-                S::namespace(right.envelope.key.kind) as u8,
-                right.envelope.key.as_bytes(),
-            ))
-    });
-    let mut hasher = Sha256::new()
-        .chain_update(S::HASH_DOMAIN)
-        .chain_update(b"materialized-projection\0")
-        .chain_update((members.len() as u64).to_be_bytes());
-    for member in &members {
-        hasher = hasher
-            .chain_update([S::namespace(member.envelope.key.kind) as u8])
-            .chain_update((member.envelope.key.as_bytes().len() as u32).to_be_bytes())
-            .chain_update(member.envelope.key.as_bytes())
-            .chain_update((member.encoded.len() as u64).to_be_bytes())
-            .chain_update(&member.encoded);
-    }
-    let transactions = reconstruct_transactions::<S>(&members)?;
-    let records = members.into_iter().map(|member| member.envelope).collect();
-    Ok(ProtectedDomainProjectionV1 {
-        records,
-        transactions,
-        root: ObjectDigest::from_bytes(hasher.finalize().into()),
-    })
+    replay_capture::replay(records, validator, &mut replay_capture::ProjectionReplayWorkV1::new(), &mut replay_capture::OrdinarySchemaReplayV1)
 }
 
 /// Structurally decodes borrowed rows as untrusted domain DATA.
@@ -835,33 +627,16 @@ pub fn replay_projection_records<'records, S: ProtectedDomainSchemaV1>(
 pub fn current_record_candidates_from_rows<'records, S: ProtectedDomainSchemaV1>(
     records: impl Iterator<Item = (RecordNamespace, &'records [u8], &'records [u8])>,
 ) -> Result<Vec<ProtectedCurrentRecordCandidateV1<S>>, DomainLedgerDataError> {
-    let mut candidates = Vec::new();
-    let mut seen = BTreeSet::new();
-    for (namespace, key_bytes, value) in records {
-        if !key_bytes.starts_with(S::KEY_PREFIX) {
-            continue;
-        }
-        if candidates.len() >= MAXIMUM_COLD_REPLAY_MEMBERS || !seen.insert(key_bytes.to_vec()) {
-            return Err(DomainLedgerDataError::NonCanonicalRecord);
-        }
-
-        let key = ProtectedDomainKeyV1::<S>::decode(key_bytes)?;
-        if namespace != S::namespace(key.kind) {
-            return Err(DomainLedgerDataError::NonCanonicalRecord);
-        }
-        candidates.push(decode_protected_current_candidate::<S>(key, value)?);
-    }
-    candidates.sort_by(|left, right| {
-        (S::namespace(left.key.kind) as u8, left.key.as_bytes())
-            .cmp(&(S::namespace(right.key.kind) as u8, right.key.as_bytes()))
-    });
-    Ok(candidates)
+    let mut capture = CurrentRecordCandidatesCaptureV1::<S>::new();
+    current_record_candidates_with_capture_v1(records, &mut capture)?;
+    capture.take_completed_once().ok_or(DomainLedgerDataError::NonCanonicalRecord)
 }
 
 fn decode_protected_current_candidate<S: ProtectedDomainSchemaV1>(
-    key: ProtectedDomainKeyV1<S>,
+    key_original: &mut Option<ProtectedDomainKeyV1<S>>,
     bytes: &[u8],
 ) -> Result<ProtectedCurrentRecordCandidateV1<S>, DomainLedgerDataError> {
+    let key = key_original.as_ref().ok_or(DomainLedgerDataError::NonCanonicalRecord)?;
     if bytes.len() < 189
         || bytes.len() > 188 + S::MAXIMUM_PAYLOAD_BYTES
         || &bytes[..8] != DURABLE_MEMBER_MAGIC
@@ -956,7 +731,7 @@ fn decode_protected_current_candidate<S: ProtectedDomainSchemaV1>(
         structurally_decode_reducer_body::<S>(&key, payload)?.to_vec()
     };
     Ok(ProtectedCurrentRecordCandidateV1 {
-        key,
+        key: key_original.take().ok_or(DomainLedgerDataError::NonCanonicalRecord)?,
         envelope_digest,
         body,
     })
@@ -1036,53 +811,7 @@ fn structurally_decode_reducer_body<'payload, S: ProtectedDomainSchemaV1>(
 pub fn reconstruct_transactions<S: ProtectedDomainSchemaV1>(
     members: &[DurableDomainMemberV1<S>],
 ) -> Result<Vec<ProtectedDomainReplayTransactionV1<S>>, DomainLedgerDataError> {
-    let mut grouped: BTreeMap<[u8; 16], Vec<&DurableDomainMemberV1<S>>> = BTreeMap::new();
-    for member in members {
-        grouped
-            .entry(member.transaction_id)
-            .or_default()
-            .push(member);
-    }
-    let mut transactions = Vec::with_capacity(grouped.len());
-    for (transaction_id, mut group) in grouped {
-        group.sort_by_key(|member| member.member_index);
-        let first = group
-            .first()
-            .ok_or(DomainLedgerDataError::NonCanonicalRecord)?;
-        if group.iter().any(|member| {
-            member.member_count != first.member_count
-                || member.set_digest != first.set_digest
-                || member.transaction_id != transaction_id
-        }) || group
-            .windows(2)
-            .any(|pair| pair[0].member_index == pair[1].member_index)
-        {
-            return Err(DomainLedgerDataError::NonCanonicalRecord);
-        }
-        let complete = usize::from(first.member_count) == group.len()
-            && group
-                .iter()
-                .enumerate()
-                .all(|(index, member)| usize::from(member.member_index) == index);
-        let records: Vec<_> = group.iter().map(|member| member.envelope.clone()).collect();
-        let phase = if !complete {
-            ProtectedDomainReplayPhaseV1::Incomplete
-        } else {
-            let recomputed = domain_transaction_set_digest::<S>(transaction_id, &records);
-            if recomputed != first.set_digest {
-                return Err(DomainLedgerDataError::NonCanonicalRecord);
-            }
-            aggregate_reducer_phase::<S>(&records)?
-        };
-        transactions.push(ProtectedDomainReplayTransactionV1 {
-            transaction_id,
-            transaction: reconstructed_transaction_digest::<S>(transaction_id, &group)?,
-            set_digest: first.set_digest,
-            phase,
-            records,
-        });
-    }
-    Ok(transactions)
+    replay_capture::reconstruct(members, &mut replay_capture::TransactionReplayWorkV1::new())
 }
 
 /// Returns the schema-decoded reducer phase as DATA, not currentness.
@@ -1096,20 +825,7 @@ pub fn reducer_phase<S: ProtectedDomainSchemaV1>(
     Ok(envelope.validated_phase)
 }
 
-fn aggregate_reducer_phase<S: ProtectedDomainSchemaV1>(
-    records: &[ProtectedDomainEnvelopeV1<S>],
-) -> Result<ProtectedDomainReplayPhaseV1, DomainLedgerDataError> {
-    let mut phases = Vec::with_capacity(records.len());
-    for record in records {
-        phases.push(reducer_phase(record)?);
-    }
-    Ok(match aggregate_semantic_phases(&phases) {
-        ProtectedReducerPhaseV1::Prepared => ProtectedDomainReplayPhaseV1::Prepared,
-        ProtectedReducerPhaseV1::Observed => ProtectedDomainReplayPhaseV1::Observed,
-        ProtectedReducerPhaseV1::Terminal => ProtectedDomainReplayPhaseV1::Terminal,
-        ProtectedReducerPhaseV1::Superseded => ProtectedDomainReplayPhaseV1::Superseded,
-    })
-}
+
 
 /// Classifies a collection of decoded reducer-phase DATA.
 pub fn aggregate_semantic_phases(phases: &[ProtectedReducerPhaseV1]) -> ProtectedReducerPhaseV1 {
@@ -1124,23 +840,7 @@ pub fn aggregate_semantic_phases(phases: &[ProtectedReducerPhaseV1]) -> Protecte
     }
 }
 
-fn reconstructed_transaction_digest<S: ProtectedDomainSchemaV1>(
-    transaction_id: [u8; 16],
-    members: &[&DurableDomainMemberV1<S>],
-) -> Result<ObjectDigest, DomainLedgerDataError> {
-    let records = members
-        .iter()
-        .map(|member| {
-            JournalRecord::put(
-                S::namespace(member.envelope.key.kind),
-                member.envelope.key.as_bytes().to_vec(),
-                member.encoded.clone(),
-            )
-        })
-        .collect();
-    let transaction = JournalTransaction::new(transaction_id, records)?;
-    Ok(transaction_digest::<S>(&transaction))
-}
+
 
 fn envelope_digest<S: ProtectedDomainSchemaV1>(
     key: &ProtectedDomainKeyV1<S>,
@@ -1148,20 +848,7 @@ fn envelope_digest<S: ProtectedDomainSchemaV1>(
     predecessor: Option<ObjectDigest>,
     payload: &[u8],
 ) -> ObjectDigest {
-    let predecessor = predecessor.map_or([0; 32], |digest| *digest.as_bytes());
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(S::HASH_DOMAIN)
-            .chain_update(b"envelope\0")
-            .chain_update((key.as_bytes().len() as u32).to_be_bytes())
-            .chain_update(key.as_bytes())
-            .chain_update(revision.to_be_bytes())
-            .chain_update(predecessor)
-            .chain_update((payload.len() as u64).to_be_bytes())
-            .chain_update(payload)
-            .finalize()
-            .into(),
-    )
+    borrowed::envelope_digest_data_v1(S::HASH_DOMAIN, key.as_bytes(), revision, predecessor, payload)
 }
 
 /// Hashes the ordered record DATA under the schema's transaction domain.
@@ -1228,6 +915,28 @@ pub fn encode_checkpoint_payload<S: ProtectedDomainSchemaV1>(
     bytes
 }
 
+/// Measures the sole reducer framing and companion DATA before encoding.
+///
+/// A count/length does not validate a body, companion digest or schema phase.
+///
+/// # Errors
+/// Refuses original body/companion/canonical payload limits and overflow.
+pub fn reducer_payload_encoded_bytes_v1<S: ProtectedDomainSchemaV1>(
+    body_bytes: usize, companion_count: usize,
+) -> Result<usize, DomainLedgerDataError> {
+    if body_bytes < 8 || body_bytes > S::MAXIMUM_PAYLOAD_BYTES
+        || companion_count > MAXIMUM_REDUCER_COMPANIONS
+        || u32::try_from(body_bytes).is_err()
+    {
+        return Err(DomainLedgerDataError::NonCanonicalRecord);
+    }
+    20_usize.checked_add(companion_count.saturating_mul(32))
+        .and_then(|bytes| bytes.checked_add(body_bytes))
+        .and_then(|bytes| bytes.checked_add(32))
+        .filter(|bytes| *bytes <= S::MAXIMUM_PAYLOAD_BYTES)
+        .ok_or(DomainLedgerDataError::NonCanonicalRecord)
+}
+
 /// Encodes a reducer body using the original borrowed schema validator.
 ///
 /// # Errors
@@ -1255,14 +964,7 @@ pub fn encode_reducer_payload_with_validator<S: ProtectedDomainSchemaV1>(
         u16::try_from(companions.len()).map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?;
     let body_length =
         u32::try_from(body.len()).map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?;
-    let capacity = 20_usize
-        .checked_add(companions.len().saturating_mul(32))
-        .and_then(|length| length.checked_add(body.len()))
-        .and_then(|length| length.checked_add(32))
-        .ok_or(DomainLedgerDataError::NonCanonicalRecord)?;
-    if capacity > S::MAXIMUM_PAYLOAD_BYTES {
-        return Err(DomainLedgerDataError::NonCanonicalRecord);
-    }
+    let capacity = reducer_payload_encoded_bytes_v1::<S>(body.len(), companions.len())?;
     let mut encoded = Vec::with_capacity(capacity);
     encoded.extend_from_slice(REDUCER_PAYLOAD_MAGIC);
     encoded.extend_from_slice(&ENVELOPE_VERSION.to_be_bytes());
@@ -1370,98 +1072,10 @@ pub fn decode_reducer_payload_with_validator<'payload, S: ProtectedDomainSchemaV
     bytes: &'payload [u8],
     validator: &S::ReplayValidator,
 ) -> Result<DecodedReducerPayloadV1<'payload>, DomainLedgerDataError> {
-    if !valid_reducer_payload::<S>(key, bytes, validator) {
-        return Err(DomainLedgerDataError::NonCanonicalRecord);
-    }
-    let phase = decode_phase(bytes[12]).ok_or(DomainLedgerDataError::NonCanonicalRecord)?;
-    let companion_count = usize::from(u16::from_be_bytes([bytes[14], bytes[15]]));
-    let companions_end = 20 + companion_count * 32;
-    let body_length = usize::try_from(u32::from_be_bytes([
-        bytes[16], bytes[17], bytes[18], bytes[19],
-    ]))
-    .map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?;
-    let body_end = companions_end + body_length;
-    let companions = bytes[20..companions_end]
-        .chunks_exact(32)
-        .map(|digest| {
-            let bytes: [u8; 32] = digest
-                .try_into()
-                .map_err(|_| DomainLedgerDataError::NonCanonicalRecord)?;
-            Ok(ObjectDigest::from_bytes(bytes))
-        })
-        .collect::<Result<Vec<_>, DomainLedgerDataError>>()?;
-    Ok(DecodedReducerPayloadV1 {
-        body: &bytes[companions_end..body_end],
-        companions,
-        phase,
-    })
+    replay_capture::decode_reducer_payload_ordinary(key, bytes, validator)
 }
 
-fn valid_reducer_payload<S: ProtectedDomainSchemaV1>(
-    key: &ProtectedDomainKeyV1<S>,
-    bytes: &[u8],
-    validator: &S::ReplayValidator,
-) -> bool {
-    if bytes.len() < 60
-        || bytes.len() > S::MAXIMUM_PAYLOAD_BYTES
-        || &bytes[..8] != REDUCER_PAYLOAD_MAGIC
-        || u16::from_be_bytes([bytes[8], bytes[9]]) != ENVELOPE_VERSION
-        || bytes[10] != S::family(key.kind)
-        || bytes[11] != S::kind_code(key.kind)
-        || bytes[13] != 0
-    {
-        return false;
-    }
-    let Some(phase) = decode_phase(bytes[12]) else {
-        return false;
-    };
-    let companion_count = usize::from(u16::from_be_bytes([bytes[14], bytes[15]]));
-    if companion_count > MAXIMUM_REDUCER_COMPANIONS {
-        return false;
-    }
-    let body_length = usize::try_from(u32::from_be_bytes([
-        bytes[16], bytes[17], bytes[18], bytes[19],
-    ]))
-    .ok();
-    let Some(body_length) = body_length else {
-        return false;
-    };
-    let companions_end = 20_usize.checked_add(companion_count.saturating_mul(32));
-    let Some(companions_end) = companions_end else {
-        return false;
-    };
-    let body_end = companions_end.checked_add(body_length);
-    let Some(body_end) = body_end else {
-        return false;
-    };
-    if body_length < 8 || bytes.len() != body_end + 32 {
-        return false;
-    }
-    let companions = &bytes[20..companions_end];
-    if companions.chunks_exact(32).any(|digest| digest == [0; 32])
-        || !companions
-            .chunks_exact(32)
-            .collect::<Vec<_>>()
-            .windows(2)
-            .all(|pair| pair[0] < pair[1])
-    {
-        return false;
-    }
-    let body = &bytes[companions_end..body_end];
-    let derived_companions = encode_digest_slice(&derived_companions(key, body));
-    if S::decode_reducer_phase(validator, key.kind, &key.identity, body) != Some(phase)
-        || companions != derived_companions.as_slice()
-    {
-        return false;
-    }
-    let expected: [u8; 32] = Sha256::new()
-        .chain_update(S::HASH_DOMAIN)
-        .chain_update(b"reducer-payload\0")
-        .chain_update(&bytes[..body_end])
-        .finalize()
-        .into();
-    bytes[body_end..] == expected
-}
+
 
 fn decode_phase(value: u8) -> Option<ProtectedReducerPhaseV1> {
     match value {
@@ -1477,6 +1091,14 @@ fn derived_companions<S: ProtectedDomainSchemaV1>(
     key: &ProtectedDomainKeyV1<S>,
     body: &[u8],
 ) -> Vec<ObjectDigest> {
+    derived_companions_with_disposition(key, body, &mut replay_capture::OrdinarySchemaReplayV1)
+}
+
+fn derived_companions_with_disposition<S: ProtectedDomainSchemaV1>(
+    key: &ProtectedDomainKeyV1<S>,
+    body: &[u8],
+    disposition: &mut impl replay_capture::SchemaReplayDispositionV1<S>,
+) -> Vec<ObjectDigest> {
     let body_digest = ObjectDigest::from_bytes(
         Sha256::new()
             .chain_update(S::HASH_DOMAIN)
@@ -1487,7 +1109,7 @@ fn derived_companions<S: ProtectedDomainSchemaV1>(
             .into(),
     );
     let mut companions = vec![body_digest];
-    if let Some(tuple) = S::semantic_tuple(key.kind, &key.identity, body) {
+    if let Some(tuple) = disposition.semantic_tuple(key.kind, &key.identity, body) {
         companions.push(ObjectDigest::from_bytes(
             Sha256::new()
                 .chain_update(b"aos.sandbox.protected-journal.subject.v1\0")

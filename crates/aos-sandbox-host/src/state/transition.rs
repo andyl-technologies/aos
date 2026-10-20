@@ -50,6 +50,8 @@ pub(crate) enum HostAction {
     ReserveExecutionOutput,
     QueryExecutionOutput,
     ObserveExecutionArgument,
+    PrepareExecutionArgumentV2,
+    AcceptExecutionArgumentV2,
     QueryExecutionArgument,
     TerminalNoApply,
     QueryNoApply,
@@ -67,6 +69,8 @@ impl HostAction {
                 | Self::ReserveExecutionOutput
                 | Self::QueryExecutionOutput
                 | Self::ObserveExecutionArgument
+                | Self::PrepareExecutionArgumentV2
+                | Self::AcceptExecutionArgumentV2
                 | Self::QueryExecutionArgument
                 | Self::TerminalNoApply
                 | Self::QueryNoApply
@@ -89,6 +93,8 @@ impl HostAction {
             12 => Some(Self::QueryExecutionArgument),
             13 => Some(Self::TerminalNoApply),
             14 => Some(Self::QueryNoApply),
+            15 => Some(Self::PrepareExecutionArgumentV2),
+            16 => Some(Self::AcceptExecutionArgumentV2),
             _ => None,
         }
     }
@@ -109,6 +115,8 @@ impl HostAction {
             Self::QueryExecutionArgument => 12,
             Self::TerminalNoApply => 13,
             Self::QueryNoApply => 14,
+            Self::PrepareExecutionArgumentV2 => 15,
+            Self::AcceptExecutionArgumentV2 => 16,
         }
     }
 }
@@ -127,6 +135,18 @@ pub(crate) enum DurableExecution {
     HostExecutionHandoff(HostExecutionHandoffRecord),
 }
 
+pub(super) struct AuthenticationByteCountV5(pub(super) usize);
+
+impl std::io::Write for AuthenticationByteCountV5 {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.checked_add(bytes.len()).ok_or_else(||
+            std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+
 /// Retains the protected runtime and stable operation bound to a Host grant.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -140,6 +160,74 @@ pub(crate) struct HostExecutionHandoffRecord {
     pub(crate) execution_id: [u8; 16],
     pub(crate) source_commitment: [u8; 32],
     pub(crate) semantic_commitment: [u8; 32],
+    // New Accept rows retain the exact prepared body for cold reauthentication.
+    // None preserves the prior JSON and authentication bytes of old rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) argument_preparation: Option<Vec<u8>>,
+    // Only actual version-five Observe admission produces this compact DATA.
+    // None preserves established snapshot bytes, but cannot serve old queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) historical_read_binding_v5: Option<super::historical_execution::HistoricalExecutionReadBindingV5>,
+}
+
+impl DurableExecution {
+    pub(super) fn receiving_dynamic_bytes_v3(&self) -> Option<usize> {
+        match self {
+            Self::GuardianLaunch(record) => {
+                let evidence = &record.evidence;
+                [
+                    &evidence.broker_plan,
+                    &evidence.broker_plan_signature,
+                    &evidence.ownership_lease,
+                    &evidence.ownership_lease_signature,
+                ]
+                .into_iter()
+                .try_fold(std::mem::size_of::<GuardianLaunchRecord>(), |sum, bytes| {
+                    sum.checked_add(bytes.capacity())
+                })
+                .and_then(|sum| sum.checked_add(record.launch_namespace_history_v1.as_ref().map_or(0, Vec::capacity)))
+            }
+            Self::HostExecutionHandoff(record) => record
+                .argument_preparation
+                .as_ref()
+                .map_or(0, Vec::capacity)
+                .checked_add(record.historical_read_binding_v5.as_ref().map_or(
+                    0,
+                    super::historical_execution::HistoricalExecutionReadBindingV5::dynamic_bytes_v5,
+                )),
+            Self::CompositeStop(record) => Some(
+                record
+                    .namespace_history_v6
+                    .as_ref()
+                    .map_or(0, Vec::capacity)
+                    .checked_add(record.cleanup_parent_v1.as_ref().map_or(0, |parent| parent.dynamic_bytes_v1()))?,
+            ),
+            Self::DirectLifecycle => Some(0),
+        }
+    }
+}
+
+impl HostExecutionHandoffRecord {
+    fn argument_preparation_is_consistent(&self, context: ExecutionContext) -> bool {
+        if self.historical_read_binding_v5.as_ref().is_some_and(|binding|
+            !binding.is_consistent_v5(context, self)) { return false; }
+        match (&self.argument_preparation, context.action) {
+            (Some(bytes), HostAction::AcceptExecutionArgumentV2) => {
+                let Ok(preparation) = aos_sandbox_protocol::host_execution_argument::preparation::HostArgumentPreparationV2::decode(bytes) else {
+                    return false;
+                };
+                let source = preparation.proposed_source();
+                source[8..24] == self.execution_id
+                    && source[24..40] == self.operation_id
+                    && source[184..216] == context.assignment_digest
+                    && source[40..56] != context.request_id
+                    && preparation.controller_session() == self.session_binding
+                    && preparation.runtime_handle() == self.runtime_handle
+            }
+            (None, HostAction::AcceptExecutionArgumentV2) | (Some(_), _) => false,
+            (None, _) => true,
+        }
+    }
 }
 
 impl DurableExecution {
@@ -148,7 +236,8 @@ impl DurableExecution {
         let (Self::GuardianLaunch(old), Self::GuardianLaunch(new)) = (before, self) else {
             return false;
         };
-        if old.evidence != new.evidence || old.phase == new.phase {
+        if old.evidence != new.evidence || old.phase == new.phase
+            || old.launch_namespace_history_v1 != new.launch_namespace_history_v1 {
             return false;
         }
 
@@ -207,15 +296,24 @@ impl DurableExecution {
         let (Self::CompositeStop(old), Self::CompositeStop(new)) = (before, self) else {
             return false;
         };
-        if old.target != new.target || old.phase == new.phase {
+        if old.target != new.target
+            || old.namespace_history_v6 != new.namespace_history_v6
+            || old.phase == new.phase
+        {
             return false;
         }
         match (&old.phase, &new.phase) {
-            (CompositeStopPhase::StopAuthorized, CompositeStopPhase::StopEffectIssued { .. }
-                | CompositeStopPhase::Complete { .. }) => true,
-            (CompositeStopPhase::StopEffectIssued { progress: old },
-                CompositeStopPhase::StopEffectIssued { progress }) => stop_rank(*progress) > stop_rank(*old),
-            (CompositeStopPhase::StopEffectIssued { .. }, CompositeStopPhase::Complete { .. }) => true,
+            (
+                CompositeStopPhase::StopAuthorized,
+                CompositeStopPhase::StopEffectIssued { .. } | CompositeStopPhase::Complete { .. },
+            ) => true,
+            (
+                CompositeStopPhase::StopEffectIssued { progress: old },
+                CompositeStopPhase::StopEffectIssued { progress },
+            ) => stop_rank(*progress) > stop_rank(*old),
+            (CompositeStopPhase::StopEffectIssued { .. }, CompositeStopPhase::Complete { .. }) => {
+                true
+            }
             _ => false,
         }
     }
@@ -230,6 +328,7 @@ impl DurableExecution {
             GuardianLaunchPhase::PayloadVerified { .. } => 7,
             GuardianLaunchPhase::Complete { .. } => 6,
             GuardianLaunchPhase::Compensated { .. } => 0,
+            GuardianLaunchPhase::CompensatedRetainedV1 { .. } => return None,
             GuardianLaunchPhase::CleanupIssued { progress, .. } => 4 - cleanup_rank(*progress),
         })
     }
@@ -255,6 +354,8 @@ impl DurableExecution {
             HostAction::ReserveExecutionOutput
             | HostAction::QueryExecutionOutput
             | HostAction::ObserveExecutionArgument
+            | HostAction::PrepareExecutionArgumentV2
+            | HostAction::AcceptExecutionArgumentV2
             | HostAction::QueryExecutionArgument
             | HostAction::TerminalNoApply
             | HostAction::QueryNoApply => None,
@@ -272,6 +373,17 @@ impl DurableExecution {
             }
             Self::CompositeStop(record) => {
                 context.action == HostAction::Stop && record.validate(context.receipt_present)
+                    && record.namespace_history_v6.as_ref().is_none_or(|bytes| {
+                        aos_sandbox_protocol::host_stopped_namespace::HostStoppedNamespaceDataV4::decode_v4(bytes)
+                            .is_ok_and(|scope| record.cleanup_parent_v1.as_ref().map_or_else(
+                                || scope.stop_v4().0 == context.request_id,
+                                |parent| parent.subject_v1().is_ok_and(|subject|
+                                    subject.historical_scope_v1() == &scope
+                                        && subject.cleanup_request_v1() == &context.request_id),
+                            )
+                                && scope.fence_v4().sandbox_id() == &context.sandbox_id
+                                && scope.fence_v4().incarnation_id() == &context.incarnation_id)
+                    })
             }
             Self::HostExecutionHandoff(record) => {
                 context.action.is_execution_handoff()
@@ -283,8 +395,16 @@ impl DurableExecution {
                     && record.execution_id != [0; 16]
                     && record.source_commitment != [0; 32]
                     && record.semantic_commitment != [0; 32]
+                    && record.argument_preparation_is_consistent(context)
             }
         }
+    }
+
+    pub(super) fn authentication_encoding_receiving_bytes_v5(&self) -> Option<usize> {
+        let mut count = AuthenticationByteCountV5(0);
+        serde_json::to_writer(&mut count, self).ok()?;
+        // Two complete encodings and their geometric allocation overlaps.
+        count.0.checked_mul(4)?.checked_add(std::mem::size_of::<AuthenticationByteCountV5>())
     }
 
     /// Commits one execution record to its request and stable authority.
@@ -327,6 +447,84 @@ impl DurableExecution {
         }
     }
 
+    pub(crate) fn launch_namespace_receiving_demand_v1() -> Option<aos_sandbox_core::ResourceVector>
+    {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        let width = aos_sandbox_protocol::host_stopped_namespace::HOST_LAUNCH_NAMESPACE_BYTES_V1;
+        // Resident/proposed/commit models plus complete JSON authentication
+        // encodings and geometric scratch, all before the first allocation.
+        let bytes = width
+            .checked_mul(3)?
+            .checked_add(width.checked_mul(4)?.checked_mul(4)?)?
+            .checked_add(
+                std::mem::size_of::<
+                    aos_sandbox_protocol::host_stopped_namespace::HostLaunchNamespaceDataV1,
+                >()
+                .checked_mul(2)?,
+            )?;
+        Some(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(bytes).ok()?))
+    }
+
+    pub(crate) fn bind_launch_namespace_history_v1(
+        &mut self,
+        runtime: &aos_sandbox_protocol::ValidatedRuntimeRequest,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        receiving: &crate::plan::HostExecutionReceivingLoanV2<'_>,
+        admitted: &aos_sandbox_broker::VerifiedBrokerAdmission,
+    ) -> crate::Result<()> {
+        receiving.require_launch_request_v2(request)?;
+        let Self::GuardianLaunch(record) = self else {
+            return Err(crate::HostError::Fence(
+                "Launch namespace history lacks its actual Guardian record",
+            ));
+        };
+        let id = request.request_id();
+        let digest: [u8; 32] = Sha256::digest(request.exact_body()).into();
+        if record.evidence.request_id != id
+            || runtime.header().request_id() != &id
+            || record.evidence.request_digest != digest
+            || admitted.effect.transport_request_digest().as_bytes() != &digest
+            || admitted.effect.request_id() != &id
+            || admitted.effect.host_boot_id() != &record.evidence.host_boot_id
+        {
+            return Err(crate::HostError::Fence(
+                "Launch namespace history differs from its actual authenticated request",
+            ));
+        }
+        let plan = runtime.launch_plan().ok_or(crate::HostError::Fence(
+            "Launch namespace history lacks its typed plan",
+        ))?;
+        let scope =
+            aos_sandbox_protocol::host_stopped_namespace::HostLaunchNamespaceDataV1::from_data_v1(
+                *admitted.effect.host_boot_id(),
+                *runtime.fence(),
+                *plan.attachment_anchor_handle(),
+                (
+                    id,
+                    request.session_binding(),
+                    request.signed_request_digest(),
+                ),
+            )?;
+        let bytes = scope.encode_v1();
+        if let Some(previous) = record.launch_namespace_history_v1.as_ref() {
+            if previous.as_slice() != bytes {
+                return Err(crate::HostError::Fence(
+                    "Launch namespace history cannot change",
+                ));
+            }
+            return Ok(());
+        }
+        // Only the original authorized admission may capture this association;
+        // a completed legacy row cannot be retrospectively given new history.
+        if !matches!(record.phase, GuardianLaunchPhase::Authorized) {
+            return Err(crate::HostError::Fence(
+                "Launch namespace history cannot be reconstructed after admission",
+            ));
+        }
+        record.launch_namespace_history_v1 = Some(bytes.to_vec());
+        Ok(())
+    }
+
     pub(crate) fn stop_source(&self) -> Option<StopSourceReference> {
         match self {
             Self::CompositeStop(record) => record.target.source(),
@@ -341,6 +539,8 @@ impl DurableExecution {
         let execution = Self::CompositeStop(CompositeStopRecord {
             target,
             phase: CompositeStopPhase::StopAuthorized,
+            namespace_history_v6: None,
+            cleanup_parent_v1: None,
         });
         execution.validate(context).then_some(execution)
     }
@@ -350,6 +550,37 @@ impl DurableExecution {
             return None;
         };
         Some(record)
+    }
+
+    /// Binds the actual resident Launch and authenticated Stop comparison scope.
+    ///
+    /// The same Stop receiver must prepay the scope before this allocation.
+    /// These bytes become part of the existing execution authentication.
+    ///
+    /// # Errors
+    /// Refuses a repeat, issued effect, Absent target or different source Launch.
+    pub(crate) fn bind_resident_namespace_history_v6(
+        &mut self,
+        scope: aos_sandbox_protocol::host_stopped_namespace::HostStoppedNamespaceDataV4,
+    ) -> crate::Result<()> {
+        let Self::CompositeStop(record) = self else {
+            return Err(crate::HostError::Fence(
+                "namespace history requires the actual composite Stop",
+            ));
+        };
+        if record.namespace_history_v6.is_some()
+            || !matches!(record.phase, CompositeStopPhase::StopAuthorized)
+            || !record.target.source().is_some_and(|source| {
+                source.request_id == scope.launch_v4().0
+                    && source.incarnation_id == *scope.fence_v4().incarnation_id()
+            })
+        {
+            return Err(crate::HostError::Fence(
+                "namespace history differs from its resident Stop parent",
+            ));
+        }
+        record.namespace_history_v6 = Some(scope.encode_v4().to_vec());
+        Ok(())
     }
 
     pub(crate) fn set_composite_stop_phase(&mut self, phase: CompositeStopPhase) -> bool {
@@ -409,6 +640,7 @@ impl DurableExecution {
         let execution = Self::GuardianLaunch(Box::new(GuardianLaunchRecord {
             evidence,
             phase: GuardianLaunchPhase::Authorized,
+            launch_namespace_history_v1: None,
         }));
         execution.validate(context).then_some(execution)
     }
@@ -514,6 +746,7 @@ impl DurableExecution {
         Self::GuardianLaunch(Box::new(GuardianLaunchRecord {
             evidence,
             phase: GuardianLaunchPhase::Authorized,
+            launch_namespace_history_v1: None,
         }))
     }
 
@@ -522,6 +755,8 @@ impl DurableExecution {
         Self::CompositeStop(CompositeStopRecord {
             target: CompositeStopTarget::Absent,
             phase: CompositeStopPhase::StopAuthorized,
+            namespace_history_v6: None,
+            cleanup_parent_v1: None,
         })
     }
 }
@@ -581,16 +816,34 @@ pub(crate) struct ExecutionContext {
 pub(crate) struct GuardianLaunchRecord {
     pub(crate) evidence: GuardianLaunchEvidence,
     pub(crate) phase: GuardianLaunchPhase,
+    // The real authenticated Launch receiver records these coordinates before
+    // its first Start. The existing execution MAC covers the exact bytes;
+    // omitted legacy rows cannot supply Launch-only restart comparison.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) launch_namespace_history_v1: Option<Vec<u8>>,
 }
 
 impl GuardianLaunchRecord {
     fn validate(&self, context: ExecutionContext) -> bool {
         self.evidence.validate(context)
             && self.phase.validate(self.evidence.binding)
-            && matches!(
-                self.phase,
-                GuardianLaunchPhase::Compensated { .. } | GuardianLaunchPhase::Complete { .. }
-            ) == context.receipt_present
+            && self.launch_namespace_history_v1.as_ref().is_none_or(|bytes| {
+                let Ok(scope) = aos_sandbox_protocol::host_stopped_namespace::HostLaunchNamespaceDataV1::decode_v1(bytes)
+                else { return false; };
+                let fence = scope.fence_v1();
+                scope.launch_v1().0 == context.request_id
+                    && scope.boot_v1() == &self.evidence.host_boot_id
+                    && fence.sandbox_id() == &context.sandbox_id
+                    && fence.incarnation_id() == &context.incarnation_id
+                    && fence.assignment_epoch() == context.assignment_epoch
+                    && fence.desired_generation() == context.desired_generation
+                    && fence.assignment_digest() == &context.assignment_digest
+            })
+            && match self.phase {
+                GuardianLaunchPhase::CompensatedRetainedV1 { .. } => !context.receipt_present,
+                _ => matches!(self.phase, GuardianLaunchPhase::Compensated { .. }
+                    | GuardianLaunchPhase::Complete { .. }) == context.receipt_present,
+            }
     }
 }
 
@@ -940,6 +1193,11 @@ pub(crate) enum GuardianLaunchPhase {
     Compensated {
         observation_sequence: u64,
     },
+    /// Records proved absence while the failed Launch and its debt stay pending.
+    #[serde(rename = "compensated_retained_v1")]
+    CompensatedRetainedV1 {
+        observation_sequence: u64,
+    },
     Complete {
         guardian_invocation: [u8; 16],
         payload_invocation: [u8; 16],
@@ -953,6 +1211,9 @@ impl GuardianLaunchPhase {
         match self {
             Self::Authorized | Self::GuardianStartIssued => true,
             Self::Compensated {
+                observation_sequence,
+            }
+            | Self::CompensatedRetainedV1 {
                 observation_sequence,
             } => *observation_sequence != 0,
             Self::GuardianReady {
@@ -1037,12 +1298,29 @@ impl ExactUnitTarget {
 pub(crate) struct CompositeStopRecord {
     pub(crate) target: CompositeStopTarget,
     pub(crate) phase: CompositeStopPhase,
+    // Historical comparison DATA, captured only from the actual resident
+    // Launch and signed Stop. The existing execution MAC covers these bytes.
+    // Omission preserves old JSON/MAC bytes but supplies no restart evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) namespace_history_v6: Option<Vec<u8>>,
+    // Only fresh native cleanup admission creates this MAC-covered immutable
+    // parent association. Omission keeps all old row/MAC encodings unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cleanup_parent_v1: Option<super::cleanup_chain::CleanupParentDataV1>,
 }
 
 impl CompositeStopRecord {
     fn validate(&self, receipt_present: bool) -> bool {
         self.target.validate()
             && self.phase.validate(&self.target)
+            && self.cleanup_parent_v1.as_ref().is_none_or(|parent| parent.validate_format_v1())
+            && self.namespace_history_v6.as_ref().is_none_or(|bytes| {
+                let Ok(scope) = aos_sandbox_protocol::host_stopped_namespace::HostStoppedNamespaceDataV4::decode_v4(bytes)
+                else { return false; };
+                self.target.source().is_some_and(|source|
+                    source.request_id == scope.launch_v4().0
+                        && source.incarnation_id == *scope.fence_v4().incarnation_id())
+            })
             && matches!(self.phase, CompositeStopPhase::Complete { .. }) == receipt_present
     }
 }
@@ -1388,6 +1666,7 @@ pub(crate) fn decide_guardian_launch(input: GuardianDecisionInput<'_>) -> Guardi
         GuardianLaunchPhase::Compensated { .. } | GuardianLaunchPhase::Complete { .. } => {
             GuardianDecision::HistoricalComplete
         }
+        GuardianLaunchPhase::CompensatedRetainedV1 { .. } => GuardianDecision::Quarantine,
     }
 }
 
@@ -1770,6 +2049,18 @@ pub(crate) fn decide_composite_stop(input: StopDecisionInput<'_>) -> StopDecisio
     }
 }
 
+/// Requires the new cleanup authority before using the same exact Stop reducer.
+///
+/// Immutable ordinary issued Stops retain their existing historical retry law.
+/// A cleanup child always belongs to its fresh request/cutoff, including when
+/// its copied progress was already issued by an immutable ancestor.
+pub(crate) fn decide_fresh_stop_cleanup_v1(input: StopDecisionInput<'_>) -> StopDecision {
+    if input.freshness != AuthorityFreshness::Fresh {
+        return StopDecision::Reject(DecisionRejection::AuthorityExpired);
+    }
+    decide_composite_stop(input)
+}
+
 fn decide_stop_authorized(input: StopDecisionInput<'_>) -> StopDecision {
     if input.freshness == AuthorityFreshness::Expired {
         return StopDecision::Reject(DecisionRejection::AuthorityExpired);
@@ -1991,6 +2282,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retained_compensation_has_one_closed_version_and_preserves_legacy_bytes() {
+        let old = GuardianLaunchPhase::Compensated { observation_sequence: 7 };
+        assert_eq!(serde_json::to_string(&old).unwrap(),
+            r#"{"phase":"compensated","observation_sequence":7}"#);
+        let phase = GuardianLaunchPhase::CompensatedRetainedV1 { observation_sequence: 7 };
+        let bytes = serde_json::to_vec(&phase).unwrap();
+        assert_eq!(bytes.as_slice(), br#"{"phase":"compensated_retained_v1","observation_sequence":7}"#);
+        assert_eq!(serde_json::from_slice::<GuardianLaunchPhase>(&bytes).unwrap(), phase);
+        for invalid in [
+            r#"{"phase":"compensated_retained_v2","observation_sequence":7}"#,
+            r#"{"phase":"compensated_retained_v1","observation_sequence":7,"extra":1}"#,
+            r#"{"phase":"compensated_retained_v1","observation_sequence":7,"observation_sequence":8}"#,
+            r#"{"phase":"compensated_retained_v1"}"#,
+        ] {
+            assert!(serde_json::from_str::<GuardianLaunchPhase>(invalid).is_err());
+        }
+        assert!(!guardian_record(GuardianLaunchPhase::CompensatedRetainedV1 {
+            observation_sequence: 0,
+        }).validate(context(HostAction::Launch, false)));
+        assert!(guardian_record(phase.clone()).validate(context(HostAction::Launch, false)));
+        assert!(!guardian_record(phase).validate(context(HostAction::Launch, true)));
+        assert!(!guardian_record(old.clone()).validate(context(HostAction::Launch, false)));
+        assert!(guardian_record(old).validate(context(HostAction::Launch, true)));
+    }
+
+    #[test]
+    fn retained_compensation_never_selects_replay_or_another_native_programme() {
+        let phase = GuardianLaunchPhase::CompensatedRetainedV1 { observation_sequence: 7 };
+        let observations = [UnitObservation::Absent, UnitObservation::Indeterminate,
+            UnitObservation::Present { binding: Some(evidence().binding), invocation: [91; 16],
+                state: PresentUnitState::ActiveRunning }];
+        for freshness in [AuthorityFreshness::Fresh, AuthorityFreshness::Expired] {
+            for guardian in observations {
+                for payload in observations {
+                    for job in [StartJobEvidence::None, StartJobEvidence::DoneForCurrentSubmission,
+                        StartJobEvidence::RecoveredExactProof, StartJobEvidence::FailedForCurrentSubmission]
+                    {
+                        let mut input = guardian_input(&phase, guardian);
+                        input.freshness = freshness;
+                        input.payload = payload;
+                        input.guardian_job = job;
+                        input.payload_job = job;
+                        assert_eq!(decide_guardian_launch(input), GuardianDecision::Quarantine);
+                    }
+                }
+            }
+        }
+        let negative = guardian_record(phase);
+        assert!(negative.canary_remaining_guardian().is_none());
+        assert!(!negative.canary_guardian_follows(&guardian_record(GuardianLaunchPhase::Authorized)));
+        assert!(negative.guardian_completed_invocations().is_none());
+    }
+
+    #[test]
     fn execution_handoff_actions_use_the_shared_execution_fence() {
         for action in [
             HostAction::ApplyExecution,
@@ -2030,6 +2375,8 @@ mod tests {
             execution_id: [13; 16],
             source_commitment: [14; 32],
             semantic_commitment: [15; 32],
+            argument_preparation: None,
+            historical_read_binding_v5: None,
         };
         let stable_authority = [16; 32];
         let original = DurableExecution::HostExecutionHandoff(handoff.clone());
@@ -2089,7 +2436,62 @@ mod tests {
         DurableExecution::GuardianLaunch(Box::new(GuardianLaunchRecord {
             evidence: evidence(),
             phase,
+            launch_namespace_history_v1: None,
         }))
+    }
+
+    #[test]
+    fn launch_namespace_history_is_mac_bound_and_legacy_omission_stays_unchanged() {
+        let context = context(HostAction::Launch, false);
+        let mut execution = DurableExecution::guardian_fixture(context);
+        let original = execution.authentication_digest(context, [91; 32]).unwrap();
+        assert!(
+            !serde_json::to_string(&execution)
+                .unwrap()
+                .contains("launch_namespace_history_v1")
+        );
+        let binding = execution.guardian_binding().unwrap();
+        let DurableExecution::GuardianLaunch(record) = &mut execution else {
+            unreachable!()
+        };
+        let evidence = &record.evidence;
+        let runtime = aos_sandbox_protocol::semantics::host::runtime_handle_v1(
+            &evidence.incarnation_id,
+            evidence.assignment_epoch,
+            &evidence.assignment_digest,
+        );
+        let mut bytes = Vec::new();
+        for part in [
+            b"AOSHLR10".as_slice(),
+            &evidence.host_boot_id,
+            &evidence.sandbox_id,
+            &evidence.incarnation_id,
+            &evidence.assignment_epoch.to_le_bytes(),
+            &evidence.desired_generation.to_le_bytes(),
+            &evidence.assignment_digest,
+            &[92; 32],
+            &runtime,
+            &evidence.request_id,
+            &[93; 32],
+            &[94; 32],
+        ] {
+            bytes.extend_from_slice(part);
+        }
+        aos_sandbox_protocol::host_stopped_namespace::HostLaunchNamespaceDataV1::decode_v1(&bytes)
+            .unwrap();
+        record.launch_namespace_history_v1 = Some(bytes);
+
+        assert!(execution.validate(context));
+        assert_eq!(execution.guardian_binding(), Some(binding));
+        assert_ne!(
+            execution.authentication_digest(context, [91; 32]).unwrap(),
+            original
+        );
+        let DurableExecution::GuardianLaunch(record) = &mut execution else {
+            unreachable!()
+        };
+        record.launch_namespace_history_v1.as_mut().unwrap()[24] ^= 1;
+        assert!(!execution.validate(context));
     }
 
     fn present(
@@ -2996,6 +3398,14 @@ mod tests {
                 ..
             })) if invocation == [63; 16]
         ));
+        assert_eq!(decide_fresh_stop_cleanup_v1(expired_issued),
+            StopDecision::Reject(DecisionRejection::AuthorityExpired));
+        for phase in [&authorized,&issued] {
+            assert!(matches!(decide_fresh_stop_cleanup_v1(StopDecisionInput {
+                phase,freshness:AuthorityFreshness::Fresh,payload:UnitObservation::Absent,
+                guardian:UnitObservation::Absent,..expired
+            }),StopDecision::Persist(CompositeStopPhase::Complete { observation_sequence:65 })));
+        }
     }
 
     #[test]

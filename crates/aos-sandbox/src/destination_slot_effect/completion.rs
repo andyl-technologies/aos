@@ -30,7 +30,7 @@ use super::attempt::{DurableCurrentDestinationSlotAttemptV1, History as AttemptH
 use super::{CARRIER_VERSION, DestinationSlotEffectError, METHOD, RESPONSE_BYTES, decode_request};
 use crate::mount_preparation::transport;
 use crate::mount_preparation::{MountServiceIdentity, ServiceExecution};
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
 const NAMESPACE: RecordNamespace = RecordNamespace::DestinationSlotCompletion;

@@ -7,9 +7,12 @@
 //! keys, excess nesting, or an allocation claim beyond caller limits.
 
 mod assignment;
+pub mod assignment_capture;
+pub mod authorization_capture;
 mod attachment;
 mod broker_authorization;
 mod cbor;
+pub(crate) mod decode_attempt;
 mod execution;
 mod git_upload_capacity;
 pub mod git_upload_enrollment;
@@ -27,6 +30,8 @@ mod view;
 use sha2::{Digest, Sha256};
 
 use crate::{MediaType, ObjectDescriptor, ObjectDigest};
+
+pub(crate) use assignment::decode_assignment_manifest_engine_v1;
 
 pub use assignment::{decode_assignment_manifest_v1, encode_assignment_manifest_v1};
 pub use attachment::{
@@ -49,22 +54,39 @@ pub(crate) use publisher_request::encode_publisher_admission_draft_v1;
 pub use publisher_request::{
     decode_publisher_admission_request_v1, encode_publisher_admission_request_v1,
 };
-pub use snapshot::{decode_snapshot, encode_snapshot};
-pub use spec::{decode_sandbox_spec, encode_sandbox_spec, sandbox_spec_media_type};
+pub use snapshot::{decode_snapshot, encode_snapshot, snapshot_decode_receiving_bytes_v2};
+pub use spec::{
+    decode_sandbox_spec, encode_sandbox_spec, sandbox_spec_media_type,
+    sandbox_spec_decoding_memory_bound_v4, sandbox_spec_decoding_receiving_bytes_v2,
+};
 pub use tree::{
     StreamingDirectory, decode_delta, decode_directory, decode_tree, encode_delta,
     encode_directory, encode_object_descriptor, encode_tree, hardlink_group_digest,
 };
 pub use trust::{
-    decode_signature, decode_signature_statement, decode_trust_policy, encode_signature,
+    TrustPolicyDecodeCaptureV1, TrustPolicyDecodeClosedV1,
+    decode_signature, decode_signature_statement, decode_trust_policy, decode_trust_policy_retaining_v1, encode_signature,
     encode_signature_statement, encode_trust_policy,
 };
 pub use view::{
     decode_environment, decode_view, decode_view_source, encode_environment, encode_view,
-    encode_view_source, try_encode_environment,
+    encode_view_source, try_encode_environment, view_decode_receiving_bytes_v2,
 };
 
 const OBJECT_DOMAIN: &[u8] = b"aos-sandbox-object-v1\0";
+
+/// Bounds the existing canonical validator's reached recursive frame storage.
+///
+/// This passive layout includes the first refusing depth and both map/value
+/// frames. It does not parse bytes or authorize decoding. The returned bytes
+/// are memory obligations; local variables are not namespace entries.
+#[must_use]
+pub fn canonical_cbor_validation_receiving_bytes_v1(
+    input_bytes: usize,
+    limits: DecodeLimits,
+) -> Option<usize> {
+    cbor::validation_receiving_bytes_v1(input_bytes, limits)
+}
 
 /// Reports failure to match a streamed payload to its expected object descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -197,6 +219,25 @@ pub fn descriptor_for_bytes(media_type: MediaType, stored_bytes: &[u8]) -> Objec
     ObjectDescriptor::new(media_type, digest, encoded_size)
 }
 
+/// Compares encoded bytes with the existing exact object-descriptor commitment.
+///
+/// This pure DATA comparison shares the descriptor's original domain hasher.
+/// It does not decode the content, validate its role, establish currentness or
+/// construct a descriptor or execution authority.
+#[doc(hidden)]
+#[must_use]
+pub fn descriptor_matches_encoded_bytes_data_v1(
+    expected: &ObjectDescriptor,
+    stored_bytes: &[u8],
+) -> bool {
+    if u64::try_from(stored_bytes.len()).ok() != Some(expected.encoded_size()) {
+        return false;
+    }
+    let mut hasher = object_hasher(expected.media_type(), expected.encoded_size());
+    hasher.update(stored_bytes);
+    ObjectDigest::from_bytes(hasher.finalize().into()) == expected.digest()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,4 +358,27 @@ mod tests {
             Err(ObjectDescriptorVerificationError::LengthOverflow)
         );
     }
+
+    #[test]
+    fn borrowed_descriptor_comparison_uses_original_domain_and_exact_extent() {
+        let media = MediaType::new("application/octet-stream".to_owned()).unwrap();
+        let expected = descriptor_for_bytes(media, b"exact");
+
+        assert!(descriptor_matches_encoded_bytes_data_v1(&expected, b"exact"));
+        assert!(!descriptor_matches_encoded_bytes_data_v1(&expected, b"exacu"));
+        assert!(!descriptor_matches_encoded_bytes_data_v1(&expected, b"exact!"));
+        let other_media = descriptor_for_bytes(MediaType::new("text/plain".to_owned()).unwrap(), b"exact");
+        assert_ne!(expected.digest(), other_media.digest());
+        assert!(descriptor_matches_encoded_bytes_data_v1(&other_media, b"exact"));
+    }
+
+}
+
+/// Bounds the actual canonical validator's recursive receiving frames.
+///
+/// This inspects only extents and limits; it parses no bytes and grants no IO.
+/// `None` reports checked layout arithmetic overflow.
+#[must_use]
+pub fn canonical_validation_receiving_memory_v4(input_bytes: usize, limits: DecodeLimits) -> Option<usize> {
+    cbor::validation_receiving_bytes_v1(input_bytes, limits)
 }

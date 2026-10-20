@@ -19,7 +19,7 @@ use std::time::Duration;
 use crate::journal::{SourceProjectAdmissionChallengeV1, SourceProjectAdmissionReservationV1};
 use aos_sandbox_core::ObjectDigest;
 
-use super::root_nonce::fresh_root_nonce;
+use aos_sandbox_broker::root_nonce::fresh_root_nonce;
 use super::project_admission_root::{
     RootProjectAdmissionIntentV1, RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeV1,
     RootProjectAdmissionStageV1, RootProjectReservationCancellationV1,

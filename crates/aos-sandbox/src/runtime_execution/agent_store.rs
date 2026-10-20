@@ -59,6 +59,46 @@ const OPERATION_MAGIC: &[u8; 8] = b"AOSAGO02";
 const SESSION_MAGIC: &[u8; 8] = b"AOSAGS01";
 const MAXIMUM_AGENT_STORE_RECORDS: usize = 16_384;
 
+// Sizes only the actual Agent replay/reducer value families. Complete rows
+// and their encoded backing remain borrowed; this never decodes a checkpoint
+// or authenticates a session, signature, operation or recovery transition.
+pub(super) fn claim_replay_geometry_v2(
+    journal: &Journal,
+) -> Option<super::owner::claim_receiving::ReplayGeometry> {
+    use aos_sandbox_journal::geometry::conservative_btree_node_bytes_v1 as node;
+    let node_bytes = [
+        node::<([u8; 32], u64), StoredAgentOperationV1>(1)?,
+        node::<([u8; 32], u64), SignedAgentOutcomePacketV1>(1)?,
+        node::<[u8; 32], StoredAgentHeadV1>(1)?,
+        node::<[u8; 32], ()>(1)?,
+        node::<aos_sandbox_core::ExecutionId, aos_sandbox_agent::AgentExecutionPhaseV1>(1)?,
+    ]
+    .into_iter()
+    .max()?;
+    let mut shape = super::owner::claim_receiving::ReplayGeometry {
+        rows: 0,
+        encoded: 0,
+        node_bytes,
+        dynamic: false,
+    };
+    for ((namespace, key), value) in journal.historical_read_view_v1().materialized_state_v1() {
+        shape.rows = shape.rows.checked_add(1)?;
+        shape.encoded = shape
+            .encoded
+            .checked_add(key.len())?
+            .checked_add(value.len())?;
+        if *namespace == RecordNamespace::Effect && key.as_slice() != OWNER_KEY {
+            shape.dynamic = true;
+        }
+    }
+    Some(shape)
+}
+
+pub(super) const fn claim_owner_key_bytes_v2() -> usize {
+    OWNER_KEY.len()
+}
+
+
 /// Owns a dedicated protected journal for dormant agent durable state.
 pub(crate) struct DormantJournalAgentStoreV1<'journal> {
     authority: ProtectedJournalAuthority<'journal>,

@@ -31,6 +31,63 @@ pub(crate) fn host_execution_receipt_digest(request_id: [u8; 16], outcome: &[u8]
 }
 
 impl HostState {
+    /// Rejoins the early closure to its actual completed signed HostState grant.
+    ///
+    /// This authenticates historical marker/handoff bytes, not a live lease.
+    /// The current native Host/HostState claim and Root antirollback floor must
+    /// remain independently held throughout later Controller settlement.
+    ///
+    /// # Errors
+    /// Rejects changed accepted source, terminal grant, runtime, receipt or
+    /// sealed HostState authentication. Missing argument fields are never made.
+    pub(crate) fn completed_before_argument_no_apply_handoff_digest_v2(
+        &self,
+        authority: &HostAuthorityV1,
+        marker: aos_sandbox_protocol::host_execution_no_apply::ClosedBeforeArgumentNoApplyRecordV2,
+        assignment: BrokerAssignment,
+        runtime_handle: ObjectDigest,
+    ) -> Result<ObjectDigest> {
+        use aos_sandbox_protocol::semantics::host_execution_argument::host_before_argument_no_apply_grant_v2;
+
+        self.validate_authenticated(authority)?;
+        let fields = marker.fields();
+        let source = fields.source.fields();
+        let request = self.requests.get(&fields.terminal_request)
+            .ok_or(HostError::Fence("Host early no-Apply handoff is absent"))?;
+        let DurableExecution::HostExecutionHandoff(handoff) = &request.execution else {
+            return Err(HostError::Fence("Host early no-Apply handoff is invalid"));
+        };
+        let receipt = request.receipt.as_deref()
+            .ok_or(HostError::Fence("Host early no-Apply outcome is pending"))?;
+        let semantics = host_before_argument_no_apply_grant_v2(assignment, fields.terminal_request, fields.source)
+            .map_err(|_| HostError::Fence("Host early no-Apply semantics changed"))?;
+        let effect = authority.open_effect(&fields.terminal_request, &request.effect)?;
+        if request.action != HostAction::TerminalNoApply.code()
+            || effect.verb() != BrokerVerb::HostTerminalNoApply
+            || effect.status() != BrokerEffectStatusV1::Complete
+            || effect.request_digest() != semantics.commitment().digest()
+            || handoff.semantic_commitment != *semantics.commitment().digest().as_bytes()
+            || handoff.source_commitment != *fields.source.digest().as_bytes()
+            || handoff.operation_id != source.create_operation || handoff.execution_id != source.execution
+            || handoff.runtime_handle != *runtime_handle.as_bytes()
+            || fields.runtime_handle != *runtime_handle.as_bytes()
+            || handoff.session_binding != fields.terminal_session
+            || handoff.signed_request_digest != fields.signed_terminal_request
+        { return Err(HostError::Fence("Host early no-Apply identity changed")); }
+
+        let response = TerminalHostExecutionArgumentNoApplyResponseV1 {
+            canonical_record: marker.encode_canonical().to_vec(), ..Default::default()
+        }.encode_to_vec();
+        if receipt != host_execution_receipt_digest(fields.terminal_request, &response).as_slice() {
+            return Err(HostError::Fence("Host early no-Apply receipt changed"));
+        }
+        let authenticated = authority.open_execution_record(&fields.terminal_request, &request.execution_authentication)?;
+        let digest: [u8; 32] = authenticated.try_into()
+            .map_err(|_| HostError::Fence("Host early no-Apply handoff is malformed"))?;
+        if digest == [0; 32] { return Err(HostError::Fence("Host early no-Apply handoff is zero")); }
+        Ok(ObjectDigest::from_bytes(digest))
+    }
+
     /// Finds any retained terminal handoff for this Create, including a pending one.
     ///
     /// The caller must authenticate this HostState snapshot first. A foreign

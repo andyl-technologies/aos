@@ -17,6 +17,8 @@ use super::JournalTransactionDataError;
 
 /// Prefixes canonical reservation-identity keys.
 const KEY_PREFIX: &[u8] = b"aos.journal.global-capacity-reservation.v1\0";
+/// Sizes the exact canonical reservation key, including its identity.
+pub const RESERVATION_KEY_BYTES_V1: usize = KEY_PREFIX.len() + 32;
 /// Separates V1 reservation-identity hashes.
 pub const RECORD_DOMAIN: &[u8] = b"aos.sandbox.journal.global-capacity-reservation.v1\0";
 /// Sizes the canonical V1 reservation representation.

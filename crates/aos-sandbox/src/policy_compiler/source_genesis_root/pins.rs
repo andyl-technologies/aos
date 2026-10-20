@@ -5,25 +5,32 @@
 //! Historical recovery still requires these independently held exact pins;
 //! a packet, receipt, or decoded floor cannot supply a replacement trust root.
 
+use aos_sandbox_policy::journal_keys::{
+    CONTROLLER_HOLD_PIN_KEY, SIGNER_PINS_KEY, SOURCE_HOLD_PIN_KEY,
+};
+
+use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
+
+use aos_sandbox_protocol::publisher_project_authorization::{
+    PinnedPublisherProjectAuthorizationIssuerV2,
+    verify_signed_project_authorization_claims_v2,
+};
+
 use aos_sandbox_core::ObjectDigest;
 
-use crate::hierarchy::genesis_profile::{
-    ControllerSourceGenesisAcceptanceRecordV1, SourceGenesisErrorV1, hash,
-};
-use crate::hierarchy::source_seed::{
+use aos_sandbox_protocol::source_genesis_acceptance::ControllerSourceGenesisAcceptanceRecordV1;
+use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, hash};
+use aos_sandbox_protocol::controller_source_seed::{
     ControllerSourceTreeSeedExpectedV1, PinnedControllerSourceTreeSeedIssuerV1,
     verify_controller_source_tree_seed_v1,
 };
 use crate::journal::{Journal, RecordNamespace};
 use crate::public_api_session::PinnedSystemdCredential;
-use crate::publisher_policy::{
-    PinnedPublisherProjectAuthorizationIssuerV2, verify_signed_project_authorization_claims_v2,
-};
 
-use super::super::controller_hold_pin::CONTROLLER_HOLD_PIN_KEY;
-use super::super::deployment_head::{SIGNER_PINS_KEY, decode_policy_signer_pins_v1};
-use super::super::source_hold_pin::SOURCE_HOLD_PIN_KEY;
-use super::super::{PinnedControllerHoldSignerV1, PinnedSourceHoldReadbackSignerV1};
+
+use super::super::deployment_head::decode_policy_signer_pins_v1;
+
+use super::super::PinnedSourceHoldReadbackSignerV1;
 
 const MAGIC: &[u8; 8] = b"AOSGPK01";
 const DOMAIN: &[u8] = b"aos.sandbox.source-genesis.root-role-pins.v1\0";
@@ -45,36 +52,15 @@ impl RootGenesisRolePinsV1 {
             .map_err(|_| SourceGenesisErrorV1::Stale)?;
         let authorization_file = PinnedSystemdCredential::load_project_authorization_issuer_v2()
             .map_err(|_| SourceGenesisErrorV1::Stale)?;
-        let seed: [u8; 80] = seed_file
-            .bytes()
-            .try_into()
-            .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-        let authorization: [u8; 80] = authorization_file
-            .bytes()
-            .try_into()
-            .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-        let controller: [u8; 80] = journal
-            .get(RecordNamespace::DesiredState, CONTROLLER_HOLD_PIN_KEY)
-            .ok_or(SourceGenesisErrorV1::Stale)?
-            .try_into()
-            .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-        let source: [u8; 80] = journal
-            .get(RecordNamespace::DesiredState, SOURCE_HOLD_PIN_KEY)
-            .ok_or(SourceGenesisErrorV1::Stale)?
-            .try_into()
-            .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-        let deployment: [u8; 120] = journal
-            .get(RecordNamespace::DesiredState, SIGNER_PINS_KEY)
-            .ok_or(SourceGenesisErrorV1::Stale)?
-            .try_into()
-            .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-        let encoded = encode(&seed, &authorization, &controller, &source, &deployment)?;
+        let pinned = role_pins_from_journal_v1(
+            journal,
+            seed_file.bytes(),
+            authorization_file.bytes(),
+        )?;
         let retained = Self {
-            controller: PinnedControllerHoldSignerV1::decode(&controller)
-                .map_err(|_| SourceGenesisErrorV1::NonCanonical)?,
-            source: PinnedSourceHoldReadbackSignerV1::decode(&source)
-                .map_err(|_| SourceGenesisErrorV1::NonCanonical)?,
-            encoded,
+            controller: pinned.controller,
+            source: pinned.source,
+            encoded: pinned.encoded,
             seed_file,
             authorization_file,
         };
@@ -107,16 +93,105 @@ impl RootGenesisRolePinsV1 {
     }
 
     pub(super) fn digest(&self) -> ObjectDigest {
-        hash(DOMAIN, &self.encoded)
+        saved_role_digest_v1(&self.encoded)
     }
 
     pub(super) fn verify_administrative_input(
         &self,
         acceptance: &ControllerSourceGenesisAcceptanceRecordV1,
     ) -> Result<(), SourceGenesisErrorV1> {
-        let seed_pin = PinnedControllerSourceTreeSeedIssuerV1::decode(&self.encoded[16..96])?;
+        verify_administrative_input_data_v1(&self.encoded, acceptance)
+    }
+
+    // The administrative key is the SAME independently retained seed issuer,
+    // never an issuer selected by an approval or Source observation.
+    pub(super) fn verify_first_source_successor_v2(
+        &self,
+        packet: &aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        verify_retained_first_source_successor_v2(&self.encoded, packet)
+    }
+}
+
+// Both the historical owner and the new receiving owner use this exact pure
+// tuple construction. Each caller separately retains/checks its actual writer
+// and independent credential originals; this DATA type grants no authority.
+pub(in crate::policy_compiler) struct RootRolePinsDataV1 {
+    pub(in crate::policy_compiler) encoded: [u8; BYTES],
+    pub(in crate::policy_compiler) controller: PinnedControllerHoldSignerV1,
+    pub(in crate::policy_compiler) source: PinnedSourceHoldReadbackSignerV1,
+}
+
+pub(in crate::policy_compiler) fn role_pins_from_journal_v1(
+    journal: &Journal,
+    seed: &[u8],
+    authorization: &[u8],
+) -> Result<RootRolePinsDataV1, SourceGenesisErrorV1> {
+    let seed: &[u8; 80] = seed.try_into().map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+    let authorization: &[u8; 80] = authorization.try_into()
+        .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+    let controller: &[u8; 80] = journal
+        .get(RecordNamespace::DesiredState, CONTROLLER_HOLD_PIN_KEY)
+        .ok_or(SourceGenesisErrorV1::Stale)?
+        .try_into().map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+    let source: &[u8; 80] = journal
+        .get(RecordNamespace::DesiredState, SOURCE_HOLD_PIN_KEY)
+        .ok_or(SourceGenesisErrorV1::Stale)?
+        .try_into().map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+    let deployment: &[u8; 120] = journal
+        .get(RecordNamespace::DesiredState, SIGNER_PINS_KEY)
+        .ok_or(SourceGenesisErrorV1::Stale)?
+        .try_into().map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+    Ok(RootRolePinsDataV1 {
+        encoded: encode(seed, authorization, controller, source, deployment)?,
+        controller: PinnedControllerHoldSignerV1::decode(controller)
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
+            .map_err(|_| SourceGenesisErrorV1::NonCanonical)?,
+        source: PinnedSourceHoldReadbackSignerV1::decode(source)
+            .map_err(|_| SourceGenesisErrorV1::NonCanonical)?,
+    })
+}
+
+// Cold replay checks the same independently retained public tuple. This
+// authenticates provenance only; freshness still belongs to the live owner.
+pub(super) fn verify_retained_first_source_successor_v2(
+    encoded: &[u8],
+    packet: &aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2,
+) -> Result<(), SourceGenesisErrorV1> {
+    aos_sandbox_ledger_replay::replay::root_genesis_pins::verify_retained_first_source_successor_v2(encoded, packet)
+        .map_err(SourceGenesisErrorV1::from)
+}
+
+pub(super) fn role_tuple_digest(bytes: &[u8]) -> Result<ObjectDigest, SourceGenesisErrorV1> {
+    aos_sandbox_ledger_replay::replay::root_genesis_pins::role_tuple_digest(bytes)
+        .map_err(SourceGenesisErrorV1::from)
+}
+
+fn encode(
+    seed: &[u8; 80],
+    authorization: &[u8; 80],
+    controller: &[u8; 80],
+    source: &[u8; 80],
+    deployment: &[u8; 120],
+) -> Result<[u8; BYTES], SourceGenesisErrorV1> {
+    aos_sandbox_ledger_replay::replay::root_genesis_pins::encode(seed, authorization, controller, source, deployment)
+        .map_err(SourceGenesisErrorV1::from)
+}
+
+fn decode(bytes: &[u8]) -> Result<(), SourceGenesisErrorV1> {
+    aos_sandbox_ledger_replay::replay::root_genesis_pins::decode(bytes)
+        .map_err(SourceGenesisErrorV1::from)
+}
+
+// This is the old complete historical signature comparison over independently
+// supplied saved tuple DATA. Actual credential and writer gates remain callers.
+pub(super) fn verify_administrative_input_data_v1(encoded: &[u8; BYTES],
+    acceptance: &ControllerSourceGenesisAcceptanceRecordV1,
+) -> Result<(), SourceGenesisErrorV1> {
+        let seed_pin = PinnedControllerSourceTreeSeedIssuerV1::decode(&encoded[16..96])?;
         let authorization_pin =
-            PinnedPublisherProjectAuthorizationIssuerV2::decode(&self.encoded[96..176])?;
+            PinnedPublisherProjectAuthorizationIssuerV2::decode(&encoded[96..176])
+                .map_err(crate::publisher_admin::policy::ProjectAuthorizationSourceErrorV2::from)?;
         let seed = acceptance.seed_claims()?;
         let expected = ControllerSourceTreeSeedExpectedV1::new(
             seed.project(),
@@ -130,103 +205,15 @@ impl RootGenesisRolePinsV1 {
         verify_signed_project_authorization_claims_v2(
             acceptance.auth_packet(),
             &authorization_pin,
-        )?;
-        if acceptance.administrative_roles() != hash(ADMINISTRATIVE_DOMAIN, &self.encoded[16..176])
+        )
+            .map_err(crate::publisher_admin::policy::ProjectAuthorizationSourceErrorV2::from)?;
+        if acceptance.administrative_roles() != hash(ADMINISTRATIVE_DOMAIN, &encoded[16..176])
         {
             return Err(SourceGenesisErrorV1::Stale);
         }
         Ok(())
-    }
+ }
 
-    // The administrative key is the SAME independently retained seed issuer,
-    // never an issuer selected by an approval or Source observation.
-    pub(super) fn verify_first_source_successor_v2(
-        &self,
-        packet: &crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2,
-    ) -> Result<(), SourceGenesisErrorV1> {
-        verify_retained_first_source_successor_v2(&self.encoded, packet)
-    }
-}
-
-// Cold replay checks the same independently retained public tuple. This
-// authenticates provenance only; freshness still belongs to the live owner.
-pub(super) fn verify_retained_first_source_successor_v2(
-    encoded: &[u8],
-    packet: &crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2,
-) -> Result<(), SourceGenesisErrorV1> {
-    decode(encoded)?;
-    let seed = PinnedControllerSourceTreeSeedIssuerV1::decode(&encoded[16..96])?;
-    let authorization = PinnedPublisherProjectAuthorizationIssuerV2::decode(&encoded[96..176])?;
-    if u64::from_be_bytes(crate::hierarchy::genesis_profile::take(packet.body(), 16)?)
-        != seed.generation()
-        || &packet.body()[112..144] != role_tuple_digest(encoded)?.as_bytes()
-    {
-        return Err(SourceGenesisErrorV1::Conflict);
-    }
-
-    packet.verify_signature(seed.verifying_key())?;
-    verify_signed_project_authorization_claims_v2(packet.authorization_packet(), &authorization)?;
-    Ok(())
-}
-
-pub(super) fn role_tuple_digest(bytes: &[u8]) -> Result<ObjectDigest, SourceGenesisErrorV1> {
-    decode(bytes)?;
-    Ok(hash(DOMAIN, bytes))
-}
-
-fn encode(
-    seed: &[u8; 80],
-    authorization: &[u8; 80],
-    controller: &[u8; 80],
-    source: &[u8; 80],
-    deployment: &[u8; 120],
-) -> Result<[u8; BYTES], SourceGenesisErrorV1> {
-    let mut bytes = [0; BYTES];
-    bytes[..8].copy_from_slice(MAGIC);
-    bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    for (range, value) in [
-        (16..96, seed.as_slice()),
-        (96..176, authorization.as_slice()),
-        (176..256, controller.as_slice()),
-        (256..336, source.as_slice()),
-        (336..456, deployment.as_slice()),
-    ] {
-        bytes[range].copy_from_slice(value);
-    }
-    let checksum = hash(DOMAIN, &bytes[..456]);
-    bytes[456..].copy_from_slice(checksum.as_bytes());
-    decode(&bytes)?;
-    Ok(bytes)
-}
-
-fn decode(bytes: &[u8]) -> Result<(), SourceGenesisErrorV1> {
-    if bytes.len() != BYTES
-        || bytes.get(..8) != Some(MAGIC.as_slice())
-        || bytes[8..16] != [0, 1, 0, 0, 0, 0, 0, 0]
-        || hash(DOMAIN, &bytes[..456]).as_bytes() != &bytes[456..]
-    {
-        return Err(SourceGenesisErrorV1::NonCanonical);
-    }
-    let seed = PinnedControllerSourceTreeSeedIssuerV1::decode(&bytes[16..96])?;
-    let authorization = PinnedPublisherProjectAuthorizationIssuerV2::decode(&bytes[96..176])?;
-    let controller = PinnedControllerHoldSignerV1::decode(&bytes[176..256])
-        .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-    let source = PinnedSourceHoldReadbackSignerV1::decode(&bytes[256..336])
-        .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-    let (_, deployment, _, project) = decode_policy_signer_pins_v1(&bytes[336..456])
-        .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
-    let keys = [
-        seed.verifying_key(),
-        authorization.verifying_key(),
-        controller.verifying_key(),
-        source.verifying_key(),
-        &deployment,
-        &project,
-    ];
-    for (index, key) in keys.iter().enumerate() {
-        if keys[..index].contains(key) {
-            return Err(SourceGenesisErrorV1::NonCanonical);
-        }
-    }
-    Ok(())
+pub(super) fn saved_role_digest_v1(encoded: &[u8]) -> ObjectDigest {
+    hash(DOMAIN, encoded)
 }

@@ -7,6 +7,8 @@
 //! Failure drops that stream without guessing which durable suffix committed;
 //! restart rejoins the same retained input and owner records, never a fresh seed.
 
+use aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootReceivedChunkV1 as RootReceivedChunkV1;
+
 use aos_sandbox_core::ObjectDigest;
 use ed25519_dalek::SigningKey;
 
@@ -21,15 +23,15 @@ use crate::hierarchy::source_genesis::{
     acknowledge_source_tree_genesis_v1, append_source_tree_genesis_v1,
     observe_retained_source_genesis_v1, observe_source_genesis_attempt_v1,
 };
-use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
 use super::controller_readback::{
     sign_controller_source_genesis_completion_readback_v1,
     sign_controller_source_genesis_readback_v1,
 };
 use super::flight::{OriginalRootGenesisFlightV1, OriginalRootGenesisReplyV1};
-use super::wire::RootSourceGenesisFrameKindV1 as Phase;
+use aos_sandbox_protocol::source_genesis_wire::RootSourceGenesisFrameKindV1 as Phase;
 
 /// Parks the real configured pair and writers before the existing signer callback.
 ///
@@ -41,14 +43,19 @@ pub struct OriginalConfiguredProjectGenesisInvocationV3<'writers, 'profile> {
     source: Option<&'writers mut ProtectedSourceDomainJournalOwnerV1>,
     input: &'writers ProvisionedControllerSourceGenesisInputV1,
     profile: &'profile ProductionControllerNormalRootProfileV1,
-    controller: Option<Result<crate::hierarchy::controller_genesis::HeldControllerSourceGenesisV1<'writers>, ControllerSourceGenesisInputErrorV1>>,
-    raw: Option<std::os::fd::OwnedFd>,
-    adopted: Option<aos_sandbox_linux::unix_stream::RetainedUnixStream>,
+    controller: Option<Result<crate::hierarchy::controller_genesis::HeldControllerSourceGenesisV1<'writers>, ControllerSourceGenesisInputErrorV1,
+        >,
+    >,
     flight: Option<OriginalRootGenesisFlightV1<'profile>>,
     hello: Vec<u8>,
-    hello_received: Option<Result<aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
+    hello_received: Option<Result<
+            RootReceivedChunkV1, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1,
+        >,
+    >,
     connection: Option<Result<(), SourceGenesisErrorV1>>,
-    signatures: [Option<Result<super::controller_readback::ControllerProjectGenesisReadbackPacketV4, SourceGenesisErrorV1>>; 3],
+    signatures: [Option<Result<super::controller_readback::ControllerProjectGenesisReadbackPacketV4, SourceGenesisErrorV1,
+        >,
+    >; 3],
     signature_posts: [Vec<Result<(), SourceGenesisErrorV1>>; 3],
     io: [super::flight::ProjectGenesisFlightIoV3; 8],
     append: crate::hierarchy::source_genesis::SourceProjectGenesisMutationV3,
@@ -91,8 +98,7 @@ impl<'writers, 'profile> OriginalConfiguredProjectGenesisInvocationV3<'writers, 
         profile: &'profile ProductionControllerNormalRootProfileV1,
     ) -> Self {
         Self {
-            journal: Some(journal), source, input, profile, controller: None,
-            raw: None, adopted: None, flight: None, hello: Vec::new(), hello_received: None, connection: None,
+            journal: Some(journal), source, input, profile, controller: None, flight: None, hello: Vec::new(), hello_received: None, connection: None,
             signatures: std::array::from_fn(|_| None), signature_posts: std::array::from_fn(|_| Vec::new()),
             io: std::array::from_fn(|_| super::flight::ProjectGenesisFlightIoV3::default()),
             append: crate::hierarchy::source_genesis::SourceProjectGenesisMutationV3::new(),
@@ -125,7 +131,9 @@ impl<'writers, 'profile> OriginalConfiguredProjectGenesisInvocationV3<'writers, 
     fn posts(&mut self) {
         let controller = match &self.controller {
             Some(Ok(controller)) => controller.recheck(),
-            _ => self.journal.as_deref().map_or(Ok(()), |journal| journal.ensure_healthy().map_err(SourceGenesisErrorV1::from)),
+            _ => self.journal.as_deref().map_or(Ok(()), |journal| {
+                journal.ensure_healthy().map_err(SourceGenesisErrorV1::from)
+            }),
         };
         let index = self.owner_posts.len();
         self.owner_posts.push(controller);
@@ -166,7 +174,7 @@ impl<'writers, 'profile> OriginalConfiguredProjectGenesisInvocationV3<'writers, 
             return Err(SourceGenesisErrorV1::Stale.into());
         }
         self.connection = Some(OriginalRootGenesisFlightV1::connect_project_genesis_parked_v3(
-            self.profile, &mut self.raw, &mut self.adopted, &mut self.flight, &mut self.hello, &mut self.hello_received, uid,
+            self.profile, &mut self.flight, &mut self.hello, &mut self.hello_received, uid,
         ));
         if self.connection.as_ref().is_some_and(Result::is_err) {
             self.first_failure = Some(ConfiguredProjectGenesisSiteV3::Connection);
@@ -280,9 +288,15 @@ fn signature_failure_site_v3(
     index: usize, site: super::controller_readback::ProjectGenesisSignatureFailureV3,
 ) -> ConfiguredProjectGenesisSiteV3 {
     match site {
-        super::controller_readback::ProjectGenesisSignatureFailureV3::Signature => ConfiguredProjectGenesisSiteV3::Signature(index),
-        super::controller_readback::ProjectGenesisSignatureFailureV3::Post(post) => ConfiguredProjectGenesisSiteV3::SignaturePost(index, post),
-        super::controller_readback::ProjectGenesisSignatureFailureV3::Refused => ConfiguredProjectGenesisSiteV3::Action,
+        super::controller_readback::ProjectGenesisSignatureFailureV3::Signature => {
+            ConfiguredProjectGenesisSiteV3::Signature(index)
+        }
+        super::controller_readback::ProjectGenesisSignatureFailureV3::Post(post) => {
+            ConfiguredProjectGenesisSiteV3::SignaturePost(index, post)
+        }
+        super::controller_readback::ProjectGenesisSignatureFailureV3::Refused => {
+            ConfiguredProjectGenesisSiteV3::Action
+        }
     }
 }
 
@@ -291,11 +305,15 @@ impl FailedConfiguredProjectGenesisInvocationV3<'_, '_> {
     pub fn first_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
         let original = &self.original;
         match original.first_failure? {
-            ConfiguredProjectGenesisSiteV3::Action => original.action.as_ref()?.as_ref().err().map(|e| e as _),
+            ConfiguredProjectGenesisSiteV3::Action => {
+                original.action.as_ref()?.as_ref().err().map(|e| e as _)
+            }
             ConfiguredProjectGenesisSiteV3::Signer => original.signer_admission.as_ref()?.as_ref().err().map(|e| e as _),
             ConfiguredProjectGenesisSiteV3::Connection => original.hello_received.as_ref().and_then(|r| r.as_ref().err()).map(|e| e as _)
                 .or_else(|| original.connection.as_ref()?.as_ref().err().map(|e| e as _)),
-            ConfiguredProjectGenesisSiteV3::Controller => original.controller.as_ref()?.as_ref().err().map(|e| e as _),
+            ConfiguredProjectGenesisSiteV3::Controller => {
+                original.controller.as_ref()?.as_ref().err().map(|e| e as _)
+            }
             ConfiguredProjectGenesisSiteV3::Signature(index) => original.signatures.get(index)?.as_ref()?.as_ref().err().map(|e| e as _),
             ConfiguredProjectGenesisSiteV3::SignaturePost(index, post) => original.signature_posts.get(index)?.get(post)?.as_ref().err().map(|e| e as _),
             ConfiguredProjectGenesisSiteV3::Io(index) => original.io.get(index)?.error(),

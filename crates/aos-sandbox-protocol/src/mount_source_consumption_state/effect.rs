@@ -207,7 +207,7 @@ fn decode_payload(
         }
         _ => false,
     };
-    if status > 1 || !(1..=8).contains(&verb) || !target_shape_valid {
+    if status > 1 || !(1..=10).contains(&verb) || !target_shape_valid {
         return Err(MountSourceConsumptionStateError::InvalidValue);
     }
     let request_id = decoder.array::<16>()?;

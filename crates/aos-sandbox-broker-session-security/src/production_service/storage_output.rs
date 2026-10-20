@@ -4,6 +4,11 @@ use crate::{DormantAuthenticatedBrokerSessionV1, ProductionBrokerResponseErrorV1
 
 use super::{ProductionBrokerDeadlineErrorV1, wait_output_original};
 
+mod host;
+mod logical;
+pub(crate) use logical::{StorageOutputRequestOriginalV1, StorageOutputLifecycleOriginalV1};
+use host::StorageOutputHostOriginalV1;
+
 impl DormantAuthenticatedBrokerSessionV1 {
     /// Parks this genuine Storage session before receiving selected output work.
     ///
@@ -56,16 +61,7 @@ impl Drop for ProductionOriginalStorageOutputCycleV1 {
 struct OriginalStorageOutputRequestV1 {
     session: Option<DormantAuthenticatedBrokerSessionV1>,
     receipt: crate::handshake::output_registration_continuation::OriginalOutputServerReceiptV1,
-    registration: aos_sandbox_storage::execution_output_credential::OriginalExecutionOutputRegistrationV1,
-    original: Option<Result<aos_sandbox::controller_storage_output_reserve_attempt::ControllerStorageOutputReserveAttemptV1, aos_sandbox::controller_storage_output_reserve_attempt::ControllerStorageOutputReserveAttemptErrorV1>>,
-    host_custody: Option<Result<crate::ProtectedBrokerSessionFixedCustodyV1, crate::BrokerSessionSecurityError>>,
-    host_session: Option<Result<DormantAuthenticatedBrokerSessionV1, crate::DormantBrokerSessionHandshakeErrorV1>>,
-    host: crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
-    preparation: crate::handshake::output_registration_continuation::OutputPreparationCustodyV1,
-    nomination: Option<aos_proto::aos::sandbox::local::v1::StorageOutputRegistrationPreparationV1>,
-    host_body: Option<Result<Vec<u8>, aos_sandbox::controller_storage_output_reserve_attempt::ControllerStorageOutputReserveAttemptErrorV1>>,
-    host_checks: [Option<Result<(), crate::BrokerSessionSecurityError>>; 2],
-    readiness: [Option<Result<(), crate::DormantBrokerSessionHandshakeErrorV1>>; 5],
+    logical: StorageOutputRequestOriginalV1,
     terminal: crate::handshake::output_registration_continuation::OriginalOutputServerTerminalV1,
     deadline: u64,
     attempted: bool,
@@ -184,7 +180,7 @@ impl OriginalStorageCaptureRequestV1 {
 
 #[derive(Debug, thiserror::Error)]
 #[error("original Storage output request is closed with its returned custody resident")]
-struct OriginalStorageOutputClosedV1;
+pub(crate) struct OriginalStorageOutputClosedV1;
 
 impl ProductionOriginalStorageOutputCycleV1 {
     fn begin(session: DormantAuthenticatedBrokerSessionV1) -> Self {
@@ -257,24 +253,7 @@ impl ProductionOriginalStorageOutputCycleV1 {
         }
         let selected = self.selected.as_ref()?;
         if let Some(error) = selected.receipt.postcheck_debt() { return Some(error); }
-        if let Some(session) = &selected.session {
-            if let Some(error) = session.output_preparation_postcheck_debt(&selected.preparation) { return Some(error); }
-        }
-        if let Some(Ok(session)) = &selected.host_session {
-            if let Some(error) = session.output_client_flight_postcheck_debt(&selected.host) { return Some(error); }
-        }
-        if let Some(error) = selected.registration.postcheck_debt() { return Some(error); }
-        if selected.host_checks[1].is_some() {
-            if let Some(Ok(session)) = &selected.host_session {
-                if let Some(witness) = session.output_terminal_witness_debt_before_protected() { return Some(witness); }
-            }
-        }
-        if let Some(Err(error)) = &selected.host_checks[1] {
-            return Some(error);
-        }
-        if let Some(Ok(session)) = &selected.host_session {
-            if let Some(witness) = session.output_terminal_witness_debt() { return Some(witness); }
-        }
+        if let Some(error) = selected.logical.postcheck_debt(selected.session.as_ref()) { return Some(error); }
         selected.terminal.postcheck_debt().map(|error| error as &dyn std::error::Error)
     }
 
@@ -366,7 +345,7 @@ impl ProductionOriginalStorageOutputCycleV1 {
         }
 
         if let Some(predecessor) = &self.selected {
-            let original = predecessor.registration.original_request();
+            let original = predecessor.logical.request();
             let Some(crate::ProductionBrokerRequestEventV1::Request(successor)) = &self.event else { return; };
             if !successor.is_original_output_successor(original) { return; }
             // A current signed successor, not local send success, is the
@@ -420,16 +399,7 @@ impl OriginalStorageOutputRequestV1 {
         Self {
             session: Some(session),
             receipt,
-            registration,
-            original: None,
-            host_custody: None,
-            host_session: None,
-            host: crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1::empty(),
-            preparation: crate::handshake::output_registration_continuation::OutputPreparationCustodyV1::empty(),
-            nomination: None,
-            host_body: None,
-            host_checks: std::array::from_fn(|_| None),
-            readiness: std::array::from_fn(|_| None),
+            logical: StorageOutputRequestOriginalV1::new(registration),
             terminal: crate::handshake::output_registration_continuation::OriginalOutputServerTerminalV1::empty(),
             deadline,
             attempted: false,
@@ -439,36 +409,11 @@ impl OriginalStorageOutputRequestV1 {
 
     fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         if let Some(error) = self.receipt.failure() { return Some(error); }
-        if let Some(Err(error)) = &self.original { return Some(error); }
-        if let Some(Err(error)) = &self.host_custody { return Some(error); }
-        if let Some(Err(error)) = &self.host_session { return Some(error); }
-        let host_failure = match &self.host_session {
-            Some(Ok(session)) => session.output_client_flight_failure(&self.host),
-            _ => self.host.failure(),
-        };
-        if let Some(error) = host_failure { return Some(error); }
-        if let Some(Err(error)) = &self.host_body { return Some(error); }
-        let preparation_failure = match &self.session {
-            Some(session) => session.output_preparation_failure(&self.preparation),
-            None => self.preparation.failure(),
-        };
-        if let Some(error) = preparation_failure { return Some(error); }
-        for result in self.readiness.iter().flatten() {
-            if let Err(error) = result { return Some(error); }
-        }
-        if self.host_checks[0].is_some() {
-            if let Some(Ok(session)) = &self.host_session {
-                if let Some(witness) = session.output_terminal_witness_failure() { return Some(witness); }
-            }
-        }
-        if let Some(Err(error)) = &self.host_checks[0] {
-            return Some(error);
-        }
-        if let Some(error) = self.registration.failure() { return Some(error); }
+        if let Some(error) = self.logical.failure(self.session.as_ref()) { return Some(error); }
         if let Some(error) = self.terminal.failure() { return Some(error); }
-        let witness_debt = self.host_session.as_ref().and_then(|result| result.as_ref().ok())
+        let witness_debt = self.logical.host.session.as_ref().and_then(|result| result.as_ref().ok())
             .and_then(DormantAuthenticatedBrokerSessionV1::output_terminal_witness_debt).is_some();
-        (self.ended && !witness_debt && !self.host.has_postcheck_debt() && !self.preparation.has_postcheck_debt())
+        (self.ended && !witness_debt && !self.logical.host.flight.has_postcheck_debt() && !self.logical.preparation.has_postcheck_debt())
             .then_some(&OriginalStorageOutputClosedV1 as &dyn std::error::Error)
     }
 
@@ -477,112 +422,12 @@ impl OriginalStorageOutputRequestV1 {
         storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
         output: &mut aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
     ) {
-        if self.attempted {
-            self.ended = true;
-            return;
-        }
+        if self.attempted { self.ended = true; return; }
         self.attempted = true;
         self.ended = true;
-        if self.registration.original_request().method()
-            == aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
-        {
-            if let Some(session) = &mut self.session {
-                {
-                    let mut transport = session.output_registration_transport(
-                        self.registration.original_request(), &mut self.preparation,
-                    );
-                    if transport.recheck(self.registration.original_request()).is_err() { return; }
-                    storage.query_original_execution_output(output, &mut self.registration);
-                    if transport.finish_action_turn(self.registration.original_request()).is_err() { return; }
-                }
-                finish_original_output_terminal(
-                    session, &self.registration, &mut self.terminal,
-                    &mut self.readiness[4], self.deadline,
-                );
-            }
-            self.ended = !self.terminal.locally_sent();
-            return;
-        }
-        self.original = Some(aos_sandbox::controller_storage_output_reserve_attempt::ControllerStorageOutputReserveAttemptV1::from_authenticated_captured_request(
-            self.registration.original_request(),
-        ));
-        if !matches!(&self.original, Some(Ok(_))) { return; }
-        self.host_custody = Some(crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
-            crate::ProtectedBrokerSessionFixedEndpointV1::StorageHostClient,
-        ));
-        if !matches!(&self.host_custody, Some(Ok(_))) { return; }
-        let Some(Ok(custody)) = self.host_custody.take() else { return; };
-        self.host_session = Some(custody.connect_output_client_session(self.deadline));
-        let Some(Ok(host_session)) = &mut self.host_session else { return; };
-        host_session.park_output_client_coordinates(
-            aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT,
-            self.deadline, &mut self.host,
-        );
-        let Some(Ok(coordinates)) = &self.host.coordinates else { return; };
-        let Some(Ok(original)) = &self.original else { return; };
-        self.host_body = Some(original.captured_host_readback_body(coordinates.request_header()));
-        let Some(Ok(body)) = &self.host_body else { return; };
-        let Some(session) = &mut self.session else { return; };
-        let request = self.registration.original_request();
-        let mut transport = session.output_registration_transport(request, &mut self.preparation);
-        let Ok(head) = transport.original_head(request) else { return; };
-        self.nomination = Some(aos_proto::aos::sandbox::local::v1::StorageOutputRegistrationPreparationV1 {
-            version: 1, stage: 1,
-            original_storage_request_id: request.request_id().to_vec(),
-            original_storage_session_binding: request.session_binding().to_vec(),
-            original_signed_request_digest: request.signed_request_digest().to_vec(),
-            original_semantic_request_digest: request.semantic_commitment().to_vec(),
-            storage_pending_head: head.to_vec(),
-            canonical_host_readback_request: body.clone(),
-            ..Default::default()
-        });
-        if transport.finish_turn(request).is_err() { return; }
-        self.readiness[0] = Some(wait_output_original(session, true, self.deadline));
-        if !matches!(&self.readiness[0], Some(Ok(()))) { return; }
-        let Some(nomination) = &self.nomination else { return; };
-        let mut transport = session.output_registration_transport(request, &mut self.preparation);
-        if transport.send(request, nomination).is_err() || transport.finish_turn(request).is_err() { return; }
-        self.readiness[1] = Some(wait_output_original(session, false, self.deadline));
-        if !matches!(&self.readiness[1], Some(Ok(()))) { return; }
-        let mut transport = session.output_registration_transport(request, &mut self.preparation);
-        if transport.receive(request, 2).is_err() || transport.finish_turn(request).is_err() { return; }
-        let Some(authorization) = self.preparation.record(2) else { return; };
-        if !aos_sandbox_protocol::storage_output_reserve::continuation::matches_nomination_v1(authorization, nomination) { return; }
-        let message = aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope {
-            method: aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT.into(),
-            body: body.clone(),
-            authorization: authorization.host_authorization.clone(),
-            ..Default::default()
-        };
-        if !host_session.park_output_client_request(&mut self.host, message) { return; }
-        self.readiness[2] = Some(wait_output_original(host_session, true, self.deadline));
-        if !matches!(&self.readiness[2], Some(Ok(())))
-            || !host_session.send_original_output_client_request(&mut self.host)
-        { return; }
-        self.readiness[3] = Some(wait_output_original(host_session, false, self.deadline));
-        if !matches!(&self.readiness[3], Some(Ok(())))
-            || !host_session.receive_original_output_client_terminal(&mut self.host)
-        { return; }
-        let Some(crate::ProtectedBrokerOutcomeCommitResultV1::Committed(committed)) = &self.host.committed else { return; };
-        {
-            let mut transport = session.output_registration_transport(
-                request, &mut self.preparation,
-            );
-            if transport.recheck(request).is_err() { return; }
-            host_session.register_original_storage_output_with_host(
-                committed, storage, output, &mut self.registration, &mut self.host_checks,
-            );
-            if transport.finish_action_turn(self.registration.original_request()).is_err() { return; }
-        }
-        if !matches!(&self.host_checks[0], Some(Ok(())))
-            || !matches!(&self.host_checks[1], Some(Ok(())))
-            || host_session.output_terminal_witness_failure().is_some()
-            || host_session.output_terminal_witness_debt().is_some()
-        { return; }
-        finish_original_output_terminal(
-            session, &self.registration, &mut self.terminal,
-            &mut self.readiness[4], self.deadline,
-        );
+        let Some(session) = self.session.as_mut() else { return; };
+        if !self.logical.advance(session, storage, output, logical::LogicalOutputReceivingV1::Ordinary, self.deadline) { return; }
+        self.logical.finish_logical_terminal_v1(session, &mut self.terminal, self.deadline);
         self.ended = !self.terminal.locally_sent();
     }
 }

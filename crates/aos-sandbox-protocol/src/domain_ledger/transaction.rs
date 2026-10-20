@@ -18,6 +18,9 @@
 //!              repeated(record-length:u32be | native-record-payload)
 //! ```
 
+mod preflight_digest;
+pub use preflight_digest::transaction_preflight_comparison_digest_v1;
+
 use aos_sandbox_core::{OperationId, RecordNamespace};
 use aos_sandbox_journal::geometry::NativeGeometryBounds;
 use aos_sandbox_journal::materialized::RecordMutationRef;
@@ -28,7 +31,7 @@ use aos_sandbox_journal::geometry::{
 };
 use aos_sandbox_journal::record::{self, RecordHeader};
 use aos_sandbox_journal::transaction::{
-    self, NativeRecordRef, NativeRecordValidation, NativeRecordValidationError,
+    self, NativeRecordRef, NativeRecordValidation, NativeRecordValidationError, NativeRecordKeyIndexV1,
 };
 
 /// Bounds all disk input and in-memory work performed while opening a journal.
@@ -96,10 +99,20 @@ impl IdempotencyKey {
     /// key longer than 128 bytes.
     pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, JournalTransactionDataError> {
         let bytes = bytes.into();
+        Self::validate_bytes(&bytes)?;
+        Ok(Self(bytes))
+    }
+
+    fn validate_bytes(bytes: &[u8]) -> Result<(), JournalTransactionDataError> {
         if bytes.is_empty() || bytes.len() > 128 {
             return Err(JournalTransactionDataError::InvalidIdempotencyKey);
         }
-        Ok(Self(bytes))
+        Ok(())
+    }
+
+    fn from_retained_input(bytes: &mut Option<Vec<u8>>) -> Result<Self, JournalTransactionDataError> {
+        Self::validate_bytes(bytes.as_deref().ok_or(JournalTransactionDataError::InvalidIdempotencyKey)?)?;
+        Ok(Self(bytes.take().ok_or(JournalTransactionDataError::InvalidIdempotencyKey)?))
     }
 
     /// Returns the exact opaque key bytes.
@@ -110,6 +123,10 @@ impl IdempotencyKey {
 }
 
 const IDEMPOTENCY_VALUE_BYTES: usize = 48;
+
+/// Returns the canonical idempotency decision's fixed value width.
+#[must_use]
+pub const fn idempotency_value_encoded_bytes_v1() -> usize { IDEMPOTENCY_VALUE_BYTES }
 
 /// Describes one value replacement or deletion inside a journal transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -237,10 +254,25 @@ pub fn validate_transaction(
     transaction: &JournalTransaction,
     limits: JournalLimits,
 ) -> Result<(), JournalTransactionDataError> {
-    let mut validation =
-        NativeRecordValidation::begin(transaction.id, transaction.records.len(), limits.into())
-            .map_err(native_record_validation_error)?;
+    validate_transaction_engine(transaction, limits, None)
+}
+
+fn validate_transaction_engine(
+    transaction: &JournalTransaction,
+    limits: JournalLimits,
+    retained: Option<&mut TransactionValidationCaptureV1>,
+) -> Result<(), JournalTransactionDataError> {
+    let (index, mut idempotency) = match retained {
+        Some(retained) => (Some(&mut retained.index), Some(&mut retained.idempotency)),
+        None => (None, None),
+    };
+    let mut validation = match index {
+        Some(retained) => NativeRecordValidation::begin_retaining_v1(
+            transaction.id, transaction.records.len(), limits.into(), retained),
+        None => NativeRecordValidation::begin(transaction.id, transaction.records.len(), limits.into()),
+    }.map_err(native_record_validation_error)?;
     for record in &transaction.records {
+        validate_finality_admission_fields(record.namespace, &record.key, record.value.as_deref())?;
         validation
             .observe_extent(&record.key, record.value.as_ref().map(|value| value.len()))
             .map_err(native_record_validation_error)?;
@@ -253,7 +285,15 @@ pub fn validate_transaction(
                     .ok_or(JournalTransactionDataError::MalformedRecord(
                         "idempotency records cannot be deleted",
                     ))?;
-            if IdempotencyKey::new(record.key.clone()).is_err()
+            let invalid_key = match idempotency.as_deref_mut() {
+                None => IdempotencyKey::new(record.key.clone()).is_err(),
+                Some(original) => {
+                    original.input = Some(record.key.clone());
+                    original.outcome = Some(IdempotencyKey::from_retained_input(&mut original.input));
+                    matches!(original.outcome, Some(Err(_)))
+                }
+            };
+            if invalid_key
                 || value.len() != IDEMPOTENCY_VALUE_BYTES
                 || value[32..] == [0; 16]
             {
@@ -268,6 +308,76 @@ pub fn validate_transaction(
             .map_err(native_record_validation_error)?;
     }
     Ok(())
+}
+
+/// Retains the actual structural validator's index and returned classification.
+///
+/// This owns DATA only. It neither binds a file nor grants record admission.
+#[derive(Default)]
+pub struct TransactionValidationCaptureV1 {
+    index: NativeRecordKeyIndexV1,
+    idempotency: IdempotencyValidationCaptureV1,
+    outcome: Option<Result<(), JournalTransactionDataError>>,
+    reentered: bool,
+}
+
+impl TransactionValidationCaptureV1 {
+    /// Creates empty fixed destinations without allocation.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { index: NativeRecordKeyIndexV1::new(),
+            idempotency: IdempotencyValidationCaptureV1 { input: None, outcome: None },
+            outcome: None, reentered: false }
+    }
+
+    /// Counts all added fixed capture and native-stage control destinations.
+    ///
+    /// Besides the lower tree/current owners, this counts Idempotency input
+    /// and typed Result, final Result and reentry flag, and the transient
+    /// native validation carrier and its constructor Result. Inline bytes are
+    /// separately included by the actual replay owner layout.
+    #[must_use]
+    pub fn receiving_metadata_cells_v1() -> Option<usize> {
+        NativeRecordKeyIndexV1::receiving_metadata_cells_v1().checked_add(2)?
+            .checked_add(2)?.checked_add(2)
+    }
+
+    /// Borrows the actual reached key index even after a later typed refusal.
+    #[must_use]
+    pub fn index_v1(&self) -> &NativeRecordKeyIndexV1 { &self.index }
+
+    /// Borrows the original returned structural refusal.
+    #[must_use]
+    pub fn failure(&self) -> Option<&JournalTransactionDataError> {
+        self.idempotency.outcome.as_ref().and_then(|result| result.as_ref().err())
+            .or_else(|| self.outcome.as_ref().and_then(|result| result.as_ref().err()))
+    }
+}
+
+#[derive(Default)]
+struct IdempotencyValidationCaptureV1 {
+    input: Option<Vec<u8>>,
+    outcome: Option<Result<IdempotencyKey, JournalTransactionDataError>>,
+}
+
+/// Runs the sole transaction validator with an actual once-owned index.
+///
+/// # Errors
+/// Retains the same identity, extent, Idempotency or duplicate failure; repeated
+/// entry refuses without replacing the first reached index or outcome.
+pub fn validate_transaction_retaining_v1(
+    transaction: &JournalTransaction,
+    limits: JournalLimits,
+    capture: &mut TransactionValidationCaptureV1,
+) -> Result<(), JournalTransactionDataError> {
+    if capture.outcome.is_some() {
+        capture.reentered = true;
+        return Err(JournalTransactionDataError::InvalidTransaction);
+    }
+    let result = validate_transaction_engine(transaction, limits, Some(&mut *capture));
+    capture.outcome = Some(result);
+    if matches!(capture.outcome, Some(Ok(()))) { Ok(()) }
+    else { Err(JournalTransactionDataError::InvalidTransaction) }
 }
 
 fn native_record_validation_error(
@@ -373,6 +483,7 @@ pub fn decode_record(
     let header = RecordHeader::read(payload)?;
     let namespace = RecordNamespace::from_byte(header.namespace_byte())?;
     let fields = header.decode_fields(limits.maximum_key_bytes, limits.maximum_record_bytes)?;
+    validate_finality_admission_fields(namespace, fields.key, fields.value)?;
     let key = fields.key.to_vec();
     let value = fields.value.map(<[u8]>::to_vec);
     Ok(JournalRecord {
@@ -380,6 +491,19 @@ pub fn decode_record(
         key,
         value,
     })
+}
+
+// This newly introduced family is borrowed and allocation-free at the sole
+// typed native decoder. Role authority and all other schemas stay separate.
+fn validate_finality_admission_fields(namespace: RecordNamespace, key: &[u8], value: Option<&[u8]>)
+    -> Result<(), JournalTransactionDataError> {
+    use super::provisioning_root::finality_recover::CreateFinalityObservationAdmissionDataV1 as Data;
+    if namespace == RecordNamespace::OperatorRecovery && Data::is_admission_key_v1(key) {
+        Data::require_record_v1(key, value.ok_or(JournalTransactionDataError::MalformedRecord(
+            "finality observation admission cannot be deleted"))?)
+            .map_err(|_|JournalTransactionDataError::MalformedRecord("finality observation admission"))?;
+    }
+    Ok(())
 }
 
 /// Encodes canonical transaction frames without appending them.
@@ -403,7 +527,107 @@ pub fn encode_transaction(
     .map_err(JournalTransactionDataError::from)
 }
 
+mod prepared;
+pub use prepared::PreparedTransactionDecodeCaptureV1;
+
 const MAGIC: &[u8; 8] = b"AOSJPT01";
+
+/// Retains the sole preparation encoder's validation and failed byte prefix.
+///
+/// Construction is inert DATA. No Journal, writer, framing acceptance, capacity
+/// or native completion is issued. A real caller prepays receiving_demand_v2
+/// and retains this original plus its complete returned classification.
+#[derive(Default)]
+pub struct PreparedTransactionEncodeCaptureV2 {
+    validation: TransactionValidationCaptureV1,
+    bytes: Vec<u8>,
+    record: Option<Result<Vec<u8>, JournalTransactionDataError>>,
+    completed: Option<Vec<u8>>,
+    result: Option<Result<(), JournalTransactionDataError>>,
+    entered: bool,
+}
+
+impl PreparedTransactionEncodeCaptureV2 {
+    /// Creates empty validation and encoding destinations without allocation.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { validation: TransactionValidationCaptureV1::new(), bytes: Vec::new(),
+            record: None, completed: None, result: None, entered: false }
+    }
+
+    /// Prices exact output, one record scratch and the actual owned key index.
+    ///
+    /// This uses the source transaction's real widths before growth. Only
+    /// duplicate-index entries count as names; control and codec fields add
+    /// bytes, and the opaque preparation bytes add no namespace entries.
+    ///
+    /// Returns `None` on invalid geometry or checked arithmetic overflow.
+    #[must_use]
+    pub fn receiving_demand_v2(transaction: &JournalTransaction, limits: JournalLimits)
+        -> Option<aos_sandbox_core::ResourceVector>
+    {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        let encoded = transaction.prepared_encoded_bytes_v2(limits).ok()?;
+        let mut keys = 0usize;
+        let mut largest_key = 0usize;
+        let mut largest_payload = 0usize;
+        for record in transaction.records() {
+            keys = keys.checked_add(record.key.len())?;
+            largest_key = largest_key.max(record.key.len());
+            let payload = EncodedRecordLayout::new(record.key.len(),
+                record.value.as_ref().map(Vec::len)).ok()?.payload_bytes;
+            largest_payload = largest_payload.max(payload);
+        }
+        let index = NativeRecordKeyIndexV1::dynamic_bytes_v1(
+            transaction.records().len(), keys, largest_key,
+        )?;
+        let bytes = std::mem::size_of::<Self>().checked_mul(2)?
+            .checked_add(index)?.checked_add(encoded)?.checked_add(largest_payload)?
+            .checked_add(largest_key)?;
+        Some(ResourceVector::ZERO
+            .with(D::MemoryBytes, u64::try_from(bytes).ok()?)
+            .with(D::MetadataEntries, u64::try_from(transaction.records().len()).ok()?))
+    }
+
+    /// Runs the same bounded encoder once while retaining a failed prefix.
+    ///
+    /// # Errors
+    /// Returns the existing coarse invalid-transaction refusal while failure()
+    /// borrows the original validation, record or framing cause. Reentry keeps
+    /// all first results and allocated prefixes unchanged.
+    pub fn encode_once_v2(&mut self, transaction: &JournalTransaction, limits: JournalLimits)
+        -> Result<(), JournalTransactionDataError>
+    {
+        if self.entered { return Err(JournalTransactionDataError::InvalidTransaction); }
+        self.entered = true;
+        match transaction.encode_prepared_engine_v2(limits, Some(&mut *self)) {
+            Ok(bytes) => {
+                self.completed = Some(bytes);
+                self.result = Some(Ok(()));
+                Ok(())
+            }
+            Err(cause) => {
+                self.result = Some(Err(cause));
+                Err(JournalTransactionDataError::InvalidTransaction)
+            }
+        }
+    }
+
+    /// Moves the exact positive encoded DATA once, leaving the one-shot fence.
+    #[must_use]
+    pub fn take_completed_v2(&mut self) -> Option<Vec<u8>> {
+        if !matches!(self.result, Some(Ok(()))) { return None; }
+        self.completed.take()
+    }
+
+    /// Borrows the earliest actual validator, record or encoder refusal.
+    #[must_use]
+    pub fn failure(&self) -> Option<&JournalTransactionDataError> {
+        self.validation.failure()
+            .or_else(|| self.record.as_ref()?.as_ref().err())
+            .or_else(|| self.result.as_ref()?.as_ref().err())
+    }
+}
 
 impl JournalTransaction {
     /// Returns the maximum bounded preparation width for the supplied native limits.
@@ -421,6 +645,47 @@ impl JournalTransaction {
             .map_err(JournalTransactionDataError::from)
     }
 
+    /// Measures this actual transaction's owned record and byte capacities.
+    ///
+    /// This passive resident bound includes the transaction inline layout, its
+    /// real ordered record allocation, and each actual key/value allocation.
+    /// It performs no allocation, clone, parse, observation or admission.
+    ///
+    /// Returns `None` on checked width overflow.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn retained_receiving_bytes_v2(&self) -> Option<usize> {
+        let records = self.records.capacity().checked_mul(std::mem::size_of::<JournalRecord>())?;
+        self.records.iter().try_fold(std::mem::size_of::<Self>().checked_add(records)?,
+            |bytes, record| bytes.checked_add(record.key.capacity())?
+                .checked_add(record.value.as_ref().map_or(0, Vec::capacity)))
+    }
+
+    /// Measures this transaction's exact preparation wrapper without encoding.
+    ///
+    /// The shared native record layout and preparation framing supply these
+    /// passive bytes. This performs no allocation, namespace/duplicate-key
+    /// admission, capacity reservation, hashing or journal observation.
+    ///
+    /// # Errors
+    /// Rejects invalid limits, unrepresentable native fields/counts or a width
+    /// exceeding the format's bounded preparation maximum.
+    #[doc(hidden)]
+    pub fn prepared_encoded_bytes_v2(&self, limits: JournalLimits)
+        -> Result<usize, JournalTransactionDataError>
+    {
+        let maximum = Self::maximum_prepared_bytes_v1(limits)?;
+        let bytes = aos_sandbox_journal::geometry::encoded_prepared_bytes(
+            self.records.iter().map(|record| RecordShape {
+                key_bytes: record.key.len(), value_bytes: record.value.as_ref().map(Vec::len),
+            }),
+        )?;
+        if bytes > maximum {
+            return Err(JournalTransactionDataError::LimitExceeded("prepared transaction bytes"));
+        }
+        Ok(bytes)
+    }
+
     /// Encodes one exact bounded transaction without writing or committing it.
     ///
     /// Reuses the ordinary journal record encoder and validation, including
@@ -435,29 +700,68 @@ impl JournalTransaction {
         &self,
         limits: JournalLimits,
     ) -> Result<Vec<u8>, JournalTransactionDataError> {
+        self.encode_prepared_engine_v2(limits, None)
+    }
+
+    fn encode_prepared_engine_v2(&self, limits: JournalLimits,
+        mut capture: Option<&mut PreparedTransactionEncodeCaptureV2>)
+        -> Result<Vec<u8>, JournalTransactionDataError>
+    {
         let maximum_bytes = Self::maximum_prepared_bytes_v1(limits)?;
-        validate_transaction(self, limits)?;
+        match capture.as_deref_mut() {
+            Some(original) => validate_transaction_retaining_v1(self, limits, &mut original.validation)?,
+            None => validate_transaction(self, limits)?,
+        }
+        let encoded_bytes = self.prepared_encoded_bytes_v2(limits)?;
         let count = u32::try_from(self.records.len())
             .map_err(|_| JournalTransactionDataError::LimitExceeded("prepared record count"))?;
-        let mut bytes = Vec::new();
+        // Ordinary encoding owns only its original byte/payload locals. A
+        // selected encoding borrows disjoint actual destinations; no complete
+        // capture-sized owner is constructed on the ordinary stack.
+        let mut ordinary_bytes;
+        let (bytes, mut record_slot) = match capture {
+            Some(original) => {
+                original.bytes = Vec::with_capacity(encoded_bytes);
+                (&mut original.bytes, Some(&mut original.record))
+            }
+            None => {
+                ordinary_bytes = Vec::with_capacity(encoded_bytes);
+                (&mut ordinary_bytes, None)
+            }
+        };
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(&1_u16.to_be_bytes());
         bytes.extend_from_slice(&[0; 2]);
         bytes.extend_from_slice(&self.id);
         bytes.extend_from_slice(&count.to_be_bytes());
         for record in &self.records {
-            let payload = encode_record(record)?;
+            let ordinary_payload;
+            let payload = match record_slot.as_deref_mut() {
+                Some(slot) => {
+                    *slot = Some(encode_record(record));
+                    match slot.as_ref() {
+                        Some(Ok(payload)) => payload,
+                        _ => return Err(JournalTransactionDataError::InvalidTransaction),
+                    }
+                }
+                None => {
+                    ordinary_payload = encode_record(record)?;
+                    &ordinary_payload
+                }
+            };
             let length = u32::try_from(payload.len())
                 .map_err(|_| JournalTransactionDataError::LimitExceeded("prepared record bytes"))?;
             bytes.extend_from_slice(&length.to_be_bytes());
-            bytes.extend_from_slice(&payload);
+            bytes.extend_from_slice(payload);
+            // A copied positive record ends at the same iteration boundary.
+            if let Some(slot) = record_slot.as_deref_mut() { *slot = None; }
         }
-        if bytes.len() > maximum_bytes {
+        if bytes.len() > maximum_bytes || bytes.len() != encoded_bytes {
             return Err(JournalTransactionDataError::LimitExceeded(
                 "prepared transaction bytes",
             ));
         }
-        Ok(bytes)
+        Ok(std::mem::take(bytes))
     }
 
     /// Decodes only an exact bounded preparation, not a committed journal frame.
@@ -473,6 +777,13 @@ impl JournalTransaction {
     pub fn decode_prepared_v1(
         bytes: &[u8],
         limits: JournalLimits,
+    ) -> Result<Self, JournalTransactionDataError> {
+        Self::decode_prepared_engine(bytes, limits, None)
+    }
+
+    fn decode_prepared_engine(
+        bytes: &[u8], limits: JournalLimits,
+        mut capture: Option<&mut PreparedTransactionDecodeCaptureV1>,
     ) -> Result<Self, JournalTransactionDataError> {
         if bytes.len() < HEADER_BYTES
             || bytes.len() > Self::maximum_prepared_bytes_v1(limits)?
@@ -501,7 +812,17 @@ impl JournalTransaction {
             ));
         }
         let mut cursor = HEADER_BYTES;
-        let mut records = Vec::with_capacity(count);
+        let mut ordinary_records;
+        let records = match capture.as_deref_mut() {
+            Some(original) => {
+                original.records = Vec::with_capacity(count);
+                &mut original.records
+            }
+            None => {
+                ordinary_records = Vec::with_capacity(count);
+                &mut ordinary_records
+            }
+        };
         let mut payload_bytes = 0_usize;
         for _ in 0..count {
             let length = usize::try_from(u32::from_be_bytes(read_array(bytes, cursor)?))
@@ -542,9 +863,22 @@ impl JournalTransaction {
                 "padded preparation",
             ));
         }
-        let transaction = Self::new(id, records)?;
-        validate_transaction(&transaction, limits)?;
-        Ok(transaction)
+        let transaction = Self::new(id, std::mem::take(records))?;
+        match capture {
+            Some(original) => {
+                // All framing is complete. Park the actual transaction before
+                // the same validator can retain a later semantic refusal.
+                original.transaction = Some(transaction);
+                let transaction = original.transaction.as_ref()
+                    .ok_or(JournalTransactionDataError::InvalidTransaction)?;
+                validate_transaction_retaining_v1(transaction, limits, &mut original.validation)?;
+                original.transaction.take().ok_or(JournalTransactionDataError::InvalidTransaction)
+            }
+            None => {
+                validate_transaction(&transaction, limits)?;
+                Ok(transaction)
+            }
+        }
     }
 }
 
@@ -668,6 +1002,12 @@ mod tests {
             ]
             .concat()
         );
+        assert_eq!(transaction.prepared_encoded_bytes_v2(JournalLimits::default()).unwrap(), bytes.len());
+        let mut retained = PreparedTransactionEncodeCaptureV2::new();
+        retained.encode_once_v2(&transaction, JournalLimits::default()).unwrap();
+        assert_eq!(retained.take_completed_v2().unwrap(), bytes);
+        assert!(retained.take_completed_v2().is_none());
+        assert!(retained.failure().is_none());
         // Literal native payloads, independently laid out from the existing
         // record format: namespace47, key length LE, value length LE (or delete).
         assert_eq!(
@@ -736,5 +1076,108 @@ mod tests {
             assert!(transaction.encode_prepared_v1(limits).is_err());
             assert!(JournalTransaction::decode_prepared_v1(&bytes, limits).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod retaining_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_refusal_keeps_actual_index_and_current_key_on_reentry() {
+        let transaction = JournalTransaction::from_unvalidated_data([1; 16], vec![
+            JournalRecord::put(RecordNamespace::Operation, vec![7], vec![1]),
+            JournalRecord::put(RecordNamespace::Operation, vec![7], vec![2]),
+        ]);
+        let mut capture = TransactionValidationCaptureV1::new();
+
+        assert!(validate_transaction_retaining_v1(&transaction, JournalLimits::default(), &mut capture).is_err());
+
+        assert!(matches!(validate_transaction(&transaction, JournalLimits::default()),
+            Err(JournalTransactionDataError::DuplicateRecordKey)));
+        assert!(matches!(capture.failure(), Some(JournalTransactionDataError::DuplicateRecordKey)));
+        assert_eq!(capture.index_v1().retained_key_count_v1(), 1);
+        assert_eq!(capture.index_v1().current_key_v1(), Some((RecordNamespace::Operation as u8, &[7][..])));
+        let first = capture.failure().unwrap() as *const JournalTransactionDataError;
+        assert!(validate_transaction_retaining_v1(&transaction, JournalLimits::default(), &mut capture).is_err());
+        assert!(std::ptr::eq(first, capture.failure().unwrap()));
+        assert_eq!(capture.index_v1().retained_key_count_v1(), 1);
+    }
+
+    #[test]
+    fn later_extent_failure_keeps_previously_reached_original_keys() {
+        let transaction = JournalTransaction::from_unvalidated_data([2; 16], vec![
+            JournalRecord::put(RecordNamespace::Operation, vec![7], vec![1]),
+            JournalRecord::put(RecordNamespace::DesiredState, Vec::new(), vec![2]),
+        ]);
+        let mut capture = TransactionValidationCaptureV1::new();
+
+        assert!(validate_transaction_retaining_v1(&transaction, JournalLimits::default(), &mut capture).is_err());
+
+        assert!(matches!(capture.failure(), Some(JournalTransactionDataError::LimitExceeded("record key bytes"))));
+        assert_eq!(capture.index_v1().retained_key_count_v1(), 1);
+        assert!(capture.index_v1().current_key_v1().is_none());
+    }
+
+    #[test]
+    fn invalid_idempotency_constructor_keeps_actual_cloned_input() {
+        let transaction = JournalTransaction::from_unvalidated_data([4; 16], vec![
+            JournalRecord::put(RecordNamespace::Operation, vec![7], vec![1]),
+            JournalRecord::put(RecordNamespace::Idempotency, vec![8; 129], vec![1; 48]),
+        ]);
+        let mut capture = TransactionValidationCaptureV1::new();
+
+        assert!(validate_transaction_retaining_v1(&transaction, JournalLimits::default(), &mut capture).is_err());
+
+        assert!(matches!(capture.failure(), Some(JournalTransactionDataError::InvalidIdempotencyKey)));
+        assert_eq!(capture.idempotency.input.as_deref(), Some(&[8; 129][..]));
+        assert_eq!(capture.index_v1().retained_key_count_v1(), 1);
+    }
+
+    #[test]
+    fn later_idempotency_shape_keeps_original_typed_key_and_prior_index() {
+        let transaction = JournalTransaction::from_unvalidated_data([3; 16], vec![
+            JournalRecord::put(RecordNamespace::Operation, vec![7], vec![1]),
+            JournalRecord::put(RecordNamespace::Idempotency, vec![8], vec![0; 47]),
+        ]);
+        let mut capture = TransactionValidationCaptureV1::new();
+
+        assert!(validate_transaction_retaining_v1(&transaction, JournalLimits::default(), &mut capture).is_err());
+
+        assert!(matches!(capture.failure(), Some(JournalTransactionDataError::MalformedRecord("invalid idempotency decision"))));
+        assert_eq!(capture.index_v1().retained_key_count_v1(), 1);
+        assert_eq!(capture.idempotency.outcome.as_ref().unwrap().as_ref().unwrap().as_bytes(), &[8]);
+        assert!(capture.idempotency.input.is_none());
+    }
+}
+
+
+#[cfg(test)]
+mod prepared_encoding_retention_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_preparation_keeps_its_actual_index_and_original_cause() {
+        let transaction = JournalTransaction::new([1; 16], vec![
+            JournalRecord::put(RecordNamespace::Operation, vec![7], vec![1]),
+            JournalRecord::put(RecordNamespace::Operation, vec![7], vec![2]),
+        ]).unwrap();
+        let mut original = PreparedTransactionEncodeCaptureV2::new();
+
+        assert!(original.encode_once_v2(&transaction, JournalLimits::default()).is_err());
+
+        assert!(matches!(original.failure(), Some(JournalTransactionDataError::DuplicateRecordKey)));
+        assert_eq!(original.validation.index_v1().retained_key_count_v1(), 1);
+        assert_eq!(original.validation.index_v1().current_key_v1(),
+            Some((RecordNamespace::Operation as u8, &[7][..])));
+        assert!(original.bytes.is_empty());
+        assert!(original.take_completed_v2().is_none());
+        let first = original.failure().unwrap() as *const JournalTransactionDataError;
+
+        assert!(original.encode_once_v2(&transaction, JournalLimits::default()).is_err());
+
+        assert!(std::ptr::eq(first, original.failure().unwrap()));
+        assert_eq!(original.validation.index_v1().retained_key_count_v1(), 1);
+        assert!(original.take_completed_v2().is_none());
     }
 }

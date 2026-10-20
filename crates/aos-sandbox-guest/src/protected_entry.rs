@@ -34,6 +34,8 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
 
 use crate::DormantGuestAgentServiceV1;
+mod active_control;
+mod handshake;
 use crate::runtime_argument_observation::sign_current_guest_argument_readback_v1;
 #[cfg(test)]
 use aos_sandbox_agent::launch::GuestAgentLaunchRecordV1;
@@ -72,6 +74,9 @@ const O_CLOEXEC: i32 = 0o2_000_000;
 const O_NOFOLLOW: i32 = 0o400_000;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+
+mod operation_deadline;
+pub use operation_deadline::GuestOperationDeadlineOriginalV1;
 const RETRY_INTERVAL: Duration = Duration::from_millis(2);
 const MAX_OPERATIONS: usize = 4_096;
 const HANDSHAKE_SIGNATURE_DOMAIN: &[u8] = b"aos-sandbox-agent-handshake-signature-v1\0";
@@ -90,31 +95,15 @@ pub fn require_host_canary_challenge_v1(
     runtime: &[u8; 104],
     channel: [u8; 32],
 ) -> Result<u64, ProtectedGuestAgentErrorV1> {
-    if bytes.len() != 200 || &bytes[..8] != b"AOSHCR01"
-        || bytes[8..12] != [0, 1, 0, 0]
-        || bytes[12..16] != 200_u32.to_be_bytes()
-        || bytes[160..176] != [0; 16]
-        || bytes[112..144] != runtime[..32]
-        || bytes[144..152] != runtime[32..40]
-        || bytes[152..160] != runtime[72..80]
-        || bytes[16..48] == [0; 32] || bytes[48..80] == [0; 32]
-        || bytes[80..112] == [0; 32] || bytes[176..192] == [0; 16]
-    {
+    use aos_sandbox_linux::guest_startup_report::{HostStartupReportChallengeErrorV1,
+        HostStartupReportKindV1, require_host_startup_report_challenge_v1};
+    let (kind, deadline) = require_host_startup_report_challenge_v1(bytes, runtime, channel)
+        .map_err(|cause| match cause {
+            HostStartupReportChallengeErrorV1::Mismatch => ProtectedGuestAgentErrorV1::ProvisioningMismatch,
+            HostStartupReportChallengeErrorV1::Deadline => ProtectedGuestAgentErrorV1::InvalidProvisioning,
+        })?;
+    if kind != HostStartupReportKindV1::Canary {
         return Err(ProtectedGuestAgentErrorV1::ProvisioningMismatch);
-    }
-    let mut binding = Sha256::new();
-    binding.update(b"aos.sandbox.host.canary-agent-channel.v1\0");
-    binding.update(&bytes[48..80]);
-    binding.update(&bytes[80..112]);
-    binding.update(&bytes[176..192]);
-    binding.update(&bytes[16..48]);
-    if <[u8; 32]>::from(binding.finalize()) != channel {
-        return Err(ProtectedGuestAgentErrorV1::ProvisioningMismatch);
-    }
-    let deadline = u64::from_be_bytes(bytes[192..200].try_into()
-        .map_err(|_| ProtectedGuestAgentErrorV1::InvalidProvisioning)?);
-    if deadline == 0 {
-        return Err(ProtectedGuestAgentErrorV1::InvalidProvisioning);
     }
     Ok(deadline)
 }
@@ -299,8 +288,34 @@ struct Provisioning {
 /// outcome. The protocol loop exits on any handler error and does not retry an
 /// ambiguous effect.
 pub trait GuestOperationEffectsV1 {
+    /// Borrows the actual failed selected SSH startup original for diagnostics.
+    ///
+    /// This performs no sampling or live-authority check and cannot recover an
+    /// operation. Adapters without that native owner return no such cause.
+    fn selected_openssh_startup_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
+    /// Borrows actual completed native/IO retirement, never historical absence.
+    ///
+    /// The default has no original process custody and cannot supply this
+    /// constructor-closed token. It authorizes no effect or cancellation.
+    fn original_transport_retirement_v2(&self) -> Option<&crate::OriginalExecutionTransportRetirementV2> { None }
+    /// Services already-owned execution deadlines without authorizing an operation.
+    ///
+    /// The default preserves adapters with no native child custody. The process
+    /// owner publishes only actual reaped outcomes; failures stay on its original.
+    fn service_original_deadlines_v1(&mut self) {}
+
+    /// Reports actual retained child/startup custody, never a historical PID row.
+    fn has_original_execution_custody_v1(&self) -> bool { false }
+
     /// Reports whether this effect owner implements an advertised feature.
     fn supports(&self, feature: AgentFeatureV1) -> bool;
+
+    /// Fences a Running/started reply against its actual original child lifetime.
+    ///
+    /// # Errors
+    /// The native process owner refuses an expired, failed or foreign original.
+    fn require_original_start_reply_current_v1(&mut self, _request: &AgentOperationRequestV1,
+        _runtime: &AgentRuntimeBindingV1) -> Result<(), ProtectedGuestAgentErrorV1> { Ok(()) }
 
     /// Applies one exact operation and returns its phase and bounded result.
     ///
@@ -314,6 +329,43 @@ pub trait GuestOperationEffectsV1 {
         channel: ObjectDigest,
         deadline: Instant,
     ) -> Result<(AgentExecutionPhaseV1, Vec<u8>), ProtectedGuestAgentErrorV1>;
+
+    /// Applies the same operation with its actual received Capture pipe owner.
+    ///
+    /// The default refuses without ordinary fallback. The fixed process owner
+    /// shares its existing durable reducer and spawn kernel with Stream/PTY.
+    ///
+    /// # Errors
+    /// Retains failed received/spec/pipe/launch custody on the supplied original.
+    fn apply_capture_v2(
+        &mut self,
+        _request: &AgentOperationRequestV1,
+        _runtime: &AgentRuntimeBindingV1,
+        _channel: ObjectDigest,
+        _deadline: Instant,
+        _capture: &mut crate::capture::GuestCaptureAuthorizeOriginalV2,
+    ) -> Result<(AgentExecutionPhaseV1, Vec<u8>), ProtectedGuestAgentErrorV1> {
+        Err(ProtectedGuestAgentErrorV1::CaptureRefused)
+    }
+
+    /// Applies the explicit SSH Authorize through the same live process owner.
+    ///
+    /// The plan is comparison DATA from the authenticated, fully reconstructed
+    /// request. It supplies no financial reservation or adopted process scope.
+    ///
+    /// # Errors
+    /// Refuses adapters without the actual original process/native owner or a
+    /// mismatched request, execution shape, durable reservation or effect.
+    fn apply_ssh_authorize_v1(
+        &mut self,
+        _request: &AgentOperationRequestV1,
+        _runtime: &AgentRuntimeBindingV1,
+        _channel: ObjectDigest,
+        _deadline: Instant,
+        _plan: &aos_sandbox_agent::openssh_receiving::OpenSshDescendantPlanDataV1,
+    ) -> Result<(AgentExecutionPhaseV1, Vec<u8>), ProtectedGuestAgentErrorV1> {
+        Err(ProtectedGuestAgentErrorV1::EffectUnavailable)
+    }
 
     /// Installs or rechecks one gate and returns a fresh physical measurement.
     ///
@@ -330,6 +382,21 @@ pub trait GuestOperationEffectsV1 {
         _runtime: &AgentRuntimeBindingV1,
         _channel: ObjectDigest,
         _deadline: Instant,
+    ) -> Result<OpenSshGateReadbackV1, ProtectedGuestAgentErrorV1> {
+        Err(ProtectedGuestAgentErrorV1::EffectUnavailable)
+    }
+
+    /// Installs a selected gate against the original pre-receive interval.
+    ///
+    /// # Errors
+    /// Refuses adapters without the same original process and native custody.
+    fn observe_openssh_gate_original_v1(
+        &mut self,
+        _request: &OpenSshGateObserveRequestV1,
+        _runtime: &AgentRuntimeBindingV1,
+        _channel: ObjectDigest,
+        _deadline: Instant,
+        _original: &GuestOperationDeadlineOriginalV1,
     ) -> Result<OpenSshGateReadbackV1, ProtectedGuestAgentErrorV1> {
         Err(ProtectedGuestAgentErrorV1::EffectUnavailable)
     }
@@ -403,16 +470,79 @@ pub trait GuestOperationEffectsV1 {
     }
 }
 
+// Only the installed concrete process owner holds failed protocol originals
+// until its original Guardian exits. Generic adapters retain their returning API.
+enum ProtocolFailureDispositionV1 {
+    Return,
+    HoldWithOriginalProcess,
+}
+
 /// Runs one provisioned guest-agent session on the fixed inherited channel.
 pub struct ProtectedGuestAgentV1<Effects> {
     effects: Effects,
+    capture: Option<crate::capture::GuestCaptureAuthorizeOriginalV2>,
+    ssh_authorize: Option<crate::ssh_authorize::GuestSshAuthorizeOriginalV1>,
+    operation_deadline: Option<GuestOperationDeadlineOriginalV1>,
+    capture_receive_failure: Option<RetainedSeqpacketReceiveErrorV1>,
+    active_control: Option<active_control::ActiveControlOriginalV2>,
+    session_socket: Option<SeqpacketSocket>,
+    protocol_send_failure: Option<aos_sandbox_linux::seqpacket::RetainedSeqpacketSendErrorV1>,
+    initial_handshake: Option<handshake::InitialHandshakeOriginalV2>,
+    protocol_failure_disposition: ProtocolFailureDispositionV1,
 }
 
 impl<Effects> ProtectedGuestAgentV1<Effects> {
     /// Creates an entry owner with its guest-local effect implementation.
     #[must_use]
     pub const fn new(effects: Effects) -> Self {
-        Self { effects }
+        Self {
+            effects,
+            capture: None,
+            ssh_authorize: None,
+            operation_deadline: None,
+            capture_receive_failure: None,
+            active_control: None, session_socket: None, protocol_send_failure: None,
+            initial_handshake: None,
+            protocol_failure_disposition: ProtocolFailureDispositionV1::Return,
+        }
+    }
+
+    /// Borrows an actual retained Capture, protocol or native mode failure.
+    #[must_use]
+    pub fn capture_failure(&self) -> Option<&(dyn std::error::Error + 'static)>
+    where Effects: GuestOperationEffectsV1 {
+        self.active_control.as_ref().and_then(|original| original.native_failure())
+            .or_else(|| self.initial_handshake.as_ref().and_then(|original| original.native_failure()))
+            .or_else(|| self.capture_receive_failure.as_ref().map(|cause| cause as _))
+            .or_else(|| self.protocol_send_failure.as_ref().map(|cause| cause as _))
+            .or_else(|| self.initial_handshake.as_ref()?.body.as_ref()?.as_ref().err().map(|cause| cause as _))
+            .or_else(|| self.capture.as_ref().and_then(|original| original.failure()))
+            .or_else(|| self.ssh_authorize.as_ref().and_then(|original| original.failure()))
+            .or_else(|| self.operation_deadline.as_ref().and_then(|original| original.failure()))
+            .or_else(|| self.effects.selected_openssh_startup_failure_v1())
+            .or_else(|| self.active_control.as_ref()?.protocol_failure.as_ref().map(|cause| cause as _))
+    }
+}
+
+impl ProtectedGuestAgentV1<crate::GuestProcessEffectsV1> {
+    /// Retains failed protocol originals beside the installed native process owner.
+    ///
+    /// This negative disposition creates no execution or cancellation permission.
+    /// Existing child deadlines continue after transport closure; failed Capture
+    /// owners remain occupied until the original Guardian terminates the Agent.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_original_process_owner_v1(effects: crate::GuestProcessEffectsV1) -> Self {
+        Self {
+            effects,
+            capture: None,
+            ssh_authorize: None,
+            operation_deadline: None,
+            capture_receive_failure: None,
+            active_control: None, session_socket: None, protocol_send_failure: None,
+            initial_handshake: None,
+            protocol_failure_disposition: ProtocolFailureDispositionV1::HoldWithOriginalProcess,
+        }
     }
 }
 
@@ -422,11 +552,59 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
     type Error = ProtectedGuestAgentErrorV1;
 
     fn run(&mut self) -> Result<(), Self::Error> {
+        if self.capture.is_some() || self.capture_receive_failure.is_some() || self.session_socket.is_some() {
+            return Err(ProtectedGuestAgentErrorV1::CaptureRefused);
+        }
+        let result = match self.run_session() {
+            Err(cause) if self.capture.is_some() => {
+                if let Some(capture) = self.capture.as_mut() {
+                    capture.protocol_failure = Some(cause);
+                }
+                Err(ProtectedGuestAgentErrorV1::CaptureRefused)
+            }
+            Err(cause) if self.active_control.is_some() => {
+                if let Some(original) = self.active_control.as_mut() {
+                    original.protocol_failure = Some(cause);
+                }
+                Err(ProtectedGuestAgentErrorV1::CaptureRefused)
+            }
+            result => result,
+        };
+        // Transport closure is not a Continue cancellation. Keep the SAME
+        // actual child/tree and failed Capture prefix in this process until
+        // their original timeout/native disposition or original Guardian exit.
+        // No new session, parsed PID, deadline, worker or authorization enters.
+        while self.effects.has_original_execution_custody_v1()
+            || (matches!(self.protocol_failure_disposition,
+                ProtocolFailureDispositionV1::HoldWithOriginalProcess)
+                && self.capture_failure().is_some())
+        {
+            self.effects.service_original_deadlines_v1();
+            std::thread::sleep(RETRY_INTERVAL);
+        }
+        result
+    }
+}
+
+impl<Effects: GuestOperationEffectsV1> ProtectedGuestAgentV1<Effects> {
+    fn run_session(&mut self) -> Result<(), ProtectedGuestAgentErrorV1> {
         let channel = duplicate_inherited_descriptor(CHANNEL_DESCRIPTOR)?;
         let provisioning_fd = duplicate_inherited_descriptor(PROVISIONING_DESCRIPTOR)?;
         mark_inherited_descriptor_close_on_exec(CHANNEL_DESCRIPTOR)?;
         mark_inherited_descriptor_close_on_exec(PROVISIONING_DESCRIPTOR)?;
         let mut socket = SeqpacketSocket::from_owned(channel)?;
+        let result = self.run_session_on_original_v2(&mut socket, provisioning_fd);
+        // A failed selected protocol keeps the SAME endpoint even after its
+        // last child retired. No FD duplication, reconnect or repair enters.
+        if matches!(self.protocol_failure_disposition, ProtocolFailureDispositionV1::HoldWithOriginalProcess) {
+            self.session_socket = Some(socket);
+        }
+        result
+    }
+
+    fn run_session_on_original_v2(&mut self, socket: &mut SeqpacketSocket,
+        provisioning_fd: OwnedFd) -> Result<(), ProtectedGuestAgentErrorV1>
+    {
         let provisioning = SealedMemfdMapping::run(
             provisioning_fd,
             GUEST_AGENT_PROVISIONING_BYTES_V1 as u64,
@@ -441,31 +619,69 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
             return Err(ProtectedGuestAgentErrorV1::UnsupportedFeature);
         }
 
+        let capture_transport = provisioning.features.contains(AgentFeatureV1::CapturePipeHandoffV2);
+        let selected_original_owner = matches!(self.protocol_failure_disposition,
+            ProtocolFailureDispositionV1::HoldWithOriginalProcess);
+        let selected_control_transport = capture_transport && selected_original_owner;
         let handshake_deadline = Instant::now() + HANDSHAKE_TIMEOUT;
-        let request = match decode_frame_v1(&receive(&mut socket, handshake_deadline)?)? {
-            AgentFrameV1::HandshakeRequest(request) => request,
-            _ => return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame),
+        let binding = if selected_original_owner {
+            self.initial_handshake = Some(handshake::InitialHandshakeOriginalV2::default());
+            let result = authenticate_initial_handshake_v2(socket, &provisioning, handshake_deadline,
+                self.initial_handshake.as_mut(), Some(&mut self.protocol_send_failure),
+                &mut || self.effects.service_original_deadlines_v1());
+            let original = self.initial_handshake.as_mut()
+                .ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?;
+            original.body = Some(result);
+            let binding = match original.body.as_ref() {
+                Some(Ok(binding)) => *binding,
+                _ => return Err(ProtectedGuestAgentErrorV1::CaptureRefused),
+            };
+            // All receive, binding and retained native send posts completed.
+            // Session binding DATA is the only surviving handshake result.
+            self.initial_handshake.take();
+            binding
+        } else {
+            authenticate_initial_handshake_v2(socket, &provisioning, handshake_deadline,
+                None, None, &mut || {})?
         };
-        if request.runtime() != &provisioning.runtime
-            || request.host_channel_binding() != provisioning.channel
-        {
-            return Err(ProtectedGuestAgentErrorV1::ProvisioningMismatch);
-        }
-
-        let binding = AgentSessionBindingV1::derive(&request, &provisioning.instance)?;
-        let response = sign_handshake(&request, binding, &provisioning)?;
-        send(
-            &mut socket,
-            &encode_frame_v1(&AgentFrameV1::HandshakeResponse(response)),
-            handshake_deadline,
-        )?;
 
         let mut next_sequence = AgentOperationSequenceV1::new(1)?;
-        let mut last: Option<(AgentOperationRequestV1, Vec<u8>)> = None;
+        let mut last: Option<(AgentOperationRequestV1, Vec<u8>, AgentExecutionPhaseV1)> = None;
         for _ in 0..MAX_OPERATIONS {
+            // This sample precedes every selected receive. SSH startup borrows
+            // this same interval; it never starts a fresh duration after IO.
+            self.operation_deadline = selected_control_transport
+                .then(GuestOperationDeadlineOriginalV1::start);
+            if let Some(original) = self.operation_deadline.as_ref() {
+                original.cutoff_data_v1()?;
+            }
             let deadline = Instant::now() + OPERATION_TIMEOUT;
-            let (received, mut descriptors) = receive_optional_descriptor(&mut socket, deadline)?;
-            if received.starts_with(ARGUMENT_OBSERVE_REQUEST_MAGIC_V1) {
+            let active_restriction = self.active_control.as_ref().filter(|original| !original.is_restored());
+            let (mut received, subject, mut descriptors) = if capture_transport && active_restriction.is_some() {
+                let original = active_restriction.ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?;
+                let record = receive_active_control_v2(socket, deadline, &original.restriction,
+                    &mut self.capture_receive_failure, &mut || self.effects.service_original_deadlines_v1())?;
+                let (bytes, subject) = record.into_parts();
+                (bytes, Some(subject), Vec::new())
+            } else if capture_transport {
+                let record = receive_authorize_descriptors_v2(
+                    socket, deadline, &mut self.capture_receive_failure,
+                    &mut || self.effects.service_original_deadlines_v1(),
+                )?;
+                let (bytes, subject, rights) = record.into_parts();
+                (bytes, Some(subject), rights)
+            } else {
+                let (bytes, rights) = receive_optional_descriptor_with_progress(
+                    socket, deadline, &mut || self.effects.service_original_deadlines_v1())?;
+                (bytes, None, rights)
+            };
+            let capture_candidate = capture_transport && (descriptors.len() == 3
+                || received.get(..9) == Some(b"AOSAGE01\x0e".as_slice()));
+            let ssh_candidate = selected_control_transport
+                && received.get(..9) == Some(b"AOSAGE01\x0f".as_slice());
+            let mut capture_frame = false;
+            let mut ssh_frame = false;
+            if !capture_candidate && received.starts_with(ARGUMENT_OBSERVE_REQUEST_MAGIC_V1) {
                 if !descriptors.is_empty() {
                     return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
                 }
@@ -486,10 +702,36 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                 let packet =
                     sign_current_guest_argument_readback_v1(&observe, &provisioning.signing_key)?;
                 check_deadline(deadline)?;
-                send(&mut socket, &packet, deadline)?;
+                send_selected_v2(socket, selected_control_transport.then_some(&mut self.protocol_send_failure), &packet, deadline)?;
                 continue;
             }
-            let request = match decode_frame_v1(&received)? {
+            let frame = if capture_candidate {
+                if self.capture.is_some() {
+                    return Err(ProtectedGuestAgentErrorV1::CaptureRefused);
+                }
+                self.capture = Some(crate::capture::GuestCaptureAuthorizeOriginalV2::new(
+                    std::mem::take(&mut received), std::mem::take(&mut descriptors),
+                    subject.ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?,
+                ));
+                let capture = self.capture.as_mut().ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?;
+                capture.decode_frame_once()?
+            } else if ssh_candidate {
+                if self.ssh_authorize.is_some() {
+                    return Err(ProtectedGuestAgentErrorV1::CaptureRefused);
+                }
+                self.ssh_authorize = Some(crate::ssh_authorize::GuestSshAuthorizeOriginalV1::new(
+                    std::mem::take(&mut received), std::mem::take(&mut descriptors),
+                    subject.ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?,
+                ));
+                self.ssh_authorize.as_mut().ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?
+                    .decode_frame_once()?
+            } else {
+                decode_frame_v1(&received)?
+            };
+            if capture_candidate && !matches!(frame, AgentFrameV1::SealedCaptureAuthorizeRequestV2(_)) {
+                return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
+            }
+            let request = match frame {
                 AgentFrameV1::OperationRequest(request) => {
                     // The protected Authorize path must never expand a large
                     // specification into a seqpacket datagram.
@@ -516,6 +758,20 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                         MAX_AGENT_SEALED_SPEC_BYTES_V1 as u64,
                         |bytes, _| reference.reconstruct(bytes),
                     )??
+                }
+                AgentFrameV1::SealedCaptureAuthorizeRequestV2(reference) => {
+                    if !capture_transport { return Err(ProtectedGuestAgentErrorV1::UnsupportedFeature); }
+                    capture_frame = true;
+                    self.capture.as_mut().ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?
+                        .reconstruct_once(reference)?
+                }
+                AgentFrameV1::SealedSshAuthorizeRequestV1(reference) => {
+                    if !ssh_candidate || capture_candidate {
+                        return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
+                    }
+                    ssh_frame = true;
+                    self.ssh_authorize.as_mut().ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?
+                        .reconstruct_once(reference, &provisioning.runtime)?
                 }
                 AgentFrameV1::OriginalControlRequestV5(bytes) => {
                     if !descriptors.is_empty() {
@@ -571,8 +827,7 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                             &provisioning.signing_key,
                         )
                         .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
-                    send(
-                        &mut socket,
+                    send_selected_v2(socket, selected_control_transport.then_some(&mut self.protocol_send_failure),
                         &encode_frame_v1(&AgentFrameV1::OriginalControlResponseV5(response)),
                         deadline,
                     )?;
@@ -633,8 +888,7 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                         &physical,
                     )
                     .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
-                    send(
-                        &mut socket,
+                    send_selected_v2(socket, selected_control_transport.then_some(&mut self.protocol_send_failure),
                         &encode_frame_v1(&AgentFrameV1::OriginalAttachResponseV3(response)),
                         deadline,
                     )?;
@@ -677,8 +931,7 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                         &provisioning.signing_key,
                     )
                     .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
-                    send(
-                        &mut socket,
+                    send_selected_v2(socket, selected_control_transport.then_some(&mut self.protocol_send_failure),
                         &encode_frame_v1(&AgentFrameV1::OpenSshTicketReadbackV2(packet)),
                         deadline,
                     )?;
@@ -709,12 +962,13 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                     {
                         return Err(ProtectedGuestAgentErrorV1::OperationMismatch);
                     }
-                    let readback = self.effects.observe_openssh_gate(
-                        &observe,
-                        &provisioning.runtime,
-                        provisioning.channel,
-                        deadline,
-                    )?;
+                    let readback = if let Some(original) = self.operation_deadline.as_ref() {
+                        self.effects.observe_openssh_gate_original_v1(&observe,
+                            &provisioning.runtime, provisioning.channel, deadline, original)?
+                    } else {
+                        self.effects.observe_openssh_gate(&observe, &provisioning.runtime,
+                            provisioning.channel, deadline)?
+                    };
                     check_deadline(deadline)?;
                     if readback.challenge != observe.challenge
                         || readback.route_digest != observe.route_digest
@@ -727,7 +981,7 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                         sign_openssh_gate_readback_v1(&readback, &provisioning.signing_key)
                             .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
                     let frame = encode_frame_v1(&AgentFrameV1::OpenSshGateReadback(packet));
-                    send(&mut socket, &frame, deadline)?;
+                    send_selected_v2(socket, selected_control_transport.then_some(&mut self.protocol_send_failure), &frame, deadline)?;
                     continue;
                 }
                 _ => return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame),
@@ -735,31 +989,89 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
             if request.session() != binding {
                 return Err(ProtectedGuestAgentErrorV1::SessionMismatch);
             }
-            if let Some((previous, packet)) = &last {
+            if let Some((previous, packet, phase)) = &last {
                 if request.sequence() == previous.sequence() {
+                    // A new pipe table cannot replay an earlier Capture launch.
+                    // The actual failed table stays on the selected original.
+                    if capture_frame || ssh_frame { return Err(ProtectedGuestAgentErrorV1::CaptureRefused); }
                     if request != *previous {
                         return Err(ProtectedGuestAgentErrorV1::Equivocation);
                     }
-                    send(&mut socket, packet, deadline)?;
+                    send_with_original_gate_selected_v2(socket, selected_control_transport.then_some(&mut self.protocol_send_failure), packet, deadline, &mut || {
+                        if *phase == AgentExecutionPhaseV1::Running {
+                            self.effects.require_original_start_reply_current_v1(&request, &provisioning.runtime)?;
+                        }
+                        Ok(())
+                    })?;
                     continue;
                 }
             }
             if request.sequence() != next_sequence {
                 return Err(ProtectedGuestAgentErrorV1::SequenceMismatch);
             }
-            validate_operation(&request, &provisioning)?;
+            validate_operation_transport_v2(&request, &provisioning, capture_frame)?;
             check_deadline(deadline)?;
 
-            let (phase, result) = self.effects.apply(
-                &request,
-                &provisioning.runtime,
-                provisioning.channel,
-                deadline,
-            )?;
+            if selected_control_transport {
+                if let AgentExecutionOperationV1::Authorize { execution, .. } = request.operation() {
+                    if self.active_control.as_ref().is_some_and(|original| !original.is_restored()) {
+                        return Err(ProtectedGuestAgentErrorV1::CaptureRefused);
+                    }
+                    self.active_control = Some(active_control::ActiveControlOriginalV2::new(*execution));
+                    // Actual descriptor delivery, frame/session/sequence and
+                    // transport validation precede this native transition.
+                    // No Process/Child effect has entered yet, and no ACK lets
+                    // the Host start another request before the empty-queue
+                    // and independently owed cookie/mode checks complete.
+                    self.active_control.as_mut().ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?
+                        .enter(socket)?;
+                }
+            }
+
+            let (phase, result) = if capture_frame {
+                let capture = self.capture.as_mut().ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?;
+                self.effects.apply_capture_v2(
+                    &request, &provisioning.runtime, provisioning.channel, deadline, capture,
+                )?
+            } else if ssh_frame {
+                let original = self.ssh_authorize.as_mut()
+                    .ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?;
+                let effect = self.effects.apply_ssh_authorize_v1(
+                    &request, &provisioning.runtime, provisioning.channel, deadline, original.plan()?,
+                );
+                match effect {
+                    Ok(outcome) => {
+                        original.effect = Some(Ok(()));
+                        outcome
+                    }
+                    Err(cause) => {
+                        original.effect = Some(Err(cause));
+                        return Err(ProtectedGuestAgentErrorV1::CaptureRefused);
+                    }
+                }
+            } else {
+                self.effects.apply(
+                    &request, &provisioning.runtime, provisioning.channel, deadline,
+                )?
+            };
             // A late durable effect is recovered from its owner; it cannot
             // become a fresh response on an expired exchange.
             check_deadline(deadline)?;
             validate_outcome_phase(request.operation(), phase)?;
+            if selected_control_transport && matches!(phase, AgentExecutionPhaseV1::Exited
+                | AgentExecutionPhaseV1::Canceled | AgentExecutionPhaseV1::Failed)
+            {
+                let execution = match request.operation() {
+                    AgentExecutionOperationV1::Observe { execution }
+                        | AgentExecutionOperationV1::Cancel { execution }
+                        | AgentExecutionOperationV1::Authorize { execution, .. } => *execution,
+                    _ => return Err(ProtectedGuestAgentErrorV1::CaptureRefused),
+                };
+                let retirement = self.effects.original_transport_retirement_v2()
+                    .ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?;
+                self.active_control.as_mut().ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?
+                    .restore_after_retirement(socket, execution, &provisioning.runtime, retirement)?;
+            }
             let outcome = AgentExecutionOutcomeV1::new(&request, phase, result)?;
             let message =
                 aos_sandbox_core::runtime_backend::backend_agent_outcome_signing_message_v1(
@@ -774,18 +1086,107 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
             let signature = provisioning.signing_key.sign(&message).to_bytes();
             let packet = SignedAgentOutcomePacketV1::new(outcome, signature)?;
             let bytes = encode_signed_agent_outcome_packet_v1(&packet)?;
-            send(&mut socket, &bytes, deadline)?;
+            if capture_frame {
+                let capture = self.capture.as_mut().ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?;
+                if !capture.effect_completed() {
+                    return Err(ProtectedGuestAgentErrorV1::CaptureRefused);
+                }
+                capture.response = Some(send_with_original_gate_selected_v2(socket, selected_control_transport.then_some(&mut self.protocol_send_failure), &bytes, deadline, &mut || {
+                    if phase == AgentExecutionPhaseV1::Running {
+                        self.effects.require_original_start_reply_current_v1(&request, &provisioning.runtime)?;
+                    }
+                    Ok(())
+                }));
+                if !matches!(capture.response, Some(Ok(()))) {
+                    return Err(ProtectedGuestAgentErrorV1::CaptureRefused);
+                }
+                capture.complete_after_sent();
+                // The request cache below owns pure canonical DATA. There is
+                // no further required Capture native post after this disposal.
+                drop(self.capture.take());
+            } else if ssh_frame {
+                let original = self.ssh_authorize.as_mut()
+                    .ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?;
+                original.response = Some(send_with_original_gate_selected_v2(socket,
+                    selected_control_transport.then_some(&mut self.protocol_send_failure),
+                    &bytes, deadline, &mut || {
+                        if phase == AgentExecutionPhaseV1::Running {
+                            self.effects.require_original_start_reply_current_v1(&request,
+                                &provisioning.runtime)?;
+                        }
+                        Ok(())
+                    }));
+                if !matches!(original.response, Some(Ok(()))) {
+                    return Err(ProtectedGuestAgentErrorV1::CaptureRefused);
+                }
+                // The signed start reply and actual native current gate are
+                // complete. Only pure plan DATA survives in the live Process.
+                drop(self.ssh_authorize.take());
+            } else {
+                send_with_original_gate_selected_v2(socket, selected_control_transport.then_some(&mut self.protocol_send_failure), &bytes, deadline, &mut || {
+                    if phase == AgentExecutionPhaseV1::Running {
+                        self.effects.require_original_start_reply_current_v1(&request, &provisioning.runtime)?;
+                    }
+                    Ok(())
+                })?;
+            }
 
             next_sequence = next_sequence.checked_next()?;
-            last = Some((request, bytes));
+            last = Some((request, bytes, phase));
         }
         Err(ProtectedGuestAgentErrorV1::OperationLimit)
     }
 }
 
+fn authenticate_initial_handshake_v2(
+    socket: &mut SeqpacketSocket,
+    provisioning: &Provisioning,
+    deadline: Instant,
+    original: Option<&mut handshake::InitialHandshakeOriginalV2>,
+    retained_send: Option<&mut Option<aos_sandbox_linux::seqpacket::RetainedSeqpacketSendErrorV1>>,
+    progress: &mut impl FnMut(),
+) -> Result<AgentSessionBindingV1, ProtectedGuestAgentErrorV1> {
+    let ordinary;
+    let payload = if let Some(original) = original {
+        original.receive(socket, deadline, progress)?;
+        original.payload()?
+    } else {
+        ordinary = receive(socket, deadline)?;
+        ordinary.as_slice()
+    };
+    let request = match decode_frame_v1(payload)? {
+        AgentFrameV1::HandshakeRequest(request) => request,
+        _ => return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame),
+    };
+    if request.runtime() != &provisioning.runtime
+        || request.host_channel_binding() != provisioning.channel
+    {
+        return Err(ProtectedGuestAgentErrorV1::ProvisioningMismatch);
+    }
+
+    let binding = AgentSessionBindingV1::derive(&request, &provisioning.instance)?;
+    let response = sign_handshake(&request, binding, provisioning)?;
+    send_selected_v2(
+        socket,
+        retained_send,
+        &encode_frame_v1(&AgentFrameV1::HandshakeResponse(response)),
+        deadline,
+    )?;
+
+    Ok(binding)
+}
+
 fn validate_operation(
     request: &AgentOperationRequestV1,
     provisioning: &Provisioning,
+) -> Result<(), ProtectedGuestAgentErrorV1> {
+    validate_operation_transport_v2(request, provisioning, false)
+}
+
+fn validate_operation_transport_v2(
+    request: &AgentOperationRequestV1,
+    provisioning: &Provisioning,
+    capture: bool,
 ) -> Result<(), ProtectedGuestAgentErrorV1> {
     let required = match request.operation() {
         AgentExecutionOperationV1::Authorize {
@@ -804,6 +1205,9 @@ fn validate_operation(
                 },
             )
             .map_err(|_| ProtectedGuestAgentErrorV1::OperationMismatch)?;
+            crate::capture::require_capture_shape(
+                specification.io().output_mode(), specification.io().terminal_mode(), capture,
+            ).map_err(|_| ProtectedGuestAgentErrorV1::CaptureRefused)?;
             let target = specification.target();
             let runtime = &provisioning.runtime;
             if target.sandbox() != runtime.sandbox()
@@ -916,7 +1320,7 @@ fn decode_provisioning(bytes: &[u8]) -> Result<Provisioning, ProtectedGuestAgent
         || instance == [0; 16]
         || seed == [0; 32]
         || package_binding.as_bytes() == &[0; 32]
-        || mask & !0x007f != 0
+        || mask & !0x00ff != 0
     {
         return Err(ProtectedGuestAgentErrorV1::InvalidProvisioning);
     }
@@ -928,6 +1332,7 @@ fn decode_provisioning(bytes: &[u8]) -> Result<Provisioning, ProtectedGuestAgent
         AgentFeatureV1::ExecutionSignal,
         AgentFeatureV1::Quiesce,
         AgentFeatureV1::RuntimeArgumentObservation,
+        AgentFeatureV1::CapturePipeHandoffV2,
     ]
     .into_iter()
     .filter(|feature| mask & (1_u16 << (*feature as u8 - 1)) != 0)
@@ -1039,11 +1444,13 @@ fn receive(
     }
 }
 
-fn receive_optional_descriptor(
+fn receive_optional_descriptor_with_progress(
     socket: &mut SeqpacketSocket,
     deadline: Instant,
+    progress: &mut impl FnMut(),
 ) -> Result<(Vec<u8>, Vec<OwnedFd>), ProtectedGuestAgentErrorV1> {
     loop {
+        progress();
         check_deadline(deadline)?;
         match socket.receive_with_optional_descriptor(MAX_AGENT_FRAME_BYTES) {
             Ok(record) => {
@@ -1063,13 +1470,99 @@ fn receive_optional_descriptor(
     }
 }
 
+
+fn receive_authorize_descriptors_v2(
+    socket: &mut SeqpacketSocket,
+    deadline: Instant,
+    failure: &mut Option<RetainedSeqpacketReceiveErrorV1>,
+    progress: &mut impl FnMut(),
+) -> Result<aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord, ProtectedGuestAgentErrorV1> {
+    loop {
+        progress();
+        check_deadline(deadline)?;
+        match socket.receive_agent_authorize_retaining_v2(MAX_AGENT_FRAME_BYTES) {
+            Ok(record) => return Ok(record),
+            Err(cause) if (cause.is_nonconsuming_would_block()
+                || cause.is_nonconsuming_interrupted()) && Instant::now() < deadline => {
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+            Err(cause) => {
+                *failure = Some(cause);
+                return Err(ProtectedGuestAgentErrorV1::CaptureRefused);
+            }
+        }
+    }
+}
+
+fn receive_active_control_v2(
+    socket: &mut SeqpacketSocket, deadline: Instant,
+    restriction: &aos_sandbox_linux::seqpacket::SeqpacketRightsRestrictionOriginalV6,
+    failure: &mut Option<RetainedSeqpacketReceiveErrorV1>, progress: &mut impl FnMut(),
+) -> Result<aos_sandbox_linux::seqpacket::ReceivedRecord, ProtectedGuestAgentErrorV1> {
+    loop {
+        progress();
+        check_deadline(deadline)?;
+        match socket.receive_agent_active_control_retaining_v2(MAX_AGENT_FRAME_BYTES, restriction) {
+            Ok(record) => return Ok(record),
+            Err(cause) if (cause.is_nonconsuming_would_block()
+                || cause.is_nonconsuming_interrupted()) && Instant::now() < deadline => {
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+            Err(cause) => {
+                *failure = Some(cause);
+                return Err(ProtectedGuestAgentErrorV1::CaptureRefused);
+            }
+        }
+    }
+}
+
 fn send(
     socket: &mut SeqpacketSocket,
     bytes: &[u8],
     deadline: Instant,
 ) -> Result<(), ProtectedGuestAgentErrorV1> {
+    send_with_original_gate_v1(socket, bytes, deadline, &mut || Ok(()))
+}
+
+fn send_with_original_gate_v1(
+    socket: &mut SeqpacketSocket, bytes: &[u8], deadline: Instant,
+    current: &mut impl FnMut() -> Result<(), ProtectedGuestAgentErrorV1>,
+) -> Result<(), ProtectedGuestAgentErrorV1> {
+    send_with_original_gate_selected_v2(socket, None, bytes, deadline, current)
+}
+
+fn send_selected_v2(socket: &mut SeqpacketSocket,
+    retained: Option<&mut Option<aos_sandbox_linux::seqpacket::RetainedSeqpacketSendErrorV1>>,
+    bytes: &[u8], deadline: Instant,
+) -> Result<(), ProtectedGuestAgentErrorV1> {
+    send_with_original_gate_selected_v2(socket, retained, bytes, deadline, &mut || Ok(()))
+}
+
+fn send_with_original_gate_selected_v2(
+    socket: &mut SeqpacketSocket,
+    mut retained: Option<&mut Option<aos_sandbox_linux::seqpacket::RetainedSeqpacketSendErrorV1>>,
+    bytes: &[u8], deadline: Instant,
+    current: &mut impl FnMut() -> Result<(), ProtectedGuestAgentErrorV1>,
+) -> Result<(), ProtectedGuestAgentErrorV1> {
     loop {
         check_deadline(deadline)?;
+        current()?;
+        if let Some(slot) = retained.as_deref_mut() {
+            match socket.send_retaining(bytes) {
+                Ok(()) => return Ok(()),
+                Err(cause) => {
+                    let nonconsuming = matches!(cause.cause(),
+                        SeqpacketError::WouldBlock | SeqpacketError::Interrupted);
+                    if nonconsuming && Instant::now() < deadline {
+                        std::thread::sleep(RETRY_INTERVAL);
+                        continue;
+                    }
+                    *slot = Some(cause);
+                    return Err(if nonconsuming { ProtectedGuestAgentErrorV1::Deadline }
+                        else { ProtectedGuestAgentErrorV1::CaptureRefused });
+                }
+            }
+        }
         match socket.send(bytes) {
             Ok(()) => return Ok(()),
             Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted)
@@ -1090,6 +1583,30 @@ fn check_deadline(deadline: Instant) -> Result<(), ProtectedGuestAgentErrorV1> {
         Err(ProtectedGuestAgentErrorV1::Deadline)
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod retained_active_send_tests {
+    use super::*;
+    use std::os::fd::AsRawFd as _;
+
+    #[test]
+    fn selected_failed_reply_keeps_the_same_native_socket() {
+        let (mut sender, peer) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let path = format!("/proc/self/fd/{}", sender.as_fd().unwrap().as_raw_fd());
+        drop(peer);
+        let mut failure = None;
+
+        assert!(send_selected_v2(&mut sender, Some(&mut failure), b"reply",
+            Instant::now() + Duration::from_secs(1)).is_err());
+
+        assert!(failure.as_ref().is_some_and(|cause| cause.retains_descriptor()));
+        assert!(std::fs::read_link(&path).is_ok());
+        drop(sender);
+        assert!(std::fs::read_link(&path).is_ok());
+        drop(failure);
+        assert!(std::fs::read_link(path).is_err());
     }
 }
 
@@ -1182,6 +1699,9 @@ pub enum ProtectedGuestAgentErrorV1 {
     /// A signed Guest runtime-argument observation is unavailable or invalid.
     #[error("guest-agent runtime argument observation is invalid: {0}")]
     RuntimeArgumentObservation(#[from] GuestRuntimeArgumentObservationErrorV1),
+    /// The actual Capture originals or strict receive failure remain resident.
+    #[error("guest-agent Capture refused; actual original remains resident")]
+    CaptureRefused,
     /// Guest-local effect or protected ledger processing failed.
     #[error("guest-agent protected effect failed: {0}")]
     EffectFailed(String),
@@ -1314,7 +1834,8 @@ mod tests {
         assert_eq!(launch.package_binding(), decoded.package_binding);
 
         let mut malformed = bytes;
-        malformed[193] |= 0x80;
+        // Bit 8 is the first unknown flag after Capture uses bit 7.
+        malformed[192] |= 0x01;
         let checksum: [u8; 32] = Sha256::digest(&malformed[..226]).into();
         malformed[226..].copy_from_slice(&checksum);
         assert!(matches!(

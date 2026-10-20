@@ -70,6 +70,7 @@ fn encode_runtime_error(
         StorageRuntimeError::Worker(_)
         | StorageRuntimeError::Transaction(_)
         | StorageRuntimeError::Recovery
+        | StorageRuntimeError::Receiving
         | StorageRuntimeError::ReopenRequired
         | StorageRuntimeError::WorkspacePinScope
         | StorageRuntimeError::OperatorProvision(_)
@@ -120,19 +121,23 @@ fn ambiguous_runtime_failures_are_never_labelled_retryable() {
         0,
     )
     .unwrap();
-    let (encoded, outcome) =
-        encode_runtime_error(&request_id, &request, &StorageRuntimeError::Recovery, 4096).unwrap();
-    let response =
-        aos_proto::aos::sandbox::local::v1::BrokerResponseEnvelope::decode_from_slice(&encoded)
-            .unwrap();
+    for error in [StorageRuntimeError::Recovery, StorageRuntimeError::Receiving] {
+        let (encoded, outcome) =
+            encode_runtime_error(&request_id, &request, &error, 4096).unwrap();
+        let response =
+            aos_proto::aos::sandbox::local::v1::BrokerResponseEnvelope::decode_from_slice(&encoded)
+                .unwrap();
 
-    assert_eq!(outcome, StorageConnectionOutcome::RequestRejected);
-    assert_eq!(
-        response.error.as_option().unwrap().code.as_known(),
-        Some(BrokerErrorCode::BROKER_ERROR_CODE_BACKEND_FAILURE)
-    );
-    assert!(!response.error.as_option().unwrap().retryable);
-    assert!(response.body.is_empty());
+        assert_eq!(outcome, StorageConnectionOutcome::RequestRejected);
+        assert_eq!(
+            response.error.as_option().unwrap().code.as_known(),
+            Some(BrokerErrorCode::BROKER_ERROR_CODE_BACKEND_FAILURE)
+        );
+        assert_eq!(response.error.as_option().unwrap().safe_message,
+            "Storage request requires reconciliation");
+        assert!(!response.error.as_option().unwrap().retryable);
+        assert!(response.body.is_empty());
+    }
 }
 
 #[test]

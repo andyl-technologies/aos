@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox_core::{RawPairedClockSample, SandboxId};
 
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 #[cfg(test)]
 use crate::runtime_authority::RuntimeAuthorityStore;
 use crate::runtime_authority::{

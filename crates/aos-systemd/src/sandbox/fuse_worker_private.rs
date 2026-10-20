@@ -178,7 +178,7 @@ impl FixedFuseWorkerPid1ClientV1 {
     pub async fn start_fuse_worker_unit_guarded_v1<E>(
         &self,
         spec: &FuseWorkerUnitSpecV1,
-        guard: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
+        guard: &mut dyn FnMut() -> std::result::Result<(), E>,
     ) -> std::result::Result<JobOutcome, ExactStartError<E>> {
         self.recheck().map_err(ExactStartError::Systemd)?;
         if self.launch_consumed.swap(true, Ordering::AcqRel) {

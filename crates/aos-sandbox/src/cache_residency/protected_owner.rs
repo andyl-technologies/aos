@@ -6,6 +6,12 @@
 //! clock journal prevents a copied or expired manifest from becoming current
 //! merely because a process restarted or the wall clock moved backwards.
 
+mod lifecycle_inventory;
+pub(crate) use lifecycle_inventory::{actionable_rows_data_v2, actionable_rows_receiving_demand_v2};
+
+use aos_sandbox_protocol::cache_state::clock_floor::cache_clock_transaction_id_data_v1;
+use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -21,8 +27,15 @@ use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleResourceV1;
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{
-    CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, Journal, JournalLimits, JournalRecord,
-    JournalTransaction, ProtectedWriterNameWitness, RecordNamespace, RecoveryReport,
+    CACHE_POLICY_HOLD_JOURNAL,
+    Journal,
+    JournalError,
+    JournalLimits,
+    JournalRecord,
+    JournalTransaction,
+    ProtectedWriterNameWitness,
+    RecordNamespace,
+    RecoveryReport,
 };
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 
@@ -34,7 +47,8 @@ use super::protected_journal::{
 };
 use super::{
     CacheAtomicObjectPayloadV1, CacheAuthorityOwner, CacheAuthorityPurposeV1,
-    CacheAuthorityScopeV1, CachePinV1, CacheRecoveryInventoryV1, CacheRecoveryLimitsV1,
+    CacheAuthorityScopeV1, CacheHistoryFloorV1, CachePinV1, CacheRecoveryInventoryV1,
+    CacheRecoveryLimitsV1,
     CacheResidencyAuthorityRequestV1, CacheResidencyColdRecoveryV1, CacheResidencyCommitOutcomeV1,
     CacheResidencyControllerRecordV1, CacheResidencyOutcomeUnknownV1,
     CacheResidencyProtectedJournalEnvelopeV1, CacheResidencyProtectedJournalErrorV1,
@@ -57,6 +71,16 @@ use super::{
 
 mod pin_lookup;
 mod initialization;
+#[cfg(target_os = "linux")]
+pub(crate) use initialization::InitializerJournal;
+mod manifest_geometry;
+#[cfg(target_os = "linux")]
+pub(in crate::cache_residency) use initialization::baseline::{
+    CacheConstructionOriginalsV1, CacheNativeStageV1, CacheConstructionReceivingV1,
+    CacheConstructionOwnerV1,
+};
+pub(crate) use manifest_geometry::CacheReplayManifestGeometryV1;
+pub(super) use manifest_geometry::genesis_manifest_project_count;
 pub(super) mod project_usage;
 mod provisioning;
 mod root_read_only;
@@ -66,11 +90,29 @@ pub(crate) use root_read_only::{
     replay_fixed_root_q04_terminal_cache_journals_v1,
 };
 mod writer_readback;
+#[cfg(target_os = "linux")]
+pub(in crate::cache_residency) use writer_readback::current_inventory_selection;
+#[cfg(target_os = "linux")]
+pub(crate) use initialization::create_storage::{
+    cache_terminal_receiving_demand_v1, CacheReleasedOriginalsV1, CacheReleasedShapeV1, CacheReleasedAppendLoanV1, CacheReleasedCurrentnessSiteV1, release_receiving_demand_v1, release_append_bytes_v1,
+    OriginalCreateStorageCacheLoanV1, CacheCurrentAuditOriginalsV1, CacheCurrentAuditShapeV1, CacheHeldAppendLoanV1, CacheHeldPreRootCutV1, CacheHeldReadonlyContextV1,
+    CacheHeldSelectionOriginalV1,
+    CacheHeldNativeSemanticShapeV1, CacheCreateStorageReceivingShapeV1,
+    CacheHeldIdentityDataV1, CacheHeldErrorV1, CacheHeldClosedV1, CacheHeldCurrentnessSiteV1,
+};
+
 
 pub use pin_lookup::PublicLogicalPinAcquisitionCommitV1;
 #[cfg(target_os = "linux")]
 use pin_lookup::ResidentCachePinMutationV1;
 pub use initialization::{CacheResidentInitializationV1, CacheResidentUnavailableV1};
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use initialization::create_storage::{CacheDeleteInventoryOriginalV1, CacheDeleteInventoryQueryV1};
+#[cfg(target_os = "linux")]
+pub(crate) use initialization::q04_capture_pricing::{
+    OriginalQ04CachePreflightLoanV1, OriginalQ04CacheCaptureShapeV1,
+};
 #[cfg(target_os = "linux")]
 pub(crate) use initialization::original_q04::{
     OriginalQ04CacheClearanceLoanV1, OriginalQ04CacheOwnerCutV1,
@@ -99,18 +141,16 @@ pub(crate) use writer_readback::CacheV8SettledClearV1;
 // root-owned parent. An idmapped directory view then follows compaction renames
 // without disclosing object storage or allowing the Controller to replace the
 // mounted directory name.
-pub(crate) const PROTECTED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency-journals";
+pub(crate) const PROTECTED_CACHE_ROOT: &str = aos_sandbox_protocol::cache_state::fixed_journals::CACHE_JOURNAL_DIRECTORY_V1;
 const LEGACY_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency";
-const CACHE_STATE_JOURNAL: &str = "state.journal";
-const CACHE_AUTHORITY_JOURNAL: &str = "authority.journal";
-const CACHE_CLOCK_JOURNAL: &str = "clock.journal";
-const CACHE_CLOCK_KEY: &[u8] = b"\0aos-cache-residency-clock-v1\0current";
-pub(super) const CACHE_MANIFEST_KEY_PREFIX: &[u8] = b"\0aos-cache-replay-manifest-v1\0";
+const CACHE_STATE_JOURNAL: &str = aos_sandbox_protocol::cache_state::fixed_journals::CACHE_STATE_BASENAME_V1;
+const CACHE_AUTHORITY_JOURNAL: &str = aos_sandbox_protocol::cache_state::fixed_journals::CACHE_AUTHORITY_BASENAME_V1;
+const CACHE_CLOCK_JOURNAL: &str = aos_sandbox_protocol::cache_state::fixed_journals::CACHE_CLOCK_BASENAME_V1;
+const CACHE_CLOCK_KEY: &[u8] = aos_sandbox_protocol::cache_state::clock_floor::CACHE_CLOCK_KEY;
+pub(super) const CACHE_MANIFEST_KEY_PREFIX: &[u8] = aos_sandbox_protocol::cache_state::replay_evidence::CACHE_REPLAY_MANIFEST_KEY_PREFIX_V1;
 const CACHE_MANIFEST_MAGIC: &[u8; 8] = b"AOSCRM01";
-const CACHE_CLOCK_MAGIC: &[u8; 8] = b"AOSCCL01";
-const CACHE_CLOCK_BYTES: usize = 104;
 const CACHE_MANIFEST_FIXED_BYTES: usize = 555;
-pub(super) const MAXIMUM_CACHE_MANIFESTS: usize = 4_096;
+pub(super) const MAXIMUM_CACHE_MANIFESTS: usize = aos_sandbox_protocol::cache_state::replay_evidence::CACHE_MAXIMUM_REPLAY_MANIFESTS_V1;
 const MAXIMUM_AUTHORITY_RECORD_BYTES: usize = 1024 * 1024;
 
 fn open_cache_journal(
@@ -308,55 +348,22 @@ impl CurrentProjectPhysicalCacheHeadV1 {
 fn unique_project_physical_cache_head(
     candidates: impl IntoIterator<Item = CurrentProjectPhysicalCacheHeadV1>,
 ) -> Result<CurrentProjectPhysicalCacheHeadV1, CacheResidencyProtectedJournalErrorV1> {
-    let mut candidates = candidates.into_iter();
-    let head = candidates
-        .next()
-        .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
-    if candidates.next().is_some() {
-        return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-    }
-    Ok(head)
+    let selected = aos_sandbox_protocol::cache_state::current_selection::unique_project_physical_cache_head(
+        candidates.into_iter().map(|candidate| aos_sandbox_protocol::cache_state::current_selection::CurrentProjectPhysicalCacheHeadDataV1 {
+            project: candidate.project, partition: candidate.partition, head: candidate.head,
+        }),
+    ).map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+    Ok(CurrentProjectPhysicalCacheHeadV1 { project: selected.project, partition: selected.partition, head: selected.head })
 }
 
 fn select_project_physical_cache_head(
     project: ProjectId,
     inventories: &[CacheRecoveryInventoryV1],
 ) -> Result<CurrentProjectPhysicalCacheHeadV1, CacheResidencyProtectedJournalErrorV1> {
-    let mut candidates = Vec::new();
-    for inventory in inventories {
-        let partition = inventory.global.node_quota.partition;
-        let disclosure = partition.disclosure();
-        if disclosure.kind() != CacheDomainKind::Project
-            || disclosure.domain_id().as_bytes() != project.as_bytes()
-        {
-            continue;
-        }
-        if inventory.authority_poisoned
-            || inventory.global.poison.is_some()
-            || !inventory.work.is_empty()
-            || inventory
-                .global
-                .project_quotas
-                .iter()
-                .filter(|quota| quota.project == project && quota.partition == partition)
-                .count()
-                != 1
-        {
-            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-        }
-
-        let head = project_physical_cache_head_digest(
-            project,
-            partition,
-            inventory.protected_replay_binding(),
-        );
-        candidates.push(CurrentProjectPhysicalCacheHeadV1 {
-            project,
-            partition,
-            head,
-        });
-    }
-    unique_project_physical_cache_head(candidates)
+    let selected = aos_sandbox_protocol::cache_state::current_selection::select_project_physical_cache_head(
+        project, inventories.iter().map(|inventory| &**inventory),
+    ).map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+    Ok(CurrentProjectPhysicalCacheHeadV1 { project: selected.project, partition: selected.partition, head: selected.head })
 }
 
 fn project_physical_cache_head_digest(
@@ -364,15 +371,7 @@ fn project_physical_cache_head_digest(
     partition: PhysicalPartitionId,
     replay_binding: ObjectDigest,
 ) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(b"aos.sandbox.cache.project-physical-head.v1\0")
-            .chain_update(project.as_bytes())
-            .chain_update(partition.digest().as_bytes())
-            .chain_update(replay_binding.as_bytes())
-            .finalize()
-            .into(),
-    )
+    aos_sandbox_protocol::cache_state::current_selection::project_physical_cache_head_digest(project, partition, replay_binding)
 }
 
 fn complete_node_quota_digest_v2(
@@ -382,33 +381,8 @@ fn complete_node_quota_digest_v2(
     if quotas.len() > MAXIMUM_CACHE_MANIFESTS {
         return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
     }
-    let node = quotas.first().map(|quota| quota.partition.node());
-    let mut digest = Sha256::new()
-        .chain_update(b"aos.sandbox.cache.complete-node-quota-envelope.v2\0")
-        .chain_update((quotas.len() as u64).to_be_bytes());
-    let mut predecessor = None;
-    for quota in quotas {
-        quota
-            .validate()
-            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        let partition = quota.partition.digest();
-        if predecessor == Some(partition) || Some(quota.partition.node()) != node {
-            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-        }
-        predecessor = Some(partition);
-        digest = digest
-            .chain_update(partition.as_bytes())
-            .chain_update(quota.maximum_physical_bytes.to_be_bytes())
-            .chain_update(quota.maximum_resident_objects.to_be_bytes())
-            .chain_update(quota.maximum_logical_pins.to_be_bytes())
-            .chain_update(quota.maximum_source_retentions.to_be_bytes())
-            .chain_update(quota.maximum_kernel_references.to_be_bytes())
-            .chain_update(quota.maximum_backing_registrations.to_be_bytes())
-            .chain_update(quota.recovery_reserve_bytes.to_be_bytes())
-            .chain_update(quota.high_water_bytes.to_be_bytes())
-            .chain_update(quota.low_water_bytes.to_be_bytes());
-    }
-    Ok(ObjectDigest::from_bytes(digest.finalize().into()))
+    aos_sandbox_protocol::cache_state::complete_node_quotas::complete_node_quota_digest_v2(&quotas)
+        .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority.into())
 }
 
 /// Carries one complete protected Cache currentness root and its actionable resources.
@@ -595,7 +569,7 @@ impl<'session, 'authority, 'journal>
         pin: &CachePinV1,
     ) -> Option<CacheResidencyAuthorizedPayloadV1<'session>> {
         let (scope, record_digest) = pin.authority_binding();
-        if !payload.pins.iter().any(|candidate| candidate == pin)
+        if !payload.pins.iter().any(|candidate| candidate == pin.historical_data_v1())
             || self.capabilities.get(capability)?.record_digest() != record_digest
         {
             return None;
@@ -619,7 +593,8 @@ impl<'session, 'authority, 'journal>
         if !payload
             .released_pins
             .iter()
-            .any(|candidate| candidate == released)
+            .any(|candidate| candidate.pin == *released.pin.historical_data_v1()
+                && candidate.drain == released.drain.historical_data_v1())
             || self.capabilities.get(capability)?.record_digest() != record_digest
         {
             return None;
@@ -754,7 +729,7 @@ impl<'session, 'authority, 'journal>
         plan: &FrozenEvictionPlanV1,
     ) -> Option<CacheResidencyAuthorizedPayloadV1<'session>> {
         let (scope, record_digest) = plan.authority_binding();
-        if payload.eviction_plan.as_ref() != Some(plan)
+        if payload.eviction_plan.as_ref() != Some(plan.historical_data_v1())
             || self.capabilities.get(capability)?.record_digest() != record_digest
         {
             return None;
@@ -781,7 +756,7 @@ impl<'session, 'authority, 'journal>
             .validate_current(self.owner, selected, plan, previous, self.now)
             .ok()?;
         let (scope, _record_digest) = observation.authority_binding();
-        if payload.eviction_plan.as_ref() != Some(plan)
+        if payload.eviction_plan.as_ref() != Some(plan.historical_data_v1())
             || !payload
                 .eviction_progress
                 .iter()
@@ -811,7 +786,7 @@ impl<'session, 'authority, 'journal>
             .validate_current(self.owner, selected, plan, previous, self.now)
             .ok()?;
         let (scope, _record_digest) = evidence.authority_binding();
-        if payload.eviction_plan.as_ref() != Some(plan)
+        if payload.eviction_plan.as_ref() != Some(plan.historical_data_v1())
             || !payload
                 .eviction_progress
                 .iter()
@@ -853,7 +828,7 @@ impl<'session, 'authority, 'journal>
         observation
             .validate_current(self.owner, observation_capability, plan, previous, self.now)
             .ok()?;
-        if payload.eviction_plan.as_ref() != Some(plan)
+        if payload.eviction_plan.as_ref() != Some(plan.historical_data_v1())
             || !payload.eviction_progress.iter().any(|next| {
                 retry.matches_observation_and_successor(
                     observation,
@@ -1310,7 +1285,8 @@ impl CacheResidencyProtectedOwnerV1 {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
         }
         let hold =
-            CachePolicyHoldV1::new(project, expected_partition, expected_head, binding, epoch)?;
+            CachePolicyHoldV1::new(project, expected_partition, expected_head, binding, epoch)
+                .map_err(JournalError::from)?;
         Journal::acquire_cache_policy_hold_at(
             Path::new(PROTECTED_CACHE_ROOT),
             self.owner_uid,
@@ -1408,7 +1384,7 @@ impl CacheResidencyProtectedOwnerV1 {
         self.with_reconstructed_partitions(|inventories| {
             let mut pin = None;
             for inventory in inventories {
-                for payload in inventory.reconstructed {
+                for payload in inventory.into_parsed_history_data_v1().reconstructed {
                     if payload.plan.partition != partition
                         || &payload.plan.descriptor != object
                         || payload.plan.project != project
@@ -1421,7 +1397,7 @@ impl CacheResidencyProtectedOwnerV1 {
                         ) {
                             continue;
                         }
-                        if pin.replace(candidate).is_some() {
+                        if pin.replace(CachePinV1::from_parsed_history_data_v1(candidate)).is_some() {
                             return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
                         }
                     }
@@ -1449,76 +1425,7 @@ impl CacheResidencyProtectedOwnerV1 {
             let projection =
                 CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
             let inventories = reconstruct_cache_history(projection.records(), &validator)?;
-            let mut entries = Vec::new();
-            for inventory in inventories {
-                for payload in inventory.reconstructed {
-                    if matches!(
-                        payload.reservation.state,
-                        ReservationStateV1::Reserved | ReservationStateV1::Uncertain
-                    ) {
-                        entries.push(
-                            crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
-                                LifecycleResourceV1::Capability(
-                                    aos_sandbox_core::ResourceId::from_bytes(
-                                        *payload.reservation.id.as_bytes(),
-                                    ),
-                                ),
-                                payload.reservation.digest,
-                            )
-                            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
-                        );
-                    }
-
-                    if let Some(catalog) = payload
-                        .catalog
-                        .filter(|catalog| catalog.presence != CatalogPresenceV1::Evicted)
-                    {
-                        let mut environment = [0_u8; 16];
-                        environment.copy_from_slice(&catalog.descriptor.digest().as_bytes()[..16]);
-                        entries.push(
-                            crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
-                                LifecycleResourceV1::Environment(
-                                    aos_sandbox_core::ResourceId::from_bytes(environment),
-                                ),
-                                catalog.digest,
-                            )
-                            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
-                        );
-                    }
-
-                    for pin in payload.pins {
-                        let resource = if let Some(attachment) = pin.attachment {
-                            LifecycleResourceV1::Attachment(
-                                aos_sandbox_core::ResourceId::from_bytes(*attachment.as_bytes()),
-                            )
-                        } else {
-                            LifecycleResourceV1::View(pin.view)
-                        };
-                        // Physical obligations remain distinct across disclosure partitions.
-                        let identity = ObjectDigest::from_bytes(
-                            Sha256::new()
-                                .chain_update(b"aos.sandbox.lifecycle.cache-pin-physical-row.v2\0")
-                                .chain_update(pin.partition.digest().as_bytes())
-                                .chain_update(pin.id.as_bytes())
-                                .chain_update(pin.object.digest().as_bytes())
-                                .chain_update([pin.kind as u8])
-                                .finalize()
-                                .into(),
-                        );
-                        entries.push(
-                            crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
-                                resource, identity,
-                            )
-                            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
-                        );
-                    }
-                }
-            }
-            entries.sort_unstable();
-            entries.dedup();
-            if entries.len() > crate::lifecycle::MAXIMUM_LIFECYCLE_EXPECTATIONS {
-                return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-            }
+            let entries = lifecycle_inventory::actionable_rows_v1(inventories)?;
             refresh()?;
             Ok(CacheLifecycleBootInventoryV1 {
                 root: projection.root(),
@@ -2602,53 +2509,7 @@ struct ProtectedCacheClockStateV1 {
     readback_held: bool,
 }
 
-#[derive(Clone, Copy)]
-struct CacheClockFloorV1 {
-    owner_scope: ObjectDigest,
-    revision: u64,
-    observed_unix_seconds: u64,
-    predecessor_unix_seconds: u64,
-}
-
-impl CacheResidencyProtectedOwnerV1 {
-    // Pure closed classification for the sole native observer. The original
-    // clock decoder, encoder and transaction-ID recipe stay authoritative for
-    // bytes; these coordinates do not construct a clock or currentness loan.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn compare_git_coverage_clock_transaction_v1(
-        transaction: &JournalTransaction,
-        previous: Option<(ObjectDigest, u64, u64)>,
-    ) -> Result<(ObjectDigest, u64, u64), crate::journal::JournalError> {
-        let [record] = transaction.records() else {
-            return Err(crate::journal::JournalError::ProtectedBoundary);
-        };
-        if record.namespace() != RecordNamespace::DesiredState || record.key() != CACHE_CLOCK_KEY {
-            return Err(crate::journal::JournalError::ProtectedBoundary);
-        }
-        let value = record.value().ok_or(crate::journal::JournalError::ProtectedBoundary)?;
-        let current = decode_cache_clock_floor(value)
-            .map_err(|_| crate::journal::JournalError::ProtectedBoundary)?;
-        let expected_transaction = cache_clock_transaction_id(value)
-            .map_err(|_| crate::journal::JournalError::ProtectedBoundary)?;
-        if current.owner_scope != cache_owner_scope() || transaction.id() != &expected_transaction {
-            return Err(crate::journal::JournalError::ProtectedBoundary);
-        }
-
-        let successor = match previous {
-            None => current.revision == 1 && current.predecessor_unix_seconds == 0,
-            Some((scope, revision, observed)) => {
-                scope == current.owner_scope
-                    && revision.checked_add(1) == Some(current.revision)
-                    && current.predecessor_unix_seconds == observed
-                    && current.observed_unix_seconds >= observed
-            }
-        };
-        if !successor {
-            return Err(crate::journal::JournalError::ProtectedBoundary);
-        }
-        Ok((current.owner_scope, current.revision, current.observed_unix_seconds))
-    }
-}
+use aos_sandbox_protocol::cache_state::clock_floor::CacheClockFloorDataV1 as CacheClockFloorV1;
 
 /// Owns one selected in-place clock proposal and every returned native result.
 /// The optional proposal distinguishes an unchanged actual floor from a write;
@@ -2730,7 +2591,8 @@ impl CacheClockWriterReadbackGuard<'_> {
             };
             let expected = encode_cache_clock_floor(proposed);
             let transaction = JournalTransaction::new(
-                cache_clock_transaction_id(&expected)?,
+                cache_clock_transaction_id_data_v1(&expected)
+                    .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
                 vec![JournalRecord::put(
                     RecordNamespace::DesiredState, CACHE_CLOCK_KEY.to_vec(), expected.clone(),
                 )],
@@ -3118,7 +2980,8 @@ fn persist_cache_clock(
     owner_uid: u32,
 ) -> Result<(Journal, bool), CacheResidencyProtectedJournalErrorV1> {
     let encoded = encode_cache_clock_floor(successor);
-    let transaction_id = cache_clock_transaction_id(&encoded)?;
+    let transaction_id = cache_clock_transaction_id_data_v1(&encoded)
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
     let transaction = JournalTransaction::new(
         transaction_id,
         vec![JournalRecord::put(
@@ -3191,145 +3054,32 @@ fn recover_cache_replay_evidence(
     Ok(evidence)
 }
 
+/// Borrows only the existing manifest envelope; this does not validate Replay authority.
+pub(super) use aos_sandbox_protocol::cache_state::replay_envelope::BorrowedCacheReplayManifestDataV1 as BorrowedCacheReplayManifestV1;
+
+pub(super) fn borrow_cache_replay_manifest(
+    bytes: &[u8],
+    limits: CacheRecoveryLimitsV1,
+) -> Result<BorrowedCacheReplayManifestV1<'_>, CacheResidencyProtectedJournalErrorV1> {
+    aos_sandbox_protocol::cache_state::replay_envelope::borrow_cache_replay_manifest(
+        bytes, limits.maximum_payload_bytes,
+    ).map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)
+}
+
 pub(super) fn decode_cache_replay_manifest(
     bytes: &[u8],
     limits: CacheRecoveryLimitsV1,
 ) -> Result<CacheResidencyReplayPartitionEvidenceV1, CacheResidencyProtectedJournalErrorV1> {
-    if bytes.len() < CACHE_MANIFEST_FIXED_BYTES
-        || &bytes[..8] != CACHE_MANIFEST_MAGIC
-        || bytes[8..10] != 1_u16.to_be_bytes()
-        || bytes[10..16] != [0; 6]
-        || bytes[258..265] != [0; 7]
-    {
-        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-    }
-    let partition = decode_partition_descriptor(&bytes[16..257])
-        .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    let purpose = decode_cache_authority_purpose(bytes[257])
-        .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    let operation_bytes: [u8; 16] = bytes[297..313]
-        .try_into()
-        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    let operation = (operation_bytes != [0; 16]).then(|| OperationId::from_bytes(operation_bytes));
-    let scope = CacheAuthorityScopeV1::new(
-        partition,
-        ObjectDigest::from_bytes(read_array(bytes, 265)?),
-        operation,
-        ObjectDigest::from_bytes(read_array(bytes, 313)?),
-        ObjectDigest::from_bytes(read_array(bytes, 345)?),
-        read_u64(bytes, 377)?,
-        read_u64(bytes, 385)?,
-    )
-    .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    let floor = decode_floor(&bytes[393..545])
-        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    let record_key_bytes = usize::from(read_u16(bytes, 545)?);
-    let checkpoint_bytes = usize::try_from(read_u32(bytes, 547)?)
-        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    let prior_bytes = usize::try_from(read_u32(bytes, 551)?)
-        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    if record_key_bytes == 0
-        || record_key_bytes > 1024
-        || checkpoint_bytes == 0
-        || checkpoint_bytes > limits.maximum_payload_bytes
-        || prior_bytes > limits.maximum_payload_bytes
-        || CACHE_MANIFEST_FIXED_BYTES
-            .checked_add(record_key_bytes)
-            .and_then(|length| length.checked_add(checkpoint_bytes))
-            .and_then(|length| length.checked_add(prior_bytes))
-            != Some(bytes.len())
-    {
-        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-    }
-    let record_key_end = CACHE_MANIFEST_FIXED_BYTES + record_key_bytes;
-    let checkpoint_end = record_key_end + checkpoint_bytes;
-    let record_key = bytes[CACHE_MANIFEST_FIXED_BYTES..record_key_end].to_vec();
-    let typed_checkpoint = bytes[record_key_end..checkpoint_end].to_vec();
-    let prior_typed_checkpoint = (prior_bytes != 0).then(|| bytes[checkpoint_end..].to_vec());
-    decode_typed_checkpoint(partition, &typed_checkpoint, limits)
-        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    if let Some(prior) = prior_typed_checkpoint.as_deref() {
-        decode_typed_checkpoint(partition, prior, limits)
-            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    }
-    let evidence = CacheResidencyReplayPartitionEvidenceV1 {
-        partition,
-        purpose,
-        scope,
-        record_key,
-        typed_checkpoint,
-        prior_typed_checkpoint,
-        floor,
-    };
-    if encode_cache_replay_manifest(&evidence, limits)?.as_slice() != bytes {
-        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-    }
-    Ok(evidence)
+    aos_sandbox_protocol::cache_state::replay_evidence::decode_cache_replay_manifest(bytes, limits)
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)
 }
 
 pub(super) fn encode_cache_replay_manifest(
     evidence: &CacheResidencyReplayPartitionEvidenceV1,
     limits: CacheRecoveryLimitsV1,
 ) -> Result<Vec<u8>, CacheResidencyProtectedJournalErrorV1> {
-    let record_key_bytes = u16::try_from(evidence.record_key.len())
-        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    let checkpoint_bytes = u32::try_from(evidence.typed_checkpoint.len())
-        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    let prior = evidence
-        .prior_typed_checkpoint
-        .as_deref()
-        .unwrap_or_default();
-    let prior_bytes = u32::try_from(prior.len())
-        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    let total_bytes = CACHE_MANIFEST_FIXED_BYTES
-        .checked_add(evidence.record_key.len())
-        .and_then(|length| length.checked_add(evidence.typed_checkpoint.len()))
-        .and_then(|length| length.checked_add(prior.len()))
-        .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    if evidence.record_key.is_empty()
-        || evidence.record_key.len() > 1024
-        || evidence.typed_checkpoint.is_empty()
-        || evidence.typed_checkpoint.len() > limits.maximum_payload_bytes
-        || prior.len() > limits.maximum_payload_bytes
-        || evidence
-            .prior_typed_checkpoint
-            .as_ref()
-            .is_some_and(Vec::is_empty)
-        || evidence.scope.partition() != evidence.partition.digest()
-    {
-        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-    }
-    decode_typed_checkpoint(evidence.partition, &evidence.typed_checkpoint, limits)
-        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    if !prior.is_empty() {
-        decode_typed_checkpoint(evidence.partition, prior, limits)
-            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    }
-
-    let mut bytes = vec![0_u8; total_bytes];
-    bytes[..8].copy_from_slice(CACHE_MANIFEST_MAGIC);
-    bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    bytes[16..257].copy_from_slice(&encode_partition_descriptor(evidence.partition));
-    bytes[257] = evidence.purpose as u8;
-    bytes[265..297].copy_from_slice(evidence.scope.subject().as_bytes());
-    bytes[297..313].copy_from_slice(&evidence.scope.operation());
-    bytes[313..345].copy_from_slice(evidence.scope.plan().as_bytes());
-    bytes[345..377].copy_from_slice(evidence.scope.root_custody().as_bytes());
-    bytes[377..385].copy_from_slice(&evidence.scope.generation().to_be_bytes());
-    bytes[385..393].copy_from_slice(&evidence.scope.valid_until().to_be_bytes());
-    bytes[393..545].copy_from_slice(
-        &encode_floor(&evidence.floor)
-            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
-    );
-    bytes[545..547].copy_from_slice(&record_key_bytes.to_be_bytes());
-    bytes[547..551].copy_from_slice(&checkpoint_bytes.to_be_bytes());
-    bytes[551..555].copy_from_slice(&prior_bytes.to_be_bytes());
-    let record_key_end = CACHE_MANIFEST_FIXED_BYTES + evidence.record_key.len();
-    let checkpoint_end = record_key_end + evidence.typed_checkpoint.len();
-    bytes[CACHE_MANIFEST_FIXED_BYTES..record_key_end].copy_from_slice(&evidence.record_key);
-    bytes[record_key_end..checkpoint_end].copy_from_slice(&evidence.typed_checkpoint);
-    bytes[checkpoint_end..].copy_from_slice(prior);
-    Ok(bytes)
+    aos_sandbox_protocol::cache_state::replay_evidence::encode_cache_replay_manifest(evidence, limits)
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)
 }
 
 fn decode_cache_authority_purpose(code: u8) -> Option<CacheAuthorityPurposeV1> {
@@ -3353,13 +3103,7 @@ fn decode_cache_authority_purpose(code: u8) -> Option<CacheAuthorityPurposeV1> {
 }
 
 fn cache_owner_scope() -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(b"aos.sandbox.cache-residency.fixed-owner.v1\0")
-            .chain_update(PROTECTED_CACHE_ROOT.as_bytes())
-            .finalize()
-            .into(),
-    )
+    aos_sandbox_protocol::cache_state::replay_evidence::cache_fixed_owner_scope_data_v1()
 }
 
 fn sample_wall_clock() -> Result<u64, CacheResidencyProtectedJournalErrorV1> {
@@ -3374,94 +3118,24 @@ fn sample_wall_clock() -> Result<u64, CacheResidencyProtectedJournalErrorV1> {
 }
 
 fn encode_cache_clock_floor(floor: CacheClockFloorV1) -> Vec<u8> {
-    let mut bytes = vec![0_u8; CACHE_CLOCK_BYTES];
-    bytes[..8].copy_from_slice(CACHE_CLOCK_MAGIC);
-    bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    bytes[16..48].copy_from_slice(floor.owner_scope.as_bytes());
-    bytes[48..56].copy_from_slice(&floor.revision.to_be_bytes());
-    bytes[56..64].copy_from_slice(&floor.observed_unix_seconds.to_be_bytes());
-    bytes[64..72].copy_from_slice(&floor.predecessor_unix_seconds.to_be_bytes());
-    let digest = Sha256::new()
-        .chain_update(b"aos.sandbox.cache-residency.clock-floor.v1\0")
-        .chain_update(&bytes[..72])
-        .finalize();
-    bytes[72..104].copy_from_slice(&digest);
-    bytes
+    aos_sandbox_protocol::cache_state::clock_floor::encode_cache_clock_floor(floor)
 }
 
-fn decode_cache_clock_floor(
-    bytes: &[u8],
-) -> Result<CacheClockFloorV1, CacheResidencyProtectedJournalErrorV1> {
-    if bytes.len() != CACHE_CLOCK_BYTES
-        || &bytes[..8] != CACHE_CLOCK_MAGIC
-        || bytes[8..10] != 1_u16.to_be_bytes()
-        || bytes[10..16] != [0; 6]
-        || bytes[72..104]
-            != Sha256::new()
-                .chain_update(b"aos.sandbox.cache-residency.clock-floor.v1\0")
-                .chain_update(&bytes[..72])
-                .finalize()[..]
-    {
-        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-    }
-    let floor = CacheClockFloorV1 {
-        owner_scope: ObjectDigest::from_bytes(read_array(bytes, 16)?),
-        revision: read_u64(bytes, 48)?,
-        observed_unix_seconds: read_u64(bytes, 56)?,
-        predecessor_unix_seconds: read_u64(bytes, 64)?,
-    };
-    if floor.owner_scope.as_bytes() == &[0; 32]
-        || floor.revision == 0
-        || floor.observed_unix_seconds == 0
-        || (floor.revision == 1 && floor.predecessor_unix_seconds != 0)
-        || (floor.revision > 1
-            && (floor.predecessor_unix_seconds == 0
-                || floor.predecessor_unix_seconds > floor.observed_unix_seconds))
-    {
-        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-    }
-    Ok(floor)
-}
-
-fn cache_clock_transaction_id(
-    encoded: &[u8],
-) -> Result<[u8; 16], CacheResidencyProtectedJournalErrorV1> {
-    let digest = Sha256::new()
-        .chain_update(b"aos.sandbox.cache-residency.clock-transaction.v1\0")
-        .chain_update(encoded)
-        .finalize();
-    let transaction_id: [u8; 16] = digest[..16]
-        .try_into()
-        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    if transaction_id == [0; 16] {
-        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-    }
-    Ok(transaction_id)
+fn decode_cache_clock_floor(bytes: &[u8]) -> Result<CacheClockFloorV1, CacheResidencyProtectedJournalErrorV1> {
+    aos_sandbox_protocol::cache_state::clock_floor::decode_cache_clock_floor(bytes)
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)
 }
 
 fn cache_state_journal_limits() -> JournalLimits {
-    JournalLimits::default()
+    aos_sandbox_protocol::cache_state::fixed_journals::CacheJournalRecipeRoleV1::State.limits_v1()
 }
 
 fn cache_authority_journal_limits() -> JournalLimits {
-    JournalLimits {
-        maximum_record_bytes: 16 * 1024 * 1024,
-        maximum_materialized_records: 16_384,
-        ..JournalLimits::default()
-    }
+    aos_sandbox_protocol::cache_state::fixed_journals::CacheJournalRecipeRoleV1::Authority.limits_v1()
 }
 
 fn cache_clock_journal_limits() -> JournalLimits {
-    JournalLimits {
-        maximum_journal_bytes: 16 * 1024 * 1024,
-        maximum_record_bytes: 4 * 1024,
-        maximum_key_bytes: 128,
-        maximum_records_per_transaction: 1,
-        maximum_transaction_bytes: 8 * 1024,
-        maximum_transactions: 262_144,
-        maximum_materialized_bytes: 8 * 1024,
-        maximum_materialized_records: 1,
-    }
+    aos_sandbox_protocol::cache_state::fixed_journals::CacheJournalRecipeRoleV1::Clock.limits_v1()
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, CacheResidencyProtectedJournalErrorV1> {
@@ -4294,3 +3968,8 @@ pub(in crate::cache_residency) mod tests {
         ));
     }
 }
+
+#[cfg(target_os = "linux")]
+pub use initialization::create_storage::{CreateStorageCacheCurrentExtentsDataV1, create_storage_cache_current_dynamic_receiving_demand_v1};
+#[cfg(target_os = "linux")]
+pub(crate) use initialization::create_storage::current_cache_fixed_receiving_demand_v1;

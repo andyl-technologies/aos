@@ -9,7 +9,8 @@
 
 use aos_sandbox_core::{ObjectDigest, OperationId};
 
-use crate::local_inventory::assignment::{AssignmentEffectPlanV1, AssignmentIntentV1};
+use crate::local_inventory::assignment::AssignmentEffectPlanV1;
+use aos_sandbox_core::AssignmentIntentV1;
 
 use super::{
     InvalidMultiNodeJournal, JournalEffectStateV1, MultiNodeJournalDomainV1,

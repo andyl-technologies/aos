@@ -19,7 +19,7 @@ use aos_sandbox::controller_no_apply_settlement_cursor::{
     observe_controller_no_apply_preliminary_v1, read_controller_no_apply_settlement_cursor_v1,
     reserve_controller_no_apply_settlement_cursor_v1,
 };
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{EffectFailure, Journal};
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion, RawPairedClockSample};

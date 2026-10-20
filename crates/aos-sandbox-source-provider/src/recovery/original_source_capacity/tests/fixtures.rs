@@ -4,7 +4,7 @@
 //! fabricated. Witness digests are synthetic; these fixtures test lower-level
 //! canonical inventories and immutable bindings, not whole-graph association.
 
-use aos_sandbox::journal::JournalError;
+use aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1 as JournalError;
 
 use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
     NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, OriginalSourceCapacityBudgetsV5,
@@ -167,8 +167,9 @@ pub(super) fn floor_only_union_state() -> State {
 }
 
 /// Encodes independent canonical legacy DATA, without a protected producer.
-pub(super) fn legacy_row(admission: u8) -> (aos_sandbox::GlobalCapacityReservationRequestV1, JournalRecord) {
-    use aos_sandbox::{GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1};
+pub(super) fn legacy_row(admission: u8) -> (aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationRequestV1, JournalRecord) {
+    use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationPurposeV1;
+    use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationRequestV1;
 
     let request = GlobalCapacityReservationRequestV1 {
         purpose: GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,

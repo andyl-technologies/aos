@@ -85,6 +85,31 @@ fn handoff_is_exact_non_authorizing_dependency_data() {
 }
 
 #[test]
+fn handoff_commits_every_original_source_pending_coordinate() {
+    let bytes = fixture_batch_v1(b"projection", b"retained before", 1);
+    let batch = DeleteBatchViewV1::decode(&bytes).unwrap();
+    let mut native = [0; 64];
+    native[..16].fill(2);
+    native[16..48].fill(3);
+    native[48..56].copy_from_slice(&7_u64.to_be_bytes());
+    native[56..64].copy_from_slice(&2000_u64.to_be_bytes());
+
+    let handoff = encode_handoff_from_source_pending_data_v2(batch, &native).unwrap();
+    assert!(validate_handoff(&handoff, batch).is_ok());
+    assert_eq!(&handoff[96..128], &source_pending_handoff_commitment_data_v2(&native));
+    for offset in [0, 16, 55, 63] {
+        let mut changed = native;
+        changed[offset] ^= 1;
+        assert_ne!(source_pending_handoff_commitment_data_v2(&changed), handoff[96..128]);
+    }
+    for (start, end) in [(0, 16), (16, 48), (48, 56), (56, 64)] {
+        let mut missing = native;
+        missing[start..end].fill(0);
+        assert!(encode_handoff_from_source_pending_data_v2(batch, &missing).is_err());
+    }
+}
+
+#[test]
 fn canonical_ready_order_does_not_accept_caller_tie_order() {
     let first = LifecycleResourceV1::Sandbox(aos_sandbox_core::SandboxId::from_bytes([1; 16]));
     let second = LifecycleResourceV1::Sandbox(aos_sandbox_core::SandboxId::from_bytes([2; 16]));

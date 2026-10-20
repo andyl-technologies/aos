@@ -15,14 +15,14 @@
 //!          | canonical-policy-object-digest[32] | ed25519-signature[64]
 //! ```
 
-use aos_sandbox::publisher_policy::{
+use aos_sandbox::publisher_admin::policy::{
     GitUploadBootstrapAppendV1, GitUploadBootstrapErrorV1, PublisherPolicyError,
     PublisherPolicyLimits, VerifiedPublisherPolicySourceV1,
 };
 use aos_sandbox::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1;
-use aos_sandbox::publisher_sessions::PublisherSessionScope;
+use aos_sandbox_publisher::publisher_sessions::PublisherSessionScope;
 use aos_sandbox_core::{GitUploadCapacityV1, RawPairedClockSample};
-use aos_sandbox::ownership_resume::OwnershipClockObservationError;
+use aos_sandbox_core::OwnershipClockObservationError;
 use super::ProductionController;
 use super::publisher_credential::read_required_credential;
 use aos_sandbox_broker_session_security::controller_composition::sample_ownership_clock;
@@ -51,7 +51,7 @@ pub(super) enum PublisherPolicySourceErrorV1 {
     Conflict,
     /// Protected journal replay or durability failed.
     #[error("publisher policy source installation failed: {0}")]
-    Store(#[from] aos_sandbox::publisher_policy::PublisherPolicyError),
+    Store(#[from] aos_sandbox::publisher_admin::policy::PublisherPolicyError),
 }
 
 struct SignedSourceV1(VerifiedPublisherPolicySourceV1);
@@ -657,7 +657,7 @@ mod tests {
     }
 
     use super::*;
-    use aos_sandbox::publisher_policy::PreparedPublisherPolicyRevisionV1;
+    use aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1;
     use aos_sandbox_core::{
         DecodeLimits, NodeId, ObjectDigest, Operation, PrincipalId, ProjectId,
         ResourceId, ResourceKind, RevocationScopeId, Selector,

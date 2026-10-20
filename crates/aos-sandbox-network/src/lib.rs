@@ -23,16 +23,18 @@
 //! provide observation, durable commit, and publication. [`lifecycle_state`]
 //! retains existing-resource operations, and [`lifecycle_worker_protocol`]
 //! releases ordered effect steps under the authenticated lifecycle dispatch.
-//! [`NetworkBrokerSessionRuntimeV1`] joins these owners for the separately
-//! packaged broker; the inventory-only [`service`] remains a narrower surface. The
-//! namespace inspector retains its separate deployment qualification gate.
+//! [`NetworkServiceOriginalV4`] joins these owners through the authenticated
+//! same-Source request router; [`service`] retains its inventory protocol.
+//! The namespace inspector retains its separate deployment qualification gate.
+
+mod journal;
+pub use journal::{NetworkJournalErrorV1, NetworkJournalAppendReceivingDemandErrorV1, JournalNativePostFailureOriginalV1};
 
 pub mod allocation;
 pub mod authorization;
 pub mod broker;
 pub mod broker_pid1_query;
 pub mod catalog;
-mod dormant_broker_session;
 pub mod inspector_deployment;
 pub mod kernel_mutator;
 pub mod kernel_observation;
@@ -62,13 +64,24 @@ mod namespace_pin_worker_runtime;
 pub mod namespace_store;
 pub mod nftables_reader;
 mod observation_worker_runtime;
+mod observer_handoff_v2;
 pub mod policy;
 pub mod preparation_catalog;
 pub mod preparation_runtime;
 mod protected_policy;
 pub mod rtnetlink_reader;
 pub mod service;
-mod session_runtime;
+mod service_original;
+mod worker_arguments_v2;
+pub(crate) mod worker_cgroup_v2;
+pub use service_original::{
+    NetworkServiceClosedV4, NetworkServiceDestroyOriginalV4, NetworkServiceDomainCallsiteV4,
+    NetworkServiceFailureV4, NetworkServiceInventoryOriginalV4, NetworkServiceObservationV4,
+    NetworkServiceOriginalV4, NetworkServicePrepareOriginalV4, NetworkServiceSessionInputsV4,
+    NetworkServiceRequestMethodV5,
+    NetworkServiceWorkersOriginalV2,
+    NetworkServiceDestroyProgrammeOriginalV2,
+};
 pub mod state;
 mod systemd_socket_instance;
 #[allow(
@@ -96,11 +109,6 @@ pub use catalog::{
     AuthenticatedNetworkPreparationV1, NetworkCatalogBindingV1, ResolvedEndpointV1,
     ResolvedNetworkPreparationV1,
 };
-pub use dormant_broker_session::{
-    DormantNetworkBrokerAdmissionV1, DormantNetworkBrokerCallErrorV1,
-    DormantNetworkBrokerCallsiteV1, DormantNetworkBrokerObservationV1,
-    ProductionNetworkBrokerCompositionV1,
-};
 pub use kernel_observation::{
     ExpectedAddressPairV1, ExpectedRouteV1, ExpectedVethV1, NetworkKernelExpectationV1,
     NetworkKernelObservationError, NetworkKernelObservationV1, ObservedAddressV1,
@@ -124,11 +132,10 @@ pub use lifecycle_state::{
     NetworkLifecycleRecoveryEntryV1, NetworkLifecycleStateError, NetworkLifecycleStateStore,
 };
 pub use lifecycle_worker_protocol::{
-    AuthenticatedNetworkLifecycleWorkerDispatchV1,
-    MAXIMUM_NETWORK_LIFECYCLE_WORKER_REQUEST_BYTES, NetworkLifecycleAuthorizedStepV1,
-    NetworkLifecycleDescriptorRoleV1, NetworkLifecycleExecutionAuthorizationV1,
-    NetworkLifecycleExecutionStepV1, NetworkLifecycleWorkerDispatchV1,
-    NetworkLifecycleWorkerRoleV1,
+    AuthenticatedNetworkLifecycleWorkerDispatchV1, MAXIMUM_NETWORK_LIFECYCLE_WORKER_REQUEST_BYTES,
+    NetworkLifecycleAuthorizedStepV1, NetworkLifecycleDescriptorRoleV1,
+    NetworkLifecycleExecutionAuthorizationV1, NetworkLifecycleExecutionStepV1,
+    NetworkLifecycleWorkerDispatchV1, NetworkLifecycleWorkerRoleV1,
 };
 pub use lifecycle_worker_runtime::{
     ExecutedNetworkLifecycleWorkerV1, NetworkLifecycleWorkerConfiguration,
@@ -157,16 +164,18 @@ pub use namespace_pin_worker_runtime::{
 };
 pub use namespace_store::{
     ActivatedNetworkDescriptors, MAXIMUM_RETAINED_NETWORK_NAMESPACES,
-    NetworkNamespaceCustodyRequirementV1, NetworkNamespaceStoreError, NetworkNamespaceStoreName,
-    NetworkNamespaceStoreOutcome, PendingNetworkSystemdActivationV1, RetainedNetworkNamespace,
-    SystemdNetworkNamespaceStore, adopt_systemd_activation, claim_network_activation,
-    validate_activation_replay,
+    NetworkNamespaceCustodyRequirementV1, NetworkNamespaceStoreError,
+    NetworkNamespaceStoreFailureV4, NetworkNamespaceStoreMutationOriginalV4,
+    NetworkNamespaceStoreName, NetworkNamespaceStoreOpeningOriginalV4,
+    NetworkNamespaceStoreOutcome, NetworkNamespaceStoreRefusalV4,
+    PendingNetworkSystemdActivationV1, RetainedNetworkNamespace, SystemdNetworkNamespaceStore,
+    adopt_systemd_activation, claim_network_activation, validate_activation_replay,
 };
 pub use nftables_reader::{FixedNftablesObservationReader, decode_nftables_observation};
 pub use observation_worker_runtime::{
     NetworkObservationWorkerConfiguration, NetworkObservationWorkerError,
     PreparedNetworkObservationV1, SystemdNetworkObservationExecutor,
-    run_inherited_network_observation_worker,
+    run_inherited_network_observation_worker_entry_v2,
 };
 pub use policy::{
     NetworkEndpointPolicyV1, NetworkFlowDirectionV1, NetworkFlowPolicyV1, NetworkIpPrefixV1,
@@ -191,7 +200,6 @@ pub use rtnetlink_reader::{
     FixedRtnetlinkObservationReader, RtnetlinkLinkInventoryV1, RtnetlinkNamespaceInventoryV1,
 };
 pub use service::{NetworkConnectionOutcome, NetworkInventoryService, NetworkServiceError};
-pub use session_runtime::{NetworkBrokerSessionRuntimeErrorV1, NetworkBrokerSessionRuntimeV1};
 pub use state::{
     CommittedNetworkResultV1, DurableNetworkPhase, NetworkNamespaceCustodyV1, NetworkRecoveryEntry,
     NetworkRecoverySnapshotV1, NetworkStateError, NetworkStateStore, VerifiedNetworkResultV1,
@@ -201,9 +209,13 @@ pub use worker_protocol::{
     NetworkActivationAuthorizationV1, NetworkMutationAuthorizationV1,
     NetworkPrepareWorkerDispatchV1, NetworkWorkerProtocolError,
 };
-pub use worker_replay::NetworkWorkerReplayLedger;
+pub use worker_replay::{
+    NetworkWorkerReplayClaimOriginalV4, NetworkWorkerReplayLedger,
+    NetworkWorkerReplayOpeningOriginalV4,
+};
 pub use worker_runtime::{
-    NetworkWorkerConfiguration, NetworkWorkerRuntimeError, PreparedNetworkWorkerOutput,
+    NetworkObservationExecutorOpeningOriginalV4, NetworkPrepareExecutorOpeningOriginalV4,
+    NetworkPrepareExecutorOpeningRefusalV4, NetworkWorkerRuntimeError, PreparedNetworkWorkerOutput,
     RecoveredNetworkPreparationObservation, SystemdNetworkPrepareExecutor,
-    run_inherited_network_prepare_worker,
+    run_inherited_network_prepare_worker_entry_v2,
 };

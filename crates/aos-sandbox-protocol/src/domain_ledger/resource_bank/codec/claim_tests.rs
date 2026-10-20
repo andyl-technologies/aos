@@ -7,7 +7,7 @@ use super::{
     ResourceBankDataError, ResourceDimension, ResourceVector, encode_claim,
 };
 
-const PURPOSES: [(ClaimPurpose, &[u8; 8], u8); 12] = [
+const PURPOSES: [(ClaimPurpose, &[u8; 8], u8); 19] = [
     (ClaimPurpose::ControllerBootstrap, b"AOSRSC02", 1),
     (ClaimPurpose::ComponentEnvelope, b"AOSRSC02", 2),
     (ClaimPurpose::InclusiveGrant, b"AOSRSC02", 3),
@@ -20,6 +20,13 @@ const PURPOSES: [(ClaimPurpose, &[u8; 8], u8); 12] = [
     (ClaimPurpose::NixOriginalStartIntake, b"AOSRSC06", 11),
     (ClaimPurpose::Q04OriginalIntake, b"AOSRSC07", 12),
     (ClaimPurpose::RootReceiving, b"AOSRSC08", 13),
+    (ClaimPurpose::CreateContinuationIntake, b"AOSRSC09", 14),
+    (ClaimPurpose::StorageReceiving, b"AOSRSC10", 16),
+    (ClaimPurpose::CreateStorageUse, b"AOSRSC11", 15),
+    (ClaimPurpose::DeleteOperationIntake, b"AOSRSC12", 17),
+    (ClaimPurpose::ExecutionOperationIntake, b"AOSRSC13", 18),
+    (ClaimPurpose::HostExecutionPrepare, b"AOSRSC14", 19),
+    (ClaimPurpose::HostExecutionAccept, b"AOSRSC15", 20),
 ];
 
 // Historical DATA alone creates no original resource or paid owner.
@@ -56,11 +63,15 @@ fn fixture(purpose: ClaimPurpose) -> Claim {
         | ClaimPurpose::ControllerFirstGlobalPrefix
         | ClaimPurpose::NixOriginalStartIntake
         | ClaimPurpose::Q04OriginalIntake
-        | ClaimPurpose::RootReceiving => claim.child = [0; 16],
+        | ClaimPurpose::RootReceiving | ClaimPurpose::StorageReceiving
+        | ClaimPurpose::DeleteOperationIntake | ClaimPurpose::ExecutionOperationIntake
+        | ClaimPurpose::HostExecutionPrepare | ClaimPurpose::HostExecutionAccept
+        | ClaimPurpose::CreateContinuationIntake => claim.child = [0; 16],
         ClaimPurpose::InclusiveGrant
         | ClaimPurpose::Snapshot
         | ClaimPurpose::ProjectPreparation
-        | ClaimPurpose::Q04Preparation => {
+        | ClaimPurpose::Q04Preparation
+        | ClaimPurpose::CreateStorageUse => {
             claim.operation = [9; 16];
             claim.project = [10; 16];
             claim.tree_revision = [11; 32];
@@ -75,7 +86,7 @@ fn fixture(purpose: ClaimPurpose) -> Claim {
             }
             if matches!(
                 purpose,
-                ClaimPurpose::Snapshot | ClaimPurpose::Q04Preparation
+                ClaimPurpose::Snapshot | ClaimPurpose::Q04Preparation | ClaimPurpose::CreateStorageUse
             ) {
                 claim.sandbox = [13; 16];
             }
@@ -135,7 +146,7 @@ fn claim_framing_refuses_unknown_headers_and_bad_checksums() {
     for (purpose, _, _) in PURPOSES {
         let bytes = encode_claim(fixture(purpose)).unwrap();
 
-        for magic in [b"AOSRSC01", b"AOSRSC05", b"AOSRSC09"] {
+        for magic in [b"AOSRSC01", b"AOSRSC05", b"AOSRSC16"] {
             let mut unknown = bytes;
             unknown[..8].copy_from_slice(magic);
             refresh_checksum(&mut unknown);
@@ -167,6 +178,13 @@ fn checksummed_claims_refuse_cross_family_and_unknown_purposes() {
             b"AOSRSC06",
             b"AOSRSC07",
             b"AOSRSC08",
+            b"AOSRSC09",
+            b"AOSRSC10",
+            b"AOSRSC11",
+            b"AOSRSC12",
+            b"AOSRSC13",
+            b"AOSRSC14",
+            b"AOSRSC15",
         ] {
             if other_magic == magic {
                 continue;
@@ -180,7 +198,7 @@ fn checksummed_claims_refuse_cross_family_and_unknown_purposes() {
                 Err(ResourceBankDataError::CorruptLedger)
             ));
         }
-        for code in [0, 10, 14, 255] {
+        for code in [0, 10, 21, 255] {
             let mut unknown_purpose = bytes;
             unknown_purpose[184] = code;
             refresh_checksum(&mut unknown_purpose);
@@ -191,4 +209,86 @@ fn checksummed_claims_refuse_cross_family_and_unknown_purposes() {
             ));
         }
     }
+}
+
+
+use crate::domain_ledger::resource_bank::OperationIntakeFundingDataV1;
+
+#[test]
+fn fresh_delete_controller_frame_preserves_the_complete_c17_claim() {
+    use crate::domain_ledger::delete_root::controller_cut::{
+        DeleteRootControllerCutDataV3, DELETE_ROOT_CONTROLLER_CUT_BYTES_V3,
+    };
+    let expected = DeleteRootControllerCutDataV3 {
+        challenge: [23; 32], funding: OperationIntakeFundingDataV1::InitialReservedClaim(fixture(ClaimPurpose::DeleteOperationIntake)), next: 41, end: 8192,
+    };
+    let bytes = expected.encode_v3().unwrap();
+
+    assert_eq!(bytes.len(), DELETE_ROOT_CONTROLLER_CUT_BYTES_V3);
+    assert_eq!(DeleteRootControllerCutDataV3::decode_v3(&bytes).unwrap(), expected);
+    assert_eq!(&bytes[64..64 + CLAIM_BYTES], &encode_claim(fixture(ClaimPurpose::DeleteOperationIntake)).unwrap());
+    let mut retired = bytes;
+    retired[..8].copy_from_slice(b"AOSDRC01");
+    retired[8..10].copy_from_slice(&1u16.to_be_bytes());
+    assert!(DeleteRootControllerCutDataV3::decode_v3(&retired).is_err());
+    for end in 0..bytes.len() { assert!(DeleteRootControllerCutDataV3::decode_v3(&bytes[..end]).is_err()); }
+    let mut trailing = bytes.to_vec();
+    trailing.push(0);
+    assert!(DeleteRootControllerCutDataV3::decode_v3(&trailing).is_err());
+}
+
+#[test]
+fn fresh_delete_frame_refuses_other_purposes_and_spent_claims() {
+    use crate::domain_ledger::delete_root::controller_cut::DeleteRootControllerCutDataV3;
+    let mut frame = DeleteRootControllerCutDataV3 {
+        challenge: [23; 32], funding: OperationIntakeFundingDataV1::InitialReservedClaim(fixture(ClaimPurpose::ExecutionOperationIntake)), next: 41, end: 8192,
+    };
+    assert!(frame.encode_v3().is_err());
+
+    let mut claim = fixture(ClaimPurpose::DeleteOperationIntake);
+    for state in [ClaimState::Committed, ClaimState::Released, ClaimState::Reserved] {
+        claim.state = state;
+        frame.funding = OperationIntakeFundingDataV1::InitialReservedClaim(claim);
+        assert_eq!(frame.encode_v3().is_ok(), state == ClaimState::Reserved);
+    }
+}
+
+#[test]
+fn planning_frames_use_only_v3_without_a_retired_encoder() {
+    use aos_sandbox_core::{RawClockProvenance, RawPairedClockSample};
+    use crate::domain_ledger::delete_root::planning::{
+        DeleteRootPlanningOpenDataV3, DeleteRootPlanningChallengeDataV3,
+    };
+    let sample = |wall, boot| RawPairedClockSample::new_untrusted(
+        RawClockProvenance::new_untrusted([1; 16]).unwrap(), [2; 16], wall, boot,
+    ).unwrap();
+    // Plain codec DATA provides neither the claimed account nor native cuts.
+    let open = DeleteRootPlanningOpenDataV3 {
+        project: [3; 16], caller: [4; 16], input: [5; 32],
+        authorization_clock: sample(100, 10_000_000_000), authorization_expires: 500,
+        controller_nonce: [6; 16], controller_cutoff: 15_000_000_000,
+        controller_next: 7, controller_end: 4096, source_next: 8, source_end: 8192,
+        funding: OperationIntakeFundingDataV1::InitialReservedClaim(fixture(ClaimPurpose::DeleteOperationIntake)),
+    };
+    let bytes = open.encode_v3().unwrap();
+    assert_eq!(DeleteRootPlanningOpenDataV3::decode_v3(&bytes).unwrap(), open);
+    let challenge = DeleteRootPlanningChallengeDataV3 {
+        open: open.digest_v3().unwrap(), clock: sample(101, 11_000_000_000),
+        nonce: [9; 16], cutoff: 15_000_000_000,
+    };
+    assert!(challenge.require_open_v3(open).is_ok());
+    let reply = challenge.encode_v3().unwrap();
+    assert_eq!(DeleteRootPlanningChallengeDataV3::decode_v3(&reply).unwrap(), challenge);
+
+    let mut retired_open = bytes;
+    retired_open[..8].copy_from_slice(b"AOSDRP01");
+    retired_open[8..10].copy_from_slice(&1u16.to_be_bytes());
+    let mut retired_reply = reply;
+    retired_reply[..8].copy_from_slice(b"AOSDPC01");
+    retired_reply[8..10].copy_from_slice(&1u16.to_be_bytes());
+    assert!(DeleteRootPlanningOpenDataV3::decode_v3(&retired_open).is_err());
+    retired_open[..8].copy_from_slice(b"AOSDRP02");
+    retired_open[8..10].copy_from_slice(&2u16.to_be_bytes());
+    assert!(DeleteRootPlanningOpenDataV3::decode_v3(&retired_open).is_err());
+    assert!(DeleteRootPlanningChallengeDataV3::decode_v3(&retired_reply).is_err());
 }

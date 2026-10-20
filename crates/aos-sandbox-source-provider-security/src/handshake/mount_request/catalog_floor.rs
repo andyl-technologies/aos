@@ -7,7 +7,7 @@ use aos_sandbox_protocol::mount_source_acquisition_state::{
 };
 
 pub(super) fn validate_mount_floor(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_mount_native::ProtectedJournalAuthority<'_>,
     graph: &MountSourceAcquisitionStateV2,
     session: &MountProviderSessionProjectionV2,
     catalog: &ProviderCatalogFloorV1,

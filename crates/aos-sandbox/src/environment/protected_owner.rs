@@ -37,9 +37,63 @@ use super::{
     decode_environment_activation_v1, decode_environment_generation_v1,
 };
 
+// Only the closed execution constructor below selects SourceView. It
+// borrows the SAME genuine Source scope; a public historical view cannot
+// construct this owner or gain Environment/Source mutation authority.
+enum EnvironmentJournalAccessV2<'journal> {
+    Native(EnvironmentProtectedJournalV1<'journal>),
+    SourceView {
+        view: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerReadViewV1<'journal>,
+        history: EnvironmentGenerationHistoryV1,
+    },
+}
+
+impl<'journal> EnvironmentJournalAccessV2<'journal> {
+    fn replay(&self) -> Result<EnvironmentProtectedJournalProjectionV1, ProtectedDomainJournalErrorV1> {
+        match self {
+            Self::Native(journal) => journal.replay(),
+            Self::SourceView { view, history } =>
+                aos_sandbox_protocol::domain_ledger::records::replay_projection_records::<EnvironmentProtectedJournalSchemaV1>(
+                    view.all_records(), history,
+                ).map_err(ProtectedDomainJournalErrorV1::from),
+        }
+    }
+
+    fn native_v1(&self) -> Result<&EnvironmentProtectedJournalV1<'journal>, ProtectedDomainJournalErrorV1> {
+        match self {
+            Self::Native(journal) => Ok(journal),
+            Self::SourceView { .. } => Err(ProtectedDomainJournalErrorV1::Journal(crate::JournalError::ProtectedBoundary)),
+        }
+    }
+
+    fn plan(&self, transaction: [u8; 16], successors: Vec<super::protected_journal::EnvironmentProtectedJournalEnvelopeV1>)
+        -> Result<super::protected_journal::PreparedEnvironmentJournalTransactionV1, ProtectedDomainJournalErrorV1>
+    {
+        self.native_v1()?.plan(transaction, successors)
+    }
+
+    fn commit(&mut self, prepared: super::protected_journal::PreparedEnvironmentJournalTransactionV1)
+        -> Result<EnvironmentJournalCommitOutcomeV1, ProtectedDomainJournalErrorV1>
+    {
+        match self {
+            Self::Native(journal) => journal.commit(prepared),
+            Self::SourceView { .. } => Err(ProtectedDomainJournalErrorV1::Journal(crate::JournalError::ProtectedBoundary)),
+        }
+    }
+
+    fn recover(&mut self, pending: EnvironmentJournalOutcomeUnknownV1)
+        -> Result<EnvironmentJournalRecoveryV1, ProtectedDomainJournalErrorV1>
+    {
+        match self {
+            Self::Native(journal) => journal.recover(pending),
+            Self::SourceView { .. } => Err(ProtectedDomainJournalErrorV1::Journal(crate::JournalError::ProtectedBoundary)),
+        }
+    }
+}
+
 /// Owns a cold-replayed, dormant environment adapter and its custody verifier.
 pub struct EnvironmentProtectedJournalOwnerV1<'journal, 'evidence> {
-    journal: EnvironmentProtectedJournalV1<'journal>,
+    journal: EnvironmentJournalAccessV2<'journal>,
     verifier: EnvironmentJournalVerifierV1,
     evidence_owner: &'evidence mut EnvironmentProtectedEvidenceOwnerV1,
 }
@@ -61,33 +115,41 @@ impl<'journal, 'evidence> EnvironmentProtectedJournalOwnerV1<'journal, 'evidence
 
         let claimed = claim_environment_protected_journal_v1(journal, history.clone())?;
         let projection = claimed.replay()?;
-        let authenticated_manifests = projection
-            .records()
-            .iter()
-            .filter(|record| record.key().kind() == EnvironmentProtectedRecordKindV1::Generation)
-            .map(|record| {
-                let payload = decode_reducer_payload_with_validator::<
-                    EnvironmentProtectedJournalSchemaV1,
-                >(record.key(), record.payload(), &history)?;
-                decode_environment_generation_v1(payload.body())
-                    .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let authenticated_history =
-            EnvironmentGenerationHistoryV1::from_protected_manifests(authenticated_manifests)
-                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-        if authenticated_history != history {
-            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
-        }
+        validate_claimed_environment_history_v1(&projection, &history)?;
         evidence_owner
             .revalidate_pinned()
             .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
 
         Ok(Self {
-            journal: claimed,
+            journal: EnvironmentJournalAccessV2::Native(claimed),
             verifier,
             evidence_owner,
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn claim_execution_source_v2(
+        source: aos_sandbox_broker::source_receiving::SourceExecutionReadViewV1<'journal>,
+        evidence_owner: &'evidence mut EnvironmentProtectedEvidenceOwnerV1,
+    ) -> Result<Self, ProtectedDomainJournalErrorV1> {
+        let evidence = evidence_owner.issue_claim_evidence()
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+        let view = source.into_historical_view_v1();
+        let candidates = aos_sandbox_protocol::domain_ledger::records::current_record_candidates_from_rows::<EnvironmentProtectedJournalSchemaV1>(
+            view.all_records(),
+        ).map_err(ProtectedDomainJournalErrorV1::from)?;
+        let history = recover_environment_history_candidates_v2(candidates)?;
+        let evidence = evidence.into_parts();
+        let candidates = aos_sandbox_protocol::domain_ledger::records::current_record_candidates_from_rows::<EnvironmentProtectedJournalSchemaV1>(
+            view.all_records(),
+        ).map_err(ProtectedDomainJournalErrorV1::from)?;
+        let verifier = recover_environment_verifier_candidates_v2(candidates, evidence)?;
+        let journal = EnvironmentJournalAccessV2::SourceView { view, history: history.clone() };
+        let projection = journal.replay()?;
+        validate_claimed_environment_history_v1(&projection, &history)?;
+        evidence_owner.revalidate_pinned()
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+        Ok(Self { journal, verifier, evidence_owner })
     }
 
     /// Replays the current environment projection under fresh evidence.
@@ -196,7 +258,8 @@ impl<'journal, 'evidence> EnvironmentProtectedJournalOwnerV1<'journal, 'evidence
                 let authority = applied
                     .take_postcommit()
                     .ok_or(EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?
-                    .consume(&self.journal)
+                    .consume(self.journal.native_v1()
+                        .map_err(|_| EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?)
                     .map_err(|_| EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?;
                 validate_nix_effect_authority(&authority, &record, &history)?;
                 Ok(NixBuildPrepareOutcomeV1::Prepared(
@@ -253,7 +316,8 @@ impl<'journal, 'evidence> EnvironmentProtectedJournalOwnerV1<'journal, 'evidence
                 let authority = applied
                     .take_postcommit()
                     .ok_or(EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?
-                    .consume(&self.journal)
+                    .consume(self.journal.native_v1()
+                        .map_err(|_| EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?)
                     .map_err(|_| EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?;
                 validate_nix_effect_authority(&authority, &expected, &history)?;
                 Ok(NixBuildPrepareRecoveryV1::Prepared(
@@ -312,7 +376,8 @@ impl<'journal, 'evidence> EnvironmentProtectedJournalOwnerV1<'journal, 'evidence
                 let authority = applied
                     .take_postcommit()
                     .ok_or(EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?
-                    .consume(&self.journal)
+                    .consume(self.journal.native_v1()
+                        .map_err(|_| EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?)
                     .map_err(|_| EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?;
                 validate_nix_effect_authority(&authority, &expected, &history)?;
                 Ok(NixBuildPrepareOutcomeV1::Prepared(
@@ -595,7 +660,8 @@ impl<'journal, 'evidence> EnvironmentProtectedJournalOwnerV1<'journal, 'evidence
                 let authority = applied
                     .take_postcommit()
                     .ok_or(EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?
-                    .consume(&self.journal)
+                    .consume(self.journal.native_v1()
+                        .map_err(|_| EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?)
                     .map_err(|_| EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?;
                 validate_nix_terminal_authority(&authority, &terminal, &history)?;
                 Ok(NixBuildSettlementRecoveryV1::Applied(
@@ -637,7 +703,8 @@ impl<'journal, 'evidence> EnvironmentProtectedJournalOwnerV1<'journal, 'evidence
                 let authority = applied
                     .take_postcommit()
                     .ok_or(EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?
-                    .consume(&self.journal)
+                    .consume(self.journal.native_v1()
+                        .map_err(|_| EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?)
                     .map_err(|_| EnvironmentExecutionErrorV1::ProtectedEvidenceUnavailable)?;
                 validate_nix_terminal_authority(&authority, &terminal, &history)?;
                 Ok(NixBuildSettlementOutcomeV1::Applied(
@@ -731,6 +798,31 @@ impl<'journal, 'evidence> EnvironmentProtectedJournalOwnerV1<'journal, 'evidence
     }
 }
 
+pub(super) fn validate_claimed_environment_history_v1(
+    projection: &EnvironmentProtectedJournalProjectionV1,
+    history: &EnvironmentGenerationHistoryV1,
+) -> Result<(), ProtectedDomainJournalErrorV1> {
+    let authenticated_manifests = projection
+        .records()
+        .iter()
+        .filter(|record| record.key().kind() == EnvironmentProtectedRecordKindV1::Generation)
+        .map(|record| {
+            let payload = decode_reducer_payload_with_validator::<
+                EnvironmentProtectedJournalSchemaV1,
+            >(record.key(), record.payload(), history)?;
+            decode_environment_generation_v1(payload.body())
+                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let authenticated_history =
+        EnvironmentGenerationHistoryV1::from_protected_manifests(authenticated_manifests)
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    if &authenticated_history != history {
+        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
+    }
+    Ok(())
+}
+
 fn authenticated_generation_history(
     projection: &EnvironmentProtectedJournalProjectionV1,
 ) -> Result<EnvironmentGenerationHistoryV1, EnvironmentExecutionErrorV1> {
@@ -813,9 +905,14 @@ fn validate_nix_terminal_authority(
 pub(crate) fn recover_environment_generation_history_v1(
     journal: &Journal,
 ) -> Result<EnvironmentGenerationHistoryV1, ProtectedDomainJournalErrorV1> {
-    let manifests =
-        protected_current_record_candidates_v1::<EnvironmentProtectedJournalSchemaV1>(journal)?
-            .into_iter()
+    let candidates = protected_current_record_candidates_v1::<EnvironmentProtectedJournalSchemaV1>(journal)?;
+    recover_environment_history_candidates_v2(candidates)
+}
+
+pub(super) fn recover_environment_history_candidates_v2(
+    candidates: Vec<aos_sandbox_protocol::domain_ledger::records::ProtectedCurrentRecordCandidateV1<EnvironmentProtectedJournalSchemaV1>>,
+) -> Result<EnvironmentGenerationHistoryV1, ProtectedDomainJournalErrorV1> {
+    let manifests = candidates.into_iter()
             .filter(|candidate| {
                 candidate.key().kind() == EnvironmentProtectedRecordKindV1::Generation
             })
@@ -832,10 +929,19 @@ pub(crate) fn recover_environment_journal_verifier_v1(
     journal: &Journal,
     evidence: EnvironmentProtectedClaimEvidenceV1,
 ) -> Result<EnvironmentJournalVerifierV1, ProtectedDomainJournalErrorV1> {
-    let (current_boot, current_time, boot_attestation, mut authenticated_predecessor_boots) =
+    let (current_boot, current_time, boot_attestation, authenticated_predecessor_boots) =
         evidence.into_parts();
     let candidates =
         protected_current_record_candidates_v1::<EnvironmentProtectedJournalSchemaV1>(journal)?;
+    recover_environment_verifier_candidates_v2(candidates,
+        (current_boot, current_time, boot_attestation, authenticated_predecessor_boots))
+}
+
+fn recover_environment_verifier_candidates_v2(
+    candidates: Vec<aos_sandbox_protocol::domain_ledger::records::ProtectedCurrentRecordCandidateV1<EnvironmentProtectedJournalSchemaV1>>,
+    evidence: (ObjectDigest, super::EnvironmentLeaseTimeV1, ObjectDigest, Vec<ObjectDigest>),
+) -> Result<EnvironmentJournalVerifierV1, ProtectedDomainJournalErrorV1> {
+    let (current_boot, current_time, boot_attestation, mut authenticated_predecessor_boots) = evidence;
     authenticated_predecessor_boots.sort_unstable();
     if authenticated_predecessor_boots
         .windows(2)

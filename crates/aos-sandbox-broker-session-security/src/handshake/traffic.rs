@@ -77,7 +77,7 @@ pub(super) enum TrafficTransition<Complete, Retry> {
 
 /// Owns the locally admitted exact ClientRecord until one atomic send succeeds.
 pub(super) struct ClientPreparedRequest {
-    custody: ProtectedBrokerSessionClientV1,
+    custody: ClientHandshakeCustodyV1,
     carrier: HandshakeCarrier,
     publication_packet: Vec<u8>,
     client_packet: Vec<u8>,
@@ -91,7 +91,7 @@ pub(super) struct ClientPreparedRequest {
 
 /// Retains the sent ClientRecord and its outstanding semantic state.
 pub(super) struct ClientAwaitOutcome {
-    custody: ProtectedBrokerSessionClientV1,
+    custody: ClientHandshakeCustodyV1,
     carrier: HandshakeCarrier,
     publication_packet: Vec<u8>,
     client_packet: Vec<u8>,
@@ -107,7 +107,7 @@ pub(super) struct ClientAwaitOutcome {
 
 /// Owns the broker's provisional state while awaiting the mandatory ClientRecord.
 pub(super) struct BrokerAwaitRequest {
-    custody: ProtectedBrokerSessionBrokerV1,
+    custody: BrokerHandshakeCustodyV1,
     carrier: HandshakeCarrier,
     publication: [u8; BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES],
     client_packet: Vec<u8>,
@@ -120,7 +120,7 @@ pub(super) struct BrokerAwaitRequest {
 
 /// Retains one authenticated request before closed outcome selection.
 pub(super) struct BrokerAdmittedRequest {
-    custody: ProtectedBrokerSessionBrokerV1,
+    custody: BrokerHandshakeCustodyV1,
     carrier: HandshakeCarrier,
     publication: [u8; BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES],
     client_packet: Vec<u8>,
@@ -137,7 +137,7 @@ pub(super) struct BrokerAdmittedRequest {
 
 /// Owns the locally admitted exact BrokerOutcome until one atomic send succeeds.
 pub(super) struct BrokerPreparedOutcome {
-    custody: ProtectedBrokerSessionBrokerV1,
+    custody: BrokerHandshakeCustodyV1,
     carrier: HandshakeCarrier,
     publication: [u8; BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES],
     client_packet: Vec<u8>,
@@ -153,7 +153,7 @@ pub(super) struct BrokerPreparedOutcome {
 
 /// Retains client-side checkpoint inputs without exposing authority or further I/O.
 pub(super) struct ClientNetworkInventoryCheckpointPending {
-    _custody: ProtectedBrokerSessionClientV1,
+    _custody: ClientHandshakeCustodyV1,
     _carrier: HandshakeCarrier,
     _publication_packet: Vec<u8>,
     _client_packet: Vec<u8>,
@@ -174,7 +174,7 @@ pub(super) struct ClientNetworkInventoryCheckpointPending {
 
 /// Retains broker-side checkpoint inputs without exposing authority or further I/O.
 pub(super) struct BrokerNetworkInventoryCheckpointPending {
-    _custody: ProtectedBrokerSessionBrokerV1,
+    _custody: BrokerHandshakeCustodyV1,
     _carrier: HandshakeCarrier,
     _publication_packet: [u8; BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES],
     _client_packet: Vec<u8>,

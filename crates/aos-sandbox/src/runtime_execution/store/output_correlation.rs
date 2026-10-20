@@ -38,6 +38,10 @@ pub(super) struct HostOutputCorrelationV1 {
 }
 
 impl HostOutputCorrelationV1 {
+    pub(in crate::runtime_execution) const fn encoded_bytes_v2() -> usize {
+        RECORD_BYTES
+    }
+
     pub(super) fn encode(self) -> Option<[u8; RECORD_BYTES]> {
         if !self.is_valid() {
             return None;

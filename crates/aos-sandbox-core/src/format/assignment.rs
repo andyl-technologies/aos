@@ -11,8 +11,8 @@ use crate::{
 
 use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
 use super::tree::{
-    decode_descriptor, decode_feature, encode_descriptor, encode_feature, encode_slice,
-    exact_bytes, semantics,
+    encode_descriptor, encode_feature, encode_slice,
+    exact_bytes,
 };
 
 /// Encodes one assignment manifest in its exact canonical v1 form.
@@ -57,25 +57,38 @@ pub fn decode_assignment_manifest_v1(
     bytes: &[u8],
     limits: DecodeLimits,
 ) -> Result<AssignmentManifestV1, CanonicalCborError> {
+    decode_assignment_manifest_engine_v1(bytes, limits)
+        .map_err(super::decode_attempt::DecodeFailure::into_canonical)
+}
+
+pub(crate) fn decode_assignment_manifest_engine_v1(
+    bytes: &[u8],
+    limits: DecodeLimits,
+) -> super::decode_attempt::DecodeResult<AssignmentManifestV1> {
+    use super::decode_attempt::typed_semantics;
+    use super::tree::{decode_descriptor_engine, decode_feature_engine};
+
     let mut decoder = Decoder::new(bytes, limits)?;
     decoder.array(17)?;
     decoder.exact("assignment manifest version", 1)?;
     let sandbox = SandboxId::from_bytes(exact_bytes(&mut decoder, 16)?);
     let project = ProjectId::from_bytes(exact_bytes(&mut decoder, 16)?);
-    let ancestors = decode_ids(&mut decoder)?;
+    let ancestors = decoder.bounded_vec(MAX_ANCESTRY_DEPTH, |decoder| {
+        exact_bytes(decoder, 16).map(SandboxId::from_bytes)
+    })?;
     let ancestry = SandboxAncestry::new(sandbox, ancestors)
-        .map_err(|error| semantics("assignment ancestry", error))?;
+        .map_err(|cause| typed_semantics("assignment ancestry", cause))?;
     let incarnation = IncarnationId::from_bytes(exact_bytes(&mut decoder, 16)?);
     let node = NodeId::from_bytes(exact_bytes(&mut decoder, 16)?);
     let epoch = AssignmentEpoch::new(decoder.unsigned()?);
     let desired_generation = DesiredGeneration::new(decoder.unsigned()?);
     let namespace_generation = NamespaceGeneration::new(decoder.unsigned()?);
-    let sandbox_spec = decode_descriptor(&mut decoder)?;
-    let policy = decode_descriptor(&mut decoder)?;
-    let environment = decode_descriptor(&mut decoder)?;
-    let root_view = decode_descriptor(&mut decoder)?;
+    let sandbox_spec = decode_descriptor_engine(&mut decoder)?;
+    let policy = decode_descriptor_engine(&mut decoder)?;
+    let environment = decode_descriptor_engine(&mut decoder)?;
+    let root_view = decode_descriptor_engine(&mut decoder)?;
     let source_commitments =
-        decoder.bounded_vec(MAX_ASSIGNMENT_SOURCE_COMMITMENTS, decode_descriptor)?;
+        decoder.bounded_vec(MAX_ASSIGNMENT_SOURCE_COMMITMENTS, decode_descriptor_engine)?;
     let resource_commitment = ObjectDigest::from_bytes(exact_bytes(&mut decoder, 32)?);
     decoder.array(ResourceDimension::COUNT)?;
     let mut reservations = [0_u64; ResourceDimension::COUNT];
@@ -83,7 +96,7 @@ pub fn decode_assignment_manifest_v1(
         *amount = decoder.unsigned()?;
     }
     let required_features =
-        decoder.bounded_vec(MAX_ASSIGNMENT_REQUIRED_FEATURES, decode_feature)?;
+        decoder.bounded_vec(MAX_ASSIGNMENT_REQUIRED_FEATURES, decode_feature_engine)?;
     decoder.finish()?;
 
     AssignmentManifestV1::new(
@@ -104,7 +117,7 @@ pub fn decode_assignment_manifest_v1(
         ResourceVector::new(reservations),
         required_features,
     )
-    .map_err(|error| semantics("assignment manifest", error))
+    .map_err(|cause| typed_semantics("assignment manifest", cause))
 }
 
 fn encode_ids(encoder: &mut Encoder, identities: &[SandboxId]) {
@@ -114,11 +127,6 @@ fn encode_ids(encoder: &mut Encoder, identities: &[SandboxId]) {
     }
 }
 
-fn decode_ids(decoder: &mut Decoder<'_>) -> Result<Vec<SandboxId>, CanonicalCborError> {
-    decoder.bounded_vec(MAX_ANCESTRY_DEPTH, |decoder| {
-        exact_bytes(decoder, 16).map(SandboxId::from_bytes)
-    })
-}
 
 #[cfg(test)]
 mod tests {

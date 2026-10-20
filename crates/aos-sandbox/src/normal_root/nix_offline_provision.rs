@@ -41,6 +41,7 @@ use super::{NormalRootStartupErrorV1, images, profile::ImagePinV1, service, star
 
 mod approved_data;
 pub(crate) use approved_data::nix_offline_location_has_original_label_v5;
+pub(crate) use approved_data::nix_offline_opening_has_original_label_v5;
 pub use approved_data::{
     NixOfflineApprovedDataErrorV4, NixOfflineEffectApprovalKindV4,
     derive_nix_offline_public_candidates_v3, fill_nix_offline_static_preimage_v3,

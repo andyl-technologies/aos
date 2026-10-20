@@ -63,7 +63,7 @@ use crate::mount_source_acquisition_inventory::{
     self, DurableMountSourceAcquisitionInventorySnapshotV1, MountSourceAcquisitionInventoryError,
     MountSourceAcquisitionInventoryObservationFenceV1,
 };
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::runtime_scope::{
     self, CurrentAssignmentTarget, CurrentNamespaceTarget, CurrentRuntimeScope,
     CurrentRuntimeScopeError, CurrentRuntimeScopePolicy, NamespaceTargetError,
@@ -75,7 +75,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBroke
 
 mod consumer_read;
 mod fuse_reserve;
-pub(crate) use consumer_read::validate_consumer_resource_transaction;
+pub(crate) use consumer_read::{validate_consumer_resource_transaction, validate_consumer_resource_transaction_read_v1};
 
 pub use consumer_read::{
     ConsumerReadRequestDataV1, ConsumerResourceAttemptLimitsV1, ConsumerResourceAttemptPhaseV1,
@@ -272,6 +272,33 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
             client,
             policy,
             clock,
+        )?)
+    }
+
+    /// Retains the same current-source acquisition through the caller's owed posts.
+    ///
+    /// # Errors
+    /// Rejects unprotected custody or the same stale Host, assignment and lease
+    /// conditions as `observe_current_source`; native originals remain resident.
+    #[doc(hidden)]
+    pub fn observe_current_source_retaining_v1<T>(
+        &mut self,
+        holder: RuntimeScopeHolder,
+        client: RuntimeScopeClient,
+        policy: CurrentRuntimeScopePolicy,
+        clock: &mut T,
+        original: &mut runtime_scope::RuntimeScopeAcquireOriginalV1,
+    ) -> Result<CurrentRuntimeScope, ProtectedAttachmentTargetErrorV1>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        // Park the already-open client even if the original protected gate refuses.
+        if let Err(cause) = self.journal.ensure_protected_authority() {
+            original.retain_unentered_client_v1(client);
+            return Err(cause.into());
+        }
+        Ok(runtime_scope::acquire_current_runtime_retaining(
+            self.journal, holder, client, policy, clock, original,
         )?)
     }
 

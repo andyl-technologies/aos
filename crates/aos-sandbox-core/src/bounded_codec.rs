@@ -3,6 +3,9 @@
 //! Callers map mechanical failures into their own errors and retain ownership
 //! of framing, version checks, semantic limits, and canonical validation.
 
+mod retained_value;
+pub use retained_value::{CaptureOnDropV1, RetainingIterV1};
+
 use crate::ObjectDigest;
 
 /// Identifies a byte-reading failure for a format-specific error mapper.

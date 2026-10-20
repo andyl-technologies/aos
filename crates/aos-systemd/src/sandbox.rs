@@ -21,7 +21,19 @@ use crate::client::{JobOutcome, SystemdClient};
 use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{AuxiliaryUnit, ServiceProxy, TransientProperty, UnitProxy};
 
-mod discovery;
+// Only the retained finite launch transport selects concrete wire decoding.
+// The ordinary branch remains the generated getter and its original errors.
+macro_rules! launch_property_v2 {
+    ($client:expr, $proxy:ident, $getter:ident, $name:literal, $type:ty) => {{
+        if $client.is_retained_host_launch_v2() {
+            $proxy.inner().get_uncached_property_typed::<$type>($name).await
+        } else {
+            $proxy.$getter().await
+        }
+    }};
+}
+
+pub(crate) mod discovery;
 mod exact_unit;
 #[cfg(target_os = "linux")]
 mod fuse_worker;
@@ -29,6 +41,8 @@ mod fuse_worker;
 mod fuse_worker_private;
 mod guardian;
 mod payload_root_continuity;
+mod payload_property_original;
+pub use payload_property_original::PayloadUnitPropertyOriginalV2;
 pub use discovery::{
     DiscoveredSandboxUnit, SandboxDiscoveryComparison, SandboxDiscoveryConflict,
     SandboxDiscoveryIndeterminate, SandboxDiscoveryOutcome, SandboxQuarantineEvidence,
@@ -46,13 +60,22 @@ pub use fuse_worker::{
 #[cfg(target_os = "linux")]
 pub use fuse_worker_private::FixedFuseWorkerPid1ClientV1;
 pub use guardian::{
-    GuardianCredentialDescriptors, GuardianCredentialRole, GuardianExecutableDescriptor,
+    GuardianUnitPropertyOriginalV2, GuardianCredentialAcquisitionOriginalV2, GuardianCredentialDescriptors, GuardianCredentialRole, GuardianExecutableDescriptor,
     GuardianExecutableSnapshot, GuardianStartError, GuardianUnitObservation, GuardianUnitSpec,
 };
 
 const UNIT_PREFIX: &str = "aos-sandbox-";
 const UNIT_SUFFIX: &str = ".service";
 const GUARD_PREFIX: &str = "aos-lease-guard-";
+
+// Each admitted incarnation/worker instance is 16 bytes encoded as 32 hex digits.
+// Exact width excludes permanent broker services; malformed names of this width
+// still match and therefore block an empty-population certificate.
+pub(crate) const RUNTIME_INVENTORY_PATTERNS_V5: [&str; 3] = [
+    "aos-sandbox-????????????????????????????????.service",
+    "aos-lease-guard-????????????????????????????????.service",
+    "aos-view-worker@????????????????????????????????.service",
+];
 // Hyphens encode slice ancestry: systemd nests this slice beneath aos.slice.
 const SANDBOX_SLICE_CGROUP: &str = "/aos.slice/aos-sandboxes.slice";
 const GUARDIAN_SLICE_CGROUP: &str =
@@ -435,7 +458,57 @@ impl PartialEq for SandboxDescriptorPath {
 
 impl Eq for SandboxDescriptorPath {}
 
+/// Retains the three actual Guest launch descriptor pins and their first failure.
+///
+/// This mechanical destination neither chooses a launch nor authenticates a
+/// Guest. The enclosing Host original pays its full footprint before entry.
+pub struct SandboxGuestAgentPinOriginalV2 {
+    pins: [Option<std::io::Result<SandboxDescriptorPath>>; 3],
+    attempted: bool,
+}
+
+impl SandboxGuestAgentPinOriginalV2 {
+    /// Constructs empty destinations without duplicating a descriptor.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { pins: [None, None, None], attempted: false }
+    }
+
+    /// Borrows the first actual descriptor duplication error.
+    #[must_use]
+    pub fn failure(&self) -> Option<&std::io::Error> {
+        self.pins.iter().find_map(|pin| pin.as_ref()?.as_ref().err())
+    }
+
+    /// Bounds native pins, actual procfs aliases and construction carriers.
+    ///
+    /// The three descriptors and their namespace aliases remain independent
+    /// of the original caller's endpoints. No operation or payer is created.
+    #[must_use]
+    pub fn receiving_footprint_v2() -> Option<(usize, usize)> {
+        let bytes = std::mem::size_of::<Self>().checked_mul(3)?
+            .checked_add(3_usize.checked_mul(std::mem::size_of::<std::os::fd::OwnedFd>()
+                .checked_add(2 * std::mem::size_of::<usize>())?)?)?
+            .checked_add(3_usize.checked_mul("/proc/".len() + 10 + "/fd/".len() + 10)?)?;
+        Some((bytes, 3))
+    }
+}
+
+impl Default for SandboxGuestAgentPinOriginalV2 {
+    fn default() -> Self { Self::new() }
+}
+
 impl SandboxDescriptorPath {
+    /// Bounds one descriptor alias and its constructor/retained Arc storage.
+    ///
+    /// The fixed procfs spelling contains two at-most-ten-digit identifiers.
+    #[must_use]
+    pub fn construction_receiving_bytes_v2() -> Option<usize> {
+        std::mem::size_of::<Self>().checked_mul(2)?
+            .checked_add(2 * std::mem::size_of::<usize>() + std::mem::size_of::<OwnedFd>())?
+            .checked_add(4 * (5 + 10 + 4 + 10))
+    }
+
     /// Derives a descriptor path for the current broker process.
     ///
     /// # Errors
@@ -542,6 +615,12 @@ impl SandboxResolvedPaths {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostStartupReportRoleV2 {
+    Canary,
+    Component,
+}
+
 /// The complete typed input used to create one sandbox transient service.
 ///
 /// The specification owns the root transferred over D-Bus and every descriptor
@@ -560,6 +639,7 @@ pub struct SandboxUnitSpec {
     devices: Vec<SandboxDevice>,
     guest_agent_descriptors: Option<SandboxGuestAgentDescriptorsV1>,
     pub(crate) host_canary_report: Option<SandboxDescriptorPath>,
+    host_startup_report_role: HostStartupReportRoleV2,
     launch_binding: Option<[u8; 32]>,
     timeout_start: Duration,
     timeout_stop: Duration,
@@ -577,6 +657,16 @@ pub struct SandboxGuestAgentDescriptorsV1 {
 }
 
 impl SandboxUnitSpec {
+    /// Bounds the fixed nspawn argument compiler's dominant construction peak.
+    ///
+    /// Native descriptors and input catalog owners require separate admission.
+    #[must_use]
+    pub fn construction_receiving_bytes_v2() -> Option<usize> {
+        std::mem::size_of::<Self>().checked_mul(4)?
+            .checked_add(MAX_ARGUMENTS.checked_mul(std::mem::size_of::<String>())?.checked_mul(2)?)?
+            .checked_add(MAX_ARGUMENT_BYTES.checked_mul(4)?)
+    }
+
     /// Borrows the original resource request used by the property encoder.
     #[must_use]
     pub const fn resources(&self) -> &SandboxResources {
@@ -621,6 +711,7 @@ impl SandboxUnitSpec {
             devices: Vec::new(),
             guest_agent_descriptors: None,
             host_canary_report: None,
+            host_startup_report_role: HostStartupReportRoleV2::Canary,
             launch_binding: None,
             timeout_start,
             timeout_stop,
@@ -658,13 +749,25 @@ impl SandboxUnitSpec {
     /// Returns an error for the all-zero sentinel or a spec which is already
     /// bound, preventing a caller from silently rebinding compiled authority.
     pub fn into_bound(mut self, launch_binding: [u8; 32]) -> Result<Self> {
+        self.bind_launch_retaining_v2(launch_binding)?;
+        Ok(self)
+    }
+
+    /// Binds the same held specification without consuming it on refusal.
+    ///
+    /// This mechanical operation validates only the binding sentinel and the
+    /// specification's existing assignment; it grants no launch permission.
+    ///
+    /// # Errors
+    /// Rejects zero or already assigned bindings and leaves the spec unchanged.
+    pub fn bind_launch_retaining_v2(&mut self, launch_binding: [u8; 32]) -> Result<()> {
         if launch_binding == [0; 32] || self.launch_binding.is_some() {
             return Err(invalid(
                 "payload launch binding is zero or already assigned",
             ));
         }
         self.launch_binding = Some(launch_binding);
-        Ok(self)
+        Ok(())
     }
 
     /// Adds a typed supervisor device allowlist.
@@ -702,23 +805,64 @@ impl SandboxUnitSpec {
         provisioning: BorrowedFd<'_>,
         attach_trust: BorrowedFd<'_>,
     ) -> Result<Self> {
+        self.bind_guest_agent_descriptors_engine_v2(channel, provisioning, attach_trust, None)?;
+        Ok(self)
+    }
+
+    /// Pins the same three roles while retaining every reached native result.
+    ///
+    /// The input specification stays in its caller on failure. This entry uses
+    /// the ordinary duplication, argument and validation engine unchanged.
+    ///
+    /// # Errors
+    /// Refuses repeated entry, bound/provisioned specifications, failed pins or
+    /// oversized arguments. Earlier pins remain borrowed from `original`.
+    pub fn bind_guest_agent_descriptors_retaining_v2(
+        &mut self,
+        channel: BorrowedFd<'_>,
+        provisioning: BorrowedFd<'_>,
+        attach_trust: BorrowedFd<'_>,
+        original: &mut SandboxGuestAgentPinOriginalV2,
+    ) -> Result<()> {
+        if original.attempted {
+            return Err(invalid("guest descriptor pin destination is already entered"));
+        }
+        original.attempted = true;
+        self.bind_guest_agent_descriptors_engine_v2(channel, provisioning, attach_trust, Some(original))
+    }
+
+    fn bind_guest_agent_descriptors_engine_v2(
+        &mut self,
+        channel: BorrowedFd<'_>,
+        provisioning: BorrowedFd<'_>,
+        attach_trust: BorrowedFd<'_>,
+        original: Option<&mut SandboxGuestAgentPinOriginalV2>,
+    ) -> Result<()> {
         if self.launch_binding.is_some() || self.guest_agent_descriptors.is_some() {
             return Err(invalid("guest descriptors must precede launch binding"));
         }
-        let descriptors = SandboxGuestAgentDescriptorsV1 {
-            channel: SandboxDescriptorPath::for_current_process(channel)
-                .map_err(|error| invalid(format!("cannot pin guest channel: {error}")))?,
-            provisioning: SandboxDescriptorPath::for_current_process(provisioning)
-                .map_err(|error| invalid(format!("cannot pin guest provisioning: {error}")))?,
-            attach_trust: SandboxDescriptorPath::for_current_process(attach_trust)
-                .map_err(|error| invalid(format!("cannot pin guest attach trust: {error}")))?,
-        };
-        self.arguments = self
-            .command
-            .arguments(self.paths.attachment_anchor_pin.is_some(), true);
+        let mut local = [None, None, None];
+        let pins = match original { Some(original) => &mut original.pins, None => &mut local };
+        for (index, (descriptor, role)) in [
+            (channel, "channel"), (provisioning, "provisioning"), (attach_trust, "attach trust"),
+        ].into_iter().enumerate() {
+            pins[index] = Some(SandboxDescriptorPath::for_current_process(descriptor));
+            if let Some(Err(error)) = pins[index].as_ref() {
+                return Err(invalid(format!("cannot pin guest {role}: {error}")));
+            }
+        }
+        self.arguments = self.command.arguments(self.paths.attachment_anchor_pin.is_some(), true);
         validate_arguments(&self.arguments)?;
-        self.guest_agent_descriptors = Some(descriptors);
-        Ok(self)
+        let [Some(Ok(channel)), Some(Ok(provisioning)), Some(Ok(attach_trust))] =
+            pins.each_mut().map(Option::take)
+        else {
+            // All three results were inspected under this exclusive borrow.
+            std::process::abort();
+        };
+        self.guest_agent_descriptors = Some(SandboxGuestAgentDescriptorsV1 {
+            channel, provisioning, attach_trust,
+        });
+        Ok(())
     }
 
     /// Previews only the fixed Agent and Host-canary report argument semantics.
@@ -763,6 +907,45 @@ impl SandboxUnitSpec {
         spec.arguments = spec.host_canary_arguments();
         validate_arguments(&spec.arguments)?;
         Ok(spec)
+    }
+
+    /// Pins the fixed normal startup report after the ordinary Agent roles.
+    ///
+    /// The original duplication result stays in `original` on refusal. This
+    /// mechanical role supplies no launch, component or readiness authority.
+    ///
+    /// # Errors
+    /// Refuses bound or incomplete Agent specifications, reentry, failed native
+    /// duplication, and oversized fixed command arguments.
+    pub fn bind_component_startup_report_retaining_v2(
+        &mut self,
+        report: BorrowedFd<'_>,
+        original: &mut Option<std::io::Result<SandboxDescriptorPath>>,
+    ) -> Result<()> {
+        if self.launch_binding.is_some() || self.guest_agent_descriptors.is_none()
+            || self.host_canary_report.is_some() || original.is_some()
+        {
+            return Err(invalid("component report must follow Agent pins and precede binding"));
+        }
+        *original = Some(SandboxDescriptorPath::for_current_process(report));
+        if let Some(Err(cause)) = original.as_ref() {
+            return Err(invalid(format!("cannot pin component report: {cause}")));
+        }
+        let mut arguments = self.command.arguments(self.paths.attachment_anchor_pin.is_some(), true);
+        arguments.push("--aos-host-component-readiness-report".to_owned());
+        validate_arguments(&arguments)?;
+        let Some(Ok(report)) = original.take() else { std::process::abort(); };
+        self.host_canary_report = Some(report);
+        self.host_startup_report_role = HostStartupReportRoleV2::Component;
+        self.arguments = arguments;
+        Ok(())
+    }
+
+    pub(crate) fn host_startup_report_role_v2(&self) -> &'static str {
+        match self.host_startup_report_role {
+            HostStartupReportRoleV2::Canary => "aos-host-readiness-report",
+            HostStartupReportRoleV2::Component => "aos-host-component-readiness-report",
+        }
     }
 
     fn host_canary_arguments(&self) -> Vec<String> {
@@ -1092,22 +1275,22 @@ impl SystemdClient {
             .build()
             .await?;
 
-        let id_before = unit.id().await?;
-        let invocation_before = parse_invocation_id(unit.invocation_id().await?)?;
-        let environment_before = service.environment().await?;
+        let id_before = launch_property_v2!(self, unit, id, "Id", String)?;
+        let invocation_before = parse_invocation_id(launch_property_v2!(self, unit, invocation_id, "InvocationID", Vec<u8>)?)?;
+        let environment_before = launch_property_v2!(self, service, environment, "Environment", Vec<String>)?;
         let binding =
             exact_unit::parse_launch_binding(&environment_before, ExactUnitRole::Payload)?;
 
-        let cgroup = parse_cgroup(name, service.control_group().await?)?;
-        let load_state = unit.load_state().await?;
-        let active_state = unit.active_state().await?;
-        let sub_state = unit.sub_state().await?;
-        let freezer_state = FreezerState::from_systemd(unit.freezer_state().await?);
-        let supervisor_pid = NonZeroU32::new(service.main_pid().await?);
+        let cgroup = parse_cgroup(name, launch_property_v2!(self, service, control_group, "ControlGroup", String)?)?;
+        let load_state = launch_property_v2!(self, unit, load_state, "LoadState", String)?;
+        let active_state = launch_property_v2!(self, unit, active_state, "ActiveState", String)?;
+        let sub_state = launch_property_v2!(self, unit, sub_state, "SubState", String)?;
+        let freezer_state = FreezerState::from_systemd(launch_property_v2!(self, unit, freezer_state, "FreezerState", String)?);
+        let supervisor_pid = NonZeroU32::new(launch_property_v2!(self, service, main_pid, "MainPID", u32)?);
 
-        let environment_after = service.environment().await?;
-        let invocation_after = parse_invocation_id(unit.invocation_id().await?)?;
-        let id_after = unit.id().await?;
+        let environment_after = launch_property_v2!(self, service, environment, "Environment", Vec<String>)?;
+        let invocation_after = parse_invocation_id(launch_property_v2!(self, unit, invocation_id, "InvocationID", Vec<u8>)?)?;
+        let id_after = launch_property_v2!(self, unit, id, "Id", String)?;
         if id_before != name.as_str()
             || id_after != name.as_str()
             || id_before != id_after
@@ -1345,6 +1528,92 @@ mod tests {
         )
         .and_then(|value| value.with_devices(vec![SandboxDevice::Tun]))
         .unwrap()
+    }
+
+    fn retained_payload_descriptor_numbers_v2(original: &PayloadUnitPropertyOriginalV2) -> Vec<i32> {
+        original.properties.iter().find_map(|(name, value)| {
+            if name != "ExtraFileDescriptors" { return None; }
+            let Value::Array(array) = &**value else { panic!("descriptor property is not an array") };
+            Some(array.inner().iter().map(|value| {
+                let Value::Structure(record) = value else { panic!("descriptor row is not a structure") };
+                let Value::Fd(descriptor) = &record.fields()[0] else { panic!("descriptor role has no FD") };
+                assert!(rustix::fs::fstat(descriptor).is_ok());
+                descriptor.as_raw_fd()
+            }).collect())
+        }).unwrap()
+    }
+
+    #[test]
+    fn retained_payload_keeps_actual_fd_properties_after_later_duration_refusal() {
+        let mut specification = fixture();
+        // Exercise the existing post-FD scalar refusal directly inside the
+        // private fixture; public constructors already reject this duration.
+        specification.timeout_start = Duration::MAX;
+        let mut original = PayloadUnitPropertyOriginalV2::new();
+
+        assert!(original.prepare_once_v2(&specification).is_err());
+        let numbers = retained_payload_descriptor_numbers_v2(&original);
+        assert_eq!(numbers.len(), 1);
+        assert!(original.active_descriptors.is_empty());
+        assert!(original.failure().unwrap().downcast_ref::<Error>().is_some());
+        let first = original.failure().unwrap() as *const dyn std::error::Error;
+        assert!(original.prepare_once_v2(&specification).is_err());
+        assert_eq!(original.failure().unwrap() as *const dyn std::error::Error, first);
+        assert_eq!(retained_payload_descriptor_numbers_v2(&original), numbers);
+    }
+
+    #[test]
+    fn retained_payload_binds_whole_spec_and_exact_source_arc_owners() {
+        let specification = fixture();
+        let mut original = PayloadUnitPropertyOriginalV2::new();
+        original.prepare_once_v2(&specification).unwrap();
+        let allocation = original.completed_properties_v2(&specification).unwrap().as_ptr();
+        let clone = specification.clone();
+        assert_eq!(original.completed_properties_v2(&clone).unwrap().as_ptr(), allocation);
+
+        let mut foreign = specification.clone();
+        foreign.paths.root_pin = descriptor_path("/");
+        // Equal path DATA alone cannot replace the actual original source Arc.
+        foreign.paths.root_pin.path = specification.paths.root_pin.path.clone();
+        assert_eq!(foreign, specification);
+        assert!(original.completed_properties_v2(&foreign).is_err());
+        assert_eq!(original.completed_properties_v2(&specification).unwrap().as_ptr(), allocation);
+    }
+
+    #[test]
+    fn retained_payload_uses_same_property_program_and_truthful_pre_catalog_bound() {
+        let specification = fixture();
+        let ordinary = specification.properties().unwrap();
+        let mut original = PayloadUnitPropertyOriginalV2::new();
+        original.prepare_once_v2(&specification).unwrap();
+        let retained = original.completed_properties_v2(&specification).unwrap();
+        let signatures = |properties: &[crate::manager_proxy::TransientProperty]| {
+            properties.iter().map(|(name, value)| (name.clone(), value.value_signature().to_string())).collect::<Vec<_>>()
+        };
+        assert_eq!(signatures(retained), signatures(&ordinary));
+        let (bytes, files, namespaces) = PayloadUnitPropertyOriginalV2::receiving_obligations_v2().unwrap();
+        assert!(bytes > SandboxUnitSpec::construction_receiving_bytes_v2().unwrap());
+        assert_eq!(files, 7);
+        assert!(namespaces >= retained.len() + MAX_ARGUMENTS + MAX_DEVICES + 7);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rejected_in_place_binding_keeps_the_same_live_specification() {
+        let mut spec = fixture();
+        let before = spec.semantic_digest_v1();
+        let root_identity = rustix::fs::fstat(spec.paths.root_pin.pin.as_fd()).unwrap();
+
+        assert!(spec.bind_launch_retaining_v2([0; 32]).is_err());
+        assert_eq!(spec.semantic_digest_v1(), before);
+        assert_eq!(spec.launch_binding(), None);
+        let after = rustix::fs::fstat(spec.paths.root_pin.pin.as_fd()).unwrap();
+        assert_eq!((after.st_dev, after.st_ino), (root_identity.st_dev, root_identity.st_ino));
+
+        spec.bind_launch_retaining_v2([7; 32]).unwrap();
+        assert!(spec.bind_launch_retaining_v2([8; 32]).is_err());
+        assert_eq!(spec.launch_binding(), Some([7; 32]));
+        assert!(rustix::fs::fstat(spec.paths.root_pin.pin.as_fd()).is_ok());
     }
 
     #[test]
@@ -2326,3 +2595,6 @@ mod tests {
         assert!(parse_cgroup(&name, "/system.slice/other.service".into()).is_err());
     }
 }
+
+#[cfg(target_os = "linux")]
+pub use guardian::GuardianExecutableValidationOriginalV2;

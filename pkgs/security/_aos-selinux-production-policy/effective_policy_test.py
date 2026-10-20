@@ -81,9 +81,9 @@ class FakePolicy:
             effective_policy.NO_CONTEXT_TRANSLATION_ATTRIBUTE: set(
                 effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS
             ),
-            effective_policy.PRIVATE_ROOT_CUSTODY_ATTRIBUTE: {
-                "aos_sandbox_policy_authority_t"
-            },
+            effective_policy.PRIVATE_ROOT_CUSTODY_ATTRIBUTE: set(dict(
+                effective_policy.EXPLICIT_DOMAIN_ATTRIBUTES
+            )[effective_policy.PRIVATE_ROOT_CUSTODY_ATTRIBUTE]),
         }
         self.queries: list[dict[str, object]] = []
         self.allows = {
@@ -116,6 +116,9 @@ class FakePolicy:
             "fixed native GET_INFO selector",
             perms=frozenset({effective_policy.HOST_CANARY_NATIVE_PIDFS_SELECTOR}),
         )]
+        for target in ("aos_sandbox_source_signer_t", "aos_sandbox_policy_authority_t", "init_t"):
+            access = effective_policy.Access("aos_sandbox_source_signer_t", target, "file", "ioctl")
+            self.xperms[access] = [FakeXpermRule("fixed Source peer GET_INFO", perms=frozenset({0xff0b}))]
         state = effective_policy.Access(
             "aos_sandbox_host_t", effective_policy.HOST_CANARY_STATE_TYPE, "file", "ioctl",
         )
@@ -181,10 +184,13 @@ class FakeQuery:
                                 continue
                         elif str(source) not in sources:
                             continue
-                    if target is not None and not target_members.intersection(
-                        concrete_target.expand()
-                    ):
-                        continue
+                    if target is not None:
+                        targets = concrete_target.expand()
+                        if self.criteria.get("target_regex"):
+                            if not any(re.search(str(target), str(member)) for member in targets):
+                                continue
+                        elif not target_members.intersection(targets):
+                            continue
                     matches.append(replace(
                         rule, source=concrete_source, target=concrete_target,
                     ))
@@ -278,17 +284,9 @@ class EffectivePolicyTest(unittest.TestCase):
     """Exercises positive, negative, conditional, and permissive gates."""
 
     def _storage_policy(self) -> FakePolicy:
-        """Uses the current custody cohort only for the new delivery vectors."""
+        """Uses the complete currently selected custody cohort."""
 
-        policy = FakePolicy()
-        # Leave legacy fixture/expectations unchanged; new B vectors must
-        # reach their own checks rather than fail an inherited stale cohort.
-        policy.attributes[effective_policy.PRIVATE_ROOT_CUSTODY_ATTRIBUTE] = {
-            "aos_sandbox_policy_authority_t", "aos_nix_offline_prepare_t",
-            "aos_nix_offline_tpm_helper_t",
-            *effective_policy.owner_policy.RUNTIME_DOMAINS,
-        }
-        return policy
+        return FakePolicy()
 
     def test_transition_no_filter_never_observes_filename(self) -> None:
         class UnobservableName:
@@ -297,9 +295,10 @@ class EffectivePolicyTest(unittest.TestCase):
                 raise RuntimeError("legacy query must not observe filename")
 
         rule = UnobservableName()
-        queries = SimpleNamespace(TERuleQuery=lambda policy, **criteria: SimpleNamespace(
-            results=lambda: [rule],
-        ))
+        queries = SimpleNamespace(
+            TERuletype=FAKE_SETOOLS.TERuletype,
+            TERuleQuery=lambda policy, **criteria: SimpleNamespace(results=lambda: [rule]),
+        )
         transition = effective_policy.Transition("source", "target", "file", "default")
 
         self.assertEqual(effective_policy.transition_rules(queries, None, transition), [rule])
@@ -369,6 +368,68 @@ class EffectivePolicyTest(unittest.TestCase):
                 )]
 
                 with self.assertRaisesRegex(ValueError, "unexpected Storage credential"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_noapply_generic_promotion_cannot_satisfy_fixed_public_or_secret_name(self) -> None:
+        owner = effective_policy.owner_policy
+        for name in (owner.HOST_NO_APPLY_PUBLIC_NAME, owner.ROOT_NO_APPLY_SIGNING_NAME):
+            with self.subTest(name=name):
+                policy = self._storage_policy()
+                transition = next(
+                    transition for transition in effective_policy.OWNER_TRANSITIONS
+                    if transition.filename == name
+                )
+                policy.transitions[transition] = [FakeRule(
+                    "generic credential impostor", default=transition.default,
+                )]
+
+                with self.assertRaisesRegex(ValueError, "missing effective transition"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_noapply_delivery_rejects_disabled_sibling_and_generic_promotion(self) -> None:
+        owner = effective_policy.owner_policy
+        for parent, promoted in (
+            (owner.HOST_NO_APPLY_CREDENTIAL, owner.HOST_NO_APPLY_CREDENTIAL),
+            ("aos_sandbox_policy_authority_credential_t", owner.ROOT_NO_APPLY_SIGNING_CREDENTIAL),
+        ):
+            for name in (None, "unselected-credential"):
+                with self.subTest(parent=parent, name=name):
+                    policy = self._storage_policy()
+                    transition = effective_policy.Transition(
+                        "init_t", parent, "file", promoted, filename=name,
+                    )
+                    policy.transitions[transition] = [FakeRule(
+                        "disabled credential widening", active=False, default=promoted,
+                        filename_value=name,
+                    )]
+
+                    with self.assertRaisesRegex(ValueError, "unexpected Root NoApply credential"):
+                        effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_noapply_secret_and_public_custody_deny_foreign_read_and_owner_write(self) -> None:
+        owner = effective_policy.owner_policy
+        for domain, target, permission in (
+            ("aos_sandbox_host_t", owner.ROOT_NO_APPLY_SIGNING_CREDENTIAL, "open"),
+            ("aos_sandbox_controller_t", owner.ROOT_NO_APPLY_SIGNING_CREDENTIAL, "read"),
+            ("aos_sandbox_policy_authority_t", owner.ROOT_NO_APPLY_SIGNING_CREDENTIAL, "write"),
+            ("aos_sandbox_host_t", owner.HOST_NO_APPLY_CREDENTIAL, "write"),
+        ):
+            with self.subTest(domain=domain, target=target, permission=permission):
+                policy = self._storage_policy()
+                access = effective_policy.Access(domain, target, "file", permission)
+                policy.allows[access] = [FakeRule("credential role or mutation widening")]
+
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_noapply_credential_objects_never_inherit_broad_file_type(self) -> None:
+        owner = effective_policy.owner_policy
+        for target in (owner.ROOT_NO_APPLY_SIGNING_CREDENTIAL, owner.HOST_NO_APPLY_CREDENTIAL):
+            with self.subTest(target=target):
+                policy = self._storage_policy()
+                policy.file_types.add(target)
+
+                with self.assertRaisesRegex(ValueError, "protected object inherited broad file_type"):
                     effective_policy.check_policy(FAKE_SETOOLS, policy)
 
     def test_storage_source_read_and_destination_copy_are_separate(self) -> None:
@@ -503,7 +564,8 @@ class EffectivePolicyTest(unittest.TestCase):
             + 2 * sum(len(domains) for _, domains in effective_policy.EXPLICIT_DOMAIN_ATTRIBUTES)
             + len(effective_policy.POSITIVE_ACCESS)
             + len(effective_policy.NEGATIVE_ACCESS)
-            + 3,  # One closed delivery set and two source attribute cuts.
+            + 4  # Two closed delivery sets and two source attribute cuts.
+            + 7,  # Two namespace, four pidfs and one state ioctl cells.
         )
 
     def test_explicit_loader_membership_is_exact_and_preserves_domains(self) -> None:
@@ -544,7 +606,8 @@ class EffectivePolicyTest(unittest.TestCase):
             },
         )
         self.assertEqual(
-            set(effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS),
+            set(effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS)
+            | {effective_policy.owner_policy.OFFLINE_HELPER},
             {
                 access.source for access in effective_policy.NEGATIVE_ACCESS
                 if access.target == "*"
@@ -674,6 +737,61 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(helper, owner, "unix_stream_socket", permission)
                     )
 
+    def test_source_observer_requires_status_and_exact_socket_targets(self) -> None:
+        source = "aos_sandbox_source_signer_t"
+        for target, object_class, permission in (
+            (source, "unix_stream_socket", "connect"),
+            ("system_dbusd_t", "unix_stream_socket", "connectto"),
+            ("systemd_unit_t", "service", "status"),
+            ("security_t", "security", "read_policy"),
+        ):
+            with self.subTest(target=target, permission=permission):
+                policy = self._storage_policy()
+                policy.allows[effective_policy.Access(source, target, object_class, permission)] = []
+                with self.assertRaisesRegex(ValueError, "missing effective allow"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_source_pidfs_refuses_namespace_selectors_even_when_disabled(self) -> None:
+        for target in ("init_t", "aos_sandbox_policy_authority_t"):
+            with self.subTest(target=target):
+                policy = self._storage_policy()
+                access = effective_policy.Access(
+                    "aos_sandbox_source_signer_t", target, "file", "ioctl",
+                )
+                policy.xperms[access].append(FakeXpermRule(
+                    "disabled namespace ioctl", active=False, perms=frozenset({0xff01}),
+                ))
+
+                with self.assertRaisesRegex(ValueError, "forbidden Source Root peer pidfs ioctl selectors"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_source_root_pidfs_observation_grants_no_other_custody_cell(self) -> None:
+        source = "aos_sandbox_source_signer_t"
+        root = "aos_sandbox_policy_authority_t"
+        for object_class, permission in effective_policy.owner_policy.ROOT_CUSTODY_CUTS:
+            if (object_class, permission) == ("file", "ioctl"):
+                continue
+            with self.subTest(object_class=object_class, permission=permission):
+                policy = self._storage_policy()
+                access = effective_policy.Access(source, root, object_class, permission)
+                policy.allows[access] = [FakeRule("Source custody widening")]
+
+                with self.assertRaisesRegex(ValueError, "foreign normal Root custody"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_source_observer_refuses_foreign_and_disabled_attribute_targets(self) -> None:
+        source = "aos_sandbox_source_signer_t"
+        for active in (True, False):
+            policy = self._storage_policy()
+            access = effective_policy.Access(source, source, "unix_stream_socket", "connect")
+            policy.allows[access].append(FakeRule(
+                "mixed same-role and foreign targets", active=active,
+                target=FakeTypeAttribute({source, "init_t", "aos_sandbox_cache_signer_t"}),
+            ))
+            with self.subTest(active=active):
+                with self.assertRaisesRegex(ValueError, "forbidden Source observer socket target"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_signer_inherited_listener_channels_remain_required(self) -> None:
         for signer in effective_policy.view_policy.SIGNER_DOMAINS:
             for permission in ("bind", "create", "getattr", "getopt", "listen", "setopt"):
@@ -711,7 +829,13 @@ class EffectivePolicyTest(unittest.TestCase):
                         source=FakeAttribute("indirect_clients", (client, "init_t")),
                         target=FakeTypeAttribute(set(members)),
                     )]
-                    with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    rejection = (
+                        "forbidden Source observer socket target"
+                        if client == "aos_sandbox_source_signer_t"
+                        and permission in effective_policy.view_policy.SOURCE_OBSERVER_SOCKET_TARGETS
+                        else "forbidden allow exists"
+                    )
+                    with self.assertRaisesRegex(ValueError, rejection):
                         effective_policy.check_policy(FAKE_SETOOLS, policy)
 
     def test_loader_exclusion_preserves_ordinary_textrel_and_explicit_worker_loads(self) -> None:
@@ -1131,7 +1255,20 @@ class EffectivePolicyTest(unittest.TestCase):
             line for line in source.splitlines()
             if line.startswith("typeattribute ") and line.endswith(f" {marker};")
         ]
-        self.assertEqual(memberships, [f"typeattribute {root} {marker};"])
+        # This file is the complete source template. The Nix recipe removes
+        # unselected closed blocks; the effective matrix checks that selected
+        # cohort separately rather than pretending the template is Root-only.
+        expected_domains = {
+            root, "aos_nix_offline_prepare_t", "aos_nix_offline_tpm_helper_t",
+            "aos_sandbox_mount_t", "aos_source_provider_t",
+            *effective_policy.owner_policy.ONLINE_NIX_KNOWN_DOMAINS,
+            *effective_policy.owner_policy.RUNTIME_KNOWN_DOMAINS,
+        }
+        expected_memberships = {
+            f"typeattribute {domain} {marker};" for domain in expected_domains
+        }
+        self.assertEqual(set(memberships), expected_memberships)
+        self.assertEqual(len(memberships), len(expected_memberships))
 
         policy = FakePolicy()
         policy.attributes[marker].clear()
@@ -2013,6 +2150,8 @@ class SelectedLauncherImageIoctlTest(unittest.TestCase):
         self.assertEqual(owner.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS, (
             ("aos_sandbox_mount_t", "init_exec_t"),
             ("aos_source_provider_t", "init_exec_t"),
+            ("aos_sandbox_mount_t", "aos_sandbox_mount_exec_t"),
+            ("aos_source_provider_t", "aos_source_provider_exec_t"),
         ))
         self.assertEqual(owner.SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS, frozenset())
 
@@ -2108,12 +2247,22 @@ class SelectedLauncherImageIoctlTest(unittest.TestCase):
         access = next(iter(policy.xperms))
         cells = effective_policy.owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS
         source_attribute = FakeTypeAttribute({source for source, _ in cells})
-        policy.allows = {access: [FakeRule("two fixed sources", source=source_attribute)]}
-        policy.xperms = {access: [FakeXpermRule(
+        # The shared init image admits the exact two-source attribute. Each
+        # own-image cell stays separate; their cross-product is forbidden.
+        policy.allows = {
+            key: rules for key, rules in policy.allows.items()
+            if key.target != "init_exec_t"
+        }
+        policy.xperms = {
+            key: rules for key, rules in policy.xperms.items()
+            if key.target != "init_exec_t"
+        }
+        policy.allows[access] = [FakeRule("two fixed sources", source=source_attribute)]
+        policy.xperms[access] = [FakeXpermRule(
             "two fixed sources", source=source_attribute, perms=frozenset({0x6686}),
-        )]}
+        )]
 
-        self.assertEqual(len(self._check_selected(policy)), 2)
+        self.assertEqual(len(self._check_selected(policy)), len(cells))
 
     def test_default_rejects_base_and_extended_grants_even_if_inactive(self) -> None:
         cells = effective_policy.owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS
@@ -2158,7 +2307,10 @@ class SelectedLauncherImageIoctlTest(unittest.TestCase):
             effective_policy._check_selected_launcher_image_ioctls(FAKE_SETOOLS, policy)
 
     def test_aliases_and_nonabsence_errors_are_not_hidden(self) -> None:
-        names = ("init_exec_t", "aos_sandbox_mount_t", "aos_source_provider_t")
+        names = (
+            "init_exec_t", "aos_sandbox_mount_t", "aos_source_provider_t",
+            "aos_sandbox_mount_exec_t", "aos_source_provider_exec_t",
+        )
         for aliased_name in names:
             class AliasedPolicy(FakePolicy):
                 def lookup_type(self, name: str) -> FakeType:
@@ -2185,7 +2337,10 @@ class SelectedLauncherImageIoctlTest(unittest.TestCase):
         for query in policy.queries:
             self.assertEqual(query["perms"], ["ioctl"])
             self.assertEqual(query["tclass"], ["file"])
-            self.assertEqual(query["target"], "init_exec_t")
+            for _, target in effective_policy.owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS:
+                self.assertIsNotNone(re.search(str(query["target"]), target))
+            self.assertIsNone(re.search(str(query["target"]), "other_image_t"))
+            self.assertIs(query["target_regex"], True)
             self.assertIs(query["source_regex"], True)
             self.assertIs(query["source_indirect"], True)
             self.assertIs(query["target_indirect"], True)

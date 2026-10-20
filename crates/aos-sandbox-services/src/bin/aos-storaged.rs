@@ -1,7 +1,7 @@
 //! Runs the authenticated, systemd-activated Storage broker.
 //!
 //! The daemon claims its exact listener before opening protected Storage state.
-//! Each connection completes one authenticated, durable, bounded request cycle.
+//! Each connection retains its authenticated writer across sequential bounded requests.
 
 use std::env;
 use std::os::fd::OwnedFd;
@@ -30,6 +30,23 @@ use aos_sandbox_storage::{
     DormantStorageApplyCompositionV1, StorageIdentityPoolV1, StoragePrepareReadiness,
     StorageRuntimeError, StorageServiceError, SystemdZfsExecutor,
 };
+
+// No actual authenticated Recovery owner exists at this stack boundary.
+// Parking preserves every old channel, native result, output and spent debit;
+// a delivered negative receipt never enables ordinary service or F disposal.
+fn retain_capture_cleanup_residual_v4(
+    composition: &DormantStorageApplyCompositionV1,
+    receiving: &aos_sandbox::StoragePrepareReceivingLoanV1<'_>,
+) -> ! {
+    if let Some(cause) = composition.original_capture_stop_failure_v4(receiving) {
+        eprintln!("aos-storaged: Capture Stop cleanup remains uncertain: {cause}");
+    } else if composition.original_capture_stopped_with_residual_v4() {
+        eprintln!("aos-storaged: Capture runtime stopped with retained incomplete output");
+    }
+    loop {
+        std::thread::park();
+    }
+}
 
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const STATE_ROOT: &str = "/var/lib/aos/sandbox-storage";
@@ -102,15 +119,20 @@ enum StorageStartupRunErrorV3 {
 // one daemon loop without consuming a selected owner or using legacy early-send.
 enum StorageRunCompositionV1<'original> {
     Legacy(&'original mut Option<DormantStorageApplyCompositionV1>),
+    OrdinaryOriginal {
+        composition: &'original mut DormantStorageApplyCompositionV1,
+        service: aos_sandbox_storage::runtime::StorageOriginalServiceSlotV1<'original>,
+    },
     Original {
         composition: &'original mut DormantStorageApplyCompositionV1,
         trust: aos_sandbox_storage::runtime::StorageOriginalNativeTrustLoanV1<'original>,
+        service: Option<aos_sandbox_storage::runtime::StorageOriginalServiceSlotV1<'original>>,
     },
 }
 
 impl StorageRunCompositionV1<'_> {
     fn is_original(&self) -> bool {
-        matches!(self, Self::Original { .. })
+        matches!(self, Self::Original { .. } | Self::OrdinaryOriginal { .. })
     }
 
     fn composition_mut(&mut self) -> &mut DormantStorageApplyCompositionV1 {
@@ -119,8 +141,184 @@ impl StorageRunCompositionV1<'_> {
                 Some(composition) => composition,
                 None => std::process::abort(),
             },
-            Self::Original { composition, .. } => composition,
+            Self::Original { composition, .. } | Self::OrdinaryOriginal { composition, .. } => composition,
         }
+    }
+
+    fn push_original_capture_terminal_poll_v3<'fd>(&'fd self,
+        polls: &mut Vec<rustix::event::PollFd<'fd>>) -> Option<usize> {
+        match self {
+            Self::Original { composition, .. } | Self::OrdinaryOriginal { composition, .. } =>
+                composition.push_original_capture_terminal_poll_v3(polls),
+            Self::Legacy(_) => None,
+        }
+    }
+
+    fn serve_original_broker_turn_v1(
+        &mut self,
+        activation: &mut aos_sandbox_broker_session_security::ProductionBrokerSessionActivationV1,
+        connection: &mut aos_sandbox_broker_session_security::ProductionOriginalStorageConnectionV1,
+        deadline: u64,
+        disconnected: bool,
+        mut output: Option<&mut StorageExecutionOutputCustodyV1>,
+    ) {
+        let (composition, service) = match self {
+            Self::OrdinaryOriginal { composition, service } => (&mut **composition, service),
+            Self::Original { composition, service: Some(service), .. } => (&mut **composition, service),
+            _ => std::process::abort(),
+        };
+        if let Err(cause) = service.lend_original_v1(composition) {
+            eprintln!("aos-storaged: original service admission failed: {}", service.failure_with_composition(composition).unwrap_or(&cause));
+            std::process::exit(1);
+        }
+        {
+            let mut receiving = match service.borrow_receiving_v1() {
+                Ok(receiving) => receiving,
+                Err(cause) => {
+                    eprintln!("aos-storaged: original receiving unavailable: {cause}");
+                    std::process::exit(1);
+                }
+            };
+            let result = if disconnected {
+                connection.retire_once_v1(&mut receiving, deadline)
+            } else {
+                connection.serve_once_v1(activation, composition, output.as_deref_mut(), &mut receiving, deadline)
+            };
+            if let Err(cause) = &result {
+                let cause = connection.failure_with_storage_output_v3(composition, output.as_deref(), &receiving)
+                    .or_else(|| activation.storage_prepare_failure_v1())
+                    .or_else(|| receiving.failure())
+                    .unwrap_or(cause);
+                eprintln!("aos-storaged: resident original Storage operation failed: {cause}");
+                std::process::exit(1);
+            }
+        }
+        // Actual positive Sent/post/control disposal (or positive idle accept)
+        // ended the short borrow. No I/O/check follows this same-owner move.
+        service.return_after_positive_v1(composition);
+    }
+
+    fn serve_original_capture_held_v3(
+        &mut self,
+        listener: &mut RecordSubjectListener,
+        output: &mut StorageExecutionOutputCustodyV1,
+    ) -> bool {
+        let awaiting_begin = self.composition_mut().awaiting_original_capture_begin_v3();
+        let cleanup = !awaiting_begin
+            && self
+                .composition_mut()
+                .can_receive_original_capture_stop_v4();
+        if !awaiting_begin && !cleanup {
+            return false;
+        }
+        self.serve_original_capture_phase_v3(listener, output, cleanup);
+        true
+    }
+
+    fn serve_original_capture_phase_v3(
+        &mut self,
+        listener: &mut RecordSubjectListener,
+        output: &mut StorageExecutionOutputCustodyV1,
+        cleanup: bool,
+    ) {
+        let (composition, service) = match self {
+            Self::OrdinaryOriginal {
+                composition,
+                service,
+            } => (&mut **composition, service),
+            Self::Original {
+                composition,
+                service: Some(service),
+                ..
+            } => (&mut **composition, service),
+            _ => std::process::abort(),
+        };
+        if let Err(cause) = service.lend_original_v1(composition) {
+            eprintln!(
+                "aos-storaged: resident Capture lender failed: {}",
+                service
+                    .failure_with_composition(composition)
+                    .unwrap_or(&cause)
+            );
+            std::process::exit(1);
+        }
+        {
+            let mut receiving = match service.borrow_receiving_v1() {
+                Ok(receiving) => receiving,
+                Err(cause) => {
+                    eprintln!("aos-storaged: resident Capture original unavailable: {cause}");
+                    std::process::exit(1);
+                }
+            };
+            if cleanup {
+                composition.serve_original_capture_stop_v4(listener, output, &mut receiving);
+                retain_capture_cleanup_residual_v4(composition, &receiving);
+            }
+            composition.serve_original_capture_held_v3(listener, output, &mut receiving);
+            if let Some(cause) = composition
+                .original_capture_reserve_failure_v3(output)
+                .map(|cause| {
+                    if cause.is::<aos_sandbox::StorageReceivingClosedV1>() {
+                        receiving.failure().unwrap_or(cause)
+                    } else {
+                        cause
+                    }
+                })
+                .or_else(|| receiving.failure())
+            {
+                eprintln!("aos-storaged: physical Capture retained failure: {cause}");
+                // This same loan remains on the stack. A fresh Stop arrives
+                // on its separately prepaid control slot after the Host has
+                // fenced/shut its old channel; neither old F nor OFDs reopen.
+                if composition.can_receive_original_capture_stop_v4() {
+                    if composition.wait_original_capture_stop_v4(listener).is_ok() {
+                        composition.serve_original_capture_stop_v4(
+                            listener,
+                            output,
+                            &mut receiving,
+                        );
+                    }
+                }
+                retain_capture_cleanup_residual_v4(composition, &receiving);
+            }
+            if composition.original_capture_physical_completed_v3() {
+                if let Err(cause) = composition.retire_completed_original_capture_v3() {
+                    eprintln!("aos-storaged: physical Capture remains occupied: {cause}");
+                    retain_capture_cleanup_residual_v4(composition, &receiving);
+                }
+            }
+        }
+        service.return_after_positive_v1(composition);
+    }
+
+    fn probe_guest_root_publisher(&mut self) -> Result<(), StorageRuntimeError> {
+        let (composition, service) = match self {
+            Self::OrdinaryOriginal { composition, service } => (&mut **composition, service),
+            Self::Original { composition, service: Some(service), .. } => (&mut **composition, service),
+            _ => return self.composition_mut().probe_guest_root_publisher(),
+        };
+        if let Err(cause) = service.lend_original_v1(composition) {
+            eprintln!("aos-storaged: startup health lender failed: {}",
+                service.failure_with_composition(composition).unwrap_or(&cause));
+            std::process::exit(1);
+        }
+        {
+            let mut receiving = match service.borrow_receiving_v1() {
+                Ok(receiving) => receiving,
+                Err(cause) => {
+                    eprintln!("aos-storaged: startup health original unavailable: {cause}");
+                    std::process::exit(1);
+                }
+            };
+            let result = composition.probe_guest_root_publisher_receiving_v2(&mut receiving);
+            if let Err(cause) = &result {
+                eprintln!("aos-storaged: startup health retained failure: {}",
+                    composition.guest_root_startup_health_failure_v2(&receiving).unwrap_or(cause));
+                std::process::exit(1);
+            }
+        }
+        service.return_after_positive_v1(composition);
+        Ok(())
     }
 
     fn cold_audit(&mut self, state: &Path) -> Result<(), StorageServiceError> {
@@ -133,7 +331,8 @@ impl StorageRunCompositionV1<'_> {
                 **slot = Some(composition.with_private_live_export_cold_audit(state)?);
                 Ok(())
             }
-            Self::Original { composition, .. } => composition.retain_private_live_export_cold_audit(state),
+            Self::Original { composition, .. } | Self::OrdinaryOriginal { composition, .. } =>
+                composition.retain_private_live_export_cold_audit(state),
         }
     }
 
@@ -149,7 +348,10 @@ impl StorageRunCompositionV1<'_> {
                 ),
                 None => std::process::abort(),
             },
-            Self::Original { composition, trust } => {
+            Self::OrdinaryOriginal { composition, .. } => composition.serve_zfs_hold_request_once(
+                listener, verifier, authority, key,
+            ),
+            Self::Original { composition, trust, .. } => {
                 let key = key.ok_or(StorageRuntimeError::Recovery)?;
                 composition.serve_original_held_settlement_once(listener, verifier, trust, key)
             }
@@ -166,7 +368,7 @@ impl std::ops::Deref for StorageRunCompositionV1<'_> {
                 Some(composition) => composition,
                 None => std::process::abort(),
             },
-            Self::Original { composition, .. } => composition,
+            Self::Original { composition, .. } | Self::OrdinaryOriginal { composition, .. } => composition,
         }
     }
 }
@@ -274,6 +476,10 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
     // locals below retain their old creation and reverse destruction positions.
     let mut original_key = None;
     let mut original_operator_credentials = None;
+    let mut original_output_custody = None;
+    let mut original_executor = None;
+    let resource_receiving_selected = original_attempt.as_ref().is_some_and(|original|
+        original.has_storage_service_receiving_original_v1());
     let _original_crossing = original_attempt.as_ref().map(|owner| owner.unwind_fence());
     let result: Result<(), StorageStartupRunErrorV3> = (|| {
         let (
@@ -284,10 +490,37 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             mut operator_listener,
             mut existing_output_listener,
         ) = startup.into_parts();
-        let mut output_custody = if let Some(source) = &arguments.output_key_source {
+        if let Some(original) = original_attempt.as_mut().filter(|_original| resource_receiving_selected) {
+            original.observe_guest_root_template_once_v1(&arguments.guest_root_template)?;
+            if arguments.zfs_hold_key_configured {
+                original.prepare_held_native_daemon_prefix_once_v1(
+                    &arguments.authority_directory, &arguments.bootstrap_directory,
+                    arguments.resolver_policy_directory.as_deref(),
+                )?;
+            } else {
+                original.prepare_ordinary_daemon_prefix_once_v1(
+                    &arguments.authority_directory, &arguments.bootstrap_directory,
+                    arguments.resolver_policy_directory.as_deref(),
+                )?;
+            }
+        }
+        if let Some(source) = arguments.output_key_source.as_ref()
+            .filter(|_| resource_receiving_selected)
+        {
+            original_attempt.as_mut().ok_or(StorageRuntimeError::Receiving)?
+                .capture_daemon_output_once_v1(source, &mut original_output_custody)?;
+        }
+        let mut legacy_output_custody = if resource_receiving_selected {
+            None
+        } else if let Some(source) = &arguments.output_key_source {
             Some(StorageExecutionOutputCustodyV1::open(state_root, source)?)
         } else {
             None
+        };
+        let output_custody = if resource_receiving_selected {
+            &mut original_output_custody
+        } else {
+            &mut legacy_output_custody
         };
         if output_custody.is_some() != existing_output_listener.is_some() {
             return Err(StorageServiceError::Activation(
@@ -297,7 +530,14 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             .into());
         }
         let mut legacy_key = None;
-        let zfs_hold_key = if original_attempt.is_some() {
+        let zfs_hold_key = if let Some(original) = original_attempt.as_mut()
+            .filter(|_original| resource_receiving_selected)
+        {
+            if arguments.zfs_hold_key_configured {
+                original.capture_daemon_hold_key_once_v1(&mut original_key)?;
+            }
+            &original_key
+        } else if original_attempt.is_some() {
             original_key = Some(StorageZfsHoldKeyV1::load()?);
             &original_key
         } else {
@@ -309,20 +549,37 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
         let identity_pool =
             StorageIdentityPoolV1::new(arguments.identity_pool_start, arguments.identity_pool_size)
                 .map_err(StorageRuntimeError::WorkspaceCatalog)?;
-        let executor = SystemdZfsExecutor::new(PathBuf::from(ZFS_WORKER_SOCKET), open_cgroup_root()?)
-            .map_err(StorageRuntimeError::Worker)?;
-        let guest_root_template = ProtectedGuestRootTemplateV1::open(&arguments.guest_root_template)
-            .map_err(|cause| {
-                if original_attempt.is_some() {
-                    StorageStartupRunErrorV3::Template(cause)
-                } else {
-                    StorageStartupRunErrorV3::Service(StorageServiceError::Activation(cause.to_string()))
-                }
-            })?;
+        let mut legacy_executor = if resource_receiving_selected {
+            original_attempt.as_mut().ok_or(StorageRuntimeError::Receiving)?
+                .capture_daemon_executor_once_v1(&mut original_executor)?;
+            None
+        } else {
+            Some(SystemdZfsExecutor::new(PathBuf::from(ZFS_WORKER_SOCKET), open_cgroup_root()?)
+                .map_err(StorageRuntimeError::Worker)?)
+        };
+        // Preserve the ordinary post-executor load/error order. The selected
+        // template stays on Construction through all subsequent fallible gates.
+        let mut legacy_template = if resource_receiving_selected {
+            None
+        } else {
+            Some(ProtectedGuestRootTemplateV1::open(&arguments.guest_root_template)
+                .map_err(|cause| {
+                    if original_attempt.is_some() {
+                        StorageStartupRunErrorV3::Template(cause)
+                    } else {
+                        StorageStartupRunErrorV3::Service(StorageServiceError::Activation(cause.to_string()))
+                    }
+                })?)
+        };
         let mut legacy_operator_credentials = None;
         let operator_credentials = if original_attempt.is_some() {
             if operator_listener.is_some() {
-                original_operator_credentials = Some(StorageOperatorRecoveryCredentialsV1::load()?);
+                if resource_receiving_selected {
+                    original_attempt.as_mut().ok_or(StorageRuntimeError::Receiving)?
+                        .capture_daemon_operator_credentials_once_v1(&mut original_operator_credentials)?;
+                } else {
+                    original_operator_credentials = Some(StorageOperatorRecoveryCredentialsV1::load()?);
+                }
             }
             &original_operator_credentials
         } else {
@@ -331,6 +588,9 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             }
             &legacy_operator_credentials
         };
+        // PID1 delivers the Main resource table only for SERVICE_EXEC_START
+        // with EXEC_PASS_FDS. Provisioning has its own existing Pre/explicit
+        // command custody; it never borrows or reconstructs Main's original.
         if command == StorageStartupCommandV4::ProvisionOperator {
             let credentials = operator_credentials.as_ref().ok_or_else(|| {
                 StorageServiceError::Activation(
@@ -355,7 +615,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 arguments.resolver_policy_directory.as_deref(),
                 identity_pool,
                 arguments.zfs_executable,
-                executor,
+                legacy_executor.take().ok_or(StorageRuntimeError::Receiving)?,
                 credentials,
             )?;
 
@@ -365,11 +625,12 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             if let Some(key) = &zfs_hold_key {
                 key.recheck()?;
             }
-            if let Some(custody) = &output_custody {
+            if let Some(custody) = output_custody.as_ref() {
                 custody.recheck(state_root)?;
             }
             let current_template = ProtectedGuestRootTemplateV1::open(&arguments.guest_root_template)
                 .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+            let guest_root_template = legacy_template.as_ref().ok_or(StorageRuntimeError::Receiving)?;
             if current_template.root() != guest_root_template.root()
                 || current_template.package_binding() != guest_root_template.package_binding()
                 || current_template.root_tree_digest() != guest_root_template.root_tree_digest()
@@ -381,7 +642,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             }
             // Keep the actual template and complete inherited table until all
             // provisioning bookends finish. No actor or effect owner is returned.
-            drop(guest_root_template);
+            drop(legacy_template.take());
             return Ok(());
         }
         // Declare these in the original tuple's order: on legacy error the fourth
@@ -389,15 +650,40 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
         let mut legacy_storage = None;
         let mut legacy_operator_owner = None;
         let (mut storage, operator_owner) = if let Some(original) = original_attempt.as_mut() {
-            original.open_once(
-                &arguments.authority_directory, &arguments.bootstrap_directory,
-                state_root, arguments.resolver_policy_directory.as_deref(),
-                identity_pool, arguments.zfs_executable, executor,
-                zfs_hold_key.as_ref().ok_or(StorageRuntimeError::Recovery)?,
-                operator_credentials.as_ref(), guest_root_template,
-            )?;
-            let (composition, owner, trust) = original.ready_parts()?;
-            (StorageRunCompositionV1::Original { composition, trust }, owner)
+            if resource_receiving_selected {
+                let template = original.take_observed_guest_root_template_once_v1()?;
+                if let Some(key) = zfs_hold_key.as_ref() {
+                    original.open_observed_held_once_v1(
+                        &arguments.authority_directory, &arguments.bootstrap_directory,
+                        state_root, arguments.resolver_policy_directory.as_deref(),
+                        identity_pool, arguments.zfs_executable, &mut original_executor,
+                        key, operator_credentials.as_ref(), template,
+                    )?;
+                    let (composition, owner, trust, service) = original.ready_service_parts_v1()?;
+                    (StorageRunCompositionV1::Original { composition, trust, service: Some(service) }, owner)
+                } else {
+                    original.open_observed_ordinary_once_v1(
+                        &arguments.authority_directory, &arguments.bootstrap_directory,
+                        state_root, arguments.resolver_policy_directory.as_deref(),
+                        identity_pool, arguments.zfs_executable, &mut original_executor,
+                        operator_credentials.as_ref(), template,
+                    )?;
+                    let (composition, owner, service) = original.ordinary_ready_service_parts_v1()?;
+                    (StorageRunCompositionV1::OrdinaryOriginal { composition, service }, owner)
+                }
+            } else {
+                original.open_once(
+                    &arguments.authority_directory, &arguments.bootstrap_directory,
+                    state_root, arguments.resolver_policy_directory.as_deref(),
+                    identity_pool, arguments.zfs_executable,
+                    legacy_executor.take().ok_or(StorageRuntimeError::Receiving)?,
+                    zfs_hold_key.as_ref().ok_or(StorageRuntimeError::Recovery)?,
+                    operator_credentials.as_ref(),
+                    legacy_template.take().ok_or(StorageRuntimeError::Receiving)?,
+                )?;
+                let (composition, owner, trust) = original.ready_parts()?;
+                (StorageRunCompositionV1::Original { composition, trust, service: None }, owner)
+            }
         } else {
             let (composition, owner) = match operator_credentials.as_ref() {
                 Some(credentials) => {
@@ -408,10 +694,10 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                         arguments.resolver_policy_directory.as_deref(),
                         identity_pool,
                         arguments.zfs_executable,
-                        executor,
+                        legacy_executor.take().ok_or(StorageRuntimeError::Receiving)?,
                         credentials,
                     )?;
-                    (storage.with_guest_root_template(guest_root_template), Some(owner))
+                    (storage.with_guest_root_template(legacy_template.take().ok_or(StorageRuntimeError::Receiving)?), Some(owner))
                 }
                 None => (
                     DormantStorageApplyCompositionV1::open_root_owned(
@@ -421,8 +707,8 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                         arguments.resolver_policy_directory.as_deref(),
                         identity_pool,
                         arguments.zfs_executable,
-                        executor,
-                    )?.with_guest_root_template(guest_root_template),
+                        legacy_executor.take().ok_or(StorageRuntimeError::Receiving)?,
+                    )?.with_guest_root_template(legacy_template.take().ok_or(StorageRuntimeError::Receiving)?),
                     None,
                 ),
             };
@@ -457,6 +743,10 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
         // needs no public constructor, raw owner export, or empty-custody factory.
         let mut original_output_cycle = None;
         let mut original_generation_cycle: Option<ProductionOriginalNixGenerationCycleV1> = None;
+        let mut original_broker_connection = (
+            resource_receiving_selected && !git_coverage_selected && !nix_generation_selected
+                && !activation.has_original_output_capture_launch()
+        ).then(aos_sandbox_broker_session_security::ProductionOriginalStorageConnectionV1::new);
         let mut generation_accepted = nix_generation_selected.then(|| Box::new(None));
         loop {
             // An unresolved sidecar hold admits its same-socket recovery and a
@@ -616,15 +906,28 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             if let Some(key) = &zfs_hold_key {
                 key.recheck()?;
             }
-            if let Some(custody) = &output_custody {
-                custody.recheck(state_root)?;
+            if let Some(custody) = output_custody.as_mut() {
+                if resource_receiving_selected {
+                    storage.recheck_execution_output_receiving_v1(custody)?;
+                } else {
+                    custody.recheck(state_root)?;
+                }
             }
             if !storage.runtime().is_inventory_ready() {
                 return Err(StorageRuntimeError::Recovery.into());
             }
 
             let mut ready = Vec::with_capacity(6);
-            if let Some(cycle) = original_generation_cycle.as_ref() {
+            if let Some(connection) = original_broker_connection.as_ref().filter(|connection| connection.has_active_session()) {
+                let descriptor = match connection.as_fd() {
+                    Ok(descriptor) => descriptor,
+                    Err(cause) => {
+                        eprintln!("aos-storaged: resident original Storage socket closed: {cause}");
+                        std::process::exit(1);
+                    }
+                };
+                ready.push(rustix::event::PollFd::from_borrowed_fd(descriptor, rustix::event::PollFlags::IN));
+            } else if let Some(cycle) = original_generation_cycle.as_ref() {
                 let descriptor = match cycle.as_fd() {
                     Ok(descriptor) => descriptor,
                     Err(error) => {
@@ -698,9 +1001,16 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 ));
                 index
             });
+            // A parked Capture never blocks the Broker listener while Guest
+            // executes. Only its actual resident socket joins the same poll.
+            let capture_terminal_index = storage.push_original_capture_terminal_poll_v3(&mut ready);
             match rustix::event::poll(&mut ready, None) {
                 Ok(_) => {}
                 Err(rustix::io::Errno::INTR) => continue,
+                Err(error) if original_broker_connection.is_some() => {
+                    eprintln!("aos-storaged: original Storage poll failed: {error}");
+                    std::process::exit(1);
+                }
                 Err(error) if original_generation_cycle.is_some() => {
                     drop(ready);
                     if let Some(cycle) = original_generation_cycle.as_mut() {
@@ -738,6 +1048,9 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             let existing_output_ready = existing_output_index
                 .and_then(|index| ready.get(index))
                 .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
+            let capture_terminal_ready = capture_terminal_index.and_then(|index| ready.get(index))
+                .is_some_and(|entry| entry.revents().intersects(rustix::event::PollFlags::IN
+                    | rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR));
             drop(ready);
             if broker_disconnected && original_generation_cycle.is_some() {
                 eprintln!("aos-storaged: original generation peer retired without settlement");
@@ -752,8 +1065,12 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             if let Some(key) = &zfs_hold_key {
                 key.recheck()?;
             }
-            if let Some(custody) = &output_custody {
-                custody.recheck(state_root)?;
+            if let Some(custody) = output_custody.as_mut() {
+                if resource_receiving_selected {
+                    storage.recheck_execution_output_receiving_v1(custody)?;
+                } else {
+                    custody.recheck(state_root)?;
+                }
             }
             if !broker_ready
                 && !broker_disconnected
@@ -762,6 +1079,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 && !zfs_hold_ready
                 && !operator_ready
                 && !existing_output_ready
+                && !capture_terminal_ready
             {
                 return Err(StorageServiceError::Activation(
                     "activated Storage endpoint reported invalid readiness".to_owned(),
@@ -769,14 +1087,24 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 .into());
             }
 
-            if broker_disconnected && active_session.is_none() {
+            if broker_disconnected && active_session.is_none()
+                && !original_broker_connection.as_ref().is_some_and(|connection| connection.has_active_session())
+            {
                 return Err(StorageServiceError::Activation(
                     "protected Storage broker listener was retired".to_owned(),
                 )
                 .into());
             }
-            if broker_ready {
-                if nix_generation_selected {
+            if broker_ready || (broker_disconnected && original_broker_connection.is_some()) {
+                if let Some(connection) = original_broker_connection.as_mut() {
+                    let timeout = if connection.has_active_session() { REQUEST_TIMEOUT } else { ACCEPT_TIMEOUT };
+                    let deadline = production_deadline_after(timeout)
+                        .map_err(|cause| StorageServiceError::Activation(cause.to_string()))?;
+                    storage.serve_original_broker_turn_v1(
+                        &mut activation, connection, deadline, broker_disconnected && !broker_ready,
+                        output_custody.as_mut(),
+                    );
+                } else if nix_generation_selected {
                     if let Some(cycle) = original_generation_cycle.as_mut() {
                         // The actual Session is already parked before this
                         // fallible receive clock; no consuming Result helper.
@@ -1021,27 +1349,40 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 }
                 credentials.recheck()?;
             }
+            if capture_terminal_ready {
+                let listener = existing_output_listener.as_mut().ok_or_else(||
+                    StorageServiceError::Activation("Capture listener disappeared".to_owned()))?;
+                let custody = output_custody.as_mut().ok_or_else(||
+                    StorageServiceError::Activation("Capture custody disappeared".to_owned()))?;
+                storage.serve_original_capture_phase_v3(listener, custody, false);
+            }
             if existing_output_ready {
                 let listener = existing_output_listener.as_mut().ok_or_else(|| {
                     StorageServiceError::Activation("existing-output listener disappeared".to_owned())
                 })?;
-                let custody = output_custody.as_ref().ok_or_else(|| {
+                let custody = output_custody.as_mut().ok_or_else(|| {
                     StorageServiceError::Activation("existing-output custody disappeared".to_owned())
                 })?;
-                let host_cgroup = open_cgroup_root()?.resolve(Path::new(HOST_CGROUP));
-                if let Ok(host_cgroup) = host_cgroup {
-                    let verifier = HostRootExportPeerVerifier::new(host_cgroup)?;
-                    serve_existing_output_query_once(listener, &verifier, custody, state_root)?;
-                } else {
-                    listener.validate_current()?;
-                    let _ = listener.accept_descriptor_subject();
+                if !storage.serve_original_capture_held_v3(listener, custody) {
+                    let host_cgroup = open_cgroup_root()?.resolve(Path::new(HOST_CGROUP));
+                    if let Ok(host_cgroup) = host_cgroup {
+                        let verifier = HostRootExportPeerVerifier::new(host_cgroup)?;
+                        serve_existing_output_query_once(listener, &verifier, custody, state_root)?;
+                    } else {
+                        listener.validate_current()?;
+                        let _ = listener.accept_descriptor_subject();
+                    }
                 }
             }
             if let Some(key) = &zfs_hold_key {
                 key.recheck()?;
             }
-            if let Some(custody) = &output_custody {
-                custody.recheck(state_root)?;
+            if let Some(custody) = output_custody.as_mut() {
+                if resource_receiving_selected {
+                    storage.recheck_execution_output_receiving_v1(custody)?;
+                } else {
+                    custody.recheck(state_root)?;
+                }
             }
         }
     })();
@@ -1049,14 +1390,18 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
         (None, outcome) => outcome,
         (Some(owner), Err(StorageStartupRunErrorV3::Service(cause))) => {
             owner.retain_service_failure(cause);
-            if let Some(cause) = owner.first_cause() {
+            let output_failure = original_output_custody.as_ref()
+                .and_then(StorageExecutionOutputCustodyV1::receiving_current_failure_v1);
+            if let Some(cause) = resident_original_failure_v1(owner.first_cause(), output_failure) {
                 eprintln!("aos-storaged: resident original native failure: {cause}");
             }
             std::process::exit(1);
         }
         (Some(owner), Err(cause)) => {
             owner.close_resident();
-            if let Some(first) = owner.first_cause() {
+            let output_failure = original_output_custody.as_ref()
+                .and_then(StorageExecutionOutputCustodyV1::receiving_current_failure_v1);
+            if let Some(first) = resident_original_failure_v1(owner.first_cause(), output_failure) {
                 eprintln!("aos-storaged: resident original native failure: {first}");
             } else {
                 eprintln!("aos-storaged: resident original native failure: {cause}");
@@ -1068,6 +1413,20 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             owner.close_resident();
             std::process::exit(1);
         }
+    }
+}
+
+// A recurring frame is installed only after original preflight succeeds and
+// cannot be replaced after failure. Its concrete primary therefore precedes
+// any independently owed receiving post failure. With no failed frame, preserve
+// the earlier Construction cause; an Output marker is never a concrete cause.
+fn resident_original_failure_v1<'cause>(
+    construction: Option<&'cause (dyn std::error::Error + 'static)>,
+    output: Option<&'cause (dyn std::error::Error + 'static)>,
+) -> Option<&'cause (dyn std::error::Error + 'static)> {
+    match output {
+        Some(cause) if !cause.is::<aos_sandbox::StorageReceivingClosedV1>() => Some(cause),
+        _ => construction.or(output),
     }
 }
 
@@ -1276,8 +1635,59 @@ mod tests {
     use super::{
         GIT_COVERAGE_ARGUMENT, NIX_GENERATION_ARGUMENT, StorageStartupCommandV4, parse_arguments,
         parse_nix_generation_startup_command, parse_provision_source, parse_selected_startup_command,
-        parse_startup_command,
+        parse_startup_command, resident_original_failure_v1,
     };
+
+
+    #[test]
+    fn output_primary_precedes_a_later_independent_native_post_failure() {
+        let source = std::io::Error::other("retained Output source read failed");
+        let post = std::io::Error::other("later receiving post failed");
+
+        let selected = resident_original_failure_v1(Some(&post), Some(&source))
+            .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+            .unwrap();
+
+        assert!(std::ptr::eq(selected, &source));
+    }
+
+    #[test]
+    fn output_current_marker_resolves_to_the_concrete_original_refusal() {
+        let refusal = aos_sandbox_core::AccountingError::LimitExceeded {
+            dimension: aos_sandbox_core::ResourceDimension::MemoryBytes,
+            limit: 512,
+            attempted: 513,
+        };
+        let marker = aos_sandbox::StorageReceivingClosedV1;
+
+        let selected = resident_original_failure_v1(Some(&refusal), Some(&marker))
+            .and_then(|cause| cause.downcast_ref::<aos_sandbox_core::AccountingError>())
+            .unwrap();
+
+        assert!(std::ptr::eq(selected, &refusal));
+    }
+
+    #[test]
+    fn a_preflight_refusal_without_an_entered_output_frame_keeps_its_cause() {
+        let earlier = std::io::Error::other("original preflight failed before Output entry");
+
+        let selected = resident_original_failure_v1(Some(&earlier), None)
+            .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+            .unwrap();
+
+        assert!(std::ptr::eq(selected, &earlier));
+    }
+
+    #[test]
+    fn absent_concrete_original_keeps_the_actual_output_marker() {
+        let marker = aos_sandbox::StorageReceivingClosedV1;
+
+        let selected = resident_original_failure_v1(None, Some(&marker))
+            .and_then(|cause| cause.downcast_ref::<aos_sandbox::StorageReceivingClosedV1>())
+            .unwrap();
+
+        assert!(std::ptr::eq(selected, &marker));
+    }
 
     fn service_arguments(zfs_key: &str, output_key: &str) -> Vec<OsString> {
         [

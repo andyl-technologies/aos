@@ -346,6 +346,22 @@ impl RecordSubjectListener {
         DescriptorSubjectSocket::from_pending_retaining(self.accept_pending_child()?)
     }
 
+    /// Accepts the root-export carrier with original raw peer-pidfd custody.
+    ///
+    /// This uses the same inherited-option-before-adoption engine as the
+    /// general retained accept. Its existing raw-native destination keeps the
+    /// actual SO_PEERPIDFD on later CLOEXEC/length/pidfs failure. The accepted
+    /// connection alone supplies no Host identity, financial loan or grant.
+    ///
+    /// # Errors
+    /// Retains the original accepted socket, reached peer pin and native first
+    /// cause after shutdown. The listener is not repaired or reconfigured.
+    pub fn accept_storage_root_export_retaining_v2(
+        &mut self,
+    ) -> Result<DescriptorSubjectSocket, RetainedSeqpacketAdmissionErrorV1> {
+        DescriptorSubjectSocket::from_pending_retaining_raw_v2(self.accept_pending_child()?)
+    }
+
     fn accept_child(&mut self) -> Result<OwnedFd, SeqpacketError> {
         self.validate_current()?;
         let child =

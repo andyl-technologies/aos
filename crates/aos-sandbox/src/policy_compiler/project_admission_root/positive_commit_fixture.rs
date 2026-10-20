@@ -5,6 +5,19 @@
 //! floor. Only the Root terminal transition and its exact cold replay are
 //! qualified here; public Create remains closed.
 
+use aos_sandbox_policy::controller_project_readback::ControllerProjectAdmissionChallengeV1;
+
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentInputsV1, verify_policy_deployment_head_v1,
+    verify_signed_project_policy_source_v2,
+};
+
+use aos_sandbox_policy::journal_keys::{
+    CONTROLLER_HOLD_PIN_KEY, HEAD_KEY, SIGNER_PINS_KEY, SOURCE_HOLD_PIN_KEY,
+};
+
+use aos_sandbox_policy::controller_readback::encode_controller_hold_signer_credential_v1;
+
 use std::fs;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
@@ -15,10 +28,8 @@ use super::*;
 use crate::source_domain::source_domain_journal_limits;
 use crate::policy_compiler::controller_project_admission_readback::sign_synthetic_controller_project_admission_v1;
 use crate::policy_compiler::source_project_admission_readback::sign_source_project_admission_fields_v1;
-use crate::policy_compiler::{
-    encode_controller_hold_signer_credential_v1, encode_source_hold_readback_signer_credential_v1,
-};
-use crate::publisher_policy::project_revocation_digest;
+use crate::policy_compiler::encode_source_hold_readback_signer_credential_v1;
+use crate::publisher_admin::policy::project_revocation_digest;
 
 const PROJECT: ProjectId = ProjectId::from_bytes([1; 16]);
 const OPERATION: OperationId = OperationId::from_bytes([3; 16]);
@@ -243,6 +254,7 @@ fn exercise_held_synthetic_commit(history_retirement: bool) {
         CONTROLLER_GENERATION,
         &controller_key.verifying_key(),
     )
+    .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
     .expect("Controller pin");
     let source_pin = encode_source_hold_readback_signer_credential_v1(
         SOURCE_GENERATION,
@@ -263,6 +275,7 @@ fn exercise_held_synthetic_commit(history_retirement: bool) {
         &deployment_key.verifying_key(),
         NOW,
     )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
     .expect("signed deployment");
     let project = verify_signed_project_policy_source_v2(
         &heads.project,
@@ -270,6 +283,7 @@ fn exercise_held_synthetic_commit(history_retirement: bool) {
         &project_key.verifying_key(),
         NOW,
     )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
     .expect("signed synthetic project source");
 
     let client_nonce = project_admission_client_nonce_v1(OPERATION, SOURCE_COMMITMENT);

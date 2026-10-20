@@ -29,6 +29,7 @@ pub mod activation;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+mod native_commit_batch;
 mod catalog_decode;
 pub mod catalog_preparation;
 mod nix_generation;
@@ -81,6 +82,7 @@ pub mod guest_root_worker;
 mod helper;
 mod lifecycle_atomic_snapshot;
 mod lifecycle_inventory;
+mod receiving_demand;
 mod live_export_catalog;
 #[allow(
     dead_code,
@@ -190,7 +192,7 @@ pub use catalog_preparation::{
     StorageCatalogPreparationOutcomeV1,
 };
 pub use dormant_broker_session::{
-    DormantStorageApplyCompositionV1, DormantStorageBrokerCallErrorV1,
+    DormantStorageApplyCompositionV1, DormantStorageBrokerCallErrorV1, DormantStorageLifecycleDisposalV1,
     DormantStorageBrokerCallsiteV1, DormantStorageBrokerObservationV1,
 };
 pub use lifecycle_atomic_snapshot::DormantAtomicDatasetSnapshotV1;

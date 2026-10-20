@@ -90,10 +90,15 @@ let
           version = "2.55.0";
         };
         aos-git-helper = "unused-git-helper";
+        aos-method46-tpm-helper = "unused-method46-helper";
+        systemd = "unused-systemd";
         protobuf = "unused-protobuf";
         stdenv = {
           isCross = false;
-          hostPlatform.isDarwin = false;
+          hostPlatform = {
+            isDarwin = false;
+            isLinux = true;
+          };
         };
         buildPackages = {};
       }
@@ -106,7 +111,11 @@ let
     package = controllerPackage online;
     roles = ["controller" "git" "entitlement" "policy" "policy-key-pin" "cache-signer" "source-signer" "publisher" "nix-provision"] ++ lib.optional online "nix";
     selectedRoles = command:
-      lib.filter (role: matches ".*(--features |,)aos-sandbox-services/${role}([,[:space:]].*)?" command) roles;
+      lib.filter (role:
+        if role == "publisher"
+        then matches ".*-p aos-sandbox-publisher([[:space:]].*)?" command
+        else matches ".*(--features |,)aos-sandbox-services/${role}([,[:space:]].*)?" command)
+      roles;
     independentRoles = commands:
       lib.all (command: lib.length (selectedRoles command) == 1) commands
       && lib.all (role: lib.length (lib.filter (command: builtins.elem role (selectedRoles command)) commands) == 1) roles;
@@ -121,7 +130,11 @@ let
     artifactTests = lib.filter (lib.hasPrefix "test --no-run ") artifactCommands;
     policyBuilds = lib.filter (command: builtins.elem "policy" (selectedRoles command)) artifactBuilds;
     keyPinBuilds = lib.filter (command: builtins.elem "policy-key-pin" (selectedRoles command)) artifactBuilds;
-    roleArtifactTests = lib.filter (lib.hasInfix "-p aos-sandbox-services") artifactTests;
+    publisherBuilds = lib.filter (command: builtins.elem "publisher" (selectedRoles command)) artifactBuilds;
+    roleArtifactTests = lib.filter (command:
+      lib.hasInfix "-p aos-sandbox-services" command
+      || lib.hasInfix "-p aos-sandbox-publisher" command)
+    artifactTests;
     coreArtifactTests = lib.filter (lib.hasInfix "-p aos-sandbox -p aos-sandbox-broker-session-security") artifactTests;
   in
     # Logged build executables are installed: test targets must stay in the
@@ -133,6 +146,10 @@ let
     && selectedRoles "--features aos-sandbox-services/policy-key-pin,aos-sandbox-services/policy" == ["policy" "policy-key-pin"]
     && policyBuilds == ["build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/policy -p aos-sandbox-services --bin aos-sandbox-policy-authorityd"]
     && keyPinBuilds == ["build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/policy-key-pin -p aos-sandbox-services --bin aos-sandbox-policy-key-pin"]
+    && publisherBuilds == ["build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features -p aos-sandbox-publisher --bin aos-view-publisher"]
+    && signerTestsRetained "publisher" "aos-sandbox-publisher" roleArtifactTests
+    && signerTestsRetained "publisher" "aos-sandbox-publisher" package.cargoTestFlagSets
+    && lib.all (command: !lib.hasInfix "aos-sandbox-services/publisher" command) artifactCommands
     && independentRoles roleArtifactTests
     && signerTestsRetained "policy-key-pin" "aos-sandbox-policy" roleArtifactTests
     && signerTestsRetained "cache-signer" "aos-sandbox-cache-signer" roleArtifactTests

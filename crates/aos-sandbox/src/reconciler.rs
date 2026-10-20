@@ -27,6 +27,7 @@
 //! public identity and restart-stable observation metadata.
 
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
+use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 #[cfg(test)]
 use aos_sandbox_ownership_protocol::CLAIM_BYTES;
 use aos_sandbox_ownership_protocol::OwnershipClaimV1;
@@ -49,11 +50,33 @@ use crate::publication::{
     validate_durable_gate_publication, validate_publication_namespace,
 };
 
+pub(crate) mod start_admission;
+mod start_host_completed;
+pub(crate) use start_host_completed::{
+    completed_start_host_publication_receiving_demand_v2,
+    require_completed_start_host_publication_data_v2,
+};
+mod accepted_start;
+mod core_journal;
+mod admission_records;
+#[cfg(target_os = "linux")]
+pub(crate) use admission_records::{prepare_delete_admission_transaction_v3, prepare_delete_admission_comparison_data_v3};
+pub(crate) use accepted_start::accepted_start_origin_from_journal_v1;
+
 mod create_failure;
+mod stop_residual;
+mod execution_target;
+mod execution_acceptance;
+pub(crate) use execution_acceptance::{accepted_create_execution_effect_from_journal_v1,
+    accepted_execution_effect_from_journal_v3, accepted_stop_effect_from_journal_v4,
+    accepted_public_effect_models_receiving_bytes_v4,
+    accepted_public_effect_models_receiving_bytes_retaining_v4};
+pub use execution_target::accepted_execution_target_from_journal_v1;
+pub(crate) use execution_target::AcceptedExecutionTargetOriginalV2;
 #[cfg(target_os = "linux")]
 mod create_q04;
 #[cfg(target_os = "linux")]
-pub(crate) use create_q04::validate_original_claim_rows_v1;
+pub(crate) use create_q04::{validate_original_claim_rows_v1, RootAcceptedCreateRowsV1};
 #[cfg(target_os = "linux")]
 pub(crate) use create_q04::{Q04OriginalRowBindingV1, read_original_q04_rows_v1};
 #[cfg(target_os = "linux")]
@@ -62,6 +85,8 @@ pub(crate) use create_q04::OriginalQ04ControllerLedgerV1;
 pub(crate) use create_q04::require_original_pending as require_q04_original_pending_v1;
 #[cfg(target_os = "linux")]
 pub use create_q04::continue_original_create_q04_policy_subgate_v1;
+#[cfg(target_os = "linux")]
+mod provisioning_geometry;
 mod effect;
 #[cfg(target_os = "linux")]
 mod fuse_admission;
@@ -79,7 +104,9 @@ pub(crate) use runtime_authority::{
     validate_runtime_authority_operations, validate_runtime_authority_pending,
 };
 
+#[cfg(test)]
 use create_failure::CreateFailureReceiptV1;
+pub(crate) use create_failure::{ClosedCreateFailurePlanDataV2, plan_closed_create_failure_rows_data_v2};
 pub(crate) use operator_repair_failure::{
     RepairPreconditionFailureReceiptV1, RECEIPT_BYTES as REPAIR_FAILURE_RECEIPT_BYTES,
     RECEIPT_DOMAIN as REPAIR_FAILURE_RECEIPT_DOMAIN,
@@ -104,7 +131,8 @@ mod nix_admission;
 #[cfg(target_os = "linux")]
 pub(crate) use nix_admission::{accepted_nix_start_admission_v2, require_current_effect_v2};
 pub use observe_reservation::{
-    adopt_execution_observe_child_v1, observe_child_adoption_state_v1, observe_child_identity_v1,
+    adopt_execution_observe_child_v1, prepare_completed_execution_observe_child_v1, observe_child_adoption_state_v1, observe_child_identity_v1,
+    completed_execution_observe_from_journal_v4,
 };
 #[cfg(feature = "project-negative-recovery-vm-fixture")]
 pub use project_admission::vm_fixture::{
@@ -155,6 +183,7 @@ pub struct OperationPlan {
     ownership_gate: Option<OwnershipGatePlanV1>,
     runtime_authority: Option<RuntimeAuthorityIntentV1>,
     public_operation: Option<PublicOperationAdmissionV1>,
+    accepted_start: Option<aos_sandbox_protocol::domain_ledger::operation::AcceptedStartOriginDataV1>,
     local_records: Vec<JournalRecord>,
 }
 
@@ -192,6 +221,7 @@ impl OperationPlan {
             ownership_gate: None,
             runtime_authority: None,
             public_operation: None,
+            accepted_start: None,
             local_records: Vec::new(),
         })
     }
@@ -257,6 +287,7 @@ impl OperationPlan {
             ownership_gate: None,
             runtime_authority: None,
             public_operation: None,
+            accepted_start: None,
             local_records,
         })
     }
@@ -299,6 +330,7 @@ impl OperationPlan {
             ownership_gate: None,
             runtime_authority: None,
             public_operation: None,
+            accepted_start: None,
             local_records: vec![route_record, decision_record],
         })
     }
@@ -348,6 +380,7 @@ impl OperationPlan {
             ownership_gate: None,
             runtime_authority: None,
             public_operation: None,
+            accepted_start: None,
             local_records: vec![acknowledgment],
         })
     }
@@ -470,6 +503,7 @@ impl OperationPlan {
             ownership_gate: None,
             runtime_authority: None,
             public_operation: None,
+            accepted_start: None,
             local_records: Vec::new(),
         };
         plan.ownership_gate = Some(OwnershipGatePlanV1::new(
@@ -480,6 +514,24 @@ impl OperationPlan {
             publication_draft,
         )?);
         Ok(plan)
+    }
+
+    /// Quotes that canonical pending encoding before its reached allocation.
+    pub(crate) fn pending_ownership_gate_receiving_bytes_v2(&self) -> Result<usize, ReconcilerError> {
+        let gate = self.ownership_gate.as_ref().ok_or(ReconcilerError::InvalidPlan(
+            "the Host publication child requires its admitted ownership gate",
+        ))?;
+        aos_sandbox_protocol::domain_ledger::ownership_gate::ownership_gate_encoded_bytes_v1(gate)
+            .map_err(Into::into)
+    }
+
+    /// Encodes the private plan's same canonical pending gate for exact rejoin.
+    pub(crate) fn pending_ownership_gate_bytes_v2(&self) -> Result<Vec<u8>, ReconcilerError> {
+        let gate = self.ownership_gate.as_ref().ok_or(ReconcilerError::InvalidPlan(
+            "the Host publication child requires its admitted ownership gate",
+        ))?;
+        encode_ownership_gate(&OwnershipGateStatusV1::Pending(gate.clone()))
+            .map_err(Into::into)
     }
 
     /// Returns the durable operation identity.
@@ -525,6 +577,45 @@ impl OperationPlan {
         Ok(self)
     }
 
+    /// Attaches the three exact provisioning companions to the gated child.
+    ///
+    /// The Native issuer pays the complete plan and fixed companion geometry
+    /// before this transformation. These immutable DATA records grant no
+    /// payment, workspace completion, publication activation, or Host launch.
+    pub(crate) fn with_provisioning_resource_records_v1(
+        mut self,
+        records: aos_sandbox_protocol::domain_ledger::provisioning_resources::ProvisioningResourceRecordsV1,
+    ) -> Result<Self, ReconcilerError> {
+        use aos_sandbox_protocol::domain_ledger::provisioning_resources::
+            require_provisioning_publication_gate_v1;
+
+        if self.public_operation.is_some() || self.runtime_authority.is_none()
+            || !self.local_records.is_empty()
+            || records.fields_v1().publication_operation != self.operation_id
+        {
+            return Err(ReconcilerError::InvalidPlan(
+                "provisioning companions require their distinct gated child",
+            ));
+        }
+        let gate = self.ownership_gate.as_ref().ok_or(ReconcilerError::InvalidPlan(
+            "provisioning companions require an ownership gate",
+        ))?;
+        require_provisioning_publication_gate_v1(records, gate)?;
+        let records = records.records_v1();
+        let maximum_effects = MAXIMUM_GATED_EFFECTS.checked_sub(1 + records.len())
+            .ok_or(ReconcilerError::InvalidPlan("provisioning companion bound overflow"))?;
+        if self.effects.len() > maximum_effects
+            || records.iter().any(|record| record.key() == self.desired_key)
+        {
+            return Err(ReconcilerError::InvalidPlan(
+                "provisioning companions exceed the exact atomic plan shape",
+            ));
+        }
+
+        self.local_records.extend(records);
+        Ok(self)
+    }
+
     /// Adds immutable public observation metadata to this admission.
     ///
     /// Direct desired-state plans begin at their semantic commit boundary.
@@ -560,6 +651,116 @@ impl OperationPlan {
         Ok(self)
     }
 
+    pub(crate) fn require_accepted_start_data_v1(&self,journal:&Journal)->Result<(),ReconcilerError> {
+        if !matches!(journal.check_idempotency(&self.idempotency_key,self.request_digest),
+            IdempotencyOutcome::Replay(operation) if operation==self.operation_id) {
+            return Err(ReconcilerError::IdempotencyConflict);
+        }
+        let bytes=journal.get(RecordNamespace::Operation,self.operation_id.as_bytes())
+            .ok_or(ReconcilerError::CorruptLedger("accepted Start missing"))?;
+        let operation=decode_operation(bytes)?;
+        if operation.accepted_start_origin_v1()!=self.accepted_start
+            || operation.public_operation()!=self.public_operation.as_ref().map(PublicOperationAdmissionV1::durable)
+            || operation.effect_count()!=1 || operation.ownership_gated() {
+            return Err(ReconcilerError::IdempotencyConflict);
+        }
+        Ok(())
+    }
+
+    // The retained plan is already resident. This pays the additional decoded
+    // public context, current Sandbox comparison and fixed Operation decoder
+    // before the Source-origin stage calls those same existing engines.
+    pub(crate) fn start_source_context_receiving_demand_v1(&self,journal:&Journal)
+        ->Option<aos_sandbox_core::ResourceVector> {
+        let [effect]=self.effects.as_slice() else {return None;};
+        let context=aos_sandbox_protocol::domain_ledger::effect_history::
+            effect_decoding_receiving_bytes_v1(effect.request().len())?;
+        let operation=std::mem::size_of::<aos_sandbox_protocol::domain_ledger::operation::OperationRecord>()
+            .checked_mul(2)?;
+        let new_use = aos_sandbox_protocol::domain_ledger::delete_batch::new_use::
+            public_mutation_new_use_receiving_bytes_v2();
+        let memory=u64::try_from(context.checked_add(operation)?.checked_add(new_use)?).ok()?
+            .checked_add(crate::controller_service::public_projection::sandbox_source_receiving_bytes_v1(journal)?)?;
+        Some(aos_sandbox_core::ResourceVector::ZERO.with(
+            aos_sandbox_core::ResourceDimension::MemoryBytes,memory))
+    }
+
+    /// Borrows the actual sole private Host effect without creating a plan.
+    pub(crate) fn start_host_effect_plan_v2(&self) -> Result<&EffectPlan, ReconcilerError> {
+        let [effect] = self.effects.as_slice() else {
+            return Err(ReconcilerError::InvalidPlan("private Host child requires exactly one effect"));
+        };
+        if self.public_operation.is_some() || self.ownership_gate.is_none()
+            || self.runtime_authority.is_none() || effect.authority().is_none() {
+            return Err(ReconcilerError::InvalidPlan("private Host child has another grammar"));
+        }
+        Ok(effect)
+    }
+
+    pub(crate) fn original_start_context_v1(&self)
+        ->Result<aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1,ReconcilerError> {
+        let [effect]=self.effects.as_slice() else {
+            return Err(ReconcilerError::InvalidPlan("Start needs its sole canonical public effect"));
+        };
+        if effect.public_mutation_method()!=Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::StartSandbox)
+            || self.accepted_start.is_none() || self.ownership_gate.is_some() || self.runtime_authority.is_some() {
+            return Err(ReconcilerError::InvalidPlan("invalid retained public Start context"));
+        }
+        effect.public_mutation_context().map_err(ReconcilerError::from)?
+            .ok_or(ReconcilerError::InvalidPlan("retained Start context missing"))
+    }
+
+    pub(crate) fn require_public_execution_admission_shape_v2(&self)
+        -> Result<(), ReconcilerError> {
+        use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
+
+        let [effect] = self.effects.as_slice() else {
+            return Err(ReconcilerError::InvalidPlan("Execution needs its sole canonical public effect"));
+        };
+        if effect.public_mutation_method() != Some(PublicOperationMethodV1::CreateExecution)
+            || self.public_operation.as_ref().is_none_or(|public| {
+                public.method() != PublicOperationMethodV1::CreateExecution
+            })
+            || self.accepted_start.is_some() || self.ownership_gate.is_some()
+            || self.runtime_authority.is_some()
+        {
+            return Err(ReconcilerError::InvalidPlan("invalid retained public Execution plan"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn require_same_public_execution_projection_v2(&self, journal: &Journal)
+        -> Result<(), crate::JournalError>
+    {
+        self.require_public_execution_admission_shape_v2()
+            .map_err(|_| crate::JournalError::ProtectedBoundary)?;
+        if journal.get(RecordNamespace::DesiredState, &self.desired_key) != Some(self.desired_value.as_slice()) {
+            return Err(crate::JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
+    // This is the immutable original selected by the sole compiler, including
+    // idempotent replay. It is never replaced by a reconnect's fresh clock.
+    pub(crate) const fn accepted_start_origin_data_v1(&self)
+        ->Option<aos_sandbox_protocol::domain_ledger::operation::AcceptedStartOriginDataV1> {
+        self.accepted_start
+    }
+
+    // Only the checked public compiler attaches original Start coordinates.
+    pub(crate) fn with_accepted_start_origin_v1(mut self,
+        origin: Option<aos_sandbox_protocol::domain_ledger::operation::AcceptedStartOriginDataV1>,
+    ) -> Result<Self, ReconcilerError> {
+        if self.accepted_start.is_some() || origin.is_some_and(|origin| {
+            self.public_operation.as_ref().is_none_or(|public| {
+                public.method() != aos_sandbox_protocol::public_api::PublicOperationMethodV1::StartSandbox
+                    || public.accepted_wall_seconds() != origin.accepted_clock_v1().wall_seconds()
+            })
+        }) { return Err(ReconcilerError::InvalidPlan("invalid original Start admission")); }
+        self.accepted_start = origin;
+        Ok(self)
+    }
+
     /// Returns the digest of the normalized request admitted by this plan.
     #[must_use]
     pub const fn request_digest(&self) -> [u8; 32] {
@@ -576,6 +777,7 @@ pub enum AcceptOutcome {
     Replay(OperationId),
 }
 
+#[cfg(test)]
 fn create_failure_receipt(receipt: &EffectReceipt) -> Result<Option<CreateFailureReceiptV1>, ()> {
     CreateFailureReceiptV1::decode(receipt.as_bytes())
 }
@@ -632,8 +834,95 @@ impl EffectFailure {
     }
 }
 
+/// Carries one concrete cleanup response with its post-disposal native proof.
+///
+/// The private proof constructors require actual role-specific Source/native
+/// completion. The reconciler checks the exact same Controller and complete
+/// terminal cut before letting the Node compare its public response projection.
+#[cfg(target_os = "linux")]
+#[must_use = "validate the native proof before returning its public response"]
+pub enum OperatorCleanupRecoveryCompletionV2 {
+    /// Retains completed Source22 Stop and Recover metadata custody.
+    Stop {
+        /// Contains the exact stored Recover response projection.
+        response: aos_proto::aos::sandbox::v1::Operation,
+        /// Proves real Stop22 terminal and Source disposition.
+        completion: crate::controller_lifecycle_stop::ControllerHostStopCleanupCompletionV1,
+    },
+    /// Retains the existing completed NoApply and fresh Source/C18 custody.
+    Execution {
+        /// Contains the exact stored Recover response projection.
+        response: aos_proto::aos::sandbox::v1::Operation,
+        /// Proves real NoApply terminal and Source disposition.
+        completion: crate::controller_execution_operation::ControllerExecutionNoApplyCompletionV2,
+    },
+}
+
 /// Executes idempotent single-node effects through fixed local boundaries.
 pub trait SingleNodeEffectExecutor {
+    /// Keeps both actual Execution Sessions borrowed across admission and bind.
+    ///
+    /// # Errors
+    /// Refuses missing or failed native originals. The default supplies no owner.
+    #[cfg(target_os = "linux")]
+    fn admit_original_execution_availability_once_v2(
+        &mut self,
+        _controller: &mut Journal,
+        _maximum_pending_operations: usize,
+    ) -> Result<AcceptOutcome, crate::ResourceReservationErrorV1> {
+        Err(crate::ResourceReservationErrorV1::Conflict)
+    }
+
+    /// Moves the actual Runtime C18 into serial predurable public compilation.
+    ///
+    /// # Errors
+    /// Refuses missing, busy or failed originals. The default supplies no owner.
+    #[cfg(target_os = "linux")]
+    fn take_original_execution_public_custody_once_v2(
+        &mut self,
+        _controller: &mut Journal,
+    ) -> Result<Option<crate::controller_execution_operation::ControllerExecutionPublicCustodyTransferV2>,
+        crate::ResourceReservationErrorV1>
+    {
+        Ok(None)
+    }
+
+    /// Restores the whole original after every serial public compiler return.
+    #[cfg(target_os = "linux")]
+    fn retain_original_execution_public_custody_v2(
+        &mut self,
+        _custody: crate::controller_execution_operation::ControllerExecutionRuntimeCustodyV2,
+    ) {
+        std::process::abort();
+    }
+
+    /// Moves the actual fresh four-role context after full recovered enrollment.
+    ///
+    /// The default supplies no context. Concrete executors keep all failed
+    /// enrollment/context originals resident and never reconstruct a context
+    /// from historical metadata or successful comparison data.
+    #[cfg(target_os = "linux")]
+    fn take_recovered_ordinary_sessions_once_v2(&mut self) -> Option<aos_sandbox_broker::controller_receiving::bank_launch::ControllerRecoveredOrdinarySessionsOriginalV2> {
+        None
+    }
+
+    /// Observes an existing execution without replaying its accepted effect.
+    ///
+    /// The production owner uses its same consumed purpose18 subdivision and
+    /// independent Source/Controller posts. Historical rows alone supply no
+    /// native or terminal permission to an implementation.
+    ///
+    /// # Errors
+    /// Refuses unavailable genuine observation custody or any retained failure.
+    #[cfg(target_os = "linux")]
+    fn observe_current_executions_v4(&mut self, journal: &mut Journal) -> Result<(), EffectFailure> {
+        if journal.records(RecordNamespace::ControllerExecutionSpecAttempt).next().is_some() {
+            Err(EffectFailure::Retryable("execution observation custody is unavailable".to_owned()))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Captures the fixed account cut using genuine resident original owners.
     ///
     /// # Errors
@@ -643,8 +932,8 @@ pub trait SingleNodeEffectExecutor {
         &mut self,
         _journal: &mut Journal,
         _original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
-        _original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        _original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        _original_bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        _original_source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         _original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         _original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         _attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
@@ -661,8 +950,8 @@ pub trait SingleNodeEffectExecutor {
         &mut self,
         _journal: &mut Journal,
         _original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
-        _original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        _original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        _original_bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        _original_source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         _original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         _original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         _attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
@@ -744,6 +1033,7 @@ pub trait SingleNodeEffectExecutor {
     #[cfg(target_os = "linux")]
     fn select_original_create_q04_policy_subgate_v1(
         &mut self,
+        _controller: &mut Journal,
         _profile: std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
     ) -> Result<(), EffectFailure> {
         Err(EffectFailure::Permanent("original Q04 owner selection is unavailable".to_owned()))
@@ -774,6 +1064,117 @@ pub trait SingleNodeEffectExecutor {
         None
     }
 
+    /// Lends a genuine fresh Start entry after its paid historical prelude.
+    ///
+    /// # Errors
+    /// Retains the original native/accounting cause at the installed executor.
+    #[cfg(target_os = "linux")]
+    fn prepare_original_start_entry_v1(&mut self,_peer:&crate::public_api_session::PublicApiPeer,
+        _encoded:&[u8],_journal:&mut Journal,
+    )->Result<Option<crate::AcceptedStartEntryOriginalV1>,crate::ResourceReservationErrorV1> {Ok(None)}
+
+    /// Runs the finite original Delete pipeline through final native disposition.
+    ///
+    /// # Errors
+    /// Refuses unavailable genuine runtime ownership or an early authorization.
+    /// Entered failures retain the whole prefix and finish their owed posts.
+    #[cfg(target_os = "linux")]
+    fn admit_original_delete_once_v4(
+        &mut self,
+        _peer: &crate::public_api_session::PublicApiPeer,
+        _capability: aos_sandbox_core::CapabilityId,
+        _handle: &[u8],
+        _encoded: &[u8],
+        _journal: &mut Journal,
+    ) -> Result<AcceptOutcome, crate::ResourceReservationErrorV1> {
+        Err(crate::ResourceReservationErrorV1::Conflict)
+    }
+
+    /// Runs all independently owed Start posts on the same owning entry.
+    #[cfg(target_os = "linux")]
+    fn finish_original_start_entry_v1(&mut self,_entry:&mut crate::AcceptedStartEntryOriginalV1,
+        _journal:&mut Journal,
+    ) {std::process::abort();}
+
+    /// Writes the first Start Source origin through the same retained Source owner.
+    ///
+    /// The selected implementation always returns the entire entry after its
+    /// independently owed Source, C and paired-clock posts.
+    #[cfg(target_os = "linux")]
+    fn admit_original_start_source_origin_v1(&mut self,_entry:&mut crate::AcceptedStartEntryOriginalV1,
+        _journal:&mut Journal,
+    ) {std::process::abort();}
+
+    /// Advances only the installed genuine Start owner under its fresh native payer.
+    ///
+    /// No ordinary effect is dispatched by this hook. A selected refusal stays
+    /// resident at the executor and cannot become Failed or a generic retry.
+    ///
+    /// # Errors
+    /// Retains the original native, transport, authorization or temporal cause.
+    #[cfg(target_os = "linux")]
+    fn progress_original_start_once_v1(&mut self,_operation:OperationId,_journal:&mut Journal)
+        ->Option<Result<(),crate::ResourceReservationErrorV1>> {None}
+
+    /// Advances only the genuine accepted Stop on its same baseline native owner.
+    ///
+    /// The caller selects the already decoded canonical public Stop method.
+    /// The implementation pays its accepted graph before Source or Host use,
+    /// retains all refused prefixes, and never returns generic receipt DATA.
+    ///
+    /// # Errors
+    /// Keeps native, Source, signed dispatch, residual or terminal CAS refusal.
+    #[cfg(target_os = "linux")]
+    fn progress_original_lifecycle_stop_once_v4(&mut self, _operation: OperationId,
+        _journal: &mut Journal,
+    ) -> Option<Result<(), crate::ResourceReservationErrorV1>> { None }
+
+    /// Permanently retains the whole fresh Start entry after its actual posts.
+    #[cfg(target_os = "linux")]
+    fn retain_original_start_entry_v1(&mut self,_entry:crate::AcceptedStartEntryOriginalV1) {
+        std::process::abort();
+    }
+
+    /// Lends an actual separately funded publication turn for a selected Create.
+    ///
+    /// The returned owners remain the original issued action and same C
+    /// receiver. `None` leaves the selected original Create pending; it never
+    /// permits generic Apply or treats Storage completion as launch readiness.
+    ///
+    /// # Errors
+    /// The installed issuer retains every original Root, Session, finance and
+    /// native cause before returning a coarse failure to Core.
+    #[cfg(target_os = "linux")]
+    fn prepare_original_publication_turn_v1(
+        &mut self,
+        _operation: OperationId,
+        _plan: &EffectPlan,
+        _journal: &mut Journal,
+    ) -> Result<Option<(crate::OriginalPublicationActionV1,
+        crate::CreateProvisioningOriginalsV1,
+        crate::normal_root::RootStorageApplyClientOriginalV1)>, EffectFailure> {
+        Ok(None)
+    }
+
+    /// Retains all three original owners and the complete Core/native turn result.
+    ///
+    /// A selected issuer implements this together with its prepare method.
+    /// Core always calls it after returning the same receiver and running its
+    /// independently owed native post, including a failed semantic body.
+    ///
+    /// The default terminates the process if an implementation lends a turn
+    /// without implementing its mandatory permanent retention handback.
+    #[cfg(target_os = "linux")]
+    fn retain_original_publication_turn_v1(
+        &mut self,
+        _action: crate::OriginalPublicationActionV1,
+        _receiving: crate::CreateProvisioningOriginalsV1,
+        _root: crate::normal_root::RootStorageApplyClientOriginalV1,
+        _returned: Result<(), crate::OriginalPublicationActionClosedV1>,
+    ) {
+        std::process::abort();
+    }
+
     /// Issues only the fixed administrative successor on real original owners.
     ///
     /// The default is retaining terminal refusal. Production borrows its SAME
@@ -790,7 +1191,7 @@ pub trait SingleNodeEffectExecutor {
         profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
         credentials: &'credentials mut crate::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
     ) -> Result<
-        crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2,
+        aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2,
         crate::policy_compiler::FailedOriginalSourceSuccessorInvocationV2<'writers, 'profile, 'credentials>,
     > {
         Err(crate::policy_compiler::unavailable_source_successor_issuer_v2(
@@ -807,7 +1208,7 @@ pub trait SingleNodeEffectExecutor {
         &'writers mut self, journal: &'writers mut Journal,
         profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
         credentials: &'credentials mut crate::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
-    ) -> Result<crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2, crate::policy_compiler::FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
+    ) -> Result<aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2, crate::policy_compiler::FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
         Err(crate::policy_compiler::unavailable_project_issuer_v3(journal, profile, credentials))
     }
 
@@ -823,6 +1224,121 @@ pub trait SingleNodeEffectExecutor {
         profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
     ) -> Result<Option<ObjectDigest>, crate::policy_compiler::FailedOriginalFirstSourceSuccessorV2<'writers, 'profile>> {
         crate::policy_compiler::unavailable_first_source_successor_v2(journal, profile)
+    }
+
+    /// Observes authorized Create recovery through the actual Source/Session owner.
+    ///
+    /// This method does not perform subsequent physical reconciliation.
+    ///
+    /// This hook performs observation only. Its successful return cannot mint
+    /// public completion, restore the old Apply receiver or authorize effects.
+    ///
+    /// # Errors
+    /// Refuses unavailable actual native inventory or any failed currentness.
+    #[cfg(target_os = "linux")]
+    fn observe_operator_create_recovery_sources_v1(&mut self,
+        _journal: &mut Journal, _original: &mut crate::OperatorCreateRecoveryOriginalV1,
+    ) -> Result<(), crate::OperatorCreateRecoveryClosedV1> {
+        Err(crate::OperatorCreateRecoveryClosedV1)
+    }
+
+    /// Settles the actual Recover Source after the independently owed C posts.
+    ///
+    /// A concrete executor must retain the same Source owner throughout entry
+    /// and settlement. The default grants no completed observation.
+    #[cfg(target_os = "linux")]
+    fn finish_operator_create_recovery_after_native_v1(&mut self,
+        _journal: &Journal, _original: &mut crate::OperatorCreateRecoveryOriginalV1,
+    ) -> Result<(), crate::OperatorCreateRecoveryClosedV1> {
+        Err(crate::OperatorCreateRecoveryClosedV1)
+    }
+
+    /// Completes cleanup through a distinct actual payer after Recover finance.
+    ///
+    /// The actual new owner must finish its Source/native/clock posts, positive
+    /// disposal and protected C terminal append before releasing its proof.
+    /// Reconciler checks that proof immediately; Node checks the stored response.
+    ///
+    /// # Errors
+    /// Refuses unavailable concrete cleanup, grant, completion or disposition.
+    #[cfg(target_os = "linux")]
+    fn complete_operator_cleanup_recovery_v2(&mut self,
+        _journal: &mut Journal, _original: &mut crate::OperatorCreateRecoveryOriginalV1,
+        _purpose: aos_sandbox_protocol::domain_ledger::public_operation::PublicRecoveryKindV1,
+    ) -> Result<OperatorCleanupRecoveryCompletionV2, crate::OperatorCreateRecoveryClosedV1> {
+        Err(crate::OperatorCreateRecoveryClosedV1)
+    }
+
+    /// Observes the closed first-local population after original Recover posts.
+    ///
+    /// This distinct interval preserves historical metadata completion and
+    /// keeps all physical observations resident. It grants no ordinary service.
+    ///
+    /// # Errors
+    /// Refuses unavailable physical receiving, an unsupported population or
+    /// any native, signed-inventory, Source or original-horizon refusal.
+    #[cfg(target_os = "linux")]
+    fn reconcile_first_local_after_recover_v2(&mut self,
+        _journal: &mut Journal, _original: &crate::OperatorCreateRecoveryOriginalV1,
+    ) -> Result<(), crate::OperatorCreateRecoveryClosedV1> {
+        Err(crate::OperatorCreateRecoveryClosedV1)
+    }
+
+    /// Enters the same enrolled B's finite catalog maintenance on the actual Source.
+    ///
+    /// # Errors
+    /// Refuses unavailable native custody, another installed context or admission.
+    #[cfg(target_os = "linux")]
+    fn begin_catalog_maintenance_once_v2(&mut self,
+        _journal: &mut Journal, _original: &mut crate::CatalogMaintenanceOriginalV2,
+        _bank: &std::sync::Arc<std::sync::Mutex<crate::ControllerResourceBankOpeningV1>>,
+        _profile: &std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
+        _runtime: &std::sync::Arc<tokio::runtime::Runtime>,
+        _shape: crate::CatalogMaintenanceSdkShapeDataV2,
+    ) -> Result<(), crate::CatalogMaintenanceClosedV2> { Err(crate::CatalogMaintenanceClosedV2) }
+
+    /// Enters real recurring no-effect refresh under the same installed B.
+    ///
+    /// # Errors
+    /// Refuses unavailable native custody, another context or failed admission.
+    #[cfg(target_os = "linux")]
+    fn begin_catalog_refresh_once_v2(&mut self,
+        _journal: &mut Journal, _original: &mut crate::CatalogMaintenanceOriginalV2,
+        _bank: &std::sync::Arc<std::sync::Mutex<crate::ControllerResourceBankOpeningV1>>,
+        _profile: &std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
+        _runtime: &std::sync::Arc<tokio::runtime::Runtime>,
+        _shape: crate::CatalogMaintenanceSdkShapeDataV2,
+    ) -> Result<(), crate::CatalogMaintenanceClosedV2> { Err(crate::CatalogMaintenanceClosedV2) }
+
+    /// Lends only a closed current borrow of this executor's actual Source.
+    ///
+    /// # Errors
+    /// Refuses unavailable or changed native Source/current maintenance custody.
+    #[cfg(target_os = "linux")]
+    fn borrow_catalog_maintenance_source_v2<'source>(&'source mut self,
+        _journal: &Journal, _original: &mut crate::CatalogMaintenanceOriginalV2,
+    ) -> Result<crate::CatalogMaintenanceSourceBorrowV2<'source>, crate::ResourceReservationErrorV1> {
+        Err(crate::ResourceReservationErrorV1::Conflict)
+    }
+
+    /// Performs every independently owed Source/C/clock post of the same interval.
+    #[cfg(target_os = "linux")]
+    fn finish_catalog_maintenance_once_v2(&mut self,
+        _journal: &mut Journal, _original: &mut crate::CatalogMaintenanceOriginalV2,
+    ) {}
+
+    /// Fences cold public Create success before the Runtime publishes Ready.
+    ///
+    /// The concrete executor retains its actual Source and fixed observer.
+    /// Missing authenticated recovery custody is closed by default.
+    ///
+    /// # Errors
+    /// Refuses a cold completed Create or unhealthy original Controller.
+    #[cfg(target_os = "linux")]
+    fn coordinate_cold_create_stopped_observer_once_v1(&mut self, journal: &mut Journal)
+        -> Result<(), crate::journal::CreateStoppedColdObserverClosedV1> {
+        crate::journal::CreateStoppedColdObserverOriginalV1::new()
+            .observe_without_source_once_v1(journal)
     }
 
     /// Completes provisioned Source genesis using the executor's real owner.
@@ -970,6 +1486,17 @@ pub trait SingleNodeEffectExecutor {
         plan: &EffectPlan,
     ) -> Result<EffectReceipt, EffectFailure>;
 
+    /// Takes only a genuine completed NoApply and Source-disposal witness.
+    ///
+    /// The default has no witness. The kernel independently checks the same
+    /// actual Controller owner, full current cut and exact terminal relation;
+    /// a generic effect error or receipt cannot select this path.
+    #[cfg(target_os = "linux")]
+    fn take_execution_no_apply_completion_v2(&mut self, _operation: OperationId)
+        -> Option<crate::controller_execution_operation::ControllerExecutionNoApplyCompletionV2> {
+        None
+    }
+
     /// Reconciles the exact public Storage Repair through its atomic terminal owner.
     ///
     /// This method-specific hook may commit the accepted Effect and Operation
@@ -1034,6 +1561,45 @@ pub trait SingleNodeEffectExecutor {
         self.apply(operation_id, step, plan)
     }
 
+    /// Borrows the actual retained provisioning cause without changing custody.
+    fn original_provisioning_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+
+    /// Formats the original cause while any native property guard is borrowed.
+    fn fmt_original_provisioning_failure_v1(&self,
+        formatter: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        match self.original_provisioning_failure_v1() {
+            Some(cause) => std::fmt::Display::fmt(cause, formatter),
+            None => formatter.write_str("the original provisioning purpose is closed"),
+        }
+    }
+
+    /// Observes the exact Storage child using its installed provisioning owner.
+    ///
+    /// Returning `None` preserves ordinary behavior only without an actual
+    /// provisioning scope. A selected original never falls back to Legacy IO.
+    #[cfg(target_os = "linux")]
+    fn observe_original_provisioning_authority_v1(
+        &mut self, _operation: OperationId, _step: u32,
+        _prepared: &PreparedAuthorityEffectV1, _journal: &mut Journal,
+    ) -> Option<Result<AuthorityEffectObservationV1, EffectFailure>> {
+        None
+    }
+
+    /// Applies the exact Storage child using its retained same-C23 Session IO.
+    ///
+    /// The concrete executor returns the same original to the Journal scope
+    /// before returning any result; Core still always owes C23 and Root posts.
+    #[cfg(target_os = "linux")]
+    fn apply_original_provisioning_authority_v1(
+        &mut self, _operation: OperationId, _step: u32,
+        _prepared: &PreparedAuthorityEffectV1, _journal: &mut Journal,
+    ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
+        None
+    }
+
     /// Observes one exact durably recorded authority-bound broker attempt.
     ///
     /// # Errors
@@ -1087,12 +1653,41 @@ pub enum ReconcileOutcome {
     CreateFailurePending,
     /// Every planned effect and the terminal operation success are durable.
     Succeeded,
+    /// Desired Stop committed while explicit Capture cleanup debt remains.
+    CommittedWithResidualCleanup,
     /// Protected orchestration canceled the operation before semantic commit.
     CanceledBeforeCommit,
     /// An exact Create no-Apply proof settled the operation and execution as failed.
     FailedBeforeCommit,
     /// A permanent executor failure durably blocked the operation.
     PermanentlyBlocked,
+}
+
+#[cfg(target_os = "linux")]
+fn is_closed_no_apply_prepare_v2(journal: &Journal, operation: OperationId) -> bool {
+    journal.get(RecordNamespace::ControllerCreateFailurePrepare, operation.as_bytes())
+        .is_some_and(|bytes| bytes.starts_with(aos_sandbox_protocol::host_execution_no_apply::closed_controller::CLOSED_CREATE_FAILURE_PREPARE_MAGIC_V2))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn require_closed_no_apply_terminal_ack_data_v2(journal: &Journal,
+    ack: aos_sandbox_protocol::host_execution_no_apply::closed_controller::ControllerCreateFailureAckDataV2,
+) -> Result<(), ReconcilerError> {
+    use aos_sandbox_protocol::host_execution_no_apply::closed_controller::ClosedCreateFailurePrepareDataV2;
+    let bytes = journal.get(RecordNamespace::ControllerCreateFailurePrepare, ack.operation.as_bytes())
+        .ok_or(ReconcilerError::InvalidExecutorOutput("NoApply completion lost its actual prepare"))?;
+    let prepare = ClosedCreateFailurePrepareDataV2::decode_canonical(ack.operation.as_bytes(), bytes)
+        .map_err(|_| ReconcilerError::InvalidExecutorOutput("NoApply completion prepare is malformed"))?;
+    if prepare.root_floor != ack.root_floor || prepare.root_sequence != ack.root_sequence
+        || prepare.digest() != ack.controller_prepare || prepare.settled_cas_digest() != ack.settled_cas {
+        return Err(ReconcilerError::InvalidExecutorOutput("NoApply completion prepare/ACK identity changed"));
+    }
+    let plan = plan_closed_create_failure_rows_data_v2(journal, prepare.identity.marker,
+        prepare.identity.terminal_archive, prepare.identity.signed_terminal, prepare.wall_seconds)?;
+    if !plan.settled_data_v2() || plan.prepared_data_v2() != Some(prepare) {
+        return Err(ReconcilerError::InvalidExecutorOutput("NoApply completion is not the exact actual three-row terminal"));
+    }
+    Ok(())
 }
 
 /// Identifies a durable operation state that still requires mutation authority.
@@ -1187,6 +1782,13 @@ pub enum ReconcilerError {
     /// Protected runtime-authority validation or mutation preparation failed.
     #[error("runtime authority failed: {0}")]
     RuntimeAuthority(#[from] crate::runtime_authority::RuntimeAuthorityError),
+    /// Accepted provisioning/resource companions disagree with their source rows.
+    #[error("provisioning resource history failed: {0}")]
+    ProvisioningResource(#[from] aos_sandbox_protocol::domain_ledger::provisioning_resources::ProvisioningResourceLinkErrorV1),
+    /// Atomic historical Create STOPPED transaction DATA differs.
+    #[cfg(target_os = "linux")]
+    #[error("Create STOPPED terminal history failed: {0}")]
+    CreateStoppedTerminal(#[from] aos_sandbox_protocol::domain_ledger::effect_history::CreateStoppedTerminalDataErrorV1),
     /// Durable journal operation failed.
     #[error("sandbox journal failed: {0}")]
     Journal(#[from] JournalError),
@@ -1268,6 +1870,9 @@ pub enum OwnershipGateActivationOutcome {
     Replay,
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) mod provisioning;
+
 /// Reconciles one exclusively owned single-node journal.
 ///
 /// A poisoned journal rejects admission, gate resolution, and reconciliation
@@ -1295,6 +1900,70 @@ where
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_original_start_entry_v1(&mut self,peer:&crate::public_api_session::PublicApiPeer,
+        encoded:&[u8],
+    )->Result<Option<crate::AcceptedStartEntryOriginalV1>,crate::ResourceReservationErrorV1> {
+        self.ledger_validated=false;
+        self.executor.prepare_original_start_entry_v1(peer,encoded,&mut self.journal)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn admit_original_delete_once_v4(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability: aos_sandbox_core::CapabilityId,
+        handle: &[u8],
+        encoded: &[u8],
+    ) -> Result<AcceptOutcome, crate::ResourceReservationErrorV1> {
+        self.ledger_validated = false;
+        self.executor.admit_original_delete_once_v4(peer, capability, handle, encoded, &mut self.journal)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_original_execution_public_custody_once_v2(
+        &mut self,
+    ) -> Result<Option<crate::controller_execution_operation::ControllerExecutionPublicCustodyTransferV2>,
+        crate::ResourceReservationErrorV1>
+    {
+        self.ledger_validated = false;
+        self.executor.take_original_execution_public_custody_once_v2(&mut self.journal)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_original_execution_public_custody_v2(
+        &mut self,
+        custody: crate::controller_execution_operation::ControllerExecutionRuntimeCustodyV2,
+    ) {
+        self.executor.retain_original_execution_public_custody_v2(custody);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn admit_original_execution_availability_once_v2(
+        &mut self,
+        maximum_pending_operations: usize,
+    ) -> Result<AcceptOutcome, crate::ResourceReservationErrorV1> {
+        self.ledger_validated = false;
+        self.executor.admit_original_execution_availability_once_v2(
+            &mut self.journal, maximum_pending_operations)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn finish_original_start_entry_v1(&mut self,entry:&mut crate::AcceptedStartEntryOriginalV1) {
+        self.executor.finish_original_start_entry_v1(entry,&mut self.journal);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn admit_original_start_source_origin_v1(&mut self,entry:&mut crate::AcceptedStartEntryOriginalV1) {
+        self.ledger_validated=false;
+        self.executor.admit_original_start_source_origin_v1(entry,&mut self.journal);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_original_start_entry_v1(&mut self,entry:crate::AcceptedStartEntryOriginalV1) {
+        self.executor.retain_original_start_entry_v1(entry);
+    }
+
     /// Borrows the sole journal writer for a short composed controller action.
     pub(crate) fn journal_mut(&mut self) -> &mut Journal {
         self.ledger_validated = false;
@@ -1305,8 +1974,8 @@ where
     pub(crate) fn capture_existing_git_coverage_account_cut_v1(
         &mut self,
         original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
-        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
@@ -1322,8 +1991,8 @@ where
     pub(crate) fn commit_existing_git_coverage_account_v1(
         &mut self,
         original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
-        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
@@ -1365,7 +2034,7 @@ where
         &mut self,
         profile: std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
     ) -> Result<(), EffectFailure> {
-        self.executor.select_original_create_q04_policy_subgate_v1(profile)
+        self.executor.select_original_create_q04_policy_subgate_v1(&mut self.journal, profile)
     }
 
     #[cfg(target_os = "linux")]
@@ -1392,7 +2061,7 @@ where
         profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
         credentials: &'credentials mut crate::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
     ) -> Result<
-        crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2,
+        aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2,
         crate::policy_compiler::FailedOriginalSourceSuccessorInvocationV2<'writers, 'profile, 'credentials>,
     > {
         self.ledger_validated = false;
@@ -1405,9 +2074,168 @@ where
     pub(crate) fn issue_project_source_successor_v3<'writers, 'profile, 'credentials>(
         &'writers mut self, profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
         credentials: &'credentials mut crate::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
-    ) -> Result<crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2, crate::policy_compiler::FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
+    ) -> Result<aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2, crate::policy_compiler::FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
         self.ledger_validated = false;
         self.executor.issue_project_source_successor_v3(&mut self.journal, profile, credentials)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn observe_operator_create_recovery_sources_v1(&mut self,
+        original: &mut crate::OperatorCreateRecoveryOriginalV1,
+    ) -> Result<(), crate::OperatorCreateRecoveryClosedV1> {
+        self.ledger_validated = false;
+        self.executor.observe_operator_create_recovery_sources_v1(&mut self.journal, original)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn finish_operator_create_recovery_after_native_v1(&mut self,
+        original: &mut crate::OperatorCreateRecoveryOriginalV1,
+    ) -> Result<(), crate::OperatorCreateRecoveryClosedV1> {
+        self.executor.finish_operator_create_recovery_after_native_v1(&self.journal, original)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn complete_operator_cleanup_recovery_v2(&mut self,
+        original: &mut crate::OperatorCreateRecoveryOriginalV1,
+        purpose: aos_sandbox_protocol::domain_ledger::public_operation::PublicRecoveryKindV1,
+    ) -> Result<aos_proto::aos::sandbox::v1::Operation, crate::OperatorCreateRecoveryClosedV1> {
+        self.ledger_validated = false;
+        let completed = self.executor.complete_operator_cleanup_recovery_v2(&mut self.journal, original, purpose)?;
+        use aos_sandbox_protocol::domain_ledger::public_operation::PublicRecoveryKindV1 as Purpose;
+        let closed = crate::OperatorCreateRecoveryClosedV1;
+        match (purpose, completed) {
+            (Purpose::StopCleanup, OperatorCleanupRecoveryCompletionV2::Stop { response, completion }) => {
+                let operation = OperationId::from_bytes(response.operation_id.as_slice().try_into().map_err(|_| closed)?);
+                completion.require_recovery_current_v1(&self.journal, operation).map_err(|_| closed)?;
+                Ok(response)
+            }
+            (Purpose::ExecutionNoApply, OperatorCleanupRecoveryCompletionV2::Execution { response, completion }) => {
+                let operation = OperationId::from_bytes(response.operation_id.as_slice().try_into().map_err(|_| closed)?);
+                completion.require_recovery_current_v2(&self.journal, operation).map_err(|_| closed)?;
+                Ok(response)
+            }
+            _ => Err(closed),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_recovered_ordinary_sessions_once_v2(&mut self) -> Option<aos_sandbox_broker::controller_receiving::bank_launch::ControllerRecoveredOrdinarySessionsOriginalV2> {
+        self.executor.take_recovered_ordinary_sessions_once_v2()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn reconcile_first_local_after_recover_v2(&mut self,
+        original: &crate::OperatorCreateRecoveryOriginalV1,
+    ) -> Result<(), crate::OperatorCreateRecoveryClosedV1> {
+        self.ledger_validated = false;
+        self.executor.reconcile_first_local_after_recover_v2(&mut self.journal, original)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn begin_catalog_maintenance_once_v2(&mut self,
+        original: &mut crate::CatalogMaintenanceOriginalV2,
+        bank: &std::sync::Arc<std::sync::Mutex<crate::ControllerResourceBankOpeningV1>>,
+        profile: &std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
+        runtime: &std::sync::Arc<tokio::runtime::Runtime>,
+        shape: crate::CatalogMaintenanceSdkShapeDataV2,
+    ) -> Result<(), crate::CatalogMaintenanceClosedV2> {
+        self.ledger_validated = false;
+        self.executor.begin_catalog_maintenance_once_v2(&mut self.journal, original, bank, profile, runtime, shape)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn begin_catalog_refresh_once_v2(&mut self,
+        original: &mut crate::CatalogMaintenanceOriginalV2,
+        bank: &std::sync::Arc<std::sync::Mutex<crate::ControllerResourceBankOpeningV1>>,
+        profile: &std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
+        runtime: &std::sync::Arc<tokio::runtime::Runtime>,
+        shape: crate::CatalogMaintenanceSdkShapeDataV2,
+    ) -> Result<(), crate::CatalogMaintenanceClosedV2> {
+        self.ledger_validated = false;
+        self.executor.begin_catalog_refresh_once_v2(&mut self.journal, original, bank, profile, runtime, shape)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn borrow_catalog_maintenance_interval_v2<'owner, 'controller>(
+        &'controller mut self, original: &'owner mut crate::CatalogMaintenanceOriginalV2,
+    ) -> Result<crate::ControllerCatalogMaintenanceLoanV2<'owner, 'controller>, crate::ResourceReservationErrorV1> {
+        self.ledger_validated = false;
+        let source = self.executor.borrow_catalog_maintenance_source_v2(&self.journal, original)?;
+        source.into_interval_v2(original, &mut self.journal)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn finish_catalog_maintenance_once_v2(&mut self, original: &mut crate::CatalogMaintenanceOriginalV2) {
+        self.executor.finish_catalog_maintenance_once_v2(&mut self.journal, original)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_catalog_maintenance_sdk_disposal_v2<'owner>(
+        &self, original: &'owner mut crate::CatalogMaintenanceOriginalV2,
+        source: &crate::host_catalog_reconciliation::StartHostCatalogPublicationOriginalV2,
+        outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<crate::ControllerCatalogMaintenanceCatalogDisposalV2<'owner>, crate::ResourceReservationErrorV1> {
+        original.prepare_catalog_sdk_disposal_once_v2(&self.journal, source, outcome)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_catalog_maintenance_storage_sdk_disposal_v3<'owner>(
+        &self,
+        original: &'owner mut crate::CatalogMaintenanceOriginalV2,
+        prepared: &crate::ControllerMaintenanceStorageRequestOriginalV3,
+        resource: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        inventory: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        native: &[u8; 64],
+    ) -> Result<
+        crate::ControllerMaintenanceStorageSdkDisposalV3<'owner>,
+        crate::ResourceReservationErrorV1,
+    > {
+        original.prepare_storage_sdk_disposal_once_v3(
+            &self.journal,
+            prepared,
+            resource,
+            inventory,
+            native,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn completed_catalog_maintenance_cold_native_v2<'completed>(
+        &self, original: &'completed crate::CatalogMaintenanceOriginalV2,
+        source: &crate::host_catalog_reconciliation::StartHostCatalogPublicationOriginalV2,
+    ) -> Result<crate::CatalogMaintenanceColdCompletedNativeBorrowV2<'completed>, crate::ResourceReservationErrorV1> {
+        original.completed_cold_native_v2(&self.journal, source)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn completed_catalog_maintenance_refresh_native_v2<'completed>(
+        &self, original: &'completed crate::CatalogMaintenanceOriginalV2,
+        source: &crate::host_catalog_reconciliation::StartHostCatalogPublicationOriginalV2,
+    ) -> Result<crate::CatalogMaintenanceRefreshCompletedNativeBorrowV2<'completed>, crate::ResourceReservationErrorV1> {
+        original.completed_refresh_native_v2(&self.journal, source)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn require_recovered_ordinary_session_for_maintenance_v2(
+        &self, session: &crate::ControllerInitialSessionCompletedNativeBorrowV1<'_>,
+        context: &aos_sandbox_broker::controller_receiving::bank_launch::ControllerRecoveredOrdinarySessionsOriginalV2,
+        bank: &crate::ControllerResourceBankOpeningV1,
+        profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), crate::ResourceReservationErrorV1> {
+        session.require_completed_recovered_ordinary_context_v2(context, bank, &self.journal, profile)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn coordinate_cold_create_stopped_observer_once_v1(&mut self)
+        -> Result<(), crate::journal::CreateStoppedColdObserverClosedV1> {
+        self.ledger_validated = false;
+        self.executor.coordinate_cold_create_stopped_observer_once_v1(&mut self.journal)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn observe_current_executions_v4(&mut self) -> Result<(), EffectFailure> {
+        self.ledger_validated = false;
+        self.executor.observe_current_executions_v4(&mut self.journal)
     }
 
     #[cfg(target_os = "linux")]
@@ -1529,107 +2357,12 @@ where
         activation: AuthorityPublicationActivationV1,
         wall_seconds: Option<i64>,
     ) -> Result<OwnershipGateActivationOutcome, ReconcilerError> {
-        self.ensure_ledger_validated()?;
-        let AuthorityPublicationActivationPartsV1 {
-            records: publication_records,
-            sandbox,
-            assignment_digest,
-            source_draft_digest,
-            ownership_authority,
-            publication_digest,
-            lease_generation,
-            lease_digest,
-            receipt_action,
-            receipt_request_id,
-            receipt_claim_digest,
-            prepared,
-        } = activation.into_parts();
-        let operation = self.load_operation(operation_id)?;
-        let gate = self
-            .load_and_validate_ownership_gate(operation_id, operation)?
-            .ok_or(ReconcilerError::OwnershipGateNotFound)?;
-        let durable_plan = match &gate {
-            OwnershipGateStatusV1::Pending(plan)
-            | OwnershipGateStatusV1::Activated { plan, .. } => plan,
-        };
-        let claim_assignment = durable_plan.claim().assignment();
-        if sandbox != claim_assignment.sandbox()
-            || assignment_digest != claim_assignment.digest()
-            || source_draft_digest != durable_plan.publication_draft_digest()
-            || &ownership_authority != durable_plan.expected_authority()
-            || receipt_action != durable_plan.claim().action()
-            || receipt_request_id != *durable_plan.claim().request_id()
-            || receipt_claim_digest != durable_plan.claim().digest()
-        {
-            return Err(ReconcilerError::OwnershipActivationConflict);
-        }
-        let plan = match gate {
-            OwnershipGateStatusV1::Pending(plan) => plan,
-            OwnershipGateStatusV1::Activated {
-                publication_digest: prior_publication,
-                lease_generation: prior_generation,
-                lease_digest: prior_lease,
-                ..
-            } if prior_publication == publication_digest
-                && prior_generation == lease_generation
-                && prior_lease == lease_digest =>
-            {
-                return Ok(OwnershipGateActivationOutcome::Replay);
-            }
-            OwnershipGateStatusV1::Activated { .. } => {
-                return Err(ReconcilerError::OwnershipActivationConflict);
-            }
-        };
-        AuthorityPublicationStore::new(&mut self.journal)
-            .validate_gate_successor(&prepared)
-            .map_err(|_| ReconcilerError::OwnershipPublicationNotSuccessor)?;
-        self.validate_gated_effects_for_activation(operation_id, operation.effect_count())?;
-        let runtime_records = if operation.runtime_intent_digest().is_some()
-            || self
-                .journal
-                .records(RecordNamespace::RuntimeAuthority)
-                .next()
-                .is_some()
-        {
-            let store =
-                RuntimeAuthorityStore::load(&mut self.journal, RuntimeAuthorityLimits::default())?;
-            if operation.runtime_intent_digest().is_none() && store.current(sandbox)?.is_some() {
-                return Err(ReconcilerError::InvalidPlan(
-                    "a current runtime holder requires an explicit successor intent",
-                ));
-            }
-            store.prepare_activation(
-                operation_id,
-                plan.request_digest(),
-                plan.publication_draft(),
-                &prepared,
-            )?
-        } else {
-            Vec::new()
-        };
-        let activated = OwnershipGateStatusV1::Activated {
-            plan,
-            publication_digest,
-            lease_generation,
-            lease_digest,
-        };
-        let mut records = Vec::from(publication_records);
-        records.extend(runtime_records);
-        let operation = transition_operation(operation, OperationState::Accepted, wall_seconds)?;
-        records.push(JournalRecord::put(
-            RecordNamespace::Operation,
-            operation_id.into_bytes().to_vec(),
-            encode_operation_record(operation),
-        ));
-        records.push(JournalRecord::put(
-            RecordNamespace::OwnershipGate,
-            operation_id.into_bytes().to_vec(),
-            encode_ownership_gate(&activated)?,
-        ));
-        let transaction = JournalTransaction::new(OperationId::new().into_bytes(), records)
-            .map_err(JournalError::from)?;
-        self.journal.commit(&transaction)?;
-        Ok(OwnershipGateActivationOutcome::Activated)
+        let mut kernel = core_journal::CoreJournalMutationV2::ordinary_v2(
+            &mut self.journal, &mut self.executor, self.ledger_validated,
+        );
+        let returned = kernel.activate_ownership_gate_inner(operation_id, activation, wall_seconds);
+        self.ledger_validated = kernel.ledger_validated;
+        returned
     }
 
     /// Atomically admits desired state, an operation, and its effect ledger.
@@ -1665,231 +2398,16 @@ where
         plan: &OperationPlan,
         maximum_pending_operations: Option<usize>,
     ) -> Result<AcceptOutcome, ReconcilerError> {
-        self.ensure_ledger_validated()?;
-        match self
-            .journal
-            .check_idempotency(&plan.idempotency_key, plan.request_digest)
-        {
-            IdempotencyOutcome::Replay(operation_id) => {
-                if observe_reservation::is_adopted_child(&self.journal, operation_id)? {
-                    return Err(ReconcilerError::OperationAlreadyExists);
-                }
-                self.validate_operation_gate_relation(operation_id)?;
-                let recorded = self.load_operation(operation_id)?;
-                let recorded_authorization = self
-                    .journal
-                    .get(
-                        RecordNamespace::PublicOperationAuthorization,
-                        operation_id.as_bytes(),
-                    )
-                    .map(PublicOperationAuthorizationV1::decode)
-                    .transpose()?;
-                let planned_public_operation = plan.public_operation.as_ref().map(|public| {
-                    if plan.effects.is_empty() {
-                        public.durable_completed()
-                    } else {
-                        public.durable()
-                    }
-                });
-                if recorded.runtime_intent_digest()
-                    != plan
-                        .runtime_authority
-                        .as_ref()
-                        .map(RuntimeAuthorityIntentV1::digest)
-                    || recorded.public_operation() != planned_public_operation
-                    || recorded_authorization.as_ref()
-                        != plan
-                            .public_operation
-                            .as_ref()
-                            .map(PublicOperationAdmissionV1::authorization)
-                {
-                    return Err(ReconcilerError::IdempotencyConflict);
-                }
-                let recorded_local_completion = recorded.effect_count() == 0
-                    && recorded.state() == OperationState::Succeeded
-                    && !recorded.ownership_gated()
-                    && recorded.runtime_intent_digest().is_none();
-                let planned_local_completion =
-                    plan.effects.is_empty() && !plan.local_records.is_empty();
-                if recorded_local_completion != planned_local_completion {
-                    return Err(ReconcilerError::IdempotencyConflict);
-                }
-                if recorded_local_completion
-                    && self
-                        .journal
-                        .get(RecordNamespace::DesiredState, &plan.desired_key)
-                        != Some(plan.desired_value.as_slice())
-                {
-                    return Err(ReconcilerError::IdempotencyConflict);
-                }
-                for local in &plan.local_records {
-                    if self.journal.get(local.namespace(), local.key()) != local.value() {
-                        return Err(ReconcilerError::IdempotencyConflict);
-                    }
-                }
-                #[cfg(target_os = "linux")]
-                nix_admission::require_exact_nix_replay_plan_v2(&self.journal, operation_id, plan)?;
-                return Ok(AcceptOutcome::Replay(operation_id));
-            }
-            IdempotencyOutcome::Conflict => return Err(ReconcilerError::IdempotencyConflict),
-            IdempotencyOutcome::Vacant => {}
-        }
-        #[cfg(target_os = "linux")]
-        self.journal.require_git_coverage_new_admission_v1()?;
-        if self
-            .journal
-            .get(RecordNamespace::Operation, plan.operation_id.as_bytes())
-            .is_some()
-        {
-            return Err(ReconcilerError::OperationAlreadyExists);
-        }
-        if observe_reservation::claims_operation(&self.journal, plan.operation_id)? {
-            return Err(ReconcilerError::OperationAlreadyExists);
-        }
-        // A second admission cannot replace another operator's terminal
-        // acknowledgment, even if a previously compiled plan is retained.
-        if plan.local_records.iter().any(|record| {
-            crate::operator_abandon_ack::is_acknowledgment_record_v1(record)
-                && self.journal.get(record.namespace(), record.key()).is_some()
-        }) {
-            return Err(ReconcilerError::IdempotencyConflict);
-        }
-        if let Some(maximum) = maximum_pending_operations {
-            // Corrupt operation state must never be treated as spare capacity.
-            if self.pending_operation_count()? >= maximum {
-                return Err(ReconcilerError::AdmissionBackpressure);
-            }
-        }
-
-        let effect_count = u32::try_from(plan.effects.len())
-            .map_err(|_| ReconcilerError::InvalidPlan("too many effects"))?;
-        let mut records = Vec::with_capacity(
-            plan.effects.len()
-                + plan.local_records.len()
-                + 3
-                + usize::from(plan.ownership_gate.is_some())
-                + usize::from(plan.public_operation.is_some()),
+        let mut kernel = core_journal::CoreJournalMutationV2::ordinary_v2(
+            &mut self.journal, &mut self.executor, self.ledger_validated,
         );
-        records.push(JournalRecord::put(
-            RecordNamespace::DesiredState,
-            plan.desired_key.clone(),
-            plan.desired_value.clone(),
-        ));
-        records.push(JournalRecord::put(
-            RecordNamespace::Operation,
-            plan.operation_id.into_bytes().to_vec(),
-            encode_operation_record(OperationRecord::new(
-                if plan.effects.is_empty() && !plan.local_records.is_empty() {
-                    OperationState::Succeeded
-                } else if plan.ownership_gate.is_some() {
-                    OperationState::OwnershipPending
-                } else {
-                    OperationState::Accepted
-                },
-                effect_count,
-                plan.ownership_gate.is_some(),
-                plan.runtime_authority
-                    .as_ref()
-                    .map(RuntimeAuthorityIntentV1::digest),
-                plan.public_operation.as_ref().map(|public| {
-                    if plan.effects.is_empty() {
-                        public.durable_completed()
-                    } else {
-                        public.durable()
-                    }
-                }),
-            )),
-        ));
-        records.push(JournalRecord::idempotency(
-            &plan.idempotency_key,
-            plan.request_digest,
-            plan.operation_id,
-        ));
-        if let Some(public) = &plan.public_operation {
-            records.push(JournalRecord::put(
-                RecordNamespace::PublicOperationAuthorization,
-                plan.operation_id.into_bytes().to_vec(),
-                public.authorization().encode()?,
-            ));
-        }
-        if let Some(gate) = &plan.ownership_gate {
-            if plan.runtime_authority.is_none()
-                && self
-                    .journal
-                    .records(RecordNamespace::RuntimeAuthority)
-                    .next()
-                    .is_some()
-                && RuntimeAuthorityStore::load(
-                    &mut self.journal,
-                    RuntimeAuthorityLimits::default(),
-                )?
-                .current(gate.publication_draft().manifest().manifest().sandbox())?
-                .is_some()
-            {
-                return Err(ReconcilerError::InvalidPlan(
-                    "a current runtime holder requires an explicit successor intent",
-                ));
-            }
-            records.push(JournalRecord::put(
-                RecordNamespace::OwnershipGate,
-                plan.operation_id.into_bytes().to_vec(),
-                encode_ownership_gate(&OwnershipGateStatusV1::Pending(gate.clone()))?,
-            ));
-            if let Some(intent) = &plan.runtime_authority {
-                records.extend(
-                    RuntimeAuthorityStore::load(
-                        &mut self.journal,
-                        RuntimeAuthorityLimits::default(),
-                    )?
-                    .prepare_pending(
-                        plan.operation_id,
-                        plan.request_digest,
-                        gate.publication_draft(),
-                        intent,
-                    )?,
-                );
-            }
-        }
-        records.extend(plan.local_records.iter().cloned());
-        for (index, effect) in plan.effects.iter().enumerate() {
-            let step = u32::try_from(index)
-                .map_err(|_| ReconcilerError::InvalidPlan("too many effects"))?;
-            records.push(JournalRecord::put(
-                RecordNamespace::Effect,
-                effect_key(plan.operation_id, step).to_vec(),
-                encode_effect(&EffectLedgerRecord::from_parts((
-                    effect.clone(),
-                    EffectState::Planned,
-                    None,
-                    None,
-                )))
-                .map_err(ReconcilerError::from)?,
-            ));
-        }
-        let transaction = JournalTransaction::new(OperationId::new().into_bytes(), records)
-            .map_err(JournalError::from)?;
-        self.journal.commit(&transaction)?;
-        Ok(AcceptOutcome::Accepted(plan.operation_id))
+        let returned = kernel.accept_inner(plan, maximum_pending_operations);
+        self.ledger_validated = kernel.ledger_validated;
+        returned
     }
 
     fn pending_operation_count(&self) -> Result<usize, ReconcilerError> {
-        let mut pending = 0_usize;
-        let adopted_children = observe_reservation::adopted_operations(&self.journal)?;
-        for (key, value) in self.journal.records(RecordNamespace::Operation) {
-            let operation_id = decode_operation_key(key)?;
-            if adopted_children.contains(&operation_id) {
-                continue;
-            }
-            let operation = decode_operation(value)?;
-            if !operation.state().is_terminal() {
-                pending = pending
-                    .checked_add(1)
-                    .ok_or(ReconcilerError::CorruptLedger(
-                        "pending operation count overflow",
-                    ))?;
-            }
-        }
-        Ok(pending)
+        core_journal::readonly::pending_operation_count(&self.journal)
     }
 
     /// Returns the first validated operation that still requires active work.
@@ -1922,6 +2440,7 @@ where
                 OperationState::Succeeded
                 | OperationState::CanceledBeforeCommit
                 | OperationState::FailedBeforeCommit
+                | OperationState::CommittedWithResidualCleanup
                 | OperationState::PermanentlyBlocked => continue,
             };
             first.get_or_insert(ValidatedUnfinishedOperationV1 {
@@ -1975,6 +2494,25 @@ where
             .map_err(ReconcilerError::from)
     }
 
+    /// Borrows the installed executor's original provisioning failure.
+    ///
+    /// This read-only forwarding view does not replace the retained owner or
+    /// open a failed native purpose. It conveys no completion authority.
+    #[doc(hidden)]
+    pub fn original_provisioning_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)> {
+        self.executor.original_provisioning_failure_v1()
+    }
+
+    /// Borrows a formatter for the same installed original provisioning cause.
+    ///
+    /// The formatter holds no allocated diagnostic or temporary error guard;
+    /// the executor borrows its selected native archive only while formatting.
+    #[doc(hidden)]
+    pub fn original_provisioning_failure_view_v1(&self) -> impl std::fmt::Display + '_ {
+        OriginalProvisioningFailureDisplayV1(&self.executor)
+    }
+
     /// Advances one operation by at most one durable transition or effect.
     ///
     /// # Errors
@@ -2019,6 +2557,16 @@ where
             return Ok(ReconcileOutcome::ObserveChildPending);
         }
         let gate = self.load_and_validate_ownership_gate(operation_id, operation)?;
+        // Metadata completion has no executable Effect. Only the closed Root-
+        // admitted joint terminal CAS can finish it; an empty generic loop
+        // must never turn its durable Accepted prefix into public success.
+        if operation.state() == OperationState::Accepted
+            && operation.public_operation().is_some_and(|public| matches!(public.recovery_kind_v1(),
+                aos_sandbox_protocol::domain_ledger::public_operation::PublicRecoveryKindV1::MetadataComplete
+                    | aos_sandbox_protocol::domain_ledger::public_operation::PublicRecoveryKindV1::StopCleanup
+                    | aos_sandbox_protocol::domain_ledger::public_operation::PublicRecoveryKindV1::ExecutionNoApply)) {
+            return Ok(ReconcileOutcome::RetryPending);
+        }
         match operation.state() {
             OperationState::OwnershipPending => return Ok(ReconcileOutcome::OwnershipPending),
             OperationState::Succeeded | OperationState::PermanentlyBlocked => {
@@ -2049,10 +2597,19 @@ where
                     ReconcileOutcome::PermanentlyBlocked
                 });
             }
+            OperationState::CommittedWithResidualCleanup => {
+                // Exact cold ledger validation already joined its sole residual
+                // companion. A normal reconcile cannot reissue containment.
+                return Ok(ReconcileOutcome::CommittedWithResidualCleanup);
+            }
             OperationState::CanceledBeforeCommit => {
                 return Ok(ReconcileOutcome::CanceledBeforeCommit);
             }
             OperationState::FailedBeforeCommit => {
+                #[cfg(target_os = "linux")]
+                if is_closed_no_apply_prepare_v2(&self.journal, operation_id) {
+                    return self.require_execution_no_apply_completion_v2(operation_id);
+                }
                 return Ok(ReconcileOutcome::FailedBeforeCommit);
             }
             OperationState::Accepted | OperationState::Applying => {}
@@ -2063,10 +2620,42 @@ where
             return Ok(ReconcileOutcome::CreateFailurePending);
         }
         #[cfg(target_os = "linux")]
-        if create_q04::require_original_pending(&self.journal)? {
-            // A Controller-wide Q04 fence applies before every generic effect
-            // or observer call, including C1 before a consumed gate exists.
+        if let Some(returned)=self.executor.progress_original_start_once_v1(operation_id,&mut self.journal) {
+            // The installed original keeps all reached results and mandatory
+            // posts. The public Start remains nonterminal until real launch
+            // completion; this route never enters ordinary effect dispatch.
+            returned.map_err(|_|ReconcilerError::InvalidExecutorOutput(
+                "the original Start continuation retains a refusal",
+            ))?;
             return Ok(ReconcileOutcome::RetryPending);
+        }
+        #[cfg(target_os = "linux")]
+        if operation.public_operation().is_some_and(|public|
+            public.method() == aos_sandbox_protocol::public_api::PublicOperationMethodV1::StopSandbox)
+        {
+            if let Some(returned) = self.executor.progress_original_lifecycle_stop_once_v4(
+                operation_id, &mut self.journal)
+            {
+                // No generic failure/retry transition may overwrite a reached
+                // residual CAS or turn supplied receipt DATA into Applied.
+                self.ledger_validated = false;
+                returned.map_err(|_| ReconcilerError::InvalidExecutorOutput(
+                    "the original Stop continuation retains a refusal"))?;
+                self.ensure_ledger_validated()?;
+                return match self.load_operation(operation_id)?.state() {
+                    OperationState::CommittedWithResidualCleanup => Ok(ReconcileOutcome::CommittedWithResidualCleanup),
+                    OperationState::Succeeded => Ok(ReconcileOutcome::Succeeded),
+                    _ => Ok(ReconcileOutcome::RetryPending),
+                };
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if !self.has_original_provisioning_operation_v1(operation_id)
+            && create_q04::require_original_pending(&self.journal)? {
+            // Only the actual sole public parent may ask its retained issuer
+            // for a separately funded turn. Every generic effect and every
+            // unrelated operation remains behind the original Q04 fence.
+            return self.continue_original_publication_parent_v1(operation_id, operation);
         }
 
         let mut canceled_before_commit = false;
@@ -2179,6 +2768,8 @@ where
                         Some(operation.effect_count()),
                         wall_seconds,
                     )?;
+                    #[cfg(target_os = "linux")]
+                    self.journal.retain_unissued_original_provisioning_attempt_v1(operation_id, step)?;
                     return Ok(ReconcileOutcome::Progressed);
                 }
                 EffectState::Applying { attempt, .. } => {
@@ -2281,67 +2872,25 @@ where
         &mut self,
         validate_current_boot: bool,
     ) -> Result<(), ReconcilerError> {
-        let gated_operations = self
-            .journal
-            .records(RecordNamespace::OwnershipGate)
-            .map(|(key, _)| decode_operation_key(key))
-            .collect::<Result<Vec<_>, _>>()?;
-        for operation_id in gated_operations {
-            let operation = self.load_operation(operation_id).map_err(|error| {
-                if matches!(error, ReconcilerError::OperationNotFound) {
-                    ReconcilerError::CorruptLedger("orphan ownership gate")
-                } else {
-                    error
-                }
-            })?;
-            self.load_and_validate_ownership_gate_for(
-                operation_id,
-                operation,
-                validate_current_boot,
-            )?;
-        }
-
-        let operations = self
-            .journal
-            .records(RecordNamespace::Operation)
-            .map(|(key, _)| decode_operation_key(key))
-            .collect::<Result<Vec<_>, _>>()?;
-        for operation_id in operations {
-            let operation = self.load_operation(operation_id)?;
-            self.load_and_validate_ownership_gate_for(
-                operation_id,
-                operation,
-                validate_current_boot,
-            )?;
-        }
-        Ok(())
+        let mut kernel = core_journal::CoreJournalMutationV2::ordinary_v2(
+            &mut self.journal, &mut self.executor, self.ledger_validated,
+        );
+        let returned = kernel.validate_all_ownership_gates(validate_current_boot);
+        self.ledger_validated = kernel.ledger_validated;
+        returned
     }
 
     fn validate_public_operation_authorizations(&self) -> Result<(), ReconcilerError> {
-        for (key, value) in self
-            .journal
-            .records(RecordNamespace::PublicOperationAuthorization)
-        {
-            let operation_id = decode_operation_key(key)?;
-            let operation = self.load_operation(operation_id).map_err(|error| {
-                if matches!(error, ReconcilerError::OperationNotFound) {
-                    ReconcilerError::CorruptLedger("orphan public operation authorization binding")
-                } else {
-                    error
-                }
-            })?;
-            if operation.public_operation().is_none() {
-                return Err(ReconcilerError::CorruptLedger(
-                    "authorization binding refers to a non-public operation",
-                ));
-            }
-            PublicOperationAuthorizationV1::decode(value)?;
-        }
-        Ok(())
+        core_journal::readonly::validate_public_operation_authorizations(&self.journal)
     }
 
     fn ensure_ledger_validated(&mut self) -> Result<(), ReconcilerError> {
-        self.ensure_ledger_validated_for(true)
+        let mut kernel = core_journal::CoreJournalMutationV2::ordinary_v2(
+            &mut self.journal, &mut self.executor, self.ledger_validated,
+        );
+        let returned = kernel.ensure_ledger_validated();
+        self.ledger_validated = kernel.ledger_validated;
+        returned
     }
 
     fn ensure_ledger_validated_read_only(&mut self) -> Result<(), ReconcilerError> {
@@ -2352,290 +2901,12 @@ where
         &mut self,
         validate_current_boot: bool,
     ) -> Result<(), ReconcilerError> {
-        // Cached structural validity says nothing about a later failed commit.
-        // Check on every entry before replay or any executor/session interaction.
-        self.journal.ensure_healthy()?;
-        if !self.ledger_validated {
-            // Scan the publication namespace once after recovery or an exposed
-            // raw journal mutation. Individual gated operations still verify
-            // their direct prepared/current references on every selection.
-            validate_publication_namespace(&self.journal).map_err(|_| {
-                ReconcilerError::CorruptLedger("authority publication namespace is corrupt")
-            })?;
-            observe_reservation::validate_all(&self.journal)?;
-            project_admission::validate_all(&self.journal)?;
-            self.validate_all_ownership_gates(validate_current_boot)?;
-            self.validate_public_operation_authorizations()?;
-            validate_runtime_authority_operations(&self.journal)?;
-            create_failure::validate_all_prepare_floors(&self.journal)?;
-            crate::controller_no_apply_settlement_cursor::validate_all_controller_no_apply_cursors_v1(
-                &self.journal,
-            )
-            .map_err(|_| ReconcilerError::CorruptLedger("Controller no-Apply settlement cursor is corrupt"))?;
-            if self
-                .journal
-                .records(RecordNamespace::SandboxSpec)
-                .next()
-                .is_some()
-            {
-                crate::sandbox_spec_state::validate_namespace(&self.journal)
-                    .map_err(|error| ReconcilerError::SandboxSpec(Box::new(error)))?;
-            }
-            if self
-                .journal
-                .records(RecordNamespace::FilesystemViewRevision)
-                .next()
-                .is_some()
-            {
-                crate::filesystem_view_state::validate_namespace(&self.journal)
-                    .map_err(|error| ReconcilerError::FilesystemViewRevision(Box::new(error)))?;
-            }
-            if self
-                .journal
-                .records(RecordNamespace::AttachmentSlot)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::attachment_slot_state::validate_namespace(&self.journal)
-                    .map_err(|error| ReconcilerError::AttachmentSlot(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "attachment slots require Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::RuntimeAuthority)
-                .next()
-                .is_some()
-            {
-                RuntimeAuthorityStore::load(&mut self.journal, RuntimeAuthorityLimits::default())?;
-            }
-            if self
-                .journal
-                .records(RecordNamespace::RuntimeGeneration)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::runtime_scope::validate_generation_namespace(&mut self.journal)
-                    .map_err(|error| ReconcilerError::RuntimeGeneration(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "runtime generations require Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::NamespaceTarget)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::runtime_scope::validate_namespace_target_namespace(&mut self.journal)
-                    .map_err(|error| ReconcilerError::NamespaceTarget(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "namespace targets require Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::AttachmentDesired)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::attachment_state::validate_namespace(&self.journal)
-                    .map_err(|error| ReconcilerError::AttachmentDesired(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "attachment desired state requires Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::MountAttempt)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::mount_attempt::validate_namespace(&mut self.journal)
-                    .map_err(|error| ReconcilerError::MountAttempt(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "mount attempts require Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::MountCompletion)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::mount_attempt::validate_completion_namespace(&mut self.journal)
-                    .map_err(|error| ReconcilerError::MountAttempt(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "mount completions require Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::MountInventory)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::mount_attempt::validate_inventory_namespace(&mut self.journal)
-                    .map_err(|error| ReconcilerError::MountAttempt(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "mount inventory requires Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::MountSourceAcquisitionInventory)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::mount_source_acquisition_inventory::validate_namespace(&mut self.journal)
-                    .map_err(|error| {
-                        ReconcilerError::MountSourceAcquisitionInventory(Box::new(error))
-                    })?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "Mount source-acquisition inventory requires Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::AttachmentSourceAttempt)
-                .next()
-                .is_some()
-                || self
-                    .journal
-                    .records(RecordNamespace::AttachmentSourceCompletion)
-                    .next()
-                    .is_some()
-                || self
-                    .journal
-                    .records(RecordNamespace::AttachmentSourceDispatch)
-                    .next()
-                    .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                {
-                    crate::attachment_source::validate_attempt_namespace(&mut self.journal)
-                        .map_err(|error| ReconcilerError::AttachmentSource(Box::new(error)))?;
-                    crate::attachment_source::validate_completion_namespace(&mut self.journal)
-                        .map_err(|error| ReconcilerError::AttachmentSource(Box::new(error)))?;
-                    crate::attachment_source::validate_dispatch_namespace(&mut self.journal)
-                        .map_err(|error| ReconcilerError::AttachmentSource(Box::new(error)))?;
-                }
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "attachment source custody requires Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::DestinationSlotAttempt)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::destination_slot_effect::validate_attempt_namespace(&mut self.journal)
-                    .map_err(|error| ReconcilerError::DestinationSlotEffect(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "destination-slot attempts require Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::DestinationSlotCompletion)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::destination_slot_effect::validate_completion_namespace(&mut self.journal)
-                    .map_err(|error| ReconcilerError::DestinationSlotEffect(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "destination-slot completions require Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::DestinationSlotInventory)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::destination_slot_inventory::validate_namespace(&mut self.journal)
-                    .map_err(|error| ReconcilerError::DestinationSlotInventory(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "destination-slot inventory requires Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::StorageResourceInventory)
-                .next()
-                .is_some()
-                || self
-                    .journal
-                    .records(RecordNamespace::NetworkResourceInventory)
-                    .next()
-                    .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::resource_inventory::validate_namespaces(&mut self.journal)
-                    .map_err(|error| ReconcilerError::ResourceInventory(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "broker resource inventory requires Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::AttachmentVerification)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::attachment_verification::validate_namespace(&mut self.journal)
-                    .map_err(|error| ReconcilerError::AttachmentVerification(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "attachment verification requires Linux validation",
-                ));
-            }
-            if self
-                .journal
-                .records(RecordNamespace::HostCatalogReconciliation)
-                .next()
-                .is_some()
-            {
-                #[cfg(target_os = "linux")]
-                crate::host_catalog_reconciliation::validate_namespace(&mut self.journal)
-                    .map_err(|error| ReconcilerError::HostCatalogReconciliation(Box::new(error)))?;
-                #[cfg(not(target_os = "linux"))]
-                return Err(ReconcilerError::CorruptLedger(
-                    "Host catalog reconciliation requires Linux validation",
-                ));
-            }
-            // Executor-free validation must not satisfy the stronger cache
-            // used immediately before effect recovery and dispatch.
-            self.ledger_validated = validate_current_boot;
-        }
-        Ok(())
+        let mut kernel = core_journal::CoreJournalMutationV2::ordinary_v2(
+            &mut self.journal, &mut self.executor, self.ledger_validated,
+        );
+        let returned = kernel.ensure_ledger_validated_for(validate_current_boot);
+        self.ledger_validated = kernel.ledger_validated;
+        returned
     }
 
     fn validate_gated_effects_for_activation(
@@ -2643,52 +2914,19 @@ where
         operation_id: OperationId,
         effect_count: u32,
     ) -> Result<(), ReconcilerError> {
-        for step in 0..effect_count {
-            let bytes = self
-                .journal
-                .get(RecordNamespace::Effect, &effect_key(operation_id, step))
-                .ok_or(ReconcilerError::CorruptLedger(
-                    "ownership-gated operation is missing an effect",
-                ))?;
-            if !matches!(
-                decode_effect(bytes).map_err(ReconcilerError::from)?.state(),
-                EffectState::Planned
-            ) {
-                return Err(ReconcilerError::CorruptLedger(
-                    "ownership-gated effect advanced before activation",
-                ));
-            }
-        }
-        for (key, _) in self.journal.records(RecordNamespace::Effect) {
-            if key.len() >= OPERATION_KEY_BYTES
-                && &key[..OPERATION_KEY_BYTES] == operation_id.as_bytes()
-            {
-                let step_bytes: [u8; 4] = key
-                    .get(OPERATION_KEY_BYTES..)
-                    .ok_or(ReconcilerError::CorruptLedger(
-                        "invalid ownership-gated effect key",
-                    ))?
-                    .try_into()
-                    .map_err(|_| {
-                        ReconcilerError::CorruptLedger("invalid ownership-gated effect key")
-                    })?;
-                if u32::from_be_bytes(step_bytes) >= effect_count {
-                    return Err(ReconcilerError::CorruptLedger(
-                        "ownership-gated operation has an extra effect",
-                    ));
-                }
-            }
-        }
-        Ok(())
+        core_journal::readonly::validate_gated_effects_for_activation(&self.journal, operation_id, effect_count)
     }
 
     fn validate_operation_gate_relation(
         &mut self,
         operation_id: OperationId,
     ) -> Result<(), ReconcilerError> {
-        let operation = self.load_operation(operation_id)?;
-        self.load_and_validate_ownership_gate(operation_id, operation)?;
-        Ok(())
+        let mut kernel = core_journal::CoreJournalMutationV2::ordinary_v2(
+            &mut self.journal, &mut self.executor, self.ledger_validated,
+        );
+        let returned = kernel.validate_operation_gate_relation(operation_id);
+        self.ledger_validated = kernel.ledger_validated;
+        returned
     }
 
     fn load_and_validate_ownership_gate(
@@ -2696,7 +2934,12 @@ where
         operation_id: OperationId,
         operation: OperationRecord,
     ) -> Result<Option<OwnershipGateStatusV1>, ReconcilerError> {
-        self.load_and_validate_ownership_gate_for(operation_id, operation, true)
+        let mut kernel = core_journal::CoreJournalMutationV2::ordinary_v2(
+            &mut self.journal, &mut self.executor, self.ledger_validated,
+        );
+        let returned = kernel.load_and_validate_ownership_gate(operation_id, operation);
+        self.ledger_validated = kernel.ledger_validated;
+        returned
     }
 
     fn load_and_validate_ownership_gate_for(
@@ -2705,94 +2948,12 @@ where
         operation: OperationRecord,
         validate_current_boot: bool,
     ) -> Result<Option<OwnershipGateStatusV1>, ReconcilerError> {
-        self.validate_canceled_operation(operation_id, operation)?;
-        create_failure::validate_failed_create_operation(&self.journal, operation_id, operation)?;
-        operator_repair_failure::validate_operation(&self.journal, operation_id, operation)?;
-        let gate = self
-            .journal
-            .get(RecordNamespace::OwnershipGate, operation_id.as_bytes())
-            .map(|bytes| decode_ownership_gate(bytes).map_err(ReconcilerError::from))
-            .transpose()?;
-        let Some(gate) = gate else {
-            return if operation.ownership_gated() {
-                Err(ReconcilerError::CorruptLedger(
-                    "ownership-gated operation has no gate",
-                ))
-            } else {
-                self.validate_effect_authority_bindings(
-                    operation_id,
-                    operation.effect_count(),
-                    None,
-                    None,
-                    validate_current_boot,
-                )?;
-                Ok(None)
-            };
-        };
-        let plan = match &gate {
-            OwnershipGateStatusV1::Pending(plan)
-            | OwnershipGateStatusV1::Activated { plan, .. } => plan,
-        };
-        if plan.operation_id() != operation_id
-            || self
-                .journal
-                .check_idempotency(plan.idempotency_key(), plan.request_digest())
-                != IdempotencyOutcome::Replay(operation_id)
-        {
-            return Err(ReconcilerError::CorruptLedger(
-                "ownership gate does not match its operation",
-            ));
-        }
-        if !operation.ownership_gated() {
-            return Err(ReconcilerError::CorruptLedger(
-                "ungated operation has an ownership gate",
-            ));
-        }
-        self.validate_effect_authority_bindings(
-            operation_id,
-            operation.effect_count(),
-            Some(plan.publication_draft()),
-            match &gate {
-                OwnershipGateStatusV1::Activated {
-                    publication_digest, ..
-                } => Some(*publication_digest),
-                OwnershipGateStatusV1::Pending(_) => None,
-            },
-            validate_current_boot,
-        )?;
-        match (&gate, operation.state()) {
-            (OwnershipGateStatusV1::Pending(_), OperationState::OwnershipPending) => Ok(Some(gate)),
-            (
-                OwnershipGateStatusV1::Activated {
-                    plan,
-                    publication_digest,
-                    lease_generation,
-                    lease_digest,
-                },
-                OperationState::Accepted
-                | OperationState::Applying
-                | OperationState::Succeeded
-                | OperationState::PermanentlyBlocked,
-            ) => {
-                validate_durable_gate_publication(
-                    &self.journal,
-                    *publication_digest,
-                    plan.publication_draft(),
-                    plan.claim(),
-                    *lease_generation,
-                    *lease_digest,
-                )
-                .map_err(|_| {
-                    ReconcilerError::CorruptLedger(
-                        "activated ownership gate publication is missing or corrupt",
-                    )
-                })?;
-                Ok(Some(gate))
-            }
-            _ => Err(ReconcilerError::CorruptLedger(
-                "ownership gate state does not match its operation",
-            )),
-        }
+        let mut kernel = core_journal::CoreJournalMutationV2::ordinary_v2(
+            &mut self.journal, &mut self.executor, self.ledger_validated,
+        );
+        let returned = kernel.load_and_validate_ownership_gate_for(operation_id, operation, validate_current_boot);
+        self.ledger_validated = kernel.ledger_validated;
+        returned
     }
 
     fn validate_canceled_operation(
@@ -2800,45 +2961,7 @@ where
         operation_id: OperationId,
         operation: OperationRecord,
     ) -> Result<(), ReconcilerError> {
-        if operation.state() != OperationState::CanceledBeforeCommit {
-            return Ok(());
-        }
-        if operation.effect_count() != 1
-            || operation.ownership_gated()
-            || operation.public_operation().is_none()
-        {
-            return Err(ReconcilerError::CorruptLedger(
-                "invalid canceled-before-commit operation",
-            ));
-        }
-
-        let bytes = self
-            .journal
-            .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
-            .ok_or(ReconcilerError::CorruptLedger(
-                "canceled operation is missing its effect",
-            ))?;
-        let effect = decode_effect(bytes)
-            .map_err(ReconcilerError::from)?
-            .into_parts();
-        let EffectState::Applied { receipt, .. } = effect.1 else {
-            return Err(ReconcilerError::CorruptLedger(
-                "canceled operation effect is not applied",
-            ));
-        };
-        if effect.0.public_mutation_method().is_none()
-            || receipt
-                .canceled_before_commit_evidence()
-                .map_err(|()| {
-                    ReconcilerError::CorruptLedger("invalid canceled-before-commit effect receipt")
-                })?
-                .is_none()
-        {
-            return Err(ReconcilerError::CorruptLedger(
-                "canceled operation lacks cancellation evidence",
-            ));
-        }
-        Ok(())
+        core_journal::readonly::validate_canceled_operation(&self.journal, operation_id, operation)
     }
 
     fn validate_effect_authority_bindings(
@@ -2849,113 +2972,12 @@ where
         activated_publication: Option<ObjectDigest>,
         validate_current_boot: bool,
     ) -> Result<(), ReconcilerError> {
-        for step in 0..effect_count {
-            let bytes = self
-                .journal
-                .get(RecordNamespace::Effect, &effect_key(operation_id, step))
-                .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
-            let effect = decode_effect(bytes).map_err(ReconcilerError::from)?;
-            match (draft, effect.plan().authority()) {
-                (None, None) => {}
-                (Some(draft), Some(binding)) => {
-                    let template = draft
-                        .templates()
-                        .iter()
-                        .find(|template| template.digest() == binding.template_digest())
-                        .ok_or(ReconcilerError::CorruptLedger(
-                            "authority effect template is absent from gate draft",
-                        ))?;
-                    if binding.source_draft_digest() != draft.digest()
-                        || binding.operation_id() != operation_id
-                        || binding.step() != step
-                        || binding.audience() != template.audience()
-                        || binding.method() != template.method()
-                        || binding.body_digest()
-                            != effect_body_digest(template.body_without_deadline())
-                        || binding.semantic_digest()
-                            != crate::dispatch::semantic_identity_digest(template.semantics())
-                        || !binding.descriptor_free()
-                        || !template.descriptor_roles().is_empty()
-                        || effect.plan().request() != template.body_without_deadline()
-                    {
-                        return Err(ReconcilerError::CorruptLedger(
-                            "authority effect does not match gate draft template",
-                        ));
-                    }
-                    if let Some(dispatch) = effect.dispatch() {
-                        let current_host_boot_id = if validate_current_boot
-                            && matches!(effect.state(), EffectState::Applying { .. })
-                        {
-                            Some(
-                                self.executor
-                                    .authority_effect_timing(operation_id, step)
-                                    .ok_or(ReconcilerError::InvalidExecutorOutput(
-                                        "authority-bound effect execution is unsupported",
-                                    ))?
-                                    .clock()
-                                    .host_boot_id(),
-                            )
-                        } else {
-                            None
-                        };
-                        validate_durable_effect_attempt(
-                            &self.journal,
-                            draft.manifest().manifest().sandbox(),
-                            activated_publication.ok_or(ReconcilerError::CorruptLedger(
-                                "authority dispatch exists before gate activation",
-                            ))?,
-                            binding.digest(),
-                            binding.source_draft_digest(),
-                            binding.audience(),
-                            binding.template_digest(),
-                            effect.plan().request(),
-                            dispatch,
-                            current_host_boot_id,
-                        )
-                        .map_err(|_| {
-                            ReconcilerError::CorruptLedger(
-                                "authority effect dispatch is missing or corrupt",
-                            )
-                        })?;
-                        if let EffectState::Applied { receipt, .. } = effect.state() {
-                            effect::validate_durable_receipt_history(dispatch, receipt.as_bytes())
-                                .map_err(|_| {
-                                    ReconcilerError::CorruptLedger(
-                                        "authority effect receipt is malformed or substituted",
-                                    )
-                                })?;
-                        }
-                    }
-                }
-                (Some(_), None) => {
-                    return Err(ReconcilerError::CorruptLedger(
-                        "effect record authority flag does not match operation provenance",
-                    ));
-                }
-                (None, Some(_)) => {
-                    return Err(ReconcilerError::CorruptLedger(
-                        "effect record authority flag does not match operation provenance",
-                    ));
-                }
-            }
-        }
-        for (key, _) in self.journal.records(RecordNamespace::Effect) {
-            if key.len() >= OPERATION_KEY_BYTES
-                && &key[..OPERATION_KEY_BYTES] == operation_id.as_bytes()
-            {
-                let step: [u8; 4] = key
-                    .get(OPERATION_KEY_BYTES..)
-                    .ok_or(ReconcilerError::CorruptLedger("invalid effect key"))?
-                    .try_into()
-                    .map_err(|_| ReconcilerError::CorruptLedger("invalid effect key"))?;
-                if u32::from_be_bytes(step) >= effect_count {
-                    return Err(ReconcilerError::CorruptLedger(
-                        "operation has an extra effect",
-                    ));
-                }
-            }
-        }
-        Ok(())
+        let mut kernel = core_journal::CoreJournalMutationV2::ordinary_v2(
+            &mut self.journal, &mut self.executor, self.ledger_validated,
+        );
+        let returned = kernel.validate_effect_authority_bindings(operation_id, effect_count, draft, activated_publication, validate_current_boot);
+        self.ledger_validated = kernel.ledger_validated;
+        returned
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3077,14 +3099,23 @@ where
                         "Q04 policy subgate lost its pending fence",
                     ));
                 }
-                return Ok(ReconcileOutcome::RetryPending);
+                return self.advance_original_publication_from_executor_v1(operation_id, &plan);
             }
         }
         let receipt = if let Some(prepared) = dispatch.as_ref() {
-            let observed = match self
-                .executor
-                .observe_authority(operation_id, step, prepared)
-            {
+            #[cfg(target_os = "linux")]
+            let observed = if self.journal.has_provisioning_scope_v1() {
+                self.executor.observe_original_provisioning_authority_v1(
+                    operation_id, step, prepared, &mut self.journal,
+                ).unwrap_or_else(|| Err(EffectFailure::Permanent(
+                    "the original provisioning Storage observation is unavailable".to_owned(),
+                )))
+            } else {
+                self.executor.observe_authority(operation_id, step, prepared)
+            };
+            #[cfg(not(target_os = "linux"))]
+            let observed = self.executor.observe_authority(operation_id, step, prepared);
+            let observed = match observed {
                 Ok(value) => value,
                 Err(failure) => {
                     return self.handle_failure(
@@ -3151,7 +3182,21 @@ where
                     // This commit is the crash boundary: no Apply may use the
                     // fresh packet until its exact replacement is durable.
                     self.store_effect(operation_id, step, &refreshed, None, wall_seconds)?;
-                    match self.executor.apply_authority(operation_id, step, &fresh) {
+                    #[cfg(target_os = "linux")]
+                    self.journal.retain_unissued_original_provisioning_attempt_v1(operation_id, step)?;
+                    #[cfg(target_os = "linux")]
+                    let applied = if self.journal.has_provisioning_scope_v1() {
+                        self.executor.apply_original_provisioning_authority_v1(
+                            operation_id, step, &fresh, &mut self.journal,
+                        ).unwrap_or_else(|| Err(EffectFailure::Permanent(
+                            "the original provisioning Storage Apply is unavailable".to_owned(),
+                        )))
+                    } else {
+                        self.executor.apply_authority(operation_id, step, &fresh)
+                    };
+                    #[cfg(not(target_os = "linux"))]
+                    let applied = self.executor.apply_authority(operation_id, step, &fresh);
+                    match applied {
                         Ok(receipt) => {
                             let receipt = receipt.into_effect_receipt_for(&fresh)?;
                             let applied = EffectLedgerRecord::from_parts((
@@ -3205,6 +3250,12 @@ where
                 self.ledger_validated = false;
                 self.ensure_ledger_validated()?;
             }
+            #[cfg(target_os = "linux")]
+            if controller_effect && step == 0 && effect_count == 1
+                && plan.public_mutation_method() == Some(PublicOperationMethodV1::CreateExecution)
+                && is_closed_no_apply_prepare_v2(&self.journal, operation_id) {
+                return self.require_execution_no_apply_completion_v2(operation_id);
+            }
             let observed = match observed {
                 Ok(value) => value,
                 Err(failure) => {
@@ -3233,6 +3284,12 @@ where
                         self.ledger_validated = false;
                         self.ensure_ledger_validated()?;
                     }
+                    #[cfg(target_os = "linux")]
+                    if controller_effect && step == 0 && effect_count == 1
+                        && plan.public_mutation_method() == Some(PublicOperationMethodV1::CreateExecution)
+                        && is_closed_no_apply_prepare_v2(&self.journal, operation_id) {
+                        return self.require_execution_no_apply_completion_v2(operation_id);
+                    }
                     match applied {
                         Ok(receipt) => receipt,
                         Err(failure) => {
@@ -3251,6 +3308,14 @@ where
                 }
             }
         };
+        // The residual extension needs its closed protected Source/native
+        // terminal transaction. Generic executor receipt DATA cannot create
+        // an Applied effect that the ordinary success fold would misclassify.
+        if receipt.as_bytes().starts_with(b"AOSLIF04") {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "Stop residual requires the protected residual terminal transaction",
+            ));
+        }
         if receipt
             .canceled_before_commit_evidence()
             .map_err(|()| {
@@ -3265,9 +3330,8 @@ where
                 "invalid canceled-before-commit effect receipt",
             ));
         }
-        if create_failure_receipt(&receipt)
+        if create_failure::has_special_receipt_data_v2(receipt.as_bytes())
             .map_err(|()| ReconcilerError::InvalidExecutorOutput("invalid failed-Create receipt"))?
-            .is_some()
         {
             return Err(ReconcilerError::InvalidExecutorOutput(
                 "failed-Create requires the protected three-record transaction",
@@ -3281,6 +3345,19 @@ where
         ));
         self.store_effect(operation_id, step, &applied, None, wall_seconds)?;
         Ok(ReconcileOutcome::EffectApplied)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn require_execution_no_apply_completion_v2(&mut self, operation: OperationId)
+        -> Result<ReconcileOutcome, ReconcilerError> {
+        let Some(completed) = self.executor.take_execution_no_apply_completion_v2(operation) else {
+            // Actual prepare/terminal rows are durable facts even when a
+            // later native post or ACK is ambiguous. Never rewrite them as a
+            // generic retry/failure or infer Root completion from those rows.
+            return Ok(ReconcileOutcome::CreateFailurePending);
+        };
+        completed.require_current_v2(&self.journal, operation)?;
+        Ok(ReconcileOutcome::FailedBeforeCommit)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3342,11 +3419,7 @@ where
         &self,
         operation_id: OperationId,
     ) -> Result<OperationRecord, ReconcilerError> {
-        let bytes = self
-            .journal
-            .get(RecordNamespace::Operation, operation_id.as_bytes())
-            .ok_or(ReconcilerError::OperationNotFound)?;
-        decode_operation(bytes).map_err(ReconcilerError::from)
+        core_journal::readonly::load_operation(&self.journal, operation_id)
     }
 
     fn store_operation(
@@ -3356,19 +3429,10 @@ where
         effect_count: u32,
         wall_seconds: Option<i64>,
     ) -> Result<(), ReconcilerError> {
-        let operation = self.load_operation(operation_id)?;
-        if operation.effect_count() != effect_count {
-            return Err(ReconcilerError::CorruptLedger(
-                "operation effect count changed during transition",
-            ));
-        }
-        let operation = transition_operation(operation, state, wall_seconds)?;
-        let record = JournalRecord::put(
-            RecordNamespace::Operation,
-            operation_id.into_bytes().to_vec(),
-            encode_operation_record(operation),
+        let mut kernel = core_journal::CoreJournalMutationV2::ordinary_v2(
+            &mut self.journal, &mut self.executor, self.ledger_validated,
         );
-        self.commit_records(vec![record])
+        kernel.store_operation(operation_id, state, effect_count, wall_seconds)
     }
 
     fn store_effect(
@@ -3379,87 +3443,17 @@ where
         operation_effect_count: Option<u32>,
         wall_seconds: Option<i64>,
     ) -> Result<(), ReconcilerError> {
-        // An executor may append project-admission metadata while retaining this
-        // writer. Re-read that exact Effect before writing the retry diagnostic;
-        // a record captured before dispatch must not erase terminal custody.
-        let current = self
-            .journal
-            .get(RecordNamespace::Effect, &effect_key(operation_id, step))
-            .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
-        #[cfg(target_os = "linux")]
-        if q04_effect_subgate(current)
-            .map_err(ReconcilerError::from)?
-            .is_some()
-        {
-            // The selected same-flight CAS is the only writer for this
-            // Applying subgate. A generic retry/result must not erase it or
-            // turn policy admission into Applied/public Create completion.
-            return Err(ReconcilerError::CorruptLedger(
-                "Q04 policy admission requires its original closed transition",
-            ));
-        }
-        let current = decode_effect(current)
-            .map_err(ReconcilerError::from)?
-            .into_parts();
-        if current.0 != *record.plan()
-            || record
-                .project_admission()
-                .is_some_and(|metadata| Some(metadata) != current.3.as_ref())
-        {
-            return Err(ReconcilerError::CorruptLedger(
-                "Effect changed during executor transition",
-            ));
-        }
-        let retained = {
-            // The replacement moves before the complete clone, including its
-            // overridden metadata. The unused clone field dies at this cut.
-            let metadata = current.3;
-            let cloned = record.clone().into_parts();
-            EffectLedgerRecord::from_parts((cloned.0, cloned.1, cloned.2, metadata))
-        };
-        let mut records = vec![JournalRecord::put(
-            RecordNamespace::Effect,
-            effect_key(operation_id, step).to_vec(),
-            encode_effect(&retained).map_err(ReconcilerError::from)?,
-        )];
-        let operation = self.load_operation(operation_id)?;
-        if let Some(effect_count) = operation_effect_count {
-            if operation.effect_count() != effect_count {
-                return Err(ReconcilerError::CorruptLedger(
-                    "operation effect count changed during transition",
-                ));
-            }
-            let state = match record.state() {
-                EffectState::Applying { .. } => OperationState::Applying,
-                EffectState::PermanentlyBlocked { .. } => OperationState::PermanentlyBlocked,
-                EffectState::Planned | EffectState::Applied { .. } => {
-                    return Err(ReconcilerError::CorruptLedger(
-                        "invalid coupled operation transition",
-                    ));
-                }
-            };
-            let operation = transition_operation(operation, state, wall_seconds)?;
-            records.push(JournalRecord::put(
-                RecordNamespace::Operation,
-                operation_id.into_bytes().to_vec(),
-                encode_operation_record(operation),
-            ));
-        } else if operation.public_operation().is_some() {
-            let operation = transition_operation(operation, operation.state(), wall_seconds)?;
-            records.push(JournalRecord::put(
-                RecordNamespace::Operation,
-                operation_id.into_bytes().to_vec(),
-                encode_operation_record(operation),
-            ));
-        }
-        self.commit_records(records)
+        let mut kernel = core_journal::CoreJournalMutationV2::ordinary_v2(
+            &mut self.journal, &mut self.executor, self.ledger_validated,
+        );
+        kernel.store_effect(operation_id, step, record, operation_effect_count, wall_seconds, false)
     }
 
     fn commit_records(&mut self, records: Vec<JournalRecord>) -> Result<(), ReconcilerError> {
-        let transaction = JournalTransaction::new(OperationId::new().into_bytes(), records)
-            .map_err(JournalError::from)?;
-        self.journal.commit(&transaction)?;
-        Ok(())
+        let mut kernel = core_journal::CoreJournalMutationV2::ordinary_v2(
+            &mut self.journal, &mut self.executor, self.ledger_validated,
+        );
+        kernel.commit_records(records)
     }
 }
 
@@ -3535,6 +3529,7 @@ pub(crate) fn recovered_public_operation_resource_v1(
     let mut canceled_effects = 0_u32;
     let mut failed_create_effects = 0_u32;
     let mut failed_repair_effects = 0_u32;
+    let mut stop_residual_effects = 0_u32;
     let mut controller_method = None;
     let mut effect_records = Vec::with_capacity(operation.effect_count() as usize);
     for step in 0..operation.effect_count() {
@@ -3548,6 +3543,13 @@ pub(crate) fn recovered_public_operation_resource_v1(
         match effect.state() {
             EffectState::Applied { receipt, .. } => {
                 increment_effect_count(&mut applied_effects)?;
+                if stop_residual::classify(operation_id, effect.plan(), receipt)?.is_some() {
+                    if step != 0 || operation.effect_count() != 1 {
+                        return Err(ReconcilerError::CorruptLedger("residual Stop has another effect graph"));
+                    }
+                    increment_effect_count(&mut stop_residual_effects)?;
+                }
+
                 if operator_repair_failure::classify(receipt)? {
                     if step != 0
                         || operation.effect_count() != 1
@@ -3578,9 +3580,8 @@ pub(crate) fn recovered_public_operation_resource_v1(
                     }
                     increment_effect_count(&mut canceled_effects)?;
                 }
-                if create_failure_receipt(receipt)
+                if create_failure::has_special_receipt_data_v2(receipt.as_bytes())
                     .map_err(|()| ReconcilerError::CorruptLedger("invalid failed-Create receipt"))?
-                    .is_some()
                 {
                     if operation.effect_count() != 1
                         || step != 0
@@ -3621,6 +3622,11 @@ pub(crate) fn recovered_public_operation_resource_v1(
                 && canceled_effects == 0
                 && failed_create_effects == 0
         }
+        OperationState::CommittedWithResidualCleanup => {
+            operation.effect_count() == 1 && stop_residual_effects == 1
+                && applied_effects == 1 && applying_effects == 0 && blocked_effects == 0
+                && canceled_effects == 0 && failed_create_effects == 0 && failed_repair_effects == 0
+        }
         OperationState::CanceledBeforeCommit => {
             applied_effects == operation.effect_count()
                 && canceled_effects == 1
@@ -3632,7 +3638,10 @@ pub(crate) fn recovered_public_operation_resource_v1(
         OperationState::PermanentlyBlocked => {
             failed_create_effects == 0
                 && canceled_effects == 0
-                && ((failed_repair_effects == 0 && blocked_effects != 0)
+                && ((operation.effect_count() == 0
+                        && public.recovery_kind_v1()
+                            == aos_sandbox_protocol::domain_ledger::public_operation::PublicRecoveryKindV1::StopCleanup)
+                    || (failed_repair_effects == 0 && blocked_effects != 0)
                     || (failed_repair_effects == 1
                         && applied_effects == 1
                         && applying_effects == 0
@@ -3641,6 +3650,7 @@ pub(crate) fn recovered_public_operation_resource_v1(
     };
     if !state_matches_effects
         || (failed_repair_effects != 0 && operation.state() != OperationState::PermanentlyBlocked)
+        || (stop_residual_effects != 0 && operation.state() != OperationState::CommittedWithResidualCleanup)
     {
         return Err(ReconcilerError::CorruptLedger(
             "public operation state contradicts its effects",
@@ -3759,49 +3769,197 @@ impl PendingOperatorRepairLedgerV1 {
         completion_wall_seconds: i64,
         decision: OperationState,
     ) -> Result<[JournalRecord; 2], ReconcilerError> {
-        let attempt = match &self.effect.1 {
-            EffectState::Planned => 1,
-            EffectState::Applying { attempt, .. } => *attempt,
-            _ => {
-                return Err(ReconcilerError::InvalidPlan(
-                    "Repair effect is already terminal",
-                ));
-            }
-        };
-        let state = EffectState::Applied { attempt, receipt };
-        let effect = encode_effect(&EffectLedgerRecord::from_parts((
-            self.effect.0,
-            state,
-            self.effect.2,
-            self.effect.3,
-        )))
-        .map_err(ReconcilerError::from)?;
-        decode_effect(&effect).map_err(ReconcilerError::from)?;
-        let public = self
-            .operation
-            .public_operation()
-            .ok_or(ReconcilerError::InvalidPlan(
-                "Repair operation is not public",
-            ))?
-            .advance(decision, completion_wall_seconds)?;
-        let operation = encode_operation_record(
-            self.operation
-                .with_state_and_public_operation(decision, Some(public)),
-        );
-        decode_operation(&operation)?;
-        Ok([
-            JournalRecord::put(
-                RecordNamespace::Effect,
-                effect_key(self.operation_id, 0).to_vec(),
-                effect,
-            ),
-            JournalRecord::put(
-                RecordNamespace::Operation,
-                self.operation_id.as_bytes().to_vec(),
-                operation,
-            ),
-        ])
+        completed_effect_operation_records_v1(self.operation_id, self.operation, self.effect,
+            receipt, completion_wall_seconds, decision, CompletionPurposeV1::Repair)
     }
+}
+
+impl OperationPlan {
+    // Pure comparison of the exact private child after qualified native Host
+    // completion. No Operation/Effect DTO supplies a completion permission.
+    pub(crate) fn require_completed_start_host_child_data_v2(&self, journal: &Journal)
+        -> Result<(), ReconcilerError> {
+        let [expected] = self.effects.as_slice() else {
+            return Err(ReconcilerError::InvalidPlan("the Start Host child lost its sole effect"));
+        };
+        if self.public_operation.is_some() || self.ownership_gate.is_none() || self.runtime_authority.is_none() {
+            return Err(ReconcilerError::InvalidPlan("the Start Host child changed family"));
+        }
+        let operation = decode_operation(journal.get(RecordNamespace::Operation, self.operation_id.as_bytes())
+            .ok_or(ReconcilerError::OperationNotFound)?)?;
+        let (effect, q04) = decode_effect_with_q04(journal.get(RecordNamespace::Effect,
+            &effect_key(self.operation_id, 0)).ok_or(ReconcilerError::CorruptLedger("Start Host child effect missing"))?)?;
+        if operation.state() != OperationState::Succeeded || operation.public_operation().is_some()
+            || operation.effect_count() != 1 || q04.is_some()
+            || effect.plan() != expected || !matches!(effect.state(), EffectState::Applied { .. })
+        { return Err(ReconcilerError::InvalidPlan("the exact Start Host child is incomplete")); }
+        Ok(())
+    }
+}
+
+// This shares the existing public Effect/Operation codec and state transition.
+// Only the private Start native context can commit the returned DATA records.
+pub(crate) fn completed_start_effect_operation_records_v2(
+    journal: &Journal, plan: &OperationPlan, receipt: EffectReceipt, wall: i64,
+) -> Result<[JournalRecord; 2], ReconcilerError> {
+    plan.require_accepted_start_data_v1(journal)?;
+    let operation_id = plan.operation_id();
+    let operation = decode_operation(journal.get(RecordNamespace::Operation, operation_id.as_bytes())
+        .ok_or(ReconcilerError::OperationNotFound)?)?;
+    let effect = decode_effect(journal.get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+        .ok_or(ReconcilerError::CorruptLedger("Start effect is absent"))?)?;
+    let [expected] = plan.effects.as_slice() else {
+        return Err(ReconcilerError::InvalidPlan("Start must keep its sole admitted effect"));
+    };
+    if operation.state() != OperationState::Accepted || operation.effect_count() != 1
+        || !matches!(effect.state(), EffectState::Planned) || effect.plan() != expected
+        || operation.accepted_start_origin_v1() != plan.accepted_start_origin_data_v1()
+    { return Err(ReconcilerError::InvalidPlan("the original Start terminal predecessor changed")); }
+    completed_effect_operation_records_v1(operation_id, operation, effect.into_parts(), receipt,
+        wall, OperationState::Succeeded, CompletionPurposeV1::Repair)
+}
+
+// Only the same accepted Stop/native terminal context appends these DATA rows.
+// Generic executor receipts remain refused by the ordinary Applied fold.
+pub(crate) fn completed_stop_residual_effect_operation_records_v4(
+    journal: &Journal,
+    operation_id: OperationId,
+    expected: &PublicMutationEffectHistoryV1,
+    receipt: EffectReceipt,
+    wall: i64,
+) -> Result<[JournalRecord; 2], ReconcilerError> {
+    let context = accepted_stop_effect_from_journal_v4(journal, operation_id)?
+        .ok_or(ReconcilerError::InvalidPlan("residual Stop lost its accepted context"))?;
+    if &context != expected { return Err(ReconcilerError::InvalidPlan("residual Stop context changed")); }
+    let operation = decode_operation(journal.get(RecordNamespace::Operation, operation_id.as_bytes())
+        .ok_or(ReconcilerError::OperationNotFound)?)?;
+    let (effect, q04) = decode_effect_with_q04(journal.get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+        .ok_or(ReconcilerError::CorruptLedger("residual Stop effect is absent"))?)?;
+    if q04.is_some() || stop_residual::classify(operation_id, effect.plan(), &receipt)?.is_none() {
+        return Err(ReconcilerError::InvalidPlan("residual Stop effect changed family"));
+    }
+    completed_effect_operation_records_v1(operation_id, operation, effect.into_parts(), receipt,
+        wall, OperationState::CommittedWithResidualCleanup, CompletionPurposeV1::StopResidual)
+}
+
+// The native Source Stop successor and actual adjacent Inventory borrower
+// supply completion provenance; this helper only constructs the same two rows.
+pub(crate) fn completed_stop_success_effect_operation_records_v5(
+    journal: &Journal, operation_id: OperationId,
+    expected: &PublicMutationEffectHistoryV1, receipt: EffectReceipt, wall: i64,
+) -> Result<[JournalRecord; 2], ReconcilerError> {
+    let context = accepted_stop_effect_from_journal_v4(journal, operation_id)?
+        .ok_or(ReconcilerError::InvalidPlan("Stop lost its accepted context"))?;
+    if &context != expected { return Err(ReconcilerError::InvalidPlan("Stop context changed")); }
+    let operation = decode_operation(journal.get(RecordNamespace::Operation, operation_id.as_bytes())
+        .ok_or(ReconcilerError::OperationNotFound)?)?;
+    let (effect, q04) = decode_effect_with_q04(journal.get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+        .ok_or(ReconcilerError::CorruptLedger("Stop effect is absent"))?)?;
+    if q04.is_some() || !matches!(
+        aos_sandbox_protocol::domain_ledger::effect_history::decode_lifecycle_effect_receipt_v1(receipt.as_bytes(), [0; 16])?,
+        aos_sandbox_protocol::domain_ledger::effect_history::LifecycleEffectReceiptDataV1::Ordinary { operation, .. }
+            if operation == operation_id)
+    { return Err(ReconcilerError::InvalidPlan("Stop success requires ordinary terminal receipt")); }
+    completed_effect_operation_records_v1(operation_id, operation, effect.into_parts(), receipt,
+        wall, OperationState::Succeeded, CompletionPurposeV1::StopSuccess)
+}
+
+/// Selects only the existing Repair and private inert-child completion recipes.
+#[derive(Clone, Copy)]
+enum CompletionPurposeV1<'evidence> {
+    Repair,
+    StopResidual,
+    StopSuccess,
+    ReservedObserve(&'evidence aos_sandbox_protocol::domain_ledger::execution_observe_reservation::completion::ObserveChildCompletionDataV1),
+}
+
+// Only the original Delete finalizer can append these comparison DATA rows.
+// The ordinary executor still cannot turn a supplied receipt into Delete IO.
+pub(crate) fn completed_delete_effect_operation_records_v4(
+    journal: &Journal,
+    plan: &OperationPlan,
+    receipt: EffectReceipt,
+    wall: i64,
+) -> Result<[JournalRecord; 2], ReconcilerError> {
+    let operation_id = plan.operation_id();
+    let operation = decode_operation(journal.get(RecordNamespace::Operation, operation_id.as_bytes())
+        .ok_or(ReconcilerError::OperationNotFound)?)?;
+    let effect = decode_effect(journal.get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+        .ok_or(ReconcilerError::CorruptLedger("Delete effect is absent"))?)?;
+    let [expected] = plan.effects.as_slice() else {
+        return Err(ReconcilerError::InvalidPlan("Delete must keep its sole admitted effect"));
+    };
+    if operation.state() != OperationState::Accepted || operation.effect_count() != 1
+        || !matches!(effect.state(), EffectState::Planned) || effect.plan() != expected
+        || expected.public_mutation_method()
+            != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::DeleteSandbox)
+        || operation.public_operation()
+            != plan.public_operation.as_ref().map(PublicOperationAdmissionV1::durable)
+        || !matches!(journal.check_idempotency(&plan.idempotency_key, plan.request_digest()),
+            IdempotencyOutcome::Replay(actual) if actual == operation_id)
+    {
+        return Err(ReconcilerError::InvalidPlan("the original Delete terminal predecessor changed"));
+    }
+    completed_effect_operation_records_v1(operation_id, operation, effect.into_parts(), receipt,
+        wall, OperationState::Succeeded, CompletionPurposeV1::Repair)
+}
+
+// One exact Effect/Operation encoding recipe; the caller alone retains the
+// genuine writer/payer and commits these two DATA records atomically.
+fn completed_effect_operation_records_v1(
+    operation_id: OperationId, operation: OperationRecord, effect: EffectRecordParts,
+    receipt: EffectReceipt, completion_wall_seconds: i64, decision: OperationState,
+    purpose: CompletionPurposeV1<'_>,
+) -> Result<[JournalRecord; 2], ReconcilerError> {
+    let attempt = match &effect.1 {
+        EffectState::Planned => 1,
+        EffectState::Applying { attempt, .. } => *attempt,
+        _ => {
+            return Err(ReconcilerError::InvalidPlan(
+                "Repair effect is already terminal",
+            ));
+        }
+    };
+    let state = EffectState::Applied { attempt, receipt };
+    let record = EffectLedgerRecord::from_parts((effect.0, state, effect.2, effect.3));
+    let effect = match purpose {
+        CompletionPurposeV1::Repair | CompletionPurposeV1::StopResidual | CompletionPurposeV1::StopSuccess => encode_effect(&record),
+        CompletionPurposeV1::ReservedObserve(completion) =>
+            aos_sandbox_protocol::domain_ledger::effect_history::observe_completion::encode_completed_observe_effect_v1(&record, completion),
+    }.map_err(ReconcilerError::from)?;
+    decode_effect(&effect).map_err(ReconcilerError::from)?;
+    let operation = match purpose {
+        CompletionPurposeV1::Repair | CompletionPurposeV1::StopResidual | CompletionPurposeV1::StopSuccess => {
+            if matches!(purpose, CompletionPurposeV1::StopResidual)
+                && decision != OperationState::CommittedWithResidualCleanup
+            { return Err(ReconcilerError::InvalidPlan("residual Stop cannot become ordinary success")); }
+            if matches!(purpose, CompletionPurposeV1::StopSuccess) && decision != OperationState::Succeeded {
+                return Err(ReconcilerError::InvalidPlan("healthy Stop requires ordinary success"));
+            }
+            let public = operation.public_operation().ok_or(ReconcilerError::InvalidPlan(
+                "Repair operation is not public"))?.advance(decision, completion_wall_seconds)?;
+            encode_operation_record(operation.with_state_and_public_operation(decision, Some(public)))
+        }
+        CompletionPurposeV1::ReservedObserve(_) => {
+            if operation.public_operation().is_some() || decision != OperationState::Succeeded {
+                return Err(ReconcilerError::InvalidPlan("reserved Observe cannot become public"));
+            }
+            encode_operation_record(operation.with_state_and_public_operation(decision, None))
+        }
+    };
+    decode_operation(&operation)?;
+    Ok([
+        JournalRecord::put(
+            RecordNamespace::Effect,
+            effect_key(operation_id, 0).to_vec(),
+            effect,
+        ),
+        JournalRecord::put(
+            RecordNamespace::Operation,
+            operation_id.as_bytes().to_vec(),
+            operation,
+        ),
+    ])
 }
 
 /// Loads the exact pending public Repair operation and its authenticated effect.
@@ -4015,63 +4173,13 @@ pub(crate) fn operator_repair_original_ledger_v1(
     )
 }
 
-/// Reads the exact accepted CreateExecution effect from protected operation custody.
-///
-/// A canceled or permanently blocked operation cannot produce a specification.
-/// This readback is nonauthorizing after the journal borrow ends.
-///
-/// # Errors
-///
-/// Returns an error if the protected operation/effect graph is corrupt or its
-/// public method and retained request disagree.
-pub(crate) fn accepted_create_execution_effect_from_journal_v1(
-    journal: &Journal,
-    operation_id: OperationId,
-) -> Result<Option<PublicMutationEffectHistoryV1>, ReconcilerError> {
-    if recovered_public_operation_resource_v1(journal, operation_id)?.is_none() {
-        return Ok(None);
-    }
-    let bytes = journal
-        .get(RecordNamespace::Operation, operation_id.as_bytes())
-        .ok_or(ReconcilerError::CorruptLedger(
-            "accepted Create operation is absent",
-        ))?;
-    let operation = decode_operation(bytes)?;
-    if operation.effect_count() != 1
-        || !matches!(
-            operation.state(),
-            OperationState::Accepted | OperationState::Applying | OperationState::Succeeded
-        )
-    {
-        return Ok(None);
-    }
-    let effect_bytes = journal
-        .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
-        .ok_or(ReconcilerError::CorruptLedger(
-            "accepted Create effect is absent",
-        ))?;
-    let effect = decode_effect(effect_bytes).map_err(ReconcilerError::from)?;
-    if effect.plan().public_mutation_method()
-        != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateExecution)
-    {
-        return Ok(None);
-    }
-    let context = effect
-        .plan()
-        .public_mutation_context()
-        .map_err(ReconcilerError::from)?
-        .ok_or(ReconcilerError::CorruptLedger(
-            "accepted Create context is absent",
-        ))?;
-    if !matches!(
-        context.validated_request().map_err(ReconcilerError::from)?,
-        aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Exec(_)
-    ) {
-        return Err(ReconcilerError::CorruptLedger(
-            "accepted Create request has another method",
-        ));
-    }
-    Ok(Some(context))
+
+// Root's final same-native Controller/Session comparison uses this sole
+// historical receipt checker; no effect module or parser is exposed.
+pub(crate) fn validate_durable_receipt_history_v1(
+    prepared: &PreparedAuthorityEffectHistoryV1, receipt: &[u8],
+) -> Result<(), ReconcilerError> {
+    effect::validate_durable_receipt_history(prepared, receipt)
 }
 
 /// Reads the validated publication digest of one activated ownership gate.
@@ -4177,7 +4285,7 @@ pub(crate) fn validated_ownership_gate_from_journal_v1(
     }
 }
 
-fn transition_operation(
+pub(crate) fn transition_operation(
     operation: OperationRecord,
     state: OperationState,
     wall_seconds: Option<i64>,
@@ -4310,6 +4418,74 @@ mod tests {
     use crate::publication::{
         AuthorityPublicationDraftV1, AuthorityPublicationError, AuthorityPublicationStore,
     };
+
+    #[test]
+    fn closed_recover_pending_never_enters_generic_effect_or_terminal_loop() {
+        use aos_sandbox_protocol::domain_ledger::public_operation::{
+            DurablePublicOperationV1, PublicRecoveryKindV1,
+        };
+        for kind in [
+            PublicRecoveryKindV1::MetadataComplete,
+            PublicRecoveryKindV1::StopCleanup,
+            PublicRecoveryKindV1::ExecutionNoApply,
+        ] {
+            let directory = TestDirectory::new();
+            let (mut journal, _) =
+                Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+            let operation_id = OperationId::from_bytes([0xde; 16]);
+            let metadata = match kind {
+                PublicRecoveryKindV1::MetadataComplete => {
+                    DurablePublicOperationV1::metadata_complete_initial_v1(
+                        *operation_id.as_bytes(),
+                        100,
+                    )
+                }
+                PublicRecoveryKindV1::StopCleanup => {
+                    DurablePublicOperationV1::stop_cleanup_initial_v1(*operation_id.as_bytes(), 100)
+                }
+                PublicRecoveryKindV1::ExecutionNoApply => {
+                    DurablePublicOperationV1::execution_no_apply_initial_v1(
+                        *operation_id.as_bytes(),
+                        100,
+                    )
+                }
+                PublicRecoveryKindV1::Ordinary => unreachable!(),
+            }
+            .unwrap();
+            let pending =
+                OperationRecord::new(OperationState::Accepted, 0, false, None, Some(metadata));
+            let encoded = encode_operation_record(pending);
+            journal
+                .commit(
+                    &JournalTransaction::new(
+                        [0xdf; 16],
+                        vec![JournalRecord::put(
+                            RecordNamespace::Operation,
+                            operation_id.as_bytes().to_vec(),
+                            encoded.clone(),
+                        )],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let mut reconciler = Reconciler::new(journal, Executor::default());
+
+            for wall in [101, 102] {
+                assert_eq!(
+                    reconciler.reconcile_once_at(operation_id, wall).unwrap(),
+                    ReconcileOutcome::RetryPending
+                );
+                assert_eq!(
+                    reconciler
+                        .journal
+                        .get(RecordNamespace::Operation, operation_id.as_bytes()),
+                    Some(encoded.as_slice())
+                );
+            }
+            assert_eq!(reconciler.executor.observe_calls, 0);
+            assert_eq!(reconciler.executor.apply_calls, 0);
+        }
+    }
 
     #[test]
     fn effect_failure_error_borrows_original_classification_and_diagnostic() {
@@ -4561,6 +4737,33 @@ mod tests {
             ],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn generic_executor_cannot_publish_stop_residual_receipt_data() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let plan = operation();
+        let operation_id = plan.operation_id();
+        reconciler.accept(&plan).unwrap();
+        reconciler.reconcile_once(operation_id).unwrap();
+
+        // Even a selected version prefix cannot enter generic success. Its
+        // actual receipt validation and native terminal owner belong to the
+        // distinct closed transaction, never to this supplied DATA.
+        reconciler.executor.applied.insert(
+            (operation_id, 0), EffectReceipt::new(b"AOSLIF04".to_vec()).unwrap(),
+        );
+        let returned = reconciler.reconcile_once(operation_id);
+
+        assert!(matches!(returned, Err(ReconcilerError::InvalidExecutorOutput(_))));
+        let effect = decode_effect(reconciler.journal.get(
+            RecordNamespace::Effect, &effect_key(operation_id, 0),
+        ).unwrap()).unwrap();
+        assert!(!matches!(effect.state(), EffectState::Applied { .. }));
+        assert_eq!(reconciler.load_operation(operation_id).unwrap().state(), OperationState::Applying);
+        assert_eq!(reconciler.executor.apply_calls, 0);
     }
 
     fn public_operation_authorization() -> PublicOperationAuthorizationV1 {
@@ -7712,6 +7915,125 @@ mod tests {
     }
 
     #[test]
+    fn closed_create_planner_rejoins_prepared_and_cold_terminal_rows() {
+        use aos_sandbox_protocol::host_execution_no_apply::{
+            BeforeArgumentNoApplySourceDataV2, BeforeArgumentNoApplySourceFieldsV2,
+            ClosedBeforeArgumentNoApplyRecordFieldsV2, ClosedBeforeArgumentNoApplyRecordV2,
+            closed_controller::{ClosedCreateFailureIdentityDataV2, ClosedCreateFailurePrepareDataV2},
+        };
+
+        let directory = TestDirectory::new();
+        let (accepted, old_marker) = failed_create_fixture();
+        let old = old_marker.fields();
+        let operation = accepted.operation_id();
+        let source = BeforeArgumentNoApplySourceDataV2::new(BeforeArgumentNoApplySourceFieldsV2 {
+            create_operation: operation.into_bytes(),
+            execution: old.execution_id,
+            sandbox: [0xd3; 16],
+            incarnation: [0xd4; 16],
+            node: [0xd5; 16],
+            host_boot: old.host_boot_id,
+            assignment_epoch: 1,
+            desired_generation: 1,
+            accepted_request_digest: [0xa5; 32],
+            assignment_digest: [0xb1; 32],
+        })
+        .unwrap();
+        let marker =
+            ClosedBeforeArgumentNoApplyRecordV2::new(ClosedBeforeArgumentNoApplyRecordFieldsV2 {
+                source,
+                terminal_request: [0xb2; 16],
+                terminal_session: [0xb3; 32],
+                signed_terminal_request: [0xb4; 32],
+                runtime_handle: [0xb5; 32],
+                execution_store: [0xb6; 32],
+                observed_preclose_cut: [0xb7; 32],
+                observed_epoch: 1,
+                commit_sequence: 3,
+            })
+            .unwrap();
+        let archive = ObjectDigest::from_bytes([0xb8; 32]);
+        let terminal = ObjectDigest::from_bytes([0xb9; 32]);
+        let mut reconciler = applying_failed_create_reconciler(&directory, &accepted);
+        let initial = plan_closed_create_failure_rows_data_v2(
+            &reconciler.journal,
+            marker,
+            archive,
+            terminal,
+            102,
+        )
+        .unwrap();
+        assert!(initial.prepared_data_v2().is_none());
+        assert!(!initial.settled_data_v2());
+        let (predecessor, successor) = initial.row_digests_data_v2();
+        let prepare = ClosedCreateFailurePrepareDataV2 {
+            operation,
+            identity: ClosedCreateFailureIdentityDataV2 {
+                marker,
+                terminal_archive: archive,
+                signed_terminal: terminal,
+            },
+            root_floor: ObjectDigest::from_bytes([0xba; 32]),
+            root_sequence: 1,
+            wall_seconds: 102,
+            predecessor: predecessor.map(ObjectDigest::from_bytes),
+            successor: successor.map(ObjectDigest::from_bytes),
+        };
+
+        let prepare_rows = vec![JournalRecord::put(
+            RecordNamespace::ControllerCreateFailurePrepare,
+            operation.into_bytes().to_vec(),
+            prepare.encode_canonical(),
+        )];
+        assert!(matches!(reconciler.commit_records(prepare_rows.clone()),
+            Err(ReconcilerError::Journal(JournalError::ProtectedBoundary))));
+        let Reconciler { journal, .. } = reconciler;
+        journal.append_closed_no_apply_planner_fixture_data_v2(
+            &JournalTransaction::new([0xec; 16], prepare_rows).unwrap(),
+        ).unwrap();
+        let mut journal = protected_runtime_journal(&directory);
+        let prepared = plan_closed_create_failure_rows_data_v2(
+            &journal,
+            marker,
+            archive,
+            terminal,
+            102,
+        )
+        .unwrap();
+        assert_eq!(prepared.prepared_data_v2(), Some(prepare));
+        assert!(!prepared.settled_data_v2());
+        let terminal_transaction = JournalTransaction::new([0xed; 16], prepared.records_data_v2().to_vec()).unwrap();
+        assert!(matches!(journal.commit(&terminal_transaction), Err(JournalError::ProtectedBoundary)));
+        journal.append_closed_no_apply_planner_fixture_data_v2(&terminal_transaction).unwrap();
+
+        let journal = protected_runtime_journal(&directory);
+        let next = journal.snapshot_sequence();
+        let settled =
+            plan_closed_create_failure_rows_data_v2(&journal, marker, archive, terminal, 102).unwrap();
+        assert!(settled.settled_data_v2());
+        assert_eq!(settled.prepared_data_v2(), Some(prepare));
+        assert_eq!(settled.row_digests_data_v2(), (predecessor, successor));
+        assert_eq!(journal.snapshot_sequence(), next);
+        assert!(
+            plan_closed_create_failure_rows_data_v2(
+                &journal,
+                marker,
+                archive,
+                ObjectDigest::from_bytes([0xff; 32]),
+                102,
+            )
+            .is_err()
+        );
+        assert!(
+            plan_closed_create_failure_rows_data_v2(&journal, marker, archive, terminal, 103,).is_err()
+        );
+        let mut cold = Reconciler::new(journal, Executor::default());
+        assert_eq!(cold.reconcile_once_at(operation, 104).unwrap(), ReconcileOutcome::CreateFailurePending);
+        assert_eq!(cold.journal.snapshot_sequence(), next);
+        assert_eq!(cold.executor.apply_calls, 0);
+    }
+
+    #[test]
     fn failed_create_settlement_is_atomic_terminal_and_replays_exactly() {
         use aos_proto::aos::sandbox::v1::{ExecutionPhase, OperationPhase};
         use sha2::{Digest as _, Sha256};
@@ -8357,6 +8679,83 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn execution_family_keeps_create_facade_and_rejects_unrelated_accepted_start() {
+        let directory = TestDirectory::new();
+        let (create, _) = failed_create_fixture();
+        let operation = create.operation_id();
+        let mut reconciler = Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        reconciler.accept(&create).unwrap();
+
+        assert_eq!(accepted_create_execution_effect_from_journal_v1(&reconciler.journal, operation)
+            .unwrap(), accepted_execution_effect_from_journal_v3(&reconciler.journal, operation).unwrap());
+        assert!(accepted_execution_effect_from_journal_v3(&reconciler.journal, operation)
+            .unwrap().is_some());
+        drop(reconciler);
+
+        let other_directory = TestDirectory::new();
+        let start = cancelable_controller_operation();
+        let operation = start.operation_id();
+        let mut other = Reconciler::new(protected_runtime_journal(&other_directory), Executor::default());
+        other.accept(&start).unwrap();
+        assert!(accepted_execution_effect_from_journal_v3(&other.journal, operation).unwrap().is_none());
+        assert!(accepted_create_execution_effect_from_journal_v1(&other.journal, operation).unwrap().is_none());
+    }
+
+    #[test]
+    fn execution_family_reopens_control_and_cancel_without_widening_create_reader() {
+        use aos_proto::aos::sandbox::v1::{CancelExecutionRequest, ExecutionControlAction,
+            ExecutionControlRequest, ExecutionSignal};
+        use aos_sandbox_protocol::public_api::PublicOperationMethodV1 as Method;
+        use crate::cli_model::{PublicApiAuditMethodV1 as Audit, PublicMutationRequestV1};
+
+        for cancel in [false, true] {
+            let directory = TestDirectory::new();
+            let (mut plan, marker) = failed_create_fixture();
+            let original = plan.effects[0].public_mutation_context().unwrap().unwrap();
+            let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Exec(create) =
+                original.validated_request().unwrap() else { panic!("fixture has another request") };
+            let mutation = create.mutation;
+            let (method, audit, bytes) = if cancel {
+                (Method::CancelExecution, Audit::CancelExecution, CancelExecutionRequest {
+                    execution_id: marker.fields().execution_id.to_vec(), mutation,
+                    ..Default::default()
+                }.encode_to_vec())
+            } else {
+                (Method::ControlExecution, Audit::ControlExecution, ExecutionControlRequest {
+                    execution_id: marker.fields().execution_id.to_vec(), mutation,
+                    action: ExecutionControlAction::EXECUTION_CONTROL_ACTION_SIGNAL.into(),
+                    signal: ExecutionSignal::EXECUTION_SIGNAL_TERMINATE.into(),
+                    ..Default::default()
+                }.encode_to_vec())
+            };
+            let envelope = PublicMutationRequestV1::new(audit, &bytes).unwrap().encode();
+            plan.effects = vec![PublicMutationEffectV1::new(original.caller(), original.project(),
+                100, envelope).unwrap().into_plan(method).unwrap()];
+            plan.public_operation = Some(PublicOperationAdmissionV1::new(method, 1,
+                [0xa6; 16], 100, PublicOperationAuthorizationV1::new(original.project(),
+                    ResourceKind::Execution, Selector::Resource {
+                        resource: ResourceId::from_bytes(marker.fields().execution_id),
+                    }).unwrap()).unwrap());
+            let operation = plan.operation_id();
+            let mut reconciler = Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+            reconciler.accept(&plan).unwrap();
+            let expected = plan.effects[0].public_mutation_context().unwrap().unwrap();
+
+            assert_eq!(accepted_execution_effect_from_journal_v3(&reconciler.journal, operation)
+                .unwrap(), Some(expected.clone()));
+            assert!(accepted_create_execution_effect_from_journal_v1(&reconciler.journal, operation)
+                .unwrap().is_none());
+            drop(reconciler);
+
+            let reopened = protected_runtime_journal(&directory);
+            assert_eq!(accepted_execution_effect_from_journal_v3(&reopened, operation)
+                .unwrap(), Some(expected));
+            assert!(accepted_create_execution_effect_from_journal_v1(&reopened, operation)
+                .unwrap().is_none());
+        }
     }
 
     #[test]
@@ -9279,5 +9678,16 @@ mod tests {
                 "invalid ownership gate activation state"
             ))
         ));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod provisioning_plan_tests;
+
+struct OriginalProvisioningFailureDisplayV1<'held, E>(&'held E);
+
+impl<E: SingleNodeEffectExecutor> std::fmt::Display for OriginalProvisioningFailureDisplayV1<'_, E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt_original_provisioning_failure_v1(formatter)
     }
 }

@@ -4,6 +4,9 @@
 //! listener is then transferred into broker-session activation while retained
 //! mount and source descriptors remain under their dedicated custody owners.
 
+#[path = "aos-sandbox-mountd/attachment_service.rs"]
+mod attachment_service;
+
 use std::collections::BTreeSet;
 use std::env;
 use std::os::fd::AsFd as _;
@@ -12,9 +15,10 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aos_sandbox::journal::{Journal, JournalError, JournalLimits, RecordNamespace, RecoveryReport};
-use aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1;
-use aos_sandbox::mount_manager_startup::{
+use aos_sandbox_mount_native::{MountJournalV1 as Journal, MountJournalErrorV1 as JournalError,
+    JournalLimits, RecordNamespace, RecoveryReport};
+use aos_sandbox_broker::systemd_credentials::GitCoverageCredentialCustodyV1;
+use aos_sandbox_mount_native::mount_manager_startup::{
     MountManagerSourceInventoryError, MountManagerStartupJournalBorrowV1,
     MountManagerStartupProtectedOwnerV1,
     SelectedMountStartupV2,
@@ -159,6 +163,11 @@ fn run() -> Result<(), MountDaemonErrorV1> {
 
     let arguments = env::args().collect::<Vec<_>>();
     if matches!(arguments.as_slice(), [_, command]
+        if command == "--selected-attachment-anchor-v4")
+    {
+        attachment_service::run();
+    }
+    if matches!(arguments.as_slice(), [_, command]
         if command == "--check-selected-source-provider-authority")
     {
         validate_fixed_selected_root_mount_authority_v1()
@@ -238,16 +247,12 @@ fn run() -> Result<(), MountDaemonErrorV1> {
 
     let mut ordinary_journal = None;
     if let Some(owner) = &mut coverage {
-        owner.opened = Some(Journal::open_protected_at(
-            Path::new(STATE_ROOT), "mount.journal", JournalLimits::default(),
-        ));
+        owner.opened = Some(Journal::open_fixed_protected_v1(JournalLimits::default()));
         if let Some(Err(cause)) = &owner.opened {
             exit_with_git_coverage_failure(cause);
         }
     } else {
-        let (journal, _) = Journal::open_protected_at(
-            Path::new(STATE_ROOT), "mount.journal", JournalLimits::default(),
-        )?;
+        let (journal, _) = Journal::open_fixed_protected_v1(JournalLimits::default())?;
         ordinary_journal = Some(journal);
     }
 
@@ -816,7 +821,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::{PermissionsExt as _, symlink};
 
-    use aos_sandbox::journal::{JournalRecord, JournalTransaction};
+    use aos_sandbox_mount_native::{JournalRecord, JournalTransaction};
 
     #[test]
     fn carrier_policy_install_requires_both_paths() {

@@ -18,6 +18,19 @@ PROFILE = load("aos-normal-root-profile")
 
 
 class ProducerTests(unittest.TestCase):
+    def test_cache_gid_is_explicit_and_can_differ_from_uid_and_socket_gid(self):
+        PROFILE.require_configured_identities([811, 812, 813, 814], 947)
+        PROFILE.require_configured_identities([811, 812, 0, 814], 0)
+
+        for identities, gid in (
+            ([811, 812, 813, 814], 0), ([811, 812, 0, 814], 947),
+            ([811, 812, 813, 814], True), ([811, 812, 813, 814], -1),
+            ([811, 812, 813, 814], 1 << 32), ([811, 812, 813, 814], "947"),
+        ):
+            with self.subTest(identities=identities, gid=gid):
+                with self.assertRaises(ValueError):
+                    PROFILE.require_configured_identities(identities, gid)
+
     def test_context_is_exact_non_mls_root_subject(self):
         self.assertEqual(PROFILE.CONTEXT, "system_u:system_r:aos_sandbox_policy_authority_t")
         self.assertEqual(len(PROFILE.CONTEXT.split(":")), 3)
@@ -47,6 +60,22 @@ class ProducerTests(unittest.TestCase):
             self.assertEqual(bytes(pinned["sha256"]), hashlib.sha256(path.read_bytes()).digest())
             path.write_bytes(b"substituted artifact bytes")
             self.assertNotEqual(pinned, PROFILE.pin(path))
+
+    def test_environment_binding_is_versioned_exact_and_read_only(self):
+        root = Path("/nix/store/" + "1" * 32 + "-aos-environment-provision-1")
+        binding = f"ReadOnlyPaths={root}\n".encode()
+        PROFILE.require_environment_provision_binding(root, binding)
+
+        for bad in (b"", binding * 2, b"# " + binding,
+                    binding.replace(b"ReadOnlyPaths", b"ReadWritePaths")):
+            with self.subTest(unit=bad), self.assertRaises(ValueError):
+                PROFILE.require_environment_provision_binding(root, bad)
+
+        for path in (root / "objects", Path(str(root) + "-alias"),
+                     Path(str(root).replace("provision-1", "provision-2")),
+                     Path(str(root).replace("/nix/store/", "/nix.lower/store/"))):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                PROFILE.require_environment_provision_binding(path, f"ReadOnlyPaths={path}\n".encode())
 
     def test_runtime_resolution_reuses_actual_existing_manifest_helpers(self):
         helpers = PROFILE.load_runtime_helpers(Path(__file__).with_name("aos-selinux-runtime-manifest.py"))

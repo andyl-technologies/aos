@@ -16,11 +16,10 @@ use std::fmt;
 use std::mem::{self, size_of};
 use std::path::Path;
 
-use super::runtime_deployment_history::ReadAtCursorV1;
 use super::{
     DeploymentHistoryObserverV1, Journal, JournalError, JournalLimits, JournalRecord,
-    JournalTransaction, ProtectedWriterNameWitness, RecordNamespace, ReplayState,
-    encoded_transaction_append_bytes, replay_original_observed, root_original_inventory,
+    JournalTransaction, ProtectedWriterNameWitness, RecordNamespace, ObservedReplayStateV1,
+    encoded_transaction_append_bytes, replay_coordinator_observed_v1, root_original_inventory,
     validate_limits, validate_materialized_change,
 };
 
@@ -594,7 +593,7 @@ impl StorageHistoryObserverV1 {
         Ok(())
     }
 
-    fn finish(&self, replayed: &ReplayState) -> std::result::Result<(), JournalError> {
+    fn finish(&self, replayed: &ObservedReplayStateV1) -> std::result::Result<(), JournalError> {
         if matches!(self.purpose, StorageHistoryPurpose::PrimaryBootstrap) {
             if self.transactions.len() != replayed.committed_transactions
                 || self.primary_records != replayed.committed_records
@@ -731,9 +730,9 @@ impl Journal {
                     )?
                 }
             };
-            let mut reader = ReadAtCursorV1::new(self.native.file(), witness.file().byte_len());
-            let replayed = replay_original_observed(
-                &mut reader,
+            let reader = self.native.captured_reader(witness.file().byte_len());
+            let replayed = replay_coordinator_observed_v1(
+                reader,
                 self.native.limits(),
                 None,
                 Some(DeploymentHistoryObserverV1::Storage(&mut observer)),
@@ -834,20 +833,20 @@ fn require_capture_limits(
 
 fn require_replayed_snapshot(
     journal: &Journal,
-    replayed: &ReplayState,
+    replayed: &ObservedReplayStateV1,
     physical_bytes: u64,
 ) -> std::result::Result<(), JournalError> {
     if replayed.durable_end != physical_bytes
         || replayed.next_sequence != journal.native.next_sequence()
         || replayed.committed_transactions != journal.native.committed_transactions()
         || replayed.committed_records != replayed.committed_transactions
-        || replayed.transaction_ids != *journal.native.transaction_ids()
-        || replayed.committed_namespaces != *journal.native.committed_namespaces()
-        || replayed.state != *journal.native.state()
-        || replayed.materialized_bytes != journal.native.materialized_bytes()
-        || replayed.idempotency != journal.idempotency
-        || !replayed.idempotency.is_empty()
-        || replayed.committed_namespaces.iter().any(|namespace| *namespace != NAMESPACE)
+        || replayed.native.transaction_ids_data_v1() != journal.native.transaction_ids()
+        || replayed.native.committed_namespaces_data_v1() != journal.native.committed_namespaces()
+        || replayed.native.state_data_v1() != journal.native.state()
+        || replayed.native.materialized_bytes_data_v1() != journal.native.materialized_bytes()
+        || replayed.native.idempotency_data_v1() != journal.native.idempotency()
+        || !replayed.native.idempotency_data_v1().is_empty()
+        || replayed.native.committed_namespaces_data_v1().iter().any(|namespace| *namespace != NAMESPACE)
         || !replayed.source_challenge_history.is_empty()
         || !journal.source_challenge_history.is_empty()
         || replayed.source_original_replay.has_dependencies()
@@ -862,17 +861,17 @@ fn require_replayed_snapshot(
 
 fn require_primary_replayed_snapshot(
     journal: &Journal,
-    replayed: &ReplayState,
+    replayed: &ObservedReplayStateV1,
     physical_bytes: u64,
 ) -> std::result::Result<(), JournalError> {
     if replayed.durable_end != physical_bytes
         || replayed.next_sequence != journal.native.next_sequence()
         || replayed.committed_transactions != journal.native.committed_transactions()
-        || replayed.transaction_ids != *journal.native.transaction_ids()
-        || replayed.committed_namespaces != *journal.native.committed_namespaces()
-        || replayed.state != *journal.native.state()
-        || replayed.materialized_bytes != journal.native.materialized_bytes()
-        || replayed.idempotency != journal.idempotency
+        || replayed.native.transaction_ids_data_v1() != journal.native.transaction_ids()
+        || replayed.native.committed_namespaces_data_v1() != journal.native.committed_namespaces()
+        || replayed.native.state_data_v1() != journal.native.state()
+        || replayed.native.materialized_bytes_data_v1() != journal.native.materialized_bytes()
+        || replayed.native.idempotency_data_v1() != journal.native.idempotency()
         || !replayed.source_challenge_history.is_empty()
         || !journal.source_challenge_history.is_empty()
         || replayed.source_original_replay.has_dependencies()
@@ -1061,19 +1060,17 @@ mod tests {
 
     fn observe(
         bytes: &[u8],
-    ) -> std::result::Result<(Vec<NativeTransactionData>, ReplayState), JournalError> {
+    ) -> std::result::Result<(Vec<NativeTransactionData>, ObservedReplayStateV1), JournalError> {
         // Inert same-codec DATA, not the fixed protected production owner.
         let mut file = tempfile::tempfile()?;
         file.write_all(bytes)?;
         let position = file.stream_position()?;
         let length = file.metadata()?.len();
         let mut observer = StorageHistoryObserverV1::new(limits(), length)?;
-        let mut reader = ReadAtCursorV1::new(&file, length);
-        let result = replay_original_observed(
-            &mut reader, limits(), None,
+        let result = super::super::replay_published_bytes_observed_v1(
+            bytes, super::super::FileIdentity::of::<JournalError>(&file)?, limits(),
             Some(DeploymentHistoryObserverV1::Storage(&mut observer)),
         );
-        drop(reader);
         assert_eq!(file.stream_position()?, position);
         let replayed = result?;
         observer.finish(&replayed)?;
@@ -1089,7 +1086,7 @@ mod tests {
         assert_eq!(replayed.committed_transactions, 0);
         assert_eq!(replayed.committed_records, 0);
         assert_eq!(replayed.durable_end, 0);
-        assert!(replayed.state.is_empty());
+        assert!(replayed.native.state_data_v1().is_empty());
     }
 
     #[test]
@@ -1139,7 +1136,7 @@ mod tests {
         assert_eq!(prefix.after.get(&key).unwrap(), b"cold");
         assert_eq!(native[2].begin_sequence, 7);
         assert_eq!(native[2].next_sequence, 10);
-        assert_eq!(prefix.after, replayed.state);
+        assert_eq!(&prefix.after, replayed.native.state_data_v1());
         assert_eq!(prefix.end_offset, replayed.durable_end);
         assert_eq!(prefix.advance(&native, limits()).unwrap(), None);
     }

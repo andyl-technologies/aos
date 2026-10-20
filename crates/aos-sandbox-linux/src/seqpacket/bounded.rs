@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
-use super::descriptor_subject::{DescriptorSubjectSocket, ReceivedDescriptorRecord};
+use super::descriptor_subject::{
+    DescriptorSubjectSocket, ReceivedDescriptorRecord, WorkerObserverRecordKindV1,
+};
 use super::{ReceivedRecord, RecordSubjectListener, SeqpacketError, SeqpacketSocket};
 
 /// Reports a bounded exchange failure without assigning service policy.
@@ -148,6 +150,370 @@ pub fn receive_provisioned_worker_record_without_io_uring(
         deadline,
         |socket| socket.receive(maximum, expected_descriptors),
     )
+}
+
+/// Retains a fixed worker receive's first failure and all outstanding custody.
+///
+/// Fatal native errors keep the complete original receive attempt. A record
+/// received after the deadline stays owned here alongside its deadline error;
+/// the caller may inspect it but cannot project the failure to successful work.
+pub struct RetainedWorkerReceiveErrorV1<Record> {
+    attempt: WorkerObserverReceiveAttemptV1<Record>,
+}
+
+/// Owns the fixed descriptor-channel worker receive's negative disposition.
+pub type WorkerObserverReceiveErrorV1 = RetainedWorkerReceiveErrorV1<ReceivedDescriptorRecord>;
+
+/// Owns the fixed zero-rights ZFS receive's negative disposition.
+pub type ZfsWorkerReceiveErrorV1 = RetainedWorkerReceiveErrorV1<ReceivedRecord>;
+
+#[derive(Debug)]
+struct WorkerObserverReceiveAttemptV1<Record> {
+    provision: Option<Result<(), SeqpacketError>>,
+    before: Option<Result<(), WorkerRecordError>>,
+    returned: Option<Result<Record, super::RetainedSeqpacketReceiveErrorV1>>,
+    after: Option<Result<(), WorkerRecordError>>,
+    wait: Option<Result<(), WorkerRecordError>>,
+    first: WorkerObserverFailureSite,
+}
+
+#[derive(Debug)]
+enum WorkerObserverFailureSite {
+    Provision,
+    Before,
+    Receive,
+    After,
+    Wait,
+}
+
+impl<Record> RetainedWorkerReceiveErrorV1<Record> {
+    /// Borrows the actual record retained after a late native success.
+    #[must_use]
+    pub fn received_record(&self) -> Option<&Record> {
+        self.attempt.returned.as_ref()?.as_ref().ok()
+    }
+
+    /// Borrows the first native, capacity, poll or deadline failure.
+    #[must_use]
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.attempt.first {
+            WorkerObserverFailureSite::Provision =>
+                self.attempt.provision.as_ref()?.as_ref().err().map(|error| error as _),
+            WorkerObserverFailureSite::Before =>
+                self.attempt.before.as_ref()?.as_ref().err().map(|error| error as _),
+            WorkerObserverFailureSite::Receive =>
+                self.attempt.returned.as_ref()?.as_ref().err().map(|error| error as _),
+            WorkerObserverFailureSite::After =>
+                self.attempt.after.as_ref()?.as_ref().err().map(|error| error as _),
+            WorkerObserverFailureSite::Wait =>
+                self.attempt.wait.as_ref()?.as_ref().err().map(|error| error as _),
+        }
+    }
+}
+
+impl<Record> std::fmt::Debug for RetainedWorkerReceiveErrorV1<Record> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("WorkerObserverReceiveErrorV1")
+            .field("first", &self.attempt.first)
+            .field("late_record_retained", &self.received_record().is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<Record> std::fmt::Display for RetainedWorkerReceiveErrorV1<Record> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.failure() {
+            Some(error) => write!(formatter, "fixed worker observer receive refused: {error}"),
+            None => formatter.write_str("fixed worker observer receive refused"),
+        }
+    }
+}
+
+impl<Record> std::error::Error for RetainedWorkerReceiveErrorV1<Record> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.failure()
+    }
+}
+
+/// Receives one fixed worker observer record while retaining failed originals.
+///
+/// Capacity 4096 precedes the first clock. Both proven nonconsuming EAGAIN and
+/// EINTR wait before retrying, using the existing worker clock/poll mechanics.
+/// Only those completed no-acquisition attempts may be disposed before reuse of
+/// the same prepaid peak. Fatal/ambiguous attempts and late successful records
+/// remain owned in the error. A late deadline can leave the channel connected:
+/// the application owner must retain the error and close its failed interval
+/// before any further receive, rather than project the record to successful work.
+///
+/// # Errors
+/// Returns an owning [`WorkerObserverReceiveErrorV1`] for capacity, native
+/// transport, subject/table, wait, clock or late-success refusal.
+pub fn receive_worker_observer_record_v1(
+    socket: &mut DescriptorSubjectSocket,
+    kind: WorkerObserverRecordKindV1,
+    deadline: u64,
+) -> Result<ReceivedDescriptorRecord, WorkerObserverReceiveErrorV1> {
+    receive_fixed_worker_record(socket, WorkerObserverProfile(kind), deadline)
+}
+
+/// Selects one fixed zero-rights ZFS worker record without application authority.
+#[derive(Clone, Copy, Debug)]
+pub enum ZfsWorkerRecordKindV1 {
+    /// Existing READY ceiling.
+    Ready,
+    /// Existing fixed Storage worker request ceiling.
+    Request,
+    /// Existing fixed Storage worker acknowledgement ceiling.
+    Acknowledgement,
+    /// Existing mutation/atomic stdout+stderr result ceiling.
+    MutationResult,
+    /// Existing physical observation result ceiling.
+    ObservationResult,
+    /// Closed version-three Capture created-report width on the same worker.
+    CaptureCreatedV3,
+}
+
+impl ZfsWorkerRecordKindV1 {
+    /// Returns this existing fixed wire ceiling as passive transport DATA.
+    #[must_use]
+    pub const fn maximum_payload_bytes(self) -> usize {
+        match self {
+            Self::Ready => 4096,
+            Self::Request => 24 * 1024,
+            Self::Acknowledgement => 10,
+            Self::MutationResult => 132 * 1024,
+            Self::ObservationResult => 52,
+            Self::CaptureCreatedV3 => 226,
+        }
+    }
+}
+
+/// Receives one fixed ZFS worker record using the same retained retry engine.
+///
+/// The ordinary ZFS receiver does not resize socket queues. This adapter
+/// likewise retains their installed capacity and uses the fixed logical bound;
+/// it does not shrink a large existing reply queue to the observer's4096bytes.
+///
+/// # Errors
+/// Owns capacity/native/subject/wait/deadline failures and late records.
+pub fn receive_zfs_worker_record_v1(
+    socket: &mut SeqpacketSocket,
+    kind: ZfsWorkerRecordKindV1,
+    deadline: u64,
+) -> Result<ReceivedRecord, ZfsWorkerReceiveErrorV1> {
+    receive_fixed_worker_record(socket, ZfsWorkerProfile(kind), deadline)
+}
+
+/// Receives the fixed two-pipe Capture reply through the existing retry engine.
+///
+/// # Errors
+/// Retains both actual native samples and any late successful descriptor table.
+pub fn receive_capture_worker_pipes_v3(
+    socket: &mut SeqpacketSocket, deadline: u64,
+) -> Result<ReceivedDescriptorRecord, WorkerObserverReceiveErrorV1> {
+    receive_fixed_worker_record(socket, CapturePipesProfileV3, deadline)
+}
+
+struct CapturePipesProfileV3;
+
+impl FixedWorkerReceiveProfile<SeqpacketSocket, ReceivedDescriptorRecord> for CapturePipesProfileV3 {
+    fn provision(&self, _: &SeqpacketSocket) -> Option<Result<(), SeqpacketError>> { None }
+
+    fn receive(&self, socket: &mut SeqpacketSocket)
+        -> Result<ReceivedDescriptorRecord, super::RetainedSeqpacketReceiveErrorV1>
+    {
+        socket.receive_capture_worker_pipes_retaining_v3()
+    }
+
+    fn wait(&self, socket: &SeqpacketSocket, deadline: u64) -> Result<(), WorkerRecordError> {
+        socket.as_fd().map_err(WorkerRecordError::from)
+            .and_then(|fd| wait_worker_before(&NativeWorkerWait, fd, PollFlags::IN, deadline))
+    }
+}
+
+// These closed native profiles select the common engine. No public callback,
+// arbitrary record bound, parser or worker-service authority is exposed.
+trait FixedWorkerReceiveProfile<Socket, Record> {
+    fn after_receive(&self, deadline: u64) -> Result<(), WorkerRecordError> {
+        check_worker_deadline(deadline)
+    }
+    fn provision(&self, socket: &Socket) -> Option<Result<(), SeqpacketError>>;
+    fn receive(&self, socket: &mut Socket)
+        -> Result<Record, super::RetainedSeqpacketReceiveErrorV1>;
+    fn wait(&self, socket: &Socket, deadline: u64) -> Result<(), WorkerRecordError>;
+}
+
+struct WorkerObserverProfile(WorkerObserverRecordKindV1);
+
+impl FixedWorkerReceiveProfile<DescriptorSubjectSocket, ReceivedDescriptorRecord> for WorkerObserverProfile {
+    fn provision(&self, socket: &DescriptorSubjectSocket) -> Option<Result<(), SeqpacketError>> {
+        Some(socket.provision_packet_capacity(self.0.maximum_payload_bytes_v1()))
+    }
+
+    fn receive(&self, socket: &mut DescriptorSubjectSocket)
+        -> Result<ReceivedDescriptorRecord, super::RetainedSeqpacketReceiveErrorV1>
+    {
+        socket.receive_worker_observer_retaining_v1(self.0)
+    }
+
+    fn wait(&self, socket: &DescriptorSubjectSocket, deadline: u64) -> Result<(), WorkerRecordError> {
+        socket.as_fd().map_err(WorkerRecordError::from)
+            .and_then(|fd| wait_worker_before(&NativeWorkerWait, fd, PollFlags::IN, deadline))
+    }
+}
+
+struct ZfsWorkerProfile(ZfsWorkerRecordKindV1);
+
+impl FixedWorkerReceiveProfile<SeqpacketSocket, ReceivedRecord> for ZfsWorkerProfile {
+    fn provision(&self, _socket: &SeqpacketSocket) -> Option<Result<(), SeqpacketError>> {
+        None
+    }
+
+    fn receive(&self, socket: &mut SeqpacketSocket)
+        -> Result<ReceivedRecord, super::RetainedSeqpacketReceiveErrorV1>
+    {
+        socket.receive_zfs_worker_retaining_v1(self.0.maximum_payload_bytes())
+    }
+
+    fn wait(&self, socket: &SeqpacketSocket, deadline: u64) -> Result<(), WorkerRecordError> {
+        socket.as_fd().map_err(WorkerRecordError::from)
+            .and_then(|fd| wait_worker_before(&NativeWorkerWait, fd, PollFlags::IN, deadline))
+    }
+}
+
+fn receive_fixed_worker_record<Socket, Record, Profile: FixedWorkerReceiveProfile<Socket, Record>>(
+    socket: &mut Socket,
+    profile: Profile,
+    deadline: u64,
+) -> Result<Record, RetainedWorkerReceiveErrorV1<Record>> {
+    let mut attempt = WorkerObserverReceiveAttemptV1 {
+        provision: profile.provision(socket),
+        before: None,
+        returned: None,
+        after: None,
+        wait: None,
+        first: WorkerObserverFailureSite::Provision,
+    };
+    if matches!(attempt.provision, Some(Err(_))) {
+        return Err(RetainedWorkerReceiveErrorV1 { attempt });
+    }
+
+    loop {
+        attempt.before = Some(check_worker_deadline(deadline));
+        if !matches!(attempt.before, Some(Ok(()))) {
+            attempt.first = WorkerObserverFailureSite::Before;
+            return Err(RetainedWorkerReceiveErrorV1 { attempt });
+        }
+        attempt.returned = Some(profile.receive(socket));
+        match attempt.returned.as_ref() {
+            Some(Ok(_)) => {
+                attempt.after = Some(profile.after_receive(deadline));
+                if !matches!(attempt.after, Some(Ok(()))) {
+                    attempt.first = WorkerObserverFailureSite::After;
+                    return Err(RetainedWorkerReceiveErrorV1 { attempt });
+                }
+                // Only the positive completion transfers the actual record.
+                return match attempt.returned.take() {
+                    Some(Ok(record)) => Ok(record),
+                    other => {
+                        // Preserve unexpected internal state and fail closed;
+                        // this branch cannot turn a missing result into work.
+                        attempt.returned = other;
+                        attempt.first = WorkerObserverFailureSite::Receive;
+                        Err(RetainedWorkerReceiveErrorV1 { attempt })
+                    }
+                };
+            }
+            Some(Err(error)) if error.is_nonconsuming_would_block()
+                || error.is_nonconsuming_interrupted() => {}
+            _ => {
+                attempt.first = WorkerObserverFailureSite::Receive;
+                return Err(RetainedWorkerReceiveErrorV1 { attempt });
+            }
+        }
+
+        // Keep the exact nonconsuming native result through its readiness
+        // wait too. A failed wait retains both observations; only a complete
+        // positive wait can precede disposal/reuse of this actual peak.
+        attempt.wait = Some(profile.wait(socket, deadline));
+        if !matches!(attempt.wait, Some(Ok(()))) {
+            attempt.first = WorkerObserverFailureSite::Wait;
+            return Err(RetainedWorkerReceiveErrorV1 { attempt });
+        }
+        // The lower proof requires !raw.received for every native sample and
+        // complete original posts. No record or ancillary acquisition is being
+        // disposed, and the positive wait leaves no independent later debt.
+        drop(attempt.returned.take());
+        drop(attempt.before.take());
+        drop(attempt.wait.take());
+    }
+}
+
+/// Returns fixed retained worker-deadline wrapper obligations as comparison DATA.
+///
+/// This supplements the actual strict receiver geometry with its complete
+/// owning failure/result slots and existing native wait/clock stack. It grants
+/// no service payment, receiving original or worker authority.
+#[must_use]
+pub fn worker_observer_record_obligations_v1() -> (usize, usize) {
+    let (bytes, files) = DescriptorSubjectSocket::worker_observer_receive_obligations_v1();
+    let wrapper = std::mem::size_of::<WorkerObserverReceiveAttemptV1<ReceivedDescriptorRecord>>()
+        + std::mem::size_of::<Result<ReceivedDescriptorRecord, WorkerObserverReceiveErrorV1>>()
+        + std::mem::size_of::<[PollFd<'_>; 1]>()
+        + 2 * std::mem::size_of::<Timespec>()
+        + std::mem::size_of::<Duration>()
+        + 4 * std::mem::size_of::<u64>();
+    (bytes + wrapper, files)
+}
+
+/// Prices a fixed descriptor worker receive through the same retaining engine.
+#[must_use]
+pub fn descriptor_worker_record_obligations_v1(
+    kind: WorkerObserverRecordKindV1,
+) -> Option<(usize, usize, usize)> {
+    let (bytes, files) = DescriptorSubjectSocket::worker_descriptor_receive_obligations_v1(kind);
+    let old = worker_observer_record_obligations_v1().0;
+    let raw = DescriptorSubjectSocket::worker_observer_receive_obligations_v1().0;
+    let wrapper = old.checked_sub(raw)?;
+    // Six bounded attempt fields, four wait/clock temporaries and the native
+    // wrapper/result namespaces supplement the actual shared raw census.
+    let cells = DescriptorSubjectSocket::worker_descriptor_receive_metadata_cells_v1()?
+        .checked_add(6 + 4 + 2)?;
+    Some((bytes.checked_add(wrapper)?, files, cells))
+}
+
+/// Returns actual fixed ZFS receive reservoir and FD comparison obligations.
+#[must_use]
+pub fn zfs_worker_record_obligations_v1(kind: ZfsWorkerRecordKindV1) -> Option<(usize, usize)> {
+    let (bytes, files) = SeqpacketSocket::zfs_worker_receive_obligations_v1(kind.maximum_payload_bytes())?;
+    let wrapper = std::mem::size_of::<WorkerObserverReceiveAttemptV1<ReceivedRecord>>()
+        + std::mem::size_of::<Result<ReceivedRecord, ZfsWorkerReceiveErrorV1>>()
+        + std::mem::size_of::<[PollFd<'_>; 1]>()
+        + 2 * std::mem::size_of::<Timespec>()
+        + std::mem::size_of::<Duration>()
+        + 4 * std::mem::size_of::<u64>();
+    Some((bytes.checked_add(wrapper)?, files))
+}
+
+/// Waits once for the already-owned Capture cancellation listener.
+///
+/// This is only standing ingress readiness. It establishes no clock bound,
+/// connection identity, Stop permission or resource disposal. The caller keeps
+/// its continuously occupied original and retains this actual wait result.
+///
+/// # Errors
+/// Returns the existing readiness primitive's actual native polling failure.
+pub fn wait_capture_stop_listener_v4(
+    listener: &RecordSubjectListener,
+) -> Result<(), BoundedRecordError> {
+    wait_unbounded(listener.as_fd(), PollFlags::IN)
+}
+
+/// Returns the fixed native standing-wait frame without acquiring descriptors.
+#[must_use]
+pub fn capture_stop_listener_wait_bytes_v4() -> Option<usize> {
+    std::mem::size_of::<[PollFd<'_>; 1]>()
+        .checked_add(std::mem::size_of::<Result<usize, rustix::io::Errno>>())
 }
 
 /// Waits for one checked connection, rejecting a stale queued child.
@@ -425,6 +791,7 @@ fn check_worker_deadline(deadline: u64) -> Result<(), WorkerRecordError> {
 // The sole production adapter directly samples and polls native objects.
 // Alternate stage implementations exist only in the test module.
 trait WorkerWait {
+    fn before_poll(&self) -> Result<(), WorkerRecordError> { Ok(()) }
     fn boottime(&self) -> Result<u64, WorkerRecordError>;
     fn poll(
         &self,
@@ -465,6 +832,7 @@ fn wait_worker_before(
             .ok_or(WorkerRecordClockError::Expired)?;
         let timeout = Timespec::try_from(Duration::from_nanos(remaining))
             .map_err(|_| WorkerRecordClockError::InvalidTimeout)?;
+        wait.before_poll()?;
         match wait.poll(descriptor, events, &timeout) {
             Ok(0) => return Err(WorkerRecordClockError::Expired.into()),
             Ok(_) => {
@@ -493,6 +861,35 @@ pub fn boottime() -> Result<u64, BoundedRecordError> {
         .checked_mul(1_000_000_000)
         .and_then(|value| value.checked_add(nanoseconds))
         .ok_or(BoundedRecordError::Clock)
+}
+
+/// Waits for the staged root-export preview on the same retained endpoint.
+///
+/// This nonconsuming adapter uses the existing deadline/poll engine. It neither
+/// receives a packet nor restores a failed channel, admits a role or extends
+/// the caller's original deadline. A genuine payer must precede entry.
+///
+/// # Errors
+/// Returns the actual closed-carrier, deadline or native poll refusal.
+pub fn wait_storage_root_export_request_v2(
+    socket: &DescriptorSubjectSocket,
+    original_deadline: u64,
+) -> Result<(), BoundedRecordError> {
+    wait_until(socket.as_fd()?, PollFlags::IN, original_deadline)
+}
+
+/// Waits for readability of the actual retained Capture worker pidfd.
+///
+/// This shares the bounded poll engine, does not signal or reap a process, and
+/// does not establish aggregate emptiness or physical completion. The genuine
+/// resident caller retains the actual poll result and separately checks those
+/// independently owed observations before native disposal.
+///
+/// # Errors
+/// Returns the existing original-cutoff, clock or native poll refusal.
+pub fn wait_capture_worker_exit_v3(pidfd: &crate::pidfd::PidFd,
+    original_deadline: u64) -> Result<(), BoundedRecordError> {
+    wait_until(pidfd.as_fd(), PollFlags::IN, original_deadline)
 }
 
 fn check_deadline(deadline: u64) -> Result<(), BoundedRecordError> {
@@ -1315,5 +1712,857 @@ mod tests {
             descriptor.wait_readiness(PollFlags::IN, 0),
             Err(BoundedRecordError::Clock)
         ));
+    }
+}
+
+
+#[cfg(test)]
+mod fixed_worker_observer_tests {
+    use super::*;
+
+    fn pair() -> (DescriptorSubjectSocket, SeqpacketSocket) {
+        let (first, second) = crate::uapi::seqpacket_pair().unwrap();
+        (
+            DescriptorSubjectSocket::from_owned_retaining(first).unwrap(),
+            SeqpacketSocket::from_owned(second).unwrap(),
+        )
+    }
+
+    #[test]
+    fn expired_fixed_receive_keeps_the_queued_record_and_original_channel() {
+        let (mut receiver, mut sender) = pair();
+        sender.send(&[1; 313]).unwrap();
+
+        let refused = receive_worker_observer_record_v1(
+            &mut receiver, WorkerObserverRecordKindV1::ReadyOrResult, 0,
+        ).unwrap_err();
+
+        assert!(refused.received_record().is_none());
+        assert!(refused.failure().unwrap().is::<WorkerRecordError>());
+        let record = receiver.receive_worker_observer_retaining_v1(
+            WorkerObserverRecordKindV1::ReadyOrResult,
+        ).unwrap();
+        assert_eq!(record.payload(), &[1; 313]);
+    }
+
+    #[test]
+    fn bounded_fixed_receive_keeps_supported_full_request_and_two_original_rights() {
+        let (mut receiver, mut sender) = pair();
+        let first = std::fs::File::open("/dev/null").unwrap();
+        let second = std::fs::File::open("/dev/zero").unwrap();
+        sender.send_with_descriptors(&[2; 4096], &[first.as_fd(), second.as_fd()]).unwrap();
+
+        let record = receive_worker_observer_record_v1(
+            &mut receiver, WorkerObserverRecordKindV1::Request, u64::MAX,
+        ).unwrap();
+
+        assert_eq!(record.payload(), &[2; 4096]);
+        assert_eq!(record.descriptors().len(), 2);
+        for (received, original) in record.descriptors().iter().zip([&first, &second]) {
+            let received = rustix::fs::fstat(received).unwrap();
+            let original = rustix::fs::fstat(original).unwrap();
+            assert_eq!((received.st_dev, received.st_ino), (original.st_dev, original.st_ino));
+        }
+    }
+
+    #[test]
+    fn malformed_fixed_receive_retains_actual_native_cause_and_closes_original() {
+        let (mut receiver, mut sender) = pair();
+        let file = std::fs::File::open("/dev/null").unwrap();
+        sender.send_with_descriptors(&[3; 313], &[file.as_fd(); 5]).unwrap();
+
+        let refused = receive_worker_observer_record_v1(
+            &mut receiver, WorkerObserverRecordKindV1::ReadyOrResult, u64::MAX,
+        ).unwrap_err();
+
+        assert!(refused.failure().unwrap().is::<super::super::RetainedSeqpacketReceiveErrorV1>());
+        assert!(refused.received_record().is_none());
+        assert!(receiver.as_fd().is_err());
+    }
+}
+
+/// Selects an existing no-rights ZFS request or acknowledgment packet ceiling.
+#[derive(Clone, Copy, Debug)]
+pub enum ZfsWorkerSendKindV1 {
+    /// Existing typed mutation, atomic or observation request ceiling.
+    Request,
+    /// Existing fixed acknowledgment ceiling.
+    Acknowledgment,
+    /// Fixed106-byte acknowledgment of one exact authenticated Capture report.
+    ///
+    /// It promises neither a durable676 commit nor physical/F retirement.
+    CaptureReportAcknowledgment,
+}
+
+/// Retains the complete bounded send, wait and independent deadline results.
+///
+/// This owns transport DATA only. The genuine entered worker financial owner
+/// and its upper semantic/control posts remain separate requirements.
+#[derive(Debug)]
+pub struct ZfsWorkerSendAttemptV1 {
+    original: FixedWorkerSendAttemptV1<super::StorageSeqpacketSendAttemptV1>,
+}
+
+/// Selects the existing fixed worker frame and exact borrowed rights shape.
+///
+/// These transport bounds grant no descriptor roles, worker identity or payment.
+#[derive(Clone, Copy, Debug)]
+pub enum DescriptorWorkerSendKindV1 {
+    /// First fixed4096-byte request frame carrying the two retained originals.
+    RequestFirst,
+    /// Later fixed4096-byte request frame carrying no additional rights.
+    RequestContinuation,
+    /// Existing ten-byte no-rights worker acknowledgment.
+    Acknowledgment,
+    /// Fixed8192-byte maximum method31 request carrying no transferred rights.
+    GuestRootPublicationRequestV2,
+    /// Exact observation-only startup health request, eight bytes and no rights.
+    GuestRootStartupHealthV2,
+    /// Closed physical Capture proof carrying its two existing FIFO originals.
+    ///
+    /// Its caller validates the fixed application codec. This mechanical
+    /// profile adds no capacity provisioning or descriptor authority.
+    StorageCaptureProof,
+    /// Closed physical Capture terminal acknowledgment without transferred FDs.
+    StorageCaptureAck,
+}
+
+/// Retains a fixed descriptor-worker send, clocks and readiness observations.
+#[derive(Debug)]
+pub struct DescriptorWorkerSendAttemptV1 {
+    original: FixedWorkerSendAttemptV1<Result<
+        super::descriptor_subject::DescriptorWorkerNativeSendAttemptV1, SeqpacketError,
+    >>,
+}
+
+#[derive(Debug)]
+struct FixedWorkerSendAttemptV1<Native> {
+    provision: Option<Result<(), SeqpacketError>>,
+    before: Option<Result<(), WorkerRecordError>>,
+    sent: Option<Native>,
+    after: Option<Result<(), WorkerRecordError>>,
+    wait: Option<Result<(), WorkerRecordError>>,
+    bound: Option<SeqpacketError>,
+    first: Option<FixedWorkerSendFailureV1>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FixedWorkerSendFailureV1 {
+    Bound,
+    Provision,
+    Before,
+    Send,
+    After,
+    Wait,
+}
+
+trait FixedWorkerNativeSendReceiptV1 {
+    fn is_sent(&self) -> bool;
+    fn is_nonconsuming(&self) -> bool;
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)>;
+}
+
+impl FixedWorkerNativeSendReceiptV1 for super::StorageSeqpacketSendAttemptV1 {
+    fn is_sent(&self) -> bool { super::StorageSeqpacketSendAttemptV1::is_sent(self) }
+    fn is_nonconsuming(&self) -> bool { super::StorageSeqpacketSendAttemptV1::is_nonconsuming(self) }
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        super::StorageSeqpacketSendAttemptV1::failure(self)
+    }
+}
+
+impl FixedWorkerNativeSendReceiptV1 for Result<
+    super::descriptor_subject::DescriptorWorkerNativeSendAttemptV1, SeqpacketError,
+> {
+    fn is_sent(&self) -> bool {
+        self.as_ref().is_ok_and(|receipt| receipt.is_sent())
+    }
+
+    fn is_nonconsuming(&self) -> bool {
+        self.as_ref().is_ok_and(|receipt| receipt.is_nonconsuming())
+    }
+
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Ok(receipt) => receipt.failure(),
+            Err(error) => Some(error),
+        }
+    }
+}
+
+impl<Native: FixedWorkerNativeSendReceiptV1> FixedWorkerSendAttemptV1<Native> {
+    fn is_sent(&self) -> bool {
+        self.first.is_none()
+            && self.sent.as_ref().is_some_and(FixedWorkerNativeSendReceiptV1::is_sent)
+            && matches!(self.after, Some(Ok(())))
+    }
+
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first? {
+            FixedWorkerSendFailureV1::Bound => self.bound.as_ref().map(|error| error as _),
+            FixedWorkerSendFailureV1::Provision => self.provision.as_ref()?.as_ref().err().map(|error| error as _),
+            FixedWorkerSendFailureV1::Before => self.before.as_ref()?.as_ref().err().map(|error| error as _),
+            FixedWorkerSendFailureV1::Send => self.sent.as_ref()?.failure(),
+            FixedWorkerSendFailureV1::After => self.after.as_ref()?.as_ref().err().map(|error| error as _),
+            FixedWorkerSendFailureV1::Wait => self.wait.as_ref()?.as_ref().err().map(|error| error as _),
+        }
+    }
+}
+
+impl ZfsWorkerSendAttemptV1 {
+    /// Reports a full native send followed by its positive deadline observation.
+    #[must_use]
+    pub fn is_sent(&self) -> bool { self.original.is_sent() }
+
+    /// Borrows the actual earliest refusal without disposing later observations.
+    #[must_use]
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original.failure()
+    }
+}
+
+impl DescriptorWorkerSendAttemptV1 {
+    /// Reports a full native send with positive carrier and deadline posts.
+    #[must_use]
+    pub fn is_sent(&self) -> bool { self.original.is_sent() }
+
+    /// Borrows the earliest actual send, native, wait or deadline refusal.
+    #[must_use]
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original.failure()
+    }
+
+    /// Prices actual bounded/native receipt frames and native error carriers.
+    #[must_use]
+    pub fn requested_bytes_v1() -> Option<usize> {
+        std::mem::size_of::<Self>().checked_mul(2)?
+            .checked_add(super::descriptor_subject::DescriptorWorkerNativeSendAttemptV1::requested_bytes_v1()?)?
+            .checked_add(4 * 256)
+    }
+}
+
+trait FixedWorkerSendProfileV1<Socket, Native> {
+    fn maximum(&self) -> usize;
+    fn maximum_attempts(&self) -> Option<usize> { None }
+    fn shape_error(&self) -> Option<SeqpacketError> { None }
+    fn provision(&self, socket: &Socket) -> Option<Result<(), SeqpacketError>>;
+    fn send(&self, socket: &mut Socket, packet: &[u8]) -> Native;
+    fn wait(&self, socket: &Socket, deadline: u64) -> Result<(), WorkerRecordError>;
+}
+
+struct ZfsSendProfileV1(ZfsWorkerSendKindV1);
+
+impl FixedWorkerSendProfileV1<SeqpacketSocket, super::StorageSeqpacketSendAttemptV1>
+    for ZfsSendProfileV1
+{
+    fn maximum(&self) -> usize {
+        match self.0 {
+            ZfsWorkerSendKindV1::Request => 24 * 1024,
+            ZfsWorkerSendKindV1::Acknowledgment => 10,
+            ZfsWorkerSendKindV1::CaptureReportAcknowledgment => 106,
+        }
+    }
+    fn provision(&self, _: &SeqpacketSocket) -> Option<Result<(), SeqpacketError>> { None }
+    fn send(&self, socket: &mut SeqpacketSocket, packet: &[u8]) -> super::StorageSeqpacketSendAttemptV1 {
+        socket.send_storage_session_retaining_v1(packet)
+    }
+    fn wait(&self, socket: &SeqpacketSocket, deadline: u64) -> Result<(), WorkerRecordError> {
+        socket.as_fd().map_err(WorkerRecordError::from)
+            .and_then(|fd| wait_worker_before(&NativeWorkerWait, fd, PollFlags::OUT, deadline))
+    }
+}
+
+struct DescriptorSendProfileV1<'rights, 'fd> {
+    kind: DescriptorWorkerSendKindV1,
+    rights: &'rights [BorrowedFd<'fd>],
+}
+
+impl FixedWorkerSendProfileV1<DescriptorSubjectSocket, Result<
+    super::descriptor_subject::DescriptorWorkerNativeSendAttemptV1, SeqpacketError,
+>> for DescriptorSendProfileV1<'_, '_> {
+    fn maximum(&self) -> usize {
+        match self.kind {
+            DescriptorWorkerSendKindV1::RequestFirst | DescriptorWorkerSendKindV1::RequestContinuation => 4096,
+            DescriptorWorkerSendKindV1::Acknowledgment => 10,
+            DescriptorWorkerSendKindV1::GuestRootPublicationRequestV2 => 8192,
+            DescriptorWorkerSendKindV1::GuestRootStartupHealthV2 => 8,
+            DescriptorWorkerSendKindV1::StorageCaptureProof | DescriptorWorkerSendKindV1::StorageCaptureAck => 4096,
+        }
+    }
+    fn shape_error(&self) -> Option<SeqpacketError> {
+        let expected = match self.kind {
+            DescriptorWorkerSendKindV1::RequestFirst | DescriptorWorkerSendKindV1::StorageCaptureProof => 2,
+            _ => 0,
+        };
+        (self.rights.len() != expected).then_some(SeqpacketError::InvalidMaximum)
+    }
+    fn provision(&self, socket: &DescriptorSubjectSocket) -> Option<Result<(), SeqpacketError>> {
+        match self.kind {
+            DescriptorWorkerSendKindV1::RequestFirst => Some(socket.provision_packet_capacity(4096)),
+            DescriptorWorkerSendKindV1::GuestRootPublicationRequestV2 => Some(socket.provision_packet_capacity(8192)),
+            DescriptorWorkerSendKindV1::GuestRootStartupHealthV2 => Some(socket.provision_packet_capacity(8)),
+            _ => None,
+        }
+    }
+    fn send(&self, socket: &mut DescriptorSubjectSocket, packet: &[u8])
+        -> Result<super::descriptor_subject::DescriptorWorkerNativeSendAttemptV1, SeqpacketError>
+    {
+        socket.send_worker_record_retaining_v1(packet, self.rights)
+    }
+    fn wait(&self, socket: &DescriptorSubjectSocket, deadline: u64) -> Result<(), WorkerRecordError> {
+        socket.as_fd().map_err(WorkerRecordError::from)
+            .and_then(|fd| wait_worker_before(&NativeWorkerWait, fd, PollFlags::OUT, deadline))
+    }
+}
+
+struct CapturePipesSendProfileV3<'rights, 'fd>(&'rights [BorrowedFd<'fd>; 2]);
+
+impl FixedWorkerSendProfileV1<SeqpacketSocket, super::StorageSeqpacketSendAttemptV1>
+    for CapturePipesSendProfileV3<'_, '_>
+{
+    fn maximum(&self) -> usize { 4096 }
+    fn provision(&self, _: &SeqpacketSocket) -> Option<Result<(), SeqpacketError>> { None }
+    fn send(&self, socket: &mut SeqpacketSocket, packet: &[u8]) -> super::StorageSeqpacketSendAttemptV1 {
+        socket.send_capture_worker_pipes_retaining_v3(packet, *self.0)
+    }
+    fn wait(&self, socket: &SeqpacketSocket, deadline: u64) -> Result<(), WorkerRecordError> {
+        socket.as_fd().map_err(WorkerRecordError::from)
+            .and_then(|fd| wait_worker_before(&NativeWorkerWait, fd, PollFlags::OUT, deadline))
+    }
+}
+
+/// Sends the fixed Capture worker pipe reply through the same bounded sender.
+///
+/// Rights remain borrowed from the actual worker original. Fatal or late
+/// results stay in the returned receipt; this grants no readiness or disposal.
+#[must_use]
+pub fn send_capture_worker_pipes_v3(
+    socket: &mut SeqpacketSocket, packet: &[u8], pipes: [BorrowedFd<'_>; 2], deadline: u64,
+) -> ZfsWorkerSendAttemptV1 {
+    ZfsWorkerSendAttemptV1 {
+        original: send_fixed_worker_record_v1(socket, packet, CapturePipesSendProfileV3(&pipes), deadline),
+    }
+}
+
+// Both fixed carrier wrappers share this exact clock/native/wait/disposal engine.
+fn send_fixed_worker_record_v1<Socket, Native, Profile>(
+    socket: &mut Socket, packet: &[u8], profile: Profile, deadline: u64,
+) -> FixedWorkerSendAttemptV1<Native>
+where
+    Native: FixedWorkerNativeSendReceiptV1,
+    Profile: FixedWorkerSendProfileV1<Socket, Native>,
+{
+    let mut attempt = FixedWorkerSendAttemptV1 {
+        provision: None, before: None, sent: None, after: None, wait: None,
+        bound: None, first: None,
+    };
+    let maximum = profile.maximum();
+    if packet.is_empty() || packet.len() > maximum {
+        attempt.bound = Some(if packet.is_empty() {
+            SeqpacketError::EmptyRecord
+        } else {
+            SeqpacketError::RecordTooLarge { actual: packet.len(), maximum }
+        });
+    } else {
+        attempt.bound = profile.shape_error();
+    }
+    if attempt.bound.is_some() {
+        attempt.first = Some(FixedWorkerSendFailureV1::Bound);
+        return attempt;
+    }
+    attempt.provision = profile.provision(socket);
+    if matches!(attempt.provision, Some(Err(_))) {
+        attempt.first = Some(FixedWorkerSendFailureV1::Provision);
+        return attempt;
+    }
+    let mut native_attempts = 0_usize;
+    loop {
+        attempt.before = Some(check_worker_deadline(deadline));
+        if !matches!(attempt.before, Some(Ok(()))) {
+            attempt.first = Some(FixedWorkerSendFailureV1::Before);
+            return attempt;
+        }
+        native_attempts += 1;
+        attempt.sent = Some(profile.send(socket, packet));
+        let Some(sent) = attempt.sent.as_ref() else { std::process::abort() };
+        if sent.is_sent() {
+            attempt.after = Some(check_worker_deadline(deadline));
+            if !matches!(attempt.after, Some(Ok(()))) {
+                attempt.first = Some(FixedWorkerSendFailureV1::After);
+            }
+            return attempt;
+        }
+        if !sent.is_nonconsuming()
+            || profile.maximum_attempts().is_some_and(|maximum| native_attempts >= maximum)
+        {
+            // A finite selected profile retains its actual final EAGAIN/EINTR
+            // rather than replacing that native cause with a synthetic retry.
+            attempt.first = Some(FixedWorkerSendFailureV1::Send);
+            return attempt;
+        }
+        attempt.wait = Some(profile.wait(socket, deadline));
+        if !matches!(attempt.wait, Some(Ok(()))) {
+            attempt.first = Some(FixedWorkerSendFailureV1::Wait);
+            return attempt;
+        }
+        // Only the actual no-acquisition native result, positive carrier posts
+        // and completed wait may be disposed before the same slot is reused.
+        drop(attempt.sent.take());
+        drop(attempt.before.take());
+        drop(attempt.wait.take());
+    }
+}
+
+/// Sends one actual bounded ZFS packet through the shared retaining worker engine.
+///
+/// Queue sizing, no-rights framing, native counts and retry policy are unchanged.
+/// Fatal/partial sends and late successes retain the whole receipt and never retry.
+#[must_use]
+pub fn send_zfs_worker_record_v1(
+    socket: &mut SeqpacketSocket, packet: &[u8], kind: ZfsWorkerSendKindV1, deadline: u64,
+) -> ZfsWorkerSendAttemptV1 {
+    ZfsWorkerSendAttemptV1 {
+        original: send_fixed_worker_record_v1(socket, packet, ZfsSendProfileV1(kind), deadline),
+    }
+}
+
+/// Sends one closed fixed descriptor-worker frame with its actual borrowed rights.
+///
+/// Only the first request frame carries two rights. Continuations and the ACK
+/// carry none. Capacity, native send, carrier posts and deadline/wait results
+/// remain resident on refusal; this supplies no worker or financial authority.
+#[must_use]
+pub fn send_descriptor_worker_record_v1(
+    socket: &mut DescriptorSubjectSocket, packet: &[u8], rights: &[BorrowedFd<'_>],
+    kind: DescriptorWorkerSendKindV1, deadline: u64,
+) -> DescriptorWorkerSendAttemptV1 {
+    DescriptorWorkerSendAttemptV1 {
+        original: send_fixed_worker_record_v1(socket, packet, DescriptorSendProfileV1 { kind, rights }, deadline),
+    }
+}
+
+
+/// Names the existing Network worker packet and exact borrowed rights shape.
+#[derive(Clone, Copy, Debug)]
+pub enum NetworkWorkerSendKindV4 {
+    /// Existing64KiB first preparation frame with the host namespace right.
+    PreparationFirst,
+    /// V2 first frame: signed63 host right or signed9 target+host rights.
+    PreparationFirstV2,
+    /// Existing64KiB continuation with no additional rights.
+    PreparationContinuation,
+    /// Existing184+512KiB observation request with host and target rights.
+    ObservationRequest,
+    /// Existing ten-byte acknowledgement without rights.
+    Acknowledgment,
+}
+
+/// Retains a bounded Network send and its exact original effect-gate refusal.
+#[derive(Debug)]
+pub struct NetworkWorkerSendAttemptV4<E> {
+    original: FixedWorkerSendAttemptV1<NetworkWorkerNativeSendV4<E>>,
+}
+
+#[derive(Debug)]
+struct NetworkWorkerNativeSendV4<E> {
+    receipt: Result<super::descriptor_subject::DescriptorWorkerNativeSendAttemptV1, SeqpacketError>,
+    gate: Option<NetworkWorkerNativeGateFailureV4<E>>,
+}
+
+#[derive(Debug)]
+enum NetworkWorkerNativeGateFailureV4<E> {
+    Cutoff(crate::Error),
+    Original(E),
+}
+
+impl<E: std::error::Error + 'static> FixedWorkerNativeSendReceiptV1
+    for NetworkWorkerNativeSendV4<E>
+{
+    fn is_sent(&self) -> bool {
+        self.gate.is_none() && self.receipt.is_sent()
+    }
+    fn is_nonconsuming(&self) -> bool {
+        self.gate.is_none() && self.receipt.is_nonconsuming()
+    }
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.gate.as_ref() {
+            Some(NetworkWorkerNativeGateFailureV4::Cutoff(error)) => Some(error),
+            Some(NetworkWorkerNativeGateFailureV4::Original(error)) => Some(error),
+            None => self.receipt.failure(),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> NetworkWorkerSendAttemptV4<E> {
+    /// Reports an atomic full send with positive original and deadline posts.
+    #[must_use]
+    pub fn is_sent(&self) -> bool {
+        self.original.is_sent()
+    }
+
+    /// Borrows the earliest actual native, original-gate or deadline refusal.
+    #[must_use]
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original.failure()
+    }
+
+    /// Borrows only the failed actual final native effect gate, if selected.
+    #[must_use]
+    pub fn original_gate_failure_v4(&self) -> Option<&E> {
+        if !matches!(self.original.first, Some(FixedWorkerSendFailureV1::Send)) {
+            return None;
+        }
+        match self.original.sent.as_ref()?.gate.as_ref()? {
+            NetworkWorkerNativeGateFailureV4::Original(error) => Some(error),
+            NetworkWorkerNativeGateFailureV4::Cutoff(_) => None,
+        }
+    }
+
+    /// Prices the compiled receipt and both bounded native-attempt frames.
+    #[must_use]
+    pub fn receiving_bytes_v4() -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_mul(2)?
+            .checked_add(
+                super::descriptor_subject::DescriptorWorkerNativeSendAttemptV1::requested_bytes_v1(
+                )?
+                .checked_mul(2)?,
+            )?
+            .checked_add(std::mem::size_of::<[PollFd<'_>; 1]>())?
+            .checked_add(4 * std::mem::size_of::<Timespec>())?
+            .checked_add(super::NetworkWorkerNativeCutoffV4::receiving_bytes_v4()?.checked_mul(2)?)
+    }
+}
+
+struct NetworkWorkerWaitV4(super::NetworkWorkerNativeCutoffV4);
+
+impl WorkerWait for NetworkWorkerWaitV4 {
+    fn boottime(&self) -> Result<u64, WorkerRecordError> {
+        self.0.check_v4()?;
+        worker_boottime()
+    }
+    fn before_poll(&self) -> Result<(), WorkerRecordError> {
+        Ok(self.0.check_v4()?)
+    }
+    fn poll(
+        &self,
+        fd: BorrowedFd<'_>,
+        events: PollFlags,
+        timeout: &Timespec,
+    ) -> Result<usize, rustix::io::Errno> {
+        NativeWorkerWait.poll(fd, events, timeout)
+    }
+}
+
+struct NetworkWorkerReceiveProfileV4 {
+    kind: super::NetworkWorkerRecordKindV4,
+    cutoff: super::NetworkWorkerNativeCutoffV4,
+}
+
+impl FixedWorkerReceiveProfile<DescriptorSubjectSocket, ReceivedDescriptorRecord>
+    for NetworkWorkerReceiveProfileV4
+{
+    fn after_receive(&self, deadline: u64) -> Result<(), WorkerRecordError> {
+        self.cutoff.check_v4()?;
+        check_worker_deadline(deadline)
+    }
+    fn provision(&self, socket: &DescriptorSubjectSocket) -> Option<Result<(), SeqpacketError>> {
+        Some(
+            self.cutoff
+                .check_v4()
+                .map_err(SeqpacketError::from)
+                .and_then(|()| {
+                    socket.provision_packet_capacity(self.kind.maximum_payload_bytes_v4())
+                }),
+        )
+    }
+    fn receive(
+        &self,
+        socket: &mut DescriptorSubjectSocket,
+    ) -> Result<ReceivedDescriptorRecord, super::RetainedSeqpacketReceiveErrorV1> {
+        socket.receive_network_worker_retaining_v4(self.kind, self.cutoff)
+    }
+    fn wait(
+        &self,
+        socket: &DescriptorSubjectSocket,
+        deadline: u64,
+    ) -> Result<(), WorkerRecordError> {
+        let fd = socket.as_fd().map_err(WorkerRecordError::from)?;
+        wait_worker_before(
+            &NetworkWorkerWaitV4(self.cutoff),
+            fd,
+            PollFlags::IN,
+            deadline,
+        )
+    }
+}
+
+/// Receives one closed Network record through the shared retained retry engine.
+///
+/// # Errors
+/// Retains all native failures and any late/partial record. Original BOOTTIME
+/// and absolute WALL checks precede each preview, consume and readiness poll.
+pub fn receive_network_worker_record_v4(
+    socket: &mut DescriptorSubjectSocket,
+    kind: super::NetworkWorkerRecordKindV4,
+    cutoff: super::NetworkWorkerNativeCutoffV4,
+) -> Result<ReceivedDescriptorRecord, WorkerObserverReceiveErrorV1> {
+    receive_fixed_worker_record(
+        socket,
+        NetworkWorkerReceiveProfileV4 { kind, cutoff },
+        cutoff.original_deadline_v4(),
+    )
+}
+
+/// Waits for the issued worker's next record under its original transport cut.
+///
+/// This shares the existing Network poll/clock reducer and grants no Source or
+/// effect authority. After a wait refusal the caller may only attempt its
+/// separately prepaid nonblocking negative/disposition receive, retaining the
+/// wait error; it cannot renew the deadline or infer successful completion.
+///
+/// # Errors
+/// Retains the actual native poll, conversion or unchanged cutoff refusal.
+pub fn wait_network_worker_record_ready_data_v2(
+    socket: &DescriptorSubjectSocket,
+    cutoff: super::NetworkWorkerNativeCutoffV4,
+) -> Result<(), WorkerRecordError> {
+    let fd = socket.as_fd().map_err(WorkerRecordError::from)?;
+    wait_worker_before(&NetworkWorkerWaitV4(cutoff), fd, PollFlags::IN,
+        cutoff.original_deadline_v4())
+}
+
+struct NetworkWorkerSendProfileV4<'rights, 'fd, 'gate, E> {
+    kind: NetworkWorkerSendKindV4,
+    rights: &'rights [BorrowedFd<'fd>],
+    cutoff: super::NetworkWorkerNativeCutoffV4,
+    gate: std::cell::RefCell<&'gate mut dyn FnMut() -> Result<(), E>>,
+}
+
+impl<E: std::error::Error + 'static>
+    FixedWorkerSendProfileV1<DescriptorSubjectSocket, NetworkWorkerNativeSendV4<E>>
+    for NetworkWorkerSendProfileV4<'_, '_, '_, E>
+{
+    fn maximum(&self) -> usize {
+        match self.kind {
+            NetworkWorkerSendKindV4::PreparationFirst
+            | NetworkWorkerSendKindV4::PreparationFirstV2
+            | NetworkWorkerSendKindV4::PreparationContinuation => 64 * 1024,
+            NetworkWorkerSendKindV4::ObservationRequest => 184 + 512 * 1024,
+            NetworkWorkerSendKindV4::Acknowledgment => 10,
+        }
+    }
+    fn maximum_attempts(&self) -> Option<usize> {
+        Some(2)
+    }
+    fn shape_error(&self) -> Option<SeqpacketError> {
+        if matches!(self.kind, NetworkWorkerSendKindV4::PreparationFirstV2) {
+            return (!matches!(self.rights.len(), 1 | 2)).then_some(SeqpacketError::InvalidMaximum);
+        }
+        let expected = match self.kind {
+            NetworkWorkerSendKindV4::PreparationFirst => 1,
+            NetworkWorkerSendKindV4::ObservationRequest => 2,
+            _ => 0,
+        };
+        (self.rights.len() != expected).then_some(SeqpacketError::InvalidMaximum)
+    }
+    fn provision(&self, socket: &DescriptorSubjectSocket) -> Option<Result<(), SeqpacketError>> {
+        Some(
+            self.cutoff
+                .check_v4()
+                .map_err(SeqpacketError::from)
+                .and_then(|()| socket.provision_packet_capacity(self.maximum())),
+        )
+    }
+    fn send(
+        &self,
+        socket: &mut DescriptorSubjectSocket,
+        packet: &[u8],
+    ) -> NetworkWorkerNativeSendV4<E> {
+        let mut original_gate = self.gate.borrow_mut();
+        let mut gate = || {
+            self.cutoff
+                .check_v4()
+                .map_err(NetworkWorkerNativeGateFailureV4::Cutoff)?;
+            original_gate().map_err(NetworkWorkerNativeGateFailureV4::Original)
+        };
+        let (receipt, gate) =
+            socket.send_worker_record_with_gate_v4(packet, self.rights, Some(&mut gate));
+        NetworkWorkerNativeSendV4 { receipt, gate }
+    }
+    fn wait(
+        &self,
+        socket: &DescriptorSubjectSocket,
+        deadline: u64,
+    ) -> Result<(), WorkerRecordError> {
+        let fd = socket.as_fd().map_err(WorkerRecordError::from)?;
+        wait_worker_before(
+            &NetworkWorkerWaitV4(self.cutoff),
+            fd,
+            PollFlags::OUT,
+            deadline,
+        )
+    }
+}
+
+/// Sends one existing Network packet through the same bounded native engine.
+///
+/// At most two actual native sends enter. The caller's same-original gate runs
+/// after framing/carrier checks immediately before every actual syscall; all
+/// retries consume another gate entry. A final native refusal remains owned.
+#[must_use]
+pub fn send_network_worker_record_v4<E: std::error::Error + 'static>(
+    socket: &mut DescriptorSubjectSocket,
+    packet: &[u8],
+    rights: &[BorrowedFd<'_>],
+    kind: NetworkWorkerSendKindV4,
+    cutoff: super::NetworkWorkerNativeCutoffV4,
+    gate: &mut dyn FnMut() -> Result<(), E>,
+) -> NetworkWorkerSendAttemptV4<E> {
+    NetworkWorkerSendAttemptV4 {
+        original: send_fixed_worker_record_v1(
+            socket,
+            packet,
+            NetworkWorkerSendProfileV4 {
+                kind,
+                rights,
+                cutoff,
+                gate: std::cell::RefCell::new(gate),
+            },
+            cutoff.original_deadline_v4(),
+        ),
+    }
+}
+
+/// Returns the complete fixed Network receive wrapper and native backing shape.
+#[must_use]
+pub fn network_worker_record_obligations_v4(
+    kind: super::NetworkWorkerRecordKindV4,
+) -> Option<(usize, usize)> {
+    let (raw, files) = DescriptorSubjectSocket::network_worker_receive_obligations_v4(kind)?;
+    let wrapper = worker_observer_record_obligations_v1()
+        .0
+        .checked_sub(DescriptorSubjectSocket::worker_observer_receive_obligations_v1().0)?;
+    Some((raw.checked_add(wrapper)?, files))
+}
+
+#[cfg(test)]
+mod network_worker_native_tests {
+    use super::*;
+    use std::os::fd::AsFd as _;
+
+    fn pair() -> (DescriptorSubjectSocket, DescriptorSubjectSocket) {
+        let (first, second) = crate::uapi::seqpacket_pair().unwrap();
+        (
+            DescriptorSubjectSocket::from_owned_retaining(first).unwrap(),
+            DescriptorSubjectSocket::from_owned_retaining(second).unwrap(),
+        )
+    }
+
+    fn horizon() -> super::super::NetworkWorkerNativeCutoffV4 {
+        let boot = worker_boottime().unwrap();
+        let wall = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
+        super::super::NetworkWorkerNativeCutoffV4::new(
+            boot,
+            wall.tv_sec,
+            boot + 5_000_000_000,
+            None,
+        )
+    }
+
+    #[test]
+    fn refused_final_native_gate_keeps_original_error_and_emits_no_bytes_or_rights() {
+        let (mut sender, mut receiver) = pair();
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let mut calls = 0;
+        let mut gate = || -> Result<(), std::io::Error> {
+            calls += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        };
+
+        let refused = send_network_worker_record_v4(
+            &mut sender,
+            &[7; 544],
+            &[file.as_fd()],
+            NetworkWorkerSendKindV4::PreparationFirst,
+            horizon(),
+            &mut gate,
+        );
+
+        assert_eq!(calls, 1);
+        assert!(!refused.is_sent());
+        let cause = refused.original_gate_failure_v4().unwrap();
+        assert_eq!(cause.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(std::ptr::eq(
+            refused
+                .failure()
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .unwrap(),
+            cause
+        ));
+        let native = refused.original.sent.as_ref().unwrap();
+        assert!(native.receipt.as_ref().unwrap().retains_descriptor());
+        // The same failed sender was shut down without a packet; no borrowed
+        // right became a delivered record on the original peer.
+        let received = receiver.receive_network_worker_retaining_v4(
+            super::super::NetworkWorkerRecordKindV4::PreparationReady,
+            horizon(),
+        );
+        assert!(received.is_err());
+    }
+
+    #[test]
+    fn genuine_preparation_ready_keeps_exact_original_namespace_role_order() {
+        let (mut sender, mut receiver) = pair();
+        let file = std::fs::File::open("/dev/null").unwrap();
+        sender
+            .send_with_descriptors(&[4; 544], &[file.as_fd()])
+            .unwrap();
+
+        let received = receive_network_worker_record_v4(
+            &mut receiver,
+            super::super::NetworkWorkerRecordKindV4::PreparationReady,
+            horizon(),
+        )
+        .unwrap();
+
+        assert_eq!(received.payload(), &[4; 544]);
+        assert_eq!(received.descriptors().len(), 1);
+        let actual = rustix::fs::fstat(&received.descriptors()[0]).unwrap();
+        let original = rustix::fs::fstat(&file).unwrap();
+        assert_eq!(
+            (actual.st_dev, actual.st_ino),
+            (original.st_dev, original.st_ino)
+        );
+    }
+
+    #[test]
+    fn expired_wall_refuses_before_the_actual_native_send() {
+        let (mut sender, _receiver) = pair();
+        let boot = worker_boottime().unwrap();
+        let wall = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
+        let cutoff = super::super::NetworkWorkerNativeCutoffV4::new(
+            boot,
+            wall.tv_sec,
+            boot + 5_000_000_000,
+            Some(wall.tv_sec),
+        );
+        let mut gate = || -> Result<(), std::io::Error> {
+            panic!("expired absolute wall ceiling must precede the effect callback")
+        };
+
+        let refused = send_network_worker_record_v4(
+            &mut sender,
+            &[1; 10],
+            &[],
+            NetworkWorkerSendKindV4::Acknowledgment,
+            cutoff,
+            &mut gate,
+        );
+
+        assert!(!refused.is_sent());
+        assert!(refused.original_gate_failure_v4().is_none());
+        assert!(refused.failure().unwrap().is::<SeqpacketError>());
+        assert!(refused.original.sent.is_none());
     }
 }

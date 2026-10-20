@@ -75,6 +75,17 @@ pub struct HostAuthorityV1 {
 }
 
 impl HostAuthorityV1 {
+    pub(crate) fn node_identity_data_v2(&self) -> NodeId {
+        self.authority.node_identity_data_v2()
+    }
+
+    pub(crate) fn execution_signed_admission_receiving_bytes_v5(
+        &self, artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+    ) -> Option<usize> {
+        let demand = self.authority.signed_admission_receiving_demand_v4(artifacts).ok()?;
+        usize::try_from(demand.get(aos_sandbox_core::ResourceDimension::MemoryBytes)).ok()
+    }
+
     /// Admits only a retained independent startup job through the real engine.
     pub(crate) fn admit_original_canary(
         &self,
@@ -209,10 +220,26 @@ impl HostAuthorityV1 {
     pub(crate) fn revalidated_guardian_credentials(
         &self,
     ) -> Result<Option<RevalidatedGuardianCredentials<'_>>, HostAuthorityConfigError> {
-        self.public_credentials
-            .as_ref()
-            .map(ProtectedBrokerPublicCredentials::revalidated_descriptor_evidence)
-            .transpose()
+        self.revalidated_guardian_credentials_engine_v2(None)
+    }
+
+    pub(crate) fn revalidated_guardian_credentials_retaining_v2(
+        &self,
+        original: &mut aos_sandbox_broker::ProtectedBrokerPublicCredentialRevalidationOriginalV1,
+    ) -> Result<Option<RevalidatedGuardianCredentials<'_>>, HostAuthorityConfigError> {
+        self.revalidated_guardian_credentials_engine_v2(Some(original))
+    }
+
+    fn revalidated_guardian_credentials_engine_v2(
+        &self,
+        original: Option<&mut aos_sandbox_broker::ProtectedBrokerPublicCredentialRevalidationOriginalV1>,
+    ) -> Result<Option<RevalidatedGuardianCredentials<'_>>, HostAuthorityConfigError> {
+        match (&self.public_credentials, original) {
+            (Some(credentials), Some(original)) => credentials
+                .revalidated_descriptor_evidence_retaining_v1(original).map(Some),
+            (Some(credentials), None) => credentials.revalidated_descriptor_evidence().map(Some),
+            (None, _) => Ok(None),
+        }
     }
 
     #[allow(
@@ -228,11 +255,40 @@ impl HostAuthorityV1 {
         current_clock: &RawPairedClockSample,
         prior_fence: Option<&[u8]>,
     ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        self.admit_runtime_engine_v4(artifacts, request, request_body, protocol_version,
+            current_clock, prior_fence, None)
+    }
+
+    /// Retains only the fresh Stop refusal on the shared runtime admission recipe.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_stop_retaining_v4(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &ValidatedRuntimeRequest,
+        request_body: &[u8],
+        protocol_version: ProtocolVersion,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+        original: &mut aos_sandbox_broker::BrokerSignedAdmissionOriginalV4,
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        self.admit_runtime_engine_v4(artifacts, request, request_body, protocol_version,
+            current_clock, prior_fence, Some(original))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_runtime_engine_v4(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &ValidatedRuntimeRequest,
+        request_body: &[u8],
+        protocol_version: ProtocolVersion,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+        original: Option<&mut aos_sandbox_broker::BrokerSignedAdmissionOriginalV4>,
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
         let semantics = canonical_host_semantics_v1(request)
             .map_err(|_| HostAdmissionError::RequestMismatch)?;
-        self.authority.admit(
-            artifacts,
-            AdmissionRequest {
+        let admission = AdmissionRequest {
                 audience: BrokerAudience::Host,
                 protocol: ProtocolId::HostBroker,
                 protocol_version,
@@ -246,10 +302,12 @@ impl HostAuthorityV1 {
                 request_deadline_boottime_nanoseconds: request
                     .header()
                     .deadline_boottime_nanoseconds(),
-            },
-            current_clock,
-            prior_fence,
-        )
+            };
+        match original {
+            Some(original) => original.admit_host_stop_once_v4(
+                &self.authority, artifacts, admission, current_clock, prior_fence),
+            None => self.authority.admit(artifacts, admission, current_clock, prior_fence),
+        }
     }
 
     /// Verifies a protected-runtime execution grant against the shared fence.
@@ -268,25 +326,26 @@ impl HostAuthorityV1 {
         deadline_boottime_nanoseconds: u64,
         current_clock: &RawPairedClockSample,
         prior_fence: &[u8],
+        original: Option<&mut aos_sandbox_broker::BrokerSignedAdmissionOriginalV4>,
     ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
-        self.authority.admit_host_execution(
-            artifacts,
-            AdmissionRequest {
-                audience: BrokerAudience::Host,
-                protocol: ProtocolId::HostBroker,
-                protocol_version: ProtocolVersion::new(1, 0),
-                assignment,
-                request_id,
-                request_body,
-                descriptor_count: 0,
-                verb: semantics.verb(),
-                target: semantics.target(),
-                argument_commitment: semantics.commitment(),
-                request_deadline_boottime_nanoseconds: deadline_boottime_nanoseconds,
-            },
-            current_clock,
-            prior_fence,
-        )
+        let request = AdmissionRequest {
+            audience: BrokerAudience::Host,
+            protocol: ProtocolId::HostBroker,
+            protocol_version: ProtocolVersion::new(1, 0),
+            assignment,
+            request_id,
+            request_body,
+            descriptor_count: 0,
+            verb: semantics.verb(),
+            target: semantics.target(),
+            argument_commitment: semantics.commitment(),
+            request_deadline_boottime_nanoseconds: deadline_boottime_nanoseconds,
+        };
+        match original {
+            Some(original) => original.admit_host_query_once_v3(
+                &self.authority, artifacts, request, current_clock, prior_fence),
+            None => self.authority.admit_host_execution(artifacts, request, current_clock, prior_fence),
+        }
     }
 
     /// Verifies a provisional output reserve or query against the shared Host fence.
@@ -345,9 +404,41 @@ impl HostAuthorityV1 {
         current_clock: &RawPairedClockSample,
         prior_fence: &[u8],
     ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
-        self.authority.admit_host_argument(
-            artifacts,
-            AdmissionRequest {
+        self.admit_argument_engine_v5(artifacts, assignment, request_id, request_body,
+            semantics, deadline_boottime_nanoseconds, current_clock, prior_fence, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_prepare_argument_retaining_v5(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        assignment: BrokerAssignment,
+        request_id: [u8; 16],
+        request_body: &[u8],
+        semantics: CanonicalHostExecutionArgumentSemanticsV1,
+        deadline_boottime_nanoseconds: u64,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+        original: &mut aos_sandbox_broker::BrokerSignedAdmissionOriginalV4,
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        self.admit_argument_engine_v5(artifacts, assignment, request_id, request_body,
+            semantics, deadline_boottime_nanoseconds, current_clock, prior_fence, Some(original))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_argument_engine_v5(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        assignment: BrokerAssignment,
+        request_id: [u8; 16],
+        request_body: &[u8],
+        semantics: CanonicalHostExecutionArgumentSemanticsV1,
+        deadline_boottime_nanoseconds: u64,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+        original: Option<&mut aos_sandbox_broker::BrokerSignedAdmissionOriginalV4>,
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        let request = AdmissionRequest {
                 audience: BrokerAudience::Host,
                 protocol: ProtocolId::HostBroker,
                 protocol_version: ProtocolVersion::new(1, 0),
@@ -359,10 +450,12 @@ impl HostAuthorityV1 {
                 target: semantics.target(),
                 argument_commitment: semantics.commitment(),
                 request_deadline_boottime_nanoseconds: deadline_boottime_nanoseconds,
-            },
-            current_clock,
-            prior_fence,
-        )
+            };
+        match original {
+            Some(original) => original.admit_host_prepare_argument_once_v5(
+                &self.authority, artifacts, request, current_clock, prior_fence),
+            None => self.authority.admit_host_argument(artifacts, request, current_clock, prior_fence),
+        }
     }
 
     /// Verifies one exact ATTACH plan and lease against the shared Host fence.

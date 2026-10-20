@@ -51,6 +51,7 @@ pub use host_execution::{
 pub use host_execution_argument::{
     CanonicalHostExecutionArgumentSemanticsV1, HostExecutionArgumentSemanticErrorV1,
     host_execution_argument_no_apply_grant_v1, host_execution_argument_observe_grant_v1,
+    host_execution_argument_prepare_grant_v2, host_execution_argument_accept_grant_v2,
     host_execution_argument_query_grant_v1, host_execution_argument_query_no_apply_grant_v1,
 };
 pub use host_output::{
@@ -76,10 +77,12 @@ pub use storage::{
 };
 pub use storage_guest_root::{
     CanonicalStorageGuestRootArgumentsV1, CanonicalStorageGuestRootSemanticsV1,
-    decode_storage_guest_root_response_v1,
+    decode_storage_guest_root_response_v2, StorageGuestRootResponseDataV2,
+    StorageGuestRootCurrentPublicationDataV2, STORAGE_GUEST_ROOT_CURRENT_PUBLICATION_BYTES_V2,
 };
 pub use storage_prepare::{
     CanonicalStoragePreparationSemanticsV1, ProtectedStorageCreatePreparationV1,
+    ProtectedStorageCreateApplyDataV1,
     StoragePreparationOperationV1, StoragePreparationSemanticsError,
 };
 pub use storage_repair::{CanonicalStorageRepairSemanticsV1, StorageRepairSemanticsError};

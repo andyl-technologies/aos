@@ -22,6 +22,12 @@ const MAGIC: &[u8; 8] = b"AOSHRO01";
 const HEADER_BYTES: usize = 8 + 8 + 32 + 4;
 const DIGEST_BYTES: usize = 32;
 
+pub(in crate::runtime_execution) fn encoded_width_v5(packet_bytes: usize) -> Option<usize> {
+    if packet_bytes > MAX_SIGNED_AGENT_OUTCOME_PACKET_BYTES { return None; }
+    HEADER_BYTES.checked_add(packet_bytes)?.checked_add(DIGEST_BYTES)
+}
+
+
 /// Retains one immutable signed packet and its first Host observation identity.
 pub(super) struct HostAgentOutcomeRecordV1 {
     observation_sequence: ObservationSequence,
@@ -83,7 +89,7 @@ impl HostAgentOutcomeRecordV1 {
         let length =
             u32::try_from(packet.len()).map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
 
-        let mut bytes = Vec::with_capacity(HEADER_BYTES + packet.len() + DIGEST_BYTES);
+        let mut bytes = Vec::with_capacity(encoded_width_v5(packet.len()).unwrap_or(0));
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(&self.observation_sequence.get().to_be_bytes());
         bytes.extend_from_slice(self.observation_commitment.as_bytes());

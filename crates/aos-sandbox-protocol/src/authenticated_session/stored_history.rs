@@ -1,7 +1,10 @@
 //! Canonical historical stored-session DATA, without protected provenance.
 //!
 //! ```text
-//! key: AOSBSJ01 | protocol:u8
+//! ordinary key: AOSBSJ01 | protocol:u8
+//! Recover Inventory18 key: AOSBRI01 | Storage protocol:u8
+//! Stop cleanup key: AOSBHS01 | Host protocol:u8
+//! NoApply cleanup key: AOSBHN01 | Host protocol:u8
 //! value: AOSBSJ01 | version:u16be=2/3 | protocol:u8 | endpoint:u8 |
 //! generation:u64be | stable-endpoint[32] | publication[32] | catalog[32] |
 //! history-head[32] | history-length:u32be | canonical durable history |
@@ -17,6 +20,10 @@ use aos_sandbox_broker_session_protocol::{
     BrokerSessionDurableHistoryV1, BrokerSessionProtocolV1,
 };
 use sha2::{Digest as _, Sha256};
+
+mod capture;
+
+pub use capture::{StoredBrokerSessionHistoryDecodeCaptureV1, StoredBrokerSessionHistoryEncodeCaptureV1};
 
 use super::historical_checkpoint::{self, HistoricalCheckpointErrorV1, HistoricalSessionCheckpointV1};
 
@@ -36,6 +43,90 @@ impl From<HistoricalCheckpointErrorV1> for StoredBrokerSessionHistoryErrorV1 {
 
 /// Exact protocol-key prefix, without journal-namespace authority.
 pub const KEY_MAGIC: &[u8; 8] = b"AOSBSJ01";
+/// Names the distinct Inventory18-only Recover head in the same protected file.
+///
+/// This key never replaces the ordinary head or settles its uncertainty.
+pub const OPERATOR_RECOVER_KEY_MAGIC_V1: &[u8; 8] = b"AOSBRI01";
+
+/// Names the separate fresh Host Stop cleanup head without replacing old Stop.
+pub const HOST_STOP_CLEANUP_KEY_MAGIC_V1: &[u8; 8] = b"AOSBHS01";
+
+/// Names the separate fresh Host NoApply cleanup head without adopting old C18.
+pub const HOST_NO_APPLY_CLEANUP_KEY_MAGIC_V1: &[u8; 8] = b"AOSBHN01";
+
+/// Distinguishes finite canonical row purposes without granting journal authority.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StoredBrokerSessionPurposeDataV2 {
+    /// The established ordinary protocol head.
+    #[default]
+    Ordinary,
+    /// The separate signed Inventory18-only OperatorRecover observation head.
+    OperatorRecoverInventory,
+    /// The fresh Host Stop cleanup head, restricted to methods 1 and 3.
+    HostStopCleanup,
+    /// The fresh Host NoApply cleanup head, restricted to methods 42 and 43.
+    HostNoApplyCleanup,
+}
+
+/// Classifies a complete canonical protocol key as passive format DATA.
+///
+/// # Errors
+/// Rejects unknown prefixes/codes and a purpose with the wrong protocol.
+pub fn classify_protocol_key_v2(key: &[u8])
+    -> Result<(StoredBrokerSessionPurposeDataV2, BrokerSessionProtocolV1), StoredBrokerSessionHistoryErrorV1>
+{
+    if key.len() != CANONICAL_PROTOCOL_KEY_BYTES_V1 {
+        return Err(StoredBrokerSessionHistoryErrorV1::Invalid);
+    }
+    let protocol = decode_protocol(key[8])?;
+    let purpose = if key.starts_with(KEY_MAGIC) {
+        StoredBrokerSessionPurposeDataV2::Ordinary
+    } else if key.starts_with(OPERATOR_RECOVER_KEY_MAGIC_V1) && protocol == BrokerSessionProtocolV1::Storage {
+        StoredBrokerSessionPurposeDataV2::OperatorRecoverInventory
+    } else if key.starts_with(HOST_STOP_CLEANUP_KEY_MAGIC_V1) && protocol == BrokerSessionProtocolV1::Host {
+        StoredBrokerSessionPurposeDataV2::HostStopCleanup
+    } else if key.starts_with(HOST_NO_APPLY_CLEANUP_KEY_MAGIC_V1) && protocol == BrokerSessionProtocolV1::Host {
+        StoredBrokerSessionPurposeDataV2::HostNoApplyCleanup
+    } else {
+        return Err(StoredBrokerSessionHistoryErrorV1::Invalid);
+    };
+    Ok((purpose, protocol))
+}
+
+/// Produces the fixed Recover Inventory18 key as comparison DATA.
+#[must_use]
+pub fn canonical_operator_recover_inventory_key_v1() -> Vec<u8> {
+    protocol_key_for_purpose_v2(BrokerSessionProtocolV1::Storage,
+        StoredBrokerSessionPurposeDataV2::OperatorRecoverInventory)
+}
+
+fn protocol_key_for_purpose_v2(protocol: BrokerSessionProtocolV1,
+    purpose: StoredBrokerSessionPurposeDataV2,
+) -> Vec<u8> {
+    let mut key = Vec::with_capacity(CANONICAL_PROTOCOL_KEY_BYTES_V1);
+    key.extend_from_slice(match purpose {
+        StoredBrokerSessionPurposeDataV2::Ordinary => KEY_MAGIC,
+        StoredBrokerSessionPurposeDataV2::OperatorRecoverInventory => OPERATOR_RECOVER_KEY_MAGIC_V1,
+        StoredBrokerSessionPurposeDataV2::HostStopCleanup => HOST_STOP_CLEANUP_KEY_MAGIC_V1,
+        StoredBrokerSessionPurposeDataV2::HostNoApplyCleanup => HOST_NO_APPLY_CLEANUP_KEY_MAGIC_V1,
+    });
+    key.push(protocol_code(protocol));
+    key
+}
+
+/// Produces the separate fresh Host Stop cleanup key as comparison DATA.
+#[must_use]
+pub fn canonical_host_stop_cleanup_key_v1() -> Vec<u8> {
+    protocol_key_for_purpose_v2(BrokerSessionProtocolV1::Host,
+        StoredBrokerSessionPurposeDataV2::HostStopCleanup)
+}
+
+/// Produces the separate fresh Host NoApply cleanup key as comparison DATA.
+#[must_use]
+pub fn canonical_host_no_apply_cleanup_key_v1() -> Vec<u8> {
+    protocol_key_for_purpose_v2(BrokerSessionProtocolV1::Host,
+        StoredBrokerSessionPurposeDataV2::HostNoApplyCleanup)
+}
 /// Exact stored-session value prefix.
 pub const VALUE_MAGIC: &[u8; 8] = b"AOSBSJ01";
 /// Original carrier version without signed historical hello evidence.
@@ -117,86 +208,7 @@ impl StoredBrokerSessionHistoryV1 {
     /// # Errors
     /// Rejects malformed keys, closed codes, lengths, nested data or digest.
     pub fn decode(key: &[u8], value: &[u8]) -> Result<Self, StoredBrokerSessionHistoryErrorV1> {
-        if value.len() < VALUE_FIXED_BYTES_V2
-            || value.len()
-                > VALUE_FIXED_BYTES_V3
-                    .checked_add(BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES)
-                    .and_then(|size| size.checked_add(historical_checkpoint::MAXIMUM_BYTES))
-                    .ok_or(StoredBrokerSessionHistoryErrorV1::Invalid)?
-            || value.get(..8) != Some(VALUE_MAGIC.as_slice())
-        {
-            return Err(StoredBrokerSessionHistoryErrorV1::Invalid);
-        }
-        let version = read_u16(value, 8)?;
-        if !matches!(version, VALUE_VERSION_V2 | VALUE_VERSION_V3) {
-            return Err(StoredBrokerSessionHistoryErrorV1::Invalid);
-        }
-        let protocol = decode_protocol(read_u8(value, 10)?)?;
-        let endpoint = decode_endpoint(read_u8(value, 11)?)?;
-        if key != canonical_protocol_key_v1(protocol) {
-            return Err(StoredBrokerSessionHistoryErrorV1::Invalid);
-        }
-        let generation = read_u64(value, 12)?;
-        let stable_endpoint_identity = read_array(value, 20)?;
-        let endpoint_publication = read_array(value, 52)?;
-        let current_catalog = read_array(value, 84)?;
-        let current_head = read_array(value, 116)?;
-        let history_length = usize::try_from(read_u32(value, 148)?)
-            .map_err(|_| StoredBrokerSessionHistoryErrorV1::Invalid)?;
-        let history_end = 152usize
-            .checked_add(history_length)
-            .ok_or(StoredBrokerSessionHistoryErrorV1::Invalid)?;
-        let (checkpoint, digest_start) = if version == VALUE_VERSION_V3 {
-            let length = usize::try_from(read_u32(value, history_end)?)
-                .map_err(|_| StoredBrokerSessionHistoryErrorV1::Invalid)?;
-            if length == 0 || length > historical_checkpoint::MAXIMUM_BYTES {
-                return Err(StoredBrokerSessionHistoryErrorV1::Invalid);
-            }
-            let start = history_end
-                .checked_add(4)
-                .ok_or(StoredBrokerSessionHistoryErrorV1::Invalid)?;
-            let end = start
-                .checked_add(length)
-                .ok_or(StoredBrokerSessionHistoryErrorV1::Invalid)?;
-            let checkpoint = HistoricalSessionCheckpointV1::decode(
-                value
-                    .get(start..end)
-                    .ok_or(StoredBrokerSessionHistoryErrorV1::Invalid)?,
-            )?;
-            (Some(checkpoint), end)
-        } else {
-            (None, history_end)
-        };
-        let digest_end = digest_start
-            .checked_add(VALUE_DIGEST_BYTES)
-            .ok_or(StoredBrokerSessionHistoryErrorV1::Invalid)?;
-        if history_length == 0
-            || history_length > BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES
-            || digest_end != value.len()
-            || read_array::<32>(value, digest_start)?
-                != value_digest(&value[..digest_start], version)
-        {
-            return Err(StoredBrokerSessionHistoryErrorV1::Invalid);
-        }
-        let history = value
-            .get(152..history_end)
-            .ok_or(StoredBrokerSessionHistoryErrorV1::Invalid)?
-            .to_vec();
-        let stored = Self {
-            protocol,
-            endpoint,
-            generation,
-            stable_endpoint_identity,
-            endpoint_publication,
-            current_catalog,
-            current_head,
-            history,
-            checkpoint,
-        };
-        if stored.encode()? != value {
-            return Err(StoredBrokerSessionHistoryErrorV1::Invalid);
-        }
-        Ok(stored)
+        capture::decode_engine(key, value, None)
     }
 }
 
@@ -232,87 +244,47 @@ impl StoredBrokerSessionHistoryViewV1<'_> {
     /// # Errors
     /// Rejects malformed history, checkpoint linkage, zero bindings or bounds.
     pub fn encode(&self) -> Result<Vec<u8>, StoredBrokerSessionHistoryErrorV1> {
-        let model = BrokerSessionDurableHistoryV1::decode(self.history)
-            .map_err(|_| StoredBrokerSessionHistoryErrorV1::Invalid)?;
-        let head = model
-            .head()
-            .map_err(|_| StoredBrokerSessionHistoryErrorV1::Invalid)?;
-        if let Some(checkpoint) = self.checkpoint {
-            let transcript = checkpoint.verify()?;
-            if transcript.protocol() != self.protocol
-                || model.records().iter().any(|record| {
-                    record.session_binding() != transcript.session_binding()
-                        || record.protected_bindings().protected_context()
-                            != checkpoint.context().protected_context_digest()
-                        || record.protected_bindings().endpoint_publication()
-                            != self.endpoint_publication
-                })
-            {
-                return Err(StoredBrokerSessionHistoryErrorV1::Invalid);
-            }
-        }
-        if self.generation == 0
-            || self.endpoint_publication.iter().all(|byte| *byte == 0)
-            || self.stable_endpoint_identity.iter().all(|byte| *byte == 0)
-            || self.current_catalog.iter().all(|byte| *byte == 0)
-            || model.head_commitment() != self.current_head
-            || head.protocol() != self.protocol
-            || head.endpoint() != self.endpoint
-        {
-            return Err(StoredBrokerSessionHistoryErrorV1::Invalid);
-        }
-        let history_length = u32::try_from(self.history.len())
-            .map_err(|_| StoredBrokerSessionHistoryErrorV1::Invalid)?;
-        let checkpoint = self
-            .checkpoint
-            .map(HistoricalSessionCheckpointV1::encode)
-            .transpose()?;
-        let checkpoint_length = checkpoint.as_ref().map_or(0, Vec::len);
-        let version = if checkpoint.is_some() {
-            VALUE_VERSION_V3
-        } else {
-            VALUE_VERSION_V2
-        };
-        let capacity = VALUE_FIXED_BYTES_V3
-            .checked_add(self.history.len())
-            .and_then(|size| size.checked_add(checkpoint_length))
-            .ok_or(StoredBrokerSessionHistoryErrorV1::Invalid)?;
-        if self.history.len() > BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES
-            || checkpoint_length > historical_checkpoint::MAXIMUM_BYTES
-        {
-            return Err(StoredBrokerSessionHistoryErrorV1::Invalid);
-        }
-        let mut value = Vec::with_capacity(capacity);
-        value.extend_from_slice(VALUE_MAGIC);
-        value.extend_from_slice(&version.to_be_bytes());
-        value.push(protocol_code(self.protocol));
-        value.push(endpoint_code(self.endpoint));
-        value.extend_from_slice(&self.generation.to_be_bytes());
-        value.extend_from_slice(&self.stable_endpoint_identity);
-        value.extend_from_slice(&self.endpoint_publication);
-        value.extend_from_slice(&self.current_catalog);
-        value.extend_from_slice(&self.current_head);
-        value.extend_from_slice(&history_length.to_be_bytes());
-        value.extend_from_slice(self.history);
-        if let Some(checkpoint) = checkpoint {
-            let length = u32::try_from(checkpoint.len())
-                .map_err(|_| StoredBrokerSessionHistoryErrorV1::Invalid)?;
-            value.extend_from_slice(&length.to_be_bytes());
-            value.extend_from_slice(&checkpoint);
-        }
-        let digest = value_digest(&value, version);
-        value.extend_from_slice(&digest);
-        Ok(value)
+        capture::encode_engine(self, None, StoredBrokerSessionPurposeDataV2::Ordinary)
+    }
+
+    /// Encodes only signed Inventory18-only Recover history as passive DATA.
+    ///
+    /// # Errors
+    /// Rejects a missing signed checkpoint, a different profile/method, or any
+    /// existing canonical history, linkage, length, or checksum error.
+    pub fn encode_operator_recover_inventory_v1(&self)
+        -> Result<Vec<u8>, StoredBrokerSessionHistoryErrorV1>
+    {
+        capture::encode_engine(self, None, StoredBrokerSessionPurposeDataV2::OperatorRecoverInventory)
+    }
+
+    /// Encodes only the signed fresh Host Stop cleanup history as passive DATA.
+    ///
+    /// # Errors
+    /// Rejects a different signed profile, ordinary Stop body, missing checkpoint,
+    /// or any shared canonical history, linkage, length or checksum error.
+    pub fn encode_host_stop_cleanup_v1(&self)
+        -> Result<Vec<u8>, StoredBrokerSessionHistoryErrorV1>
+    {
+        capture::encode_engine(self, None, StoredBrokerSessionPurposeDataV2::HostStopCleanup)
+    }
+
+    /// Encodes only the signed fresh Host NoApply cleanup history as passive DATA.
+    ///
+    /// # Errors
+    /// Rejects a different signed profile, methods outside 42/43, missing signed
+    /// checkpoint, forbidden ordinary authorization, or any shared history error.
+    pub fn encode_host_no_apply_cleanup_v1(&self)
+        -> Result<Vec<u8>, StoredBrokerSessionHistoryErrorV1>
+    {
+        capture::encode_engine(self, None, StoredBrokerSessionPurposeDataV2::HostNoApplyCleanup)
     }
 }
 
 /// Computes the sole canonical protocol-row key, without journal authority.
 #[must_use]
 pub fn canonical_protocol_key_v1(protocol: BrokerSessionProtocolV1) -> Vec<u8> {
-    let mut key = Vec::with_capacity(9);
-    key.extend_from_slice(KEY_MAGIC);
-    key.push(protocol_code(protocol));
-    key
+    protocol_key_for_purpose_v2(protocol, StoredBrokerSessionPurposeDataV2::Ordinary)
 }
 
 fn protocol_code(protocol: BrokerSessionProtocolV1) -> u8 {
@@ -449,6 +421,57 @@ mod tests {
     }
 
     #[test]
+    fn recover_key_is_disjoint_fixed_storage_and_rejects_unknown_purposes() {
+        let recover = canonical_operator_recover_inventory_key_v1();
+        assert_eq!(classify_protocol_key_v2(&recover).unwrap(),
+            (StoredBrokerSessionPurposeDataV2::OperatorRecoverInventory, BrokerSessionProtocolV1::Storage));
+        assert_ne!(recover, canonical_protocol_key_v1(BrokerSessionProtocolV1::Storage));
+        for protocol in [BrokerSessionProtocolV1::Host, BrokerSessionProtocolV1::Mount,
+            BrokerSessionProtocolV1::Network, BrokerSessionProtocolV1::MountFuse,
+            BrokerSessionProtocolV1::Nix] {
+            let mut cross_role = recover.clone();
+            cross_role[8] = protocol_code(protocol);
+            assert!(classify_protocol_key_v2(&cross_role).is_err());
+        }
+        let mut unknown = recover.clone();
+        unknown[7] = b'2';
+        assert!(classify_protocol_key_v2(&unknown).is_err());
+        assert!(classify_protocol_key_v2(&recover[..8]).is_err());
+        let mut trailing = recover;
+        trailing.push(0);
+        assert!(classify_protocol_key_v2(&trailing).is_err());
+    }
+
+    #[test]
+    fn host_cleanup_keys_cannot_alias_ordinary_or_cross_their_protocol() {
+        let stop = canonical_host_stop_cleanup_key_v1();
+        let no_apply = canonical_host_no_apply_cleanup_key_v1();
+        let ordinary = canonical_protocol_key_v1(BrokerSessionProtocolV1::Host);
+        assert_ne!(stop, no_apply);
+        assert_ne!(stop, ordinary);
+        assert_ne!(no_apply, ordinary);
+
+        for (key, purpose) in [
+            (stop, StoredBrokerSessionPurposeDataV2::HostStopCleanup),
+            (no_apply, StoredBrokerSessionPurposeDataV2::HostNoApplyCleanup),
+        ] {
+            assert_eq!(classify_protocol_key_v2(&key).unwrap(),
+                (purpose, BrokerSessionProtocolV1::Host));
+            for protocol in [BrokerSessionProtocolV1::Storage, BrokerSessionProtocolV1::Mount,
+                BrokerSessionProtocolV1::Network, BrokerSessionProtocolV1::MountFuse,
+                BrokerSessionProtocolV1::Nix] {
+                let mut cross_role = key.clone();
+                cross_role[8] = protocol_code(protocol);
+                assert!(classify_protocol_key_v2(&cross_role).is_err());
+            }
+            assert!(classify_protocol_key_v2(&key[..8]).is_err());
+            let mut trailing = key;
+            trailing.push(0);
+            assert!(classify_protocol_key_v2(&trailing).is_err());
+        }
+    }
+
+    #[test]
     fn checked_reader_rejects_wrapping_or_truncated_offsets() {
         let bytes = [1, 2, 3, 4];
         assert_eq!(read_array::<2>(&bytes, 1).unwrap(), [2, 3]);
@@ -476,3 +499,9 @@ mod tests {
         }
     }
 }
+
+const CANONICAL_PROTOCOL_KEY_BYTES_V1: usize = 9;
+
+/// Reports the actual canonical key encoder's fixed allocated byte capacity.
+#[must_use]
+pub const fn canonical_protocol_key_receiving_bytes_v1() -> usize { CANONICAL_PROTOCOL_KEY_BYTES_V1 }

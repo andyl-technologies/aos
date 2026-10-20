@@ -13,6 +13,9 @@ use crate::{Error, Result};
 
 pub(super) const MAXIMUM_PROC_STAT_BYTES: usize = 4096;
 
+mod original;
+pub use original::PidFdProcessIdentityOriginalV1;
+
 /// Captures process facts while a [`PidFd`] retains the observed instance.
 ///
 /// Callers that persist this value must additionally bind the current kernel
@@ -75,11 +78,20 @@ impl PidFd {
     /// malformed or oversized stat record, the stat record contradicts the
     /// pidfd, the process changes during observation, or the process exits.
     pub fn process_identity(&self) -> Result<PidFdProcessIdentity> {
-        let before = self.info()?;
-        let stat = read_proc_stat(before.pid())?;
-        let after = self.info()?;
+        self.process_identity_observed(&mut None)
+    }
 
-        identity_from_stat(self, before, stat, after)
+    fn process_identity_observed(
+        &self,
+        original: &mut Option<&mut PidFdProcessIdentityOriginalV1>,
+    ) -> Result<PidFdProcessIdentity> {
+        let before = original::observe_copy(self.info(), original.as_deref_mut()
+            .map(|original| &mut original.before))?;
+        let stat = read_proc_stat_observed(before.pid(), original)?;
+        let after = original::observe_copy(self.info(), original.as_deref_mut()
+            .map(|original| &mut original.after))?;
+
+        identity_from_stat_observed(self, before, stat, after, original)
     }
 }
 
@@ -107,34 +119,77 @@ impl ProcStatIdentity {
     }
 }
 
-fn read_proc_stat(pid: u32) -> Result<ProcStatIdentity> {
+fn read_proc_stat_observed(
+    pid: u32,
+    original: &mut Option<&mut PidFdProcessIdentityOriginalV1>,
+) -> Result<ProcStatIdentity> {
     let pid = NonZeroU32::new(pid).ok_or_else(|| {
         Error::invalid("pidfd process identity", "kernel returned process ID zero")
     })?;
+    let path = format!("/proc/{pid}/stat");
+    if let Some(original) = original.as_deref_mut() {
+        original.path = Some(path.clone());
+    }
     let descriptor = rustix::fs::open(
-        format!("/proc/{pid}/stat"),
+        path,
         rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
         rustix::fs::Mode::empty(),
     )
     .map_err(|source| Error::Syscall {
         operation: "open(/proc/PID/stat)",
         source: source.into(),
-    })?;
-    let mut bytes = Vec::new();
-    File::from(descriptor)
-        .take((MAXIMUM_PROC_STAT_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|source| Error::Syscall {
-            operation: "read(/proc/PID/stat)",
-            source,
-        })?;
-    if bytes.len() > MAXIMUM_PROC_STAT_BYTES {
-        return Err(Error::invalid(
-            "pidfd process identity",
-            "proc stat record exceeds its fixed bound",
-        ));
+    });
+    match original.as_deref_mut() {
+        None => {
+            let mut bytes = Vec::new();
+            File::from(descriptor?)
+                .take((MAXIMUM_PROC_STAT_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|source| Error::Syscall {
+                    operation: "read(/proc/PID/stat)",
+                    source,
+                })?;
+            if bytes.len() > MAXIMUM_PROC_STAT_BYTES {
+                return Err(too_long());
+            }
+            parse_proc_stat(&bytes)
+        }
+        Some(original) => {
+            match descriptor {
+                Ok(file) => {
+                    original.file = Some(File::from(file));
+                    original.open = Some(Ok(()));
+                }
+                Err(cause) => {
+                    original.open = Some(Err(cause));
+                    return Err(original::closed());
+                }
+            }
+            let file = original.file.as_ref().ok_or_else(original::closed)?;
+            original.read = Some(file.take((MAXIMUM_PROC_STAT_BYTES + 1) as u64)
+                .read_to_end(&mut original.bytes)
+                .map_err(|source| Error::Syscall {
+                    operation: "read(/proc/PID/stat)",
+                    source,
+                }));
+            if !matches!(original.read, Some(Ok(_))) {
+                return Err(original::closed());
+            }
+            original.length = Some(if original.bytes.len() > MAXIMUM_PROC_STAT_BYTES {
+                Err(too_long())
+            } else {
+                Ok(())
+            });
+            if !matches!(original.length, Some(Ok(()))) {
+                return Err(original::closed());
+            }
+            original.parsed = Some(parse_proc_stat(&original.bytes));
+            match original.parsed.as_ref() {
+                Some(Ok(stat)) => Ok(*stat),
+                _ => Err(original::closed()),
+            }
+        }
     }
-    parse_proc_stat(&bytes)
 }
 
 pub(super) fn parse_proc_stat(bytes: &[u8]) -> Result<ProcStatIdentity> {
@@ -198,17 +253,47 @@ pub(super) fn identity_from_stat(
     stat: ProcStatIdentity,
     after: PidFdInfo,
 ) -> Result<PidFdProcessIdentity> {
-    if before != after
-        || stat.pid != before.pid()
-        || stat.parent_pid != before.parent_pid()
-        || !pidfd.is_alive()?
-    {
-        return Err(Error::invalid(
-            "pidfd process identity",
-            "process changed or exited during observation",
-        ));
-    }
+    identity_from_stat_observed(pidfd, before, stat, after, &mut None)
+}
 
+fn identity_from_stat_observed(
+    pidfd: &PidFd,
+    before: PidFdInfo,
+    stat: ProcStatIdentity,
+    after: PidFdInfo,
+    original: &mut Option<&mut PidFdProcessIdentityOriginalV1>,
+) -> Result<PidFdProcessIdentity> {
+    original::observe_copy(require_stat_coordinates(before, stat, after),
+        original.as_deref_mut().map(|original| &mut original.coordinates))?;
+    let alive = original::observe_copy(pidfd.is_alive(),
+        original.as_deref_mut().map(|original| &mut original.alive))?;
+    original::observe_copy(identity_with_liveness(before, stat, alive),
+        original.as_deref_mut().map(|original| &mut original.binding))
+}
+
+fn too_long() -> Error {
+    Error::invalid("pidfd process identity", "proc stat record exceeds its fixed bound")
+}
+
+pub(super) fn require_stat_coordinates(
+    before: PidFdInfo,
+    stat: ProcStatIdentity,
+    after: PidFdInfo,
+) -> Result<()> {
+    if before != after || stat.pid != before.pid() || stat.parent_pid != before.parent_pid() {
+        return Err(changed_identity());
+    }
+    Ok(())
+}
+
+pub(super) fn identity_with_liveness(
+    before: PidFdInfo,
+    stat: ProcStatIdentity,
+    alive: bool,
+) -> Result<PidFdProcessIdentity> {
+    if !alive {
+        return Err(changed_identity());
+    }
     Ok(PidFdProcessIdentity {
         pid: before.pid(),
         thread_group_id: before.thread_group_id(),
@@ -216,6 +301,13 @@ pub(super) fn identity_from_stat(
         cgroup_id: before.cgroup_id(),
         start_time_ticks: stat.start_time_ticks,
     })
+}
+
+fn changed_identity() -> Error {
+    Error::invalid(
+        "pidfd process identity",
+        "process changed or exited during observation",
+    )
 }
 
 #[cfg(test)]

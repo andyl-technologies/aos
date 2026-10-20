@@ -39,19 +39,38 @@ use sha2::{Digest as _, Sha256};
 use crate::BrokerSessionSecurityError;
 
 mod journal;
+pub(crate) use journal::StorageFloorFinancialSourceV2;
+pub(crate) use journal::FixedServiceReceivingExtentErrorV4;
+pub(crate) use journal::StorageHostClientReceivingV1;
+pub use journal::HostExecutionSessionReceivingOriginalV1;
+pub(crate) use journal::OutcomeCurrentOriginalsV1;
+mod current_replay;
+mod terminal_semantics;
+use terminal_semantics::TerminalSemanticsOriginalsV1;
+use current_replay::ReopenCurrentOriginalsV1;
+use current_replay::{reopen_ordinary as reopen_current, unchanged_ordinary as require_unchanged};
+mod peer_liveness;
+
+pub(crate) use peer_liveness::{
+    ObservedBrokerPeerOriginalV1, recovery_peer_liveness_footprint_v1,
+};
 #[cfg(test)]
 pub(crate) use journal::LifecycleTerminalFixture;
 pub(crate) use journal::BrokerSidecarCustodyV1;
 // These closed Broker inputs and comparisons serve the one shared physical owner.
 pub(crate) use journal::{
-    AuthenticatedNvObservationV1, BrokerPhysicalOpenV1, FloorErrorV1, FloorProfileV1,
-    HelperObservationV1, HelperOperationV1, LOCK_ACK_BYTES, MeasuredHelperImageV1,
-    NV_ATTRIBUTES_WRITTEN, RESPONSE_BYTES, RetainedFloorServicePolicyV1, decode_response_v2,
+    AuthenticatedNvObservationV1, BrokerPhysicalOpenV1, OwnerConfinementOriginalV1, FloorErrorV1, FloorProfileV1,
+    HelperExecutedImageOriginalV1, HelperImageAcquisitionOriginalV1, HelperImageRevalidationOriginalV1, HelperObservationV1, HelperOperationV1, LOCK_ACK_BYTES, MeasuredHelperImageV1,
+    NV_ATTRIBUTES_WRITTEN, RESPONSE_BYTES, FloorServiceAcquisitionOriginalV1, FloorServiceCurrentnessOriginalV1, FloorServicePolicyReadbackV1, RetainedFloorServicePolicyV1, decode_response_v2,
     encode_auth_v2, encode_hello_v2, encode_request_v2, require_broker_floor_helper_v1,
     require_broker_floor_owner_v1, require_lock_ack_v2,
 };
 pub(crate) use journal::require_launch_image_presence;
-pub(crate) use journal::ModePinV1;
+pub(crate) use journal::{
+    InitialModeOriginalV1, ModePinV1, ModePresenceOriginalV1, ModeRevalidationOriginalV1,
+    mode_initial_receiving_demand_v1, mode_presence_receiving_demand_v1,
+    mode_revalidation_receiving_demand_v1,
+};
 mod role_direction;
 
 use role_direction::request_direction_for_endpoint;
@@ -62,7 +81,11 @@ pub(crate) use journal::{
     ProtectedPriorTerminalExchangeV1, ProtectedVerifiedAtomicStorageHistoryV1,
 };
 pub(crate) use journal::{FixedEndpointCustodyV1, ProtectedBrokerSessionJournalV1};
-pub(crate) use journal::BrokerMainOpenV1;
+pub(crate) use journal::{BrokerMainOpenV1, floor_initial_capture_shape_v1, controller_initial_fixed_endpoint_v1};
+pub(crate) use journal::floor_revalidation::{FloorCurrentnessSharedV1, floor_revalidation_footprint_v1};
+pub use journal::ExecutionClientPostOriginalV1;
+pub(crate) use journal::{RetainedStorageClientTerminalOriginalV1, RetainedStorageClientOwnerPostV1};
+pub(crate) use journal::RetainedStorageOwnerPostV1;
 pub use journal::{
     ArchivedStorageInventoryHeadV1, AuthenticatedOriginalHostArgumentArchiveV1,
     AuthenticatedOriginalHostNoApplyJoinV1, RetainedFailedCreateOriginalsDataV3,
@@ -89,10 +112,20 @@ impl ObservedBrokerPeerExecutionV1 {
         peer: &ConnectionPeerIdentity,
         process_execution_id: [u8; 16],
     ) -> Result<Self, BrokerSessionSecurityError> {
+        Self::from_connection_with_originals(peer, process_execution_id, None)
+    }
+
+    fn from_connection_with_originals(
+        peer: &ConnectionPeerIdentity,
+        process_execution_id: [u8; 16],
+        originals: Option<&mut ObservedBrokerPeerOriginalV1>,
+    ) -> Result<Self, BrokerSessionSecurityError> {
         let credentials = peer.credentials();
-        if !peer
-            .is_alive()
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?
+        let alive = match originals {
+            Some(originals) => originals.observe_once(peer),
+            None => peer.is_alive().map_err(|_| BrokerSessionSecurityError::Currentness),
+        }?;
+        if !alive
             || peer.initial_info().pid() != credentials.pid().get()
             || process_execution_id.iter().all(|byte| *byte == 0)
         {
@@ -178,14 +211,8 @@ impl ProtectedBrokerSessionJournalSnapshotV1 {
         current_head: [u8; 32],
         history: Option<Vec<u8>>,
     ) -> Result<Self, BrokerSessionSecurityError> {
-        let has_history = history.is_some();
-        if endpoint_publication.iter().all(|byte| *byte == 0)
-            || current_catalog.iter().all(|byte| *byte == 0)
-            || has_history == current_head.iter().all(|byte| *byte == 0)
-            || (has_history && generation == 0)
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
+        Self::validate_fields(generation, endpoint_publication, current_catalog,
+            current_head, history.is_some())?;
         Ok(Self {
             generation,
             endpoint_publication,
@@ -193,6 +220,36 @@ impl ProtectedBrokerSessionJournalSnapshotV1 {
             current_head,
             history,
         })
+    }
+
+    fn validate_fields(
+        generation: u64,
+        endpoint_publication: [u8; 32],
+        current_catalog: [u8; 32],
+        current_head: [u8; 32],
+        has_history: bool,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if endpoint_publication.iter().all(|byte| *byte == 0)
+            || current_catalog.iter().all(|byte| *byte == 0)
+            || has_history == current_head.iter().all(|byte| *byte == 0)
+            || (has_history && generation == 0)
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok(())
+    }
+
+    fn new_retaining(
+        generation: u64,
+        endpoint_publication: [u8; 32],
+        current_catalog: [u8; 32],
+        current_head: [u8; 32],
+        history: &mut Option<Vec<u8>>,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        Self::validate_fields(generation, endpoint_publication, current_catalog,
+            current_head, history.is_some())?;
+        Ok(Self { generation, endpoint_publication, current_catalog, current_head,
+            history: history.take() })
     }
 
     fn protected_bindings(
@@ -208,15 +265,7 @@ impl ProtectedBrokerSessionJournalSnapshotV1 {
     }
 
     fn decode_history(&self) -> Result<BrokerSessionDurableHistoryV1, BrokerSessionSecurityError> {
-        let bytes = self
-            .history
-            .as_deref()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let history = BrokerSessionDurableHistoryV1::decode(bytes).map_err(map_durable)?;
-        if history.head_commitment() != self.current_head {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        Ok(history)
+        current_replay::decode_ordinary(self)
     }
 }
 
@@ -316,12 +365,24 @@ impl ProtectedBrokerRequestWriteV1 {
         transcript: &VerifiedBrokerSessionTranscriptV1,
         peer: &ObservedBrokerPeerExecutionV1,
     ) -> Result<Self, BrokerSessionSecurityError> {
+        Self::prepare_successor_with_storage_receiving_v3(authority, request, context, transcript, peer, None)
+    }
+
+    pub(crate) fn prepare_successor_with_storage_receiving_v3(
+        authority: &mut ProtectedBrokerSessionJournalV1,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        peer: &ObservedBrokerPeerExecutionV1,
+        mut receiving: Option<&mut dyn StorageFloorFinancialSourceV2>,
+    ) -> Result<Self, BrokerSessionSecurityError> {
         require_current_session(transcript, context)?;
-        let before = authority.read_current(transcript.protocol())?;
+        let before = authority.read_current_with_storage_receiving_v3(transcript.protocol(),
+            receiving.as_mut().map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
         let originals = Self::prepare_successor_originals_from_snapshot(
             request, context, transcript, peer, &before,
         )?;
-        require_unchanged(authority, transcript.protocol(), &before)?;
+        current_replay::unchanged_ordinary_with_storage_receiving_v3(authority, transcript.protocol(), &before, receiving)?;
         Ok(originals.into_write(&before))
     }
 
@@ -628,13 +689,23 @@ impl ProtectedBrokerOutcomeCommitReadbackV1 {
         pending: &ProtectedBrokerOutcomePendingAdvancementV1,
         peer: &ObservedBrokerPeerExecutionV1,
     ) -> Result<Self, BrokerSessionSecurityError> {
+        Self::confirm_after_cas_with_storage_receiving_v3(authority, pending, peer, None)
+    }
+
+    pub(crate) fn confirm_after_cas_with_storage_receiving_v3(
+        authority: &mut ProtectedBrokerSessionJournalV1,
+        pending: &ProtectedBrokerOutcomePendingAdvancementV1,
+        peer: &ObservedBrokerPeerExecutionV1,
+        receiving: Option<&mut dyn StorageFloorFinancialSourceV2>,
+    ) -> Result<Self, BrokerSessionSecurityError> {
         let expected_generation = pending
             .durable_cas
             .expected_generation
             .checked_add(1)
             .ok_or(BrokerSessionSecurityError::Currentness)?;
         let (history, traffic, current) =
-            reopen_current(authority, &pending.transcript, &pending.context, peer)?;
+            current_replay::reopen_ordinary_with_storage_receiving_v3(authority,
+                &pending.transcript, &pending.context, peer, receiving)?;
         let encoded = history.encode().map_err(map_durable)?;
         let head = history.head().map_err(map_durable)?;
         let recomputed_admission = pending_outcome_admission_commitment(
@@ -817,6 +888,11 @@ impl ProtectedBrokerOutcomeCommittedAdvancementV1 {
         &self.exact_packet
     }
 
+    // The real Sent producer lends the authenticated result without a clone.
+    pub(crate) fn authenticated_outcome_v2(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
+        &self.currentness_owner.outcome
+    }
+
     /// Consumes the advancement into exact terminal-head currentness authority.
     #[must_use]
     pub fn into_currentness_owner(self) -> ProtectedBrokerOutcomeCurrentnessOwnerV1 {
@@ -985,6 +1061,38 @@ impl ProtectedBrokerOutcomeReplayV1 {
     }
 }
 
+/// Retains only the exact terminal and its existing currentness authority.
+///
+/// A positive ordinary Sent or no-write replay Sent moves these SAME owners
+/// here. This private projection creates neither an advancement nor traffic,
+/// effect or write authority; the full signed history remains in the Journal.
+pub(crate) struct RetainedStorageTerminalV1 {
+    pub(super) currentness_owner: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    exact_packet: Vec<u8>,
+}
+
+impl RetainedStorageTerminalV1 {
+    pub(crate) fn canonical_request(&self) -> &[u8] {
+        self.currentness_owner.request.canonical_packet()
+    }
+
+    pub(crate) fn exact_packet(&self) -> &[u8] {
+        &self.exact_packet
+    }
+}
+
+impl ProtectedBrokerOutcomeCommittedAdvancementV1 {
+    pub(crate) fn into_retained_storage_terminal_v1(self) -> RetainedStorageTerminalV1 {
+        RetainedStorageTerminalV1 { currentness_owner: self.currentness_owner, exact_packet: self.exact_packet }
+    }
+}
+
+impl ProtectedBrokerOutcomeReplayV1 {
+    pub(crate) fn into_retained_storage_terminal_v1(self) -> RetainedStorageTerminalV1 {
+        RetainedStorageTerminalV1 { currentness_owner: self.currentness_owner, exact_packet: self.exact_packet }
+    }
+}
+
 /// Owns the protected artifacts needed to revalidate one terminal broker head.
 ///
 /// This move-only value has no public constructor. New and exact-replay
@@ -1043,6 +1151,17 @@ impl ProtectedBrokerOutcomeCurrentV1<'_> {
     ///
     /// Returns an error unless the protected journal, endpoint context,
     /// transcript, terminal packet, and pidfd-backed peer remain exact.
+    /// Revalidates through this execution interval's distinct prepaid originals.
+    ///
+    /// # Errors
+    /// Retains changed custody, native or terminal failure without skipping the
+    /// independently owed endpoint/peer post of the same complete validator.
+    pub fn revalidate_execution_with_post_v1(&mut self,
+        original: &mut ExecutionClientPostOriginalV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        original.observe_terminal_after_v1(self.authority, &self.owner, self.connection_peer)
+    }
+
     pub fn revalidate(&mut self) -> Result<(), BrokerSessionSecurityError> {
         self.authority
             .validate_broker_outcome(&self.owner, self.connection_peer)
@@ -1065,7 +1184,20 @@ impl ProtectedBrokerOutcomeGateRecoveryV1 {
         context: &ProtectedBrokerSessionVerificationContextV1,
         peer: &ObservedBrokerPeerExecutionV1,
     ) -> Result<Self, BrokerSessionSecurityError> {
-        let (history, traffic, current) = reopen_current(authority, transcript, context, peer)?;
+        Self::reopen_broker_outcome_with_storage_receiving_v3(authority, request, transcript, context, peer, None)
+    }
+
+    pub(crate) fn reopen_broker_outcome_with_storage_receiving_v3(
+        authority: &mut ProtectedBrokerSessionJournalV1,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+        peer: &ObservedBrokerPeerExecutionV1,
+        receiving: Option<&mut dyn StorageFloorFinancialSourceV2>,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        let (history, traffic, current) = current_replay::reopen_ordinary_with_storage_receiving_v3(
+            authority, transcript, context, peer, receiving,
+        )?;
         let head = history.head().map_err(map_durable)?;
         let endpoint = authority.endpoint_role();
         if head.endpoint() != endpoint
@@ -1212,6 +1344,13 @@ impl ProtectedBrokerOutcomeAdmissionGateV1 {
         self.admit_outcome_inner(outcome, None)
     }
 
+    pub(crate) fn admit_outcome_retaining_v1(self,
+        outcome: &CanonicalBrokerResponseEnvelopeV1,
+        capture: &mut aos_sandbox_protocol::authenticated_session::all_methods::outcome_capture::AuthenticatedBrokerMethodOutcomeCaptureV1,
+    ) -> Result<ProtectedBrokerOutcomeAdmissionV1, BrokerSessionSecurityError> {
+        self.admit_outcome_engine_v1(outcome, None, 0, Some(capture))
+    }
+
     pub(crate) fn admit_outcome_with_descriptor_count(
         self,
         outcome: &CanonicalBrokerResponseEnvelopeV1,
@@ -1265,8 +1404,23 @@ impl ProtectedBrokerOutcomeAdmissionGateV1 {
         qualification_record_commitment: Option<[u8; 32]>,
         descriptor_count: usize,
     ) -> Result<ProtectedBrokerOutcomeAdmissionV1, BrokerSessionSecurityError> {
+        self.admit_outcome_engine_v1(outcome, qualification_record_commitment, descriptor_count, None)
+    }
+
+    fn admit_outcome_engine_v1(self, outcome: &CanonicalBrokerResponseEnvelopeV1,
+        qualification_record_commitment: Option<[u8; 32]>, descriptor_count: usize,
+        capture: Option<&mut aos_sandbox_protocol::authenticated_session::all_methods::outcome_capture::AuthenticatedBrokerMethodOutcomeCaptureV1>,
+    ) -> Result<ProtectedBrokerOutcomeAdmissionV1, BrokerSessionSecurityError> {
         let packet = outcome.encoded_bytes();
-        let admission = match self.request.direction() {
+        let admission = if let Some(capture) = capture {
+            if self.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            aos_sandbox_protocol::authenticated_session::all_methods::outcome_capture::admit_client_received_outcome_retaining_v1(
+                &self.traffic, &self.request, packet, self.retained_outcome.as_ref(),
+                descriptor_count, &self.context, capture,
+            ).and_then(|()| capture.take_admission_once())
+        } else { match self.request.direction() {
             AuthenticatedBrokerRequestDirectionV1::ClientSend => {
                 admit_client_received_authenticated_broker_method_outcome_v1(
                     &self.traffic,
@@ -1288,7 +1442,7 @@ impl ProtectedBrokerOutcomeAdmissionGateV1 {
                 )
             }
         }
-        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        }.map_err(|_| BrokerSessionSecurityError::Currentness)?;
 
         match admission {
             AuthenticatedBrokerMethodOutcomeAdmissionV1::New {
@@ -1500,37 +1654,6 @@ fn pending_outcome_admission_commitment(
     Ok(digest.finalize().into())
 }
 
-fn reopen_current(
-    authority: &mut ProtectedBrokerSessionJournalV1,
-    transcript: &VerifiedBrokerSessionTranscriptV1,
-    context: &ProtectedBrokerSessionVerificationContextV1,
-    peer: &ObservedBrokerPeerExecutionV1,
-) -> Result<
-    (
-        BrokerSessionDurableHistoryV1,
-        BrokerSessionTrafficStateV1,
-        ProtectedBrokerSessionJournalSnapshotV1,
-    ),
-    BrokerSessionSecurityError,
-> {
-    require_current_session(transcript, context)?;
-    let before = authority.read_current(transcript.protocol())?;
-    let history = before.decode_history()?;
-    let head = history.head().map_err(map_durable)?;
-    let protected_bindings = before.protected_bindings(context)?;
-    let peer_binding = peer.binding(head.endpoint(), transcript, context)?;
-    if head.protocol() != transcript.protocol()
-        || head.session_binding() != transcript.session_binding()
-        || head.protected_bindings() != protected_bindings
-        || head.peer_binding() != peer_binding
-    {
-        return Err(BrokerSessionSecurityError::Currentness);
-    }
-    let traffic = reconstruct_traffic(&history, transcript, context)?;
-    require_unchanged(authority, transcript.protocol(), &before)?;
-    Ok((history, traffic, before))
-}
-
 fn reconstruct_traffic(
     history: &BrokerSessionDurableHistoryV1,
     transcript: &VerifiedBrokerSessionTranscriptV1,
@@ -1557,16 +1680,7 @@ fn request_matches_head(
     head: &BrokerSessionDurableRecordV1,
     expected_direction: AuthenticatedBrokerRequestDirectionV1,
 ) -> bool {
-    let signed = head.request_companion().signed_request();
-    request.direction() == expected_direction
-        && request.method() == head.method()
-        && request.session_binding() == head.session_binding()
-        && request.request_id() == head.request_id()
-        && request.client_sequence() == head.client_sequence()
-        && request.maximum_response_bytes() == head.maximum_response_bytes()
-        && request.semantic_commitment() == head.request_semantic_binding()
-        && request.signed_request_digest() == complete_signed_request_digest_v1(signed)
-        && request.canonical_packet() == head.request_packet()
+    aos_sandbox_protocol::authenticated_session::historical_method::request_matches_head(request, head, expected_direction)
 }
 
 fn reconstruct_terminal_semantics(
@@ -1576,64 +1690,9 @@ fn reconstruct_terminal_semantics(
     context: &ProtectedBrokerSessionVerificationContextV1,
     final_traffic: &BrokerSessionTrafficStateV1,
 ) -> Result<AuthenticatedBrokerMethodOutcomeV1, BrokerSessionSecurityError> {
-    let head_index = history
-        .records()
-        .len()
-        .checked_sub(1)
-        .ok_or(BrokerSessionSecurityError::Currentness)?;
-    let prior_traffic =
-        reconstruct_traffic_records(&history.records()[..head_index], transcript, context)?;
-    let packet = history
-        .head()
-        .map_err(map_durable)?
-        .outcome_packet()
-        .ok_or(BrokerSessionSecurityError::Currentness)?;
-    let declared_descriptor_count = decode_canonical_response_v1(packet)
-        .map_err(|_| BrokerSessionSecurityError::Currentness)?
-        .message()
-        .descriptors
-        .len();
-    let admission = match request.direction() {
-        AuthenticatedBrokerRequestDirectionV1::ClientSend => {
-            admit_client_received_authenticated_broker_method_outcome_v1(
-                &prior_traffic,
-                request,
-                packet,
-                None,
-                0,
-                context,
-            )
-        }
-        AuthenticatedBrokerRequestDirectionV1::ServerReceive => {
-            prepare_server_sent_authenticated_broker_method_outcome_v1(
-                &prior_traffic,
-                request,
-                packet,
-                None,
-                declared_descriptor_count,
-                context,
-            )
-        }
-    }
-    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-    match admission {
-        AuthenticatedBrokerMethodOutcomeAdmissionV1::New {
-            outcome,
-            next_traffic,
-        } if next_traffic.as_ref() == final_traffic => Ok(outcome),
-        _ => Err(BrokerSessionSecurityError::Currentness),
-    }
-}
-
-fn require_unchanged(
-    authority: &mut ProtectedBrokerSessionJournalV1,
-    protocol: BrokerSessionProtocolV1,
-    before: &ProtectedBrokerSessionJournalSnapshotV1,
-) -> Result<(), BrokerSessionSecurityError> {
-    if authority.read_current(protocol)? != *before {
-        return Err(BrokerSessionSecurityError::Currentness);
-    }
-    Ok(())
+    terminal_semantics::reconstruct_terminal_semantics_engine(
+        history, request, transcript, context, final_traffic, None,
+    ).map(|value| value.into_ordinary())
 }
 
 fn endpoint_for_request(
@@ -1679,3 +1738,21 @@ fn require_current_session(
 fn map_durable(_: BrokerSessionDurableError) -> BrokerSessionSecurityError {
     BrokerSessionSecurityError::Currentness
 }
+
+
+/// Reports actual private replay frame bytes and reached Result cells.
+///
+/// This passive cost DATA precedes the genuine Client J fixed admission.
+#[must_use]
+pub(crate) fn retained_current_replay_footprint_v1() -> Option<(usize, usize)> {
+    current_replay::receiving_footprint_v1()
+}
+
+pub(crate) use journal::ClientRequestOriginalsV1;
+
+
+pub(crate) use journal::FixedServiceSessionPostOriginalV4;
+
+pub(crate) use journal::FixedServiceTerminalCurrentOriginalV4;
+
+pub(crate) use journal::FixedServiceColdJournalReceivingV4;

@@ -22,19 +22,17 @@ use aos_sandbox_agent::guest_attach_trust::{
 use aos_sandbox_agent::launch::GUEST_AGENT_PROVISIONING_BYTES_V1;
 use aos_sandbox_guest::protected_entry::{
     validated_guest_agent_runtime_prefix_v1,
-    require_host_canary_challenge_v1,
 };
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
-use aos_sandbox_linux::pidfd::HostCanaryLocalChildOriginalsV1;
 use aos_sandbox_linux::inherited_fd::{
-    GuestCanaryReportOriginalV1, duplicate_inherited_descriptor,
+    duplicate_inherited_descriptor,
     mark_inherited_descriptor_close_on_exec,
 };
 use aos_sandbox_linux::seqpacket::{
-    GuestAncestorHostChannelV1, GuestAncestorHostRecordV1,
-    RetainedSeqpacketReceiveErrorV1, SeqpacketError, SeqpacketSocket,
+    SeqpacketSocket,
 };
 use sha2::{Digest as _, Sha256};
+use aos_sandbox_linux::guest_startup_report::{GuestStartupReportOriginalV1, HostStartupReportKindV1};
 
 const CHANNEL_FD: i32 = 3;
 const PROVISIONING_FD: i32 = 4;
@@ -55,16 +53,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args_os().len() != 1 {
         return Err("guest bootstrap accepts no arguments".into());
     }
-    let mut canary = GuestCanaryReportV1::new();
-    let canary_selected = canary.capture_original()?;
+    let mut report = GuestStartupReportOriginalV1::new();
+    if report.capture_original()? {
+        let (runtime, channel) = report.with_launch_bytes_v1(|bytes| {
+            let runtime = validated_guest_agent_runtime_prefix_v1(bytes)?;
+            let channel = bytes[112..144].try_into()
+                .map_err(|_| aos_sandbox_guest::protected_entry::ProtectedGuestAgentErrorV1::InvalidProvisioning)?;
+            Ok::<_, aos_sandbox_guest::protected_entry::ProtectedGuestAgentErrorV1>((runtime, channel))
+        })??;
+        report.bind_launch_once_v1(&runtime, channel)?;
+    }
+    let canary_selected = report.kind_data_v1() == Some(HostStartupReportKindV1::Canary);
     aos_sandbox_linux::guest_confinement::prepare_guest_runtime_anchors()?;
     aos_sandbox_guest_root_realization::guest_root_label::label_fresh_guest_manager_before_v1()?;
 
+    let mut normal = (!canary_selected).then(|| Box::new(GuestPid1NormalOriginalV1::new()));
+    let body = launch_actual_agent_and_systemd(&mut report, canary_selected, normal.as_deref_mut());
+    match body {
+        Ok(()) => Ok(()),
+        Err(cause) => {
+            if let Some(mut original) = normal {
+                original.cause = Some(cause);
+                if original.topology.requires_original_guardian_hold_v1() {
+                    eprintln!("Guest PID1 startup remains occupied: {original}");
+                    loop { std::hint::black_box(&original); std::thread::park(); }
+                }
+                return Err(original);
+            }
+            Err(cause)
+        }
+    }
+}
+
+fn launch_actual_agent_and_systemd(report: &mut GuestStartupReportOriginalV1, canary_selected: bool,
+    normal: Option<&mut GuestPid1NormalOriginalV1>) -> Result<(), Box<dyn std::error::Error>>
+{
+    let (topology, mut spawn) = match normal {
+        Some(original) => (Some(&mut original.topology), Some(&mut original.spawn)),
+        None => (None, None),
+    };
+    let mut topology = topology;
+
     // Adopt original slots 6/7 before any startup duplicate can reuse them.
     // Their fixed originals remain live only through the one Agent spawn.
-    let cgroup = aos_sandbox_linux::guest_cgroup::GuestPayloadCgroupCustodyV1::from_inherited()?;
-    let execution_root = cgroup.execution_root()?;
-    let channel = if !canary_selected {
+    let ordinary = if let Some(topology) = topology.as_mut() {
+        topology.capture_initial_pid1_once_v1()?;
+        None
+    } else {
+        let cgroup = aos_sandbox_linux::guest_cgroup::GuestPayloadCgroupCustodyV1::from_inherited()?;
+        let root = cgroup.execution_root()?;
+        Some((cgroup, root))
+    };
+    let (cgroup, execution_root) = match ordinary.as_ref() {
+        Some((cgroup, root)) => (cgroup, root),
+        None => topology.as_ref().and_then(|original| original.borrow_pid1_parts_v1())
+            .ok_or("completed PID1 topology has no original native roots")?,
+    };
+    // Both report kinds already retain and compare the actual ancestor-Host
+    // FD3/FD8 pins. The ordinary peer decoder cannot name namespace-local
+    // PID0; preserve that old route only when no startup report is selected.
+    let channel = if report.kind_data_v1().is_none() {
         Some(duplicate_inherited_descriptor(CHANNEL_FD)?)
     } else {
         None
@@ -83,13 +131,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let (runtime, canary_channel) = SealedMemfdMapping::run(
+    let (runtime, report_channel) = SealedMemfdMapping::run(
         provisioning,
         GUEST_AGENT_PROVISIONING_BYTES_V1 as u64,
         GUEST_AGENT_PROVISIONING_BYTES_V1 as u64,
         |bytes, _identity| {
             let runtime = validated_guest_agent_runtime_prefix_v1(bytes)?;
-            let channel = if canary_selected {
+            let channel = if report.kind_data_v1().is_some() {
                 let mut channel = [0; 32];
                 channel.copy_from_slice(&bytes[112..144]);
                 Some(channel)
@@ -125,21 +173,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     verify_executable(AGENT_PATH)?;
     verify_executable(SYSTEMD_PATH)?;
-    if let Some(channel) = canary_channel {
-        canary.report_original(&runtime, channel)?;
-    }
-    let mut agent = Command::new(AGENT_PATH);
-    agent.env_clear();
-    agent.stdin(Stdio::null());
-    agent.stdout(Stdio::null());
-    agent.stderr(Stdio::null());
-    if canary_selected {
-        agent.arg("--host-canary-readiness-v1");
+    if let Some(channel) = report_channel {
+        report.report_original(&runtime, channel)?;
     }
     if canary_selected {
-        canary.spawn_agent_original(&mut agent)?;
+        report.spawn_agent_original()?;
     } else {
-        agent.spawn()?;
+        let mut agent = Command::new(AGENT_PATH);
+        agent.env_clear();
+        agent.stdin(Stdio::null());
+        agent.stdout(Stdio::null());
+        agent.stderr(Stdio::null());
+        let actual = spawn.as_deref_mut().ok_or("normal Agent spawn original is absent")?;
+        actual.capture_once(&mut agent)?;
+        if report.kind_data_v1() == Some(HostStartupReportKindV1::Component) {
+            let child = actual.spawned.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or("normal Agent Child original is absent")?;
+            report.report_component_agent_once_v1(child)?;
+        }
     }
 
     for descriptor in [6, 7] {
@@ -148,272 +199,112 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // for this Agent spawn. Rust owns only separate CLOEXEC duplicates.
         drop(unsafe { OwnedFd::from_raw_fd(descriptor) });
     }
-    drop(cgroup);
-    drop(execution_root);
+    let _ = (cgroup, execution_root);
+    drop(ordinary);
     drop(socket);
+
+    if let Some(topology) = topology.as_mut() {
+        let child = spawn.as_ref().and_then(|original| original.process.as_ref())
+            .ok_or("actual Agent child pidfd is absent before completion")?;
+        topology.wait_actual_agent_topology_once_v1(child)?;
+        topology.prepare_systemd_exec_once_v1()?;
+    }
 
     mark_inherited_descriptor_close_on_exec(CHANNEL_FD)?;
     mark_inherited_descriptor_close_on_exec(PROVISIONING_FD)?;
-    if canary_selected {
-        canary.prepare_systemd_exec()?;
+    if report.kind_data_v1().is_some() {
+        report.prepare_systemd_exec()?;
     }
     let mut systemd = Command::new(SYSTEMD_PATH);
-    if canary_selected {
-        systemd.arg("--aos-host-readiness-report");
+    match report.kind_data_v1() {
+        Some(HostStartupReportKindV1::Canary) => { systemd.arg("--aos-host-readiness-report"); }
+        Some(HostStartupReportKindV1::Component) => { systemd.arg("--aos-host-component-readiness-report"); }
+        None => {}
     }
     systemd.env_clear();
     Err(systemd.exec().into())
 }
 
-const CANARY_CHALLENGE_BYTES: usize = 200;
-const CANARY_HEADER_BYTES: usize = 176;
-const CANARY_WAIT_NANOSECONDS: u64 = 30_000_000_000;
-const CANARY_OWN_PATHS: [&str; 11] = [
-    "/",
-    "/proc/thread-self/ns/user",
-    "/proc/thread-self/ns/mnt",
-    "/proc/thread-self/ns/net",
-    "/proc/thread-self/ns/pid",
-    "/proc/thread-self/stat",
-    "/proc/thread-self/status",
-    "/proc/thread-self/attr/current",
-    "/proc/thread-self/uid_map",
-    "/proc/thread-self/gid_map",
-    "/proc/thread-self/exe",
-];
-
-// Selected originals remain resident through the only Agent spawn and the
-// immediate PID1 exec. An error or unwind terminates before these fields drop;
-// this is not a claim that remote processes or effects have drained.
-struct GuestCanaryReportV1 {
-    original: GuestCanaryReportOriginalV1,
-    socket: GuestAncestorHostChannelV1,
-    agent: GuestAncestorHostChannelV1,
-    challenge: Option<GuestAncestorHostRecordV1>,
-    receive_failure: Option<RetainedSeqpacketReceiveErrorV1>,
-    originals: [Option<File>; 11],
-    spawned_agent: Option<Child>,
-    child_originals: HostCanaryLocalChildOriginalsV1,
-    header: [u8; CANARY_HEADER_BYTES],
-    deadline: u64,
-    selected: bool,
-    attempted: bool,
-    armed: bool,
-    first_failure: Option<Box<dyn std::error::Error>>,
+struct GuestPid1AgentSpawnOriginalV1 {
+    spawned: Option<std::io::Result<Child>>,
+    pidfd: aos_sandbox_linux::pidfd::PidFdOpenAttemptV1,
+    process: Option<aos_sandbox_linux::pidfd::PidFd>,
+    identity: Option<Box<aos_sandbox_linux::pidfd::PidFdProcessIdentityOriginalV1>>,
 }
 
-impl GuestCanaryReportV1 {
+impl GuestPid1AgentSpawnOriginalV1 {
     fn new() -> Self {
-        Self {
-            original: GuestCanaryReportOriginalV1::new(),
-            socket: GuestAncestorHostChannelV1::new(),
-            agent: GuestAncestorHostChannelV1::new(),
-            challenge: None,
-            receive_failure: None,
-            originals: std::array::from_fn(|_| None),
-            spawned_agent: None,
-            child_originals: HostCanaryLocalChildOriginalsV1::new(),
-            header: [0; CANARY_HEADER_BYTES],
-            deadline: 0,
-            selected: false,
-            attempted: false,
-            armed: false,
-            first_failure: None,
-        }
+        Self { spawned: None, pidfd: aos_sandbox_linux::pidfd::PidFdOpenAttemptV1::new(),
+            process: None, identity: None }
     }
 
-    fn capture_original(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
-        self.armed = true;
-        self.selected = self.original.capture_original()
-            .map_err(|_| "Guest canary report capture failed; original cause remains resident")?;
-        if !self.selected {
-            self.armed = false;
-        } else {
-            self.agent.capture_agent_original()
-                .map_err(|_| "Guest original Agent channel failed; cause remains resident")?;
-            self.socket.capture_report_original(&self.original)
-                .map_err(|_| "Guest original report channel failed; cause remains resident")?;
-            self.socket.require_same_host_original(&mut self.agent)?;
-        }
-        Ok(self.selected)
-    }
-
-    fn report_original(
-        &mut self,
-        runtime: &[u8; 104],
-        channel: [u8; 32],
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        if !self.selected || self.attempted || self.first_failure.is_some() {
-            return Err("Guest canary report observation is closed".into());
-        }
-        self.attempted = true;
-        match self.report_inner(runtime, channel) {
-            Ok(()) => Ok(()),
-            Err(cause) => {
-                self.first_failure = Some(cause);
-                Err("Guest canary report failed; original cause remains resident".into())
-            }
-        }
-    }
-
-    fn report_inner(
-        &mut self,
-        runtime: &[u8; 104],
-        channel: [u8; 32],
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        self.socket.require_same_host_original(&mut self.agent)?;
-
-        let first_deadline = aos_sandbox_linux::seqpacket::bounded::boottime()?
-            .checked_add(CANARY_WAIT_NANOSECONDS)
-            .ok_or("Guest canary challenge deadline overflowed")?;
-        loop {
-            self.require_before(first_deadline)?;
-            let received = self.socket.receive_retaining(CANARY_CHALLENGE_BYTES);
-            match received {
-                Ok(record) => {
-                    self.challenge = Some(record);
-                    break;
-                }
-                Err(error) if error.is_nonconsuming_would_block()
-                    || error.is_nonconsuming_interrupted() => {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-                Err(error) => {
-                    self.receive_failure = Some(error);
-                    return Err("Guest canary challenge receive failed; originals remain resident".into());
-                }
-            }
-        }
-        self.require_before(first_deadline)?;
-        let record = self.challenge.as_ref().ok_or("Guest canary challenge is absent")?;
-        self.socket.require_record_original(record)?;
-        self.socket.require_same_host_original(&mut self.agent)?;
-        self.deadline = require_host_canary_challenge_v1(record.payload(), runtime, channel)?;
-        self.require_before(self.deadline)?;
-        self.header.copy_from_slice(&record.payload()[..CANARY_HEADER_BYTES]);
-
-        for (slot, path) in CANARY_OWN_PATHS.iter().enumerate() {
-            self.originals[slot] = Some(OpenOptions::new()
-                .read(true)
-                .custom_flags(O_CLOEXEC)
-                .open(path)?);
-            self.require_before(self.deadline)?;
-        }
-        self.send_originals(3, 0, 0..5)?;
-        self.send_originals(4, 1, 5..10)?;
-        self.send_originals(5, 2, 10..11)?;
+    fn capture_once(&mut self, agent: &mut Command) -> Result<(), Box<dyn std::error::Error>> {
+        if self.spawned.is_some() { return Err("original Agent child spawn already entered".into()); }
+        self.spawned = Some(agent.spawn());
+        let child = self.spawned.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or("actual Agent child spawn refused")?;
+        let pid = std::num::NonZeroU32::new(child.id()).ok_or("actual Agent child PID is zero")?;
+        self.pidfd.capture_once(pid)?;
+        self.process = self.pidfd.take_validated();
+        self.identity = Some(Box::new(aos_sandbox_linux::pidfd::PidFdProcessIdentityOriginalV1::new()));
+        let original = self.identity.as_mut().ok_or("Agent identity original is absent")?;
+        original.capture_once(self.process.as_ref().ok_or("Agent original pidfd is absent")?)?;
+        let identity = original.identity().ok_or("Agent original identity is absent")?;
+        // The same unreaped Child reserves this PID throughout pidfd capture.
+        // Its own fixed startup may already have moved it to the Agent leaf.
+        if identity.pid() != child.id() || identity.thread_group_id() != child.id()
+            || identity.parent_pid() != 1
+        { return Err("actual Agent child parent/identity changed".into()); }
         Ok(())
     }
 
-    fn send_originals(
-        &mut self,
-        kind: u16,
-        sequence: u64,
-        slots: std::ops::Range<usize>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        self.header[10..12].copy_from_slice(&kind.to_be_bytes());
-        self.header[12..16].copy_from_slice(&(CANARY_HEADER_BYTES as u32).to_be_bytes());
-        self.header[168..176].copy_from_slice(&sequence.to_be_bytes());
-        let count = slots.len();
-        let first = self.originals[slots.start].as_ref()
-            .ok_or("Guest canary original descriptor is absent")?.as_fd();
-        let mut descriptors: [BorrowedFd<'_>; 5] = [first; 5];
-        for (target, slot) in slots.enumerate() {
-            descriptors[target] = self.originals[slot].as_ref()
-                .ok_or("Guest canary original descriptor is absent")?.as_fd();
-        }
-        loop {
-            self.require_before(self.deadline)?;
-            match self.socket.send_with_descriptors(&self.header, &descriptors[..count])
-            {
-                Ok(()) => return self.require_before(self.deadline),
-                Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-                Err(cause) => return Err(cause.into()),
-            }
-        }
-    }
-
-    fn spawn_agent_original(&mut self, command: &mut Command)
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        if !self.selected || !self.attempted || self.spawned_agent.is_some()
-            || self.first_failure.is_some()
-        {
-            return Err("Guest original Agent spawn is closed".into());
-        }
-        match self.spawn_agent_inner(command) {
-            Ok(()) => Ok(()),
-            Err(cause) => {
-                self.first_failure = Some(cause);
-                Err("Guest original Agent observation failed; cause remains resident".into())
-            }
-        }
-    }
-
-    fn spawn_agent_inner(&mut self, command: &mut Command)
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        self.require_before(self.deadline)?;
-        self.socket.require_same_host_original(&mut self.agent)?;
-        self.spawned_agent = Some(command.spawn()?);
-        self.child_originals.capture_original(
-            self.spawned_agent.as_ref().ok_or("actual Agent child is absent")?,
-        )?;
-        self.require_before(self.deadline)?;
-
-        for stage in 0..2 {
-            loop {
-                self.require_before(self.deadline)?;
-                let result = if stage == 0 {
-                    self.socket.send_host_canary_child_first_v1(
-                        &mut self.child_originals, &self.header,
-                    )
-                } else {
-                    self.socket.send_host_canary_child_second_v1(
-                        &mut self.child_originals, &self.header,
-                    )
-                };
-                match result {
-                    Ok(()) => break,
-                    Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
-                        std::thread::sleep(std::time::Duration::from_millis(2));
-                    }
-                    Err(cause) => return Err(cause.into()),
-                }
-            }
-            self.require_before(self.deadline)?;
-        }
-        self.socket.require_same_host_original(&mut self.agent)?;
-        self.child_originals.recheck_original()?;
-        self.require_before(self.deadline)
-    }
-
-    fn require_before(&self, deadline: u64) -> Result<(), Box<dyn std::error::Error>> {
-        if aos_sandbox_linux::seqpacket::bounded::boottime()? >= deadline {
-            return Err("Guest canary original deadline expired".into());
-        }
-        Ok(())
-    }
-
-    fn prepare_systemd_exec(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.require_before(self.deadline)?;
-        self.original.prepare_systemd_exec()
-            .map_err(|_| "Guest canary exec disposition failed; original cause remains resident")?;
-        // Successful exec retains original FD8. If exec fails or unwinds this
-        // still-armed owner terminates rather than silently dropping prefixes.
-        Ok(())
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.spawned.as_ref().and_then(|result| result.as_ref().err()).map(|cause| cause as _)
+            .or_else(|| self.pidfd.failure().map(|cause| cause as _))
+            .or_else(|| self.identity.as_ref().and_then(|original| original.failure()).map(|cause| cause as _))
     }
 }
 
-impl Drop for GuestCanaryReportV1 {
-    fn drop(&mut self) {
-        if self.armed {
-            std::process::abort();
-        }
+struct GuestPid1NormalOriginalV1 {
+    topology: Box<aos_sandbox_linux::guest_cgroup::GuestRuntimeTopologyOriginalV1>,
+    spawn: GuestPid1AgentSpawnOriginalV1,
+    cause: Option<Box<dyn std::error::Error>>,
+}
+
+impl GuestPid1NormalOriginalV1 {
+    fn new() -> Self {
+        Self { topology: Box::new(aos_sandbox_linux::guest_cgroup::GuestRuntimeTopologyOriginalV1::new()),
+            spawn: GuestPid1AgentSpawnOriginalV1::new(), cause: None }
+    }
+
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.topology.failure().or_else(|| self.spawn.failure()).or(self.cause.as_deref())
     }
 }
+
+impl std::fmt::Debug for GuestPid1NormalOriginalV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("GuestPid1NormalOriginalV1").field("failure", &self.failure()).finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for GuestPid1NormalOriginalV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.failure() { Some(cause) => write!(formatter, "{cause}"),
+            None => formatter.write_str("actual Guest PID1 startup remains occupied") }
+    }
+}
+
+impl std::error::Error for GuestPid1NormalOriginalV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { self.failure() }
+}
+
+const _: () = {
+    let header = 2 * std::mem::size_of::<GuestPid1NormalOriginalV1>()
+        + 2 * std::mem::size_of::<Command>() + 4 * AGENT_PATH.len() + 4 * SYSTEMD_PATH.len();
+    assert!(header <= aos_sandbox_linux::guest_cgroup::GUEST_PID1_STARTUP_CONTROL_BYTES_V1);
+};
+
 
 fn install_trust(record: &GuestAttachTrustRecordV1) -> Result<(), Box<dyn std::error::Error>> {
     for directory in ["/etc", "/etc/aos", TRUST_DIRECTORY] {

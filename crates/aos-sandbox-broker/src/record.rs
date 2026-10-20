@@ -55,6 +55,12 @@ const AUTHENTICATED_FIXED_BYTES: usize = 8 + 2 + 1 + 1 + 16 + 4 + 32;
 const MAXIMUM_JOURNAL_KEY_BYTES: usize = 1_024;
 const MAXIMUM_RECEIPT_BYTES: usize = 1_024 * 1_024;
 const MAXIMUM_AUTHENTICATED_PAYLOAD_BYTES: usize = MAXIMUM_RECEIPT_BYTES + 2_048;
+/// Bounds one complete canonical authenticated local record, including its MAC.
+///
+/// This is the existing record codec's enforced width, not a receiving allowance
+/// or permission to construct, authenticate or adopt a record.
+pub const MAXIMUM_AUTHENTICATED_RECORD_BYTES_V3: usize =
+    AUTHENTICATED_FIXED_BYTES + MAXIMUM_AUTHENTICATED_PAYLOAD_BYTES;
 const LOCAL_RECORD_DOMAIN_BYTES: usize = 16;
 
 const FENCE_VERSION: u16 = 1;
@@ -226,6 +232,38 @@ pub struct BrokerAuthorizationFenceV1 {
 }
 
 impl BrokerAuthorizationFenceV1 {
+    /// Measures the actual canonical Network payload before allocating it.
+    ///
+    /// # Errors
+    /// Refuses invalid original fields or an unrepresentable codec width.
+    pub fn network_handoff_length_data_v2(&self) -> Result<usize, AuthorizationRecordError> {
+        self.validate()?;
+        authorization_fence_payload_bytes_v1(self.ownership_authority.stable_key_id().as_str().len())
+            .ok_or(AuthorizationRecordError::InvalidPayload)
+    }
+
+    /// Encodes passive original Network handoff DATA with the canonical codec.
+    ///
+    /// # Errors
+    /// Refuses invalid original fence fields. This does not seal or attest them.
+    pub fn network_handoff_payload_data_v2(&self) -> Result<Vec<u8>, AuthorizationRecordError> {
+        self.validate()?;
+        encode_fence(self, BrokerDomain::Network)
+    }
+
+    /// Decodes passive Network handoff DATA without authenticating a local MAC.
+    ///
+    /// # Errors
+    /// Refuses malformed or noncanonical fields. Actual native Source custody
+    /// must qualify this original before the public read verifier accepts it.
+    pub fn decode_network_handoff_payload_data_v2(bytes: &[u8]) -> Result<Self, AuthorizationRecordError> {
+        let fence = decode_fence(bytes, BrokerDomain::Network)?;
+        if fence.network_handoff_payload_data_v2()? != bytes {
+            return Err(AuthorizationRecordError::InvalidPayload);
+        }
+        Ok(fence)
+    }
+
     /// Constructs one internally consistent authorization fence.
     ///
     /// # Errors
@@ -369,6 +407,45 @@ pub struct BrokerEffectIntentV1 {
 }
 
 impl BrokerEffectIntentV1 {
+    /// Measures the same pending Network payload without allocating a record.
+    ///
+    /// # Errors
+    /// Refuses invalid fields, another verb or a completed original effect.
+    pub fn network_handoff_length_data_v2(&self) -> Result<usize, AuthorizationRecordError> {
+        self.validate()?;
+        if self.status != BrokerEffectStatusV1::Pending || !self.receipt.is_empty()
+            || !matches!(self.verb, BrokerVerb::NetworkPrepare | BrokerVerb::NetworkDestroy) {
+            return Err(AuthorizationRecordError::InvalidPayload);
+        }
+        Ok(STORAGE_EFFECT_FIXED_BYTES)
+    }
+
+    /// Encodes only a pending original Network effect as passive handoff DATA.
+    ///
+    /// # Errors
+    /// Refuses another verb, completed status, receipt or invalid original fields.
+    pub fn network_handoff_payload_data_v2(&self) -> Result<Vec<u8>, AuthorizationRecordError> {
+        self.validate()?;
+        if self.status != BrokerEffectStatusV1::Pending || !self.receipt.is_empty()
+            || !matches!(self.verb, BrokerVerb::NetworkPrepare | BrokerVerb::NetworkDestroy) {
+            return Err(AuthorizationRecordError::InvalidPayload);
+        }
+        encode_effect(self, BrokerDomain::Network)
+    }
+
+    /// Decodes an original pending effect without issuing or renewing it.
+    ///
+    /// # Errors
+    /// Refuses malformed, foreign or noncanonical DATA. This performs no MAC
+    /// authentication; genuine native Netd Source provenance remains mandatory.
+    pub fn decode_network_handoff_payload_data_v2(bytes: &[u8]) -> Result<Self, AuthorizationRecordError> {
+        let effect = decode_effect(bytes, BrokerDomain::Network)?;
+        if effect.network_handoff_payload_data_v2()? != bytes {
+            return Err(AuthorizationRecordError::InvalidPayload);
+        }
+        Ok(effect)
+    }
+
     /// Captures one exact non-authorizing intersection as pending intent.
     ///
     /// # Errors
@@ -570,6 +647,8 @@ impl BrokerEffectIntentV1 {
                 | BrokerVerb::HostQueryExecutionOutput
                 | BrokerVerb::HostObserveStorageOutput
                 | BrokerVerb::HostObserveExecutionArgument
+                | BrokerVerb::HostPrepareExecutionArgumentV2
+                | BrokerVerb::HostAcceptExecutionArgumentV2
                 | BrokerVerb::HostQueryExecutionArgument
                 | BrokerVerb::HostTerminalNoApply
                 | BrokerVerb::HostQueryNoApply
@@ -602,7 +681,8 @@ impl BrokerEffectIntentV1 {
                         || receipt.len() == 32)
             }
             (
-                BrokerVerb::MountCreate | BrokerVerb::MountMaterializeDestinationSlot,
+                BrokerVerb::MountCreate | BrokerVerb::MountMaterializeDestinationSlot
+                    | BrokerVerb::MountMaterializeAttachmentAnchor,
                 BrokerGrantTarget::Assignment,
             ) => true,
             (
@@ -610,7 +690,8 @@ impl BrokerEffectIntentV1 {
                 | BrokerVerb::MountDetach
                 | BrokerVerb::MountRelease
                 | BrokerVerb::MountReapDestinationSlot
-                | BrokerVerb::MountRematerializeDestinationSlot,
+                | BrokerVerb::MountRematerializeDestinationSlot
+                | BrokerVerb::MountReapAttachmentAnchor,
                 BrokerGrantTarget::Resource(_),
             ) => true,
             (BrokerVerb::MountReserveFuseWorkerIntent, BrokerGrantTarget::Resource(_)) => {
@@ -698,6 +779,148 @@ impl BrokerEffectIntentV1 {
         }
         Ok(())
     }
+}
+
+/// Prices the ordinary Storage admission's two fences and pending effect.
+///
+/// This passive layout DATA uses actual stable-key and receipt lengths plus
+/// this module's fixed binary fields, wrapper and local-lease codec. It covers
+/// retained outputs, payload/envelope overlap and Vec growth; input authority
+/// models are separate. It neither validates admission nor seals a record.
+/// A nonpending/non-Storage effect has no shape at this closed DATA entry.
+#[must_use]
+pub fn storage_admission_sealing_bytes_v1(
+    fence: &BrokerAuthorizationFenceV1,
+    effect: &BrokerEffectIntentV1,
+) -> Option<usize> {
+    if effect.status != BrokerEffectStatusV1::Pending
+        || !effect.receipt.is_empty()
+        || verb_code(BrokerDomain::Storage, effect.verb) == 0
+    {
+        return None;
+    }
+    let stable_key = fence.ownership_authority.stable_key_id().as_str().len();
+    // Magic/version, assignment5, node, plan/expiry, stable-key length and
+    // content, key generation/digest/usage, and the actual fixed local lease.
+    let fence_payload = authorization_fence_payload_bytes_v1(stable_key)?;
+    let fence_peak = record_sealing_peak_v1(fence_payload, 408_usize.checked_add(stable_key)?)?;
+    let effect_payload = STORAGE_EFFECT_FIXED_BYTES.checked_add(effect.receipt.len())?;
+    let effect_peak = record_sealing_peak_v1(effect_payload, 554_usize.checked_add(effect.receipt.len())?)?;
+    fence_peak.checked_mul(2)?.checked_add(effect_peak)
+}
+
+/// Carries closed Mount anchor record widths and simultaneous sealing backing.
+///
+/// This passive DATA neither admits a request nor authenticates the records.
+#[derive(Clone, Copy, Debug)]
+pub struct MountAttachmentAnchorRecordShapeDataV4 {
+    fence_bytes: usize,
+    pending_bytes: usize,
+    complete_bytes: usize,
+    sealing_bytes: usize,
+}
+
+impl MountAttachmentAnchorRecordShapeDataV4 {
+    /// Returns one actual authenticated fence value width.
+    #[must_use]
+    pub const fn fence_bytes_v4(&self) -> usize { self.fence_bytes }
+
+    /// Returns the actual pending effect value width.
+    #[must_use]
+    pub const fn pending_bytes_v4(&self) -> usize { self.pending_bytes }
+
+    /// Returns the bounded completed effect value width.
+    #[must_use]
+    pub const fn complete_bytes_v4(&self) -> usize { self.complete_bytes }
+
+    /// Returns simultaneous codec/output backing from the same record recipes.
+    #[must_use]
+    pub const fn sealing_bytes_v4(&self) -> usize { self.sealing_bytes }
+}
+
+/// Prices only the real pending Mount attachment-anchor admission and receipt.
+///
+/// The existing shared Mount effect payload uses the same fixed field layout
+/// as ordinary effects. The exact stable-key width comes from this fence.
+/// This function allocates and seals nothing, and supplies no payer or grant.
+#[must_use]
+pub fn mount_attachment_anchor_record_shape_v4(
+    fence: &BrokerAuthorizationFenceV1,
+    effect: &BrokerEffectIntentV1,
+    receipt_bytes: usize,
+) -> Option<MountAttachmentAnchorRecordShapeDataV4> {
+    if effect.status != BrokerEffectStatusV1::Pending || !effect.receipt.is_empty()
+        || !matches!(effect.verb, BrokerVerb::MountMaterializeAttachmentAnchor
+            | BrokerVerb::MountReapAttachmentAnchor)
+        || receipt_bytes == 0 || receipt_bytes > MAXIMUM_RECEIPT_BYTES
+    {
+        return None;
+    }
+    let stable_key = fence.ownership_authority.stable_key_id().as_str().len();
+    let fence_payload = authorization_fence_payload_bytes_v1(stable_key)?;
+    let pending_payload = STORAGE_EFFECT_FIXED_BYTES;
+    let complete_payload = pending_payload.checked_add(receipt_bytes)?;
+    let fence_peak = record_sealing_peak_v1(fence_payload, 408_usize.checked_add(stable_key)?)?;
+    let pending_peak = record_sealing_peak_v1(pending_payload, 554)?;
+    let complete_peak = record_sealing_peak_v1(complete_payload, 554_usize.checked_add(receipt_bytes)?)?;
+    Some(MountAttachmentAnchorRecordShapeDataV4 {
+        fence_bytes: AUTHENTICATED_FIXED_BYTES.checked_add(fence_payload)?,
+        pending_bytes: AUTHENTICATED_FIXED_BYTES.checked_add(pending_payload)?,
+        complete_bytes: AUTHENTICATED_FIXED_BYTES.checked_add(complete_payload)?,
+        sealing_bytes: fence_peak.checked_mul(2)?.checked_add(pending_peak)?
+            .checked_add(complete_peak)?.checked_add(receipt_bytes)?,
+    })
+}
+
+fn authorization_fence_payload_bytes_v1(stable_key: usize) -> Option<usize> {
+    const FIXED: usize = 8 + 2 + 16 + 16 + 8 + 8 + 32 + 16 + 32 + 8
+        + 1 + 8 + 32 + 1 + LOCAL_LEASE_RECORD_BYTES;
+    FIXED.checked_add(stable_key)
+}
+
+const STORAGE_EFFECT_FIXED_BYTES: usize = 8 + 2 + 1 + 1 + 65 + 16 + 4 * 32 + 4 + 2
+    + 2 * 8 + 16 + 8 + 16 + 4 * 8 + LOCAL_LEASE_RECORD_BYTES + 4;
+
+fn record_sealing_peak_v1(payload: usize, initial_capacity: usize) -> Option<usize> {
+    let payload_peak = payload.max(initial_capacity);
+    payload_peak.checked_add(payload)
+        .and_then(|bytes| bytes.checked_add(AUTHENTICATED_FIXED_BYTES))
+        .and_then(|bytes| bytes.checked_add(LOCAL_LEASE_RECORD_BYTES))
+        .and_then(|bytes| bytes.checked_add(3 * std::mem::size_of::<Vec<u8>>()))
+        .and_then(|bytes| bytes.checked_mul(3))
+}
+
+/// Prices one completed Storage effect using the same binary record geometry.
+///
+/// The pending input and receipt length are passive DATA. This neither completes
+/// nor seals an effect, and cannot establish admission or supply a payer.
+#[must_use]
+pub fn storage_effect_completion_sealing_bytes_v1(
+    effect: &BrokerEffectIntentV1,
+    receipt_bytes: usize,
+) -> Option<usize> {
+    if effect.status != BrokerEffectStatusV1::Pending || !effect.receipt.is_empty()
+        || verb_code(BrokerDomain::Storage, effect.verb) == 0
+        || receipt_bytes == 0 || receipt_bytes > MAXIMUM_RECEIPT_BYTES
+    {
+        return None;
+    }
+    let payload = STORAGE_EFFECT_FIXED_BYTES.checked_add(receipt_bytes)?;
+    record_sealing_peak_v1(payload, 554_usize.checked_add(receipt_bytes)?)?
+        .checked_add(receipt_bytes)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<BrokerEffectIntentV1>()))
+}
+
+/// Prices the payload, local-domain frame and authenticated envelope together.
+///
+/// The caller supplies its real codec's payload backing capacity. This pure
+/// byte layout neither seals a value nor grants a receiving admission.
+#[must_use]
+pub fn local_record_sealing_bytes_v1(payload_capacity: usize) -> Option<usize> {
+    payload_capacity.checked_mul(3)
+        .and_then(|bytes| bytes.checked_add(2 * LOCAL_RECORD_DOMAIN_BYTES))
+        .and_then(|bytes| bytes.checked_add(AUTHENTICATED_FIXED_BYTES))
+        .and_then(|bytes| bytes.checked_add(3 * std::mem::size_of::<Vec<u8>>()))
 }
 
 /// Encodes and authenticates one assignment authorization fence.
@@ -1368,9 +1591,13 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         (BrokerDomain::Host, BrokerVerb::HostTerminalNoApply) => 13,
         (BrokerDomain::Host, BrokerVerb::HostQueryNoApply) => 14,
         (BrokerDomain::Host, BrokerVerb::HostPrepareFuseWorkerSession) => 15,
+        (BrokerDomain::Host, BrokerVerb::HostPrepareExecutionArgumentV2) => 16,
+        (BrokerDomain::Host, BrokerVerb::HostAcceptExecutionArgumentV2) => 17,
         (BrokerDomain::Mount, BrokerVerb::MountMaterializeDestinationSlot) => 6,
         (BrokerDomain::Mount, BrokerVerb::MountReapDestinationSlot) => 7,
         (BrokerDomain::Mount, BrokerVerb::MountRematerializeDestinationSlot) => 8,
+        (BrokerDomain::Mount, BrokerVerb::MountMaterializeAttachmentAnchor) => 9,
+        (BrokerDomain::Mount, BrokerVerb::MountReapAttachmentAnchor) => 10,
         (BrokerDomain::Storage, BrokerVerb::StorageCreateWorkspace)
         | (BrokerDomain::Network, BrokerVerb::NetworkPrepare) => 1,
         (BrokerDomain::Storage, BrokerVerb::StorageSnapshot)
@@ -1412,6 +1639,8 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Host, 13) => Ok(BrokerVerb::HostTerminalNoApply),
         (BrokerDomain::Host, 14) => Ok(BrokerVerb::HostQueryNoApply),
         (BrokerDomain::Host, 15) => Ok(BrokerVerb::HostPrepareFuseWorkerSession),
+        (BrokerDomain::Host, 16) => Ok(BrokerVerb::HostPrepareExecutionArgumentV2),
+        (BrokerDomain::Host, 17) => Ok(BrokerVerb::HostAcceptExecutionArgumentV2),
         (BrokerDomain::Mount, 1) => Ok(BrokerVerb::MountCreate),
         (BrokerDomain::Mount, 2) => Ok(BrokerVerb::MountInstall),
         (BrokerDomain::Mount, 3) => Ok(BrokerVerb::MountReplace),
@@ -1420,6 +1649,8 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Mount, 6) => Ok(BrokerVerb::MountMaterializeDestinationSlot),
         (BrokerDomain::Mount, 7) => Ok(BrokerVerb::MountReapDestinationSlot),
         (BrokerDomain::Mount, 8) => Ok(BrokerVerb::MountRematerializeDestinationSlot),
+        (BrokerDomain::Mount, 9) => Ok(BrokerVerb::MountMaterializeAttachmentAnchor),
+        (BrokerDomain::Mount, 10) => Ok(BrokerVerb::MountReapAttachmentAnchor),
         (BrokerDomain::Storage, 1) => Ok(BrokerVerb::StorageCreateWorkspace),
         (BrokerDomain::Storage, 2) => Ok(BrokerVerb::StorageSnapshot),
         (BrokerDomain::Storage, 3) => Ok(BrokerVerb::StorageHoldSnapshot),
@@ -2050,6 +2281,8 @@ mod tests {
                 BrokerVerb::MountRematerializeDestinationSlot,
                 8,
             ),
+            (BrokerDomain::Mount, BrokerVerb::MountMaterializeAttachmentAnchor, 9),
+            (BrokerDomain::Mount, BrokerVerb::MountReapAttachmentAnchor, 10),
             (BrokerDomain::Storage, BrokerVerb::StorageCreateWorkspace, 1),
             (BrokerDomain::Storage, BrokerVerb::StorageSnapshot, 2),
             (BrokerDomain::Storage, BrokerVerb::StorageHoldSnapshot, 3),
@@ -2087,6 +2320,7 @@ mod tests {
                 BrokerVerb::HostLaunch
                 | BrokerVerb::MountCreate
                 | BrokerVerb::MountMaterializeDestinationSlot
+                | BrokerVerb::MountMaterializeAttachmentAnchor
                 | BrokerVerb::StorageCreateWorkspace
                 | BrokerVerb::StoragePrepareCatalog
                 | BrokerVerb::NetworkPrepare => BrokerGrantTarget::Assignment,
@@ -2349,6 +2583,73 @@ mod tests {
             local_lease_record: lease,
             receipt: Vec::new(),
         }
+    }
+
+    #[test]
+    fn storage_admission_byte_shape_matches_the_existing_fence_and_effect_codecs() {
+        let fence = fence();
+        let mut effect = sample_intent();
+        effect.verb = BrokerVerb::StorageDestroy;
+        let fence_payload = encode_fence(&fence, BrokerDomain::Storage).unwrap();
+        let effect_payload = encode_effect(&effect, BrokerDomain::Storage).unwrap();
+        let stable_key = fence.ownership_authority.stable_key_id().as_str().len();
+        let peak = |payload: usize, initial: usize| {
+            (payload.max(initial) + payload + AUTHENTICATED_FIXED_BYTES
+                + LOCAL_LEASE_RECORD_BYTES + 3 * std::mem::size_of::<Vec<u8>>()) * 3
+        };
+
+        assert_eq!(storage_admission_sealing_bytes_v1(&fence, &effect), Some(
+            2 * peak(fence_payload.len(), 408 + stable_key)
+                + peak(effect_payload.len(), 554),
+        ));
+        effect.receipt.push(1);
+        assert_eq!(storage_admission_sealing_bytes_v1(&fence, &effect), None);
+        effect.receipt.clear();
+        effect.verb = BrokerVerb::MountCreate;
+        assert_eq!(storage_admission_sealing_bytes_v1(&fence, &effect), None);
+        assert_eq!(local_record_sealing_bytes_v1(usize::MAX), None);
+    }
+
+    #[test]
+    fn anchor_shape_uses_actual_mount_payload_and_refuses_other_purposes() {
+        let fence = fence();
+        let mut effect = sample_intent();
+        effect.verb = BrokerVerb::MountMaterializeAttachmentAnchor;
+        effect.target = BrokerGrantTarget::Assignment;
+        for receipt in [1, 4112, MAXIMUM_RECEIPT_BYTES] {
+            let shape = mount_attachment_anchor_record_shape_v4(&fence, &effect, receipt).unwrap();
+            let pending = encode_effect(&effect, BrokerDomain::Mount).unwrap();
+            let completed = effect.clone().complete(vec![7; receipt]).unwrap();
+            let complete = encode_effect(&completed, BrokerDomain::Mount).unwrap();
+            assert_eq!(shape.fence_bytes_v4(), AUTHENTICATED_FIXED_BYTES + encode_fence(&fence, BrokerDomain::Mount).unwrap().len());
+            assert_eq!(shape.pending_bytes_v4(), AUTHENTICATED_FIXED_BYTES + pending.len());
+            assert_eq!(shape.complete_bytes_v4(), AUTHENTICATED_FIXED_BYTES + complete.len());
+            assert!(shape.sealing_bytes_v4() >= shape.fence_bytes_v4() + shape.pending_bytes_v4() + shape.complete_bytes_v4());
+        }
+        effect.verb = BrokerVerb::MountMaterializeDestinationSlot;
+        assert!(mount_attachment_anchor_record_shape_v4(&fence, &effect, 4112).is_none());
+        effect.verb = BrokerVerb::MountMaterializeAttachmentAnchor;
+        assert!(mount_attachment_anchor_record_shape_v4(&fence, &effect, 0).is_none());
+        assert!(mount_attachment_anchor_record_shape_v4(&fence, &effect, usize::MAX).is_none());
+    }
+
+    #[test]
+    fn completion_shape_covers_real_codec_at_each_receipt_boundary() {
+        let mut effect = sample_intent();
+        effect.verb = BrokerVerb::StorageDestroy;
+        effect.target = BrokerGrantTarget::Resource(BrokerResourceHandle::from_bytes([7; 32]).unwrap());
+        for length in [1, 58, MAXIMUM_RECEIPT_BYTES] {
+            let completed = effect.clone().complete(vec![7; length]).unwrap();
+            let encoded = encode_effect(&completed, BrokerDomain::Storage).unwrap();
+            let bound = storage_effect_completion_sealing_bytes_v1(&effect, length).unwrap();
+
+            assert!(bound >= 3 * (encoded.len() + AUTHENTICATED_FIXED_BYTES)
+                + length + std::mem::size_of::<BrokerEffectIntentV1>());
+        }
+        assert_eq!(storage_effect_completion_sealing_bytes_v1(&effect, 0), None);
+        assert_eq!(storage_effect_completion_sealing_bytes_v1(&effect, usize::MAX), None);
+        effect.status = BrokerEffectStatusV1::Complete;
+        assert_eq!(storage_effect_completion_sealing_bytes_v1(&effect, 58), None);
     }
 
     fn sample_effect() -> Vec<u8> {

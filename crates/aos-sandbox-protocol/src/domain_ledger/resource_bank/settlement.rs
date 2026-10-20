@@ -1,4 +1,4 @@
-//! Owns complete terminal encoding and allocation-free physical-history replay.
+//! Owns terminal encoding and bounded physical-history replay.
 //!
 //! ```text
 //! AOSRST01..02 | original16 | coissuance32 | transaction16 | names48 |
@@ -17,6 +17,10 @@ use super::{
 pub(super) const PREFIX: u8 = b't';
 const RECORD_BYTES: usize = 712;
 
+pub(super) fn encoded_binding_receiving_bytes_v1() -> Option<usize> {
+    std::mem::size_of::<([u8; RECORD_BYTES], Sha256)>().checked_mul(2)
+}
+
 // There is one exact successor today. Later operation/history events must be
 // implemented as typed transitions, not a generation >= 1 replay exception.
 pub(super) fn current_use(
@@ -30,6 +34,17 @@ pub(super) fn current_use(
     };
     let terminal = decode(bytes)?;
     require_original(terminal, original)?;
+    let (claim, terminal) = terminal_pair(original)?;
+    Ok((claim, super::create_use::current_child(state, original, terminal)?))
+}
+
+// Historical Q04 members keep their exact generation-two postimage even after
+// a later typed U reservation advances the current child to three or four.
+pub(super) fn terminal_pair(original: super::CoissuanceBinding)
+    -> Result<(Claim, AccountHead), ResourceBankDataError>
+{
+    let claim = q04::use_claim(original);
+    let before = q04::child_head(original)?;
     Ok((
         Claim {
             state: ClaimState::Committed,
@@ -73,7 +88,7 @@ pub(super) fn require_predecessor(
     Ok(())
 }
 
-fn require_original(
+pub(super) fn require_original(
     terminal: Binding,
     original: super::CoissuanceBinding,
 ) -> Result<(), ResourceBankDataError> {
@@ -237,11 +252,13 @@ fn fixed<const N: usize>(bytes: &[u8]) -> Result<[u8; N], ResourceBankDataError>
 
 /// Compares retained terminal rows with transactions supplied by the Native parser.
 ///
-/// This allocation-free observer checks actual complete members and physical
-/// chronology. It constructs no payment, current authority or retry permit.
+/// This observer checks complete members and physical chronology. Q04 tracking
+/// borrows its state; U tracking requires the separately priced bounded backing.
+/// It constructs no payment, current authority or retry permit.
 pub struct PhysicalHistory<'state> {
     state: &'state replay::State,
     matched: usize,
+    uses: super::create_use::UsePhysicalHistoryV1,
 }
 
 impl<'state> PhysicalHistory<'state> {
@@ -253,7 +270,34 @@ impl<'state> PhysicalHistory<'state> {
                 *namespace == RecordNamespace::ControllerResourceReservation
                     && key.first() == Some(&PREFIX)
             })
-            .then_some(Self { state, matched: 0 })
+            .then_some(Self { state, matched: 0, uses: Default::default() })
+    }
+
+    /// Prices additional bounded use-order tracking from the actual saved bank.
+    ///
+    /// The native owner admits this byte demand before observing U transactions.
+    /// Existing Q04 tracking is allocation-free; no namespace entries are added.
+    ///
+    /// # Errors
+    /// Rejects representation arithmetic overflow. This creates no admission.
+    pub fn additional_use_receiving_demand_v1(state: &replay::State)
+        -> Result<aos_sandbox_core::ResourceVector, ResourceBankDataError>
+    {
+        super::create_use::UsePhysicalHistoryV1::additional_demand(state)
+    }
+
+    /// Prices the same use-order tracking for a checked conservative count.
+    ///
+    /// A forecast must bound this count from an actual captured native prefix.
+    /// This passive byte recipe does not establish which bindings exist, issue
+    /// a loan or replace the actual-state admission before physical replay.
+    ///
+    /// # Errors
+    /// Rejects representation arithmetic overflow.
+    pub fn additional_use_receiving_demand_for_count_v1(count: usize)
+        -> Result<aos_sandbox_core::ResourceVector, ResourceBankDataError>
+    {
+        super::create_use::UsePhysicalHistoryV1::additional_demand_for_count(count)
     }
 
     /// Compares a complete transaction with retained origin and terminal chronology.
@@ -329,7 +373,7 @@ impl<'state> PhysicalHistory<'state> {
             if transaction.id() != &terminal.transaction {
                 continue;
             }
-            let (claim, head) = current_use(self.state, original)?;
+            let (claim, head) = terminal_pair(original)?;
             let records = transaction.records();
             if records.len() != 3
                 || begin_sequence != terminal.next
@@ -355,7 +399,7 @@ impl<'state> PhysicalHistory<'state> {
                 .checked_add(1)
                 .ok_or(ResourceBankDataError::CorruptLedger)?;
         }
-        Ok(())
+        self.uses.observe(self.state, transaction, begin_sequence, commit_sequence, begin_offset, end_offset)
     }
 
     /// Requires recorded origin and terminal identities in the supplied history.
@@ -388,6 +432,7 @@ impl<'state> PhysicalHistory<'state> {
                 .checked_add(1)
                 .ok_or(ResourceBankDataError::CorruptLedger)?;
         }
+        self.uses.finish(self.state, ids)?;
         if self.matched != expected {
             return Err(ResourceBankDataError::CorruptLedger);
         }

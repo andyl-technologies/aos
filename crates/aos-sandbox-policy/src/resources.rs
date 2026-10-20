@@ -17,8 +17,9 @@ use super::authority::AuthorityPlanV1;
 use super::model::{
     ExplanationDecisionV1, ExplanationEntryV1, ExplanationReasonV1, ExplanationStageV1,
     HardResourcePlanCommitmentV1, InputSourceV1, PolicyCompilerInputV1, PolicyModelError,
-    RedactedSubjectV1, digest,
+    RedactedSubjectV1,
 };
+use aos_sandbox_protocol::policy_data::digest;
 
 /// Portable dimensions in their exact core registry order.
 pub const PORTABLE_LIMIT_DIMENSIONS: [LimitDimension; 16] = [
@@ -106,16 +107,9 @@ impl HardEnforcementV1 {
     /// Returns [`HardResourceModelError::RegisteredFeature`] only if a built-in
     /// feature spelling is rejected by the core feature parser.
     pub fn feature(self) -> Result<FeatureRef, HardResourceModelError> {
-        let namespace = match self {
-            Self::CgroupV2 => "aos.sandbox.enforcement.cgroup-v2",
-            Self::BrokerLedger => "aos.sandbox.enforcement.broker-ledger",
-            Self::ZfsQuota => "aos.sandbox.enforcement.zfs-quota",
-            Self::NodeBoundedSharedResidency => "aos.sandbox.residency.node-bounded-shared",
-            Self::HardIsolatedResidency => "aos.sandbox.residency.hard-isolated",
-            Self::CombinedFileDescriptor => "aos.sandbox.enforcement.broker-ledger",
-            Self::CombinedMemoryAccounting => "aos.sandbox.enforcement.cgroup-v2",
-        };
-        FeatureRef::new(namespace, 1, 0).map_err(|_| HardResourceModelError::RegisteredFeature)
+        let namespace = self.required_feature_names().first()
+            .ok_or(HardResourceModelError::RegisteredFeature)?;
+        FeatureRef::new(*namespace, 1, 0).map_err(|_| HardResourceModelError::RegisteredFeature)
     }
 
     /// Reports whether this exact mechanism implements the dimension in its scope.
@@ -150,15 +144,22 @@ impl HardEnforcementV1 {
         }
     }
 
-    fn required_features(self) -> Result<Vec<FeatureRef>, HardResourceModelError> {
-        let mut features = vec![self.feature()?];
-        if self == Self::CombinedMemoryAccounting {
-            features.push(
-                FeatureRef::new("aos.sandbox.enforcement.broker-ledger", 1, 0)
-                    .map_err(|_| HardResourceModelError::RegisteredFeature)?,
-            );
+    fn required_feature_names(self) -> &'static [&'static str] {
+        match self {
+            Self::CgroupV2 => &["aos.sandbox.enforcement.cgroup-v2"],
+            Self::BrokerLedger | Self::CombinedFileDescriptor =>
+                &["aos.sandbox.enforcement.broker-ledger"],
+            Self::ZfsQuota => &["aos.sandbox.enforcement.zfs-quota"],
+            Self::NodeBoundedSharedResidency => &["aos.sandbox.residency.node-bounded-shared"],
+            Self::HardIsolatedResidency => &["aos.sandbox.residency.hard-isolated"],
+            Self::CombinedMemoryAccounting => &["aos.sandbox.enforcement.cgroup-v2",
+                "aos.sandbox.enforcement.broker-ledger"],
         }
-        Ok(features)
+    }
+
+    fn required_features(self) -> Result<Vec<FeatureRef>, HardResourceModelError> {
+        self.required_feature_names().iter().map(|name| FeatureRef::new(*name, 1, 0)
+            .map_err(|_| HardResourceModelError::RegisteredFeature)).collect()
     }
 }
 
@@ -272,6 +273,44 @@ impl HardResourceProfileV1 {
             .copied()
             .find(|entry| entry.key() == key)
     }
+}
+
+/// Bounds new named resource rows and feature/mechanism sets for an inherited request.
+///
+/// The three profiles are the already decoded node, site and project layers.
+/// The selected parentless request inherits every dimension and has no grants,
+/// namespace rules, advisory actions or ancestors. Callers must separately
+/// establish that closed recipe; this supplier validates no policy authority.
+///
+/// Every explicit enforcement contributes at most one per-dimension mechanism
+/// entry. The actual registered feature roster bounds each of the resource and
+/// final compiler feature unions; the selected portable feature contributes at
+/// most one per portable dimension to each union. The resolved portable and
+/// accounting dimensions are actual semantic rows, not Rust control fields.
+/// Overflow returns `None` before allocation.
+#[must_use]
+pub fn inherited_parentless_resource_namespace_entries_v1(
+    profiles: [&HardResourceProfileV1; 3],
+) -> Option<u64> {
+    let mut mechanisms = 0_u64;
+    let mut features = 0_u64;
+    for profile in profiles {
+        for entry in profile.portable().iter().chain(profile.accounting()) {
+            if let Some(mechanism) = entry.enforcement() {
+                mechanisms = mechanisms.checked_add(1)?;
+                features = features.checked_add(u64::try_from(mechanism.required_feature_names().len()).ok()?)?;
+            }
+        }
+    }
+    let explicit = |key| profiles.iter().any(|profile| profile.entry(key)
+        .is_some_and(|entry| entry.enforcement().is_some()));
+    let portable = PORTABLE_LIMIT_DIMENSIONS.into_iter()
+        .filter(|dimension| explicit(HardResourceKeyV1::Portable(*dimension))).count();
+    let accounting = ResourceDimension::ALL.into_iter()
+        .filter(|dimension| explicit(HardResourceKeyV1::Accounting(*dimension))).count();
+    let rows = u64::try_from(portable.checked_add(accounting)?).ok()?;
+    rows.checked_add(mechanisms)?.checked_add(features.checked_mul(2)?)?
+        .checked_add(u64::try_from(portable).ok()?.checked_mul(2)?)
 }
 
 /// Stores a canonical typed backend enforcement set.
@@ -584,10 +623,13 @@ pub(crate) fn compile_resources(
         .map_err(|_| HardResourceCompilationError::InternalMapping)?;
     let accounting_ceilings = ResourceCeilings::new(accounting_array);
     let required_features = features.into_iter().collect::<Vec<_>>();
-    let commitment = HardResourcePlanCommitmentV1::new(digest(
-        b"aos.sandbox.hard-resource-plan.v2",
-        &(&portable, &accounting, &required_features),
-    )?);
+    let commitment = HardResourcePlanCommitmentV1::new(
+        digest(
+            b"aos.sandbox.hard-resource-plan.v2",
+            &(&portable, &accounting, &required_features),
+        )
+        .map_err(crate::PolicyModelError::from)?,
+    );
     Ok((
         HardResourcePlanV1 {
             commitment,
@@ -654,7 +696,10 @@ fn resolve_key(
                 )
                 .ok_or(HardResourceCompilationError::UnlimitedNotAuthorized)?;
                 let predecessor = match proofs.last() {
-                    Some(prior) => Some(digest(b"aos.sandbox.unlimited-proof-link.v2", prior)?),
+                    Some(prior) => Some(
+                        digest(b"aos.sandbox.unlimited-proof-link.v2", prior)
+                            .map_err(crate::PolicyModelError::from)?,
+                    ),
                     None => None,
                 };
                 proofs.push(UnlimitedProvenanceV1 {
@@ -665,7 +710,8 @@ fn resolve_key(
                     resource_kind: ResourceKind::Sandbox,
                     operations: unlimited_operations,
                     selector: effective_selector.clone(),
-                    grant_semantics: digest(b"aos.sandbox.unlimited-grant.v2", grant)?,
+                    grant_semantics: digest(b"aos.sandbox.unlimited-grant.v2", grant)
+                        .map_err(crate::PolicyModelError::from)?,
                     predecessor,
                 });
                 if source == InputSourceV1::Request {
@@ -766,5 +812,144 @@ impl From<PolicyModelError> for HardResourceCompilationError {
 impl From<HardResourceModelError> for HardResourceCompilationError {
     fn from(value: HardResourceModelError) -> Self {
         Self::Resource(value)
+    }
+}
+
+/// Reports incompatible immutable Spec and resolved portable resource limits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("the resolved resource profile is incompatible with the immutable specification")]
+pub struct SpecResourceCompatibilityErrorV1;
+
+/// Checks the existing exact sixteen-dimension Spec-to-resolved relation.
+///
+/// Both profiles must contain all dimensions in registry order and identical
+/// enforcement mechanisms. Resolved values must be bounded; requested inherited
+/// limits allow that bound, finite requests cap it, and unlimited requests fail.
+/// This compares semantic DATA and supplies no resource or compiler authority.
+///
+/// # Errors
+/// Returns [`SpecResourceCompatibilityErrorV1`] on any missing or reordered
+/// dimension, enforcement mismatch, unbounded result, unlimited request or
+/// resolved value exceeding its finite requested bound.
+pub fn require_specification_resource_profile_v1(
+    requested: &ResourceProfile, resolved: &ResourceProfile,
+) -> Result<(), SpecResourceCompatibilityErrorV1> {
+    let requested = requested.limits();
+    let resolved = resolved.limits();
+    if requested.len() != 16 || resolved.len() != 16 {
+        return Err(SpecResourceCompatibilityErrorV1);
+    }
+    for (index, (requested, resolved)) in requested.iter().zip(resolved).enumerate() {
+        let LimitValue::Bounded(actual) = resolved.value() else {
+            return Err(SpecResourceCompatibilityErrorV1);
+        };
+        if requested.dimension() as usize != index
+            || requested.dimension() != resolved.dimension()
+            || requested.enforcement() != resolved.enforcement()
+            || match requested.value() {
+                LimitValue::Inherited => false,
+                LimitValue::Bounded(limit) => actual > limit,
+                LimitValue::Unlimited(_) => true,
+            }
+        {
+            return Err(SpecResourceCompatibilityErrorV1);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod specification_resource_compatibility_tests {
+    use super::*;
+    use std::num::NonZeroU32;
+    use aos_sandbox_core::{DecodeLimits, MediaType, ObjectDescriptor, ObjectDigest};
+    use aos_sandbox_core::model::{
+        IdentityProfile, NetworkKind, NetworkProfile, SandboxSpec, UnmappableIdentityPolicy,
+    };
+
+    fn canonical_spec(value: LimitValue, changed: Option<(LimitDimension, LimitValue, HardEnforcementV1)>)
+        -> SandboxSpec
+    {
+        let limits = PORTABLE_LIMIT_DIMENSIONS.into_iter().map(|dimension| {
+            let (value, mechanism) = match changed {
+                Some((target, value, mechanism)) if target == dimension => (value, mechanism),
+                _ => (value, HardEnforcementV1::CgroupV2),
+            };
+            Limit::new(dimension, value, mechanism.feature().unwrap())
+        }).collect();
+        let descriptor = |kind| ObjectDescriptor::new(
+            MediaType::new(format!("application/vnd.aos.sandbox.{kind}.v1+cbor")).unwrap(),
+            ObjectDigest::from_bytes([1; 32]), 1,
+        );
+        let specification = SandboxSpec::new(
+            FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 0).unwrap(),
+            IdentityProfile::PrivateUserns {
+                id_range_size: NonZeroU32::new(65_536).unwrap(),
+                unmappable_policy: UnmappableIdentityPolicy::Reject, required_features: Vec::new(),
+            },
+            ResourceProfile::new(limits).unwrap(), descriptor("environment"), descriptor("view"),
+            Vec::new(), NetworkProfile::new(NetworkKind::Isolated, Vec::new(), Vec::new()).unwrap(), Vec::new(),
+        ).unwrap();
+        let bytes = aos_sandbox_core::format::encode_sandbox_spec(&specification);
+        aos_sandbox_core::format::decode_sandbox_spec(&bytes, DecodeLimits::default()).unwrap()
+    }
+
+    #[test]
+    fn canonical_spec_allows_inherited_or_sufficient_bounded_resolved_limits() {
+        let bounded = canonical_spec(LimitValue::Bounded(100), None);
+        let inherited = canonical_spec(LimitValue::Inherited, None);
+        let actual = canonical_spec(LimitValue::Bounded(90), None);
+
+        assert!(require_specification_resource_profile_v1(bounded.resource_profile(), actual.resource_profile()).is_ok());
+        assert!(require_specification_resource_profile_v1(inherited.resource_profile(), actual.resource_profile()).is_ok());
+    }
+
+    #[test]
+    fn canonical_spec_rejects_underbound_enforcement_mismatch_and_unresolved_result() {
+        let requested = canonical_spec(LimitValue::Bounded(100), None);
+        let underbound = canonical_spec(LimitValue::Bounded(100), Some((
+            LimitDimension::Memory, LimitValue::Bounded(99), HardEnforcementV1::CgroupV2,
+        )));
+        let mismatch = canonical_spec(LimitValue::Bounded(90), Some((
+            LimitDimension::OpenFiles, LimitValue::Bounded(90), HardEnforcementV1::BrokerLedger,
+        )));
+        let inherited = canonical_spec(LimitValue::Inherited, None);
+        let unlimited = canonical_spec(LimitValue::Unlimited(GrantId::from_bytes([4; 16])), None);
+
+        assert!(require_specification_resource_profile_v1(unlimited.resource_profile(), requested.resource_profile()).is_err());
+        assert!(require_specification_resource_profile_v1(underbound.resource_profile(), requested.resource_profile()).is_err());
+        assert!(require_specification_resource_profile_v1(requested.resource_profile(), mismatch.resource_profile()).is_err());
+        assert!(require_specification_resource_profile_v1(requested.resource_profile(), inherited.resource_profile()).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod receiving_namespace_tests {
+    use super::*;
+
+    fn profile(mechanism: bool) -> HardResourceProfileV1 {
+        let portable = PORTABLE_LIMIT_DIMENSIONS.into_iter().map(|dimension| {
+            let selected = mechanism && dimension == LimitDimension::FuseMemory;
+            HardLimitRequestV1::new(HardResourceKeyV1::Portable(dimension),
+                if selected { HardLimitValueV1::Bounded(1024) } else { HardLimitValueV1::Inherit },
+                selected.then_some(HardEnforcementV1::CombinedMemoryAccounting)).unwrap()
+        }).collect();
+        let accounting = ResourceDimension::ALL.into_iter().map(|dimension|
+            HardLimitRequestV1::new(HardResourceKeyV1::Accounting(dimension),
+                HardLimitValueV1::Inherit, None).unwrap()).collect();
+        HardResourceProfileV1::new(portable, accounting).unwrap()
+    }
+
+    #[test]
+    fn namespace_forecast_counts_actual_semantic_rows_and_registered_feature_roster() {
+        let empty = profile(false);
+        let memory = profile(true);
+        assert_eq!(inherited_parentless_resource_namespace_entries_v1([&empty, &empty, &empty]), Some(0));
+        // One real dimension row, one mechanism, two features in each of two
+        // compiler unions, and one selected feature in each union.
+        assert_eq!(inherited_parentless_resource_namespace_entries_v1([&empty, &memory, &empty]), Some(8));
+        // The repeated layer does not invent another semantic dimension row.
+        assert_eq!(inherited_parentless_resource_namespace_entries_v1([&memory, &memory, &empty]), Some(13));
     }
 }

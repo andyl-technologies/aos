@@ -15,16 +15,15 @@
 //! Source-fixed-names[48] | Ed25519-signature:64
 //! ```
 
+use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
+
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey};
 
 use crate::journal::{Journal, ProtectedJournalNamesV1};
 use crate::reconciler::project_admission::accepted_controller_project_terminal_v1;
 
-use super::{
-    ControllerProjectAdmissionReadbackErrorV1, PinnedControllerHoldSignerV1,
-    RootProjectHistoryTerminalKindV1,
-};
+use super::{ControllerProjectAdmissionReadbackErrorV1, RootProjectHistoryTerminalKindV1};
 
 const MAGIC: &[u8; 8] = b"AOSCTP04";
 const DOMAIN: &[u8] = b"aos.sandbox.controller-project-history-acceptance.v1\0/var/lib/aos/sandboxd/controller.journal\0";

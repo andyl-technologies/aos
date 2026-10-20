@@ -8,6 +8,8 @@
 //!
 //! This grouping changes neither protected custody nor dependency boundaries.
 
+use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -15,13 +17,28 @@ use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest, Sha256};
 
 use super::{
-    CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, CacheQ04TransactionRecipesV1, CommitResult,
-    ControllerPolicyHoldV1, ControllerQ04TransitionV1, DeploymentHistoryObserverV1, Journal,
-    JournalAuthorityInstance, JournalError, JournalLimits, JournalTransaction,
-    PreflightTransactionViewV1, ProtectedAuthorityScope, ProtectedJournalAuthority,
-    ProtectedJournalNamesV1, ProtectedWriterNameWitness, RecordNamespace,
-    SourceQ04TransactionRecipesV1, controller_policy_hold, encode_record_fields,
-    encoded_transaction_append_bytes, replay_original_observed, runtime_deployment_history,
+    CACHE_POLICY_HOLD_JOURNAL,
+    CacheQ04TransactionRecipesV1,
+    CommitResult,
+    ControllerPolicyHoldV1,
+    ControllerQ04TransitionV1,
+    DeploymentHistoryObserverV1,
+    Journal,
+    JournalAuthorityInstance,
+    JournalError,
+    JournalLimits,
+    JournalTransaction,
+    PreflightTransactionViewV1,
+    ProtectedAuthorityScope,
+    ProtectedJournalAuthority,
+    ProtectedJournalNamesV1,
+    ProtectedWriterNameWitness,
+    RecordNamespace,
+    SourceQ04TransactionRecipesV1,
+    controller_policy_hold,
+    encode_record_fields,
+    replay_coordinator_observed_v1,
+    runtime_deployment_history,
 };
 
 #[cfg(target_os = "linux")]
@@ -32,26 +49,8 @@ enum Q04ControllerBookendPurposeV1<'recipes> {
     Gen1Refresh(&'recipes [ControllerQ04TransitionV1<'recipes>]),
 }
 
-// These closed phases select observation only. They never select the mutable
-// Cache gate, waive a pin check or authorize an own-successor authority append.
 #[cfg(target_os = "linux")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Q04CacheTerminalPhaseV1 {
-    Held,
-    Released,
-    Cleared,
-}
-
-#[cfg(target_os = "linux")]
-impl Q04CacheTerminalPhaseV1 {
-    pub(super) fn prefix(self) -> usize {
-        match self {
-            Self::Held => 1,
-            Self::Released => 2,
-            Self::Cleared => 3,
-        }
-    }
-}
+pub(crate) use aos_sandbox_protocol::cache_state::hold_state::q04_recipes::Q04CacheTerminalPhaseV1;
 
 #[cfg(target_os = "linux")]
 struct Q04OriginalCacheTargetV1 {
@@ -207,8 +206,7 @@ impl Journal {
         let uid = hold.protected_owner_uid()?;
         hold.require_q04_cache_prepare_v1()?;
         let location = self
-            .protected
-            .as_ref()
+            .native.protected_view()
             .ok_or(JournalError::ProtectedBoundary)?;
         let fixed_target = match location.name() {
             "clock.journal" => self.cache_policy_gate.is_none(),
@@ -259,95 +257,75 @@ impl Journal {
     }
 }
 
-// Only validated COMMIT calls reach this observer. Matching an ID without its
-// complete ordered records and original physical boundary is insufficient.
-// The recipes are DATA retained by a closed Q04 owner, not commit permissions.
+// Preserve the new actual allocation refusal; ordinary semantic categories
+// retain their established protected-boundary projection.
+#[cfg(target_os = "linux")]
+fn resource_bank_history_error(
+    error: aos_sandbox_protocol::domain_ledger::resource_bank::ResourceBankDataError,
+) -> JournalError {
+    match error {
+        aos_sandbox_protocol::domain_ledger::resource_bank::ResourceBankDataError::Representation(cause) =>
+            JournalError::Q04RootOriginal(Box::new(
+                crate::policy_compiler::create_q04::CreateQ04ErrorV1::ResourceReservation(Box::new(
+                    crate::controller_resource_reservation::ResourceReservationErrorV1::Representation(cause),
+                )),
+            )),
+        _ => JournalError::ProtectedBoundary,
+    }
+}
+
+// Fixed control bytes belong to the actual semantic/native receiving recipe;
+// namespace cardinalities remain with the existing map and path suppliers.
+pub(super) fn native_audit_fixed_receiving_demand_v1()
+    -> Result<aos_sandbox_core::ResourceVector, JournalError>
+{
+    use aos_sandbox_ledger_replay::q04_native_history::Q04NativeHistoryDataErrorV1;
+
+    // The two existing owner planes include the core's construction. Its
+    // returned comparison result and moved projection cause are additional.
+    let comparison_controls = std::mem::size_of::<(
+        Result<(), Q04NativeHistoryDataErrorV1>,
+        Q04NativeHistoryDataErrorV1,
+    )>();
+    let bytes = std::mem::size_of::<Q04NativeRecipeAuditV1<'static>>()
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(comparison_controls))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(JournalError::LimitExceeded("native history observer controls"))?;
+    Ok(aos_sandbox_core::ResourceVector::ZERO
+        .with(aos_sandbox_core::ResourceDimension::MemoryBytes, bytes))
+}
+
+// The same lexical DATA recipe serves this private heterogeneous view and
+// the concrete lower ordinary-slice observer. No role/native callback escapes.
+#[cfg(target_os = "linux")]
+aos_sandbox_ledger_replay::define_q04_native_history_data_v1!(
+    Q04NativeRecipeAuditCoreV1<'recipes>, PreflightTransactionViewV1<'recipes>);
+
 #[cfg(target_os = "linux")]
 pub(super) struct Q04NativeRecipeAuditV1<'recipes> {
-    recipes: PreflightTransactionViewV1<'recipes>,
-    matched: usize,
-    previous_end: u64,
-    previous_next: u64,
-    original_next: Option<u64>,
-    bank_history:
-        Option<aos_sandbox_protocol::domain_ledger::resource_bank::PhysicalHistory<'recipes>>,
+    core: Q04NativeRecipeAuditCoreV1<'recipes>,
 }
 
 #[cfg(target_os = "linux")]
 impl Q04NativeRecipeAuditV1<'_> {
-    pub(super) fn observe(
-        &mut self,
-        transaction: &JournalTransaction,
-        begin_sequence: u64,
-        commit_sequence: u64,
-        begin_offset: u64,
-        end_offset: u64,
+    pub(super) fn observe(&mut self, transaction: &JournalTransaction,
+        begin_sequence: u64, commit_sequence: u64, begin_offset: u64, end_offset: u64,
     ) -> Result<(), JournalError> {
-        if let Some(history) = self.bank_history.as_mut() {
-            history
-                .observe(
-                    transaction,
-                    begin_sequence,
-                    commit_sequence,
-                    begin_offset,
-                    end_offset,
-                )
-                .map_err(|_| JournalError::ProtectedBoundary)?;
-        }
-        let next = commit_sequence.checked_add(1).ok_or(JournalError::SequenceExhausted)?;
-        let frames = u64::try_from(transaction.records().len())
-            .map_err(|_| JournalError::LimitExceeded("Q04 native record count"))?
-            .checked_add(2).ok_or(JournalError::SequenceExhausted)?;
-        if begin_sequence != self.previous_next
-            || next.checked_sub(begin_sequence) != Some(frames)
-            || begin_offset != self.previous_end
-            || end_offset.checked_sub(begin_offset)
-                != Some(encoded_transaction_append_bytes(transaction)?)
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        self.previous_end = end_offset;
-        self.previous_next = next;
+        self.core.observe_v1(transaction, begin_sequence, commit_sequence, begin_offset, end_offset)
+            .map_err(q04_history_data_error_v1)
+    }
+}
 
-        if let Some(original_next) = self.original_next {
-            if begin_sequence < original_next {
-                if next > original_next || (0..self.recipes.len()).any(|index| {
-                    self.recipes.transaction(index).id() == transaction.id()
-                }) {
-                    return Err(JournalError::ProtectedBoundary);
-                }
-                return Ok(());
-            }
-            // A terminal readback compares the entire in-cut suffix, not a
-            // selected subsequence separated by unobserved foreign appends.
-            if self.matched >= self.recipes.len()
-                || (self.matched == 0 && begin_sequence != original_next)
-                || transaction != self.recipes.transaction(self.matched)
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            self.matched += 1;
-            return Ok(());
-        }
-
-        if self.matched < self.recipes.len() {
-            let expected = self.recipes.transaction(self.matched);
-            if transaction.id() == expected.id() {
-                if transaction != expected {
-                    return Err(JournalError::ProtectedBoundary);
-                }
-                self.matched += 1;
-            } else if (0..self.recipes.len()).any(|index| {
-                self.recipes.transaction(index).id() == transaction.id()
-            }) {
-                return Err(JournalError::ProtectedBoundary);
-            }
-        } else if (0..self.recipes.len()).any(|index| {
-            self.recipes.transaction(index).id() == transaction.id()
-        }) {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
+#[cfg(target_os = "linux")]
+fn q04_history_data_error_v1(
+    cause: aos_sandbox_ledger_replay::q04_native_history::Q04NativeHistoryDataErrorV1,
+) -> JournalError {
+    use aos_sandbox_ledger_replay::q04_native_history::Q04NativeHistoryDataErrorV1;
+    match cause {
+        Q04NativeHistoryDataErrorV1::Mechanical(cause) => JournalError::from(cause),
+        Q04NativeHistoryDataErrorV1::Bank(cause) => resource_bank_history_error(cause),
+        Q04NativeHistoryDataErrorV1::Stopped(cause) => super::create_stopped_history::observation_error(cause),
     }
 }
 
@@ -477,13 +455,36 @@ impl Journal {
         terminal.require_preappend_positions(
             self.protected_writer_physical_names_v1()?,
             self.snapshot_sequence(),
-            self.native.file().metadata()?.len(),
+            self.native.metadata()?.len(),
             returned.iter().map(|result| result.as_ref().and_then(|result| {
                 result.as_ref().ok().map(|position| (position.commit_sequence, position.durable_bytes))
             })),
         ).map_err(|cause| JournalError::Q04RootOriginal(Box::new(
             crate::policy_compiler::create_q04::CreateQ04ErrorV1::ResourceReservation(Box::new(cause.into())),
         )))?;
+        self.validate_held_protected_names()
+    }
+
+    /// Rejoins the actual returned terminal commit before the first J append.
+    ///
+    /// # Errors
+    /// Rejects changed names, an absent terminal transaction, any intervening
+    /// native append, changed NEXT or differing durable file extent.
+    pub(crate) fn require_create_intake_preappend_position_v1(
+        &self,
+        names: super::ProtectedJournalNamesV1,
+        terminal: &JournalTransaction,
+        returned: &CommitResult,
+    ) -> Result<(), JournalError> {
+        self.validate_held_protected_names()?;
+        if self.protected_writer_physical_names_v1()? != names
+            || !self.native.transaction_ids().contains(terminal.id())
+            || self.native.next_sequence() != returned.commit_sequence.checked_add(1)
+                .ok_or(JournalError::SequenceExhausted)?
+            || self.native.metadata()?.len() != returned.durable_bytes
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
         self.validate_held_protected_names()
     }
 
@@ -505,6 +506,18 @@ impl Journal {
         &self,
     ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
         self.require_q04_native_recipes_v1(&[])
+    }
+
+    // The actual U receiver borrows its positively returned bank reservation.
+    // Charge the SAME physical progression owner before observer Vec growth.
+    pub(crate) fn require_controller_resource_history_for_create_storage_use_v1(
+        &self,
+        original: &mut crate::controller_resource_reservation::CreateStorageUseHistoryReceivingLoanV1<'_>,
+    ) -> Result<(), crate::controller_resource_reservation::ResourceReservationErrorV1> {
+        self.ensure_healthy()?;
+        original.admit_actual_history_once(self.native.state())?;
+        self.require_controller_resource_history_v1()
+            .map_err(|cause| crate::controller_resource_reservation::ResourceReservationErrorV1::Terminal(Box::new(cause)))
     }
 
     pub(crate) fn require_controller_resource_q04_prefix_v1(
@@ -551,73 +564,7 @@ impl Journal {
 
         self.ensure_protected_authority()?;
         let witness = self.protected_writer_name_witness()?;
-        let result = (|| {
-            // Before any Q04 selfwrite there are no selected recipes yet.
-            // An empty selection still audits the entire original native
-            // history and compares its complete replay to this same owner.
-            if recipes.len() > self.native.limits().maximum_transactions
-                || (0..recipes.len()).any(|index| {
-                    (0..index).any(|prior| {
-                        recipes.transaction(prior).id() == recipes.transaction(index).id()
-                    })
-                })
-            {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            let recipe_count = recipes.len();
-            let mut history = Q04NativeRecipeAuditV1 {
-                recipes,
-                matched: 0,
-                previous_end: 0,
-                previous_next: 1,
-                original_next,
-                bank_history:
-                    aos_sandbox_protocol::domain_ledger::resource_bank::PhysicalHistory::new(
-                        self.native.state(),
-                    ),
-            };
-            let mut reader = runtime_deployment_history::ReadAtCursorV1::new(
-                self.native.file(),
-                witness.file().byte_len(),
-            );
-            let replayed = replay_original_observed(
-                &mut reader,
-                self.native.limits(),
-                None,
-                Some(DeploymentHistoryObserverV1::Q04(&mut history)),
-            )?;
-            if let Some(history) = history.bank_history.as_ref() {
-                history
-                    .finish(
-                        &replayed.transaction_ids,
-                        self.protected_writer_physical_names_v1()?,
-                    )
-                    .map_err(|_| JournalError::ProtectedBoundary)?;
-            }
-            if history.matched != recipe_count
-                || (recipe_count == 0
-                    && original_next.is_some_and(|next| next != self.native.next_sequence()))
-                || history.previous_end != witness.file().byte_len()
-                || history.previous_next != self.native.next_sequence()
-                || replayed.durable_end != witness.file().byte_len()
-                || replayed.next_sequence != self.native.next_sequence()
-                || replayed.committed_transactions != self.native.committed_transactions()
-                || replayed.transaction_ids != *self.native.transaction_ids()
-                || replayed.committed_namespaces != *self.native.committed_namespaces()
-                || replayed.state != *self.native.state()
-                || replayed.materialized_bytes != self.native.materialized_bytes()
-                || replayed.idempotency != self.idempotency
-                || !replayed.source_challenge_history.is_empty()
-                || !self.source_challenge_history.is_empty()
-                || replayed.source_original_replay.has_dependencies()
-                || self.source_original_replay.has_dependencies()
-                || replayed.source_history_compacted != self.source_history_compacted
-                || replayed.q04_lower_history_present != self.q04_lower_history_present
-            {
-                return Err(JournalError::StaleAuthoritySnapshot);
-            }
-            Ok(())
-        })();
+        let result = self.audit_original_native_recipe_view_v1(recipes, original_next, &witness, None);
         let bookend = self.validate_protected_writer_name_witness(&witness);
         match (result, bookend) {
             (Ok(()), Ok(())) => Ok(()),
@@ -631,6 +578,68 @@ impl Journal {
             }),
         }
     }
+
+    // Shared nonauthorizing readback mechanics: purpose owners retain their
+    // distinct entry checks and error/bookend projection around this parser.
+    fn audit_original_native_recipe_view_v1(
+        &self,
+        recipes: PreflightTransactionViewV1<'_>,
+        original_next: Option<u64>,
+        witness: &ProtectedWriterNameWitness,
+        selected_names: Option<ProtectedJournalNamesV1>,
+    ) -> Result<(), JournalError> {
+        // Before any Q04 selfwrite there are no selected recipes yet.
+        // An empty selection still audits the entire original native
+        // history and compares its complete replay to this same owner.
+        Q04NativeRecipeAuditCoreV1::validate_recipes_v1(
+            &recipes, self.native.limits().maximum_transactions,
+        ).map_err(q04_history_data_error_v1)?;
+        // Select the original strict Controller hook at the same custody
+        // boundary and only after the unchanged recipe geometry validation.
+        let stopped = super::create_stopped_history::NativeTerminalSelectionV1::from_original_v1(self)?
+            .map(super::create_stopped_history::NativeTerminalSelectionV1::into_observation_v1);
+        let bank = aos_sandbox_protocol::domain_ledger::resource_bank::PhysicalHistory::new(self.native.state());
+        let mut history = Q04NativeRecipeAuditV1 {
+            core: Q04NativeRecipeAuditCoreV1::from_validated_recipe_data_v1(
+                recipes, original_next, bank, stopped),
+        };
+        let reader = self.native.captured_reader(witness.file().byte_len());
+        let replayed = replay_coordinator_observed_v1(
+            reader,
+            self.native.limits(),
+            None,
+            Some(DeploymentHistoryObserverV1::Q04(&mut history)),
+        )?;
+        let names = if history.core.requires_names_v1() {
+            Some(match selected_names {
+                Some(names) => names,
+                None => self.protected_writer_physical_names_v1()?,
+            })
+        } else { None };
+        history.core.finish_v1(replayed.native.transaction_ids_data_v1(), names,
+            witness.file().byte_len(), self.native.next_sequence())
+            .map_err(q04_history_data_error_v1)?;
+        if replayed.durable_end != witness.file().byte_len()
+            || replayed.next_sequence != self.native.next_sequence()
+            || replayed.committed_transactions != self.native.committed_transactions()
+            || replayed.native.transaction_ids_data_v1() != self.native.transaction_ids()
+            || replayed.native.committed_namespaces_data_v1() != self.native.committed_namespaces()
+            || replayed.native.state_data_v1() != self.native.state()
+            || replayed.native.materialized_bytes_data_v1() != self.native.materialized_bytes()
+            || replayed.native.idempotency_data_v1() != self.native.idempotency()
+            || !replayed.source_challenge_history.is_empty()
+            || !self.source_challenge_history.is_empty()
+            || replayed.source_original_replay.has_dependencies()
+            || self.source_original_replay.has_dependencies()
+            || replayed.source_history_compacted != self.source_history_compacted
+            || replayed.q04_lower_history_present != self.q04_lower_history_present
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        Ok(())
+    }
+
+
 
     pub(crate) fn readback_controller_q04_phase_v1(
         &mut self,
@@ -697,11 +706,38 @@ impl Journal {
     ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
         self.validate_held_protected_names()?;
         if self.native.next_sequence() != result.commit_sequence.checked_add(1).ok_or(JournalError::SequenceExhausted)?
-            || self.native.file().metadata()?.len() != result.durable_bytes
+            || self.native.metadata()?.len() != result.durable_bytes
         {
             return Err(JournalError::StaleAuthoritySnapshot.into());
         }
         self.validate_held_protected_names()?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod create_storage_use_history_error_tests {
+    use super::*;
+    use aos_sandbox_protocol::domain_ledger::resource_bank::ResourceBankDataError;
+
+    #[test]
+    fn actual_progress_allocation_error_survives_native_boundary_projection() {
+        let allocation = Vec::<u8>::new().try_reserve(usize::MAX).unwrap_err();
+        let original_message = allocation.to_string();
+
+        let projected = resource_bank_history_error(ResourceBankDataError::Representation(allocation));
+
+        let JournalError::Q04RootOriginal(original) = projected else { panic!("native allocation cause lost"); };
+        let crate::policy_compiler::create_q04::CreateQ04ErrorV1::ResourceReservation(original) = *original
+            else { panic!("resource cause lost"); };
+        let crate::controller_resource_reservation::ResourceReservationErrorV1::Representation(original) = *original
+            else { panic!("actual allocation error replaced"); };
+        assert_eq!(original.to_string(), original_message);
+    }
+
+    #[test]
+    fn existing_corrupt_history_keeps_its_protected_boundary_category() {
+        assert!(matches!(resource_bank_history_error(ResourceBankDataError::CorruptLedger),
+            JournalError::ProtectedBoundary));
     }
 }

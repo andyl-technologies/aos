@@ -21,11 +21,24 @@ use crate::{
     SandboxId, SignatureVerificationError, TrustScopeId, verify_signature,
 };
 
+mod trust_capture;
+pub use trust_capture::{OwnershipLeaseTrustAnchorConstructionV1, OwnershipLeaseTrustAnchorClosedV1};
+
+pub mod retained;
+
 /// Fixed v1 guard removed from every locally derived lease duration.
 pub const LEASE_SAFETY_MARGIN_SECONDS: u64 = 5;
 /// Maximum v1 disagreement between elapsed wall time and `CLOCK_BOOTTIME`.
 pub const CLOCK_PAIR_TOLERANCE_NANOSECONDS: u64 = 2_000_000_000;
 const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
+
+/// Reports failure to obtain a local paired-clock observation.
+///
+/// The observation is input to cryptographic liveness checking only. It is not
+/// a sealed protected-clock capability and cannot authorize a broker effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("local ownership clock observation is unavailable")]
+pub struct OwnershipClockObservationError;
 
 /// Labels an untrusted paired-clock reader configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +142,52 @@ impl RawPairedClockSample {
             .filter(|seconds| *seconds > 0)
             .and_then(|seconds| seconds.checked_mul(NANOSECONDS_PER_SECOND))
             .and_then(|remaining| self.boottime_nanoseconds().checked_add(remaining))
+    }
+
+    /// Projects the existing lease skew and safety margin from this original sample.
+    ///
+    /// The returned comparison DATA authenticates neither the sample nor the
+    /// lease. It must not replace an already retained original lease deadline.
+    ///
+    /// # Errors
+    /// Rejects exhausted authority or overflow using the same lease projection
+    /// errors as the original local-lease preparation engine.
+    pub fn conservative_lease_expiry_deadline_data_v2(
+        self,
+        authority_expires_seconds: i64,
+        maximum_clock_skew_seconds: u64,
+    ) -> Result<u64, OwnershipLeaseVerificationError> {
+        let guard = maximum_clock_skew_seconds
+            .checked_add(LEASE_SAFETY_MARGIN_SECONDS)
+            .and_then(|value| i64::try_from(value).ok())
+            .ok_or(OwnershipLeaseVerificationError::DeadlineOverflow)?;
+        let remaining = authority_expires_seconds
+            .checked_sub(guard)
+            .and_then(|end| end.checked_sub(self.wall_seconds))
+            .filter(|seconds| *seconds > 0)
+            .ok_or(OwnershipLeaseVerificationError::AuthorityExpired)?;
+        let duration = u64::try_from(remaining)
+            .ok()
+            .and_then(|seconds| seconds.checked_mul(NANOSECONDS_PER_SECOND))
+            .ok_or(OwnershipLeaseVerificationError::DeadlineOverflow)?;
+        self.boottime_nanoseconds
+            .checked_add(duration)
+            .ok_or(OwnershipLeaseVerificationError::DeadlineOverflow)
+    }
+
+    /// Compares boot, rollback and elapsed-clock agreement as inert DATA.
+    ///
+    /// Unlike [`Self::validate_later_sample`], this calculation does not require
+    /// equal reader-configuration labels. A closed native consumer must retain
+    /// and independently authenticate both actual clock origins; relabeling a
+    /// sample or this pure comparison cannot supply that provenance.
+    ///
+    /// # Errors
+    /// Rejects changed boot, rollback, overflow or excessive clock divergence.
+    pub fn validate_same_boot_elapsed_data_v1(self, later: Self)
+        -> Result<(), OwnershipLeaseVerificationError>
+    {
+        validate_same_boot_elapsed(self, later)
     }
 
     /// Checks that a later sample preserves the existing paired-clock policy.
@@ -323,7 +382,62 @@ pub struct OwnershipLeaseTrustAnchor {
     public_key: [u8; 32],
 }
 
+/// Borrows the exact public trust coordinates from one existing anchor.
+///
+/// This view performs no observation or verification and carries no current
+/// authority. Its private construction preserves the actual anchor's fields;
+/// callers still establish the protected origin and independently compare any
+/// separately pinned verifier authority. It exposes no signing secret or
+/// mutable policy and allocates nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct OwnershipLeaseTrustAnchorComparisonV1<'anchor> {
+    policy_descriptor: &'anchor ObjectDescriptor,
+    trust_scope: TrustScopeId,
+    authority: &'anchor KeyReference,
+    public_key: &'anchor [u8; 32],
+}
+
+impl OwnershipLeaseTrustAnchorComparisonV1<'_> {
+    /// Borrows the descriptor of the complete configured canonical trust policy.
+    #[must_use]
+    pub const fn policy_descriptor(&self) -> &ObjectDescriptor {
+        self.policy_descriptor
+    }
+
+    /// Returns the exact configured trust scope as comparison DATA.
+    #[must_use]
+    pub const fn trust_scope(&self) -> TrustScopeId {
+        self.trust_scope
+    }
+
+    /// Borrows the anchor's exact key identifier, generation, fingerprint and usage.
+    #[must_use]
+    pub const fn authority(&self) -> &KeyReference {
+        self.authority
+    }
+
+    /// Borrows the actual public key whose fingerprint was checked at construction.
+    #[must_use]
+    pub const fn public_key(&self) -> &[u8; 32] {
+        self.public_key
+    }
+}
+
 impl OwnershipLeaseTrustAnchor {
+    /// Borrows the existing public policy, scope, authority and public key.
+    ///
+    /// This comparison view performs no IO, allocation, parsing or verification.
+    /// It does not project a native origin, currentness or an effect capability.
+    #[must_use]
+    pub const fn configuration_comparison_v1(&self) -> OwnershipLeaseTrustAnchorComparisonV1<'_> {
+        OwnershipLeaseTrustAnchorComparisonV1 {
+            policy_descriptor: &self.policy_descriptor,
+            trust_scope: self.trust_scope,
+            authority: &self.authority,
+            public_key: &self.public_key,
+        }
+    }
+
     /// Constructs an anchor from protected local configuration.
     ///
     /// # Errors
@@ -331,41 +445,31 @@ impl OwnershipLeaseTrustAnchor {
     /// Returns [`OwnershipLeaseVerificationError::InvalidTrustAnchor`] unless
     /// policy bytes, descriptor, scope, purpose, key, and fingerprint agree.
     pub fn from_trusted_configuration(
-        canonical_policy: Vec<u8>,
-        policy_descriptor: ObjectDescriptor,
-        trust_scope: TrustScopeId,
-        authority: KeyReference,
-        public_key: [u8; 32],
+        canonical_policy: Vec<u8>, policy_descriptor: ObjectDescriptor,
+        trust_scope: TrustScopeId, authority: KeyReference, public_key: [u8; 32],
         limits: DecodeLimits,
     ) -> Result<Self, OwnershipLeaseVerificationError> {
-        use sha2::{Digest as _, Sha256};
+        trust_capture::ordinary(
+            canonical_policy, policy_descriptor, trust_scope, authority, public_key, limits,
+        )
+    }
 
-        let policy = decode_trust_policy(&canonical_policy, limits)?;
-        crate::validate_required_features(policy.required_features())?;
-        crate::validate_descriptor_role(
-            crate::DescriptorRole::SignatureVerificationPolicy,
-            &policy_descriptor,
-        )?;
-        let computed =
-            descriptor_for_bytes(policy_descriptor.media_type().clone(), &canonical_policy);
-        if computed != policy_descriptor
-            || policy.trust_scope() != trust_scope
-            || policy.purpose() != SignaturePurpose::OwnershipLease
-            || !policy.allowed_keys().contains(&authority)
-            || authority.usage() != KeyUsage::OwnershipLease
-            || authority.generation() == 0
-            || authority.public_key_sha256()
-                != ObjectDigest::from_bytes(Sha256::digest(public_key).into())
-        {
-            return Err(OwnershipLeaseVerificationError::InvalidTrustAnchor);
-        }
-        Ok(Self {
-            canonical_policy,
-            policy_descriptor,
-            trust_scope,
-            authority,
-            public_key,
-        })
+    /// Constructs the same anchor while retaining each reached input and model.
+    ///
+    /// This accepts portable trust DATA only; its actual caller supplies the
+    /// independently protected credential originals and receiving payment.
+    ///
+    /// # Errors
+    /// Returns a closed marker while the original canonical/binding error and
+    /// partial policy remain in `capture`. Reentry performs no new decoding.
+    pub fn from_trusted_configuration_retaining_v1(
+        canonical_policy: Vec<u8>, policy_descriptor: ObjectDescriptor,
+        trust_scope: TrustScopeId, authority: KeyReference, public_key: [u8; 32],
+        limits: DecodeLimits, capture: &mut OwnershipLeaseTrustAnchorConstructionV1,
+    ) -> Result<(), OwnershipLeaseTrustAnchorClosedV1> {
+        capture.construct_once(
+            canonical_policy, policy_descriptor, trust_scope, authority, public_key, limits,
+        )
     }
 
     /// Returns the exact configured ownership-authority key generation.
@@ -621,17 +725,50 @@ pub fn verify_ownership_lease(
     expectation: OwnershipLeaseExpectation<'_>,
     limits: DecodeLimits,
 ) -> Result<VerifiedOwnershipLease, OwnershipLeaseVerificationError> {
-    let lease = decode_ownership_lease(canonical_lease, limits)?;
-    let descriptor = descriptor_for_bytes(
+    verify_ownership_lease_engine(canonical_lease, signature, anchor, expectation, limits, None)
+}
+
+fn verify_ownership_lease_engine(
+    canonical_lease: &[u8],
+    signature: &Signature,
+    anchor: &OwnershipLeaseTrustAnchor,
+    expectation: OwnershipLeaseExpectation<'_>,
+    limits: DecodeLimits,
+    capture: Option<&mut retained::LeaseVerificationWorkV1>,
+) -> Result<VerifiedOwnershipLease, OwnershipLeaseVerificationError> {
+    let selected = capture.is_some();
+    let mut work = crate::retained::CaptureValueV1::new(retained::LeaseVerificationWorkV1::default(), capture);
+    verify_ownership_lease_work(canonical_lease, signature, anchor, expectation, limits, &mut work, selected)
+}
+
+fn verify_ownership_lease_work(
+    canonical_lease: &[u8],
+    signature: &Signature,
+    anchor: &OwnershipLeaseTrustAnchor,
+    expectation: OwnershipLeaseExpectation<'_>,
+    limits: DecodeLimits,
+    work: &mut retained::LeaseVerificationWorkV1,
+    selected: bool,
+) -> Result<VerifiedOwnershipLease, OwnershipLeaseVerificationError> {
+    work.lease = Some(if selected {
+        crate::format::authorization_capture::decode_ownership_lease_retaining_v1(
+            canonical_lease, limits, &mut work.decode)?;
+        work.decode.take_model_once()?
+    } else {
+        decode_ownership_lease(canonical_lease, limits)?
+    });
+    let lease = work.lease.as_ref().ok_or(OwnershipLeaseVerificationError::ContextMismatch)?;
+    work.descriptor = Some(descriptor_for_bytes(
         crate::MediaType::new(crate::PortableMediaType::OwnershipLease.as_str().to_owned())
             .map_err(|error| CanonicalCborError::InvalidSemantics {
                 object: "ownership lease media type",
                 message: error.to_string(),
             })?,
         canonical_lease,
-    );
+    ));
+    let descriptor = work.descriptor.as_ref().ok_or(OwnershipLeaseVerificationError::ContextMismatch)?;
     let statement = signature.statement();
-    if statement.subject() != &descriptor
+    if statement.subject() != descriptor
         || statement.purpose() != SignaturePurpose::OwnershipLease
         || statement.signer() != &anchor.authority
         || statement.verification_policy() != &anchor.policy_descriptor
@@ -641,13 +778,10 @@ pub fn verify_ownership_lease(
     {
         return Err(OwnershipLeaseVerificationError::SignatureStatementMismatch);
     }
-    verify_signature(
-        signature,
-        &anchor.canonical_policy,
-        &anchor.public_key,
-        expectation.clock.wall_seconds,
-        limits,
-    )?;
+    let verified_signature = crate::crypto::verify_signature_engine(
+        signature, &anchor.canonical_policy, &anchor.public_key,
+        expectation.clock.wall_seconds, limits, selected.then_some(&mut work.crypto));
+    retain_lease_signature_result(verified_signature, selected.then_some(&mut work.signature))?;
     if !lease
         .assignment()
         .matches_broker_assignment(expectation.assignment)
@@ -671,6 +805,7 @@ pub fn verify_ownership_lease(
     if earliest < lease.authority_issued_seconds() || latest >= lease.authority_expires_seconds() {
         return Err(OwnershipLeaseVerificationError::AuthorityExpired);
     }
+    let lease = work.lease.take().ok_or(OwnershipLeaseVerificationError::ContextMismatch)?;
     Ok(VerifiedOwnershipLease {
         lease,
         authority: anchor.authority.clone(),
@@ -701,7 +836,36 @@ pub fn verify_ownership_transaction_receipt_signature(
     verification_wall_seconds: i64,
     limits: DecodeLimits,
 ) -> Result<(), OwnershipLeaseVerificationError> {
-    let descriptor = descriptor_for_bytes(
+    verify_ownership_transaction_receipt_signature_engine(canonical_receipt, signature, anchor, authority_issued_seconds, authority_expires_seconds, verification_wall_seconds, limits, None)
+}
+
+fn verify_ownership_transaction_receipt_signature_engine(
+    canonical_receipt: &[u8],
+    signature: &Signature,
+    anchor: &OwnershipLeaseTrustAnchor,
+    authority_issued_seconds: i64,
+    authority_expires_seconds: i64,
+    verification_wall_seconds: i64,
+    limits: DecodeLimits,
+    capture: Option<&mut retained::ReceiptVerificationWorkV1>,
+) -> Result<(), OwnershipLeaseVerificationError> {
+    let selected = capture.is_some();
+    let mut work = crate::retained::CaptureValueV1::new(retained::ReceiptVerificationWorkV1::default(), capture);
+    verify_ownership_transaction_receipt_signature_work(canonical_receipt, signature, anchor, authority_issued_seconds, authority_expires_seconds, verification_wall_seconds, limits, &mut work, selected)
+}
+
+fn verify_ownership_transaction_receipt_signature_work(
+    canonical_receipt: &[u8],
+    signature: &Signature,
+    anchor: &OwnershipLeaseTrustAnchor,
+    authority_issued_seconds: i64,
+    authority_expires_seconds: i64,
+    verification_wall_seconds: i64,
+    limits: DecodeLimits,
+    work: &mut retained::ReceiptVerificationWorkV1,
+    selected: bool,
+) -> Result<(), OwnershipLeaseVerificationError> {
+    work.descriptor = Some(descriptor_for_bytes(
         crate::MediaType::new(
             crate::PortableMediaType::OwnershipTransactionReceipt
                 .as_str()
@@ -712,9 +876,10 @@ pub fn verify_ownership_transaction_receipt_signature(
             message: error.to_string(),
         })?,
         canonical_receipt,
-    );
+    ));
+    let descriptor = work.descriptor.as_ref().ok_or(OwnershipLeaseVerificationError::ContextMismatch)?;
     let statement = signature.statement();
-    if statement.subject() != &descriptor
+    if statement.subject() != descriptor
         || statement.purpose() != SignaturePurpose::OwnershipLease
         || statement.signer() != &anchor.authority
         || statement.verification_policy() != &anchor.policy_descriptor
@@ -724,13 +889,10 @@ pub fn verify_ownership_transaction_receipt_signature(
     {
         return Err(OwnershipLeaseVerificationError::SignatureStatementMismatch);
     }
-    verify_signature(
-        signature,
-        &anchor.canonical_policy,
-        &anchor.public_key,
-        verification_wall_seconds,
-        limits,
-    )?;
+    let verified_signature = crate::crypto::verify_signature_engine(
+        signature, &anchor.canonical_policy, &anchor.public_key,
+        verification_wall_seconds, limits, selected.then_some(&mut work.crypto));
+    retain_lease_signature_result(verified_signature, selected.then_some(&mut work.signature))?;
     Ok(())
 }
 
@@ -1095,26 +1257,9 @@ pub fn prepare_local_lease_record(
             LeaseFenceOutcome::Advanced
         }
     };
-    let guard = lease
-        .maximum_clock_skew_seconds()
-        .checked_add(LEASE_SAFETY_MARGIN_SECONDS)
-        .and_then(|value| i64::try_from(value).ok())
-        .ok_or(OwnershipLeaseVerificationError::DeadlineOverflow)?;
-    let remaining = lease
-        .authority_expires_seconds()
-        .checked_sub(guard)
-        .and_then(|end| end.checked_sub(verified.verification_clock.wall_seconds))
-        .filter(|seconds| *seconds > 0)
-        .ok_or(OwnershipLeaseVerificationError::AuthorityExpired)?;
-    let duration = u64::try_from(remaining)
-        .ok()
-        .and_then(|seconds| seconds.checked_mul(NANOSECONDS_PER_SECOND))
-        .ok_or(OwnershipLeaseVerificationError::DeadlineOverflow)?;
-    let deadline = verified
-        .verification_clock
-        .boottime_nanoseconds
-        .checked_add(duration)
-        .ok_or(OwnershipLeaseVerificationError::DeadlineOverflow)?;
+    let deadline = verified.verification_clock.conservative_lease_expiry_deadline_data_v2(
+        lease.authority_expires_seconds(), lease.maximum_clock_skew_seconds(),
+    )?;
     if later_clock.boottime_nanoseconds >= deadline {
         return Err(OwnershipLeaseVerificationError::LocalDeadlineExpired);
     }
@@ -1146,6 +1291,13 @@ fn validate_later_clock(
     if initial.provenance != later.provenance {
         return Err(OwnershipLeaseVerificationError::ClockProvenanceMismatch);
     }
+    validate_same_boot_elapsed(initial, later)
+}
+
+fn validate_same_boot_elapsed(
+    initial: RawPairedClockSample,
+    later: RawPairedClockSample,
+) -> Result<(), OwnershipLeaseVerificationError> {
     if initial.host_boot_id != later.host_boot_id {
         return Err(OwnershipLeaseVerificationError::BootMismatch);
     }
@@ -2142,5 +2294,21 @@ mod tests {
             decode_local_lease_record(&trailing),
             Err(LocalLeaseRecordCodecError::InvalidFraming)
         );
+    }
+}
+
+
+fn retain_lease_signature_result(
+    result: Result<crate::crypto::VerifiedSignature, SignatureVerificationError>,
+    destination: Option<&mut Option<Result<crate::crypto::VerifiedSignature, SignatureVerificationError>>>,
+) -> Result<(), OwnershipLeaseVerificationError> {
+    match destination {
+        None => result.map(|_| ()).map_err(OwnershipLeaseVerificationError::from),
+        Some(destination) => {
+            *destination = Some(result);
+            destination.as_ref().ok_or(OwnershipLeaseVerificationError::ContextMismatch)?
+                .as_ref().map(|_| ())
+                .map_err(|cause| OwnershipLeaseVerificationError::from(cause.clone()))
+        }
     }
 }

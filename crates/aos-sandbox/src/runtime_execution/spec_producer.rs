@@ -57,7 +57,7 @@ use crate::execution_parent_resource::{
     ExecutionParentResourceSourceErrorV1, ExecutionParentResourceSourceV1,
     revalidate_execution_parent_resource_from_journal_v1,
 };
-use crate::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use crate::reconciler::{ReconcilerError, accepted_create_execution_effect_from_journal_v1};
 use crate::runtime_scope::{CurrentAssignmentTarget, CurrentRuntimeScopeError};
 use crate::sandbox_spec_state::{self, SandboxSpecStateError};
@@ -134,26 +134,7 @@ pub struct ControllerExecutionSpecPreviewV1 {
     source_heads: ControllerExecutionSpecSourceHeadsV1,
 }
 
-/// Records the independent protected heads observed while deriving one spec.
-///
-/// These values identify a Controller source cut for later audit. They do not
-/// prove a Host/Storage cross-owner hold or confer effect authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ControllerExecutionSpecSourceHeadsV1 {
-    pub(crate) assignment_digest: ObjectDigest,
-    pub(crate) assignment_epoch: u64,
-    pub(crate) parent_binding: ObjectDigest,
-    pub(crate) parent_projection: ObjectDigest,
-    pub(crate) sandbox_spec_record: ObjectDigest,
-    pub(crate) environment_activation: ObjectDigest,
-    pub(crate) environment_manifest: ObjectDigest,
-    pub(crate) environment_generation: u64,
-    pub(crate) output_claim: ObjectDigest,
-    pub(crate) output_settlement: ObjectDigest,
-    pub(crate) argument_receipt: ObjectDigest,
-    pub(crate) host_argument_custody: ObjectDigest,
-    pub(crate) host_argument_sequence: u64,
-}
+pub use aos_sandbox_protocol::execution_spec_attempt::ControllerExecutionSpecSourceHeadsV1;
 
 impl ControllerExecutionSpecPreviewV1 {
     /// Borrows the complete canonical specification model.

@@ -32,8 +32,13 @@
 //! deployment policy remain the concrete transport's responsibility.
 
 pub mod authenticated;
+pub mod authority_records;
 pub mod carrier;
+pub mod client_records;
 pub mod protocol;
+pub mod trusted_policy;
+pub mod local_bootstrap;
+pub mod response_verification;
 
 use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_core::format::{decode_signature, encode_signature};
@@ -477,76 +482,7 @@ impl OwnershipTransactionReceiptV1 {
     /// bytes, invalid UTF-8 or key identity, unknown action, sentinels,
     /// trailing bytes, or non-canonical encoding.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, OwnershipReceiptError> {
-        if bytes.len() > MAXIMUM_RECEIPT_BYTES || bytes.len() < RECEIPT_FIXED_BYTES + 1 {
-            return Err(OwnershipReceiptError::InvalidEncoding);
-        }
-        let mut reader = BoundedReader::new(bytes, receipt_read_error);
-        if reader.array::<8>()? != *RECEIPT_MAGIC
-            || u16::from_be_bytes(reader.array::<2>()?) != RECEIPT_VERSION
-            || u16::from_be_bytes(reader.array::<2>()?) != RECEIPT_PROTOCOL_CODE
-            || u16::from_be_bytes(reader.array::<2>()?) != RECEIPT_PROTOCOL_MAJOR
-        {
-            return Err(OwnershipReceiptError::InvalidEncoding);
-        }
-        if u16::from_be_bytes(reader.array::<2>()?) != RECEIPT_PROTOCOL_MINOR {
-            return Err(OwnershipReceiptError::InvalidEncoding);
-        }
-        let action = OwnershipClaimAction::from_code(reader.array::<1>()?[0])
-            .map_err(|_| OwnershipReceiptError::InvalidEncoding)?;
-        if reader.array::<7>()? != [0; 7] {
-            return Err(OwnershipReceiptError::InvalidEncoding);
-        }
-        let key_id_length = usize::from(u16::from_be_bytes(reader.array::<2>()?));
-        if key_id_length == 0 || key_id_length > 255 {
-            return Err(OwnershipReceiptError::InvalidEncoding);
-        }
-        let key_id = std::str::from_utf8(reader.bytes(key_id_length)?)
-            .map_err(|_| OwnershipReceiptError::InvalidEncoding)?;
-        let authority = KeyReference::new(
-            StableKeyId::new(key_id.to_owned())
-                .map_err(|_| OwnershipReceiptError::InvalidEncoding)?,
-            u64::from_be_bytes(reader.array::<8>()?),
-            ObjectDigest::from_bytes(reader.array::<32>()?),
-            KeyUsage::OwnershipLease,
-        );
-        let request_id = reader.array::<16>()?;
-        let claim_digest = ObjectDigest::from_bytes(reader.array::<32>()?);
-        let lease_size = u64::from_be_bytes(reader.array::<8>()?);
-        let lease_digest = ObjectDigest::from_bytes(reader.array::<32>()?);
-        if !reader.is_empty()
-            || authority.generation() == 0
-            || authority.public_key_sha256().as_bytes() == &[0; 32]
-            || request_id == [0; 16]
-            || claim_digest.as_bytes() == &[0; 32]
-            || lease_size == 0
-            || lease_digest.as_bytes() == &[0; 32]
-        {
-            return Err(OwnershipReceiptError::InvalidEncoding);
-        }
-        let lease_descriptor = ObjectDescriptor::new(
-            MediaType::new(PortableMediaType::OwnershipLease.as_str().to_owned())
-                .map_err(|_| OwnershipReceiptError::InvalidEncoding)?,
-            lease_digest,
-            lease_size,
-        );
-        let canonical_bytes = encode_receipt(
-            &authority,
-            action,
-            request_id,
-            claim_digest,
-            &lease_descriptor,
-        );
-        if canonical_bytes != bytes {
-            return Err(OwnershipReceiptError::InvalidEncoding);
-        }
-        Ok(Self {
-            authority,
-            action,
-            request_id,
-            claim_digest,
-            lease_descriptor,
-            canonical_bytes,
-        })
+        response_verification::receipt::decode_receipt_engine(bytes, None)
     }
 
     /// Verifies every receipt field against a claim, authority, and lease.
@@ -561,17 +497,7 @@ impl OwnershipTransactionReceiptV1 {
         claim: &OwnershipClaimV1,
         canonical_lease: &[u8],
     ) -> Result<(), OwnershipReceiptError> {
-        let lease_media = MediaType::new(PortableMediaType::OwnershipLease.as_str().to_owned())
-            .map_err(|_| OwnershipReceiptError::InvalidEncoding)?;
-        if &self.authority != authority
-            || self.action != claim.action()
-            || self.request_id != *claim.request_id()
-            || self.claim_digest != claim.digest()
-            || self.lease_descriptor != descriptor_for_bytes(lease_media, canonical_lease)
-        {
-            return Err(OwnershipReceiptError::ContextMismatch);
-        }
-        Ok(())
+        response_verification::receipt::verify_context_engine(self, authority, claim, canonical_lease, None)
     }
 
     /// Returns the exact canonical receipt bytes.
@@ -649,17 +575,7 @@ impl UnverifiedOwnershipLeaseResponse {
         receipt: Vec<u8>,
         receipt_signature: Vec<u8>,
     ) -> Result<Self, OwnershipLeaseAcquisitionError> {
-        if lease.is_empty()
-            || lease.len() > MAXIMUM_LEASE_BYTES
-            || signature.is_empty()
-            || signature.len() > MAXIMUM_SIGNATURE_BYTES
-            || receipt.is_empty()
-            || receipt.len() > MAXIMUM_RECEIPT_BYTES
-            || receipt_signature.is_empty()
-            || receipt_signature.len() > MAXIMUM_SIGNATURE_BYTES
-        {
-            return Err(OwnershipLeaseAcquisitionError::InvalidIssuerResponse);
-        }
+        response_verification::validate_response_lengths(&lease, &signature, &receipt, &receipt_signature)?;
         Ok(Self {
             lease,
             signature,
@@ -768,6 +684,19 @@ pub struct OwnershipAuthorityVerifier {
 }
 
 impl OwnershipAuthorityVerifier {
+    /// Borrows the existing anchor's public configured trust coordinates.
+    ///
+    /// The verifier's separately pinned [`Self::authority`] remains a distinct
+    /// comparison: callers matching a native trust observation must require it
+    /// to equal this view's authority too. This method performs no native IO,
+    /// allocation, decoding, verification or currentness admission.
+    #[must_use]
+    pub const fn trust_anchor_comparison_v1(&self)
+        -> aos_sandbox_core::ownership_lease::OwnershipLeaseTrustAnchorComparisonV1<'_>
+    {
+        self.anchor.configuration_comparison_v1()
+    }
+
     /// Pins the trust anchor and exact ownership-authority key generation.
     #[must_use]
     pub const fn new(anchor: OwnershipLeaseTrustAnchor, authority: KeyReference) -> Self {
@@ -859,63 +788,7 @@ impl OwnershipAuthorityVerifier {
         response: UnverifiedOwnershipLeaseResponse,
         clock: &RawPairedClockSample,
     ) -> Result<SignedOwnershipLease, OwnershipLeaseAcquisitionError> {
-        let signature = decode_signature(&response.signature, response_limits())
-            .map_err(|_| OwnershipLeaseAcquisitionError::InvalidIssuerResponse)?;
-        if encode_signature(&signature) != response.signature {
-            return Err(OwnershipLeaseAcquisitionError::InvalidIssuerResponse);
-        }
-        let verified = verify_ownership_lease(
-            &response.lease,
-            &signature,
-            &self.anchor,
-            aos_sandbox_core::OwnershipLeaseExpectation {
-                assignment: claim.broker_assignment()?,
-                node: claim.node,
-                ownership_authority: &self.authority,
-                clock,
-            },
-            response_limits(),
-        )
-        .map_err(|_| OwnershipLeaseAcquisitionError::InvalidIssuerResponse)?;
-        validate_verified_response(claim, verified.lease())?;
-
-        let receipt = OwnershipTransactionReceiptV1::from_canonical_bytes(&response.receipt)
-            .map_err(|_| OwnershipLeaseAcquisitionError::InvalidIssuerResponse)?;
-        receipt
-            .verify_context(&self.authority, claim, &response.lease)
-            .map_err(|_| OwnershipLeaseAcquisitionError::InvalidIssuerResponse)?;
-        let receipt_signature = decode_signature(&response.receipt_signature, response_limits())
-            .map_err(|_| OwnershipLeaseAcquisitionError::InvalidIssuerResponse)?;
-        if encode_signature(&receipt_signature) != response.receipt_signature {
-            return Err(OwnershipLeaseAcquisitionError::InvalidIssuerResponse);
-        }
-        verify_ownership_transaction_receipt_signature(
-            receipt.canonical_bytes(),
-            &receipt_signature,
-            &self.anchor,
-            verified.lease().authority_issued_seconds(),
-            verified.lease().authority_expires_seconds(),
-            clock.wall_seconds(),
-            response_limits(),
-        )
-        .map_err(|_| OwnershipLeaseAcquisitionError::InvalidIssuerResponse)?;
-
-        Ok(SignedOwnershipLease {
-            canonical_lease: response.lease,
-            canonical_signature: response.signature,
-            canonical_receipt: response.receipt,
-            canonical_receipt_signature: response.receipt_signature,
-            generation: verified.lease().lease_generation(),
-            digest: verified.lease_digest(),
-            assignment: verified.lease().assignment(),
-            desired_generation: claim.desired_generation(),
-            node: verified.lease().node(),
-            authority_issued_seconds: verified.lease().authority_issued_seconds(),
-            authority_expires_seconds: verified.lease().authority_expires_seconds(),
-            maximum_clock_skew_seconds: verified.lease().maximum_clock_skew_seconds(),
-            renewal_nonce: *verified.lease().renewal_nonce(),
-            signer: signature.statement().signer().clone(),
-        })
+        response_verification::verify_response_ordinary(self, claim, response, clock)
     }
 
     /// Authenticates a response at an integrity-protected historical instant.
@@ -1402,3 +1275,6 @@ fn encode_receipt(
 fn receipt_read_error(_: ReadError) -> OwnershipReceiptError {
     OwnershipReceiptError::InvalidEncoding
 }
+
+/// Defines the ordinary portable dispatch envelopes, not a protected handler.
+pub mod service;

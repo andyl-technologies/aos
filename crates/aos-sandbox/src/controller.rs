@@ -15,6 +15,7 @@
 //! Their methods continue to borrow this controller's sole reconciler and Journal.
 
 use aos_sandbox_core::{ObjectDigest, OperationId, RawPairedClockSample};
+use aos_sandbox_ownership_protocol::OwnershipAuthorityVerifier;
 use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipAuthoritySessionClient;
 #[cfg(target_os = "linux")]
 use sha2::{Digest as _, Sha256};
@@ -33,18 +34,25 @@ use crate::public_policy_planner::{
     AuthorizedPublicPolicyPlanRequestV1, PublicPolicyPlanningErrorV1,
     ResolvedPublicPolicyPlanRequestV1,
 };
-use crate::publisher_authority::{
+use crate::publisher_admin::capabilities::{
     PublisherAuthorityError, PublisherAuthorityLimits, PublisherCapabilityRegistry,
 };
-use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
+use crate::publisher_admin::policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
+use aos_sandbox_core::OwnershipClockObservationError;
+
 use crate::{
-    AcceptOutcome, OperationPlan, OwnershipAuthorityVerifier, OwnershipClockObservationError,
+    AcceptOutcome, OperationPlan,
     OwnershipResumeError, OwnershipResumeOutcomeV1, ReconcileOutcome, Reconciler, ReconcilerError,
     SingleNodeEffectExecutor, ValidatedUnfinishedOperationV1,
 };
 
 #[cfg(target_os = "linux")]
 mod destination_slot;
+#[cfg(target_os = "linux")]
+mod execution_observation;
+
+#[cfg(target_os = "linux")]
+mod execution_admission;
 
 #[cfg(target_os = "linux")]
 mod lifecycle_boot_inventory;
@@ -91,11 +99,21 @@ pub use operator_recovery_issuance::{
 #[cfg(target_os = "linux")]
 mod original_attach_grant;
 #[cfg(target_os = "linux")]
+mod public_handle_lookup;
+#[cfg(target_os = "linux")]
+mod start_admission;
+#[cfg(target_os = "linux")]
+mod delete_admission;
+#[cfg(target_os = "linux")]
+pub(crate) use public_handle_lookup::resolve_delete_capability_handle_retaining_v1;
+#[cfg(target_os = "linux")]
 mod public_api_authorization;
 #[cfg(target_os = "linux")]
 mod protected_clock;
 #[cfg(target_os = "linux")]
 pub(crate) use protected_clock::ControllerProtectedClockV1;
+#[cfg(target_os = "linux")]
+pub(crate) use protected_clock::RetainedControllerProtectedClockAttemptV1;
 #[cfg(target_os = "linux")]
 pub(crate) use public_api_authorization::DormantCliAuthorizationOwnerV1;
 #[cfg(target_os = "linux")]
@@ -106,12 +124,14 @@ pub use original_attach_grant::{
 };
 #[cfg(target_os = "linux")]
 pub(crate) use public_api_authorization::{
-    authorize_public_operator_recovery_v1, authorize_resolved_public_mutation_v1,
+    authorize_public_operator_recovery_v1, authorize_public_operator_recovery_retaining_v1, authorize_resolved_public_mutation_v1,
+    authorize_resolved_delete_retaining_v1,
+    authorize_resolved_start_retaining_v1,
+    authorize_resolved_execution_retaining_v2,
 };
 
 const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-request.v1\0";
 #[cfg(target_os = "linux")]
-const PUBLIC_REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-public-request.v1\0";
 const MAXIMUM_ACTIVATION_BYTES: usize = 1024 * 1024;
 const MAXIMUM_PENDING_OPERATIONS: usize = 1_000_000;
 const MAXIMUM_RECONCILIATION_QUANTUM: usize = 4096;
@@ -614,6 +634,20 @@ where
         input.hold(self.reconciler.journal_mut())
     }
 
+    /// Runs the actual cold Create observer barrier before public ingress.
+    ///
+    /// This opens no effect or recovery purpose. The original Controller is
+    /// poisoned when authenticated native recovery custody is unavailable.
+    ///
+    /// # Errors
+    /// Refuses cold public Create success, unhealthy custody or malformed state.
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    pub fn coordinate_cold_create_stopped_observer_once_v1(&mut self)
+        -> Result<(), crate::journal::CreateStoppedColdObserverClosedV1> {
+        self.reconciler.coordinate_cold_create_stopped_observer_once_v1()
+    }
+
     /// Completes a fixed provisioned genesis pair through the actual executor.
     ///
     /// The production owner joins its existing Source writer and protected
@@ -711,7 +745,8 @@ where
         let global = crate::journal::controller_source_successor_issuance::retained(journal)
             .map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
         let different_global = global.as_ref().map(|saved| saved.packet.intent())
-            .transpose()?.is_some_and(|intent| intent.project() != input.project());
+            .transpose().map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?
+            .is_some_and(|intent| intent.project() != input.project());
         if selected.is_some() || different_global {
             input.has_retained_attempt(journal)?;
             input.recheck()?;
@@ -825,7 +860,7 @@ where
         profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
         credentials: &'credentials mut crate::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
     ) -> Result<
-        crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2,
+        aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2,
         crate::policy_compiler::FailedOriginalSourceSuccessorInvocationV2<'writers, 'profile, 'credentials>,
     > {
         self.reconciler.issue_source_successor_v2(profile, credentials)
@@ -839,7 +874,7 @@ where
     pub fn issue_project_source_successor_v3<'writers, 'profile, 'credentials>(
         &'writers mut self, profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
         credentials: &'credentials mut crate::normal_root::SourceSuccessorCredentialCustodyV2<'profile>,
-    ) -> Result<crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2, crate::policy_compiler::FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
+    ) -> Result<aos_sandbox_ledger_replay::successor::SourceSuccessorApprovalDataV2, crate::policy_compiler::FailedSourceProjectSuccessorInvocationV3<'writers, 'profile, 'credentials>> {
         self.reconciler.issue_project_source_successor_v3(profile, credentials)
     }
 
@@ -966,8 +1001,8 @@ where
     pub fn capture_existing_git_coverage_account_cut_v1(
         &mut self,
         original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
-        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
@@ -988,8 +1023,8 @@ where
     pub fn commit_existing_git_coverage_account_v1(
         &mut self,
         original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
-        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
-        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_bootstrap: &crate::publisher_admin::policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_admin::policy::VerifiedPublisherPolicySourceV1,
         original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
@@ -1083,28 +1118,9 @@ where
         peer: &crate::public_api_session::PublicApiPeer,
         handle: &[u8],
     ) -> Result<aos_sandbox_core::CapabilityId, ControllerServiceError> {
-        peer.recheck()
-            .map_err(|_| OperationCompilationError::Rejected)?;
-        let registry = PublisherCapabilityRegistry::load(
-            self.reconciler.journal_mut(),
-            PublisherAuthorityLimits::default(),
+        public_handle_lookup::resolve_public_capability_target_inner_v1(
+            self.reconciler.journal_mut(), peer, handle, None,
         )
-        .map_err(|_| OperationCompilationError::Rejected)?;
-        let resolved = registry
-            .resolve_holder_handle(handle, peer.principal(), peer.key_binding())
-            .map_err(|_| OperationCompilationError::Rejected)?;
-        if peer.project()
-            != registry
-                .resolve_current(resolved)
-                .map_err(|_| OperationCompilationError::Rejected)?
-                .claims()
-                .project
-        {
-            return Err(OperationCompilationError::Rejected.into());
-        }
-        peer.recheck()
-            .map_err(|_| OperationCompilationError::Rejected)?;
-        Ok(resolved)
     }
 
     /// Returns an issued handle only to its current authenticated TLS holder.
@@ -1188,7 +1204,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         assignment
@@ -1228,7 +1244,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
@@ -1312,7 +1328,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_slot_state::commit_current_assignment(
@@ -1348,7 +1364,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_slot_state::commit_current(
@@ -1400,7 +1416,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_state::commit_current(
@@ -1646,7 +1662,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::mount_attempt::reconcile_current_inventory(
@@ -1921,31 +1937,6 @@ where
         crate::host_catalog_reconciliation::recover_pending(self.reconciler.journal_mut())
     }
 
-    /// Publishes one exact durable pending catalog and records Host confirmation.
-    ///
-    /// A lost or rejected exchange leaves the pending record unchanged. The
-    /// caller may reacquire the configured Host channel and retry the recovered
-    /// bytes; Host publication and exact replay are both successful outcomes.
-    ///
-    /// # Errors
-    ///
-    /// Rejects substituted pending state, Host identity or protocol failure,
-    /// mismatched receipts, elapsed deadlines, and failed confirmation commits.
-    #[cfg(target_os = "linux")]
-    pub fn dispatch_host_catalog(
-        &mut self,
-        pending: crate::DurablePendingHostCatalogV1,
-        client: crate::host_catalog_publication::HostCatalogPublicationClient,
-        deadline_boottime_nanoseconds: u64,
-    ) -> Result<crate::DurableCurrentHostCatalogV1, crate::HostCatalogReconciliationError> {
-        crate::host_catalog_reconciliation::dispatch(
-            self.reconciler.journal_mut(),
-            pending,
-            client,
-            deadline_boottime_nanoseconds,
-        )
-    }
-
     /// Confirms the exact pending catalog using a signed Host publication result.
     ///
     /// The transport owner must durably receive the result and revalidate its
@@ -2016,7 +2007,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_reconciliation::reconcile_current(
@@ -2051,7 +2042,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_source::plan_current(
@@ -2090,7 +2081,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_source::record_current_attempt(
@@ -2127,7 +2118,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_source::record_completion(
@@ -2178,7 +2169,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_verification::record_current(
@@ -2211,7 +2202,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_mount::prepare_current_resume(
@@ -2237,7 +2228,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         prepared.recheck(self.reconciler.journal_mut(), clock)
@@ -2264,7 +2255,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_mount::bind_resume_signed_plan(
@@ -2290,7 +2281,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         prepared.recheck(self.reconciler.journal_mut(), clock)
@@ -2318,7 +2309,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_mount::resume_current(self.reconciler.journal_mut(), prepared, clock)
@@ -2347,7 +2338,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_mount::prepare_current(
@@ -2373,7 +2364,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         prepared.recheck(self.reconciler.journal_mut(), clock)
@@ -2395,7 +2386,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_mount::bind_signed_plan(
@@ -2427,7 +2418,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_mount::admit_current(
@@ -2454,7 +2445,7 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         attempt.recheck(self.reconciler.journal_mut(), clock)
@@ -2483,106 +2474,13 @@ where
     where
         T: FnMut() -> Result<
             RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
         crate::attachment_mount::dispatch_current(
             self.reconciler.journal_mut(),
             attempt,
             client,
-            clock,
-        )
-    }
-
-    /// Issues a local holder channel from an acquired current-runtime scope.
-    ///
-    /// The complete Host and payload proof moves into the live session. Scope
-    /// identities derive from its protected holder decision, while current
-    /// publication policy determines the cache grant. Runtime issuance evidence
-    /// commits before the endpoint escapes. Current authority and the
-    /// original observation deadline are rechecked before and after commit.
-    ///
-    /// The clock must be the same protected adapter used at acquisition. The
-    /// endpoint must be delivered only to the intended execution; invalidate
-    /// its session if delivery fails. Successful issuance does not authorize
-    /// publication, and later admission requires fresh runtime authority.
-    ///
-    /// # Errors
-    ///
-    /// Rejects changed or expired runtime authority, stale execution pins,
-    /// denied policy, capacity, clock, encoding, or protected commit failures.
-    /// Post-commit failure can retain an audited capability without a live session.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn provision_current_runtime_ingress<T>(
-        &mut self,
-        sessions: &mut crate::local_sessions::LocalSessionRegistry,
-        runtime: crate::runtime_scope::CurrentRuntimeScope,
-        cache_resource: aos_sandbox_core::ResourceId,
-        config: crate::local_provisioning::LocalProvisioningPolicy,
-        clock: &mut T,
-    ) -> Result<
-        crate::local_sessions::LocalSessionEndpoint,
-        crate::local_provisioning::LocalProvisioningError,
-    >
-    where
-        T: FnMut() -> Result<
-            RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
-        >,
-    {
-        crate::local_provisioning::provision_runtime(
-            self.reconciler.journal_mut(),
-            sessions,
-            runtime,
-            cache_resource,
-            config,
-            clock,
-        )
-    }
-
-    /// Provisions a channel for an explicitly authorized local holder assignment.
-    ///
-    /// This trusted administration interface requires its caller to authorize
-    /// the principal, sandbox incarnation, assignment epoch, and retained cgroup
-    /// together. Neither guest UIDs nor incoming packet claims supply that mapping.
-    /// The clock callback must be the protected paired-clock adapter identified
-    /// by configuration, never a request-provided timestamp. Successful issuance
-    /// is not source admission or permission to publish; every use needs current
-    /// capability, policy, revocation, assignment, and resource checks.
-    ///
-    /// The returned descriptor must be delivered only to the intended execution
-    /// scope. On delivery failure, invalidate its session. Restart creates an
-    /// empty session table even when issued capability records survive.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on capacity, scope, policy, time, or protected commit
-    /// failure. No endpoint escapes on failure; post-commit failures may retain
-    /// an audited capability that has no live session.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn provision_local_ingress<T>(
-        &mut self,
-        sessions: &mut crate::local_sessions::LocalSessionRegistry,
-        scope: crate::local_sessions::LocalSessionScope,
-        anchor: aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
-        config: crate::local_provisioning::LocalProvisioningPolicy,
-        clock: &mut T,
-    ) -> Result<
-        crate::local_sessions::LocalSessionEndpoint,
-        crate::local_provisioning::LocalProvisioningError,
-    >
-    where
-        T: FnMut() -> Result<
-            aos_sandbox_core::ownership_lease::RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
-        >,
-    {
-        crate::local_provisioning::provision(
-            self.reconciler.journal_mut(),
-            sessions,
-            scope,
-            anchor,
-            config,
             clock,
         )
     }
@@ -2603,22 +2501,22 @@ where
     #[cfg(target_os = "linux")]
     pub fn register_publisher_execution<T>(
         &mut self,
-        sessions: &mut crate::publisher_sessions::PublisherSessionRegistry,
+        sessions: &mut aos_sandbox_publisher::publisher_sessions::PublisherSessionRegistry,
         listener: &mut aos_sandbox_linux::seqpacket::RecordSubjectListener,
-        service: crate::publisher_control::PublisherServiceRegistration,
-        config: crate::publisher_control::PublisherControlPolicy,
+        service: crate::publisher_admin::registration::PublisherServiceRegistration,
+        config: crate::publisher_admin::registration::PublisherControlPolicy,
         clock: &mut T,
     ) -> Result<
-        crate::publisher_ingress::PublisherExecutionRegistrationV1,
-        crate::publisher_control::PublisherControlError,
+        crate::publisher_admin::audit::PublisherExecutionRegistrationV1,
+        crate::publisher_admin::registration::PublisherControlError,
     >
     where
         T: FnMut() -> Result<
             aos_sandbox_core::ownership_lease::RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
-        crate::publisher_control::register(
+        crate::publisher_admin::registration::register(
             self.reconciler.journal_mut(),
             sessions,
             listener,
@@ -2646,65 +2544,24 @@ where
     #[cfg(target_os = "linux")]
     pub fn register_publisher_challenge<T>(
         &mut self,
-        sessions: &mut crate::publisher_sessions::PublisherSessionRegistry,
+        sessions: &mut aos_sandbox_publisher::publisher_sessions::PublisherSessionRegistry,
         instance: aos_sandbox_core::PublisherInstanceId,
-        config: crate::publisher_control::PublisherControlPolicy,
+        config: crate::publisher_admin::registration::PublisherControlPolicy,
         clock: &mut T,
     ) -> Result<
-        crate::publisher_control::PendingPublisherChallengeReceipt,
-        crate::publisher_control::PublisherControlError,
+        crate::publisher_admin::registration::PendingPublisherChallengeReceipt,
+        crate::publisher_admin::registration::PublisherControlError,
     >
     where
         T: FnMut() -> Result<
             aos_sandbox_core::ownership_lease::RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
+            aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
-        crate::publisher_control::register_challenge(
+        crate::publisher_admin::registration::register_challenge(
             self.reconciler.journal_mut(),
             sessions,
             instance,
-            config,
-            clock,
-        )
-    }
-
-    /// Joins the actual holder record to a pending challenge of a live publisher.
-    ///
-    /// The returned non-cloneable context retains both channel observations and
-    /// exclusive journal access. It checks current protected issuance and policy
-    /// consistency, but does not prove current runtime assignment, source release,
-    /// root authority, reservation, or admission. No challenge is consumed and
-    /// no signing or completion permit is issued.
-    ///
-    /// # Errors
-    /// Rejects malformed or substituted requests, absent or dead channels,
-    /// stale protected claims, revoked capabilities, unhealthy storage, and
-    /// expired or inconsistent clocks. Failure after receiving a holder record
-    /// closes its ingress; later receive or explicit invalidation removes the slot.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn join_publisher_request<'a, T>(
-        &'a mut self,
-        holders: &'a mut crate::local_sessions::LocalSessionRegistry,
-        publishers: &'a mut crate::publisher_sessions::PublisherSessionRegistry,
-        holder_session: crate::local_sessions::LocalSessionId,
-        config: crate::publisher_control::PublisherJoinPolicy,
-        clock: &mut T,
-    ) -> Result<
-        crate::publisher_control::JoinedPublisherRequest<'a>,
-        crate::publisher_control::PublisherJoinError,
-    >
-    where
-        T: FnMut() -> Result<
-            aos_sandbox_core::ownership_lease::RawPairedClockSample,
-            crate::ownership_authority::ProtectedOwnershipClockError,
-        >,
-    {
-        crate::publisher_control::join_holder_request(
-            self.reconciler.journal_mut(),
-            holders,
-            publishers,
-            holder_session,
             config,
             clock,
         )
@@ -2722,13 +2579,13 @@ where
     #[cfg(target_os = "linux")]
     pub fn release_exited_publisher(
         &mut self,
-        sessions: &mut crate::publisher_sessions::PublisherSessionRegistry,
+        sessions: &mut aos_sandbox_publisher::publisher_sessions::PublisherSessionRegistry,
         instance: aos_sandbox_core::PublisherInstanceId,
     ) -> Result<
         aos_sandbox_core::PublisherInstanceId,
-        crate::publisher_control::PublisherControlError,
+        crate::publisher_admin::registration::PublisherControlError,
     > {
-        crate::publisher_control::release_exited(self.reconciler.journal_mut(), sessions, instance)
+        crate::publisher_admin::registration::release_exited(self.reconciler.journal_mut(), sessions, instance)
     }
 
     /// Compiles and atomically admits one canonical activated request.
@@ -3834,15 +3691,9 @@ fn public_controller_request_digest(
     project: aos_sandbox_core::ProjectId,
     canonical_request: &[u8],
 ) -> [u8; 32] {
-    Sha256::new()
-        .chain_update(PUBLIC_REQUEST_DIGEST_DOMAIN)
-        .chain_update(scope.digest().as_bytes())
-        .chain_update(principal.as_bytes())
-        .chain_update(project.as_bytes())
-        .chain_update((canonical_request.len() as u64).to_be_bytes())
-        .chain_update(canonical_request)
-        .finalize()
-        .into()
+    aos_sandbox_protocol::domain_ledger::provisioning_root::finality_recover::public_operation::
+        public_controller_request_digest_v1(*scope.digest().as_bytes(),
+            principal.into_bytes(), project.into_bytes(), canonical_request)
 }
 
 fn controller_request_digest(
@@ -4153,7 +4004,7 @@ mod tests {
             .unwrap()
             .install_from_trusted_controller(
                 [1; 16],
-                crate::publisher_authority::tests::capability(capability_id, 200),
+                crate::publisher_admin::capabilities::tests::capability(capability_id, 200),
             )
             .unwrap();
         let mut controller = NodeController::new(
@@ -4335,5 +4186,133 @@ mod tests {
         assert_eq!(report.steps().len(), 2);
         assert_eq!(report.steps()[0].outcome(), ReconcileOutcome::RetryPending);
         assert_eq!(report.steps()[1].outcome(), ReconcileOutcome::EffectApplied);
+    }
+}
+
+use aos_sandbox_ownership_protocol::{OwnershipAuthority};
+
+#[cfg(target_os = "linux")]
+mod operator_create_recovery;
+mod recovered_sessions;
+
+#[cfg(target_os = "linux")]
+impl<C, E> NodeController<C, E>
+where C: ActivatedOperationCompiler, E: SingleNodeEffectExecutor {
+    /// Enters the actual finite maintenance under the installed original context.
+    ///
+    /// # Errors
+    /// Retains native payment, context, C/Source, profile or clock refusal.
+    #[doc(hidden)]
+    pub fn begin_catalog_maintenance_once_v2(&mut self,
+        original: &mut crate::CatalogMaintenanceOriginalV2,
+        bank: &std::sync::Arc<std::sync::Mutex<crate::ControllerResourceBankOpeningV1>>,
+        profile: &std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
+        runtime: &std::sync::Arc<tokio::runtime::Runtime>, shape: crate::CatalogMaintenanceSdkShapeDataV2,
+    ) -> Result<(), crate::CatalogMaintenanceClosedV2> {
+        self.reconciler.begin_catalog_maintenance_once_v2(original, bank, profile, runtime, shape)
+    }
+
+    /// Enters the real recurring no-effect refresh on this Node's current B/Source.
+    ///
+    /// # Errors
+    /// Retains changed context, native payment, current C/Source or clock refusal.
+    #[doc(hidden)]
+    pub fn begin_catalog_refresh_once_v2(&mut self,
+        original: &mut crate::CatalogMaintenanceOriginalV2,
+        bank: &std::sync::Arc<std::sync::Mutex<crate::ControllerResourceBankOpeningV1>>,
+        profile: &std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
+        runtime: &std::sync::Arc<tokio::runtime::Runtime>, shape: crate::CatalogMaintenanceSdkShapeDataV2,
+    ) -> Result<(), crate::CatalogMaintenanceClosedV2> {
+        self.reconciler.begin_catalog_refresh_once_v2(original, bank, profile, runtime, shape)
+    }
+
+    /// Borrows only the finite loan joining this Node's same private C and Source.
+    ///
+    /// # Errors
+    /// Refuses changed native original, payment, Source or the original cutoff.
+    #[doc(hidden)]
+    pub fn borrow_catalog_maintenance_interval_v2<'owner, 'controller>(
+        &'controller mut self, original: &'owner mut crate::CatalogMaintenanceOriginalV2,
+    ) -> Result<crate::ControllerCatalogMaintenanceLoanV2<'owner, 'controller>, crate::ResourceReservationErrorV1> {
+        self.reconciler.borrow_catalog_maintenance_interval_v2(original)
+    }
+
+    /// Performs every entered independent native post without taking the Session lock.
+    #[doc(hidden)]
+    pub fn finish_catalog_maintenance_once_v2(&mut self, original: &mut crate::CatalogMaintenanceOriginalV2) {
+        self.reconciler.finish_catalog_maintenance_once_v2(original)
+    }
+
+    /// Joins the genuine completed Session to this same C and all recovered roles.
+    ///
+    /// # Errors
+    /// Refuses another receiver, context, Bank, C or unfinished recovered role.
+    #[doc(hidden)]
+    pub fn require_recovered_ordinary_session_for_maintenance_v2(
+        &self, session: &crate::ControllerInitialSessionCompletedNativeBorrowV1<'_>,
+        context: &aos_sandbox_broker::controller_receiving::bank_launch::ControllerRecoveredOrdinarySessionsOriginalV2,
+        bank: &crate::ControllerResourceBankOpeningV1,
+        profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), crate::ResourceReservationErrorV1> {
+        self.reconciler.require_recovered_ordinary_session_for_maintenance_v2(session, context, bank, profile)
+    }
+
+    /// Lends actual positive native disposal using this Node's same current C.
+    ///
+    /// # Errors
+    /// Refuses incomplete Root/fresh18/catalog/native posts or changed SDK data.
+    #[doc(hidden)]
+    pub fn prepare_catalog_maintenance_storage_sdk_disposal_v3<'owner>(
+        &self,
+        original: &'owner mut crate::CatalogMaintenanceOriginalV2,
+        prepared: &crate::ControllerMaintenanceStorageRequestOriginalV3,
+        resource: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        inventory: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        native: &[u8; 64],
+    ) -> Result<
+        crate::ControllerMaintenanceStorageSdkDisposalV3<'owner>,
+        crate::ResourceReservationErrorV1,
+    > {
+        self.reconciler
+            .prepare_catalog_maintenance_storage_sdk_disposal_v3(
+                original, prepared, resource, inventory, native,
+            )
+    }
+
+    /// Lends actual positive native disposal using this Node's same current C.
+    ///
+    /// # Errors
+    /// Refuses confirmation, unfinished posts, changed receipt or repeated disposal.
+    #[doc(hidden)]
+    pub fn prepare_catalog_maintenance_sdk_disposal_v2<'owner>(
+        &self, original: &'owner mut crate::CatalogMaintenanceOriginalV2,
+        source: &crate::host_catalog_reconciliation::StartHostCatalogPublicationOriginalV2,
+        outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<crate::ControllerCatalogMaintenanceCatalogDisposalV2<'owner>, crate::ResourceReservationErrorV1> {
+        self.reconciler.prepare_catalog_maintenance_sdk_disposal_v2(original, source, outcome)
+    }
+
+    /// Borrows only genuine completed native cold comparison through this Node's C.
+    ///
+    /// # Errors
+    /// Refuses unknown population, changed families, unfinished posts or disposal.
+    #[doc(hidden)]
+    pub fn completed_catalog_maintenance_cold_native_v2<'completed>(
+        &self, original: &'completed crate::CatalogMaintenanceOriginalV2,
+        source: &crate::host_catalog_reconciliation::StartHostCatalogPublicationOriginalV2,
+    ) -> Result<crate::CatalogMaintenanceColdCompletedNativeBorrowV2<'completed>, crate::ResourceReservationErrorV1> {
+        self.reconciler.completed_catalog_maintenance_cold_native_v2(original, source)
+    }
+
+    /// Borrows this actual completed no-effect refresh through the Node's same C.
+    ///
+    /// # Errors
+    /// Refuses required31, changed canonical source, unfinished posts or disposal.
+    #[doc(hidden)]
+    pub fn completed_catalog_maintenance_refresh_native_v2<'completed>(
+        &self, original: &'completed crate::CatalogMaintenanceOriginalV2,
+        source: &crate::host_catalog_reconciliation::StartHostCatalogPublicationOriginalV2,
+    ) -> Result<crate::CatalogMaintenanceRefreshCompletedNativeBorrowV2<'completed>, crate::ResourceReservationErrorV1> {
+        self.reconciler.completed_catalog_maintenance_refresh_native_v2(original, source)
     }
 }

@@ -1,5 +1,16 @@
 //! LIFE-06 complete boot inventory aggregation and exact recovery planning.
 
+mod delete_planning;
+#[cfg(test)]
+mod completed_stop_tests;
+
+pub(crate) use delete_planning::{SelectedDeleteStoragePreparationDataV2,
+    SelectedDeleteResourceDataV4, select_first_local_delete_network_data_v4,
+    DeleteStorageSelectionErrorV2, select_first_local_delete_storage_preparation_data_v2};
+pub use delete_planning::{DeletePlanningBrokerInventoryDataV2, DeletePlanningMountInventoryDataV2, DeletePlanningNetworkInventoryDataV4,
+    delete_planning_broker_inventory_receiving_demand_v2,
+    delete_planning_broker_inventory_role_receiving_demand_v2};
+
 use aos_proto::aos::sandbox::local::v1::{
     ApplyAtomicStorageSnapshotRequest, BrokerMethod, InventoryRuntimeResponse,
     InventoryStorageResourcesResponse, RuntimeState, StorageAtomicSnapshotCheckpoint,
@@ -422,6 +433,15 @@ impl LifecycleAuthenticatedBrokerDomainInventoryV1 {
         outcome: &AuthenticatedBrokerMethodOutcomeV1,
         host_boot: [u8; 16],
     ) -> Result<Self, LifecyclePhase6ErrorV1> {
+        Self::from_authenticated_outcome_with_network_data_v4(endpoint, outcome, host_boot)
+            .map(|(model, _)| model)
+    }
+
+    fn from_authenticated_outcome_with_network_data_v4(
+        endpoint: LifecycleBootBootstrapEndpointV1,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        host_boot: [u8; 16],
+    ) -> Result<(Self, Option<aos_sandbox_protocol::ValidatedNetworkInventory>), LifecyclePhase6ErrorV1> {
         if !matches!(
             endpoint,
             LifecycleBootBootstrapEndpointV1::Mount | LifecycleBootBootstrapEndpointV1::Network
@@ -434,7 +454,7 @@ impl LifecycleAuthenticatedBrokerDomainInventoryV1 {
         let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         };
-        let (generation, source, mut entries) = match endpoint {
+        let (generation, source, mut entries, network) = match endpoint {
             LifecycleBootBootstrapEndpointV1::Mount => {
                 let inventory = aos_sandbox_protocol::decode_mount_inventory_response(
                     exact_body,
@@ -458,6 +478,7 @@ impl LifecycleAuthenticatedBrokerDomainInventoryV1 {
                     inventory.journal_sequence(),
                     ObjectDigest::from_bytes(Sha256::digest(exact_body).into()),
                     entries,
+                    None,
                 )
             }
             LifecycleBootBootstrapEndpointV1::Network => {
@@ -483,6 +504,7 @@ impl LifecycleAuthenticatedBrokerDomainInventoryV1 {
                     inventory.catalog_generation(),
                     ObjectDigest::from_bytes(Sha256::digest(exact_body).into()),
                     entries,
+                    Some(inventory),
                 )
             }
             _ => return Err(LifecyclePhase6ErrorV1::InvalidInput),
@@ -513,7 +535,7 @@ impl LifecycleAuthenticatedBrokerDomainInventoryV1 {
                 .chain_update(entry.resource.as_bytes())
                 .chain_update(entry.identity.as_bytes());
         }
-        Ok(Self {
+        Ok((Self {
             endpoint,
             host_boot,
             session,
@@ -523,7 +545,7 @@ impl LifecycleAuthenticatedBrokerDomainInventoryV1 {
             source,
             entries,
             commitment: ObjectDigest::from_bytes(hasher.finalize().into()),
-        })
+        }, network))
     }
 
     fn require_current_successor(&self, current: &Self) -> Result<(), LifecyclePhase6ErrorV1> {
@@ -1588,6 +1610,15 @@ impl LifecycleAuthenticatedStorageInventoryV1 {
     pub fn from_authenticated_outcome(
         outcome: &AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<Self, LifecyclePhase6ErrorV1> {
+        Self::from_authenticated_outcome_with_inventory_data_v2(outcome)
+            .map(|(lifecycle, _)| lifecycle)
+    }
+
+    // Delete retains the same already-decoded workspace inventory beside the
+    // lifecycle projection. Ordinary consumers keep their existing result.
+    pub(crate) fn from_authenticated_outcome_with_inventory_data_v2(
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<(Self, aos_sandbox_protocol::ValidatedStorageInventory), LifecyclePhase6ErrorV1> {
         if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
             || outcome.method() != BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         {
@@ -1596,13 +1627,11 @@ impl LifecycleAuthenticatedStorageInventoryV1 {
         let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         };
-        aos_sandbox_protocol::decode_storage_resource_inventory_response(
+        let (workspaces, inventory) = aos_sandbox_protocol::decode_storage_resource_inventory_response_with_model(
             exact_body,
             aos_sandbox_protocol::MAXIMUM_RESPONSE_BYTES,
         )
         .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
-        let inventory = InventoryStorageResourcesResponse::decode_from_slice(exact_body)
-            .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
         if inventory.encode_to_vec().as_slice() != exact_body.as_slice() {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
@@ -1707,7 +1736,7 @@ impl LifecycleAuthenticatedStorageInventoryV1 {
                 .chain_update(transition.hold_id.map_or([0; 16], |id| id.into_bytes()))
                 .chain_update(transition.identity.as_bytes());
         }
-        Ok(Self {
+        Ok((Self {
             generation,
             source,
             source_version,
@@ -1719,7 +1748,7 @@ impl LifecycleAuthenticatedStorageInventoryV1 {
             entries,
             transitions,
             commitment: ObjectDigest::from_bytes(hasher.finalize().into()),
-        })
+        }, workspaces))
     }
 
     /// Returns the protected source generation.
@@ -2325,6 +2354,9 @@ pub struct LifecycleAuthenticatedRuntimeInventoryV1 {
     source: ObjectDigest,
     entries: Vec<LifecycleBootDomainEntryV1>,
     runtime_facts: Vec<LifecycleAuthenticatedRuntimeFactV1>,
+    stopped_namespace: Option<aos_sandbox_protocol::host_stopped_namespace::HostStoppedNamespaceDataV4>,
+    recovered_namespace: Option<aos_sandbox_protocol::host_recovered_namespace::HostRecoveredNamespaceDataV7>,
+    cleanup_lineage: Option<aos_sandbox_protocol::host_cleanup_lineage::HostCleanupLineageDataV1>,
     commitment: ObjectDigest,
 }
 
@@ -2524,10 +2556,45 @@ impl LifecycleAuthenticatedRuntimeInventoryV1 {
             .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
         if inventory.encode_to_vec().as_slice() != exact_body.as_slice()
             || inventory.runtimes.len() > super::MAXIMUM_LIFECYCLE_EXPECTATIONS
+            || !inventory.present_stop_cleanup_candidates_v1.is_empty()
         {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
 
+        if inventory.stopped_namespaces_v4.len() > 1 {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        let stopped_namespace = inventory.stopped_namespaces_v4.first()
+            .map(|bytes| aos_sandbox_protocol::host_stopped_namespace::HostStoppedNamespaceDataV4::decode_v4(bytes))
+            .transpose().map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
+        use aos_sandbox_protocol::host_stopped_namespace::HostStoppedInventoryDataV1;
+        let stopped_inventory = HostStoppedInventoryDataV1::from_inventory_v1(&inventory)
+            .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
+        let recovered_namespace = match stopped_inventory {
+            Some(HostStoppedInventoryDataV1::Recovered(row)) => Some(row),
+            _ => None,
+        };
+        let cleanup_lineage = match stopped_inventory {
+            Some(HostStoppedInventoryDataV1::Cleanup(row)) => Some(row),
+            _ => None,
+        };
+        if cleanup_lineage.as_ref().is_some_and(|row|
+            row.observation_v1().boot_v5() != &host_boot
+                || row.observation_v1().request_id_v5() != &outcome.request().request_id())
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        if recovered_namespace.as_ref().is_some_and(|recovery|
+            recovery.observation_v7().boot_v5() != &host_boot
+                || recovery.observation_v7().request_id_v5() != &outcome.request().request_id()
+                || recovery.saved_phase_v7() == aos_sandbox_protocol::host_recovered_namespace::HostRecoveryStopPhaseDataV7::AuthorizedAbsent) {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        if stopped_namespace.as_ref().is_some_and(|proof| proof.boot_v4() != &host_boot
+            || inventory.runtimes.iter().any(|row| row.runtime_handle.as_slice() == proof.runtime_v4()))
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
         let mut entries = Vec::new();
         let mut runtime_facts = Vec::new();
         entries
@@ -2595,8 +2662,20 @@ impl LifecycleAuthenticatedRuntimeInventoryV1 {
         for runtime in &mut stable_inventory.runtimes {
             runtime.observation_sequence = 0;
         }
-        let source =
-            ObjectDigest::from_bytes(Sha256::digest(stable_inventory.encode_to_vec()).into());
+        let source = if let Some(physical) = stopped_inventory
+            .and_then(|row| row.cleanup_physical_commitment_v1())
+        {
+            // Query nonces and census clocks are separately authenticated and
+            // retained below. Only immutable chain identity belongs to the
+            // stable physical projection compared by an adjacent query pair.
+            stable_inventory.cleanup_lineages_v1.clear();
+            ObjectDigest::from_bytes(Sha256::new()
+                .chain_update(b"aos.sandbox.runtime-inventory.cleanup-successor.v1\0")
+                .chain_update(stable_inventory.encode_to_vec())
+                .chain_update(physical).finalize().into())
+        } else {
+            ObjectDigest::from_bytes(Sha256::digest(stable_inventory.encode_to_vec()).into())
+        };
         let mut generation_bytes = [0_u8; 8];
         generation_bytes.copy_from_slice(&source.as_bytes()[..8]);
         let generation = u64::from_be_bytes(generation_bytes).max(1);
@@ -2631,6 +2710,9 @@ impl LifecycleAuthenticatedRuntimeInventoryV1 {
             source,
             entries,
             runtime_facts,
+            stopped_namespace,
+            recovered_namespace,
+            cleanup_lineage,
             commitment,
         })
     }
@@ -2725,6 +2807,7 @@ impl LifecycleAuthenticatedRuntimeInventoryV1 {
             || successor.generation != self.generation
             || successor.source != self.source
             || successor.entries != self.entries
+            || !cleanup_lineage_successor_data_v1(self.cleanup_lineage, successor.cleanup_lineage)
             || successor.runtime_facts.len() != self.runtime_facts.len()
             || !self
                 .runtime_facts
@@ -2744,6 +2827,25 @@ impl LifecycleAuthenticatedRuntimeInventoryV1 {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
         Ok(())
+    }
+}
+
+fn cleanup_lineage_successor_data_v1(
+    before: Option<aos_sandbox_protocol::host_cleanup_lineage::HostCleanupLineageDataV1>,
+    after: Option<aos_sandbox_protocol::host_cleanup_lineage::HostCleanupLineageDataV1>,
+) -> bool {
+    match (before, after) {
+        (None, None) => true,
+        (Some(before), Some(after)) => {
+            before.subject_v1() == after.subject_v1()
+                && before.child_v1() == after.child_v1()
+                && before.chain_commitment_v1() == after.chain_commitment_v1()
+                && before.observation_v1().boot_v5() == after.observation_v1().boot_v5()
+                && before.observation_v1().request_id_v5() != after.observation_v1().request_id_v5()
+                && before.observation_v1().boottime_interval_v5().1
+                    <= after.observation_v1().boottime_interval_v5().0
+        }
+        _ => false,
     }
 }
 

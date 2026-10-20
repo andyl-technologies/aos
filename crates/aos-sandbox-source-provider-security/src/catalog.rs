@@ -82,7 +82,7 @@ pub struct CurrentCatalogPublicationProjectionV1 {
 pub struct ProtectedCurrentCatalogPublicationV1 {
     pub(crate) projection: CurrentCatalogPublicationProjectionV1,
     pub(crate) publication: VerifiedCatalogPublicationV1,
-    pub(crate) journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    pub(crate) journal_snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
     pub(crate) catalog_key: Vec<u8>,
     pub(crate) catalog_record: Vec<u8>,
 }
@@ -147,8 +147,8 @@ impl core::fmt::Debug for ProtectedCurrentCatalogPublicationV1 {
 /// or catalog lineage equivocation.
 pub(crate) fn authorize_current_catalog_publication_v1(
     configuration: &RevalidatedProviderConfigurationV1,
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-    journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
+    journal_snapshot: aos_sandbox_source::provider_journal::ProtectedJournalSnapshot,
     publication: VerifiedCatalogPublicationV1,
 ) -> Result<ProtectedCurrentCatalogPublicationV1, SourceProviderSecurityError> {
     use aos_sandbox_source_provider_ledger::ledger::model::DecodedRecordV1;
@@ -603,7 +603,7 @@ impl ProtectedCurrentCatalogPublicationV1 {
     /// floor, current-row commitment, or complete signed-publication digest.
     pub fn require_native_catalog_binding_v3(
         &self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         claims: &NativeAcquireCatalogBindingV3,
     ) -> Result<(), SourceProviderSecurityError> {
         let raw_publication = ObjectDigest::from_bytes(
@@ -633,7 +633,7 @@ impl ProtectedCurrentCatalogPublicationV1 {
     /// namespace mismatch, or absent logical-binding row.
     pub fn select_manifest_row<'catalog>(
         &'catalog self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         canonical_manifest: &[u8],
         binding_digest: ObjectDigest,
     ) -> Result<ProtectedProviderCatalogSelectionV1<'catalog>, SourceProviderSecurityError> {
@@ -667,7 +667,7 @@ impl ProtectedCurrentCatalogPublicationV1 {
     /// head or namespace, or absent logical-binding row.
     pub fn select_held_snapshot_row<'catalog>(
         &'catalog self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         canonical_catalog: &[u8],
         binding_digest: ObjectDigest,
     ) -> Result<ProtectedProviderHeldSnapshotSelectionV1<'catalog>, SourceProviderSecurityError>
@@ -694,7 +694,7 @@ impl ProtectedCurrentCatalogPublicationV1 {
 
     pub(crate) fn validate_current(
         &self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     ) -> bool {
         journal
             .validate_source_provider_authority_snapshot(&self.journal_snapshot)
@@ -712,7 +712,7 @@ impl ProtectedProviderCatalogSelectionV1<'_> {
 
     /// Rechecks that the same protected catalog head remains current.
     #[must_use]
-    pub fn is_current(&self, journal: &aos_sandbox::ProtectedJournalAuthority<'_>) -> bool {
+    pub fn is_current(&self, journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>) -> bool {
         self.current_catalog.validate_current(journal)
     }
 }
@@ -730,7 +730,7 @@ impl ProtectedProviderHeldSnapshotSelectionV1<'_> {
 
     /// Rechecks that the same protected catalog head remains current.
     #[must_use]
-    pub fn is_current(&self, journal: &aos_sandbox::ProtectedJournalAuthority<'_>) -> bool {
+    pub fn is_current(&self, journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>) -> bool {
         self.current_catalog.validate_current(journal)
     }
 }
@@ -857,7 +857,7 @@ pub(crate) fn current_catalog_projection(
 
 pub(crate) fn current_catalog_head_matches(
     configuration: &RevalidatedProviderConfigurationV1,
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     expected_commitment: ObjectDigest,
 ) -> bool {
     use aos_sandbox_source_provider_ledger::ledger::model::DecodedRecordV1;
@@ -892,7 +892,7 @@ pub(crate) fn current_catalog_head_matches(
 
 pub(crate) fn retained_catalog_head_cleanup_status(
     configuration: &RevalidatedProviderConfigurationV1,
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
     expected_commitment: ObjectDigest,
     catalog_floor: &aos_sandbox_source_provider_protocol::ProviderCatalogFloorV1,
     verified_at_seconds: i64,
@@ -958,7 +958,7 @@ pub(crate) fn retained_catalog_head_cleanup_status(
 }
 
 fn validated_catalog_records(
-    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
 ) -> Option<std::collections::BTreeMap<Vec<u8>, Vec<u8>>> {
     journal.validate_source_provider_authority().ok()?;
     let records =
@@ -1204,7 +1204,7 @@ mod tests {
     }
 
     fn retained_test_owner(
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         row: &CatalogHeadRecordV1,
     ) -> ProtectedCurrentCatalogPublicationV1 {
         use aos_sandbox_source_provider_ledger::ledger::format::{catalog_key, encode_catalog};
@@ -1259,17 +1259,17 @@ mod tests {
     }
 
     fn put_catalog(
-        journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &mut aos_sandbox_source::provider_journal::ProtectedJournalAuthority<'_>,
         row: &CatalogHeadRecordV1,
         id: u8,
     ) {
         use aos_sandbox_source_provider_ledger::ledger::format::{catalog_key, encode_catalog};
         journal
             .commit(
-                &aos_sandbox::JournalTransaction::new(
+                &aos_sandbox_protocol::domain_ledger::transaction::JournalTransaction::new(
                     [id; 16],
-                    vec![aos_sandbox::JournalRecord::put(
-                        aos_sandbox::RecordNamespace::SourceProviderAuthority,
+                    vec![aos_sandbox_protocol::domain_ledger::transaction::JournalRecord::put(
+                        aos_sandbox_core::RecordNamespace::SourceProviderAuthority,
                         catalog_key(row.provider.authority_id(), row.catalog_generation),
                         encode_catalog(row),
                     )],
@@ -1284,10 +1284,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut journal = aos_sandbox::Journal::open_protected_at_uid(
+        let mut journal = aos_sandbox_source::provider_journal::SourceProviderJournalV1::open_protected_at_uid(
             directory.path(),
             "catalog.journal",
-            aos_sandbox::JournalLimits::default(),
+            aos_sandbox_protocol::domain_ledger::transaction::JournalLimits::default(),
             rustix::process::geteuid().as_raw(),
         )
         .unwrap()
@@ -1370,10 +1370,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut journal = aos_sandbox::Journal::open_protected_at_uid(
+        let mut journal = aos_sandbox_source::provider_journal::SourceProviderJournalV1::open_protected_at_uid(
             directory.path(),
             "catalog.journal",
-            aos_sandbox::JournalLimits::default(),
+            aos_sandbox_protocol::domain_ledger::transaction::JournalLimits::default(),
             rustix::process::geteuid().as_raw(),
         )
         .unwrap()

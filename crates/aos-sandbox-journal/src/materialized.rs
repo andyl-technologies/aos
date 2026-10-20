@@ -71,29 +71,110 @@ pub fn validate_change<'a, N: Ord + Copy>(
     maximum_bytes: usize,
     maximum_records: usize,
 ) -> Result<usize, FrameError> {
+    validate_change_engine(state, current_bytes, records, maximum_bytes, maximum_records, None)
+}
+
+/// Retains the actual current materialization lookup tuple on a failed step.
+///
+/// Positive lookup/iteration scratch retires at the original boundary; this
+/// DATA supplies neither an admitted map, count nor a native mutation permit.
+pub struct NativeMaterializedChangeOriginalsV1<N> {
+    current_key: Option<(N, Vec<u8>)>,
+    bytes: usize,
+    entries: usize,
+    attempted: bool,
+    closed: bool,
+}
+
+impl<N> NativeMaterializedChangeOriginalsV1<N> {
+    /// Creates empty fixed slots without allocation.
+    pub const fn new() -> Self {
+        Self { current_key: None, bytes: 0, entries: 0, attempted: false, closed: false }
+    }
+
+    /// Borrows the actual current tuple retained before a checked-step refusal.
+    pub fn current_key(&self) -> Option<(&N, &[u8])> {
+        self.current_key.as_ref().map(|(namespace, key)| (namespace, key.as_slice()))
+    }
+
+    /// Counts five fields plus the current tuple's namespace/key cells as DATA.
+    pub const fn receiving_metadata_cells_v1() -> usize { 7 }
+}
+
+impl<N> Default for NativeMaterializedChangeOriginalsV1<N> {
+    fn default() -> Self { Self::new() }
+}
+
+/// Runs the same projection while retaining the current failed lookup tuple.
+///
+/// # Errors
+/// Preserves ordinary arithmetic/bounds error order; reentry refuses without
+/// replacing the first tuple. The actual returned error belongs to the caller.
+///
+/// # Panics
+/// Preserves ordinary duplicate-deletion count underflow behavior.
+pub fn validate_change_retaining_v1<'a, N: Ord + Copy>(
+    state: &BTreeMap<(N, Vec<u8>), Vec<u8>>,
+    current_bytes: usize,
+    records: impl IntoIterator<Item = RecordMutationRef<'a, N>>,
+    maximum_bytes: usize,
+    maximum_records: usize,
+    original: &mut NativeMaterializedChangeOriginalsV1<N>,
+) -> Result<usize, FrameError> {
+    if original.attempted {
+        original.closed = true;
+        return Err(FrameError::MissingRetainedPayload);
+    }
+    original.attempted = true;
+    validate_change_engine(state, current_bytes, records, maximum_bytes, maximum_records, Some(original))
+}
+
+fn validate_change_engine<'a, N: Ord + Copy>(
+    state: &BTreeMap<(N, Vec<u8>), Vec<u8>>,
+    current_bytes: usize,
+    records: impl IntoIterator<Item = RecordMutationRef<'a, N>>,
+    maximum_bytes: usize,
+    maximum_records: usize,
+    mut original: Option<&mut NativeMaterializedChangeOriginalsV1<N>>,
+) -> Result<usize, FrameError> {
     let mut bytes = current_bytes;
     let mut entries = state.len();
     for record in records {
         let key = (record.namespace, record.key.to_vec());
         let existing = state.get(&key);
-        if let Some(value) = existing {
-            bytes = bytes.saturating_sub(record.key.len().saturating_add(value.len()));
-        }
-        match record.value {
-            Some(value) => {
-                if existing.is_none() {
-                    entries = entries
-                        .checked_add(1)
-                        .ok_or(FrameError::LimitExceeded("materialized record count"))?;
-                }
-                bytes = bytes
-                    .checked_add(record.key.len())
-                    .and_then(|size| size.checked_add(value.len()))
-                    .ok_or(FrameError::LimitExceeded("materialized state bytes"))?;
+        let outcome = (|| {
+            if let Some(value) = existing {
+                bytes = bytes.saturating_sub(record.key.len().saturating_add(value.len()));
             }
-            None if existing.is_some() => entries -= 1,
-            None => {}
+            match record.value {
+                Some(value) => {
+                    if existing.is_none() {
+                        entries = entries
+                            .checked_add(1)
+                            .ok_or(FrameError::LimitExceeded("materialized record count"))?;
+                    }
+                    bytes = bytes
+                        .checked_add(record.key.len())
+                        .and_then(|size| size.checked_add(value.len()))
+                        .ok_or(FrameError::LimitExceeded("materialized state bytes"))?;
+                }
+                None if existing.is_some() => entries -= 1,
+                None => {}
+            }
+            Ok(())
+        })();
+        if let Err(cause) = outcome {
+            if let Some(original) = original.as_deref_mut() {
+                original.current_key = Some(key);
+                original.bytes = bytes;
+                original.entries = entries;
+            }
+            return Err(cause);
         }
+    }
+    if let Some(original) = original.as_deref_mut() {
+        original.bytes = bytes;
+        original.entries = entries;
     }
     if bytes > maximum_bytes {
         return Err(FrameError::LimitExceeded("materialized state bytes"));
@@ -267,5 +348,31 @@ mod tests {
         assert_eq!(after.get(&(1, b"k".to_vec())), Some(&b"new".to_vec()));
         assert_eq!(after.get(&(2, b"k".to_vec())), Some(&b"other".to_vec()));
         assert_eq!(state.get(&(1, b"k".to_vec())), Some(&Vec::new()));
+    }
+}
+
+#[cfg(test)]
+mod retaining_change_tests {
+    use super::*;
+
+    #[test]
+    fn failed_checked_step_keeps_the_current_original_lookup_key_across_reentry() {
+        let state = BTreeMap::new();
+        let records = || [RecordMutationRef { namespace: 3_u8, key: b"key", value: Some(b"v") }];
+        let ordinary = validate_change(&state, usize::MAX, records(), usize::MAX, usize::MAX);
+        let mut original = NativeMaterializedChangeOriginalsV1::new();
+        let retained = validate_change_retaining_v1(
+            &state, usize::MAX, records(), usize::MAX, usize::MAX, &mut original,
+        );
+
+        assert_eq!(ordinary.unwrap_err().to_string(), retained.unwrap_err().to_string());
+        assert_eq!(original.current_key(), Some((&3, b"key".as_slice())));
+        let key = original.current_key().unwrap().1.as_ptr();
+        assert!(validate_change_retaining_v1(
+            &state, 0, records(), usize::MAX, usize::MAX, &mut original,
+        ).is_err());
+        assert_eq!(original.current_key().unwrap().1.as_ptr(), key);
+        assert_eq!(original.bytes, usize::MAX);
+        assert_eq!(original.entries, 1);
     }
 }

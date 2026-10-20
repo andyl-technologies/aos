@@ -78,6 +78,7 @@
     gitCoverageDeploymentPublicKey = "deployment-public-key";
   };
   coverageSelected = cfg.credentials.gitCoverageEnrollment != null;
+  attachmentSelected = cfg.attachmentAnchorService.enable;
   coverageLoadCredentials = lib.mapAttrsToList (
     name: credentialFile: "${credentialFile}:/run/credentials/@system/${cfg.credentials.${name}}"
   ) (lib.filterAttrs (name: _: cfg.credentials.${name} != null) coverageCredentialFields);
@@ -95,6 +96,12 @@
 in {
   options.aos.sandbox.mountBroker = {
     enable = lib.mkEnableOption "the fixed AOS sandbox mount broker";
+
+    attachmentAnchorService.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Select the image-enrolled same-main Mount service for empty attachment namespace materialization and fresh physical inventory. Its explicit Parent04 Mount F/M subdivisions, protected Session credentials and Root authority remain required; Reap is unavailable without a complete Host disposal lender.";
+    };
 
     sourceProviderSession.enable = lib.mkOption {
       type = lib.types.bool;
@@ -151,6 +158,17 @@ in {
         message = "Mount Git coverage credentials must be configured as one complete fixed four-input profile";
       }) coverageCredentialFields
       ++ [
+        {
+          assertion =
+            !attachmentSelected
+            || (config.aos.sandbox.resourceBank.parentEnclosure != null
+              && cfg.package == pkgs.aos-sandbox-mountd
+              && (import ./_fixed-systemd-profile.nix {inherit config pkgs;})
+              && !cfg.sourceProviderSession.enable
+              && !cfg.useExecutableCarrier
+              && !coverageSelected);
+          message = "selected attachment Mount requires the fixed enrolled package, systemd and explicit Parent04 subdivision, without a separate SourceProvider, executable carrier or Git cohort";
+        }
         {
           assertion = !coverageSelected || !cfg.sourceProviderSession.enable;
           message = "The first exclusive Git cohort requires an unused Source domain, not an active SourceProvider connector";
@@ -230,13 +248,18 @@ in {
         Type = "simple";
         NotifyAccess = "main";
         ExecStartPre =
-          brokerSessionInstallCommands
-          ++ lib.optionals cfg.sourceProviderSession.enable [
-            "${daemonPath} --check-selected-source-provider-authority"
-          ];
+          if attachmentSelected
+          then []
+          else brokerSessionInstallCommands
+            ++ lib.optionals cfg.sourceProviderSession.enable [
+              "${daemonPath} --check-selected-source-provider-authority"
+            ];
         # The service does not provision RootMount custody; the daemon checks
         # its fixed files, peer and signed hello before retaining the session.
-        ExecStart = "${daemonPath} ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider --selected-mount-source"}${lib.optionalString coverageSelected " --git-upload-exclusive-cohort"}";
+        ExecStart =
+          if attachmentSelected
+          then "${daemonPath} --selected-attachment-anchor-v4"
+          else "${daemonPath} ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider --selected-mount-source"}${lib.optionalString coverageSelected " --git-upload-exclusive-cohort"}";
         LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials ++ coverageLoadCredentials
           ++ lib.optionals cfg.sourceProviderSession.enable [
             "current-catalog-publication:/run/credentials/@system/${sourceProvider.credentials.catalogPublication}"
@@ -272,7 +295,7 @@ in {
         ProtectKernelLogs = true;
         ProtectKernelModules = true;
         ProtectKernelTunables = true;
-        ProtectProc = if cfg.sourceProviderSession.enable then "default" else "invisible";
+        ProtectProc = if cfg.sourceProviderSession.enable || attachmentSelected then "default" else "invisible";
         ProtectSystem = "strict";
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictRealtime = true;

@@ -1,49 +1,49 @@
-//! Dormant retained exchange for the original Host ARG_MAX observation.
+//! Retains Prepare and Accept on the same authenticated Host Session.
 //!
-//! Method 37 sends only the one signed request already bound to AOSCIA02.
-//! The protected broker-session owner retains its exact packet through
-//! ambiguity. Method 38 can query the original attempt with a fresh signed
-//! read-only request after restart. This adapter checks request identity and
-//! returns an opaque signed outcome; it does not interpret Guest evidence,
-//! admit an execution specification, or issue a second observation.
+//! Prepare does not consume AOSCIA02 or create a Guest challenge. Its exact
+//! authenticated response and terminal-currentness owner remain beside the
+//! separate Accept flight. Accept revalidates that actual predecessor before
+//! invoking the one-shot signer. Every request uses the existing retained
+//! transport engine; a failure blocks replacement and reconnect-based resend.
 
-use aos_proto::aos::sandbox::local::v1::{
-    BrokerMethod, BrokerRequestEnvelope, ObserveHostExecutionArgumentRequestV1,
-    QueryHostExecutionArgumentRequestV1,
-};
-use aos_sandbox::EffectFailure;
+use aos_proto::aos::sandbox::local::v1::{BrokerMethod, BrokerRequestEnvelope};
+use aos_sandbox::{EffectFailure, Journal};
+use aos_sandbox::controller_execution_operation::ControllerExecutionReadReceivingLoanV1;
+use aos_sandbox::ControllerResourceBankOpeningV1;
+use aos_sandbox_broker::controller_receiving::bank_launch::ControllerOperationIntakeDemandDataV1;
+use aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1;
+use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+use std::mem::size_of;
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
-use buffa::Message as _;
+use aos_sandbox_protocol::host_execution_argument::preparation::HostArgumentPreparationV2;
 
 use crate::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
 use crate::controller_service::execution_argument_observe::{
-    SignedExecutionArgumentObserveV1, SignedExecutionArgumentQueryV1,
+    SignedExecutionArgumentRequestV2,
 };
 use crate::{
     BrokerSessionSecurityError, DormantAuthenticatedBrokerSessionV1,
-    DormantBrokerRequestCoordinatesV1,
+    DormantBrokerRequestCoordinatesV1, DormantBrokerRequestPreparationV1,
+    ProtectedBrokerOutcomeCurrentnessOwnerV1,
 };
 
 const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
-    absent: "Host argument observation request custody is absent",
-    retained: "Host argument observation retains protected session recovery",
-    unusable: "Host argument session is unusable; query original attempt after recovery",
+    absent: "Host argument request custody is absent",
+    retained: "Host argument request retains protected recovery",
+    unusable: "Host argument Session is closed; only original historical recovery is permitted",
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ArgumentMethodV1 {
-    Observe,
-    Query,
-}
+enum ArgumentMethodV1 { Prepare, Accept }
 
 impl ArgumentMethodV1 {
     const fn broker_method(self) -> BrokerMethod {
         match self {
-            Self::Observe => BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT,
-            Self::Query => BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT,
+            Self::Prepare => BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2,
+            Self::Accept => BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2,
         }
     }
 }
@@ -55,218 +55,418 @@ struct ArgumentExchangeContextV1 {
     exact_body: Vec<u8>,
 }
 
-/// Holds a signed outcome without granting ARG_MAX or specification authority.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ControllerHostArgumentOutcomeV1 {
-    method: BrokerMethod,
-    attempt: ControllerExecutionArgumentAttemptV1,
-    outcome: AuthenticatedBrokerMethodOutcomeV1,
+/// Parks the real preparation return and transport owners before classification.
+#[derive(Default)]
+struct ArgumentFlightV2 {
+    exchange: RetainedBrokerExchangeV1<ArgumentExchangeContextV1>,
+    receiving: aos_sandbox_broker_session_security::HostExecutionSessionReceivingOriginalV1,
+    post: super::execution_authorize::ExecutionClientPostSlotV1,
+    post_arm: Option<Result<(), BrokerSessionSecurityError>>,
+    post_finish: Option<Result<(), BrokerSessionSecurityError>>,
+    receiving_demand: Option<Result<ResourceVector, BrokerSessionSecurityError>>,
+    receiving_check: Option<Result<(), aos_sandbox::ResourceReservationErrorV1>>,
+    preparation: Option<Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError>>,
+    issuance: Option<Result<(), EffectFailure>>,
+    context: Option<ArgumentExchangeContextV1>,
+    outcome: Option<AuthenticatedBrokerMethodOutcomeV1>,
+    currentness: Option<ProtectedBrokerOutcomeCurrentnessOwnerV1>,
+    current_before: Option<Result<(), BrokerSessionSecurityError>>,
+    classification: Option<Result<(), EffectFailure>>,
+    current_after: Option<Result<(), BrokerSessionSecurityError>>,
+    transport: Option<Result<(), EffectFailure>>,
+    closed: Option<EffectFailure>,
 }
 
-impl ControllerHostArgumentOutcomeV1 {
-    pub(crate) const fn method(&self) -> BrokerMethod {
-        self.method
+impl ArgumentFlightV2 {
+    fn entered(&self) -> bool {
+        self.preparation.is_some() || self.context.is_some() || self.exchange.has_request()
     }
 
-    pub(crate) const fn attempt(&self) -> &ControllerExecutionArgumentAttemptV1 {
-        &self.attempt
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(error) = self.receiving.failure() { return Some(error); }
+        if let Some(Err(error)) = &self.receiving_demand { return Some(error); }
+        if let Some(Err(error)) = &self.receiving_check { return Some(error); }
+        if let Some(Err(error)) = &self.issuance { return Some(error); }
+        match &self.preparation {
+            Some(Err(error))
+            | Some(Ok(DormantBrokerRequestPreparationV1::InitializationRecoveryRequired { error, .. }))
+            | Some(Ok(DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired { error, .. })) => return Some(error),
+            _ => {}
+        }
+        self.exchange.execution_failure()
+            .or_else(|| self.transport.as_ref()?.as_ref().err().map(|error| error as _))
+            .or_else(|| self.current_before.as_ref()?.as_ref().err().map(|error|
+                self.post.terminal_before_failure_v1().unwrap_or(error)))
+            .or_else(|| self.classification.as_ref()?.as_ref().err().map(|error| error as _))
+            .or_else(|| self.current_after.as_ref()?.as_ref().err().map(|error|
+                self.post.terminal_after_failure_v1().unwrap_or(error)))
+            .or_else(|| self.closed.as_ref().map(|error| error as _))
+            .or_else(|| self.post.failure())
+            .or_else(|| self.post_finish.as_ref().and_then(|v| v.as_ref().err()).map(|e| e as _))
     }
 
-    pub(crate) const fn outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
-        &self.outcome
+    fn finish_post(&mut self, session: &mut DormantAuthenticatedBrokerSessionV1) -> Result<(), EffectFailure> {
+        if self.post_arm.is_some() {
+            self.post_finish = Some(
+                self.post
+                    .native_mut_v1()
+                    .and_then(|post| session.finish_execution_client_post_v1(post))
+            );
+            if !matches!(self.post_finish, Some(Ok(()))) {
+                return Err(retryable("Host argument independently owed Session post failed"));
+            }
+        }
+        Ok(())
+    }
+
+    fn admit_receiving(
+        &mut self,
+        session: &DormantAuthenticatedBrokerSessionV1,
+        method: ArgumentMethodV1,
+        receiving: &mut ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &ControllerResourceBankOpeningV1,
+        controller: &mut Journal,
+        profile: &ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), EffectFailure> {
+        let inline = u64::try_from(size_of::<Self>().checked_mul(2)
+            .ok_or_else(|| retryable("Host argument capsule geometry overflows"))?)
+            .map_err(|_| retryable("Host argument capsule geometry overflows"))?;
+        let fixed = aos_sandbox_broker_session_security::HostExecutionSessionReceivingOriginalV1::fixed_demand_v1()
+            .and_then(|fixed| fixed.checked_add(ResourceVector::ZERO.with(D::MemoryBytes, inline)).ok())
+            .and_then(|fixed| fixed.checked_add(
+                super::execution_authorize::ExecutionClientPostSlotV1::receiving_demand_v1()?).ok())
+            .ok_or_else(|| retryable("Host argument fixed geometry overflows"))?;
+        self.receiving_check = Some(receiving.admit_stage_v1(bank, controller, profile,
+            ControllerOperationIntakeDemandDataV1::from_demand_v1(fixed)));
+        if !matches!(self.receiving_check, Some(Ok(()))) {
+            return Err(retryable("Host argument fixed receiving is unavailable"));
+        }
+        self.post_arm = Some(
+            self.post
+                .initialize_once_v1()
+                .and_then(|()| self.post.native_mut_v1())
+                .and_then(|post| session.arm_execution_client_post_v1(post))
+        );
+        if !matches!(self.post_arm, Some(Ok(()))) {
+            return Err(retryable("Host argument post could not bind its original Session"));
+        }
+        self.receiving_demand = Some(session.host_execution_argument_demand_v1(method.broker_method(), &mut self.receiving));
+        let demand = self.receiving_demand.as_ref().and_then(|v| v.as_ref().ok()).copied()
+            .ok_or_else(|| retryable("Host argument original receiving geometry failed"))?;
+        self.receiving_check = Some(receiving.admit_stage_v1(bank, controller, profile,
+            ControllerOperationIntakeDemandDataV1::from_demand_v1(demand)));
+        if !matches!(self.receiving_check, Some(Ok(()))) {
+            return Err(retryable("Host argument receiving declaration is insufficient"));
+        }
+        Ok(())
+    }
+
+    fn start(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        method: ArgumentMethodV1,
+        prepared_source: Option<&HostArgumentPreparationV2>,
+        issue: impl FnOnce(DormantBrokerRequestCoordinatesV1)
+            -> Result<SignedExecutionArgumentRequestV2, EffectFailure>,
+    ) -> Result<(), EffectFailure> {
+        if self.entered() || self.failure().is_some() {
+            self.closed.get_or_insert_with(|| retryable("Host argument flight already entered"));
+            return Err(retryable(ERRORS.unusable));
+        }
+        let mut issued = None;
+        let mut issuance = None;
+        let build = |coordinates: DormantBrokerRequestCoordinatesV1| {
+                let signed = match issue(coordinates) {
+                    Ok(signed) => signed,
+                    Err(error) => {
+                        issuance = Some(Err(error));
+                        return Err(BrokerSessionSecurityError::Currentness);
+                    }
+                };
+                if signed.method() != method.broker_method()
+                    || signed.attempt().request_id() != coordinates.request_id()
+                {
+                    issuance = Some(Err(retryable("Host argument signed request changed")));
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+                let body = signed.body().to_vec();
+                let envelope = BrokerRequestEnvelope {
+                    method: method.broker_method().into(),
+                    body: body.clone(),
+                    authorization: Some(signed.authorization().clone()).into(),
+                    ..Default::default()
+                };
+                issued = Some(ArgumentExchangeContextV1 {
+                    method, attempt: signed.attempt().clone(), exact_body: body,
+                });
+                issuance = Some(Ok(()));
+                Ok(envelope)
+            };
+        self.preparation = Some(match (method, prepared_source) {
+            (ArgumentMethodV1::Prepare, None) => session.prepare_authenticated_request_checked_fallible(
+                method.broker_method(), build, |_| true,
+            ),
+            (ArgumentMethodV1::Accept, Some(preparation)) => session.prepare_host_execution_argument_accept_v2(
+                preparation, build,
+                |request| request.session_binding() == preparation.controller_session(),
+            ),
+            _ => Err(BrokerSessionSecurityError::Currentness),
+        });
+        self.issuance = issuance;
+        self.context = issued;
+        if !matches!(self.preparation, Some(Ok(DormantBrokerRequestPreparationV1::Prepared(_)))) {
+            self.exchange.mark_failed();
+            return Err(retryable("Host argument preparation retains original failure"));
+        }
+        let Some(context) = self.context.take() else {
+            self.closed = Some(retryable("Host argument context is absent"));
+            return Err(retryable(ERRORS.unusable));
+        };
+        if let Some(Ok(DormantBrokerRequestPreparationV1::Prepared(prepared))) = self.preparation.take() {
+            self.exchange.start_generation(context, prepared);
+        }
+        Ok(())
+    }
+
+    fn drive(&mut self, session: &mut DormantAuthenticatedBrokerSessionV1) -> Result<(), EffectFailure> {
+        if self.failure().is_some() { return Err(retryable(ERRORS.unusable)); }
+        match self.exchange.drive_execution_publication(session, &ERRORS) {
+            Ok((context, outcome, currentness)) => {
+                self.context = Some(context);
+                self.outcome = Some(outcome);
+                self.currentness = Some(currentness);
+                self.transport = Some(Ok(()));
+            }
+            Err(error) => {
+                self.transport = Some(Err(error));
+                return Err(retryable(ERRORS.retained));
+            }
+        }
+        let post = self.post.native_mut_v1()
+            .map_err(|_| retryable(ERRORS.absent))?;
+        let owner = self.currentness.take().ok_or_else(|| retryable(ERRORS.absent))?;
+        let mut current = match session.retain_execution_outcome_current_with_post_v1(owner, post) {
+            Ok(current) => { self.current_before = Some(Ok(())); current }
+            Err((owner, error)) => {
+                self.currentness = Some(owner);
+                self.current_before = Some(Err(error));
+                return Err(retryable("Host argument outcome is no longer current"));
+            }
+        };
+        self.classification = Some(match (&self.context, &self.outcome) {
+            (Some(context), Some(outcome)) => classify_outcome(context, outcome),
+            _ => Err(retryable(ERRORS.absent)),
+        });
+        // The original live peer and terminal post is owed even if projection
+        // rejects the returned authenticated body.
+        self.current_after = Some(
+            self.post
+                .native_mut_v1()
+                .and_then(|post| current.revalidate_execution_with_post_v1(post))
+        );
+        self.currentness = Some(current.into_currentness_owner());
+        if self.failure().is_some() { return Err(retryable(ERRORS.unusable)); }
+        Ok(())
+    }
+
+    fn completed(&self) -> bool {
+        self.failure().is_none() && matches!(self.classification, Some(Ok(())))
+            && matches!(self.current_after, Some(Ok(())))
     }
 }
 
-/// Retains the exact original signed request until a terminal Host outcome.
+/// Retains the actual Prepare terminal alongside the independent Accept flight.
 #[derive(Default)]
 pub(crate) struct ControllerHostArgumentExchangeV1 {
-    exchange: RetainedBrokerExchangeV1<ArgumentExchangeContextV1>,
+    prepare: ArgumentFlightV2,
+    accept: ArgumentFlightV2,
+    preparation: Option<Result<HostArgumentPreparationV2, aos_sandbox_protocol::ProtocolValidationError>>,
+    accept_predecessor: Option<Result<(), BrokerSessionSecurityError>>,
+    closed: Option<EffectFailure>,
 }
 
 impl ControllerHostArgumentExchangeV1 {
-    pub(crate) const fn has_pending(&self) -> bool {
-        self.exchange.has_pending()
+    pub(crate) fn is_unentered_v2(&self) -> bool {
+        !self.prepare.entered() && !self.accept.entered()
+            && self.preparation.is_none() && self.accept_predecessor.is_none()
+            && self.closed.is_none()
     }
 
-    pub(crate) const fn requires_reconnect(&self) -> bool {
-        self.exchange.requires_reconnect()
+    pub(crate) fn has_pending(&self) -> bool {
+        self.failure().is_some()
+            || (self.prepare.entered() && !self.prepare.completed())
+            || (self.accept.entered() && !self.accept.completed())
     }
 
-    /// Sends only the original signed and durably retained method-37 request.
-    pub(crate) fn observe(
+    pub(crate) fn requires_reconnect(&self) -> bool { self.failure().is_some() }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.prepare.failure()
+            .or_else(|| self.preparation.as_ref()?.as_ref().err().map(|error| error as _))
+            .or_else(|| self.accept_predecessor.as_ref()?.as_ref().err().map(|error|
+                self.accept.post.terminal_before_failure_v1().unwrap_or(error)))
+            .or_else(|| self.accept.failure())
+            .or_else(|| self.closed.as_ref().map(|error| error as _))
+    }
+
+    pub(crate) fn prepare(
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
-        issue: impl FnOnce(
-            DormantBrokerRequestCoordinatesV1,
-        ) -> Result<SignedExecutionArgumentObserveV1, EffectFailure>,
-    ) -> Result<ControllerHostArgumentOutcomeV1, EffectFailure> {
-        if self.exchange.has_pending() {
-            return Err(retryable(
-                "another Host argument request retains session custody",
-            ));
+        receiving: &mut ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &ControllerResourceBankOpeningV1,
+        controller: &mut Journal,
+        profile: &ProductionControllerNormalRootProfileV1,
+        issue: impl FnOnce(DormantBrokerRequestCoordinatesV1, &mut Journal)
+            -> Result<SignedExecutionArgumentRequestV2, EffectFailure>,
+    ) -> Result<&HostArgumentPreparationV2, EffectFailure> {
+        if self.prepare.entered() || self.failure().is_some() {
+            return Err(retryable("Host preparation may only enter once"));
         }
-        let mut issued = None;
-        let preparation = session
-            .prepare_authenticated_request_checked_fallible(
-                ArgumentMethodV1::Observe.broker_method(),
-                |coordinates| {
-                    let signed = issue(coordinates).map_err(|_| {
-                        BrokerSessionSecurityError::manifest("protected Host argument issuer")
-                    })?;
-                    let body = signed.body().to_vec();
-                    let decoded = ObserveHostExecutionArgumentRequestV1::decode_from_slice(&body)
-                        .map_err(|_| {
-                        BrokerSessionSecurityError::manifest("canonical Host argument body")
-                    })?;
-                    if decoded.encode_to_vec() != body
-                        || decoded.canonical_attempt != signed.attempt().canonical_bytes()
-                        || signed.attempt().request_id() != coordinates.request_id()
-                    {
-                        return Err(BrokerSessionSecurityError::manifest(
-                            "Host argument request changed after signing",
-                        ));
-                    }
-                    let envelope = BrokerRequestEnvelope {
-                        method: ArgumentMethodV1::Observe.broker_method().into(),
-                        body: body.clone(),
-                        authorization: Some(signed.authorization().clone()).into(),
-                        ..Default::default()
-                    };
-                    issued = Some((signed, body));
-                    Ok(envelope)
-                },
-                |_| true,
-            )
-            .map_err(|_| {
-                self.exchange.mark_failed();
-                retryable("original Host argument attempt needs cold Query38 recovery")
-            })?;
-        let (signed, body) = issued.ok_or_else(|| {
-            self.exchange.mark_failed();
-            retryable("Host argument issuer returned no protected attempt")
-        })?;
-        self.exchange.start(
-            ArgumentExchangeContextV1 {
-                method: ArgumentMethodV1::Observe,
-                attempt: signed.attempt().clone(),
-                exact_body: body,
-            },
-            preparation,
-        );
-        self.drain(session)?.ok_or_else(|| retryable(ERRORS.absent))
+        let primary = (|| {
+            self.prepare.admit_receiving(session, ArgumentMethodV1::Prepare, receiving, bank, controller, profile)?;
+            self.prepare.start(session, ArgumentMethodV1::Prepare, None, |coordinates| issue(coordinates, controller))?;
+            self.prepare.drive(session)
+        })();
+        let after = self.prepare.finish_post(session);
+        primary?;
+        after?;
+        let body = self.prepare.outcome.as_ref().and_then(|outcome| match outcome.result() {
+            AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } => Some(exact_body.as_slice()),
+            _ => None,
+        }).ok_or_else(|| retryable("Host preparation success is absent"))?;
+        self.preparation = Some(HostArgumentPreparationV2::decode(body));
+        self.preparation.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or_else(|| retryable("Host preparation bytes are not canonical"))
     }
 
-    /// Sends a new read-only Query38 for the immutable original attempt.
-    ///
-    /// Query has its own session-selected request ID and distinct signed verb.
-    /// It never issues a Guest challenge or upgrades historical Host custody.
-    pub(crate) fn query(
+    pub(crate) fn accept(
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
-        attempt: &ControllerExecutionArgumentAttemptV1,
-        issue: impl FnOnce(
-            DormantBrokerRequestCoordinatesV1,
-        ) -> Result<SignedExecutionArgumentQueryV1, EffectFailure>,
-    ) -> Result<ControllerHostArgumentOutcomeV1, EffectFailure> {
-        if self.exchange.has_pending() {
-            return Err(retryable("another Host argument request retains custody"));
+        receiving: &mut ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &ControllerResourceBankOpeningV1,
+        controller: &mut Journal,
+        profile: &ProductionControllerNormalRootProfileV1,
+        issue: impl FnOnce(DormantBrokerRequestCoordinatesV1, &HostArgumentPreparationV2, &mut Journal)
+            -> Result<SignedExecutionArgumentRequestV2, EffectFailure>,
+    ) -> Result<(), EffectFailure> {
+        if self.failure().is_some() || !self.prepare.completed() || self.accept.entered() {
+            return Err(retryable("Host Accept has no completed original Prepare"));
         }
-        let mut issued = None;
-        let preparation = session
-            .prepare_authenticated_request_checked_fallible(
-                ArgumentMethodV1::Query.broker_method(),
-                |coordinates| {
-                    let signed = issue(coordinates).map_err(|_| {
-                        BrokerSessionSecurityError::manifest("protected Host argument query issuer")
-                    })?;
-                    let body = signed.body().to_vec();
-                    let decoded = QueryHostExecutionArgumentRequestV1::decode_from_slice(&body)
-                        .map_err(|_| {
-                            BrokerSessionSecurityError::manifest("canonical Host argument query")
-                        })?;
-                    if decoded.encode_to_vec() != body
-                        || decoded.canonical_attempt != attempt.canonical_bytes()
-                    {
-                        return Err(BrokerSessionSecurityError::manifest(
-                            "Host argument query changed after signing",
-                        ));
-                    }
-                    let envelope = BrokerRequestEnvelope {
-                        method: ArgumentMethodV1::Query.broker_method().into(),
-                        body: body.clone(),
-                        authorization: Some(signed.authorization().clone()).into(),
-                        ..Default::default()
-                    };
-                    issued = Some(body);
-                    Ok(envelope)
-                },
-                |_| true,
-            )
-            .map_err(|_| {
-                self.exchange.mark_failed();
-                retryable("Host argument query needs exact session recovery")
-            })?;
-        let body = issued.ok_or_else(|| {
-            self.exchange.mark_failed();
-            retryable("Host argument query returned no signed request")
-        })?;
-        self.exchange.start(
-            ArgumentExchangeContextV1 {
-                method: ArgumentMethodV1::Query,
-                attempt: attempt.clone(),
-                exact_body: body,
-            },
-            preparation,
-        );
-        self.drain(session)?.ok_or_else(|| retryable(ERRORS.absent))
+        let primary = (|| {
+            self.accept.admit_receiving(session, ArgumentMethodV1::Accept, receiving, bank, controller, profile)?;
+            let post = self.accept.post.native_mut_v1()
+                .map_err(|_| retryable(ERRORS.absent))?;
+            let owner = self.prepare.currentness.take().ok_or_else(|| retryable(ERRORS.absent))?;
+            match session.retain_execution_outcome_current_with_post_v1(owner, post) {
+                Ok(current) => {
+                    // The same exclusive Session cannot advance between this
+                    // terminal join and the immediately following preparation.
+                    self.prepare.currentness = Some(current.into_currentness_owner());
+                    self.accept_predecessor = Some(Ok(()));
+                }
+                Err((owner, error)) => {
+                    self.prepare.currentness = Some(owner);
+                    self.accept_predecessor = Some(Err(error));
+                    return Err(retryable("Host Accept Session differs from Prepare"));
+                }
+            }
+            let preparation = self.preparation.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or_else(|| retryable("Host preparation is absent"))?;
+            self.accept.start(session, ArgumentMethodV1::Accept, Some(preparation), |coordinates| issue(coordinates, preparation, controller))?;
+            self.accept.drive(session)
+        })();
+        let after = self.accept.finish_post(session);
+        primary?;
+        after
     }
 
-    /// Resumes the exact in-process send or authenticated response commitment.
-    pub(crate) fn drain(
+    /// Retires both positive terminals only while the original C/Source cut lives.
+    pub(crate) fn retire_positive_v1(
         &mut self,
-        session: &mut DormantAuthenticatedBrokerSessionV1,
-    ) -> Result<Option<ControllerHostArgumentOutcomeV1>, EffectFailure> {
-        if self.exchange.context().is_none() {
-            return Ok(None);
+        disposal: &aos_sandbox::controller_execution_operation::ControllerExecutionPositiveDisposalV1<'_>,
+        execution: aos_sandbox_core::ExecutionId,
+    ) -> Result<(), EffectFailure> {
+        if self.failure().is_some() || !self.prepare.completed() || !self.accept.completed() {
+            return Err(retryable("Host argument positive disposal lacks its original terminals"));
         }
-        let (context, outcome) = self.exchange.drive(session, &ERRORS)?;
-        let observation = classify_outcome(&context, &outcome);
-        if matches!(&observation, Err(EffectFailure::Permanent(_))) {
-            self.exchange.mark_failed();
+        for flight in [&self.prepare, &self.accept] {
+            let context = flight.context.as_ref().ok_or_else(|| retryable(ERRORS.absent))?;
+            if context.attempt.create_operation() != disposal.operation_v1()
+                || context.attempt.execution() != execution
+            {
+                return Err(retryable("another execution owns the Host argument terminals"));
+            }
         }
-        observation.map(Some)
+        *self = Self::default();
+        Ok(())
+    }
+
+    pub(crate) fn accepted_outcome(&self) -> Option<&AuthenticatedBrokerMethodOutcomeV1> {
+        if !self.accept.completed() { return None; }
+        self.accept.outcome.as_ref()
     }
 }
 
 fn classify_outcome(
     context: &ArgumentExchangeContextV1,
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
-) -> Result<ControllerHostArgumentOutcomeV1, EffectFailure> {
+) -> Result<(), EffectFailure> {
     let request = outcome.request();
     if outcome.method() != context.method.broker_method()
-        || (context.method == ArgumentMethodV1::Observe
-            && request.request_id() != context.attempt.request_id())
+        || request.request_id() != context.attempt.request_id()
         || request.exact_body() != context.exact_body
     {
-        return Err(EffectFailure::Permanent(
-            "Host argument outcome has the wrong signed request".to_owned(),
-        ));
+        return Err(EffectFailure::Permanent("Host argument outcome changed its original request".to_owned()));
     }
     let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
-        return Err(retryable("Host argument observation was not committed"));
+        return Err(retryable("Host argument flight has no successful terminal"));
     };
     if exact_body.is_empty() {
-        return Err(EffectFailure::Permanent(
-            "Host argument observation returned an empty signed body".to_owned(),
-        ));
+        return Err(EffectFailure::Permanent("Host argument signed body is empty".to_owned()));
     }
-    Ok(ControllerHostArgumentOutcomeV1 {
-        method: outcome.method(),
-        attempt: context.attempt.clone(),
-        outcome: outcome.clone(),
-    })
+    Ok(())
 }
 
-fn retryable(message: &'static str) -> EffectFailure {
-    EffectFailure::Retryable(message.to_owned())
+fn retryable(message: &'static str) -> EffectFailure { EffectFailure::Retryable(message.to_owned()) }
+
+/// Holds one actual output-stage forecast through the original caller's posts.
+#[derive(Default)]
+pub(crate) struct ExecutionSessionReceivingOriginalV1 {
+    original: aos_sandbox_broker_session_security::HostExecutionSessionReceivingOriginalV1,
+    demand: Option<Result<ResourceVector, BrokerSessionSecurityError>>,
+    paid: Option<Result<(), aos_sandbox::ResourceReservationErrorV1>>,
+}
+
+impl ExecutionSessionReceivingOriginalV1 {
+    pub(crate) fn admit_v1(
+        &mut self,
+        session: &DormantAuthenticatedBrokerSessionV1,
+        method: BrokerMethod,
+        receiving: &mut ControllerExecutionReadReceivingLoanV1<'_, '_>,
+        bank: &ControllerResourceBankOpeningV1,
+        controller: &mut Journal,
+        profile: &ProductionControllerNormalRootProfileV1,
+    ) -> Result<(), EffectFailure> {
+        if self.demand.is_some() || self.paid.is_some() {
+            return Err(retryable("original output receiving stage already entered"));
+        }
+        let fixed = aos_sandbox_broker_session_security::HostExecutionSessionReceivingOriginalV1::fixed_demand_v1()
+            .ok_or_else(|| retryable("output receiving fixed geometry overflows"))?;
+        self.paid = Some(receiving.admit_stage_v1(bank, controller, profile,
+            ControllerOperationIntakeDemandDataV1::from_demand_v1(fixed)));
+        if !matches!(self.paid, Some(Ok(()))) { return Err(retryable("output receiving fixed declaration refused")); }
+        self.demand = Some(session.execution_output_demand_v1(method, &mut self.original));
+        let demand = self.demand.as_ref().and_then(|v| v.as_ref().ok()).copied()
+            .ok_or_else(|| retryable("output original geometry is unavailable"))?;
+        self.paid = Some(receiving.admit_stage_v1(bank, controller, profile,
+            ControllerOperationIntakeDemandDataV1::from_demand_v1(demand)));
+        if matches!(self.paid, Some(Ok(()))) { Ok(()) }
+        else { Err(retryable("output receiving exceeds the original declaration")) }
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original.failure()
+            .or_else(|| self.demand.as_ref()?.as_ref().err().map(|cause| cause as _))
+            .or_else(|| self.paid.as_ref()?.as_ref().err().map(|cause| cause as _))
+    }
 }

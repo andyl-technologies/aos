@@ -13,7 +13,6 @@
 //! Every present attach row, including legacy byte-one and partial v3 rows,
 //! permanently refuses another transfer; readback never reconstructs custody.
 
-use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
@@ -26,6 +25,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::GuestProcessEffectErrorV1;
+
+mod record_write;
+pub(super) use record_write::RetainedProcessRecordWriteV1;
+use record_write::create_record;
 
 const LEDGER_PATH: &str = "/var/lib/aos-sandbox-agent/guest-effects-v1";
 const O_CLOEXEC: i32 = 0o2_000_000;
@@ -52,6 +55,17 @@ struct QuiesceRecord {
     quiesced: bool,
 }
 
+/// Keeps the immutable first Guest spawn origin; cold DATA cannot adopt a child.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ExecutionLifetimeRecordV1 {
+    pub(super) version: u8,
+    pub(super) origin_boottime_nanoseconds: u64,
+    pub(super) timeout_nanoseconds: u64,
+    pub(super) deadline_boottime_nanoseconds: u64,
+    pub(super) specification_digest: [u8; 32],
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct ProcessRecord {
     pub(super) version: u8,
@@ -72,6 +86,10 @@ pub(super) struct ProcessRecord {
     pub(super) cgroup: Option<u64>,
     #[serde(default)]
     pub(super) cancel_on_disconnect: Option<bool>,
+    #[serde(default)]
+    pub(super) lifetime: Option<ExecutionLifetimeRecordV1>,
+    #[serde(default)]
+    pub(super) timed_out: bool,
     pub(super) canceled: bool,
     #[serde(default)]
     pub(super) terminal: Option<StoredOutcome>,
@@ -119,7 +137,7 @@ pub(super) enum Reservation {
 pub(super) struct Ledger {
     root: PathBuf,
     effect_barrier: Arc<Mutex<()>>,
-    live: Arc<Mutex<BTreeMap<[u8; 16], crate::process::LiveProcess>>>,
+    live: Arc<Mutex<crate::process::LiveProcessRegistryV1>>,
 }
 
 impl Ledger {
@@ -132,7 +150,7 @@ impl Ledger {
         Ok(Self {
             root,
             effect_barrier: Arc::new(Mutex::new(())),
-            live: Arc::new(Mutex::new(BTreeMap::new())),
+            live: Arc::new(Mutex::new(crate::process::LiveProcessRegistryV1::default())),
         })
     }
 
@@ -144,7 +162,7 @@ impl Ledger {
         Arc::clone(&self.effect_barrier)
     }
 
-    pub(crate) fn live(&self) -> &Mutex<BTreeMap<[u8; 16], crate::process::LiveProcess>> {
+    pub(crate) fn live(&self) -> &Mutex<crate::process::LiveProcessRegistryV1> {
         &self.live
     }
 
@@ -204,8 +222,10 @@ impl Ledger {
         let process = live
             .get(&record.execution)
             .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
-        process.tree.require_active_original_scope(record)?;
-        effect(&process.tree)
+        let tree = Arc::clone(&process.tree);
+        drop(live);
+        tree.require_active_original_scope(record)?;
+        effect(&tree)
     }
 
     pub(super) fn processes(&self) -> Result<Vec<ProcessRecord>, GuestProcessEffectErrorV1> {
@@ -349,6 +369,13 @@ impl Ledger {
         Ok(())
     }
 
+    pub(super) fn write_process_retaining_v1(&self, execution: ExecutionId,
+        record: &ProcessRecord, original: &mut RetainedProcessRecordWriteV1)
+        -> Result<(), GuestProcessEffectErrorV1>
+    {
+        original.create_once(self, &self.process_path(execution), record)
+    }
+
     pub(super) fn read_process(
         &self,
         execution: ExecutionId,
@@ -374,7 +401,7 @@ impl Ledger {
         let io = process
             .attach_io
             .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
-        if process.version != 2
+        if !matches!(process.version, 2 | 3)
             || process.cgroup.is_none_or(|id| id == 0)
             || process.cancel_on_disconnect.is_none()
             || ticket == [0; 32]
@@ -429,7 +456,7 @@ impl Ledger {
             .cgroup
             .filter(|cgroup| *cgroup != 0)
             .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
-        if process.version != 2
+        if !matches!(process.version, 2 | 3)
             || process.attach_io.is_none()
             || process.canceled
             || process.terminal.is_some()
@@ -475,6 +502,12 @@ impl Ledger {
         Ok(())
     }
 
+    pub(super) fn replace_process_retaining_v1(&self, execution: ExecutionId, record: &ProcessRecord,
+        original: &mut RetainedProcessRecordWriteV1) -> Result<(), GuestProcessEffectErrorV1>
+    {
+        original.replace_once(self, &self.process_path(execution), record)
+    }
+
     fn operation_path(&self, request: &AgentOperationRequestV1) -> PathBuf {
         self.root.join(format!(
             "operation-{}",
@@ -506,8 +539,8 @@ fn verify_directory(path: &Path, private: bool) -> Result<(), GuestProcessEffect
 }
 
 fn validate_process(record: &ProcessRecord) -> Result<(), GuestProcessEffectErrorV1> {
-    if !matches!(record.version, 1 | 2)
-        || record.version == 2
+    if !matches!(record.version, 1 | 2 | 3)
+        || matches!(record.version, 2 | 3)
             && (record.cgroup.is_none_or(|id| id == 0) || record.cancel_on_disconnect.is_none())
         || record.execution == [0; 16]
         || record.incarnation == [0; 16]
@@ -517,13 +550,24 @@ fn validate_process(record: &ProcessRecord) -> Result<(), GuestProcessEffectErro
     {
         return Err(GuestProcessEffectErrorV1::LedgerConflict);
     }
+    if record.version == 3 {
+        let lifetime = record.lifetime.as_ref().ok_or(GuestProcessEffectErrorV1::LedgerConflict)?;
+        if lifetime.version != 1 || lifetime.timeout_nanoseconds == 0
+            || lifetime.specification_digest == [0; 32]
+            || lifetime.origin_boottime_nanoseconds.checked_add(lifetime.timeout_nanoseconds)
+                != Some(lifetime.deadline_boottime_nanoseconds)
+        { return Err(GuestProcessEffectErrorV1::LedgerConflict); }
+    } else if record.lifetime.is_some() || record.timed_out {
+        return Err(GuestProcessEffectErrorV1::LedgerConflict);
+    }
     if let Some(raw) = record.terminal_waitstatus {
-        if record.version != 2 {
+        if !matches!(record.version, 2 | 3) {
             return Err(GuestProcessEffectErrorV1::LedgerConflict);
         }
         let status = aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(raw)
             .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
-        let expected = crate::process::terminal_outcome(status, record.canceled);
+        let expected = if record.timed_out { crate::process::timeout_terminal_outcome_v1(status) }
+            else { crate::process::terminal_outcome(status, record.canceled) };
         if !record.terminal.as_ref().is_some_and(|terminal| {
             terminal.phase == expected.phase && terminal.result == expected.result
         }) {
@@ -532,7 +576,7 @@ fn validate_process(record: &ProcessRecord) -> Result<(), GuestProcessEffectErro
     } else if record
         .terminal
         .as_ref()
-        .is_some_and(|terminal| terminal.result.starts_with(b"AOSGER02"))
+        .is_some_and(|terminal| terminal.result.starts_with(b"AOSGER02") || terminal.result.starts_with(b"AOSGER03"))
     {
         return Err(GuestProcessEffectErrorV1::LedgerConflict);
     }
@@ -558,18 +602,6 @@ fn runtime_commitment(runtime: &AgentRuntimeBindingV1, channel: ObjectDigest) ->
     digest.update(runtime_identity(runtime));
     digest.update(channel.as_bytes());
     digest.finalize().into()
-}
-
-fn create_record<T: Serialize>(path: &Path, record: &T) -> std::io::Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(O_CLOEXEC | O_NOFOLLOW)
-        .open(path)?;
-    serde_json::to_writer(&mut file, record).map_err(std::io::Error::other)?;
-    file.flush()?;
-    file.sync_all()
 }
 
 fn replace_record<T: Serialize>(path: &Path, record: &T) -> std::io::Result<()> {
@@ -616,7 +648,7 @@ mod tests {
         let ledger = Ledger {
             root: PathBuf::new(),
             effect_barrier: Arc::new(Mutex::new(())),
-            live: Arc::new(Mutex::new(BTreeMap::new())),
+            live: Arc::new(Mutex::new(crate::process::LiveProcessRegistryV1::default())),
         };
         let mut historical = ProcessRecord {
             version: 2,
@@ -634,6 +666,7 @@ mod tests {
             attach_io: Some(AttachIoShapeV3::Pty),
             cgroup: Some(1),
             cancel_on_disconnect: Some(true),
+            lifetime: None, timed_out: false,
             canceled: false,
             terminal: None,
             terminal_waitstatus: None,
@@ -687,7 +720,7 @@ mod tests {
         let ledger = Ledger {
             root: directory.path().to_path_buf(),
             effect_barrier: Arc::new(Mutex::new(())),
-            live: Arc::new(Mutex::new(BTreeMap::new())),
+            live: Arc::new(Mutex::new(crate::process::LiveProcessRegistryV1::default())),
         };
         let process = ProcessRecord {
             version: 2,
@@ -705,6 +738,7 @@ mod tests {
             attach_io: Some(AttachIoShapeV3::Pty),
             cgroup: Some(1),
             cancel_on_disconnect: Some(true),
+            lifetime: None, timed_out: false,
             canceled: false,
             terminal: None,
             terminal_waitstatus: None,

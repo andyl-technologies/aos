@@ -10,6 +10,23 @@ use std::num::NonZeroU32;
 use std::os::fd::OwnedFd;
 use std::path::Path;
 
+mod receiving;
+pub use receiving::{
+    StoragePhysicalWorkerLoanV1, StorageBoundPhysicalWorkerLoanV1, StoragePhysicalWorkerDisposalV1,
+    StorageResidentCaptureWorkerV2, StorageCaptureWorkerBorrowV2, StorageCaptureWorkerDisposalV2,
+    StorageCaptureStopQuiescenceV4,
+    StorageRootLaunchExportReceivingLoanV2, StorageRootLaunchExportDisposalV2,
+StorageInitialSessionHelloDisposalV1, StorageSessionHelloDisposalErrorV1,
+    StorageGuestRootTemplateReceivingLoanV1,
+    StorageOutputOwedAfterOriginalV1,
+    StorageFloorPhysicalProgramReceivingV2,
+    StorageLifecycleSessionLoanV1, StorageLifecyclePositiveDisposalV1, StorageLifecycleDisposalErrorV1,
+    StorageStateRecoveryEncodingLoanV1, StorageInitialPinQuiescenceLoanV1,
+    StoragePrepareReceivingLoanV1, StoragePrepareSessionReplayLoanV1,
+                    StoragePrepareStartupJournalLoanV1,
+                    StorageReceivingClosedV1};
+use receiving::StorageReceivingOriginalV1;
+
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::inherited_fd::{
@@ -23,14 +40,13 @@ use crate::immutable_image::{
     ImmutableImageErrorV1, RetainedImmutableFileV1, retain_original_backend_pid1_v1,
 };
 use crate::controller_resource_reservation::{
-    StorageComponentEnvelopeOriginalV1, StorageComponentPostV1,
+    StorageComponentEnvelopeOriginalV1,
 };
 use super::client::{RESOURCE_ENROLLMENT_NAME, RESOURCE_POLICY_NAME};
 use super::{
     NormalRootStartupErrorV1, StorageWorkerParentDataV3, observe_fixed_storage_worker_parent_v3,
 };
 
-const STORAGE_CGROUP: &str = "aos.slice/aos-control.slice/aos-storaged.service";
 const MAXIMUM_EXECUTABLE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Reports the actual failure of the fixed launch-table capture.
@@ -142,6 +158,13 @@ pub struct RejectedStorageWorkerOriginV3 {
 }
 
 impl RejectedStorageWorkerOriginV3 {
+    /// Borrows an original retained initial-cgroup failure after cause projection.
+    pub fn retained_initial_cgroup_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        self.partial.as_ref().and_then(|custody| custody.aggregate.initial_failure().or_else(|| custody.cgroup_initial.failure()))
+    }
+
     /// Describes negative custody occupancy for the existing error formatter.
     #[must_use]
     pub fn retained_prefix_presence(&self) -> (bool, bool) {
@@ -169,13 +192,17 @@ impl std::fmt::Debug for StorageWorkerOriginAdmissionErrorV3 {
 
 impl std::fmt::Display for StorageWorkerOriginAdmissionErrorV3 {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.cause.fmt(formatter)
+        match self.partial.as_ref().and_then(|custody| custody.aggregate.initial_failure().or_else(|| custody.cgroup_initial.failure())) {
+            Some(error) => std::fmt::Display::fmt(error, formatter),
+            None => self.cause.fmt(formatter),
+        }
     }
 }
 
 impl std::error::Error for StorageWorkerOriginAdmissionErrorV3 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.cause)
+        self.partial.as_ref().and_then(|custody| custody.aggregate.initial_failure().or_else(|| custody.cgroup_initial.failure()))
+            .or(Some(&self.cause))
     }
 }
 
@@ -416,9 +443,7 @@ enum RecipientFailure {
     Capture,
     Paths,
     Component,
-    Before,
     Startup,
-    After,
     Closed,
 }
 
@@ -436,9 +461,8 @@ pub struct StorageResourceRecipientCaptureV1 {
     captured: Option<Result<CapturedStorageLaunchV3, StorageLaunchCaptureErrorV3>>,
     paths: Option<Result<(), SeqpacketError>>,
     component: Option<StorageComponentEnvelopeOriginalV1>,
-    before: Option<StorageComponentPostV1>,
+    receiving: Option<Box<StorageReceivingOriginalV1>>,
     startup: Option<Result<StorageWorkerPartsV3, StorageWorkerOriginAdmissionErrorV3>>,
-    after: Option<StorageComponentPostV1>,
     first: Option<RecipientFailure>,
     attempted: bool,
     admitted: bool,
@@ -455,9 +479,8 @@ impl StorageResourceRecipientCaptureV1 {
             captured: None,
             paths: None,
             component: None,
-            before: None,
+            receiving: None,
             startup: None,
-            after: None,
             first: None,
             attempted: false,
             admitted: false,
@@ -530,36 +553,39 @@ impl StorageResourceRecipientCaptureV1 {
             self.first = Some(RecipientFailure::Closed);
             return false;
         };
-        if component.admit_once().is_err() {
-            self.first = Some(RecipientFailure::Component);
-            return false;
-        }
-        let loan = match component.borrow_preopen() {
-            Ok(loan) => loan,
+        match component.prepare_storage_receiving_once() {
+            Ok(envelope) => {
+                let lifetime = match component.storage_receiving_lifetime() {
+                    Ok(lifetime) => lifetime,
+                    Err(_) => {
+                        self.first = Some(RecipientFailure::Component);
+                        return false;
+                    }
+                };
+                self.receiving = Some(Box::new(StorageReceivingOriginalV1::new(envelope, lifetime)));
+                let Some(receiving) = self.receiving.as_mut() else {
+                    self.first = Some(RecipientFailure::Closed);
+                    return false;
+                };
+                match self.captured.take() {
+                    Some(Ok(captured)) => {
+                        self.startup = Some(admit_captured_receiving(captured, component, receiving));
+                        if self.startup.as_ref().is_some_and(Result::is_err) {
+                            self.first = Some(RecipientFailure::Startup);
+                        }
+                    }
+                    _ => self.first = Some(RecipientFailure::Closed),
+                }
+                if receiving.failure().is_some() {
+                    self.first = Some(RecipientFailure::Component);
+                }
+                return self.first.is_none();
+            }
             Err(_) => {
                 self.first = Some(RecipientFailure::Component);
                 return false;
             }
-        };
-        self.before = Some(loan.observe_current());
-        if self.before.as_ref().is_some_and(|post| post.failure().is_some()) {
-            self.first = Some(RecipientFailure::Before);
-        } else {
-            match self.captured.take() {
-                Some(Ok(captured)) => {
-                    self.startup = Some(admit_captured(captured));
-                    if self.startup.as_ref().is_some_and(Result::is_err) {
-                        self.first = Some(RecipientFailure::Startup);
-                    }
-                }
-                _ => self.first = Some(RecipientFailure::Closed),
-            }
         }
-        self.after = Some(loan.observe_current());
-        if self.after.as_ref().is_some_and(|post| post.failure().is_some()) {
-            self.first.get_or_insert(RecipientFailure::After);
-        }
-        self.first.is_none()
     }
 
     /// Borrows the actual earliest error without replacing later resident debt.
@@ -574,16 +600,27 @@ impl StorageResourceRecipientCaptureV1 {
                 .or_else(|| self.captured.as_ref().and_then(|result| {
                     result.as_ref().err().map(|error| error as &dyn std::error::Error)
                 })),
-            RecipientFailure::Component => self.component.as_ref()
-                .and_then(|component| component.borrow_preopen().err()),
+            RecipientFailure::Component => self.startup.as_ref()
+                .and_then(|result| result.as_ref().err())
+                .and_then(|error| error.partial.as_ref())
+                .and_then(|custody| custody.aggregate.initial_failure().or_else(|| custody.cgroup_initial.failure()))
+                .or_else(|| self.receiving.as_ref().and_then(|receiving| {
+                    if receiving.failed_aggregate_v1() {
+                        self.startup.as_ref().and_then(|result| result.as_ref().err())
+                            .and_then(|error| error.partial.as_ref())
+                            .and_then(|custody| custody.aggregate.failure())
+                            .or_else(|| receiving.failure())
+                    } else {
+                        receiving.failure()
+                    }
+                }))
+                .or_else(|| self.component.as_ref().and_then(|component| component.storage_receiving_failure())),
             RecipientFailure::Paths => self.paths.as_ref().and_then(|result| {
                 result.as_ref().err().map(|error| error as &dyn std::error::Error)
             }),
-            RecipientFailure::Before => self.before.as_ref().and_then(StorageComponentPostV1::failure),
             RecipientFailure::Startup => self.startup.as_ref().and_then(|result| {
                 result.as_ref().err().map(|error| error as &dyn std::error::Error)
             }),
-            RecipientFailure::After => self.after.as_ref().and_then(StorageComponentPostV1::failure),
             RecipientFailure::Closed => Some(&StorageWorkerOriginCauseV3::Closed),
         };
         cause.or(Some(&StorageWorkerOriginCauseV3::Closed))
@@ -595,15 +632,12 @@ impl StorageResourceRecipientCaptureV1 {
     ///
     /// Owns this entire negative attempt, including failed Startup custody.
     pub fn into_worker_parts(mut self) -> Result<StorageWorkerPartsV3, StorageResourceRecipientErrorV1> {
-        if self.first.is_none() && self.admitted
-            && matches!(self.startup.as_ref(), Some(Ok((_, _, Some(_)))))
-            && self.component.is_some() && self.before.is_some() && self.after.is_some()
-        {
-            if let (Some(Ok((listeners, image, Some(mut startup)))), Some(component), Some(before), Some(after)) = (
-                self.startup.take(), self.component.take(), self.before.take(), self.after.take(),
+        if self.first.is_none() && self.admitted && self.receiving.is_some() {
+            if let (Some(Ok((listeners, image, Some(mut startup)))), Some(component), Some(receiving)) = (
+                self.startup.take(), self.component.take(), self.receiving.take(),
             ) {
-                startup.recipient = Some(StorageResourceRecipientCustodyV1 {
-                    component, before, after,
+                startup.recipient = Some(StorageResourceRecipientCustodyV1::Receiving {
+                    component, receiving,
                 });
                 return Ok((listeners, image, Some(startup)));
             }
@@ -651,10 +685,11 @@ impl std::error::Error for StorageResourceRecipientErrorV1 {
     }
 }
 
-struct StorageResourceRecipientCustodyV1 {
-    component: StorageComponentEnvelopeOriginalV1,
-    before: StorageComponentPostV1,
-    after: StorageComponentPostV1,
+enum StorageResourceRecipientCustodyV1 {
+    Receiving {
+        component: StorageComponentEnvelopeOriginalV1,
+        receiving: Box<StorageReceivingOriginalV1>,
+    },
 }
 
 fn selected_startup_names() -> Result<(u32, String), StorageLaunchCaptureErrorV3> {
@@ -737,6 +772,10 @@ struct StartupCustody {
     process: Option<PidFd>,
     identity: Option<PidFdProcessIdentity>,
     cgroup: Option<RetainedCgroupAnchor>,
+    cgroup_root: Option<CgroupV2Root>,
+    cgroup_initial: aos_sandbox_linux::cgroup::StorageInitialCgroupReadbackV1,
+    cgroup_initial_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    aggregate: receiving::aggregate::StorageAggregateOriginalV1,
     manager: Option<RetainedImmutableFileV1>,
     executable: Option<RetainedImmutableFileV1>,
     fragment: Option<RetainedImmutableFileV1>,
@@ -755,9 +794,84 @@ pub struct StorageWorkerOriginV3 {
 }
 
 impl StorageWorkerOriginV3 {
+    /// Reports retained service-receiver presence without granting its loan.
+    ///
+    /// This distinguishes the actual first-table recipient from supported
+    /// nonresource legacy startup; callers cannot set or reconstruct it.
+    #[must_use]
+    pub fn has_storage_service_receiving_original_v1(&self) -> bool {
+        matches!(self.recipient, Some(StorageResourceRecipientCustodyV1::Receiving { .. }))
+    }
+
+    /// Checks a pure ownership handoff between completed service intervals.
+    ///
+    /// This performs no I/O and authorizes no new operation. The next named
+    /// purpose entry still checks this same original's current native state.
+    ///
+    /// # Errors
+    /// Refuses failed originals, active Session borrowers or pending owed posts.
+    pub fn require_storage_service_handoff_v1(&self) -> Result<(), StorageReceivingClosedV1> {
+        if !self.open {
+            return Err(StorageReceivingClosedV1);
+        }
+        let Some(StorageResourceRecipientCustodyV1::Receiving { receiving, .. }) = &self.recipient else {
+            return Err(StorageReceivingClosedV1);
+        };
+        receiving.require_service_handoff_v1()
+    }
+
+    /// Attempts only the prearmed post of this original's failed Capture interval.
+    ///
+    /// This negative-only port remains usable after an outcome or primary
+    /// refusal closes ordinary borrowing. The resident's actual READY identity
+    /// is checked before the existing owed sampler can run; no work is lent.
+    ///
+    /// # Errors
+    /// Always reports the negative interval, retaining all original causes and
+    /// debt. A foreign or already completed resident performs no observation.
+    pub fn finish_failed_capture_worker_v2(
+        &mut self, resident: &StorageResidentCaptureWorkerV2,
+    ) -> Result<(), StorageReceivingClosedV1> {
+        StoragePrepareReceivingLoanV1::new(self).finish_failed_capture_worker_v2(resident)
+    }
+
     /// Permanently closes later observation without releasing retained originals.
     pub fn close(&mut self) {
         self.open = false;
+    }
+
+    /// Borrows the actual first receiver failure even after the original closes.
+    pub fn storage_receiving_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        match self.recipient.as_ref() {
+            Some(StorageResourceRecipientCustodyV1::Receiving { receiving, .. }) => {
+                if receiving.failed_aggregate_v1() {
+                    self.custody.aggregate.failure().or_else(|| receiving.failure())
+                } else {
+                    receiving.failure()
+                }
+            },
+            _ => None,
+        }
+    }
+
+    /// Borrows this same original's once-paid Storage receiving interval.
+    ///
+    /// # Errors
+    /// Refuses legacy bootstrap scope, a closed original, or retained startup debt.
+    pub fn borrow_storage_prepare_receiving_v1(
+        &mut self,
+    ) -> Result<StoragePrepareReceivingLoanV1<'_>, StorageReceivingClosedV1> {
+        if !self.open {
+            return Err(StorageReceivingClosedV1);
+        }
+        match &self.recipient {
+            Some(StorageResourceRecipientCustodyV1::Receiving { receiving, .. })
+                if receiving.require_initial().is_ok() => {}
+            _ => return Err(StorageReceivingClosedV1),
+        }
+        Ok(StoragePrepareReceivingLoanV1::new(self))
     }
 
     /// Pre-arms before any observation; Err, unwind, drop and forget stay closed.
@@ -767,7 +881,13 @@ impl StorageWorkerOriginV3 {
     /// Rejects a closed owner or changed original process, unit or image.
     pub fn recheck(&mut self) -> Result<(), StorageWorkerOriginCauseV3> {
         let observation = StartupObservation::begin(&mut self.open)?;
-        self.custody.recheck()?;
+        match &mut self.recipient {
+            Some(StorageResourceRecipientCustodyV1::Receiving { component, receiving }) => {
+                receiving.observe_current(&self.custody, component)
+                    .map_err(|_| StorageWorkerOriginCauseV3::Binding)?;
+            }
+            _ => self.custody.recheck()?,
+        }
         observation.finish();
         Ok(())
     }
@@ -824,8 +944,44 @@ fn admit_captured(
     ))
 }
 
+fn admit_captured_receiving(
+    captured: CapturedStorageLaunchV3,
+    component: &StorageComponentEnvelopeOriginalV1,
+    receiving: &mut StorageReceivingOriginalV1,
+) -> Result<StorageWorkerPartsV3, StorageWorkerOriginAdmissionErrorV3> {
+    let mut custody = Box::new(StartupCustody::default());
+    let result = match captured.pid1_image.as_ref() {
+        Some(original) => receiving.capture_once(&mut custody, component, original),
+        None => Err(StorageWorkerOriginCauseV3::Binding),
+    };
+    if let Err(cause) = result {
+        return Err(StorageWorkerOriginAdmissionErrorV3 {
+            cause, captured: Some(captured), partial: Some(custody),
+        });
+    }
+    Ok((captured.listeners, captured.pid1_image, Some(StorageWorkerOriginV3 {
+        custody: *custody, open: true, recipient: None,
+    })))
+}
+
 impl StartupCustody {
-    fn capture(&mut self, original: &OwnedFd) -> Result<(), StorageWorkerOriginCauseV3> {
+    fn capture_native_prefix(&mut self, original: &OwnedFd) -> Result<(), StorageWorkerOriginCauseV3> {
+        self.capture_native_process_prefix(original)?;
+        self.capture_ordinary_cgroup_prefix()
+    }
+
+    fn capture_native_receiving_prefix(&mut self, original: &OwnedFd, original_f: aos_sandbox_core::ResourceVector)
+        -> Result<(), StorageWorkerOriginCauseV3>
+    {
+        self.capture_native_process_prefix(original)?;
+        self.aggregate.capture_once(original_f).map_err(|_| StorageWorkerOriginCauseV3::Binding)?;
+        let (root, anchor) = self.aggregate.take_main_once().ok_or(StorageWorkerOriginCauseV3::Binding)?;
+        self.cgroup_root = Some(root);
+        self.cgroup = Some(anchor);
+        Ok(())
+    }
+
+    fn capture_native_process_prefix(&mut self, original: &OwnedFd) -> Result<(), StorageWorkerOriginCauseV3> {
         self.original_pid1 = Some(File::from(original.try_clone()?));
         self.manager = Some(retain_original_backend_pid1_v1(
             self.original_pid1
@@ -842,40 +998,55 @@ impl StartupCustody {
                 .ok_or(StorageWorkerOriginCauseV3::Binding)?
                 .process_identity()?,
         );
-        self.cgroup = Some(
-            open_storage_cgroup_root_v3()
-                .map_err(|error| match error {
-                    StorageCgroupRootErrorV3::Linux(error) => {
-                        StorageWorkerOriginCauseV3::Linux(error)
-                    }
-                    StorageCgroupRootErrorV3::Kernel(error) => {
-                        StorageWorkerOriginCauseV3::CgroupKernel(error)
-                    }
-                })?
-                .resolve(Path::new(STORAGE_CGROUP))?,
-        );
-        self.observed = Some(observe_fixed_storage_worker_parent_v3()?);
+        Ok(())
+    }
 
-        let observed = self
-            .observed
-            .as_ref()
+    fn capture_ordinary_cgroup_prefix(&mut self) -> Result<(), StorageWorkerOriginCauseV3> {
+        self.cgroup_initial_result = Some(self.cgroup_initial.capture_once());
+        if !matches!(self.cgroup_initial_result, Some(Ok(()))) {
+            // The actual Linux cause and partial descriptors stay on the
+            // original capture; the enclosing owner exposes that cause first.
+            return Err(StorageWorkerOriginCauseV3::Binding);
+        }
+        let (root, anchor) = self.cgroup_initial.take_validated_pair()
             .ok_or(StorageWorkerOriginCauseV3::Binding)?;
-        let mut arguments = std::env::args_os();
+        self.cgroup_root = Some(root);
+        self.cgroup = Some(anchor);
+        Ok(())
+    }
+
+    fn capture(&mut self, original: &OwnedFd) -> Result<(), StorageWorkerOriginCauseV3> {
+        self.capture_native_prefix(original)?;
+        self.observed = Some(observe_fixed_storage_worker_parent_v3()?);
+        self.capture_observed()?;
+        self.recheck()
+    }
+
+    fn capture_observed(&mut self) -> Result<(), StorageWorkerOriginCauseV3> {
+        let observed = self.observed.take().ok_or(StorageWorkerOriginCauseV3::Binding)?;
+        let result = self.capture_observed_fields(&observed);
+        self.observed = Some(observed);
+        result
+    }
+
+    fn capture_observed_fields(
+        &mut self,
+        observed: &StorageWorkerParentDataV3,
+    ) -> Result<(), StorageWorkerOriginCauseV3> {
+        let mut actual_arguments = std::env::args_os();
         for expected in observed.arguments() {
-            if arguments
+            if actual_arguments
                 .next()
                 .is_none_or(|actual| std::ffi::OsStr::new(expected) != actual.as_os_str())
             {
                 return Err(StorageWorkerOriginCauseV3::Binding);
             }
         }
-        if arguments.next().is_some()
-            || observed
-                .executable()
+        if actual_arguments.next().is_some()
+            || observed.executable()
                 .file_name()
                 .is_none_or(|name| name != "aos-storaged")
-            || observed
-                .executable()
+            || observed.executable()
                 .parent()
                 .is_none_or(|path| path.file_name().is_none_or(|name| name != "bin"))
         {
@@ -896,10 +1067,19 @@ impl StartupCustody {
             observed.fragment().to_path_buf(),
         )?);
         self.boot = Some(KernelBootId::current()?.into_bytes());
-        self.recheck()
+        Ok(())
     }
 
     fn recheck(&self) -> Result<(), StorageWorkerOriginCauseV3> {
+        self.recheck_native_before()?;
+        let observed = self.observed.as_ref().ok_or(StorageWorkerOriginCauseV3::Binding)?;
+        if observe_fixed_storage_worker_parent_v3()? != *observed {
+            return Err(StorageWorkerOriginCauseV3::Binding);
+        }
+        self.recheck_native_after()
+    }
+
+    fn recheck_native_before(&self) -> Result<(), StorageWorkerOriginCauseV3> {
         let manager = self
             .manager
             .as_ref()
@@ -920,10 +1100,6 @@ impl StartupCustody {
             .cgroup
             .as_ref()
             .ok_or(StorageWorkerOriginCauseV3::Binding)?;
-        let observed = self
-            .observed
-            .as_ref()
-            .ok_or(StorageWorkerOriginCauseV3::Binding)?;
 
         manager.revalidate()?;
         manager.require_executed(1)?;
@@ -936,9 +1112,15 @@ impl StartupCustody {
             return Err(StorageWorkerOriginCauseV3::Binding);
         }
         cgroup.verify_exact_membership(process)?;
-        if observe_fixed_storage_worker_parent_v3()? != *observed {
-            return Err(StorageWorkerOriginCauseV3::Binding);
-        }
+        Ok(())
+    }
+
+    fn recheck_native_after(&self) -> Result<(), StorageWorkerOriginCauseV3> {
+        let manager = self.manager.as_ref().ok_or(StorageWorkerOriginCauseV3::Binding)?;
+        let executable = self.executable.as_ref().ok_or(StorageWorkerOriginCauseV3::Binding)?;
+        let fragment = self.fragment.as_ref().ok_or(StorageWorkerOriginCauseV3::Binding)?;
+        let process = self.process.as_ref().ok_or(StorageWorkerOriginCauseV3::Binding)?;
+        let cgroup = self.cgroup.as_ref().ok_or(StorageWorkerOriginCauseV3::Binding)?;
         cgroup.verify_exact_membership(process)?;
         if Some(process.process_identity()?) != self.identity || !process.is_alive()? {
             return Err(StorageWorkerOriginCauseV3::Binding);
@@ -957,6 +1139,23 @@ impl StartupCustody {
 ///
 /// Retains the syscall or cgroup-descriptor adoption error without redaction.
 pub fn open_storage_cgroup_root_v3() -> Result<CgroupV2Root, StorageCgroupRootErrorV3> {
+    open_storage_cgroup_root_inner_v3(None)
+}
+
+/// Opens the same fixed hierarchy with a retained incoming-admission destination.
+///
+/// # Errors
+/// Keeps a rejected descriptor in the supplied inert native destination. This
+/// mechanical acquisition grants no Storage role, worker or financial loan.
+pub fn open_storage_cgroup_root_retaining_v3(
+    original: &mut aos_sandbox_linux::cgroup::CgroupRootOriginalV2,
+) -> Result<CgroupV2Root, StorageCgroupRootErrorV3> {
+    open_storage_cgroup_root_inner_v3(Some(original))
+}
+
+fn open_storage_cgroup_root_inner_v3(
+    original: Option<&mut aos_sandbox_linux::cgroup::CgroupRootOriginalV2>,
+) -> Result<CgroupV2Root, StorageCgroupRootErrorV3> {
     let descriptor: OwnedFd = rustix::fs::open(
         "/sys/fs/cgroup",
         rustix::fs::OFlags::PATH
@@ -965,7 +1164,18 @@ pub fn open_storage_cgroup_root_v3() -> Result<CgroupV2Root, StorageCgroupRootEr
             | rustix::fs::OFlags::CLOEXEC,
         rustix::fs::Mode::empty(),
     )?;
-    Ok(CgroupV2Root::from_owned(descriptor)?)
+    match original {
+        None => Ok(CgroupV2Root::from_owned(descriptor)?),
+        Some(original) => {
+            original.admit_once(descriptor)?;
+            original.take_completed_once().ok_or_else(|| StorageCgroupRootErrorV3::Linux(
+                aos_sandbox_linux::Error::InvalidInput {
+                    field: "Storage worker cgroup root",
+                    message: "retained admission did not complete".to_owned(),
+                },
+            ))
+        }
+    }
 }
 
 #[cfg(test)]

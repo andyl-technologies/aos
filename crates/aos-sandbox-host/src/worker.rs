@@ -2,6 +2,18 @@
 
 pub mod shifted_payload_inspection;
 mod systemd;
+mod inventory_owned;
+pub(crate) use inventory_owned::HostOwnedRuntimeProofOriginalV8;
+pub(crate) mod launch;
+mod kernel_recheck;
+mod leader_clone;
+pub(crate) use leader_clone::PinnedLeaderCloneOriginalV3;
+pub(crate) use kernel_recheck::HostScopeKernelOriginalV3;
+mod service_probe;
+pub(crate) mod limit_original;
+
+mod component_startup;
+pub(crate) use component_startup::HostComponentStartupReportOriginalV2;
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -180,17 +192,7 @@ impl PinnedLeader {
 
     /// Duplicates the same supervisor pin for independent broker registries.
     pub(crate) fn try_clone(&self) -> Result<Self> {
-        let descriptor = self
-            .pidfd
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        Ok(Self {
-            handle: self.handle,
-            pidfd: PidFd::from_owned(descriptor)
-                .map_err(|error| HostError::Worker(error.to_string()))?,
-            cgroup: self.cgroup.clone(),
-        })
+        leader_clone::clone_local(self)
     }
 }
 
@@ -239,54 +241,7 @@ impl PidfdNamespaceAccessProbe {
     /// service sandbox blocks one, an ioctl returns a substituted process or
     /// namespace type, or the pinned process is not live after inspection.
     pub fn current_service() -> Result<Self> {
-        let raw_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
-            .map_err(|_| HostError::Worker("host pid does not fit in u32".to_owned()))?;
-        let pid = NonZeroU32::new(raw_pid)
-            .ok_or_else(|| HostError::Worker("host pid is zero".to_owned()))?;
-        let process = PidFd::open(pid).map_err(|error| HostError::Worker(error.to_string()))?;
-        let before = process
-            .info()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        validate_service_probe_identity(raw_pid, before.pid(), before.thread_group_id())?;
-
-        let mount = process
-            .namespace(NamespaceKind::Mount)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let network = process
-            .namespace(NamespaceKind::Network)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let pid_namespace = process
-            .namespace(NamespaceKind::Pid)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let user = process
-            .namespace(NamespaceKind::User)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-
-        let after = process
-            .info()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        validate_service_probe_identity(raw_pid, after.pid(), after.thread_group_id())?;
-        if before != after {
-            return Err(HostError::Worker(
-                "host pidfd identity changed during namespace probe".to_owned(),
-            ));
-        }
-        if !process
-            .is_alive()
-            .map_err(|error| HostError::Worker(error.to_string()))?
-        {
-            return Err(HostError::Worker(
-                "host process exited during namespace probe".to_owned(),
-            ));
-        }
-
-        Ok(Self {
-            process,
-            mount,
-            network,
-            pid: pid_namespace,
-            user,
-        })
+        service_probe::capture_local()
     }
 
     /// Borrows the probed service-process pidfd.
@@ -356,99 +311,15 @@ impl PinnedPayloadLeader {
 
     /// Rechecks the retained payload proof immediately before descriptor use.
     pub(crate) fn recheck_kernel(&self, supervisor: &PinnedLeader) -> Result<()> {
-        let supervisor_before = supervisor
-            .pidfd
-            .info()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let cgroup = CgroupV2Root::from_owned(
-            self.cgroup
-                .as_fd()
-                .try_clone_to_owned()
-                .map_err(|error| HostError::Worker(error.to_string()))?,
-        )
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-        let anchor = cgroup
-            .resolve(Path::new("."))
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let payload_before = if self.relative_cgroup_hint.is_empty() {
-            anchor.verify_exact_membership(&self.pidfd)
-        } else {
-            anchor.verify_descendant_membership(&self.pidfd, Path::new(&self.relative_cgroup_hint))
-        }
-        .map_err(|error| HostError::Worker(error.to_string()))?;
-        if payload_before.thread_group_id() != payload_before.pid()
-            || payload_before.parent_pid() != supervisor_before.pid()
-            || read_nested_pid(
-                NonZeroU32::new(payload_before.pid()).ok_or_else(|| {
-                    HostError::Worker("payload pidfd returned PID zero".to_owned())
-                })?,
-            )? != 1
-        {
-            return Err(HostError::Worker(
-                "retained payload process no longer satisfies its exact scope".to_owned(),
-            ));
-        }
+        kernel_recheck::recheck(self, supervisor, None)
+    }
 
-        let current_root = open_payload_root(
-            NonZeroU32::new(payload_before.pid())
-                .ok_or_else(|| HostError::Worker("payload pidfd returned PID zero".to_owned()))?,
-        )?;
-        let current_root = rustix::fs::fstat(&current_root)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let retained_root =
-            rustix::fs::fstat(&self.root).map_err(|error| HostError::Worker(error.to_string()))?;
-        let current_network = self
-            .pidfd
-            .namespace(NamespaceKind::Network)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let current_mount = self
-            .pidfd
-            .namespace(NamespaceKind::Mount)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let current_user = self
-            .pidfd
-            .namespace(NamespaceKind::User)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let current_pid = self
-            .pidfd
-            .namespace(NamespaceKind::Pid)
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        if (current_root.st_dev, current_root.st_ino)
-            != (retained_root.st_dev, retained_root.st_ino)
-            || current_network.identity() != self.network.identity()
-            || current_mount.identity() != self.mount.identity()
-            || current_pid.identity() != self.pid.identity()
-            || current_user.identity() != self.user.identity()
-        {
-            return Err(HostError::Worker(
-                "retained payload root or namespaces changed".to_owned(),
-            ));
-        }
-
-        let payload_after = self
-            .pidfd
-            .info()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        let supervisor_after = supervisor
-            .pidfd
-            .info()
-            .map_err(|error| HostError::Worker(error.to_string()))?;
-        if payload_before != payload_after
-            || supervisor_before != supervisor_after
-            || !self
-                .pidfd
-                .is_alive()
-                .map_err(|error| HostError::Worker(error.to_string()))?
-            || !supervisor
-                .pidfd
-                .is_alive()
-                .map_err(|error| HostError::Worker(error.to_string()))?
-        {
-            return Err(HostError::Worker(
-                "retained payload identity changed during revalidation".to_owned(),
-            ));
-        }
-        Ok(())
+    pub(super) fn recheck_kernel_retaining_v2(
+        &self,
+        supervisor: &PinnedLeader,
+        original: &mut kernel_recheck::PayloadKernelRecheckOriginalV2,
+    ) -> Result<()> {
+        kernel_recheck::recheck(self, supervisor, Some(original))
     }
 
     /// Borrows the point-in-time payload root descriptor.
@@ -509,6 +380,26 @@ trait PayloadInspectionBackend {
     fn snapshot(&self) -> Result<Vec<PayloadCandidate>>;
     fn prove(&self, candidate: PayloadCandidate) -> Result<(PayloadEvidence, Option<Self::Proof>)>;
     fn is_alive(&self, proof: &Self::Proof) -> Result<bool>;
+
+    // The reducer has established the same candidate identity and its actual
+    // irrelevance before this hook. A retained backend may then dispose only
+    // that completed candidate's native leaves, keeping failed prefixes held.
+    fn retire_irrelevant_candidate(
+        &self,
+        _candidate: &PayloadCandidate,
+        _evidence: &PayloadEvidence,
+        proof: Option<Self::Proof>,
+    ) -> Result<()> {
+        drop(proof);
+        Ok(())
+    }
+
+    // Native backends can return an opaque reference to their resident proof.
+    // Later comparison/snapshot failures then leave the actual pins on that
+    // owner. The ordinary backend keeps its existing owning proof unchanged.
+    fn retain_selected_candidate(&self, proof: Self::Proof) -> Result<Self::Proof> {
+        Ok(proof)
+    }
 }
 
 fn discover_payload_leader<B: PayloadInspectionBackend>(
@@ -530,6 +421,7 @@ fn discover_payload_leader<B: PayloadInspectionBackend>(
             ));
         }
         if evidence.nested_pid != 1 || evidence.parent_pid != supervisor_pid {
+            backend.retire_irrelevant_candidate(&candidate, &evidence, proof)?;
             continue;
         }
         let proof = proof.ok_or_else(|| {
@@ -550,7 +442,7 @@ fn discover_payload_leader<B: PayloadInspectionBackend>(
                 "payload PID 1 network namespace differs from its pin".to_owned(),
             ));
         }
-        selected = Some(proof);
+        selected = Some(backend.retain_selected_candidate(proof)?);
     }
     let proof = selected.ok_or_else(|| {
         HostError::Worker("payload subtree has no direct nested PID 1 candidate".to_owned())
@@ -587,6 +479,7 @@ fn recover_payload_leader<B: PayloadInspectionBackend>(
             ));
         }
         if evidence.nested_pid != 1 || evidence.parent_pid != supervisor_pid {
+            backend.retire_irrelevant_candidate(&candidate, &evidence, proof)?;
             continue;
         }
         if evidence.pid.get() != expected.payload.pid
@@ -611,7 +504,7 @@ fn recover_payload_leader<B: PayloadInspectionBackend>(
                 "payload recovery found multiple direct nested PID 1 candidates".to_owned(),
             ));
         }
-        selected = Some(proof);
+        selected = Some(backend.retain_selected_candidate(proof)?);
     }
     let proof = selected.ok_or_else(|| {
         HostError::Worker("payload recovery found no exact nested PID 1".to_owned())
@@ -722,6 +615,15 @@ pub struct RetainedPayloadWorkerV1<'worker> {
     worker: &'worker SystemdOneShotWorker,
 }
 
+impl RetainedPayloadWorkerV1<'_> {
+    pub(crate) fn capture_inventory_cgroup_v5(&self,
+        original: &mut aos_sandbox_linux::cgroup::HostRuntimeCgroupAbsenceOriginalV5)
+        -> std::result::Result<(), aos_sandbox_linux::cgroup::HostRuntimeCgroupAbsenceRefusalV5>
+    {
+        original.capture_next_once_v5(&self.worker.cgroup_root)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BoundReadbackPhaseV1 {
     Fresh,
@@ -732,6 +634,7 @@ pub(crate) enum BoundReadbackPhaseV1 {
 
 /// Resident originals for one of the request's two fixed verification points.
 pub(crate) struct BoundPayloadReadbackV1 {
+    pub(super) limit_native: Option<limit_original::HostLimitNativeOriginalV2>,
     pub(super) pending_payload: Option<PinnedPayloadLeader>,
     pub(super) observation: Option<WorkerObservation>,
     pub(super) proof: Option<RuntimeProofSnapshot>,
@@ -751,6 +654,7 @@ pub(crate) struct BoundPayloadReadbackV1 {
 impl BoundPayloadReadbackV1 {
     pub(crate) fn new() -> Self {
         Self {
+            limit_native: None,
             pending_payload: None,
             observation: None,
             proof: None,
@@ -768,6 +672,10 @@ impl BoundPayloadReadbackV1 {
         }
     }
 
+    pub(crate) fn new_launch_receiving_v2() -> Self {
+        Self { limit_native: Some(limit_original::HostLimitNativeOriginalV2::new()), ..Self::new() }
+    }
+
     pub(crate) fn verified(&self) -> Result<&BoundPayloadVerification> {
         if self.phase != BoundReadbackPhaseV1::Ready {
             return Err(HostError::Worker("resident payload readback is not ready".to_owned()));
@@ -779,6 +687,9 @@ impl BoundPayloadReadbackV1 {
 
     /// Borrows the actual first refusal; coarse status errors own no custody.
     pub(crate) fn failure_cause(&self) -> Option<&dyn std::error::Error> {
+        if let Some(error) = self.limit_native.as_ref().and_then(|original| original.failure()) {
+            return Some(error);
+        }
         if let Some(error) = &self.native_failure {
             return Some(error);
         }
@@ -805,6 +716,8 @@ pub(crate) struct HostCanaryPayloadReadbackV1 {
     limits: BoundPayloadReadbackV1,
     originals: aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1,
     report_socket: Option<aos_sandbox_linux::seqpacket::SeqpacketSocket>,
+    component_report: bool,
+    component_images: [aos_sandbox_linux::path::BeneathRegularFileOpenOriginalV2; 3],
     child_channel: Option<OwnedFd>,
     reports: [Option<aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord>; 7],
     program_report: Option<aos_sandbox_linux::seqpacket::ReceivedRecord>,
@@ -832,6 +745,8 @@ enum CanaryPayloadFailureV1 {
     Binding(#[from] aos_sandbox_linux::seqpacket::RecordBindingError),
     #[error(transparent)]
     Original(#[from] aos_sandbox_linux::pidfd::HostCanaryReceivedChildErrorV1),
+    #[error(transparent)]
+    AgentOriginal(#[from] crate::live_agent::CanaryAgentFailureV1),
     #[error("native canary report failed at phase {phase} with error {error}")]
     Report { phase: u16, error: i32 },
     #[error("canary receive failed; original partials and cause remain resident")]
@@ -848,6 +763,8 @@ impl HostCanaryPayloadReadbackV1 {
             limits: BoundPayloadReadbackV1::new(),
             originals: aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1::new(),
             report_socket: None,
+            component_report: false,
+            component_images: std::array::from_fn(|_| aos_sandbox_linux::path::BeneathRegularFileOpenOriginalV2::new()),
             child_channel: None,
             reports: std::array::from_fn(|_| None),
             program_report: None,
@@ -1720,6 +1637,72 @@ mod tests {
             .leader
             .unwrap();
         assert!(current_payload_proof().recheck_kernel(&supervisor).is_err());
+    }
+
+    #[test]
+    fn selected_kernel_recheck_keeps_native_cause_and_refuses_window_reentry() {
+        let payload = current_payload_proof();
+        let supervisor = observation(ObservedRuntimeState::Ready, true).leader.unwrap();
+        let mut originals = kernel_recheck::PayloadKernelRechecksV2::new();
+
+        assert!(originals.observe_once(&payload, &supervisor).is_err());
+        let receiver = originals.first_original_address().unwrap();
+        let cause = originals.failure().unwrap()
+            .downcast_ref::<aos_sandbox_linux::Error>().unwrap() as *const _;
+        assert!(!originals.can_dispose_first());
+
+        // The genuine non-cgroup filesystem refusal retains its exact owner
+        // and native error; a later call must neither observe nor replace it.
+        assert!(originals.observe_once(&payload, &supervisor).is_err());
+        assert_eq!(originals.first_original_address(), Some(receiver));
+        let retained = originals.failure().unwrap()
+            .downcast_ref::<aos_sandbox_linux::Error>().unwrap() as *const _;
+        assert_eq!(cause, retained);
+    }
+
+    #[test]
+    fn supervisor_executable_mismatch_keeps_actual_proc_executable_and_first_cause() {
+        let pins = current_pins("/dev/null");
+        let supervisor = observation(ObservedRuntimeState::Ready, true).leader.unwrap();
+        let directory = std::fs::File::open("/").unwrap();
+        let cgroup = BeneathRoot::from_owned(directory.into()).unwrap();
+        let mut original = systemd::SupervisorProofOriginalV2::new(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+        );
+
+        assert!(original.prefix_for_test(&cgroup, &pins, &supervisor).is_err());
+        let cause = original.failure().unwrap().downcast_ref::<HostError>().unwrap() as *const _;
+        let held = rustix::fs::fstat(original.retained_executable_for_test().unwrap()).unwrap();
+        let actual = std::fs::File::open("/proc/self/exe").unwrap();
+        let expected = rustix::fs::fstat(actual.as_fd()).unwrap();
+        assert_eq!((held.st_dev, held.st_ino), (expected.st_dev, expected.st_ino));
+
+        assert!(original.prefix_for_test(&cgroup, &pins, &supervisor).is_err());
+        let retained = original.failure().unwrap().downcast_ref::<HostError>().unwrap() as *const _;
+        assert_eq!(cause, retained);
+        let held_again = rustix::fs::fstat(original.retained_executable_for_test().unwrap()).unwrap();
+        assert_eq!((held_again.st_dev, held_again.st_ino), (held.st_dev, held.st_ino));
+    }
+
+    #[test]
+    fn contradictory_runtime_snapshot_keeps_native_prefixes_and_first_validation_cause() {
+        let pins = current_pins("/proc/self/exe");
+        let supervisor = observation(ObservedRuntimeState::Ready, true).leader.unwrap();
+        let payload = current_payload_proof();
+        let mut original = systemd::RuntimeProofOriginalV2::new(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+        );
+
+        // Both actual pidfds deliberately name this process: native reads can
+        // complete, but the unchanged parent/child proof conjunction must fail.
+        assert!(original.capture_once(&pins, &supervisor, &payload).is_err());
+        assert!(original.completed_native_identities_for_test());
+        let cause = original.failure().unwrap().downcast_ref::<HostError>().unwrap() as *const _;
+
+        assert!(original.capture_once(&pins, &supervisor, &payload).is_err());
+        assert!(original.completed_native_identities_for_test());
+        let retained = original.failure().unwrap().downcast_ref::<HostError>().unwrap() as *const _;
+        assert_eq!(cause, retained);
     }
 
     #[cfg(feature = "kernel-tests")]

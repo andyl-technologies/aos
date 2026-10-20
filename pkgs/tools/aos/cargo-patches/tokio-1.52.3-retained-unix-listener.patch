@@ -1,28 +1,15 @@
-diff --git a/src/io/poll_evented.rs b/src/io/poll_evented.rs
 --- a/src/io/poll_evented.rs
 +++ b/src/io/poll_evented.rs
-@@ -111,18 +111,40 @@
-         Self::new_with_interest_and_handle(io, interest, scheduler::Handle::current())
-     }
+@@ -113,13 +113,35 @@
  
--    #[track_caller]
--    pub(crate) fn new_with_interest_and_handle(
+     #[track_caller]
+     pub(crate) fn new_with_interest_and_handle(
 -        mut io: E,
--        interest: Interest,
--        handle: scheduler::Handle,
--    ) -> io::Result<Self> {
--        let registration = Registration::new_with_interest_and_handle(&mut io, interest, handle)?;
--        Ok(Self {
--            io: Some(io),
--            registration,
--        })
--    }
-+    #[track_caller]
-+    pub(crate) fn new_with_interest_and_handle(
 +        io: E,
-+        interest: Interest,
-+        handle: scheduler::Handle,
-+    ) -> io::Result<Self> {
+         interest: Interest,
+         handle: scheduler::Handle,
+     ) -> io::Result<Self> {
+-        let registration = Registration::new_with_interest_and_handle(&mut io, interest, handle)?;
 +        // The local slot preserves the owned constructor's error/unwind boundary.
 +        let mut io = Some(io);
 +        Self::new_with_retained_io_and_handle(&mut io, interest, handle)
@@ -46,15 +33,12 @@ diff --git a/src/io/poll_evented.rs b/src/io/poll_evented.rs
 +
 +        // The exclusive source loan kept the slot occupied. Transfer only moves;
 +        // no check or user code may run between registration and assembly.
-+        Ok(Self {
+         Ok(Self {
+-            io: Some(io),
 +            io: io.take(),
-+            registration,
-+        })
-+    }
- 
-     /// Returns a reference to the registration.
-     #[cfg(any(feature = "net", all(feature = "process", target_os = "linux")))]
-diff --git a/src/net/mod.rs b/src/net/mod.rs
+             registration,
+         })
+     }
 --- a/src/net/mod.rs
 +++ b/src/net/mod.rs
 @@ -54,7 +54,7 @@
@@ -66,21 +50,12 @@ diff --git a/src/net/mod.rs b/src/net/mod.rs
      pub use unix::stream::UnixStream;
      pub use unix::socket::UnixSocket;
  }
-diff --git a/src/net/unix/listener.rs b/src/net/unix/listener.rs
 --- a/src/net/unix/listener.rs
 +++ b/src/net/unix/listener.rs
-@@ -51,12 +51,121 @@
-     /// }
-     /// ```
+@@ -53,6 +53,115 @@
      #[cfg_attr(docsrs, doc(alias = "uds"))]
--    pub struct UnixListener {
--        io: PollEvented<mio::net::UnixListener>,
--    }
--}
--
--impl UnixListener {
-+    pub struct UnixListener {
-+        io: PollEvented<mio::net::UnixListener>,
+     pub struct UnixListener {
+         io: PollEvented<mio::net::UnixListener>,
 +    }
 +
 +    /// Holds the original Unix listener through one borrowed registration attempt.
@@ -190,10 +165,243 @@ diff --git a/src/net/unix/listener.rs b/src/net/unix/listener.rs
 +            .field("owns_std_listener", &self.listener.is_some())
 +            .field("owns_mio_listener", &self.source.is_some())
 +            .finish()
+     }
+ }
+ 
+--- a/src/runtime/blocking/pool.rs
++++ b/src/runtime/blocking/pool.rs
+@@ -608,3 +608,16 @@
+         fmt.debug_struct("blocking::Spawner").finish()
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl BlockingPool {
++    pub(crate) fn default_receiving_bytes_v4() -> Option<usize> {
++        // No worker is spawned by pool construction. The queue and worker map
++        // are empty; the actual shutdown channel owns one additional Arc.
++        let arcs = std::mem::size_of::<Inner>()
++            .checked_add(std::mem::size_of::<crate::sync::oneshot::Sender<()>>())?
++            .checked_add(4 * std::mem::size_of::<usize>())?;
++        arcs.checked_mul(2)?
++            .checked_add(crate::sync::oneshot::channel_receiving_bytes_v4::<()>()?)
 +    }
 +}
+--- a/src/runtime/builder.rs
++++ b/src/runtime/builder.rs
+@@ -241,6 +241,9 @@
+     MultiThread,
+ }
+ 
++// Shared with the passive default current-thread geometry below.
++const DEFAULT_IO_EVENTS_V4: usize = 1024;
 +
-+impl UnixListener {
-     pub(crate) fn new(listener: mio::net::UnixListener) -> io::Result<UnixListener> {
-         let io = PollEvented::new(listener)?;
-         Ok(UnixListener { io })
+ impl Builder {
+     /// Returns a new builder with the current thread scheduler selected.
+     ///
+@@ -285,7 +288,7 @@
+ 
+             // I/O defaults to "off"
+             enable_io: false,
+-            nevents: 1024,
++            nevents: DEFAULT_IO_EVENTS_V4,
+ 
+             // Time defaults to "off"
+             enable_time: false,
+@@ -1940,3 +1943,34 @@
+         }
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl Builder {
++    /// Bounds the default Linux current-thread IO/time constructor storage.
++    ///
++    /// This allocation-free DATA helper uses the actual private driver,
++    /// scheduler, shutdown channel, signal registry and initial queue layouts.
++    /// It applies only to `new_current_thread().enable_io().enable_time()` with
++    /// otherwise-default settings. It grants no Runtime, native resource,
++    /// account or permission and does not bound arbitrary spawned-task growth.
++    /// The caller must separately price its actual tasks and native resources.
++    #[must_use]
++    pub fn default_current_thread_io_time_receiving_bytes_v4() -> Option<usize> {
++        let bytes = std::mem::size_of::<Builder>()
++            .checked_add(std::mem::size_of::<Runtime>())?
++            // The default thread-name closure has no captures but its Arc
++            // owns two counters. The seed generators are inline above.
++            .checked_add(2 * std::mem::size_of::<usize>())?
++            .checked_mul(2)?
++            .checked_add(crate::runtime::io::Driver::default_receiving_bytes_v4(
++                DEFAULT_IO_EVENTS_V4,
++            )?)?
++            .checked_add(crate::runtime::time::Driver::default_receiving_bytes_v4()?)?
++            .checked_add(CurrentThread::default_receiving_bytes_v4()?)?
++            .checked_add(blocking::BlockingPool::default_receiving_bytes_v4()?)?
++            .checked_add(crate::runtime::park::default_receiving_bytes_v4()?)?;
++        #[cfg(any(feature = "signal", feature = "process"))]
++        let bytes = bytes.checked_add(crate::signal::unix::global_receiving_bytes_v4()?)?;
++        Some(bytes)
++    }
++}
+--- a/src/runtime/io/driver.rs
++++ b/src/runtime/io/driver.rs
+@@ -332,3 +332,16 @@
+         }
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl Driver {
++    pub(crate) fn default_receiving_bytes_v4(events: usize) -> Option<usize> {
++        let inline = std::mem::size_of::<Self>()
++            .checked_add(std::mem::size_of::<Handle>())?
++            .checked_add(2 * std::mem::size_of::<usize>())?;
++        // mio::Event contains the actual Linux epoll event representation.
++        inline.checked_mul(2)?
++            .checked_add(events.checked_mul(std::mem::size_of::<mio::event::Event>())?)?
++            .checked_add(RegistrationSet::default_receiving_bytes_v4()?)
++    }
++}
+--- a/src/runtime/io/registration_set.rs
++++ b/src/runtime/io/registration_set.rs
+@@ -147,3 +147,16 @@
+         unsafe { NonNull::new_unchecked(target.as_ref().linked_list_pointers.get()) }
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl RegistrationSet {
++    pub(super) fn default_receiving_bytes_v4() -> Option<usize> {
++        // The actual pending-release Vec reserves NOTIFY_AFTER at construction.
++        // Two native registrations cover the fixed socket's connect/stream
++        // stages; their ownership does not create application-level authority.
++        NOTIFY_AFTER.checked_mul(std::mem::size_of::<Arc<ScheduledIo>>())?
++            .checked_add(2usize.checked_mul(
++                std::mem::size_of::<ScheduledIo>().checked_add(2 * std::mem::size_of::<usize>())?,
++            )?)
++    }
++}
+--- a/src/runtime/park.rs
++++ b/src/runtime/park.rs
+@@ -360,3 +360,12 @@
+ pub(crate) fn current_thread_park_count() -> usize {
+     CURRENT_THREAD_PARK_COUNT.with(|count| count.load(SeqCst))
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++pub(crate) fn default_receiving_bytes_v4() -> Option<usize> {
++    // The real thread-local parker can be first initialized by block_on or
++    // shutdown. Its Arc remains process/thread-local, never a caller grant.
++    std::mem::size_of::<Inner>()
++        .checked_add(2 * std::mem::size_of::<usize>())?
++        .checked_mul(2)
++}
+--- a/src/runtime/scheduler/current_thread/mod.rs
++++ b/src/runtime/scheduler/current_thread/mod.rs
+@@ -884,3 +884,15 @@
+         }
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl CurrentThread {
++    pub(crate) fn default_receiving_bytes_v4() -> Option<usize> {
++        let controls = std::mem::size_of::<Core>()
++            .checked_add(std::mem::size_of::<Handle>())?
++            .checked_add(2 * std::mem::size_of::<usize>())?;
++        controls.checked_mul(2)?
++            .checked_add(INITIAL_CAPACITY.checked_mul(std::mem::size_of::<Notified>())?)?
++            .checked_add(OwnedTasks::<Arc<Handle>>::single_thread_receiving_bytes_v4()?)
++    }
++}
+--- a/src/runtime/task/list.rs
++++ b/src/runtime/task/list.rs
+@@ -368,3 +368,15 @@
+         }
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl<S: 'static> OwnedTasks<S> {
++    pub(crate) fn single_thread_receiving_bytes_v4() -> Option<usize> {
++        // Share the actual source shard formula used by OwnedTasks::new(1).
++        Self::gen_shared_list_size(1).checked_mul(
++            std::mem::size_of::<crate::loom::sync::Mutex<
++                LinkedList<Task<S>, <Task<S> as Link>::Target>,
++            >>(),
++        )?.checked_mul(2)
++    }
++}
+--- a/src/runtime/time/mod.rs
++++ b/src/runtime/time/mod.rs
+@@ -491,3 +491,13 @@
+ 
+ #[cfg(test)]
+ mod tests;
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl Driver {
++    pub(crate) fn default_receiving_bytes_v4() -> Option<usize> {
++        std::mem::size_of::<Inner>()
++            .checked_add(2 * std::mem::size_of::<usize>())?
++            .checked_mul(2)?
++            .checked_add(wheel::default_receiving_bytes_v4()?)
++    }
++}
+--- a/src/runtime/time/wheel/mod.rs
++++ b/src/runtime/time/wheel/mod.rs
+@@ -333,3 +333,9 @@
+         }
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++pub(super) fn default_receiving_bytes_v4() -> Option<usize> {
++    // The same six levels are built in a Vec and moved into its fixed Box.
++    NUM_LEVELS.checked_mul(std::mem::size_of::<Level>())?.checked_mul(2)
++}
+--- a/src/signal/unix.rs
++++ b/src/signal/unix.rs
+@@ -548,3 +548,16 @@
+         assert_eq!(value, libc::SIGINT as _);
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++pub(crate) fn global_receiving_bytes_v4() -> Option<usize> {
++    // This is the same Linux SIGRTMAX row count used by OsStorage::default.
++    // Each SignalInfo constructs one watch channel even before any handler.
++    let signals = usize::try_from(libc::SIGRTMAX()).ok()?;
++    let row = std::mem::size_of::<SignalInfo>()
++        .checked_mul(2)?
++        .checked_add(crate::sync::watch::channel_receiving_bytes_v4::<()>()?)?;
++    signals.checked_mul(row)?
++        .checked_add(2 * std::mem::size_of::<OsExtraData>())?
++        .checked_add(4 * std::mem::size_of::<usize>())
++}
+--- a/src/sync/oneshot.rs
++++ b/src/sync/oneshot.rs
+@@ -1605,3 +1605,10 @@
+             .finish()
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++pub(crate) fn channel_receiving_bytes_v4<T>() -> Option<usize> {
++    std::mem::size_of::<Inner<T>>()
++        .checked_add(2 * std::mem::size_of::<usize>())?
++        .checked_mul(2)
++}
+--- a/src/sync/watch.rs
++++ b/src/sync/watch.rs
+@@ -1554,3 +1554,10 @@
+         });
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++pub(crate) fn channel_receiving_bytes_v4<T>() -> Option<usize> {
++    std::mem::size_of::<Shared<T>>()
++        .checked_add(2 * std::mem::size_of::<usize>())?
++        .checked_mul(2)
++}

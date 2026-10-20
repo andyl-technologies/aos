@@ -423,6 +423,20 @@ fn classify_error(error: &MountError) -> (BrokerErrorCode, &'static str, bool) {
             "durable mount state is unavailable",
             false,
         ),
+        MountError::AnchorGeometry(
+            aos_sandbox_mount_native::MountJournalAppendReceivingDemandErrorV1::Journal(_),
+        ) => (
+            BrokerErrorCode::BROKER_ERROR_CODE_INTEGRITY_FAILURE,
+            "durable mount receiving state is unavailable",
+            false,
+        ),
+        MountError::AnchorGeometry(
+            aos_sandbox_mount_native::MountJournalAppendReceivingDemandErrorV1::Accounting(_),
+        ) => (
+            BrokerErrorCode::BROKER_ERROR_CODE_RESOURCE_EXHAUSTED,
+            "mount receiving demand exceeds resource bounds",
+            false,
+        ),
         MountError::Worker(_) => (
             BrokerErrorCode::BROKER_ERROR_CODE_BACKEND_FAILURE,
             "mount backend operation failed",

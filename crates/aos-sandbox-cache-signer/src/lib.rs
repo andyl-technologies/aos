@@ -1,18 +1,17 @@
-//! Independent Cache-only readback signer and fixed Root/Controller exchange.
+//! Owns the selected, independently confined Cache Current signer role.
 //!
-//! The private credential owner retains the dedicated zeroizing seed and
-//! provisioned memory ceiling. [`cache_signer_exchange`] owns the fixed
-//! listener, peer checks, separate challenge histories, and one-shot replies.
-//! Native Cache-view replay and packet validation remain with the existing
-//! Cache domain owner in `aos-sandbox`.
+//! The closed service captures one genuine PID1 Cache financial original and
+//! drives two distinct finite Current-proof purposes through the same native,
+//! complete historical replay, physical, clock and signing engines. Its seed,
+//! listener, ledger and native owners stay private. Returned signed DATA alone
+//! grants no Controller-held writer custody or publication/effect authority.
 //!
-//! Signed readback is nonauthorizing DATA, not Controller writer custody,
-//! an all-owner held cut, Q04 permission, or publication authority. This crate
-//! does not expose its credential owner, signing key, or listener descriptor.
-//! Executable entry points and service registration remain in
-//! `aos-sandbox-services`.
+//! Ordinary diagnostic/Q04 application exchanges are assembled above this
+//! role in `aos-sandbox-services`; this crate has no Domain integration edge.
 
 #![cfg(target_os = "linux")]
 
 mod cache_signer_credential;
-pub mod cache_signer_exchange;
+mod service_original;
+
+pub use service_original::run_selected_current_service_once;

@@ -24,7 +24,32 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{ListUnitsEntry, ManagerProxy, ServiceProxy, UnitProxy};
 
+#[cfg(target_os = "linux")]
+pub use host_launch::{HostSystemdCallV2, HostLaunchEffectWriteGateV3, HostSystemdConnectionOriginalV2, HostSystemdConnectionFootprintV2,
+    HostSystemdNativeDisposalV2, HostSystemdNativeDisposedV2, HostSystemdStorageCompactedV2,
+    HostSystemdDispositionFailureLoanV2, HostSystemdDispositionUnavailableV2, HostLaunchReceiveScheduleV2};
 mod service_properties;
+pub use service_properties::{ServicePropertiesReadOriginalV2, ServicePropertiesReadClosedV2,
+    ServiceControlGroupReadOriginalV2};
+mod fixed_property;
+#[cfg(target_os = "linux")]
+mod readonly_manager;
+
+#[cfg(target_os = "linux")]
+mod host_inventory;
+#[cfg(target_os = "linux")]
+pub use host_inventory::{HostRuntimeDiscoveryOriginalV5, HostRuntimeDiscoveryRefusalV5, NetworkWorkerCensusOriginalV4, NetworkWorkerCensusRefusalV4};
+#[cfg(target_os = "linux")]
+pub use readonly_manager::{ReadonlyPropertyManagerOriginalV2, ReadonlyPropertyReceiveScheduleV2};
+#[cfg(target_os = "linux")]
+mod property_worker;
+#[cfg(target_os = "linux")]
+pub use property_worker::{
+    SharedFixedPid1PropertyProviderV1,
+    FixedPid1PropertyArchiveV1, FixedPid1PropertyErrorV1, FixedPid1PropertyGrowthErrorV1,
+    FixedPid1PropertyGeometryV1, FixedPid1PropertyValuesV1, FixedPid1PropertyActionOutcomeV1,
+    FixedPid1PropertyFailureViewV1, FixedPid1PropertyJoinOutcomeV1, FixedPid1PropertyWorkerSlotV1,
+};
 pub(crate) use service_properties::{
     ServicePropertyBookendV1, capture_mount_fd_store_bookend_v1,
 };
@@ -38,6 +63,46 @@ pub use source_launcher_image::{
     OwnUnitPid1ImageEndedV1, OwnUnitPid1ImageFailureV1,
 };
 
+#[macro_use]
+mod connection_recipe;
+
+#[cfg(target_os = "linux")]
+mod host_launch;
+
+/// Selects one fixed service observed by Controller's startup owner.
+///
+/// This DATA selector grants no service authority or kernel cgroup identity.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControllerAttachmentServiceV1 {
+    /// Selects the installed Host broker's exact unit.
+    Host,
+    /// Selects the installed Mount broker's exact unit.
+    Mount,
+}
+
+#[cfg(target_os = "linux")]
+impl ControllerAttachmentServiceV1 {
+    fn unit_name(self) -> &'static str {
+        match self {
+            Self::Host => "aos-sandbox-hostd.service",
+            Self::Mount => "aos-sandbox-mountd.service",
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+enum FixedServicePropertyQueryV1<'query> {
+    Startup { name: &'query str, pid: u32, service: &'query [&'query str], unit: &'query [&'query str] },
+    Ownership,
+}
+
+#[cfg(target_os = "linux")]
+enum ControllerServiceQueryV1 {
+    Attachment(ControllerAttachmentServiceV1),
+    Publisher,
+}
+
 /// Retains one readonly Controller/PID-1 property observation and its originals.
 ///
 /// The caller creates this DATA owner before spawning or entering a prepaid
@@ -47,8 +112,10 @@ pub use source_launcher_image::{
 #[cfg(target_os = "linux")]
 pub struct ControllerPropertyObserverAttemptV1 {
     transport: zbus::connection::ControllerPropertyReceiveAttemptV1,
-    constructor: Option<Result<SystemdClient>>,
-    properties: Option<Result<(Vec<OwnedValue>, Vec<OwnedValue>)>>,
+    constructor: Option<Result<Option<SystemdClient>>>,
+    properties: Option<Result<(Arc<Vec<OwnedValue>>, Arc<Vec<OwnedValue>>)>>,
+    control_group: Option<Result<ServiceControlGroupObservation>>,
+    publisher_control_group: Option<Result<Option<ServiceControlGroupObservation>>>,
     connect_attempted: bool,
     observe_attempted: bool,
 }
@@ -67,14 +134,48 @@ impl ControllerPropertyObserverAttemptV1 {
     /// Maximum outgoing messages, including the one Hello.
     pub const OUTGOING_MESSAGES: usize =
         zbus::connection::ControllerPropertyReceiveAttemptV1::OUTGOING_MESSAGES;
-    /// Aggregate raw receive-prefix byte capacity, separate from framed messages.
+    /// Default raw receive-prefix byte capacity, separate from framed messages.
     pub const RAW_PREFIX_BYTES: usize =
         zbus::connection::ControllerPropertyReceiveAttemptV1::RAW_PREFIX_BYTES;
+
+    /// Reports the same native constructor's raw-prefix and frame byte widths.
+    ///
+    /// These passive DATA include raw carryover/reallocation overlap. They
+    /// create no transport, original, grant, decoder or allocator proof.
+    #[must_use]
+    pub fn raw_receive_bytes_for_materialization(maximum: usize) -> (usize, usize) {
+        zbus::connection::ControllerPropertyReceiveAttemptV1::
+            raw_receive_bytes_for_materialization(maximum)
+    }
 
     /// Returns this owner's inline representation size, not its heap/peak demand.
     #[must_use]
     pub fn inline_bytes() -> usize {
         std::mem::size_of::<Self>()
+    }
+
+    /// Reports the two actual successful property's shared Vec/control owners.
+    ///
+    /// Element storage is separate. This passive layout DATA creates neither
+    /// a property read nor resource authority, and includes no heap estimate.
+    #[must_use]
+    pub fn shared_property_owner_bytes_v1() -> usize {
+        2 * (std::mem::size_of::<Vec<OwnedValue>>() + 2 * std::mem::size_of::<usize>())
+    }
+
+    /// Reports decoded storage for the actual small selected property schema.
+    ///
+    /// Includes concrete decoder growth, moved table values, dynamic tuple
+    /// signatures, hostile bounded header signatures and partial-record slack.
+    /// Raw/native/runtime/request storage is separate. This passive DATA does
+    /// not admit a read, identify a payer or measure allocator internals.
+    /// Returns `None` on overflow or outside the existing one-message small
+    /// materialization lane. Default/full and ordinary budgets are unchanged.
+    #[must_use]
+    pub fn fixed_property_decoded_geometry_v1(materialized_bytes: usize)
+        -> Option<(usize, usize)>
+    {
+        fixed_property::decoded_geometry_v1(materialized_bytes)
     }
 
     /// Prearms one fixed DATA attempt without opening a socket or spawning a task.
@@ -83,13 +184,36 @@ impl ControllerPropertyObserverAttemptV1 {
     /// proof. A genuine caller-owned resource interval must precede this call.
     #[must_use]
     pub fn empty() -> Self {
+        Self::with_materialization_limit(Self::MESSAGE_BYTES * Self::INCOMING_MESSAGES)
+    }
+
+    /// Restricts raw frame bytes admitted to dynamic property materialization.
+    ///
+    /// This is a nonauthorizing DATA ceiling. A genuine caller must separately
+    /// price raw capture, runtime, native paths and decoder/value/error storage
+    /// before constructing this attempt. The original transport and property
+    /// Results remain resident on refusal; no wire ceiling changes.
+    #[must_use]
+    pub fn with_materialization_limit(maximum_materialized_frame_bytes: usize) -> Self {
         Self {
-            transport: zbus::connection::ControllerPropertyReceiveAttemptV1::empty(),
+            transport: zbus::connection::ControllerPropertyReceiveAttemptV1::with_materialization_limit(
+                maximum_materialized_frame_bytes,
+            ),
             constructor: None,
             properties: None,
+            control_group: None,
+            publisher_control_group: None,
             connect_attempted: false,
             observe_attempted: false,
         }
+    }
+
+    /// Reports admitted raw bytes, their ceiling and any first refused increment.
+    ///
+    /// This borrows numeric transport DATA without extracting the Connection.
+    #[must_use]
+    pub fn materialization_extent(&self) -> (usize, usize, Option<usize>) {
+        self.transport.materialization_extent()
     }
 
     /// Constructs one readonly client on the fixed system bus without Subscribe.
@@ -108,7 +232,7 @@ impl ControllerPropertyObserverAttemptV1 {
         }
         self.connect_attempted = true;
 
-        self.constructor = Some(self.connect_inner().await);
+        self.constructor = Some(self.connect_inner().await.map(Some));
         if matches!(self.constructor.as_ref(), Some(Err(_))) {
             self.transport.end();
             return Err(Error::Zbus(zbus::Error::InvalidReply));
@@ -119,24 +243,7 @@ impl ControllerPropertyObserverAttemptV1 {
 
     async fn connect_inner(&mut self) -> Result<SystemdClient> {
         let conn = self.transport.connect().await.map_err(Error::SystemdUnavailable)?;
-        let manager = ManagerProxy::builder(&conn)
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await?;
-        let (_, event_rx) = mpsc::unbounded_channel::<()>();
-
-        Ok(SystemdClient {
-            conn,
-            manager,
-            jobs: Arc::new(Mutex::new(JobRegistry {
-                closed: true,
-                ..JobRegistry::default()
-            })),
-            reloading: Arc::new(AtomicBool::new(false)),
-            job_event_rx: AsyncMutex::new(event_rx),
-            tasks: Vec::new(),
-            readonly_controller: true,
-        })
+        SystemdClient::readonly_from_connection_v2(conn).await
     }
 
     /// Performs one shared startup-property kernel with authentic PID-1 bookends.
@@ -155,6 +262,26 @@ impl ControllerPropertyObserverAttemptV1 {
         service_properties: &[&str],
         unit_properties: &[&str],
     ) -> Result<()> {
+        self.observe_property_recipe_v1(FixedServicePropertyQueryV1::Startup {
+            name, pid: expected_main_pid, service: service_properties, unit: unit_properties,
+        }).await
+    }
+
+    /// Observes only the active fixed local Ownership profile through PID1.
+    ///
+    /// This discovers MainPID inside the same authentic active-unit bookends;
+    /// returned properties remain comparison DATA, without role or funding.
+    ///
+    /// # Errors
+    /// Retains the actual constructor/property failure or refuses reentry.
+    ///
+    /// # Panics
+    /// Panics if polled without the actual Tokio IO/time drivers enabled.
+    pub async fn observe_fixed_ownership_profile_v1(&mut self) -> Result<()> {
+        self.observe_property_recipe_v1(FixedServicePropertyQueryV1::Ownership).await
+    }
+
+    async fn observe_property_recipe_v1(&mut self, query: FixedServicePropertyQueryV1<'_>) -> Result<()> {
         let mut cancellation = self.transport.cancellation_fence();
         if self.observe_attempted || self.transport.has_ended() {
             self.transport.end();
@@ -163,18 +290,106 @@ impl ControllerPropertyObserverAttemptV1 {
         self.observe_attempted = true;
 
         let result = match self.constructor.as_ref() {
-            Some(Ok(client)) => client.observe_pid1_service_startup_properties(
-                name, expected_main_pid, service_properties, unit_properties,
-            ).await,
+            Some(Ok(Some(client))) => match query {
+                FixedServicePropertyQueryV1::Startup { name, pid, service, unit } =>
+                    client.observe_pid1_service_startup_properties(name, pid, service, unit).await,
+                FixedServicePropertyQueryV1::Ownership =>
+                    service_properties::observe_fixed_ownership_profile_v1(client).await,
+            },
             _ => Err(Error::Zbus(zbus::Error::InvalidReply)),
         };
-        self.properties = Some(result);
+        self.properties = Some(result.map(|(service, unit)| {
+            (Arc::new(service), Arc::new(unit))
+        }));
         if matches!(self.properties.as_ref(), Some(Err(_))) {
             self.transport.end();
             return Err(Error::Zbus(zbus::Error::InvalidReply));
         }
         cancellation.complete();
         Ok(())
+    }
+
+    /// Observes one fixed active Host/Mount locator through the same bounded transport.
+    ///
+    /// The unique manager owner must be PID1. Its exact unit ID, nonzero
+    /// invocation, active state and discovered MainPID must remain equal around
+    /// ControlGroup. The returned locator remains DATA; the actual role must
+    /// join its retained cgroup, pidfd, credentials and independent second read.
+    ///
+    /// # Errors
+    /// Retains the whole original constructor/property error and transport
+    /// prefixes on disconnected, repeated, cancelled or changed observation.
+    ///
+    /// # Panics
+    /// Panics if polled outside a Tokio runtime with its IO driver enabled.
+    pub async fn observe_controller_attachment_service_v1(
+        &mut self,
+        role: ControllerAttachmentServiceV1,
+    ) -> Result<()> {
+        self.observe_control_group_once(ControllerServiceQueryV1::Attachment(role)).await
+    }
+
+    /// Observes only the installed Publisher using the same bounded PID1 engine.
+    ///
+    /// A stable non-active unit is a retained successful absence. Active units
+    /// have the same exact unique-PID1 ControlGroup/MainPID/invocation bookends
+    /// as the fixed Host/Mount reader. This yields locator DATA, not authority.
+    ///
+    /// # Errors
+    /// Retains the whole original native result and transport prefixes on
+    /// disconnected, repeated, malformed, cancelled or changed observation.
+    ///
+    /// # Panics
+    /// Panics if polled outside a Tokio runtime with its IO driver enabled.
+    pub async fn observe_controller_publisher_service_v1(&mut self) -> Result<()> {
+        self.observe_control_group_once(ControllerServiceQueryV1::Publisher).await
+    }
+
+    async fn observe_control_group_once(&mut self, purpose: ControllerServiceQueryV1) -> Result<()> {
+        let mut cancellation = self.transport.cancellation_fence();
+        if self.observe_attempted || self.transport.has_ended() {
+            self.transport.end();
+            return Err(Error::Zbus(zbus::Error::InvalidReply));
+        }
+        self.observe_attempted = true;
+        let failed = match purpose {
+            ControllerServiceQueryV1::Attachment(role) => {
+                self.control_group = Some(match self.constructor.as_ref() {
+                    Some(Ok(Some(client))) => service_properties::observe_active_control_group(
+                        client, role.unit_name(),
+                    ).await,
+                    _ => Err(Error::Zbus(zbus::Error::InvalidReply)),
+                });
+                matches!(self.control_group.as_ref(), Some(Err(_)))
+            }
+            ControllerServiceQueryV1::Publisher => {
+                self.publisher_control_group = Some(match self.constructor.as_ref() {
+                    Some(Ok(Some(client))) => service_properties::observe_optional_active_control_group(
+                        client, "aos-view-publisher.service",
+                    ).await,
+                    _ => Err(Error::Zbus(zbus::Error::InvalidReply)),
+                });
+                matches!(self.publisher_control_group.as_ref(), Some(Err(_)))
+            }
+        };
+        if failed {
+            self.transport.end();
+            return Err(Error::Zbus(zbus::Error::InvalidReply));
+        }
+        cancellation.complete();
+        Ok(())
+    }
+
+    /// Borrows the complete original fixed Publisher locator-or-absence Result.
+    pub fn publisher_service_result_v1(
+        &self,
+    ) -> Option<&Result<Option<ServiceControlGroupObservation>>> {
+        self.publisher_control_group.as_ref()
+    }
+
+    /// Borrows the complete original active-service locator Result as DATA.
+    pub fn control_group_result_v1(&self) -> Option<&Result<ServiceControlGroupObservation>> {
+        self.control_group.as_ref()
     }
 
     /// Borrows the constructor's actual error, or reports its parked success.
@@ -185,7 +400,12 @@ impl ControllerPropertyObserverAttemptV1 {
     }
 
     /// Borrows the complete original decoded property Result as diagnostic DATA.
-    pub fn property_result(&self) -> Option<&Result<(Vec<OwnedValue>, Vec<OwnedValue>)>> {
+    ///
+    /// Successful tables share the same immutable Vec owners with read-only
+    /// DATA projections. Cloning these Arcs never recursively clones a value.
+    pub fn property_result(
+        &self,
+    ) -> Option<&Result<(Arc<Vec<OwnedValue>>, Arc<Vec<OwnedValue>>)>> {
         self.properties.as_ref()
     }
 
@@ -196,6 +416,19 @@ impl ControllerPropertyObserverAttemptV1 {
     #[must_use]
     pub fn cancellation_fence(&self) -> zbus::connection::FixedLauncherImageCancellationV1 {
         self.transport.cancellation_fence()
+    }
+
+    /// Reports the original transport's explicitly completed clean end as DATA.
+    ///
+    /// This performs no IO or end action. Native/protocol failure, unavailable
+    /// custody and poisoned slots remain false, even after shutdown. Callers
+    /// separately retain and check the original shutdown and property Results;
+    /// this projection grants no role authority or resource settlement.
+    #[must_use]
+    pub fn transport_ended_cleanly_v1(&self) -> bool {
+        matches!(self.transport_failure(), Ok(Some(failure)) if matches!(
+            failure.cause(), zbus::connection::socket::LauncherImageFailureRefV1::Ended,
+        ))
     }
 
     /// Borrows the actual native/parser cause without reconnecting or extracting it.
@@ -221,6 +454,43 @@ impl ControllerPropertyObserverAttemptV1 {
     #[must_use]
     pub fn has_ended(&self) -> bool {
         self.transport.has_ended()
+    }
+
+    /// Disposes completed property-observer connections and the native socket.
+    ///
+    /// Called after the actual worker Runtime and completed cancellation guard
+    /// have been destroyed. Native exclusivity is checked mechanically; raw
+    /// bytes, property Arcs, native/error Results and clean end stay resident.
+    /// Host/Mount queries and ordinary Systemd clients retain their old path.
+    ///
+    /// # Errors
+    /// Returns a marker if a complete property flight or unique native owner
+    /// is unavailable. [`Self::native_socket_retirement_outcome_v1`] retains the
+    /// actual transport refusal after native disposition is entered.
+    pub fn retire_positive_native_socket_once_v1(&mut self) -> std::result::Result<(), ()> {
+        if !matches!(self.properties, Some(Ok(_)))
+            || !matches!(self.constructor, Some(Ok(Some(_))))
+            || !self.transport_ended_cleanly_v1()
+            || !matches!(self.shutdown_outcomes(), (Some(Ok(())), None))
+            || self.transport.socket_retirement_outcome().is_some()
+        {
+            return Err(());
+        }
+        // This drops both the readonly client's direct Connection and its
+        // Manager proxy clone. Keep the actual constructor's successful
+        // outcome as Ok(None); the separate native outcome records disposal.
+        if let Some(Ok(client)) = self.constructor.as_mut() {
+            drop(client.take());
+        }
+        self.transport.retire_ended_socket_once()
+    }
+
+    /// Borrows the original once-only native socket disposition outcome.
+    #[must_use]
+    pub fn native_socket_retirement_outcome_v1(&self) -> Option<&std::result::Result<
+        (), zbus::connection::socket::ControllerSocketRetirementErrorV1,
+    >> {
+        self.transport.socket_retirement_outcome()
     }
 
     /// Ends the same original transport without releasing any retained Result.
@@ -481,9 +751,60 @@ pub struct SystemdClient {
     tasks: Vec<JoinHandle<()>>,
     // Selected readonly clients never subscribe or enter unsubscribe-on-drop.
     readonly_controller: bool,
+    #[cfg(target_os = "linux")]
+    host_launch: Option<Arc<Mutex<host_launch::HostSystemdDispositionV2>>>,
 }
 
 impl SystemdClient {
+    pub(crate) fn uses_fixed_property_decoding_v2(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if self.host_launch.is_some() { return true; }
+        self.readonly_controller
+    }
+
+    pub(crate) fn is_retained_host_launch_v2(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        { self.host_launch.is_some() }
+        #[cfg(not(target_os = "linux"))]
+        { false }
+    }
+
+
+    // Both selected transport owners use this exact readonly constructor. The
+    // resulting manager remains on the caller's existing Runtime/Connection;
+    // it subscribes to nothing and spawns no background signal-handler worker.
+    #[cfg(target_os = "linux")]
+    async fn readonly_from_connection_v2(conn: zbus::Connection) -> Result<Self> {
+        let manager = ManagerProxy::builder(&conn)
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        Ok(Self::readonly_from_manager_v8(conn, manager))
+    }
+
+    // The finite inventory already holds its actual unique-PID1 manager. It
+    // shares the same inert readonly client fields without resolving another
+    // destination, adding a transport query or subscribing to signals.
+    #[cfg(target_os = "linux")]
+    fn readonly_from_manager_v8(conn: zbus::Connection, manager: ManagerProxy<'static>) -> Self {
+        let (_, event_rx) = mpsc::unbounded_channel::<()>();
+
+        Self {
+            conn,
+            manager,
+            jobs: Arc::new(Mutex::new(JobRegistry {
+                closed: true,
+                ..JobRegistry::default()
+            })),
+            reloading: Arc::new(AtomicBool::new(false)),
+            job_event_rx: AsyncMutex::new(event_rx),
+            tasks: Vec::new(),
+            readonly_controller: true,
+            #[cfg(target_os = "linux")]
+            host_launch: None,
+        }
+    }
+
     /// Open the system bus, build the Manager proxy, `Subscribe()`, and start
     /// the background signal-handler tasks.
     ///
@@ -570,78 +891,7 @@ impl SystemdClient {
         conn: zbus::Connection,
         manager: ManagerProxy<'static>,
     ) -> Result<Self> {
-        // MUST come before constructing any signal stream below. API-bus peers
-        // receive NO JobNew/JobRemoved/Reloading until they call Subscribe();
-        // direct (private-socket) peers are subscribed implicitly. systemd
-        // source: src/core/dbus-manager.c:1376-1410 (method_subscribe). Skip
-        // this and the streams silently produce nothing — the JobRemoved
-        // waiter then hangs/times out for the wrong reason, and tests can go
-        // green for the wrong reason too.
-        manager.subscribe().await?;
-
-        let jobs = Arc::new(Mutex::new(JobRegistry::default()));
-        let reloading = Arc::new(AtomicBool::new(false));
-        let (event_tx, event_rx) = mpsc::unbounded_channel::<()>();
-
-        // Build the streams AFTER Subscribe so we never miss an event for a
-        // job submitted later in this process.
-        let mut job_removed = manager.receive_job_removed().await?;
-        let mut reloading_stream = manager.receive_reloading().await?;
-
-        let mut tasks = Vec::with_capacity(2);
-
-        // One task, double duty (see JobRegistry): route the result to any
-        // waiter (or stash it in `completed`), AND tick the settle channel.
-        let jobs_for_task = jobs.clone();
-        tasks.push(tokio::spawn(async move {
-            while let Some(signal) = job_removed.next().await {
-                let Ok(args) = signal.args() else { continue };
-                let path = args.job;
-                let path_key = path.as_str().to_owned();
-                let result = JobResult::from_systemd(&args.result);
-                {
-                    let mut reg = jobs_for_task.lock().unwrap();
-                    if let Some(tx) = reg.waiters.remove(&path_key) {
-                        // Fire-and-forget; if the awaiter dropped (caller timed
-                        // out at a higher level), there's nothing to do.
-                        let _ = tx.send(result);
-                    } else {
-                        reg.completed.insert(path_key, result);
-                    }
-                }
-                let _ = event_tx.send(());
-            }
-            // Stream closed = bus connection died (e.g. we just restarted
-            // dbus.service out from under our own connection). No more
-            // JobRemoved will ever arrive, so flip `closed` and drop every
-            // parked sender: each awaiting `await_job` then observes a closed
-            // oneshot and returns `JobSenderDropped` instead of hanging
-            // forever. Future `await_job` calls see `closed` and bail up front.
-            {
-                let mut reg = jobs_for_task.lock().unwrap();
-                reg.closed = true;
-                reg.waiters.clear();
-            }
-        }));
-
-        let reloading_for_task = reloading.clone();
-        tasks.push(tokio::spawn(async move {
-            while let Some(signal) = reloading_stream.next().await {
-                if let Ok(args) = signal.args() {
-                    reloading_for_task.store(args.active, Ordering::SeqCst);
-                }
-            }
-        }));
-
-        Ok(Self {
-            conn,
-            manager,
-            jobs,
-            reloading,
-            job_event_rx: AsyncMutex::new(event_rx),
-            tasks,
-            readonly_controller: false,
-        })
+        systemd_setup_recipe!(Local, unused, conn, manager)
     }
 
     // ---- Unit lifecycle ---------------------------------------------------
@@ -976,65 +1226,10 @@ impl SystemdClient {
     /// Rejects a missing, inactive, substituted, or changing service, an
     /// invalid cgroup path or invocation, or a D-Bus exchange failure.
     pub async fn observe_service_control_group(
-        &self,
-        name: &str,
+        &self, name: &str,
     ) -> Result<ServiceControlGroupObservation> {
-        if !name.ends_with(".service") || name.contains('/') || name.contains('\0') {
-            return Err(Error::InvalidSandboxUnit(
-                "service name is not an exact unit name".to_owned(),
-            ));
-        }
-        let path = self.manager.get_unit(name).await?;
-        let unit = UnitProxy::builder(&self.conn)
-            .path(path.clone())?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await?;
-        let service = ServiceProxy::builder(&self.conn)
-            .path(path)?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await?;
-
-        let id_before = unit.id().await?;
-        let invocation_before = unit.invocation_id().await?;
-        let active_before = unit.active_state().await?;
-        let pid_before = service.main_pid().await?;
-        let control_group = service.control_group().await?;
-        let pid_after = service.main_pid().await?;
-        let active_after = unit.active_state().await?;
-        let invocation_after = unit.invocation_id().await?;
-        let id_after = unit.id().await?;
-
-        let invocation_id: [u8; 16] = invocation_before
-            .as_slice()
-            .try_into()
-            .map_err(|_| Error::InvalidSandboxUnit("service invocation is invalid".to_owned()))?;
-        let main_pid = NonZeroU32::new(pid_before)
-            .ok_or_else(|| Error::InvalidSandboxUnit("service main PID is absent".to_owned()))?;
-        let path_is_normalized = control_group.len() <= 4096
-            && control_group.starts_with('/')
-            && control_group.split('/').skip(1).all(|part| {
-                !part.is_empty() && part != "." && part != ".." && !part.contains('\0')
-            });
-        if id_before != name
-            || id_after != name
-            || invocation_id == [0; 16]
-            || invocation_before != invocation_after
-            || active_before != "active"
-            || active_after != "active"
-            || pid_before != pid_after
-            || !path_is_normalized
-        {
-            return Err(Error::InvalidSandboxUnit(
-                "service identity or cgroup changed during observation".to_owned(),
-            ));
-        }
-        Ok(ServiceControlGroupObservation {
-            control_group,
-            main_pid,
-            invocation_id,
-        })
+        service_properties::ServiceControlGroupReadOriginalV2::new()
+            .observe_body(self, name).await
     }
 
     /// List units filtered by active states and shell-glob name patterns;
@@ -1240,6 +1435,17 @@ impl SystemdClient {
 
 impl Drop for SystemdClient {
     fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(original) = self.host_launch.as_ref() {
+            for task in &self.tasks { task.abort(); }
+            let Ok(mut original) = original.lock() else { std::process::abort() };
+            if !self.tasks.is_empty() { std::process::abort(); }
+            let Ok(tasks) = original.tasks.try_lock() else { std::process::abort() };
+            for task in tasks.iter() {
+                if let Some(handle) = task.handle.as_ref() { handle.abort(); }
+            }
+            return;
+        }
         if self.readonly_controller {
             return;
         }
@@ -1276,3 +1482,46 @@ async fn systemctl_status(unit: &str) -> String {
         Err(e) => format!("(failed to capture `systemctl status {unit}`: {e})"),
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod publisher_observer_tests {
+    use super::*;
+
+    #[test]
+    fn ended_publisher_transport_refuses_before_any_constructor_or_pid1_read() {
+        let mut attempt = ControllerPropertyObserverAttemptV1::with_materialization_limit(64 * 1024);
+        attempt.end();
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+
+        for _ in 0..2 {
+            let result = {
+                let mut observation = std::pin::pin!(attempt.observe_controller_publisher_service_v1());
+                std::future::Future::poll(observation.as_mut(), &mut context)
+            };
+
+            assert!(matches!(result, std::task::Poll::Ready(Err(_))));
+            assert!(attempt.constructor_result().is_none());
+            assert!(attempt.publisher_service_result_v1().is_none());
+            assert!(attempt.control_group_result_v1().is_none());
+            assert!(attempt.has_ended());
+        }
+    }
+}
+
+// Network FD-store shares the actual fixed schema and unique-PID1 sampler.
+// These crate-private adapters expose no general property program or proxy.
+#[cfg(target_os = "linux")]
+pub(crate) fn network_fd_store_decoded_geometry_v4(materialized: usize, incoming: usize)
+    -> Option<(usize, usize)>
+{
+    fixed_property::decoded_geometry_for_schedule_v2(materialized, incoming)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn network_fd_store_manager_post_v4(connection: &zbus::Connection) -> Result<()> {
+    service_properties::capture_pid1_owner_v2(connection).await.map(|_| ())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) use service_properties::{capture_network_fd_store_bookend_v4,
+    capture_fixed_inventory_fd_store_bookend_v2, FixedFdStoreRoleV2};

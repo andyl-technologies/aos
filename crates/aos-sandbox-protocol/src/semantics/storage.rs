@@ -364,11 +364,24 @@ impl CanonicalStorageSemanticsV1 {
         policy: PeerPolicy,
         now_boottime_nanoseconds: u64,
     ) -> Result<Self, StorageSemanticsError> {
+        Self::decode_engine(bytes, catalog, peer, policy, now_boottime_nanoseconds, None)
+    }
+
+    pub(crate) fn decode_engine(
+        bytes: &[u8], catalog: CatalogBindingV1, peer: PeerCredentials, policy: PeerPolicy,
+        now_boottime_nanoseconds: u64,
+        capture: Option<(&mut ApplyStorageRequest, &mut Option<Result<(), buffa::DecodeError>>,
+            &mut Option<CanonicalStorageWorkspaceMetadataV1>, &mut Vec<u8>)>,
+    ) -> Result<Self, StorageSemanticsError> {
         if bytes.len() > MAXIMUM_REQUEST_BYTES {
             return Err(ProtocolValidationError::RequestTooLarge.into());
         }
-        let request = ApplyStorageRequest::decode_from_slice(bytes)
-            .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+        let (raw, decode, workspace, canonical) = match capture {
+            Some((raw, decode, workspace, canonical)) =>
+                (Some(raw), Some(decode), Some(workspace), Some(canonical)),
+            None => (None, None, None, None),
+        };
+        let request = crate::capture::decode_message_v1::<ApplyStorageRequest>(bytes, raw, decode)?;
         if !request.__buffa_unknown_fields.is_empty() {
             return Err(ProtocolValidationError::UnknownFields.into());
         }
@@ -419,14 +432,11 @@ impl CanonicalStorageSemanticsV1 {
             ObjectDigest::from_bytes(assignment_digest),
         )
         .map_err(|_| StorageSemanticsError::InvalidWorkspaceMetadata)?;
-        let workspace_metadata = decode_workspace_metadata(
-            operation,
-            assignment,
-            &request.assignment_manifest,
-            &request.sandbox_spec,
-        )?;
+        let workspace_metadata = aos_sandbox_core::retained::CaptureValueV1::new(
+            decode_workspace_metadata(operation, assignment,
+                &request.assignment_manifest, &request.sandbox_spec)?, workspace);
         let target = operation.grant_target()?;
-        let bytes = encode_canonical(
+        let bytes = aos_sandbox_core::retained::CaptureValueV1::new(encode_canonical(
             sandbox_id,
             incarnation_id,
             fence.assignment_epoch,
@@ -436,17 +446,17 @@ impl CanonicalStorageSemanticsV1 {
             operation,
             catalog,
             workspace_metadata.as_ref(),
-        )?;
+        )?, canonical);
         let commitment = BrokerArgumentCommitment::for_canonical_bytes(&bytes);
         Ok(Self {
             header,
             operation_id,
             operation,
-            bytes,
+            bytes: bytes.take(),
             commitment,
             target,
             catalog,
-            workspace_metadata,
+            workspace_metadata: workspace_metadata.take(),
         })
     }
 
@@ -585,6 +595,58 @@ fn decode_workspace_metadata(
         manifest_bytes: manifest_bytes.to_vec(),
         sandbox_spec_bytes: sandbox_spec_bytes.to_vec(),
     }))
+}
+
+/// Bounds reached portable workspace-metadata model and canonical copies.
+///
+/// This passive recipe grants no decoding or resource authority. The actual
+/// authenticated Storage request supplies its embedded byte lengths before
+/// `decode_workspace_metadata` grows the Core models. CBOR's complete bounded
+/// prevalidation precedes typed collection allocation, so reached items are
+/// clipped by physical bytes as well as the same decoder's total-item limit.
+/// Eight copies cover admission's retained semantic/canonical aliases and
+/// in-progress model clones; allocator metadata remains under the service
+/// cgroup and the existing decoder limits.
+///
+/// Returns `None` on checked arithmetic overflow. Oversized semantic inputs
+/// remain subject to the unchanged decoder errors, not a new pricing policy.
+#[doc(hidden)]
+pub fn workspace_metadata_receiving_obligations_v1(
+    manifest_bytes: usize,
+    sandbox_spec_bytes: usize,
+) -> Option<(usize, usize)> {
+    use std::mem::size_of;
+    use aos_sandbox_core::model::Limit;
+    use aos_sandbox_core::SandboxId;
+
+    let manifest_bytes = manifest_bytes.min(MAXIMUM_ASSIGNMENT_MANIFEST_BYTES);
+    let spec_bytes = sandbox_spec_bytes.min(MAXIMUM_SANDBOX_SPEC_BYTES);
+    let manifest_items = manifest_bytes.min(
+        metadata_decode_limits(MAXIMUM_ASSIGNMENT_MANIFEST_BYTES).maximum_total_items,
+    );
+    let spec_items = spec_bytes.min(
+        metadata_decode_limits(MAXIMUM_SANDBOX_SPEC_BYTES).maximum_total_items,
+    );
+    let manifest_cell = size_of::<aos_sandbox_core::ObjectDescriptor>()
+        .max(size_of::<aos_sandbox_core::FeatureRef>())
+        .max(size_of::<SandboxId>());
+    let spec_cell = size_of::<aos_sandbox_core::FeatureRef>()
+        .max(size_of::<Limit>())
+        .max(size_of::<aos_sandbox_core::AttachmentSlotId>())
+        .max(size_of::<aos_sandbox_core::NetworkEndpointId>())
+        .max(size_of::<u32>());
+    let cells = manifest_items.checked_add(spec_items)?;
+    let slots = manifest_items.checked_mul(manifest_cell)?
+        .checked_add(spec_items.checked_mul(spec_cell)?)?;
+    let payload = manifest_bytes.checked_add(spec_bytes)?;
+    let inline = size_of::<CanonicalStorageWorkspaceMetadataV1>()
+        .checked_add(size_of::<CanonicalAssignmentManifestV1>())?
+        .checked_add(size_of::<SandboxSpec>())?;
+    let memory = slots.checked_mul(3)?
+        .checked_add(payload.checked_mul(4)?)?
+        .checked_add(inline)?
+        .checked_mul(8)?;
+    Some((memory, cells.checked_mul(8)?))
 }
 
 fn metadata_decode_limits(maximum_bytes: usize) -> DecodeLimits {
@@ -843,6 +905,45 @@ mod tests {
         request.assignment_manifest = manifest.canonical_bytes().to_vec();
         request.sandbox_spec.clone_from(&specification_bytes);
         (request, manifest, specification_bytes)
+    }
+
+    #[test]
+    fn create_apply_uses_the_live_codec_and_keeps_the_original_catalog_and_metadata() {
+        use crate::semantics::{ProtectedStorageCreatePreparationV1,
+            ProtectedStorageCreateApplyDataV1};
+        let (request, manifest, specification) = create_with_metadata();
+        let assignment = manifest.broker_assignment().unwrap();
+        let catalog = CatalogBindingV1::from_publisher(9,
+            ObjectDigest::from_bytes([31; 32])).unwrap();
+        let preparation = ProtectedStorageCreatePreparationV1::from_protected_inputs(
+            assignment, aos_sandbox_core::OperationId::from_bytes([7; 16]),
+            request.quota_bytes, 0, catalog, catalog, 200,
+        ).unwrap();
+        let apply = ProtectedStorageCreateApplyDataV1::from_preparation_data_v1(
+            &preparation, catalog, manifest.canonical_bytes(), &specification,
+        ).unwrap();
+
+        let bytes = apply.deadline_free_request_body_v1([1; 16]).unwrap();
+        let mut body = ApplyStorageRequest::decode_from_slice(&bytes).unwrap();
+        body.header.as_option_mut().unwrap().deadline_boottime_nanoseconds = 101;
+        let live = CanonicalStorageSemanticsV1::decode(&body.encode_to_vec(),
+            catalog, peer(), policy(), 100).unwrap();
+
+        assert_eq!(live.argument_commitment(), apply.argument_commitment());
+        assert_eq!(body, request);
+        assert_eq!(apply.preparation_expires_boottime_nanoseconds(), 200);
+        assert_ne!(apply.argument_commitment(), preparation.argument_commitment());
+        let successor = CatalogBindingV1::from_publisher(10, catalog.digest()).unwrap();
+        let changed = ProtectedStorageCreateApplyDataV1::from_preparation_data_v1(
+            &preparation, successor, manifest.canonical_bytes(), &specification,
+        ).unwrap();
+        assert_ne!(changed.argument_commitment(), apply.argument_commitment());
+        let mut substituted_spec = specification.clone();
+        substituted_spec[0] ^= 1;
+        assert!(ProtectedStorageCreateApplyDataV1::from_preparation_data_v1(
+            &preparation, catalog, manifest.canonical_bytes(), &substituted_spec,
+        ).is_err());
+        assert!(apply.deadline_free_request_body_v1([0; 16]).is_err());
     }
 
     #[test]

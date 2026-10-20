@@ -7,11 +7,8 @@
 //! reads but deliberately makes no secure-erasure claim.
 
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, OperationId};
-use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_protocol::cache_state::{
-    BackingObjectIdentityV1, CatalogPresenceV1, ImmutableSealV1, object_descriptor_commitment,
-};
+use aos_sandbox_protocol::cache_state::CatalogPresenceV1;
 
 use super::admission::{AdmissionError, CacheAdmissionStateV1};
 use super::domain::{
@@ -19,65 +16,43 @@ use super::domain::{
     VerifiedCacheCapabilityV1,
 };
 
-/// Captures one stable protected-root-relative backing observation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BackingObservationV1 {
-    /// Opaque root custody generation digest.
-    pub root_custody: ObjectDigest,
-    /// Exact protected root generation reopened for this observation.
-    pub root_generation: u64,
-    /// Opaque digest of the derived canonical relative name.
-    pub canonical_name: ObjectDigest,
-    /// Stable backing identity under that root.
-    pub backing: BackingObjectIdentityV1,
-    /// Exact regular-file or snapshot byte size.
-    pub size: u64,
-    /// Independently measured immutable seal.
-    pub seal: ImmutableSealV1,
-    /// Whether the reopened description is read-only.
-    pub read_only: bool,
-    /// Whether root-relative resolution prohibited symlinks and mount crossing.
-    pub confined_resolution: bool,
-}
+pub use aos_sandbox_protocol::cache_state::scrub_data::BackingObservationV1;
+pub(crate) use aos_sandbox_protocol::cache_state::scrub_data::scrub_subject;
+use aos_sandbox_protocol::cache_state::scrub_data::{ScrubEvidenceDataV1, scrub_digest};
 
-impl BackingObservationV1 {
-    fn validate(self) -> Result<Self, ScrubError> {
-        self.seal.validate()?;
-        if self.root_custody.as_bytes() == &[0; 32]
-            || self.root_generation == 0
-            || self.canonical_name.as_bytes() == &[0; 32]
-            || self.size == 0
-            || !self.read_only
-            || !self.confined_resolution
-        {
-            return Err(ScrubError::InvalidObservation);
-        }
-        Ok(self)
+/// Binds a live verifier-issued scrub to its exact historical DATA.
+///
+/// Historical DATA cannot construct the Native wrapper.
+///
+/// ```compile_fail
+/// use aos_sandbox_protocol::cache_state::scrub_data::ScrubEvidenceDataV1;
+/// fn issue(data: ScrubEvidenceDataV1) {
+///     let _ = aos_sandbox::cache_residency::scrub::ScrubEvidenceV1(data);
+/// }
+/// ```
+///
+/// The historical projection cannot mutate the verifier-issued wrapper.
+///
+/// ```compile_fail
+/// use aos_sandbox::cache_residency::scrub::ScrubEvidenceV1;
+/// fn rewrite(mut proof: ScrubEvidenceV1) {
+///     proof.operation = aos_sandbox_core::OperationId::from_bytes([1; 16]);
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScrubEvidenceV1(ScrubEvidenceDataV1);
+
+impl std::ops::Deref for ScrubEvidenceV1 {
+    type Target = ScrubEvidenceDataV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
-}
-
-/// Binds repeated physical observations to one exact catalog generation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ScrubEvidenceV1 {
-    /// Idempotent scrub operation.
-    pub(crate) operation: OperationId,
-    /// Catalog generation being verified.
-    pub(crate) catalog_digest: ObjectDigest,
-    /// Observation immediately after root-relative reopen.
-    pub(crate) before_validation: BackingObservationV1,
-    /// Observation repeated after digest/size/seal validation.
-    pub(crate) after_validation: BackingObservationV1,
-    /// Digest of the verified object bytes.
-    pub(crate) content_digest: ObjectDigest,
-    /// Digest of the complete trusted scrub evidence.
-    pub(crate) digest: ObjectDigest,
-    pub(crate) authority_scope: CacheAuthorityScopeV1,
-    pub(crate) authority_record: ObjectDigest,
 }
 
 impl ScrubEvidenceV1 {
     pub(crate) const fn authority_binding(&self) -> (CacheAuthorityScopeV1, ObjectDigest) {
-        (self.authority_scope, self.authority_record)
+        (self.0.authority_scope, self.0.authority_record)
     }
 
     /// Constructs evidence from repeated trusted physical observations.
@@ -101,7 +76,7 @@ impl ScrubEvidenceV1 {
             .catalog_entry(object)
             .ok_or(ScrubError::UnknownObject)?;
         let subject = scrub_subject(object, before_validation, after_validation, content_digest);
-        let authority_scope = CacheAuthorityScopeV1::new(
+        let authority_scope = crate::cache_residency::domain::new_cache_authority_scope_v1(
             entry.partition,
             subject,
             Some(operation),
@@ -116,7 +91,7 @@ impl ScrubEvidenceV1 {
             authority_scope,
             now,
         )?;
-        let mut evidence = Self {
+        let mut evidence = ScrubEvidenceDataV1 {
             operation,
             catalog_digest: entry.digest,
             before_validation,
@@ -127,27 +102,21 @@ impl ScrubEvidenceV1 {
             authority_record: capability.record_digest(),
         };
         evidence.digest = scrub_digest(&evidence);
-        evidence.validate()
+        Self(evidence).validate()
     }
 
-    /// Validates stable repeated observations and the evidence digest.
+    /// Validates the historical fields without replacing live authority.
     ///
     /// # Errors
     ///
-    /// Returns [`ScrubError::InvalidObservation`] for sentinel, unstable, or
-    /// incorrectly committed observations.
+    /// Returns [`ScrubError`] for malformed observations or commitment.
     pub fn validate(self) -> Result<Self, ScrubError> {
-        self.before_validation.validate()?;
-        self.after_validation.validate()?;
-        if self.operation.as_bytes() == &[0; 16]
-            || self.catalog_digest.as_bytes() == &[0; 32]
-            || self.content_digest.as_bytes() == &[0; 32]
-            || self.before_validation != self.after_validation
-            || self.digest != scrub_digest(&self)
-        {
-            return Err(ScrubError::InvalidObservation);
-        }
+        self.0.validate()?;
         Ok(self)
+    }
+
+    pub(crate) fn recover_historical(data: ScrubEvidenceDataV1) -> Self {
+        Self(data)
     }
 }
 
@@ -282,40 +251,12 @@ pub enum ScrubError {
     Authority(#[from] CacheAuthorityError),
 }
 
-pub(crate) fn scrub_subject(
-    object: &ObjectDescriptor,
-    before: BackingObservationV1,
-    after: BackingObservationV1,
-    content_digest: ObjectDigest,
-) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(b"aos.sandbox.cache.scrub-subject.v1\0");
-    hasher.update(object_descriptor_commitment(object).as_bytes());
-    update_observation(&mut hasher, before);
-    update_observation(&mut hasher, after);
-    hasher.update(content_digest.as_bytes());
-    ObjectDigest::from_bytes(hasher.finalize().into())
-}
-
-fn scrub_digest(evidence: &ScrubEvidenceV1) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(b"aos.sandbox.cache.scrub-evidence.v1\0");
-    hasher.update(evidence.operation.as_bytes());
-    hasher.update(evidence.catalog_digest.as_bytes());
-    update_observation(&mut hasher, evidence.before_validation);
-    update_observation(&mut hasher, evidence.after_validation);
-    hasher.update(evidence.content_digest.as_bytes());
-    ObjectDigest::from_bytes(hasher.finalize().into())
-}
-
-fn update_observation(hasher: &mut Sha256, observation: BackingObservationV1) {
-    hasher.update(observation.root_custody.as_bytes());
-    hasher.update(observation.root_generation.to_be_bytes());
-    hasher.update(observation.canonical_name.as_bytes());
-    hasher.update(observation.backing.as_bytes());
-    hasher.update(observation.size.to_be_bytes());
-    hasher.update([observation.seal.profile as u8]);
-    hasher.update(observation.seal.measurement.as_bytes());
-    hasher.update([u8::from(observation.read_only)]);
-    hasher.update([u8::from(observation.confined_resolution)]);
+impl From<aos_sandbox_protocol::cache_state::scrub_data::ScrubDataErrorV1> for ScrubError {
+    fn from(error: aos_sandbox_protocol::cache_state::scrub_data::ScrubDataErrorV1) -> Self {
+        use aos_sandbox_protocol::cache_state::scrub_data::ScrubDataErrorV1;
+        match error {
+            ScrubDataErrorV1::InvalidObservation => Self::InvalidObservation,
+            ScrubDataErrorV1::Catalog(error) => Self::Catalog(error),
+        }
+    }
 }

@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use aos_sandbox::journal::{Journal, JournalLimits, RecordNamespace};
-use aos_sandbox::mount_manager_startup::MountManagerStartupProtectedOwnerV1;
+use aos_sandbox_mount_native::{MountJournalV1 as Journal, JournalLimits, RecordNamespace};
+use aos_sandbox_mount_native::mount_manager_startup::MountManagerStartupProtectedOwnerV1;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::mount_manager_startup::{
@@ -254,10 +254,11 @@ fn fixed_owner_native_recovery_vm_cut() {
     let mut root = handshake();
     wait_for(initial_ready);
 
-    let (mut journal, _) = Journal::open_protected_at(
+    let (mut journal, _) = Journal::open_protected_at_uid(
         Path::new(MOUNT_ROOT),
         MOUNT_JOURNAL,
         JournalLimits::default(),
+        0,
     )
     .expect("fixed Mount journal");
     let mut source =
@@ -331,10 +332,11 @@ fn fixed_owner_native_recovery_vm_cut() {
         .expect("successor fixed Provider child");
     let mut successor = handshake();
     wait_for(recovery_ready);
-    let (mut journal, _) = Journal::open_existing_protected_at(
+    let (mut journal, _) = Journal::open_existing_protected_at_uid(
         Path::new(MOUNT_ROOT),
         MOUNT_JOURNAL,
         JournalLimits::default(),
+        0,
     )
     .expect("reopen pre-cut fixed Mount journal");
     let mut source =
@@ -375,10 +377,11 @@ fn fixed_owner_native_recovery_vm_cut() {
         .expect("replay fixed Provider child");
     let mut successor = handshake();
     wait_for(replay_ready);
-    let (mut journal, _) = Journal::open_existing_protected_at(
+    let (mut journal, _) = Journal::open_existing_protected_at_uid(
         Path::new(MOUNT_ROOT),
         MOUNT_JOURNAL,
         JournalLimits::default(),
+        0,
     )
     .expect("cold reopen before Mount terminal CAS");
     let mut source =
@@ -405,10 +408,11 @@ fn fixed_owner_native_recovery_vm_cut() {
             .success()
     );
 
-    let (mut journal, _) = Journal::open_existing_protected_at(
+    let (mut journal, _) = Journal::open_existing_protected_at_uid(
         Path::new(MOUNT_ROOT),
         MOUNT_JOURNAL,
         JournalLimits::default(),
+        0,
     )
     .expect("cold reopen after Mount terminal CAS");
     let graph = validate_protected_graph(&journal);

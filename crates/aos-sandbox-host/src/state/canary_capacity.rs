@@ -205,6 +205,18 @@ impl HostProductionStateStoreV1 {
 }
 
 impl HostStateStore for HostProductionStateStoreV1 {
+    fn load_retaining_v2(&self, capture: &mut super::HostStateReadAttemptV2) -> Result<HostState> {
+        if let Some(selected) = &self.selected {
+            let candidate = selected.candidate.lock().map_err(|_| storage_refusal())?;
+            // The active canary owns its separate original-cell readback.
+            // Ordinary execution cannot substitute the unexported writer.
+            if !candidate.exported {
+                return capture.refuse_unsupported_v2();
+            }
+        }
+        self.writer.load_retaining_v2(capture)
+    }
+
     fn load(&self) -> Result<HostState> {
         match &self.selected {
             None => self.writer.load(),
@@ -266,6 +278,7 @@ pub(super) struct NativeStateReadbackV1 {
     bytes: Vec<u8>,
     file: Option<File>,
     disposition: ReadbackDisposition,
+    retain_root_causes: bool,
     first_failure: Option<NativeFailure>,
 }
 
@@ -283,8 +296,23 @@ impl NativeStateReadbackV1 {
             bytes: Vec::new(),
             file: None,
             disposition,
+            retain_root_causes: false,
             first_failure: None,
         }
+    }
+
+    pub(super) fn retained_with_root_causes_v2() -> Self {
+        let mut original = Self::retained();
+        original.retain_root_causes = true;
+        original
+    }
+
+    pub(super) fn retains_root_causes_v2(&self) -> bool {
+        self.retain_root_causes
+    }
+
+    pub(super) fn failure_v2(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.first_failure.as_ref().map(|error| error as _)
     }
 
     pub(super) fn park(&mut self, descriptor: OwnedFd) {

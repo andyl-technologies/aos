@@ -4,12 +4,22 @@
 //! and history retirement. Its synthetic historical heads and deterministic
 //! pins never establish current publisher/ancestry authority or Root publication.
 
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentInputsV1, verify_policy_deployment_head_v1,
+    verify_signed_project_policy_source_v2,
+};
+
+use aos_sandbox_policy::controller_readback::{
+    PinnedControllerHoldSignerV1, encode_controller_hold_signer_credential_v1,
+};
+
 #[path = "aos-sandbox-q04-bootstrap-vm-probe/negative_recovery.rs"]
 mod negative_recovery;
 
 #[path = "aos-sandbox-q04-bootstrap-vm-probe/project_recovery.rs"]
 mod project_recovery;
 
+use aos_sandbox_broker::root_settlement::query_fixed_root_v8_settled_grant_v1;
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
@@ -18,20 +28,19 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox::Journal;
-use aos_sandbox::cache_residency::{
-    CacheOwnerReadbackChallengeV1, PinnedCacheOwnerReadbackSignerV1,
-    encode_cache_owner_readback_signer_credential_v1, sign_fixed_signer_cache_owner_readback_v2,
+use aos_sandbox::cache_residency::sign_fixed_signer_cache_owner_readback_v2;
+use aos_sandbox_protocol::cache_owner_readback::{
+    CacheOwnerReadbackChallengeV1,
+    PinnedCacheOwnerReadbackSignerV1,
+    encode_cache_owner_readback_signer_credential_v1,
     verify_closed_cache_owner_readback_v2,
 };
 use aos_sandbox::journal::controller::production_journal_limits;
 use aos_sandbox::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
-    PinnedControllerHoldSignerV1, PinnedSourceHoldReadbackSignerV1, PolicyCompilerProtectedOwnerV1,
-    PolicyDeploymentInputsV1, SourceHoldReadbackChallengeV1,
-    encode_controller_hold_signer_credential_v1, encode_source_hold_readback_signer_credential_v1,
-    query_fixed_root_v8_settled_grant_v1, read_fixed_policy_cache_hold_v1,
-    sign_fixed_source_signer_readback_v2, verify_fixed_policy_cache_owner_readback_v2,
-    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v2,
+    PinnedSourceHoldReadbackSignerV1, PolicyCompilerProtectedOwnerV1,
+    encode_source_hold_readback_signer_credential_v1, read_fixed_policy_cache_hold_v1,
+    verify_fixed_policy_cache_owner_readback_v2,
 };
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::{Signer as _, SigningKey};
@@ -95,9 +104,9 @@ fn run() -> Result<(), Box<dyn Error>> {
             require_uid(0)?;
             root_cache_verify()?;
         }
-        "source-signer-reject-unheld" => {
+        "source-signer-view-credentials" => {
             require_uid(SOURCE_SIGNER_UID)?;
-            source_signer_reject_unheld()?;
+            source_signer_view_credentials()?;
         }
         "source-signer-listener" => {
             require_uid(0)?;
@@ -162,7 +171,8 @@ fn run() -> Result<(), Box<dyn Error>> {
 
 fn rotate_controller_credential() -> Result<(), Box<dyn Error>> {
     let key = SigningKey::from_bytes(&[0x42; 32]);
-    let pin = encode_controller_hold_signer_credential_v1(10, &key.verifying_key())?;
+    let pin = encode_controller_hold_signer_credential_v1(10, &key.verifying_key())
+        .map_err(aos_sandbox::policy_compiler::ControllerHoldReadbackErrorV1::from)?;
     let service = "aos-sandboxd.service";
     fs::write(
         credential_path(service, "controller-hold-signing-key"),
@@ -253,7 +263,8 @@ fn bootstrap_credentials() -> Result<(), Box<dyn Error>> {
     let cache_pin = encode_cache_owner_readback_signer_credential_v1(7, &cache.verifying_key())?;
     let source_pin = encode_source_hold_readback_signer_credential_v1(8, &source.verifying_key())?;
     let controller_pin =
-        encode_controller_hold_signer_credential_v1(9, &controller.verifying_key())?;
+        encode_controller_hold_signer_credential_v1(9, &controller.verifying_key())
+            .map_err(aos_sandbox::policy_compiler::ControllerHoldReadbackErrorV1::from)?;
     let mut memory = [0; 16];
     memory[..8].copy_from_slice(b"AOSCSM01");
     memory[8..].copy_from_slice(&(1024_u64 * 1024).to_be_bytes());
@@ -363,7 +374,8 @@ fn provision_root_signed_inputs() -> Result<(), Box<dyn Error>> {
         backend: &inputs[2],
         catalogs: &inputs[3],
     };
-    verify_policy_deployment_head_v1(&deployment, &sources, &deployment_key.verifying_key(), now)?;
+    verify_policy_deployment_head_v1(&deployment, &sources, &deployment_key.verifying_key(), now)
+        .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
 
     // A signed source is required for normal Root service startup. Its
     // publisher and ancestry claims are not admitted by this bootstrap probe.
@@ -407,7 +419,8 @@ fn provision_root_signed_inputs() -> Result<(), Box<dyn Error>> {
         &project_layer,
         &project_key.verifying_key(),
         now,
-    )?;
+    )
+    .map_err(aos_sandbox::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
 
     let root = "aos-sandbox-policy-authorityd.service";
     for (name, bytes) in [
@@ -473,7 +486,8 @@ fn replay_credentials() -> Result<(), Box<dyn Error>> {
     }
     let cache = PinnedCacheOwnerReadbackSignerV1::decode(&cache)?;
     let source = PinnedSourceHoldReadbackSignerV1::decode(&source)?;
-    let controller = PinnedControllerHoldSignerV1::decode(&controller)?;
+    let controller = PinnedControllerHoldSignerV1::decode(&controller)
+        .map_err(aos_sandbox::policy_compiler::ControllerHoldReadbackErrorV1::from)?;
     let controller_seed = fs::read(credential_path(
         "aos-sandboxd.service",
         "controller-hold-signing-key",
@@ -536,30 +550,36 @@ fn root_cache_verify() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn source_signer_reject_unheld() -> Result<(), Box<dyn Error>> {
+
+/// Checks the real Source fixture view and credential binding without signing.
+fn source_signer_view_credentials() -> Result<(), Box<dyn Error>> {
+    let mount = aos_sandbox_linux::signer_mount::require_signer_mount(
+        "/run/aos/sandbox-source-signer-journal",
+        "/var/lib/aos/sandbox/source-domains",
+        SOURCE_SIGNER_UID,
+        "/run/aos",
+        &[
+            "/var",
+            "/var/lib",
+            "/var/lib/aos",
+            "/var/lib/aos/sandbox",
+            "/run",
+            "/run/aos",
+        ],
+    )?;
+    if mount.source_uid() != CONTROLLER_UID {
+        return Err("Source signer view maps a foreign protected owner".into());
+    }
+
     let seed = fs::read(credential_path(
-        "aos-sandbox-source-signerd.service",
-        "source-hold-signing-seed",
+        "aos-sandbox-source-signerd.service", "source-hold-signing-seed",
     ))?;
     let seed: [u8; 32] = seed.try_into().map_err(|_| "invalid Source seed")?;
-    let pin = fs::read(credential_path(
-        "aos-sandbox-source-signerd.service",
-        "source-hold-public-key",
-    ))?;
-    let pin = PinnedSourceHoldReadbackSignerV1::decode(&pin)?;
-    let key = SigningKey::from_bytes(&seed);
-    let challenge = SourceHoldReadbackChallengeV1::new([8; 16], ObjectDigest::from_bytes([9; 32]))?;
-    if pin.verifying_key() != &key.verifying_key()
-        || sign_fixed_source_signer_readback_v2(
-            CONTROLLER_UID,
-            ProjectId::from_bytes([1; 16]),
-            challenge,
-            pin.generation(),
-            &key,
-        )
-        .is_ok()
-    {
-        return Err("unheld Source unexpectedly signed".into());
+    let pin = PinnedSourceHoldReadbackSignerV1::decode(&fs::read(credential_path(
+        "aos-sandbox-source-signerd.service", "source-hold-public-key",
+    ))?)?;
+    if pin.verifying_key() != &SigningKey::from_bytes(&seed).verifying_key() {
+        return Err("Source signer seed/pin mismatch".into());
     }
     Ok(())
 }

@@ -7,6 +7,10 @@
 //! those layers. This precursor is DATA until the enclosing original flight
 //! joins the actual Root floor, fresh signatures and complete derivation.
 
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentHeadV1, PolicyDeploymentSourcesV1, VerifiedSignedProjectPolicySourceV2,
+};
+
 use aos_sandbox_core::{
     CanonicalAssignmentManifestV1, ObjectDescriptor, ObjectDigest, PortableMediaType, ProjectId,
     SandboxId, descriptor_for_bytes, MediaType,
@@ -29,10 +33,7 @@ use crate::runtime_authority::{
 use crate::sandbox_spec_state::{DurableSandboxSpecV1, SandboxSpecStateError};
 use crate::{Journal, JournalError};
 
-use super::super::{
-    PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentSourcesV1,
-    VerifiedSignedProjectPolicySourceV2,
-};
+use super::super::PolicyDeploymentHeadErrorV1;
 use aos_sandbox_policy::{
     AuthenticatedSandboxProjectRelationV1, PolicyCompilerInputV1, PolicyModelError,
     SandboxProjectRelationVerifierV1,
@@ -339,8 +340,8 @@ impl<'source> CurrentNixInputAttemptV1<'source> {
             return Err(CurrentNixInputErrorV1::Changed);
         }
 
-        let publisher = crate::publisher_policy::PublisherPolicyStore::load(
-            controller, crate::publisher_policy::PublisherPolicyLimits::default(),
+        let publisher = crate::publisher_admin::policy::PublisherPolicyStore::load(
+            controller, crate::publisher_admin::policy::PublisherPolicyLimits::default(),
         ).map_err(PolicyDeploymentHeadErrorV1::from)?;
         let revocation = publisher.project_revocation_head(head.project())
             .map_err(PolicyDeploymentHeadErrorV1::from)?

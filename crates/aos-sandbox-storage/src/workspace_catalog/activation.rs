@@ -65,6 +65,28 @@ pub(crate) struct StorageWorkspaceCatalogActivationPromotionFailureV1 {
 }
 
 impl StorageWorkspaceCatalogActivationPromotionFailureV1 {
+    pub(crate) fn startup_materialization_failed_v1(&self) -> bool {
+        self.validated.as_ref().is_some_and(
+            ValidatedPendingStorageWorkspaceCatalogV1::startup_materialization_failed_v1,
+        )
+    }
+
+    pub(crate) fn actual_failure_v1(&self) -> &(dyn std::error::Error + 'static) {
+        if self.startup_materialization_failed_v1() {
+            if let Some(cause) = self.validated.as_ref()
+                .and_then(ValidatedPendingStorageWorkspaceCatalogV1::startup_native_failure_v1)
+            {
+                if let Some(StorageWorkspaceCatalogError::Receiving(marker)) =
+                    cause.downcast_ref::<StorageWorkspaceCatalogError>()
+                {
+                    return marker;
+                }
+                return cause;
+            }
+        }
+        &self.error
+    }
+
     pub(crate) const fn error(&self) -> &StorageWorkspaceCatalogError {
         &self.error
     }
@@ -94,11 +116,7 @@ impl StorageWorkspaceCatalogActivationCandidateV1 {
         physical_plan: AuthenticatedWorkspaceCatalogPhysicalPlanV1,
         request: WorkspaceCatalogObservationRequestV1,
     ) -> Result<Self, StorageWorkspaceCatalogActivationPreparationFailureV1> {
-        let validation = (|| {
-            validate_physical_plan(&physical_plan, &request)?;
-            validate_request_bindings(&validated, &request)?;
-            validate_terminal_plan(&validated, &request)
-        })();
+        let validation = validate_preparation(&validated, &physical_plan, &request);
         match validation {
             Ok(()) => Ok(Self {
                 validated,
@@ -119,6 +137,42 @@ impl StorageWorkspaceCatalogActivationCandidateV1 {
     /// Recovers structural custody when observation cannot complete.
     pub(crate) fn into_validated(self) -> ValidatedPendingStorageWorkspaceCatalogV1 {
         self.validated
+    }
+
+    /// Requires the same catalog's already-paid native materializer.
+    ///
+    /// # Errors
+    /// Returns the existing promotion error while preserving validated Journal
+    /// custody when fresh evidence or actual native custody does not qualify.
+    pub(crate) fn activate_retaining_v1(
+        self,
+        recomposed_plan: StorageWorkspaceCatalogPlanV1,
+        recomposed_physical_plan: AuthenticatedWorkspaceCatalogPhysicalPlanV1,
+        recomposed_request: WorkspaceCatalogObservationRequestV1,
+        fresh: FreshWorkspaceCatalogObservationV1,
+        now: u64,
+    ) -> Result<ActivatedStorageWorkspaceCatalogV1, StorageWorkspaceCatalogActivationPromotionFailureV1> {
+        self.promote(
+            recomposed_plan, recomposed_physical_plan, recomposed_request,
+            fresh, now, CatalogPromotionV4::ReceivingMaterialize, None,
+        )
+    }
+
+    /// Joins actual recomposed materialization to the same initial State cut.
+    pub(crate) fn activate_state_receiving_v1(
+        self,
+        recomposed_plan: StorageWorkspaceCatalogPlanV1,
+        recomposed_physical_plan: AuthenticatedWorkspaceCatalogPhysicalPlanV1,
+        recomposed_request: WorkspaceCatalogObservationRequestV1,
+        fresh: FreshWorkspaceCatalogObservationV1,
+        now: u64,
+        receiving: &mut crate::state::encoding::StateEncodingLoanV1<'_, '_>,
+        state: &aos_sandbox::Journal,
+    ) -> Result<ActivatedStorageWorkspaceCatalogV1, StorageWorkspaceCatalogActivationPromotionFailureV1> {
+        self.promote(
+            recomposed_plan, recomposed_physical_plan, recomposed_request,
+            fresh, now, CatalogPromotionV4::ReceivingMaterialize, Some((receiving, state)),
+        )
     }
 
     /// Consumes matching fresh evidence after an exact second composition.
@@ -148,6 +202,7 @@ impl StorageWorkspaceCatalogActivationCandidateV1 {
             fresh,
             now_boottime_nanoseconds,
             CatalogPromotionV4::Materialize,
+            None,
         )
     }
 
@@ -170,6 +225,7 @@ impl StorageWorkspaceCatalogActivationCandidateV1 {
             fresh,
             now_boottime_nanoseconds,
             CatalogPromotionV4::TerminalReadonly,
+            None,
         )
     }
 
@@ -181,6 +237,7 @@ impl StorageWorkspaceCatalogActivationCandidateV1 {
         fresh: FreshWorkspaceCatalogObservationV1,
         now_boottime_nanoseconds: u64,
         promotion: CatalogPromotionV4,
+        receiving: Option<(&mut crate::state::encoding::StateEncodingLoanV1<'_, '_>, &aos_sandbox::Journal)>,
     ) -> Result<
         ActivatedStorageWorkspaceCatalogV1,
         StorageWorkspaceCatalogActivationPromotionFailureV1,
@@ -218,13 +275,37 @@ impl StorageWorkspaceCatalogActivationCandidateV1 {
                 }
                 self.validated
             }
-            CatalogPromotionV4::Materialize => match self.validated.materialize_terminal() {
-                Ok(validated) => validated,
-                Err(error) => {
+            CatalogPromotionV4::Materialize | CatalogPromotionV4::ReceivingMaterialize => {
+                if self.validated.has_startup_native_custody_v1() {
+                    let result = match receiving {
+                        Some((receiving, state)) => self.validated
+                            .materialize_terminal_state_receiving_v1(receiving, state),
+                        None => self.validated.materialize_terminal_retaining_v1(),
+                    };
+                    match result {
+                        Ok(validated) => validated,
+                        Err((validated, error)) => {
+                            return Err(StorageWorkspaceCatalogActivationPromotionFailureV1 {
+                                validated: Some(validated),
+                                error,
+                            });
+                        }
+                    }
+                } else if matches!(promotion, CatalogPromotionV4::ReceivingMaterialize) {
                     return Err(StorageWorkspaceCatalogActivationPromotionFailureV1 {
-                        validated: None,
-                        error,
+                        validated: Some(self.validated),
+                        error: StorageWorkspaceCatalogError::InvalidCandidate,
                     });
+                } else {
+                    match self.validated.materialize_terminal() {
+                        Ok(validated) => validated,
+                        Err(error) => {
+                            return Err(StorageWorkspaceCatalogActivationPromotionFailureV1 {
+                                validated: None,
+                                error,
+                            });
+                        }
+                    }
                 }
             },
         };
@@ -253,6 +334,7 @@ impl StorageWorkspaceCatalogActivationCandidateV1 {
 
 enum CatalogPromotionV4 {
     Materialize,
+    ReceivingMaterialize,
     TerminalReadonly,
 }
 
@@ -270,6 +352,16 @@ impl ActivatedStorageWorkspaceCatalogV1 {
     pub(crate) fn into_inventory(self) -> (ValidatedPendingStorageWorkspaceCatalogV1, Vec<u8>) {
         (self.validated, self.prepared_inventory)
     }
+}
+
+fn validate_preparation(
+    validated: &ValidatedPendingStorageWorkspaceCatalogV1,
+    physical_plan: &AuthenticatedWorkspaceCatalogPhysicalPlanV1,
+    request: &WorkspaceCatalogObservationRequestV1,
+) -> Result<(), StorageWorkspaceCatalogError> {
+    validate_physical_plan(physical_plan, request)?;
+    validate_request_bindings(validated, request)?;
+    validate_terminal_plan(validated, request)
 }
 
 fn validate_physical_plan(
@@ -1181,6 +1273,31 @@ mod tests {
             error,
             StorageWorkspaceCatalogError::InvalidCandidate
         ));
+        assert_eq!(validated.unwrap().snapshot(), snapshot);
+    }
+    #[test]
+    fn receiving_promotion_without_paid_writer_keeps_actual_catalog() {
+        let directory = TempDir::new().unwrap();
+        let validated = validated_empty(&directory);
+        let request = observation_request(&validated, Vec::new(), Vec::new());
+        let digest = ObjectDigest::from_bytes([15; 32]);
+        let result = crate::observation_protocol::WorkspaceCatalogObservationResultV1::matched(
+            &request, digest, digest, digest, digest,
+        ).unwrap();
+        let candidate = StorageWorkspaceCatalogActivationCandidateV1::new(
+            validated, physical_empty(), request,
+        ).ok().unwrap();
+        let snapshot = candidate.validated.snapshot();
+        let current_plan = plan(1);
+        let recomposed = observation_request(&candidate.validated, Vec::new(), Vec::new());
+
+        let failure = candidate.activate_retaining_v1(
+            current_plan, physical_empty(), recomposed,
+            FreshWorkspaceCatalogObservationV1::new_for_test(result), 99,
+        ).err().unwrap();
+        let (validated, error) = failure.into_parts();
+
+        assert!(matches!(error, StorageWorkspaceCatalogError::InvalidCandidate));
         assert_eq!(validated.unwrap().snapshot(), snapshot);
     }
 }

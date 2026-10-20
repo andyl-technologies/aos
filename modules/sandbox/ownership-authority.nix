@@ -7,6 +7,10 @@
 }: let
   cfg = config.aos.sandbox.ownershipAuthority;
   controller = config.aos.sandbox.controller;
+  protectedOrigin = config.aos.sandbox.resourceBank.parentEnclosure != null;
+  service = config.systemd.services.aos-sandbox-ownershipd.serviceConfig;
+  socket = config.systemd.sockets.aos-sandbox-ownershipd.socketConfig;
+  controllerService = config.aos.sandbox.controllerService;
 in {
   options.aos.sandbox.ownershipAuthority = {
     enable = lib.mkEnableOption "the fixed local sandbox ownership authority";
@@ -23,13 +27,47 @@ in {
       default = null;
       description = "External 32-byte local ownership-session key shared with the controller; its bytes never enter the Nix store.";
     };
+    credentials.signingKey = lib.mkOption {
+      type = lib.types.nullOr lib.serviceTypes.credentialName;
+      default = null;
+      description = "External 32-byte local ownership signing seed matching the fixed protected bootstrap; never included in the Nix store.";
+    };
+
   };
 
   config = lib.mkIf cfg.enable {
     assertions = [
       {
+        assertion = protectedOrigin
+          && config.aos.sandbox.resourceBank.parentEnclosure.ownershipReceiving != null
+          && config.aos.sandbox.resourceBank.parentEnclosure.ownershipSender != null;
+        message = "the ownership daemon requires its genuine PID1 parent and distinct explicit Ownership receiving/sender subdivisions";
+      }
+      {
         assertion = cfg.credentials.sessionKey != null;
         message = "aos.sandbox.ownershipAuthority.credentials.sessionKey is required";
+      }
+      {
+        assertion = controllerService.credentials.nodeId != null;
+        message = "local ownership requires the same protected Controller node identity";
+      }
+      {
+        assertion = cfg.credentials.signingKey != null;
+        message = "aos.sandbox.ownershipAuthority.credentials.signingKey is required for fresh local issuance";
+      }
+      {
+        assertion = (
+          (socket.PassSubjectBeforeListen or false)
+          && (socket.PassCredentials or false)
+          && (socket.PassPIDFD or false)
+          && !(socket.PassSecurity or false)
+          && (service.StandardInput or null) == "null"
+          && (service.StateDirectory or null) == "aos/sandbox/multi-node"
+          && (service.StateDirectoryMode or null) == "0700"
+          && (service.RuntimeDirectory or null) == "aos/sandbox-ownership"
+          && (service.RuntimeDirectoryMode or null) == "0711"
+        );
+        message = "protected Ownership requires its actual fixed directory roster, named activation and credentials/pidfd before listen, without SCM_SECURITY";
       }
     ];
 
@@ -42,6 +80,10 @@ in {
         Service = "aos-sandbox-ownershipd.service";
         PassCredentials = true;
         PassPIDFD = true;
+        # The existing Ownership record grammar forbids SCM_SECURITY. Both
+        # required identity options are installed by PID1 before bind instead.
+        PassSubjectBeforeListen = true;
+        PassSecurity = false;
         SocketUser = "aos-sandboxd";
         SocketGroup = "aos-sandboxd";
         SocketMode = "0600";
@@ -58,9 +100,12 @@ in {
       after = ["aos-sandbox-ownershipd.socket" "local-fs.target"];
       serviceConfig = {
         Type = "simple";
+        StandardInput = "null";
         ExecStart = "${cfg.package}/bin/aos-sandbox-ownershipd ${toString controller.uid} ${toString controller.gid}";
         LoadCredential = [
           "ownership-session-key:/run/credentials/@system/${cfg.credentials.sessionKey}"
+          "ownership-signing-key:/run/credentials/@system/${cfg.credentials.signingKey}"
+          "node-id:/run/credentials/@system/${controllerService.credentials.nodeId}"
         ];
         Restart = "on-failure";
         RestartSec = "2s";
@@ -70,8 +115,8 @@ in {
         RuntimeDirectoryMode = "0711";
         UMask = "0077";
 
-        # The fixed bootstrap, issuer inbox, and journal remain root-owned;
-        # systemd credentials contain only the local record MAC key.
+        # The bootstrap/public key and journal remain root-owned. The signing
+        # seed and session MAC key are separate external systemd credentials.
         CapabilityBoundingSet = "";
         DevicePolicy = "closed";
         LockPersonality = true;

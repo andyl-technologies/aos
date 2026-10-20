@@ -224,8 +224,50 @@ impl LifecycleStepV1 {
         compensation_body: Option<LifecycleStepBodyDigestV1>,
         compensation_plan: Option<LifecycleStepPlanDigestV1>,
         state: LifecycleStepStateV1,
-        forward_attempts: Vec<LifecycleEffectAttemptV1>,
-        compensation_attempts: Vec<LifecycleEffectAttemptV1>,
+        mut forward_attempts: Vec<LifecycleEffectAttemptV1>,
+        mut compensation_attempts: Vec<LifecycleEffectAttemptV1>,
+        result: Option<LifecycleStepResultDigestV1>,
+        compensation_result: Option<LifecycleStepResultDigestV1>,
+        inventory: Option<LifecycleInventoryDigestV1>,
+        failure: Option<LifecycleFailureV1>,
+        retry: Option<LifecycleRetryV1>,
+    ) -> Result<Self, LifecycleModelError> {
+        Self::new_from_decode_parts(
+            index,
+            class,
+            domain,
+            request,
+            request_body,
+            plan,
+            compensation_request,
+            compensation_body,
+            compensation_plan,
+            state,
+            &mut forward_attempts,
+            &mut compensation_attempts,
+            result,
+            compensation_result,
+            inventory,
+            failure,
+            retry,
+        )
+    }
+
+    /// Validates the same model while retaining borrowed graph inputs on refusal.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_from_decode_parts(
+        index: u32,
+        class: LifecycleStepClassV1,
+        domain: LifecycleStepDomainV1,
+        request: LifecycleStepRequestDigestV1,
+        request_body: LifecycleStepBodyDigestV1,
+        plan: LifecycleStepPlanDigestV1,
+        compensation_request: Option<LifecycleStepRequestDigestV1>,
+        compensation_body: Option<LifecycleStepBodyDigestV1>,
+        compensation_plan: Option<LifecycleStepPlanDigestV1>,
+        state: LifecycleStepStateV1,
+        forward_attempts: &mut Vec<LifecycleEffectAttemptV1>,
+        compensation_attempts: &mut Vec<LifecycleEffectAttemptV1>,
         result: Option<LifecycleStepResultDigestV1>,
         compensation_result: Option<LifecycleStepResultDigestV1>,
         inventory: Option<LifecycleInventoryDigestV1>,
@@ -376,8 +418,8 @@ impl LifecycleStepV1 {
             compensation_body,
             compensation_plan,
             state,
-            forward_attempts,
-            compensation_attempts,
+            forward_attempts: std::mem::take(forward_attempts),
+            compensation_attempts: std::mem::take(compensation_attempts),
             result,
             compensation_result,
             inventory,
@@ -853,6 +895,7 @@ pub struct LifecycleOperationV1 {
     // Selected by the actual D4 envelope before any semantic fact exists.
     // It is retained format DATA, never inferred from generic Delete intent.
     delete_batch_layout: bool,
+    start_origin: Option<aos_sandbox_protocol::domain_ledger::operation::StartNativeOriginDataV1>,
     operation_id: OperationId,
     caller: PrincipalId,
     project: ProjectId,
@@ -889,12 +932,56 @@ impl LifecycleOperationV1 {
         intent: LifecycleIntentV1,
         accepted_at: LifecycleTimeV1,
         record_revision: Revision,
-        expectations: Vec<ResourceExpectationV1>,
-        steps: Vec<LifecycleStepV1>,
+        mut expectations: Vec<ResourceExpectationV1>,
+        mut steps: Vec<LifecycleStepV1>,
         phase: LifecyclePhaseV1,
         forward_progress: u32,
         compensation_progress: u32,
-        semantic_commit: Option<LifecycleMethodSemanticCommitV1>,
+        mut semantic_commit: Option<LifecycleMethodSemanticCommitV1>,
+        failure: Option<LifecycleFailureV1>,
+        retry: Option<LifecycleRetryV1>,
+        terminal_result: Option<LifecycleTerminalResultV1>,
+        finished_at: Option<LifecycleTimeV1>,
+        predecessor_digest: Option<LifecycleRecordDigestV1>,
+    ) -> Result<Self, LifecycleModelError> {
+        Self::new_from_decode_parts(
+            operation_id,
+            caller,
+            project,
+            idempotency,
+            intent,
+            accepted_at,
+            record_revision,
+            &mut expectations,
+            &mut steps,
+            phase,
+            forward_progress,
+            compensation_progress,
+            &mut semantic_commit,
+            failure,
+            retry,
+            terminal_result,
+            finished_at,
+            predecessor_digest,
+        )
+    }
+
+    /// Validates the same model while retaining borrowed graph inputs on refusal.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_from_decode_parts(
+        operation_id: OperationId,
+        caller: PrincipalId,
+        project: ProjectId,
+        idempotency: LifecycleIdempotencyDigestV1,
+        intent: LifecycleIntentV1,
+        accepted_at: LifecycleTimeV1,
+        record_revision: Revision,
+        expectations: &mut Vec<ResourceExpectationV1>,
+        steps: &mut Vec<LifecycleStepV1>,
+        phase: LifecyclePhaseV1,
+        forward_progress: u32,
+        compensation_progress: u32,
+        semantic_commit: &mut Option<LifecycleMethodSemanticCommitV1>,
         failure: Option<LifecycleFailureV1>,
         retry: Option<LifecycleRetryV1>,
         terminal_result: Option<LifecycleTerminalResultV1>,
@@ -975,6 +1062,7 @@ impl LifecycleOperationV1 {
         Ok(Self {
             operation_id,
             delete_batch_layout: false,
+            start_origin: None,
             caller,
             project,
             idempotency,
@@ -982,12 +1070,12 @@ impl LifecycleOperationV1 {
             intent,
             accepted_at,
             record_revision,
-            expectations,
-            steps,
+            expectations: std::mem::take(expectations),
+            steps: std::mem::take(steps),
             phase,
             forward_progress,
             compensation_progress,
-            semantic_commit,
+            semantic_commit: std::mem::take(semantic_commit),
             failure,
             retry,
             terminal_result,
@@ -996,13 +1084,44 @@ impl LifecycleOperationV1 {
         })
     }
 
-    pub(super) const fn has_delete_batch_layout(&self) -> bool {
+    /// Returns the immutable first native Start origin as historical DATA.
+    #[must_use]
+    pub const fn start_native_origin_v1(&self)
+        -> Option<aos_sandbox_protocol::domain_ledger::operation::StartNativeOriginDataV1>
+    { self.start_origin }
+
+    // Only the sole decoder and closed native first-admission producer attach
+    // this field. Later Source successors must preserve it byte for byte.
+    pub(crate) fn select_start_native_origin_retaining_v1(&mut self,
+        origin: aos_sandbox_protocol::domain_ledger::operation::StartNativeOriginDataV1,
+    ) -> Result<(), LifecycleModelError> {
+        let accepted_ns = u64::try_from(origin.accepted_v1().accepted_clock_v1().wall_seconds())
+            .ok().and_then(|seconds| seconds.checked_mul(1_000_000_000));
+        if !matches!(self.intent, LifecycleIntentV1::Start { .. })
+            || self.delete_batch_layout || self.start_origin.is_some()
+            || accepted_ns != Some(self.accepted_at.get())
+        { return Err(LifecycleModelError::InvalidModel); }
+        self.start_origin = Some(origin);
+        Ok(())
+    }
+
+    // This existing retained-format marker is comparison DATA only. Exposing
+    // it within the crate does not select the layout or grant a transition.
+    pub(crate) const fn has_delete_batch_layout(&self) -> bool {
         self.delete_batch_layout
     }
 
     pub(super) fn select_delete_batch_layout(mut self) -> Result<Self, LifecycleModelError> {
+        self.select_delete_batch_layout_retaining()?;
+        Ok(self)
+    }
+
+    pub(super) fn select_delete_batch_layout_retaining(
+        &mut self,
+    ) -> Result<(), LifecycleModelError> {
         if !matches!(self.intent, LifecycleIntentV1::DeleteSandbox { .. })
-            || self.terminal_result == Some(LifecycleTerminalResultV1::Succeeded)
+            || (self.terminal_result == Some(LifecycleTerminalResultV1::Succeeded)
+                && !self.has_completed_delete_batch_shape_v4())
             || self.terminal_result == Some(LifecycleTerminalResultV1::CanceledBeforeCommit)
             || self.semantic_commit.as_ref().is_some_and(|commit| {
                 !matches!(commit.facts(), super::LifecycleSemanticCommitFactV1::DeleteBatch { batch, .. }
@@ -1013,7 +1132,33 @@ impl LifecycleOperationV1 {
             return Err(LifecycleModelError::InvalidModel);
         }
         self.delete_batch_layout = true;
-        Ok(self)
+        Ok(())
+    }
+
+    // This only selects the retained DATA format. Physical/native permission
+    // still comes from the private completion borrower and Root's full join.
+    // Earlier generic terminal Delete shapes remain outside this format.
+    fn has_completed_delete_batch_shape_v4(&self) -> bool {
+        let [step] = self.steps.as_slice() else { return false; };
+        let [attempt] = step.forward_attempts() else { return false; };
+        self.phase == LifecyclePhaseV1::Terminal
+            && self.forward_progress == 1
+            && self.compensation_progress == 0
+            && self.semantic_commit.as_ref().is_some_and(|commit| {
+                matches!(commit.facts(), super::LifecycleSemanticCommitFactV1::DeleteBatch { batch, .. }
+                    if batch.state() == 2)
+            })
+            && step.index() == 0
+            && step.class() == LifecycleStepClassV1::PostCommitForward
+            && step.domain() == LifecycleStepDomainV1::Controller
+            && !step.is_unbound()
+            && step.state() == LifecycleStepStateV1::Applied
+            && step.compensation_attempts().is_empty()
+            && step.result().is_some()
+            && step.inventory().is_some()
+            && attempt.number() == 1
+            && attempt.direction() == LifecycleEffectDirectionV1::Forward
+            && attempt.state() == LifecycleAttemptStateV1::Succeeded
     }
 
     /// Returns operation identity.
@@ -1759,4 +1904,36 @@ fn operation_progress_is_valid(
         && failure_shape
         && retry_shape
         && residual_retry_shape
+}
+
+
+// Counts only this actual completed Create model's retained vector backings.
+// The native writer, encoded history and future decoder/append planes remain
+// separate. Capacity is read from the actual resident Vecs, never wire counts.
+pub(crate) fn create_operation_resident_bytes_v1(operation: &LifecycleOperationV1) -> Option<usize> {
+    use std::mem::size_of;
+    use super::semantic::LifecycleSemanticCommitFactV1;
+
+    if !matches!(operation.intent(), LifecycleIntentV1::Create { .. })
+        || operation.start_native_origin_v1().is_some()
+    {
+        return None;
+    }
+    let mut bytes = size_of::<LifecycleOperationV1>()
+        .checked_add(operation.expectations.capacity().checked_mul(size_of::<ResourceExpectationV1>())?)?
+        .checked_add(operation.steps.capacity().checked_mul(size_of::<LifecycleStepV1>())?)?;
+    for step in &operation.steps {
+        bytes = bytes.checked_add(step.forward_attempts.capacity().checked_mul(size_of::<LifecycleEffectAttemptV1>())?)?
+            .checked_add(step.compensation_attempts.capacity().checked_mul(size_of::<LifecycleEffectAttemptV1>())?)?;
+    }
+    if let Some(commit) = operation.method_semantic_commit() {
+        let LifecycleSemanticCommitFactV1::DesiredState {
+            reads, resources, assignments, reservations, ..
+        } = commit.facts() else { return None; };
+        bytes = bytes.checked_add(reads.capacity().checked_mul(size_of::<super::LifecycleReadCommitFactV1>())?)?
+            .checked_add(resources.capacity().checked_mul(size_of::<super::LifecycleCommittedResourceV1>())?)?
+            .checked_add(assignments.capacity().checked_mul(size_of::<super::LifecycleAssignmentCommitFactV1>())?)?
+            .checked_add(reservations.capacity().checked_mul(size_of::<super::LifecycleReservationCommitFactV1>())?)?;
+    }
+    Some(bytes)
 }

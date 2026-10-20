@@ -61,15 +61,18 @@ mod namespace_target;
 #[cfg(test)]
 mod tests;
 mod transport;
+mod retaining;
+pub use retaining::{RuntimeScopeOpeningOriginalV1, RuntimeScopeObserveOriginalV1, RuntimeScopeAcquireOriginalV1};
 
 #[cfg(all(test, feature = "kernel-tests"))]
 pub(crate) use current::tests::CurrentNamespaceFixture;
 pub use current::{
     CurrentAssignmentTarget, CurrentRuntimeScope, CurrentRuntimeScopeError,
+    OriginalAssignmentCaptureLifetimeV2, ControllerCaptureAssignmentChecksV4,
     CurrentRuntimeScopePolicy, RuntimeScopeHolder,
 };
 pub(crate) use current::{
-    acquire as acquire_current_runtime, acquire_assignment as acquire_current_assignment,
+    acquire as acquire_current_runtime, acquire_retaining as acquire_current_runtime_retaining, acquire_assignment as acquire_current_assignment,
 };
 pub(crate) use generation::validate_namespace as validate_generation_namespace;
 pub use generation::{CurrentRuntimeGeneration, RuntimeGenerationError};
@@ -81,6 +84,18 @@ pub(crate) use namespace_target::{
 pub use namespace_target::{
     CurrentNamespaceTarget, NamespaceTargetAdvanceV1, NamespaceTargetError, NamespaceTargetOutcome,
 };
+
+/// Returns current-source reader representation on actual held rows and policy.
+///
+/// This pure BYTE/cardinality supplier performs no IO, parsing or admission.
+/// The actual trusted coordinator must debit its genuine purpose before growth.
+#[doc(hidden)]
+#[must_use]
+pub fn current_source_receiving_demand_v1(
+    journal: &crate::Journal, policy: &CurrentRuntimeScopePolicy,
+) -> Option<aos_sandbox_core::ResourceVector> {
+    current::acquisition_receiving_demand_v1(journal, policy)
+}
 
 const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const AUTHORITY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
@@ -103,6 +118,9 @@ pub enum RuntimeScopeError {
     /// The nominated service subject is outside the configured identity or changed execution.
     #[error("runtime scope reply does not match the pinned host service")]
     HostIdentity,
+    /// The actual native cause remains in the selected exchange original.
+    #[error("runtime scope native original records a refusal")]
+    RetainedNative,
     /// A retained payload changed identity or membership across observations.
     #[error("runtime scope payload identity changed")]
     PayloadIdentity,
@@ -129,7 +147,7 @@ pub enum RuntimeScopeError {
 /// Owns one connected channel for a single authenticated Host payload-scope exchange.
 pub struct RuntimeScopeClient {
     socket: DescriptorSubjectSocket,
-    expected_host: HostServiceIdentity,
+    expected_host: Option<HostServiceIdentity>,
 }
 
 impl RuntimeScopeClient {
@@ -149,7 +167,7 @@ impl RuntimeScopeClient {
         expected_host.cgroup.validate_current()?;
         Ok(Self {
             socket: DescriptorSubjectSocket::connect(path)?,
-            expected_host,
+            expected_host: Some(expected_host),
         })
     }
 
@@ -172,8 +190,36 @@ impl RuntimeScopeClient {
         expected_host.cgroup.validate_current()?;
         Ok(Self {
             socket: DescriptorSubjectSocket::from_owned(fd)?,
-            expected_host,
+            expected_host: Some(expected_host),
         })
+    }
+
+    /// Opens the same channel while retaining the actual refused native prefix.
+    ///
+    /// # Errors
+    /// Rejects repeated entry, invalid configured cgroup or socket admission.
+    /// The first actual cause and all reached native owners remain in `original`.
+    #[doc(hidden)]
+    pub fn connect_retaining_v1(
+        path: &Path,
+        expected_host: HostServiceIdentity,
+        original: &mut RuntimeScopeOpeningOriginalV1,
+    ) -> Result<Self, RuntimeScopeError> {
+        if original.attempted { return Err(RuntimeScopeError::RetainedNative); }
+        original.attempted = true;
+        original.expected = Some(expected_host);
+        let expected = original.expected.as_ref().ok_or(RuntimeScopeError::HostIdentity)?;
+        original.validation = Some(original.active.capture_active_once(&expected.cgroup).map_err(Into::into));
+        if !matches!(original.validation, Some(Ok(()))) {
+            return Err(RuntimeScopeError::RetainedNative);
+        }
+        original.socket = Some(DescriptorSubjectSocket::connect_retaining(path));
+        if !matches!(original.socket, Some(Ok(_))) {
+            return Err(RuntimeScopeError::RetainedNative);
+        }
+        let Some(Ok(mut socket)) = original.socket.take() else { std::process::abort(); };
+        socket.begin_original_retention_v1();
+        Ok(Self { socket, expected_host: original.expected.take() })
     }
 
     /// Observes one runtime using an exact Host 1.0 body and signed authority quartet.
@@ -189,10 +235,48 @@ impl RuntimeScopeClient {
     /// substitution, broker denial, inexact response bindings/descriptor roles,
     /// invalid received kernel objects, or failed execution rechecks.
     pub fn observe(
-        mut self,
+        self,
         request_body: &[u8],
         authorization: AuthorizationArtifactBytes<'_>,
     ) -> Result<ObservedPayloadScope, RuntimeScopeError> {
+        self.observe_with_disposition(request_body, authorization, None)
+    }
+
+    /// Uses the same exchange while retaining reached inputs through the caller's posts.
+    ///
+    /// # Errors
+    /// Returns the same protocol and currentness refusals; the actual first error
+    /// and native prefix remain in `original` on failure.
+    #[doc(hidden)]
+    pub fn observe_retaining_v1(
+        self,
+        request_body: &[u8],
+        authorization: AuthorizationArtifactBytes<'_>,
+        original: &mut RuntimeScopeObserveOriginalV1,
+    ) -> Result<ObservedPayloadScope, RuntimeScopeError> {
+        if original.attempted { return Err(RuntimeScopeError::RetainedNative); }
+        original.attempted = true;
+        let result = self.observe_with_disposition(request_body, authorization, Some(&mut *original));
+        match result {
+            Ok(value) => Ok(value),
+            Err(cause) => {
+                original.error = Some(cause);
+                Err(RuntimeScopeError::RetainedNative)
+            }
+        }
+    }
+
+    fn observe_with_disposition(
+        self,
+        request_body: &[u8],
+        authorization: AuthorizationArtifactBytes<'_>,
+        original: Option<&mut RuntimeScopeObserveOriginalV1>,
+    ) -> Result<ObservedPayloadScope, RuntimeScopeError> {
+        use retaining::{HeldValueV1, ObserveDestinationsV1};
+        let mut destinations = ObserveDestinationsV1::new(original);
+        let mut membership = destinations.membership.take();
+        let mut client = HeldValueV1::new(self, destinations.client.take());
+        if destinations.selected { client.get_mut()?.socket.begin_original_retention_v1(); }
         let uid = rustix::process::geteuid().as_raw();
         let gid = rustix::process::getegid().as_raw();
         let request = decode_payload_scope_request(
@@ -237,17 +321,26 @@ impl RuntimeScopeClient {
             &[],
             authorization,
         )?;
-        transport::send(&mut self.socket, &hello.encode_to_vec(), deadline)?;
-        let hello = transport::receive(
-            &mut self.socket,
+        transport::send_with_disposition(&mut client.get_mut()?.socket, &hello.encode_to_vec(), deadline, destinations.selected)?;
+        let hello = transport::receive_with_disposition(
+            &mut client.get_mut()?.socket,
             aos_sandbox_protocol::MAXIMUM_HANDSHAKE_BYTES,
             Some(0),
             deadline,
+            destinations.hello_receive.take(),
         )?;
-        let (hello_bytes, subject, _) = hello.into_parts();
-        let host = HostExecution::new(self.expected_host, subject)?;
+        let hello = HeldValueV1::new(hello, destinations.hello.take());
+        let (hello_bytes, subject, _) = hello.take()?.into_parts();
+        let hello_bytes = HeldValueV1::new(hello_bytes, destinations.hello_bytes.take());
+        let expected = HeldValueV1::new(client.get_mut()?.expected_host.take()
+            .ok_or(RuntimeScopeError::HostIdentity)?, destinations.expected_host.take());
+        let subject = HeldValueV1::new(subject, destinations.hello_subject.take());
+        let info = validate_host_subject_with_disposition(expected.get()?, subject.get()?, membership.as_deref_mut())?;
+        let host = HeldValueV1::new(HostExecution {
+            expected: expected.take()?, subject: subject.take()?, info,
+        }, destinations.host.take());
         let session = decode_server_hello(
-            &hello_bytes,
+            hello_bytes.get()?,
             ProtocolId::HostBroker,
             Audience::AUDIENCE_NODE_CONTROLLER,
             CARRIER_VERSION,
@@ -264,21 +357,23 @@ impl RuntimeScopeClient {
             ))?
             .clone();
 
-        host.recheck()?;
-        transport::send(&mut self.socket, &packet, deadline)?;
-        let response = transport::receive(
-            &mut self.socket,
+        host.get()?.recheck_with_disposition(membership.as_deref_mut())?;
+        transport::send_with_disposition(&mut client.get_mut()?.socket, &packet, deadline, destinations.selected)?;
+        let response = transport::receive_with_disposition(
+            &mut client.get_mut()?.socket,
             request.header().maximum_response_bytes() as usize,
             None,
             deadline,
+            destinations.response_receive.take(),
         )?;
-        host.validate_response(response.subject())?;
+        let response = HeldValueV1::new(response, destinations.response.take());
+        host.get()?.validate_response_with_disposition(response.get()?.subject(), membership.as_deref_mut())?;
         let envelope = decode_response_envelope(
-            response.payload(),
+            response.get()?.payload(),
             request.header().request_id(),
             METHOD,
             &[],
-            response.descriptors().len(),
+            response.get()?.descriptors().len(),
             session.maximum_response_bytes(),
             request.header().maximum_response_bytes(),
         )?;
@@ -290,29 +385,46 @@ impl RuntimeScopeClient {
             request.fence(),
             request.runtime_handle(),
         )?;
-        let (_, _, descriptors) = response.into_parts();
-        let [payload, cgroup]: [OwnedFd; 2] = descriptors
-            .try_into()
+        let (response_bytes, response_subject, descriptors) = response.take()?.into_parts();
+        let _response_bytes = HeldValueV1::keep_selected(response_bytes, destinations.response_bytes.take());
+        let _response_subject = HeldValueV1::keep_selected(response_subject, destinations.response_subject.take());
+        let descriptors = HeldValueV1::new(descriptors, destinations.descriptors.take());
+        if descriptors.get()?.len() != 2 { return Err(RuntimeScopeError::Descriptor); }
+        let [payload, cgroup]: [OwnedFd; 2] = descriptors.take()?.try_into()
             .map_err(|_| RuntimeScopeError::Descriptor)?;
-        if !rustix::fs::fcntl_getfl(&cgroup)?.contains(rustix::fs::OFlags::PATH) {
+        let payload = HeldValueV1::new(payload, destinations.payload_raw.take());
+        let cgroup = HeldValueV1::new(cgroup, destinations.cgroup_raw.take());
+        if !rustix::fs::fcntl_getfl(cgroup.get()?)?.contains(rustix::fs::OFlags::PATH) {
             return Err(RuntimeScopeError::Descriptor);
         }
-        let payload = PidFd::from_owned(payload)?;
-        let anchor = CgroupV2Root::from_owned(cgroup)?.resolve(Path::new("."))?;
-        let payload_info = observe_payload(&payload, &anchor, metadata.leader_cgroup_hint())?;
+        let payload = if let Some(original) = destinations.payload_admission.take() {
+            original.capture_once(payload.take()?).map_err(|_| RuntimeScopeError::RetainedNative)?;
+            original.take_completed_once().ok_or(RuntimeScopeError::RetainedNative)?
+        } else { PidFd::from_owned(payload.take()?)? };
+        let payload = HeldValueV1::new(payload, destinations.payload.take());
+        let anchor = if let Some(original) = destinations.cgroup_admission.take() {
+            original.capture_once(cgroup.take()?).map_err(|_| RuntimeScopeError::RetainedNative)?;
+            let (root, anchor) = original.take_completed_once().ok_or(RuntimeScopeError::RetainedNative)?;
+            let _root = HeldValueV1::new(root, destinations.cgroup_root.take());
+            anchor
+        } else { CgroupV2Root::from_owned(cgroup.take()?)?.resolve(Path::new("."))? };
+        let anchor = HeldValueV1::new(anchor, destinations.anchor.take());
+        let payload_info = observe_payload_with_disposition(payload.get()?, anchor.get()?, metadata.leader_cgroup_hint(), membership.as_deref_mut())?;
         let observed = ObservedPayloadScope {
-            host,
-            payload,
-            anchor,
+            host: host.take()?,
+            payload: payload.take()?,
+            anchor: anchor.take()?,
             metadata,
             payload_info,
             authorization,
             request_deadline_boottime_nanoseconds: request.header().deadline_boottime_nanoseconds(),
         };
-        observed.recheck()?;
+        let observed = HeldValueV1::new(observed, destinations.observed.take());
+        observed.get()?.recheck_with_disposition(membership.as_deref_mut())?;
         transport::check_deadline(deadline)?;
-        Ok(observed)
+        observed.take()
     }
+
 }
 
 struct HostExecution {
@@ -335,7 +447,13 @@ impl HostExecution {
     }
 
     fn recheck(&self) -> Result<PidFdInfo, RuntimeScopeError> {
-        let fresh = validate_host_subject(&self.expected, &self.subject)?;
+        self.recheck_with_disposition(None)
+    }
+
+    fn recheck_with_disposition(
+        &self, original: Option<&mut retaining::RuntimeScopeMembershipWindowV1>,
+    ) -> Result<PidFdInfo, RuntimeScopeError> {
+        let fresh = validate_host_subject_with_disposition(&self.expected, &self.subject, original)?;
         if !same_process(fresh, self.info) {
             return Err(RuntimeScopeError::HostIdentity);
         }
@@ -346,9 +464,16 @@ impl HostExecution {
         &self,
         subject: &KernelAuthorizedRecordSubject,
     ) -> Result<(), RuntimeScopeError> {
-        let before = self.recheck()?;
-        let response = validate_host_subject(&self.expected, subject)?;
-        let after = self.recheck()?;
+        self.validate_response_with_disposition(subject, None)
+    }
+
+    fn validate_response_with_disposition(
+        &self, subject: &KernelAuthorizedRecordSubject,
+        mut original: Option<&mut retaining::RuntimeScopeMembershipWindowV1>,
+    ) -> Result<(), RuntimeScopeError> {
+        let before = self.recheck_with_disposition(original.as_deref_mut())?;
+        let response = validate_host_subject_with_disposition(&self.expected, subject, original.as_deref_mut())?;
+        let after = self.recheck_with_disposition(original.as_deref_mut())?;
         if !same_process(before, response) || !same_process(after, response) {
             return Err(RuntimeScopeError::HostIdentity);
         }
@@ -360,6 +485,13 @@ fn validate_host_subject(
     expected: &HostServiceIdentity,
     subject: &KernelAuthorizedRecordSubject,
 ) -> Result<PidFdInfo, RuntimeScopeError> {
+    validate_host_subject_with_disposition(expected, subject, None)
+}
+
+fn validate_host_subject_with_disposition(
+    expected: &HostServiceIdentity, subject: &KernelAuthorizedRecordSubject,
+    original: Option<&mut retaining::RuntimeScopeMembershipWindowV1>,
+) -> Result<PidFdInfo, RuntimeScopeError> {
     let credentials = subject.credentials();
     if credentials.uid() != expected.uid
         || credentials.gid() != expected.gid
@@ -367,7 +499,10 @@ fn validate_host_subject(
     {
         return Err(RuntimeScopeError::HostIdentity);
     }
-    Ok(expected.cgroup.verify_exact_membership(subject.pidfd())?)
+    match original {
+        Some(original) => original.observe(&expected.cgroup, subject.pidfd(), None),
+        None => Ok(expected.cgroup.verify_exact_membership(subject.pidfd())?),
+    }
 }
 
 fn same_process(left: PidFdInfo, right: PidFdInfo) -> bool {
@@ -381,7 +516,17 @@ fn observe_payload(
     anchor: &RetainedCgroupAnchor,
     hint: &[u8],
 ) -> Result<PidFdInfo, RuntimeScopeError> {
-    let info = if hint.is_empty() {
+    observe_payload_with_disposition(payload, anchor, hint, None)
+}
+
+fn observe_payload_with_disposition(
+    payload: &PidFd, anchor: &RetainedCgroupAnchor, hint: &[u8],
+    original: Option<&mut retaining::RuntimeScopeMembershipWindowV1>,
+) -> Result<PidFdInfo, RuntimeScopeError> {
+    let info = if let Some(original) = original {
+        let hint = if hint.is_empty() { None } else { Some(Path::new(std::ffi::OsStr::from_bytes(hint))) };
+        original.observe(anchor, payload, hint)?
+    } else if hint.is_empty() {
         anchor.verify_exact_membership(payload)?
     } else {
         anchor
@@ -501,13 +646,20 @@ impl ObservedPayloadScope {
     /// Rejects host exit/substitution, payload exit or changed identity/membership,
     /// stale cgroups, failed strict hint resolution, or any kernel failure.
     pub fn recheck(&self) -> Result<PidFdInfo, RuntimeScopeError> {
-        self.host.recheck()?;
-        let fresh = observe_payload(
+        self.recheck_with_disposition(None)
+    }
+
+    fn recheck_with_disposition(
+        &self, mut original: Option<&mut retaining::RuntimeScopeMembershipWindowV1>,
+    ) -> Result<PidFdInfo, RuntimeScopeError> {
+        self.host.recheck_with_disposition(original.as_deref_mut())?;
+        let fresh = observe_payload_with_disposition(
             &self.payload,
             &self.anchor,
             self.metadata.leader_cgroup_hint(),
+            original.as_deref_mut(),
         )?;
-        self.host.recheck()?;
+        self.host.recheck_with_disposition(original.as_deref_mut())?;
         if !same_process(fresh, self.payload_info) {
             return Err(RuntimeScopeError::PayloadIdentity);
         }

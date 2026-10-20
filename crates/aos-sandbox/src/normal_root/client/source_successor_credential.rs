@@ -5,13 +5,18 @@
 //! and final zeroizing buffers stay in the caller's parked owner on failure.
 //! No supplied path, FD, property map or signing key constructs this owner.
 
+use aos_sandbox_protocol::publisher_project_authorization::{
+    PinnedPublisherProjectAuthorizationIssuerV2,
+};
+
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsFd as _, BorrowedFd};
+use std::os::fd::AsFd as _;
 use std::path::Path;
+use std::sync::Arc;
 
 use aos_sandbox_linux::inventory::{MountId, ReadOnlyDirectorySnapshot};
-use aos_sandbox_linux::protected_file::{ExactReadError, open_nofollow_child, read_exact_positioned};
+use aos_sandbox_linux::protected_file::{ExactReadError, read_exact_positioned};
 use aos_systemd::{OwnedValue, Value};
 use ed25519_dalek::{Signer as _, SigningKey};
 use rustix::fs::{CWD, FileType, Mode, OFlags, ResolveFlags, openat2};
@@ -19,11 +24,16 @@ use zeroize::{Zeroize as _, Zeroizing};
 
 use super::ProductionControllerNormalRootProfileV1;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
-use crate::hierarchy::source_seed::PinnedControllerSourceTreeSeedIssuerV1;
-use crate::hierarchy::source_successor::{
+use aos_sandbox_protocol::controller_source_seed::PinnedControllerSourceTreeSeedIssuerV1;
+use aos_sandbox_ledger_replay::successor::{
     SourceSuccessorApprovalDataV2, SourceSuccessorIntentDataV2, signature_message,
 };
-use crate::immutable_image::RetainedImmutableFileV1;
+mod executable;
+mod native;
+
+use executable::IssueExecutableOriginalV1;
+use aos_sandbox_broker::immutable_image::ImmutableFileRevalidationOriginalV1;
+use native::CredentialNativePassV1;
 use crate::normal_root::{NormalRootStartupErrorV1, service};
 use crate::policy_compiler::SourceSuccessorSigningCutV2;
 use crate::policy_compiler::SourceSuccessorSigningCutV3;
@@ -41,7 +51,7 @@ impl SourceSuccessorSigningRecipeV3<'_, '_, '_, '_, '_> {
         }
     }
 }
-use crate::publisher_policy::PinnedPublisherProjectAuthorizationIssuerV2;
+
 use crate::systemd_property_data;
 
 const DIRECTORY: &str = "/run/credentials/aos-sandboxd.service";
@@ -58,6 +68,13 @@ const SOURCES: [&str; 2] = [
 const WIDTHS: [usize; 4] = [32, 80, 80, 80];
 const CONTEXT: &[u8] = b"system_u:object_r:aos_sandbox_controller_credential_t";
 const MAXIMUM_OBSERVATIONS: usize = 24;
+// This selected issue recipe admits at most one 64KiB materialized aggregate
+// before native body growth. Larger/hostile replies retain the same original
+// native refusal. Ordinary/default Systemd observations keep their full lane.
+const MATERIALIZATION_BYTES: usize = 64 * 1024;
+// Initial delivery and its full recheck coexist until that comparison succeeds.
+const OBSERVER_PEAK_ROWS: usize = 2;
+const UNIT_PROPERTIES: &[&str] = &["FragmentPath", "DropInPaths", "Transient", "InvocationID"];
 const PROPERTIES: &[&str] = &[
     "Type", "Restart", "ExecStart", "ExecStartPre", "ExecStartPost",
     "LoadCredential", "LoadCredentialEncrypted", "SetCredential",
@@ -70,6 +87,9 @@ pub enum SourceSuccessorCredentialErrorV2 {
     /// The same original selected Controller/PID1 owner no longer matches.
     #[error("original Source successor Controller profile differs")]
     Profile(#[from] NormalRootStartupErrorV1),
+    /// The same bounded PID1 receiver retained a constructor/native refusal.
+    #[error("original Source successor bounded PID1 observation refused")]
+    Observer(#[from] aos_systemd::FixedPid1PropertyErrorV1),
     /// Original descriptor or protected fixed-name inspection failed.
     #[error("original Source successor credential I/O failed")]
     Io(#[from] io::Error),
@@ -82,6 +102,12 @@ pub enum SourceSuccessorCredentialErrorV2 {
     /// Canonical DATA, signature or the borrowed original signing cut differs.
     #[error("Source successor canonical approval differs")]
     Approval(#[from] SourceGenesisErrorV1),
+}
+
+impl From<aos_sandbox_ledger_replay::data::SourceSuccessorDataErrorV2> for SourceSuccessorCredentialErrorV2 {
+    fn from(error: aos_sandbox_ledger_replay::data::SourceSuccessorDataErrorV2) -> Self {
+        Self::Approval(SourceGenesisErrorV1::from(error))
+    }
 }
 
 impl From<rustix::io::Errno> for SourceSuccessorCredentialErrorV2 {
@@ -105,21 +131,6 @@ struct Identity {
 }
 
 impl Identity {
-    fn capture(file: BorrowedFd<'_>) -> Result<Self, SourceSuccessorCredentialErrorV2> {
-        let metadata = rustix::fs::fstat(file)?;
-        Ok(Self {
-            device: metadata.st_dev,
-            inode: metadata.st_ino,
-            mode: metadata.st_mode,
-            uid: metadata.st_uid,
-            gid: metadata.st_gid,
-            links: u64::from(metadata.st_nlink),
-            bytes: u64::try_from(metadata.st_size).map_err(|_| SourceSuccessorCredentialErrorV2::Rejected)?,
-            mtime: (i64::from(metadata.st_mtime), u64::from(metadata.st_mtime_nsec)),
-            ctime: (i64::from(metadata.st_ctime), u64::from(metadata.st_ctime_nsec)),
-            mount: MountId::from_fd(file).map_err(|_| SourceSuccessorCredentialErrorV2::Rejected)?,
-        })
-    }
 
     fn require(
         &self,
@@ -129,8 +140,8 @@ impl Identity {
     ) -> Result<(), SourceSuccessorCredentialErrorV2> {
         if FileType::from_raw_mode(self.mode) != kind
             || self.mode & 0o7777 != mode
-            || self.uid != profile.profile.identities[0]
-            || self.gid != profile.profile.identities[1]
+            || self.uid != profile.original.schema().identities[0]
+            || self.gid != profile.original.schema().identities[1]
             || self.device == 0
             || self.inode == 0
         {
@@ -152,11 +163,116 @@ pub struct SourceSuccessorCredentialCustodyV2<'profile> {
     directory_identity: Option<Identity>,
     directory_snapshot: Option<ReadOnlyDirectorySnapshot>,
     identities: Vec<Identity>,
-    executable: Option<RetainedImmutableFileV1>,
-    observations: Vec<(Vec<OwnedValue>, Vec<OwnedValue>)>,
+    executable: IssueExecutableOriginalV1,
+    native_pass: Option<CredentialNativePassV1>,
+    fragment_currentness: Option<ImmutableFileRevalidationOriginalV1>,
+    observer: aos_systemd::FixedPid1PropertyArchiveV1,
+    observer_preparation: Option<Result<(), aos_systemd::FixedPid1PropertyErrorV1>>,
+    observations: Vec<(Arc<Vec<OwnedValue>>, Arc<Vec<OwnedValue>>)>,
+    observer_settlements: [Option<Result<(), aos_systemd::FixedPid1PropertyErrorV1>>; MAXIMUM_OBSERVATIONS],
     buffers: Vec<[Zeroizing<Vec<u8>>; 4]>,
     admitted: bool,
     ended: bool,
+}
+
+impl ProductionControllerNormalRootProfileV1 {
+    pub(crate) fn source_successor_issue_receiving_demand_v2<Outer>()
+        -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_broker::controller_receiving::ControllerReceivingErrorV1>
+    {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        use aos_sandbox_broker::controller_receiving::ControllerReceivingErrorV1 as Error;
+        use aos_systemd::FixedPid1PropertyArchiveV1 as Archive;
+
+        let invalid = || Error::Conflict;
+        let observer = Archive::fixed_property_geometry_v1(MATERIALIZATION_BYTES)
+            .map_err(|_| invalid())?;
+        let raw = WIDTHS.iter().try_fold(0usize, |sum, width| sum.checked_add(*width))
+            .ok_or_else(invalid)?;
+        let retained_slots = MAXIMUM_OBSERVATIONS.checked_next_power_of_two()
+            .ok_or_else(invalid)?;
+        let observation_bytes = raw.checked_mul(3)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<[Zeroizing<Vec<u8>>; 4]>()))
+            .and_then(|bytes| bytes.checked_add(
+                std::mem::size_of::<(Arc<Vec<OwnedValue>>, Arc<Vec<OwnedValue>>)>(),
+            ))
+            .and_then(|bytes| bytes.checked_add(Archive::entry_bytes_v1()))
+            .ok_or_else(invalid)?;
+        let flight_controls = crate::policy_compiler::
+            root_flight_detached_construction_bytes_v1().ok_or_else(invalid)?;
+        let local_bytes = std::mem::size_of::<SourceSuccessorCredentialCustodyV2<'_>>()
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Outer>().checked_mul(2)?))
+            // The original same-C issue debit precedes each sequential flight.
+            // This later local flight is not embedded in the input owners.
+            .and_then(|bytes| bytes.checked_add(flight_controls))
+            .and_then(|bytes| bytes.checked_add(retained_slots.checked_mul(observation_bytes)?))
+            // Descriptor/name snapshots, fixed paths and executable hashing
+            // stream buffers coexist with the retained property observations.
+            .and_then(|bytes| bytes.checked_add(2 * 1024 * 1024))
+            .ok_or_else(invalid)?;
+        let rows = u64::try_from(MAXIMUM_OBSERVATIONS).map_err(|_| invalid())?;
+        let retained_values = Archive::fixed_property_retained_values_bytes_v1(MATERIALIZATION_BYTES)
+            .and_then(|bytes| u64::try_from(bytes).ok()).ok_or_else(invalid)?;
+        let peak_rows = u64::try_from(OBSERVER_PEAK_ROWS).map_err(|_| invalid())?;
+        let geometry = crate::public_api_session::ControllerInitialCredentialCustodyV1::
+            source_genesis_geometry().ok_or_else(invalid)?;
+        let memory_bytes = u64::try_from(local_bytes).map_err(|_| invalid())?
+            // All completed decoded tables remain resident. Only raw native
+            // rows retire at the whole comparison boundary below; no credit
+            // is taken for unperformed cleanup or a failed native original.
+            .checked_add(retained_values.checked_mul(rows).ok_or_else(invalid)?)
+            .and_then(|bytes| bytes.checked_add(observer.memory_bytes.checked_mul(peak_rows)?))
+            .and_then(|bytes| bytes.checked_add(u64::try_from(geometry.memory_bytes).ok()?))
+            .ok_or_else(invalid)?;
+
+        // The actual fixed property maps have 11 service and 4 unit names per
+        // observation. Rust fields and decoded tuple values are byte carriers.
+        let property_names = u64::try_from(PROPERTIES.len() + UNIT_PROPERTIES.len())
+            .map_err(|_| invalid())?;
+        let metadata_entries = rows.checked_mul(property_names)
+            .and_then(|entries| entries.checked_add(u64::try_from(geometry.metadata_entries).ok()?))
+            // Fixed credential/source names, credential directory ancestors
+            // and the /proc executable locator have a 14-entry bound.
+            .and_then(|entries| entries.checked_add(14))
+            .ok_or_else(invalid)?;
+        // Four originals, two directory handles, executable and at most four
+        // named recheck handles coexist with optional genesis inputs.
+        let open_files = 12u64
+            .checked_add(observer.open_files.checked_mul(peak_rows).ok_or_else(invalid)?)
+            .and_then(|files| files.checked_add(u64::try_from(geometry.open_files).ok()?))
+            .ok_or_else(invalid)?;
+        let wire_bytes = observer.wire_io_bytes.checked_mul(rows).ok_or_else(invalid)?;
+        let executable = IssueExecutableOriginalV1::receiving_demand_v1()
+            .ok_or_else(invalid)?;
+        let (native_bytes, native_files) = CredentialNativePassV1::receiving_footprint_v1()
+            .ok_or_else(invalid)?;
+        // Existing four temporary-name lanes cover the actual named directory,
+        // one named child and one bounded boot read; no field-count metadata.
+        if native_files > 4 { return Err(invalid()); }
+        let native = ResourceVector::ZERO.with(D::MemoryBytes,
+            u64::try_from(native_bytes).map_err(|_| invalid())?);
+        let demand = ResourceVector::ZERO
+            .with(D::MemoryBytes, memory_bytes)
+            .with(D::MetadataEntries, metadata_entries)
+            .with(D::OpenFiles, open_files)
+            .with(D::Pids, 1)
+            .with(D::NetworkBytes, wire_bytes)
+            .with(D::OutputBytes, wire_bytes)
+            .with(D::LogBytes, observer.maximum_log_bytes);
+        // The nested owner is already included in Self's compiled width.
+        // Its shared native/hash scratch and one executed-file probe remain
+        // separate. The measured executable uses the existing base file lane.
+        // Both inline fragment destinations are already covered by the two
+        // compiled Self copies above. Its canonical hashing scratch is extra;
+        // this same-held-file comparison opens no descriptor or namespace.
+        let fragment = ImmutableFileRevalidationOriginalV1::receiving_demand_v1()
+            .ok_or_else(invalid)?;
+        let fragment_inline = u64::try_from(std::mem::size_of::<ImmutableFileRevalidationOriginalV1>())
+            .map_err(|_| invalid())?;
+        let fragment = fragment.with(D::MemoryBytes,
+            fragment.get(D::MemoryBytes).checked_sub(fragment_inline).ok_or_else(invalid)?);
+        demand.checked_add(executable)?.checked_add(native)?.checked_add(fragment).map_err(Error::from)
+    }
 }
 
 impl<'profile> ProductionControllerNormalRootProfileV1 {
@@ -181,8 +297,15 @@ impl<'profile> ProductionControllerNormalRootProfileV1 {
             directory_identity: None,
             directory_snapshot: None,
             identities: Vec::with_capacity(4),
-            executable: None,
+            executable: IssueExecutableOriginalV1::new(),
+            native_pass: Some(CredentialNativePassV1::new()),
+            fragment_currentness: None,
+            observer: aos_systemd::FixedPid1PropertyArchiveV1::with_materialization_limit(
+                OBSERVER_PEAK_ROWS, MATERIALIZATION_BYTES,
+            ),
+            observer_preparation: None,
             observations: Vec::new(),
+            observer_settlements: [const { None }; MAXIMUM_OBSERVATIONS],
             buffers: Vec::new(),
             admitted: false,
             ended: false,
@@ -200,52 +323,82 @@ impl<'profile> ProductionControllerNormalRootProfileV1 {
 }
 
 impl SourceSuccessorCredentialCustodyV2<'_> {
+    /// Borrows the same bounded PID1 failure without releasing its original.
+    #[must_use]
+    pub fn observer_failure_view_v2(&self) -> Option<aos_systemd::FixedPid1PropertyFailureViewV1<'_>> {
+        self.observer.failure_view()
+    }
+
+    /// Borrows an actual executable acquisition or comparison refusal.
+    ///
+    /// This performs no IO and leaves the same file and native prefix owned.
+    /// Other credential/profile failure sites retain their own diagnostic order.
+    #[must_use]
+    pub fn executable_failure_v2(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.executable.failure()
+    }
+
+    /// Borrows the actual directory, mount, label, ACL or name-prefix refusal.
+    ///
+    /// This keeps all failed native results and named descriptions resident.
+    #[must_use]
+    pub fn credential_native_failure_v2(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.native_pass.as_ref().and_then(CredentialNativePassV1::failure)
+    }
+
+    /// Borrows the actual same-fragment name, mount or hashing refusal.
+    ///
+    /// The immutable anchor remains on the admitted profile. A failed native
+    /// comparison stays here and cannot be overwritten by another observation.
+    #[must_use]
+    pub fn fragment_failure_v2(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.fragment_currentness.as_ref().and_then(ImmutableFileRevalidationOriginalV1::failure)
+    }
+
     fn admit(&mut self) -> Result<(), SourceSuccessorCredentialErrorV2> {
+        self.observer_preparation = Some(self.observer.prepare_once());
+        if !matches!(self.observer_preparation, Some(Ok(()))) {
+            return Err(SourceSuccessorCredentialErrorV2::Rejected);
+        }
         self.profile.recheck()?;
         let executable = self.observe_delivery(true)?;
-        self.executable = Some(RetainedImmutableFileV1::retain_with_profile(
-            executable.into(),
-            File::open("/proc/self/exe")?,
-            None,
-            64 * 1024 * 1024,
-            true,
-        ).map_err(|_| SourceSuccessorCredentialErrorV2::Rejected)?);
-        self.executable.as_ref()
-            .ok_or(SourceSuccessorCredentialErrorV2::Rejected)?
-            .require_executed(std::process::id())
-            .map_err(|_| SourceSuccessorCredentialErrorV2::Rejected)?;
+        self.executable.capture_once(executable)?;
 
-        self.directory_path = Some(open_directory(true)?);
-        self.directory_reader = Some(open_directory(false)?);
+        let native = self.native_pass.as_mut().ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
+        self.directory_path = Some(native::open_directory(true, &mut native.opens)?);
+        self.directory_reader = Some(native::open_directory(false, &mut native.opens)?);
         let path = self.directory_path.as_ref().ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
         let reader = self.directory_reader.as_ref().ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
-        let identity = Identity::capture(reader.as_fd())?;
+        let identity = native::identity(reader.as_fd(), &mut native.identities)?;
         identity.require(self.profile, FileType::Directory, 0o500)?;
-        require_label_and_acl(reader.as_fd())?;
-        if Identity::capture(path.as_fd())? != identity {
+        native::label_and_acl(reader.as_fd(), &mut native.labels)?;
+        if native::identity(path.as_fd(), &mut native.identities)? != identity {
             return Err(SourceSuccessorCredentialErrorV2::Rejected);
         }
         self.directory_snapshot = Some(
-            ReadOnlyDirectorySnapshot::capture(path.as_fd())
-                .map_err(|_| SourceSuccessorCredentialErrorV2::Rejected)?,
+            native::snapshot(path.as_fd(), &mut native.snapshots)?,
         );
         self.directory_identity = Some(identity);
 
         for (name, width) in NAMES.into_iter().zip(WIDTHS) {
-            self.files.push(File::from(open_nofollow_child(path, name)?));
+            self.files.push(native::open_child(path, name, &mut native.opens)?);
             let file = self.files.last().ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
-            let identity = Identity::capture(file.as_fd())?;
+            let identity = native::identity(file.as_fd(), &mut native.identities)?;
             identity.require(self.profile, FileType::RegularFile, 0o400)?;
             if identity.links != 1 || identity.bytes != width as u64 {
                 return Err(SourceSuccessorCredentialErrorV2::Rejected);
             }
-            require_read_description(file.as_fd())?;
-            require_label_and_acl(file.as_fd())?;
+            native::read_description(file.as_fd(), &mut native.descriptions)?;
+            native::label_and_acl(file.as_fd(), &mut native.labels)?;
             self.identities.push(identity);
         }
 
         self.capture_bytes()?;
         self.validate_roles()?;
+        // Complete initial descriptor/byte/role comparison. Original files and
+        // derived snapshots stay held; only these positive native temporaries
+        // dispose before the independently entered full recheck below.
+        drop(self.native_pass.take());
         self.admitted = true;
         self.recheck()
     }
@@ -270,19 +423,36 @@ impl SourceSuccessorCredentialCustodyV2<'_> {
         }
         self.profile.recheck()?;
         let executable = self.observe_delivery(true)?;
-        let retained = self.executable.as_ref().ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
-        if retained.path() != Path::new(&executable) {
-            return Err(SourceSuccessorCredentialErrorV2::Rejected);
-        }
-        retained.revalidate()
-            .map_err(|_| SourceSuccessorCredentialErrorV2::Rejected)?;
-        retained.require_executed(std::process::id())
-            .map_err(|_| SourceSuccessorCredentialErrorV2::Rejected)?;
+        self.executable.recheck(&executable)?;
         self.check_descriptors_and_names()?;
         self.capture_bytes()?;
         self.validate_roles()?;
         self.check_descriptors_and_names()?;
-        self.profile.recheck().map_err(Into::into)
+        self.profile.recheck()?;
+        self.settle_completed_delivery_once()
+    }
+
+    // This is the last step of a complete recheck, after descriptor/name,
+    // credential byte/role and independent profile-post comparisons. A failed
+    // comparison never enters here and keeps every native row. Successful
+    // table Arcs remain in observations after their native archive retires.
+    fn settle_completed_delivery_once(&mut self) -> Result<(), SourceSuccessorCredentialErrorV2> {
+        let index = self.observations.len().checked_sub(1)
+            .ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
+        let outcome = self.observer_settlements.get_mut(index)
+            .ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
+        if outcome.is_some() { return Err(SourceSuccessorCredentialErrorV2::Rejected); }
+        *outcome = Some(self.observer.settle_positive_once());
+        if !matches!(outcome, Some(Ok(()))) {
+            return Err(SourceSuccessorCredentialErrorV2::Rejected);
+        }
+        // Construction is inert; no fresh row backing, Runtime or socket is
+        // prepared until the next already-paid actual delivery observation.
+        self.observer = aos_systemd::FixedPid1PropertyArchiveV1::with_materialization_limit(
+            OBSERVER_PEAK_ROWS, MATERIALIZATION_BYTES,
+        );
+        self.observer_preparation = None;
+        Ok(())
     }
 
     pub(crate) fn intent(&self) -> Result<SourceSuccessorIntentDataV2, SourceGenesisErrorV1> {
@@ -291,7 +461,7 @@ impl SourceSuccessorCredentialCustodyV2<'_> {
         }
         SourceSuccessorIntentDataV2::from_bytes(
             self.first_buffers()?[1].as_slice(),
-        )
+        ).map_err(SourceGenesisErrorV1::from)
     }
 
     /// Returns project comparison DATA from the same already-admitted intent.
@@ -316,7 +486,7 @@ impl SourceSuccessorCredentialCustodyV2<'_> {
         packet: &SourceSuccessorApprovalDataV2,
     ) -> Result<(), SourceGenesisErrorV1> {
         let pin = PinnedControllerSourceTreeSeedIssuerV1::decode(self.first_buffers()?[2].as_slice())?;
-        packet.verify_signature(pin.verifying_key())
+        packet.verify_signature(pin.verifying_key()).map_err(SourceGenesisErrorV1::from)
     }
 
     pub(crate) fn sign_approval(
@@ -418,20 +588,35 @@ impl SourceSuccessorCredentialCustodyV2<'_> {
         if self.observations.len() >= MAXIMUM_OBSERVATIONS {
             return Err(SourceSuccessorCredentialErrorV2::Rejected);
         }
-        self.observations.push(service::read_properties(
-            super::UNIT, std::process::id(), PROPERTIES,
+        if self.observer_preparation.is_none() {
+            self.observer_preparation = Some(self.observer.prepare_once());
+        }
+        if !matches!(self.observer_preparation, Some(Ok(()))) {
+            return Err(SourceSuccessorCredentialErrorV2::Rejected);
+        }
+        self.observations.push(self.observer.read(
+            super::UNIT, std::process::id(), PROPERTIES, UNIT_PROPERTIES,
         )?);
         let (values, unit) = self.observations.last().ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
         require_unit_schema(unit)?;
         let observed = service::immutable_observation(service::decode_unit(unit, super::UNIT)?)?;
-        service::require_same(&self.profile.observed, &observed)?;
-        self.profile.fragment.revalidate()
+        service::require_same(self.profile.original.original_unit_observation(), &observed)?;
+        if self.fragment_currentness.is_some() {
+            return Err(SourceSuccessorCredentialErrorV2::Rejected);
+        }
+        self.fragment_currentness = Some(ImmutableFileRevalidationOriginalV1::new());
+        let fragment = self.fragment_currentness.as_mut()
+            .ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
+        self.profile.original.fragment_measurement().revalidate_retaining(fragment)
             .map_err(|_| SourceSuccessorCredentialErrorV2::Rejected)?;
+        // This complete same-file name/hash comparison has no later temporary
+        // anchor duty. Keep the held measured fragment; failed passes stay here.
+        drop(self.fragment_currentness.take());
 
         require_delivery(
             values.get(5..).ok_or(SourceSuccessorCredentialErrorV2::Rejected)?, issue,
         )?;
-        let identities = self.profile.profile.identities[..2].try_into()
+        let identities = self.profile.original.schema().identities[..2].try_into()
             .map_err(|_| SourceSuccessorCredentialErrorV2::Rejected)?;
         let path = require_issue_launch(
             values.get(..5).ok_or(SourceSuccessorCredentialErrorV2::Rejected)?, identities,
@@ -439,35 +624,42 @@ impl SourceSuccessorCredentialCustodyV2<'_> {
         Ok(path.to_owned())
     }
 
-    fn check_descriptors_and_names(&self) -> Result<(), SourceSuccessorCredentialErrorV2> {
+    fn check_descriptors_and_names(&mut self) -> Result<(), SourceSuccessorCredentialErrorV2> {
+        if self.native_pass.is_some() { return Err(SourceSuccessorCredentialErrorV2::Rejected); }
+        self.native_pass = Some(CredentialNativePassV1::new());
+        let native = self.native_pass.as_mut().ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
         let path = self.directory_path.as_ref().ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
         let reader = self.directory_reader.as_ref().ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
-        let original_snapshot = ReadOnlyDirectorySnapshot::capture(path.as_fd())
-            .map_err(|_| SourceSuccessorCredentialErrorV2::Rejected)?;
-        if Some(&Identity::capture(path.as_fd())?) != self.directory_identity.as_ref()
-            || Some(&Identity::capture(reader.as_fd())?) != self.directory_identity.as_ref()
+        let original_snapshot = native::snapshot(path.as_fd(), &mut native.snapshots)?;
+        if Some(&native::identity(path.as_fd(), &mut native.identities)?) != self.directory_identity.as_ref()
+            || Some(&native::identity(reader.as_fd(), &mut native.identities)?) != self.directory_identity.as_ref()
             || Some(&original_snapshot) != self.directory_snapshot.as_ref()
         {
             return Err(SourceSuccessorCredentialErrorV2::Rejected);
         }
-        require_label_and_acl(reader.as_fd())?;
+        native::label_and_acl(reader.as_fd(), &mut native.labels)?;
 
-        let named_directory = open_directory(true)?;
-        let named_snapshot = ReadOnlyDirectorySnapshot::capture(named_directory.as_fd())
-            .map_err(|_| SourceSuccessorCredentialErrorV2::Rejected)?;
-        if Some(&Identity::capture(named_directory.as_fd())?) != self.directory_identity.as_ref()
+        native.named_directory = Some(native::open_directory(true, &mut native.opens)?);
+        let named_directory = native.named_directory.as_ref().ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
+        let named_snapshot = native::snapshot(named_directory.as_fd(), &mut native.snapshots)?;
+        if Some(&native::identity(named_directory.as_fd(), &mut native.identities)?) != self.directory_identity.as_ref()
             || Some(&named_snapshot) != self.directory_snapshot.as_ref()
         {
             return Err(SourceSuccessorCredentialErrorV2::Rejected);
         }
         for ((file, identity), name) in self.files.iter().zip(&self.identities).zip(NAMES) {
-            let named = open_nofollow_child(&named_directory, name)?;
-            if Identity::capture(file.as_fd())? != *identity || Identity::capture(named.as_fd())? != *identity {
+            native.named_leaf = Some(native::open_child(named_directory, name, &mut native.opens)?);
+            let named = native.named_leaf.as_ref().ok_or(SourceSuccessorCredentialErrorV2::Rejected)?;
+            if native::identity(file.as_fd(), &mut native.identities)? != *identity || native::identity(named.as_fd(), &mut native.identities)? != *identity {
                 return Err(SourceSuccessorCredentialErrorV2::Rejected);
             }
-            require_read_description(file.as_fd())?;
-            require_label_and_acl(file.as_fd())?;
+            native::read_description(file.as_fd(), &mut native.descriptions)?;
+            native::label_and_acl(file.as_fd(), &mut native.labels)?;
+            // The held original and exact named comparison have completed;
+            // no later leaf borrows this positive temporary description.
+            drop(native.named_leaf.take());
         }
+        drop(self.native_pass.take());
         Ok(())
     }
 }
@@ -499,7 +691,7 @@ pub fn require_source_successor_delivery_absent_v2(
         let (values, unit) = service::read_properties(super::UNIT, std::process::id(), PROPERTIES)?;
         require_unit_schema(&unit)?;
         let observed = service::immutable_observation(service::decode_unit(&unit, super::UNIT)?)?;
-        service::require_same(&profile.observed, &observed)?;
+        service::require_same(profile.original.original_unit_observation(), &observed)?;
         require_delivery(values.get(5..).ok_or(SourceSuccessorCredentialErrorV2::Rejected)?, false)?;
         profile.recheck()?;
     }
@@ -670,35 +862,6 @@ fn open_directory(path_only: bool) -> Result<File, SourceSuccessorCredentialErro
         Mode::empty(),
         ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
     )?))
-}
-
-fn require_read_description(file: BorrowedFd<'_>) -> Result<(), SourceSuccessorCredentialErrorV2> {
-    let flags = rustix::fs::fcntl_getfl(file)?;
-    if flags.contains(OFlags::PATH)
-        || flags & OFlags::ACCMODE != OFlags::RDONLY
-        || !rustix::io::fcntl_getfd(file)?.contains(rustix::io::FdFlags::CLOEXEC)
-    {
-        return Err(SourceSuccessorCredentialErrorV2::Rejected);
-    }
-    Ok(())
-}
-
-fn require_label_and_acl(file: BorrowedFd<'_>) -> Result<(), SourceSuccessorCredentialErrorV2> {
-    let mut context = [0; 256];
-    let length = rustix::fs::fgetxattr(file, "security.selinux", &mut context)?;
-    let context = context[..length].strip_suffix(&[0]).unwrap_or(&context[..length]);
-    if context != CONTEXT {
-        return Err(SourceSuccessorCredentialErrorV2::Rejected);
-    }
-    let mut acl = [0; 4096];
-    for name in ["system.posix_acl_access", "system.posix_acl_default"] {
-        match rustix::fs::fgetxattr(file, name, &mut acl) {
-            Err(error) if error == rustix::io::Errno::NODATA => {}
-            Err(error) => return Err(error.into()),
-            Ok(_) => return Err(SourceSuccessorCredentialErrorV2::Rejected),
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

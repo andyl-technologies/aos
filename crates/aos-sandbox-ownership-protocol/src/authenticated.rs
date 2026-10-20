@@ -143,18 +143,11 @@ impl OwnershipRecordAuthenticatorV1 {
         }
         let payload_length = frame.len() - FRAME_OVERHEAD;
         self.validate_payload(expected_sequence, payload_length, maximum_frame_bytes)?;
-        let sequence = u64::from_be_bytes(
-            frame[..SEQUENCE_BYTES]
-                .try_into()
-                .map_err(|_| OwnershipRecordAuthenticationErrorV1::Malformed)?,
-        );
+        let (sequence, record, tag) = split_frame(frame)?;
         if sequence != expected_sequence {
             return Err(OwnershipRecordAuthenticationErrorV1::Malformed);
         }
 
-        let record_end = SEQUENCE_BYTES + payload_length;
-        let record = &frame[SEQUENCE_BYTES..record_end];
-        let tag = &frame[record_end..];
         let mac = self.mac(direction, sequence, record)?;
         mac.verify_slice(tag)
             .map_err(|_| OwnershipRecordAuthenticationErrorV1::AuthenticationFailed)?;
@@ -213,6 +206,43 @@ impl OwnershipRecordAuthenticatorV1 {
         mac.update(record);
         Ok(mac)
     }
+}
+
+/// Borrows bounded sequence and payload DATA from the existing record framing.
+///
+/// This performs no MAC, canonical-body, peer or currentness verification. A
+/// protected caller must retain the actual authenticated record and its original
+/// verification owner; these borrowed bytes supply no authority on their own.
+/// The payload is borrowed from the supplied frame without copying or encoding.
+///
+/// # Errors
+/// Returns a malformed-frame error for empty/truncated records or zero sequence,
+/// and an oversized error when the complete frame exceeds the supplied or V1
+/// bound. This does not consume or advance an authenticated session sequence.
+pub fn ownership_record_frame_data_v1(
+    frame: &[u8], maximum_frame_bytes: u32,
+) -> Result<(u64, &[u8]), OwnershipRecordAuthenticationErrorV1> {
+    let (sequence, record, _) = split_frame(frame)?;
+    if sequence == 0 {
+        return Err(OwnershipRecordAuthenticationErrorV1::Malformed);
+    }
+    if maximum_frame_bytes == 0 || maximum_frame_bytes > MAXIMUM_OWNERSHIP_RESPONSE_BYTES
+        || frame.len() > maximum_frame_bytes as usize {
+        return Err(OwnershipRecordAuthenticationErrorV1::Oversized);
+    }
+    Ok((sequence, record))
+}
+
+fn split_frame(frame: &[u8])
+    -> Result<(u64, &[u8], &[u8]), OwnershipRecordAuthenticationErrorV1>
+{
+    if frame.len() <= FRAME_OVERHEAD {
+        return Err(OwnershipRecordAuthenticationErrorV1::Malformed);
+    }
+    let sequence = u64::from_be_bytes(frame[..SEQUENCE_BYTES].try_into()
+        .map_err(|_| OwnershipRecordAuthenticationErrorV1::Malformed)?);
+    let record_end = frame.len() - TAG_BYTES;
+    Ok((sequence, &frame[SEQUENCE_BYTES..record_end], &frame[record_end..]))
 }
 
 #[cfg(test)]
@@ -295,6 +325,10 @@ mod tests {
 
         let mut changed = frame;
         changed[SEQUENCE_BYTES] ^= 1;
+        // Framing DATA deliberately accepts a bounded tampered payload. Only
+        // the original authenticator below can reject its invalid MAC.
+        assert_eq!(ownership_record_frame_data_v1(&changed,
+            MAXIMUM_OWNERSHIP_REQUEST_BYTES).unwrap().0, 1);
         assert_eq!(
             authenticator.open(
                 OwnershipRecordDirectionV1::ClientToAuthority,

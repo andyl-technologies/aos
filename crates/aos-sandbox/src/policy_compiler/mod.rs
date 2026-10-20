@@ -5,7 +5,13 @@
 //! actual Root, Source, Cache and Controller custody. Extracting compiler DATA
 //! does not make those effect-owning continuations independent.
 
+pub(crate) mod bounded_stream_io;
+#[cfg(target_os = "linux")]
+pub(crate) mod host_resources;
+
 mod binding_v2;
+#[cfg(target_os = "linux")]
+pub(crate) mod execution_no_apply_root;
 mod cache_journal_readback;
 mod cache_readback_pin;
 mod cache_readback_session;
@@ -39,11 +45,13 @@ pub use controller_project_terminal_readback::{
     sign_fixed_controller_project_terminal_readback_v1,
 };
 #[cfg(target_os = "linux")]
-pub(crate) use root_nonce::fresh_root_nonce;
+pub(crate) use aos_sandbox_broker::root_nonce::fresh_root_nonce;
 mod controller_root_receipt_readback_v8;
 mod controller_v8_readback_envelope;
 mod controller_v8_settlement_readback;
 mod deployment_head;
+
+pub(crate) mod root_signed_sources;
 #[cfg(target_os = "linux")]
 mod git_coverage_enrollment;
 #[cfg(target_os = "linux")]
@@ -87,6 +95,14 @@ pub use create_q04::root::{
     OriginalRootCreateQ04AttemptV1, ROOT_CREATE_Q04_QUERY_MAGIC_V1,
     RootCreateQ04SourceObservationLoanV1,
 };
+#[cfg(target_os = "linux")]
+pub(crate) mod create_storage_current;
+#[cfg(target_os = "linux")]
+pub use create_storage_current::{
+    OriginalRootCreateStorageCurrentAttemptV1, RootCreateStorageCurrentErrorV1, RootCurrentFailureViewV1,
+};
+#[cfg(target_os = "linux")]
+pub use create_storage_current::policy_inputs::RootCurrentPolicyInputDataV1;
 mod protected_owner;
 mod public_create_source;
 pub(crate) use public_create_source::{
@@ -98,17 +114,27 @@ mod publisher_origin;
 mod resolved_policy;
 mod resource_read;
 mod root_challenge_record;
-mod root_nonce;
 mod root_project_admission_proof;
 mod root_startup_journal;
-pub use root_startup_journal::{RootPolicyStartupDeploymentV1, RootPolicyStartupJournalV1};
+pub(crate) mod root_current_writers;
+pub use root_startup_journal::{RootStartupCredentialWriterV1, RootPolicyStartupDeploymentV1, RootPolicyStartupJournalV1};
 mod root_v8_released_proof;
-mod root_v8_settled_grant;
-mod source_genesis_readback;
+use aos_sandbox_ledger_replay::source_signer_data::source_genesis_readback;
+#[cfg(test)]
+#[path = "source_genesis_readback.rs"]
+mod source_genesis_readback_native_tests;
+#[cfg(target_os = "linux")]
+mod kernel_clock;
+#[cfg(target_os = "linux")]
+pub(crate) use kernel_clock::RetainedKernelPairedClockAttemptV1;
 #[cfg(target_os = "linux")]
 mod source_genesis_root;
-#[path = "source_genesis_root/successor_records.rs"]
-mod first_source_successor_records;
+#[cfg(target_os = "linux")]
+pub(crate) use source_genesis_root::{
+    root_flight_additional_control_bytes_v1, root_flight_detached_construction_bytes_v1,
+};
+mod source_phase_geometry;
+pub(crate) use source_phase_geometry::first_source_successor_fixed_codec_peak_bytes_v1;
 #[cfg(target_os = "linux")]
 mod source_successor_readback;
 #[cfg(target_os = "linux")]
@@ -120,13 +146,6 @@ pub use source_successor_readback::{
     SOURCE_RESOURCE_SUCCESSOR_LEGACY_GENESIS_BYTES_V4, SOURCE_RESOURCE_SUCCESSOR_READBACK_BYTES_V4,
     verify_source_resource_first_successor_readback_v4,
     verify_source_resource_project_continuation_readback_v5,
-};
-#[cfg(target_os = "linux")]
-pub use source_signer_readback::{
-    CurrentNixSourceObservationAttemptV1, observe_fixed_current_nix_source_into_v1,
-    sign_fixed_source_first_successor_readback_v2,
-    sign_fixed_source_project_continuation_readback_v3,
-    sign_fixed_source_resource_successor_readback_v4,
 };
 #[cfg(target_os = "linux")]
 pub use source_genesis_root::{
@@ -146,18 +165,6 @@ pub(crate) use source_genesis_root::RootSuccessorNativeServerCutV3;
 #[cfg(target_os = "linux")]
 pub(crate) use source_genesis_root::{unavailable_project_successor_v3, unavailable_predecessor_successor_v3};
 
-pub use first_source_successor_records::{
-    ControllerFirstSourceSuccessorAnchoredV2, ControllerFirstSourceSuccessorBeginV2,
-    ControllerFirstSourceSuccessorCompleteV2, RootFirstSourceSuccessorFloorV2,
-    RootFirstSourceSuccessorIntentV2, SourceFirstSuccessorAckV2,
-    SourceFirstSuccessorPendingV2, SourceFirstSuccessorReceiptV2,
-};
-pub(crate) use first_source_successor_records::{
-    ControllerFirstSourceSuccessorAnchoredFieldsV2, ControllerFirstSourceSuccessorBeginFieldsV2,
-    ControllerFirstSourceSuccessorCompleteFieldsV2, RootFirstSourceSuccessorFloorFieldsV2,
-    RootFirstSourceSuccessorIntentFieldsV2, SourceFirstSuccessorAckFieldsV2,
-    SourceFirstSuccessorPendingFieldsV2, SourceFirstSuccessorReceiptFieldsV2,
-};
 #[cfg(target_os = "linux")]
 pub(crate) use source_genesis_root::{
     require_root_first_source_successor_capacity_owner_v2,
@@ -179,40 +186,26 @@ pub(crate) use source_genesis_root::{
     GlobalRootGenesisNativeCutV2,
 };
 mod source_hold_readback;
-mod source_hold_readback_v2;
+use aos_sandbox_ledger_replay::source_signer_data::source_hold_readback_v2;
 #[cfg(target_os = "linux")]
 pub use source_genesis_root::{
     RootFirstSourceSuccessorOpeningV2,
     RootProjectGenesisMutationResultsV3, CurrentRootSourceProjectGenesisFloorV3,
     OriginalConfiguredProjectGenesisInvocationV3, FailedConfiguredProjectGenesisInvocationV3,
-    ROOT_SOURCE_PROJECT_GENESIS_QUERY_MAGIC_V3, ROOT_SOURCE_PROJECT_GENESIS_HELLO_MAGIC_V3,
-    encode_root_source_project_genesis_frame_v3, decode_root_source_project_genesis_frame_v3,
-    root_source_project_genesis_payload_bytes_v3,
-    root_resource_successor_payload_bytes_v4,
-    ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2, ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2,
-    ROOT_PROJECT_SOURCE_SUCCESSOR_HELLO_MAGIC_V3, ROOT_PROJECT_SOURCE_SUCCESSOR_QUERY_MAGIC_V3,
-    RootFirstSourceSuccessorFrameKindV2, decode_root_first_source_successor_frame_v2,
-    encode_root_first_source_successor_frame_v2,
-    encode_root_project_source_successor_frame_v3, decode_root_project_source_successor_frame_v3,
     observe_root_first_source_successor_clock_v2,
     CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2,
     CurrentRootSourceGenesisFloorV1,
-    HeldRootSourceGenesisIntentV1, ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1,
+    HeldRootSourceGenesisIntentV1,
     HeldRootSourceProjectGenesisIntentV3, RootSourceProjectGenesisFloorProofV3,
     FailedOriginalSourceSuccessorInvocationV2, OriginalSourceSuccessorInvocationV2,
     OriginalSourceProjectSuccessorInvocationV3, FailedSourceProjectSuccessorInvocationV3,
-    SourceSuccessorIssuancePhaseV2,
-    ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1, ROOT_SOURCE_GENESIS_INTENT_BYTES_V1,
-    ROOT_SOURCE_GENESIS_INTENT_BYTES_V2,
-    ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1, RootSourceGenesisAuthorityV1,
-    RootSourceGenesisFloorProofV1, RootSourceGenesisFrameKindV1, RootSourceGenesisIntentRecordV1,
+    SourceSuccessorIssuancePhaseV2, ROOT_SOURCE_GENESIS_INTENT_BYTES_V1,
+    ROOT_SOURCE_GENESIS_INTENT_BYTES_V2, RootSourceGenesisAuthorityV1,
+    RootSourceGenesisFloorProofV1, RootSourceGenesisIntentRecordV1,
     SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1, SOURCE_HIERARCHY_FLOOR_BYTES_V1,
     SOURCE_HIERARCHY_FLOOR_BYTES_V2,
     SourceHierarchyFloorRecordV1, coordinate_provisioned_source_genesis_v1,
-    ROOT_SOURCE_RESOURCE_GENESIS_QUERY_MAGIC_V2, root_source_resource_genesis_payload_bytes_v2,
     OriginalConfiguredGlobalGenesisInvocationV2, FailedConfiguredGlobalGenesisInvocationV2,
-    decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
-    decode_root_source_genesis_frame_v2, encode_root_source_genesis_frame_v2,
     fixed_root_source_genesis_recovery_available_v1,
     sign_controller_source_genesis_completion_readback_v1,
     sign_controller_source_genesis_readback_v1,
@@ -222,6 +215,7 @@ pub(crate) use source_genesis_root::{
     unavailable_project_genesis_v3,
     unavailable_global_genesis_v2,
     require_root_source_genesis_capacity_owner_v1, require_root_source_genesis_mutation_v1,
+    require_root_source_genesis_mutation_read_v1,
     validate_root_source_genesis_capacity_admission_v1,
     validate_root_source_genesis_capacity_settlement_v1,
     SourceSuccessorSigningCutV2, SourceSuccessorSigningCutV3, CompletedRootSourceProjectGenesisFloorV3,
@@ -229,8 +223,12 @@ pub(crate) use source_genesis_root::{
     unavailable_project_issuer_v3,
 };
 mod source_project_admission_readback;
+
+#[cfg(all(test, target_os = "linux"))]
+mod source_signer_comparison_fixture;
 #[cfg(target_os = "linux")]
-mod source_signer_readback;
+pub use aos_sandbox_ledger_replay::source_signer_data::source_signer_wire;
+
 #[cfg(target_os = "linux")]
 mod v8_successor_clear;
 
@@ -286,16 +284,10 @@ pub use controller_effect_ack_readback_v8::{
 };
 pub use controller_hold_pin::{ControllerHoldPinErrorV1, admit_fixed_controller_hold_pin_v1};
 pub use controller_hold_readback::{
-    CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1, ControllerHoldReadbackChallengeV1,
-    ControllerHoldReadbackErrorV1, PinnedControllerHoldSignerV1, VerifiedControllerHoldReadbackV1,
-    encode_controller_hold_signer_credential_v1, sign_fixed_controller_hold_readback_v1,
-    verify_controller_hold_readback_v1,
+    ControllerHoldReadbackErrorV1, sign_fixed_controller_hold_readback_v1,
 };
 pub use controller_project_admission_readback::{
-    CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1, ControllerProjectAdmissionChallengeV1,
-    ControllerProjectAdmissionReadbackErrorV1, VerifiedControllerProjectAdmissionV1,
-    sign_fixed_controller_project_admission_readback_v1,
-    verify_controller_project_admission_readback_v1,
+    ControllerProjectAdmissionReadbackErrorV1, sign_fixed_controller_project_admission_readback_v1,
 };
 pub use controller_root_receipt_readback_v8::{
     CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1,
@@ -306,12 +298,9 @@ pub use controller_v8_settlement_readback::{
     CONTROLLER_V8_SETTLEMENT_READBACK_BYTES_V1, sign_fixed_controller_v8_settlement_readback_v1,
 };
 pub use deployment_head::{
-    PolicyDeploymentCatalogDeclarationsV2, PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1,
-    PolicyDeploymentInputProfileV2, PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1,
-    SignedProjectPolicyHeadV1, admit_fixed_policy_deployment_head_v1,
+    PolicyDeploymentHeadErrorV1, admit_fixed_policy_deployment_head_v1,
     admit_fixed_policy_deployment_profile_v2, admit_fixed_policy_signer_pins_v1,
-    decode_policy_deployment_sources_v1, verify_current_policy_deployment_profile_v2,
-    verify_policy_deployment_head_v1,
+    verify_current_policy_deployment_profile_v2,
 };
 pub use project_admission_root::{
     RootProjectAdmissionIntentV1, RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeV1,
@@ -331,9 +320,7 @@ pub use project_admission_root::{
     retire_fixed_root_project_history_v1, stage_fixed_root_project_admission_v1,
 };
 pub use project_source_v2::{
-    AdmittedSignedProjectPolicySourceV2, SignedProjectPolicyHeadV2,
-    VerifiedSignedProjectPolicySourceV2, admit_fixed_signed_project_policy_source_v2,
-    verify_signed_project_policy_source_v2,
+    AdmittedSignedProjectPolicySourceV2, admit_fixed_signed_project_policy_source_v2,
 };
 pub use project_source_v3::{
     HeldCurrentCreatePolicyInputsV3, PROJECT_POLICY_ASSOCIATION_PACKET_BYTES_V3,
@@ -381,7 +368,7 @@ pub use public_create_source::{
     with_current_create_policy_source_barrier_v3, with_current_create_policy_source_barrier_v4,
     with_current_parentless_create_ancestry_v1,
 };
-pub use aos_sandbox_policy::{RetainedPublisherCompilerOriginV3, normalized_policy_input_digest_v1};
+pub use aos_sandbox_policy::normalized_policy_input_digest_v1;
 pub use publisher_origin::{
     CompiledPublisherPolicyRevisionV2, compile_publisher_policy_revision_v2,
 };
@@ -415,10 +402,6 @@ pub use root_v8_released_proof::{
     POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2, RootV8ReleasedProofV1, read_root_v8_released_proof_v1,
     validate_untrusted_root_v8_release_reply_frame_v1,
 };
-pub use root_v8_settled_grant::{
-    ROOT_V8_SETTLED_QUERY_MAGIC, RootV8SettledGrantV1, encode_root_v8_settled_reply_v1,
-    query_fixed_root_v8_settled_grant_v1,
-};
 #[cfg(target_os = "linux")]
 pub use source_genesis_readback::{
     SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1, SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V2,
@@ -437,14 +420,11 @@ pub use source_hold_pin::{SourceHoldPinErrorV1, admit_fixed_source_hold_pin_v1};
 pub use source_hold_readback::{
     PinnedSourceHoldReadbackSignerV1, SOURCE_HOLD_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1,
     SourceHoldReadbackErrorV1, encode_source_hold_readback_signer_credential_v1,
-    record_current_source_signer_challenge_v1, require_current_source_signer_challenge_v1,
-    sign_current_source_hold_readback_v1, verify_current_source_hold_readback_v1,
+    verify_current_source_hold_readback_v1,
 };
 pub use source_hold_readback_v2::{
     SOURCE_HOLD_READBACK_BYTES_V2, verify_source_hold_readback_with_names_v2,
 };
-#[cfg(target_os = "linux")]
-pub use source_project_admission_readback::sign_fixed_source_project_completed_terminal_readback_v1;
 pub use source_project_admission_readback::{
     SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1,
     SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1,
@@ -461,14 +441,69 @@ pub use source_project_admission_readback::{
     verify_source_project_reservation_readback_v1, verify_source_project_retirement_readback_v1,
 };
 #[cfg(target_os = "linux")]
-pub use source_signer_readback::{
-    SourceSignerReadbackErrorV1, sign_fixed_source_project_admission_readback_v1,
-    sign_fixed_source_project_reservation_readback_v1,
-    sign_fixed_source_project_retirement_readback_v1, sign_fixed_source_signer_readback_v1,
-    sign_fixed_source_signer_readback_v2, sign_fixed_source_tree_genesis_readback_v2,
-    sign_fixed_source_tree_genesis_readback_v3,
-    sign_fixed_source_project_genesis_readback_v3,
-    sign_fixed_source_project_genesis_readback_v4,
-};
-#[cfg(target_os = "linux")]
 pub use v8_successor_clear::clear_current_create_v8_successor_fences_v1;
+
+#[cfg(target_os = "linux")]
+pub(crate) mod provisioning_current;
+
+// Fresh Delete retains its distinct actual accepted flight and native debts.
+pub(crate) mod delete_root;
+
+mod root_subject_readiness;
+pub(crate) use root_subject_readiness::RootSubjectReadinessV1;
+
+// Same checked native BOOTTIME bookend for a paid Root peer leaf.
+pub(crate) use bounded_stream_io::remaining as root_deadline_remaining_v1;
+
+mod root_subject_chunk;
+
+#[cfg(target_os = "linux")]
+pub(crate) mod root_policy_prelude;
+#[cfg(target_os = "linux")]
+pub use root_policy_prelude::{RootPolicyPreludeOriginalV1, RootPolicyPreludeErrorV1, RootPolicyPurposeV1};
+
+#[cfg(target_os = "linux")]
+pub(crate) mod continuation_policy;
+
+mod source_signer_transport;
+
+pub(crate) mod storage_apply_root;
+pub(crate) mod host_launch_root;
+pub(crate) mod start_assignment_inputs_root;
+mod root_resource_opening;
+pub use storage_apply_root::RootStorageApplyReceivingV1;
+pub use host_launch_root::{RootStartResourceReceivingV2, RootMaintenanceStorageReceivingV3};
+#[cfg(target_os = "linux")]
+pub(crate) mod finality_recover_root;
+#[cfg(target_os = "linux")]
+pub use finality_recover_root::RootFinalityRecoverReceivingV1;
+#[cfg(target_os = "linux")]
+pub(crate) mod environment_root;
+
+#[cfg(target_os = "linux")]
+pub use environment_root::{RootEnvironmentPolicyAttemptV1, RootEnvironmentExchangeErrorV1};
+
+mod assignment_manifest;
+pub(crate) use assignment_manifest::{
+    AssignmentManifestPlacementDataV2, assignment_manifest_policy_data_v2,
+    assignment_manifest_construction_receiving_bytes_v2,
+    materialize_assignment_manifest_v2,
+};
+
+#[cfg(target_os = "linux")]
+mod public_start_source;
+#[cfg(target_os = "linux")]
+pub(crate) use public_start_source::{
+    CurrentAcceptedStartProjectSourceV2, current_accepted_start_project_source_v2,
+};
+
+#[cfg(target_os = "linux")]
+pub(crate) use provisioning_current::{
+    StartAssignmentCompilationDataV2, StartAssignmentCompilationResultV2,
+    compile_accepted_start_assignment_v2,
+};
+
+#[cfg(target_os = "linux")]
+pub use start_assignment_inputs_root::RootStartAssignmentInputsReceivingV2;
+#[cfg(target_os = "linux")]
+pub(crate) mod stop_cleanup_root;

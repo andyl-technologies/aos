@@ -9,13 +9,18 @@ use std::collections::BTreeMap;
 
 use super::{JournalError, JournalTransaction, RecordNamespace};
 
-pub(crate) const KEY_PREFIX: u8 = b'w';
+use aos_sandbox_ledger_replay::host_fence::settlement_admission as canonical;
+pub(crate) use canonical::KEY_PREFIX;
 
 pub(super) fn require_no_mutation(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     transaction: &JournalTransaction,
     allow_exact_append: bool,
 ) -> Result<(), JournalError> {
+    if !allow_exact_append {
+        return canonical::require_no_mutation_v1(state, transaction).map_err(JournalError::from);
+    }
+
     let reserved = transaction.records().iter().filter(|record| {
         record.namespace() == RecordNamespace::Effect && record.key().first() == Some(&KEY_PREFIX)
     });
@@ -35,10 +40,5 @@ pub(super) fn require_no_mutation(
 pub(super) fn require_no_compaction(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<(), JournalError> {
-    if state.keys().any(|(namespace, key)| {
-        *namespace == RecordNamespace::Effect && key.first() == Some(&KEY_PREFIX)
-    }) {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
+    canonical::require_no_compaction_v1(state).map_err(JournalError::from)
 }

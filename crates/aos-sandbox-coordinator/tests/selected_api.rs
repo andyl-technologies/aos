@@ -4,13 +4,11 @@
 
 #[test]
 fn explicit_multi_node_selection_exposes_remote_adapters() {
-    use aos_sandbox_coordinator::lease_projection::committed_lease_to_protobuf;
     use aos_sandbox_coordinator::placement::place_deterministically;
     use aos_sandbox_coordinator::watch_service::DormantOrderedWatchServiceV1;
 
     let _watch = DormantOrderedWatchServiceV1::new;
     let _placement = place_deterministically;
-    let _lease_wire = committed_lease_to_protobuf;
 }
 
 #[test]
@@ -38,4 +36,17 @@ fn explicitly_selected_placement_keeps_no_candidates_closed() {
             rejections: Vec::new(),
         }
     );
+}
+
+#[test]
+fn protected_transport_is_owned_by_the_selected_coordinator() {
+    let _authenticate = aos_sandbox_coordinator::transport::CoordinatorNodeTransportOriginalV1::authenticate_once_v1;
+}
+
+#[test]
+fn real_drain_and_transfer_callers_belong_to_coordinator() {
+    let _drain = aos_sandbox_coordinator::draining::prepare_current_drain_request;
+    let _resume = aos_sandbox_coordinator::transfer::SnapshotTransferCoordinatorV1::prepare_snapshot_resume_request;
+    let _chunk = aos_sandbox_coordinator::transfer::SnapshotTransferCoordinatorV1::prepare_next_snapshot_chunk_request;
+    let _dependency = aos_sandbox_coordinator::transfer::SnapshotTransferCoordinatorV1::prepare_next_snapshot_dependency_request;
 }

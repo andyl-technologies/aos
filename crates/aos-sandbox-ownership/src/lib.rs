@@ -1,17 +1,14 @@
-//! Historical ownership-chain state and borrow-bound prepared updates.
+//! Owns protected local Ownership issuance, history and contacted operations.
 //!
-//! This crate owns canonical entry/current-pointer records, request identity,
-//! exact successor/CAS rules, and authenticated historical reconstruction. It
-//! does not open storage, issue leases, sample protected clocks, or grant live
-//! authority. Callers retain responsibility for protected storage and genuine
-//! native commits; prepared updates keep the history exclusively borrowed
-//! while those callers commit the returned inert transaction data.
-//!
-//! `format` owns the V1 record codec, `recovery` reconstructs linear histories,
-//! and `transition` supplies the shared admission/replay successor relation.
-//! Every recovered lease and replay response still requires fresh verification
-//! at its eventual effect boundary.
+//! `ownership_component` retains the genuine PID1/F original and whole startup,
+//! authenticated transport and operation outcomes. `local_ownership` holds the
+//! fixed credentials, paired clock and signing owner. `ownership_authority`
+//! joins semantic history preparation to actual private journal commits.
+//! Shared Broker/Journal code supplies physical and canonical DATA mechanics;
+//! no Domain/Runtime/Controller dependency enters this protected crate.
+//! Historical records and recovered leases remain nonauthorizing at effect use.
 
+mod footprint;
 mod format;
 mod recovery;
 mod transition;
@@ -21,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_sandbox_core::model::KeyReference;
 use aos_sandbox_core::{ObjectDigest, RawPairedClockSample, SandboxId};
 use aos_sandbox_ownership_protocol::protocol::OwnershipTransactionReferenceV1;
-use aos_sandbox_ownership_protocol::{
+pub use aos_sandbox_ownership_protocol::{
     CLAIM_BYTES, OwnershipAuthorityVerifier, OwnershipClaimAction, OwnershipClaimV1,
     OwnershipLeaseAcquisitionError, RecoveredOwnershipLease, UnverifiedOwnershipLeaseResponse,
 };
@@ -506,3 +503,23 @@ fn validate_claim_against_current(
 
 #[cfg(test)]
 mod tests;
+
+mod journal;
+mod ownership_component;
+pub mod local_ownership;
+pub mod ownership_authority;
+pub mod ownership_service;
+pub mod runtime;
+
+pub use ownership_authority::{DurableOwnershipAuthority, DurableOwnershipAuthorityError,
+    DurableOwnershipBeginOutcome, DurableOwnershipQueryOutcome, ProtectedOwnershipClockError};
+pub use ownership_service::{DurableOwnershipProtocolService, InProcessOwnershipSessionClient,
+    OwnershipProtocolServiceError};
+pub use ownership_component::{OwnershipReceivingClosedV1, OwnershipServiceReceivingLoanV1,
+    OwnershipServiceReceivingOriginalV1};
+pub use aos_sandbox_ownership_protocol::{ExpectedOwnershipLease, OwnershipAuthority,
+    OwnershipAuthorityError, OwnershipClaimError, OwnershipTransactionReceiptV1, SignedOwnershipLease};
+
+use journal::{Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction,
+    ProtectedJournalCurrentnessOriginalsV1};
+pub use journal::RecoveryReport;

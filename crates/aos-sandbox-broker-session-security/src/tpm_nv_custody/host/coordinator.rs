@@ -25,6 +25,9 @@ use zeroize::Zeroizing;
 use ed25519_dalek::Signer as _;
 use sha2::{Digest as _, Sha256};
 
+mod boot_preparation;
+pub use boot_preparation::run_runtime_boot_preparation_once_v1;
+
 use aos_sandbox_linux::seqpacket::{
     RetainedSeqpacketAdmissionErrorV1, RetainedSeqpacketReceiveErrorV1, SeqpacketError,
 };
@@ -54,6 +57,8 @@ use aos_sandbox::observe_original_runtime_deployment_clock_v3
 
 #[derive(Debug, thiserror::Error)]
 enum CanarySigningCauseV2 {
+    #[error("normal signing outer startup post refused")]
+    NormalClock(#[from] aos_sandbox::RuntimeDeploymentOriginalClockCauseV3),
     #[error("selected signing original native observation failed")]
     Descriptor(#[from] rustix::io::Errno),
     #[error("selected signing original read failed")]
@@ -344,6 +349,37 @@ struct CanarySigningOriginalV2<'origin, 'startup> {
 }
 
 impl<'origin, 'startup> CanarySigningOriginalV2<'origin, 'startup> {
+    fn capture_boot_once_v1(
+        &mut self, native: &aos_sandbox::RuntimeBootPreparationNativeOriginalV1<'_, '_>,
+    ) -> Result<(), CanarySigningDiagnosticV2> {
+        if !std::ptr::eq(self.origins, native.origins_v1()) {
+            return self.finish_original_action(Err(CanarySigningCauseV2::Changed));
+        }
+        if let Err(cause) = native.begin_outer_startup_after_v1() {
+            return self.finish_original_action(Err(cause.into()));
+        }
+        let primary = self.capture_once();
+        let after = native.finish_outer_startup_after_owed_once_v1().map_err(CanarySigningCauseV2::from);
+        self.retain_post(after);
+        if self.first_failure.is_some() { Err(self.diagnostic()) } else { primary }
+    }
+
+    fn recheck_boot_once_v1(
+        &mut self, native: &aos_sandbox::RuntimeBootPreparationNativeOriginalV1<'_, '_>,
+    ) -> Result<(), CanarySigningDiagnosticV2> {
+        if self.first_failure.is_some() { return Err(self.diagnostic()); }
+        if !std::ptr::eq(self.origins, native.origins_v1()) {
+            return self.finish_original_action(Err(CanarySigningCauseV2::Changed));
+        }
+        if let Err(cause) = native.begin_outer_startup_after_v1() {
+            return self.finish_original_action(Err(cause.into()));
+        }
+        let primary = self.recheck();
+        let after = native.finish_outer_startup_after_owed_once_v1().map_err(CanarySigningCauseV2::from);
+        self.retain_post(after);
+        if self.first_failure.is_some() { Err(self.diagnostic()) } else { primary }
+    }
+
     fn new(origins: &'origin RuntimeDeploymentComparisonOriginsV1<'startup>) -> Self {
         Self {
             origins,
@@ -367,6 +403,9 @@ impl<'origin, 'startup> CanarySigningOriginalV2<'origin, 'startup> {
             return Err(self.diagnostic());
         }
         self.require_vacant_failure();
+        if let Err(cause) = self.fund_normal_step_v1() {
+            return self.finish_original_action(Err(cause));
+        }
         let result = if self.phase != SigningPhaseV2::Empty || self.first_failure.is_some() {
             Err(CanarySigningCauseV2::Changed)
         } else {
@@ -382,6 +421,9 @@ impl<'origin, 'startup> CanarySigningOriginalV2<'origin, 'startup> {
             return Err(self.diagnostic());
         }
         self.require_vacant_failure();
+        if let Err(cause) = self.fund_normal_step_v1() {
+            return self.finish_original_action(Err(cause));
+        }
         let result = if self.phase != SigningPhaseV2::Ready || self.first_failure.is_some()
             || self.named_leaf.is_some() || self.named_ancestors.iter().any(Option::is_some)
             || self.debt_count > self.post_debt.len() - 2
@@ -396,7 +438,7 @@ impl<'origin, 'startup> CanarySigningOriginalV2<'origin, 'startup> {
 
     fn capture_inner(&mut self) -> Result<(), CanarySigningCauseV2> {
         self.origins.recheck()?;
-        if self.origins.canary_purpose_v2().is_none() || self.leaf.is_some()
+        if (self.origins.canary_purpose_v2().is_none() && self.origins.boot_purpose_v1().is_none()) || self.leaf.is_some()
             || self.key.is_some() || self.ancestors.iter().any(Option::is_some)
         {
             return Err(CanarySigningCauseV2::Changed);
@@ -408,7 +450,7 @@ impl<'origin, 'startup> CanarySigningOriginalV2<'origin, 'startup> {
 
         // The Core RefCell loan ends inside this UNIT comparator. The actual
         // returned seed File remains here before the first secret read.
-        self.origins.compare_canary_signing_original_v2(directory, leaf)?;
+        self.compare_selected_original(directory, leaf)?;
         read_exact_positioned_retaining_cause(leaf, &mut self.seed[..])?;
         self.key = Some(SigningKey::from_bytes(&self.seed));
         if *self.seed == [0; 32]
@@ -417,7 +459,7 @@ impl<'origin, 'startup> CanarySigningOriginalV2<'origin, 'startup> {
         {
             return Err(CanarySigningCauseV2::Changed);
         }
-        self.origins.compare_canary_signing_original_v2(directory, leaf)?;
+        self.compare_selected_original(directory, leaf)?;
         self.origins.recheck()?;
         Ok(())
     }
@@ -438,7 +480,7 @@ impl<'origin, 'startup> CanarySigningOriginalV2<'origin, 'startup> {
             .ok_or(CanarySigningCauseV2::Changed)?;
         self.named_leaf = Some(File::from(open_nofollow_child(directory, SIGNING_ROLE_V2)?));
         let leaf = self.named_leaf.as_ref().ok_or(CanarySigningCauseV2::Changed)?;
-        self.origins.compare_canary_signing_original_v2(directory, leaf)?;
+        self.compare_selected_original(directory, leaf)?;
         read_exact_positioned_retaining_cause(leaf, &mut self.readback[..])?;
         if self.readback != self.seed {
             return Err(CanarySigningCauseV2::Changed);
@@ -450,12 +492,46 @@ impl<'origin, 'startup> CanarySigningOriginalV2<'origin, 'startup> {
     fn compare_originals(&self) -> Result<(), CanarySigningCauseV2> {
         let directory = self.ancestors[3].as_ref().ok_or(CanarySigningCauseV2::Changed)?;
         let leaf = self.leaf.as_ref().ok_or(CanarySigningCauseV2::Changed)?;
-        self.origins.compare_canary_signing_original_v2(directory, leaf)?;
+        self.compare_selected_original(directory, leaf)?;
         if self.key.as_ref().ok_or(CanarySigningCauseV2::Changed)?
             .verifying_key().to_bytes() != self.origins.genesis_claims().signer
         {
             return Err(CanarySigningCauseV2::Changed);
         }
+        Ok(())
+    }
+
+    fn compare_selected_original(&self, directory: &File, leaf: &File)
+        -> Result<(), RuntimeDeploymentComparisonErrorV1>
+    {
+        if self.origins.boot_purpose_v1().is_some() {
+            self.origins.compare_boot_signing_original_v1(directory, leaf)
+        } else {
+            self.origins.compare_canary_signing_original_v2(directory, leaf)
+        }
+    }
+
+    // The same engine retains at most two five-description paths and its two
+    // exact secret buffers. This normal branch pays before any path crossing;
+    // the actual parent cgroup backs residual allocator/native bookkeeping.
+    fn fund_normal_step_v1(&self) -> Result<(), CanarySigningCauseV2> {
+        if self.origins.boot_purpose_v1().is_none() {
+            return Ok(());
+        }
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+        let demand = (|| {
+            let paths = SIGNING_ANCESTRY_V2.iter().try_fold(2usize, |sum, name| {
+                sum.checked_add(name.len().checked_add(1)?)
+            })?.checked_add(SIGNING_ROLE_V2.len().checked_add(1)?)?;
+            let memory = std::mem::size_of::<Self>().checked_mul(2)?
+                .checked_add(paths.checked_mul(2)?)?;
+            Some(ResourceVector::ZERO
+                .with(D::MemoryBytes, u64::try_from(memory).ok()?)
+                .with(D::OpenFiles, 10)
+                .with(D::MetadataEntries, 10)
+                .with(D::OutputBytes, 64))
+        })();
+        self.origins.admit_boot_publisher_representation_v1(demand)?;
         Ok(())
     }
 

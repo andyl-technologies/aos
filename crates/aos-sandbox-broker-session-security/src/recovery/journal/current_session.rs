@@ -8,7 +8,7 @@
 use super::*;
 
 impl ProtectedBrokerSessionJournalV1 {
-    /// Installs the first authenticated request under an exact absence CAS.
+    /// Installs the first request under exact absence or qualified terminal CAS.
     ///
     /// A method-specific current-catalog binding is retained when the signed
     /// request carries one. Other valid first methods use their nonzero signed
@@ -18,10 +18,12 @@ impl ProtectedBrokerSessionJournalV1 {
     /// # Errors
     ///
     /// Returns an error before mutation for a wrong endpoint, stale peer,
-    /// mismatched transcript, invalid semantic binding, a current-process history,
-    /// or a nonterminal old-process head. A terminal old-process history may be
-    /// replaced only by this new signed initial request under an exact monotone
-    /// predecessor CAS. Durability or readback failure retains recovery.
+    /// mismatched transcript, invalid semantic binding, an unqualified current-
+    /// process history, or a nonterminal old-process head. Terminal history may
+    /// be replaced only by a new signed initial request under the exact monotone
+    /// predecessor CAS. Same-process replacement additionally requires this
+    /// actual owner's private positively retired transcript predecessor. Native
+    /// or readback failure retains the whole exact target for recovery.
     pub fn initialize_authenticated_request(
         &mut self,
         request: &AuthenticatedBrokerMethodRequestV1,
@@ -29,13 +31,23 @@ impl ProtectedBrokerSessionJournalV1 {
         connection_peer: &ConnectionPeerIdentity,
         checkpoint: &HistoricalSessionCheckpointV1,
     ) -> Result<ProtectedBrokerSessionInitializationResultV1, BrokerSessionSecurityError> {
-        self.require_floor_method(request.method())?;
-        let context = self.current_context(transcript)?;
-        let peer = self.observe_peer(transcript, connection_peer)?;
+        self.initialize_request_with_storage_receiving_v2(request, transcript, connection_peer, checkpoint, None)
+    }
+
+    pub(super) fn initialize_request_with_storage_receiving_v2(&mut self,
+        request: &AuthenticatedBrokerMethodRequestV1, transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity, checkpoint: &HistoricalSessionCheckpointV1,
+        mut receiving: Option<&mut dyn tpm_floor::storage_receiving::StorageFloorFinancialSourceV2>,
+    ) -> Result<ProtectedBrokerSessionInitializationResultV1, BrokerSessionSecurityError> {
+        self.require_retired_storage_initial_request_v1(request)?;
+        self.require_floor_method_with_storage_receiving_v2(request.method(), receiving.as_mut().map(|source| &mut **source as &mut dyn tpm_floor::storage_receiving::StorageFloorFinancialSourceV2))?;
+        let context = self.current_context_with_storage_receiving_v2(transcript, None, receiving.as_mut().map(|source| &mut **source as &mut dyn tpm_floor::storage_receiving::StorageFloorFinancialSourceV2))?.into_ordinary();
+        let peer = self.observe_peer_with_storage_receiving_v3(transcript, connection_peer, receiving.as_mut()
+            .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
         if super::super::endpoint_for_request(request) != self.endpoint.role() {
             return Err(BrokerSessionSecurityError::Currentness);
         }
-        let before = self.read_optional(transcript.protocol())?;
+        let before = self.read_optional_with_storage_receiving_v2(transcript.protocol(), receiving.as_mut().map(|source| &mut **source as &mut dyn tpm_floor::storage_receiving::StorageFloorFinancialSourceV2))?;
         if before.is_none()
             && request.method() == BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
         {
@@ -56,10 +68,16 @@ impl ProtectedBrokerSessionJournalV1 {
                 let head = history
                     .head()
                     .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-                if current.endpoint_publication == endpoint_publication
-                    || current.stable_endpoint_identity != stable_endpoint_identity
-                {
+                if current.stable_endpoint_identity != stable_endpoint_identity {
                     return Err(BrokerSessionSecurityError::Currentness);
+                }
+                if current.endpoint_publication == endpoint_publication {
+                    if !self.require_retired_storage_rollover_v1(current, &history, transcript)? {
+                        return Err(BrokerSessionSecurityError::Currentness);
+                    }
+                    // Consume this actual private predecessor before any archive,
+                    // target preparation or CAS effect. Failure never rearms it.
+                    self.mark_retired_storage_rollover_attempted_v1();
                 }
                 if request.method() == BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY {
                     let coordinates =
@@ -147,7 +165,7 @@ impl ProtectedBrokerSessionJournalV1 {
                     }
                     if (head.method() == BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
                         && archived.original_head != current.current_head)
-                        || self.read_optional(BrokerSessionProtocolV1::Storage)? != before
+                        || self.read_optional_with_storage_receiving_v2(BrokerSessionProtocolV1::Storage, receiving.as_mut().map(|source| &mut **source as &mut dyn tpm_floor::storage_receiving::StorageFloorFinancialSourceV2))? != before
                     {
                         return Err(BrokerSessionSecurityError::Currentness);
                     }
@@ -197,7 +215,8 @@ impl ProtectedBrokerSessionJournalV1 {
         let write = ProtectedBrokerRequestWriteV1::prepare_initial_from_snapshot(
             request, &context, transcript, &peer, &empty,
         )?;
-        let target = StoredProtocolHistoryV1::from_request_write(
+        let target = StoredProtocolHistoryV1::from_request_write_for_purpose_v2(
+            self.purpose,
             transcript.protocol(),
             self.endpoint.role(),
             stable_endpoint_identity,
@@ -213,7 +232,7 @@ impl ProtectedBrokerSessionJournalV1 {
             target,
             transcript: transcript.clone(),
         };
-        Ok(self.install_initial(recovery, connection_peer))
+        Ok(self.install_initial_with_storage_receiving_v2(recovery, connection_peer, receiving))
     }
 
     /// Reopens the exact protected broker-side outcome gate.
@@ -229,14 +248,25 @@ impl ProtectedBrokerSessionJournalV1 {
         connection_peer: &ConnectionPeerIdentity,
     ) -> Result<super::super::ProtectedBrokerOutcomeAdmissionGateV1, BrokerSessionSecurityError>
     {
-        self.require_floor_method(request.method())?;
+        self.reopen_broker_outcome_with_storage_receiving_v3(request, transcript, connection_peer, None)
+    }
 
-        let context = self.current_context(transcript)?;
-        let peer = self.observe_peer(transcript, connection_peer)?;
-        let recovery = ProtectedBrokerOutcomeGateRecoveryV1::reopen_broker_outcome(
-            self, request, transcript, &context, &peer,
+    pub(super) fn reopen_broker_outcome_with_storage_receiving_v3(&mut self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+        mut receiving: Option<&mut dyn StorageFloorFinancialSourceV2>,
+    ) -> Result<super::super::ProtectedBrokerOutcomeAdmissionGateV1, BrokerSessionSecurityError> {
+        self.require_floor_method_with_storage_receiving_v2(request.method(), receiving.as_mut()
+            .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
+
+        let context = self.current_context_with_storage_receiving_v2(transcript, None, receiving.as_mut()
+            .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?.into_ordinary();
+        let peer = self.observe_peer_with_storage_receiving_v3(transcript, connection_peer, receiving.as_mut().map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
+        let recovery = ProtectedBrokerOutcomeGateRecoveryV1::reopen_broker_outcome_with_storage_receiving_v3(
+            self, request, transcript, &context, &peer, receiving.as_mut().map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2),
         )?;
-        let after_peer = self.observe_peer(transcript, connection_peer)?;
+        let after_peer = self.observe_peer_with_storage_receiving_v3(transcript, connection_peer, receiving.as_mut().map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
         if recovery.gate.currentness.peer_binding
             != after_peer.binding(self.endpoint.role(), transcript, &context)?
         {
@@ -290,19 +320,60 @@ impl ProtectedBrokerSessionJournalV1 {
             BrokerSessionSecurityError,
         ),
     > {
-        let fixed = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::ControllerHostClient);
-        let checked = if self.directory != Path::new(fixed.journal_root)
-            || self.endpoint.role() != BrokerSessionDurableEndpointV1::Client
-            || owner.transcript.protocol() != BrokerSessionProtocolV1::Host
-            || owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
-            || !matches!(
-                owner.request.method(),
-                BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
-                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
-            ) {
-            Err(BrokerSessionSecurityError::Currentness)
-        } else {
-            self.validate_broker_outcome(&owner, connection_peer)
+        self.retain_execution_outcome_current_inner_v1(owner, connection_peer, None)
+    }
+
+    pub(crate) fn retain_execution_outcome_current_with_post_v1<'authority>(
+        &'authority mut self,
+        owner: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        connection_peer: &'authority ConnectionPeerIdentity,
+        post: &mut super::client_session_continuation::ExecutionClientPostOriginalV1,
+        socket: std::os::fd::RawFd,
+    ) -> Result<ProtectedBrokerOutcomeCurrentV1<'authority>,
+        (ProtectedBrokerOutcomeCurrentnessOwnerV1, BrokerSessionSecurityError)>
+    {
+        self.retain_execution_outcome_current_inner_v1(owner, connection_peer, Some((post, socket)))
+    }
+
+    pub(crate) fn retain_execution_outcome_current_inner_v1<'authority>(
+        &'authority mut self,
+        owner: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        connection_peer: &'authority ConnectionPeerIdentity,
+        post: Option<(&mut super::client_session_continuation::ExecutionClientPostOriginalV1, std::os::fd::RawFd)>,
+    ) -> Result<
+        ProtectedBrokerOutcomeCurrentV1<'authority>,
+        (
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+            BrokerSessionSecurityError,
+        ),
+    > {
+        let selected = match (owner.transcript.protocol(), owner.request.method()) {
+            // This is read/currentness validation of the already authenticated
+            // Runtime outcome. It neither admits nor dispatches its effect.
+            (BrokerSessionProtocolV1::Host, BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+                | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME) =>
+                Some(ProtectedBrokerSessionFixedEndpointV1::ControllerHostClient),
+            (BrokerSessionProtocolV1::Host, BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+                | BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2
+                | BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2) =>
+                    Some(ProtectedBrokerSessionFixedEndpointV1::ControllerHostClient),
+            (BrokerSessionProtocolV1::Storage,
+                BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1
+                | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1) =>
+                    Some(ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient),
+            _ => None,
+        };
+        let checked = match selected {
+            Some(selected) if self.directory == Path::new(fixed_endpoint(selected).journal_root)
+                && self.endpoint.role() == BrokerSessionDurableEndpointV1::Client
+                && owner.request.direction() == AuthenticatedBrokerRequestDirectionV1::ClientSend =>
+                    match post {
+                        Some((post, socket)) => post.cover_terminal_once_v1(self, &owner.transcript, socket)
+                            .and_then(|()| post.observe_terminal_before_v1(self, &owner, connection_peer)),
+                        None => self.validate_broker_outcome(&owner, connection_peer),
+                    },
+            _ => Err(BrokerSessionSecurityError::Currentness),
         };
         if let Err(error) = checked {
             return Err((owner, error));
@@ -320,6 +391,14 @@ impl ProtectedBrokerSessionJournalV1 {
         owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
         connection_peer: &ConnectionPeerIdentity,
     ) -> Result<(), BrokerSessionSecurityError> {
+        self.require_storage_inventory_predecessor_v1(owner)?;
+        self.validate_broker_outcome(owner, connection_peer)
+    }
+
+    pub(super) fn require_storage_inventory_predecessor_v1(
+        &self,
+        owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
         let endpoint =
             fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient);
         if self.directory != Path::new(endpoint.journal_root)
@@ -334,7 +413,7 @@ impl ProtectedBrokerSessionJournalV1 {
             return Err(BrokerSessionSecurityError::Currentness);
         }
 
-        self.validate_broker_outcome(owner, connection_peer)
+        Ok(())
     }
 
     /// Compares only the original Storage-client Host48 terminal under its held owner.
@@ -459,55 +538,7 @@ impl ProtectedBrokerSessionJournalV1 {
         owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
         connection_peer: &ConnectionPeerIdentity,
     ) -> Result<(), BrokerSessionSecurityError> {
-        self.require_floor_method(owner.request.method())?;
-
-        let context = self.current_context(&owner.transcript)?;
-        if context.protected_context_digest() != owner.context.protected_context_digest() {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        let peer = self.observe_peer(&owner.transcript, connection_peer)?;
-        let peer_binding = peer.binding(self.endpoint.role(), &owner.transcript, &owner.context)?;
-        let (history, traffic, current) =
-            reopen_current(self, &owner.transcript, &owner.context, &peer)?;
-        let head = history
-            .head()
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        if current.generation != owner.protected_generation
-            || current.current_head != owner.protected_head
-            || current.protected_bindings(&owner.context)? != owner.protected_bindings
-            || peer_binding != owner.peer_binding
-            || head.endpoint() != self.endpoint.role()
-            || head.phase() != BrokerSessionDurablePhaseV1::Terminal
-            || !request_matches_head(
-                &owner.request,
-                head,
-                request_direction_for_endpoint(self.endpoint.role()),
-            )
-            || traffic.has_outstanding_request()
-            || head.outcome_packet() != Some(owner.outcome.canonical_packet())
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        let reconstructed = reconstruct_terminal_semantics(
-            &history,
-            &owner.request,
-            &owner.transcript,
-            &owner.context,
-            &traffic,
-        )?;
-        if reconstructed != owner.outcome
-            || reconstructed.filesystem_worker_qualification_commitment()
-                != owner.qualification_record_commitment
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        let after_peer = self.observe_peer(&owner.transcript, connection_peer)?;
-        if after_peer.binding(self.endpoint.role(), &owner.transcript, &owner.context)?
-            != owner.peer_binding
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        Ok(())
+        self.validate_broker_outcome_with_originals(owner, connection_peer, None)
     }
 
     // The signed original terminal or two durable abandonment markers must
@@ -655,15 +686,28 @@ impl ProtectedBrokerSessionJournalV1 {
         transcript: &VerifiedBrokerSessionTranscriptV1,
         connection_peer: &ConnectionPeerIdentity,
     ) -> Result<ProtectedBrokerRequestCommitResultV1, BrokerSessionSecurityError> {
-        self.require_floor_method(request.method())?;
+        self.append_request_with_storage_receiving_v3(request, transcript, connection_peer, None)
+    }
 
-        let context = self.current_context(transcript)?;
-        let peer = self.observe_peer(transcript, connection_peer)?;
-        let write = ProtectedBrokerRequestWriteV1::prepare_successor(
-            self, request, &context, transcript, &peer,
+    pub(super) fn append_request_with_storage_receiving_v3(&mut self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+        mut receiving: Option<&mut dyn StorageFloorFinancialSourceV2>,
+    ) -> Result<ProtectedBrokerRequestCommitResultV1, BrokerSessionSecurityError> {
+        self.require_floor_method_with_storage_receiving_v2(request.method(), receiving.as_mut()
+            .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
+
+        let context = self.current_context_with_storage_receiving_v2(transcript, None, receiving.as_mut()
+            .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?.into_ordinary();
+        let peer = self.observe_peer_with_storage_receiving_v3(transcript, connection_peer, receiving.as_mut().map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
+        let write = ProtectedBrokerRequestWriteV1::prepare_successor_with_storage_receiving_v3(
+            self, request, &context, transcript, &peer, receiving.as_mut()
+                .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2),
         )?;
         let current = self
-            .read_optional(transcript.protocol())?
+            .read_optional_with_storage_receiving_v2(transcript.protocol(), receiving.as_mut()
+                .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?
             .ok_or(BrokerSessionSecurityError::Currentness)?;
         let history = current.history_model()?;
         if history.records().first().is_some_and(|first| {
@@ -697,7 +741,7 @@ impl ProtectedBrokerSessionJournalV1 {
             )?,
             transcript: transcript.clone(),
         };
-        Ok(self.install_successor(recovery, connection_peer))
+        Ok(self.install_successor_with_storage_receiving_v3(recovery, connection_peer, receiving))
     }
 
     /// Commits one exact pending outcome and confirms canonical readback.
@@ -711,7 +755,15 @@ impl ProtectedBrokerSessionJournalV1 {
         pending: ProtectedBrokerOutcomePendingAdvancementV1,
         connection_peer: &ConnectionPeerIdentity,
     ) -> ProtectedBrokerOutcomeCommitResultV1 {
-        match self.try_commit_outcome(&pending, connection_peer) {
+        self.commit_outcome_with_storage_receiving_v3(pending, connection_peer, None)
+    }
+
+    pub(super) fn commit_outcome_with_storage_receiving_v3(&mut self,
+        pending: ProtectedBrokerOutcomePendingAdvancementV1,
+        connection_peer: &ConnectionPeerIdentity,
+        receiving: Option<&mut dyn StorageFloorFinancialSourceV2>,
+    ) -> ProtectedBrokerOutcomeCommitResultV1 {
+        match self.try_commit_outcome(&pending, connection_peer, receiving) {
             Ok(readback) => match pending.confirm_committed_preserving(readback) {
                 Ok(committed) => ProtectedBrokerOutcomeCommitResultV1::Committed(committed),
                 Err((error, pending)) => ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired {
@@ -761,6 +813,13 @@ impl ProtectedBrokerSessionJournalV1 {
         recovery: ProtectedBrokerSessionInitializationRecoveryV1,
         connection_peer: &ConnectionPeerIdentity,
     ) -> ProtectedBrokerSessionInitializationResultV1 {
+        self.install_initial_with_storage_receiving_v2(recovery, connection_peer, None)
+    }
+
+    fn install_initial_with_storage_receiving_v2(&mut self,
+        recovery: ProtectedBrokerSessionInitializationRecoveryV1, connection_peer: &ConnectionPeerIdentity,
+        mut receiving: Option<&mut dyn tpm_floor::storage_receiving::StorageFloorFinancialSourceV2>,
+    ) -> ProtectedBrokerSessionInitializationResultV1 {
         let target = &recovery.target;
         let result = (|| {
             let history = target.history_model()?;
@@ -768,10 +827,10 @@ impl ProtectedBrokerSessionJournalV1 {
                 .head()
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?
                 .method();
-            self.require_floor_method(method)?;
+            self.require_floor_method_with_storage_receiving_v2(method, receiving.as_mut().map(|source| &mut **source as &mut dyn tpm_floor::storage_receiving::StorageFloorFinancialSourceV2))?;
 
-            self.validate_recovery_peer(target, &recovery.transcript, connection_peer)?;
-            match self.read_optional(target.protocol)? {
+            self.validate_recovery_peer_with_storage_receiving_v2(target, &recovery.transcript, connection_peer, receiving.as_mut().map(|source| &mut **source as &mut dyn tpm_floor::storage_receiving::StorageFloorFinancialSourceV2))?;
+            match self.read_optional_with_storage_receiving_v2(target.protocol, receiving.as_mut().map(|source| &mut **source as &mut dyn tpm_floor::storage_receiving::StorageFloorFinancialSourceV2))? {
                 Some(current) if current == *target => return Ok(()),
                 Some(current)
                     if current.generation == recovery.expected_generation
@@ -783,16 +842,19 @@ impl ProtectedBrokerSessionJournalV1 {
                     && recovery.expected_publication == [0; 32] => {}
                 _ => return Err(BrokerSessionSecurityError::Currentness),
             }
-            self.commit_stored(target)?;
-            self.validate_recovery_peer(target, &recovery.transcript, connection_peer)?;
-            if !matches!(self.read_optional(target.protocol)?, Some(current) if current == *target)
+            self.commit_stored_with_storage_receiving_v2(target, receiving.as_mut().map(|source| &mut **source as &mut dyn tpm_floor::storage_receiving::StorageFloorFinancialSourceV2))?;
+            self.validate_recovery_peer_with_storage_receiving_v2(target, &recovery.transcript, connection_peer, receiving.as_mut().map(|source| &mut **source as &mut dyn tpm_floor::storage_receiving::StorageFloorFinancialSourceV2))?;
+            if !matches!(self.read_optional_with_storage_receiving_v2(target.protocol, receiving.as_mut().map(|source| &mut **source as &mut dyn tpm_floor::storage_receiving::StorageFloorFinancialSourceV2))?, Some(current) if current == *target)
             {
                 return Err(BrokerSessionSecurityError::Currentness);
             }
             Ok(())
         })();
         match result {
-            Ok(()) => ProtectedBrokerSessionInitializationResultV1::Initialized,
+            Ok(()) => {
+                self.mark_retired_storage_rollover_consumed_v1(&recovery);
+                ProtectedBrokerSessionInitializationResultV1::Initialized
+            },
             Err(error) => {
                 ProtectedBrokerSessionInitializationResultV1::RecoveryRequired { error, recovery }
             }
@@ -804,6 +866,14 @@ impl ProtectedBrokerSessionJournalV1 {
         recovery: ProtectedBrokerRequestCommitRecoveryV1,
         connection_peer: &ConnectionPeerIdentity,
     ) -> ProtectedBrokerRequestCommitResultV1 {
+        self.install_successor_with_storage_receiving_v3(recovery, connection_peer, None)
+    }
+
+    fn install_successor_with_storage_receiving_v3(&mut self,
+        recovery: ProtectedBrokerRequestCommitRecoveryV1,
+        connection_peer: &ConnectionPeerIdentity,
+        mut receiving: Option<&mut dyn StorageFloorFinancialSourceV2>,
+    ) -> ProtectedBrokerRequestCommitResultV1 {
         let target = &recovery.target;
         let result = (|| {
             let history = target.history_model()?;
@@ -811,11 +881,14 @@ impl ProtectedBrokerSessionJournalV1 {
                 .head()
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?
                 .method();
-            self.require_floor_method(method)?;
+            self.require_floor_method_with_storage_receiving_v2(method, receiving.as_mut()
+                .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
 
-            self.validate_recovery_peer(target, &recovery.transcript, connection_peer)?;
+            self.validate_recovery_peer_with_storage_receiving_v2(target, &recovery.transcript, connection_peer,
+                receiving.as_mut().map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
             let current = self
-                .read_optional(target.protocol)?
+                .read_optional_with_storage_receiving_v2(target.protocol, receiving.as_mut()
+                    .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?
                 .ok_or(BrokerSessionSecurityError::Currentness)?;
             if current == *target {
                 return Ok(());
@@ -831,9 +904,12 @@ impl ProtectedBrokerSessionJournalV1 {
             {
                 return Err(BrokerSessionSecurityError::Currentness);
             }
-            self.commit_stored(target)?;
-            self.validate_recovery_peer(target, &recovery.transcript, connection_peer)?;
-            if !matches!(self.read_optional(target.protocol)?, Some(current) if current == *target)
+            self.commit_stored_with_storage_receiving_v2(target, receiving.as_mut()
+                .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
+            self.validate_recovery_peer_with_storage_receiving_v2(target, &recovery.transcript, connection_peer,
+                receiving.as_mut().map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
+            if !matches!(self.read_optional_with_storage_receiving_v2(target.protocol, receiving.as_mut()
+                .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?, Some(current) if current == *target)
             {
                 return Err(BrokerSessionSecurityError::Currentness);
             }
@@ -851,11 +927,14 @@ impl ProtectedBrokerSessionJournalV1 {
         &mut self,
         pending: &ProtectedBrokerOutcomePendingAdvancementV1,
         connection_peer: &ConnectionPeerIdentity,
+        mut receiving: Option<&mut dyn StorageFloorFinancialSourceV2>,
     ) -> Result<ProtectedBrokerOutcomeCommitReadbackV1, BrokerSessionSecurityError> {
-        self.require_floor_method(pending.outcome.request().method())?;
+        self.require_floor_method_with_storage_receiving_v2(pending.outcome.request().method(), receiving.as_mut()
+            .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
 
-        let context = self.current_context(&pending.transcript)?;
-        let before_peer = self.observe_peer(&pending.transcript, connection_peer)?;
+        let context = self.current_context_with_storage_receiving_v2(&pending.transcript, None, receiving.as_mut()
+            .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?.into_ordinary();
+        let before_peer = self.observe_peer_with_storage_receiving_v3(&pending.transcript, connection_peer, receiving.as_mut().map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
         if before_peer.binding(self.endpoint.role(), &pending.transcript, &context)?
             != pending.peer_binding
         {
@@ -863,14 +942,15 @@ impl ProtectedBrokerSessionJournalV1 {
         }
         let protocol = pending.transcript.protocol();
         let current = self
-            .read_optional(protocol)?
+            .read_optional_with_storage_receiving_v2(protocol, receiving.as_mut()
+                .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?
             .ok_or(BrokerSessionSecurityError::Currentness)?;
         let replacement = StoredProtocolHistoryV1::from_pending_outcome(&current, pending)?;
         if current.generation == replacement.generation
             && current.current_head == replacement.current_head
             && current.history == replacement.history
         {
-            return self.confirm_pending(pending, connection_peer);
+            return self.confirm_pending(pending, connection_peer, receiving);
         }
         let current_history = current.history_model()?;
         let current_record = current_history
@@ -884,20 +964,23 @@ impl ProtectedBrokerSessionJournalV1 {
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
-        self.commit_stored(&replacement)?;
-        self.confirm_pending(pending, connection_peer)
+        self.commit_stored_with_storage_receiving_v2(&replacement, receiving.as_mut()
+            .map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
+        self.confirm_pending(pending, connection_peer, receiving)
     }
 
     fn confirm_pending(
         &mut self,
         pending: &ProtectedBrokerOutcomePendingAdvancementV1,
         connection_peer: &ConnectionPeerIdentity,
+        mut receiving: Option<&mut dyn StorageFloorFinancialSourceV2>,
     ) -> Result<ProtectedBrokerOutcomeCommitReadbackV1, BrokerSessionSecurityError> {
-        let peer = self.observe_peer(&pending.transcript, connection_peer)?;
+        let peer = self.observe_peer_with_storage_receiving_v3(&pending.transcript, connection_peer, receiving.as_mut().map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
         let readback =
-            ProtectedBrokerOutcomeCommitReadbackV1::confirm_after_cas(self, pending, &peer)?;
-        let context = self.current_context(&pending.transcript)?;
-        let after_peer = self.observe_peer(&pending.transcript, connection_peer)?;
+            ProtectedBrokerOutcomeCommitReadbackV1::confirm_after_cas_with_storage_receiving_v3(self, pending, &peer,
+                receiving.as_mut().map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
+        let context = self.current_context_with_storage_receiving_v2(&pending.transcript, None, receiving.as_mut().map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?.into_ordinary();
+        let after_peer = self.observe_peer_with_storage_receiving_v3(&pending.transcript, connection_peer, receiving.as_mut().map(|source| &mut **source as &mut dyn StorageFloorFinancialSourceV2))?;
         if after_peer.binding(self.endpoint.role(), &pending.transcript, &context)?
             != pending.peer_binding
         {
@@ -920,6 +1003,44 @@ impl ProtectedBrokerOutcomeCurrentV1<'_> {
         self.authority.require_floor_current()
     }
 
+    pub(crate) fn revalidate_stop_inventory_attestation_v5(&mut self,
+        post: &mut super::client_session_continuation::ExecutionClientPostOriginalV1,
+        original: &mut crate::host_stop_inventory::StopAttestationCheckV5,
+        after: bool,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if original.terminal.is_some() { return Err(BrokerSessionSecurityError::Currentness); }
+        original.terminal = Some(if after {
+            post.observe_terminal_after_v1(self.authority, &self.owner, self.connection_peer)
+        } else {
+            post.observe_terminal_before_v1(self.authority, &self.owner, self.connection_peer)
+        });
+        // Each after destination was prepaid independently. Preserve the
+        // terminal result before entering the endpoint and floor posts so a
+        // later refusal cannot replace it or suppress another owed check.
+        if !after && !matches!(original.terminal, Some(Ok(()))) {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        original.endpoint = Some(self.authority.endpoint.revalidate_into_v1(&mut original.endpoint_native));
+        if !after && !matches!(original.endpoint, Some(Ok(()))) {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        original.floor = Some(self.authority.require_floor_current());
+        if matches!(original.terminal, Some(Ok(())))
+            && matches!(original.endpoint, Some(Ok(())))
+            && matches!(original.floor, Some(Ok(())))
+        {
+            Ok(())
+        } else {
+            Err(BrokerSessionSecurityError::Currentness)
+        }
+    }
+
+    pub(crate) fn sign_stop_inventory_attestation_v5(&mut self, message: &[u8; 32],
+        original: &mut crate::host_stop_inventory::StopAttestationSignatureV5,
+    ) -> Result<[u8; 64], BrokerSessionSecurityError> {
+        self.authority.endpoint.sign_stop_inventory_retaining_v5(message, original)
+    }
+
     /// Signs a lifecycle attestation while retaining the exact terminal writer.
     ///
     /// # Errors
@@ -938,5 +1059,71 @@ impl ProtectedBrokerOutcomeCurrentV1<'_> {
         let signature = signed?;
         post?;
         Ok(signature)
+    }
+}
+
+#[cfg(test)]
+mod stop_attestation_post_tests {
+    use super::super::lifecycle_test_fixture::LifecycleTerminalFixture;
+    use crate::host_stop_inventory::{HostStopInventoryAttestationOriginalV5, StopAttestationCheckV5};
+    use crate::{BrokerSessionSecurityError, ExecutionClientPostOriginalV1};
+
+    #[test]
+    fn terminal_after_refusal_still_observes_distinct_endpoint_and_floor() {
+        let mut fixture = LifecycleTerminalFixture::new();
+        let mut post = ExecutionClientPostOriginalV1::default();
+        let mut attestation = HostStopInventoryAttestationOriginalV5::default();
+        let mut current = fixture.current();
+
+        assert!(current.revalidate_stop_inventory_attestation_v5(
+            &mut post, &mut attestation.after, true,
+        ).is_err());
+
+        assert!(matches!(attestation.after.terminal, Some(Err(_))));
+        assert!(matches!(attestation.after.endpoint, Some(Ok(()))));
+        assert!(matches!(attestation.after.floor, Some(Ok(()))));
+        let terminal = attestation.after.terminal.as_ref().unwrap().as_ref().unwrap_err();
+        assert!(std::ptr::eq(attestation.failure_with_post_v5(&post).unwrap()
+            .downcast_ref::<BrokerSessionSecurityError>().unwrap(), terminal));
+    }
+
+    #[test]
+    fn endpoint_after_refusal_still_observes_floor_and_keeps_terminal_cause() {
+        let mut fixture = LifecycleTerminalFixture::new();
+        let client_path = fixture.client_path.clone();
+        let mut post = ExecutionClientPostOriginalV1::default();
+        let mut attestation = HostStopInventoryAttestationOriginalV5::default();
+        let mut current = fixture.current();
+        LifecycleTerminalFixture::replace_client_key(&client_path);
+
+        assert!(current.revalidate_stop_inventory_attestation_v5(
+            &mut post, &mut attestation.after, true,
+        ).is_err());
+
+        assert!(matches!(attestation.after.terminal, Some(Err(_))));
+        assert!(matches!(attestation.after.endpoint, Some(Err(_))));
+        assert!(attestation.after.endpoint_native.failure().is_some());
+        assert!(matches!(attestation.after.floor, Some(Ok(()))));
+        let terminal = attestation.after.terminal.as_ref().unwrap().as_ref().unwrap_err();
+        assert!(std::ptr::eq(attestation.failure_with_post_v5(&post).unwrap()
+            .downcast_ref::<BrokerSessionSecurityError>().unwrap(), terminal));
+    }
+
+    #[test]
+    fn before_refusal_keeps_unentered_following_checks_absent() {
+        let mut fixture = LifecycleTerminalFixture::new();
+        let client_path = fixture.client_path.clone();
+        let mut post = ExecutionClientPostOriginalV1::default();
+        let mut original = StopAttestationCheckV5::default();
+        let mut current = fixture.current();
+        LifecycleTerminalFixture::replace_client_key(&client_path);
+
+        assert!(current.revalidate_stop_inventory_attestation_v5(
+            &mut post, &mut original, false,
+        ).is_err());
+
+        assert!(matches!(original.terminal, Some(Err(_))));
+        assert!(original.endpoint.is_none());
+        assert!(original.floor.is_none());
     }
 }

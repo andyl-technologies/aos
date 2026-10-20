@@ -1,54 +1,30 @@
-//! Typed values for protected runtime-assignment authority.
+//! Keeps private Native record acceptance above the shared canonical DATA codec.
 //!
-//! Public intents are non-authorizing compiler inputs. Pending and binding
-//! values can only be constructed by the crate-private store after it has
-//! resolved a canonical authority-publication draft and protected current head.
+//! Only the existing store/codec boundary can enclose replayed Binding/Pending
+//! DATA. Neither a public portable record nor its canonical decoder constructs
+//! these Native wrappers, a current Runtime scope or an effect permit.
 
 use aos_sandbox_core::{
     CanonicalAssignmentManifestV1, ObjectDigest, OperationId, PrincipalId, SandboxId,
 };
-use sha2::{Digest as _, Sha256};
+use aos_sandbox_protocol::domain_ledger::runtime_authority_history as data;
 
-use super::{
-    MAXIMUM_MATERIALIZED_BYTES, MAXIMUM_RECORD_BYTES, MAXIMUM_RECORDS, RuntimeAuthorityError,
-};
+use super::RuntimeAuthorityError;
 
-/// Selects the durable result of one admitted runtime-authority intent.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RuntimeAuthorityStateV1 {
-    /// Binds the current assignment to one controller-authorized holder.
-    Bound,
-    /// Revokes the current holder mapping while retaining an ordered tombstone.
-    Revoked,
-}
+pub use data::RuntimeAuthorityStateV1;
+pub(super) use data::RuntimeAuthorityHeadV1;
 
-impl RuntimeAuthorityStateV1 {
-    pub(super) const fn code(self) -> u8 {
-        match self {
-            Self::Bound => 1,
-            Self::Revoked => 2,
-        }
-    }
-
-    pub(super) fn from_code(code: u8) -> Result<Self, RuntimeAuthorityError> {
-        match code {
-            1 => Ok(Self::Bound),
-            2 => Ok(Self::Revoked),
-            _ => Err(RuntimeAuthorityError::CorruptState),
-        }
-    }
-}
-
-/// Carries a non-authorizing holder-binding or revocation request.
-///
-/// The intent contains neither assignment bytes nor a caller-selected current
-/// state. Admission derives those facts from the ownership-gated publication
-/// draft and the protected runtime-authority head.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Carries a checked nonauthorizing Runtime holder intent.
+#[derive(Clone, Copy, Eq, PartialEq)]
+#[repr(transparent)]
 pub struct RuntimeAuthorityIntentV1 {
-    pub(super) state: RuntimeAuthorityStateV1,
-    pub(super) holder: Option<PrincipalId>,
-    pub(super) expected_revision: Option<u64>,
+    pub(super) data: data::RuntimeAuthorityIntentV1,
+}
+
+impl std::fmt::Debug for RuntimeAuthorityIntentV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.data, f)
+    }
 }
 
 impl RuntimeAuthorityIntentV1 {
@@ -65,15 +41,9 @@ impl RuntimeAuthorityIntentV1 {
         holder: PrincipalId,
         expected_revision: Option<u64>,
     ) -> Result<Self, RuntimeAuthorityError> {
-        validate_expected_revision(expected_revision)?;
-        if holder.as_bytes() == &[0; 16] {
-            return Err(RuntimeAuthorityError::InvalidIntent);
-        }
-        Ok(Self {
-            state: RuntimeAuthorityStateV1::Bound,
-            holder: Some(holder),
-            expected_revision,
-        })
+        data::RuntimeAuthorityIntentV1::bind_holder(holder, expected_revision)
+            .map(|data| Self { data })
+            .map_err(RuntimeAuthorityError::from)
     }
 
     /// Requests an ordered tombstone for the protected current holder mapping.
@@ -88,24 +58,21 @@ impl RuntimeAuthorityIntentV1 {
     /// revision. Revoking a sandbox without a current head is rejected during
     /// protected admission.
     pub fn revoke(expected_revision: Option<u64>) -> Result<Self, RuntimeAuthorityError> {
-        validate_expected_revision(expected_revision)?;
-        Ok(Self {
-            state: RuntimeAuthorityStateV1::Revoked,
-            holder: None,
-            expected_revision,
-        })
+        data::RuntimeAuthorityIntentV1::revoke(expected_revision)
+            .map(|data| Self { data })
+            .map_err(RuntimeAuthorityError::from)
     }
 
     /// Returns the exact revision expected at protected admission.
     #[must_use]
     pub const fn expected_revision(&self) -> Option<u64> {
-        self.expected_revision
+        self.data.expected_revision()
     }
 
     /// Returns whether this intent binds a holder or requests a tombstone.
     #[must_use]
     pub const fn state(&self) -> RuntimeAuthorityStateV1 {
-        self.state
+        self.data.state()
     }
 
     /// Returns the domain-separated commitment stored with the operation.
@@ -115,26 +82,28 @@ impl RuntimeAuthorityIntentV1 {
     /// pending record.
     #[must_use]
     pub fn digest(&self) -> ObjectDigest {
-        intent_digest(self.state, self.holder, self.expected_revision)
+        self.data.digest()
     }
 }
 
-fn validate_expected_revision(revision: Option<u64>) -> Result<(), RuntimeAuthorityError> {
-    if revision == Some(0) {
-        return Err(RuntimeAuthorityError::InvalidIntent);
-    }
-    Ok(())
-}
-
-/// Bounds complete namespace replay and mutation encoding.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Preserves the unchanged checked Runtime replay bounds.
+#[derive(Clone, Copy, Eq, PartialEq)]
+#[repr(transparent)]
 pub struct RuntimeAuthorityLimits {
-    pub(super) maximum_records: usize,
-    pub(super) maximum_record_bytes: usize,
-    pub(super) maximum_materialized_bytes: usize,
+    pub(super) data: data::RuntimeAuthorityLimits,
+}
+
+impl std::fmt::Debug for RuntimeAuthorityLimits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.data, f)
+    }
 }
 
 impl RuntimeAuthorityLimits {
+    pub(crate) const fn data_v2(self) -> data::RuntimeAuthorityLimits {
+        self.data
+    }
+
     /// Constructs limits within the implementation's fixed ceilings.
     ///
     /// # Errors
@@ -146,195 +115,182 @@ impl RuntimeAuthorityLimits {
         maximum_record_bytes: usize,
         maximum_materialized_bytes: usize,
     ) -> Result<Self, RuntimeAuthorityError> {
-        if maximum_records == 0
-            || maximum_records > MAXIMUM_RECORDS
-            || maximum_record_bytes == 0
-            || maximum_record_bytes > MAXIMUM_RECORD_BYTES
-            || maximum_materialized_bytes == 0
-            || maximum_materialized_bytes > MAXIMUM_MATERIALIZED_BYTES
-        {
-            return Err(RuntimeAuthorityError::InvalidLimits);
-        }
-        Ok(Self {
+        data::RuntimeAuthorityLimits::new(
             maximum_records,
             maximum_record_bytes,
             maximum_materialized_bytes,
-        })
+        )
+        .map(|data| Self { data })
+        .map_err(RuntimeAuthorityError::from)
     }
 }
 
 impl Default for RuntimeAuthorityLimits {
     fn default() -> Self {
         Self {
-            maximum_records: MAXIMUM_RECORDS,
-            maximum_record_bytes: MAXIMUM_RECORD_BYTES,
-            maximum_materialized_bytes: MAXIMUM_MATERIALIZED_BYTES,
+            data: data::RuntimeAuthorityLimits::default(),
         }
     }
 }
 
-/// Retains one admitted, non-authorizing runtime-authority intent.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Retains one store-admitted nonauthorizing pending record.
+#[derive(Clone, Eq, PartialEq)]
+#[repr(transparent)]
 pub(crate) struct RuntimeAuthorityPendingV1 {
-    pub(super) operation: OperationId,
-    pub(super) request_digest: [u8; 32],
-    pub(super) state: RuntimeAuthorityStateV1,
-    pub(super) holder: Option<PrincipalId>,
-    pub(super) expected_revision: Option<u64>,
-    pub(super) revision: u64,
-    pub(super) predecessor_digest: Option<ObjectDigest>,
-    pub(super) manifest: CanonicalAssignmentManifestV1,
-    pub(super) source_draft_digest: ObjectDigest,
+    pub(super) data: data::RuntimeAuthorityPendingV1,
+}
+
+impl std::fmt::Debug for RuntimeAuthorityPendingV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.data, f)
+    }
 }
 
 impl RuntimeAuthorityPendingV1 {
+    // This borrows comparison DATA only; private accepted construction stays here.
+    pub(crate) const fn historical_data_v1(&self) -> &data::RuntimeAuthorityPendingV1 {
+        &self.data
+    }
+
     pub(crate) const fn operation(&self) -> OperationId {
-        self.operation
+        self.data.operation()
     }
 
     pub(crate) const fn request_digest(&self) -> &[u8; 32] {
-        &self.request_digest
+        self.data.request_digest()
     }
 
     pub(crate) const fn state(&self) -> RuntimeAuthorityStateV1 {
-        self.state
+        self.data.state()
     }
 
     pub(crate) const fn manifest(&self) -> &CanonicalAssignmentManifestV1 {
-        &self.manifest
+        self.data.manifest()
     }
 
     pub(crate) const fn sandbox(&self) -> SandboxId {
-        self.manifest.manifest().sandbox()
+        self.data.sandbox()
     }
 
     pub(crate) const fn source_draft_digest(&self) -> ObjectDigest {
-        self.source_draft_digest
+        self.data.source_draft_digest()
     }
 
     pub(crate) fn intent_digest(&self) -> ObjectDigest {
-        intent_digest(self.state, self.holder, self.expected_revision)
+        self.data.intent_digest()
     }
 }
 
-/// Replays one immutable protected runtime-authority decision.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Retains one privately replayed structural Runtime binding.
+///
+/// A decoded portable record cannot construct this Native wrapper, current
+/// Runtime proof, process pin or publication effect permit.
+///
+/// ```compile_fail
+/// use aos_sandbox::runtime_authority::RuntimeAuthorityBindingV1;
+/// use aos_sandbox_protocol::domain_ledger::runtime_authority_history as data;
+/// fn accept(record: data::RuntimeAuthorityBindingV1) -> RuntimeAuthorityBindingV1 {
+///     record.into()
+/// }
+/// ```
+#[derive(Clone, Eq, PartialEq)]
+#[repr(transparent)]
 pub struct RuntimeAuthorityBindingV1 {
-    pub(super) operation: OperationId,
-    pub(super) request_digest: [u8; 32],
-    pub(super) state: RuntimeAuthorityStateV1,
-    pub(super) holder: Option<PrincipalId>,
-    pub(super) revision: u64,
-    pub(super) predecessor_digest: Option<ObjectDigest>,
-    pub(super) manifest: CanonicalAssignmentManifestV1,
-    pub(super) source_draft_digest: ObjectDigest,
-    pub(super) publication_digest: ObjectDigest,
-    pub(super) lease_generation: u64,
-    pub(super) lease_digest: ObjectDigest,
-    pub(super) digest: ObjectDigest,
+    pub(super) data: data::RuntimeAuthorityBindingV1,
+}
+
+impl std::fmt::Debug for RuntimeAuthorityBindingV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.data, f)
+    }
 }
 
 impl RuntimeAuthorityBindingV1 {
+    pub(crate) const fn data_v2(&self) -> &data::RuntimeAuthorityBindingV1 {
+        &self.data
+    }
+
+    // This borrows comparison DATA only; private accepted construction stays here.
+    pub(crate) const fn historical_data_v1(&self) -> &data::RuntimeAuthorityBindingV1 {
+        &self.data
+    }
+
     /// Returns whether this revision binds a holder or revokes the mapping.
     #[must_use]
     pub const fn state(&self) -> RuntimeAuthorityStateV1 {
-        self.state
+        self.data.state()
     }
 
     /// Returns the bound holder, or `None` for a revocation tombstone.
     #[must_use]
     pub const fn holder(&self) -> Option<PrincipalId> {
-        self.holder
+        self.data.holder()
     }
 
     /// Returns the contiguous sandbox-local binding revision.
     #[must_use]
     pub const fn revision(&self) -> u64 {
-        self.revision
+        self.data.revision()
     }
 
     /// Returns the canonical assignment manifest from the admitted gate draft.
     #[must_use]
     pub const fn manifest(&self) -> &CanonicalAssignmentManifestV1 {
-        &self.manifest
+        self.data.manifest()
     }
 
     /// Returns the sandbox named by the canonical assignment.
     #[must_use]
     pub const fn sandbox(&self) -> SandboxId {
-        self.manifest.manifest().sandbox()
+        self.data.sandbox()
     }
 
     /// Returns the internally derived canonical assignment digest.
     #[must_use]
     pub const fn assignment_digest(&self) -> ObjectDigest {
-        self.manifest.digest()
+        self.data.assignment_digest()
     }
 
     /// Returns the operation that activated this immutable revision.
     #[must_use]
     pub const fn operation(&self) -> OperationId {
-        self.operation
+        self.data.operation()
     }
 
     /// Returns the normalized request digest admitted with the operation.
     #[must_use]
     pub const fn request_digest(&self) -> &[u8; 32] {
-        &self.request_digest
+        self.data.request_digest()
     }
 
     /// Returns the exact admitted authority-publication draft digest.
     #[must_use]
     pub const fn source_draft_digest(&self) -> ObjectDigest {
-        self.source_draft_digest
+        self.data.source_draft_digest()
     }
 
     /// Returns the exact prepared authority-publication digest.
     #[must_use]
     pub const fn publication_digest(&self) -> ObjectDigest {
-        self.publication_digest
+        self.data.publication_digest()
     }
 
     /// Returns the ownership-lease generation activated with this revision.
     #[must_use]
     pub const fn lease_generation(&self) -> u64 {
-        self.lease_generation
+        self.data.lease_generation()
     }
 
     /// Returns the exact ownership-lease digest activated with this revision.
     #[must_use]
     pub const fn lease_digest(&self) -> ObjectDigest {
-        self.lease_digest
+        self.data.lease_digest()
     }
 
     /// Returns the domain-separated digest of this complete immutable record.
     #[must_use]
     pub const fn digest(&self) -> ObjectDigest {
-        self.digest
+        self.data.digest()
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct RuntimeAuthorityHeadV1 {
-    pub(super) sandbox: SandboxId,
-    pub(super) revision: u64,
-    pub(super) binding_digest: ObjectDigest,
-}
-
-fn intent_digest(
-    state: RuntimeAuthorityStateV1,
-    holder: Option<PrincipalId>,
-    expected_revision: Option<u64>,
-) -> ObjectDigest {
-    let mut digest = Sha256::new();
-    digest.update(super::INTENT_DIGEST_DOMAIN);
-    digest.update([state.code()]);
-    digest.update(
-        holder
-            .unwrap_or_else(|| PrincipalId::from_bytes([0; 16]))
-            .as_bytes(),
-    );
-    digest.update([u8::from(expected_revision.is_some())]);
-    digest.update(expected_revision.unwrap_or(0).to_be_bytes());
-    ObjectDigest::from_bytes(digest.finalize().into())
-}

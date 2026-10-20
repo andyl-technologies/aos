@@ -12,18 +12,30 @@
 //! particular, neither it nor cold replay permits AOSPCB02, release, Create,
 //! or Apply.
 
+use aos_sandbox_policy::journal_keys::{
+    CONTROLLER_HOLD_PIN_KEY, HEAD_KEY, SIGNER_PINS_KEY, SOURCE_HOLD_PIN_KEY,
+};
+
+use aos_sandbox_policy::controller_readback::{
+    CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1, ControllerHoldReadbackChallengeV1,
+    PinnedControllerHoldSignerV1, encode_controller_hold_signer_credential_v1,
+    verify_controller_hold_readback_v1,
+};
+
+use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
+use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{
-    JournalRecord, JournalTransaction, ProtectedJournalNamesV1, RecordNamespace,
-    SourceDomainPolicyHoldV1,
+    JournalRecord,
+    JournalTransaction,
+    ProtectedJournalNamesV1,
+    RecordNamespace,
 };
-use crate::policy_compiler::controller_hold_pin::CONTROLLER_HOLD_PIN_KEY;
-use crate::policy_compiler::controller_hold_readback::{
-    CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1, ControllerHoldReadbackChallengeV1,
-    PinnedControllerHoldSignerV1, verify_controller_hold_readback_v1,
-};
+
+
 use crate::policy_compiler::source_hold_readback::SourceHoldReadbackChallengeV1;
 
 use super::held_proof::{KEY as HELD_PROOF_KEY, RECORD_BYTES as HELD_PROOF_BYTES, RootHeldProofV2};
@@ -156,6 +168,7 @@ impl ClosedSourceTerminalClaimV1 {
                 .into(),
         );
         ControllerHoldReadbackChallengeV1::new(self.source_challenge.nonce(), cut)
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
             .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
     }
 
@@ -197,7 +210,7 @@ impl ClosedSourceTerminalClaimV1 {
             ObjectDigest::from_bytes(take_claim::<32>(bytes, &mut offset)?),
             ObjectDigest::from_bytes(take_claim::<32>(bytes, &mut offset)?),
             u64::from_be_bytes(take_claim::<8>(bytes, &mut offset)?),
-        )?;
+        ).map_err(crate::journal::JournalError::from)?;
         let nonce = take_claim::<16>(bytes, &mut offset)?;
         let source_issue = u64::from_be_bytes(take_claim::<8>(bytes, &mut offset)?);
         let names = ProtectedJournalNamesV1::from_bytes(&take_claim::<48>(bytes, &mut offset)?)
@@ -593,6 +606,7 @@ impl ClosedPolicyRootSessionV2<'_> {
         let cache_signer = PinnedCacheOwnerReadbackSignerV1::decode(cache_pin)
             .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
         let controller_signer = PinnedControllerHoldSignerV1::decode(controller_pin)
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
             .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
         if source_signer.verifying_key() == cache_signer.verifying_key()
             || source_signer.verifying_key() == controller_signer.verifying_key()
@@ -883,6 +897,7 @@ fn terminal_record_bytes(
     packet: &[u8],
 ) -> Result<[u8; CLOSED_SOURCE_TERMINAL_RECORD_BYTES_V1], PolicyCompilerJournalErrorV1> {
     let signer = PinnedControllerHoldSignerV1::decode(pin)
+        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
         .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     let receipt = verify_controller_hold_readback_v1(
         packet,
@@ -890,6 +905,7 @@ fn terminal_record_bytes(
         claim.controller_challenge()?,
         controller_uid,
     )
+    .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
     .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     if receipt.operation() != claim.source_hold.operation()
         || receipt.sandbox() != claim.source_hold.sandbox()
@@ -940,18 +956,18 @@ mod tests {
 
     use ed25519_dalek::{Signer as _, SigningKey};
 
-    use crate::cache_residency::{
-        CacheOwnerReadbackChallengeV1, PinnedCacheOwnerReadbackSignerV1,
-        encode_cache_owner_readback_signer_credential_v1, sign_test_cache_owner_readback_v2,
+    use crate::cache_residency::sign_test_cache_owner_readback_v2;
+    use aos_sandbox_protocol::cache_owner_readback::{
+        CacheOwnerReadbackChallengeV1,
+        PinnedCacheOwnerReadbackSignerV1,
+        encode_cache_owner_readback_signer_credential_v1,
         verify_closed_cache_owner_readback_v2,
     };
     use crate::journal::{ControllerPolicyHoldV1, ProtectedJournalAuthority};
     use crate::policy_compiler::binding_v2::tests::{
         cas_fixture, identity, matching_cache_hold, open_test_root,
     };
-    use crate::policy_compiler::controller_hold_readback::{
-        encode_controller_hold_signer_credential_v1, sign_test_controller_hold_readback_v1,
-    };
+    use crate::policy_compiler::controller_hold_readback::sign_test_controller_hold_readback_v1;
     use crate::policy_compiler::source_hold_readback::encode_source_hold_readback_signer_credential_v1;
 
     use super::*;
@@ -1053,6 +1069,7 @@ mod tests {
         let binding_digest = closed_policy_binding_digest_v2(&proposed).expect("binding digest");
         let controller_key = SigningKey::from_bytes(&[51; 32]);
         let pin = encode_controller_hold_signer_credential_v1(5, &controller_key.verifying_key())
+            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
             .expect("Controller-only pin");
         let mut root = open_test_root(directory.path());
         let mut authority = root
@@ -1471,6 +1488,7 @@ mod tests {
         let rotated_key = SigningKey::from_bytes(&[52; 32]);
         let rotated_pin =
             encode_controller_hold_signer_credential_v1(6, &rotated_key.verifying_key())
+                .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
                 .expect("rotated pin");
         assert!(terminal_record_bytes(claim, 1234, &rotated_pin, &packet).is_err());
         session

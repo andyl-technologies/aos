@@ -4,11 +4,13 @@
 //! administration and PID1 remain within the RFC boot/system-manager boundary.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
-use aos_systemd::{OwnedValue, SystemdClient, Value};
+use aos_systemd::{OwnedValue, Value};
 
 use crate::systemd_property_data;
+
+mod property_values;
+pub(crate) use property_values::{PropertyPairV1, PropertyValuesV1};
 
 use super::{
     NormalRootStartupErrorV1, PID1_FD_NAME, PROFILE_FD_NAME,
@@ -40,6 +42,8 @@ pub(super) const RESOURCE_SERVICE_PROPERTIES: &[&str] = &[
     "NoNewPrivileges",
     "AOSResourceProducerEpoch",
 ];
+pub(super) const RUNTIME_TASK_PROPERTIES: &[&str] = &["TasksMax"];
+
 const UNIT_PROPERTIES: &[&str] = &["FragmentPath", "DropInPaths", "Transient", "InvocationID"];
 const NIX_BARRIER_PROPERTIES: &[&str] = &[
     "ControlGroup",
@@ -55,23 +59,15 @@ const NIX_BARRIER_PROPERTIES: &[&str] = &[
     "KillMode",
     "TimeoutStopUSec",
 ];
-pub(super) const PEER_PROPERTIES: &[&str] = &[
-    "ControlGroup",
-    "OpenFile",
-    "ExtraFileDescriptorNames",
-    "FileDescriptorStoreMax",
-    "NFileDescriptorStore",
-    "SELinuxContext",
-    "CapabilityBoundingSet",
-    "AmbientCapabilities",
-    "NoNewPrivileges",
-    "ExecStart",
-    "ExecStartPre",
-    "ExecStartPost",
-];
+pub(super) const PEER_PROPERTIES: &[&str] =
+    aos_sandbox_broker::receiving::ROOT_PEER_PROPERTIES_V1;
+
+pub(super) const CONTROLLER_UNIT: &str = "aos-sandboxd.service";
 
 const STORAGE_UNIT: &str = "aos-storaged.service";
 const STORAGE_CGROUP: &str = "/aos.slice/aos-control.slice/aos-storaged.service";
+const STORAGE_RECEIVING_CGROUP: &str = aos_sandbox_linux::cgroup::StorageCgroupLayoutV1::ReceivingAggregate
+    .main_control_group_v1();
 const STORAGE_CONTEXT: &str = "system_u:system_r:aos_sandbox_storage_t";
 const STORAGE_PROPERTIES: &[&str] = &[
     "ControlGroup",
@@ -99,11 +95,7 @@ const STORAGE_RESOURCE_PROPERTIES: &[&str] = &[
     "AOSResourceProducerEpoch",
 ];
 
-#[derive(Debug, PartialEq)]
-pub(super) struct ServiceObservationV1 {
-    pub(super) fragment: PathBuf,
-    pub(super) invocation: [u8; 16],
-}
+pub(super) use aos_sandbox_broker::profile_data::delivery::ServiceObservationV1;
 
 pub(super) fn observe(
     profile_path: &str,
@@ -129,6 +121,54 @@ pub(super) fn observe_storage_resource(
     Ok((parent, decode_resource_producer(producer)?))
 }
 
+// These fixed role recipes share the already-paid archive and existing
+// semantic decoder. No caller-selected unit, PID or property list enters.
+// The actual selected Controller profile supplies its separately paid
+// archive. These fixed recipes return DATA and cannot select arbitrary units.
+pub(super) fn read_controller_startup_with_archive(
+    archive: &mut FirstGlobalPropertyArchive,
+) -> Result<PropertyPairV1, NormalRootStartupErrorV1> {
+    archive.read(CONTROLLER_UNIT, std::process::id(), SERVICE_PROPERTIES)
+}
+
+pub(super) fn read_controller_resource_with_archive(
+    archive: &mut FirstGlobalPropertyArchive,
+) -> Result<PropertyPairV1, NormalRootStartupErrorV1> {
+    archive.read(CONTROLLER_UNIT, std::process::id(), RESOURCE_SERVICE_PROPERTIES)
+}
+
+pub(super) fn observe_storage_with_archive(
+    archive: &mut FirstGlobalPropertyArchive,
+) -> Result<super::StorageWorkerParentDataV3, NormalRootStartupErrorV1> {
+    let (service, unit) = archive.read(
+        STORAGE_UNIT, std::process::id(), STORAGE_PROPERTIES,
+    )?;
+    decode_storage(&service, &unit, false)
+}
+
+pub(super) fn observe_storage_resource_with_archive(
+    archive: &mut FirstGlobalPropertyArchive,
+) -> Result<(super::StorageWorkerParentDataV3, [u8; 16]), NormalRootStartupErrorV1> {
+    let (service, unit) = archive.read(
+        STORAGE_UNIT, std::process::id(), STORAGE_RESOURCE_PROPERTIES,
+    )?;
+    let (producer, common) = service.split_last()
+        .ok_or(NormalRootStartupErrorV1::Service)?;
+    let parent = decode_storage(common, &unit, true)?;
+    Ok((parent, decode_resource_producer(producer)?))
+}
+
+pub(super) fn observe_root_resource_with_archive(
+    archive: &mut FirstGlobalPropertyArchive,
+    profile_path: &str,
+) -> Result<(ServiceObservationV1, [u8; 16]), NormalRootStartupErrorV1> {
+    let (service, unit) = archive.read(
+        UNIT, std::process::id(), RESOURCE_SERVICE_PROPERTIES,
+    )?;
+    let (parent, producer) = decode_root_resource(&service, &unit, profile_path)?;
+    Ok((immutable_observation(parent)?, producer))
+}
+
 fn decode_storage(
     service: &[OwnedValue],
     unit: &[OwnedValue],
@@ -151,7 +191,11 @@ fn decode_storage(
     let Value::Array(extras) = &**extras else {
         return Err(NormalRootStartupErrorV1::Service);
     };
-    if <&str>::try_from(cgroup).ok() != Some(STORAGE_CGROUP)
+    if <&str>::try_from(cgroup).ok() != Some(if resource_delivery {
+        STORAGE_RECEIVING_CGROUP
+    } else {
+        STORAGE_CGROUP
+    })
         || path.as_str() != "/proc/1/exe"
         || name.as_str() != "aos-method46-pid1-image"
         || !super::client::valid_resource_delivery_names(extras.inner(), resource_delivery)
@@ -169,7 +213,7 @@ fn decode_storage(
         .ok_or(NormalRootStartupErrorV1::Service)?;
     if command.pid != std::process::id()
         || command.path.len() > 4096
-        || command.argv.len() != 12
+        || !storage_main_argument_shape_v1(command.argv, resource_delivery)
     {
         return Err(NormalRootStartupErrorV1::Service);
     }
@@ -200,8 +244,8 @@ pub(super) fn observe_at(
     profile_path: &str,
     pid: u32,
 ) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
-    let (service, unit) = read_properties(UNIT, pid, SERVICE_PROPERTIES)?;
-    immutable_observation(decode(&service, &unit, profile_path)?)
+    aos_sandbox_broker::receiving::observe_root_comparison_at_v1(profile_path, pid)
+        .map_err(Into::into)
 }
 
 pub(super) fn observe_peer(
@@ -220,17 +264,20 @@ pub(super) fn decode_peer_properties(
     values: &[OwnedValue],
     unit: &[OwnedValue],
 ) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
-    let common = values
-        .get(..SERVICE_PROPERTIES.len())
-        .ok_or(NormalRootStartupErrorV1::Service)?;
-    let launch = values
-        .get(SERVICE_PROPERTIES.len()..)
-        .ok_or(NormalRootStartupErrorV1::Service)?;
-    require_peer_launch(launch, pid, profile)?;
-    let profile_path = profile_path
-        .to_str()
-        .ok_or(NormalRootStartupErrorV1::Profile)?;
-    immutable_observation(decode(common, unit, profile_path)?)
+    aos_sandbox_broker::profile_data::root_peer_data::decode_peer_properties(profile_path, pid, profile, values, unit).map_err(Into::into)
+}
+
+// Selected callers retain the actual canonicalization Result beside the same
+// complete PID1 archive. Ordinary callers keep their original short sink.
+pub(super) fn decode_peer_properties_into(
+    profile_path: &std::path::Path,
+    pid: u32,
+    profile: &super::profile::NormalRootProfileV1,
+    values: &[OwnedValue],
+    unit: &[OwnedValue],
+    canonical: &mut Option<std::io::Result<std::path::PathBuf>>,
+) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
+    aos_sandbox_broker::profile_data::root_peer_data::decode_peer_properties_into(profile_path, pid, profile, values, unit, canonical).map_err(Into::into)
 }
 
 pub(super) fn require_peer_launch(
@@ -238,32 +285,7 @@ pub(super) fn require_peer_launch(
     pid: u32,
     profile: &super::profile::NormalRootProfileV1,
 ) -> Result<(), NormalRootStartupErrorV1> {
-    let [start, pre, post] = launch else {
-        return Err(NormalRootStartupErrorV1::Service);
-    };
-    for empty in [pre, post] {
-        let Value::Array(commands) = &**empty else {
-            return Err(NormalRootStartupErrorV1::Service);
-        };
-        if !commands.is_empty() {
-            return Err(NormalRootStartupErrorV1::Service);
-        }
-    }
-    let command = systemd_property_data::single_exec_start(start)
-        .ok_or(NormalRootStartupErrorV1::Service)?;
-
-    let expected = std::iter::once(profile.executable.path.clone())
-        .chain(profile.identities.map(|identity| identity.to_string()))
-        .collect::<Vec<_>>();
-    if command.path != profile.executable.path || command.pid != pid
-        || command.argv.len() != expected.len()
-        || command.argv.iter().zip(&expected).any(|(actual, expected)| {
-            !matches!(actual, Value::Str(actual) if actual.as_str() == expected)
-        })
-    {
-        return Err(NormalRootStartupErrorV1::Service);
-    }
-    Ok(())
+    aos_sandbox_broker::profile_data::root_peer_data::require_peer_launch(launch, pid, profile).map_err(Into::into)
 }
 
 pub(super) fn read_properties(
@@ -291,250 +313,148 @@ pub(super) fn read_nix_offline_hardware_properties(
     )
 }
 
+// Resource Main supports the existing mutually exclusive measured selectors.
+// Legacy observation keeps its original exact twelve-argument contract. This
+// borrowed check precedes String collection and supplies comparison DATA only.
+fn storage_main_argument_shape_v1(arguments: &[Value<'_>], resource_delivery: bool) -> bool {
+    match arguments.len() {
+        12 => true,
+        13 if resource_delivery => matches!(arguments.last(), Some(Value::Str(flag))
+            if matches!(flag.as_str(), "--git-upload-exclusive-cohort" | "--nix-storage-generation-prepare")),
+        _ => false,
+    }
+}
+
 fn read_properties_with_recipe(
     unit_name: &'static str,
     pid: u32,
     properties: &'static [&'static str],
     recipe: Pid1ConnectionRecipeV5,
 ) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>), NormalRootStartupErrorV1> {
-    std::thread::Builder::new()
-        .name("normal-root-pid1-readback".to_owned())
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|_| NormalRootStartupErrorV1::Service)?;
-            runtime.block_on(async {
-                tokio::time::timeout(Duration::from_secs(5), async {
-                    let manager = match recipe {
-                        Pid1ConnectionRecipeV5::Legacy => SystemdClient::connect().await,
-                        Pid1ConnectionRecipeV5::NixOfflineHardware => {
-                            SystemdClient::connect_nix_offline_hardware_observer().await
-                        }
-                    }
-                        .map_err(|_| NormalRootStartupErrorV1::Service)?;
-                    manager
-                        .observe_pid1_service_startup_properties(
-                            unit_name,
-                            pid,
-                            properties,
-                            UNIT_PROPERTIES,
-                        )
-                        .await
-                        .map_err(|_| NormalRootStartupErrorV1::Service)
-                })
-                .await
-                .map_err(|_| NormalRootStartupErrorV1::Service)?
-            })
-        })
-        .map_err(|_| NormalRootStartupErrorV1::Service)?
-        .join()
-        .map_err(|_| NormalRootStartupErrorV1::Service)?
+    let recipe = match recipe {
+        Pid1ConnectionRecipeV5::Legacy => aos_systemd::Pid1PropertyReadRecipeV1::Legacy,
+        Pid1ConnectionRecipeV5::NixOfflineHardware => {
+            aos_systemd::Pid1PropertyReadRecipeV1::NixOfflineHardware
+        }
+    };
+    aos_systemd::read_pid1_startup_properties_v1(unit_name, pid, properties, recipe)
+        .map_err(|_| NormalRootStartupErrorV1::Service)
 }
-
-// Each selected observation has one fixed-stack worker and one distinct
-// no-Subscribe transport. The archive is paid before any entry is constructed;
-// native errors and cancellation remain owned even when only a coarse status
-// can be returned to the existing profile decoder.
-pub(super) const FIRST_GLOBAL_OBSERVER_STACK_BYTES: usize = 512 * 1024;
 
 pub(crate) fn first_global_observer_demand_v1(
 ) -> Result<aos_sandbox_core::ResourceVector, NormalRootStartupErrorV1> {
-    use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
     use aos_systemd::ControllerPropertyObserverAttemptV1 as Observer;
 
-    // Each encoded byte can nominate a decoded value cell. This intentionally
-    // overprices malformed replies as well as the expected fixed property
-    // lists; the selected receiver enforces these extents before resizing.
-    let incoming = Observer::MESSAGE_BYTES.checked_mul(Observer::INCOMING_MESSAGES)
+    let maximum = Observer::MESSAGE_BYTES.checked_mul(Observer::INCOMING_MESSAGES)
         .ok_or(NormalRootStartupErrorV1::Service)?;
-    let outgoing = Observer::MESSAGE_BYTES.checked_mul(Observer::OUTGOING_MESSAGES)
-        .ok_or(NormalRootStartupErrorV1::Service)?;
-    let cells = incoming.checked_add(outgoing)
-        .ok_or(NormalRootStartupErrorV1::Service)?;
-    // A wire byte is a conservative possible value/container cell. Include
-    // both dictionary operands and container links, and the simultaneous
-    // original/decoder-facing copies. This is structural provision, not an
-    // assertion about the allocator's physical layout or exact peak.
-    let value_cell = std::mem::size_of::<(OwnedValue, OwnedValue, [usize; 3])>();
-    let decoded = incoming.checked_mul(value_cell)
-        .ok_or(NormalRootStartupErrorV1::Service)?;
-    let memory = Observer::RAW_PREFIX_BYTES.checked_add(incoming)
-        .and_then(|bytes| bytes.checked_add(outgoing))
-        .and_then(|bytes| bytes.checked_add(decoded.checked_mul(2)?))
-        .and_then(|bytes| bytes.checked_add(Observer::AUTH_BYTES.checked_mul(4)?))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<FirstGlobalPropertyEntry>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<FirstGlobalPropertyOriginal>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<tokio::runtime::Runtime>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<SystemdClient>()))
-        .and_then(|bytes| bytes.checked_add(Observer::inline_bytes()))
-        // Runtime/connection queues, fixed task frames, parser scratch and
-        // owning native errors have separate provision from raw frame bytes.
-        // The immutable selected service limits remain the physical backstop;
-        // this row does not claim sizeof(Runtime) measures its heap.
-        .and_then(|bytes| bytes.checked_add(cells.checked_mul(value_cell)?))
-        .and_then(|bytes| bytes.checked_add(FIRST_GLOBAL_OBSERVER_STACK_BYTES))
-        .ok_or(NormalRootStartupErrorV1::Service)?;
-    let memory = u64::try_from(memory).map_err(|_| NormalRootStartupErrorV1::Service)?;
-    let cells = u64::try_from(cells).map_err(|_| NormalRootStartupErrorV1::Service)?;
-    let traffic = u64::try_from(incoming.checked_add(outgoing)
-        .ok_or(NormalRootStartupErrorV1::Service)?)
-        .map_err(|_| NormalRootStartupErrorV1::Service)?;
-    Ok(ResourceVector::ZERO
-        .with(D::MemoryBytes, memory)
-        // Sequential joined workers contribute one peak task in fixed_demand,
-        // not one permanently live task for every archived observation.
-        // Each retained row owns poll, registry clone, waker, signal receiver
-        // and socket FDs. Conservatively charge the process-global signal pair
-        // per row rather than assuming a separately paid global origin.
-        .with(D::OpenFiles, 7)
-        .with(D::MetadataEntries, cells)
-        .with(D::NetworkBytes, traffic)
-        .with(D::PublicationStagingBytes, memory)
-        .with(D::LogBytes, u64::try_from(Observer::MESSAGE_BYTES)
-            .map_err(|_| NormalRootStartupErrorV1::Service)?)
-        .with(D::OutputBytes, memory))
+    first_global_observer_demand_for_materialization_v1(maximum)
 }
 
-struct FirstGlobalPropertyOriginal {
-    attempt: aos_systemd::ControllerPropertyObserverAttemptV1,
-    runtime: Option<Result<tokio::runtime::Runtime, std::io::Error>>,
-    action: Option<Result<(), NormalRootStartupErrorV1>>,
+// This is representation DATA, never an admission or payer constructor. The
+// lower receiver charges this exact cumulative encoded-byte ceiling before
+// either its fixed header or dynamic body decoder can materialize a value.
+// Strict wire/collection limits and the original service cgroup separately
+// back allocator metadata, parser overhead and kernel residency (RFC-0006).
+pub(crate) fn first_global_observer_demand_for_materialization_v1(
+    materialized_bytes: usize,
+) -> Result<aos_sandbox_core::ResourceVector, NormalRootStartupErrorV1> {
+    observer_materialization_demand_v1(materialized_bytes)
 }
 
-struct FirstGlobalPropertyEntry {
-    original: std::sync::Arc<std::sync::Mutex<FirstGlobalPropertyOriginal>>,
-    spawn: Option<Result<std::thread::JoinHandle<()>, std::io::Error>>,
-    joined: Option<std::thread::Result<()>>,
+// The selected receiver emits only Hello, GetNameOwner,
+// GetConnectionUnixProcessID, GetUnit and Properties.Get. Their bodies contain
+// at most two string arguments, with fixed tuple/header shape; no recursively
+// decoded outbound OwnedValue is created. Returned destination/object paths
+// come from already-admitted incoming frames and retain their own copy budget.
+pub(crate) fn fixed_property_observer_demand_v1(
+    materialized_bytes: usize,
+) -> Result<aos_sandbox_core::ResourceVector, NormalRootStartupErrorV1> {
+    aos_sandbox_broker::receiving::fixed_property_archive_demand_v1(materialized_bytes)
+        .map_err(Into::into)
 }
 
-pub(super) struct FirstGlobalPropertyArchive {
-    entries: Vec<FirstGlobalPropertyEntry>,
-    maximum: usize,
-    preparation: Option<Result<(), std::collections::TryReserveError>>,
-    lifetime: crate::controller_resource_reservation::service_interval::ObserverLifetime,
+fn observer_materialization_demand_v1(
+    materialized_bytes: usize,
+) -> Result<aos_sandbox_core::ResourceVector, NormalRootStartupErrorV1> {
+    aos_sandbox_broker::receiving::FixedPropertyArchiveV1::observer_materialization_demand_v1(materialized_bytes)
+        .map_err(Into::into)
 }
+
+// Complete per-row data includes old/new entry Vec backing during a later
+// funded increase of the SAME archive. Native row owners have their separate
+// fixed-property bound; this does not describe an allocator's exact metadata.
+pub(super) fn growing_fixed_property_observer_demand_v1(
+    materialized_bytes: usize,
+) -> Result<aos_sandbox_core::ResourceVector, NormalRootStartupErrorV1> {
+    aos_sandbox_broker::receiving::growing_fixed_property_archive_demand_v1(materialized_bytes)
+        .map_err(Into::into)
+}
+
+pub(crate) use aos_sandbox_broker::receiving::FixedPropertyArchiveGrowthErrorV1
+    as CreateIntakeObserverGrowthErrorV1;
+
+// The one-field role projection keeps the same native archive/lifetime layout.
+pub(crate) struct FirstGlobalPropertyArchive(
+    aos_sandbox_broker::receiving::FixedPropertyArchiveV1,
+);
+
 
 impl FirstGlobalPropertyArchive {
     pub(super) fn new(
         maximum: usize,
         lifetime: crate::controller_resource_reservation::service_interval::ObserverLifetime,
     ) -> Self {
-        Self {
-            entries: Vec::new(),
-            maximum,
-            preparation: None,
-            lifetime,
-        }
+        Self(aos_sandbox_broker::receiving::FixedPropertyArchiveV1::new(maximum, lifetime))
     }
 
-    // The closed FirstGlobal or Nix-intake admission pays this same archive
-    // engine. Each retains its own lifetime and partial allocation; neither
-    // replaces or rearms the other purpose's resident original.
+    pub(super) fn with_materialization_limit(
+        maximum: usize,
+        lifetime: crate::controller_resource_reservation::service_interval::ObserverLifetime,
+        materialization_limit: usize,
+    ) -> Self {
+        Self(aos_sandbox_broker::receiving::FixedPropertyArchiveV1::with_materialization_limit(
+            maximum, lifetime, materialization_limit,
+        ))
+    }
+
     pub(super) fn prepare(&mut self) -> Result<(), NormalRootStartupErrorV1> {
-        if self.preparation.is_some() || self.maximum == 0 {
-            return Err(NormalRootStartupErrorV1::Service);
-        }
-        self.preparation = Some(self.entries.try_reserve_exact(self.maximum));
-        if !matches!(self.preparation, Some(Ok(()))) || self.entries.capacity() > self.maximum {
-            return Err(NormalRootStartupErrorV1::Service);
-        }
-        Ok(())
+        self.0.prepare().map_err(Into::into)
+    }
+
+    pub(super) fn failure_view(&self) -> Option<aos_systemd::FixedPid1PropertyFailureViewV1<'_>> {
+        self.0.failure_view()
+    }
+
+    pub(super) fn grow_prepaid_create_intake_once(
+        &mut self, maximum: usize,
+    ) -> Result<(), CreateIntakeObserverGrowthErrorV1> {
+        self.0.grow_rows(maximum)
+    }
+
+    pub(super) fn settle_positive_once(&mut self) -> Result<(), NormalRootStartupErrorV1> {
+        self.0.settle_positive_once().map_err(Into::into)
     }
 
     pub(super) fn read(
-        &mut self,
-        unit_name: &'static str,
-        pid: u32,
-        properties: &'static [&'static str],
-    ) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>), NormalRootStartupErrorV1> {
-        if !self.lifetime.is_open()
-            || !matches!(self.preparation, Some(Ok(())))
-            || self.entries.len() >= self.maximum
-            || self.entries.len() >= self.entries.capacity()
-            || properties.len() > PEER_PROPERTIES.len()
-        {
-            return Err(NormalRootStartupErrorV1::Service);
-        }
-
-        let original = std::sync::Arc::new(std::sync::Mutex::new(FirstGlobalPropertyOriginal {
-            attempt: aos_systemd::ControllerPropertyObserverAttemptV1::empty(),
-            runtime: None,
-            action: None,
-        }));
-        self.entries.push(FirstGlobalPropertyEntry {
-            original,
-            spawn: None,
-            joined: None,
-        });
-        let entry = self.entries.last_mut().ok_or(NormalRootStartupErrorV1::Service)?;
-        let worker_original = std::sync::Arc::clone(&entry.original);
-        entry.spawn = Some(std::thread::Builder::new()
-            .name("first-global-pid1-readback".to_owned())
-            .stack_size(FIRST_GLOBAL_OBSERVER_STACK_BYTES)
-            .spawn(move || {
-                let Ok(mut original) = worker_original.lock() else {
-                    return;
-                };
-                original.runtime = Some(tokio::runtime::Builder::new_current_thread()
-                    .enable_all().build());
-                let FirstGlobalPropertyOriginal {
-                    attempt,
-                    runtime,
-                    action,
-                } = &mut *original;
-
-                let mut cancellation = attempt.cancellation_fence();
-                *action = Some(match runtime.as_ref() {
-                    Some(Ok(runtime)) => runtime.block_on(async {
-                        let outcome = tokio::time::timeout(Duration::from_secs(5), async {
-                            attempt.connect().await.map_err(|_| NormalRootStartupErrorV1::Service)?;
-                            attempt.observe_pid1_service_startup_properties(
-                                unit_name, pid, properties, UNIT_PROPERTIES,
-                            ).await.map_err(|_| NormalRootStartupErrorV1::Service)
-                        }).await.map_err(|_| NormalRootStartupErrorV1::Service);
-                        outcome.and_then(std::convert::identity)
-                    }),
-                    _ => Err(NormalRootStartupErrorV1::Service),
-                });
-                if matches!(action.as_ref(), Some(Ok(()))) {
-                    cancellation.complete();
-                }
-            }));
-
-        match entry.spawn.take() {
-            Some(Ok(worker)) => entry.joined = Some(worker.join()),
-            Some(Err(error)) => entry.spawn = Some(Err(error)),
-            None => {}
-        }
-
-        let original = entry.original.lock().map_err(|_| NormalRootStartupErrorV1::Service)?;
-        if !matches!(entry.joined, Some(Ok(()))) || !matches!(original.action, Some(Ok(()))) {
-            return Err(NormalRootStartupErrorV1::Service);
-        }
-        let (service, unit) = original.attempt.property_result()
-            .and_then(|result| result.as_ref().ok())
-            .ok_or(NormalRootStartupErrorV1::Service)?;
-        let clone_values = |values: &[OwnedValue]| values.iter()
-            .map(|value| value.try_clone().map_err(|_| NormalRootStartupErrorV1::Service))
-            .collect::<Result<Vec<_>, _>>();
-        Ok((clone_values(service)?, clone_values(unit)?))
+        &mut self, unit_name: &'static str, pid: u32, properties: &'static [&'static str],
+    ) -> Result<PropertyPairV1, NormalRootStartupErrorV1> {
+        self.0.read(unit_name, pid, properties).map_err(Into::into)
     }
 }
 
 pub(super) fn immutable_observation(
-    mut observed: ServiceObservationV1,
+    observed: ServiceObservationV1,
 ) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
-    // Retain the immutable canonical target, not PID1's logical /etc symlink.
-    observed.fragment =
-        std::fs::canonicalize(&observed.fragment).map_err(|_| NormalRootStartupErrorV1::Service)?;
-    super::profile::require_store_path(
-        observed
-            .fragment
-            .to_str()
-            .ok_or(NormalRootStartupErrorV1::Service)?,
-    )?;
-    Ok(observed)
+    immutable_observation_into(observed, &mut None)
+}
+
+// The selected owner supplies the result slot before this same native action.
+// No name or observation is authority, and a repeated slot does no new IO.
+pub(super) fn immutable_observation_into(
+    mut observed: ServiceObservationV1,
+    canonical: &mut Option<std::io::Result<PathBuf>>,
+) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
+    aos_sandbox_broker::profile_data::delivery::immutable_observation_into(observed, canonical).map_err(Into::into)
 }
 
 // Only Nix floor-origin observations add the population crash-barrier fields.
@@ -575,107 +495,21 @@ pub(super) fn decode(
     unit: &[OwnedValue],
     profile_path: &str,
 ) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
-    decode_with_resource_pair(service, unit, profile_path, false)
+    aos_sandbox_broker::profile_data::root_peer_data::decode(service, unit, profile_path).map_err(Into::into)
 }
 
-fn decode_with_resource_pair(
-    service: &[OwnedValue],
-    unit: &[OwnedValue],
-    profile_path: &str,
-    resource_delivery: bool,
-) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
-    let [
-        cgroup,
-        open_files,
-        extras,
-        maximum,
-        stored,
-        context,
-        bounding,
-        ambient,
-        nnp,
-    ] = service
-    else {
-        return Err(NormalRootStartupErrorV1::Service);
-    };
-    let context = systemd_property_data::explicit_context(context)
-        .ok_or(NormalRootStartupErrorV1::Service)?;
-    let expected_cgroup = format!("/system.slice/{UNIT}");
-    if <&str>::try_from(cgroup).ok() != Some(expected_cgroup.as_str())
-        || context != CONTEXT
-        || u64::try_from(bounding).ok() != Some(0)
-        || u64::try_from(ambient).ok() != Some(0)
-        || bool::try_from(nnp).ok() != Some(true)
-        || u32::try_from(maximum).ok() != Some(0)
-        || u32::try_from(stored).ok() != Some(0)
-        || !(if resource_delivery {
-            exact_resource_open_files(open_files, extras, profile_path)
-        } else {
-            exact_open_files(open_files, extras, profile_path)
-        })
-    {
-        return Err(NormalRootStartupErrorV1::Service);
-    }
-    decode_unit(unit, UNIT)
-}
+
 
 pub(super) fn decode_unit(
     unit: &[OwnedValue],
     unit_name: &str,
 ) -> Result<ServiceObservationV1, NormalRootStartupErrorV1> {
-    let [fragment, drop_ins, transient, invocation] = unit else {
-        return Err(NormalRootStartupErrorV1::Service);
-    };
-    let Value::Array(drop_ins) = &**drop_ins else {
-        return Err(NormalRootStartupErrorV1::Service);
-    };
-    let Value::Array(invocation) = &**invocation else {
-        return Err(NormalRootStartupErrorV1::Service);
-    };
-    if !drop_ins.is_empty()
-        || drop_ins.element_signature() != Value::from("").value_signature()
-        || bool::try_from(transient).ok() != Some(false)
-        || invocation.len() != 16
-    {
-        return Err(NormalRootStartupErrorV1::Service);
-    }
-    let id = systemd_property_data::nonzero_invocation_bytes(invocation.inner())
-        .ok_or(NormalRootStartupErrorV1::Service)?;
-    let fragment = <&str>::try_from(fragment).map_err(|_| NormalRootStartupErrorV1::Service)?;
-    if fragment.len() > 1024
-        || !fragment.starts_with('/')
-        || !fragment.ends_with(&format!("/{unit_name}"))
-    {
-        return Err(NormalRootStartupErrorV1::Service);
-    }
-    Ok(ServiceObservationV1 {
-        fragment: fragment.into(),
-        invocation: id,
-    })
+    aos_sandbox_broker::profile_data::delivery::decode_unit(unit, unit_name).map_err(Into::into)
 }
 
-fn exact_open_files(open_files: &OwnedValue, extras: &OwnedValue, profile_path: &str) -> bool {
-    systemd_property_data::exact_readonly_open_file_pair(
-        open_files,
-        extras,
-        [("/proc/1/exe", PID1_FD_NAME), (profile_path, PROFILE_FD_NAME)],
-    )
-}
 
-fn exact_resource_open_files(open_files: &OwnedValue, extras: &OwnedValue, profile_path: &str) -> bool {
-    let Value::Array(open_files) = &**open_files else {
-        return false;
-    };
-    let Value::Array(extras) = &**extras else {
-        return false;
-    };
-    extras.element_signature() == Value::from("").value_signature()
-        && super::client::valid_resource_delivery_names(extras.inner(), true)
-        && systemd_property_data::exact_readonly_open_file_entries(
-            open_files.inner(),
-            [("/proc/1/exe", PID1_FD_NAME), (profile_path, PROFILE_FD_NAME)],
-        )
-}
+
+
 
 // This only compares already-retained property DATA. The original Root must
 // supply a complete admission before any archive/read/runtime is constructed.
@@ -684,19 +518,14 @@ pub(super) fn decode_root_resource(
     unit: &[OwnedValue],
     profile_path: &str,
 ) -> Result<(ServiceObservationV1, [u8; 16]), NormalRootStartupErrorV1> {
-    let (producer, common) = service.split_last().ok_or(NormalRootStartupErrorV1::Service)?;
-    let observed = decode_with_resource_pair(common, unit, profile_path, true)?;
-    Ok((observed, decode_resource_producer(producer)?))
+    aos_sandbox_broker::profile_data::root_peer_data::decode_root_resource(service, unit, profile_path).map_err(Into::into)
 }
 
 pub(super) fn require_same(
     previous: &ServiceObservationV1,
     current: &ServiceObservationV1,
 ) -> Result<(), NormalRootStartupErrorV1> {
-    if previous != current {
-        return Err(NormalRootStartupErrorV1::Service);
-    }
-    Ok(())
+    aos_sandbox_broker::profile_data::delivery::require_same(previous, current).map_err(Into::into)
 }
 
 // A live property is merely an observation. The owning enrollment consumer
@@ -704,14 +533,7 @@ pub(super) fn require_same(
 pub(super) fn decode_resource_producer(
     value: &OwnedValue,
 ) -> Result<[u8; 16], NormalRootStartupErrorV1> {
-    let Value::Array(bytes) = &**value else {
-        return Err(NormalRootStartupErrorV1::Service);
-    };
-    if bytes.element_signature() != Value::from(0_u8).value_signature() {
-        return Err(NormalRootStartupErrorV1::Service);
-    }
-    systemd_property_data::nonzero_invocation_bytes(bytes.inner())
-        .ok_or(NormalRootStartupErrorV1::Service)
+    aos_sandbox_broker::profile_data::delivery::decode_resource_producer(value).map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -754,5 +576,75 @@ mod nix_barrier_tests {
         let mut extra = values("cgroup", "control-group", u64::MAX);
         extra.push(OwnedValue::from(0_u64));
         assert!(require_nix_barrier(&extra).is_err());
+    }
+}
+
+#[cfg(all(test, target_os = "linux", target_pointer_width = "64"))]
+mod property_observer_received_descriptor_tests {
+    use std::io::{IoSlice, IoSliceMut};
+    use std::mem::MaybeUninit;
+    use std::os::fd::AsFd;
+    use std::os::unix::net::UnixStream;
+
+    use rustix::net::{
+        RecvAncillaryBuffer, RecvFlags, ReturnFlags, SendAncillaryBuffer,
+        SendAncillaryMessage, SendFlags, recvmsg, sendmsg,
+    };
+
+    #[test]
+    fn empty_controller_control_never_installs_rights_for_any_linux_rights_count() {
+        let (sender, receiver) = UnixStream::pair().expect("fixture socket pair");
+        let borrowed = vec![sender.as_fd(); 253];
+
+        // Linux accepts at most SCM_MAX_FD=253 descriptors per rights message.
+        // Exercise every accepted count, including no control. This matches
+        // the actual Controller branch's zero-length slice, not the backing
+        // LauncherRawRecord array's larger allocated capacity.
+        for count in 0..=borrowed.len() {
+            let mut outgoing = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(253))];
+            let mut outgoing = SendAncillaryBuffer::new(&mut outgoing);
+            if count != 0 {
+                assert!(outgoing.push(SendAncillaryMessage::ScmRights(&borrowed[..count])));
+            }
+            assert_eq!(sendmsg(&sender, &[IoSlice::new(b"x")], &mut outgoing,
+                SendFlags::empty()).expect("fixture rights send"), 1);
+
+            let mut bytes = [0_u8; 1];
+            let mut no_control = [];
+            let mut incoming = RecvAncillaryBuffer::new(&mut no_control);
+            let message = recvmsg(&receiver, &mut [IoSliceMut::new(&mut bytes)],
+                &mut incoming, RecvFlags::CMSG_CLOEXEC).expect("fixture rights receive");
+
+            assert_eq!(message.bytes, 1);
+            assert_eq!(bytes, *b"x");
+            assert_eq!(incoming.drain().count(), 0, "sent rights: {count}");
+            assert_eq!(message.flags.contains(ReturnFlags::CTRUNC), count != 0,
+                "sent rights: {count}");
+        }
+    }
+
+}
+
+
+#[cfg(test)]
+mod storage_main_argument_tests {
+    use super::*;
+
+    #[test]
+    fn resource_main_accepts_only_one_existing_fixed_optional_mode() {
+        let mut arguments: Vec<Value<'_>> = (0..12).map(|_| Value::from("fixed")).collect();
+        assert!(storage_main_argument_shape_v1(&arguments, true));
+        assert!(storage_main_argument_shape_v1(&arguments, false));
+
+        arguments.push(Value::from("--git-upload-exclusive-cohort"));
+        assert!(storage_main_argument_shape_v1(&arguments, true));
+        assert!(!storage_main_argument_shape_v1(&arguments, false));
+        arguments[12] = Value::from("--nix-storage-generation-prepare");
+        assert!(storage_main_argument_shape_v1(&arguments, true));
+        arguments[12] = Value::from("--unknown-mode");
+        assert!(!storage_main_argument_shape_v1(&arguments, true));
+        arguments[12] = Value::from("--git-upload-exclusive-cohort");
+        arguments.push(Value::from("--nix-storage-generation-prepare"));
+        assert!(!storage_main_argument_shape_v1(&arguments, true));
     }
 }

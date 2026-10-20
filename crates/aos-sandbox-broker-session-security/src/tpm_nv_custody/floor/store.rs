@@ -6,11 +6,20 @@
 //! Canonical claims, signed main history and actual Journal codecs stay in
 //! their existing owners. No injected parser, policy, transport or callback exists.
 
+mod readback;
+mod storage_read;
+mod prepare_capture;
+mod finalize_capture;
+mod storage_mutation;
+pub(crate) use readback::BrokerFloorReadOriginalV1;
+pub(super) use prepare_capture::SidecarPreparationOriginalV2;
+pub(super) use finalize_capture::SidecarFinalizationOriginalV2;
+pub(crate) use storage_mutation::StorageFinalSuffixPreflightV2;
+
 use aos_sandbox::{
     Journal, JournalLimits, JournalRecord, JournalTransaction,
     ProtectedJournalLockCustodyV1, ProtectedJournalPreflight, RecordNamespace,
 };
-use aos_sandbox_journal::geometry::maximum_prepared_bytes;
 
 use super::{
     CHECKPOINT_BYTES, INTENT_BYTES, FloorCheckpointV1, FloorErrorV1, FloorIntentV1,
@@ -20,9 +29,10 @@ use super::{
 use crate::recovery::BrokerSidecarCustodyV1;
 use crate::tpm_nv_custody::host::{HostOwnedJournalErrorV1, HostSidecarCustodyV1};
 
-pub(crate) const CHECKPOINT_KEY: &[u8] = b"checkpoint";
-pub(crate) const INTENT_KEY: &[u8] = b"intent";
-pub(crate) const TRANSACTION_KEY: &[u8] = b"transaction";
+pub(crate) use aos_sandbox_protocol::domain_ledger::floor_sidecar_geometry::{
+    CHECKPOINT_KEY_V1 as CHECKPOINT_KEY, INTENT_KEY_V1 as INTENT_KEY,
+    TRANSACTION_KEY_V1 as TRANSACTION_KEY,
+};
 const BROKER_PREPARE_DOMAIN: &[u8] = b"aos.sandbox.broker-session.tpm-floor.prepare.v1\0";
 const BROKER_FINALIZE_DOMAIN: &[u8] = b"aos.sandbox.broker-session.tpm-floor.finalize.v1\0";
 const HOST_PREPARE_DOMAIN: &[u8] = b"aos.runtime-deployment.tpm-floor.prepare.v1\0";
@@ -35,6 +45,9 @@ const ONLINE_FINALIZE_DOMAIN: &[u8] = b"aos.sandbox.nix.online-floor.finalize.v1
 pub(crate) struct BrokerSidecarStoreV1 {
     custody: BrokerSidecarCustodyV1,
     main_limits: JournalLimits,
+    selected_read_fixed: Option<Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError>>,
+    selected_read_preparation: Option<Result<(), aos_sandbox::StorageReceivingClosedV1>>,
+    selected_read: Option<Box<storage_read::StorageFloorReadProgrammeOriginalV2>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,9 +179,21 @@ impl From<FloorIntentDataV1> for SidecarIntentDataV1 {
 }
 
 impl BrokerSidecarStoreV1 {
+    pub(crate) fn install_currentness_archive_v1(
+        &mut self,
+        archive: crate::recovery::FloorCurrentnessSharedV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.custody.install_currentness_archive_v1(archive)
+    }
+
     pub(crate) fn from_broker(custody: BrokerSidecarCustodyV1) -> Self {
         let main_limits = custody.main_limits();
-        Self { custody, main_limits }
+        Self { custody, main_limits, selected_read_fixed: None,
+            selected_read_preparation: None, selected_read: None }
+    }
+
+    pub(crate) fn original_broker_journal_v1(&self) -> &Journal {
+        self.custody.journal()
     }
 
     pub(crate) fn loan_lock_custody(&self) -> Result<ProtectedJournalLockCustodyV1, FloorErrorV1> {
@@ -275,58 +300,7 @@ impl BrokerSidecarStoreV1 {
         &mut self,
         profile: FloorProfileDataV1,
     ) -> Result<StoredFloorDataV1, FloorErrorV1> {
-        self.validate_held()?;
-        let authority = self.custody.journal_mut()
-            .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
-            .map_err(|_| FloorErrorV1::Unavailable)?;
-        let snapshot = authority
-            .snapshot()
-            .map_err(|_| FloorErrorV1::Unavailable)?;
-        let mut checkpoint = None;
-        let mut intent = None;
-        let mut transaction = None;
-        for (key, value) in authority.records().map_err(|_| FloorErrorV1::Unavailable)? {
-            match key {
-                CHECKPOINT_KEY => {
-                    checkpoint = Some(FloorCheckpointDataV1::decode(profile, value)?);
-                }
-                INTENT_KEY => {
-                    intent = Some(FloorIntentDataV1::decode(profile, value)?);
-                }
-                TRANSACTION_KEY => {
-                    transaction = Some(
-                        JournalTransaction::decode_prepared_v1(value, self.main_limits)
-                            .map_err(|_| FloorErrorV1::Encoding)?,
-                    );
-                }
-                _ => return Err(FloorErrorV1::Encoding),
-            }
-        }
-        let checkpoint = checkpoint.ok_or(FloorErrorV1::Unavailable)?;
-        checkpoint.require_profile(profile)?;
-        let prepared = match (intent, transaction) {
-            (None, None) => None,
-            (Some(intent), Some(transaction)) => {
-                intent.require_predecessor(profile, checkpoint)?;
-                intent.require_transaction(&transaction)?;
-                Some((intent, transaction))
-            }
-            _ => return Err(FloorErrorV1::Encoding),
-        };
-        let expected_sequence = sidecar_sequence(checkpoint.ordinal(), prepared.is_some())?;
-        if snapshot.sequence() != expected_sequence {
-            return Err(FloorErrorV1::Diverged);
-        }
-        authority
-            .validate_snapshot_for_effect(&snapshot)
-            .map_err(|_| FloorErrorV1::Unavailable)?;
-        let stored = StoredFloorDataV1 {
-            checkpoint,
-            prepared,
-            sequence: snapshot.sequence(),
-        };
-        self.validate_held()?;
-        Ok(stored)
+        readback::read_ordinary(self, profile)
     }
 
     pub(crate) fn require_same(
@@ -505,44 +479,30 @@ fn prepare_transaction(
     transaction: &JournalTransaction,
     main_limits: JournalLimits,
 ) -> Result<JournalTransaction, FloorErrorV1> {
-    let id = transaction_id(intent.prepare_domain(), intent)?;
-    JournalTransaction::new(
-        id,
-        vec![
-            JournalRecord::put(
-                intent.namespace(),
-                INTENT_KEY.to_vec(),
-                intent.encode().to_vec(),
-            ),
-            JournalRecord::put(
-                intent.namespace(),
-                TRANSACTION_KEY.to_vec(),
-                transaction
-                    .encode_prepared_v1(main_limits)
-                    .map_err(|_| FloorErrorV1::Encoding)?,
-            ),
-        ],
-    )
-    .map_err(|_| FloorErrorV1::Encoding)
+    prepare_capture::prepare_transaction_engine_v2(intent, transaction, main_limits, None)?
+        .ok_or(FloorErrorV1::Encoding)
 }
 
 fn finalize_transaction(intent: SidecarIntentDataV1) -> Result<JournalTransaction, FloorErrorV1> {
-    JournalTransaction::new(
-        transaction_id(intent.finalize_domain(), intent)?,
-        vec![
-            JournalRecord::put(
-                intent.namespace(),
-                CHECKPOINT_KEY.to_vec(),
-                intent.target_bytes().to_vec(),
-            ),
-            JournalRecord::delete(intent.namespace(), INTENT_KEY.to_vec()),
-            JournalRecord::delete(
-                intent.namespace(),
-                TRANSACTION_KEY.to_vec(),
-            ),
-        ],
-    )
-    .map_err(|_| FloorErrorV1::Encoding)
+    finalize_capture::finalize_transaction_engine_v2(intent, None)?
+        .ok_or(FloorErrorV1::Encoding)
+}
+
+// The sole encoder and the pre-growth supplier compare their ordered widths.
+// The comparison borrows actual records, performs no IO or allocation, and
+// cannot replace namespace, transaction, predecessor or journal validation.
+fn require_record_shapes_v2(
+    transaction: &JournalTransaction,
+    shapes: impl ExactSizeIterator<Item = aos_sandbox_journal::geometry::RecordShape>,
+) -> Result<(), FloorErrorV1> {
+    if transaction.records().len() != shapes.len()
+        || transaction.records().iter().zip(shapes).any(|(record, shape)|
+            record.key().len() != shape.key_bytes
+                || record.value().map(<[u8]>::len) != shape.value_bytes)
+    {
+        return Err(FloorErrorV1::Encoding);
+    }
+    Ok(())
 }
 
 fn transaction_id(domain: &[u8], intent: SidecarIntentDataV1) -> Result<[u8; 16], FloorErrorV1> {
@@ -556,49 +516,23 @@ fn transaction_id(domain: &[u8], intent: SidecarIntentDataV1) -> Result<[u8; 16]
     Ok(id)
 }
 
+// The canonical ID recipe holds its intent encoding beside the hash state,
+// full digest and returned ID. Both constructors use this same scratch bound.
+fn transaction_id_receiving_bytes_v2() -> Option<usize> {
+    INTENT_BYTES.checked_add(std::mem::size_of::<sha2::Sha256>())?
+        .checked_add(std::mem::size_of::<[u8; 32]>())?
+        .checked_add(std::mem::size_of::<[u8; 16]>())?
+        .checked_add(std::mem::size_of::<[&[u8]; 1]>())
+}
+
 /// An ordinal is NV-bound, so fixed sidecar geometry cannot be reset by compaction.
 fn sidecar_sequence(ordinal: u64, pending: bool) -> Result<u64, FloorErrorV1> {
     crate::tpm_nv_custody::sidecar_sequence_v1(ordinal, pending)
 }
 
 pub(crate) fn sidecar_limits(main: JournalLimits) -> Result<JournalLimits, FloorErrorV1> {
-    let encoded = maximum_prepared_bytes(main.into()).map_err(|_| FloorErrorV1::Encoding)?;
-    let prepared_record_bytes = encoded
-        .checked_add(TRANSACTION_KEY.len() + 7)
-        .ok_or(FloorErrorV1::Encoding)?;
-    let record_bytes = prepared_record_bytes
-        .max(INTENT_BYTES + INTENT_KEY.len() + 7)
-        .max(CHECKPOINT_BYTES + CHECKPOINT_KEY.len() + 7);
-    let transaction_bytes = prepared_record_bytes
-        .checked_add(INTENT_BYTES + INTENT_KEY.len() + 7)
-        .ok_or(FloorErrorV1::Encoding)?
-        .max(
-            CHECKPOINT_BYTES + CHECKPOINT_KEY.len() + INTENT_KEY.len() + TRANSACTION_KEY.len() + 21,
-        );
-    let materialized_bytes = encoded
-        .checked_add(
-            CHECKPOINT_BYTES
-                + INTENT_BYTES
-                + CHECKPOINT_KEY.len()
-                + INTENT_KEY.len()
-                + TRANSACTION_KEY.len(),
-        )
-        .ok_or(FloorErrorV1::Encoding)?;
-    let maximum_transactions = main
-        .maximum_transactions
-        .checked_mul(2)
-        .and_then(|count| count.checked_add(1))
-        .ok_or(FloorErrorV1::Encoding)?;
-    Ok(JournalLimits {
-        maximum_journal_bytes: main.maximum_journal_bytes,
-        maximum_record_bytes: record_bytes,
-        maximum_key_bytes: TRANSACTION_KEY.len(),
-        maximum_records_per_transaction: 3,
-        maximum_transaction_bytes: transaction_bytes,
-        maximum_transactions,
-        maximum_materialized_bytes: materialized_bytes,
-        maximum_materialized_records: 3,
-    })
+    aos_sandbox_protocol::domain_ledger::floor_sidecar_geometry::sidecar_limits_v1(main)
+        .map_err(|_| FloorErrorV1::Encoding)
 }
 
 /// Owns only the actual Host constructor's original sidecar capsule.
@@ -646,10 +580,15 @@ impl<'origin, 'startup> HostSidecarStoreV1<'origin, 'startup> {
         self.custody.journal_mut()
     }
 
+    pub(in crate::tpm_nv_custody) fn original_ref(&self) -> &Journal {
+        self.custody.journal_ref()
+    }
+
     pub(in crate::tpm_nv_custody) fn loan_host_lock(
         &mut self,
     ) -> Result<ProtectedJournalLockCustodyV1, HostOwnedJournalErrorV1> {
         self.validate_held()?;
+        self.custody.admit_boot_lock_loan_v1()?;
         let loan = self.custody.journal_mut().loan_protected_lock_custody()?;
         self.validate_held()?;
         Ok(loan)
@@ -661,6 +600,10 @@ impl<'origin, 'startup> HostSidecarStoreV1<'origin, 'startup> {
         prepared: Option<(HostFloorIntentDataV1, &JournalTransaction)>,
     ) -> Result<(), HostOwnedJournalErrorV1> {
         self.validate_held()?;
+        self.custody.admit_boot_models_v1()?;
+        if let Some((_, transaction)) = prepared {
+            self.custody.admit_boot_prepared_v1(transaction)?;
+        }
         let checkpoint_bytes = checkpoint.encode();
         let pending = prepared.map(|(intent, transaction)| {
             transaction.encode_prepared_v1(self.main_limits)
@@ -706,6 +649,56 @@ impl<'origin, 'startup> HostSidecarStoreV1<'origin, 'startup> {
         already_prepared: bool,
     ) -> Result<HostSuffixPreflightV1, HostOwnedJournalErrorV1> {
         self.validate_held()?;
+        self.custody.admit_boot_digest_v1(transaction)?;
+        if self.custody.is_boot_v1() {
+            // Quote the actual encoder's prepared width before constructing either
+            // owned suffix transaction. The common forecast preserves both native
+            // BEGIN/COMMIT boundaries at this real sidecar prefix.
+            let prepared = aos_sandbox_journal::geometry::encoded_prepared_bytes(
+                transaction.records().iter().map(|record| {
+                    aos_sandbox_journal::geometry::RecordShape {
+                        key_bytes: record.key().len(),
+                        value_bytes: record.value().map(<[u8]>::len),
+                    }
+                }),
+            )
+            .map_err(aos_sandbox::JournalError::from)?;
+            let prepare_shapes = [
+                aos_sandbox_journal::geometry::RecordShape {
+                    key_bytes: INTENT_KEY.len(),
+                    value_bytes: Some(INTENT_BYTES),
+                },
+                aos_sandbox_journal::geometry::RecordShape {
+                    key_bytes: TRANSACTION_KEY.len(),
+                    value_bytes: Some(prepared),
+                },
+            ];
+            let finalize_shapes = [
+                aos_sandbox_journal::geometry::RecordShape {
+                    key_bytes: CHECKPOINT_KEY.len(),
+                    value_bytes: Some(CHECKPOINT_BYTES),
+                },
+                aos_sandbox_journal::geometry::RecordShape {
+                    key_bytes: INTENT_KEY.len(),
+                    value_bytes: None,
+                },
+                aos_sandbox_journal::geometry::RecordShape {
+                    key_bytes: TRANSACTION_KEY.len(),
+                    value_bytes: None,
+                },
+            ];
+            if already_prepared {
+                self.custody
+                    .admit_boot_shapes_v1(std::iter::once(Ok(finalize_shapes.into_iter())))?;
+            } else {
+                // Each array iterator has a different width. Their exact borrowed
+                // slice iterators share one type without cloning/encoding records.
+                self.custody.admit_boot_shapes_v1([
+                    Ok(prepare_shapes.as_slice().iter().copied()),
+                    Ok(finalize_shapes.as_slice().iter().copied()),
+                ])?;
+            }
+        }
         intent.require_transaction(transaction)?;
         let finalize = finalize_transaction(SidecarIntentDataV1::Host(intent))?;
         let transactions = if already_prepared {
@@ -730,6 +723,7 @@ impl<'origin, 'startup> HostSidecarStoreV1<'origin, 'startup> {
         suffix: &HostSuffixPreflightV1,
     ) -> Result<(), HostOwnedJournalErrorV1> {
         self.validate_held()?;
+        for transaction in &suffix.transactions { self.custody.admit_boot_append_v1(transaction)?; }
         let authority = self.custody.journal_mut()
             .claim_protected_authority(RecordNamespace::HostCatalogReconciliation)?;
         authority.validate_preflight_for_effect(&suffix.token, &suffix.transactions)?;
@@ -744,11 +738,12 @@ impl<'origin, 'startup> HostSidecarStoreV1<'origin, 'startup> {
     pub(in crate::tpm_nv_custody) fn commit_first_canary_v2(
         &mut self,
         suffix: &HostSuffixPreflightV1,
-        original: &crate::tpm_nv_custody::host::CanaryAuthenticatedRequestV3,
+        original: &crate::tpm_nv_custody::host::PublisherNativeOriginalRefV3<'_, '_, '_>,
     ) -> Result<aos_sandbox::CommitResult, HostOwnedJournalErrorV1> {
         self.validate_suffix(suffix)?;
         let transaction = suffix.transactions.first()
             .ok_or(HostOwnedJournalErrorV1::Changed)?;
+        self.custody.admit_boot_append_v1(transaction)?;
         let mut authority = self.custody.journal_mut()
             .claim_protected_authority(RecordNamespace::HostCatalogReconciliation)?;
         original.require_clock()?;

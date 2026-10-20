@@ -21,8 +21,7 @@ mod retained_history;
 use retained_history::{
     decode_protected_store_history, encode_protected_store_history, protected_context_digest,
     protected_domain_genesis_digest, protected_receipt_commitment, protected_store_successor_root,
-    protected_transaction_digest,
-    validate_protected_store_semantics,
+    protected_transaction_digest, validate_protected_store_semantics,
 };
 #[cfg(feature = "multi-node")]
 use retained_history::{durable_drain_matches_report, replay_protected_store_semantics};
@@ -40,8 +39,6 @@ use crate::journal::{
     RecoveryReport,
 };
 
-use super::assignment::{InvalidSnapshotTransfer, SnapshotTransferManifestV1};
-use super::capability::{NodeBootId, NodeBootLineageV1};
 use super::carrier_authority::{
     AuthenticatedAssignmentCarrierContractV1, issue_context_from_protected_bootstrap,
 };
@@ -52,12 +49,13 @@ use super::journal::{
     ProtectedJournalCheckpointV1, ProtectedJournalRecordV1,
 };
 use super::protected_artifact_store::ProtectedArtifactStoreV1;
-use super::protocol::{
-    CanonicalNodeFrameV1, CanonicalNodeSemanticCodecV1, InvalidMultiNodeProtocol,
-};
+use super::protocol::{CanonicalNodeFrameV1, CanonicalNodeSemanticCodecV1};
 use super::reducer_state::{
     CapabilityJournalStateV1, DurableEvidenceBindingV1, MultiNodeReducerStateV1,
 };
+use aos_sandbox_core::InvalidMultiNodeProtocol;
+use aos_sandbox_core::{InvalidSnapshotTransfer, SnapshotTransferManifestV1};
+use aos_sandbox_core::{NodeBootId, NodeBootLineageV1};
 
 const PROTECTED_STORE_HEAD_KEY: &[u8] = b"\0aos-multi-node-protected-store-v1\0head";
 const PROTECTED_MULTI_NODE_JOURNAL_NAME: &str = "multi-node-authority-v1.journal";
@@ -1142,8 +1140,6 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
         }
         Ok(())
     }
-
-
 }
 
 /// Owns the dormant, crate-controlled protected-store integration.
@@ -1724,9 +1720,8 @@ mod protected_store_history_decoder_tests {
     #[test]
     fn truncated_and_overflowing_fields_preserve_cursor_and_store_error() {
         let bytes = [7, 8];
-        let mut decoder = BoundedReader::new(&bytes, |_| {
-            InvalidMultiNodeJournal::ProtectedStoreMismatch
-        });
+        let mut decoder =
+            BoundedReader::new(&bytes, |_| InvalidMultiNodeJournal::ProtectedStoreMismatch);
 
         assert_eq!(
             decoder.array::<4>(),
@@ -2114,9 +2109,8 @@ fn decode_protected_multi_node_clock_floor(
     if checksum != expected_checksum {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
-    let mut decoder = BoundedReader::new(payload, |_| {
-        InvalidMultiNodeJournal::ProtectedStoreMismatch
-    });
+    let mut decoder =
+        BoundedReader::new(payload, |_| InvalidMultiNodeJournal::ProtectedStoreMismatch);
     if decoder.bytes(8)? != PROTECTED_MULTI_NODE_CLOCK_MAGIC {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
@@ -2177,9 +2171,8 @@ fn decode_protected_multi_node_bootstrap(
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
 
-    let mut decoder = BoundedReader::new(payload, |_| {
-        InvalidMultiNodeJournal::ProtectedStoreMismatch
-    });
+    let mut decoder =
+        BoundedReader::new(payload, |_| InvalidMultiNodeJournal::ProtectedStoreMismatch);
     if decoder.bytes(8)? != b"AOSMBC01" {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }
@@ -2215,7 +2208,7 @@ fn decode_protected_multi_node_bootstrap(
     let canonical_frame_length = usize::try_from(decoder.u32()?)
         .map_err(|_| InvalidMultiNodeJournal::ProtectedStoreMismatch)?;
     if canonical_frame_length == 0
-        || canonical_frame_length > super::protocol::MAX_NODE_RESPONSE_BYTES as usize
+        || canonical_frame_length > aos_sandbox_core::MAX_NODE_RESPONSE_BYTES as usize
     {
         return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
     }

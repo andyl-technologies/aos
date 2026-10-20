@@ -14,12 +14,12 @@ use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::time::Duration;
 
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
-use aos_sandbox::publisher_control::PublisherServiceRegistration;
-use aos_sandbox::publisher_control::{PublisherControlError, PublisherControlPolicy};
-use aos_sandbox::publisher_ingress::PublisherIngressLimits;
-use aos_sandbox::publisher_policy::PublisherPolicyLimits;
-use aos_sandbox::publisher_sessions::{
+use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
+use aos_sandbox::publisher_admin::registration::PublisherServiceRegistration;
+use aos_sandbox::publisher_admin::registration::{PublisherControlError, PublisherControlPolicy};
+use aos_sandbox::publisher_admin::audit::PublisherIngressLimits;
+use aos_sandbox::publisher_admin::policy::PublisherPolicyLimits;
+use aos_sandbox_publisher::publisher_sessions::{
     PublisherSessionError, PublisherSessionLimits, PublisherSessionRegistry, PublisherSessionScope,
 };
 use aos_sandbox_core::{NodeId, PrincipalId, ProjectId, PublisherInstanceId, ResourceId};
@@ -34,7 +34,16 @@ use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{Mode, OFlags, open};
 
 use super::ProductionController;
-use super::publisher_credential::read_required_credential;
+use super::credential_receiving::{
+    CredentialAttemptV1, CredentialMetadataV1, CredentialSourceV1, OrdinaryCredentialSourceV1,
+};
+use aos_sandbox_linux::credential::CredentialOwnerPolicyV1;
+
+mod bus_environment;
+use bus_environment::PublisherBusEnvironmentV1;
+
+mod observation;
+use observation::PublisherObservationV1;
 use aos_sandbox_broker_session_security::controller_composition::{CLOCK_PROVENANCE, sample_ownership_clock};
 
 const CREDENTIAL: &str = "publisher-service-scope-v1";
@@ -73,8 +82,28 @@ impl PublisherServiceScopeV1 {
     }
 
     pub(super) fn from_process_credential(node: NodeId) -> Result<Self, PublisherIngressError> {
-        let bytes = read_required_credential(CREDENTIAL, CREDENTIAL_BYTES, CREDENTIAL_BYTES)
-            .map_err(|_| PublisherIngressError::Scope)?;
+        Self::from_process_credential_with_source(node, &mut OrdinaryCredentialSourceV1)
+    }
+
+    fn from_process_credential_with_source(
+        node: NodeId,
+        source: &mut impl CredentialSourceV1,
+    ) -> Result<Self, PublisherIngressError> {
+        let directory = std::env::var_os("CREDENTIALS_DIRECTORY")
+            .ok_or(PublisherIngressError::Scope)?;
+        source.directory(&directory);
+        let directory = Path::new(&directory);
+        if !directory.is_absolute() {
+            return Err(PublisherIngressError::Scope);
+        }
+        let bytes = source.read(
+            directory, CREDENTIAL, CREDENTIAL_BYTES, CREDENTIAL_BYTES,
+            CredentialMetadataV1::Protected {
+                private: true,
+                owner: CredentialOwnerPolicyV1::RootOrCurrent,
+            },
+        ).map_err(|_| PublisherIngressError::Scope)?
+            .ok_or(PublisherIngressError::Scope)?;
         Self::parse(&bytes, node)
     }
 
@@ -125,67 +154,70 @@ impl PublisherServiceScopeV1 {
     pub(super) async fn observe_execution(
         self,
     ) -> Result<PublisherServiceRegistration, PublisherIngressError> {
-        tokio::time::timeout(OBSERVATION_TIMEOUT, async {
-            let systemd = SystemdClient::connect()
-                .await
-                .map_err(|_| PublisherIngressError::Execution)?;
-            let first = systemd
-                .observe_service_control_group(UNIT)
-                .await
-                .map_err(|_| PublisherIngressError::Execution)?;
-            let root = CgroupV2Root::from_owned(
-                open(
-                    CGROUP_ROOT,
-                    OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )
-                .map_err(|_| PublisherIngressError::Execution)?,
-            )
+        tokio::time::timeout(OBSERVATION_TIMEOUT, self.observe_execution_inner())
+            .await.map_err(|_| PublisherIngressError::Execution)?
+    }
+
+    async fn observe_execution_inner(
+        self,
+    ) -> Result<PublisherServiceRegistration, PublisherIngressError> {
+        let systemd = SystemdClient::connect()
+            .await
             .map_err(|_| PublisherIngressError::Execution)?;
-            let relative = first
-                .control_group
-                .strip_prefix('/')
-                .ok_or(PublisherIngressError::Execution)?;
-            let anchor = root
-                .resolve(Path::new(relative))
-                .map_err(|_| PublisherIngressError::Execution)?;
-            let process =
-                PidFd::open(first.main_pid).map_err(|_| PublisherIngressError::Execution)?;
-            let info = anchor
-                .verify_exact_membership(&process)
-                .map_err(|_| PublisherIngressError::Execution)?;
-            let credentials = info.credentials().ok_or(PublisherIngressError::Execution)?;
-            if info.pid() != first.main_pid.get()
-                || info.thread_group_id() != first.main_pid.get()
-                || credentials.real_user_id() != self.uid
-                || credentials.effective_user_id() != self.uid
-                || credentials.real_group_id() != self.gid
-                || credentials.effective_group_id() != self.gid
-            {
-                return Err(PublisherIngressError::Execution);
-            }
-            let second = systemd
-                .observe_service_control_group(UNIT)
-                .await
-                .map_err(|_| PublisherIngressError::Execution)?;
-            if first != second
-                || !process
-                    .is_alive()
-                    .map_err(|_| PublisherIngressError::Execution)?
-            {
-                return Err(PublisherIngressError::Execution);
-            }
-            anchor
-                .verify_exact_membership(&process)
-                .map_err(|_| PublisherIngressError::Execution)?;
-            Ok(PublisherServiceRegistration {
-                scope: self.scope,
-                anchor,
-                expected_process: process,
-            })
+        let first = systemd
+            .observe_service_control_group(UNIT)
+            .await
+            .map_err(|_| PublisherIngressError::Execution)?;
+        let root = CgroupV2Root::from_owned(
+            open(
+                CGROUP_ROOT,
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|_| PublisherIngressError::Execution)?,
+        )
+        .map_err(|_| PublisherIngressError::Execution)?;
+        let relative = first
+            .control_group
+            .strip_prefix('/')
+            .ok_or(PublisherIngressError::Execution)?;
+        let anchor = root
+            .resolve(Path::new(relative))
+            .map_err(|_| PublisherIngressError::Execution)?;
+        let process =
+            PidFd::open(first.main_pid).map_err(|_| PublisherIngressError::Execution)?;
+        let info = anchor
+            .verify_exact_membership(&process)
+            .map_err(|_| PublisherIngressError::Execution)?;
+        let credentials = info.credentials().ok_or(PublisherIngressError::Execution)?;
+        if info.pid() != first.main_pid.get()
+            || info.thread_group_id() != first.main_pid.get()
+            || credentials.real_user_id() != self.uid
+            || credentials.effective_user_id() != self.uid
+            || credentials.real_group_id() != self.gid
+            || credentials.effective_group_id() != self.gid
+        {
+            return Err(PublisherIngressError::Execution);
+        }
+        let second = systemd
+            .observe_service_control_group(UNIT)
+            .await
+            .map_err(|_| PublisherIngressError::Execution)?;
+        if first != second
+            || !process
+                .is_alive()
+                .map_err(|_| PublisherIngressError::Execution)?
+        {
+            return Err(PublisherIngressError::Execution);
+        }
+        anchor
+            .verify_exact_membership(&process)
+            .map_err(|_| PublisherIngressError::Execution)?;
+        Ok(PublisherServiceRegistration {
+            scope: self.scope,
+            anchor,
+            expected_process: process,
         })
-        .await
-        .map_err(|_| PublisherIngressError::Execution)?
     }
 }
 
@@ -208,6 +240,8 @@ pub(super) enum PublisherStartupFailureRefV1<'a> {
     Lower(ListenerAdmissionFailureRefV1<'a>),
     /// The existing fixed scope credential classification remains resident.
     Scope(&'a PublisherIngressError),
+    /// The same protected scope reader retains its original native cause.
+    Credential(&'a (dyn std::error::Error + 'static)),
     /// The fixed registry constructor's actual error remains resident.
     Registry(&'a PublisherSessionError),
     /// The current-thread runtime constructor's actual error remains resident.
@@ -221,6 +255,7 @@ enum PublisherStartupFailureV1 {
     Scope(PublisherIngressError),
     Registry(PublisherSessionError),
     Runtime(std::io::Error),
+    Environment,
     Closed,
 }
 
@@ -240,14 +275,16 @@ enum PublisherStartupPhaseV1 {
 /// Listener admission and scope/registry/runtime construction remain separate
 /// crossings at their existing caller positions. Failed or unwinding attempts
 /// terminate with originals resident; they do not claim process or owner drain.
-/// The installed Controller caller has not migrated to this dormant seam.
+/// The installed selected Controller uses the same main-runtime variant;
+/// ordinary callers preserve the independent owned-runtime constructor.
 #[must_use]
 pub(super) struct PublisherStartupAttemptV1 {
     lower: RecordSubjectListenerAdmissionAttemptV1,
     listener: Option<RecordSubjectListener>,
     sessions: Option<PublisherSessionRegistry>,
     scope: Option<PublisherServiceScopeV1>,
-    runtime: Option<tokio::runtime::Runtime>,
+    runtime: Option<RegistrationRuntimeV1>,
+    scope_credentials: CredentialAttemptV1<PublisherServiceScopeV1, PublisherIngressError>,
     completed: Option<PublisherRegistrationOwnerV1>,
     phase: PublisherStartupPhaseV1,
     failure: Option<PublisherStartupFailureV1>,
@@ -256,13 +293,14 @@ pub(super) struct PublisherStartupAttemptV1 {
 
 impl PublisherStartupAttemptV1 {
     /// Parks the descriptor from the concrete original Publisher role handoff.
-    pub(super) const fn from_original_listener(descriptor: OwnedFd) -> Self {
+    pub(super) fn from_original_listener(descriptor: OwnedFd) -> Self {
         Self {
             lower: RecordSubjectListenerAdmissionAttemptV1::new(descriptor),
             listener: None,
             sessions: None,
             scope: None,
             runtime: None,
+            scope_credentials: CredentialAttemptV1::new(),
             completed: None,
             phase: PublisherStartupPhaseV1::Fresh,
             failure: None,
@@ -304,15 +342,41 @@ impl PublisherStartupAttemptV1 {
         &mut self,
         node: NodeId,
     ) -> Result<(), PublisherStartupFailureRefV1<'_>> {
+        self.construct_registration_using(node, None)
+    }
+
+    pub(super) fn construct_registration_with_runtime_once(
+        &mut self,
+        node: NodeId,
+        handle: tokio::runtime::Handle,
+        worker: std::sync::Weak<super::resident_custody::ControllerWorkerCustodyV1>,
+    ) -> Result<(), PublisherStartupFailureRefV1<'_>> {
+        self.construct_registration_using(node, Some(RegistrationRuntimeV1::Shared {
+            handle, worker, bus: PublisherBusEnvironmentV1::new(),
+        }))
+    }
+
+    fn construct_registration_using(
+        &mut self,
+        node: NodeId,
+        runtime: Option<RegistrationRuntimeV1>,
+    ) -> Result<(), PublisherStartupFailureRefV1<'_>> {
         if self.phase != PublisherStartupPhaseV1::ListenerReady || self.failure.is_some() {
             return Err(self.retain_failure(PublisherStartupFailureV1::Closed));
         }
         self.phase = PublisherStartupPhaseV1::CheckingRegistration;
 
-        let result = {
+        let mut result = {
             let _unwind = AbortPublisherStartupUnwind;
-            self.construct_registration_body(node)
+            self.construct_registration_body(node, runtime)
         };
+        // Capture the independent effective-environment post even if an
+        // earlier scope/registry/native constructor returned its first error.
+        if let Some(bus) = self.selected_bus_mut() {
+            if bus.capture_final().is_err() && result.is_ok() {
+                result = Err(PublisherStartupFailureV1::Environment);
+            }
+        }
         match result {
             Ok(()) => {
                 self.phase = PublisherStartupPhaseV1::RegistrationReady;
@@ -371,6 +435,7 @@ impl PublisherStartupAttemptV1 {
     fn construct_registration_body(
         &mut self,
         node: NodeId,
+        runtime: Option<RegistrationRuntimeV1>,
     ) -> Result<(), PublisherStartupFailureV1> {
         if self.listener.is_none()
             || self.sessions.is_some()
@@ -381,16 +446,35 @@ impl PublisherStartupAttemptV1 {
             return Err(PublisherStartupFailureV1::Closed);
         }
 
-        self.scope = Some(
-            PublisherServiceScopeV1::from_process_credential(node)
-                .map_err(PublisherStartupFailureV1::Scope)?,
-        );
+        // Park the same main runtime handle before fallible scope reading.
+        self.runtime = runtime;
+        if let Some(RegistrationRuntimeV1::Shared { bus, .. }) = self.runtime.as_mut() {
+            bus.capture_initial().map_err(|()| PublisherStartupFailureV1::Environment)?;
+        }
+        if matches!(self.runtime, Some(RegistrationRuntimeV1::Shared { .. })) {
+            if !self.scope_credentials.capture_once(|source| {
+                PublisherServiceScopeV1::from_process_credential_with_source(node, source).map(Some)
+            }) {
+                return Err(PublisherStartupFailureV1::Scope(PublisherIngressError::Scope));
+            }
+            self.scope = self.scope_credentials.take_completed().flatten();
+            if self.scope.is_none() {
+                return Err(PublisherStartupFailureV1::Closed);
+            }
+        } else {
+            self.scope = Some(
+                PublisherServiceScopeV1::from_process_credential(node)
+                    .map_err(PublisherStartupFailureV1::Scope)?,
+            );
+        }
         self.sessions = Some(
             fixed_registration_sessions().map_err(PublisherStartupFailureV1::Registry)?,
         );
-        self.runtime = Some(
-            fixed_registration_runtime().map_err(PublisherStartupFailureV1::Runtime)?,
-        );
+        if self.runtime.is_none() {
+            self.runtime = Some(RegistrationRuntimeV1::Owned(
+                fixed_registration_runtime().map_err(PublisherStartupFailureV1::Runtime)?,
+            ));
+        }
 
         // Check every source/destination before moving any original. Final
         // assembly performs no observation, allocation or fallible continuation.
@@ -415,6 +499,9 @@ impl PublisherStartupAttemptV1 {
                     sessions,
                     scope,
                     runtime,
+                    observation: None,
+                    first_completed_timeout: None,
+            receiving: None,
                     instance: None,
                 });
                 Ok(())
@@ -426,6 +513,27 @@ impl PublisherStartupAttemptV1 {
                 self.runtime = runtime;
                 Err(PublisherStartupFailureV1::Closed)
             }
+        }
+    }
+
+    fn selected_bus_mut(&mut self) -> Option<&mut PublisherBusEnvironmentV1> {
+        let runtime = if let Some(completed) = self.completed.as_mut() {
+            Some(&mut completed.runtime)
+        } else {
+            self.runtime.as_mut()
+        };
+        match runtime {
+            Some(RegistrationRuntimeV1::Shared { bus, .. }) => Some(bus),
+            _ => None,
+        }
+    }
+
+    fn selected_bus(&self) -> Option<&PublisherBusEnvironmentV1> {
+        let runtime = self.completed.as_ref().map(|completed| &completed.runtime)
+            .or(self.runtime.as_ref());
+        match runtime {
+            Some(RegistrationRuntimeV1::Shared { bus, .. }) => Some(bus),
+            _ => None,
         }
     }
 
@@ -445,7 +553,10 @@ impl PublisherStartupAttemptV1 {
                 None => PublisherStartupFailureRefV1::Closed,
             },
             Some(PublisherStartupFailureV1::Scope(cause)) => {
-                PublisherStartupFailureRefV1::Scope(cause)
+                match self.scope_credentials.failure() {
+                    Some(original) => PublisherStartupFailureRefV1::Credential(original),
+                    None => PublisherStartupFailureRefV1::Scope(cause),
+                }
             }
             Some(PublisherStartupFailureV1::Registry(cause)) => {
                 PublisherStartupFailureRefV1::Registry(cause)
@@ -453,6 +564,12 @@ impl PublisherStartupAttemptV1 {
             Some(PublisherStartupFailureV1::Runtime(cause)) => {
                 PublisherStartupFailureRefV1::Runtime(cause)
             }
+            Some(PublisherStartupFailureV1::Environment) => match self.selected_bus()
+                .and_then(PublisherBusEnvironmentV1::failure)
+            {
+                Some(cause) => PublisherStartupFailureRefV1::Credential(cause),
+                None => PublisherStartupFailureRefV1::Closed,
+            },
             Some(PublisherStartupFailureV1::Closed) | None => PublisherStartupFailureRefV1::Closed,
         }
     }
@@ -488,12 +605,51 @@ fn fixed_registration_runtime() -> Result<tokio::runtime::Runtime, std::io::Erro
         .build()
 }
 
+// The selected variant borrows the SAME prepaid main reactor/pool. Its weak
+// worker link carries scheduling state only: no payer or currentness witness.
+enum RegistrationRuntimeV1 {
+    Owned(tokio::runtime::Runtime),
+    Shared {
+        handle: tokio::runtime::Handle,
+        worker: std::sync::Weak<super::resident_custody::ControllerWorkerCustodyV1>,
+        bus: PublisherBusEnvironmentV1,
+    },
+}
+
+impl RegistrationRuntimeV1 {
+    fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        match self {
+            Self::Owned(runtime) => runtime.block_on(future),
+            // Called only by the ordinary reconciler stdthread, never from a
+            // Tokio task or nested async context. Main owns reactor driving.
+            Self::Shared { handle, .. } => handle.block_on(future),
+        }
+    }
+
+    fn ready(&self) -> bool {
+        match self {
+            Self::Owned(_) => true,
+            Self::Shared { worker, .. } => worker.upgrade().is_some_and(|worker| {
+                worker.serving.load(std::sync::atomic::Ordering::Acquire)
+                    && !worker.ended.load(std::sync::atomic::Ordering::Acquire)
+            }),
+        }
+    }
+}
+
+pub(super) fn selected_observation_future_bytes() -> usize {
+    PublisherObservationV1::future_bytes()
+}
+
 /// Owns one live registration slot beside the controller's sole journal writer.
 pub(super) struct PublisherRegistrationOwnerV1 {
     listener: RecordSubjectListener,
     sessions: PublisherSessionRegistry,
     scope: PublisherServiceScopeV1,
-    runtime: tokio::runtime::Runtime,
+    runtime: RegistrationRuntimeV1,
+    observation: Option<PublisherObservationV1>,
+    first_completed_timeout: Option<PublisherObservationV1>,
+    receiving: Option<aos_sandbox::ControllerPublisherReceivingV1>,
     instance: Option<PublisherInstanceId>,
 }
 
@@ -508,19 +664,59 @@ impl PublisherRegistrationOwnerV1 {
     ) -> Result<Self, PublisherIngressError> {
         let sessions = fixed_registration_sessions()
             .map_err(|_| PublisherIngressError::Scope)?;
-        let runtime = fixed_registration_runtime()
+        let runtime = fixed_registration_runtime().map(RegistrationRuntimeV1::Owned)
             .map_err(|_| PublisherIngressError::Execution)?;
         Ok(Self {
             listener,
             sessions,
             scope,
             runtime,
+            observation: None,
+            first_completed_timeout: None,
+            receiving: None,
             instance: None,
         })
     }
 
     pub(super) const fn needs_registration(&self) -> bool {
         self.instance.is_none()
+    }
+
+    pub(super) fn try_register_with_custody(
+        &mut self,
+        controller: &mut ProductionController,
+        bank: Option<&std::sync::Arc<std::sync::Mutex<aos_sandbox::ControllerResourceBankOpeningV1>>>,
+        profile: Option<&std::sync::Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
+    ) -> Result<(), String> {
+        if matches!(self.runtime, RegistrationRuntimeV1::Owned(_)) {
+            return self.try_register(controller);
+        }
+        // First Ready precedes Parent's remaining original posts. Do not
+        // claim even the fixed capacity until Parent has enabled main driving.
+        if !self.runtime.ready() {
+            return Ok(());
+        }
+        let (Some(bank), Some(profile)) = (bank, profile) else {
+            return Err("Publisher original receiving custody unavailable".to_owned());
+        };
+        if self.receiving.is_none() && self.observation.is_none() {
+            let mut original = bank.try_lock()
+                .map_err(|_| "Publisher original bank already borrowed".to_owned())?;
+            if original.prepare_publisher_receiving_once(
+                std::sync::Arc::clone(profile),
+                aos_sandbox::ControllerPublisherStartupDataV1 {
+                    scope: self.scope.scope, uid: self.scope.uid, gid: self.scope.gid,
+                },
+            ).is_err() {
+                // Actual failed receiver/cause stays in the SAME bank opening.
+                return Err("Publisher original receiving capacity refused".to_owned());
+            }
+            self.receiving = original.take_publisher_receiving_once();
+            if self.receiving.is_none() {
+                return Err("Publisher original receiving destination unavailable".to_owned());
+            }
+        }
+        self.try_register(controller)
     }
 
     /// Registers one service execution or one queued challenge; neither grants publication.
@@ -538,7 +734,7 @@ impl PublisherRegistrationOwnerV1 {
             match controller.release_exited_publisher(&mut self.sessions, instance) {
                 Ok(_) => self.instance = None,
                 Err(PublisherControlError::Session(
-                    aos_sandbox::publisher_sessions::PublisherSessionError::ExecutionAlive,
+                    aos_sandbox_publisher::publisher_sessions::PublisherSessionError::ExecutionAlive,
                 )) => return Ok(()),
                 Err(error) => return Err(format!("publisher exit custody failed: {error}")),
             }
@@ -556,12 +752,59 @@ impl PublisherRegistrationOwnerV1 {
             Ok(_) => true,
             Err(error) => return Err(format!("publisher listener polling failed: {error}")),
         };
-        if !ready {
+        if !ready && self.observation.is_none() {
             return Ok(());
         }
-        let service = match self.runtime.block_on(self.scope.observe_execution()) {
-            Ok(service) => service,
-            Err(_) => return Ok(()),
+        if !self.runtime.ready() {
+            return Ok(());
+        }
+        let service = if matches!(self.runtime, RegistrationRuntimeV1::Shared { .. }) {
+            if self.observation.is_none() {
+                let Some(original) = self.receiving.as_mut() else {
+                    return Err("Publisher original receiving owner unavailable".to_owned());
+                };
+                if original.begin_observation_once().is_err() {
+                    // Preserve unsupported effective env or financial refusal
+                    // BEFORE any future Box, connect, AUTH or property RPC.
+                    return Err("Publisher original operation entry refused".to_owned());
+                }
+                let Some(original) = self.receiving.take() else {
+                    return Err("Publisher original operation move refused".to_owned());
+                };
+                self.observation = Some(PublisherObservationV1::new(original));
+            }
+            let Some(observation) = self.observation.as_mut() else {
+                return Err("Publisher observation slot unavailable".to_owned());
+            };
+            observation.advance(&self.runtime, OBSERVATION_TIMEOUT);
+            let Some(original) = observation.take_completion() else {
+                return Ok(());
+            };
+            let completed = self.observation.take();
+            if self.first_completed_timeout.is_none()
+                && completed.as_ref().is_some_and(PublisherObservationV1::timed_out)
+            {
+                self.first_completed_timeout = completed;
+            }
+            // Park the whole Native/financial original BEFORE inspecting any
+            // returned class or transferring its normal registration output.
+            self.receiving = Some(original);
+            let Some(original) = self.receiving.as_mut() else {
+                return Err("Publisher returned original unavailable".to_owned());
+            };
+            if original.failure().is_some() {
+                return Err("Publisher original operation failed with custody retained".to_owned());
+            }
+            match original.take_completed_registration() {
+                Some(Some(service)) => service,
+                Some(None) => return Ok(()),
+                None => return Err("Publisher original operation incomplete".to_owned()),
+            }
+        } else {
+            match self.runtime.block_on(self.scope.observe_execution()) {
+                Ok(service) => service,
+                Err(_) => return Ok(()),
+            }
         };
         let result = controller.register_publisher_execution(
             &mut self.sessions,
@@ -603,7 +846,7 @@ impl PublisherRegistrationOwnerV1 {
         match result {
             Ok(_) => Ok(()),
             Err(PublisherControlError::Session(
-                aos_sandbox::publisher_sessions::PublisherSessionError::Transport(
+                aos_sandbox_publisher::publisher_sessions::PublisherSessionError::Transport(
                     SeqpacketError::WouldBlock | SeqpacketError::Interrupted,
                 ),
             )) => Ok(()),
@@ -611,7 +854,7 @@ impl PublisherRegistrationOwnerV1 {
                 Err(format!("publisher challenge journal failed: {error}"))
             }
             Err(PublisherControlError::Ingress(
-                aos_sandbox::publisher_ingress::PublisherIngressError::Journal(error),
+                aos_sandbox::publisher_admin::audit::PublisherIngressError::Journal(error),
             )) => Err(format!("publisher challenge audit failed: {error}")),
             Err(PublisherControlError::Policy(error)) => {
                 Err(format!("publisher challenge policy state failed: {error}"))

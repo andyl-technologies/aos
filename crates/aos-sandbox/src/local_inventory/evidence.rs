@@ -7,8 +7,8 @@
 
 use aos_sandbox_core::{NodeId, ObjectDigest};
 
-use super::capability::NodeBootLineageV1;
 use super::carrier_authority::CarrierEvidenceGrantV1;
+use aos_sandbox_core::NodeBootLineageV1;
 
 /// Reports malformed authenticated observation context.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

@@ -40,7 +40,7 @@ use crate::semantics::{
     CanonicalStorageSemanticsV1, CatalogBindingV1, MountCatalogBindingV1,
     canonical_acquire_mount_source_semantics_v1, canonical_destination_slot_semantics_v1,
     canonical_host_semantics_v1, canonical_mount_semantics_v1,
-    canonical_release_mount_source_acquisition_semantics_v1, decode_storage_guest_root_response_v1,
+    canonical_release_mount_source_acquisition_semantics_v1, decode_storage_guest_root_response_v2,
 };
 use crate::{
     PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedBrokerError,
@@ -66,12 +66,21 @@ use super::{
 
 /// Bridges live semantic evidence into journal-neutral durable records.
 pub mod checkpoint;
+/// Retains the reached closed Storage terminal comparison without authority.
+pub mod outcome_capture;
+pub mod request_capture;
+use outcome_capture::{AuthenticatedBrokerMethodOutcomeCaptureV1, StorageBodyCaptureV1};
+use aos_sandbox_core::retained::CaptureValueV1;
 mod host;
 mod mount;
 mod network;
 #[cfg(test)]
 mod no_apply_tests;
 mod storage;
+#[cfg(test)]
+mod storage_capture_tests;
+#[cfg(test)]
+mod delete_inventory_cut_tests;
 
 use host::{validate_runtime_inventory, validate_runtime_observation};
 use mount::validate_destination_slot_apply_response;
@@ -247,6 +256,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     MountPrepareCatalog,
     /// Mount destination-slot effect.
     MountApplyDestinationSlot,
+    /// Mount's exact no-slot namespace-anchor effect.
+    MountApplyAttachmentAnchorV1,
     /// Mount destination-slot inventory.
     MountInventoryDestinationSlots,
     /// Host catalog publication.
@@ -265,14 +276,22 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostObserveStorageOutput,
     /// Signed, one-shot Controller attempt for a fresh Host-owned Guest readback.
     HostObserveExecutionArgument,
+    /// Non-consuming preparation bound to the actual retained Agent and Session.
+    HostPrepareExecutionArgumentV2,
+    /// Predurable availability and accepted binding on the same paid Host owner.
+    HostPrepareExecutionAvailabilityV2,
+    /// Predurable availability and accepted binding on the same paid Storage owner.
+    StoragePrepareExecutionAvailabilityV2,
+    /// Exact native acceptance before the one-shot Guest observation.
+    HostAcceptExecutionArgumentV2,
     /// Read-only historical query of the original Host argument attempt.
     HostQueryExecutionArgument,
     /// Mutating Host terminal settlement before execution Apply.
     HostTerminalNoApply,
     /// Read-only historical Host no-Apply marker query.
     HostQueryNoApply,
-    /// Signed preliminary Host settlement coordinate; no Controller CAS authority.
-    HostSettleNoApplyPreliminary,
+    /// Signed finite Host settlement command; no detached Controller CAS authority.
+    HostSettleNoApplyV2,
     /// Read-only signed Host settlement history query.
     HostQueryNoApplySettlement,
     /// Read-only Storage capture candidate; issuer and signed outcome are closed.
@@ -281,6 +300,10 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     StorageReserveExecutionOutput,
     /// Historical original logical output registration query.
     StorageQueryExecutionOutput,
+    /// Separately signed physical capture; no logical-output grant substitutes it.
+    StorageReserveExecutionCapture,
+    /// Fresh read-only query of the original physical capture attempt.
+    StorageQueryExecutionCapture,
     /// Host OpenSSH forced-command installation and signed readback.
     HostInstallAttachGate,
     /// Advisory current Host OpenSSH gate readiness.
@@ -403,7 +426,8 @@ pub const fn authenticated_broker_method_adapter_v1(
         BrokerMethod::BROKER_METHOD_STORAGE_APPLY => {
             AuthenticatedBrokerMethodSemanticsV1::StorageApply
         }
-        BrokerMethod::BROKER_METHOD_NETWORK_APPLY => {
+        BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+        | BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2 => {
             AuthenticatedBrokerMethodSemanticsV1::NetworkApply
         }
         BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY => {
@@ -429,6 +453,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT => {
             AuthenticatedBrokerMethodSemanticsV1::MountApplyDestinationSlot
+        }
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1 => {
+            AuthenticatedBrokerMethodSemanticsV1::MountApplyAttachmentAnchorV1
         }
         BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS => {
             AuthenticatedBrokerMethodSemanticsV1::MountInventoryDestinationSlots
@@ -456,6 +483,18 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
             AuthenticatedBrokerMethodSemanticsV1::HostObserveExecutionArgument
+        }
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2 => {
+            AuthenticatedBrokerMethodSemanticsV1::HostPrepareExecutionArgumentV2
+        }
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2 => {
+            AuthenticatedBrokerMethodSemanticsV1::HostPrepareExecutionAvailabilityV2
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2 => {
+            AuthenticatedBrokerMethodSemanticsV1::StoragePrepareExecutionAvailabilityV2
+        }
+        BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2 => {
+            AuthenticatedBrokerMethodSemanticsV1::HostAcceptExecutionArgumentV2
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
             AuthenticatedBrokerMethodSemanticsV1::HostQueryExecutionArgument
@@ -515,7 +554,7 @@ pub const fn authenticated_broker_method_adapter_v1(
             AuthenticatedBrokerMethodSemanticsV1::StoragePopulateGuestRoot
         }
         BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 => {
-            AuthenticatedBrokerMethodSemanticsV1::HostSettleNoApplyPreliminary
+            AuthenticatedBrokerMethodSemanticsV1::HostSettleNoApplyV2
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
             AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApplySettlement
@@ -528,6 +567,12 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT => {
             AuthenticatedBrokerMethodSemanticsV1::StorageQueryExecutionOutput
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1 => {
+            AuthenticatedBrokerMethodSemanticsV1::StorageReserveExecutionCapture
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1 => {
+            AuthenticatedBrokerMethodSemanticsV1::StorageQueryExecutionCapture
         }
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
@@ -588,6 +633,54 @@ impl AuthenticatedBrokerMethodRequestV1 {
         &self.exact_body
     }
 
+    /// Borrows the sole canonical availability context from this signed request.
+    ///
+    /// This avoids decoding or copying its proposal during native completion.
+    /// The context is DATA and supplies no paid receiver or current lease.
+    #[must_use]
+    pub fn execution_availability_data_v2(&self)
+        -> Option<&crate::execution_availability::ValidatedExecutionAvailabilityRequestV2>
+    {
+        if !matches!(self.method,
+            BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2
+                | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2)
+        { return None; }
+        match &self.outcome_context {
+            RequestOutcomeContextV1::ExecutionAvailabilityV2(original) => Some(original),
+            _ => None,
+        }
+    }
+
+    /// Borrows the canonical held42 command without reconstructing its owner.
+    #[must_use]
+    pub fn host_held_no_apply_settlement_data_v2(&self)
+        -> Option<&crate::host_execution_no_apply::held_settlement_transport::ValidatedHostHeldNoApplySettlementRequestV2>
+    {
+        if self.method != BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 {
+            return None;
+        }
+        match &self.outcome_context {
+            RequestOutcomeContextV1::HostHeldNoApplySettlementV2(original) => Some(original),
+            _ => None,
+        }
+    }
+
+    /// Borrows the exact closed43 current-lease query from this signed request.
+    ///
+    /// Its comparison and Root nonce are DATA, never a retained native owner.
+    #[must_use]
+    pub fn host_no_apply_current_lease_query_data_v2(&self)
+        -> Option<&crate::host_execution_no_apply::current_lease_transport::ValidatedHostNoApplyCurrentLeaseQueryV2>
+    {
+        if self.method != BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 {
+            return None;
+        }
+        match &self.outcome_context {
+            RequestOutcomeContextV1::HostNoApplyCurrentLeaseQueryV2(query) => Some(query),
+            _ => None,
+        }
+    }
+
     /// Returns the method-separated semantic commitment.
     #[must_use]
     pub const fn semantic_commitment(&self) -> [u8; 32] {
@@ -624,6 +717,31 @@ impl AuthenticatedBrokerMethodRequestV1 {
         self.session_binding
     }
 
+    /// Borrows the canonical Host Query selector already retained by this request.
+    ///
+    /// This is parsed authenticated Session DATA; actual Host native admission,
+    /// currentness and fresh read-clock checks remain independently required.
+    #[must_use]
+    pub fn host_execution_query_data_v3(&self) -> Option<&crate::host_execution::ValidatedHostExecutionQueryV1> {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::HostExecutionQuery(query) => Some(query),
+            _ => None,
+        }
+    }
+
+    /// Borrows the exact parsed early no-Apply branch from this signed request.
+    ///
+    /// This is Session DATA. The actual HostState grant admission, paid native
+    /// owner and same protected runtime lock remain separately required.
+    pub fn host_before_argument_no_apply_data_v2(&self)
+        -> Option<&crate::host_execution_no_apply::ValidatedHostBeforeArgumentNoApplyRequestV2> {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::HostBeforeArgumentNoApply(request)
+                | RequestOutcomeContextV1::HostBeforeArgumentNoApplyQuery(request) => Some(request),
+            _ => None,
+        }
+    }
+
     /// Returns the exact request ID.
     #[must_use]
     pub const fn request_id(&self) -> [u8; 16] {
@@ -654,6 +772,149 @@ impl AuthenticatedBrokerMethodRequestV1 {
         &self,
     ) -> Option<&crate::session::ValidatedUntrustedAuthorizationArtifacts> {
         self.envelope.authorization()
+    }
+
+    /// Borrows the original strictly decoded Create Prepare meaning as DATA.
+    ///
+    /// This shares the retained request context without decoding a second
+    /// body or constructing a peer. The later Apply issuer must independently
+    /// join the actual completed C9, original intake, currentness and new grant;
+    /// neither this observation nor the old Prepare plan authorizes Apply.
+    #[must_use]
+    pub fn storage_create_preparation_data_v1(
+        &self,
+    ) -> Option<&CanonicalStoragePreparationSemanticsV1> {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::StoragePrepare(original)
+                if self.method == BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+                    && matches!(original.operation(),
+                        crate::semantics::StoragePreparationOperationV1::CreateWorkspace { .. }) =>
+                Some(original),
+            _ => None,
+        }
+    }
+
+    /// Borrows the same admitted Apply request's canonical semantics as DATA.
+    ///
+    /// This has no Session, native workspace, publication or Root authority.
+    #[must_use]
+    pub fn storage_apply_data_v1(&self) -> Option<&CanonicalStorageSemanticsV1> {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::StorageApply(value) if self.method == BrokerMethod::BROKER_METHOD_STORAGE_APPLY => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Borrows the same admitted method31 canonical semantics as DATA.
+    ///
+    /// The original peer/header decoder owns this model. Native workspace,
+    /// current-publication, lease and Root authority remain separate lenders.
+    #[must_use]
+    pub fn storage_guest_root_data_v2(&self) -> Option<&CanonicalStorageGuestRootSemanticsV1> {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::StorageGuestRoot(value)
+                if self.method == BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Borrows the sole admitted Host catalog request context as comparison DATA.
+    ///
+    /// The protected request decoder already validated its Header, peer,
+    /// descriptor roles and exact body. This view supplies no publication,
+    /// currentness, native receipt or activation authority.
+    #[must_use]
+    pub fn host_catalog_publication_data_v2(&self)
+        -> Option<&crate::host_catalog::ValidatedHostCatalogPublication> {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::HostPublishCatalog(original)
+                if self.method == BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => Some(original),
+            _ => None,
+        }
+    }
+
+    /// Borrows the actual admitted version-two preparation semantics as DATA.
+    ///
+    /// The retained descriptor, native receiving loan, signed domain admission
+    /// and protected reservation remain independent requirements. Lifecycle
+    /// method nine cannot lend a preparation context through this selector.
+    #[must_use]
+    pub fn network_preparation_data_v2(&self) -> Option<&CanonicalNetworkSemanticsV1> {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::NetworkApply(original)
+                if self.method == BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2
+                    && original.preparation_content_reference_v2().is_some() => Some(original),
+            _ => None,
+        }
+    }
+
+    /// Borrows only authenticated lifecycle Destroy9 semantics as DATA.
+    ///
+    /// Signed domain admission, the actual enrolled Source/F loan, native
+    /// worker custody and every physical frontier remain independent gates.
+    /// Prepare63 and other lifecycle actions cannot use this selector.
+    #[must_use]
+    pub fn network_destroy_data_v4(&self) -> Option<&CanonicalNetworkSemanticsV1> {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::NetworkApply(original)
+                if self.method == BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+                    && matches!(original.operation(),
+                        crate::semantics::network::NetworkOperation::Destroy { .. }) => Some(original),
+            _ => None,
+        }
+    }
+
+    /// Borrows the sole admitted Mount62 request context as comparison DATA.
+    ///
+    /// This lends no namespace, native receipt, currentness or execution grant.
+    #[must_use]
+    pub fn mount_attachment_anchor_data_v2(&self)
+        -> Option<&crate::mount_attachment_anchor::ValidatedAttachmentAnchorRequestV1> {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::MountAttachmentAnchorV1(original)
+                if self.method == BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1 => Some(original),
+            _ => None,
+        }
+    }
+
+    /// Borrows the whole explicitly versioned ongoing Capture source DATA.
+    ///
+    /// Actual native admission
+    /// must verify the same signed request and keep its original lifetime owner.
+    #[must_use]
+    pub fn storage_execution_capture_source_ongoing_v2(&self)
+        -> Option<&crate::storage_capture_grant::StorageCaptureGrantSourceV2>
+    {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::StorageCaptureReserve(request) => request.ongoing_source_v2(),
+            RequestOutcomeContextV1::StorageCaptureQuery(request) => request.ongoing_source_v2(),
+            _ => None,
+        }
+    }
+
+
+    /// Borrows the crosslinked original registration body on physical Reserve only.
+    /// Historical bytes are comparison DATA; signatures and physical custody
+    /// remain obligations of the actual Storage receiver.
+    #[must_use]
+    pub fn storage_execution_capture_original_output_request_v2(&self) -> Option<&[u8]> {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::StorageCaptureReserve(request) =>
+                Some(request.canonical_original_storage_output_request_v2()),
+            _ => None,
+        }
+    }
+
+    /// Borrows the same already-decoded historical registration records.
+    #[must_use]
+    pub fn storage_execution_capture_output_records_v2(&self)
+        -> Option<&crate::storage_output_reserve::StorageOutputReserveRecordsV1>
+    {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::StorageCaptureReserve(request) =>
+                Some(request.original_output_records_v2()),
+            _ => None,
+        }
     }
 
     /// Returns the digest of the complete signed ClientRecord artifact.
@@ -728,6 +989,25 @@ impl AuthenticatedHostNoApplyReadbackV1<'_> {
     pub const fn outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
         self.outcome
     }
+}
+
+/// Borrows the exact signed Host outcome with its explicit no-Apply variant.
+///
+/// Neither variant supplies a live settlement lease, Root floor or Controller
+/// terminal permission. Original authenticated archives remain separately held.
+pub struct AuthenticatedHostNoApplyReadbackV2<'outcome> {
+    outcome: &'outcome AuthenticatedBrokerMethodOutcomeV1,
+    record: crate::host_execution_no_apply::HostExecutionNoApplyRecordV2,
+}
+
+impl AuthenticatedHostNoApplyReadbackV2<'_> {
+    /// Borrows the exact structurally and cryptographically matched variant.
+    pub const fn record(&self) -> &crate::host_execution_no_apply::HostExecutionNoApplyRecordV2 {
+        &self.record
+    }
+
+    /// Borrows the complete authenticated signed request and outcome archive.
+    pub const fn outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 { self.outcome }
 }
 
 impl AuthenticatedBrokerMethodOutcomeV1 {
@@ -844,6 +1124,33 @@ impl AuthenticatedBrokerMethodOutcomeV1 {
         }))
     }
 
+    /// Reads either exact no-Apply branch from its signed client outcome.
+    ///
+    /// An error outcome or explicit historical absence returns None. A closed
+    /// before-argument record preserves its distinct source and terminal archive;
+    /// no absent original argument fields are synthesized for the V1 API.
+    ///
+    /// # Errors
+    /// Rejects changed signed direction, method, semantic commitment, source,
+    /// terminal Session identity or canonical variant.
+    pub fn recorded_host_no_apply_v2(&self)
+        -> Result<Option<AuthenticatedHostNoApplyReadbackV2<'_>>, AuthenticatedBrokerMethodErrorV1> {
+        if !matches!(self.method, BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY) { return Ok(None); }
+        if self.direction != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+            || self.request.direction != AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || self.method != self.request.method
+        { return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink); }
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, semantic_commitment, .. } = &self.result
+        else { return Ok(None); };
+        if *semantic_commitment != method_digest(OUTCOME_SEMANTIC_DOMAIN, self.method, exact_body) {
+            return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+        }
+        let record = decode_recorded_host_no_apply_v2(self.method, &self.request.outcome_context,
+            exact_body, self.request.session_binding, self.request.signed_request_digest)?;
+        Ok(record.map(|record| AuthenticatedHostNoApplyReadbackV2 { outcome: self, record }))
+    }
+
     /// Reads exact Host settlement history from a signed method-43 outcome.
     ///
     /// A matching history is protected Host custody, not a live lease or
@@ -860,6 +1167,9 @@ impl AuthenticatedBrokerMethodOutcomeV1 {
         AuthenticatedBrokerMethodErrorV1,
     > {
         if self.method != BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 {
+            return Ok(None);
+        }
+        if matches!(self.request.outcome_context, RequestOutcomeContextV1::HostNoApplyCurrentLeaseQueryV2(_)) {
             return Ok(None);
         }
         if self.direction != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
@@ -889,6 +1199,66 @@ impl AuthenticatedBrokerMethodOutcomeV1 {
         )
         .map(Some)
         .map_err(Into::into)
+    }
+
+    /// Reads lease DATA from the exact authenticated held42 response.
+    ///
+    /// This validates comparison DATA only; it cannot reconstruct the native
+    /// Host owner or authorize a Controller append or positive disposal.
+    ///
+    /// # Errors
+    /// Rejects changed direction, canonical context, semantic commitment,
+    /// terminal, current request or immutable native lease coordinates.
+    pub fn recorded_host_held_no_apply_lease_v2(&self)
+        -> Result<Option<crate::host_execution_no_apply::current_lease::CurrentHostNoApplyLeaseDataV2>, AuthenticatedBrokerMethodErrorV1>
+    {
+        let Some(original) = self.request.host_held_no_apply_settlement_data_v2() else {
+            return Ok(None);
+        };
+        if self.direction != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+            || self.request.direction != AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || self.method != self.request.method
+        { return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink); }
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, semantic_commitment, .. } = &self.result
+        else { return Ok(None); };
+        if *semantic_commitment != method_digest(OUTCOME_SEMANTIC_DOMAIN, self.method, exact_body) {
+            return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+        }
+        crate::host_execution_no_apply::held_settlement_transport::decode_host_held_no_apply_settlement_response_v2(
+            exact_body, original, self.request.session_binding, self.request.signed_request_digest,
+        ).map(Some).map_err(Into::into)
+    }
+
+    /// Reads current lease DATA from an actual authenticated closed43 outcome.
+    ///
+    /// This joins the fresh Root read nonce through the exact signed request.
+    /// Native retained custody and Root's own paid nonce remain separate checks.
+    ///
+    /// # Errors
+    /// Rejects changed direction, semantic commitment, Session/request identity,
+    /// native interval, original terminal, cuts/head/epoch or observed deadline.
+    pub fn recorded_host_no_apply_current_lease_v2(&self)
+        -> Result<Option<crate::host_execution_no_apply::current_lease::CurrentHostNoApplyLeaseDataV2>, AuthenticatedBrokerMethodErrorV1>
+    {
+        if self.method != BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 {
+            return Ok(None);
+        }
+        let Some(original) = self.request.host_no_apply_current_lease_query_data_v2() else {
+            return Ok(None);
+        };
+        if self.direction != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+            || self.request.direction != AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || self.method != self.request.method
+        { return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink); }
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, semantic_commitment, .. } = &self.result else {
+            return Ok(None);
+        };
+        if *semantic_commitment != method_digest(OUTCOME_SEMANTIC_DOMAIN, self.method, exact_body) {
+            return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+        }
+        crate::host_execution_no_apply::current_lease_transport::decode_host_no_apply_current_lease_response_v2(
+            exact_body, original, self.request.session_binding(), self.request.signed_request_digest(),
+        ).map(Some).map_err(Into::into)
     }
 }
 
@@ -978,20 +1348,76 @@ fn admit_authenticated_broker_method_request_v1(
     bindings: AuthenticatedBrokerSemanticBindingsV1,
     context: &ProtectedBrokerSessionVerificationContextV1,
 ) -> Result<AuthenticatedBrokerMethodRequestAdmissionV1, AuthenticatedBrokerMethodErrorV1> {
-    let canonical = decode_canonical_request_v1(bytes).map_err(BrokerSessionSequenceError::from)?;
+    admit_authenticated_broker_method_request_engine(direction, traffic, bytes, retained_replay,
+        actual_descriptor_count, peer, policy, now_boottime_nanoseconds, bindings, context, None)
+}
+
+fn admit_authenticated_broker_method_request_engine(
+    direction: AuthenticatedBrokerRequestDirectionV1,
+    traffic: &BrokerSessionTrafficStateV1,
+    bytes: &[u8],
+    retained_replay: Option<&AuthenticatedBrokerMethodRequestV1>,
+    actual_descriptor_count: usize,
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+    bindings: AuthenticatedBrokerSemanticBindingsV1,
+    context: &ProtectedBrokerSessionVerificationContextV1,
+    capture: Option<&mut request_capture::AuthenticatedBrokerMethodRequestCaptureV1>,
+) -> Result<AuthenticatedBrokerMethodRequestAdmissionV1, AuthenticatedBrokerMethodErrorV1> {
+    let selected = capture.is_some();
+    let (canonical_decode, canonical_slot, raw_slot, envelope_slot, body_slot, admission_capture, admission_slot, replay_slot, authorization_slot, semantic_slot) =
+        match capture {
+            Some(capture) => (Some(&mut capture.canonical_decode), Some(&mut capture.canonical),
+                Some(&mut capture.raw_envelope), Some(&mut capture.envelope), Some(&mut capture.body),
+                Some(&mut capture.traffic), Some(&mut capture.admission), Some(&mut capture.replay),
+                Some(&mut capture.authorization), Some(&mut capture.semantic)),
+            None => (None, None, None, None, None, None, None, None, None, None),
+        };
+    let canonical = match canonical_decode {
+        Some(capture) => {
+            aos_sandbox_broker_session_protocol::projection::decode_canonical_request_retaining_v1(bytes, capture)
+                .map_err(BrokerSessionSequenceError::from)?;
+            capture.take_model_once().map_err(BrokerSessionSequenceError::from)?
+        }
+        None => decode_canonical_request_v1(bytes).map_err(BrokerSessionSequenceError::from)?,
+    };
+    let canonical = CaptureValueV1::new(Some(canonical), canonical_slot);
+    let canonical = canonical.as_ref().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?;
     let method = canonical.signed_artifact().method();
     let adapter = authenticated_broker_method_adapter_v1(method)
         .ok_or(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod)?;
     let profile = adapter.profile();
+    if canonical.message().method.as_known() != Some(method) || profile.method() != method {
+        return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+    }
     if actual_descriptor_count != profile.request_descriptor_roles().len() {
         return Err(ProtocolValidationError::DescriptorTableMismatch.into());
     }
-    let envelope = validate_decoded_request_envelope(
+    // Both selected request profiles have no descriptors. Inventory forbids
+    // authorization; Prepare keeps the ordinary required-artifact checks and
+    // runs the same four Core validators into actual retained destinations.
+    if selected && (!matches!(method,
+        BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+            | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+            | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+            | BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2
+            | BrokerMethod::BROKER_METHOD_NETWORK_APPLY)
+        || (method == BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+            && canonical.message().authorization.as_option().is_some())) {
+        return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
+    }
+    if selected && !canonical.message().descriptors.is_empty() {
+        return Err(ProtocolValidationError::DescriptorTableMismatch.into());
+    }
+    let envelope = crate::session::validate_authenticated_request_envelope_retaining_authorization_engine(
         canonical.message().clone(),
         protocol_id_for_profile(profile.protocol()),
-        actual_descriptor_count,
+        actual_descriptor_count, raw_slot, authorization_slot,
     )?;
-    validate_request_against_profile(&envelope, &profile)?;
+    let envelope = CaptureValueV1::new(Some(envelope), envelope_slot);
+    let envelope_ref = envelope.as_ref().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?;
+    validate_request_against_profile(envelope_ref, &profile)?;
 
     // A byte-exact request retained by the protected owner is classified by
     // the authenticated traffic state before any live deadline check. The
@@ -1002,23 +1428,22 @@ fn admit_authenticated_broker_method_request_v1(
             && retained.direction() == direction
             && retained.method() == method
             && retained.semantics() == adapter.semantics()
-            && retained.exact_body() == envelope.body()
+            && retained.exact_body() == envelope_ref.body()
             && retained.peer() == peer
             && retained.peer_policy() == policy
             && retained.session_binding() == traffic.transcript().session_binding()
     }) {
-        let admission = traffic.admit_request(
-            &canonical,
-            retained.request_id(),
-            retained.maximum_response_bytes(),
-            context,
-        )?;
-        return match admission {
+        let admission = request_capture::traffic_admission_value(traffic, canonical,
+            retained.request_id(), retained.maximum_response_bytes(), context, admission_capture)?;
+        let admission = CaptureValueV1::new(Some(admission), admission_slot);
+        return match admission.as_ref().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)? {
             BrokerRequestAdmissionV1::ExactReplay(replay) => {
-                validate_exact_authenticated_request_replay_v1(&replay, retained, bytes)?;
-                Ok(AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(
-                    replay,
-                ))
+                validate_exact_authenticated_request_replay_v1(replay, retained, bytes)?;
+                match admission.take().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)? {
+                    BrokerRequestAdmissionV1::ExactReplay(replay) =>
+                        Ok(AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(replay)),
+                    BrokerRequestAdmissionV1::New { .. } => Err(AuthenticatedBrokerMethodErrorV1::ReplayEquivocation),
+                }
             }
             BrokerRequestAdmissionV1::New { .. } => {
                 Err(AuthenticatedBrokerMethodErrorV1::ReplayEquivocation)
@@ -1026,10 +1451,10 @@ fn admit_authenticated_broker_method_request_v1(
         };
     }
 
-    let semantic = validate_request_semantics(
+    let semantic = validate_request_semantics_engine(
         method,
-        envelope.body(),
-        envelope
+        envelope_ref.body(),
+        envelope_ref
             .descriptors()
             .iter()
             .map(|entry| entry.role())
@@ -1038,56 +1463,59 @@ fn admit_authenticated_broker_method_request_v1(
         peer,
         policy,
         now_boottime_nanoseconds,
-        bindings,
+        bindings, body_slot,
     )?;
-    if semantic.kind != adapter.semantics() {
+    let semantic = CaptureValueV1::new(Some(semantic), semantic_slot);
+    let semantic_ref = semantic.as_ref().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?;
+    if semantic_ref.kind != adapter.semantics() {
         return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
     }
-    validate_header_profile(&semantic.header, &profile, traffic)?;
+    validate_header_profile(&semantic_ref.header, &profile, traffic)?;
 
-    let admission = traffic.admit_request(
-        &canonical,
-        *semantic.header.request_id(),
-        semantic.header.maximum_response_bytes(),
-        context,
-    )?;
-    match admission {
+    let admission = request_capture::traffic_admission_value(traffic, canonical,
+        *semantic_ref.header.request_id(), semantic_ref.header.maximum_response_bytes(), context, admission_capture)?;
+    let admission = CaptureValueV1::new(Some(admission), admission_slot);
+    match admission.take().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)? {
         BrokerRequestAdmissionV1::New {
             request,
             next_state,
-        } => Ok(AuthenticatedBrokerMethodRequestAdmissionV1::New {
-            request: AuthenticatedBrokerMethodRequestV1 {
-                direction,
-                method,
-                semantics: semantic.kind,
-                canonical_packet: bytes.to_vec(),
-                exact_body: envelope.body().to_vec(),
-                semantic_commitment: semantic.commitment,
-                catalog_binding: semantic.catalog_binding,
-                published_catalog_binding: semantic.published_catalog_binding,
-                peer,
-                peer_policy: policy,
-                session_binding: traffic.transcript().session_binding(),
-                request_id: request.request_id(),
-                client_sequence: request.sequence(),
-                maximum_response_bytes: semantic.header.maximum_response_bytes(),
-                deadline_boottime_nanoseconds: semantic.header.deadline_boottime_nanoseconds(),
-                signed_request_digest: request.signed_request_digest(),
-                envelope,
-                outcome_context: semantic.outcome_context,
-            },
-            next_traffic: next_state,
-        }),
+        } => {
+            let semantic = semantic.take().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?;
+            Ok(AuthenticatedBrokerMethodRequestAdmissionV1::New {
+                request: AuthenticatedBrokerMethodRequestV1 {
+                    direction,
+                    method,
+                    semantics: semantic.kind,
+                    canonical_packet: bytes.to_vec(),
+                    exact_body: envelope_ref.body().to_vec(),
+                    semantic_commitment: semantic.commitment,
+                    catalog_binding: semantic.catalog_binding,
+                    published_catalog_binding: semantic.published_catalog_binding,
+                    peer,
+                    peer_policy: policy,
+                    session_binding: traffic.transcript().session_binding(),
+                    request_id: request.request_id(),
+                    client_sequence: request.sequence(),
+                    maximum_response_bytes: semantic.header.maximum_response_bytes(),
+                    deadline_boottime_nanoseconds: semantic.header.deadline_boottime_nanoseconds(),
+                    signed_request_digest: request.signed_request_digest(),
+                    envelope: envelope.take().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?,
+                    outcome_context: semantic.outcome_context,
+                },
+                next_traffic: next_state,
+            })
+        },
         BrokerRequestAdmissionV1::ExactReplay(replay) => {
+            let replay = CaptureValueV1::new(Some(replay), replay_slot);
             let retained =
                 retained_replay.ok_or(AuthenticatedBrokerMethodErrorV1::ReplayEquivocation)?;
             if retained.direction() != direction {
                 return Err(AuthenticatedBrokerMethodErrorV1::ReplayEquivocation);
             }
-            validate_exact_authenticated_request_replay_v1(&replay, retained, bytes)?;
-            Ok(AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(
-                replay,
-            ))
+            validate_exact_authenticated_request_replay_v1(replay.as_ref()
+                .ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?, retained, bytes)?;
+            Ok(AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(replay.take()
+                .ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?))
         }
     }
 }
@@ -1172,6 +1600,21 @@ fn admit_authenticated_broker_method_outcome_v1(
     actual_descriptor_count: usize,
     context: &ProtectedBrokerSessionVerificationContextV1,
 ) -> Result<AuthenticatedBrokerMethodOutcomeAdmissionV1, AuthenticatedBrokerMethodErrorV1> {
+    admit_authenticated_broker_method_outcome_engine(
+        direction, traffic, request, bytes, retained_replay, actual_descriptor_count, context, None,
+    )
+}
+
+fn admit_authenticated_broker_method_outcome_engine(
+    direction: AuthenticatedBrokerOutcomeDirectionV1,
+    traffic: &BrokerSessionTrafficStateV1,
+    request: &AuthenticatedBrokerMethodRequestV1,
+    bytes: &[u8],
+    retained_replay: Option<&AuthenticatedBrokerMethodOutcomeV1>,
+    actual_descriptor_count: usize,
+    context: &ProtectedBrokerSessionVerificationContextV1,
+    capture: Option<&mut AuthenticatedBrokerMethodOutcomeCaptureV1>,
+) -> Result<AuthenticatedBrokerMethodOutcomeAdmissionV1, AuthenticatedBrokerMethodErrorV1> {
     let matching_request_direction = match direction {
         AuthenticatedBrokerOutcomeDirectionV1::ServerSend => {
             AuthenticatedBrokerRequestDirectionV1::ServerReceive
@@ -1187,28 +1630,59 @@ fn admit_authenticated_broker_method_outcome_v1(
     }
     let profile = authenticated_broker_method_profile_v1(request.method())
         .ok_or(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod)?;
-    let admission = traffic.decode_and_admit_outcome(bytes, context)?;
-    let canonical =
-        decode_canonical_response_v1(bytes).map_err(BrokerSessionSequenceError::from)?;
+    let (packet, admission_slot, canonical_decode, canonical_slot, envelope_capture, envelope_slot, bodies, verified_slot, next_slot, replay_slot) = match capture {
+        Some(capture) => (
+            Some(&mut capture.packet), Some(&mut capture.traffic_admission),
+            Some(&mut capture.canonical_decode), Some(&mut capture.canonical),
+            Some(&mut capture.envelope_partial), Some(&mut capture.envelope), Some(&mut capture.bodies),
+            Some(&mut capture.verified_outcome), Some(&mut capture.next_traffic), Some(&mut capture.replay),
+        ),
+        None => (None, None, None, None, None, None, None, None, None, None),
+    };
+    let admission = match packet {
+        Some(packet) => {
+            traffic.decode_and_admit_outcome_retaining_v1(bytes, context, packet)?;
+            packet.take_admission_once()?
+        }
+        None => traffic.decode_and_admit_outcome(bytes, context)?,
+    };
+    let admission = CaptureValueV1::new(Some(admission), admission_slot);
+    let canonical = match canonical_decode {
+        Some(capture) => {
+            aos_sandbox_broker_session_protocol::projection::decode_canonical_response_retaining_v1(bytes, capture)
+                .map_err(BrokerSessionSequenceError::from)?;
+            capture.take_model_once().map_err(BrokerSessionSequenceError::from)?
+        }
+        None => decode_canonical_response_v1(bytes).map_err(BrokerSessionSequenceError::from)?,
+    };
+    let canonical = CaptureValueV1::new(Some(canonical), canonical_slot);
+    let canonical = canonical.as_ref().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?;
 
-    match admission {
-        BrokerOutcomeAdmissionV1::New {
-            outcome,
-            next_state,
-        } => {
-            let envelope = validate_decoded_response_envelope(
+    match admission.take().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)? {
+        BrokerOutcomeAdmissionV1::New { outcome, next_state } => {
+            // Ordinary locals retain their original arm-local drop interval.
+            // Selected values park both actual admission pieces before the
+            // first envelope/profile/body fallible operation.
+            let outcome = CaptureValueV1::new(Some(outcome), verified_slot);
+            let next_state = CaptureValueV1::new(Some(next_state), next_slot);
+            let envelope = crate::session::validate_decoded_response_envelope_engine(
                 canonical.message().clone(),
                 &request.request_id(),
                 request.method(),
                 request.envelope.descriptors(),
                 actual_descriptor_count,
+                envelope_capture,
             )?;
-            validate_outcome_against_profile(&envelope, &profile)?;
+            let envelope = CaptureValueV1::new(Some(envelope), envelope_slot);
+            let envelope = envelope.as_ref().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?;
+            validate_outcome_against_profile(envelope, &profile)?;
             let result = if let Some(error) = envelope.error() {
                 AuthenticatedBrokerMethodResultV1::Error(error.clone())
             } else {
-                let filesystem_worker_qualification_commitment =
-                    validate_success_semantics(request, envelope.body())?;
+                let filesystem_worker_qualification_commitment = match bodies {
+                    Some(bodies) => bodies.validate_once(request, envelope.body())?,
+                    None => validate_success_semantics(request, envelope.body())?,
+                };
                 AuthenticatedBrokerMethodResultV1::Success {
                     exact_body: envelope.body().to_vec(),
                     semantic_commitment: method_digest(
@@ -1219,27 +1693,33 @@ fn admit_authenticated_broker_method_outcome_v1(
                     filesystem_worker_qualification_commitment,
                 }
             };
+            let broker_sequence = outcome.as_ref()
+                .ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?.sequence();
+            let next_state = next_state.take()
+                .ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?;
             Ok(AuthenticatedBrokerMethodOutcomeAdmissionV1::New {
                 outcome: AuthenticatedBrokerMethodOutcomeV1 {
                     direction,
                     method: request.method(),
                     canonical_packet: bytes.to_vec(),
                     request: request.clone(),
-                    broker_sequence: outcome.sequence(),
+                    broker_sequence,
                     result,
                 },
                 next_traffic: next_state,
             })
         }
         BrokerOutcomeAdmissionV1::ExactReplay(replay) => {
+            let replay = CaptureValueV1::new(Some(replay), replay_slot);
+            let observed = replay.as_ref().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?;
             let retained =
                 retained_replay.ok_or(AuthenticatedBrokerMethodErrorV1::ReplayEquivocation)?;
             if retained.direction() != direction {
                 return Err(AuthenticatedBrokerMethodErrorV1::ReplayEquivocation);
             }
-            validate_exact_authenticated_outcome_replay_v1(&replay, retained, bytes)?;
+            validate_exact_authenticated_outcome_replay_v1(observed, retained, bytes)?;
             Ok(AuthenticatedBrokerMethodOutcomeAdmissionV1::ExactReplay(
-                replay,
+                replay.take().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?,
             ))
         }
     }
@@ -1326,8 +1806,11 @@ enum RequestOutcomeContextV1 {
     StorageGuestRoot(CanonicalStorageGuestRootSemanticsV1),
     StorageOutputReserve(crate::storage_output_reserve::ValidatedStorageOutputReserveRequestV1),
     StorageOutputQuery(crate::storage_output_reserve::ValidatedStorageOutputQueryRequestV1),
+    StorageCaptureReserve(crate::storage_capture_grant::ValidatedStorageCaptureReserveRequestV1),
+    StorageCaptureQuery(crate::storage_capture_grant::ValidatedStorageCaptureQueryRequestV1),
     MountPrepareCatalog(crate::mount_catalog::ValidatedMountCatalogPreparation),
     MountDestinationSlot(crate::ValidatedDestinationSlotRequest),
+    MountAttachmentAnchorV1(crate::mount_attachment_anchor::ValidatedAttachmentAnchorRequestV1),
     HostPublishCatalog(crate::host_catalog::ValidatedHostCatalogPublication),
     HostExecutionApply(crate::ValidatedHostExecutionApplyV1),
     HostExecutionQuery(crate::ValidatedHostExecutionQueryV1),
@@ -1337,12 +1820,21 @@ enum RequestOutcomeContextV1 {
         crate::host_storage_output_readback::ValidatedHostStorageOutputReadbackRequestV1,
     ),
     HostArgumentObserve(crate::host_execution_argument::ValidatedHostExecutionArgumentRequestV1),
+    HostArgumentPrepareV2(crate::host_execution_argument::ValidatedHostExecutionArgumentRequestV1),
+    ExecutionAvailabilityV2(crate::execution_availability::ValidatedExecutionAvailabilityRequestV2),
+    HostArgumentAcceptV2(crate::host_execution_argument::ValidatedHostExecutionArgumentAcceptV2),
     HostArgumentQuery(crate::host_execution_argument::ValidatedHostExecutionArgumentRequestV1),
     HostNoApply(crate::host_execution_no_apply::ValidatedHostExecutionNoApplyRequestV1),
     HostNoApplyQuery(crate::host_execution_no_apply::ValidatedHostExecutionNoApplyRequestV1),
+    HostBeforeArgumentNoApply(crate::host_execution_no_apply::ValidatedHostBeforeArgumentNoApplyRequestV2),
+    HostBeforeArgumentNoApplyQuery(crate::host_execution_no_apply::ValidatedHostBeforeArgumentNoApplyRequestV2),
     HostNoApplySettlement(crate::host_execution_no_apply::ValidatedHostNoApplySettlementRequestV2),
+    HostHeldNoApplySettlementV2(crate::host_execution_no_apply::held_settlement_transport::ValidatedHostHeldNoApplySettlementRequestV2),
     HostNoApplySettlementQuery(
         crate::host_execution_no_apply::ValidatedHostNoApplySettlementQueryV2,
+    ),
+    HostNoApplyCurrentLeaseQueryV2(
+        crate::host_execution_no_apply::current_lease_transport::ValidatedHostNoApplyCurrentLeaseQueryV2,
     ),
     HostAttachGate(crate::ValidatedHostAttachGateRequestV1),
     HostAttachReadiness,
@@ -1359,8 +1851,22 @@ fn validate_request_semantics(
     now: u64,
     bindings: AuthenticatedBrokerSemanticBindingsV1,
 ) -> Result<ValidatedRequestSemanticV1, AuthenticatedBrokerMethodErrorV1> {
+    validate_request_semantics_engine(method, body, descriptor_roles, peer, policy, now, bindings, None)
+}
+
+fn validate_request_semantics_engine(
+    method: BrokerMethod,
+    body: &[u8],
+    descriptor_roles: &[aos_proto::aos::sandbox::local::v1::BrokerDescriptorRole],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now: u64,
+    bindings: AuthenticatedBrokerSemanticBindingsV1,
+    mut capture: Option<&mut request_capture::RequestBodyCaptureV1>,
+) -> Result<ValidatedRequestSemanticV1, AuthenticatedBrokerMethodErrorV1> {
     let mut nix_outcome_context = RequestOutcomeContextV1::None;
     let mut git_coverage_outcome_context = RequestOutcomeContextV1::None;
+    let mut storage_capture_outcome_context = RequestOutcomeContextV1::None;
     let (kind, header, portable_commitment) = match method {
         BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
         | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
@@ -1392,10 +1898,15 @@ fn validate_request_semantics(
             let request = crate::decode_runtime_request(body, peer, policy, now)?;
             let semantics = canonical_host_semantics_v1(&request)
                 .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
+            let header = *request.header();
+            let commitment = *semantics.commitment().digest().as_bytes();
+            if let Some(capture) = capture.as_deref_mut() {
+                capture.host_runtime = Some(request);
+            }
             (
                 AuthenticatedBrokerMethodSemanticsV1::HostApplyRuntime,
-                *request.header(),
-                Some(*semantics.commitment().digest().as_bytes()),
+                header,
+                Some(commitment),
             )
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME => {
@@ -1431,17 +1942,20 @@ fn validate_request_semantics(
             let catalog = bindings
                 .storage_catalog
                 .ok_or(AuthenticatedBrokerMethodErrorV1::MissingCatalogBinding)?;
-            let semantics = CanonicalStorageSemanticsV1::decode(body, catalog, peer, policy, now)
-                .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
+            let semantics = match capture.as_deref_mut() {
+                Some(capture) => capture.apply_header.decode_once(body, catalog, peer, policy, now),
+                None => CanonicalStorageSemanticsV1::decode(body, catalog, peer, policy, now),
+            }.map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
             (
                 AuthenticatedBrokerMethodSemanticsV1::StorageApply,
                 *semantics.header(),
                 Some(*semantics.argument_commitment().digest().as_bytes()),
             )
         }
-        BrokerMethod::BROKER_METHOD_NETWORK_APPLY => {
-            let semantics = CanonicalNetworkSemanticsV1::decode(body, peer, policy, now)
-                .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
+        BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+        | BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2 => {
+            let semantics = decode_network_method_body_engine_v4(method, body, peer, policy, now,
+                capture.as_deref_mut().map(|capture| &mut capture.network_header))?;
             (
                 AuthenticatedBrokerMethodSemanticsV1::NetworkApply,
                 *semantics.header(),
@@ -1519,6 +2033,13 @@ fn validate_request_semantics(
                 Some(*semantics.commitment().digest().as_bytes()),
             )
         }
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1 => {
+            let request = crate::mount_attachment_anchor::decode_attachment_anchor_request_v1(body, peer, policy, now)?;
+            let semantics = crate::mount_attachment_anchor::canonical_attachment_anchor_semantics_v1(&request)
+                .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
+            (AuthenticatedBrokerMethodSemanticsV1::MountApplyAttachmentAnchorV1,
+                *request.header(), Some(*semantics.commitment().digest().as_bytes()))
+        }
         BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS => (
             AuthenticatedBrokerMethodSemanticsV1::MountInventoryDestinationSlots,
             decode_destination_slot_inventory_request(body, peer, policy, now)?,
@@ -1589,6 +2110,26 @@ fn validate_request_semantics(
                 Some(*grant.argument_commitment().digest().as_bytes()),
             )
         }
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2 => {
+            let request = crate::host_execution_argument::decode_host_execution_argument_prepare_request_v2(
+                body, peer, policy, now,
+            )?;
+            (AuthenticatedBrokerMethodSemanticsV1::HostPrepareExecutionArgumentV2, *request.header(), None)
+        }
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2 => {
+            let request = crate::host_execution_availability::decode_host_execution_availability_request_v2(body, peer, policy, now)?;
+            (AuthenticatedBrokerMethodSemanticsV1::HostPrepareExecutionAvailabilityV2, *request.header(), None)
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2 => {
+            let request = crate::storage_execution_availability::decode_storage_execution_availability_request_v2(body, peer, policy, now)?;
+            (AuthenticatedBrokerMethodSemanticsV1::StoragePrepareExecutionAvailabilityV2, *request.header(), None)
+        }
+        BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2 => {
+            let request = crate::host_execution_argument::decode_host_execution_argument_accept_request_v2(
+                body, peer, policy, now,
+            )?;
+            (AuthenticatedBrokerMethodSemanticsV1::HostAcceptExecutionArgumentV2, *request.source().header(), None)
+        }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
             let request =
                 crate::host_execution_argument::decode_host_execution_argument_observe_request_v1(
@@ -1613,7 +2154,7 @@ fn validate_request_semantics(
         }
         BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY => {
             let request =
-                crate::host_execution_no_apply::decode_host_execution_argument_no_apply_request_v1(
+                crate::host_execution_no_apply::decode_host_execution_no_apply_request_v2(
                     body, peer, policy, now,
                 )?;
             (
@@ -1624,7 +2165,7 @@ fn validate_request_semantics(
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
             let request = crate::host_execution_no_apply::
-                decode_host_execution_argument_query_no_apply_request_v1(
+                decode_host_execution_no_apply_query_request_v2(
                     body, peer, policy, now,
                 )?;
             (
@@ -1634,6 +2175,12 @@ fn validate_request_semantics(
             )
         }
         BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 => {
+            if crate::host_execution_no_apply::held_settlement_transport::is_held_settlement_request_v2(body) {
+                let request = crate::host_execution_no_apply::held_settlement_transport::decode_host_held_no_apply_settlement_request_v2(
+                    body, peer, policy, now,
+                )?;
+                (AuthenticatedBrokerMethodSemanticsV1::HostSettleNoApplyV2, *request.header(), None)
+            } else {
             let request =
                 crate::host_execution_no_apply::decode_host_no_apply_settlement_request_v2(
                     body, peer, policy, now,
@@ -1644,21 +2191,29 @@ fn validate_request_semantics(
                 return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
             }
             (
-                AuthenticatedBrokerMethodSemanticsV1::HostSettleNoApplyPreliminary,
+                AuthenticatedBrokerMethodSemanticsV1::HostSettleNoApplyV2,
                 *request.header(),
                 None,
             )
+            }
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
-            let request =
-                crate::host_execution_no_apply::decode_host_no_apply_settlement_query_request_v2(
+            if crate::host_execution_no_apply::current_lease_transport::is_current_lease_query_v2(body) {
+                let request = crate::host_execution_no_apply::current_lease_transport::decode_host_no_apply_current_lease_query_v2(
                     body, peer, policy, now,
                 )?;
-            (
-                AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApplySettlement,
-                *request.header(),
-                None,
-            )
+                (AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApplySettlement, *request.header(), None)
+            } else {
+                let request =
+                    crate::host_execution_no_apply::decode_host_no_apply_settlement_query_request_v2(
+                        body, peer, policy, now,
+                    )?;
+                (
+                    AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApplySettlement,
+                    *request.header(),
+                    None,
+                )
+            }
         }
         BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
             let request =
@@ -1703,7 +2258,10 @@ fn validate_request_semantics(
         }
         BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => (
             AuthenticatedBrokerMethodSemanticsV1::StorageInventoryResources,
-            decode_storage_resource_inventory_request(body, peer, policy, now)?,
+            match capture.as_deref_mut() {
+                Some(capture) => capture.inventory.decode_once(body, peer, policy, now)?,
+                None => decode_storage_resource_inventory_request(body, peer, policy, now)?,
+            },
             None,
         ),
         BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY => {
@@ -1720,7 +2278,10 @@ fn validate_request_semantics(
             None,
         ),
         BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => {
-            let semantics = CanonicalStoragePreparationSemanticsV1::decode(body, peer, policy, now)
+            let semantics = match capture.as_deref_mut() {
+                Some(capture) => capture.preparation_header.decode_once(body, peer, policy, now),
+                None => CanonicalStoragePreparationSemanticsV1::decode(body, peer, policy, now),
+            }
                 .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
             (
                 AuthenticatedBrokerMethodSemanticsV1::StoragePrepareCatalog,
@@ -1850,11 +2411,32 @@ fn validate_request_semantics(
                 Some(*grant.argument_commitment().digest().as_bytes()),
             )
         }
+        BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1 => {
+            let request = crate::storage_capture_grant::decode_storage_capture_reserve_request_v1(
+                body, peer, policy, now,
+            )?;
+            let commitment = request.argument_commitment_data_v2()?;
+            let header = *request.header();
+            storage_capture_outcome_context = RequestOutcomeContextV1::StorageCaptureReserve(request);
+            (AuthenticatedBrokerMethodSemanticsV1::StorageReserveExecutionCapture,
+                header, Some(*commitment.digest().as_bytes()))
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1 => {
+            let request = crate::storage_capture_grant::decode_storage_capture_query_request_v1(
+                body, peer, policy, now,
+            )?;
+            let commitment = request.argument_commitment_data_v2()?;
+            storage_capture_outcome_context = RequestOutcomeContextV1::StorageCaptureQuery(request);
+            (AuthenticatedBrokerMethodSemanticsV1::StorageQueryExecutionCapture,
+                *request.header(), Some(*commitment.digest().as_bytes()))
+        }
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
     };
     let outcome_context = match method {
+        BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1 => storage_capture_outcome_context,
         BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
         | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
@@ -1868,17 +2450,20 @@ fn validate_request_semantics(
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY => {
             RequestOutcomeContextV1::MountApply(decode_mount_request(body, peer, policy, now)?)
         }
-        BrokerMethod::BROKER_METHOD_NETWORK_APPLY => RequestOutcomeContextV1::NetworkApply(
-            CanonicalNetworkSemanticsV1::decode(body, peer, policy, now)
-                .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?,
+        BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+        | BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2 => RequestOutcomeContextV1::NetworkApply(
+            decode_network_method_body_engine_v4(method, body, peer, policy, now,
+                capture.as_deref_mut().map(|capture| &mut capture.network_context))?,
         ),
         BrokerMethod::BROKER_METHOD_STORAGE_APPLY => {
             let catalog = bindings
                 .storage_catalog
                 .ok_or(AuthenticatedBrokerMethodErrorV1::MissingCatalogBinding)?;
             RequestOutcomeContextV1::StorageApply(
-                CanonicalStorageSemanticsV1::decode(body, catalog, peer, policy, now)
-                    .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?,
+                match capture.as_deref_mut() {
+                    Some(capture) => capture.apply_context.decode_once(body, catalog, peer, policy, now),
+                    None => CanonicalStorageSemanticsV1::decode(body, catalog, peer, policy, now),
+                }.map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?,
             )
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => {
@@ -1918,7 +2503,10 @@ fn validate_request_semantics(
         }
         BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => {
             RequestOutcomeContextV1::StoragePrepare(
-                CanonicalStoragePreparationSemanticsV1::decode(body, peer, policy, now)
+                match capture.as_deref_mut() {
+                Some(capture) => capture.preparation_context.decode_once(body, peer, policy, now),
+                None => CanonicalStoragePreparationSemanticsV1::decode(body, peer, policy, now),
+            }
                     .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?,
             )
         }
@@ -1960,6 +2548,10 @@ fn validate_request_semantics(
                 body, peer, policy, now,
             )?)
         }
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1 => {
+            RequestOutcomeContextV1::MountAttachmentAnchorV1(
+                crate::mount_attachment_anchor::decode_attachment_anchor_request_v1(body, peer, policy, now)?)
+        }
         BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
             RequestOutcomeContextV1::HostPublishCatalog(decode_host_catalog_publication_request(
                 body, peer, policy, now,
@@ -1996,6 +2588,26 @@ fn validate_request_semantics(
                 crate::host_storage_output_readback::decode_captured_host_storage_output_readback_request_v1(body, peer, policy, now)?,
             )
         }
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2 => {
+            RequestOutcomeContextV1::HostArgumentPrepareV2(
+                crate::host_execution_argument::decode_host_execution_argument_prepare_request_v2(body, peer, policy, now)?
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2 => {
+            RequestOutcomeContextV1::ExecutionAvailabilityV2(
+                crate::host_execution_availability::decode_host_execution_availability_request_v2(body, peer, policy, now)?
+            )
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2 => {
+            RequestOutcomeContextV1::ExecutionAvailabilityV2(
+                crate::storage_execution_availability::decode_storage_execution_availability_request_v2(body, peer, policy, now)?
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2 => {
+            RequestOutcomeContextV1::HostArgumentAcceptV2(
+                crate::host_execution_argument::decode_host_execution_argument_accept_request_v2(body, peer, policy, now)?
+            )
+        }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
             RequestOutcomeContextV1::HostArgumentObserve(
                 crate::host_execution_argument::decode_host_execution_argument_observe_request_v1(
@@ -2011,33 +2623,50 @@ fn validate_request_semantics(
             )
         }
         BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY => {
-            RequestOutcomeContextV1::HostNoApply(
-                crate::host_execution_no_apply::decode_host_execution_argument_no_apply_request_v1(
-                    body, peer, policy, now,
-                )?,
-            )
+            match crate::host_execution_no_apply::decode_host_execution_no_apply_request_v2(body, peer, policy, now)? {
+                crate::host_execution_no_apply::HostExecutionNoApplyRequestV2::AfterArgument(request) =>
+                    RequestOutcomeContextV1::HostNoApply(request),
+                crate::host_execution_no_apply::HostExecutionNoApplyRequestV2::BeforeArgument(request) =>
+                    RequestOutcomeContextV1::HostBeforeArgumentNoApply(request),
+            }
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
-            RequestOutcomeContextV1::HostNoApplyQuery(
-                crate::host_execution_no_apply::
-                    decode_host_execution_argument_query_no_apply_request_v1(
-                        body, peer, policy, now,
-                    )?,
-            )
+            match crate::host_execution_no_apply::decode_host_execution_no_apply_query_request_v2(body, peer, policy, now)? {
+                crate::host_execution_no_apply::HostExecutionNoApplyRequestV2::AfterArgument(request) =>
+                    RequestOutcomeContextV1::HostNoApplyQuery(request),
+                crate::host_execution_no_apply::HostExecutionNoApplyRequestV2::BeforeArgument(request) =>
+                    RequestOutcomeContextV1::HostBeforeArgumentNoApplyQuery(request),
+            }
         }
         BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 => {
+            if crate::host_execution_no_apply::held_settlement_transport::is_held_settlement_request_v2(body) {
+                RequestOutcomeContextV1::HostHeldNoApplySettlementV2(
+                    crate::host_execution_no_apply::held_settlement_transport::decode_host_held_no_apply_settlement_request_v2(
+                        body, peer, policy, now,
+                    )?,
+                )
+            } else {
             RequestOutcomeContextV1::HostNoApplySettlement(
                 crate::host_execution_no_apply::decode_host_no_apply_settlement_request_v2(
                     body, peer, policy, now,
                 )?,
             )
+            }
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
-            RequestOutcomeContextV1::HostNoApplySettlementQuery(
-                crate::host_execution_no_apply::decode_host_no_apply_settlement_query_request_v2(
-                    body, peer, policy, now,
-                )?,
-            )
+            if crate::host_execution_no_apply::current_lease_transport::is_current_lease_query_v2(body) {
+                RequestOutcomeContextV1::HostNoApplyCurrentLeaseQueryV2(
+                    crate::host_execution_no_apply::current_lease_transport::decode_host_no_apply_current_lease_query_v2(
+                        body, peer, policy, now,
+                    )?,
+                )
+            } else {
+                RequestOutcomeContextV1::HostNoApplySettlementQuery(
+                    crate::host_execution_no_apply::decode_host_no_apply_settlement_query_request_v2(
+                        body, peer, policy, now,
+                    )?,
+                )
+            }
         }
         BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
             crate::storage_capture_candidate::decode_storage_capture_candidate_request_v1(
@@ -2129,14 +2758,60 @@ fn decode_recorded_host_no_apply(
     }
 }
 
+fn decode_recorded_host_no_apply_v2(
+    method: BrokerMethod,
+    context: &RequestOutcomeContextV1,
+    body: &[u8],
+    session_binding: [u8; 32],
+    signed_request_digest: [u8; 32],
+) -> Result<Option<crate::host_execution_no_apply::HostExecutionNoApplyRecordV2>, AuthenticatedBrokerMethodErrorV1> {
+    use crate::host_execution_no_apply::{HostExecutionNoApplyRecordV2,
+        decode_host_before_argument_no_apply_response_v2,
+        decode_host_before_argument_no_apply_query_response_v2};
+
+    match (method, context) {
+        (BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY,
+            RequestOutcomeContextV1::HostBeforeArgumentNoApply(original)) => {
+            decode_host_before_argument_no_apply_response_v2(body, original, session_binding, signed_request_digest)
+                .map(|record| Some(HostExecutionNoApplyRecordV2::ClosedV2BeforeArgument(record)))
+                .map_err(Into::into)
+        }
+        (BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY,
+            RequestOutcomeContextV1::HostBeforeArgumentNoApplyQuery(original)) => {
+            decode_host_before_argument_no_apply_query_response_v2(body, original)
+                .map(|record| record.map(HostExecutionNoApplyRecordV2::ClosedV2BeforeArgument))
+                .map_err(Into::into)
+        }
+        _ => decode_recorded_host_no_apply(method, context, body, session_binding, signed_request_digest)
+            .map(|record| record.map(HostExecutionNoApplyRecordV2::AfterArgument)),
+    }
+}
+
 fn validate_success_semantics(
     request: &AuthenticatedBrokerMethodRequestV1,
     body: &[u8],
 ) -> Result<Option<[u8; 32]>, AuthenticatedBrokerMethodErrorV1> {
+    validate_success_semantics_engine(request, body, None)
+}
+
+fn validate_success_semantics_engine(
+    request: &AuthenticatedBrokerMethodRequestV1,
+    body: &[u8],
+    capture: Option<&mut StorageBodyCaptureV1>,
+) -> Result<Option<[u8; 32]>, AuthenticatedBrokerMethodErrorV1> {
     let maximum = request.maximum_response_bytes();
     match request.method() {
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => {
-            validate_runtime_effect_receipt_for_apply(body, request.exact_body())?;
+            if let Some(capture) = capture {
+                capture.host_apply = Some(crate::session::runtime_effect_observation_for_apply_v2(
+                    body, request.exact_body(),
+                ));
+                capture.host_apply.as_ref()
+                    .ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?
+                    .as_ref().map_err(Clone::clone)?;
+            } else {
+                validate_runtime_effect_receipt_for_apply(body, request.exact_body())?;
+            }
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME => {
             let RequestOutcomeContextV1::HostObserve(original) = &request.outcome_context else {
@@ -2145,7 +2820,14 @@ fn validate_success_semantics(
             validate_runtime_observation(body, original)?;
         }
         BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME => {
-            validate_runtime_inventory(body)?;
+            if let Some(capture) = capture {
+                capture.host_inventory = Some(host::decode_runtime_inventory_data_v2(body, request.request_id()));
+                capture.host_inventory.as_ref()
+                    .ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?
+                    .as_ref().map_err(Clone::clone)?;
+            } else {
+                validate_runtime_inventory(body, request.request_id())?;
+            }
         }
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY => {
             let RequestOutcomeContextV1::MountApply(original) = &request.outcome_context else {
@@ -2163,13 +2845,27 @@ fn validate_success_semantics(
             let RequestOutcomeContextV1::StorageApply(original) = &request.outcome_context else {
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             };
-            validate_storage_apply_response(body, original)?;
+            match capture {
+                Some(capture) => capture.apply.validate_once(body, original)?,
+                None => validate_storage_apply_response(body, original)?,
+            }
         }
-        BrokerMethod::BROKER_METHOD_NETWORK_APPLY => {
+        BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+        | BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2 => {
             let RequestOutcomeContextV1::NetworkApply(original) = &request.outcome_context else {
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             };
-            validate_network_apply_response(body, original)?;
+            match capture {
+                Some(capture) if request.method() == BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2 => {
+                    capture.network_prepare = Some(network::decode_network_apply_response_data_v4(body, original));
+                    capture.network_prepare.as_ref().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?
+                        .as_ref().map_err(Clone::clone)?;
+                }
+                Some(capture) if request.method() == BrokerMethod::BROKER_METHOD_NETWORK_APPLY => {
+                    capture.network_apply.validate_once(body, original)?;
+                }
+                _ => validate_network_apply_response(body, original)?,
+            }
         }
         BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY => {
             validate_network_inventory(body)?;
@@ -2222,8 +2918,37 @@ fn validate_success_semantics(
                 request.exact_body(),
             )?;
         }
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY_ATTACHMENT_ANCHOR_V1 => {
+            let RequestOutcomeContextV1::MountAttachmentAnchorV1(original) = &request.outcome_context else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            let result = crate::mount_attachment_anchor::validate_attachment_anchor_apply_response_v1(
+                body, maximum, original, request.exact_body());
+            match capture {
+                Some(capture) => {
+                    capture.mount_namespace = Some(result);
+                    capture.mount_namespace.as_ref().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?
+                        .as_ref().map_err(Clone::clone)?;
+                }
+                None => { result?; },
+            }
+        }
         BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS => {
-            decode_destination_slot_inventory_response(body, maximum)?;
+            let result = decode_destination_slot_inventory_response(body, maximum).and_then(|model| {
+                if model.native_absence_v2().is_some_and(|absence|
+                    absence.request_id_v2() != &request.request_id()) {
+                    return Err(ProtocolValidationError::InvalidField("Mount native absence request"));
+                }
+                Ok(model)
+            });
+            match capture {
+                Some(capture) => {
+                    capture.mount_inventory = Some(result);
+                    capture.mount_inventory.as_ref().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?
+                        .as_ref().map_err(Clone::clone)?;
+                }
+                None => { result?; }
+            }
         }
         BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
             let RequestOutcomeContextV1::HostPublishCatalog(original) = &request.outcome_context
@@ -2254,12 +2979,12 @@ fn validate_success_semantics(
             else {
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             };
-            crate::decode_host_execution_outcome_v1(
-                body,
-                original.operation_id(),
-                original.execution_id(),
-                original.source_commitment(),
-            )?;
+            if original.monitor_v3().is_some() {
+                crate::host_execution::decode_host_execution_monitor_outcome_v3(body, original)?;
+            } else {
+                crate::decode_host_execution_outcome_v1(body, original.operation_id(),
+                    original.execution_id(), original.source_commitment())?;
+            }
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT => {
             return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
@@ -2325,19 +3050,39 @@ fn validate_success_semantics(
             crate::decode_host_attach_route_evidence_v1(body, original)?;
         }
         BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => {
-            decode_storage_resource_inventory_response(body, maximum)?;
+            match capture {
+                Some(capture) => capture.inventory.decode_once(body, maximum)?,
+                None => { decode_storage_resource_inventory_response(body, maximum)?; }
+            }
         }
         BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY => {
             decode_storage_inventory_recovery_response_v1(body, maximum)?;
         }
         BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => {
-            decode_network_resource_inventory_response(body, maximum)?;
+            let result = decode_network_resource_inventory_response(body, maximum).and_then(|model| {
+                if model.native_absence_v2().is_some_and(|absence|
+                    absence.request_id_v2() != &request.request_id()) {
+                    return Err(ProtocolValidationError::InvalidField("Network native absence request"));
+                }
+                Ok(model)
+            });
+            match capture {
+                Some(capture) => {
+                    capture.network_inventory = Some(result);
+                    capture.network_inventory.as_ref().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?
+                        .as_ref().map_err(Clone::clone)?;
+                }
+                None => { result?; }
+            }
         }
         BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => {
             let RequestOutcomeContextV1::StoragePrepare(original) = &request.outcome_context else {
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             };
-            validate_storage_preparation_response(body, original)?;
+            match capture {
+                Some(capture) => capture.preparation.decode_once(body, original)?,
+                None => validate_storage_preparation_response(body, original)?,
+            }
         }
         BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1 => {
             let RequestOutcomeContextV1::StoragePrepareNixGeneration(original) = &request.outcome_context else {
@@ -2376,16 +3121,63 @@ fn validate_success_semantics(
             else {
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             };
-            let proof = decode_storage_guest_root_response_v1(body, maximum)?;
-            if proof.sandbox != *original.fence().sandbox_id()
-                || proof.incarnation != *original.fence().incarnation_id()
-                || proof.assignment_epoch != original.fence().assignment_epoch()
-                || proof.assignment_digest != *original.fence().assignment_digest()
-                || proof.workspace_handle != original.workspace_handle()
-                || proof.creation_operation != original.creation_operation_id()
+            let validate = |response: &crate::semantics::storage_guest_root::StorageGuestRootResponseDataV2| {
+                let arguments = crate::semantics::CanonicalStorageGuestRootArgumentsV1::decode_data_v1(
+                    original.canonical_bytes(),
+                )?;
+                response.current_publication_v2().require_request_data_v2(
+                    response.proof_v1(), &arguments, original.header().request_id(),
+                )
+            };
+            match capture {
+                Some(capture) => {
+                    capture.guest_root_publication = Some(
+                        decode_storage_guest_root_response_v2(body, maximum).and_then(|response| {
+                            validate(&response)?;
+                            Ok(response)
+                        }),
+                    );
+                    capture.guest_root_publication.as_ref()
+                        .ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?
+                        .as_ref().map_err(Clone::clone)?;
+                }
+                None => validate(&decode_storage_guest_root_response_v2(body, maximum)?)?,
+            }
+        }
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_ARGUMENT_V2 => {
+            let RequestOutcomeContextV1::HostArgumentPrepareV2(original) = &request.outcome_context else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            let preparation = crate::host_execution_argument::preparation::HostArgumentPreparationV2::decode(body)?;
+            if preparation.proposed_source() != original.canonical_attempt()
+                || preparation.controller_session() != request.session_binding()
+                || preparation.signed_prepare_request() != request.signed_request_digest()
             {
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             }
+        }
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2 => {
+            let RequestOutcomeContextV1::ExecutionAvailabilityV2(original) = &request.outcome_context else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            if request.method() == BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2 {
+                crate::host_execution_availability::validate_host_execution_availability_response_v2(
+                    body, original, request.session_binding(), request.signed_request_digest(),
+                )?;
+            } else {
+                crate::storage_execution_availability::validate_storage_execution_availability_response_v2(
+                    body, original, request.session_binding(), request.signed_request_digest(),
+                )?;
+            }
+        }
+        BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2 => {
+            let RequestOutcomeContextV1::HostArgumentAcceptV2(original) = &request.outcome_context else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::host_execution_argument::decode_host_execution_argument_observe_response_v1(
+                body, original.source().canonical_attempt(),
+            )?;
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
             let RequestOutcomeContextV1::HostArgumentObserve(original) = &request.outcome_context
@@ -2409,7 +3201,7 @@ fn validate_success_semantics(
         }
         BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
-            decode_recorded_host_no_apply(
+            decode_recorded_host_no_apply_v2(
                 request.method(),
                 &request.outcome_context,
                 body,
@@ -2418,25 +3210,34 @@ fn validate_success_semantics(
             )?;
         }
         BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 => {
-            let RequestOutcomeContextV1::HostNoApplySettlement(original) = &request.outcome_context
-            else {
-                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
-            };
-            crate::host_execution_no_apply::decode_host_no_apply_settlement_response_v2(
-                body,
-                original,
-                request.session_binding(),
-            )?;
+            match &request.outcome_context {
+                RequestOutcomeContextV1::HostHeldNoApplySettlementV2(original) => {
+                    crate::host_execution_no_apply::held_settlement_transport::decode_host_held_no_apply_settlement_response_v2(
+                        body, original, request.session_binding(), request.signed_request_digest(),
+                    )?;
+                }
+                RequestOutcomeContextV1::HostNoApplySettlement(original) => {
+                    crate::host_execution_no_apply::decode_host_no_apply_settlement_response_v2(
+                        body, original, request.session_binding(),
+                    )?;
+                }
+                _ => return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink),
+            }
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
-            let RequestOutcomeContextV1::HostNoApplySettlementQuery(original) =
-                &request.outcome_context
-            else {
-                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
-            };
-            crate::host_execution_no_apply::decode_host_no_apply_settlement_query_response_v2(
-                body, original,
-            )?;
+            match &request.outcome_context {
+                RequestOutcomeContextV1::HostNoApplyCurrentLeaseQueryV2(original) => {
+                    crate::host_execution_no_apply::current_lease_transport::decode_host_no_apply_current_lease_response_v2(
+                        body, original, request.session_binding(), request.signed_request_digest(),
+                    )?;
+                }
+                RequestOutcomeContextV1::HostNoApplySettlementQuery(original) => {
+                    crate::host_execution_no_apply::decode_host_no_apply_settlement_query_response_v2(
+                        body, original,
+                    )?;
+                }
+                _ => return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink),
+            }
         }
         BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
         | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
@@ -2454,6 +3255,10 @@ fn validate_success_semantics(
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             };
             crate::git_project_coverage::compare_git_project_coverage_response_v1(body, original)?;
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1 => {
+            validate_storage_capture_response(request.method(), &request.outcome_context, body)?;
         }
         BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
@@ -2497,6 +3302,29 @@ fn validate_header_profile(
         || header.audience() != traffic.transcript().audience()
     {
         return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+    }
+    Ok(())
+}
+
+// Both routes use the same locator/status codec. Reserve cannot acknowledge
+// absence; a fresh Query may observe it without authorizing another reserve.
+fn validate_storage_capture_response(
+    method: BrokerMethod,
+    context: &RequestOutcomeContextV1,
+    body: &[u8],
+) -> Result<(), AuthenticatedBrokerMethodErrorV1> {
+    match (method, context) {
+        (BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_CAPTURE_V1,
+            RequestOutcomeContextV1::StorageCaptureReserve(request)) => {
+            let source = request.ongoing_source_v2().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?;
+            crate::storage_capture_grant::decode_storage_capture_attempt_response_ongoing_v2(body, source, false)?;
+        }
+        (BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_CAPTURE_V1,
+            RequestOutcomeContextV1::StorageCaptureQuery(request)) => {
+            let source = request.ongoing_source_v2().ok_or(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink)?;
+            crate::storage_capture_grant::decode_storage_capture_query_response_ongoing_v2(body, source)?;
+        }
+        _ => return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink),
     }
     Ok(())
 }
@@ -2805,4 +3633,119 @@ mod nix_request_context_tests {
             ));
         }
     }
+}
+
+// Both closed methods use the one existing Network decoder. Method selection
+// is checked before admission: old method nine cannot reinterpret Prepare,
+// and the sole descriptor-bearing method cannot issue a lifecycle action.
+fn decode_network_method_body_v2(
+    method: BrokerMethod, body: &[u8], peer: PeerCredentials, policy: PeerPolicy, now: u64,
+) -> Result<CanonicalNetworkSemanticsV1, AuthenticatedBrokerMethodErrorV1> {
+    decode_network_method_body_engine_v4(method, body, peer, policy, now, None)
+}
+
+fn decode_network_method_body_engine_v4(
+    method: BrokerMethod, body: &[u8], peer: PeerCredentials, policy: PeerPolicy, now: u64,
+    capture: Option<&mut request_capture::NetworkBodyCaptureV4>,
+) -> Result<CanonicalNetworkSemanticsV1, AuthenticatedBrokerMethodErrorV1> {
+    let semantics = match capture {
+        Some(capture) => capture.decode_once(body, peer, policy, now),
+        None => CanonicalNetworkSemanticsV1::decode(body, peer, policy, now),
+    }
+        .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
+    if semantics.broker_method_v2() != method {
+        return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+    }
+    Ok(semantics)
+}
+
+#[cfg(test)]
+mod network_method_separation_tests {
+    use super::*;
+    use aos_proto::aos::sandbox::local::v1::{ApplyNetworkRequest, AssignmentFence, Audience, NetworkAction, RequestHeader};
+    use buffa::Message as _;
+
+    #[test]
+    fn retained_destroy_response_rejects_substitution_and_preserves_decode_failure() {
+        let peer = PeerCredentials { uid: 1000, gid: 1000, pid: Some(42) };
+        let policy = PeerPolicy { uid: 1000, gid: Some(1000), audience: Audience::AUDIENCE_NODE_CONTROLLER };
+        let mut destroy = request(NetworkAction::NETWORK_ACTION_DESTROY);
+        destroy.network_handle = vec![5; 32];
+        let bytes = destroy.encode_to_vec();
+        let semantic = decode_network_method_body_v2(BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
+            &bytes, peer, policy, 10).unwrap();
+        let mut result = aos_proto::aos::sandbox::local::v1::NetworkResult {
+            network_handle: destroy.network_handle,
+            state: aos_proto::aos::sandbox::local::v1::NetworkState::NETWORK_STATE_ABSENT.into(),
+            ..Default::default()
+        };
+        let mut original = network::NetworkApplyResponseCaptureV4::default();
+        original.validate_once(&result.encode_to_vec(), &semantic).unwrap();
+        assert_eq!(original.destroy_data_v4(), Some(&result));
+
+        result.network_handle[0] ^= 1;
+        let mut substituted = network::NetworkApplyResponseCaptureV4::default();
+        assert!(substituted.validate_once(&result.encode_to_vec(), &semantic).is_err());
+        assert!(substituted.destroy_data_v4().is_none());
+        assert!(substituted.cause().is_some());
+
+        let mut truncated = network::NetworkApplyResponseCaptureV4::default();
+        assert!(truncated.validate_once(&[0x0a, 0x20, 1], &semantic).is_err());
+        assert!(truncated.cause().is_some());
+        assert!(truncated.validate_once(&result.encode_to_vec(), &semantic).is_err());
+        assert!(truncated.destroy_data_v4().is_none());
+    }
+
+    fn request(action: NetworkAction) -> ApplyNetworkRequest {
+        ApplyNetworkRequest {
+            header: Some(RequestHeader {
+                protocol_major: 1, protocol_minor: 0, request_id: vec![1; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 100, maximum_response_bytes: 4096,
+                ..Default::default()
+            }).into(),
+            fence: Some(AssignmentFence {
+                sandbox_id: vec![2; 16], incarnation_id: vec![3; 16], assignment_epoch: 1,
+                desired_generation: 1, assignment_digest: vec![4; 32], ..Default::default()
+            }).into(),
+            action: action.into(), ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sole_prepare_method_rejects_old_method_and_lifecycle_body() {
+        use crate::semantics::network::preparation_content::{NetworkPreparationContentV2, NetworkPreparationContentReferenceV2};
+        let peer = PeerCredentials { uid: 1000, gid: 1000, pid: Some(42) };
+        let policy = PeerPolicy { uid: 1000, gid: Some(1000), audience: Audience::AUDIENCE_NODE_CONTROLLER };
+        let mut prepare = request(NetworkAction::NETWORK_ACTION_PREPARE);
+        // Framing/dispatch comparison DATA only: this fixture does not enter
+        // a sealed reader, decode these model operands or create a reservation.
+        let content = NetworkPreparationContentV2::new(b"manifest", b"specification").unwrap().encode().unwrap();
+        NetworkPreparationContentReferenceV2::for_content(&content).unwrap().bind_request(&mut prepare);
+        let bytes = prepare.encode_to_vec();
+        assert!(decode_network_method_body_v2(BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2, &bytes, peer, policy, 10).is_ok());
+        assert!(decode_network_method_body_v2(BrokerMethod::BROKER_METHOD_NETWORK_APPLY, &bytes, peer, policy, 10).is_err());
+
+        let mut destroy = request(NetworkAction::NETWORK_ACTION_DESTROY);
+        destroy.network_handle = vec![5; 32];
+        let bytes = destroy.encode_to_vec();
+        assert!(decode_network_method_body_v2(BrokerMethod::BROKER_METHOD_NETWORK_APPLY, &bytes, peer, policy, 10).is_ok());
+        assert!(decode_network_method_body_v2(BrokerMethod::BROKER_METHOD_NETWORK_PREPARE_V2, &bytes, peer, policy, 10).is_err());
+    }
+}
+
+/// Decodes the complete canonical Host runtime inventory as comparison DATA.
+///
+/// This is the same validator used by authenticated Host3 outcomes. It does not
+/// authenticate a packet or supply a native runtime, Session or currentness.
+///
+/// # Errors
+/// Refuses malformed or noncanonical bytes, unknown fields, invalid runtime
+/// observations, duplicate/out-of-order handles, conflicting stopped scopes or
+/// an absence record bound to another request identifier.
+pub fn decode_host_runtime_inventory_data_v2(
+    body: &[u8],
+    request_id: [u8; 16],
+) -> Result<aos_proto::aos::sandbox::local::v1::InventoryRuntimeResponse, ProtocolValidationError> {
+    host::decode_runtime_inventory_data_v2(body, request_id)
 }

@@ -24,7 +24,6 @@
 //! ambiguous reuse of one physical key across policy generations fails closed.
 
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
-use std::os::unix::fs::FileExt as _;
 use std::path::Path;
 
 use aos_sandbox_core::format::decode_trust_policy;
@@ -38,6 +37,16 @@ use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use super::{BrokerAuthority, BrokerDomain};
+
+mod materialization;
+mod network_public;
+mod public_revalidation;
+mod receiving;
+
+pub use receiving::{ProtectedStorageBrokerConfigurationOriginalV1,
+    ProtectedNetworkBrokerConfigurationOriginalV4, ProtectedMountBrokerConfigurationOriginalV4};
+pub use public_revalidation::ProtectedBrokerPublicCredentialRevalidationOriginalV1;
+pub use network_public::NetworkPublicCredentialsOriginalV2;
 
 const MAXIMUM_POLICY_BYTES: usize = 64 * 1024;
 const PLAN_POLICY_FILE: &str = "broker-plan-policy.cbor";
@@ -96,6 +105,21 @@ pub struct ProtectedBrokerPublicCredentialSnapshot {
 }
 
 impl ProtectedBrokerPublicCredentialSnapshot {
+    /// Decodes passive evidence carried by the closed original Network handoff.
+    ///
+    /// The result is DATA. A live native Netd Source and actual credential reads
+    /// must independently qualify it before it contributes to read admission.
+    #[must_use]
+    pub fn decode_network_handoff_data_v2(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != 56 { return None; }
+        Some(Self {
+            device: u64::from_be_bytes(bytes[0..8].try_into().ok()?),
+            inode: u64::from_be_bytes(bytes[8..16].try_into().ok()?),
+            bytes: usize::try_from(u64::from_be_bytes(bytes[16..24].try_into().ok()?)).ok()?,
+            sha256: bytes[24..56].try_into().ok()?,
+        })
+    }
+
     /// Returns the device containing the retained credential inode.
     #[must_use]
     pub const fn device(self) -> u64 {
@@ -233,14 +257,22 @@ impl ProtectedBrokerPublicCredentials {
             credential.revalidate_with(role.as_str(), role.maximum_bytes(), inspect)?;
         }
 
-        Ok(std::array::from_fn(|index| {
+        Ok(self.descriptor_evidence_v1())
+    }
+
+    fn descriptor_evidence_v1(&self) -> [(
+        ProtectedBrokerPublicCredentialRole,
+        BorrowedFd<'_>,
+        ProtectedBrokerPublicCredentialSnapshot,
+    ); 6] {
+        std::array::from_fn(|index| {
             let credential = &self.credentials[index];
             (
                 ProtectedBrokerPublicCredentialRole::ALL[index],
                 credential.descriptor.as_fd(),
                 credential.snapshot.public(),
             )
-        }))
+        })
     }
 }
 
@@ -269,18 +301,54 @@ impl ProtectedBrokerPublicCredential {
             usize,
         ) -> Result<ProtectedCredentialMetadata, BrokerAuthorityConfigError>,
     ) -> Result<(), BrokerAuthorityConfigError> {
-        let before = inspect(self.descriptor.as_fd(), name, maximum_bytes)?;
-        let content = read_descriptor_exactly(self.descriptor.as_fd(), name, before.bytes)?;
-        let repeated = read_descriptor_exactly(self.descriptor.as_fd(), name, before.bytes)?;
-        let after = inspect(self.descriptor.as_fd(), name, maximum_bytes)?;
+        self.revalidate_recipe_v1(name, maximum_bytes,
+            |descriptor, name, maximum, _| inspect(descriptor, name, maximum), None)
+    }
+
+    fn revalidate_recipe_v1(
+        &self,
+        name: &'static str,
+        maximum_bytes: usize,
+        inspect: impl Fn(
+            BorrowedFd<'_>,
+            &'static str,
+            usize,
+            Option<&mut public_revalidation::MetadataOriginalV1>,
+        ) -> Result<ProtectedCredentialMetadata, BrokerAuthorityConfigError>,
+        original: Option<&mut public_revalidation::CredentialOriginalV1>,
+    ) -> Result<(), BrokerAuthorityConfigError> {
+        let (before_slot, first, second, after_slot, comparison) = match original {
+            Some(original) => (
+                Some(&mut original.before), Some(&mut original.first),
+                Some(&mut original.second), Some(&mut original.after),
+                Some(&mut original.comparison),
+            ),
+            None => (None, None, None, None, None),
+        };
+        let before = inspect(self.descriptor.as_fd(), name, maximum_bytes, before_slot)?;
+        let content = public_revalidation::read_bytes_v1(
+            self.descriptor.as_fd(), name, before.bytes, first)?;
+        let repeated = public_revalidation::read_bytes_v1(
+            self.descriptor.as_fd(), name, before.bytes, second)?;
+        let after = inspect(self.descriptor.as_fd(), name, maximum_bytes, after_slot)?;
         let observed = ProtectedCredentialSnapshot {
             metadata: before,
-            sha256: Sha256::digest(&content).into(),
+            sha256: Sha256::digest(content.as_ref()).into(),
         };
-        if !retained_snapshot_matches(&self.snapshot, &observed, &after, &content, &repeated) {
-            return Err(BrokerAuthorityConfigError::Invalid(name));
+        let result = if retained_snapshot_matches(
+            &self.snapshot, &observed, &after, content.as_ref(), repeated.as_ref(),
+        ) {
+            Ok(())
+        } else {
+            Err(BrokerAuthorityConfigError::Invalid(name))
+        };
+        if let Some(comparison) = comparison {
+            *comparison = Some(result);
+            if matches!(comparison, Some(Ok(()))) { Ok(()) }
+            else { Err(BrokerAuthorityConfigError::Invalid(name)) }
+        } else {
+            result
         }
-        Ok(())
     }
 }
 
@@ -340,6 +408,58 @@ pub struct ProtectedBrokerAuthorityConfiguration {
 }
 
 impl ProtectedBrokerAuthorityConfiguration {
+    /// Describes the bounded protected configuration receiving peak as DATA.
+    ///
+    /// This uses the same two policy byte limits and collection limits as the
+    /// actual loader. It creates no authority, key, file or receiving original.
+    /// The role-specific original must pay before entering that loader.
+    ///
+    /// # Errors
+    /// Reports checked arithmetic overflow in representation bounds.
+    pub fn receiving_demand_v1(
+    ) -> Result<aos_sandbox_core::ResourceVector, aos_sandbox_core::AccountingError> {
+        use aos_sandbox_core::{ResourceDimension as D, ResourceVector};
+
+        let limits = policy_limits();
+        // Both policy models may coexist with selected keys, anchor validation
+        // and canonical copies. Claimed key/feature arrays reserve independently
+        // of the encoded bytes; each text operand is capped at255 by its codec.
+        let cell = (std::mem::size_of::<KeyReference>()
+            + std::mem::size_of::<aos_sandbox_core::FeatureRef>() + 2 * 255) as u64;
+        let count = limits.maximum_collection_items as u64;
+        let models = cell.checked_mul(count)
+            .and_then(|value| value.checked_mul(2 * 4))
+            .ok_or(aos_sandbox_core::AccountingError::ArithmeticOverflow {
+                dimension: D::MemoryBytes,
+            })?;
+        // Eight raw/repeated/canonical policy byte views, secret exact readers,
+        // public descriptors and bounded directory/path/native error work.
+        let bytes = (2 * MAXIMUM_POLICY_BYTES * 8) as u64;
+        let owners = (std::mem::size_of::<Self>() as u64)
+            .checked_add(std::mem::size_of::<ProtectedStorageBrokerConfigurationOriginalV1>() as u64)
+            .ok_or(aos_sandbox_core::AccountingError::ArithmeticOverflow {
+                dimension: D::MemoryBytes,
+            })?;
+        let metadata = count.checked_mul(2 * 2 * 4)
+            .and_then(|entries| entries.checked_add(9))
+            .ok_or(aos_sandbox_core::AccountingError::ArithmeticOverflow {
+                dimension: D::MetadataEntries,
+            })?;
+        let memory = models.checked_add(bytes)
+            .and_then(|value| value.checked_add(owners))
+            .and_then(|value| value.checked_add(4 * 1024 * 1024))
+            .ok_or(aos_sandbox_core::AccountingError::ArithmeticOverflow {
+                dimension: D::MemoryBytes,
+            })?;
+
+        // Six public originals coexist with the directory, secret original
+        // and one actual positional-read duplicate before secret disposal.
+        Ok(ResourceVector::ZERO
+            .with(D::MemoryBytes, memory)
+            .with(D::MetadataEntries, metadata)
+            .with(D::OpenFiles, 9))
+    }
+
     /// Loads one protected fixed-file configuration snapshot.
     ///
     /// Every child is opened relative to the same retained root directory.
@@ -373,6 +493,28 @@ impl ProtectedBrokerAuthorityConfiguration {
     #[must_use]
     pub fn into_parts(self) -> (BrokerAuthority, [u8; 16], Zeroizing<[u8; 32]>) {
         (self.authority, self.journal_key_id, self.journal_secret)
+    }
+
+    /// Separates authority, journal-key bytes and their six original public files.
+    ///
+    /// The descriptor owner remains alongside fallible audience-specific key
+    /// conversion. The returned secret needs an audience-specific zeroizing
+    /// owner; this split performs no revalidation or new authority admission.
+    #[must_use]
+    pub fn into_parts_with_public_credentials(
+        self,
+    ) -> (
+        BrokerAuthority,
+        [u8; 16],
+        Zeroizing<[u8; 32]>,
+        ProtectedBrokerPublicCredentials,
+    ) {
+        (
+            self.authority,
+            self.journal_key_id,
+            self.journal_secret,
+            self.public_credentials,
+        )
     }
 
     /// Separates authority from the exact public descriptors used to build it.
@@ -437,69 +579,25 @@ fn load_from_directory(
     let (node, node_descriptor) = read_exact::<16>(directory, NODE_ID_FILE)?;
     let journal_key = read_secret_exact::<48>(directory, JOURNAL_MAC_KEY_FILE)?;
 
-    let plan_signer = select_policy_key(
-        &plan_policy,
-        &plan_public_key,
-        SignaturePurpose::BrokerAuthorization,
-        KeyUsage::BrokerAuthorization,
-    )?;
-    let lease_authority = select_policy_key(
-        &lease_policy,
-        &lease_public_key,
-        SignaturePurpose::OwnershipLease,
-        KeyUsage::OwnershipLease,
-    )?;
-    let plan_policy_model = decode_trust_policy(&plan_policy, policy_limits())
-        .map_err(|_| BrokerAuthorityConfigError::Invalid(PLAN_POLICY_FILE))?;
-    let lease_policy_model = decode_trust_policy(&lease_policy, policy_limits())
-        .map_err(|_| BrokerAuthorityConfigError::Invalid(LEASE_POLICY_FILE))?;
-    let policy_media_type = MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
-        .map_err(|_| BrokerAuthorityConfigError::Invalid("trust-policy media type"))?;
-    let plan_descriptor = descriptor_for_bytes(policy_media_type.clone(), &plan_policy);
-    let lease_descriptor = descriptor_for_bytes(policy_media_type, &lease_policy);
-    let mut journal_key_id = [0_u8; 16];
-    journal_key_id.copy_from_slice(&journal_key[..16]);
-    let mut journal_secret = Zeroizing::new([0_u8; 32]);
-    journal_secret.copy_from_slice(&journal_key[16..]);
-    let public_binding = protected_configuration_binding(
+    let mut materialization = materialization::ConfigurationMaterializationV1::new(
+        materialization::ConfigurationInputsV1 {
+            plan_policy,
+            plan_public_key,
+            revocation_scope,
+            lease_policy,
+            lease_public_key,
+            node,
+            journal_key,
+        },
         domain,
-        &plan_policy,
-        &plan_public_key,
-        &revocation_scope,
-        &lease_policy,
-        &lease_public_key,
-        &node,
-        &journal_key_id,
     );
-
-    let plan_anchor = BrokerPlanTrustAnchor::from_trusted_configuration(
-        plan_policy,
-        plan_descriptor,
-        plan_policy_model.trust_scope(),
-        plan_signer,
-        plan_public_key,
-        RevocationScopeId::from_bytes(revocation_scope),
-        policy_limits(),
-    )
-    .map_err(|_| BrokerAuthorityConfigError::Invalid("broker plan trust anchor"))?;
-    let lease_anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
-        lease_policy,
-        lease_descriptor,
-        lease_policy_model.trust_scope(),
-        lease_authority,
-        lease_public_key,
-        policy_limits(),
-    )
-    .map_err(|_| BrokerAuthorityConfigError::Invalid("ownership lease trust anchor"))?;
-    let authority = BrokerAuthority::new(
-        domain,
-        plan_anchor,
-        lease_anchor,
-        NodeId::from_bytes(node),
-        journal_key_id,
-        *journal_secret,
-    )
-    .map_err(|_| BrokerAuthorityConfigError::Invalid("broker authority"))?;
+    if materialization.run_once().is_err() {
+        return Err(materialization.into_error());
+    }
+    let (authority, public_binding, journal_key_id, journal_secret) =
+        materialization.take_completed().ok_or(
+            BrokerAuthorityConfigError::Invalid("configuration materialization"),
+        )?;
 
     Ok(ProtectedBrokerAuthorityConfiguration {
         authority,
@@ -553,8 +651,14 @@ fn protected_configuration_binding(
 
 fn validate_directory(directory: &OwnedFd) -> Result<(), BrokerAuthorityConfigError> {
     let metadata = fstat(directory).map_err(|source| filesystem("directory", source))?;
+    validate_directory_metadata(&metadata, 0)
+}
+
+fn validate_directory_metadata(metadata: &rustix::fs::Stat, uid: u32)
+    -> Result<(), BrokerAuthorityConfigError>
+{
     if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
-        || metadata.st_uid != 0
+        || metadata.st_uid != uid
         || !protected_directory_permissions(metadata.st_mode)
     {
         return Err(BrokerAuthorityConfigError::Invalid("directory"));
@@ -678,9 +782,29 @@ fn inspect_protected_descriptor(
     name: &'static str,
     maximum_bytes: usize,
 ) -> Result<ProtectedCredentialMetadata, BrokerAuthorityConfigError> {
-    let metadata = fstat(descriptor).map_err(|source| filesystem(name, source))?;
+    inspect_protected_descriptor_recipe_v1(descriptor, name, maximum_bytes, None)
+}
+
+fn inspect_protected_descriptor_recipe_v1(
+    descriptor: BorrowedFd<'_>,
+    name: &'static str,
+    maximum_bytes: usize,
+    original: Option<&mut public_revalidation::MetadataOriginalV1>,
+) -> Result<ProtectedCredentialMetadata, BrokerAuthorityConfigError> {
+    match original {
+        None => {
+            let metadata = fstat(descriptor).map_err(|source| filesystem(name, source))?;
+            protected_metadata(&metadata, name, maximum_bytes, 0)
+        }
+        Some(original) => original.inspect_once_v1(descriptor, name, maximum_bytes, 0),
+    }
+}
+
+fn protected_metadata(
+    metadata: &rustix::fs::Stat, name: &'static str, maximum_bytes: usize, uid: u32,
+) -> Result<ProtectedCredentialMetadata, BrokerAuthorityConfigError> {
     if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
-        || metadata.st_uid != 0
+        || metadata.st_uid != uid
         || metadata.st_nlink != 1
         || !protected_file_permissions(metadata.st_mode)
     {
@@ -736,25 +860,16 @@ fn read_descriptor_into(
             source,
         }
     })?);
-    file.read_exact_at(content, 0)
-        .map_err(|source| BrokerAuthorityConfigError::Filesystem {
-            object: name,
-            source,
-        })?;
-    let mut trailing = Zeroizing::new([0_u8; 1]);
-    if file
-        .read_at(&mut trailing[..], content.len() as u64)
-        .map_err(|source| BrokerAuthorityConfigError::Filesystem {
-            object: name,
-            source,
-        })?
-        != 0
-    {
-        return Err(BrokerAuthorityConfigError::Invalid(name));
-    }
-    Ok(())
+    aos_sandbox_linux::credential::read_credential_bytes_at_v1(&file, content)
+        .map_err(|error| match error {
+            aos_sandbox_linux::credential::CredentialBytesAtErrorV1::Native(source) =>
+                BrokerAuthorityConfigError::Filesystem { object: name, source },
+            aos_sandbox_linux::credential::CredentialBytesAtErrorV1::TrailingBytes =>
+                BrokerAuthorityConfigError::Invalid(name),
+        })
 }
 
+#[cfg(test)]
 fn select_policy_key(
     policy_bytes: &[u8],
     public_key: &[u8; 32],
@@ -763,6 +878,15 @@ fn select_policy_key(
 ) -> Result<KeyReference, BrokerAuthorityConfigError> {
     let policy = decode_trust_policy(policy_bytes, policy_limits())
         .map_err(|_| BrokerAuthorityConfigError::Invalid("trust policy"))?;
+    select_decoded_policy_key(&policy, public_key, purpose, usage)
+}
+
+fn select_decoded_policy_key(
+    policy: &aos_sandbox_core::model::TrustPolicy,
+    public_key: &[u8; 32],
+    purpose: SignaturePurpose,
+    usage: KeyUsage,
+) -> Result<KeyReference, BrokerAuthorityConfigError> {
     if policy.purpose() != purpose {
         return Err(BrokerAuthorityConfigError::Invalid("trust policy purpose"));
     }

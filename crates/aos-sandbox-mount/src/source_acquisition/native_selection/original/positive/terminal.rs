@@ -4,7 +4,7 @@
 //! successful Root4 call selects this inline child; no public phase or progress
 //! DATA can initialize it. Every append Result and typed claim cause stays here.
 
-use aos_sandbox::{JournalError, JournalLimits, MountManagerSourceInventoryError};
+use aos_sandbox_mount_native::{MountJournalErrorV1 as JournalError, JournalLimits, MountManagerSourceInventoryError};
 use aos_sandbox_source_provider_protocol::native_held_completion::assertion::NativeHeldSettlementV1;
 
 use super::*;

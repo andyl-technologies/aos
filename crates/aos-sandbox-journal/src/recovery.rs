@@ -81,6 +81,46 @@ pub fn finish_replayed_tail(
     mode: RecoveryTailMode,
     slots: Option<TailResultSlots<'_>>,
 ) -> Result<u64, RecoveryTailError> {
+    finish_replayed_tail_inner(file, observed_length, replayed_prefix_end, mode, slots)
+}
+
+/// Finishes the existing readonly tail check and retained final seek.
+///
+/// # Errors
+/// Rejects an incomplete tail before seeking, or retains the actual seek error.
+pub fn finish_readonly_replayed_tail_v1(
+    file: &File,
+    observed_length: u64,
+    replayed_prefix_end: u64,
+    seek: &mut Option<io::Result<u64>>,
+) -> Result<u64, RecoveryTailError> {
+    let mut truncate = None;
+    let mut sync = None;
+    finish_replayed_tail_inner(
+        file, observed_length, replayed_prefix_end, RecoveryTailMode::RejectIncomplete,
+        Some(TailResultSlots::new(&mut truncate, &mut sync, seek)),
+    )
+}
+
+/// Bounds readonly tail call, slot and return representations as passive bytes.
+#[must_use]
+pub fn readonly_tail_receiving_bytes_v1() -> Option<usize> {
+    std::mem::size_of::<TailResultSlots<'_>>().checked_mul(2)?
+        .checked_add(std::mem::size_of::<Option<std::io::Result<()>>>().checked_mul(2)?)?
+        .checked_add(std::mem::size_of::<Result<u64, RecoveryTailError>>().checked_mul(2)?)?
+        .checked_add(std::mem::size_of::<u64>().checked_mul(4)?)
+}
+
+fn finish_replayed_tail_inner(
+    file: &File,
+    observed_length: u64,
+    replayed_prefix_end: u64,
+    mode: RecoveryTailMode,
+    slots: Option<TailResultSlots<'_>>,
+) -> Result<u64, RecoveryTailError> {
+    // Borrowing the same File does not duplicate its OFD. This is the same
+    // seek engine used by the old mutable-File wrapper.
+    let mut file = file;
     let truncated_bytes = observed_length.saturating_sub(replayed_prefix_end);
     let (truncate_slot, sync_slot, seek_slot) = match slots {
         None => (None, None, None),
@@ -173,6 +213,24 @@ mod tests {
             drop(self.file.take());
             let _ = fs::remove_file(&self.path);
         }
+    }
+
+    #[test]
+    fn readonly_tail_uses_the_same_file_offset_and_preserves_rejected_seek_slot() {
+        let mut journal = TemporaryJournalFile::new(b"prefix");
+        let file = journal.file_mut();
+        file.seek(SeekFrom::Start(2)).unwrap();
+        let mut seek = None;
+
+        let rejected = finish_readonly_replayed_tail_v1(file, 6, 4, &mut seek);
+        assert!(matches!(rejected, Err(RecoveryTailError::UncommittedTail)));
+        assert!(seek.is_none());
+        assert_eq!(file.stream_position().unwrap(), 2);
+
+        let completed = finish_readonly_replayed_tail_v1(file, 6, 6, &mut seek);
+        assert_eq!(completed.unwrap(), 0);
+        assert!(matches!(seek, Some(Ok(6))));
+        assert_eq!(file.stream_position().unwrap(), 6);
     }
 
     #[test]

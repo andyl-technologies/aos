@@ -4,9 +4,8 @@
 //! The reservoir alone does not authorize send, Root acceptance or settlement.
 
 use super::*;
-use aos_sandbox::journal::{
-    OriginalSourceProtectedReadbackV5, SourceOriginalNativeJournalAuthorityV5,
-};
+use aos_sandbox_source::provider_journal::OriginalSourceProtectedReadbackV5;
+use aos_sandbox_source::provider_journal::SourceOriginalNativeJournalAuthorityV5;
 use aos_sandbox_core::{ObjectDigest, RawPairedClockSample};
 use aos_sandbox_source_provider_protocol::native_held_completion::{
     NativeHeldControlKindV1 as Kind, NativeHeldSectionTagV1 as Tag,
@@ -91,7 +90,7 @@ enum OriginalHeldCauseV5 {
     #[error("original held custody failed")]
     Security(#[from] SourceProviderSecurityError),
     #[error("original held protected readback failed")]
-    Journal(#[from] aos_sandbox::JournalError),
+    Journal(#[from] aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1),
     #[error("original held clock failed")]
     Clock(#[from] aos_sandbox_core::OwnershipLeaseVerificationError),
     #[error("original held Storage custody failed")]
@@ -327,7 +326,7 @@ impl CurrentProviderIngressSessionV1 {
         let provenance = origin.initial_floor().original_provenance().claims();
         let acquisition_key = provenance.records[1].key();
         let acquisition_bytes = readback.rows().get(&(
-            aos_sandbox::RecordNamespace::SourceProviderAuthority, acquisition_key.to_vec(),
+            aos_sandbox_core::RecordNamespace::SourceProviderAuthority, acquisition_key.to_vec(),
         )).ok_or(SourceProviderSecurityError::SessionContinuity)?;
         let aos_sandbox_source_provider_ledger::ledger::model::DecodedRecordV1::Acquisition(acquisition) =
             aos_sandbox_source_provider_ledger::ledger::format::decode_record(acquisition_key, acquisition_bytes)
@@ -336,7 +335,7 @@ impl CurrentProviderIngressSessionV1 {
         };
         let key = aos_sandbox_source_provider_ledger::ledger::native_completion::
             native_completion_key_v2(request.acquisition_id());
-        let bytes = readback.rows().get(&(aos_sandbox::RecordNamespace::SourceProviderAuthority, key.clone()))
+        let bytes = readback.rows().get(&(aos_sandbox_core::RecordNamespace::SourceProviderAuthority, key.clone()))
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         let native = aos_sandbox_source_provider_ledger::ledger::native_held_completion::
             SourceNativeHeldCompletionRecordV1::from_canonical_bytes(&key, bytes)
@@ -620,7 +619,7 @@ mod tests {
     fn first_action_cause_survives_later_debt_without_extraction() {
         let mut reservoir = OriginalProviderHeldSignaturesV5::pending(false);
         reservoir.cause = Some(SourceProviderSecurityError::SessionContinuity.into());
-        reservoir.postcheck_debt = Some(aos_sandbox::JournalError::InvalidTransaction.into());
+        reservoir.postcheck_debt = Some(aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1::InvalidTransaction.into());
 
         assert!(matches!(
             reservoir.failure().and_then(|cause| cause.downcast_ref::<OriginalHeldCauseV5>()),

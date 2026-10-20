@@ -1306,11 +1306,16 @@ fn require_recipe_assignment(
     };
     let generation = crate::environment::decode_environment_generation_v1(&recipe.generation_manifest)
         .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
-    let policy = crate::publisher_policy::PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
-        authority.project(), authority.coordinates().policy_generation(),
-        authority.coordinates().policy_not_before(), authority.coordinates().policy_expires_at(),
-        authority.canonical_policy(), DecodeLimits::default(),
-    ).map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
+    let policy =
+        aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
+            authority.project(),
+            authority.coordinates().policy_generation(),
+            authority.coordinates().policy_not_before(),
+            authority.coordinates().policy_expires_at(),
+            authority.canonical_policy(),
+            DecodeLimits::default(),
+        )
+        .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
     if recipe.sandbox.as_bytes() != request.sandbox_id.as_slice()
         || recipe.project != authority.project() || manifest.project() != authority.project()
         || manifest.sandbox() != recipe.sandbox || manifest.sandbox_spec() != &recipe.specification

@@ -349,6 +349,12 @@ impl ValidatedStorageCaptureCandidateV1 {
         )
     }
 
+    /// Returns the original candidate expiry, without renewing its query window.
+    #[must_use]
+    pub fn expiry_boottime_nanoseconds(&self) -> u64 {
+        read_u64(&self.bytes[504..512])
+    }
+
     /// Returns the signed-outcome candidate checksum, not a standalone MAC.
     #[must_use]
     pub fn candidate_digest(&self) -> ObjectDigest {
@@ -430,7 +436,6 @@ pub fn decode_storage_capture_candidate_response_for_query_v1(
         || bytes[512..544] == [0; 32]
         || bytes[544..560] == [0; 16]
         || &bytes[544..560] == original_query.settlement().create_operation().as_bytes()
-        || admitted == 0
         || stdout.checked_add(stderr) != Some(admitted)
         || metadata == 0
         || floor == 0

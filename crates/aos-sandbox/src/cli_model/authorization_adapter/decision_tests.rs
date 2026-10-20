@@ -17,9 +17,8 @@ use aos_sandbox_core::{
 
 use super::*;
 use crate::controller::ControllerProtectedClockV1;
-use crate::publisher_policy::{
-    PreparedPublisherPolicyRevisionV1, PublisherControllerHeadV1, PublisherRevocationHeadV1,
-};
+use crate::publisher_admin::policy::{PublisherControllerHeadV1, PublisherRevocationHeadV1};
+use aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1;
 
 fn fixture() -> (
     tempfile::TempDir,
@@ -42,7 +41,7 @@ fn fixture() -> (
         .sample()
         .unwrap()
         .wall_seconds();
-    let seed = crate::publisher_authority::tests::capability(
+    let seed = crate::publisher_admin::capabilities::tests::capability(
         CapabilityId::from_bytes([61; 16]),
         now + 300,
     );
