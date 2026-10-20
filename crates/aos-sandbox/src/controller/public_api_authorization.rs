@@ -587,4 +587,3 @@ pub(super) fn authorize_public_operation_read_retaining_v1(
     DormantCliAuthorizationOwnerV1 { journal, protected_clock }
         .authorize_public_operation_read_inner_v1(peer, capability, scope, protobuf_body, Some(native))
 }
-

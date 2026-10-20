@@ -40,4 +40,3 @@ impl PublicMutationAuthorizationNativeV1 {
             .or_else(|| self.new_use.as_ref()?.as_ref().err().map(|cause| cause as _))
     }
 }
-

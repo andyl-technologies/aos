@@ -307,4 +307,3 @@ pub fn require_source_transition_engine<E: From<JournalError> + std::error::Erro
         }
     }
 }
-

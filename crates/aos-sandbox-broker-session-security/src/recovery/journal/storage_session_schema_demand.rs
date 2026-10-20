@@ -63,4 +63,3 @@ pub(super) fn retained_request_demand(
         .and_then(|demand| demand.checked_add(ResourceVector::ZERO.with(D::MemoryBytes, inline)))
         .map_err(|_| BrokerSessionSecurityError::Currentness)
 }
-

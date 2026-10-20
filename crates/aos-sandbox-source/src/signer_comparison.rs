@@ -642,4 +642,3 @@ pub fn sign_source_project_completed_terminal_from_comparison_v1<R: SourceSigner
     }
     Ok(packet)
 }
-

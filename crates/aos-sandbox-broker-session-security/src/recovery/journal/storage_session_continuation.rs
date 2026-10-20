@@ -1,5 +1,5 @@
 //! Same-owner Storage Session continuity and terminal comparisons.
-//! 
+//!
 //! These private seams borrow the actual held Journal and Broker endpoint.
 //! They neither reopen a pathname nor create another writer or role instance.
 

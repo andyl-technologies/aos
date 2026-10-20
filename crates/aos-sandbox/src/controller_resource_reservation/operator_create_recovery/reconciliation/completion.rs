@@ -162,4 +162,3 @@ impl<'held, 'completed> OperatorFirstLocalReconciliationCompleteV2<'held, 'compl
         &self.network.owner.profile
     }
 }
-

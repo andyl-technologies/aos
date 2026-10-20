@@ -127,4 +127,3 @@ pub fn validate_rows_with_lineage_v1(
     }
     Ok(rows)
 }
-

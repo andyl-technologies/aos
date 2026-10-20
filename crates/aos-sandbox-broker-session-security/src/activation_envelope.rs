@@ -95,4 +95,3 @@ pub fn remaining_duration(
         .filter(|remaining| *remaining > 0)
         .ok_or(ProductionBrokerSessionActivationErrorV1::Deadline)
 }
-

@@ -153,4 +153,3 @@ mod tests {
         assert!(clock.failure().is_none());
     }
 }
-

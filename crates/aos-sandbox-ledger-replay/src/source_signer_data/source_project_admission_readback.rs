@@ -450,4 +450,3 @@ fn take<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], SourceHo
         .and_then(|field| field.try_into().ok())
         .ok_or(SourceHoldReadbackErrorV1::NonCanonical)
 }
-

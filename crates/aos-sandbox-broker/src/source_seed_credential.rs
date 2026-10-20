@@ -64,4 +64,3 @@ pub fn verify_controller_source_tree_seed_from_fixed_issuer_v1(
 ) -> Result<VerifiedControllerSourceTreeSeedV1, ControllerSourceTreeSeedErrorV1> {
     ProtectedControllerSourceTreeSeedIssuerV1::from_systemd_credentials()?.verify(bytes, expected)
 }
-

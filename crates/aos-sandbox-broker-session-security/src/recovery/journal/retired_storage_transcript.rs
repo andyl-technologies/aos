@@ -115,4 +115,3 @@ impl RetiredStorageTranscriptV1 {
             && recovery.target.generation.checked_sub(1) == Some(self.protected_generation)
     }
 }
-

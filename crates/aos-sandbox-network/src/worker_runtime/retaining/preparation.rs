@@ -58,4 +58,3 @@ pub(super) fn execute_prepare_recipe_v4<N: PreparationNativeV4>(
         },
     }
 }
-

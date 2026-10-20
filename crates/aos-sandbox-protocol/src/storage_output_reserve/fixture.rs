@@ -122,4 +122,3 @@ pub(crate) fn captured_fixture() -> (ReserveStorageExecutionOutputRequestV1, Bro
     seal(SETTLEMENT_DOMAIN, &mut request.canonical_controller_settlement, 176);
     (request, assignment)
 }
-

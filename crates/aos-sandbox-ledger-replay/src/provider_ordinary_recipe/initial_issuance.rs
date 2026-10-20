@@ -22,7 +22,7 @@ macro_rules! define_provider_initial_issuance_data_recipe_v1 {
         const BOOTSTRAP_KEY_PREFIX: &[u8] = b"bootstrap/";
         const ENTITLEMENT_HEAD_KEY: &[u8] = b"entitlement/current";
         const MAXIMUM_BOOTSTRAP_RECORDS: usize = 65_536;
-        
+
         #[derive(Deserialize, Serialize)]
         #[serde(deny_unknown_fields)]
         struct BootstrapRecordV1 {
@@ -36,7 +36,7 @@ macro_rules! define_provider_initial_issuance_data_recipe_v1 {
             project: ProjectId,
             channel_binding: [u8; 32],
         }
-        
+
         #[derive(Clone, Copy, Deserialize, Serialize)]
         #[serde(deny_unknown_fields)]
         struct EntitlementHeadV1 {
@@ -44,14 +44,14 @@ macro_rules! define_provider_initial_issuance_data_recipe_v1 {
             generation: u64,
             digest: ObjectDigest,
         }
-        
+
         fn bootstrap_key(digest: &[u8; 32]) -> Vec<u8> {
             let mut key = Vec::with_capacity(BOOTSTRAP_KEY_PREFIX.len() + digest.len());
             key.extend_from_slice(BOOTSTRAP_KEY_PREFIX);
             key.extend_from_slice(digest);
             key
         }
-        
+
         fn holder_key_digest(principal: PrincipalId, project: ProjectId, binding: &[u8; 32]) -> [u8; 32] {
             Sha256::new()
                 .chain_update(BOOTSTRAP_KEY_DOMAIN)
@@ -61,7 +61,7 @@ macro_rules! define_provider_initial_issuance_data_recipe_v1 {
                 .finalize()
                 .into()
         }
-        
+
         fn decode_canonical<T>(bytes: &[u8]) -> Result<T, InitialPublicCapabilityErrorV1>
         where
             T: for<'de> Deserialize<'de> + Serialize,
@@ -73,7 +73,7 @@ macro_rules! define_provider_initial_issuance_data_recipe_v1 {
             }
             Ok(value)
         }
-        
+
         fn validate_bootstrap_records<'a>(
             records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
         ) -> Result<Option<EntitlementHeadV1>, InitialPublicCapabilityErrorV1> {
@@ -121,7 +121,7 @@ macro_rules! define_provider_initial_issuance_data_recipe_v1 {
             }
             Ok(head)
         }
-        
+
         fn require_git_coverage_initial_transaction_v1(
             transaction: &JournalTransaction,
             previous_head: Option<EntitlementHeadV1>,
@@ -192,7 +192,7 @@ macro_rules! define_provider_initial_issuance_data_recipe_v1 {
             }
             Ok(next)
         }
-        
+
         pub(crate) fn require_git_coverage_initial_from_state_v1(
             transaction: &JournalTransaction,
             state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
@@ -209,6 +209,6 @@ macro_rules! define_provider_initial_issuance_data_recipe_v1 {
             }
             require_git_coverage_initial_transaction_v1(transaction, head).map(|_| ())
         }
-        
+
     };
 }

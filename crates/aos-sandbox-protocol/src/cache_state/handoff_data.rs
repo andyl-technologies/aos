@@ -64,4 +64,3 @@ pub fn handoff_receipt_digest(receipt: &DescriptorHandoffReceiptDataV1) -> Objec
     hasher.update(receipt.post_handoff_evidence.as_bytes());
     ObjectDigest::from_bytes(hasher.finalize().into())
 }
-

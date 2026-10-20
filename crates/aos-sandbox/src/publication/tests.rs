@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     BrokerDispatchSemanticIdentityV1, GuardianPlanRequestV1,
-      
+
 };
 use aos_sandbox_protocol::authorization_artifact::{
     BrokerPlanPreparation, ReturnedSignature, SignedBrokerPlan, SigningAuthority,

@@ -332,4 +332,3 @@ impl SourceDeleteSemanticScopeV1<'_, '_> {
         self.readiness.funding_selected.get(index).copied().unwrap_or(false)
     }
 }
-

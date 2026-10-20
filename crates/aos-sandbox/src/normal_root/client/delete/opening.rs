@@ -26,7 +26,7 @@ use aos_sandbox_protocol::domain_ledger::{
 
 use aos_sandbox_protocol::domain_ledger::delete_root::controller_cut::{
     DELETE_ROOT_CONTROLLER_CUT_BYTES_V3, DeleteRootControllerCutDataV3,
-    DeleteRootControllerCutErrorV3, 
+    DeleteRootControllerCutErrorV3,
 };
 
 pub(super) struct RootDeleteClientOpeningV1 {

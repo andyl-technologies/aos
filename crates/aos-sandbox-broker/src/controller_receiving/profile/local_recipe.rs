@@ -276,4 +276,3 @@ fn retained_error<T, E: std::error::Error + 'static>(
     result.as_ref().and_then(|result| result.as_ref().err())
         .map(|cause| cause as &(dyn std::error::Error + 'static))
 }
-

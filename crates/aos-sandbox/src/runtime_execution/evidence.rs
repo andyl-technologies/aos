@@ -56,4 +56,3 @@ pub(crate) fn completion_from_authenticated_quarantine_v1(
     aos_sandbox_protocol::execution_evidence::completion_from_authenticated_quarantine_v1(effect, inventory)
         .map(|completion| JournalExecutionCompletionV1 { completion })
 }
-

@@ -109,4 +109,3 @@ pub(super) fn observation_error(cause: CreateStoppedNativeObservationErrorV2) ->
         CreateStoppedNativeObservationErrorV2::Recovered(cause) => JournalError::RecoveredCreateTerminal(cause),
     }
 }
-

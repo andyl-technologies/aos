@@ -286,5 +286,3 @@ pub(crate) fn start_terminal_receiving_demand_v2(
 // Both changed observed uint64 fields may grow from one to ten varint bytes;
 // their nested observation length can gain one additional byte.
 pub(super) const STOP_OBSERVATION_WIRE_GROWTH_V5: usize = 2 * (10 - 1) + 1;
-
-

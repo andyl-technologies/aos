@@ -16,7 +16,7 @@ impl<'io, 'scope, 'source, 'original> NativeSessionIoMemberV2<'io, 'scope, 'sour
     fn begin_io_v1(&mut self, journal: &Journal, socket: &SeqpacketSocket,
         transcript: &VerifiedBrokerSessionTranscriptV1, expected: IoPhaseV1, entered: IoPhaseV1,
     ) -> Result<(), ResourceReservationErrorV1> {
-        
+
         let stage = self.stages_v2().active_mut()?;
         if stage.phase != expected || stage.before.is_some() || stage.failure().is_some()
             || (expected == IoPhaseV1::Prepared && stage.authenticated_request.is_none()) {
@@ -87,7 +87,7 @@ impl<'io, 'scope, 'source, 'original> NativeSessionIoMemberV2<'io, 'scope, 'sour
     #[doc(hidden)]
     pub(in crate::controller_resource_reservation) fn observe_io_post_once(&mut self, journal: &Journal, socket: &SeqpacketSocket,
         transcript: &VerifiedBrokerSessionTranscriptV1) -> Result<(), ResourceReservationErrorV1> {
-        
+
         let stage = self.stages_v2().active_mut()?;
         if stage.before.is_none() || stage.after_association.is_some() {
             stage.closed = true;
@@ -190,7 +190,7 @@ impl<'io, 'scope, 'source, 'original> NativeSessionIoMemberV2<'io, 'scope, 'sour
     /// Retains actual geometry/refusal and never replaces a failed decoder entry.
     #[doc(hidden)]
     pub(in crate::controller_resource_reservation) fn admit_response_decode_once(&mut self, packet: &[u8]) -> Result<(), ResourceReservationErrorV1> {
-        
+
         let inventory = self.stages_v2().active == Some(true);
         let stage = self.stages_v2().active_mut()?;
         if stage.phase != IoPhaseV1::Decode || stage.decode.is_some() || stage.failure().is_some() {
@@ -205,7 +205,7 @@ impl<'io, 'scope, 'source, 'original> NativeSessionIoMemberV2<'io, 'scope, 'sour
             .ok_or(ResourceReservationErrorV1::Conflict)?;
         let incoming = geometry.checked_add(ResourceVector::ZERO.with(aos_sandbox_core::ResourceDimension::MemoryBytes, canonical))?;
         let complete = self.complete_base_v2(incoming)?;
-        
+
         let paid = self.require_complete_v2( complete);
         self.stages_v2().active_mut()?.decode = Some(paid);
         if self.stages_v2().active_mut()?.failure().is_some() { return Err(ResourceReservationErrorV1::Conflict); }
@@ -232,7 +232,7 @@ impl<'io, 'scope, 'source, 'original> NativeSessionIoMemberV2<'io, 'scope, 'sour
         let incoming = stage.outcome_geometry.as_ref().and_then(|value| value.as_ref().ok())
             .copied().ok_or(ResourceReservationErrorV1::Conflict)?;
         let complete = self.complete_base_v2(incoming)?;
-        
+
         let paid = self.require_complete_v2( complete);
         self.stages_v2().active_mut()?.outcome = Some(paid);
         if self.stages_v2().active_mut()?.failure().is_some() { return Err(ResourceReservationErrorV1::Conflict); }
@@ -252,7 +252,7 @@ impl<'io, 'scope, 'source, 'original> NativeSessionIoMemberV2<'io, 'scope, 'sour
     pub(in crate::controller_resource_reservation) fn finish_terminal_data_once_v2(&mut self, expected_body: &[u8], journal: &Journal,
         outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<(), ResourceReservationErrorV1> {
-        
+
         let journal_association = self.require_journal_v2(journal);
         let inventory = self.stages_v2().active == Some(true);
         let expected = self.method_v2(inventory);
@@ -305,7 +305,7 @@ impl<'io, 'scope, 'source, 'original> NativeSessionIoMemberV2<'io, 'scope, 'sour
     pub(in crate::controller_resource_reservation) fn observe_terminal_post_once_v2(&mut self, journal: &Journal,
         socket: &SeqpacketSocket, transcript: &VerifiedBrokerSessionTranscriptV1,
     ) -> Result<(), ResourceReservationErrorV1> {
-        
+
         let stage = self.stages_v2().active_mut()?;
         if stage.terminal_association.is_some() {
             stage.closed = true; return Err(ResourceReservationErrorV1::Conflict);
@@ -400,7 +400,7 @@ impl<'io, 'scope, 'source, 'original> NativeSessionIoMemberV2<'io, 'scope, 'sour
         let incoming = stage.predecessor_geometry.as_ref().and_then(|value| value.as_ref().ok())
             .copied().ok_or(ResourceReservationErrorV1::Conflict)?;
         let complete = self.complete_base_v2(incoming)?;
-        
+
         let paid = self.require_complete_v2( complete);
         self.stages_v2().active_mut()?.predecessor = Some(paid);
         if self.stages_v2().active_mut()?.failure().is_some() { return Err(ResourceReservationErrorV1::Conflict); }
@@ -419,7 +419,7 @@ impl<'io, 'scope, 'source, 'original> NativeSessionIoMemberV2<'io, 'scope, 'sour
     pub(in crate::controller_resource_reservation) fn bind_request_data_once_v2(&mut self, expected_body: &[u8],
         request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
     ) -> Result<(), ResourceReservationErrorV1> {
-        
+
         let inventory = self.stages_v2().active == Some(true);
         let expected_method = self.method_v2(inventory);
         let stage = self.stages_v2().active_mut()?;

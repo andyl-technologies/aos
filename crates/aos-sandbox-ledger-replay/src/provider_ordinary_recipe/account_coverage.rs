@@ -20,10 +20,10 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
     ($invalid:expr) => {
         use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceDimension, ResourceVector};
         use sha2::{Digest as _, Sha256};
-        
+
         use super::{PublisherPolicyError, array, key};
         use aos_sandbox_protocol::publisher_project_authorization::commitment;
-        
+
         pub(super) const PREFIX: &[u8] = b"git-upload/account-coverage/";
         const MAGIC: &[u8; 8] = b"AOSGUBC1";
         const DOMAIN: &[u8] = b"aos.sandbox.git-upload.account-coverage.v1\0";
@@ -35,13 +35,13 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
         const MAXIMUM_OBLIGATIONS: usize = 64;
         pub(super) const MAXIMUM_BYTES: usize =
             HEADER_BYTES + MAXIMUM_OWNERS * OWNER_BYTES + MAXIMUM_OBLIGATIONS * OBLIGATION_BYTES + 32;
-        
+
         type Result<T> = std::result::Result<T, PublisherPolicyError>;
-        
+
         pub(super) fn first_profile_key(project: ProjectId) -> Vec<u8> {
             key(PREFIX, project.as_bytes(), Some(2))
         }
-        
+
         /// Supplies nonauthorizing coordinates from the retained successor attempt.
         pub(super) struct EmptyAccountCoverageFieldsV1 {
             pub(super) project: ProjectId,
@@ -53,7 +53,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
             pub(super) ceiling_authority: ObjectDigest,
             pub(super) cpu_period_micros: u64,
         }
-        
+
         /// Encodes only the first covered profile, after its actual owners prove empty.
         ///
         /// The caller supplies the original owner rows, not resource amounts. This
@@ -73,7 +73,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
             if length > MAXIMUM_BYTES {
                 return Err($invalid);
             }
-        
+
             let mut bytes = Vec::with_capacity(length);
             bytes.extend_from_slice(MAGIC);
             bytes.extend_from_slice(&[0, 1, 0, 0]);
@@ -98,7 +98,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
             for owner in owners {
                 bytes.extend_from_slice(owner);
             }
-        
+
             // The native identity excludes its own field and the later checksum. It
             // commits the exact original owner rows rather than a projected census.
             let transaction: [u8; 32] = Sha256::new()
@@ -110,19 +110,19 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
             bytes[204..220].copy_from_slice(&transaction[..16]);
             let checksum = commitment(DOMAIN, &bytes);
             bytes.extend_from_slice(checksum.as_bytes());
-        
+
             // There is one canonical shape/fold body for both encoding and replay.
             AccountCoverageV1::decode(&bytes)?.require_empty_first_profile()?;
             Ok(bytes)
         }
-        
+
         /// Borrows one fully shape-checked companion without authenticating its claims.
         pub(super) struct AccountCoverageV1<'record> {
             bytes: &'record [u8],
             owners: usize,
             obligations: usize,
         }
-        
+
         impl<'record> AccountCoverageV1<'record> {
             pub(super) fn decode(bytes: &'record [u8]) -> Result<Self> {
                 if !(HEADER_BYTES + 32..=MAXIMUM_BYTES).contains(&bytes.len())
@@ -151,68 +151,68 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
                 {
                     return Err($invalid);
                 }
-        
+
                 let record = Self { bytes, owners, obligations };
                 record.validate_header()?;
                 record.validate_rows()?;
                 record.fold()?;
                 Ok(record)
             }
-        
+
             pub(super) fn project(&self) -> Result<ProjectId> {
                 Ok(ProjectId::from_bytes(array(self.bytes, 12)?))
             }
-        
+
             pub(super) fn generation(&self) -> Result<u64> {
                 Ok(u64::from_be_bytes(array(self.bytes, 28)?))
             }
-        
+
             pub(super) fn origin(&self) -> Result<ObjectDigest> {
                 self.digest_at(36)
             }
-        
+
             pub(super) fn account(&self) -> Result<ObjectDigest> {
                 self.digest_at(68)
             }
-        
+
             pub(super) fn predecessor(&self) -> Result<ObjectDigest> {
                 self.digest_at(100)
             }
-        
+
             pub(super) fn enrollment(&self) -> Result<ObjectDigest> {
                 self.digest_at(132)
             }
-        
+
             pub(super) fn ceiling_authority(&self) -> Result<ObjectDigest> {
                 self.digest_at(164)
             }
-        
+
             pub(super) fn cpu_period_micros(&self) -> Result<u64> {
                 Ok(u64::from_be_bytes(array(self.bytes, 196)?))
             }
-        
+
             pub(super) fn transaction(&self) -> Result<[u8; 16]> {
                 array(self.bytes, 204)
             }
-        
+
             pub(super) fn digest(&self) -> ObjectDigest {
                 commitment(DOMAIN, self.bytes)
             }
-        
+
             pub(super) fn key(&self) -> Result<Vec<u8>> {
                 Ok(key(PREFIX, self.project()?.as_bytes(), Some(self.generation()?)))
             }
-        
+
             // The first profile has no owner migration or retirement. Successors must
             // retain these complete original rows, not only their cardinality.
             pub(super) fn owner_bytes(&self) -> &'record [u8] {
                 &self.bytes[HEADER_BYTES..HEADER_BYTES + self.owners * OWNER_BYTES]
             }
-        
+
             fn digest_at(&self, offset: usize) -> Result<ObjectDigest> {
                 Ok(ObjectDigest::from_bytes(array(self.bytes, offset)?))
             }
-        
+
             fn owner(&self, index: usize) -> Result<&'record [u8]> {
                 if index >= self.owners {
                     return Err($invalid);
@@ -220,7 +220,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
                 let offset = HEADER_BYTES + index * OWNER_BYTES;
                 self.bytes.get(offset..offset + OWNER_BYTES).ok_or($invalid)
             }
-        
+
             fn obligation(&self, index: usize) -> Result<&'record [u8]> {
                 if index >= self.obligations {
                     return Err($invalid);
@@ -228,7 +228,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
                 let offset = HEADER_BYTES + self.owners * OWNER_BYTES + index * OBLIGATION_BYTES;
                 self.bytes.get(offset..offset + OBLIGATION_BYTES).ok_or($invalid)
             }
-        
+
             fn validate_header(&self) -> Result<()> {
                 if self.project()?.as_bytes() == &[0; 16]
                     || self.generation()? < 2
@@ -251,7 +251,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
                 }
                 Ok(())
             }
-        
+
             fn validate_rows(&self) -> Result<()> {
                 let mut previous_owner = None;
                 for index in 0..self.owners {
@@ -278,7 +278,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
                     }
                     previous_owner = Some(identity);
                 }
-        
+
                 let mut previous_obligation = None;
                 for index in 0..self.obligations {
                     let row = self.obligation(index)?;
@@ -307,7 +307,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
                 }
                 Ok(())
             }
-        
+
             fn find_obligation(&self, identity: [u8; 32]) -> Result<usize> {
                 for index in 0..self.obligations {
                     if array::<32>(self.obligation(index)?, 0)? == identity {
@@ -316,7 +316,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
                 }
                 Err($invalid)
             }
-        
+
             // No projection into a second accounting representation is retained. Each
             // fixed row lends its vector directly to the existing checked arithmetic.
             fn amounts(&self, row: &[u8]) -> Result<ResourceVector> {
@@ -326,7 +326,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
                 }
                 Ok(ResourceVector::new(amounts))
             }
-        
+
             /// Folds top-level debt and checks complete direct-child containment.
             pub(super) fn fold(&self) -> Result<(ResourceVector, ResourceVector)> {
                 let mut committed = ResourceVector::ZERO;
@@ -339,7 +339,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
                         let total = if disposition == 1 { &mut committed } else { &mut reserved };
                         *total = total.checked_add(amounts).map_err(|_| $invalid)?;
                     }
-        
+
                     let mut ancestor = index;
                     for depth in 0..=self.obligations {
                         let current = self.obligation(ancestor)?;
@@ -354,7 +354,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
                             return Err($invalid);
                         }
                     }
-        
+
                     // Sum every direct nonretired child, not independent per-child
                     // comparisons. Parent amounts describe its envelope, not an extra
                     // additive charge; contained rows are not counted twice above.
@@ -376,7 +376,7 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
                 }
                 Ok((committed, reserved))
             }
-        
+
             // The first installed profile has no retirement producer or populated
             // tenant domain. Authentication/coverage is checked on real owners before
             // this restriction; an empty row list by itself proves nothing.
@@ -387,6 +387,6 @@ macro_rules! define_provider_account_coverage_data_recipe_v1 {
                 Ok(())
             }
         }
-        
+
     };
 }

@@ -393,4 +393,3 @@ impl OperatorReconciliationObservationLoanV2<'_, '_, '_, '_> {
     /// Borrows the retained actual role failure without releasing its custody.
     pub fn failure_v2(&self) -> Option<&(dyn Error + 'static)> { self.owner.failure_v2() }
 }
-

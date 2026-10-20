@@ -28,4 +28,3 @@ pub(crate) fn pending(
         .find(|row| row.complete.is_none())
         .map(|row| row.acceptance))
 }
-

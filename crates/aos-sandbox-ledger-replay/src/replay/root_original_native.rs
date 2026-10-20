@@ -920,4 +920,3 @@ pub fn validate_replayed_transaction(
     }
     Ok(false)
 }
-

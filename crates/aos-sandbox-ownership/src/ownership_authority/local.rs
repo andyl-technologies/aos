@@ -277,4 +277,3 @@ impl DurableOwnershipAuthority {
         Ok(response)
     }
 }
-

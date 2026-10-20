@@ -151,4 +151,3 @@ impl CaptureCreateBackendV1 for FixedCaptureCreateBackendV1<'_, '_, '_> {
         Ok(completed)
     }
 }
-

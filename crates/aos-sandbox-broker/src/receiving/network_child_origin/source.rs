@@ -637,7 +637,7 @@ fn require_same_netd_identity_once_v2(native: &native::NativeOriginalV2,
             use_kind.close_positive();
             Err(NetworkChildOriginClosedV2)
         } else { Ok(()) }
-    
+
 }
 
 fn require_live_source_query_once_v2(native: &native::NativeOriginalV2,
@@ -680,7 +680,7 @@ fn require_live_source_query_once_v2(native: &native::NativeOriginalV2,
             *closed = true;
             Err(NetworkChildOriginClosedV2)
         } else { Ok(()) }
-    
+
 }
 
 fn packet_u64(packet: &[u8; 840], offset: usize) -> Option<u64> {

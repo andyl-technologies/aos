@@ -52,4 +52,3 @@ pub use signed_outcome_packet::{
     SignedAgentOutcomePacketErrorV1, SignedAgentOutcomePacketV1,
     decode_signed_agent_outcome_packet_v1, encode_signed_agent_outcome_packet_v1,
 };
-

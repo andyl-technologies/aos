@@ -64,5 +64,3 @@ impl<E: From<JournalError> + std::error::Error + 'static, H: From<DomainLedgerDa
         Some((bytes, 8usize.checked_add(family_cells)?.checked_add(replay_cells)?.checked_add(3 * 2 + 2 * 3 + 10)?))
     }
 }
-
-

@@ -697,4 +697,3 @@ impl<'writer, 'launch, 'profile, P> PublisherControllerLoanV1<'writer, 'launch, 
         Ok(())
     }
 }
-

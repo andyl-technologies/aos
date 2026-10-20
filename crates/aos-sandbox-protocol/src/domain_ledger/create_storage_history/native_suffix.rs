@@ -322,4 +322,3 @@ impl<'expected, 'progress> HistoryPairNativeSuffixV1<'expected, 'progress> {
         self.progress.first.as_ref()
     }
 }
-

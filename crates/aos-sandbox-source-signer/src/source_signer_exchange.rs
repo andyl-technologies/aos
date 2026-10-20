@@ -29,4 +29,3 @@ pub fn run_selected_source_signer_service_v1(
     require_source_signer_process_identity_v1(controller_uid, controller_gid, signer_uid, signer_gid)?;
     receiving::run_selected()
 }
-

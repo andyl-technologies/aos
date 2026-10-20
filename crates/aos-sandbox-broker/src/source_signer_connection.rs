@@ -137,4 +137,3 @@ pub fn require_source_signer_process_identity_v1(
     }
     Ok(())
 }
-

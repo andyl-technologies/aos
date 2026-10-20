@@ -178,4 +178,3 @@ fn preserves_source_attempt_v1(
         && old.owner_predecessor_digest == next.owner_predecessor_digest
         && old.owner_predecessor == next.owner_predecessor
 }
-

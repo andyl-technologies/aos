@@ -49,4 +49,3 @@ pub struct LocalSessionScope {
     /// Logical cache resource whose domain mapping still requires current lookup.
     pub cache_resource: ResourceId,
 }
-

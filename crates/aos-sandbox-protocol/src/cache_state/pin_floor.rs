@@ -133,4 +133,3 @@ fn read_pin_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N]
     let (value, _) = checked_byte_region(bytes, offset, N).map_err(|_| PinDataErrorV1::InvalidFloor)?;
     value.try_into().map_err(|_| PinDataErrorV1::InvalidFloor)
 }
-

@@ -116,4 +116,3 @@ fn write_compaction_transaction(
         .checked_add(frames.len() as u64)
         .ok_or(CanonicalCompactionErrorV1::SequenceExhausted)
 }
-

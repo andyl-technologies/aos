@@ -124,4 +124,3 @@ pub(crate) fn trusted_provisioned_time_data_v1(record: &[u8], now: aos_sandbox_c
 pub(crate) fn provisioned_kernel_boot_data_v1(boot: [u8; 16]) -> aos_sandbox_core::ObjectDigest {
     authority_clock::linux_kernel_boot_commitment_v1(boot)
 }
-

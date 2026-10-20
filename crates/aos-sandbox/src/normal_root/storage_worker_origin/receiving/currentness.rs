@@ -147,4 +147,3 @@ impl CurrentObservation {
         cause.or(Some(&StorageReceivingClosedV1))
     }
 }
-

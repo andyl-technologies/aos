@@ -248,4 +248,3 @@ fn take<const N: usize>(
         .and_then(|slice| slice.try_into().ok())
         .ok_or(ProjectAuthorizationSignatureErrorV2::NonCanonical)
 }
-

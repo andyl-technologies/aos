@@ -38,7 +38,7 @@ macro_rules! define_provider_runtime_issuance_data_recipe_v1 {
             expires_wall_seconds: i64,
             deadline_boottime_nanoseconds: u64,
         }
-        
+
         impl RuntimeIssuanceEvidenceV1 {
             pub(super) fn validate_for(
                 &self,

@@ -65,4 +65,3 @@ impl<T> DerefMut for CaptureValueV1<'_, T> {
         }
     }
 }
-

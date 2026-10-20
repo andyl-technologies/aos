@@ -1120,7 +1120,7 @@ mod tests {
     };
 
     use super::*;
-    
+
     use crate::publisher_admin::policy::project_authorization_test_fixture::{
         TestDirectory, packet as signed_packet, pin as issuer_pin, policy as policy_at,
     };

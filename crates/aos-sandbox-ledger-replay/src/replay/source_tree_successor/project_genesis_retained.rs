@@ -183,5 +183,3 @@ impl<E: From<JournalError> + std::error::Error + 'static, H: From<DomainLedgerDa
         Some((bytes, cells))
     }
 }
-
-

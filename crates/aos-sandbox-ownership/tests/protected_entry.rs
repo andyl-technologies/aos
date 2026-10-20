@@ -15,4 +15,3 @@ fn local_lease_service_enters_through_the_retained_original_without_remote_selec
     let _original_cause = OwnershipServiceReceivingOriginalV1::failure;
     let _local_cause = ProtectedFixedLocalLeaseOwnerV1::retained_failure;
 }
-

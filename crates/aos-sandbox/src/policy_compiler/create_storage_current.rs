@@ -627,4 +627,3 @@ impl<'flight, 'listener, 'startup> OriginalRootCreateStorageCurrentAttemptV1<'fl
             .or_else(|| cause!(self.negative_post))
     }
 }
-

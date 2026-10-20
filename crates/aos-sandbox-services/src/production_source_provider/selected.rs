@@ -521,4 +521,3 @@ impl Drop for ProductionSelectedSourceProviderOriginalV1 {
         self.end_original();
     }
 }
-

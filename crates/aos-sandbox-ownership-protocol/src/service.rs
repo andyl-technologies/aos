@@ -42,4 +42,3 @@ pub trait OwnershipProtocolRequestHandler {
         request: &OwnershipRequestEnvelopeV1,
     ) -> Result<OwnershipResponseEnvelopeV1, OwnershipProtocolServiceError>;
 }
-

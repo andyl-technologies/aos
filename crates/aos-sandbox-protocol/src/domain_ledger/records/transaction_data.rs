@@ -181,4 +181,3 @@ impl<S: ProtectedDomainSchemaV1> DomainPostcommitRecordDataV1<S> {
         self.phase
     }
 }
-

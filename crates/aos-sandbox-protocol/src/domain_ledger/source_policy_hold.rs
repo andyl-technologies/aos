@@ -383,4 +383,3 @@ impl SourceDomainPolicyV8PendingSettlementV1 {
         Ok(marker)
     }
 }
-

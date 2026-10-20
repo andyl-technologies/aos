@@ -139,4 +139,3 @@ impl Shape {
             .with(D::MetadataEntries, u64::try_from(self.cells).map_err(|_| invalid())?))
     }
 }
-

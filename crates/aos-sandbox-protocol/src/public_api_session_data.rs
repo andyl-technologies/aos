@@ -17,4 +17,3 @@ pub enum PublicApiSessionError {
     #[error("public API session is no longer current")]
     Stale,
 }
-

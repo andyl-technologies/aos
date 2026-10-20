@@ -264,4 +264,3 @@ pub fn source_authority_subject(
     hasher.update(source_seal.as_bytes());
     ObjectDigest::from_bytes(hasher.finalize().into())
 }
-

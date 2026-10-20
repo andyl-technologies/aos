@@ -329,7 +329,7 @@ macro_rules! kernel_recheck_recipe {
             ));
         }
         Ok(())
-    
+
     }};
 }
 

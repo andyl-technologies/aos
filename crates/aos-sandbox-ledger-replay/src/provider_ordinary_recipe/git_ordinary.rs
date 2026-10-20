@@ -17,7 +17,7 @@ macro_rules! define_provider_git_ordinary_data_recipe_v1 {
             *read.path() == std::path::Path::new("/var/lib/aos/sandboxd/controller.journal")
             && has_durable_owner_fence_v1(state)
         }
-        
+
         pub(super) fn require_owner_transition_read_v1<P>(
             read: aos_sandbox_broker::canonical_journal::coordinator::CanonicalWriterReadViewV1<'_, P>,
             state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
@@ -37,7 +37,7 @@ macro_rules! define_provider_git_ordinary_data_recipe_v1 {
             if !controller_fenced_read_v1(read, state) {
                 return Ok(());
             }
-        
+
             if transaction.records().first().is_some_and(|record| {
                 matches!(record.namespace(), RecordNamespace::CliAuthorizationTime
                     | RecordNamespace::PublisherAuthority)
@@ -62,7 +62,7 @@ macro_rules! define_provider_git_ordinary_data_recipe_v1 {
                     _ => Err(JournalError::ProtectedBoundary),
                 };
             }
-        
+
             // The only new durable work in this first profile is its sole existing
             // three-PUT account successor. The shared account codec validates its
             // relation; the genuine store/capture performs authority and CAS.
@@ -79,7 +79,7 @@ macro_rules! define_provider_git_ordinary_data_recipe_v1 {
             }
             Ok(())
             }
-        
+
         pub(super) fn require_mount_transition_read_v1<P>(
             read: aos_sandbox_broker::canonical_journal::coordinator::CanonicalWriterReadViewV1<'_, P>,
             mount_denied: bool,
@@ -105,7 +105,7 @@ macro_rules! define_provider_git_ordinary_data_recipe_v1 {
                 state, transaction,
             ).map_err(JournalError::from)
             }
-        
+
         pub(super) fn require_storage_transition_read_v1<P>(
             read: aos_sandbox_broker::canonical_journal::coordinator::CanonicalWriterReadViewV1<'_, P>,
             state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,

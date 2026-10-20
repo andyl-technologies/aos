@@ -130,4 +130,3 @@ impl DeleteRootControllerCutDataV3 {
         Ok(())
     }
 }
-

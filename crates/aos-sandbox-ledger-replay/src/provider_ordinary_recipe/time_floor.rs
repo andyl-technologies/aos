@@ -18,7 +18,7 @@ macro_rules! define_provider_time_floor_data_recipe_v1 {
         const TIME_FLOOR_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.cli.authorization-time-floor.v1\0";
         const TIME_FLOOR_TRANSACTION_DOMAIN: &[u8] =
             b"aos.sandbox.cli.authorization-time-floor-transaction.v1\0";
-        
+
         #[derive(Clone, Copy)]
         pub(crate) struct ProtectedTimeFloorRevisionV1 {
             generation: u64,
@@ -26,7 +26,7 @@ macro_rules! define_provider_time_floor_data_recipe_v1 {
             previous: ObjectDigest,
             digest: ObjectDigest,
         }
-        
+
         fn load_protected_time_floor_records<'a>(
             records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
         ) -> Result<Option<ProtectedTimeFloorRevisionV1>, CliAuthorizationAdapterError> {
@@ -48,7 +48,7 @@ macro_rules! define_provider_time_floor_data_recipe_v1 {
                     return Err($refused);
                 }
             }
-        
+
             match (head, revisions.is_empty()) {
                 (None, true) => Ok(None),
                 (Some((head_generation, head_digest)), false) => {
@@ -74,7 +74,7 @@ macro_rules! define_provider_time_floor_data_recipe_v1 {
                 _ => Err($refused),
             }
         }
-        
+
         pub(crate) fn require_git_coverage_floor_transaction_v1(
             transaction: &JournalTransaction,
             prior: Option<ProtectedTimeFloorRevisionV1>,
@@ -114,7 +114,7 @@ macro_rules! define_provider_time_floor_data_recipe_v1 {
             }
             Ok(revision)
         }
-        
+
         pub(crate) fn require_git_coverage_floor_from_state_v1(
             transaction: &JournalTransaction,
             state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
@@ -124,7 +124,7 @@ macro_rules! define_provider_time_floor_data_recipe_v1 {
                 .map(|((_, key), value)| (key.as_slice(), value.as_slice())))?;
             require_git_coverage_floor_transaction_v1(transaction, prior).map(|_| ())
         }
-        
+
         fn validate_clock_advancement(
             prior: Option<ProtectedTimeFloorRevisionV1>,
             clock: RawPairedClockSample,
@@ -140,7 +140,7 @@ macro_rules! define_provider_time_floor_data_recipe_v1 {
             if clock.host_boot_id() != prior.clock.host_boot_id() {
                 return Ok(());
             }
-        
+
             let wall_elapsed = clock
                 .wall_seconds()
                 .checked_sub(prior.clock.wall_seconds())
@@ -156,7 +156,7 @@ macro_rules! define_provider_time_floor_data_recipe_v1 {
             }
             Ok(())
         }
-        
+
         fn encode_time_floor_revision(
             value: ProtectedTimeFloorRevisionV1,
             include_digest: bool,
@@ -176,7 +176,7 @@ macro_rules! define_provider_time_floor_data_recipe_v1 {
             });
             encoded
         }
-        
+
         fn decode_time_floor_revision(
             bytes: &[u8],
         ) -> Result<ProtectedTimeFloorRevisionV1, CliAuthorizationAdapterError> {
@@ -219,7 +219,7 @@ macro_rules! define_provider_time_floor_data_recipe_v1 {
                 digest,
             })
         }
-        
+
         fn encode_time_floor_head(value: ProtectedTimeFloorRevisionV1) -> Vec<u8> {
             let mut encoded = Vec::with_capacity(48);
             encoded.extend_from_slice(TIME_FLOOR_HEAD_MAGIC);
@@ -227,7 +227,7 @@ macro_rules! define_provider_time_floor_data_recipe_v1 {
             encoded.extend_from_slice(value.digest.as_bytes());
             encoded
         }
-        
+
         fn decode_time_floor_head(
             bytes: &[u8],
         ) -> Result<(u64, ObjectDigest), CliAuthorizationAdapterError> {
@@ -241,23 +241,23 @@ macro_rules! define_provider_time_floor_data_recipe_v1 {
             }
             Ok((generation, digest))
         }
-        
+
         fn time_floor_revision_key(generation: u64) -> Vec<u8> {
             let mut key = Vec::with_capacity(TIME_FLOOR_REVISION_PREFIX.len() + 8);
             key.extend_from_slice(TIME_FLOOR_REVISION_PREFIX);
             key.extend_from_slice(&generation.to_be_bytes());
             key
         }
-        
+
         fn decode_u64(bytes: &[u8]) -> Result<u64, CliAuthorizationAdapterError> {
             Ok(u64::from_be_bytes(decode_array::<8>(bytes)?))
         }
-        
+
         fn decode_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], CliAuthorizationAdapterError> {
             bytes
                 .try_into()
                 .map_err(|_| $refused)
         }
-        
+
     };
 }

@@ -72,4 +72,3 @@ fn bootstrap_rejects_resealed_short_prefixes_lengths_and_trailing_bytes() {
         ));
     }
 }
-

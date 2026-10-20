@@ -45,4 +45,3 @@ pub fn prepare_history_pair_v1(
         JournalRecord::put(RecordNamespace::CreateStorageHistory, latest.encode().to_vec(), head.to_vec()),
     ]).map_err(Into::into)
 }
-

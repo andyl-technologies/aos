@@ -110,4 +110,3 @@ fn as_u64(value: usize) -> Result<u64, ReceivingGeometryRefusalV1> {
 fn invalid() -> ReceivingGeometryRefusalV1 {
     ReceivingGeometryRefusalV1
 }
-

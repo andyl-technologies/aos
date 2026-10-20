@@ -164,4 +164,3 @@ macro_rules! systemd_setup_recipe {
         })
         }};
 }
-

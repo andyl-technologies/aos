@@ -28,7 +28,7 @@ use crate::{
     AuthorityEffectAttemptTimingV1, AuthorityPublicationError, AuthorityPublicationProposalV1,
     AuthorityPublicationStore, BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, Journal,
     PreparedAuthorityEffectV1, PreparedAuthorityPublicationV1, ReconcilerError,
-    
+
 };
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 

@@ -1003,4 +1003,3 @@ pub fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, CacheFormatError> {
 pub fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, CacheFormatError> {
     Ok(u64::from_be_bytes(read_array(bytes, offset)?))
 }
-

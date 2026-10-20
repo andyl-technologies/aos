@@ -124,4 +124,3 @@ pub fn reducer_body(bytes: &[u8]) -> Option<&[u8]> {
     if payload.len() != end.checked_add(32)? { return None; }
     payload.get(start..end)
 }
-

@@ -225,4 +225,3 @@ fn is_ack_delete(record: &JournalRecord) -> bool {
         && record.key() == RETIREMENT_ACK_KEY
         && record.value().is_none()
 }
-

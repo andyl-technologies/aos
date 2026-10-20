@@ -362,4 +362,3 @@ impl<E: ProtectedFailure + From<FrameError> + Error + 'static> Default for Write
         Self::new()
     }
 }
-

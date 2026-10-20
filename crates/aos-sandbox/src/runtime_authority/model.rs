@@ -293,4 +293,3 @@ impl RuntimeAuthorityBindingV1 {
         self.data.digest()
     }
 }
-

@@ -176,5 +176,3 @@ where
             .with(D::MetadataEntries, u64::try_from(cells).map_err(|_| overflow())?))
     }
 }
-
-

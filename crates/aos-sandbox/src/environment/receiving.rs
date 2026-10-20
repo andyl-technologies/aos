@@ -102,4 +102,3 @@ pub(crate) fn execution_source_receiving_demand_v1(
         .and_then(|n| u64::try_from(n).ok()).ok_or_else(invalid)?;
     Ok(ResourceVector::ZERO.with(D::MemoryBytes, models))
 }
-

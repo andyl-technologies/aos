@@ -147,4 +147,3 @@ fn idempotency_floor_digest(floor: &CacheIdempotencyCompactionFloorV1) -> Object
     hasher.update(floor.generation.to_be_bytes());
     ObjectDigest::from_bytes(hasher.finalize().into())
 }
-

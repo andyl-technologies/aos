@@ -443,4 +443,3 @@ pub(super) fn decode_provisioned_evidence_data_v1(bytes: &[u8])
 pub(super) const fn maximum_evidence_record_bytes_v1() -> usize {
     FIXED_PREFIX_BYTES + MAXIMUM_PREDECESSOR_BOOTS * 32 + DIGEST_BYTES
 }
-

@@ -32,32 +32,32 @@ macro_rules! define_provider_issuance_data_recipe_v1 {
             cache_resource: ResourceId,
             isolation_policy: ObjectDigest,
         }
-        
+
         impl IssuanceDecisionMetadataV1 {
             /// Returns the boot identity paired with the clock observation.
             #[must_use]
             pub const fn boot_id(&self) -> [u8; 16] {
                 self.boot_id
             }
-        
+
             /// Returns the protected clock-reader configuration identity.
             #[must_use]
             pub const fn clock_provenance(&self) -> [u8; 16] {
                 self.clock_provenance
             }
-        
+
             /// Returns the observed Unix wall-clock second.
             #[must_use]
             pub const fn observed_wall_seconds(&self) -> i64 {
                 self.observed_wall_seconds
             }
-        
+
             /// Returns the paired `CLOCK_BOOTTIME` nanoseconds.
             #[must_use]
             pub const fn observed_boottime_nanoseconds(&self) -> u64 {
                 self.observed_boottime_nanoseconds
             }
-        
+
             pub(super) fn validate_for(
                 &self,
                 capability: &CapabilityRecord,
@@ -108,7 +108,7 @@ macro_rules! define_provider_issuance_data_recipe_v1 {
                 }
                 capability_claims_digest(capability)
             }
-        
+
             fn validate_fields(&self) -> Result<(), PublisherAuthorityError> {
                 if self.decision_id.as_bytes() == &[0; 16]
                     || self.session_id == [0; 16]
@@ -124,7 +124,7 @@ macro_rules! define_provider_issuance_data_recipe_v1 {
                 Ok(())
             }
         }
-        
+
         pub(super) fn capability_claims_digest(
             capability: &CapabilityRecord,
         ) -> Result<ObjectDigest, PublisherAuthorityError> {
@@ -133,13 +133,13 @@ macro_rules! define_provider_issuance_data_recipe_v1 {
                 .map_err(|_| $malformed)?;
             Ok(ObjectDigest::from_bytes(writer.finish()))
         }
-        
+
         struct ClaimsDigestWriter {
             digest: Sha256,
             bytes: usize,
             maximum_bytes: usize,
         }
-        
+
         impl ClaimsDigestWriter {
             fn new(maximum_bytes: usize) -> Self {
                 let mut digest = Sha256::new();
@@ -150,12 +150,12 @@ macro_rules! define_provider_issuance_data_recipe_v1 {
                     maximum_bytes,
                 }
             }
-        
+
             fn finish(self) -> [u8; 32] {
                 self.digest.finalize().into()
             }
         }
-        
+
         impl io::Write for ClaimsDigestWriter {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 let next = self
@@ -169,7 +169,7 @@ macro_rules! define_provider_issuance_data_recipe_v1 {
                 self.bytes = next;
                 Ok(bytes.len())
             }
-        
+
             fn flush(&mut self) -> io::Result<()> {
                 Ok(())
             }

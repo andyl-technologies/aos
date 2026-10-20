@@ -86,4 +86,3 @@ pub fn validate_witness(
     }
     Ok(())
 }
-

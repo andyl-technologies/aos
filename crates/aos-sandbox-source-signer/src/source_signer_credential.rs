@@ -19,4 +19,3 @@ const PIN_NAME: &str = "source-hold-public-key";
 #[derive(Debug, thiserror::Error)]
 #[error("Source signer credentials are missing, unsafe, or inconsistent")]
 pub(crate) struct SourceSignerCredentialErrorV1;
-

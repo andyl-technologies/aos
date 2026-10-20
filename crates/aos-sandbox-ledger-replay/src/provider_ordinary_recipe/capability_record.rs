@@ -21,13 +21,13 @@ macro_rules! define_provider_capability_record_data_recipe_v1 {
         const RECORD_FAMILY: &[u8] = b"capability/";
         const RECORD_KEY_BYTES: usize = RECORD_FAMILY.len() + 16;
         const MAXIMUM_RECORD_BYTES: usize = 16 * 1024 * 1024;
-        
+
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         enum DurableCapabilityStateV1 {
             Active,
             Revoked,
         }
-        
+
         #[derive(Debug, Deserialize, Eq, PartialEq)]
         #[serde(deny_unknown_fields)]
         struct DurableCapabilityRecordWireV1 {
@@ -42,7 +42,7 @@ macro_rules! define_provider_capability_record_data_recipe_v1 {
             #[serde(default)]
             handle: Option<[u8; 32]>,
         }
-        
+
         struct DecodedCapabilityRecordV1 {
             state: DurableCapabilityStateV1,
             capability: CapabilityRecord,
@@ -51,7 +51,7 @@ macro_rules! define_provider_capability_record_data_recipe_v1 {
             parent: Option<CapabilityId>,
             handle: Option<[u8; 32]>,
         }
-        
+
         #[derive(Serialize)]
         #[serde(deny_unknown_fields)]
         struct DurableCapabilityRecordRefV1<'a> {
@@ -66,14 +66,14 @@ macro_rules! define_provider_capability_record_data_recipe_v1 {
             #[serde(skip_serializing_if = "Option::is_none")]
             handle: Option<[u8; 32]>,
         }
-        
+
         fn capability_key(id: CapabilityId) -> [u8; RECORD_KEY_BYTES] {
             let mut key = [0_u8; RECORD_KEY_BYTES];
             key[..RECORD_FAMILY.len()].copy_from_slice(RECORD_FAMILY);
             key[RECORD_FAMILY.len()..].copy_from_slice(id.as_bytes());
             key
         }
-        
+
         fn capability_id_from_key(key: &[u8]) -> Result<CapabilityId, PublisherAuthorityError> {
             if key.len() != RECORD_KEY_BYTES || !key.starts_with(RECORD_FAMILY) {
                 return Err($malformed);
@@ -85,7 +85,7 @@ macro_rules! define_provider_capability_record_data_recipe_v1 {
             }
             Ok(CapabilityId::from_bytes(bytes))
         }
-        
+
         fn decode_record(
             key: &[u8],
             bytes: &[u8],
@@ -158,7 +158,7 @@ macro_rules! define_provider_capability_record_data_recipe_v1 {
                 handle: decoded.handle,
             })
         }
-        
+
         // Closed canonical DATA projection for the enrolled initial-read recipe.
         // Signed entitlement and live holder/current policy checks remain at issuance.
         pub(crate) fn decode_git_coverage_initial_content_read_v1(
@@ -166,7 +166,7 @@ macro_rules! define_provider_capability_record_data_recipe_v1 {
             bytes: &[u8],
         ) -> Result<(CapabilityRecord, [u8; 32]), PublisherAuthorityError> {
             use aos_sandbox_core::{Operation, OperationSet, ResourceKind, Selector};
-        
+
             let decoded = decode_record(
                 key, bytes, MAXIMUM_RECORD_BYTES,
             )?;
@@ -187,7 +187,7 @@ macro_rules! define_provider_capability_record_data_recipe_v1 {
             let handle = decoded.handle.ok_or($invalid_handle)?;
             Ok((decoded.capability, handle))
         }
-        
+
         fn encode_record(
             state: DurableCapabilityStateV1,
             capability: &CapabilityRecord,
@@ -229,7 +229,7 @@ macro_rules! define_provider_capability_record_data_recipe_v1 {
             }
             Ok(writer.bytes)
         }
-        
+
         impl DurableCapabilityStateV1 {
             const fn wire_value(self) -> u8 {
                 match self {
@@ -238,13 +238,13 @@ macro_rules! define_provider_capability_record_data_recipe_v1 {
                 }
             }
         }
-        
+
         struct BoundedWriter {
             bytes: Vec<u8>,
             maximum_bytes: usize,
             exceeded: bool,
         }
-        
+
         impl BoundedWriter {
             fn new(maximum_bytes: usize) -> Self {
                 Self {
@@ -254,7 +254,7 @@ macro_rules! define_provider_capability_record_data_recipe_v1 {
                 }
             }
         }
-        
+
         impl io::Write for BoundedWriter {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 append_with_capped_doubling(&mut self.bytes, bytes, self.maximum_bytes).map_err(|error| {
@@ -267,11 +267,11 @@ macro_rules! define_provider_capability_record_data_recipe_v1 {
                     }
                 })
             }
-        
+
             fn flush(&mut self) -> io::Result<()> {
                 Ok(())
             }
         }
-        
+
     };
 }
