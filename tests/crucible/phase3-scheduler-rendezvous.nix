@@ -120,6 +120,18 @@
         label = "seeded ceiling schedule property";
         needle = "seeded_random_ceiling_schedules_match_the_unconstrained_baseline";
       }
+      {
+        label = "topology swap exact only for affected nodes";
+        needle = "a_link_fault_is_an_exact_event_only_for_the_nodes_whose_link_it_changes";
+      }
+      {
+        label = "exact topology swap schedule independence";
+        needle = "an_exact_topology_swap_is_independent_of_the_ceiling_schedule";
+      }
+      {
+        label = "settlement below an exact topology swap refused";
+        needle = "settling_below_an_exact_topology_swap_is_refused";
+      }
     ]
     ++ failuresFor "crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight/partition_probe.rs" partitionProbe [
       {
@@ -230,6 +242,7 @@ in
             ordering_exactness=frequency-independent
             empty_rendezvous_quantum=no-canonical-decision
             bounded_ceilings=guest-trajectory-frequency-independent
+            topology_swap=exact-event-for-affected-nodes-only
             production_path=checks.crucible.phase4.schedulerBoundFrequencyQemuVm
             RESULT
           '';
