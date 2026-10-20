@@ -269,11 +269,11 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
     session
         .check_recovery_context(&context)
         .map_err(io::Error::other)?;
-    // Generated unverified scratch has no content/adoption authority. Remove
-    // it before the first candidate scan, including when cold policy survives.
+    // Uncommitted chunk and index scratch has no content/adoption authority.
+    // Remove it before candidate scans, including when cold policy survives.
     // The physical executor owns these synchronous effects despite cancellation
     // of a requesting waiter; no embedded lock crosses the actual IO or RPC.
-    if shared.discard_chunk_temporaries()? != 0 {
+    if shared.discard_uncommitted_temporaries()? != 0 {
         let owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;

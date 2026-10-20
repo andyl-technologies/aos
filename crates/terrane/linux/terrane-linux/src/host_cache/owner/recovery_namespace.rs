@@ -5,10 +5,11 @@
 //! before it can claim an empty namespace. Private publisher directories remain
 //! the publisher's responsibility; this module cannot prove complete recovery.
 //!
-//! Startup may discard only the existing generated chunk scratch grammar:
+//! Startup may discard only existing generated chunk and detached-index scratch:
 //!
 //! ```text
 //! chunks/<two lowercase hex digits>/.terrane-tmp:<32 lowercase hex digits>
+//! objects/pack/<two lowercase hex digits>/.terrane-tmp:<32 lowercase hex digits>
 //! ```
 //!
 //! Cleanup precedes native adoption and retains original readonly inode custody.
@@ -202,7 +203,7 @@ impl SharedNamespaceObservation {
         Ok(())
     }
 
-    /// Discards generated chunk scratch under the original native directory custody.
+    /// Discards generated chunk and index scratch under original directory custody.
     ///
     /// Every candidate is classified and checked before the first unlink. Exact
     /// inode snapshots are carried through the effects, including multiple
@@ -214,23 +215,23 @@ impl SharedNamespaceObservation {
     /// Refuses malformed generated names, nonregular or foreign/project-mismatched
     /// scratch, changed retained or named inodes, failed unlink/directory sync,
     /// or a surviving/replaced temporary name. Partial progress grants no service.
-    pub(super) fn discard_chunk_temporaries(&self) -> io::Result<usize> {
+    pub(super) fn discard_uncommitted_temporaries(&self) -> io::Result<usize> {
         let mut files = Vec::new();
         files
             .try_reserve_exact(self.entries.len())
             .map_err(io::Error::other)?;
         let mut current = BTreeMap::new();
         for entry in &self.entries {
-            if !chunk_temporary(entry)? {
+            if !uncommitted_temporary(entry)? {
                 continue;
             }
             if !entry.metadata.is_file() {
-                return Err(invalid("generated chunk scratch is not a regular inode"));
+                return Err(invalid("generated scratch is not a regular inode"));
             }
             let name = entry
                 .name
                 .to_str()
-                .ok_or_else(|| invalid("generated chunk scratch is not UTF-8"))?;
+                .ok_or_else(|| invalid("generated scratch is not UTF-8"))?;
             let file = super::open_regular_at(&entry.parent, name)?;
             self.check_temporary(&file, &entry.metadata)?;
             let inode = (entry.metadata.dev(), entry.metadata.ino());
@@ -253,11 +254,11 @@ impl SharedNamespaceObservation {
             let inode = (entry.metadata.dev(), entry.metadata.ino());
             let before = current
                 .get(&inode)
-                .ok_or_else(|| invalid("chunk scratch lost its original inode snapshot"))?;
+                .ok_or_else(|| invalid("scratch lost its original inode snapshot"))?;
             let name = entry
                 .name
                 .to_str()
-                .ok_or_else(|| invalid("generated chunk scratch is not UTF-8"))?;
+                .ok_or_else(|| invalid("generated scratch is not UTF-8"))?;
             let named = super::open_regular_at(&entry.parent, name)?;
             self.check_temporary(&named, before)?;
             self.check_temporary(file, before)?;
@@ -268,16 +269,14 @@ impl SharedNamespaceObservation {
             let links = before
                 .nlink()
                 .checked_sub(1)
-                .ok_or_else(|| invalid("chunk scratch link count underflow"))?;
+                .ok_or_else(|| invalid("scratch link count underflow"))?;
             if !same_payload_binding(before, &after) || after.nlink() != links {
-                return Err(invalid(
-                    "chunk scratch unlink changed another inode or payload",
-                ));
+                return Err(invalid("scratch unlink changed another inode or payload"));
             }
             match statat(&entry.parent, name, AtFlags::SYMLINK_NOFOLLOW) {
                 Err(rustix::io::Errno::NOENT) => {}
                 Err(error) => return Err(error.into()),
-                Ok(_) => return Err(invalid("chunk scratch name survived or was replaced")),
+                Ok(_) => return Err(invalid("scratch name survived or was replaced")),
             }
             // Unlink legitimately changes ctime and nlink on every alias. Carry
             // that actual outcome into the next alias comparison; bytes, owner,
@@ -301,9 +300,7 @@ impl SharedNamespaceObservation {
             || observed.dev() != self.layout.directory_binding("layout-root")?.0
             || NativeProject::inspect(file)?.project_id != self.project_id
         {
-            return Err(invalid(
-                "chunk scratch differs from original native custody",
-            ));
+            return Err(invalid("scratch differs from original native custody"));
         }
         Ok(())
     }
@@ -413,29 +410,33 @@ impl SharedNamespaceObservation {
     }
 }
 
-/// Recognizes generated scratch only in the existing canonical chunk shard.
-fn chunk_temporary(entry: &EntryObservation) -> io::Result<bool> {
+/// Recognizes generated scratch only in canonical chunk or detached-index shards.
+fn uncommitted_temporary(entry: &EntryObservation) -> io::Result<bool> {
     if !entry.name.as_encoded_bytes().starts_with(b".terrane-tmp") {
         return Ok(false);
     }
     let components = entry.relative.iter().collect::<Vec<_>>();
-    if !matches!(components.as_slice(), [root, shard, _] if *root == "chunks" && canonical_shard(shard))
-    {
-        // A matching spelling elsewhere is not an admission temporary. Leave
-        // it to ordinary exhaustive recovery instead of deleting another class.
+    let known_parent = match components.as_slice() {
+        [root, shard, _] if *root == "chunks" => canonical_shard(shard),
+        [root, packs, shard, _] if *root == "objects" && *packs == "pack" => canonical_shard(shard),
+        _ => false,
+    };
+    if !known_parent {
+        // A matching spelling elsewhere is not a recognized uncommitted write.
+        // Keep it for exhaustive recovery instead of deleting another class.
         return Ok(false);
     }
     let suffix = entry
         .name
         .to_str()
         .and_then(|name| name.strip_prefix(".terrane-tmp:"))
-        .ok_or_else(|| invalid("malformed generated chunk scratch name"))?;
+        .ok_or_else(|| invalid("malformed generated scratch name"))?;
     if suffix.len() != 32
         || !suffix
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
-        return Err(invalid("malformed generated chunk scratch identifier"));
+        return Err(invalid("malformed generated scratch identifier"));
     }
     Ok(true)
 }
