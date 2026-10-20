@@ -74,6 +74,10 @@ fn publication_phase_decoder_accepts_partial_error_without_classifying_the_reply
             1024 * 1024,
         ),
         ("crates/hub/aos-hub-service/src/service.rs", 2 * 1024 * 1024),
+        (
+            "crates/hub/aos-hub-service/src/service/operations/registries/configuration_mutations.rs",
+            2 * 1024 * 1024,
+        ),
         ("crates/hub/aos-hub-db/src/db/mod.rs", 2 * 1024 * 1024),
         (
             "crates/hub/aos-hub-db/src/db/publication_delivery.rs",
