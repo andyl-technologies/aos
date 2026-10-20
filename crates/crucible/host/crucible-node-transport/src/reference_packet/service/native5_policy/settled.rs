@@ -12,7 +12,7 @@ struct PolicyHistory<'a>(&'a Native5Policy);
 
 impl Serialize for PolicyHistory<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let Native5Policy {
+        let Native5PolicyData {
             selection,
             coordinator,
             definition,
@@ -33,7 +33,7 @@ impl Serialize for PolicyHistory<'_> {
             capture_allocation_definitions,
             fresh_restore_allocation_selection,
             fresh_restore_allocation_definitions,
-        } = self.0;
+        } = &self.0.data;
         let mut state = serializer.serialize_struct("NativePolicyHistory17", 21)?;
         state.serialize_field(
             "schema",

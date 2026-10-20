@@ -14,7 +14,7 @@ use crate::reference_packet::service::{
         fresh_restore_allocation_schema,
     },
 };
-use crucible_node_format::{ProviderManifest, Validate};
+use crucible_node_format::{Id, ProviderManifest, Validate};
 
 /// Adds all five fresh allocation definitions before provider and binding hashes.
 ///

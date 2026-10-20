@@ -21,7 +21,11 @@ use crate::retained_metadata::serialization_storage::{
 use crucible_node_format::*;
 pub(super) use expanded::construction_storage_data;
 
-impl PacketNative5CoordinatorInstallation {
+/// Preserves original upper decode/construction accounting for shared coordinator DATA.
+///
+/// The immutable record owns no native authority. These original rows remain
+/// upper because they observe actual retained metadata and native parser work.
+pub trait PacketNative5CoordinatorConstructionStorage {
     /// Quotes retained DTO and complete temporary decode/validation demand.
     ///
     /// Returns `[retained, transient, counter_scratch]` from the actual canonical
@@ -37,7 +41,36 @@ impl PacketNative5CoordinatorInstallation {
     /// # Errors
     /// Refuses unsupported raw framing, zero/oversized input, arithmetic or
     /// compiled-layout failure, or complete requested demand above `maximum`.
-    pub fn decode_construction_storage_data(
+    fn decode_construction_storage_data(
+        bytes: &[u8],
+        maximum: usize,
+    ) -> Result<[usize; 3], ProviderError>;
+
+    /// Names direct decode-quote and actual retained-coordinator observer views.
+    ///
+    /// The caller admits this before the borrowed raw-marker scan or retained
+    /// census. Input-dependent reparse controls are returned by the complete
+    /// quote and admitted before decoding; neither quantity is heap permission.
+    fn decode_construction_counter_scratch_data() -> usize;
+}
+
+impl PacketNative5CoordinatorConstructionStorage for PacketNative5CoordinatorInstallation {
+    /// Quotes retained DTO and complete temporary decode/validation demand.
+    ///
+    /// Returns `[retained, transient, counter_scratch]` from the actual canonical
+    /// input, including potential reserved-Value reparses and subsequent typed,
+    /// clone, canonical and diagnostic work. It never parses or validates the
+    /// installation. The caller first admits the defining fixed counter, then
+    /// independently admits all returned axes beside every still-live owner
+    /// before calling the unchanged decoder. The actual local selection and its
+    /// counting-serializer formatter are independently retained and funded by
+    /// the caller: the decoder checks their extent before membership equality.
+    /// The row grants no native rights.
+    ///
+    /// # Errors
+    /// Refuses unsupported raw framing, zero/oversized input, arithmetic or
+    /// compiled-layout failure, or complete requested demand above `maximum`.
+    fn decode_construction_storage_data(
         bytes: &[u8],
         maximum: usize,
     ) -> Result<[usize; 3], ProviderError> {
@@ -58,7 +91,7 @@ impl PacketNative5CoordinatorInstallation {
     /// The caller admits this before the borrowed raw-marker scan or retained
     /// census. Input-dependent reparse controls are returned by the complete
     /// quote and admitted before decoding; neither quantity is heap permission.
-    pub fn decode_construction_counter_scratch_data() -> usize {
+    fn decode_construction_counter_scratch_data() -> usize {
         counter_scratch_data()
             + decoded::counter_scratch_data()
             + crate::retained_metadata::retained_native_coordinator_counter_scratch_data()

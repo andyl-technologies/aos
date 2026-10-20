@@ -38,24 +38,7 @@ pub(crate) fn requested_metadata_backing_storage_data(
     ])
 }
 
-/// Counts pinned maximum internal-node layouts, including possible empty roots.
-pub(crate) fn tree_storage_data(
-    containers: usize,
-    entries: usize,
-    key_value_bytes: usize,
-    entry_alignment: usize,
-) -> Result<usize, ProviderError> {
-    std::alloc::Layout::from_size_align(0, entry_alignment).map_err(|_| refused())?;
-    let alignment = entry_alignment.max(align_of::<usize>());
-    let node = sum(&[
-        size_of::<usize>(),
-        2 * size_of::<u16>(),
-        12 * size_of::<usize>(),
-        multiply(11, key_value_bytes)?,
-        multiply(8, alignment - 1)?,
-    ])?;
-    multiply(add(containers, entries)?, node)
-}
+pub(crate) use crucible_source_birth_data::profile::requested_storage::tree_storage_data;
 
 /// Counts one actual aligned Rc/Arc header per admitted shared backing view.
 pub(crate) fn shared_header_storage_data(

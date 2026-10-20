@@ -31,30 +31,6 @@ pub mod input;
 pub mod original_gate;
 pub mod service;
 
-/// Binds the complete original source configuration independently of wire claims.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PacketProgramDefinition {
-    /// Names the selected format, `source-owned.packet-program.v1`.
-    pub schema: String,
-    /// Lists every original native callback and its exact effect in FIFO order.
-    pub events: Vec<PacketEvent>,
-}
-
-/// Defines one indivisible actual source callback and its native effect.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PacketEvent {
-    /// Names the original native event independently of public fanout IDs.
-    pub id: Id,
-    /// Gives the first semantic transition within this callback.
-    pub evaluation: Position,
-    /// Gives its last semantic transition; the entire callback requires this below the cut.
-    pub completion: Position,
-    /// Carries output bytes, or null for an independently observable private mutation.
-    pub payload: Option<Bytes>,
-}
-
 /// Retains the actual complete stopped inventory beneath the native program.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -461,3 +437,7 @@ mod serialization_storage;
 
 #[path = "reference_packet/capture_inventory.rs"]
 mod capture_inventory;
+
+pub use crucible_source_birth_data::profile::reference_packet::{
+    PacketEvent, PacketProgramDefinition,
+};

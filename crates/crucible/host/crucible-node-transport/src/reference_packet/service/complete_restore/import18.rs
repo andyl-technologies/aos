@@ -71,11 +71,9 @@ pub use receipt::{
     verify_native_import18_commit_receipt_data, verify_native_import18_prepare_receipt_data,
 };
 
-/// Names the explicit successor of the unchanged restored-record17 grammar.
-pub const NATIVE_IMPORT18_RESTORED_RECORD_SCHEMA: &str = "source-owned.packet-restored-native/18";
+pub use crucible_source_birth_data::profile::reference_packet::service::complete_restore::import18::definitions::NATIVE_IMPORT18_RESTORED_RECORD_SCHEMA;
 
-/// Names the distinct full import18 schema and assigned binding extension.
-pub const NATIVE_IMPORT18_EXTENSION: &str = "source-owned.packet-native-import/18";
+pub use crucible_source_birth_data::profile::reference_packet::service::complete_restore::import18::definitions::NATIVE_IMPORT18_EXTENSION;
 /// Preserves the independently enforced binding extent from the original family.
 pub const MAXIMUM_NATIVE_IMPORT18_BINDING_BYTES: usize = 4096;
 

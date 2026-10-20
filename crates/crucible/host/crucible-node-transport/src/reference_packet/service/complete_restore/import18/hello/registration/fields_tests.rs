@@ -17,6 +17,26 @@ use serde_json::json;
 #[path = "fields_tests/original.rs"]
 mod original;
 
+// The saved full-launch oracle retains its original closed grammar tables.
+const FIELDS: [&str; 9] = [
+    "schema",
+    "role",
+    "connection_id",
+    "session_id",
+    "incarnation_id",
+    "limits",
+    "features",
+    "extensions",
+    "envelope_extensions",
+];
+const LIMIT_FIELDS: [&str; 5] = [
+    "frame_bytes",
+    "nesting",
+    "requests",
+    "journal_entries",
+    "blob_chunk_bytes",
+];
+
 fn launch() -> PacketNative5SourceLaunch {
     let (_handshake, authority, selection, coordinator) =
         crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
@@ -79,10 +99,10 @@ fn declaration_result(
     result
         .map(|value| {
             (
-                value.features,
-                value.keys,
-                value.feature_count,
-                value.key_count,
+                *value.features_data(),
+                *value.keys_data(),
+                value.feature_count_data(),
+                value.key_count_data(),
             )
         })
         .map_err(|error| format!("{error:?}; {error}"))
@@ -92,7 +112,20 @@ fn quote_result(
     result: Result<PacketNativeImport18ProspectiveHostRegistrationData, ProviderError>,
 ) -> Result<([u8; 32], usize), String> {
     result
-        .map(|value| (value.planned, value.maximum_encoded_bytes_data()))
+        .map(|value| {
+            (
+                value.planned_identity_data(),
+                value.maximum_encoded_bytes_data(),
+            )
+        })
+        .map_err(|error| format!("{error:?}; {error}"))
+}
+
+fn original_quote_result(
+    result: Result<original::SavedProjection, ProviderError>,
+) -> Result<([u8; 32], usize), String> {
+    result
+        .map(|value| value.parts_data())
         .map_err(|error| format!("{error:?}; {error}"))
 }
 
@@ -107,7 +140,8 @@ fn compare_plan(
 ) {
     let fields = PacketNative5LaunchValidationFields::from_launch_data(launch);
     for maximum in [0, 1, 64, 4096, usize::MAX] {
-        let expected = quote_result(original::prospective(launch, declaration, planned, maximum));
+        let expected =
+            original_quote_result(original::prospective(launch, declaration, planned, maximum));
         assert_eq!(
             quote_result(native_import18_prospective_host_registration_data(
                 launch,
@@ -245,7 +279,22 @@ fn saved_plan_checks_shared_fields_before_unchanged_identity_comparison() {
     let launch = launch();
     let declaration = original::declaration(&launch).unwrap();
     let planned = planned(&launch, &declaration);
-    let saved = original::prospective(&launch, &declaration, &planned, usize::MAX).unwrap();
+    let expected_saved =
+        original::prospective(&launch, &declaration, &planned, usize::MAX).unwrap();
+    let saved = native_import18_prospective_host_registration_data(
+        &launch,
+        &declaration,
+        &planned,
+        usize::MAX,
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            saved.planned_identity_data(),
+            saved.maximum_encoded_bytes_data()
+        ),
+        expected_saved.parts_data()
+    );
     let fields = PacketNative5LaunchValidationFields::from_launch_data(&launch);
     let pointer = launch.initial_coordinator.bytes.as_slice().as_ptr();
     let capacity = launch.initial_coordinator.bytes.allocation_capacity();
@@ -289,7 +338,7 @@ fn ignored_secret_and_path_never_enter_the_hello_or_plan_adapter() {
     let mut launch = launch();
     let declaration = original::declaration(&launch).unwrap();
     let planned = planned(&launch, &declaration);
-    let expected = quote_result(original::prospective(
+    let expected = original_quote_result(original::prospective(
         &launch,
         &declaration,
         &planned,

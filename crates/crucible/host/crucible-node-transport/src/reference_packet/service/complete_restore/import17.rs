@@ -67,52 +67,7 @@ pub const MAXIMUM_NATIVE_IMPORT17_PROOF_BYTES: usize = 512;
 /// Bounds the exact same-phase receipt without enlarging an older family.
 pub const MAXIMUM_NATIVE_IMPORT17_RECEIPT_BYTES: usize = 1024;
 
-/// Identifies one separately spent phase; this label grants no phase permission.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PacketNativeImport17Phase {
-    /// Reserves and authenticates the original six input banks.
-    Prepare,
-    /// Installs the same verified mapping and model exactly once.
-    Commit,
-}
-
-impl PacketNativeImport17Phase {
-    /// Returns the unchanged inert payload's extension key.
-    pub const fn request_extension(self) -> &'static str {
-        self.payload_phase().request_extension()
-    }
-
-    /// Returns this family's distinct phase proof key.
-    pub const fn proof_extension(self) -> &'static str {
-        match self {
-            Self::Prepare => "source-owned.packet-native-import-prepare-proof/17",
-            Self::Commit => "source-owned.packet-native-import-commit-proof/17",
-        }
-    }
-
-    /// Returns this family's distinct assigned-response receipt key.
-    pub const fn receipt_extension(self) -> &'static str {
-        match self {
-            Self::Prepare => "source-owned.packet-native-import-prepare-receipt/17",
-            Self::Commit => "source-owned.packet-native-import-commit-receipt/17",
-        }
-    }
-
-    const fn payload_phase(self) -> PacketCompleteRestoreTransferPhase {
-        match self {
-            Self::Prepare => PacketCompleteRestoreTransferPhase::Prepare,
-            Self::Commit => PacketCompleteRestoreTransferPhase::Commit,
-        }
-    }
-
-    const fn proof_domain(self) -> &'static str {
-        match self {
-            Self::Prepare => "source-owned.packet-native-import-prepare-key/17",
-            Self::Commit => "source-owned.packet-native-import-commit-key/17",
-        }
-    }
-}
+pub use crucible_source_birth_data::profile::reference_packet::service::complete_restore::import17::PacketNativeImport17Phase;
 
 /// Retains exact independent reader limits without creating an allocation grant.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

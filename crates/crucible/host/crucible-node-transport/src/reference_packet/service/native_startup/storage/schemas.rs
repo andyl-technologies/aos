@@ -82,7 +82,7 @@ pub(super) fn project(
     }
 
     let admission = decode_value(
-        include_bytes!("../../ack_emitter/admission-contract.json"),
+        crucible_source_birth_data::profile::reference_packet::service::ack_emitter::NATIVE_CANONICAL_ACK_ADMISSION_CONTRACT_DATA,
         maximum,
     )?;
     // Hash construction may retain the generated reference while a verification

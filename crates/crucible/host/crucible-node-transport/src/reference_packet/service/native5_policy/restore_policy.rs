@@ -5,6 +5,7 @@
 
 use super::super::complete_restore::*;
 use super::*;
+use crucible_source_birth_data::profile::reference_packet::service::native5_policy::Native5CompleteRestorePolicyInput;
 
 impl Native5Policy {
     pub(in crate::reference_packet::service) fn from_original_launch_with_complete_restore(
@@ -17,26 +18,21 @@ impl Native5Policy {
         metadata: super::super::PacketNative5ProtocolMetadataLimits,
         restoration: PacketNative5CompleteRestoreSelection,
     ) -> Result<Self, ProviderError> {
-        let mut policy = Self::from_original_launch_with_protocol_metadata(
-            selection,
-            coordinator,
-            profile,
-            confirmation,
-            emitter,
-            extent,
-            metadata,
-        )?;
-        let schemas = [
-            complete_restore_request_schema()?,
-            complete_restore_proof_schema()?,
-            complete_restore_receipt_schema()?,
-        ];
-        policy.complete_restore_selection = Some(restoration);
-        policy.complete_restore_definitions = Some(schemas.map(|schema| schema.definition));
-        policy.bind_complete_restore_transfer_definitions()?;
-        policy.validate_immutable_content()?;
-        serialized_credit(&policy.protocol_view(), 512 * 1024)?;
-        Ok(policy)
+        match Native5PolicyData::from_original_launch_with_complete_restore(
+            Native5CompleteRestorePolicyInput {
+                selection,
+                coordinator,
+                profile,
+                confirmation,
+                emitter,
+                extent,
+                metadata,
+                restoration,
+            },
+        ) {
+            Ok(data) => Ok(Self { data }),
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) fn complete_restore_selection(
@@ -50,51 +46,7 @@ impl Native5Policy {
     }
 
     pub(super) fn validate_complete_restore_content(&self) -> Result<(), ProviderError> {
-        self.validate_complete_restore_transfer_content()?;
-        let Some(_) = self.complete_restore_selection else {
-            return if self.complete_restore_definitions.is_none() {
-                Ok(())
-            } else {
-                Err(ProviderError::Correlation(
-                    "native absent complete restore definitions",
-                ))
-            };
-        };
-        let schemas = [
-            complete_restore_request_schema()?,
-            complete_restore_proof_schema()?,
-            complete_restore_receipt_schema()?,
-        ];
-        if self.protocol_metadata_limits.is_none()
-            || self.native_codec_metadata_extent.is_none()
-            || self.ack_emitter_selection.is_none()
-            || !matches!(
-                self.capture_profile,
-                super::super::PacketNative5CaptureProfile::OwnedProtocol11 { .. }
-            )
-            || self
-                .complete_restore_definitions
-                .as_ref()
-                .is_none_or(|definitions| {
-                    definitions
-                        .iter()
-                        .zip(schemas.iter())
-                        .any(|(actual, schema)| actual != &schema.definition)
-                })
-            || schemas.iter().any(|schema| {
-                !self
-                    .selection
-                    .provider
-                    .implementation
-                    .formats
-                    .contains(schema)
-            })
-        {
-            return Err(ProviderError::Correlation(
-                "native complete restore source definitions differ",
-            ));
-        }
-        Ok(())
+        self.data.validate_complete_restore_content()
     }
 
     pub(super) fn validate_complete_restore_negotiation(
@@ -188,22 +140,6 @@ impl Native5Policy {
             }
         }
         Ok(true)
-    }
-}
-
-pub(super) struct CompleteRestorePolicyView<'a>(pub(super) &'a Native5Policy);
-impl Serialize for CompleteRestorePolicyView<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self.0.complete_restore_selection {
-            Some(selection) => (
-                "source-private.native5-policy-complete-restore/14",
-                selection,
-                &self.0.complete_restore_definitions,
-                Native5PolicyView(self.0),
-            )
-                .serialize(serializer),
-            None => Native5PolicyView(self.0).serialize(serializer),
-        }
     }
 }
 

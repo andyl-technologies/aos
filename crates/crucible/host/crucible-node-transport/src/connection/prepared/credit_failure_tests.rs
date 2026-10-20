@@ -3,13 +3,16 @@
 //! No test creates a Source, Initial/Recipe, protocol grant or native witness.
 
 use super::*;
+use crate::reference_packet::service::PacketNative5SerializedCreditFailureStorage;
 use crate::reference_packet::service::PacketNative5SourceLaunch;
+use serde::Serialize;
+use std::io;
 use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
 
 #[test]
 fn actual_failure_component_requires_its_exact_independent_axes() {
     const FIXED_COUNTER: usize =
-        PacketNative5SourceLaunch::original_import18_serialized_credit_failure_counter_scratch_data(
+        crate::reference_packet::service::original_import18_serialized_credit_failure_counter_scratch_data(
         );
     let row =
         PacketNative5SourceLaunch::original_import18_serialized_credit_failure_construction_data(
@@ -41,13 +44,10 @@ fn short_component_refuses_before_the_actual_writer_error_constructor() {
             maximum,
         )?;
         entered.set(true);
-        let mut counter = SerializedCreditCounter {
-            used: 0,
-            maximum: 1,
-        };
+        let mut counter = SerializedCreditCounter::projection_data(1);
         let error = serde_json::to_writer(&mut counter, "actual-fragment").unwrap_err();
         assert!(error.is_io());
-        assert_eq!(counter.used, 1);
+        assert_eq!(counter.used_data(), 1);
         drop(error);
         Ok(())
     }
@@ -66,19 +66,16 @@ fn short_component_refuses_before_the_actual_writer_error_constructor() {
 
 #[test]
 fn actual_writer_keeps_last_accepted_chunk_on_credit_refusal() {
-    let mut counter = SerializedCreditCounter {
-        used: 0,
-        maximum: 1,
-    };
+    let mut counter = SerializedCreditCounter::projection_data(1);
     let error = serde_json::to_writer(&mut counter, "ordinary-content").unwrap_err();
     // Original CompactFormatter first writes the opening quote, then the
     // ordinary UTF8 fragment. The failed fragment cannot advance used.
-    assert_eq!(counter.used, 1);
+    assert_eq!(counter.used_data(), 1);
     assert!(error.is_io());
     assert_eq!(error.io_error_kind(), Some(io::ErrorKind::Other));
     assert_eq!(error.to_string(), SERIALIZED_CREDIT_FAILURE_MESSAGE);
     drop(error); // retains the legacy pure temporary lifetime
-    assert_eq!(counter.used, 1);
+    assert_eq!(counter.used_data(), 1);
     assert!(matches!(
         serialized_credit(&"ordinary-content", 1),
         Err(ProviderError::ResourceExhausted(
@@ -91,19 +88,13 @@ fn actual_writer_keeps_last_accepted_chunk_on_credit_refusal() {
 fn actual_escape_chunks_keep_exact_and_one_short_credit_behavior() {
     for value in ["", "plain", "\"\\\n\t\u{0000}", "λ𝄞", "\u{2028}/"] {
         let bytes = serde_json::to_vec(value).unwrap();
-        let mut exact = SerializedCreditCounter {
-            used: 0,
-            maximum: bytes.len(),
-        };
+        let mut exact = SerializedCreditCounter::projection_data(bytes.len());
         serde_json::to_writer(&mut exact, value).unwrap();
-        assert_eq!(exact.used, bytes.len());
-        let mut short = SerializedCreditCounter {
-            used: 0,
-            maximum: bytes.len() - 1,
-        };
+        assert_eq!(exact.used_data(), bytes.len());
+        let mut short = SerializedCreditCounter::projection_data(bytes.len() - 1);
         let error = serde_json::to_writer(&mut short, value).unwrap_err();
         assert!(error.is_io());
-        assert!(short.used <= short.maximum);
+        assert!(short.used_data() <= bytes.len() - 1);
         assert_eq!(error.to_string(), SERIALIZED_CREDIT_FAILURE_MESSAGE);
     }
 }
@@ -119,24 +110,18 @@ fn original_credit_refusal_precedes_later_malformed_path_serializer() {
         first: "must-fail-before-visiting-effects",
         effects: PathBuf::from(OsString::from_vec(vec![0xff])),
     };
-    let mut early = SerializedCreditCounter {
-        used: 0,
-        maximum: 1,
-    };
+    let mut early = SerializedCreditCounter::projection_data(1);
     let error = serde_json::to_writer(&mut early, &original).unwrap_err();
-    assert_eq!(early.used, 1); // opening object accepted; first key quote refuses
+    assert_eq!(early.used_data(), 1); // opening object accepted; first key quote refuses
     assert!(error.is_io());
     assert_eq!(error.to_string(), SERIALIZED_CREDIT_FAILURE_MESSAGE);
     drop(error);
 
-    let mut later = SerializedCreditCounter {
-        used: 0,
-        maximum: usize::MAX,
-    };
+    let mut later = SerializedCreditCounter::projection_data(usize::MAX);
     let error = serde_json::to_writer(&mut later, &original).unwrap_err();
     assert!(error.is_data());
     assert_eq!(error.to_string(), "path contains invalid UTF-8 characters");
-    assert!(later.used > early.used);
+    assert!(later.used_data() > early.used_data());
     drop(error);
     assert!(matches!(
         serialized_credit(&original, 1),

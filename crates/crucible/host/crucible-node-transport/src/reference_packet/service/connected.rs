@@ -15,22 +15,6 @@ use super::super::{
 };
 use crate::{ProviderError, handshake::Limits, reference_service::InstalledContent};
 
-/// Selects one original interpreter without changing existing output-only profiles.
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum PacketConnectedSourceProgram {
-    /// Retains the independently configured source-2 output producer.
-    Producer {
-        /// Retains its complete unchanged two-event program.
-        program: PacketProgramDefinition,
-    },
-    /// Installs the distinct source-4 relay or sink.
-    Reactive {
-        /// Retains every declared original input connection and output lane.
-        program: PacketConnectedDefinition,
-    },
-}
-
 /// Installs one original native participant of a connected three-owner world.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -165,3 +149,5 @@ impl PacketConnectedSourceLaunch {
         Ok(())
     }
 }
+
+pub use crucible_source_birth_data::profile::reference_packet::service::PacketConnectedSourceProgram;

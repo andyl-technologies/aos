@@ -51,6 +51,10 @@ const ARTIFACT_SPECS: &[ArtifactSpec] = &[
         expected: ExpectedArtifact::Library,
     },
     ArtifactSpec {
+        package: "crucible-source-birth-data",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
         package: "crucible-node-transport",
         expected: ExpectedArtifact::NodeProviderTools,
     },

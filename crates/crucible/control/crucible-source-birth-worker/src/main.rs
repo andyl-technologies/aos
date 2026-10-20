@@ -1,7 +1,7 @@
 //! Runs one private SourceBirth derivation request on inherited standard streams.
 //! Spec index: RFC-0025 files 01, 02, 05, 06, 08, 09.
 //!
-//! This L4 leaf calls Engine's shared typed request/derivation/result codec. The
+//! This L4 leaf calls the shared DATA request/derivation/result codec. The
 //! measured launcher supplies independent operational bounds and expected binary
 //! and algorithm digests. It supplies no paths, token, Source, native mechanism,
 //! environment-selected implementation, process supervisor or fallback route.
@@ -11,7 +11,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-use crucible_engine::node_adapters::cnp::source_birth_derivation::request_wire::{
+use crucible_source_birth_data::source_birth::request_wire::{
     ExpectedIdentity, OperationalLimits, run_worker,
 };
 use std::{
@@ -70,7 +70,7 @@ fn digest(value: OsString) -> Result<[u8; 32], ArgumentError> {
     }
 
     let mut result = [0; 32];
-    for (target, pair) in result.iter_mut().zip(bytes.chunks_exact(2)) {
+    for (target, pair) in result.iter_mut().zip(bytes.as_chunks::<2>().0) {
         *target = (half(pair[0])? << 4) | half(pair[1])?;
     }
     Ok(result)

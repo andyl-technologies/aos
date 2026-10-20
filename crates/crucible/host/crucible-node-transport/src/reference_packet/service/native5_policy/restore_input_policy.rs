@@ -8,41 +8,13 @@ use super::*;
 
 impl Native5Policy {
     pub(in crate::reference_packet::service) fn with_restore_input_emitter_selection(
-        mut self,
+        self,
         selection: Option<PacketNative5RestoreInputEmitterSelection>,
     ) -> Result<Self, ProviderError> {
-        if self.restore_input_emitter_selection.is_some()
-            || self.restore_input_emitter_definition.is_some()
-        {
-            return Err(refused());
+        match self.data.with_restore_input_emitter_selection(selection) {
+            Ok(data) => Ok(Self { data }),
+            Err(error) => Err(error),
         }
-        let Some(selection) = selection else {
-            return Ok(self);
-        };
-        if self.complete_restore_selection
-            != Some(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
-            || !matches!(
-                self.capture_profile,
-                super::super::PacketNative5CaptureProfile::OwnedProtocol11 { .. }
-            )
-        {
-            return Err(refused());
-        }
-        let schema = canonical_restore_inputs_schema()?;
-        if !self
-            .selection
-            .provider
-            .implementation
-            .formats
-            .contains(&schema)
-        {
-            return Err(refused());
-        }
-        self.restore_input_emitter_selection = Some(selection);
-        self.restore_input_emitter_definition = Some(schema.definition);
-        self.validate_immutable_content()?;
-        serialized_credit(&self.protocol_view(), 512 * 1024)?;
-        Ok(self)
     }
 
     pub(crate) fn restore_input_emitter_selection(
@@ -56,49 +28,7 @@ impl Native5Policy {
     }
 
     pub(super) fn validate_restore_input_emitter_content(&self) -> Result<(), ProviderError> {
-        match (
-            self.restore_input_emitter_selection,
-            self.restore_input_emitter_definition.as_ref(),
-        ) {
-            (None, None) => Ok(()),
-            (
-                Some(PacketNative5RestoreInputEmitterSelection::CanonicalSdkRestoreInputs12),
-                Some(definition),
-            ) => {
-                let schema = canonical_restore_inputs_schema()?;
-                if !self
-                    .selection
-                    .provider
-                    .extensions_supported
-                    .iter()
-                    .any(|feature| feature.as_str() == PACKET_CANONICAL_RESTORE_INPUTS_FEATURE)
-                    || self.selection.realization.bindings.iter().any(|binding| {
-                        !binding
-                            .compatibility
-                            .implementation
-                            .formats
-                            .contains(&schema)
-                    })
-                    || self.complete_restore_selection
-                        != Some(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
-                    || !matches!(
-                        self.capture_profile,
-                        super::super::PacketNative5CaptureProfile::OwnedProtocol11 { .. }
-                    )
-                    || definition != &schema.definition
-                    || !self
-                        .selection
-                        .provider
-                        .implementation
-                        .formats
-                        .contains(&schema)
-                {
-                    return Err(refused());
-                }
-                Ok(())
-            }
-            _ => Err(refused()),
-        }
+        self.data.validate_restore_input_emitter_content()
     }
 
     pub(super) fn validate_restore_input_emitter_negotiation(
@@ -120,7 +50,6 @@ impl Native5Policy {
     }
 }
 
-pub(super) struct InputPolicyView<'a>(pub(super) &'a Native5Policy);
 pub(super) struct InputCompactPolicyView<'a>(pub(super) &'a Native5Policy);
 pub(super) struct InputOwnedPolicyView<'a>(pub(super) &'a Native5Policy);
 
@@ -144,11 +73,6 @@ macro_rules! selected_view {
     };
 }
 
-selected_view!(
-    InputPolicyView,
-    TransferPolicyView,
-    "source-private.native5-policy-restore-input-emitter/16"
-);
 selected_view!(
     InputCompactPolicyView,
     TransferCompactPolicyView,

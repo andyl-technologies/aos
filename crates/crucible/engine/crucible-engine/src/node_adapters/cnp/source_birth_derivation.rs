@@ -5,19 +5,19 @@
 //! package under actual shared-process containment; original Source association
 //! and result acceptance remain separate responsibilities.
 
-pub mod literal_value;
+pub use crucible_source_birth_data::source_birth::literal_value;
 
 /// Pure serializers shared by ordinary Source construction and worker data.
-pub mod views;
+pub use crucible_source_birth_data::source_birth::views;
 
 /// Runs the contained child's pure SourceBirth data derivation.
-pub mod derive;
+pub use crucible_source_birth_data::source_birth::derive;
 
 /// Verifies the worker result envelope as ordinary data.
-pub mod result_wire;
+pub use crucible_source_birth_data::source_birth::result_wire;
 
 /// Streams the closed secret-free worker request and executes its contained child path.
-pub mod request_wire;
+pub use crucible_source_birth_data::source_birth::request_wire;
 
 /// Verifies the compiled installation under original process containment.
 pub mod installation;

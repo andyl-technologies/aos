@@ -11,13 +11,11 @@
 //!  "mac":"<32 bytes>"}
 //! ```
 
+pub use crucible_source_birth_data::profile::reference_packet::service::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE;
+
 use crate::ProviderError;
 use crucible_node_format::{Bytes, canonical};
 use serde::{Deserialize, Serialize};
-
-/// Names the registered envelope extension and immutable proof specification.
-pub const PACKET_CANONICAL_ACK_ADMISSION_FEATURE: &str =
-    "source-owned.packet-canonical-ack-admission/5";
 
 /// Names the exact standard key derivation and keyed-hash construction.
 pub const PACKET_CANONICAL_ACK_ADMISSION_ALGORITHM: &str = "blake3-keyed-canonical/1";

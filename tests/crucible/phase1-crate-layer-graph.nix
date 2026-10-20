@@ -33,6 +33,11 @@
       inVm = false;
     }
     {
+      package = "crucible-source-birth-data";
+      layer = 1;
+      inVm = false;
+    }
+    {
       package = "crucible-device";
       layer = 1;
       inVm = false;

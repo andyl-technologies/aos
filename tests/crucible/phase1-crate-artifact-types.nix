@@ -15,6 +15,10 @@
       expected = "library";
     }
     {
+      package = "crucible-source-birth-data";
+      expected = "library";
+    }
+    {
       package = "crucible-node-transport";
       expected = "node-transport-tools";
     }

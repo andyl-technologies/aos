@@ -54,7 +54,7 @@ pub(super) fn value_backing(
         .ok_or(RuntimeError::ResourceLimit)?;
     let mut walker = walk::Walker::new(value, observed_nodes)?;
     let mut bytes = 0usize;
-    while walker.next()?.is_some() {
+    while walker.next_token()?.is_some() {
         match walker.current_value() {
             Some(Value::String(value)) => bytes = checked_sum([bytes, value.capacity()], maximum)?,
             Some(Value::Array(values)) => {

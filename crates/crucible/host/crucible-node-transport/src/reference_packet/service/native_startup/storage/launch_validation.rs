@@ -54,7 +54,7 @@ fn phases(
             coordinator_decode::backing(launch.initial_coordinator.bytes.as_slice(), maximum)?,
             metadata_backing(&launch.selection)?,
             launch.initial_coordinator.bytes.as_slice().len(),
-            size_of::<crate::reference_packet::service::Native5Policy>(),
+            size_of::<crucible_source_birth_data::profile::reference_packet::service::native5_policy::Native5PolicyData>(),
             configuration.requested_total()?,
             definitions.transient,
             definitions.retained_reference_children,
@@ -193,3 +193,5 @@ mod tests {
         Ok(())
     }
 }
+
+pub use complete::PacketNative5LaunchValidationStorage;

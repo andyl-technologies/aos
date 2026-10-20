@@ -1,5 +1,6 @@
 //! Checks shared contract rosters against the exact old ordinary JSON bodies.
 use super::*;
+use crucible_node_format::canonical;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]

@@ -315,6 +315,12 @@
       safeWrapperContract = [];
     }
     {
+      package = "crucible-source-birth-data";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
       package = "crucible-node-transport";
       root = "src/lib.rs";
       unsafeBoundary = false;

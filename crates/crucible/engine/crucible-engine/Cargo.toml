@@ -14,6 +14,7 @@ test-double = ["dep:crucible-qemu-shmem"]
 workspace = true
 
 [dependencies]
+crucible-source-birth-data = { workspace = true }
 crucible-host-resources = { workspace = true }
 crucible-node-format = { workspace = true }
 crucible-node-transport = { workspace = true }

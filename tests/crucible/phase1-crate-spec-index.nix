@@ -25,6 +25,13 @@
       section6 = false;
     }
     {
+      package = "crucible-source-birth-data";
+      root = "src/lib.rs";
+      specFiles = [];
+      nodeSpecFiles = ["01" "02" "05" "06" "08" "09"];
+      section6 = false;
+    }
+    {
       package = "crucible-node-transport";
       root = "src/lib.rs";
       specFiles = [];

@@ -53,6 +53,7 @@ members = [
     "crucible/protocol/crucible-qemu-shmem",
     "crucible/protocol/crucible-qemu-protocol",
     "crucible/protocol/crucible-node-format",
+    "crucible/protocol/crucible-source-birth-data",
     "crucible/host/crucible-node-transport",
     "crucible/host/crucible-host-resources",
     "crucible/engine/crucible-device",
@@ -89,6 +90,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 crucible-node-format = { path = "crucible/protocol/crucible-node-format" }
+crucible-source-birth-data = { path = "crucible/protocol/crucible-source-birth-data", default-features = false }
 crucible-node-transport = { path = "crucible/host/crucible-node-transport" }
 crucible-host-resources = { path = "crucible/host/crucible-host-resources" }
 # Shared dependencies

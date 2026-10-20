@@ -5,6 +5,7 @@
 //! comparison before the unchanged validator or owning comparison can run.
 
 use super::*;
+use crucible_node_transport::reference_packet::service::PacketNative5LaunchValidationStorage;
 
 impl OriginalInitial15ArchivedGroup {
     pub(in super::super) fn launch_terminal_transient_data(

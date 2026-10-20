@@ -8,7 +8,8 @@ mod case;
 #[path = "worker_stdio/fixture.rs"]
 mod fixture;
 
-use crucible_engine::node_adapters::cnp::source_birth_derivation::{
+use crucible_source_birth_data::profile::reference_packet::service::PacketNative5LaunchValidationProjection;
+use crucible_source_birth_data::source_birth::{
     derive::{
         DerivationInput, ExpectedCoordinator, OutputLimits, WorldRefusal, derive_source_birth,
     },
@@ -16,11 +17,12 @@ use crucible_engine::node_adapters::cnp::source_birth_derivation::{
     request_wire::{JobContext, OperationalLimits, RequestInput, write_request},
     result_wire::{FailureInfo, Identity, ResultHeader, WireLimits, verify_stdout},
 };
-use crucible_node_transport::reference_packet::service::PacketNative5LaunchValidationProjection;
 use std::{
     io::Write,
     process::{Command, Output, Stdio},
 };
+
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 fn limits() -> OperationalLimits {
     OperationalLimits {
@@ -41,7 +43,7 @@ fn context() -> JobContext {
     }
 }
 
-fn run(bytes: &[u8], selected_worker: [u8; 32]) -> Output {
+fn run(bytes: &[u8], selected_worker: [u8; 32]) -> TestResult<Output> {
     let hex = |bytes: [u8; 32]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let bounds = limits();
     let mut child = Command::new(env!("CARGO_BIN_EXE_crucible-source-birth-worker"))
@@ -62,18 +64,21 @@ fn run(bytes: &[u8], selected_worker: [u8; 32]) -> Output {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let written = child.stdin.take().unwrap().write_all(bytes);
+        .spawn()?;
+    let written = child
+        .stdin
+        .take()
+        .ok_or_else(|| std::io::Error::other("ordinary worker stdin pipe absent"))
+        .and_then(|mut input| input.write_all(bytes));
     if let Err(error) = written {
         if error.kind() == std::io::ErrorKind::BrokenPipe {
-            return child.wait_with_output().unwrap();
+            return Ok(child.wait_with_output()?);
         }
         let _ = child.kill();
         let _ = child.wait();
-        panic!("ordinary worker input failed: {error}");
+        return Err(error.into());
     }
-    child.wait_with_output().unwrap()
+    Ok(child.wait_with_output()?)
 }
 
 fn wire_limits() -> WireLimits {
@@ -84,10 +89,10 @@ fn wire_limits() -> WireLimits {
 }
 
 #[test]
-fn actual_producer_and_reactive_child_match_facade_both_banks() {
+fn actual_producer_and_reactive_child_match_facade_both_banks() -> TestResult {
     for reactive in [false, true] {
-        let (launch, original) = case::complete_launch(reactive);
-        let plan = case::planned(&launch);
+        let (launch, original) = case::complete_launch(reactive)?;
+        let plan = case::planned(&launch)?;
         let projection = PacketNative5LaunchValidationProjection::from_launch_data(&launch);
         let expected = || {
             if reactive {
@@ -106,9 +111,8 @@ fn actual_producer_and_reactive_child_match_facade_both_banks() {
             },
             &mut bytes,
             limits(),
-            LiteralWriteWorkspace::new(8192).unwrap(),
-        )
-        .unwrap();
+            LiteralWriteWorkspace::new(8192)?,
+        )?;
         let reference = derive_source_birth(
             DerivationInput {
                 launch: &projection,
@@ -118,9 +122,8 @@ fn actual_producer_and_reactive_child_match_facade_both_banks() {
             OutputLimits {
                 maximum_output_bytes: limits().maximum_output_bytes,
             },
-        )
-        .unwrap();
-        let child = run(&bytes, context().worker_digest);
+        )?;
+        let child = run(&bytes, context().worker_digest)?;
         assert!(
             child.status.success(),
             "{}",
@@ -134,8 +137,7 @@ fn actual_producer_and_reactive_child_match_facade_both_banks() {
                 input_digest: receipt.input_digest,
             },
             wire_limits(),
-        )
-        .unwrap();
+        )?;
         assert_eq!(verified.source_bytes(), reference.source_bytes());
         assert_eq!(
             verified.registration_bytes(),
@@ -143,12 +145,13 @@ fn actual_producer_and_reactive_child_match_facade_both_banks() {
         );
         assert_eq!(receipt.wire_bytes, bytes.len());
     }
+    Ok(())
 }
 
 #[test]
-fn actual_child_refusal_keeps_original_cause_stage_and_diagnostic() {
-    let (launch, _original) = case::complete_launch(false);
-    let plan = case::planned(&launch);
+fn actual_child_refusal_keeps_original_cause_stage_and_diagnostic() -> TestResult {
+    let (launch, _original) = case::complete_launch(false)?;
+    let plan = case::planned(&launch)?;
     let projection = PacketNative5LaunchValidationProjection::from_launch_data(&launch);
     let mut bytes = Vec::new();
     let receipt = write_request(
@@ -160,10 +163,9 @@ fn actual_child_refusal_keeps_original_cause_stage_and_diagnostic() {
         },
         &mut bytes,
         limits(),
-        LiteralWriteWorkspace::new(8192).unwrap(),
-    )
-    .unwrap();
-    let reference = derive_source_birth(
+        LiteralWriteWorkspace::new(8192)?,
+    )?;
+    let reference = match derive_source_birth(
         DerivationInput {
             launch: &projection,
             expected: ExpectedCoordinator::Deferred(WorldRefusal::ForeignCreatorProcess),
@@ -172,8 +174,15 @@ fn actual_child_refusal_keeps_original_cause_stage_and_diagnostic() {
         OutputLimits {
             maximum_output_bytes: limits().maximum_output_bytes,
         },
-    )
-    .unwrap_err();
+    ) {
+        Err(failure) => failure,
+        Ok(_) => {
+            return Err(std::io::Error::other(
+                "ordinary facade unexpectedly accepted foreign creator process",
+            )
+            .into());
+        }
+    };
     let identity = Identity {
         task_digest: context().task_digest,
         input_digest: receipt.input_digest,
@@ -181,25 +190,25 @@ fn actual_child_refusal_keeps_original_cause_stage_and_diagnostic() {
     let diagnostic = reference.cause().to_string();
     let expected = ResultHeader::failure(
         identity,
-        FailureInfo::from_derivation(&reference).unwrap(),
+        FailureInfo::from_derivation(&reference)?,
         &diagnostic,
         4096,
-    )
-    .unwrap();
-    let child = run(&bytes, context().worker_digest);
+    )?;
+    let child = run(&bytes, context().worker_digest)?;
     assert!(child.status.success());
     assert!(child.stderr.is_empty());
-    let verified = verify_stdout(&child.stdout, identity, wire_limits()).unwrap();
+    let verified = verify_stdout(&child.stdout, identity, wire_limits())?;
     assert_eq!(verified.header().encode(), expected.encode());
     assert_eq!(verified.diagnostic(), diagnostic.as_str());
     assert!(verified.source_bytes().is_empty());
     assert!(verified.registration_bytes().is_empty());
+    Ok(())
 }
 
 #[test]
-fn actual_child_rejects_foreign_digest_corruption_truncation_and_extra_bytes() {
-    let (launch, original) = case::complete_launch(false);
-    let plan = case::planned(&launch);
+fn actual_child_rejects_foreign_digest_corruption_truncation_and_extra_bytes() -> TestResult {
+    let (launch, original) = case::complete_launch(false)?;
+    let plan = case::planned(&launch)?;
     let projection = PacketNative5LaunchValidationProjection::from_launch_data(&launch);
     let mut bytes = Vec::new();
     write_request(
@@ -211,10 +220,9 @@ fn actual_child_rejects_foreign_digest_corruption_truncation_and_extra_bytes() {
         },
         &mut bytes,
         limits(),
-        LiteralWriteWorkspace::new(8192).unwrap(),
-    )
-    .unwrap();
-    let wrong = run(&bytes, [9; 32]);
+        LiteralWriteWorkspace::new(8192)?,
+    )?;
+    let wrong = run(&bytes, [9; 32])?;
     assert!(!wrong.status.success());
     assert!(wrong.stdout.is_empty());
     let mut corrupt = bytes.clone();
@@ -227,8 +235,9 @@ fn actual_child_rejects_foreign_digest_corruption_truncation_and_extra_bytes() {
         &bytes[..bytes.len() - 1],
         extra.as_slice(),
     ] {
-        let child = run(invalid, context().worker_digest);
+        let child = run(invalid, context().worker_digest)?;
         assert!(!child.status.success());
         assert!(child.stdout.is_empty());
     }
+    Ok(())
 }

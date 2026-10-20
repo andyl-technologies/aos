@@ -5,10 +5,6 @@
 //! execution operation, output body or native owner. Abandoned preparations
 //! fence their original connection and transfer unresolved originals.
 
-use std::io;
-
-use serde::Serialize;
-
 use super::*;
 
 /// Retains one exact prepared frame under the same exclusively borrowed stream.
@@ -116,80 +112,11 @@ impl<S: ProviderStream> Drop for PreparedSend<'_, S> {
     }
 }
 
-/// Names the original private writer's unchanged credit-refusal diagnostic.
-pub(crate) const SERIALIZED_CREDIT_FAILURE_MESSAGE: &str =
-    "prepared frame exceeds complete byte credit";
-
 #[cfg(test)]
 #[path = "prepared/credit_failure_tests.rs"]
 mod credit_failure_tests;
 
-pub(crate) fn serialized_credit(
-    value: &impl Serialize,
-    maximum: usize,
-) -> Result<usize, ProviderError> {
-    let mut counter = SerializedCreditCounter { used: 0, maximum };
-    serde_json::to_writer(&mut counter, value)
-        .map_err(|_| ProviderError::ResourceExhausted("prepared whole frame bytes"))?;
-    Ok(counter.used)
-}
-
-/// Counts original formatter chunks against one private byte-credit bound.
-pub(crate) struct SerializedCreditCounter {
-    used: usize,
-    maximum: usize,
-}
-
-impl SerializedCreditCounter {
-    /// Starts a private projected count without serializing placeholder bytes.
-    pub(crate) fn projection_data(maximum: usize) -> Self {
-        Self { used: 0, maximum }
-    }
-
-    /// Returns actual counted JSON bytes after successful projection.
-    pub(crate) fn used_data(&self) -> usize {
-        self.used
-    }
-
-    /// Counts an exact opaque JSON extent at its original field position.
-    ///
-    /// This is not a Write operation or evidence that any bytes were emitted.
-    /// The unchanged real writer below remains the formatter's checked sink.
-    ///
-    /// # Errors
-    /// Returns the original whole-frame resource error on overflow or when the
-    /// declared extent exceeds the remaining maximum.
-    pub(crate) fn advance_projection_data(&mut self, bytes: usize) -> Result<(), ProviderError> {
-        let next = self
-            .used
-            .checked_add(bytes)
-            .filter(|next| *next <= self.maximum)
-            .ok_or(ProviderError::ResourceExhausted(
-                "prepared whole frame bytes",
-            ))?;
-        self.used = next;
-        Ok(())
-    }
-}
-
-impl Write for SerializedCreditCounter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let next = self
-            .used
-            .checked_add(bytes.len())
-            .filter(|next| *next <= self.maximum)
-            .ok_or_else(|| io::Error::other(SERIALIZED_CREDIT_FAILURE_MESSAGE))?;
-        self.used = next;
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Names actual counting writer/serializer headers before their borrowed walk.
-pub(crate) fn original_serialized_credit_counter_scratch_data() -> usize {
-    std::mem::size_of::<SerializedCreditCounter>()
-        + std::mem::size_of::<serde_json::Serializer<&mut SerializedCreditCounter>>()
-}
+pub(crate) use crucible_source_birth_data::profile::connection::{
+    SERIALIZED_CREDIT_FAILURE_MESSAGE, SerializedCreditCounter,
+    original_serialized_credit_counter_scratch_data, serialized_credit,
+};

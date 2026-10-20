@@ -26,31 +26,6 @@ impl Validate for DiscoverRequest {
     }
 }
 
-/// Represents the baseline `RealizeRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RealizeRequest {
-    /// Carries the normative `realization_id` contract field.
-    pub realization_id: Id,
-    /// Carries the normative `configuration` contract field.
-    pub configuration: ContentRef,
-    /// Carries the normative `requested_node_ids` contract field.
-    pub requested_node_ids: IdSet,
-    /// Carries the normative `resource_limits` contract field.
-    pub resource_limits: ResourceLimits,
-    /// Carries explicitly negotiated method extensions.
-    pub extensions: Extensions,
-}
-
-impl Validate for RealizeRequest {
-    fn validate(&self) -> Result<(), ContractError> {
-        self.configuration.validate()?;
-        ids(&self.requested_node_ids, "requested_node_ids")?;
-        self.resource_limits.validate()?;
-        Ok(())
-    }
-}
-
 /// Represents the baseline `AdmitRequest` wire object.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,34 +53,6 @@ impl Validate for AdmitRequest {
         self.world_binding_hash.validate()?;
         domain(&self.world_binding_hash, "cnp.world-binding.v1")?;
         self.admission_receipt.validate()?;
-        Ok(())
-    }
-}
-
-/// Represents the baseline `ActivateRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ActivateRequest {
-    /// Carries the normative `admission_id` contract field.
-    pub admission_id: Id,
-    /// Identifies the admitted activation.
-    pub activation_id: Id,
-    /// Identifies the admitted world generation.
-    pub world_generation: U64,
-    /// Carries the normative `prepared_token` contract field.
-    pub prepared_token: Id,
-    /// Commits to complete world compatibility.
-    pub world_binding_hash: HashRef,
-    /// Carries the normative `gate_id` contract field.
-    pub gate_id: Id,
-    /// Carries explicitly negotiated method extensions.
-    pub extensions: Extensions,
-}
-
-impl Validate for ActivateRequest {
-    fn validate(&self) -> Result<(), ContractError> {
-        self.world_binding_hash.validate()?;
-        domain(&self.world_binding_hash, "cnp.world-binding.v1")?;
         Ok(())
     }
 }
@@ -471,3 +418,5 @@ impl Validate for ReleaseRequest {
         Ok(())
     }
 }
+
+pub use crucible_source_birth_data::profile::bodies::{ActivateRequest, RealizeRequest};

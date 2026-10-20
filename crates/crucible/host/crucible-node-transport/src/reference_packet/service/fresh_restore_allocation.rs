@@ -10,6 +10,19 @@
 //! report + actual archived demand + whole context -> separately assigned Prepare
 //! ```
 
+pub use crucible_source_birth_data::profile::reference_packet::service::fresh_restore_allocation::{
+    PACKET_FRESH_RESTORE_ALLOCATION_FEATURE,
+    PACKET_FRESH_RESTORE_ALLOCATION_QUERY,
+    PACKET_FRESH_RESTORE_ALLOCATION_REPORT,
+    PACKET_FRESH_RESTORE_ALLOCATION_PROOF,
+    PACKET_FRESH_RESTORE_ALLOCATION_RECEIPT,
+    PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING,
+    PACKET_FRESH_RESTORE_ALLOCATION_MEDIA,
+    MAXIMUM_FRESH_RESTORE_ALLOCATION_REPORT_BYTES,
+    MAXIMUM_FRESH_RESTORE_ALLOCATION_QUERY_BYTES,
+    FRESH_RESTORE_ALLOCATION_ALGORITHM,
+};
+
 use crate::ProviderError;
 use crucible_node_format::{Bytes, ContentRef, HashRef, Id, U64, Validate};
 use serde::{Deserialize, Serialize};
@@ -37,42 +50,6 @@ pub use crypto::{
     fresh_restore_allocation_nonce_data, fresh_restore_allocation_proof_data,
     verify_fresh_restore_allocation_proof_data,
 };
-
-/// Names the independently selected fresh-target allocation family.
-pub const PACKET_FRESH_RESTORE_ALLOCATION_FEATURE: &str =
-    "source-owned.packet-fresh-restore-allocation/13";
-/// Names the startup Observe request's sole envelope extension.
-pub const PACKET_FRESH_RESTORE_ALLOCATION_QUERY: &str =
-    "source-owned.packet-fresh-restore-allocation-query/13";
-/// Names the immutable fresh-target report.
-pub const PACKET_FRESH_RESTORE_ALLOCATION_REPORT: &str =
-    "source-owned.packet-fresh-restore-allocation-report/13";
-/// Names the domain-separated proof over the complete report data.
-pub const PACKET_FRESH_RESTORE_ALLOCATION_PROOF: &str =
-    "source-owned.packet-fresh-restore-allocation-proof/13";
-/// Names the completed startup Observe response's report reference.
-pub const PACKET_FRESH_RESTORE_ALLOCATION_RECEIPT: &str =
-    "source-owned.packet-fresh-restore-allocation-receipt/13";
-/// Names the exact completed startup exchange bound into a later Prepare.
-pub const PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING: &str =
-    "source-owned.packet-fresh-restore-allocation-prepare-binding/13";
-/// Names the report's exact content media type.
-pub const PACKET_FRESH_RESTORE_ALLOCATION_MEDIA: &str =
-    "application/vnd.source-owned.packet-fresh-restore-allocation.v13+json";
-/// Bounds the closed report encoding independently of its allocation arithmetic.
-pub const MAXIMUM_FRESH_RESTORE_ALLOCATION_REPORT_BYTES: usize = 16 * 1024;
-/// Bounds a closed startup query independently of the negotiated whole frame.
-pub const MAXIMUM_FRESH_RESTORE_ALLOCATION_QUERY_BYTES: usize = 1024;
-/// Names the keyed canonical report authentication algorithm.
-pub const FRESH_RESTORE_ALLOCATION_ALGORITHM: &str = "blake3-keyed-canonical/1";
-
-/// Selects a readonly producer on the same fresh target after its once-only Admit.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PacketNative5FreshRestoreAllocationSelection {
-    /// Measures the admitted inactive target without activation or Prepare.
-    CompletedAdmit13,
-}
 
 /// Binds one startup query to the same birth and completed original Admit pair.
 ///
@@ -385,3 +362,5 @@ fn digest(value: &Bytes) -> Result<(), ProviderError> {
 fn invalid() -> ProviderError {
     ProviderError::Correlation("fresh inactive restoration allocation data")
 }
+
+pub use crucible_source_birth_data::profile::reference_packet::service::fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection;

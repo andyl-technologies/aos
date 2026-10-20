@@ -12,7 +12,7 @@ description = "Private bounded source-birth derivation worker"
 workspace = true
 
 [dependencies]
-crucible-engine = { path = "../../engine/crucible-engine", default-features = false }
+crucible-source-birth-data = { workspace = true, default-features = false }
 
 [[bin]]
 name = "crucible-source-birth-worker"
@@ -20,7 +20,6 @@ path = "src/main.rs"
 
 [dev-dependencies]
 crucible-node-format = { workspace = true }
-crucible-node-transport = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

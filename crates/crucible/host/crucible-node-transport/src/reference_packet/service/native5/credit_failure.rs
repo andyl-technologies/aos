@@ -539,7 +539,11 @@ const CONSTRUCTION: (usize, usize) = (
 );
 const TOTAL: usize = add(CONSTRUCTION.0, CONSTRUCTION.1);
 
-impl PacketNative5SourceLaunch {
+/// Shares the original upper launch accounting without granting execution.
+///
+/// Implementations report storage DATA only; callers retain original admission
+/// and parent process/thread/Source custody independently.
+pub trait PacketNative5SerializedCreditFailureStorage {
     /// Quotes the original credit error's temporary backing, returns and views.
     ///
     /// The concrete static-string error and its legacy cleanup are priced
@@ -551,7 +555,24 @@ impl PacketNative5SourceLaunch {
     /// Refuses another pinned geometry or insufficient whole-component credit.
     /// All fixed geometry arithmetic was evaluated at compile time; maximum
     /// is only a restriction and is never substituted for demand.
-    pub fn original_import18_serialized_credit_failure_construction_data(
+    fn original_import18_serialized_credit_failure_construction_data(
+        maximum: usize,
+    ) -> Result<(usize, usize), ProviderError>;
+}
+
+impl PacketNative5SerializedCreditFailureStorage for PacketNative5SourceLaunch {
+    /// Quotes the original credit error's temporary backing, returns and views.
+    ///
+    /// The concrete static-string error and its legacy cleanup are priced
+    /// independently. Original inputs, formatter/serializer/propagation work,
+    /// Path errors and later validation remain the caller's separate duties.
+    /// This component grants no parsing, allocation or native operation.
+    ///
+    /// # Errors
+    /// Refuses another pinned geometry or insufficient whole-component credit.
+    /// All fixed geometry arithmetic was evaluated at compile time; maximum
+    /// is only a restriction and is never substituted for demand.
+    fn original_import18_serialized_credit_failure_construction_data(
         maximum: usize,
     ) -> Result<(usize, usize), ProviderError> {
         if !SUPPORTED_PROFILE || maximum < TOTAL {
@@ -561,9 +582,9 @@ impl PacketNative5SourceLaunch {
         }
         Ok(CONSTRUCTION)
     }
+}
 
-    /// Names this concrete component's fixed runtime admission controls.
-    pub const fn original_import18_serialized_credit_failure_counter_scratch_data() -> usize {
-        QUOTE_CONTROLS
-    }
+/// Names this concrete component's fixed runtime admission controls.
+pub const fn original_import18_serialized_credit_failure_counter_scratch_data() -> usize {
+    QUOTE_CONTROLS
 }

@@ -5,43 +5,17 @@ use super::*;
 
 impl Native5Policy {
     pub(in crate::reference_packet::service) fn with_fresh_restore_allocation_selection(
-        mut self,
+        self,
         selection: Option<PacketNative5FreshRestoreAllocationSelection>,
     ) -> Result<Self, ProviderError> {
-        if selection.is_some() {
-            self.fresh_restore_allocation_definitions =
-                Some(fresh::policy::selected_schemas()?.map(|schema| schema.definition));
+        match self.data.with_fresh_restore_allocation_selection(selection) {
+            Ok(data) => Ok(Self { data }),
+            Err(error) => Err(error),
         }
-        self.fresh_restore_allocation_selection = selection;
-        self.validate_fresh_restore_allocation_content()?;
-        Ok(self)
     }
 
     pub(super) fn validate_fresh_restore_allocation_content(&self) -> Result<(), ProviderError> {
-        match (
-            self.fresh_restore_allocation_selection,
-            self.fresh_restore_allocation_definitions.as_ref(),
-        ) {
-            (None, None) => Ok(()),
-            (
-                Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13),
-                Some(definitions),
-            ) => {
-                if self.complete_restore_selection != Some(super::super::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
-                    || self.restore_input_emitter_selection != Some(super::super::complete_restore::PacketNative5RestoreInputEmitterSelection::CanonicalSdkRestoreInputs12)
-                    || !matches!(self.capture_profile, super::super::PacketNative5CaptureProfile::OwnedProtocol11 { .. })
-                    || self.protocol_metadata_limits.is_none()
-                    || self.native_codec_metadata_extent != Some(crate::client::CanonicalAckCodecMetadataExtent::CanonicalAck512KiB)
-                    || self.ack_emitter_selection != Some(super::super::PacketNative5AckEmitterSelection::CanonicalSdkBlob5)
-                    || self.selection.realization.bindings.len() != 1
-                    || self.selection.realization.owner_bindings.len() != 1
-                {
-                    return Err(refused());
-                }
-                fresh::policy::validate_selection_content(&self.selection, definitions)
-            }
-            _ => Err(refused()),
-        }
+        self.data.validate_fresh_restore_allocation_content()
     }
 
     pub(super) fn validate_fresh_restore_allocation_negotiation(
@@ -77,7 +51,6 @@ impl Native5Policy {
     }
 }
 
-pub(super) struct FreshPolicyView<'a>(pub(super) &'a Native5Policy);
 pub(super) struct FreshCompactPolicyView<'a>(pub(super) &'a Native5Policy);
 pub(super) struct FreshOwnedPolicyView<'a>(pub(super) &'a Native5Policy);
 
@@ -102,11 +75,6 @@ macro_rules! fresh_view {
     };
 }
 
-fresh_view!(
-    FreshPolicyView,
-    CapturePolicyView,
-    "source-private.native5-policy-fresh-restore-allocation/18"
-);
 fresh_view!(
     FreshCompactPolicyView,
     CaptureCompactPolicyView,

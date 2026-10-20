@@ -18,7 +18,11 @@ use crucible_node_format::SchemaRef;
 
 type ConstructionAxes = (usize, usize);
 
-impl PacketNative5SourceLaunch {
+/// Shares the original upper launch accounting without granting execution.
+///
+/// Implementations report storage DATA only; callers retain original admission
+/// and parent process/thread/Source custody independently.
+pub trait PacketNative5LaunchValidationStorage {
     /// Quotes formatter work before counting the complete launch validator.
     ///
     /// Returns temporary requested bytes and fixed counter scratch. This first
@@ -29,7 +33,56 @@ impl PacketNative5SourceLaunch {
     ///
     /// # Errors
     /// Refuses overflow or an unsupported actual typed metadata traversal.
-    pub fn validation_construction_projection_storage_data(
+    fn validation_construction_projection_storage_data(
+        &self,
+    ) -> Result<ConstructionAxes, ProviderError>;
+
+    /// Quotes all temporary constructors used by the unchanged launch validator.
+    ///
+    /// Returns temporary requested bytes and fixed scratch; there is no retained
+    /// result from `validate`. The caller must already admit the projection row
+    /// from [`Self::validation_construction_projection_storage_data`], including
+    /// all live caches, because closed Serialize counters may format Bytes.
+    /// Before invoking `validate`, the caller independently admits the complete
+    /// returned axes beside those same live caches. This row grants neither
+    /// constructor execution nor native installation, and never raises a cap.
+    ///
+    /// The decoded coordinator, cloned policy fields, program DOM, ingress
+    /// schema and schema references remain charged across subordinate calls.
+    /// Returning factory/validator phases reuse their work window, but no live
+    /// owner is subtracted at such a boundary. Existing coordinator geometry
+    /// follows its actual raw typed subtrees and compiled contract definitions.
+    ///
+    /// # Errors
+    /// Refuses incomplete coordinator geometry, checked overflow or a complete
+    /// temporary-plus-scratch row above `maximum_requested_bytes`. It neither
+    /// changes the accepted launch grammar nor substitutes for `validate`.
+    fn validation_construction_storage_data(
+        &self,
+        maximum_requested_bytes: usize,
+    ) -> Result<ConstructionAxes, ProviderError>;
+
+    /// Names the concrete observer, projection and constructor header windows.
+    ///
+    /// This value is admitted before the first metadata walk. It includes the
+    /// actual temporary policy and coordinator headers and returned schema
+    /// arrays, independently of their heap backing. It describes explicit
+    /// constructor values and counter views, not compiler frames or residency.
+    fn validation_construction_counter_scratch_data() -> usize;
+}
+
+impl PacketNative5LaunchValidationStorage for PacketNative5SourceLaunch {
+    /// Quotes formatter work before counting the complete launch validator.
+    ///
+    /// Returns temporary requested bytes and fixed counter scratch. This first
+    /// pass only observes actual native containers; it creates no serialization,
+    /// DOM, decoded coordinator, policy, effect or permission. The caller first
+    /// admits [`Self::validation_construction_counter_scratch_data`], then adds
+    /// these axes beside every still-live owner before requesting the full row.
+    ///
+    /// # Errors
+    /// Refuses overflow or an unsupported actual typed metadata traversal.
+    fn validation_construction_projection_storage_data(
         &self,
     ) -> Result<ConstructionAxes, ProviderError> {
         let actual = observe_retained_native_launch(self)?;
@@ -59,7 +112,7 @@ impl PacketNative5SourceLaunch {
     /// Refuses incomplete coordinator geometry, checked overflow or a complete
     /// temporary-plus-scratch row above `maximum_requested_bytes`. It neither
     /// changes the accepted launch grammar nor substitutes for `validate`.
-    pub fn validation_construction_storage_data(
+    fn validation_construction_storage_data(
         &self,
         maximum_requested_bytes: usize,
     ) -> Result<ConstructionAxes, ProviderError> {
@@ -131,9 +184,11 @@ impl PacketNative5SourceLaunch {
     /// actual temporary policy and coordinator headers and returned schema
     /// arrays, independently of their heap backing. It describes explicit
     /// constructor values and counter views, not compiler frames or residency.
-    pub fn validation_construction_counter_scratch_data() -> usize {
+    fn validation_construction_counter_scratch_data() -> usize {
         use crate::reference_packet::coordinator::PacketNative5CoordinatorInstallation;
-        use crate::reference_packet::service::Native5Policy;
+        use crucible_source_birth_data::profile::reference_packet::service::native5_policy::{
+            Native5CompleteRestorePolicyInput, Native5PolicyData,
+        };
 
         Self::VALIDATION_INPUT_COUNTER_SCRATCH_DATA
             + crate::retained_metadata::retained_native_launch_counter_scratch_data()
@@ -144,8 +199,10 @@ impl PacketNative5SourceLaunch {
             + size_of::<MetadataObserver<'static>>()
             + size_of::<schemas::InitialSchemaStorage>()
             + size_of::<Result<schemas::InitialSchemaStorage, ProviderError>>()
-            + size_of::<Native5Policy>()
-            + size_of::<Result<Native5Policy, ProviderError>>()
+            // The new record initializer and owned constructor argument.
+            + 2 * size_of::<Native5CompleteRestorePolicyInput>()
+            + size_of::<Native5PolicyData>()
+            + size_of::<Result<Native5PolicyData, ProviderError>>()
             + size_of::<PacketNative5CoordinatorInstallation>()
             + size_of::<Result<PacketNative5CoordinatorInstallation, ProviderError>>()
             + size_of::<SchemaRef>()

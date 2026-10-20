@@ -1,16 +1,16 @@
 //! Builds the existing complete Producer/Reactive fixtures without Source grants.
-use super::fixture;
-use crucible_engine::node_adapters::cnp::PacketCompleteAckHostRegistrationPlan;
+use super::{fixture, TestResult};
+use crucible_source_birth_data::registration::PacketCompleteAckHostRegistrationPlan;
 use crucible_node_format::*;
-use crucible_node_transport::reference_packet::control::PacketNative5StorageSelection;
-use crucible_node_transport::reference_packet::service::complete_restore::import18::hello::native_import18_hello_declaration_data;
-use crucible_node_transport::reference_packet::{
+use crucible_source_birth_data::profile::reference_packet::control::PacketNative5StorageSelection;
+use crucible_source_birth_data::profile::reference_packet::service::complete_restore::import18::hello::native_import18_hello_declaration_data;
+use crucible_source_birth_data::profile::reference_packet::{
     PacketEvent, PacketProgramDefinition,
     connected::{PacketConnectedDefinition, PacketInputConnection},
     coordinator::PacketNative5CoordinatorInstallation,
     service::*,
 };
-use crucible_node_transport::{
+use crucible_source_birth_data::profile::{
     client::CanonicalAckCodecMetadataExtent, reference_service::InstalledContent,
 };
 use serde_json::json;
@@ -27,7 +27,7 @@ pub(super) fn storage_selection() -> PacketNative5StorageSelection {
             hello_bytes: U64::new(2 * 65_536 + 8),
             settlement_bytes: U64::new(1024 * 1024),
         },
-        limits: crucible_node_transport::handshake::Limits {
+        limits: crucible_source_birth_data::profile::handshake::Limits {
             frame_bytes: U64::new(65_536),
             nesting: U64::new(64),
             requests: U64::new(32),
@@ -37,21 +37,20 @@ pub(super) fn storage_selection() -> PacketNative5StorageSelection {
     }
 }
 
-fn content(value: &impl serde::Serialize) -> ContentRef {
-    canonical::content_ref(
-        &canonical::canonical_json(&json!(value)).unwrap(),
+fn content(value: &impl serde::Serialize) -> TestResult<ContentRef> {
+    Ok(canonical::content_ref(
+        &canonical::canonical_json(&json!(value))?,
         "application/json",
-    )
-    .unwrap()
+    )?)
 }
 
-pub(super) fn coordinator_with_ack() -> PacketNative5CoordinatorInstallation {
-    complete_coordinator(fixture::five_with_ack(true))
+pub(super) fn coordinator_with_ack() -> TestResult<PacketNative5CoordinatorInstallation> {
+    complete_coordinator(fixture::five_with_ack(true)?)
 }
 
 fn complete_coordinator(
     mut installed: PacketNative5CoordinatorInstallation,
-) -> PacketNative5CoordinatorInstallation {
+) -> TestResult<PacketNative5CoordinatorInstallation> {
     for (index, selected) in installed.participants.iter_mut().enumerate() {
         let capabilities = CapabilityProfile {
             schema_version: 1,
@@ -63,43 +62,40 @@ fn complete_coordinator(
             devices_ref: selected.realization.descriptors[0].model_ref.clone(),
             requirements_ref: serde_json::from_value::<GuaranteeProfile>(
                 installed.template["nodes"][index]["guarantees"].clone(),
-            )
-            .unwrap()
+            )?
             .limitations_ref,
             extensions: Extensions::new(),
         };
         selected.realization.bindings[0]
             .compatibility
-            .capabilities_ref = content(&capabilities);
+            .capabilities_ref = content(&capabilities)?;
         selected.realization.owner_bindings[0].node_bindings[0].binding_hash =
-            selected.realization.bindings[0].identity().unwrap();
+            selected.realization.bindings[0].identity()?;
         selected.realize.resource_limits.memory_bytes = U64::new(16 * 1024 * 1024);
         selected.realize.resource_limits.content_bytes = U64::new(4 * 1024 * 1024);
         installed.template["nodes"][index]["binding"] = json!(selected.realization.bindings[0]);
         installed.template["owner_bindings"][index] = json!(selected.realization.owner_bindings[0]);
     }
-    let mut world: WorldBinding =
-        serde_json::from_value(installed.template["world"].clone()).unwrap();
+    let mut world: WorldBinding = serde_json::from_value(installed.template["world"].clone())?;
     for (index, selected) in installed.participants.iter().enumerate() {
-        world.node_bindings[index].binding_hash =
-            selected.realization.bindings[0].identity().unwrap();
+        world.node_bindings[index].binding_hash = selected.realization.bindings[0].identity()?;
     }
     installed.template["world"] = json!(world);
-    let identity = world.identity().unwrap();
+    let identity = world.identity()?;
     installed.template["activation"]["world_binding_hash"] = json!(identity);
     for selected in &mut installed.participants {
         selected.world = identity.clone();
     }
-    installed
+    Ok(installed)
 }
 
 pub(super) fn reactive(
     installed: &PacketNative5CoordinatorInstallation,
     member: usize,
-) -> PacketConnectedDefinition {
-    let world: WorldBinding = serde_json::from_value(installed.template["world"].clone()).unwrap();
+) -> TestResult<PacketConnectedDefinition> {
+    let world: WorldBinding = serde_json::from_value(installed.template["world"].clone())?;
     let node = &installed.participants[member].realization.descriptors[0].id;
-    PacketConnectedDefinition {
+    Ok(PacketConnectedDefinition {
         schema: "source-owned.packet-connected-program/4".into(),
         connections: world
             .connections
@@ -118,49 +114,49 @@ pub(super) fn reactive(
             .iter()
             .find(|route| &route.producer.node_id == node)
             .map(|route| route.producer.clone()),
-    }
+    })
 }
 
-pub(super) fn producer() -> PacketProgramDefinition {
-    PacketProgramDefinition {
+pub(super) fn producer() -> TestResult<PacketProgramDefinition> {
+    Ok(PacketProgramDefinition {
         schema: "source-owned.packet-program.v1".into(),
         events: vec![
             PacketEvent {
-                id: Id::new("private-callback-0").unwrap(),
+                id: Id::new("private-callback-0")?,
                 evaluation: Position::new(U64::new(4), U64::new(0), Phase::Reaction),
                 completion: Position::new(U64::new(4), U64::new(0), Phase::Reaction),
                 payload: None,
             },
             PacketEvent {
-                id: Id::new("packet-callback-0").unwrap(),
+                id: Id::new("packet-callback-0")?,
                 evaluation: Position::new(U64::new(5), U64::new(0), Phase::Reaction),
                 completion: Position::new(U64::new(5), U64::new(1), Phase::Publication),
                 payload: Some(Bytes::new(b"original-producer".to_vec())),
             },
         ],
-    }
+    })
 }
 
 pub(super) fn complete_launch(
     is_reactive: bool,
-) -> (
+) -> TestResult<(
     PacketNative5SourceLaunch,
     PacketNative5CoordinatorInstallation,
-) {
-    let coordinator = coordinator_with_ack();
+)> {
+    let coordinator = coordinator_with_ack()?;
     let member = usize::from(is_reactive);
-    let bytes = canonical::canonical_json(&serde_json::to_value(&coordinator).unwrap()).unwrap();
+    let bytes = canonical::canonical_json(&serde_json::to_value(&coordinator)?)?;
     let storage = storage_selection();
     let launch = PacketNative5SourceLaunch {
         schema_version: 5,
         selection: coordinator.participants[member].clone(),
         program: if is_reactive {
             PacketConnectedSourceProgram::Reactive {
-                program: reactive(&coordinator, member),
+                program: reactive(&coordinator, member)?,
             }
         } else {
             PacketConnectedSourceProgram::Producer {
-                program: producer(),
+                program: producer()?,
             }
         },
         controller_pid: U64::new(1),
@@ -168,11 +164,10 @@ pub(super) fn complete_launch(
         controller_executable: canonical::content_ref(
             b"pure derivation test executable",
             "application/octet-stream",
-        )
-        .unwrap(),
+        )?,
         admission_token: Bytes::new(vec![7; 32]),
         initial_coordinator: InstalledContent {
-            reference: canonical::content_ref(&bytes, "application/json").unwrap(),
+            reference: canonical::content_ref(&bytes, "application/json")?,
             bytes: Bytes::new(bytes),
         },
         limits: storage.limits,
@@ -195,21 +190,23 @@ pub(super) fn complete_launch(
         fresh_restore_allocation_selection: None,
         effects: PathBuf::from("/never-opened-pure-derivation"),
     };
-    launch.validate().unwrap();
-    (launch, coordinator)
+    launch.validate()?;
+    Ok((launch, coordinator))
 }
 
-pub(super) fn planned(launch: &PacketNative5SourceLaunch) -> PacketCompleteAckHostRegistrationPlan {
-    let declaration = native_import18_hello_declaration_data(launch).unwrap();
+pub(super) fn planned(
+    launch: &PacketNative5SourceLaunch,
+) -> TestResult<PacketCompleteAckHostRegistrationPlan> {
+    let declaration = native_import18_hello_declaration_data(launch)?;
     let mut names = None;
-    declaration
-        .retain_registration_names_into_data(&mut names)
-        .unwrap();
-    let (features, envelope_extensions) = names.unwrap();
-    PacketCompleteAckHostRegistrationPlan {
-        connection_id: Id::new("pure-derivation-controller").unwrap(),
+    declaration.retain_registration_names_into_data(&mut names)?;
+    let (features, envelope_extensions) = names.ok_or_else(|| {
+        std::io::Error::other("fixture registration names absent after retention")
+    })?;
+    Ok(PacketCompleteAckHostRegistrationPlan {
+        connection_id: Id::new("pure-derivation-controller")?,
         features,
         extensions: Vec::new(),
         envelope_extensions,
-    }
+    })
 }

@@ -9,13 +9,9 @@ use crate::ProviderError;
 use crucible_node_format::{ContentRef, HashRef, Id, U64, Validate};
 use serde::{Deserialize, Serialize};
 
-/// Names the separately negotiated request/response confirmation feature.
-pub const PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE: &str =
-    "source-owned.packet-native-after-confirmation/5";
-
-/// Names the envelope extension carrying the source-selected confirmation.
-pub const PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION: &str =
-    PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE;
+pub use crucible_source_birth_data::profile::reference_packet::service::confirmation::{
+    PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION, PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE,
+};
 
 /// Binds a confirmation request to one original completed Capture.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]

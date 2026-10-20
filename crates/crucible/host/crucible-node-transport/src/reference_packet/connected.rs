@@ -33,34 +33,6 @@ const MAXIMUM_BYTES: usize = 1024;
 const MAXIMUM_MICROSTEPS: u64 = 16;
 const MAXIMUM_RECORD: usize = 65_536;
 
-/// Declares one exact original admitted connection independently of input frames.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PacketInputConnection {
-    /// Names the immutable admitted connection.
-    pub id: Id,
-    /// Binds the complete source-installed connection policy bytes.
-    pub policy: ContentRef,
-    /// Names the declared original producer lane.
-    pub producer: Endpoint,
-    /// Names the declared original consumer lane.
-    pub consumer: Endpoint,
-    /// Gives the exact physical propagation delay in picoseconds.
-    pub delay_ps: U64,
-}
-
-/// Installs a finite input-reactive source without selecting CPU or clock fidelity.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PacketConnectedDefinition {
-    /// Selects `source-owned.packet-connected-program/4`.
-    pub schema: String,
-    /// Declares all original input connections; frames cannot add another route.
-    pub connections: Vec<PacketInputConnection>,
-    /// Selects the local output lane, or null for a consuming sink.
-    pub output: Option<Endpoint>,
-}
-
 /// Retains a complete source-native pending reaction under one consumed cut.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -648,4 +620,8 @@ pub(crate) use capture_inventory::observation17::{
     observation17_inventory_counter_scratch_data,
     original_observation17_inventory_formatter_storage_data,
     project_original_observation17_inventory_data,
+};
+
+pub use crucible_source_birth_data::profile::reference_packet::connected::{
+    PacketConnectedDefinition, PacketInputConnection,
 };

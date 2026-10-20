@@ -38,6 +38,7 @@ path = "src/bin/crucible-reference-progress-provider.rs"
 workspace = true
 
 [dependencies]
+crucible-source-birth-data = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }
 crucible-node-format = { workspace = true }

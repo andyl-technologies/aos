@@ -1,6 +1,7 @@
 //! Exercises actual canonical encodings and finite data-counter boundaries.
 
 use super::*;
+use serde::Serialize;
 use crate::retained_metadata::MetadataObserver;
 use crucible_node_format::{Bytes, U64, canonical};
 

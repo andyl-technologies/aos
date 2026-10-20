@@ -10,6 +10,8 @@ use crate::node_adapters::cnp::semantic::initial_lifecycle_diagnostics::Original
 use crate::node_adapters::cnp::semantic::packet_complete_source::retained_values;
 use crucible_node_format::{ExtensionSelection, HashRef};
 use crucible_node_transport::reference_packet::control::PacketDecodedCaptureFutureControlData;
+use crucible_node_transport::reference_packet::service::PacketNative5CoordinatorConstructionStorage;
+use crucible_node_transport::reference_packet::service::PacketNative5LaunchValidationStorage;
 use crucible_node_transport::reference_packet::service::complete_restore::import18::hello::{
     PacketNativeImport18HelloDeclarationData, PacketNativeImport18ProspectiveHostRegistrationData,
     native_import18_registration_counter_scratch_data,
@@ -419,7 +421,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + 128 * NodeRuntime::capture_serialization_counter_scratch_data()
         + NativeImport18PrivateBirthAttempt::counter_scratch_data()
         + PacketNative5SourceLaunch::validation_construction_counter_scratch_data()
-        + PacketNative5SourceLaunch::original_import18_serialized_credit_failure_counter_scratch_data()
+        + crucible_node_transport::reference_packet::service::original_import18_serialized_credit_failure_counter_scratch_data()
         + CREDIT_FAILURE_QUOTE_ADAPTER_CONTROLS
         + PacketCompleteSemanticSource::native_import18_declaration_counter_scratch_data()
         + PacketNative5CoordinatorInstallation::decode_construction_counter_scratch_data()

@@ -51,7 +51,7 @@ impl LiteralValue18Data {
         let mut walker = walk::Walker::new(value, observed_nodes)?;
         let mut prepared = self.chunks.iter().flatten();
         loop {
-            let actual = walker.next()?;
+            let actual = walker.next_token()?;
             let expected = prepared.next();
             match (expected, actual) {
                 (None, None) => return Ok(true),

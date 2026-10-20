@@ -38,17 +38,11 @@ impl serde::Serialize for ProtocolCodecView<'_> {
     }
 }
 
-/// Selects a finite serialized metadata extent for the canonical ACK codec.
-///
-/// The source selects this data before construction and accounts actual retained
-/// metadata independently. It grants no native ACK limit or restoration right.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum CanonicalAckCodecMetadataExtent {
-    /// Admits at most 512 KiB of the complete immutable codec view.
-    CanonicalAck512KiB,
+trait CanonicalAckCodecMetadataExtentData {
+    fn maximum_encoded_bytes(self) -> usize;
 }
 
-impl CanonicalAckCodecMetadataExtent {
+impl CanonicalAckCodecMetadataExtentData for CanonicalAckCodecMetadataExtent {
     fn maximum_encoded_bytes(self) -> usize {
         match self {
             Self::CanonicalAck512KiB => 512 * 1024,
@@ -1463,3 +1457,5 @@ pub(crate) use settled_history::Native5CodecHistoricalData;
 
 #[path = "native5_codec/native_import18.rs"]
 mod native_import18;
+
+pub use crucible_source_birth_data::profile::client::CanonicalAckCodecMetadataExtent;

@@ -60,7 +60,7 @@ pub(crate) fn quote_encode_data(
     let mut tokens = 0usize;
     let mut containers = 0usize;
     let mut string_bytes = 0usize;
-    while let Some(token) = walker.next()? {
+    while let Some(token) = walker.next_token()? {
         tokens = tokens.checked_add(1).ok_or(RuntimeError::ResourceLimit)?;
         if matches!(
             token,
@@ -121,7 +121,7 @@ pub(crate) fn encode_into_data(
     let mut walker = walk::Walker::new(value, quote.population)?;
     output.prepare_chunks(quote.tokens)?;
     let mut index = 0usize;
-    while let Some(token) = walker.next()? {
+    while let Some(token) = walker.next_token()? {
         output.push(index, token)?;
         index = index.checked_add(1).ok_or(RuntimeError::ResourceLimit)?;
     }

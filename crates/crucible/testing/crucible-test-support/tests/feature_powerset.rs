@@ -77,13 +77,14 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
         ],
     );
     assert_features(&manifests, "crucible-device", &[("default", &[][..])]);
+    assert_features(&manifests, "crucible-source-birth-data", &[]);
     assert_features(&manifests, "crucible-source-birth-worker", &[]);
 
     Ok(())
 }
 
 #[test]
-fn source_birth_worker_has_only_the_feature_free_engine_edge() -> Result<(), Box<dyn Error>> {
+fn source_birth_worker_has_only_the_feature_free_data_edge() -> Result<(), Box<dyn Error>> {
     let manifests = load_crucible_manifests()?;
     let worker = manifests
         .get("crucible-source-birth-worker")
@@ -98,16 +99,15 @@ fn source_birth_worker_has_only_the_feature_free_engine_edge() -> Result<(), Box
         1,
         "worker has an unreviewed direct dependency"
     );
-    let engine = dependencies
-        .get("crucible-engine")
-        .ok_or("missing pure Engine dependency")?;
+    let data = dependencies
+        .get("crucible-source-birth-data")
+        .ok_or("missing pure SourceBirth DATA dependency")?;
     assert_eq!(
-        engine.get("default-features").and_then(Value::as_bool),
+        data.get("default-features").and_then(Value::as_bool),
         Some(false)
     );
     assert!(
-        engine
-            .get("features")
+        data.get("features")
             .and_then(Value::as_array)
             .is_none_or(Vec::is_empty)
     );
@@ -200,7 +200,7 @@ fn guest_dependency_policy_rejects_direct_required_dependency() -> Result<(), Bo
     Ok(())
 }
 
-fn core_packages() -> [&'static str; 11] {
+fn core_packages() -> [&'static str; 12] {
     [
         "crucible-determinism",
         "crucible-test-support",
@@ -211,12 +211,13 @@ fn core_packages() -> [&'static str; 11] {
         "crucible-session",
         "crucible-control-api",
         "crucible-daemon",
+        "crucible-source-birth-data",
         "crucible-source-birth-worker",
         "crucible-cli",
     ]
 }
 
-fn shipped_packages() -> [&'static str; 13] {
+fn shipped_packages() -> [&'static str; 14] {
     [
         "crucible-determinism",
         "crucible-test-support",
@@ -227,6 +228,7 @@ fn shipped_packages() -> [&'static str; 13] {
         "crucible-session",
         "crucible-control-api",
         "crucible-daemon",
+        "crucible-source-birth-data",
         "crucible-source-birth-worker",
         "crucible-cli",
         "crucible-qemu-host",
@@ -446,6 +448,12 @@ fn feature_cases() -> &'static [FeatureCase] {
             package: "crucible-qemu-host",
             no_default_features: true,
             features: &["test-support"],
+        },
+        FeatureCase {
+            name: "source-birth data production",
+            package: "crucible-source-birth-data",
+            no_default_features: true,
+            features: &[],
         },
         FeatureCase {
             name: "source-birth worker production",

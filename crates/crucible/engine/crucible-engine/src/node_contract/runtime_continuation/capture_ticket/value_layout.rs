@@ -5,44 +5,17 @@
 //! serde_json 1.0.150 default/std features. Actual allocator controls must match
 //! them whenever those inputs change; this is not a public BTreeMap ABI claim.
 
-use std::mem::{MaybeUninit, size_of};
-use std::ptr::NonNull;
-
+#[cfg(test)]
 use serde_json::Value;
+use std::mem::size_of;
 
 /// Defines unselected Clone control layouts for the pinned map implementation.
 #[path = "value_layout/clone_controls.rs"]
 pub(super) mod clone_controls;
 
-// Field values are never initialized or dereferenced. The mirrors exist solely
-// to reproduce requested Layout sizes, including the compiler's actual padding.
-#[allow(dead_code)]
-struct LeafNode<K, V> {
-    parent: Option<NonNull<InternalNode<K, V>>>,
-    parent_idx: MaybeUninit<u16>,
-    len: u16,
-    keys: [MaybeUninit<K>; 11],
-    vals: [MaybeUninit<V>; 11],
-}
-
-#[repr(C)]
-#[allow(dead_code)]
-struct InternalNode<K, V> {
-    data: LeafNode<K, V>,
-    edges: [MaybeUninit<NonNull<LeafNode<K, V>>>; 12],
-}
-
-pub(super) fn map_node_bytes() -> usize {
-    size_of::<InternalNode<String, Value>>()
-}
-
-pub(super) fn map_node_bytes_for<K, V>() -> usize {
-    size_of::<InternalNode<K, V>>()
-}
-
-pub(super) fn value_slot_bytes() -> usize {
-    size_of::<Value>()
-}
+pub(super) use crucible_source_birth_data::serialization::value_layout::{
+    InternalNode, LeafNode, map_node_bytes, map_node_bytes_for, value_slot_bytes,
+};
 
 /// Bounds requested nodes for stable borrowed trees under the pinned B=6 layout.
 ///

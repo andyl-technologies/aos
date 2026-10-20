@@ -2926,6 +2926,7 @@ dependencies = [
  "crucible-node-transport",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
+ "crucible-source-birth-data",
  "crucible-store",
  "crucible-test-support",
  "hmac 0.12.1",
@@ -2982,6 +2983,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "crucible-node-format",
+ "crucible-source-birth-data",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -3075,12 +3077,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-source-birth-data"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "crucible-node-format",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "crucible-source-birth-worker"
 version = "0.1.0"
 dependencies = [
- "crucible-engine",
  "crucible-node-format",
- "crucible-node-transport",
+ "crucible-source-birth-data",
  "serde",
  "serde_json",
 ]

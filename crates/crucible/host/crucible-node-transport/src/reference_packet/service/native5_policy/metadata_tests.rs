@@ -107,6 +107,7 @@ fn original_arrays_policy_matches_the_four_field_wire_contract()
     let expected = serde_json::to_vec(&original)?;
 
     assert_eq!(serde_json::to_vec(&policy)?, expected);
+    assert_eq!(serde_json::to_vec(&policy.data)?, expected);
     assert_eq!(serde_json::to_vec(&policy.protocol_view())?, expected);
     assert_eq!(
         serde_json::to_value(&policy)?
@@ -127,7 +128,7 @@ fn selected_restore_definitions_survive_each_policy_view() -> Result<(), Box<dyn
         coordinator,
         super::super::PacketNative5CaptureProfile::OriginalArrays6,
     )?;
-    policy.complete_restore_selection = Some(
+    policy.data.complete_restore_selection = Some(
         super::super::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12,
     );
     policy.bind_complete_restore_transfer_definitions()?;

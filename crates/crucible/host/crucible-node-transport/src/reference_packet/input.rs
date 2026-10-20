@@ -13,15 +13,14 @@
 //!    "staging_receipt":{...}}}
 //! ```
 
+pub use crucible_source_birth_data::profile::reference_packet::input::PACKET_INPUT_FEATURE;
+
 use crucible_node_format::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{ProviderError, bodies::*, envelope::*};
 
 use super::control::PacketControlSelection;
-
-/// Names the explicitly negotiated connected packet input grammar.
-pub const PACKET_INPUT_FEATURE: &str = "source-owned.packet-input/4";
 
 /// Binds a complete source-specific input cut to its original activated owner.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

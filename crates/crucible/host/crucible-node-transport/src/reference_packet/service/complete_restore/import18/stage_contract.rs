@@ -1,8 +1,7 @@
 //! Defines the immutable stage18 selection over unchanged inner17 DATA contract and its real factory geometry.
 
 use super::*;
-/// Names the new full selection while inner stage17 keys and DTOs remain exact.
-pub const NATIVE_IMPORT18_STAGE_SELECTION: &str = "source-owned.packet-native-import-stage/18";
+pub use crucible_source_birth_data::profile::reference_packet::service::complete_restore::import18::stage_contract::NATIVE_IMPORT18_STAGE_SELECTION;
 
 const CONTRACT: &[u8] = br#"{
   "schema":"source-owned.packet-native-import-stage-contract/18",

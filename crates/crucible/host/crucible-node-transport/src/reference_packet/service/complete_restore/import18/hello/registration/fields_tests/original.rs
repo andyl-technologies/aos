@@ -2,6 +2,18 @@
 
 use super::*;
 
+/// Retains the saved original algorithm's digest and projected extent for tests.
+pub(super) struct SavedProjection {
+    planned: [u8; 32],
+    maximum_encoded_bytes: usize,
+}
+
+impl SavedProjection {
+    pub(super) fn parts_data(&self) -> ([u8; 32], usize) {
+        (self.planned, self.maximum_encoded_bytes)
+    }
+}
+
 pub(super) fn declaration(
     launch: &PacketNative5SourceLaunch,
 ) -> Result<PacketNativeImport18HelloDeclarationData, ProviderError> {
@@ -78,8 +90,8 @@ fn authenticate_plan_original(
         .get("envelope_extensions")
         .and_then(Value::as_array)
         .ok_or_else(refused)?;
-    if features.len() != declaration.feature_count
-        || keys.len() != declaration.key_count
+    if features.len() != declaration.feature_count_data()
+        || keys.len() != declaration.key_count_data()
         || planned
             .get("extensions")
             .and_then(Value::as_array)
@@ -92,7 +104,7 @@ fn authenticate_plan_original(
     for feature in features {
         let name = feature.as_str().ok_or_else(refused)?;
         if !declaration
-            .features
+            .features_data()
             .iter()
             .flatten()
             .any(|expected| *expected == name)
@@ -103,7 +115,7 @@ fn authenticate_plan_original(
     for key in keys {
         let name = key.as_str().ok_or_else(refused)?;
         if !declaration
-            .keys
+            .keys_data()
             .iter()
             .flatten()
             .any(|(expected, _)| *expected == name)
@@ -119,7 +131,7 @@ pub(super) fn prospective(
     declaration: &PacketNativeImport18HelloDeclarationData,
     planned: &Value,
     maximum: usize,
-) -> Result<PacketNativeImport18ProspectiveHostRegistrationData, ProviderError> {
+) -> Result<SavedProjection, ProviderError> {
     authenticate_plan_original(launch, declaration, planned)?;
     let mut projection = Projection::new(maximum)?;
     projection.add_array_extent(10)?;
@@ -134,7 +146,7 @@ pub(super) fn prospective(
     projection.add_array_extent(0)?;
     projection.add_string(BACKING_MARKER)?;
     let projected = projection.finish(maximum)?;
-    Ok(PacketNativeImport18ProspectiveHostRegistrationData {
+    Ok(SavedProjection {
         planned: planned_identity(planned)?,
         maximum_encoded_bytes: projected.maximum_encoded_bytes,
     })
@@ -147,8 +159,59 @@ pub(super) fn authenticate_saved(
     planned: &Value,
 ) -> Result<(), ProviderError> {
     authenticate_plan_original(launch, declaration, planned)?;
-    if saved.planned != planned_identity(planned)? {
+    if saved.planned_identity_data() != planned_identity(planned)? {
         return Err(refused());
     }
+    Ok(())
+}
+
+// Only known validated strings/arrays participate. Each length-delimited field
+// is committed in its defining order; no canonical DOM/formatter is allocated.
+fn planned_identity(planned: &Value) -> Result<[u8; 32], ProviderError> {
+    let mut hash = blake3::Hasher::new_derive_key("native-import18.planned-registration/1");
+    for key in [
+        "schema",
+        "role",
+        "connection_id",
+        "session_id",
+        "incarnation_id",
+    ] {
+        include(&mut hash, text(planned, key)?.as_bytes())?;
+    }
+    for key in LIMIT_FIELDS {
+        include(
+            &mut hash,
+            planned
+                .get("limits")
+                .and_then(|limits| limits.get(key))
+                .and_then(Value::as_str)
+                .ok_or_else(refused)?
+                .as_bytes(),
+        )?;
+    }
+    for key in ["features", "envelope_extensions", "extensions"] {
+        let values = planned
+            .get(key)
+            .and_then(Value::as_array)
+            .ok_or_else(refused)?;
+        hash.update(
+            &u64::try_from(values.len())
+                .map_err(|_| refused())?
+                .to_be_bytes(),
+        );
+        for value in values {
+            include(&mut hash, value.as_str().ok_or_else(refused)?.as_bytes())?;
+        }
+    }
+    Ok(*hash.finalize().as_bytes())
+}
+
+fn include(hash: &mut blake3::Hasher, value: &[u8]) -> Result<(), ProviderError> {
+    hash.update(
+        &u64::try_from(value.len())
+            .map_err(|_| refused())?
+            .to_be_bytes(),
+    );
+    hash.update(value);
     Ok(())
 }

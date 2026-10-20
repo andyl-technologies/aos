@@ -81,22 +81,14 @@ pub(super) fn project_features_data(
     out: &mut Projection,
     declaration: &PacketNativeImport18HelloDeclarationData,
 ) -> Result<(), ProviderError> {
-    out.add_array_extent(declaration.feature_count)?;
-    for feature in declaration.features.iter().flatten() {
-        out.add_string(feature)?;
-    }
-    Ok(())
+    shared::materialization::project_features_data(out, &declaration.data)
 }
 
 pub(super) fn project_keys_data(
     out: &mut Projection,
     declaration: &PacketNativeImport18HelloDeclarationData,
 ) -> Result<(), ProviderError> {
-    out.add_array_extent(declaration.key_count)?;
-    for (key, _) in declaration.keys.iter().flatten() {
-        out.add_string(key)?;
-    }
-    Ok(())
+    shared::materialization::project_keys_data(out, &declaration.data)
 }
 
 /// Names actual finite-array walks and direct prospective serialization states.

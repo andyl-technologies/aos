@@ -23,47 +23,6 @@ pub use requests::*;
 pub use responses::*;
 pub use results::*;
 
-pub(crate) fn invalid(field: &'static str, reason: &'static str) -> ContractError {
-    ContractError::Invalid {
-        field,
-        reason: reason.to_owned(),
-    }
-}
-
-fn count<T>(values: &[T], field: &'static str) -> Result<(), ContractError> {
-    if values.len() > MAX_ARRAY_ELEMENTS {
-        return Err(invalid(field, "array exceeds 65536 elements"));
-    }
-    Ok(())
-}
-
-fn sorted<T, K: Ord>(
-    values: &[T],
-    key: impl Fn(&T) -> K,
-    field: &'static str,
-) -> Result<(), ContractError> {
-    count(values, field)?;
-    if values.windows(2).any(|pair| key(&pair[0]) >= key(&pair[1])) {
-        return Err(invalid(
-            field,
-            "set must be strictly sorted without duplicates",
-        ));
-    }
-    Ok(())
-}
-
-fn ids(values: &[Id], field: &'static str) -> Result<(), ContractError> {
-    sorted(values, Clone::clone, field)
-}
-
-fn domain(hash: &HashRef, expected: &'static str) -> Result<(), ContractError> {
-    hash.validate()?;
-    if hash.domain != expected {
-        return Err(invalid("hash.domain", "incorrect typed identity domain"));
-    }
-    Ok(())
-}
-
 fn optional_nonnull<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -387,3 +346,5 @@ impl PollResult {
 // crucible-lint: allow panic-shortcut -- These bodies tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests;
+
+pub(crate) use crucible_source_birth_data::profile::bodies::{count, domain, ids, invalid, sorted};

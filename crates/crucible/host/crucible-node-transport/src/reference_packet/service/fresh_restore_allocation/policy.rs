@@ -4,6 +4,15 @@
 //! acceptance borrows selected feature/key names and existing scalar values;
 //! it does not authenticate a report key or issue startup/allocation rights.
 
+use crucible_source_birth_data::profile::reference_packet::service::fresh_restore_allocation::policy::{
+    refused,
+};
+
+pub(crate) use crucible_source_birth_data::profile::reference_packet::service::fresh_restore_allocation::policy::{
+    selected_schemas,
+    validate_selection_content,
+};
+
 use super::*;
 use crate::{
     bodies::{MethodResult, RequestBody, ResponseShape},
@@ -13,43 +22,6 @@ use crate::{
     reference_packet::control::PacketControlSelection,
 };
 use serde_json::Value;
-
-pub(crate) fn selected_schemas() -> Result<[crucible_node_format::SchemaRef; 5], ProviderError> {
-    use PacketNativeFreshRestoreAllocationSchema as S;
-    Ok([
-        fresh_restore_allocation_schema(S::Query)?,
-        fresh_restore_allocation_schema(S::Report)?,
-        fresh_restore_allocation_schema(S::Proof)?,
-        fresh_restore_allocation_schema(S::Receipt)?,
-        fresh_restore_allocation_schema(S::PrepareBinding)?,
-    ])
-}
-
-pub(crate) fn validate_selection_content(
-    selection: &PacketControlSelection,
-    definitions: &[ContentRef; 5],
-) -> Result<(), ProviderError> {
-    let schemas = selected_schemas()?;
-    if schemas.iter().zip(definitions).any(|(schema, actual)| {
-        &schema.definition != actual
-            || !selection.provider.implementation.formats.contains(schema)
-            || selection.realization.bindings.iter().any(|binding| {
-                !binding
-                    .compatibility
-                    .implementation
-                    .formats
-                    .contains(schema)
-            })
-    }) || !selection
-        .provider
-        .extensions_supported
-        .iter()
-        .any(|feature| feature.as_str() == PACKET_FRESH_RESTORE_ALLOCATION_FEATURE)
-    {
-        return Err(refused());
-    }
-    Ok(())
-}
 
 pub(crate) fn validate_selection_negotiation(
     authority: &ConnectionAuthority,
@@ -239,8 +211,4 @@ pub(crate) fn validate_allocation_reference_value(value: &Value) -> Result<(), P
         return Err(refused());
     }
     Ok(())
-}
-
-fn refused() -> ProviderError {
-    ProviderError::Correlation("selected fresh restoration allocation grammar differs")
 }

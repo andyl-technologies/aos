@@ -69,7 +69,7 @@
       cargo clippy --frozen --offline -j"$NIX_BUILD_CORES" -p crucible-source-birth-worker --no-default-features --all-targets -- -D warnings
     '';
     meta = {
-      description = "Private safe Engine-only process entry point for bounded source-birth derivation";
+      description = "Private safe SourceBirth DATA process entry point for bounded source-birth derivation";
       license = "Apache-2.0";
     };
   };

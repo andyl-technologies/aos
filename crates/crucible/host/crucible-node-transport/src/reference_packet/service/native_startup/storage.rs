@@ -140,6 +140,9 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + coordinator_decode::counter_scratch_data()
         + decoded::counter_scratch_data()
         + launch_validation_counter_scratch_data()
+        + super::super::Native5Policy::CONSTRUCTION_ADAPTER_SCRATCH_DATA
+        // Exact lower restore-input aggregate initializer and owned callee input.
+        + 2 * size_of::<crucible_source_birth_data::profile::reference_packet::service::native5_policy::Native5CompleteRestorePolicyInput>()
         + launch_validation::counter_scratch_data()
         + launch_decode::counter_scratch_data()
         + super::pre_dom::counter_scratch_data()
@@ -678,7 +681,7 @@ fn launch_validation_work(
             coordinator_decode::backing(launch.initial_coordinator.bytes.as_slice(), maximum)?,
             metadata_backing(&launch.selection)?,
             launch.initial_coordinator.bytes.as_slice().len(),
-            size_of::<crate::reference_packet::service::Native5Policy>(),
+            size_of::<crucible_source_birth_data::profile::reference_packet::service::native5_policy::Native5PolicyData>(),
             configuration.requested_total()?,
             definitions.transient,
             definitions.retained_reference_children,
@@ -888,3 +891,7 @@ pub(super) fn private_frame_work_data(
         usize::MAX,
     )
 }
+
+pub use launch_validation::PacketNative5LaunchValidationStorage;
+
+pub use coordinator_decode::PacketNative5CoordinatorConstructionStorage;

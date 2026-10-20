@@ -7,6 +7,7 @@
   "crucible-qemu-shmem"
   "crucible-qemu-protocol"
   "crucible-node-format"
+  "crucible-source-birth-data"
   "crucible-node-transport"
   "crucible-host-resources"
   "crucible-device"

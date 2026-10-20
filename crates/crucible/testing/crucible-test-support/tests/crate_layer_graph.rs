@@ -34,6 +34,11 @@ const RUNTIME_SPECS: &[LayerSpec] = &[
         in_vm: false,
     },
     LayerSpec {
+        package: "crucible-source-birth-data",
+        layer: 1,
+        in_vm: false,
+    },
+    LayerSpec {
         package: "crucible-node-transport",
         layer: 2,
         in_vm: false,

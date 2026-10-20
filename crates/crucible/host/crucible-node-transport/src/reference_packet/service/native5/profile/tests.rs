@@ -3,6 +3,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use crucible_node_format::U64;
 
 #[test]
 fn compact_profile_roundtrip_is_closed_and_independent() {

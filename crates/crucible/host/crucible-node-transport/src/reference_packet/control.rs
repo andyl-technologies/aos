@@ -81,30 +81,6 @@ const ORIGINALS: usize = 256;
 const OBJECTS: usize = 256;
 const CONTENT_BYTES: usize = 4 * 1024 * 1024;
 
-/// Defines the complete independently installed original native control scope.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PacketControlSelection {
-    /// Names the actual source-selected provider implementation and formats.
-    pub provider: ProviderManifest,
-    /// Names the complete unchanged realized descriptors, bindings and owners.
-    pub realization: RealizationManifest,
-    /// Retains the original host-selected realization request.
-    pub realize: RealizeRequest,
-    /// Names the actual closed native preparation.
-    pub prepared_token: Id,
-    /// Names the independent host admission, checked before staging.
-    pub admission: Id,
-    /// Names the exact complete transaction, without granting host publication.
-    pub transaction: Id,
-    /// Names the original actual native gate.
-    pub gate: Id,
-    /// Binds the complete source-installed world, never a request-selected subset.
-    pub world: HashRef,
-    /// Names the independently expected host admission body.
-    pub admission_receipt: ContentRef,
-}
-
 /// Retains native original proof bytes without turning their syntax into authority.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2029,3 +2005,5 @@ pub use capture17_producer::{
     restored_settled_capture_control_model_future_from_initial15_data,
     restored_settled_capture_control_model_future_initial15_prequote_data,
 };
+
+pub use crucible_source_birth_data::profile::reference_packet::control::PacketControlSelection;

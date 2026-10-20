@@ -72,6 +72,7 @@ and production VM lifecycle composition belongs to the daemon.
     crucible-qemu-shmem     the public #[repr(C)] shared-memory process protocol
     crucible-qemu-protocol  the IPC wire protocol (framing, versioning, golden vectors)
     crucible-device    disk / 9p / net I/O sub-nodes (deterministic completion)
+    crucible-source-birth-data  portable complete-profile records and pure derivation
 
   L0  DETERMINISTIC CORE
     crucible-determinism       deterministic runtime/scheduler primitives (seeded RNG,
@@ -86,6 +87,7 @@ One-line responsibilities:
 | L1 | `crucible-qemu-shmem` | The public `#[repr(C)]` shared-memory process protocol (per-node clocks, status, SPSC frame queues), with generated language views and golden vectors. |
 | L1 | `crucible-qemu-protocol` | The host↔plugin IPC protocol: message framing, explicit version field, encode/decode, golden vectors. |
 | L1 | `crucible-device` | Disk (CoW overlay), 9p (read-only, path-hashed QIDs), and net-link I/O sub-nodes with deterministic completion events. |
+| L1 | `crucible-source-birth-data` | Portable complete-profile records, static validation, pure SourceBirth derivation and worker codecs; no Source or native authority. |
 | L2 | `crucible-qemu-host` | Host-side QEMU process launch/control and the concrete VM driver wrapped by higher layers. |
 | L2 | `crucible-qemu-plugin` | The in-VM `cdylib` loaded via `-plugin`; owns virtual-time control (`qemu_plugin_request_time_control`) and the device/channel callbacks. |
 | L2 | `crucible-guest` | OPTIONAL in-guest agent for white-box markers via the doorbell; never required for any core capability (`G-3`). |
@@ -98,7 +100,7 @@ One-line responsibilities:
 | L4 | `crucible-control-client` | Client transport and lifecycle operations over the versioned API; no production QEMU dependency. |
 | L4 | `crucible-control-server` | Session service and server-side stream orchestration; native launch belongs to daemon composition. |
 | L4 | `crucible-daemon` | The long-lived host process that hosts sessions and serves the API over a transport. |
-| L4 | `crucible-source-birth-worker` | Private safe process entry point over the Engine pure derivation facade and codecs; no Source or native authority. |
+| L4 | `crucible-source-birth-worker` | Private safe process entry point over the lower SourceBirth DATA derivation and codecs; no Source or native authority. |
 | L4 | `crucible-cli` | The `crucible` binary: a thin client over `crucible-control-client`; scenario authoring, run, reproduce, query. |
 | L4 | `crucible-store-s3` | The bounded AWS SDK implementation of campaign object-store capabilities. |
 
@@ -115,7 +117,10 @@ graph TD
   client --> api
   server --> session[crucible-session]
   session --> engine[crucible-engine]
-  worker[crucible-source-birth-worker] --> engine
+  worker[crucible-source-birth-worker] --> birth[crucible-source-birth-data]
+  engine --> birth
+  transport[crucible-node-transport] --> birth
+  birth --> format[crucible-node-format]
   api --> engine
   host --> engine
   engine --> campaign
@@ -181,6 +186,7 @@ discipline of [`28-engineering-standards.md`](28-engineering-standards.md).
 | `crucible-qemu-shmem` | **UNSAFE** `#![deny(unsafe_op_in_unsafe_fn)]` | `mmap` of the shared region, `#[repr(C)]` field access across the boundary, lock-free SPSC atomics. |
 | `crucible-qemu-protocol` | **UNSAFE** | Byte (de)serialization is pure, but `Setup` descriptor handover uses Unix `sendmsg`/`recvmsg` and `SCM_RIGHTS` ancillary buffers. |
 | `crucible-device` | **SAFE** | Pure I/O-sub-node models over owned buffers / CoW page maps. |
+| `crucible-source-birth-data` | **SAFE** | Portable records, static validation and pure derivation; no native APIs or authority. |
 | `crucible-qemu-host` | **UNSAFE** | Host-side process control may touch FFI for QMP/monitor and shared-memory file descriptors; reads raw VM memory via the plugin transport. |
 | `crucible-qemu-plugin` | **UNSAFE** | The `cdylib` is the QEMU TCG plugin C ABI: `extern "C"` entry points, raw QEMU/guest memory, time-control FFI. |
 | `crucible-qemu-debug-gateway` | **SAFE** | Mediated debugger protocol and process orchestration use safe owned capabilities. |
@@ -193,7 +199,7 @@ discipline of [`28-engineering-standards.md`](28-engineering-standards.md).
 | `crucible-control-client` | **SAFE** | Client transport and lifecycle request dispatch. |
 | `crucible-control-server` | **SAFE** | Session service and server stream orchestration. |
 | `crucible-daemon` | **SAFE** | Host process; transport via safe libraries. |
-| `crucible-source-birth-worker` | **SAFE** | Binary-only bounded input/output process over the Engine facade; no native APIs. |
+| `crucible-source-birth-worker` | **SAFE** | Binary-only bounded input/output process over SourceBirth DATA; no native APIs. |
 | `crucible-cli` | **SAFE** | Thin client. |
 | `crucible-store-s3` | **SAFE** | Bounded SDK adapter over owned buffers and async operations. |
 
@@ -203,7 +209,8 @@ mmap/atomics ABI, Unix descriptor handover, or FFI. The shared
 classified in the AOS workspace. The engine and control plane remain safe.
 
 - **[CRATE-4]** Every SAFE crate (`crucible-determinism`,
-  `crucible-device`, `crucible-qemu-debug-gateway`, `crucible-engine`, `crucible-store`,
+  `crucible-device`, `crucible-source-birth-data`, `crucible-qemu-debug-gateway`,
+  `crucible-engine`, `crucible-store`,
   `crucible-campaign`, `crucible-session`, `crucible-control-api`, `crucible-control-client`,
   `crucible-control-server`, `crucible-daemon`, `crucible-source-birth-worker`,
   `crucible-cli`, `crucible-store-s3`) MUST carry
@@ -513,6 +520,11 @@ contract and which crate realizes a file.
 | `crucible-daemon` | [`20`](20-session-control-plane.md), [`21`](21-api.md) | `gate:control-responsive` |
 | `crucible-cli` | [`23`](23-cli.md) | `gate:e2e-determinism` (top-level) |
 
+The lower `crucible-source-birth-data` library implements RFC-0025 files
+01, 02, 05, 06, 08 and 09. It is Apache-2.0, is not published separately,
+and shares its portable definitions with Engine and Transport without carrying
+their live owners. The worker depends only on this lower library in production.
+
 Cross-cutting concerns spread across crates: virtual time
 ([`09`](09-virtual-time-icount.md)) is *defined* in `crucible-determinism` and *consumed*
 by `crucible-engine` and `crucible-qemu-host`; the determinism harness
@@ -544,6 +556,7 @@ members = [
   # L1
   "crucible/protocol/crucible-qemu-shmem",
   "crucible/protocol/crucible-qemu-protocol",
+  "crucible/protocol/crucible-source-birth-data",
   "crucible/engine/crucible-device",
   # L2
   "crucible/qemu/crucible-qemu-host",

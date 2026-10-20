@@ -7,6 +7,7 @@
 
 use super::{fixture, modeled_storage_selection, producer, reactive};
 use crate::ProviderError;
+use crate::reference_packet::service::PacketNative5LaunchValidationOracle;
 use crate::reference_packet::service::{
     self, PacketConnectedSourceProgram, PacketNative5CaptureProfile,
     PacketNative5LaunchValidationFields, PacketNative5LaunchValidationProjection,

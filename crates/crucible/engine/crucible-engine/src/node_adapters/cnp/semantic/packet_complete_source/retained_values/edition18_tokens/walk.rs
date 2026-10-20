@@ -4,9 +4,9 @@
 //! Its existing construction quotes and Source custody remain independent of
 //! the worker stream's operational limits.
 
-pub(super) use crate::node_adapters::cnp::source_birth_derivation::literal_value::walk::{
+pub(super) use crucible_source_birth_data::source_birth::literal_value::walk::{
     BorrowedToken18, Frame,
 };
 
 pub(super) type Walker<'a> =
-    crate::node_adapters::cnp::source_birth_derivation::literal_value::walk::Walker<'a, false>;
+    crucible_source_birth_data::source_birth::literal_value::walk::Walker<'a, false>;

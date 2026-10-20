@@ -10,6 +10,7 @@ use super::super::{
 };
 use super::*;
 use crate::{node_scheduling::SchedulingSnapshot, node_state::ParentArchive17ReadScope};
+use crucible_node_transport::reference_packet::service::PacketNative5LaunchValidationStorage;
 use crucible_node_transport::reference_packet::service::{
     PacketConnectedSourceProgram, PacketNative5SourceLaunch,
 };

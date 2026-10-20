@@ -10,6 +10,7 @@ use crate::node_state::{
     RestoredArchive17Initial15QualificationRole as QualificationRole,
     RestoredArchive17Initial15Role as TerminalRole, RestoredArchive17Initial15Work as TerminalWork,
 };
+use crucible_node_transport::reference_packet::service::PacketNative5LaunchValidationStorage;
 
 use crucible_node_format::{CaptureManifest, Repeatability, Validate};
 use crucible_node_transport::protocol_snapshot::borrowed_json::BorrowedJsonFields as Fields;

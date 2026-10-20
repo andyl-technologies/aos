@@ -35,28 +35,7 @@ pub mod retained_metadata;
 pub mod session;
 pub mod transport;
 
-/// Reports transport, portable schema, or correlation failure.
-#[derive(Debug, thiserror::Error)]
-pub enum ProviderError {
-    /// The stream could not complete an I/O operation.
-    #[error("provider stream I/O failed: {0}")]
-    Io(#[from] std::io::Error),
-    /// Portable data failed its canonical representation or bounds.
-    #[error("invalid provider data: {0}")]
-    Contract(#[from] crucible_node_format::ContractError),
-    /// A frame cannot be interpreted under the admitted transport.
-    #[error("invalid provider frame: {0}")]
-    Frame(&'static str),
-    /// A message disagrees with retained connection or request custody.
-    #[error("provider correlation failure: {0}")]
-    Correlation(&'static str),
-    /// A finite storage or sequence allowance is exhausted.
-    #[error("provider resource exhausted: {0}")]
-    ResourceExhausted(&'static str),
-    /// A request identity is reused with different material.
-    #[error("provider request conflict: {0}")]
-    Conflict(&'static str),
-}
-
 // Operational host clocks remain private to audited process/transport paths.
 mod operational_time;
+
+pub use crucible_source_birth_data::errors::ProviderError;

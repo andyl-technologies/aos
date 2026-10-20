@@ -453,3 +453,15 @@ pub(crate) use security::{
 pub(crate) use owned11::{
     BorrowedCurrentNativeService17LineageData, borrow_current_native17_service_lineage_data,
 };
+
+#[cfg(test)]
+pub(crate) use native5::PacketNative5LaunchValidationOracle;
+
+pub use native5::{
+    PacketNative5SerializedCreditFailureStorage,
+    original_import18_serialized_credit_failure_counter_scratch_data,
+};
+
+pub use native_startup::PacketNative5LaunchValidationStorage;
+
+pub use native_startup::PacketNative5CoordinatorConstructionStorage;

@@ -46,22 +46,6 @@ pub use birth::{
 };
 pub use frame::PacketCompleteAckPeerBootFrame;
 
-/// Selects one full planned controller registration for preparation only.
-///
-/// The Source derives session and incarnation from its original binding. It
-/// checks these planned values against the actual post-Hello authority before
-/// any proof signature. Construction or deserialization grants no authority.
-pub struct PacketCompleteAckHostRegistrationPlan {
-    /// Names the independently planned host-local physical connection.
-    pub connection_id: Id,
-    /// Retains the exact mutually selected feature roster expected after Hello.
-    pub features: IdSet,
-    /// Retains complete typed extension selections expected after Hello.
-    pub extensions: Vec<ExtensionSelection>,
-    /// Names the exact sorted envelope-extension roster expected after Hello.
-    pub envelope_extensions: Vec<String>,
-}
-
 impl PacketCompleteSemanticSource {
     /// Binds the expected ACK grammar before banks, keys or Child exist.
     ///
@@ -769,3 +753,5 @@ pub(crate) use association::OriginalSourceRestoredCaptureEncodingInputs;
 pub(crate) use association::OriginalSourceRestoredCaptureCountingBanksData;
 
 pub use association::OriginalSourceRestoredCaptureConstructionData;
+
+pub use crucible_source_birth_data::registration::PacketCompleteAckHostRegistrationPlan;

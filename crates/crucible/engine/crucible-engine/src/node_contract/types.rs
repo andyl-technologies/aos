@@ -441,56 +441,6 @@ impl OperationAdmission {
     }
 }
 
-/// Reports a local admission failure before provider effects begin.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum RuntimeError {
-    /// An admitted runtime or retained inventory ceiling would be exceeded.
-    #[error("runtime resource ceiling exceeded")]
-    ResourceLimit,
-    /// Dispatch would violate the admitted native adapter's thread custody.
-    #[error("native adapter thread affinity mismatch")]
-    ThreadAffinity,
-    /// The complete activated graph could not establish scheduling authority.
-    #[error("scheduler admission failed: {0}")]
-    SchedulerRefused(String),
-    /// The requested public node was not admitted.
-    #[error("unknown node")]
-    UnknownNode,
-    /// A route is missing owners or aliases an incompatible incarnation.
-    #[error("invalid owner route")]
-    InvalidRoute,
-    /// An operation identity was already used in this world.
-    #[error("operation identity already used")]
-    DuplicateOperation,
-    /// A shared owner has unresolved operation or publication custody.
-    #[error("owner has retained operation custody")]
-    OwnerBusy,
-    /// An owner is contained or released and unavailable for ordinary work.
-    #[error("owner is unavailable")]
-    OwnerUnavailable,
-    /// Complete world activation has not been durably established.
-    #[error("world activation is not committed")]
-    NotActivated,
-    /// A token or activation record belongs to another local authority.
-    #[error("foreign or stale authority")]
-    ForeignAuthority,
-    /// A required explicitly advertised facet is absent.
-    #[error("unsupported facet")]
-    UnsupportedFacet,
-    /// A timing request has empty, inverted, or incompatible bounds.
-    #[error("invalid timing request")]
-    InvalidTiming,
-    /// A provider result does not match the original admitted operation.
-    #[error("invalid provider receipt; owner quarantined")]
-    InvalidReceipt,
-    /// Native terminal outcome or output acknowledgement is still outstanding.
-    #[error("retained obligations remain")]
-    OutstandingObligations,
-    /// A durable publication failed or has uncertain status.
-    #[error("activation publication failed or is uncertain")]
-    PublicationFailed,
-}
-
 /// Bounds host routing and retained operation custody before native dispatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuntimeLimits {
@@ -560,3 +510,5 @@ pub enum RetainedOperationObservation {
     /// Classified effects and failed completion remain retained.
     Failed(OperationFailure),
 }
+
+pub use crucible_source_birth_data::errors::RuntimeError;

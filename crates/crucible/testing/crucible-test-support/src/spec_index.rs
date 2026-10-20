@@ -36,6 +36,13 @@ pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
         section_6_row: false,
     },
     CrateSpecIndexEntry {
+        package: "crucible-source-birth-data",
+        root: "src/lib.rs",
+        spec_files: &[],
+        supplemental_spec: Some("RFC-0025 files 01, 02, 05, 06, 08, 09"),
+        section_6_row: false,
+    },
+    CrateSpecIndexEntry {
         package: "crucible-node-transport",
         root: "src/lib.rs",
         spec_files: &[],

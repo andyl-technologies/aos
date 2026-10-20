@@ -13,9 +13,6 @@ use serde_json::Value;
 
 use crate::ProviderError;
 
-/// Names the opt-in wire contract and required transport feature.
-pub const EXTENSION_NEGOTIATION_V1: &str = "cnp.extension-negotiation/1";
-
 /// Bounds the complete encoded offer or selected roster before decoding copies.
 pub const MAXIMUM_EXTENSION_NEGOTIATION_BYTES: usize = 1_048_576;
 
@@ -260,3 +257,5 @@ fn invalid(reason: &'static str) -> crucible_node_format::ContractError {
         reason: reason.into(),
     }
 }
+
+pub use crucible_source_birth_data::profile::handshake::EXTENSION_NEGOTIATION_V1;

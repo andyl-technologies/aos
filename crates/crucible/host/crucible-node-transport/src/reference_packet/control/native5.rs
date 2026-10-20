@@ -36,30 +36,6 @@ use crate::{
     reference_packet::service::{PacketNative5CaptureProfile, PacketNative5StorageLimits},
 };
 
-/// Retains one service-selected native storage and negotiated transport tuple.
-///
-/// This is inert correlation data. The original service must bind it before any
-/// public dispatch, after authenticating its actual connection and allocating
-/// its selected banks. Neither decoding nor validation proves those allocations.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PacketNative5StorageSelection {
-    /// Retains every selected native snapshot, literal bank and journal ceiling.
-    pub storage: PacketNative5StorageLimits,
-    /// Retains the actual original negotiated receiving limits.
-    pub limits: Limits,
-}
-
-impl PacketNative5StorageSelection {
-    /// Checks the closed selected geometry against implementation hard ceilings.
-    ///
-    /// # Errors
-    /// Refuses unsupported, nonpositive, overflowing or incomplete data geometry.
-    pub fn validate(&self) -> Result<(), ProviderError> {
-        self.storage.validate(&self.limits)
-    }
-}
-
 /// Retains a live complete actor's exact original native-record association.
 ///
 /// Its referenced underlying record remains a separate complete immutable proof
@@ -689,3 +665,5 @@ pub(super) fn current_control17_fixture_data(
         )
     }
 }
+
+pub use crucible_source_birth_data::profile::reference_packet::control::PacketNative5StorageSelection;

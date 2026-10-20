@@ -78,16 +78,6 @@ impl Validate for ReferenceServiceLaunchBootstrap {
     }
 }
 
-/// Supplies exact privately installed content without interpreting references as paths.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InstalledContent {
-    /// Commits to the complete installed bytes.
-    pub reference: ContentRef,
-    /// Supplies complete content through the launcher's private channel.
-    pub bytes: Bytes,
-}
-
 /// Installs native reference-provider authority through its private launch channel.
 ///
 /// Possessing these bytes is launch authority. They must never be accepted as a
@@ -275,3 +265,5 @@ impl ReferenceServiceBootstrap {
         Ok(result)
     }
 }
+
+pub use crucible_source_birth_data::profile::reference_service::InstalledContent;

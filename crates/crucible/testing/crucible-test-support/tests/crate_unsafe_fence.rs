@@ -49,6 +49,12 @@ const FENCE_SPECS: &[FenceSpec] = &[
         safe_wrapper_contract: &[],
     },
     FenceSpec {
+        package: "crucible-source-birth-data",
+        root: "src/lib.rs",
+        unsafe_boundary: false,
+        safe_wrapper_contract: &[],
+    },
+    FenceSpec {
         package: "crucible-node-transport",
         root: "src/lib.rs",
         unsafe_boundary: false,
