@@ -347,6 +347,11 @@ def main():
         "seed-pending-inline",
         "refuse-pending-inline",
         "recover-pending-inline",
+        "seed-pending-raw",
+        "seed-pending-zstd",
+        "seed-pending-dictionary",
+        "refuse-pending-chunk",
+        "recover-pending-chunk",
     ]]
     shared.require(listed == expected, "cache fixture exact selector inventory mismatch")
     unit_elf = output / "bin" / UNIT_NAME

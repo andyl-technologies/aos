@@ -4,7 +4,7 @@
 //! and manifest content using actual verified metadata and native bindings.
 //! Unknown names, unhandled private publication state, temporary files,
 //! unhandled pending bodies and every other unhandled candidate remain non-ready.
-//! Expired, unpinned inline pending inodes can be removed under funded recovery.
+//! Expired, unpinned pending chunks can be removed under funded recovery.
 //! A receipt requires real shared/private scans, durable state, synchronized allocation,
 //! fresh authenticated quota charges and the original successful drain epoch.
 //! No Resume or file-bucket readiness is granted by this module.

@@ -61,7 +61,7 @@ CASES = [
     "publication-manifest-reuse-bad-whole",
     "consumer-leases", "lease-foreign",
     "source-cleanup", "source-cleanup-early", "source-cleanup-foreign",
-] + [row[0] for row in MANIFEST_CASES] + ["index-recovery", "index-disabled", "index-bound", "index-mismatch", "pending-expired", "pending-unknown"]
+] + [row[0] for row in MANIFEST_CASES] + ["index-recovery", "index-disabled", "index-bound", "index-mismatch", "pending-expired", "pending-unknown", "pending-raw-expired", "pending-raw-unknown", "pending-zstd-expired", "pending-zstd-unknown", "pending-dictionary-expired", "pending-dictionary-unknown"]
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
           "pending-delete", "state"]

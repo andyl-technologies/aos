@@ -47,6 +47,8 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "refuse-index-mismatch"
             | "refuse-pending-inline"
             | "recover-pending-inline"
+            | "refuse-pending-chunk"
+            | "recover-pending-chunk"
             | "refuse-manifest"
             | "refuse-unsealed-manifest"
             | "refuse-unsealed-writable-manifest"
@@ -106,7 +108,10 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         .enable_all()
         .build()?;
     match mode {
-        "refuse-pending-inline" | "recover-pending-inline" => {
+        "refuse-pending-inline"
+        | "recover-pending-inline"
+        | "refuse-pending-chunk"
+        | "recover-pending-chunk" => {
             super::recovery::pending::run(mode, &owner, &runtime, &inputs)?;
         }
         "dictionary-custody" => {

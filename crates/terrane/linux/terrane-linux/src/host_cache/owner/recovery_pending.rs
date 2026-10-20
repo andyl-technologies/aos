@@ -1,9 +1,10 @@
-//! Finishes expired inline pending inodes under funded physical recovery custody.
+//! Finishes expired pending chunks under funded physical recovery custody.
 //!
 //! This phase handles only an otherwise empty shared namespace and no cold
 //! pins, leases or residences. Old allocation holds survive unchanged.
-//! Actual publisher inventory verifies the sealed chunk claim;
-//! InspectPending retains its original inode and reconstructs any lost deadline.
+//! Publisher inventory distinguishes sealed inline claims from encoded chunk
+//! names and bounded frames. Encoded custody supplies no plaintext verification.
+//! InspectPending retains the original inode and reconstructs any lost deadline.
 //! The publisher alone checks that durable deadline before final removal. Any
 //! refusal keeps the bootstrap and faulted owner; uncertain exchanges invalidate
 //! the original Drain and require a new physical recovery. No deadline,
@@ -71,7 +72,7 @@ impl PublisherRecoveryRetirementTurn<'_> {
 /// Reconciles supported pending candidates without changing any other recovery case.
 ///
 /// # Errors
-/// Refuses incomplete scans, mixed encoded/manifest custody, nonempty shared
+/// Refuses incomplete scans, manifest/pack custody, nonempty shared
 /// namespaces, cold pins/leases/residences, active or unknown intervals and uncertain
 /// native effects. A successful removal still requires fresh exhaustive recovery.
 pub(super) fn run(
@@ -93,18 +94,25 @@ pub(super) fn run(
         || !shared.only_empty_scaffolds()
     {
         return Err(unresolved(
-            "pending cleanup requires exhaustive inline custody",
+            "pending cleanup requires exhaustive chunk custody",
         ));
     }
     // Validate the complete candidate set before the first namespace mutation.
-    // Metadata and encoded sources need their separate retirement-unit protocol.
+    // Encoded chunks require an actual canonical NotFound, not a failed read
+    // reinterpreted as absence. Packs need their separate retirement-unit protocol.
     for candidate in inventory.candidates() {
         let key = candidate.key();
-        if key.kind != BodyKind::Sealed as i32
-            || key.codec != 0
-            || !key.pack_id.is_empty()
-            || !matches!(candidate.issues(), [RecoveryIssue::SealedWitnessRequired])
-        {
+        let supported = match BodyKind::try_from(key.kind) {
+            Ok(BodyKind::Sealed) => {
+                key.codec == 0
+                    && matches!(candidate.issues(), [RecoveryIssue::SealedWitnessRequired])
+            }
+            Ok(BodyKind::Chunk) => {
+                key.codec <= 2 && candidate.pending_chunk_observation().is_some()
+            }
+            _ => false,
+        };
+        if !supported || !key.pack_id.is_empty() {
             return Err(unresolved("unsupported pending recovery candidate"));
         }
         let descriptor =

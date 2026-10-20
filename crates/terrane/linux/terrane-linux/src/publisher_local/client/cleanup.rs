@@ -1,8 +1,10 @@
-//! Completes original source retirement under the physical Running owner.
+//! Completes original source retirement under a physical native owner.
 //!
-//! This receipt is created only after a real authenticated, correlated native
-//! response. Unavailable includes uncertain accepted work and invalidates the
-//! session; no failed exchange is retried or treated as rollback.
+//! Running cleanup produces a receipt only after an authenticated, correlated
+//! native response. Recovery cleanup retains synchronized bootstrap funding and
+//! still requires exhaustive reconciliation before completion. Unavailable
+//! includes uncertain accepted work and invalidates the session; no failed
+//! exchange is retried or treated as rollback.
 
 use super::{
     BodyIncarnationObservation, Client, Error, PublisherRecoveryContext, PublisherRunningContext,
@@ -45,7 +47,7 @@ impl AcknowledgedSourceRetirement {
 }
 
 impl Client<HostDomainLocation> {
-    /// Finishes an expired pending inline inode under the funded physical recovery turn.
+    /// Finishes an expired pending chunk under the funded physical recovery turn.
     ///
     /// The publisher reconstructs missing retirement deadlines conservatively
     /// and checks their actual expiry. Completion grants no adoption or serving

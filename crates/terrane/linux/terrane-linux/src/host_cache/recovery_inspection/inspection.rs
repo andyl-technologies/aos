@@ -79,6 +79,28 @@ impl NativeRecoveryCandidate {
     ) -> Option<&BodyIncarnationObservation<HostDomainLocation>> {
         self.pending.as_ref()
     }
+
+    /// Borrows pending chunk custody after actual canonical absence was reported.
+    ///
+    /// The typed publisher observation proves the retained inode and codec only.
+    /// Missing canonical bytes remain unverified, never adoption or read authority.
+    /// Any other inspection error keeps the candidate unresolved.
+    pub(in crate::host_cache) fn pending_chunk_observation(
+        &self,
+    ) -> Option<&BodyIncarnationObservation<HostDomainLocation>> {
+        if self.key.kind != BodyKind::Chunk as i32
+            || self.canonical.is_some()
+            || self.verified.is_some()
+            || !matches!(self.issues.as_slice(), [
+                RecoveryIssue::Canonical(PublisherError::Remote(ResultCode::NotFound)),
+                RecoveryIssue::Verification(error),
+                RecoveryIssue::PendingOnly,
+            ] if error.kind() == io::ErrorKind::NotFound)
+        {
+            return None;
+        }
+        self.pending.as_ref()
+    }
 }
 
 /// Reports bounded inspection evidence, never readiness or completed recovery.

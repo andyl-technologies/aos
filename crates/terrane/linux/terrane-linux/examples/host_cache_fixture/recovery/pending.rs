@@ -1,11 +1,17 @@
 //! Checks actual conservative retirement deadlines across physical owner restarts.
 
 use super::{
-    HARD_LIMIT, HOLD, INLINE_BYTES, Inputs, STATE, invalid, require_seed_capabilities, write,
+    HARD_LIMIT, HOLD, INLINE_BYTES, Inputs, STATE, directory, hex, invalid,
+    require_seed_capabilities, write,
 };
 use std::{
     fs::{self, File},
     io,
+};
+use terrane_format::{
+    chunking::ChunkProfile,
+    codec::{Codec, EncodedChunk, encode_envelope},
+    identity::{IdentityKind, TERRANE_V1},
 };
 use terrane_linux::{
     host_cache::NativeMetadataOwner,
@@ -34,6 +40,71 @@ pub(crate) fn seed() -> io::Result<()> {
     file.sync_all()?;
     File::open(inputs.root.join("pending-delete"))?.sync_all()?;
     println!("SEEDED actual sealed pending inode without a retirement deadline");
+    Ok(())
+}
+
+/// Seeds an actual raw, zstd or dictionary frame without content or lease authority.
+///
+/// Dictionary data is deliberately absent: expired removal needs actual typed
+/// inode custody, while decoding and serving would require that dependency.
+///
+/// # Errors
+/// Refuses unexpected administration, domain, codec output, project inheritance
+/// or native namespace durability failures.
+pub(crate) fn seed_encoded(mode: &str) -> io::Result<()> {
+    if rustix::process::geteuid().as_raw() != 0 {
+        return Err(invalid("pending seed requires root administration"));
+    }
+    require_seed_capabilities()?;
+    let inputs = Inputs::load()?;
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    let repeated = vec![b'P'; 65536];
+    let dictionary = vec![b'P'; 4096];
+    let (prefix, codec, plaintext, encoded) = match mode {
+        "seed-pending-raw" => (
+            "tenant:pending-raw-",
+            0,
+            INLINE_BYTES,
+            encode_envelope(EncodedChunk {
+                codec: Codec::Raw,
+                body: INLINE_BYTES,
+            }),
+        ),
+        "seed-pending-zstd" => (
+            "tenant:pending-zstd-",
+            1,
+            repeated.as_slice(),
+            terrane_sdk::codec::encode_chunk(&repeated, profile.maximum(), 3, None)
+                .map_err(io::Error::other)?,
+        ),
+        "seed-pending-dictionary" => (
+            "tenant:pending-dictionary-",
+            2,
+            repeated.as_slice(),
+            terrane_sdk::codec::encode_chunk(&repeated, profile.maximum(), 3, Some(&dictionary))
+                .map_err(io::Error::other)?,
+        ),
+        _ => return Err(invalid("unknown pending encoded seed")),
+    };
+    if !matches!(
+        inputs.domain.strip_prefix(prefix),
+        Some("expired" | "unknown")
+    ) || encoded.first() != Some(&codec)
+    {
+        return Err(invalid("pending encoded seed has another domain or codec"));
+    }
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, plaintext)
+        .map_err(io::Error::other)?;
+    let digest = hex(identity.digest());
+    let parent = inputs.root.join("chunks").join(&digest[..2]);
+    directory(&parent, 840, 845, 0o2770)?;
+    File::open(&parent)?.sync_all()?;
+    File::open(inputs.root.join("chunks"))?.sync_all()?;
+    let path = inputs.root.join("pending-delete").join(digest);
+    write(&inputs, &path, &encoded, 840, 845, 0o640)?;
+    File::open(inputs.root.join("pending-delete"))?.sync_all()?;
+    println!("SEEDED actual encoded pending inode without a retirement deadline");
     Ok(())
 }
 
@@ -78,7 +149,7 @@ pub(crate) fn run(
     {
         return Err(invalid("pending recovery changed original policy holds"));
     }
-    if mode == "refuse-pending-inline" {
+    if matches!(mode, "refuse-pending-inline" | "refuse-pending-chunk") {
         let error = result
             .err()
             .ok_or_else(|| invalid("unexpired pending inode was removed"))?;
@@ -101,12 +172,18 @@ pub(crate) fn run(
         if retry.kind() != io::ErrorKind::WouldBlock || fs::read(path)? != bytes {
             return Err(invalid("pending refusal lost faulted bootstrap custody"));
         }
-        println!(
-            "PASS actual unexpired pending inode refused; original bootstrap holds retained; no Resume"
-        );
+        if mode == "refuse-pending-chunk" {
+            println!(
+                "PASS actual unexpired encoded pending inode refused; original bootstrap holds retained; no Resume"
+            );
+        } else {
+            println!(
+                "PASS actual unexpired pending inode refused; original bootstrap holds retained; no Resume"
+            );
+        }
         return Ok(());
     }
-    if mode != "recover-pending-inline" {
+    if !matches!(mode, "recover-pending-inline" | "recover-pending-chunk") {
         return Err(invalid("unknown pending recovery selector"));
     }
     let completed = result?;
@@ -122,16 +199,29 @@ pub(crate) fn run(
     runtime
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
-    println!(
-        "PASS actual expired pending inode removed before completed recovery and acknowledged Resume; original holds retained; no Ready"
-    );
+    if mode == "recover-pending-chunk" {
+        println!(
+            "PASS actual expired encoded pending inode removed before completed recovery and acknowledged Resume; original holds retained; no Ready"
+        );
+    } else {
+        println!(
+            "PASS actual expired pending inode removed before completed recovery and acknowledged Resume; original holds retained; no Ready"
+        );
+    }
     Ok(())
 }
 
 fn require_domain(inputs: &Inputs) -> io::Result<()> {
     if matches!(
         inputs.domain.as_str(),
-        "tenant:pending-expired" | "tenant:pending-unknown"
+        "tenant:pending-expired"
+            | "tenant:pending-unknown"
+            | "tenant:pending-raw-expired"
+            | "tenant:pending-raw-unknown"
+            | "tenant:pending-zstd-expired"
+            | "tenant:pending-zstd-unknown"
+            | "tenant:pending-dictionary-expired"
+            | "tenant:pending-dictionary-unknown"
     ) {
         Ok(())
     } else {
