@@ -12,7 +12,7 @@ use terrane_sdk::{
     domain::DomainBinding,
     host::cache::DomainHostLayout,
     repository::MetadataValidator,
-    store::{ContentStore, TokioLocalFs, shared_dir::SharedDir},
+    store::{Clock, ContentStore, TokioClock, TokioLocalFs, shared_dir::SharedDir},
 };
 
 /// Reads three original sealed ranges and independently revokes their grants.
@@ -32,7 +32,8 @@ pub(super) fn run(
         first.tail.as_slice(),
         second.tail.as_slice(),
     ];
-    let expires = SystemTime::now()
+    let expires = TokioClock
+        .now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(io::Error::other)?
         .as_secs()
