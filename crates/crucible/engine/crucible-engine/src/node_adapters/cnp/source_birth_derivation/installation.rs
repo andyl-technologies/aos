@@ -4,6 +4,43 @@
 //! program. Complete no-follow inventory and actual loader edges must agree;
 //! neither a manifest field nor content equality creates process authority.
 //!
+//! The private JSON records below are emitted by the source-built installation
+//! measurer. This schematic shows field names and descriptor values; `Artifact`
+//! and `ContentRef` stand for the repeated object shapes beneath it.
+//!
+//! ```text
+//! installation.json:
+//!   schema: "crucible.pure-worker.installation/1"
+//!   profile: "pure-worker-v1"
+//!   launcher, worker, runtime_closure: Artifact
+//!   read_only_roots: sorted unique absolute store roots (at most 128)
+//!   source, vendor, recipe, algorithm, request_codec, result_codec: Artifact
+//! Artifact: {"path": "/nix/store/<hash>-<package>/...", "content": ContentRef}
+//! ContentRef:
+//!   hash: {"algorithm": "blake3-256", "domain": "cnp.blob.v1",
+//!          "digest": "<64 lowercase hexadecimal characters>"}
+//!   length: "123"                 # decimal JSON string, not a JSON number
+//!   media_type: "application/octet-stream"
+//! algorithm.json:
+//!   schema: "crucible.pure-worker.algorithm/1"
+//!   id: "crucible.source-birth.derivation/1"
+//!   source, vendor, recipe: ContentRef
+//! request-codec.json / result-codec.json:
+//!   schema: "crucible.pure-worker.codec/1"
+//!   id: "crucible.source-birth.request/1" / "crucible.source-birth.result/1"
+//!   magic: "CSBIN001" / "CSBR0001"
+//!   version: 1
+//!   header_bytes: 160 / 240
+//!   source: ContentRef
+//! runtime-closure.json:
+//!   schema: "crucible.pure-worker.runtime-closure/1"
+//!   reference_graph: Artifact
+//!   store_paths: sorted unique absolute store roots
+//!   objects: regular ELF Artifacts
+//!   entries: {kind: "directory", path, mode}, {kind: "file", path, mode,
+//!             content: ContentRef}, or {kind: "symlink", path, target}
+//! ```
+//!
 //! The supported deployment trusts its source-built immutable Nix installation
 //! and excludes an administrator mutating it through another mount. Actual
 //! readonly mounts, original executable leases and loader policy are checked;
