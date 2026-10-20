@@ -49,6 +49,9 @@ pub(super) struct CodeOwners {
 #[must_use = "retain prepared code owners and partial tickets through target installation"]
 pub struct PreparedCompleteRestoration {
     selected: Manifest,
+    // Actual independently pinned recipe identity; generated coordinator bytes
+    // are not presented as an external installation artifact.
+    configuration_pin: Option<InstalledCompleteSceneManifest>,
     import18_selection: Option<import18_templates::Import18Selection>,
     import18_templates: import18_templates::Templates,
     measurements: [PacketFixtureMeasurements; 3],
@@ -125,9 +128,29 @@ impl PreparedCompleteRestoration {
     }
 
     fn prepare_selected_into(
+        selected: Manifest,
+        import18_selection: Option<import18_templates::Import18Selection>,
+        deployment: Option<Rc<crate::node_control::deployment::InstalledDeployment>>,
+        directory: PathBuf,
+        limits: NativeArchiveLimits,
+        output: &mut Option<Self>,
+    ) -> Result<(), QualificationError> {
+        Self::prepare_with_code_host_into(
+            selected,
+            import18_selection,
+            deployment,
+            None,
+            directory,
+            limits,
+            output,
+        )
+    }
+
+    fn prepare_with_code_host_into(
         mut selected: Manifest,
         import18_selection: Option<import18_templates::Import18Selection>,
         deployment: Option<Rc<crate::node_control::deployment::InstalledDeployment>>,
+        configured: Option<(HostSchedulingOwner, InstalledCompleteSceneManifest)>,
         directory: PathBuf,
         limits: NativeArchiveLimits,
         output: &mut Option<Self>,
@@ -154,11 +177,17 @@ impl PreparedCompleteRestoration {
         let content = Rc::new(super::super::super::manifest::content(std::mem::take(
             &mut selected.content,
         ))?);
-        let code_host = HostSchedulingOwner::new_complete_original_continuation(
-            selected.host.clone(),
-            selected.world.identity()?,
-        )
-        .map_err(|_| refused())?;
+        let (code_host, configuration_pin) = match configured {
+            Some((original, pin)) => (original, Some(pin)),
+            None => (
+                HostSchedulingOwner::new_complete_original_continuation(
+                    selected.host.clone(),
+                    selected.world.identity()?,
+                )
+                .map_err(|_| refused())?,
+                None,
+            ),
+        };
 
         let initial_bytes = encoded(&selected.coordinator)?;
         let initial = InstalledContent {
@@ -241,6 +270,7 @@ impl PreparedCompleteRestoration {
         namespace.retained = true;
         *output = Some(Self {
             selected,
+            configuration_pin,
             import18_selection,
             import18_templates: import18_templates::Templates::with_deployment(deployment),
             measurements,

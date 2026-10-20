@@ -19,6 +19,7 @@ use std::mem::{size_of, size_of_val};
 /// no smaller owner, detached partial, stored byte total or authority token.
 struct PreparedSetupRemainder<'a> {
     selected: &'a Manifest,
+    configuration_pin: &'a Option<InstalledCompleteSceneManifest>,
     import18_selection: &'a Option<import18_templates::Import18Selection>,
     measurements: &'a [PacketFixtureMeasurements; 3],
     content: &'a Rc<BTreeMap<ContentRef, Vec<u8>>>,
@@ -49,6 +50,7 @@ impl PreparedSetupRemainder<'_> {
             .add(size_of::<Option<PreparedCompleteRestoration>>())
             .map_err(limit)?;
         selected.charge_host_setup17_data(counter)?;
+        charge_configuration_pin_data(self.configuration_pin, counter)?;
         Ok(())
     }
 
@@ -61,6 +63,7 @@ impl PreparedSetupRemainder<'_> {
         // add a reference layer and could select a different Owned operation.
         let Self {
             selected: _,
+            configuration_pin: _,
             import18_selection: _,
             measurements,
             content,
@@ -198,6 +201,7 @@ impl PreparedSetupRemainder<'_> {
 // recursion, allocator supplier or future parser-state admission is introduced.
 const fn prepared_field_references_data() -> usize {
     size_of::<&Manifest>()
+        + size_of::<&Option<InstalledCompleteSceneManifest>>()
         + size_of::<&Option<import18_templates::Import18Selection>>()
         + size_of::<&[PacketFixtureMeasurements; 3]>()
         + size_of::<&Rc<BTreeMap<ContentRef, Vec<u8>>>>()
@@ -284,7 +288,31 @@ const PREPARED_PROJECTION_CONTROLS: usize = size_of::<&PreparedCompleteRestorati
     + size_of::<Result<(), RuntimeError>>() // prefix return
     + size_of::<Result<(), RuntimeError>>() // suffix helper return
     + runtime_try_controls_data::<(), ()>() // new prefix propagation in wrapper
+    + CONFIGURATION_PIN_CONTROLS
     + PREPARED_PROJECTION_QUOTE_CONTROLS;
+
+// The inline pin is already in Option<Prepared>. This walk adds only actual
+// original path/reference backing; neither digest nor path grants authority.
+fn charge_configuration_pin_data(
+    pin: &Option<InstalledCompleteSceneManifest>,
+    counter: &mut Counter,
+) -> Result<(), RuntimeError> {
+    if let Some(InstalledCompleteSceneManifest { path, expected }) = pin {
+        counter.charge(path).map_err(limit)?;
+        counter.charge(expected).map_err(limit)?;
+    }
+    Ok(())
+}
+
+const CONFIGURATION_PIN_CONTROLS: usize = size_of::<&Option<InstalledCompleteSceneManifest>>() // walk receiver
+    + size_of::<&mut Counter>() // actual counter loan
+    + size_of::<&PathBuf>() // original path binding
+    + size_of::<&crucible_node_format::ContentRef>() // original expected reference binding
+    + size_of::<Result<(), RuntimeError>>() // helper return
+    + size_of::<()>() // Ok input
+    + size_of::<Result<(), RuntimeError>>() // Ok initializer
+    + runtime_try_controls_data::<(), ()>() // helper propagation from prefix
+    + runtime_try_controls_data::<(), ()>(); // each sequential mapped charge
 
 // The declaration's actual term-array initializer/local and fold operands
 // are named before that same existing counter getter constructs its array.
@@ -321,6 +349,7 @@ impl PreparedCompleteRestoration {
     ) -> (PreparedSetupRemainder<'_>, &import18_templates::Templates) {
         let Self {
             selected,
+            configuration_pin,
             import18_selection,
             import18_templates,
             measurements,
@@ -347,6 +376,7 @@ impl PreparedCompleteRestoration {
         (
             PreparedSetupRemainder {
                 selected,
+                configuration_pin,
                 import18_selection,
                 measurements,
                 content,
@@ -393,6 +423,7 @@ impl PreparedCompleteRestoration {
     ) -> Result<(), RuntimeError> {
         let Self {
             selected,
+            configuration_pin,
             import18_selection: _,
             import18_templates,
             measurements,
@@ -418,6 +449,7 @@ impl PreparedCompleteRestoration {
         } = self;
         counter.add(size_of::<Option<Self>>()).map_err(limit)?;
         selected.charge_host_setup17_data(counter)?;
+        charge_configuration_pin_data(configuration_pin, counter)?;
         import18_templates.charge_unprojected_retained_data(counter)?;
         counter.charge(measurements).map_err(limit)?;
         if counter.rc(content).map_err(limit)? {
@@ -648,6 +680,10 @@ fn assert_projected_setup_matches_original_data(owner: &PreparedCompleteRestorat
     let (remainder, templates) = owner.host_setup17_observation_parts_data();
     assert!(std::ptr::eq(remainder.selected, &owner.selected));
     assert!(std::ptr::eq(
+        remainder.configuration_pin,
+        &owner.configuration_pin
+    ));
+    assert!(std::ptr::eq(
         remainder.import18_selection,
         &owner.import18_selection
     ));
@@ -736,4 +772,36 @@ fn assert_projected_setup_matches_original_data(owner: &PreparedCompleteRestorat
     assert!(!actual.rc(owner.code_graph.as_ref().unwrap()).unwrap());
     assert!(owner.prebirth.is_none());
     assert!(!owner.prebirth_attempted);
+}
+
+#[test]
+fn pinned_configuration_observer_counts_actual_backing_with_exact_short_control() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("configuration.json");
+    let bytes = b"{}";
+    std::fs::write(&path, bytes).unwrap();
+    let expected = crucible_node_format::canonical::content_ref(bytes, "application/json").unwrap();
+    let mut pin = Some(InstalledCompleteSceneManifest::new(path, expected).unwrap());
+    let mut measured = Counter::new(usize::MAX);
+    charge_configuration_pin_data(&pin, &mut measured).unwrap();
+    let actual = measured.bytes();
+    assert!(actual > 0);
+
+    let mut exact = Counter::new(actual);
+    charge_configuration_pin_data(&pin, &mut exact).unwrap();
+    assert_eq!(exact.bytes(), actual);
+    let mut short = Counter::new(actual - 1);
+    assert!(charge_configuration_pin_data(&pin, &mut short).is_err());
+
+    let original = pin.as_ref().unwrap().path.clone();
+    let before = pin.as_ref().unwrap().path.as_os_str().len();
+    let old_capacity = pin.as_ref().unwrap().path.capacity();
+    pin.as_mut().unwrap().path.reserve_exact(old_capacity + 31);
+    assert_eq!(pin.as_ref().unwrap().path, original);
+    assert_eq!(pin.as_ref().unwrap().path.as_os_str().len(), before);
+    let extra = pin.as_ref().unwrap().path.capacity() - old_capacity;
+    assert!(extra > 0);
+    let mut grown = Counter::new(usize::MAX);
+    charge_configuration_pin_data(&pin, &mut grown).unwrap();
+    assert_eq!(grown.bytes(), actual + extra);
 }

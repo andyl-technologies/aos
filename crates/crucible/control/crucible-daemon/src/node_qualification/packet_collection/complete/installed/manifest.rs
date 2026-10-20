@@ -12,6 +12,10 @@
 //! lifetime policy. The original and fresh Source rosters bind that exact policy;
 //! older editions omit the field entirely.
 
+#[path = "manifest/configuration.rs"]
+mod configuration;
+pub(super) use configuration::{FundedSelection, load_funded};
+
 #[path = "manifest/import18.rs"]
 mod import18;
 mod mechanism;

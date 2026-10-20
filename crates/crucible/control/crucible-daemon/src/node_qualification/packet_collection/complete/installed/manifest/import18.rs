@@ -27,6 +27,12 @@ pub(in super::super) fn load_import18(
     pin: &InstalledCompleteSceneManifest,
 ) -> Result<(Manifest, PacketNativeImport18Selection), QualificationError> {
     let value = read_pinned_value(pin)?;
+    decode_import18(value)
+}
+
+pub(super) fn decode_import18(
+    value: serde_json::Value,
+) -> Result<(Manifest, PacketNativeImport18Selection), QualificationError> {
     let envelope = decode_envelope(value)?;
     mechanism::authenticate_edition_data(&envelope.baseline)?;
     let baseline: Manifest = serde_json::from_value(envelope.baseline)

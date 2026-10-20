@@ -13,8 +13,10 @@ impl PreparedCompleteRestoration {
     /// Constructs funded isolated templates under an actual original deployment.
     ///
     /// The original was installed before actors, then moved to this actor. This
-    /// private route never invokes the old selected-forbidden bank/BirthWorker
-    /// stages and creates no worker result or lifecycle success.
+    /// private route accepts installation/8 or closed configuration/1. A recipe
+    /// creates one local Host/coordinator before deriving any initial or launch
+    /// reference and retains that exact Host. The route never invokes the old
+    /// selected-forbidden bank/BirthWorker stages or creates lifecycle success.
     pub(crate) fn prepare_with_deployment_into(
         manifest: InstalledCompleteSceneManifest,
         directory: PathBuf,
@@ -26,15 +28,29 @@ impl PreparedCompleteRestoration {
             return Err(refused());
         }
         deployment.authenticate().map_err(|_| refused())?;
-        let (selected, selection) = super::super::super::super::manifest::load_import18(&manifest)?;
-        Self::prepare_selected_into(
-            selected,
-            Some(selection),
-            Some(deployment),
-            directory,
-            limits,
-            output,
-        )
+        use super::super::super::super::manifest::{FundedSelection, load_funded};
+        match load_funded(&manifest)? {
+            FundedSelection::Installation(selected, selection) => Self::prepare_selected_into(
+                selected,
+                Some(selection),
+                Some(deployment),
+                directory,
+                limits,
+                output,
+            ),
+            FundedSelection::Configuration(configuration) => {
+                let (selected, host, selection) = configuration.materialize()?;
+                Self::prepare_with_code_host_into(
+                    selected,
+                    Some(selection),
+                    Some(deployment),
+                    Some((host, manifest)),
+                    directory,
+                    limits,
+                    output,
+                )
+            }
+        }
     }
 
     pub(crate) fn authenticate_funded_templates_data(&self) -> Result<(), QualificationError> {
