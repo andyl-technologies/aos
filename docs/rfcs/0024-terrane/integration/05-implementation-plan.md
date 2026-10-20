@@ -9203,11 +9203,44 @@ documentation pass in 95.650 seconds. Image and archive preparation pass in
 inputs, four original Cargo executables, 73 selectors and eight supervisor
 helpers, plus all 5,103 archive inputs and the unchanged inventory of 126
 nonignored cases and six original privileged ignores. The preparation
-controller actually terminates successfully. Application-target compilation
-and native qualification remain pending.
+controller actually terminates successfully. Required application-target
+compilation passes in 1,068.840 seconds, with all 183 artifacts from 59
+packages independently matched to Cargo metadata. Native qualification remains
+pending.
 Native execution preserves the order `62bfede7fd`, then
-`c4076a1f56`, then the audited encoded-eviction source. No task checkbox,
+`c4076a1f56`, then the audited encoded-eviction source, the transfer-census
+follow-up and the read-promotion continuation below. Each successor waits for
+actual collection and review of its predecessor. No task checkbox,
 NativeReady claim or frozen format advances; the zero-wipe conflict stays stopped.
+
+Transfer-census follow-up `1ae081eed6` observes canonical producer admissions
+without authorizing their retirement. Original acknowledged inline and manifest
+source transfers remain outside a second retirement; complete native inventory
+reconciles obsolete scheduling entries while retaining pending cache receipts.
+Formatting, graph and unsafe checks pass. Three Linux profiles, SDK all-target
+lint and both private documentation builds pass in 155.530 seconds. Image and
+archive preparation pass in 239.261 and 132.774 seconds; independent review
+verifies all 5,115 image inputs, four Cargo executables, 73 selectors, eight
+helpers and the unchanged 126-case archive with six privileged ignores.
+Required application-target compilation passes in 986.212 seconds with all
+183 artifacts from 59 packages. These controllers actually terminate
+successfully; native qualification has not started.
+
+Read-promotion continuation `58f4515208` records actual verified dictionary and
+owned metadata reads. Original admission sequences and existing authenticated
+publisher incarnation tokens distinguish physical registrations in the
+reconstructible FIFO, so a reused inode cannot inherit earlier read history.
+Metadata's active phase persists through the new fallible completion checks.
+Five activity regressions and the checked-memory regression pass locally, as
+do strict all-target Linux lint and fixture compilation. The native source
+contract preserves all 67 previous cases and adds three; all 73 fixture
+selectors and 64 project assignments remain. The extended real guest control
+observes a newer unread Zstd allocation retiring before a genuinely consumed
+older dictionary, with two additional native grace windows and original
+descriptor/quota observations. Only the overall guest allowance grows from
+690 to 780 seconds. Hermetic preparation and application qualification are
+underway; this implementation and its native runtime remain unmerged and
+unqualified, and no complete HOST requirement or task is accepted.
 
 The older shared-directory aggregate at `86fb63e127` actually terminates with
 failure after 18,940.237 seconds. Nextest reports 2,149 run, 2,141 passed,
