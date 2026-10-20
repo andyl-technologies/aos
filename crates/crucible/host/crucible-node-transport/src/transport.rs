@@ -19,8 +19,7 @@ use serde_json::Value;
 
 use crate::ProviderError;
 
-/// Limits JSON bytes in one CNP/1 frame before body allocation.
-pub const MAX_FRAME_BYTES: usize = 16_777_216;
+pub use crucible_source_birth_data::profile::reference_packet::service::native_startup::report_ack::MAX_FRAME_BYTES;
 
 /// Limits nested JSON containers independently of frame byte length.
 pub const MAX_NESTING: usize = 64;

@@ -348,7 +348,8 @@ impl MetadataObserver<'_> {
             if *current > active.maximum || *charged > self.scoped_work.announced {
                 return Err(overflow());
             }
-        } else if total.checked_sub(*charged).ok_or_else(overflow)? > 131_072 {
+        } else if total.checked_sub(*charged).ok_or_else(overflow)?
+            > crucible_source_birth_data::profile::metadata_population::MAXIMUM_ORDINARY_METADATA_ROWS {
             return Err(if node {
                 ProviderError::ResourceExhausted("retained metadata traversal rows")
             } else {

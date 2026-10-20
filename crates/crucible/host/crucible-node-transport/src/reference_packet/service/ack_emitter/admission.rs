@@ -17,8 +17,7 @@ use crate::ProviderError;
 use crucible_node_format::{Bytes, canonical};
 use serde::{Deserialize, Serialize};
 
-/// Names the exact standard key derivation and keyed-hash construction.
-pub const PACKET_CANONICAL_ACK_ADMISSION_ALGORITHM: &str = "blake3-keyed-canonical/1";
+pub use crucible_source_birth_data::profile::reference_packet::service::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_ALGORITHM;
 
 /// Bounds the validated canonical proof before assigning its original frame.
 pub const MAXIMUM_CANONICAL_ACK_ADMISSION_PROOF_BYTES: usize = 256;

@@ -86,10 +86,13 @@ fn actual_original_report_layout_consumer_keeps_full_dynamic_quote_and_new_count
             actual.maximum_simultaneous_transient_bytes,
             old.maximum_simultaneous_transient_bytes
         );
-        // The typed fixed aggregation bank grows from47 to48 real usize slots.
+        // Layout and shape delegation each add their real fixed counter term
+        // and one usize slot; all original counter operands remain independent.
         let expected_counter = sum(&[
             original::counter_scratch_data(),
             counter_scratch_data(),
+            size_of::<usize>(),
+            observe::counter_scratch_data(),
             size_of::<usize>(),
         ])?;
         assert_eq!(actual.declared_counter_scratch_bytes, expected_counter);

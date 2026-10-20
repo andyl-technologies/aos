@@ -29,13 +29,9 @@ use serde::{Deserialize, Serialize};
 /// Names the closed native baseline/pre-MAC allowance grammar.
 pub use crucible_source_birth_data::profile::reference_packet::service::native_startup::PACKET_NATIVE_STARTUP_ALLOCATION_SCHEMA;
 
-/// Names the distinct Source binding required by the resource-admitted path.
-pub const PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA: &str =
-    "source-owned.packet-canonical-ack-source-binding/14";
+pub use crucible_source_birth_data::profile::reference_packet::service::native_startup::PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA;
 
-/// Names the distinct private boot required by the resource-admitted path.
-pub const PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA: &str =
-    "source-owned.packet-canonical-ack-private-boot/6";
+pub use crucible_source_birth_data::profile::reference_packet::service::native_startup::PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA;
 
 /// Carries separately admitted requested owners for one concrete native phase.
 ///
@@ -250,6 +246,7 @@ pub(crate) fn original_native_private_invocation_backing_data() -> Result<usize,
 pub(crate) use storage::{
     OriginalHostInitialLifecycleShapes, original_host_initial_codec_schema_storage_data,
     original_host_initial_lifecycle_shapes_data,
+    original_initial_literal_shape_counter_scratch_data,
 };
 
 pub(crate) use storage::{

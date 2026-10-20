@@ -402,8 +402,8 @@ fn authenticate_tuple(
 /// traversal frames and physical allocator overhead remain separate obligations.
 pub fn original_report_startup_counter_scratch_data() -> usize {
     let result = schema_generation::requested_data().and_then(|schemas| {
-        let terms: [usize; 48] = [
-            size_of::<[usize; 48]>(),
+        let terms: [usize; 49] = [
+            size_of::<[usize; 49]>(),
             size_of::<&[usize]>(),
             size_of::<std::slice::Iter<'static, usize>>(),
             size_of::<Result<usize, ProviderError>>(),
@@ -454,6 +454,7 @@ pub fn original_report_startup_counter_scratch_data() -> usize {
             crate::protocol_snapshot::owned11::correspondence::closed_envelope_comparison_scratch_data(),
             size_of::<[u8; 20]>(),
             layout::counter_scratch_data(),
+            observe::counter_scratch_data(),
         ];
         sum(&terms)
     });

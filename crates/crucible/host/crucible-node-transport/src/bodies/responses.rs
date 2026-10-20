@@ -2,19 +2,7 @@
 
 use super::*;
 
-/// States registered operation progress independently of transport delivery.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OperationState {
-    /// Proves the operation has not started.
-    NotStarted,
-    /// Retains running operation custody.
-    Running,
-    /// Retains completed operation custody.
-    Completed,
-    /// Discloses unresolved native effects requiring containment.
-    Unknown,
-}
+pub use crucible_source_birth_data::profile::envelope::OperationState;
 
 /// States certainty about the reported operation's effects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -10,8 +10,6 @@
 //! model boundary and whole-world allocation before a Core Capture ticket is used.
 //! Serialized counts, a decoded record or a matching hash cannot replace those owners.
 
-use crucible_source_birth_data::profile::reference_packet::service::capture_allocation::CaptureAllocationContractValue;
-
 pub use crucible_source_birth_data::profile::reference_packet::service::capture_allocation::{
     MAXIMUM_NATIVE_CAPTURE_ALLOCATION_REPORT_BYTES, NATIVE_CAPTURE_ALLOCATION_OBSERVE_DOMAIN,
     PACKET_NATIVE_CAPTURE_ALLOCATION_FEATURE, PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA,
@@ -406,19 +404,7 @@ impl crate::retained_metadata::ObserveMetadata for PacketNative5CaptureAllocatio
 // and its prospective DOM/canonical counter. No schema bytes or field values
 // are regenerated independently in the admission calculation.
 
-pub(crate) fn capture_allocation_contract_storage_data(
-    maximum: usize,
-) -> Result<
-    crate::retained_metadata::serialization_storage::OriginalSerializationStorageData,
-    ProviderError,
-> {
-    // This unit struct and its borrowed literals own no heap/Bytes formatter.
-    crate::retained_metadata::serialization_storage::actual_serialization_storage_data(
-        &CaptureAllocationContractValue,
-        crate::retained_metadata::RetainedProtocolMetadataFacts::default(),
-        maximum,
-    )
-}
+pub(crate) use crucible_source_birth_data::profile::reference_packet::service::native_startup::schema_shapes::contracts::capture_allocation_contract_storage_data;
 
 mod borrowed_report;
 pub use borrowed_report::{

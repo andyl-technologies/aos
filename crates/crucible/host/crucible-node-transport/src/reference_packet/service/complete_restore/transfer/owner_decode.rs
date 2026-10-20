@@ -226,14 +226,7 @@ pub(crate) const fn selected_issuer_decode_counter_scratch_data() -> usize {
         + size_of::<Phases>()
         + size_of::<crate::reference_packet::control::PacketControlSnapshotValidationLayouts>()
         + issuer_layout::counter_scratch_data()
-        // Includes the new helpers' named DOM root-node width.
-        + 13 * size_of::<usize>()
-        + 3 * size_of::<std::alloc::Layout>()
-        + size_of::<[usize; 6]>()
-        + size_of::<[usize; 4]>()
-        + 2 * size_of::<&[usize]>()
-        + 2 * size_of::<std::slice::Iter<'static, usize>>()
-        + size_of::<&[u8]>()
+        + crucible_source_birth_data::selected_decode::arithmetic_counter_scratch_data()
 }
 
 /// Counts one closed native issuer decode using its actual selected type layouts.

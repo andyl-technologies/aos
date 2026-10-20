@@ -29,17 +29,7 @@ impl<'de, T: serde::de::DeserializeOwned> Deserialize<'de> for Nullable<T> {
     }
 }
 
-/// Classifies a stream message without granting effect authority.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageKind {
-    /// Starts or retries an origin-scoped request.
-    Request,
-    /// Reports the original request's retained status or result.
-    Response,
-    /// Reports an unsolicited observation subject to its visibility contract.
-    Event,
-}
+pub use crucible_source_birth_data::profile::envelope::MessageKind;
 
 /// Identifies the sender that originally registered a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

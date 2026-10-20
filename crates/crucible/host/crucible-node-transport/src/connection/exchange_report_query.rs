@@ -16,28 +16,11 @@ use crate::reference_packet::service::{
     report_startup::PacketNativeReportStartupPurpose as Purpose,
 };
 
-pub(crate) struct OriginalReportQueryReceiveStorageData {
-    pub(crate) maximum_frame_body_bytes: usize,
-    pub(crate) raw_and_envelope_requested_bytes: usize,
-    pub(crate) typed_query_requested_bytes: usize,
-    pub(crate) correlation_requested_bytes: usize,
-    pub(crate) declared_counter_scratch_bytes: usize,
-    /// Names a subextent of the original bank, not a new allocation.
-    pub(crate) original_literal_required_bytes: usize,
-    /// Names a subextent of the original descriptor bank.
-    pub(crate) original_descriptor_required_bytes: usize,
-}
+use crucible_source_birth_data::profile::reference_packet::service::native_startup::report_query as shared;
+pub(crate) use shared::OriginalReportQueryReceiveStorageData;
 
-impl OriginalReportQueryReceiveStorageData {
-    pub(crate) fn requested_bytes(&self) -> Result<usize, ProviderError> {
-        sum(&[
-            self.raw_and_envelope_requested_bytes,
-            self.typed_query_requested_bytes,
-            self.correlation_requested_bytes,
-            self.declared_counter_scratch_bytes,
-        ])
-    }
-}
+#[path = "exchange_report_query/layout.rs"]
+mod layout;
 
 /// Counts a closed next-Observe read without issuing a read/allocation grant.
 pub(crate) fn original_report_query_receive_storage_data(
@@ -55,11 +38,11 @@ fn native_query_receive_storage_from_limits(
     if matches!(purpose, Purpose::OriginalObserve12) {
         // This is the actual restricted native receive, not a feature-selected
         // generic read. Raw framing, parser, Error and partial owner terms stay.
-        data.raw_and_envelope_requested_bytes = sum(&[
-            acknowledgements::native_original_open_ack_storage(data.maximum_frame_body_bytes)?,
-            mul(2, size_of::<Envelope>())?,
-            size_of::<ConnectionIncident>(),
-        ])?;
+        data.raw_and_envelope_requested_bytes = shared::native_raw_and_envelope_storage_data(
+            data.maximum_frame_body_bytes,
+            &layout::FIXED,
+            &acknowledgements::ACK_FIXED_LAYOUT,
+        )?;
     }
     data.requested_bytes()?;
     Ok(data)
@@ -69,53 +52,21 @@ fn query_receive_storage_from_limits(
     limits: crate::handshake::Limits,
     purpose: Purpose,
 ) -> Result<OriginalReportQueryReceiveStorageData, ProviderError> {
-    crucible_node_format::Validate::validate(&limits)?;
-    let bytes = allowance(limits.frame_bytes.get())?;
-    let typed_query = match purpose {
-        Purpose::OriginalObserve12 => 0,
-        Purpose::FreshCompletedAdmit13 => sum(&[
-            size_of::<PacketNativeFreshRestoreAllocationQuery>(),
-            growth(PACKET_FRESH_RESTORE_ALLOCATION_QUERY.len())?,
-            mul(3, growth(32)?)?,
-        ])?,
-    };
+    let components = shared::query_receive_components_from_limits(
+        limits,
+        purpose,
+        &layout::FIXED,
+        &acknowledgements::ACK_FIXED_LAYOUT,
+    )?;
     let result = OriginalReportQueryReceiveStorageData {
-        maximum_frame_body_bytes: bytes,
-        // This reuses the real full-R raw/parser/four-DOM/canonical/error
-        // primitive, not the smaller successful ACK or original-clone bound.
-        // Its ResponseBody header is conservative extra; RequestBody below is
-        // independently charged for the actual restricted Observe decode.
-        raw_and_envelope_requested_bytes: sum(&[
-            acknowledgements::open_ack_storage(bytes)?,
-            mul(2, size_of::<Envelope>())?,
-            size_of::<ConnectionIncident>(),
-        ])?,
-        typed_query_requested_bytes: sum(&[
-            size_of::<RequestBody>(),
-            size_of::<crate::bodies::ObserveRequest>(),
-            growth("blake3-256".len())?,
-            growth("cnp.owner-binding.v1".len())?,
-            growth(64)?,
-            typed_query,
-            // Query serde/DTO construction visits its three bounded Bytes
-            // formatters before callbacks; malformed strings are rejected by
-            // the scalar guard before that independent typed construction.
-            match purpose {
-                Purpose::OriginalObserve12 => 0,
-                Purpose::FreshCompletedAdmit13 => mul(3, growth(43)?)?,
-            },
-        ])?,
-        correlation_requested_bytes: sum(&[
-            super::super::super::restore_input_quote::tree_storage(
-                1,
-                1,
-                size_of::<Id>() + size_of::<Envelope>(),
-                align_of::<Id>().max(align_of::<Envelope>()),
-            )?,
-            128,
-        ])?,
+        maximum_frame_body_bytes: components.maximum_frame_body_bytes,
+        raw_and_envelope_requested_bytes: components.raw_and_envelope_requested_bytes,
+        typed_query_requested_bytes: components.typed_query_requested_bytes,
+        correlation_requested_bytes: components.correlation_requested_bytes,
         declared_counter_scratch_bytes: original_report_query_receive_counter_scratch_data(),
-        original_literal_required_bytes: add(bytes, 4)?,
+        original_literal_required_bytes: shared::original_literal_required_bytes(
+            components.maximum_frame_body_bytes,
+        )?,
         original_descriptor_required_bytes:
             crate::transport::original_frames::original_frame_slot_layout(),
     };
@@ -158,6 +109,28 @@ pub(crate) const fn original_report_query_receive_counter_scratch_data() -> usiz
         + size_of::<crate::handshake::Limits>()
         + size_of::<[usize; 3]>()
         + size_of::<bool>()
+        // Lower by-value inputs coexist with the retained upper function's
+        // Limits and Purpose inputs; neither old header donates this window.
+        + size_of::<crate::handshake::Limits>()
+        + size_of::<Purpose>()
+        // The lower initializer/return and upper receiver/`?` input remain
+        // independent of the completed row already counted above.
+        + size_of::<shared::ReportQueryReceiveComponents>()
+        + size_of::<Result<shared::ReportQueryReceiveComponents, ProviderError>>()
+        + size_of::<shared::ReportQueryReceiveComponents>()
+        + size_of::<Result<shared::ReportQueryReceiveComponents, ProviderError>>()
+        // The formed upper const loans and lower borrowed inputs overlap.
+        // Generic and native calls are sequential and share this fixed row.
+        + size_of::<&shared::ReportQueryFixedLayoutData>()
+        + size_of::<&crucible_source_birth_data::profile::reference_packet::service::native_startup::report_ack::AckFixedLayoutData>()
+        + size_of::<&shared::ReportQueryFixedLayoutData>()
+        + size_of::<&crucible_source_birth_data::profile::reference_packet::service::native_startup::report_ack::AckFixedLayoutData>()
+        // The added native-refinement and literal forwarders run sequentially:
+        // scalar input/return and returned Result/upper `?` input are named.
+        + size_of::<usize>()
+        + size_of::<usize>()
+        + size_of::<Result<usize, ProviderError>>()
+        + size_of::<Result<usize, ProviderError>>()
 }
 
 /// Checks static installed source data; this predicate is not a startup issuer.
@@ -319,3 +292,7 @@ fn query_error() -> ProviderError {
 #[cfg(test)]
 #[path = "exchange_report_query_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "exchange_report_query/layout_tests.rs"]
+mod layout_tests;

@@ -136,3 +136,6 @@ impl serde::Serialize for NativeCanonicalBlobAckContractValue {
 /// Borrows the original canonical ACK admission contract literal without allocation.
 pub const NATIVE_CANONICAL_ACK_ADMISSION_CONTRACT_DATA: &[u8] =
     include_bytes!("ack_emitter/admission-contract.json");
+
+/// Names the exact standard key derivation and keyed-hash construction.
+pub const PACKET_CANONICAL_ACK_ADMISSION_ALGORITHM: &str = "blake3-keyed-canonical/1";

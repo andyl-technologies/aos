@@ -9,8 +9,6 @@
 //!                   -> exact original COMMIT request and response full refs
 //! ```
 
-use crucible_source_birth_data::profile::reference_packet::service::complete_restore::NativeRestoredRecordContractValue;
-
 pub use crucible_source_birth_data::profile::reference_packet::service::complete_restore::{
     PACKET_NATIVE_RESTORED_RECORD_FEATURE, native_restored_record_contract,
     native_restored_record_schema,
@@ -120,16 +118,4 @@ impl crate::retained_metadata::ObserveMetadata for PacketNativeRestoredRecord {
 // and its prospective DOM/canonical counter. No schema bytes or field values
 // are regenerated independently in the admission calculation.
 
-pub(crate) fn native_restored_record_contract_storage_data(
-    maximum: usize,
-) -> Result<
-    crate::retained_metadata::serialization_storage::OriginalSerializationStorageData,
-    ProviderError,
-> {
-    // This unit struct and its borrowed literals own no heap/Bytes formatter.
-    crate::retained_metadata::serialization_storage::actual_serialization_storage_data(
-        &NativeRestoredRecordContractValue,
-        crate::retained_metadata::RetainedProtocolMetadataFacts::default(),
-        maximum,
-    )
-}
+pub(crate) use crucible_source_birth_data::profile::reference_packet::service::native_startup::schema_shapes::contracts::native_restored_record_contract_storage_data;

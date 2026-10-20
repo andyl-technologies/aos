@@ -173,9 +173,9 @@ impl<'a> MetadataObserver<'a> {
             size_of::<T>(),
             align_of::<T>(),
         )?;
-        let bytes = capacity.checked_mul(size_of::<T>()).ok_or(overflow())?;
-        add(&mut self.facts.vector_capacity_bytes, bytes)?;
-        add(&mut self.facts.vector_banks, 1)
+        crucible_source_birth_data::source_birth_metadata_vector_population!(
+            self.facts, capacity, T
+        )
     }
 
     pub(crate) fn tree<K, V>(&mut self, entries: usize) -> Result<(), ProviderError> {
@@ -187,29 +187,13 @@ impl<'a> MetadataObserver<'a> {
                 .ok_or(overflow())?,
             align_of::<K>().max(align_of::<V>()),
         )?;
-        self.facts.maximum_tree_entry_alignment = self
-            .facts
-            .maximum_tree_entry_alignment
-            .max(align_of::<K>().max(align_of::<V>()));
-        add(&mut self.facts.tree_containers, 1)?;
-        add(&mut self.facts.tree_entries, entries)?;
-        self.facts.maximum_tree_key_value_bytes = self.facts.maximum_tree_key_value_bytes.max(
-            size_of::<K>()
-                .checked_add(size_of::<V>())
-                .ok_or(overflow())?,
-        );
-        Ok(())
+        crucible_source_birth_data::source_birth_metadata_tree_population!(
+            self.facts, entries, K, V
+        )
     }
 }
 
-fn overflow() -> ProviderError {
-    ProviderError::ResourceExhausted("retained metadata extent overflow")
-}
-
-fn add(total: &mut usize, value: usize) -> Result<(), ProviderError> {
-    *total = total.checked_add(value).ok_or(overflow())?;
-    Ok(())
-}
+use crucible_source_birth_data::profile::metadata_population::{add, overflow};
 
 pub(crate) trait ObserveMetadata {
     fn observe_metadata(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError>;

@@ -40,3 +40,6 @@ pub mod native_startup;
 
 /// Defines the sole immutable Native5 policy payload and static constructors.
 pub mod native5_policy;
+
+/// Defines the sole immutable original report publication DATA grammar.
+pub mod report_startup;

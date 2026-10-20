@@ -5,8 +5,6 @@
 //! a numeric bound cannot replace either owning source. An absent selection keeps
 //! the ordinary raw frame ceiling and existing codec bytes.
 
-use crucible_source_birth_data::profile::reference_packet::service::ack_emitter::NativeCanonicalBlobAckContractValue;
-
 pub use crucible_source_birth_data::profile::reference_packet::service::ack_emitter::{
     PACKET_NATIVE_CANONICAL_ACK_FEATURE, native_canonical_ack_admission_contract,
     native_canonical_ack_admission_schema, native_canonical_blob_ack_contract,
@@ -71,19 +69,7 @@ pub(crate) use native_boot::{
 // and its prospective DOM/canonical counter. No schema bytes or field values
 // are regenerated independently in the admission calculation.
 
-pub(crate) fn native_canonical_blob_ack_contract_storage_data(
-    maximum: usize,
-) -> Result<
-    crate::retained_metadata::serialization_storage::OriginalSerializationStorageData,
-    ProviderError,
-> {
-    // This unit struct and its borrowed literals own no heap/Bytes formatter.
-    crate::retained_metadata::serialization_storage::actual_serialization_storage_data(
-        &NativeCanonicalBlobAckContractValue,
-        crate::retained_metadata::RetainedProtocolMetadataFacts::default(),
-        maximum,
-    )
-}
+pub(crate) use crucible_source_birth_data::profile::reference_packet::service::native_startup::schema_shapes::contracts::native_canonical_blob_ack_contract_storage_data;
 
 pub use native_boot::{
     PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,

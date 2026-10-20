@@ -6,10 +6,12 @@
 use super::{Counter, DecodedStorage, refused};
 use crate::errors::ProviderError;
 use crate::profile::launch_projection::{ProjectedRecord, visit_fields};
+use crate::profile::reference_packet::service::native_startup::issuer_layout::IssuerDecodeLayoutData;
 use crate::profile::reference_packet::service::{
     PacketNative5LaunchValidationFields, PacketNative5LaunchValidationProjection,
     PacketNative5PathSerializationData, PacketNative5SourceLaunch,
 };
+use crate::selected_decode::ProjectedCredit;
 use serde::Serialize;
 use serde_json::Value;
 use std::io::{self, Write};
@@ -17,6 +19,7 @@ use std::mem::size_of;
 
 struct Stream {
     counter: Counter,
+    issuer: Option<ProjectedCredit>,
     stack: [u8; 64],
     depth: usize,
     string: Option<usize>,
@@ -32,6 +35,7 @@ impl Stream {
     fn new(maximum: usize) -> Result<Self, ProviderError> {
         Ok(Self {
             counter: Counter::new(0)?,
+            issuer: None,
             stack: [0; 64],
             depth: 0,
             string: None,
@@ -51,6 +55,9 @@ impl Stream {
             .filter(|n| *n <= self.maximum)
             .ok_or_else(refused)?;
         self.counter.encoded(bytes)?;
+        if let Some(issuer) = &mut self.issuer {
+            issuer.encoded(bytes)?;
+        }
         Ok(())
     }
 
@@ -64,6 +71,9 @@ impl Stream {
     fn flush_string(&mut self, key: bool) -> Result<(), ProviderError> {
         if let Some(encoded) = self.completed_string.take() {
             self.counter.string(encoded, key, self.maximum)?;
+            if let Some(issuer) = &mut self.issuer {
+                issuer.string(encoded, key)?;
+            }
         }
         Ok(())
     }
@@ -103,6 +113,9 @@ impl Stream {
                 *self.stack.get_mut(self.depth).ok_or_else(refused)? = byte;
                 self.depth += 1;
                 self.counter.container(byte)?;
+                if let Some(issuer) = &mut self.issuer {
+                    issuer.container(byte)?;
+                }
             }
             b'}' | b']' => {
                 self.depth = self.depth.checked_sub(1).ok_or_else(refused)?;
@@ -111,7 +124,12 @@ impl Stream {
                 }
             }
             b'"' => self.string = Some(0),
-            _ => self.atom = true,
+            _ => {
+                self.atom = true;
+                if let Some(issuer) = &mut self.issuer {
+                    issuer.atom()?;
+                }
+            }
         }
         Ok(())
     }
@@ -127,6 +145,27 @@ impl Stream {
         // A key cannot follow: the caller places it only at a value field slot.
         self.completed_string = Some(bytes - 2);
         Ok(())
+    }
+
+    fn finish_with_issuer(
+        mut self,
+        root: usize,
+        element: usize,
+    ) -> Result<ProjectedLaunchStorage, ProviderError> {
+        if let Some(error) = self.error.take() {
+            return Err(error);
+        }
+        if self.bytes == 0 || self.depth != 0 || self.string.is_some() || self.escaped {
+            return Err(refused());
+        }
+        self.flush_string(false)?;
+        let issuer = self.issuer.take().ok_or_else(refused)?;
+        let issuer_decode_bytes = issuer.finish()?;
+        Ok(ProjectedLaunchStorage {
+            native: self.counter.finish(root, element, self.maximum)?,
+            issuer_decode_bytes,
+            canonical_bytes: self.bytes,
+        })
     }
 
     fn finish(mut self, root: usize, element: usize) -> Result<DecodedStorage, ProviderError> {
@@ -284,6 +323,87 @@ pub fn quote_projected_launch(
     record.stream.finish(root, element)
 }
 
+/// Separates native and generic issuer rows from the same canonical occurrences.
+///
+/// The byte extent is not a launch hash or identity. The generic row retains its
+/// distinct original phase tax and cannot substitute for native backing.
+pub struct ProjectedLaunchStorage {
+    /// Reports the original native Value/typed/construction components.
+    pub native: DecodedStorage,
+    /// Reports the original generic one-DOM/typed/canonical issuer phase sum.
+    pub issuer_decode_bytes: usize,
+    /// Counts actual canonical bytes, including independently observed opaque extents.
+    pub canonical_bytes: usize,
+}
+
+/// Quotes both real native and generic issuer occurrences in one serializer walk.
+///
+/// Actual supplied issuer layouts come from the genuine defining upper getter.
+/// This function authenticates no Source/build association or allocation right.
+/// Token/path strings are exact extents; their bytes are neither fabricated nor
+/// retained. Native maximum bounds native requested work, while issuer maximum
+/// bounds raw canonical input as in the original generic issuer.
+///
+/// # Errors
+/// Refuses the original validation-credit/path failure, invalid layouts,
+/// unsupported structure/depth, checked overflow or either original bound.
+pub fn quote_projected_launch_with_issuer(
+    launch: &PacketNative5LaunchValidationProjection<'_>,
+    root: usize,
+    element: usize,
+    maximum: usize,
+    layouts: IssuerDecodeLayoutData,
+    issuer_maximum: usize,
+) -> Result<ProjectedLaunchStorage, ProviderError> {
+    if root == 0 || element == 0 {
+        return Err(refused());
+    }
+    launch.serialized_credit_data(maximum)?;
+    let mut stream = Stream::new(maximum)?;
+    stream.issuer = Some(ProjectedCredit::new(
+        size_of::<PacketNative5SourceLaunch>(),
+        layouts,
+        issuer_maximum,
+    )?);
+    let mut record = Record {
+        stream,
+        first: true,
+    };
+    let result = (|| {
+        record.stream.write_all(b"{").map_err(|_| refused())?;
+        visit_fields(
+            &launch.fields_data(),
+            launch.token_length_data(),
+            launch.path_serialization_data(),
+            &mut record,
+        )?;
+        record.stream.write_all(b"}").map_err(|_| refused())
+    })();
+    if let Err(error) = result {
+        return Err(record.stream.error.take().unwrap_or(error));
+    }
+    record.stream.finish_with_issuer(root, element)
+}
+
+/// Names actual added generic projected state, wrappers and direct controls.
+///
+/// This composes the genuine original projected prerequisite and shared event
+/// family. It excludes original input backing, allocator/compiler/recursive
+/// work and any Source/native admission; operational containment remains separate.
+pub fn projected_issuer_counter_scratch_data() -> usize {
+    projected_counter_scratch_data()
+        // The combined entry retains this original local before moving it into Record.
+        + size_of::<Stream>()
+        + ProjectedCredit::counter_scratch_data()
+        + size_of::<IssuerDecodeLayoutData>()
+        + size_of::<ProjectedLaunchStorage>()
+        + size_of::<Result<ProjectedLaunchStorage, ProviderError>>()
+        + size_of::<Option<ProjectedCredit>>()
+        + size_of::<Result<(), ProviderError>>()
+        + size_of::<Result<usize, ProviderError>>()
+        + size_of::<usize>() * 2
+}
+
 /// Names the projected adapter's actual fixed typed controls beside raw geometry.
 ///
 /// The row includes the defining validation-input prerequisite, retained
@@ -390,5 +510,57 @@ mod tests {
         stream.write_all(b"\"partial").unwrap();
         assert!(stream.opaque_string(5).is_err());
         assert!(stream.finish(1, 1).is_err());
+    }
+
+    #[test]
+    fn generic_projected_chunks_and_opaque_strings_match_the_original_raw_tax()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::selected_decode::{Phases, map_node, scan};
+        let facts = IssuerDecodeLayoutData {
+            maximum_typed_slot_bytes: size_of::<Value>(),
+            maximum_tree_key_value_bytes: size_of::<String>() + size_of::<Value>(),
+            maximum_tree_entry_alignment: std::mem::align_of::<Value>(),
+        };
+        let raw = br#"["a\"b",{"key":"abc"},-1,true]"#;
+        let node = map_node(
+            facts.maximum_tree_key_value_bytes,
+            facts.maximum_tree_entry_alignment,
+        )?;
+        let expected = scan(raw, raw.len(), size_of::<PacketNative5SourceLaunch>(), node)?
+            .requested(&Phases {
+                dom: 1,
+                typed: 1,
+                canonical: 1,
+            })?;
+        for chunk in [1, 2, 7, raw.len()] {
+            let mut stream = Stream::new(usize::MAX)?;
+            stream.issuer = Some(ProjectedCredit::new(
+                size_of::<PacketNative5SourceLaunch>(),
+                facts,
+                raw.len(),
+            )?);
+            for bytes in raw.chunks(chunk) {
+                stream.write_all(bytes)?;
+            }
+            let row = stream.finish_with_issuer(size_of::<Value>(), size_of::<Value>())?;
+            assert_eq!(row.issuer_decode_bytes, expected);
+            assert_eq!(row.canonical_bytes, raw.len());
+        }
+        let mut stream = Stream::new(usize::MAX)?;
+        stream.issuer = Some(ProjectedCredit::new(
+            size_of::<PacketNative5SourceLaunch>(),
+            facts,
+            raw.len(),
+        )?);
+        stream.write_all(br#"["a\"b",{"key":"#)?;
+        stream.opaque_string(5)?;
+        stream.write_all(b"},-1,true]")?;
+        assert_eq!(
+            stream
+                .finish_with_issuer(size_of::<Value>(), size_of::<Value>())?
+                .issuer_decode_bytes,
+            expected
+        );
+        Ok(())
     }
 }

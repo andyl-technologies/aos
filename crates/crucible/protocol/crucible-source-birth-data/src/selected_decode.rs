@@ -53,6 +53,41 @@ impl Credit {
     }
 }
 
+// Keep one defining arithmetic body for raw and projected occurrences. These
+// four private expansions preserve the original raw operations in place: no
+// extra call frame, temporary owner or changed raw overflow order is introduced.
+macro_rules! occurrence {
+    (container, $credit:expr, $delimiter:expr, $typed_slot:expr) => {{
+        if $delimiter == b'{' {
+            add(&mut ($credit).object_roots, 1)?;
+        }
+        add(&mut ($credit).typed, mul(4, $typed_slot)?)?;
+        if $delimiter == b'[' {
+            add(&mut ($credit).values, mul(4, size_of::<Value>())?)?;
+            add(&mut ($credit).typed, mul(4, $typed_slot)?)?;
+        }
+    }};
+    (string, $credit:expr, $encoded:expr) => {{
+        add(&mut ($credit).strings, growth($encoded, 8)?)?;
+        add(&mut ($credit).strings, $encoded)?;
+        add(&mut ($credit).typed, $encoded)?;
+        add(
+            &mut ($credit).canonical,
+            growth(sum(&[mul($encoded, 6)?, 2])?, 256)?,
+        )?;
+    }};
+    (key, $credit:expr, $encoded:expr, $value_node:expr, $typed_node:expr, $ordered_node:expr) => {{
+        add(&mut ($credit).values, $value_node)?;
+        add(&mut ($credit).typed, $typed_node)?;
+        add(&mut ($credit).canonical, $ordered_node)?;
+        add(&mut ($credit).canonical, sum(&[mul($encoded, 8)?, 16])?)?;
+    }};
+    (atom, $credit:expr, $typed_slot:expr) => {{
+        add(&mut ($credit).values, mul(4, size_of::<Value>())?)?;
+        add(&mut ($credit).typed, mul(4, $typed_slot)?)?;
+    }};
+}
+
 /// Scans raw selected input with the original fixed 64-level framing walk.
 ///
 /// This is requested-layout DATA, not full JSON validation. The maximum bounds
@@ -93,16 +128,7 @@ pub fn scan(
                 let slot = stack.get_mut(depth).ok_or_else(exhausted)?;
                 *slot = delimiter;
                 depth += 1;
-                if delimiter == b'{' {
-                    // Count occurrences without introducing a new node-width
-                    // overflow into the unchanged legacy quote paths.
-                    add(&mut credit.object_roots, 1)?;
-                }
-                add(&mut credit.typed, mul(4, typed_slot)?)?;
-                if delimiter == b'[' {
-                    add(&mut credit.values, mul(4, size_of::<Value>())?)?;
-                    add(&mut credit.typed, mul(4, typed_slot)?)?;
-                }
+                occurrence!(container, credit, delimiter, typed_slot);
                 cursor += 1;
             }
             b'}' | b']' => {
@@ -134,25 +160,15 @@ pub fn scan(
                     return Err(malformed());
                 }
                 let encoded = cursor - start - 1;
-                add(&mut credit.strings, growth(encoded, 8)?)?;
-                add(&mut credit.strings, encoded)?;
-                add(&mut credit.typed, encoded)?;
-                add(
-                    &mut credit.canonical,
-                    growth(sum(&[mul(encoded, 6)?, 2])?, 256)?,
-                )?;
+                occurrence!(string, credit, encoded);
                 let mut next = cursor;
                 while bytes.get(next).is_some_and(u8::is_ascii_whitespace) {
                     next += 1;
                 }
                 if bytes.get(next) == Some(&b':') {
-                    add(&mut credit.values, value_node)?;
-                    add(&mut credit.typed, typed_node)?;
-                    add(&mut credit.canonical, ordered_node)?;
-                    add(&mut credit.canonical, sum(&[mul(encoded, 8)?, 16])?)?;
+                    occurrence!(key, credit, encoded, value_node, typed_node, ordered_node);
                 }
-                add(&mut credit.values, mul(4, size_of::<Value>())?)?;
-                add(&mut credit.typed, mul(4, typed_slot)?)?;
+                occurrence!(atom, credit, typed_slot);
             }
             _ => {
                 let start = cursor;
@@ -162,8 +178,7 @@ pub fn scan(
                 if cursor == start {
                     return Err(malformed());
                 }
-                add(&mut credit.values, mul(4, size_of::<Value>())?)?;
-                add(&mut credit.typed, mul(4, typed_slot)?)?;
+                occurrence!(atom, credit, typed_slot);
             }
         }
     }
@@ -302,3 +317,21 @@ pub fn selected_value_decode_storage_data(
 
 #[cfg(test)]
 mod tests;
+
+/// Preserves the original declared raw/layout/sum scalar arithmetic windows.
+///
+/// Actual raw and projected callers compose this defining family separately
+/// from their own records, argument/return headers and operational containment.
+/// Compiler/recursive frames and allocator metadata remain excluded.
+pub const fn arithmetic_counter_scratch_data() -> usize {
+    13 * size_of::<usize>()
+        + 3 * size_of::<std::alloc::Layout>()
+        + size_of::<[usize; 6]>()
+        + size_of::<[usize; 4]>()
+        + 2 * size_of::<&[usize]>()
+        + 2 * size_of::<std::slice::Iter<'static, usize>>()
+        + size_of::<&[u8]>()
+}
+
+mod projected;
+pub use projected::ProjectedCredit;

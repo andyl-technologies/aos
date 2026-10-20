@@ -9,13 +9,12 @@
 //! current SDK writer lease authenticate publication; decoding this selection
 //! cannot enlarge an existing byte/record bank or authorize input allocation.
 
-use crucible_source_birth_data::profile::reference_packet::service::complete_restore::CanonicalRestoreInputsContractValue;
-
 pub use crucible_source_birth_data::profile::reference_packet::service::complete_restore::{
     PACKET_CANONICAL_RESTORE_INPUTS_FEATURE, canonical_restore_inputs_contract,
     canonical_restore_inputs_schema,
 };
 
+#[cfg(test)]
 use super::*;
 
 #[cfg(test)]
@@ -45,18 +44,6 @@ mod tests {
 // and its prospective DOM/canonical counter. No schema bytes or field values
 // are regenerated independently in the admission calculation.
 
-pub(crate) fn canonical_restore_inputs_contract_storage_data(
-    maximum: usize,
-) -> Result<
-    crate::retained_metadata::serialization_storage::OriginalSerializationStorageData,
-    ProviderError,
-> {
-    // This unit struct and its borrowed literals own no heap/Bytes formatter.
-    crate::retained_metadata::serialization_storage::actual_serialization_storage_data(
-        &CanonicalRestoreInputsContractValue,
-        crate::retained_metadata::RetainedProtocolMetadataFacts::default(),
-        maximum,
-    )
-}
+pub(crate) use crucible_source_birth_data::profile::reference_packet::service::native_startup::schema_shapes::contracts::canonical_restore_inputs_contract_storage_data;
 
 pub use crucible_source_birth_data::profile::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection;

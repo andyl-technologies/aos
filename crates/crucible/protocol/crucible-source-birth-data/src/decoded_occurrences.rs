@@ -11,7 +11,10 @@ use std::mem::{align_of, size_of};
 
 mod projected;
 
-pub use projected::{projected_counter_scratch_data, quote_projected_launch};
+pub use projected::{
+    ProjectedLaunchStorage, projected_counter_scratch_data, projected_issuer_counter_scratch_data,
+    quote_projected_launch, quote_projected_launch_with_issuer,
+};
 
 /// Separates the actual native decoded backing and complete construction work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

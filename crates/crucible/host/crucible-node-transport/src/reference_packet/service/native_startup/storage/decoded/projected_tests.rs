@@ -180,3 +180,74 @@ fn invalid_opaque_path_and_unsupported_layout_keep_explicit_refusals() -> TestRe
     assert!(quote_projected_launch(&original, 0, native_element_slot(), usize::MAX).is_err());
     Ok(())
 }
+
+#[test]
+fn original_launch_projection_matches_distinct_generic_issuer_and_native_rows() -> TestResult {
+    use crucible_source_birth_data::decoded_occurrences::quote_projected_launch_with_issuer;
+    use crucible_source_birth_data::profile::reference_packet::service::native_startup::issuer_layout::IssuerDecodeLayoutData;
+    let layouts = crate::reference_packet::control::packet_control_snapshot_validation_layouts();
+    let facts = IssuerDecodeLayoutData {
+        maximum_typed_slot_bytes: layouts.maximum_typed_slot_bytes,
+        maximum_tree_key_value_bytes: layouts.maximum_tree_key_value_bytes,
+        maximum_tree_entry_alignment: layouts.maximum_tree_entry_alignment,
+    };
+    for reactive in [false, true] {
+        for optional in [false, true] {
+            let mut launch = geometry_launch()?;
+            if optional {
+                selected(&mut launch);
+            }
+            if reactive {
+                launch.program =
+                    crate::reference_packet::service::PacketConnectedSourceProgram::Reactive {
+                        program: crate::reference_packet::connected::PacketConnectedDefinition {
+                            schema: "source-owned.packet-connected-program/4".into(),
+                            connections: Vec::new(),
+                            output: None,
+                        },
+                    };
+            }
+            launch.effects = "/tmp/original-é𝄞\"\n\\".into();
+            launch.selection.realize.extensions.insert(
+                "generic-occurrences".into(),
+                json!({"a":[{},[],null,true,1.0,-0.0,1e-7,u64::MAX],"key\u{0}é":"quoted\"\\"}),
+            );
+            let raw = canonical::canonical_json(&serde_json::to_value(&launch)?)?;
+            let projection = PacketNative5LaunchValidationProjection::from_launch_data(&launch);
+            let actual = quote_projected_launch_with_issuer(
+                &projection,
+                size_of::<PacketNative5SourceLaunch>(),
+                native_element_slot(),
+                usize::MAX,
+                facts,
+                raw.len(),
+            )?;
+            assert_eq!(actual.canonical_bytes, raw.len());
+            assert_eq!(
+                actual.native,
+                quote(
+                    &raw,
+                    size_of::<PacketNative5SourceLaunch>(),
+                    native_element_slot(),
+                    usize::MAX
+                )?
+            );
+            assert_eq!(actual.issuer_decode_bytes, crate::reference_packet::service::complete_restore::transfer::selected_issuer_decode_storage_data(&raw, size_of::<PacketNative5SourceLaunch>(), raw.len())?);
+            assert!(actual.issuer_decode_bytes > raw.len());
+            assert!(matches!(
+                quote_projected_launch_with_issuer(
+                    &projection,
+                    size_of::<PacketNative5SourceLaunch>(),
+                    native_element_slot(),
+                    usize::MAX,
+                    facts,
+                    raw.len() - 1
+                ),
+                Err(ProviderError::ResourceExhausted(
+                    "selected native owner validation storage"
+                ))
+            ));
+        }
+    }
+    Ok(())
+}

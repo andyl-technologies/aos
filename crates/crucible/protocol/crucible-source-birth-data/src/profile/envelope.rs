@@ -54,3 +54,29 @@ pub enum Method {
     /// Notifies a provider failure without implying physical containment.
     ProviderFault,
 }
+
+/// Classifies a stream message without granting effect authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageKind {
+    /// Starts or retries an origin-scoped request.
+    Request,
+    /// Reports the original request's retained status or result.
+    Response,
+    /// Reports an unsolicited observation subject to its visibility contract.
+    Event,
+}
+
+/// States registered operation progress independently of transport delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationState {
+    /// Proves the operation has not started.
+    NotStarted,
+    /// Retains running operation custody.
+    Running,
+    /// Retains completed operation custody.
+    Completed,
+    /// Discloses unresolved native effects requiring containment.
+    Unknown,
+}

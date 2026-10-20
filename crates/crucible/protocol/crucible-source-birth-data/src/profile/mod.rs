@@ -22,3 +22,6 @@ pub mod requested_storage;
 pub mod serialization_storage;
 
 pub(crate) mod launch_projection;
+
+/// Shares original scalar population source without observation authority.
+pub mod metadata_population;

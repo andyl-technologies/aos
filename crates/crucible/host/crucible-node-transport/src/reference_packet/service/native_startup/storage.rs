@@ -138,9 +138,13 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + super::data_equality::counter_scratch_data()
         + invocation_ingress_counter_scratch_data()
         + retained_overlap::counter_scratch_data()
+        + schemas::counter_scratch_data()
+        + admit::adapter_counter_scratch_data()
         + coordinator_decode::counter_scratch_data()
         + decoded::counter_scratch_data()
         + fixed_layout::counter_scratch_data()
+        + initial::original_initial_literal_shape_counter_scratch_data()
+        + private_bootstrap::literal_shape_counter_scratch_data()
         + launch_validation_counter_scratch_data()
         + super::super::Native5Policy::CONSTRUCTION_ADAPTER_SCRATCH_DATA
         // Exact lower restore-input aggregate initializer and owned callee input.
@@ -813,6 +817,7 @@ mod schema_parity_tests;
 
 pub(crate) use initial::{
     OriginalHostInitialLifecycleShapes, original_host_initial_lifecycle_shapes_data,
+    original_initial_literal_shape_counter_scratch_data,
 };
 
 pub(crate) fn original_host_initial_codec_schema_storage_data(
