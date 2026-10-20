@@ -85,6 +85,14 @@ fn position(time: u64) -> Position {
     }
 }
 
+fn reaction(time: u64) -> Position {
+    Position {
+        time_ps: U64::new(time),
+        microstep: U64::new(0),
+        phase: Phase::Reaction,
+    }
+}
+
 fn id(value: &str) -> Id {
     Id::new(value).unwrap()
 }
@@ -188,20 +196,30 @@ use crucible_qemu_host::native_node_control::owned_operation::{
 #[ignore = "requires exact native quiet prefix source and GPL runtime"]
 fn actual_native_library_owner_preserves_original_child_and_quiet_custody()
 -> Result<(), Box<dyn Error>> {
-    run_original_native_owner_scenario(false)
+    run_original_native_owner_scenario(false, false)
 }
 
 #[test]
 #[ignore = "requires exact native initial contract and GPL runtime"]
 fn actual_native_session_consumes_original_initial_custody_into_quiet_operation()
 -> Result<(), Box<dyn Error>> {
-    run_original_native_owner_scenario(true)
+    run_original_native_owner_scenario(true, false)
+}
+
+#[test]
+#[ignore = "requires exact native initial contract and GPL runtime"]
+fn actual_native_session_completes_quiet_interval_at_exclusive_limit() -> Result<(), Box<dyn Error>>
+{
+    run_original_native_owner_scenario(true, true)
 }
 
 #[path = "native_owned_prefix/initial_session.rs"]
 mod initial_session;
 
-fn run_original_native_owner_scenario(initial_contract: bool) -> Result<(), Box<dyn Error>> {
+fn run_original_native_owner_scenario(
+    initial_contract: bool,
+    complete_interval: bool,
+) -> Result<(), Box<dyn Error>> {
     let qemu = artifact("CRUCIBLE_NATIVE_PROBE_QEMU")?;
     let plugin = artifact("CRUCIBLE_NATIVE_PROBE_PLUGIN")?;
     let mut firmware = tempfile::NamedTempFile::new()?;
@@ -658,7 +676,11 @@ fn run_original_native_owner_scenario(initial_contract: bool) -> Result<(), Box<
             .send_construction(&NativeFrame::Command(Box::new(original(1, 0, 350))))
             .is_err()
     );
-    let mut command = original(1, 0, 350);
+    // The source fixes CPU service at 50 ps. A 151 ps exclusive park follows
+    // the real services at 50/100/150 while retaining the next service at 200.
+    // The 350 ps control still spends four services without closing its limit.
+    let limit_ps = if complete_interval { 151 } else { 350 };
+    let mut command = original(1, 0, limit_ps);
     let empty = crucible_node_format::InputBatch {
         schema_version: 1,
         execution_owner_id: command.scope.owner.clone(),
@@ -697,6 +719,7 @@ fn run_original_native_owner_scenario(initial_contract: bool) -> Result<(), Box<
             &archive_directory.path().join("original-initial.evidence"),
             (*receipt).clone(),
             compute.clone(),
+            complete_interval.then(|| position(151)),
         )?
     } else {
         NativeOwnedPrefixOperation::retain(child.take_child()?, native, archive, compute.clone())
@@ -724,6 +747,12 @@ fn run_original_native_owner_scenario(initial_contract: bool) -> Result<(), Box<
     assert_eq!(first.raw_after.get(), 1);
     assert_eq!(first.returned_service_count.get(), 1);
     assert_eq!(first.end_result, 0);
+    assert_eq!(first.evaluated, reaction(50));
+    assert_eq!(first.resulting, reaction(50));
+    assert_eq!(
+        first.status,
+        crucible_qemu_protocol::node_control::NativeEffectProgressStatus::PartialPrefix
+    );
     assert!(driver.request_continuation().is_err());
     next_driver_progress(
         &mut driver,
@@ -741,15 +770,31 @@ fn run_original_native_owner_scenario(initial_contract: bool) -> Result<(), Box<
     };
     prefix.validate_after_initial(&compute, &first)?;
     assert_eq!(prefix.raw_before.get(), 1);
-    assert_eq!(prefix.raw_after.get(), 4);
-    assert_eq!(prefix.cpu_retirements.get(), 3);
-    assert_eq!(prefix.cumulative_cpu_retirements.get(), 4);
+    let expected_raw_after = if complete_interval { 3 } else { 4 };
+    assert_eq!(prefix.raw_after.get(), expected_raw_after);
+    assert_eq!(prefix.cpu_retirements.get(), expected_raw_after - 1);
+    assert_eq!(prefix.cumulative_cpu_retirements.get(), expected_raw_after);
+    assert_eq!(prefix.evaluated, reaction(100));
     assert_eq!(prefix.timer_callbacks.get(), 0);
     assert_eq!(prefix.end_result, 0);
-    assert_eq!(
-        prefix.status,
-        crucible_qemu_protocol::node_control::NativeEffectProgressStatus::PartialPrefix
-    );
+    if complete_interval {
+        // Only the native post-end CPU/timer frontier check may return this
+        // exclusive park. Raw retirement is checked separately above.
+        assert_eq!(
+            prefix.status,
+            crucible_qemu_protocol::node_control::NativeEffectProgressStatus::Completed
+        );
+        assert_eq!(prefix.resulting, position(151));
+        assert!(prefix.evaluated < prefix.resulting);
+        assert!(prefix.cumulative_cpu_retirements < compute.maximum_service_span);
+    } else {
+        assert_eq!(
+            prefix.status,
+            crucible_qemu_protocol::node_control::NativeEffectProgressStatus::PartialPrefix
+        );
+        assert_eq!(prefix.resulting, reaction(200));
+        assert!(prefix.resulting < position(350));
+    }
     next_driver_progress(
         &mut driver,
         OriginalOperationProgress::AcknowledgementConsumed,
@@ -778,6 +823,13 @@ fn run_original_native_owner_scenario(initial_contract: bool) -> Result<(), Box<
         initial_bytes
     );
     drop(child);
+    if complete_interval {
+        eprintln!(
+            "native_prefix_completion=exclusive151,raw3,evaluated100,completed,acknowledged,reaped"
+        );
+    } else {
+        eprintln!("native_prefix_control=limit350,raw4,evaluated100,partial,acknowledged,reaped");
+    }
     Ok(())
 }
 

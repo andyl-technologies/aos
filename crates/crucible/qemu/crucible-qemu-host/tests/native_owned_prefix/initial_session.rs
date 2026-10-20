@@ -26,6 +26,7 @@ pub(super) fn prepare_and_consume(
     path: &Path,
     initialization: NativeInitializationReceipt,
     command: NativeEffectCompute,
+    quiet_limit: Option<crucible_node_format::Position>,
 ) -> Result<NativeOwnedPrefixOperation, Box<dyn Error>> {
     let original_pid = child.id();
     let prefix = endpoint
@@ -61,6 +62,11 @@ pub(super) fn prepare_and_consume(
     assert_eq!(observation.initial, position(0));
     assert_eq!(&facts.canonical_bytes()[560..568], &[0u8; 8]);
     assert_eq!(observation.next_cpu_deadline_ps.get(), 50);
+    if let (Some(limit), Some(timer)) = (quiet_limit, &observation.first_timer) {
+        // This completion fixture cannot hide a due timer as CPU-only work.
+        // Preserve the partial-prefix control's original preparation checks.
+        assert!(timer.evaluation >= limit);
+    }
     assert_eq!(session.archive_state(), TurnoverState::Vacant);
 
     await_initial(

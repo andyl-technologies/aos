@@ -421,6 +421,7 @@ in rec {
     };
   };
   phase2 = {
+    nativePrefixCompletion = import ./phase2-native-prefix-completion.nix {inherit pkgs lib;};
     protocolFrameFormat = import ./phase2-protocol-frame-format.nix {inherit pkgs lib;};
     protocolCodec = import ./phase2-protocol-codec.nix {inherit pkgs lib;};
     protocolDescriptorHandover = import ./phase2-protocol-descriptor-handover.nix {inherit pkgs lib;};
