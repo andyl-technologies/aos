@@ -9,8 +9,8 @@
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  loadPatternTest = builtins.readFile ../../crates/crucible/tests/workload_load_patterns.rs;
+  engineLib = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  loadPatternTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/workload_load_patterns.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -39,7 +39,7 @@
         needle = "never from host";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" engineModel [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel [
       {
         label = "time-source scenario parameter";
         needle = "pub const WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER: &str = \"load_time_source\";";
@@ -89,14 +89,14 @@
         needle = "Some(GuestWorkloadTimeSource::VirtualTime)";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" engineModel (
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel (
       builtins.map (needle: {
         label = "host wall-clock API in workload shape model";
         inherit needle;
       })
       forbiddenWallClockApis
     )
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib [
       {
         label = "time-source type re-export";
         needle = "GuestWorkloadTimeSource";
@@ -114,7 +114,7 @@
         needle = "WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/workload_load_patterns.rs" loadPatternTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/workload_load_patterns.rs" loadPatternTest [
       {
         label = "time-source parameter test";
         needle = "GuestWorkloadTimeSource::VirtualTime";
@@ -178,7 +178,9 @@ in
       pname = "crucible-phase4-workload-virtual-time-shapes";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+      runtimeDeps = [pkgs.sqlite];
+
+      buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.rust pkgs.sed];
       phases = [
         {
           name = "unpack";
@@ -226,7 +228,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-virtual-time-shapes-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_load_patterns \
               -- --list > "$TMPDIR/workload-virtual-time-shape-tests"
             require_listed \
@@ -249,7 +251,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-virtual-time-shapes-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_load_patterns \
               time_varying_load_fixtures_reproduce_bit_identically \
               -- --exact --test-threads=1
@@ -258,7 +260,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-virtual-time-shapes-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_load_patterns \
               load_pattern_reserved_parameters_reject_unknown_and_duplicate_values \
               -- --exact --test-threads=1

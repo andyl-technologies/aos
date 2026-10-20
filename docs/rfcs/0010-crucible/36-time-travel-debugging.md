@@ -151,10 +151,11 @@ the node's machine, and nothing else.
 ```
 
 Crucible mediates the gdbstub through the standalone GPL-2.0-only
-`crucible-debug-gateway` process. The gateway terminates QEMU's private RSP socket
+`crucible-debug-gateway` process, built by the `crucible-qemu-debug-gateway`
+Cargo package. The gateway terminates QEMU's private RSP socket
 and presents the stable gdb-protocol endpoint that the operator points a client at
 (`--gdb-listen`, §36.9). The Apache controller speaks to the gateway only through
-the owned-byte, versioned Unix-socket protocol in `crucible-protocol`; it neither
+the owned-byte, versioned Unix-socket protocol in `crucible-qemu-protocol`; it neither
 links the gateway nor handles QEMU-private objects. Mediation is what lets Crucible
 enforce the read-only/mutation boundary (§36.3, §36.5), keep one GDB connection
 alive while a QEMU runtime is replaced (§36.9.1), and serve time-travel verbs
@@ -174,7 +175,7 @@ alive while a QEMU runtime is replaced (§36.9.1), and serve time-travel verbs
   raw QEMU gdbstub directly. The separate GPL-side debugger gateway MUST terminate
   QEMU's private RSP socket and present the stable operator endpoint; the Apache
   controller MUST communicate with that gateway only through the versioned
-  `crucible-protocol` Unix-socket boundary. The gateway and controller MUST remain
+  `crucible-qemu-protocol` Unix-socket boundary. The gateway and controller MUST remain
   separate processes and MUST NOT exchange QEMU structures, native pointers, or
   callback tables. The operator connects an ordinary gdb-protocol client to the
   gateway endpoint. *Gate:* `gate:control-responsive`, `gate:license-boundary`.
@@ -1491,7 +1492,7 @@ peer-credential completion remain open in T-DBG-11.
   implement whole-world-forked argv exec, PTY, resize, exit/close, and SSH-compatible
   byte bridging; close all streams on reposition and keep recording opt-in. —
   satisfies [DBG-45], [DBG-46], [SHM-47], [SHM-48]; spec §36.9.3, 13 §13.3.9.
-  The independently implementable `crucible-protocol::guest_introspection`
+  The independently implementable `crucible_qemu_protocol::guest_introspection`
   codec now freezes the owned `CRGI` v1 record header and closed feature, argv
   exec, PTY, SSH bridge, input, resize, close, output, and exit vocabulary. It
   rejects zero channel identities, unknown flags/features, unbounded argv and

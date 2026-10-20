@@ -30,7 +30,7 @@ mkAosCargoPackage {
   };
   cargoDeps = aosWorkspaceVendor;
   cargoRoot = "crates";
-  cargoBuildCommands = ["test --release --frozen --offline --no-run -p aos-package --lib"];
+  cargoBuildCommands = ["test --release --frozen --offline --no-run -p aos-package-manager --lib"];
   doCheck = false;
   buildDeps = [buildPackages.pkg-config buildPackages.protobuf buildPackages.cmake buildPackages.perl];
   runtimeDeps = [openssl sqlite libssh2 zlib];

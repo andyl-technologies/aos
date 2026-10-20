@@ -1838,6 +1838,7 @@
         preferLocalBuild = true;
       }) {
         kind = "cargo-vendor";
+        inherit hash;
         hashMode = "recursive";
         sourceInputs = [builtins.toString src];
         outputDerivation = vendorStaging.drvPath;

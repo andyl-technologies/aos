@@ -11,6 +11,30 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Latest checkpoint
 
+The workspace integrates `origin/master` at `68851a3bf1` using the reorganized
+80-package layout. The node schema and transport are now `crucible-node-format`
+and `crucible-node-transport`; native read-lease custody lives in
+`crucible-host-resources`, separate from generic project quotas. Lifecycle
+adapters follow the split control API owners. Executable names and wire
+identities are preserved.
+
+The merged layout passes eleven-crate all-feature/all-target checking, 61
+node-format and host-resource tests, the same 48 node-format controls with raw
+JSON values, 39 Rust architecture controls and four engineering-hygiene
+controls. All six registered Nix architecture/hygiene checks pass. Formatting
+covers 2,543 edited Rust candidates and 26 edited Nix files, with independent
+Rust review and exact before/after parsed Nix expressions. The shared vendor
+staging hash is remeasured against the merged lockfile; its registry pins remain
+unchanged. Broader library regressions and mandatory application-target
+compilation still need refresh after this workspace integration.
+
+Strict harness lint remains unqualified: its five failing tests report 615
+emissions traced to existing pre-merge source and unchanged policies. These
+include unannotated allowances, host-time use in test leaves and operational
+path restrictions. The integration changes no scanner, adds no ignored test
+and does not claim those implementation debts are resolved. Earlier test and
+native results below remain scoped to their recorded pre-migration sources.
+
 The Source18 construction path now retains an explicit installation selection
 through separate code and fresh Sources, prospective admission, capture-bank
 reservation and private Birth-worker initialization. Original inputs, failed

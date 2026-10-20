@@ -45,8 +45,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-boot-preparation-provider --bin aos-boot-preparation-provider"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-boot-preparation-provider"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-boot-runtime --no-default-features --bin aos-boot-preparation-provider"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-boot-runtime --no-default-features --lib --bin aos-boot-preparation-provider"
     ];
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
@@ -79,8 +79,8 @@ in
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-boot-preparation-provider --bin aos-boot-preparation-provider";
-    cargoTestFlags = "-p aos-boot-preparation-provider";
+    cargoFlags = "-p aos-boot-runtime --no-default-features --bin aos-boot-preparation-provider";
+    cargoTestFlags = "-p aos-boot-runtime --no-default-features --lib --bin aos-boot-preparation-provider";
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [];

@@ -10,8 +10,8 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
-  replayOracle = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
-  qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
+  replayOracle = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs;
+  qemuRealization = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/realization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
 
@@ -21,10 +21,10 @@
     failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
       {
         label = "T-EXEC-10 completion note";
-        needle = "Completed by `crates/crucible/src/model.rs`: `NodeBlobRef`";
+        needle = "Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `NodeBlobRef`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "node blob ref enum";
         needle = "pub enum NodeBlobRef";
@@ -66,7 +66,7 @@
         needle = "NodeBlobRef::baked(blob)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "baked genesis blob ref test";
         needle = "baked_genesis_records_node_blob_refs_uniformly";
@@ -80,7 +80,7 @@
         needle = "NodeBlobRef";
       }
     ]
-    ++ failuresFor "crates/crucible/src/sim_backend.rs" simBackend [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/sim_backend.rs" simBackend [
       {
         label = "sim snapshots carry node blobs";
         needle = "self.state.node_blobs()";
@@ -90,7 +90,7 @@
         needle = "NodeBlobRef::cow_delta(parent, delta, resolved)";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_replay_oracle.rs" replayOracle [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs" replayOracle [
       {
         label = "replay oracle materialized node blobs";
         needle = "fn materialized_node_blobs";
@@ -104,7 +104,7 @@
         needle = "Some(NodeBlobRef::CowDelta { resolved, .. }) if *resolved == materialized.state.id";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/realization.rs" qemuRealization [
       {
         label = "QEMU baked genesis node blob validation";
         needle = "fn validate_baked_genesis_node_blobs";
@@ -133,7 +133,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -177,7 +180,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-execution-node-blob-ref-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               node_blob \
               -- --test-threads=1
@@ -186,7 +189,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-execution-node-blob-ref-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test gate_content_address \
               gate_content_address_excludes_materialization_cache_from_identity \
@@ -196,7 +199,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-execution-node-blob-ref-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test gate_replay_oracle \
               gate_replay_oracle_fixed_checkpoint_corpus_matches_thin_reduction \
@@ -206,7 +209,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-execution-node-blob-ref-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               baked_checkpoint_rejects_unrelated_configuration \
               -- --test-threads=1

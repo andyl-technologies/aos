@@ -47,8 +47,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-ability-crucible --bin aos-ability-crucible"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-ability-crucible"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-crucible --bin aos-ability-crucible"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-crucible"
     ];
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
@@ -83,8 +83,8 @@ in
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-ability-crucible --bin aos-ability-crucible";
-    cargoTestFlags = "-p aos-ability-crucible";
+    cargoFlags = "-p aos-activation-crucible --bin aos-ability-crucible";
+    cargoTestFlags = "-p aos-activation-crucible";
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [];

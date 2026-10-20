@@ -1,6 +1,6 @@
 ### API: `aos.registry.v1` over ConnectRPC
 
-Buf-compliant protos in `crates/aos-proto`, served via Connect
+Buf-compliant protos in `crates/aos/packages/aos-build-api`, served via Connect
 (JSON + binary, HTTP/1.1 and h2) so the browser, the CLIs, and
 third-party tooling share one schema:
 
@@ -73,7 +73,7 @@ upload.
    bound at deploy time, with registries as prefixes* — keeping the
    zero-egress fast path. Dedicated bucket-per-registry is an opt-in
    (large tenants, clean export/exit), accessed via R2's S3-compatible
-   endpoint with SigV4 (the same `aos-net` engine; SigV4-over-fetch on
+   endpoint with SigV4 (the same `aos-transfer` engine; SigV4-over-fetch on
    Workers) — latency cost only, R2 has no egress fees.
 2. **BYO bucket**, in three tiers by what the operator hands over:
    `write` credentials (hub hosts the upload facade and pointer
@@ -86,7 +86,7 @@ upload.
 
 **Shared buckets work cleanly** because everything that matters is
 per-object: `Cache-Control`/`Content-Type` are set per uploaded file
-(`crates/aos-package/src/registry/static_upload.rs`), and consumption
+(`crates/aos/registry/aos-registry-authoring/src/registry/static_upload.rs`), and consumption
 is pure GETs — `apm`, stock git, and Nix never call a listing API.
 Credential scoping per prefix: STS session policies on AWS S3; on R2,
 **permanent API tokens are bucket-scoped only, but the temporary-
@@ -146,7 +146,7 @@ the cache surface**: the committed `registry.toml` already carries
 `[[caches]]` entries with `url` + `priority`, and the client merges
 them with client-side entries and sorts by priority descending
 (`resolve_mirrors_for_registry` in
-`crates/aos-package/src/registry_ops.rs`; `RegistryRootConfig` /
+`crates/aos/registry/aos-registry-client/src/registry/mirrors.rs`; `RegistryRootConfig` /
 `CacheEntry` in `types.rs`). Each frontend with
 `surfaces.cache && advertised.in_caches` becomes one `[[caches]]` row.
 Because `registry.toml` is signed tree content, the hub cannot silently

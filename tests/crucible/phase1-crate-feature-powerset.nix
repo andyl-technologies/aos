@@ -2,9 +2,10 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
 
-  readManifest = package: builtins.fromTOML (builtins.readFile (cratesDir + "/${package}/Cargo.toml"));
+  readManifest = package: builtins.fromTOML (builtins.readFile (packageDir package + "/Cargo.toml"));
 
   manifestFeatures = package: let
     manifest = readManifest package;
@@ -117,17 +118,17 @@
     packages;
 
   corePackages = [
-    "crucible-sim"
-    "crucible-assert"
-    "crucible-shmem"
-    "crucible-protocol"
+    "crucible-determinism"
+    "crucible-test-support"
+    "crucible-qemu-shmem"
+    "crucible-qemu-protocol"
     "crucible-device"
-    "crucible"
+    "crucible-engine"
     "crucible-session"
-    "crucible-api"
+    "crucible-control-api"
     "crucible-daemon"
     "crucible-cli"
-    "crucible-qemu"
+    "crucible-qemu-host"
     "crucible-qemu-plugin"
   ];
 
@@ -146,27 +147,43 @@
   in
     builtins.concatStringsSep "\n" (map readEntry names);
 
-  productionTestDoubleFailures =
+  productionTestDoubleFailuresFor = manifests: packages:
     lib.concatMap (
       package: let
-        manifest = realManifests.${package};
-        dependency = (manifest.dependencies or {}).crucible or null;
+        manifest = manifests.${package};
+        dependency = (manifest.dependencies or {}).crucible-engine or null;
         features =
           if builtins.isAttrs dependency
           then dependency.features or []
           else [];
       in
         lib.optionals (builtins.elem "test-double" features) [
-          "${package} enables crucible/test-double in production dependencies"
+          "${package} enables crucible-engine/test-double in production dependencies"
         ]
     )
-    corePackages;
+    packages;
+
+  productionTestDoubleFailures = productionTestDoubleFailuresFor realManifests corePackages;
+  productionTestDoubleRegressionFailures = let
+    findings = productionTestDoubleFailuresFor {
+      crucible-cli.dependencies.crucible-engine.features = ["test-double"];
+    } ["crucible-cli"];
+    allowedFindings = productionTestDoubleFailuresFor {
+      crucible-cli.dependencies.crucible-engine.features = ["test-support"];
+    } ["crucible-cli"];
+  in
+    lib.optionals (findings == []) [
+      "production test-double regression failed to reject the renamed engine dependency"
+    ]
+    ++ lib.optionals (allowedFindings != []) [
+      "production test-double regression rejected an ordinary engine feature"
+    ];
 
   unconsumedFeatureFailures =
     lib.concatMap (
       package: let
         features = builtins.attrNames (manifestFeatures package);
-        sourcePath = cratesDir + "/${package}/src";
+        sourcePath = packageDir package;
         source =
           if builtins.pathExists sourcePath
           then readRustTree sourcePath
@@ -200,7 +217,7 @@
 
   guestPolicyRegressionFailures = let
     findings = guestDependencyFailuresFor {
-      crucible = {
+      crucible-engine = {
         dependencies.guest-double = {
           package = "crucible-guest";
           optional = true;
@@ -210,7 +227,7 @@
           with-guest = ["dep:guest-double"];
         };
       };
-    } ["crucible"];
+    } ["crucible-engine"];
   in
     if findings != []
     then []
@@ -220,11 +237,11 @@
 
   directGuestPolicyRegressionFailures = let
     findings = guestDependencyFailuresFor {
-      crucible = {
+      crucible-engine = {
         dependencies.crucible-guest = {};
         features.default = [];
       };
-    } ["crucible"];
+    } ["crucible-engine"];
   in
     if findings != []
     then []
@@ -233,14 +250,14 @@
     ];
 
   featureFailures =
-    assertFeatureSet "crucible" {
+    assertFeatureSet "crucible-engine" {
       default = [];
       test-support = [];
-      test-double = ["dep:crucible-shmem"];
+      test-double = ["dep:crucible-qemu-shmem"];
     }
-    ++ assertFeatureSet "crucible-qemu" {
+    ++ assertFeatureSet "crucible-qemu-host" {
       default = [];
-      test-support = ["crucible/test-double"];
+      test-support = ["crucible-engine/test-double"];
     }
     ++ assertFeatureSet "crucible-device" {
       default = [];
@@ -249,6 +266,7 @@
   failures =
     featureFailures
     ++ productionTestDoubleFailures
+    ++ productionTestDoubleRegressionFailures
     ++ unconsumedFeatureFailures
     ++ defaultGuestDependencyFailures
     ++ guestPolicyRegressionFailures
@@ -275,7 +293,7 @@ in
             check=checks.crucible.phase1.crateFeaturePowerset
             gate=gate:harness-lint
             tasks=T-CRATE-6,T-CRATE-16
-            rust_test=crucible-harness::feature_powerset
+            rust_test=crucible_test_support::feature_powerset
             RESULT
           '';
         }

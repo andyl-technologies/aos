@@ -73,16 +73,16 @@
     pname = "crucible-reference-progress-binaries";
     version = "0.1.0";
     cargoRoot = "crates";
-    cargoFlags = "-p crucible-node-provider --bin crucible-reference-progress-provider --bin crucible-reference-progress-device --bin crucible-reference-progress-manifest";
+    cargoFlags = "-p crucible-node-transport --bin crucible-reference-progress-provider --bin crucible-reference-progress-device --bin crucible-reference-progress-manifest";
     # Keep package selection before libtest arguments. The shared sequential
     # check switch places libtest arguments before cargoTestFlags.
-    cargoTestFlags = "-p crucible-node-provider --all-targets -- --test-threads=1";
+    cargoTestFlags = "-p crucible-node-transport --all-targets -- --test-threads=1";
     doCheck = true;
     doParallelCheck = true;
     buildDeps = [rust.dev];
     runtimeDeps = [];
     postBuild = ''
-      cargo clippy --frozen --offline -p crucible-node-provider --lib --bins -- -D warnings
+      cargo clippy --frozen --offline -p crucible-node-transport --lib --bins -- -D warnings
     '';
     meta = {
       description = "Builds and tests the distinct positive-native-progress reference provider and native companion";

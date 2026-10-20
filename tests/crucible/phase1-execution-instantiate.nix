@@ -25,7 +25,7 @@
     forbidden;
 
   failures =
-    failuresFor "crates/crucible/src/model.rs" model [
+    failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "instantiate implementation";
         needle = "pub fn instantiate(";
@@ -95,13 +95,13 @@
         needle = "EngineError::GenesisSnapshotMustBeBaked";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model.rs" model [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "instantiate placeholder";
         needle = "operation: \"instantiate\"";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "exact snapshot test";
         needle = "instantiate_loads_exact_snapshot_without_genesis";
@@ -148,7 +148,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
       {
         label = "T-EXEC-6 completion note";
-        needle = "Completed by `crates/crucible/src/model.rs`: `instantiate` now resolves exact";
+        needle = "Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `instantiate` now resolves exact";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
@@ -173,11 +173,13 @@ in
       pname = "crucible-phase1-execution-instantiate";
       version = "0";
       src = crucibleSrc;
+      runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+        pkgs.sqlite
       ];
 
       phases = [
@@ -218,7 +220,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-execution-instantiate-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               -- --test-threads=1
           '';

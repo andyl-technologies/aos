@@ -103,7 +103,7 @@ closed-schema and bounded-collection policy before using the object.
 ### Canonical JSON specification
 
 The normative representation is the compact UTF-8 byte sequence produced by
-the WASM-safe `aos-doc-model` encoder over closed Rust structures and ordered
+the WASM-safe `aos-module-docs` encoder over closed Rust structures and ordered
 maps. Decoding re-encodes and compares exact bytes, so alternate whitespace,
 unknown fields, duplicate semantic forms, or noncanonical key ordering fail.
 The shared fixture corpus is used by publisher, native Hub, Worker, APM, and

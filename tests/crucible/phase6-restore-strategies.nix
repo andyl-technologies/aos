@@ -10,9 +10,9 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  restoreGateTest = builtins.readFile ../../crates/crucible/tests/gate_restore_strategies.rs;
-  replayOracleHarness = builtins.readFile ../../crates/crucible-harness/src/replay_oracle.rs;
-  divergenceGateTest = builtins.readFile ../../crates/crucible-harness/tests/gate_divergence_bisect.rs;
+  restoreGateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_restore_strategies.rs;
+  replayOracleHarness = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/replay_oracle.rs;
+  divergenceGateTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_divergence_bisect.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -73,7 +73,7 @@
         needle = "Completed by `checks.crucible.phase6.restoreStrategies`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "fat materialization entry point";
         needle = "pub fn materialize_checkpoint(";
@@ -103,7 +103,7 @@
         needle = "pub fn replay(&self, configuration: &Configuration)";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_restore_strategies.rs" restoreGateTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_restore_strategies.rs" restoreGateTest [
       {
         label = "thin and snapshot convergence test";
         needle = "gate_restore_strategies_converge_on_thin_source_of_truth";
@@ -141,7 +141,7 @@
         needle = "corrupt cached snapshot should be evicted back to thin replay";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_restore_strategies.rs" restoreGateTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_restore_strategies.rs" restoreGateTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -151,7 +151,7 @@
         needle = "implementation is pending";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/replay_oracle.rs" replayOracleHarness [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/replay_oracle.rs" replayOracleHarness [
       {
         label = "oracle mismatch localization API";
         needle = "pub fn localize_replay_oracle_mismatch";
@@ -165,7 +165,7 @@
         needle = "pub struct ReplayOracleLocalizedMismatch";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_divergence_bisect.rs" divergenceGateTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_divergence_bisect.rs" divergenceGateTest [
       {
         label = "oracle mismatch divergence localization test";
         needle = "gate_divergence_bisect_localizes_replay_oracle_mismatch";
@@ -226,7 +226,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -274,7 +277,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-restore-strategies-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_restore_strategies \
               -- --test-threads=1
           '';
@@ -289,7 +292,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             restore=replay-from-seed,snapshot-restore
-            rust_test=crucible::gate_restore_strategies
+            rust_test=crucible_engine::gate_restore_strategies
             RESULT
           '';
         }

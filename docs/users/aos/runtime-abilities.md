@@ -598,8 +598,9 @@ sequenceDiagram
   APM->>APM: Commit generation
 ```
 
-The Rust entry points are `deployment::evaluation::{resolve_packages, Evaluation}`
-and `deployment::transaction::Transactions` in `aos-package`. Evaluation uses
+The reusable Rust entry points are `aos_deployment::evaluation::{resolve_packages, Evaluation}`
+and `aos_deployment::transaction::Transactions`. The `aos-package-manager` crate
+adapts these APIs to package lookup and retained installation state. Evaluation uses
 stock Nix in pure/restricted mode with fixed source inputs and import-from-
 derivation disabled. It builds nothing and executes no host modification.
 Package/version/source conflicts fail before execution.
@@ -883,7 +884,7 @@ reported desired graph and observed state are separate assertions; a document
 digest alone is not evidence that a handler ran.
 
 The executable integration example is
-[`package_deployment_check`](../../../crates/aos-package/examples/package_deployment_check.rs),
+[`package_deployment_check`](../../../crates/aos/packages/aos-package-manager/examples/package_deployment_check.rs),
 using the source-built [`checks.effects` fixture](../../../tests/effects/deployment-fixture.nix).
 It exercises artifact publication, deployment-time evaluation, real handler
 execution, generation reopening, reconfiguration, and pruning. It provides a

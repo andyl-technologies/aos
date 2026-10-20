@@ -10,11 +10,11 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
   schemaTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/event_log_schema.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/event_log_schema.rs;
   };
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -37,7 +37,7 @@
         needle = "closed `EventSource` set incl.";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "event-log time schema";
         needle = "pub struct EventLogTime";
@@ -139,7 +139,7 @@
         needle = "entry.class";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "EventSource export";
         needle = "EventSource";
@@ -153,7 +153,7 @@
         needle = "EventLogTime";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_schema.rs" schemaTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_log_schema.rs" schemaTest [
       {
         label = "schema field test";
         needle = "event_log_entries_carry_source_level_class_and_typed_time_stamp";
@@ -185,13 +185,13 @@
         needle = "eventLogSchema = import ./phase4-event-log-schema.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "virtual time cannot fabricate physical retirement";
         needle = "retired: virtual_time.ticks";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_log_schema.rs" schemaTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/event_log_schema.rs" schemaTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -260,7 +260,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-schema-target" \
-              -p crucible \
+              -p crucible-engine \
               --test event_log_schema \
               -- --test-threads=1
           '';

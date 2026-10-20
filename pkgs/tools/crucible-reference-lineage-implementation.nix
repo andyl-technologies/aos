@@ -73,16 +73,16 @@
     pname = "crucible-reference-lineage-binaries";
     version = "0.1.0";
     cargoRoot = "crates";
-    cargoFlags = "-p crucible-node-provider --bin crucible-reference-lineage-provider --bin crucible-reference-lineage-device --bin crucible-reference-lineage-manifest";
+    cargoFlags = "-p crucible-node-transport --bin crucible-reference-lineage-provider --bin crucible-reference-lineage-device --bin crucible-reference-lineage-manifest";
     # The source component exercises the binaries built here. Historical installed
     # cohort tests pin their own old package and cannot qualify this new output.
-    cargoTestFlags = "-p crucible-node-provider --lib --bins --test lineage_source -- --test-threads=1";
+    cargoTestFlags = "-p crucible-node-transport --lib --bins --test lineage_source -- --test-threads=1";
     doCheck = true;
     doParallelCheck = true;
     buildDeps = [rust.dev];
     runtimeDeps = [];
     postBuild = ''
-      cargo clippy --frozen --offline -p crucible-node-provider --lib --bins -- -D warnings
+      cargo clippy --frozen --offline -p crucible-node-transport --lib --bins -- -D warnings
     '';
     meta = {
       description = "Builds and tests the distinct ordered-consumption reference provider and native companion";

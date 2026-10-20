@@ -1,0 +1,14 @@
+[package]
+name = "crucible-host-resources"
+description = "Native host resource custody for Crucible nodes"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+libc = { workspace = true }
+thiserror = { workspace = true }

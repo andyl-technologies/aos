@@ -300,7 +300,7 @@ interface is the precedent). Full composition rules:
   PodSecurityPolicy in favor of exactly three named Pod Security Standards
   because per-knob policy proved unwritable and unauditable, and systemd
   portable services ship four named profiles for the same reason. The host file
-  is `/etc/aos/policy.toml`, parsed by `crates/aos-package/src/policy.rs`:
+  is `/etc/aos/policy.toml`, parsed by `crates/aos/packages/aos-package-manager/src/policy.rs`:
 
   ```toml
   tier = "baseline"

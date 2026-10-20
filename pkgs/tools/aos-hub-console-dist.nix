@@ -267,7 +267,7 @@ in
           mkdir -p "$out"
           cp generated/hub-console.js "$out/hub-console.js"
           cp generated/hub-console_bg.wasm "$out/hub-console_bg.wasm"
-          cp aos-hub-console/assets/app.css "$out/hub-console.css"
+          cp hub/aos-hub-console/assets/app.css "$out/hub-console.css"
           test -s "$out/hub-console.js"
           test -s "$out/hub-console_bg.wasm"
           test -s "$out/hub-console.css"

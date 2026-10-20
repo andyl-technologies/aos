@@ -9,7 +9,7 @@
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  compoundTest = builtins.readFile ../../crates/crucible/tests/compound_condition_combinators.rs;
+  compoundTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/compound_condition_combinators.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -27,7 +27,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "all-of predicate variant";
         needle = "AllOf {\n        /// Predicates that must all hold.";
@@ -65,7 +65,7 @@
         needle = "PropertyPredicateEmptyCompound";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "all-of evaluation";
         needle = "Condition::AllOf { predicates }";
@@ -111,7 +111,7 @@
         needle = "fn validate_compound_condition_references";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/compound_condition_combinators.rs" compoundTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/compound_condition_combinators.rs" compoundTest [
       {
         label = "nested combinator test";
         needle = "compound_combinators_nest_arbitrarily";
@@ -147,7 +147,7 @@
         needle = "compoundConditionCombinators = import ./phase4-compound-condition-combinators.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/compound_condition_combinators.rs" compoundTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/compound_condition_combinators.rs" compoundTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -161,7 +161,7 @@
         needle = "implementation is pending";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/trigger.rs" trigger [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "default non-latching once query";
         needle = "fn once_condition_is_latched(&self, condition: &Condition) -> bool {\n        let _ = condition;\n        false\n    }";
@@ -180,7 +180,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -224,7 +227,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-compound-condition-combinators-target" \
-              -p crucible \
+              -p crucible-engine \
               --test compound_condition_combinators \
               -- --test-threads=1
           '';

@@ -14,7 +14,14 @@
     || pathString == "${cratesRoot}/Cargo.toml"
     || pathString == "${cratesRoot}/Cargo.lock"
     || builtins.any
-    (crate: pathString == "${cratesRoot}/${crate}" || lib.hasPrefix "${cratesRoot}/${crate}/" pathString)
+    (crate: let
+      selectedPath = "${cratesRoot}/${crate}";
+    in
+      pathString
+      == selectedPath
+      || lib.hasPrefix "${selectedPath}/" pathString
+      # Nested workspace members need every ancestor retained for traversal.
+      || lib.hasPrefix "${pathString}/" selectedPath)
     selectedCrates;
   extraInput = pathString:
     builtins.any (relative: let
@@ -32,6 +39,7 @@ in
     filter = path: type: let
       pathString = toString path;
       base = baseNameOf path;
+      daemonRunState = "${cratesRoot}/crucible/control/crucible-daemon/run-state";
       generatedDir =
         type
         == "directory"
@@ -57,6 +65,7 @@ in
           else selectedCrateInput pathString
         )
         || extraInput pathString
+        || (selectedCrates == null && (pathString == "${repoRootString}/api" || lib.hasPrefix "${repoRootString}/api/proto" pathString))
         || pathString == "${repoRootString}/tests"
         || pathString == "${repoRootString}/tests/abilities"
         || pathString == "${repoRootString}/tests/abilities/fixtures"
@@ -69,6 +78,7 @@ in
             == "${repoRootString}/docs"
             || pathString == "${repoRootString}/docs/rfcs"
             || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
+            || lib.hasPrefix "${repoRootString}/docs/rfcs/0025-crucible-node-contract" pathString
           )
         );
       # The aos integration-test package evaluates repository Nix modules and
@@ -95,5 +105,7 @@ in
       # Local Python bytecode depends on host tooling, not package source.
       && !lib.hasSuffix ".pyc" base
       && !lib.hasSuffix ".pyo" base
+      && pathString != daemonRunState
+      && !lib.hasPrefix "${daemonRunState}/" pathString
       && (workspaceInput || (includeIntegrationInputs && integrationInput));
   }

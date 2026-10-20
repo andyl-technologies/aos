@@ -1,0 +1,849 @@
+//! Native Hub control-plane and typed router.
+//!
+//! The router combines the shared Connect-JSON API and Web console with native
+//! health, metrics, authentication, and storage adapters. Registry and cache
+//! bytes are never selected from URL slugs here: the shared delivery dispatcher
+//! resolves an enabled domain/IP route and rewrites it to the typed internal
+//! delivery handler. Native and Worker deployments therefore apply the same
+//! route, authorization, placement, range, and response-header contracts.
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::Router;
+use tower_http::catch_panic::CatchPanicLayer;
+
+/// Maximum inbound request-body size for the shared RPC surface (8 MiB).
+///
+/// Connect requests carry small JSON bodies; capping them well below the
+/// process's memory budget keeps a hostile or buggy client from streaming an
+/// unbounded body into a handler that buffers it. The value is owned by the
+/// shared router so native and Worker enforce the same threshold.
+pub const RPC_MAX_BODY_BYTES: usize = aos_hub_service::connect::CONNECT_REQUEST_BODY_LIMIT_BYTES;
+
+use crate::auth::extract::AuthState;
+use crate::db::Database;
+
+/// Lifetime, in seconds, of a hub access token minted at `/oauth2/token`
+/// (1 hour).
+///
+/// Kept in parity with the Worker
+/// (`aos_hub_service::connect`'s `ACCESS_TOKEN_TTL_SECS`): an hour covers a bulk
+/// publish while keeping the bearer short-lived; longer-running clients
+/// re-exchange the provisioning token rather than relying on a long TTL.
+const ACCESS_TOKEN_TTL_SECS: i64 = 3600;
+
+/// Shared state for all handlers.
+pub struct AppState {
+    /// The hub database.
+    pub db: Arc<Database>,
+    /// The externally reachable base URL, used in setup snippets.
+    pub external_url: String,
+    /// Immutable deployment identity exposed by the well-known probe.
+    pub deployment_id: Option<String>,
+    /// Authentication state: JWT keys and the access-token TTL, shared with
+    /// the `/oauth2/token` exchange and the mutating ConnectRPC services.
+    pub auth: Arc<AuthState>,
+    /// Process-local leases serializing retained publication operations.
+    pub leases: Arc<aos_hub_service::lease::InMemoryLease>,
+    /// The mailer that delivers magic-link login emails.
+    ///
+    /// Defaults to [`crate::auth::magic::LogMailer`] (logs the link rather
+    /// than sending it) for dev and tests.
+    pub mailer: Arc<dyn crate::auth::magic::Mailer>,
+    /// Dev mode: when set, the "check your email" page also shows the magic
+    /// link inline (since [`LogMailer`] does not send mail). Off in
+    /// production.
+    ///
+    /// [`LogMailer`]: crate::auth::magic::LogMailer
+    pub dev: bool,
+    /// Sealer for OIDC client secrets at rest (per-org SSO).
+    ///
+    /// Defaults to the placeholder [`crate::auth::oidc::XorSealer`]; a
+    /// production deployment supplies a real AEAD/KMS sealer.
+    pub sealer: Arc<dyn crate::auth::oidc::SecretSealer>,
+    /// Provider-backed immutable secret versions for storage and webhooks.
+    pub secret_versions: Arc<dyn aos_hub_model::secret_version::SecretVersionResolver>,
+    /// Hardened HTTP client for hub-originated OIDC requests (token exchange,
+    /// JWKS fetch), with the same timeouts as the surface fetcher.
+    pub http: reqwest::Client,
+    /// Hub-private immutable signed-image storage (native deployments only).
+    pub image_snapshots: Option<Arc<crate::image_snapshot::ImageSnapshotStore>>,
+    /// Process-local rate limiter for the pre-auth endpoints (device
+    /// authorization, magic-link issuance, token exchange, browse/search).
+    pub ratelimit: Arc<crate::ratelimit::RateLimiter>,
+    /// Whether the hub is fronted by a reverse proxy whose `X-Forwarded-For`
+    /// header may be trusted to carry the real client IP.
+    ///
+    /// `false` by default: a directly-exposed hub ignores the (forgeable)
+    /// header and rate-limits on the real TCP peer address. Set `true` only
+    /// when a proxy that strips inbound `X-Forwarded-For` and appends the true
+    /// client hop sits in front. See [`crate::ratelimit`] for the trust model.
+    pub trusted_proxy: bool,
+    /// Verifier for short-lived assertions from an explicitly configured TLS,
+    /// VPN, or layer-7 ingress adapter.
+    pub delivery_attestation_verifier:
+        Option<Arc<aos_hub_service::delivery_attestation::DeliveryAttestationVerifier>>,
+    /// Runtime-owned signer material for the domain-probe well-known route.
+    pub domain_probe_terminator:
+        Option<Arc<dyn aos_hub_service::topology_probe::DomainProbeTerminatorProvider>>,
+    /// DNS resolver used to verify organization email-domain TXT challenges.
+    pub identity_domain_verifier:
+        Option<Arc<dyn aos_hub_service::topology_probe::IdentityDomainVerifier>>,
+    /// Active and retained privacy keys for permanent route URL reservations.
+    pub route_reservation_keyring:
+        Option<Arc<dyn aos_hub_service::service::RouteReservationKeyring>>,
+    /// Independent, fail-closed OCI container rollout policy.
+    pub container_rollout: aos_hub_service::container_rollout::ContainerRollout,
+    /// Deployment-owned release receipt authority.
+    pub release_evidence:
+        Option<Arc<dyn aos_hub_service::release_evidence::ReleaseEvidenceAuthority>>,
+}
+
+impl AppState {
+    /// Builds an [`AppState`] with ephemeral JWT keys and a [`LogMailer`].
+    ///
+    /// Convenience for dev mode and tests; production may construct the
+    /// struct directly to supply stable keys (so minted access tokens
+    /// survive a restart) and a real mailer.
+    ///
+    /// [`LogMailer`]: crate::auth::magic::LogMailer
+    #[must_use]
+    pub async fn new(db: Arc<Database>, external_url: String) -> AppState {
+        let ratelimit = Arc::new(crate::ratelimit::RateLimiter::new());
+        let auth = Arc::new(AuthState {
+            db: Arc::clone(&db),
+            jwt_keys: crate::auth::jwt::JwtKeys::random(),
+            access_token_ttl: ACCESS_TOKEN_TTL_SECS,
+            ratelimit: Arc::clone(&ratelimit),
+            trusted_proxy: false,
+        });
+        AppState {
+            db,
+            external_url,
+            deployment_id: None,
+            auth,
+            leases: Arc::new(aos_hub_service::lease::InMemoryLease::new()),
+            mailer: Arc::new(crate::auth::magic::LogMailer),
+            dev: false,
+            // A deterministic placeholder sealer for dev/tests; production
+            // supplies a real one via the struct literal.
+            sealer: crate::auth::oidc::dev_sealer(),
+            secret_versions: aos_hub_model::secret_version::EmptySecretVersionResolver::shared(),
+            http: crate::fetch::hardened_client().await,
+            image_snapshots: None,
+            ratelimit,
+            trusted_proxy: false,
+            delivery_attestation_verifier: None,
+            domain_probe_terminator: None,
+            identity_domain_verifier: None,
+            route_reservation_keyring: None,
+            container_rollout: aos_hub_service::container_rollout::ContainerRollout::default(),
+            release_evidence: None,
+        }
+    }
+
+    /// Attaches the independently configured OCI capability rollout policy.
+    #[must_use]
+    pub fn with_container_rollout(
+        mut self,
+        rollout: aos_hub_service::container_rollout::ContainerRollout,
+    ) -> Self {
+        self.container_rollout = rollout;
+        self
+    }
+}
+
+/// Builds the native Hub control-plane and typed router.
+///
+/// Connect-JSON methods and the shared console own the control URL space.
+/// Public registry and cache bytes are admitted only by the outer typed
+/// delivery-route dispatcher, which rewrites a selected endpoint to the
+/// internal delivery handler shared with the Worker runtime.
+pub async fn router(state: Arc<AppState>) -> Router {
+    router_with_transport(state, None).await
+}
+
+/// Builds the native router with optional listener-authenticated transport evidence.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use std::sync::Arc;
+/// # use aos_hub_native::server::AppState;
+/// # async fn example(state: Arc<AppState>) {
+/// let router = aos_hub_native::server::router_with_transport(state, None).await;
+/// # let _ = router;
+/// # }
+/// ```
+pub async fn router_with_transport(
+    state: Arc<AppState>,
+    transport: Option<aos_hub_service::connect::DeliveryTransportEvidence>,
+) -> Router {
+    // The shared Connect-JSON RPC service, built over the hub's database, signing
+    // keys, and base URL (the same fields the old per-hub service held), with the
+    // in-process limiter adapted to the core `RateLimiter` port and the native
+    // surface provider (filesystem/HTTP fetchers chosen per a registry's storage
+    // binding).
+    let mut rpc_service = aos_hub_service::service::RpcService::new(
+        Arc::clone(&state.db),
+        state.auth.jwt_keys.clone(),
+        state.external_url.clone(),
+        Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_service::ratelimit::RateLimiter>,
+        Arc::new(
+            crate::coreports::HubSurfaceProvider::new(
+                Arc::clone(&state.db),
+                state.http.clone(),
+                state.image_snapshots.clone(),
+            )
+            .with_credentials(Arc::clone(&state.secret_versions)),
+        ),
+        Arc::new(
+            crate::coreports::HubSurfaceWriteProvider::new(
+                Arc::clone(&state.db),
+                state.http.clone(),
+            )
+            .with_credentials(Arc::clone(&state.secret_versions)),
+        ),
+        // Publication pointer flips share one in-process lease domain.
+        Arc::clone(&state.leases) as Arc<dyn aos_hub_service::lease::PublishLease>,
+        Arc::new(
+            crate::coreports::HubReindexer::new(
+                Arc::clone(&state.db),
+                state.image_snapshots.clone(),
+            )
+            .with_surface_provider(Arc::new(
+                crate::coreports::HubSurfaceProvider::new(
+                    Arc::clone(&state.db),
+                    state.http.clone(),
+                    state.image_snapshots.clone(),
+                )
+                .with_credentials(Arc::clone(&state.secret_versions))
+                .for_image_indexing(),
+            )),
+        ),
+        Arc::new(
+            aos_hub_service::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
+                &state.db,
+            )),
+        ),
+        Some(Arc::clone(&state.sealer)),
+    )
+    .with_container_rollout(state.container_rollout)
+    .with_secret_versions(Arc::clone(&state.secret_versions))
+    .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
+        state.http.clone(),
+    )));
+    if let Some(provider) = &state.domain_probe_terminator {
+        rpc_service = rpc_service.with_domain_probe_terminator(Arc::clone(provider));
+    }
+    if let Some(verifier) = &state.identity_domain_verifier {
+        rpc_service = rpc_service.with_identity_domain_verifier(Arc::clone(verifier));
+    }
+    if let Some(keyring) = &state.route_reservation_keyring {
+        rpc_service = rpc_service.with_route_reservation_keyring(Arc::clone(keyring));
+    }
+    if let Some(authority) = &state.release_evidence {
+        rpc_service = rpc_service.with_release_evidence(Arc::clone(authority));
+    }
+    let rpc_service = Arc::new(rpc_service);
+    // The shared router owns `/aos.hub.v1.*` and browse routes and carries its
+    // own `Arc<RpcService>` state. It has no resource-slug delivery wildcard.
+    // Kept for the outermost domain-routing layer below (it captures the service
+    // directly, independent of the AppState-typed router's state).
+    let dispatch_service = Arc::clone(&rpc_service);
+    let console_deps = console_deps(&state, Some(Arc::clone(&rpc_service)));
+    let rpc_router = aos_hub_service::connect::rpc_browse_router(rpc_service);
+
+    // Public bytes never resolve from a resource slug. The outer delivery-route
+    // dispatcher rewrites a matched endpoint to the typed internal delivery
+    // handler; this router owns only control-plane routes and console pages.
+    let router = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/.well-known/aos-deployment", get(deployment_identity))
+        .route("/metrics", get(metrics));
+    // The shared browser boundary owns identity ceremonies and the management
+    // application shell. Resource reads and mutations leave the shell through
+    // the same canonical Connect API as the CLI. Nested registry deep links are
+    // served by the shared dispatcher below.
+    let nested_console_deps = console_deps.clone();
+    // Seed the editable site chrome (title/banner/footer) from the database at
+    // startup so the masthead reflects persisted branding; a branding save
+    // refreshes it live via `set_site_chrome`.
+    if let Ok(s) = state.db.instance_settings().await {
+        aos_hub_service::web::console_render::set_site_chrome(
+            s.site_title.as_deref(),
+            s.tagline.as_deref(),
+            s.announcement.as_deref(),
+            s.tos_url.as_deref(),
+            s.privacy_url.as_deref(),
+            s.support_url.as_deref(),
+        );
+        aos_hub_service::web::console_render::set_caches_public(s.caches_public);
+    }
+    let console_router = aos_hub_service::web::console::console_router(console_deps);
+    // Kept for the outermost client-IP injection layer below.
+    let ip_state = Arc::clone(&state);
+    let app = router
+        // Resolve the request's session once and put the user's email in a
+        // task-local, so every page's masthead reflects the login + shows
+        // navigation without threading the identity through each handler.
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            resolve_session,
+        ))
+        .with_state(Arc::clone(&state))
+        // The shared Connect-JSON router carries its own `Arc<RpcService>`
+        // state, so it is merged after `with_state`.
+        .merge(rpc_router)
+        // The shared browser router carries its own `ConsoleDeps` state and is
+        // merged after `with_state`; the outer security layers wrap it too.
+        .merge(console_router)
+        // Dispatch nested registry settings before the shared browse wildcard
+        // can claim `/{org}/{registry}/-/{*rest}`. The middleware passes every
+        // non-console browse request through with its original body intact.
+        .layer(axum::middleware::from_fn(move |request, next| {
+            dispatch_nested_console(nested_console_deps.clone(), request, next)
+        }))
+        // Bound every control-plane request. Large object transfer uses typed
+        // placement write tickets and backend upload URLs, not this router.
+        .layer(DefaultBodyLimit::max(RPC_MAX_BODY_BYTES))
+        // Panics become plain 500s instead of dropped connections; the
+        // security-header layer wraps everything (including those 500s).
+        .layer(CatchPanicLayer::new())
+        .layer(axum::middleware::from_fn(security_headers))
+        // The OUTERMOST layer: it runs first on the way in, so it stamps the
+        // shell-resolved client IP onto the `x-aos-client-ip` header (overwriting
+        // any inbound value) before any merged router — including the shared
+        // console's pre-auth login routes — sees the request. See
+        // [`inject_client_ip`] for the forge-resistance invariant.
+        .layer(axum::middleware::from_fn_with_state(
+            ip_state,
+            inject_client_ip,
+        ));
+    // Typed domain/IP endpoints select the most-specific route before
+    // any internal handler matches. Outermost so it runs first on the way in.
+    match transport {
+        Some(transport) => aos_hub_service::connect::with_route_dispatch_transport(
+            app,
+            dispatch_service,
+            state.delivery_attestation_verifier.clone(),
+            transport,
+        ),
+        None => aos_hub_service::connect::with_route_dispatch(
+            app,
+            dispatch_service,
+            state.delivery_attestation_verifier.clone(),
+        ),
+    }
+}
+
+/// Dispatches a nested registry console request ahead of browse wildcards.
+///
+/// Requests outside the shared console manifest continue through the normal
+/// router. Body collection is limited to the same control-plane maximum that
+/// wraps this middleware.
+async fn dispatch_nested_console(
+    deps: aos_hub_service::web::console::ConsoleDeps,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path().trim_start_matches('/');
+    let nested_candidate = path
+        .split_once("/-/")
+        .is_some_and(|(registry, _)| registry.contains('/'));
+    if !nested_candidate {
+        return next.run(request).await;
+    }
+
+    let (parts, body) = request.into_parts();
+    let body = match axum::body::to_bytes(body, RPC_MAX_BODY_BYTES).await {
+        Ok(body) => body,
+        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+    };
+    if let Some(response) = aos_hub_service::web::console::dispatch_nested(
+        deps,
+        parts.method.clone(),
+        parts.uri.clone(),
+        parts.headers.clone(),
+        body.clone(),
+    )
+    .await
+    {
+        return response;
+    }
+    next.run(axum::http::Request::from_parts(parts, body.into()))
+        .await
+}
+
+/// Resolve the current session and run the request with the user's email in
+/// a task-local (read by the page renderer's masthead).
+async fn resolve_session(
+    State(state): State<Arc<AppState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let email = match aos_hub_service::web::session::session_secret_from_headers(request.headers())
+    {
+        Some(secret) => state.db.session_email(&secret).await.ok().flatten(),
+        None => None,
+    };
+    crate::ui::render::with_session_email(email, next.run(request)).await
+}
+
+/// Stamp the first-party security headers onto every response.
+async fn security_headers(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    // Default policy is `default-src 'self'; frame-ancestors 'none'` (no inline
+    // scripts, and the response may not be framed — anti-clickjacking for the
+    // console and the device-approval `/activate` page). The passkey pages are
+    // the one no-JS exception (WebAuthn requires `navigator.credentials`): they
+    // set their own per-request CSP carrying a nonce in `script-src` before
+    // this layer runs, so honor a handler-set CSP rather than clobbering it.
+    // Producer machine-surface documents likewise set their own `sandbox` CSP
+    // (which already forbids framing). Every other response gets the strict
+    // default. `frame-ancestors` is the modern control; `X-Frame-Options:
+    // DENY` is set unconditionally below as defense in depth, so even
+    // a handler that supplies its own CSP without `frame-ancestors` stays
+    // unframeable.
+    headers
+        .entry(header::CONTENT_SECURITY_POLICY)
+        .or_insert_with(|| HeaderValue::from_static("default-src 'self'; frame-ancestors 'none'"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    response
+}
+
+/// Map an internal error into a 500 with a terse body.
+pub(crate) fn internal(err: anyhow::Error) -> Response {
+    tracing::error!(error = %format!("{err:#}"), "request failed");
+    (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+}
+
+/// Resolve the request's client IP for rate-limiting from the TCP `peer`
+/// address and, only when the deployment trusts its proxy, `X-Forwarded-For`.
+///
+/// `peer` is the real connecting address (from the `ConnectInfo` extractor);
+/// it is the limiter key whenever `trusted_proxy` is `false`, so a forged
+/// `X-Forwarded-For` cannot mint a fresh per-IP bucket. When `trusted_proxy`
+/// is `true` the last forwarded hop is honored instead. See [`crate::ratelimit`]
+/// for the trust model.
+pub(crate) fn client_ip_for(
+    headers: &HeaderMap,
+    peer: Option<SocketAddr>,
+    trusted_proxy: bool,
+) -> String {
+    let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
+    let peer = peer.map(|p| p.ip().to_string()).unwrap_or_default();
+    crate::ratelimit::client_ip(xff, &peer, trusted_proxy)
+}
+
+/// Stamp the trusted client IP onto the runtime-neutral
+/// [`CLIENT_IP_HEADER`](aos_hub_service::web::console::CLIENT_IP_HEADER) so the
+/// shared console's pre-auth login handlers meter on it.
+///
+/// The shared `/login` and `/login/password` handlers (RFC-0004 Phase 5,
+/// console-dedup stage D) are wasm-clean and cannot read the native
+/// [`ConnectInfo`] peer socket or the per-deployment reverse-proxy trust flag, so
+/// they read the connecting IP from a header instead. This middleware resolves
+/// the *trusted* IP with the hub's existing [`client_ip_for`] (the same
+/// resolution every other auth path uses — peer socket by default, last
+/// forwarded hop only when `trusted_proxy`) and **overwrites** the header with
+/// it, replacing any inbound value of the same name.
+///
+/// # Security invariant
+///
+/// The overwrite (`insert`, not `append`) is load-bearing: a client could
+/// otherwise supply its own `x-aos-client-ip` and forge a fresh per-IP
+/// rate-limit bucket on the unauthenticated login paths. Because this is applied
+/// as the **outermost** router layer (after every `.merge`), it covers the shared
+/// console routes too, so a forged inbound value never survives to a handler. The
+/// peer may be `None` under a test server with no connect-info; [`client_ip_for`]
+/// resolves that to an empty string, which still meters (coarsely) rather than
+/// failing open.
+async fn inject_client_ip(
+    State(state): State<Arc<AppState>>,
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0)
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<ConnectInfo<crate::native_tls::NativeTlsPeer>>()
+                .map(|ci| (ci.0).0)
+        });
+    let ip = client_ip_for(request.headers(), peer, state.trusted_proxy);
+    if let Ok(value) = HeaderValue::from_str(&ip) {
+        request
+            .headers_mut()
+            .insert(aos_hub_service::web::console::CLIENT_IP_HEADER, value);
+    } else {
+        // A resolved IP is always header-safe ASCII, but if it somehow is not,
+        // remove any inbound value so a client cannot smuggle a forged bucket.
+        request
+            .headers_mut()
+            .remove(aos_hub_service::web::console::CLIENT_IP_HEADER);
+    }
+    next.run(request).await
+}
+
+async fn healthz(State(state): State<Arc<AppState>>) -> Response {
+    match state.db.list_registries().await {
+        Ok(regs) => (StatusCode::OK, format!("ok ({} registries)\n", regs.len())).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+async fn deployment_identity(State(state): State<Arc<AppState>>) -> Response {
+    let Some(deployment_id) = state.deployment_id.as_deref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "deployment identity is not configured\n",
+        )
+            .into_response();
+    };
+    let Ok(value) = HeaderValue::from_str(deployment_id) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "deployment identity is invalid\n",
+        )
+            .into_response();
+    };
+    let mut response = (StatusCode::OK, deployment_id.to_owned()).into_response();
+    response.headers_mut().insert("x-aos-deployment-id", value);
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
+    response
+}
+
+/// The Prometheus text-exposition `/metrics` endpoint.
+///
+/// Hand-formats the [exposition format] (no client dependency, per the
+/// hermetic build) from live database counts: total registries and a
+/// per-`state` breakdown, the webhook-delivery queue depth by lifecycle,
+/// managed-cache totals, and bounded OCI catalog, provider-inventory, upload,
+/// publication, placement, garbage-collection, and recovery aggregates. A
+/// `build_info` gauge carries the crate version as a label. Every series is
+/// preceded by its `# HELP`/`# TYPE` lines; OCI labels are fixed state/kind
+/// classes rather than tenant or object identities.
+///
+/// [exposition format]: https://prometheus.io/docs/instrumenting/exposition_formats/
+async fn metrics(State(state): State<Arc<AppState>>) -> Response {
+    let body = match render_metrics(&state).await {
+        Ok(body) => body,
+        Err(err) => return internal(err),
+    };
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
+}
+
+/// Render the `/metrics` exposition body from current database state.
+///
+/// # Errors
+///
+/// Returns an error on database failure.
+async fn render_metrics(state: &AppState) -> Result<String, anyhow::Error> {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+
+    let registries = state.db.list_registries().await?;
+    let mut by_state: BTreeMap<String, u64> = BTreeMap::new();
+    for registry in &registries {
+        let label = state
+            .db
+            .index_status(registry.id)
+            .await?
+            .map(|s| s.state)
+            .unwrap_or_else(|| "indexing".to_string());
+        *by_state.entry(label).or_default() += 1;
+    }
+    let (pending, delivered, failed) = state.db.delivery_status_counts().await?;
+    let oci_gc = state
+        .db
+        .oci_gc_metrics(aos_hub_model::clock::now_unix_secs())
+        .await?;
+    let oci = state
+        .db
+        .oci_operations_metrics(aos_hub_model::clock::now_unix_secs())
+        .await?;
+    let reused_objects = oci
+        .catalog_logical_objects
+        .saturating_sub(oci.catalog_unique_objects);
+    let reused_bytes = oci
+        .catalog_logical_bytes
+        .saturating_sub(oci.catalog_unique_bytes);
+    let reuse_ratio = if oci.catalog_logical_bytes == 0 {
+        0.0
+    } else {
+        reused_bytes as f64 / oci.catalog_logical_bytes as f64
+    };
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_registries_total Registered registries.\n\
+         # TYPE aos_hub_registries_total gauge\n\
+         aos_hub_registries_total {}",
+        registries.len()
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_registries_by_state Registered registries by index state.\n\
+         # TYPE aos_hub_registries_by_state gauge"
+    );
+    // Always emit the four known states (zero when absent) so a scrape never
+    // loses a series, then any other state the index reports.
+    for known in ["fresh", "indexing", "stale", "failed"] {
+        let n = by_state.remove(known).unwrap_or(0);
+        let _ = writeln!(out, "aos_hub_registries_by_state{{state=\"{known}\"}} {n}");
+    }
+    for (extra, n) in &by_state {
+        let _ = writeln!(out, "aos_hub_registries_by_state{{state=\"{extra}\"}} {n}");
+    }
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_webhook_deliveries Webhook deliveries by status.\n\
+         # TYPE aos_hub_webhook_deliveries gauge\n\
+         aos_hub_webhook_deliveries{{status=\"pending\"}} {pending}\n\
+         aos_hub_webhook_deliveries{{status=\"delivered\"}} {delivered}\n\
+         aos_hub_webhook_deliveries{{status=\"failed\"}} {failed}"
+    );
+    let cm = state.db.cache_metrics().await?;
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_caches_total Managed binary caches (live).\n\
+         # TYPE aos_hub_caches_total gauge\n\
+         aos_hub_caches_total {}\n\
+         # HELP aos_hub_cache_objects_total Indexed cache objects across live caches.\n\
+         # TYPE aos_hub_cache_objects_total gauge\n\
+         aos_hub_cache_objects_total {}\n\
+         # HELP aos_hub_cache_bytes_total Stored cache bytes across live caches.\n\
+         # TYPE aos_hub_cache_bytes_total gauge\n\
+         aos_hub_cache_bytes_total {}",
+        cm.cache_count, cm.object_count, cm.used_bytes
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_cache_gc_runs Cache GC runs by outcome (lifetime).\n\
+         # TYPE aos_hub_cache_gc_runs counter\n\
+         aos_hub_cache_gc_runs{{status=\"ok\"}} {}\n\
+         aos_hub_cache_gc_runs{{status=\"failed\"}} {}\n\
+         # HELP aos_hub_cache_gc_freed_bytes Bytes reclaimed by cache GC (lifetime).\n\
+         # TYPE aos_hub_cache_gc_freed_bytes counter\n\
+         aos_hub_cache_gc_freed_bytes {}",
+        cm.gc_runs_ok, cm.gc_runs_failed, cm.gc_freed_bytes
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_oci_rollout_enabled Whether an OCI capability is enabled.\n\
+         # TYPE aos_hub_oci_rollout_enabled gauge\n\
+         aos_hub_oci_rollout_enabled{{capability=\"pull\"}} {}\n\
+         aos_hub_oci_rollout_enabled{{capability=\"push\"}} {}\n\
+         aos_hub_oci_rollout_enabled{{capability=\"verified_publication\"}} {}\n\
+         aos_hub_oci_rollout_enabled{{capability=\"administration\"}} {}\n\
+         aos_hub_oci_rollout_enabled{{capability=\"garbage_collection\"}} {}",
+        u8::from(state.container_rollout.pull),
+        u8::from(state.container_rollout.push),
+        u8::from(state.container_rollout.verified_publication),
+        u8::from(state.container_rollout.administration),
+        u8::from(state.container_rollout.garbage_collection)
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_oci_gc_runs Durable OCI garbage-collection runs by state.\n\
+         # TYPE aos_hub_oci_gc_runs gauge\n\
+         aos_hub_oci_gc_runs{{state=\"planned\"}} {}\n\
+         aos_hub_oci_gc_runs{{state=\"applying\"}} {}\n\
+         aos_hub_oci_gc_runs{{state=\"complete\"}} {}\n\
+         aos_hub_oci_gc_runs{{state=\"failed_or_aborted\"}} {}\n\
+         # HELP aos_hub_oci_gc_bytes OCI bytes reviewed or logically finalized.\n\
+         # TYPE aos_hub_oci_gc_bytes gauge\n\
+         aos_hub_oci_gc_bytes{{state=\"planned\"}} {}\n\
+         aos_hub_oci_gc_bytes{{state=\"finalized\"}} {}\n\
+         # HELP aos_hub_oci_gc_failed_actions Failed conditional-deletion placement actions.\n\
+         # TYPE aos_hub_oci_gc_failed_actions gauge\n\
+         aos_hub_oci_gc_failed_actions {}\n\
+         # HELP aos_hub_oci_gc_blockers Durable fail-closed planning blockers.\n\
+         # TYPE aos_hub_oci_gc_blockers gauge\n\
+         aos_hub_oci_gc_blockers {}\n\
+         # HELP aos_hub_oci_gc_stale_inventories Placements without a current complete inventory.\n\
+         # TYPE aos_hub_oci_gc_stale_inventories gauge\n\
+         aos_hub_oci_gc_stale_inventories {}",
+        oci_gc.planned_runs,
+        oci_gc.applying_runs,
+        oci_gc.completed_runs,
+        oci_gc.failed_runs,
+        oci_gc.planned_bytes,
+        oci_gc.finalized_bytes,
+        oci_gc.failed_actions,
+        oci_gc.blockers,
+        oci_gc.stale_inventories
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_oci_catalog_objects OCI repository-object references and registry-unique objects.\n\
+         # TYPE aos_hub_oci_catalog_objects gauge\n\
+         aos_hub_oci_catalog_objects{{kind=\"logical\"}} {}\n\
+         aos_hub_oci_catalog_objects{{kind=\"unique\"}} {}\n\
+         aos_hub_oci_catalog_objects{{kind=\"reused\"}} {}\n\
+         # HELP aos_hub_oci_catalog_bytes OCI logical, registry-unique, and reused catalog bytes.\n\
+         # TYPE aos_hub_oci_catalog_bytes gauge\n\
+         aos_hub_oci_catalog_bytes{{kind=\"logical\"}} {}\n\
+         aos_hub_oci_catalog_bytes{{kind=\"unique\"}} {}\n\
+         aos_hub_oci_catalog_bytes{{kind=\"reused\"}} {}\n\
+         # HELP aos_hub_oci_reuse_ratio Fraction of logical catalog bytes reused through registry deduplication.\n\
+         # TYPE aos_hub_oci_reuse_ratio gauge\n\
+         aos_hub_oci_reuse_ratio {:.6}\n\
+         # HELP aos_hub_oci_provider_inventory_objects Physical objects in current complete provider inventory heads.\n\
+         # TYPE aos_hub_oci_provider_inventory_objects gauge\n\
+         aos_hub_oci_provider_inventory_objects {}\n\
+         # HELP aos_hub_oci_provider_inventory_bytes Physical bytes in current complete provider inventory heads.\n\
+         # TYPE aos_hub_oci_provider_inventory_bytes gauge\n\
+         aos_hub_oci_provider_inventory_bytes {}",
+        oci.catalog_logical_objects,
+        oci.catalog_unique_objects,
+        reused_objects,
+        oci.catalog_logical_bytes,
+        oci.catalog_unique_bytes,
+        reused_bytes,
+        reuse_ratio,
+        oci.provider_inventory_objects,
+        oci.provider_inventory_bytes
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_oci_uploads Durable OCI upload sessions by bounded state.\n\
+         # TYPE aos_hub_oci_uploads gauge\n\
+         aos_hub_oci_uploads{{state=\"active\"}} {}\n\
+         aos_hub_oci_uploads{{state=\"completing\"}} {}\n\
+         aos_hub_oci_uploads{{state=\"complete\"}} {}\n\
+         aos_hub_oci_uploads{{state=\"failed\"}} {}\n\
+         aos_hub_oci_uploads{{state=\"cancelled\"}} {}\n\
+         aos_hub_oci_uploads{{state=\"expired_nonterminal\"}} {}\n\
+         # HELP aos_hub_oci_publications Durable verified OCI publications by bounded state.\n\
+         # TYPE aos_hub_oci_publications gauge\n\
+         aos_hub_oci_publications{{state=\"preparing\"}} {}\n\
+         aos_hub_oci_publications{{state=\"committing\"}} {}\n\
+         aos_hub_oci_publications{{state=\"ready\"}} {}\n\
+         aos_hub_oci_publications{{state=\"aborted\"}} {}\n\
+         aos_hub_oci_publications{{state=\"failed\"}} {}\n\
+         aos_hub_oci_publications{{state=\"stuck\"}} {}\n\
+         # HELP aos_hub_oci_publication_ready_latency_seconds Time from publication creation to ready.\n\
+         # TYPE aos_hub_oci_publication_ready_latency_seconds summary\n\
+         aos_hub_oci_publication_ready_latency_seconds_sum {}\n\
+         aos_hub_oci_publication_ready_latency_seconds_count {}",
+        oci.uploads_active,
+        oci.uploads_completing,
+        oci.uploads_complete,
+        oci.uploads_failed,
+        oci.uploads_cancelled,
+        oci.uploads_expired_nonterminal,
+        oci.publications_preparing,
+        oci.publications_committing,
+        oci.publications_ready,
+        oci.publications_aborted,
+        oci.publications_failed,
+        oci.publications_stuck_nonterminal,
+        oci.publication_ready_latency_seconds_sum,
+        oci.publication_ready_latency_count
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_oci_placements Enabled OCI placements by bounded health.\n\
+         # TYPE aos_hub_oci_placements gauge\n\
+         aos_hub_oci_placements{{health=\"ready\"}} {}\n\
+         aos_hub_oci_placements{{health=\"unhealthy\"}} {}\n\
+         # HELP aos_hub_oci_inventory_age_seconds Age of current complete provider inventories.\n\
+         # TYPE aos_hub_oci_inventory_age_seconds gauge\n\
+         aos_hub_oci_inventory_age_seconds{{stat=\"max\"}} {}\n\
+         # HELP aos_hub_oci_inventory_events Durable provider-inventory recovery evidence.\n\
+         # TYPE aos_hub_oci_inventory_events gauge\n\
+         aos_hub_oci_inventory_events{{kind=\"failed\"}} {}\n\
+         aos_hub_oci_inventory_events{{kind=\"takeover\"}} {}\n\
+         # HELP aos_hub_oci_gc_recoveries Durable operator GC recovery actions.\n\
+         # TYPE aos_hub_oci_gc_recoveries gauge\n\
+         aos_hub_oci_gc_recoveries{{kind=\"action_requeue\"}} {}\n\
+         # HELP aos_hub_oci_digest_mismatches Current inventory or catalog digest evidence mismatches.\n\
+         # TYPE aos_hub_oci_digest_mismatches gauge\n\
+         aos_hub_oci_digest_mismatches {}",
+        oci.placements_ready,
+        oci.placements_unhealthy,
+        oci.max_inventory_age_seconds,
+        oci.failed_inventory_generations,
+        oci.inventory_takeover_count,
+        oci.gc_requeue_count,
+        oci.digest_mismatches
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_hub_build_info Build information.\n\
+         # TYPE aos_hub_build_info gauge\n\
+         aos_hub_build_info{{version=\"{}\"}} 1",
+        env!("CARGO_PKG_VERSION")
+    );
+    Ok(out)
+}
+
+/// Build the shared [`ConsoleDeps`](aos_hub_service::web::console::ConsoleDeps) from
+/// the hub's [`AppState`].
+///
+/// The native hub serves a nested-canonical registry's console pages through the
+/// **shared** `aos_hub_service` console dispatcher (the single source of truth for
+/// the console routing table), which needs these deps. The catch-all route
+/// handlers carry only `state`, so this reconstructs the deps — all cheap `Arc`
+/// clones over thin port wrappers — per call.
+///
+/// `default_storage_location` is `None` here: the nested dispatcher only serves
+/// registry console pages, which never read it (it backs the instance-settings
+/// page, served by the flat console router, where [`serve`] sets it explicitly).
+fn console_deps(
+    state: &Arc<AppState>,
+    control: Option<Arc<aos_hub_service::service::RpcService>>,
+) -> aos_hub_service::web::console::ConsoleDeps {
+    aos_hub_service::web::console::ConsoleDeps {
+        db: Arc::clone(&state.db),
+        jwt_keys: state.auth.jwt_keys.clone(),
+        external_url: state.external_url.clone(),
+        dev: state.dev,
+        ratelimit: Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_service::ratelimit::RateLimiter>,
+        mailer: Arc::clone(&state.mailer),
+        sealer: Arc::clone(&state.sealer),
+        http: Arc::new(crate::coreports::HubHttpClient::new(state.http.clone())),
+        control,
+    }
+}
+
+/// Builds native console dependencies for cross-shell request-contract tests.
+///
+/// This narrow adapter is compiled only with the non-default `test-support`
+/// feature. Production hub and Worker builds therefore expose no constructor
+/// whose sole purpose is a foreign crate's test harness.
+#[cfg(feature = "test-support")]
+#[must_use]
+pub fn console_deps_for_worker_test(
+    state: &Arc<AppState>,
+) -> aos_hub_service::web::console::ConsoleDeps {
+    console_deps(state, None)
+}

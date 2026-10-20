@@ -53,9 +53,9 @@
 
   egressFixture = ./aos-hub-direct-egress-fixture.mjs;
   stateFixture = ./aos-hub-worker-state-fixture.mjs;
-  removedManagementPaths = ../../crates/aos-hub/tests/fixtures/removed-management-paths-v1.json;
-  removedManagementPosts = ../../crates/aos-hub/tests/fixtures/removed-management-posts-v1.json;
-  ociProtocolTranscript = ../../crates/aos-hub/tests/fixtures/oci-protocol-parity-v1.json;
+  removedManagementPaths = ../../crates/hub/aos-hub-native/tests/fixtures/removed-management-paths-v1.json;
+  removedManagementPosts = ../../crates/hub/aos-hub-native/tests/fixtures/removed-management-posts-v1.json;
+  ociProtocolTranscript = ../../crates/hub/aos-hub-native/tests/fixtures/oci-protocol-parity-v1.json;
 
   # The workerd config: a module worker (shim.mjs + index.wasm) with the six DO
   # classes, `enableSql = true` on the SQLite-backed `HubDb`, the direct-Fetch
@@ -1040,8 +1040,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "build-input";
     };

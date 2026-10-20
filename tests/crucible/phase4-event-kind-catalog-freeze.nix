@@ -9,17 +9,17 @@
 
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   catalog = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/event_catalog.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/event_catalog.rs;
   };
-  catalogTest = builtins.readFile ../../crates/crucible/tests/event_kind_catalog.rs;
+  catalogTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_kind_catalog.rs;
   triggerTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/event_graph_replay_oracle.rs;
   };
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -67,7 +67,7 @@
     lib.concatMap (
       kind:
         lib.optionals (!(hasInfix "kind: \"${kind}\"" catalog)) [
-          "crates/crucible/src/event_catalog.rs: missing required RFC kind `${kind}`"
+          "crates/crucible/engine/crucible-engine/src/event_catalog.rs: missing required RFC kind `${kind}`"
         ]
     )
     requiredKinds;
@@ -83,7 +83,7 @@
         needle = "golden-vector";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "event catalog module";
         needle = "pub mod event_catalog;";
@@ -101,7 +101,7 @@
         needle = "EventKindCatalogDependency";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "scheduler class lookup reads catalog";
         needle = "crate::event_catalog::event_kind_catalog_class(payload.kind())";
@@ -119,7 +119,7 @@
         needle = "String::from(\"condition\")";
       }
     ]
-    ++ failuresFor "crates/crucible/src/event_catalog.rs" catalog [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/event_catalog.rs" catalog [
       {
         label = "catalog version";
         needle = "pub const EVENT_KIND_CATALOG_VERSION: u32 = 7;";
@@ -186,7 +186,7 @@
       }
     ]
     ++ requiredKindFailures
-    ++ failuresFor "crates/crucible/tests/event_kind_catalog.rs" catalogTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_kind_catalog.rs" catalogTest [
       {
         label = "version/single-source test";
         needle = "event_kind_catalog_is_versioned_sorted_and_single_source_for_classes";
@@ -212,7 +212,7 @@
         needle = "EXPECTED_CATALOG_HASH";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_graph_replay_oracle.rs" triggerTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_graph_replay_oracle.rs" triggerTest [
       {
         label = "trigger firing causal test";
         needle = "event_graph_replay_oracle_rederives_identical_firings_actions_and_verdict";
@@ -244,7 +244,7 @@
         needle = "taskIds = [\"T-OBS-13\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_kind_catalog.rs" catalogTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/event_kind_catalog.rs" catalogTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -263,7 +263,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -308,7 +311,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-kind-catalog-freeze-target" \
-              -p crucible \
+              -p crucible-engine \
               --test event_kind_catalog \
               --test event_graph_replay_oracle \
               -- --test-threads=1

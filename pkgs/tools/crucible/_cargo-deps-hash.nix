@@ -1,2 +1,2 @@
-# Crucible and application compilation use the same complete workspace lockfile.
-import ../../build-support/_workspace-cargo-deps-hash.nix
+# Resolve provenance from the shared monorepo vendor rather than another pin.
+{cargoDeps}: cargoDeps.passthru.aos.fixedOutput.hash

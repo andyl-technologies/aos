@@ -238,7 +238,7 @@ in {
           # The `hash` column has to be the *real* NAR hash of the
           # on-disk content. `aos cache push`'s pack path shells out
           # to `nix-store --export ${storePath}` (via
-          # `streaming_export` in aos-cache/src/compress.rs), and Nix
+          # `streaming_export` in aos/packages/aos-nix-cache/src/compress.rs), and Nix
           # refuses with `"hash of path ... has changed from ... to
           # ..."` if the registered hash doesn't match what it just
           # computed by re-NARing the path. So precompute the hash
@@ -271,7 +271,7 @@ in {
           NAR_SIZE=$(stat -c %s "$NAR_TMP")
           rm -f "$NAR_TMP"
           # Seed the `ca` column so the server's `validate_imported_path`
-          # check (aos-server/src/pack.rs:140-189) treats this path as a
+          # check (aos/packages/aos-build-server/src/pack.rs:140-189) treats this path as a
           # fixed-output content-addressed path and accepts it. The pack-
           # import handler refuses to register anything that's not .drv
           # or CA, on the grounds that unverified non-CA store paths from
@@ -290,7 +290,7 @@ in {
           # `upload_pack_handler` → `create_tmp_root`), but the
           # narinfo / NAR handlers go through `check_visibility`
           # which only consults `bin/` and `src/`
-          # (aos-server/src/views.rs:48-58). In production a `bin/`
+          # (aos/packages/aos-build-server/src/views.rs:48-58). In production a `bin/`
           # root is materialised once `apm build` completes; the
           # fleet test isn't running a build, so we materialise it
           # by hand. Without this, step 3.6's narinfo curl would 404
@@ -346,7 +346,7 @@ in {
           # (2) body format — the server pipes the body into
           # nix-store --import, which expects raw NAR + ExportTrailer,
           # not compressed NAR. See the TODO block in
-          # crates/aos-cache/src/backend/http.rs::put_nar. When someone
+          # crates/aos/packages/aos-nix-cache/src/backend/http.rs::put_nar. When someone
           # fixes that path, the `if cmd; then exit 1` below fires in
           # CI and the fixer must delete this block (or flip `if` →
           # `if !`). The check is intentionally exit-code only — a
@@ -436,7 +436,7 @@ in {
           raise
       # `extract_packages` strips the leading `packages/` and lands TOMLs
       # under `cache_path()/<registry>/packages/` —
-      # `crates/aos-package/src/{update,registry/git}.rs::extract_packages`.
+      # `crates/aos/packages/aos-package-manager/src/{update,registry/git}.rs::extract_packages`.
       # `cache_path()` is `$HOME/.local/share/apm/remote` for the user scope
       # (see `types.rs::cache_path`), not `.../registries` (which holds the
       # bare git clone metadata).
@@ -475,7 +475,7 @@ in {
       )
 
       # ── 6. Server's cache logged at least one NAR fetch ───────────
-      # `nar_handler` in crates/aos-server/src/routes.rs:272 logs the
+      # `nar_handler` in crates/aos/packages/aos-build-server/src/routes.rs:272 logs the
       # event with structured fields (view, hash, compression) and
       # the message "NAR streamed" — *not* the URL path. Asserting on
       # `hash=<testPkg.storeHash>` ties the assertion to exactly the

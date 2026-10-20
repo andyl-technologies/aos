@@ -2,37 +2,55 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
+  packageDisplayPath = package: "crates/${lib.removePrefix "${toString cratesDir}/" (toString (packageDir package))}";
   rfcDir = ../../docs/rfcs/0010-crucible;
   campaignRfcDir = ../../docs/rfcs/0020-crucible-campaigns;
+  nodeRfcDir = ../../docs/rfcs/0025-crucible-node-contract;
 
   specs = [
     {
-      package = "crucible-cas";
+      package = "crucible-host-resources";
+      root = "src/lib.rs";
+      specFiles = [];
+      nodeSpecFiles = ["01" "02" "05" "08"];
+      section6 = false;
+    }
+    {
+      package = "crucible-node-format";
+      root = "src/lib.rs";
+      specFiles = [];
+      nodeSpecFiles = ["00" "01" "02" "03" "04" "05" "06" "08" "09"];
+      section6 = false;
+    }
+    {
+      package = "crucible-node-transport";
+      root = "src/lib.rs";
+      specFiles = [];
+      nodeSpecFiles = ["06" "07" "08"];
+      section6 = false;
+    }
+    {
+      package = "crucible-store";
       root = "src/lib.rs";
       specFiles = ["35"];
       section6 = true;
     }
     {
-      package = "crucible-sim";
+      package = "crucible-determinism";
       root = "src/lib.rs";
       specFiles = ["04" "08" "09"];
       section6 = true;
     }
     {
-      package = "crucible-assert";
-      root = "src/lib.rs";
-      specFiles = ["18"];
-      section6 = true;
-    }
-    {
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       root = "src/lib.rs";
       specFiles = ["13"];
       section6 = true;
     }
     {
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       root = "src/lib.rs";
       specFiles = ["14" "16"];
       section6 = true;
@@ -44,7 +62,7 @@
       section6 = true;
     }
     {
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       root = "src/lib.rs";
       specFiles = ["10" "11"];
       section6 = true;
@@ -56,7 +74,7 @@
       section6 = true;
     }
     {
-      package = "crucible-debug-gateway";
+      package = "crucible-qemu-debug-gateway";
       root = "src/lib.rs";
       specFiles = ["36"];
       section6 = true;
@@ -69,7 +87,7 @@
       section6 = true;
     }
     {
-      package = "crucible";
+      package = "crucible-engine";
       root = "src/lib.rs";
       specFiles = ["05" "06" "07" "08" "17" "18" "19"];
       section6 = true;
@@ -81,7 +99,19 @@
       section6 = true;
     }
     {
-      package = "crucible-api";
+      package = "crucible-control-client";
+      root = "src/lib.rs";
+      specFiles = ["21"];
+      section6 = true;
+    }
+    {
+      package = "crucible-control-server";
+      root = "src/lib.rs";
+      specFiles = ["21"];
+      section6 = true;
+    }
+    {
+      package = "crucible-control-api";
       root = "src/lib.rs";
       specFiles = ["21"];
       section6 = true;
@@ -100,7 +130,7 @@
       section6 = true;
     }
     {
-      package = "crucible-harness";
+      package = "crucible-test-support";
       root = "src/lib.rs";
       specFiles = ["24" "27"];
       section6 = false;
@@ -113,14 +143,7 @@
       section6 = false;
     }
     {
-      package = "crucible-linux-resource";
-      root = "src/lib.rs";
-      specFiles = [];
-      campaignSpecFiles = ["04a" "06"];
-      section6 = false;
-    }
-    {
-      package = "crucible-s3-store";
+      package = "crucible-store-s3";
       root = "src/lib.rs";
       specFiles = [];
       campaignSpecFiles = ["06"];
@@ -129,13 +152,7 @@
   ];
 
   expectedPackages = lib.sort builtins.lessThan (map (spec: spec.package) specs);
-  foundPackages = lib.sort builtins.lessThan (
-    builtins.filter (
-      name:
-        lib.hasPrefix "crucible" name
-        && builtins.pathExists (cratesDir + "/${name}/Cargo.toml")
-    ) (builtins.attrNames (builtins.readDir cratesDir))
-  );
+  foundPackages = lib.sort builtins.lessThan cruciblePackages;
 
   packageSetFailures =
     if foundPackages == expectedPackages
@@ -162,6 +179,7 @@
       else [];
 
   campaignSpecFilesOf = spec: spec.campaignSpecFiles or [];
+  nodeSpecFilesOf = spec: spec.nodeSpecFiles or [];
   # RFC-0010 references always say `files`; an RFC-0020 reference says `file`
   # for one chapter and `files` for several, as the crates are written.
   campaignClause = files: "RFC-0020 ${
@@ -172,7 +190,8 @@
   expectedDocLine = spec: let
     clauses =
       lib.optional (spec.specFiles != []) "RFC-0010 files ${builtins.concatStringsSep ", " spec.specFiles}"
-      ++ lib.optional (campaignSpecFilesOf spec != []) (campaignClause (campaignSpecFilesOf spec));
+      ++ lib.optional (campaignSpecFilesOf spec != []) (campaignClause (campaignSpecFilesOf spec))
+      ++ lib.optional (nodeSpecFilesOf spec != []) "RFC-0025 files ${builtins.concatStringsSep ", " (nodeSpecFilesOf spec)}";
   in "//! Spec index: ${builtins.concatStringsSep "; " clauses}.";
 
   crateDocFailures = spec: content: displayPath: let
@@ -201,13 +220,24 @@
       lib.hasPrefix "${file}-" name && lib.hasSuffix ".md" name)
     campaignRfcFileNames;
 
+  nodeRfcFileNames = builtins.attrNames (builtins.readDir nodeRfcDir);
+  nodeRfcFileExists = file:
+    builtins.any (name:
+      lib.hasPrefix "${file}-" name && lib.hasSuffix ".md" name)
+    nodeRfcFileNames;
+  nodeSpecFileFailures = spec:
+    lib.concatMap (file:
+      lib.optionals (!(nodeRfcFileExists file)) [
+        "${spec.package}: spec index references missing RFC-0025 file `${file}`"
+      ]) (nodeSpecFilesOf spec);
+
   realDocFailures =
     lib.concatMap (
       spec:
         crateDocFailures
         spec
-        (builtins.readFile (cratesDir + "/${spec.package}/${spec.root}"))
-        "crates/${spec.package}/${spec.root}"
+        (builtins.readFile (packageDir spec.package + "/${spec.root}"))
+        "${packageDisplayPath spec.package}/${spec.root}"
     )
     specs;
 
@@ -227,6 +257,7 @@
               "${spec.package}: spec index references missing RFC-0020 file `${file}`"
             ]
         ) (campaignSpecFilesOf spec)
+        ++ nodeSpecFileFailures spec
     )
     specs;
 
@@ -303,7 +334,7 @@
 
   regressionFailures = let
     spec = {
-      package = "crucible-sim";
+      package = "crucible-determinism";
       root = "src/lib.rs";
       specFiles = ["04" "08" "09"];
       section6 = true;
@@ -318,7 +349,30 @@
       //! Spec index: RFC-0010 files 04, 09.
       #![forbid(unsafe_code)]
     '' "synthetic";
-    staleRowFindings = section6RowFailures spec "| `crucible-sim` | [`04`](04-determinism-contract.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism` |";
+    staleRowFindings = section6RowFailures spec "| `crucible-determinism` | [`04`](04-determinism-contract.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism` |";
+    nodeSpec = {
+      package = "crucible-node-format";
+      root = "src/lib.rs";
+      specFiles = [];
+      nodeSpecFiles = ["00" "09"];
+      section6 = false;
+    };
+    nodeDocFindings = crateDocFailures nodeSpec ''
+      //! synthetic portable crate
+      //!
+      //! Spec index: RFC-0025 files 00, 09.
+      #![forbid(unsafe_code)]
+    '' "synthetic-node";
+    wrongNodeDocFindings = crateDocFailures nodeSpec ''
+      //! synthetic portable crate
+      //!
+      //! Spec index: RFC-0025 files 00.
+      #![forbid(unsafe_code)]
+    '' "synthetic-node";
+    missingNodeFileFindings = nodeSpecFileFailures (nodeSpec
+      // {
+        nodeSpecFiles = ["missing-node-chapter"];
+      });
     hasFinding = needle: findings:
       builtins.any (finding: hasInfix needle finding) findings;
   in
@@ -330,6 +384,15 @@
     ]
     ++ lib.optionals (!(hasFinding "missing RFC file marker" staleRowFindings)) [
       "spec-index regression failed to reject a stale section 6 table row"
+    ]
+    ++ lib.optionals (nodeDocFindings != []) [
+      "spec-index regression rejected an exact RFC-0025 supplemental doc line"
+    ]
+    ++ lib.optionals (!(hasFinding "found Spec index lines" wrongNodeDocFindings)) [
+      "spec-index regression failed to reject a wrong RFC-0025 supplemental doc line"
+    ]
+    ++ lib.optionals (!(hasFinding "missing RFC-0025 file" missingNodeFileFindings)) [
+      "spec-index regression failed to reject a missing RFC-0025 chapter"
     ];
 
   failures = packageSetFailures ++ regressionFailures ++ realDocFailures ++ specFileFailures ++ section6Failures;
@@ -354,8 +417,8 @@ in
             PASS
             check=checks.crucible.phase1.crateSpecIndex
             tasks=T-CRATE-13
-            crate_roots=15
-            section6_rows=14
+            crate_roots=${builtins.toString (builtins.length specs)}
+            section6_rows=${builtins.toString (builtins.length expectedSectionPackages)}
             RESULT
           '';
         }

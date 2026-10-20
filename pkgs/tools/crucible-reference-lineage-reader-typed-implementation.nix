@@ -73,16 +73,16 @@
     pname = "crucible-reference-lineage-reader-typed-binaries";
     version = "0.1.0";
     cargoRoot = "crates";
-    cargoFlags = "-p crucible-node-provider --bin crucible-reference-lineage-reader-typed-provider --bin crucible-reference-lineage-device --bin crucible-reference-lineage-provider --bin crucible-reference-lineage-reader-typed-manifest";
+    cargoFlags = "-p crucible-node-transport --bin crucible-reference-lineage-reader-typed-provider --bin crucible-reference-lineage-device --bin crucible-reference-lineage-provider --bin crucible-reference-lineage-reader-typed-manifest";
     # The source component exercises the binaries built here. Historical installed
     # cohort tests pin their own old package and cannot qualify this new output.
-    cargoTestFlags = "-p crucible-node-provider --lib --bins --test lineage_source -- --test-threads=1";
+    cargoTestFlags = "-p crucible-node-transport --lib --bins --test lineage_source -- --test-threads=1";
     doCheck = true;
     doParallelCheck = true;
     buildDeps = [rust.dev];
     runtimeDeps = [];
     postBuild = ''
-      cargo clippy --frozen --offline -p crucible-node-provider --lib --bins -- -D warnings
+      cargo clippy --frozen --offline -p crucible-node-transport --lib --bins -- -D warnings
     '';
     meta = {
       description = "Builds and tests the distinct ordered-consumption reference provider and native companion";
@@ -156,9 +156,9 @@ in
             ${gzip}/bin/gzip -n -c contract.tar > "$profile/contract.tar.gz"
             cp ${./crucible-reference-lineage-reader-typed-implementation.nix} "$profile/recipe.nix"
             cp ${baseSource}/LICENSES/Apache-2.0.txt "$out/share/licenses/crucible-reference-lineage-reader-typed-implementation/LICENSE"
-            cp ${src}/crates/crucible-node-contract/src/schema/events.rs "$profile/event-definition.rs"
-            cp ${src}/crates/crucible-node-contract/src/schema/events.rs "$profile/input-definition.rs"
-            cp ${src}/crates/crucible-node-contract/src/schema/receipts.rs "$profile/stop-definition.rs"
+            cp ${src}/crates/crucible/protocol/crucible-node-format/src/schema/events.rs "$profile/event-definition.rs"
+            cp ${src}/crates/crucible/protocol/crucible-node-format/src/schema/events.rs "$profile/input-definition.rs"
+            cp ${src}/crates/crucible/protocol/crucible-node-format/src/schema/receipts.rs "$profile/stop-definition.rs"
             cat > "$profile/namespace-origin.json" <<'EOF'
             {"schema":"crucible.reference.lineage-reader-typed.namespace-origin.v1","namespace":"org.andyl.reference","source_policy":"public-original-input-lineage-reader-typed-v2","authority":"unqualified installation data; independent source namespace authority required"}
             EOF

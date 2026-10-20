@@ -8,12 +8,12 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   graphSource = import ./_crucible-model-source.nix {inherit lib;};
-  gateTest = builtins.readFile ../../crates/crucible/tests/gate_checkpoint_materialization.rs;
+  gateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_checkpoint_materialization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
   failures =
-    failuresFor "crates/crucible model" graphSource [
+    failuresFor "crates/crucible/engine/crucible-engine model" graphSource [
       {
         label = "ordinary materialization policy";
         needle = "pub struct MaterializationPolicy";
@@ -27,7 +27,7 @@
         needle = "pub fn record_thin_checkpoint(";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_checkpoint_materialization.rs" gateTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_checkpoint_materialization.rs" gateTest [
       {
         label = "fat persistence gate";
         needle = "gate_checkpoint_materialization_persists_exact_fat_checkpoint_by_configuration";
@@ -84,7 +84,7 @@ in
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then cd source; fi
             cargo test --frozen --offline \
               --target-dir "$TMPDIR/crucible-checkpoint-materialization-target" \
-              --manifest-path crates/Cargo.toml -p crucible \
+              --manifest-path crates/Cargo.toml -p crucible-engine \
               --test gate_checkpoint_materialization -- --test-threads=1
           '';
         }

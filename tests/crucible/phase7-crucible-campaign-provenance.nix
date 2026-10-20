@@ -7,8 +7,8 @@
 }: let
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
-  reproduction = builtins.readFile ../../crates/crucible-harness/src/reproduction.rs;
-  reproductionTest = builtins.readFile ../../crates/crucible-harness/tests/reproduction_artifact.rs;
+  reproduction = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/reproduction.rs;
+  reproductionTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/reproduction_artifact.rs;
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
 
@@ -37,7 +37,7 @@
         needle = "REFUSE reuse; FORK a fresh campaign lineage";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/reproduction.rs" reproduction [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/reproduction.rs" reproduction [
       {
         label = "campaign provenance schema";
         needle = "CAMPAIGN_PROVENANCE_SCHEMA";
@@ -115,7 +115,7 @@
         needle = "&identity.plugin_abi";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/reproduction_artifact.rs" reproductionTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/reproduction_artifact.rs" reproductionTest [
       {
         label = "same-provenance seeding test";
         needle = "campaign_corpus_reuse_seeds_matching_provenance";

@@ -24,12 +24,12 @@ The relevant source boundaries are:
 
 | Boundary | Existing source | Missing integration |
 | --- | --- | --- |
-| Portable declaration | `crucible-node-contract/src/values.rs`, `schema/` | Complete extension registration records and bounded exact selections |
-| Handshake | `crucible-node-provider/src/handshake/negotiation.rs` | Explicit selected version/schema identity and immutable selection across reconnect |
-| Method dispatch | `crucible-node-provider/src/connection.rs` | Installed per-location semantic validators and finite extension credits |
-| Graph admission | `crucible/src/node_admission/{nodes,ports,graph}.rs` | Selected registration closure bound to execution identity, retaining unknown refusal |
-| Actual provider | `crucible-node-provider/src/reference_service/` | A distinct installed profile exercising registered selection without altering legacy profiles |
-| Evidence | `crucible-node-provider/src/conformance/` | Required/optional selection, namespace, schema, scope, bounds, and downgrade probes against an actual endpoint |
+| Portable declaration | `crucible/protocol/crucible-node-format/src/values.rs`, `schema/` | Complete extension registration records and bounded exact selections |
+| Handshake | `crucible/host/crucible-node-transport/src/handshake/negotiation.rs` | Explicit selected version/schema identity and immutable selection across reconnect |
+| Method dispatch | `crucible/host/crucible-node-transport/src/connection.rs` | Installed per-location semantic validators and finite extension credits |
+| Graph admission | `crucible/engine/crucible-engine/src/node_admission/{nodes,ports,graph}.rs` | Selected registration closure bound to execution identity, retaining unknown refusal |
+| Actual provider | `crucible/host/crucible-node-transport/src/reference_service/` | A distinct installed profile exercising registered selection without altering legacy profiles |
+| Evidence | `crucible/host/crucible-node-transport/src/conformance/` | Required/optional selection, namespace, schema, scope, bounds, and downgrade probes against an actual endpoint |
 
 `HelloResult` currently returns selected feature identifiers. A feature suffix
 such as `/1` alone is not an explicit selection of a complete declaration,

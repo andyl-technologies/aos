@@ -369,7 +369,7 @@
     ];
   });
   referenceVectors = builtins.fromJSON (
-    builtins.readFile ../../crates/aos-oci-types/tests/reference-vectors.json
+    builtins.readFile ../../crates/shared/aos-oci-types/tests/reference-vectors.json
   );
   accepts = validator: value: (builtins.tryEval (validator "test vector" value)).success;
   openPlatform = oci.common.validatePlatform {

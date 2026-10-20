@@ -176,7 +176,7 @@ Build the actual child using the source-built AOS toolchain on this machine:
 
 ```sh
 NIX_CONFIG='builders = ' bash tools/dev/aos-dev cargo build \
-  --manifest-path crates/Cargo.toml -p crucible-node-provider \
+  --manifest-path crates/Cargo.toml -p crucible-node-transport \
   --bin crucible-reference-device --locked
 ```
 

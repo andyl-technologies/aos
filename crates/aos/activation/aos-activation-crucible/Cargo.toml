@@ -1,0 +1,25 @@
+[package]
+name = "aos-activation-crucible"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-core.workspace = true
+anyhow = { workspace = true }
+aos-activation = { workspace = true }
+crucible-guest = { path = "../../../crucible/guest/crucible-guest" }
+rustix = { workspace = true, features = ["net"] }
+serde = { workspace = true }
+
+[dev-dependencies]
+crucible-engine = { path = "../../../crucible/engine/crucible-engine", features = ["test-support"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+# Keep the installed command stable when its Cargo package is renamed.
+[[bin]]
+name = "aos-ability-crucible"
+path = "src/main.rs"

@@ -3,6 +3,7 @@
   isCargoBuildDirectory = import ../../build-support/_cargo-build-directory.nix;
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
+  daemonRunState = "${repoRootString}/crates/crucible/control/crucible-daemon/run-state";
 in
   builtins.path {
     path = repoRoot;
@@ -19,6 +20,8 @@ in
       && base != "run-state"
       && !(base == "target" && isCargoBuildDirectory repoRoot path)
       && pathString != "${repoRootString}/result"
+      && pathString != daemonRunState
+      && !lib.hasPrefix "${daemonRunState}/" pathString
       && (
         pathString
         == repoRootString

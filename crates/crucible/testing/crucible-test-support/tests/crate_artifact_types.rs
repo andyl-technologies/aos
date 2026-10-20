@@ -1,0 +1,1024 @@
+//! Checks the Crucible crate artifact-type contract.
+//!
+//! RFC-0010 file 27 fixes the Rust artifact surface before later phases add
+//! implementation detail: only the QEMU plugin builds a `cdylib`, the CLI
+//! builds the public `crucible` binary, `crucible-qemu-debug-gateway` builds the
+//! GPL-side gateway process, `crucible-guest` builds its optional in-guest
+//! emitter binary, `crucible-store` builds the fleet-store binary, and every
+//! provider reference/conformance tool is explicitly declared alongside its
+//! safe library. Daemon declares its singleton collector beside its library.
+//! Other Crucible packages remain library crates.
+
+#![forbid(unsafe_code)]
+
+#[path = "support/workspace.rs"]
+mod workspace;
+
+use std::error::Error;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use toml::Value;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExpectedArtifact {
+    CdylibPlugin,
+    CliBinary,
+    DebugGatewayBinary,
+    FleetStoreBinary,
+    GuestEmitter,
+    NodeProviderTools,
+    DaemonCollectorTool,
+    Library,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ArtifactSpec {
+    package: &'static str,
+    expected: ExpectedArtifact,
+}
+
+const ARTIFACT_SPECS: &[ArtifactSpec] = &[
+    ArtifactSpec {
+        package: "crucible-host-resources",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-node-format",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-node-transport",
+        expected: ExpectedArtifact::NodeProviderTools,
+    },
+    ArtifactSpec {
+        package: "crucible-determinism",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-store",
+        expected: ExpectedArtifact::FleetStoreBinary,
+    },
+    ArtifactSpec {
+        package: "crucible-store-s3",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-campaign",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-qemu-shmem",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-qemu-protocol",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-device",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-qemu-host",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-qemu-plugin",
+        expected: ExpectedArtifact::CdylibPlugin,
+    },
+    ArtifactSpec {
+        package: "crucible-guest",
+        expected: ExpectedArtifact::GuestEmitter,
+    },
+    ArtifactSpec {
+        package: "crucible-engine",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-session",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-control-client",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-control-server",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-control-api",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-daemon",
+        expected: ExpectedArtifact::DaemonCollectorTool,
+    },
+    ArtifactSpec {
+        package: "crucible-qemu-debug-gateway",
+        expected: ExpectedArtifact::DebugGatewayBinary,
+    },
+    ArtifactSpec {
+        package: "crucible-cli",
+        expected: ExpectedArtifact::CliBinary,
+    },
+    ArtifactSpec {
+        package: "crucible-test-support",
+        expected: ExpectedArtifact::Library,
+    },
+];
+
+#[test]
+fn crucible_packages_expose_declared_artifact_types() -> Result<(), Box<dyn Error>> {
+    let crates_dir = workspace_crates_dir()?;
+    let mut failures = Vec::new();
+
+    assert_expected_crucible_package_set(&crates_dir, &mut failures)?;
+
+    for spec in ARTIFACT_SPECS {
+        let package_dir = workspace::package_directory(&crates_dir, spec.package)?;
+        let manifest_path = package_dir.join("Cargo.toml");
+        let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
+        let layout = PackageLayout::from_package_dir(&package_dir);
+
+        failures.extend(artifact_type_failures(spec, &manifest, &layout));
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Crucible crate artifact-type lint failed:\n{}",
+        failures.join("\n")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn artifact_type_rules_reject_extra_or_missing_outputs() -> Result<(), Box<dyn Error>> {
+    let plugin_without_cdylib: Value = r#"
+        [package]
+        name = "crucible-qemu-plugin"
+        version = "0.1.0"
+        edition = "2024"
+
+        [lib]
+        crate-type = ["rlib"]
+    "#
+    .parse()?;
+    let library_with_cdylib: Value = r#"
+        [package]
+        name = "crucible-session"
+        version = "0.1.0"
+        edition = "2024"
+
+        [lib]
+        crate-type = ["rlib", "cdylib"]
+    "#
+    .parse()?;
+    let cli_with_extra_bin: Value = r#"
+        [package]
+        name = "crucible-cli"
+        version = "0.1.0"
+        edition = "2024"
+
+        [[bin]]
+        name = "crucible"
+        path = "src/main.rs"
+
+        [[bin]]
+        name = "crucible-debug"
+        path = "src/bin/debug.rs"
+    "#
+    .parse()?;
+    let guest_with_extra_bin: Value = r#"
+        [package]
+        name = "crucible-guest"
+        version = "0.1.0"
+        edition = "2024"
+
+        [[bin]]
+        name = "crucible-guest"
+        path = "src/main.rs"
+
+        [[bin]]
+        name = "crucible-guest-debug"
+        path = "src/bin/debug.rs"
+    "#
+    .parse()?;
+    let library_manifest: Value = r#"
+        [package]
+        name = "crucible-control-api"
+        version = "0.1.0"
+        edition = "2024"
+    "#
+    .parse()?;
+
+    let plugin_findings = artifact_type_failures(
+        &ArtifactSpec {
+            package: "crucible-qemu-plugin",
+            expected: ExpectedArtifact::CdylibPlugin,
+        },
+        &plugin_without_cdylib,
+        &PackageLayout::library(),
+    );
+    assert!(
+        contains_finding(&plugin_findings, "must declare exactly [\"cdylib\"]"),
+        "plugin without exact cdylib should be rejected: {plugin_findings:?}"
+    );
+
+    let library_findings = artifact_type_failures(
+        &ArtifactSpec {
+            package: "crucible-session",
+            expected: ExpectedArtifact::Library,
+        },
+        &library_with_cdylib,
+        &PackageLayout::library(),
+    );
+    assert!(
+        contains_finding(&library_findings, "forbidden crate-type"),
+        "non-plugin cdylib should be rejected: {library_findings:?}"
+    );
+
+    let cli_findings = artifact_type_failures(
+        &ArtifactSpec {
+            package: "crucible-cli",
+            expected: ExpectedArtifact::CliBinary,
+        },
+        &cli_with_extra_bin,
+        &PackageLayout::cli(),
+    );
+    assert!(
+        contains_finding(&cli_findings, "exactly one [[bin]]"),
+        "extra CLI binary target should be rejected: {cli_findings:?}"
+    );
+
+    let guest_findings = artifact_type_failures(
+        &ArtifactSpec {
+            package: "crucible-guest",
+            expected: ExpectedArtifact::GuestEmitter,
+        },
+        &guest_with_extra_bin,
+        &PackageLayout::guest_emitter(),
+    );
+    assert!(
+        contains_finding(&guest_findings, "exactly one [[bin]]"),
+        "extra guest emitter binary target should be rejected: {guest_findings:?}"
+    );
+
+    let cas_with_extra_bin: Value = r#"
+        [package]
+        name = "crucible-store"
+        version = "0.1.0"
+        edition = "2024"
+
+        [[bin]]
+        name = "crucible-fleet-store"
+        path = "src/bin/crucible-fleet-store.rs"
+
+        [[bin]]
+        name = "crucible-fleet-store-debug"
+        path = "src/bin/debug.rs"
+    "#
+    .parse()?;
+    let cas_findings = artifact_type_failures(
+        &ArtifactSpec {
+            package: "crucible-store",
+            expected: ExpectedArtifact::FleetStoreBinary,
+        },
+        &cas_with_extra_bin,
+        &PackageLayout::fleet_store(),
+    );
+    assert!(
+        contains_finding(&cas_findings, "exactly one [[bin]]"),
+        "extra fleet-store binary target should be rejected: {cas_findings:?}"
+    );
+
+    let implicit_bin_findings = artifact_type_failures(
+        &ArtifactSpec {
+            package: "crucible-control-api",
+            expected: ExpectedArtifact::Library,
+        },
+        &library_manifest,
+        &PackageLayout {
+            has_lib_rs: true,
+            has_main_rs: true,
+            has_src_bin_dir: false,
+        },
+    );
+    assert!(
+        contains_finding(&implicit_bin_findings, "implicit binary target"),
+        "library src/main.rs should be rejected: {implicit_bin_findings:?}"
+    );
+
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PackageLayout {
+    has_lib_rs: bool,
+    has_main_rs: bool,
+    has_src_bin_dir: bool,
+}
+
+#[test]
+fn provider_tools_reject_implicit_missing_renamed_and_native_outputs() -> Result<(), Box<dyn Error>>
+{
+    let manifest_path =
+        workspace::package_directory(&workspace_crates_dir()?, "crucible-node-transport")?
+            .join("Cargo.toml");
+    let manifest: Value = fs::read_to_string(manifest_path)?.parse()?;
+    let spec = ArtifactSpec {
+        package: "crucible-node-transport",
+        expected: ExpectedArtifact::NodeProviderTools,
+    };
+    let layout = PackageLayout {
+        has_lib_rs: true,
+        has_main_rs: false,
+        has_src_bin_dir: true,
+    };
+    assert!(artifact_type_failures(&spec, &manifest, &layout).is_empty());
+
+    let mut implicit = manifest.clone();
+    implicit["package"]["autobins"] = Value::Boolean(true);
+    assert!(!artifact_type_failures(&spec, &implicit, &layout).is_empty());
+
+    let bins = manifest["bin"].as_array().ok_or("binary list missing")?;
+    for (index, binary) in bins.iter().enumerate() {
+        let name = binary["name"].as_str().ok_or("binary name missing")?;
+
+        let mut missing = manifest.clone();
+        missing["bin"]
+            .as_array_mut()
+            .ok_or("binary list missing")?
+            .remove(index);
+        assert!(
+            !artifact_type_failures(&spec, &missing, &layout).is_empty(),
+            "missing declared provider tool must be refused: {name}"
+        );
+
+        let mut renamed = manifest.clone();
+        renamed["bin"][index]["name"] = Value::String("unreviewed-provider".into());
+        assert!(
+            !artifact_type_failures(&spec, &renamed, &layout).is_empty(),
+            "renamed declared provider tool must be refused: {name}"
+        );
+
+        let mut rebound = manifest.clone();
+        rebound["bin"][index]["path"] = Value::String("src/bin/unreviewed.rs".into());
+        assert!(
+            !artifact_type_failures(&spec, &rebound, &layout).is_empty(),
+            "rebound declared provider tool must be refused: {name}"
+        );
+    }
+
+    let mut extra = manifest.clone();
+    extra["bin"]
+        .as_array_mut()
+        .ok_or("binary list missing")?
+        .push(Value::Table(toml::map::Map::from_iter([
+            ("name".into(), Value::String("unreviewed-provider".into())),
+            (
+                "path".into(),
+                Value::String("src/bin/unreviewed-provider.rs".into()),
+            ),
+        ])));
+    assert!(!artifact_type_failures(&spec, &extra, &layout).is_empty());
+
+    let mut duplicate = manifest.clone();
+    duplicate["bin"]
+        .as_array_mut()
+        .ok_or("binary list missing")?
+        .push(bins[0].clone());
+    assert!(!artifact_type_failures(&spec, &duplicate, &layout).is_empty());
+
+    let mut native = manifest;
+    native
+        .as_table_mut()
+        .ok_or("manifest table missing")?
+        .insert(
+            "lib".into(),
+            Value::Table(toml::map::Map::from_iter([(
+                "crate-type".into(),
+                Value::Array(vec![Value::String("cdylib".into())]),
+            )])),
+        );
+    assert!(!artifact_type_failures(&spec, &native, &layout).is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn daemon_collector_rejects_unreviewed_outputs() -> Result<(), Box<dyn Error>> {
+    let manifest_path = workspace::package_directory(&workspace_crates_dir()?, "crucible-daemon")?
+        .join("Cargo.toml");
+    let manifest: Value = fs::read_to_string(manifest_path)?.parse()?;
+    let spec = ArtifactSpec {
+        package: "crucible-daemon",
+        expected: ExpectedArtifact::DaemonCollectorTool,
+    };
+    let layout = PackageLayout {
+        has_lib_rs: true,
+        has_main_rs: false,
+        has_src_bin_dir: true,
+    };
+    assert!(artifact_type_failures(&spec, &manifest, &layout).is_empty());
+
+    let mut implicit = manifest.clone();
+    implicit["package"]["autobins"] = Value::Boolean(true);
+    assert!(!artifact_type_failures(&spec, &implicit, &layout).is_empty());
+
+    let mut missing_autobins = manifest.clone();
+    missing_autobins["package"]
+        .as_table_mut()
+        .ok_or("package table missing")?
+        .remove("autobins");
+    assert!(!artifact_type_failures(&spec, &missing_autobins, &layout).is_empty());
+
+    let bins = manifest["bin"].as_array().ok_or("binary list missing")?;
+    let collector = bins.first().ok_or("collector target missing")?;
+
+    let mut missing = manifest.clone();
+    missing["bin"] = Value::Array(Vec::new());
+    assert!(!artifact_type_failures(&spec, &missing, &layout).is_empty());
+
+    let mut renamed = manifest.clone();
+    renamed["bin"][0]["name"] = Value::String("unreviewed-collector".into());
+    assert!(!artifact_type_failures(&spec, &renamed, &layout).is_empty());
+
+    let mut rebound = manifest.clone();
+    rebound["bin"][0]["path"] = Value::String("src/bin/unreviewed-collector.rs".into());
+    assert!(!artifact_type_failures(&spec, &rebound, &layout).is_empty());
+
+    let mut extra = manifest.clone();
+    extra["bin"]
+        .as_array_mut()
+        .ok_or("binary list missing")?
+        .push(Value::Table(toml::map::Map::from_iter([
+            ("name".into(), Value::String("unreviewed-collector".into())),
+            (
+                "path".into(),
+                Value::String("src/bin/unreviewed-collector.rs".into()),
+            ),
+        ])));
+    assert!(!artifact_type_failures(&spec, &extra, &layout).is_empty());
+
+    let mut duplicate = manifest.clone();
+    duplicate["bin"]
+        .as_array_mut()
+        .ok_or("binary list missing")?
+        .push(collector.clone());
+    assert!(!artifact_type_failures(&spec, &duplicate, &layout).is_empty());
+
+    let mut guarded = manifest.clone();
+    guarded["bin"][0]
+        .as_table_mut()
+        .ok_or("collector target table missing")?
+        .insert(
+            "required-features".into(),
+            Value::Array(vec![Value::String("test-support".into())]),
+        );
+    assert!(!artifact_type_failures(&spec, &guarded, &layout).is_empty());
+
+    for native_kind in ["cdylib", "dylib", "staticlib"] {
+        let mut native = manifest.clone();
+        native
+            .as_table_mut()
+            .ok_or("manifest table missing")?
+            .insert(
+                "lib".into(),
+                Value::Table(toml::map::Map::from_iter([(
+                    "crate-type".into(),
+                    Value::Array(vec![Value::String(native_kind.into())]),
+                )])),
+            );
+        assert!(
+            !artifact_type_failures(&spec, &native, &layout).is_empty(),
+            "native collector library output must be refused: {native_kind}"
+        );
+    }
+
+    let mut missing_library = layout;
+    missing_library.has_lib_rs = false;
+    assert!(!artifact_type_failures(&spec, &manifest, &missing_library).is_empty());
+
+    let mut implicit_main = layout;
+    implicit_main.has_main_rs = true;
+    assert!(!artifact_type_failures(&spec, &manifest, &implicit_main).is_empty());
+
+    let mut missing_bin_source = layout;
+    missing_bin_source.has_src_bin_dir = false;
+    assert!(!artifact_type_failures(&spec, &manifest, &missing_bin_source).is_empty());
+
+    Ok(())
+}
+
+impl PackageLayout {
+    fn from_package_dir(package_dir: &Path) -> Self {
+        let src_dir = package_dir.join("src");
+        Self {
+            has_lib_rs: src_dir.join("lib.rs").is_file(),
+            has_main_rs: src_dir.join("main.rs").is_file(),
+            has_src_bin_dir: src_dir.join("bin").is_dir(),
+        }
+    }
+
+    fn library() -> Self {
+        Self {
+            has_lib_rs: true,
+            has_main_rs: false,
+            has_src_bin_dir: false,
+        }
+    }
+
+    fn cli() -> Self {
+        Self {
+            has_lib_rs: false,
+            has_main_rs: true,
+            has_src_bin_dir: false,
+        }
+    }
+
+    fn guest_emitter() -> Self {
+        Self {
+            has_lib_rs: true,
+            has_main_rs: true,
+            has_src_bin_dir: false,
+        }
+    }
+
+    fn fleet_store() -> Self {
+        Self {
+            has_lib_rs: true,
+            has_main_rs: false,
+            has_src_bin_dir: true,
+        }
+    }
+}
+
+fn artifact_type_failures(
+    spec: &ArtifactSpec,
+    manifest: &Value,
+    layout: &PackageLayout,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    let package = manifest_package_name(manifest).unwrap_or("<missing package.name>");
+
+    if package != spec.package {
+        failures.push(format!(
+            "{}: manifest package.name must be `{}`",
+            spec.package, spec.package
+        ));
+    }
+
+    match spec.expected {
+        ExpectedArtifact::CdylibPlugin => {
+            let crate_types = lib_crate_types(manifest);
+            if crate_types != ["cdylib"] {
+                failures.push(format!(
+                    "{}: plugin must declare exactly [\"cdylib\"] in [lib].crate-type, found {:?}",
+                    spec.package, crate_types
+                ));
+            }
+            if !declares_or_implies_lib_target(manifest, layout) {
+                failures.push(format!(
+                    "{}: plugin must expose a library target",
+                    spec.package
+                ));
+            }
+            forbid_binary_targets(spec.package, manifest, layout, &mut failures);
+        }
+        ExpectedArtifact::CliBinary => {
+            let bins = bin_targets(manifest);
+            if bins.len() != 1 {
+                failures.push(format!(
+                    "{}: CLI must declare exactly one [[bin]] target, found {}",
+                    spec.package,
+                    bins.len()
+                ));
+            } else {
+                let bin = &bins[0];
+                if bin.name.as_deref() != Some("crucible") {
+                    failures.push(format!(
+                        "{}: CLI [[bin]] name must be `crucible`, found {:?}",
+                        spec.package, bin.name
+                    ));
+                }
+                if bin.path.as_deref() != Some("src/main.rs") {
+                    failures.push(format!(
+                        "{}: CLI [[bin]] path must be `src/main.rs`, found {:?}",
+                        spec.package, bin.path
+                    ));
+                }
+            }
+            if !layout.has_main_rs {
+                failures.push(format!(
+                    "{}: CLI target must have src/main.rs",
+                    spec.package
+                ));
+            }
+            if declares_or_implies_lib_target(manifest, layout) {
+                failures.push(format!(
+                    "{}: CLI must not expose a library target",
+                    spec.package
+                ));
+            }
+            if layout.has_src_bin_dir {
+                failures.push(format!(
+                    "{}: CLI must not add extra implicit binary targets under src/bin",
+                    spec.package
+                ));
+            }
+        }
+        ExpectedArtifact::DebugGatewayBinary => {
+            if !declares_or_implies_lib_target(manifest, layout) {
+                failures.push(format!(
+                    "{}: debug gateway must expose its gateway library target",
+                    spec.package
+                ));
+            }
+            for crate_type in lib_crate_types(manifest) {
+                if !matches!(crate_type.as_str(), "lib" | "rlib") {
+                    failures.push(format!(
+                        "{}: forbidden crate-type `{}` for debug gateway library target",
+                        spec.package, crate_type
+                    ));
+                }
+            }
+            let bins = bin_targets(manifest);
+            if bins.len() != 1 {
+                failures.push(format!(
+                    "{}: debug gateway must declare exactly one [[bin]] target, found {}",
+                    spec.package,
+                    bins.len()
+                ));
+            } else {
+                let bin = &bins[0];
+                if bin.name.as_deref() != Some("crucible-debug-gateway") {
+                    failures.push(format!(
+                        "{}: debug gateway [[bin]] name must be `crucible-debug-gateway`, found {:?}",
+                        spec.package, bin.name
+                    ));
+                }
+                if bin.path.as_deref() != Some("src/main.rs") {
+                    failures.push(format!(
+                        "{}: debug gateway [[bin]] path must be `src/main.rs`, found {:?}",
+                        spec.package, bin.path
+                    ));
+                }
+            }
+            if !layout.has_main_rs {
+                failures.push(format!(
+                    "{}: debug gateway target must have src/main.rs",
+                    spec.package
+                ));
+            }
+            if layout.has_src_bin_dir {
+                failures.push(format!(
+                    "{}: debug gateway must not add extra implicit binary targets under src/bin",
+                    spec.package
+                ));
+            }
+        }
+        ExpectedArtifact::FleetStoreBinary => {
+            if !declares_or_implies_lib_target(manifest, layout) {
+                failures.push(format!(
+                    "{}: fleet-store package must expose a library target",
+                    spec.package
+                ));
+            }
+            for crate_type in lib_crate_types(manifest) {
+                if !matches!(crate_type.as_str(), "lib" | "rlib") {
+                    failures.push(format!(
+                        "{}: forbidden crate-type `{}` for fleet-store library target",
+                        spec.package, crate_type
+                    ));
+                }
+            }
+
+            let bins = bin_targets(manifest);
+            if bins.len() != 1 {
+                failures.push(format!(
+                    "{}: fleet-store package must declare exactly one [[bin]] target, found {}",
+                    spec.package,
+                    bins.len()
+                ));
+            } else {
+                let bin = &bins[0];
+                if bin.name.as_deref() != Some("crucible-fleet-store") {
+                    failures.push(format!(
+                        "{}: fleet-store [[bin]] name must be `crucible-fleet-store`, found {:?}",
+                        spec.package, bin.name
+                    ));
+                }
+                if bin.path.as_deref() != Some("src/bin/crucible-fleet-store.rs") {
+                    failures.push(format!(
+                        "{}: fleet-store [[bin]] path must be `src/bin/crucible-fleet-store.rs`, found {:?}",
+                        spec.package, bin.path
+                    ));
+                }
+            }
+            if layout.has_main_rs {
+                failures.push(format!(
+                    "{}: fleet-store package must not have an implicit binary target at src/main.rs",
+                    spec.package
+                ));
+            }
+            if !layout.has_src_bin_dir {
+                failures.push(format!(
+                    "{}: fleet-store package must keep its binary under src/bin",
+                    spec.package
+                ));
+            }
+        }
+        ExpectedArtifact::GuestEmitter => {
+            if !declares_or_implies_lib_target(manifest, layout) {
+                failures.push(format!(
+                    "{}: guest emitter must expose a library target",
+                    spec.package
+                ));
+            }
+            for crate_type in lib_crate_types(manifest) {
+                if !matches!(crate_type.as_str(), "lib" | "rlib") {
+                    failures.push(format!(
+                        "{}: forbidden crate-type `{}` for guest emitter library target",
+                        spec.package, crate_type
+                    ));
+                }
+            }
+
+            let bins = bin_targets(manifest);
+            if bins.len() != 1 {
+                failures.push(format!(
+                    "{}: guest emitter must declare exactly one [[bin]] target, found {}",
+                    spec.package,
+                    bins.len()
+                ));
+            } else {
+                let bin = &bins[0];
+                if bin.name.as_deref() != Some("crucible-guest") {
+                    failures.push(format!(
+                        "{}: guest emitter [[bin]] name must be `crucible-guest`, found {:?}",
+                        spec.package, bin.name
+                    ));
+                }
+                if bin.path.as_deref() != Some("src/main.rs") {
+                    failures.push(format!(
+                        "{}: guest emitter [[bin]] path must be `src/main.rs`, found {:?}",
+                        spec.package, bin.path
+                    ));
+                }
+            }
+            if !layout.has_main_rs {
+                failures.push(format!(
+                    "{}: guest emitter target must have src/main.rs",
+                    spec.package
+                ));
+            }
+            if layout.has_src_bin_dir {
+                failures.push(format!(
+                    "{}: guest emitter must not add extra implicit binary targets under src/bin",
+                    spec.package
+                ));
+            }
+        }
+        ExpectedArtifact::NodeProviderTools => {
+            if !declares_or_implies_lib_target(manifest, layout)
+                || lib_crate_types(manifest)
+                    .iter()
+                    .any(|kind| !matches!(kind.as_str(), "lib" | "rlib"))
+            {
+                failures.push(format!(
+                    "{}: provider must expose only a Rust library target",
+                    spec.package
+                ));
+            }
+
+            let expected = [
+                "crucible-node-conformance",
+                "crucible-reference-device",
+                "crucible-reference-lineage-device",
+                "crucible-reference-lineage-manifest",
+                "crucible-reference-lineage-provider",
+                "crucible-reference-lineage-reader-manifest",
+                "crucible-reference-lineage-reader-provider",
+                "crucible-reference-lineage-reader-typed-manifest",
+                "crucible-reference-lineage-reader-typed-provider",
+                "crucible-reference-manifest",
+                "crucible-reference-packet-provider",
+                "crucible-reference-progress-device",
+                "crucible-reference-progress-manifest",
+                "crucible-reference-progress-provider",
+                "crucible-reference-provider",
+            ];
+            let mut actual = bin_targets(manifest)
+                .into_iter()
+                .map(|bin| (bin.name, bin.path))
+                .collect::<Vec<_>>();
+            actual.sort();
+            let required = expected
+                .into_iter()
+                .map(|name| (Some(name.to_owned()), Some(format!("src/bin/{name}.rs"))))
+                .collect::<Vec<_>>();
+            if actual != required
+                || manifest
+                    .get("package")
+                    .and_then(|package| package.get("autobins"))
+                    .and_then(Value::as_bool)
+                    != Some(false)
+                || layout.has_main_rs
+                || !layout.has_src_bin_dir
+            {
+                failures.push(format!("{}: provider must explicitly declare its fifteen process tools and disable implicit binaries", spec.package));
+            }
+        }
+        ExpectedArtifact::DaemonCollectorTool => {
+            if !declares_or_implies_lib_target(manifest, layout)
+                || lib_crate_types(manifest)
+                    .iter()
+                    .any(|kind| !matches!(kind.as_str(), "lib" | "rlib"))
+            {
+                failures.push(format!(
+                    "{}: collector owner must expose only a Rust library target",
+                    spec.package
+                ));
+            }
+
+            let actual = bin_targets(manifest)
+                .into_iter()
+                .map(|bin| (bin.name, bin.path))
+                .collect::<Vec<_>>();
+            let required = vec![(
+                Some("crucible-reference-singleton-collector".to_owned()),
+                Some("src/bin/crucible-reference-singleton-collector.rs".to_owned()),
+            )];
+            let feature_guarded =
+                manifest
+                    .get("bin")
+                    .and_then(Value::as_array)
+                    .is_some_and(|bins| {
+                        bins.iter().any(|bin| {
+                            bin.get("required-features")
+                                .and_then(Value::as_array)
+                                .is_some_and(|features| !features.is_empty())
+                        })
+                    });
+            if actual != required
+                || manifest
+                    .get("package")
+                    .and_then(|package| package.get("autobins"))
+                    .and_then(Value::as_bool)
+                    != Some(false)
+                || layout.has_main_rs
+                || !layout.has_src_bin_dir
+                || feature_guarded
+            {
+                failures.push(format!(
+                    "{}: daemon must explicitly declare only its singleton collector without feature gating and disable implicit binaries",
+                    spec.package
+                ));
+            }
+        }
+        ExpectedArtifact::Library => {
+            if !declares_or_implies_lib_target(manifest, layout) {
+                failures.push(format!(
+                    "{}: package must expose a library target",
+                    spec.package
+                ));
+            }
+            for crate_type in lib_crate_types(manifest) {
+                if !matches!(crate_type.as_str(), "lib" | "rlib") {
+                    failures.push(format!(
+                        "{}: forbidden crate-type `{}` for library package",
+                        spec.package, crate_type
+                    ));
+                }
+            }
+            forbid_binary_targets(spec.package, manifest, layout, &mut failures);
+        }
+    }
+
+    failures
+}
+
+fn manifest_package_name(manifest: &Value) -> Option<&str> {
+    manifest
+        .get("package")
+        .and_then(Value::as_table)
+        .and_then(|package| package.get("name"))
+        .and_then(Value::as_str)
+}
+
+fn declares_or_implies_lib_target(manifest: &Value, layout: &PackageLayout) -> bool {
+    manifest.get("lib").is_some() || layout.has_lib_rs
+}
+
+fn lib_crate_types(manifest: &Value) -> Vec<String> {
+    manifest
+        .get("lib")
+        .and_then(Value::as_table)
+        .and_then(|lib| lib.get("crate-type"))
+        .and_then(Value::as_array)
+        .map(|crate_types| {
+            crate_types
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BinTarget {
+    name: Option<String>,
+    path: Option<String>,
+}
+
+fn bin_targets(manifest: &Value) -> Vec<BinTarget> {
+    manifest
+        .get("bin")
+        .and_then(Value::as_array)
+        .map(|bins| {
+            bins.iter()
+                .filter_map(Value::as_table)
+                .map(|bin| BinTarget {
+                    name: bin.get("name").and_then(Value::as_str).map(str::to_owned),
+                    path: bin.get("path").and_then(Value::as_str).map(str::to_owned),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn forbid_binary_targets(
+    package: &str,
+    manifest: &Value,
+    layout: &PackageLayout,
+    failures: &mut Vec<String>,
+) {
+    let bins = bin_targets(manifest);
+    if !bins.is_empty() {
+        failures.push(format!(
+            "{}: library/plugin package must not declare [[bin]] targets",
+            package
+        ));
+    }
+    if layout.has_main_rs {
+        failures.push(format!(
+            "{}: library/plugin package must not have an implicit binary target at src/main.rs",
+            package
+        ));
+    }
+    if layout.has_src_bin_dir {
+        failures.push(format!(
+            "{}: library/plugin package must not have implicit binary targets under src/bin",
+            package
+        ));
+    }
+}
+
+fn contains_finding(findings: &[String], needle: &str) -> bool {
+    findings.iter().any(|finding| finding.contains(needle))
+}
+
+fn workspace_crates_dir() -> Result<PathBuf, io::Error> {
+    Ok(workspace::crates_directory())
+}
+
+fn assert_expected_crucible_package_set(
+    crates_dir: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), Box<dyn Error>> {
+    let mut expected: Vec<String> = ARTIFACT_SPECS
+        .iter()
+        .map(|spec| spec.package.to_string())
+        .collect();
+    expected.sort();
+
+    let mut found = Vec::new();
+    for entry in workspace::package_entries(crates_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() || !path.join("Cargo.toml").is_file() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("crucible") {
+            found.push(name);
+        }
+    }
+    found.sort();
+
+    if found != expected {
+        failures.push(format!(
+            "crucible package set mismatch: expected [{}], found [{}]",
+            expected.join(", "),
+            found.join(", ")
+        ));
+    }
+
+    Ok(())
+}
