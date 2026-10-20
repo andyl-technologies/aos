@@ -870,6 +870,15 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
             native_copy_log, native_copy_window = finish_native_copy_capture(
                 native, tools, native_copy_capture)
             proxy_lifetimes = observe_direct_boundary_lifetimes(native, worker, tools, "loaded-finish")
+            if workload_error is not None:
+                # Export diagnostics before teardown: a stopped guest's last
+                # filesystem metadata may omit the provider's final error.
+                for path, name in (
+                        ("/var/lib/hybrid-s3/garage.log", "publication-garage.private.log"),
+                        ("/var/lib/hybrid-s3/nginx-error.log", "publication-s3-proxy.private.log")):
+                    position = direct_log_position(s3, tools["python"], path)
+                    retain_direct_log_window(s3, tools["python"],
+                        {**position, "byteSize": 0}, name, after=position)
     workload_finished = time.monotonic_ns()
     protected_headers = {label: capture_protected_headers(path, label)
         for label, path in header_paths.items()}
