@@ -8769,6 +8769,45 @@ current-source diagnostics for both are prepared to run after the three-case
 diagnostic. All actual guards, policies, operation clocks and assertions remain
 unchanged. Both full aggregates remain running and unaccepted.
 
+Further component review (2026-10-20): the shared-directory source
+`86fb63e127` passes both owning gates with all thirteen exact nonignored
+executions and all 5,087 input hashes independently checked against the
+checkout and immutable build source. Its required application compilation
+passes with the exact 183 artifacts from 59 packages; its aggregate remains
+unaccepted. Native descendants `9dfae564f0` and `2fd26aa7cf` also pass both
+owning gates, with their own source and artifact bindings independently
+reviewed. The former additionally passes application compilation and all 126
+nonignored filesystem cases on ext4, with the original six privileged cases
+unchanged. A stale expected source guard in the external review helper is
+corrected against the actual reviewed head and full-source receipt; its
+original failed review is preserved. This does not qualify an aggregate.
+
+The shared-directory aggregate discovers five Linux fixture failures before
+its long repository cases finish: one raw non-UTF-8 filename creation and
+four exact setgid directory setups. A local AOS-built probe reproduces
+`EILSEQ` and `EPERM` inside the original protected package namespace, including
+fresh scratch under both `/build` and `/tmp`. Corrective candidate
+`65a2ee3152` retains all five test bodies and assertions and enables their
+normal execution with the existing `native-test-fixtures` feature. The generic
+package inventory reports their explicit native-fixture requirement instead.
+The mandatory ext4 VM inventory expands from 55 to 67 exact cases, adding all
+twelve socket cases; the existing `publisher-sole-writer` aggregate dependency
+requires this VM, including actual nonignored execution of the five affected
+cases. The formatter pair, crate graph, exact unsafe audit, three strict Linux
+profiles and private documentation checks pass. Native runtime qualification
+is pending; no fixture relocation or task acceptance is credited yet.
+
+The current-source SDK diagnostic verifies all 4,886 inputs and retains its
+actual test-profile executable. Its unchanged memo-context case passes in
+129.932 seconds, directory-sync case in 105.155 seconds and progress-conflict
+case in 104.823 seconds. All three exact nonignored executions pass. The first
+observation exceeds the failed aggregate's
+120-second outer limit, but this test-profile diagnostic is not the failed
+release executable or a passing aggregate. Production clocks, authorities,
+publication windows and test assertions remain unchanged.
+The two current-source authorization diagnostics now run sequentially using
+the same verified executable and its existing test-only denial callsite trace.
+
 Shared-directory source `744aa55567` restores its preserved SDK adapter in the
 new layout. Its all-target compilation passes, while local Nextest explicitly
 fails with zero selected cases: the shared target's dependency record contains
