@@ -19,17 +19,60 @@ retained Linux process supervision and child containment. The worker is the
 81st workspace member. Parent Source activation and accepted-result bank joins
 remain unfinished.
 
-For the captured combined development inputs, the complete default Engine
-library run passes **2,029 tests, zero failures and 33 existing ignores**.
-The actual worker CLI/stdio controls pass all four tests; HostResources passes
-30 tests; and the two Daemon deadline controls and supervisor error-mapping
-control pass. The Protocol run passes 234 library tests with one existing
-ignore and all 18 ABI integration tests. These runs have different feature
-selections and are not cumulative test coverage of one release artifact.
-Eleven-crate all-feature/all-target checking and all six registered architecture
-checks pass. The refreshed production vendor stage is built and independently
-verified against the composed lockfile. Current application-target compilation
-remains pending.
+The installation verifier in `c3aafd62b0` retains the original opened program
+while checking the measured source-built installation, complete read-only
+runtime inventory and supported ELF dependency resolution. All nine focused
+controls pass. Its complete default Engine suite passes **2,038 tests, zero
+failures and 33 existing ignores** out of 2,071 declared tests. These results
+do not qualify an installed worker or parent Source acceptance.
+
+A separate `serde_json/raw_value` run passes Engine 2,038 and Transport 1,696:
+**3,734 passed, zero failures and 48 existing ignores**. The nested child control
+is part of the Transport count, not an extra test. The raw-value worker CLI/stdio
+run passes all four tests. These inputs predate the later mechanism-template
+bridge. Earlier foundation runs retain their own scope: HostResources 30,
+two Daemon deadline controls and its supervisor error-mapping control, and
+Protocol 234 library passes with one existing ignore plus 18 ABI integration
+passes. No counts are cumulative across source states or feature selections.
+
+The Source mechanism bridge is committed in `5fd925f1d2`, following separate
+constructor presentation in `024efdf782`. Both new default-feature controls
+pass, and the final composite default Engine run after extraction passes
+**2,040 tests, zero failures and 33 existing ignores**, with zero filtering out
+of 2,073 declared tests. Both intended compile-fail documentation controls
+remain valid: the quote cannot be cloned and bindings DATA cannot replace the
+verified mechanism owner. The earlier doctest loader failure was resolved by
+forwarding the existing Cargo-shell link flags to rustdoc.
+
+The earlier engineering-hygiene refusal is resolved through a meaningful
+123-line constructor child and a human-reviewed parent with 1,396 implementation
+lines. All six registered architecture checks now pass for that Source
+checkpoint, without an exception or policy relaxation. The cleanup of six
+private Transport imports in `fbe620c2ee` preserves runtime bodies; its complete
+default suite passes 1,696 tests with zero failures and 15 existing ignores.
+Eleven-crate all-feature/all-target checking including the final Source and
+Transport imports passes in 49.26 seconds. The Engine and Transport runs have
+separate captured states and are not combined into a new latest-suite total.
+
+The bridge retains the mechanism through original template/Source handles;
+selected complete census, worker-job execution and accepted-result joins remain
+unprovided. Module comments in `00d4929c4b` and the private-function cleanup in
+`f4921f9a25` have source-only body-preservation evidence, not separate runtime
+qualification.
+
+The mandatory application-target gate now passes for its captured composite:
+180 compiler-reported test executables across 58 Rust packages and 58 application
+roots, including 71 integration targets. Final target compilation takes
+10 minutes 15 seconds after separate prerequisites. Independent audit binds
+10,656 captured files, all 81 workspace manifests and the matching vendor/lock
+inputs. The reduced compiler workspace has 70 members. It emits no Crucible
+unit-test executable or worker binary, and executes no tests.
+
+This working-tree capture includes the final Source binding and six Transport
+imports at their selected postimages, plus the Native11 source inputs. It is
+not a clean committed-tree identity, and source presence alone does not execute
+the native component. The earlier 11-minute-29-second capture predates the
+verifier, bridge and later Spawn changes and retains only its historical scope.
 
 The disposable Linux containment VM passes its actual cgroup, Landlock,
 seccomp, descriptor, filesystem, output, cancellation and waited-cleanup
@@ -45,10 +88,15 @@ admission.
 The post-merge owner corrections in `f7b0d801af` retain schema and wire versions,
 discover nested workspace owners from manifests and check the active ABI30
 field at byte 39. Registered shared-memory layout and QEMU launch checks pass;
-the Store source check also passes. The spawn gate still encounters older
-test-helper unwraps, whose correction is under review. The worker installation
-and gem5 SE/ARM gate attempts encounter the same 1,602 Transport lint sites;
-none of those failed attempts qualifies an installed worker, SE preservation,
+the Store source check also passes. The Spawn fixture correction in
+`b27d6712f1` passes 70 default-feature spawn controls with one existing ignore.
+The registered spawn check separately passes 55 parent controls; its nested
+child is not counted again. These task-level results do not establish guest
+execution or complete lifecycle preservation. Earlier worker installation and
+gem5 SE/ARM gate attempts failed on the same 1,602 Transport lint sites at their
+captured inputs, before the later Transport import cleanup. That historical
+count is not a current total. None of those attempts qualifies an installed
+worker, SE preservation,
 ARM boot or aggregate ABI/license compliance. No lint allowance or gate-policy
 change is used to bypass these failures.
 
@@ -78,6 +126,23 @@ codec, process worker and containment changes receive no runtime qualification
 from these runs; aggregate
 architecture, ABI/license and release qualification remain pending.
 
+The native11 changes are committed in `ba0fc1dfb6`. Their fresh registered
+installed-session gate passes all four selected ordinary cases, each with zero
+failures or ignores. The matching signed atomic
+successor `d4506b2d27` includes the reviewed cached-query rollover correction.
+Its QEMU package completes all 3,796 build steps and selected package checks,
+including six pure arithmetic controls; the matching plugin passes all 808
+ordinary tests with zero skips.
+
+The new installed case observes completed-prefix retirement, quiet 151→175 ps
+at raw3, same-tick Boundary→Reaction Settle, quiet advance to 199 ps and refusal
+at the due CPU frontier of 200 ps. All five original command/ACK associations
+reach durable retirement and the original child is reaped. The registered host
+binary is freshly built from its captured source; that capture precedes the six
+Transport import changes. This is bounded completion/partial, initial-source
+observation and completed-prefix quiet-turnover evidence. General evaluating
+turnover, common Ready, capture and full backend/device parity remain unqualified.
+
 The refactor at `b86bcd18eb` shares secret-free launch, Hello and registration
 operands with their original consumers, and adds bounded literal-Value streams
 with iterative success/failure ownership and closed diagnostics. Engine and
@@ -85,9 +150,11 @@ Transport pass all-feature/all-target checking. Their complete default and
 separate raw-value library runs each pass **3,706 tests with zero failures and
 48 existing ignores**. All 28 new controls execute in both configurations: seven
 launch-validation comparisons, five Hello/registration comparisons, four shared
-serializer comparisons and twelve literal-stream controls. Application-target
-compilation and registered gates for this successor remain pending. Process
-containment, the parent job join and native activation remain unqualified.
+serializer comparisons and twelve literal-stream controls. The current
+application-target capture includes these operands and literal streams; the
+verifier, bridge and Spawn components retain their separate evidence above.
+The parent job join and native activation remain unqualified; the child
+containment result has only its separately recorded boundary scope.
 
 The earlier workspace at `cb1f6ae448` includes the merge of `origin/master`
 (`68851a3bf1`, merge `f83ea82651`), the reference-provider vendor and source-filter
@@ -120,12 +187,13 @@ Final compilation takes 10 minutes 14 seconds after prerequisites. Its 10,575
 captured files and all 80 workspace manifests match that commit; shared vendor
 and lockfile checks agree. This gate compiles tests without executing them.
 
-Strict harness lint remains unqualified: 21 tests pass and five fail, with
-zero ignored tests. Its 599 diagnostic emissions retain the existing source
-findings after ten stringly-error and six bare-unsafe findings disappear. One
-private compile-time standard-IO layout alias carries a reviewed explanation
-under the existing line-local policy. Scanner, rules, source selection,
-ignored-test population and limits remain unchanged in these refreshes.
+The fresh post-native11 strict harness refresh remains failing: 21 tests pass
+and five fail, with zero ignored or filtered tests out of 26, in 16.47 seconds.
+No new diagnostic-emission total is claimed. An earlier checkpoint recorded
+599 diagnostic emissions after ten stringly-error and six bare-unsafe findings
+disappeared. Its private compile-time standard-IO layout alias carried a reviewed
+explanation under the existing line-local policy. Scanner, rules, source
+selection, ignored-test population and limits remain unchanged in this refresh.
 
 The sixth registered kernel source check passes 21 source-consuming FD cases
 with modeled kernel peers, four ordinary build-host FD groups and compilation
