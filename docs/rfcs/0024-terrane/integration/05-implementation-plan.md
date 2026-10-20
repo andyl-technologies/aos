@@ -9151,9 +9151,32 @@ the compiled fixture reports 70, across 62 domains with a finite 496 MiB
 project budget inside the unchanged 512 MiB image. Local all-target check,
 strict Clippy, formatter pair and both focused inventory tests pass. All three
 isolated strict profiles and private documentation pass in 96.473 seconds.
-Image/archive and mandatory application qualification are running; the native
-phase still awaits actual completion of the combined aggregate.
+Image and archive preparation pass in 243.216 and 129.842 seconds. Independent
+image review matches all 5,107 inputs and 70 selectors. Mandatory application
+compilation passes with exactly 183 artifacts from 59 packages in
+1,001.199 seconds. Both preparation controllers actually terminate with
+success; its native phase remains next after actual completion of the combined
+aggregate and is not superseded by the following development.
 No new native pass, completed host task or format change is claimed.
+
+Bound-candidate continuation `c4076a1f56` retains actual seal presence or kernel
+`ENODATA`, unchanged inode/project custody, parsed records and verified claim
+metadata through names-only inventory. Full plaintext, mode and seal validity
+remain enforced by funded native adoption, so inventory cannot prevent
+quarantine of a known bound unsealed candidate. Other getter errors, changed
+sources and malformed or orphan state remain refused. A separate native worker
+control uses real prior publication, a writable canonical replacement, actual
+seal refusal and original-inode quarantine before independently adopting the
+genuine restored sealed inode. Its cold manifest control uses a real sealed
+administrative donor for the untrusted prior binding; independent observation
+checks and removes that donor before either role starts, then requires actual
+quarantine with the stale record and metadata funding retained and no Resume.
+All 70 prior selectors remain; the compiled fixture lists 72 across 63 domains,
+with a finite 504 MiB project budget inside the unchanged 512 MiB image. Local
+all-target compilation, strict Clippy, both focused inventory tests and the
+formatter pair pass. Isolated preparation and mandatory application compilation
+are running. Its native phase additionally waits for actual collection of the
+`62bfede7fd` native controller; no runtime or complete task pass is claimed.
 
 The older shared-directory aggregate at `86fb63e127` actually terminates with
 failure after 18,940.237 seconds. Nextest reports 2,149 run, 2,141 passed,
