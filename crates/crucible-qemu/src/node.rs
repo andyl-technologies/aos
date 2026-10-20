@@ -2635,65 +2635,7 @@ impl SimulationBackend for QemuNode {
     }
 
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
-        let icount_ceiling = Icount {
-            retired: ceiling.ticks,
-        };
-        if let Some(decision) = self.pending_preemption.as_ref() {
-            let command = scheduler_preemption_command(
-                decision,
-                self.last_observed_time.ticks,
-                icount_ceiling.retired,
-            )?;
-            self.channels
-                .shmem_hot_path
-                .publish_preemption_command(command)
-                .map_err(|source| {
-                    QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-                })?;
-            self.pending_preemption = None;
-        }
-        let report = self
-            .advance_to_ceiling_report(icount_ceiling)
-            .map_err(BackendError::from)?;
-        let emitted_network_output = !report.emitted_frames.is_empty();
-        let outcome = self
-            .finish_advance_report(icount_ceiling, report)
-            .map_err(BackendError::from)?;
-        // A reached horizon attests settlement through the ceiling; the node's
-        // clock is its last retirement or exact event at or below it
-        // (RFC-0010 SCHED-12).
-        let mut observation = match outcome {
-            AdvanceOutcome::ReachedHorizon => {
-                StepObservation::settled_below_ceiling(ceiling, self.last_observed_time)
-            }
-            AdvanceOutcome::Paused { .. } => {
-                StepObservation::from_advance_outcome(ceiling, outcome)
-            }
-        };
-        let output_stop = if let Some(sequence) = self
-            .last_step_completed_boundary
-            .and_then(crate::QemuCompletedQuantumBoundary::console_output_sequence)
-        {
-            Some(BackendPhysicalStop::ConsoleOutput { sequence })
-        } else if emitted_network_output {
-            Some(BackendPhysicalStop::NetworkOutput)
-        } else {
-            None
-        };
-        if let Some(stop) = output_stop {
-            observation.physical_stop = stop;
-            if observation.reached < ceiling {
-                // An output batch is evidence at its own stop only. It never
-                // carries settlement through the rest of the ceiling.
-                observation.settled_through = observation.reached;
-                observation.outcome = AdvanceOutcome::Paused {
-                    at: Icount {
-                        retired: observation.reached.ticks,
-                    },
-                };
-            }
-        }
-        Ok(observation)
+        self.step_to_with_stop(ceiling, crucible::RunCeilingStop::Bound)
     }
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
@@ -2835,6 +2777,103 @@ impl SimulationBackend for QemuNode {
         self.shutdown_child_after_coverage_drain()
             .map(|_| ())
             .map_err(BackendError::from)
+    }
+}
+
+impl QemuNode {
+    /// Advances toward `ceiling` under the scheduler's stop condition.
+    ///
+    /// A [`crucible::RunCeilingStop::Bound`] ceiling may settle with the
+    /// node's clock at its last retirement or exact event below it (RFC-0010
+    /// SCHED-12). A [`crucible::RunCeilingStop::ExactEvent`] ceiling is
+    /// published as an exact event, so QEMU reaches it by a time-only advance
+    /// when no retirement lands on it (TIME-4, SCHED-39).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the bounded advance fails, or when an
+    /// exact-event ceiling settles without the node arriving there.
+    pub fn step_to_with_stop(
+        &mut self,
+        ceiling: VirtualTime,
+        stop: crucible::RunCeilingStop,
+    ) -> Result<StepObservation, BackendError> {
+        let icount_ceiling = Icount {
+            retired: ceiling.ticks,
+        };
+        if let Some(decision) = self.pending_preemption.as_ref() {
+            let command = scheduler_preemption_command(
+                decision,
+                self.last_observed_time.ticks,
+                icount_ceiling.retired,
+            )?;
+            self.channels
+                .shmem_hot_path
+                .publish_preemption_command(command)
+                .map_err(|source| {
+                    QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+                })?;
+            self.pending_preemption = None;
+        }
+        let stop_condition = match stop {
+            crucible::RunCeilingStop::Bound => crate::QemuQuantumStopCondition::Ceiling,
+            crucible::RunCeilingStop::ExactEvent => crate::QemuQuantumStopCondition::ExactEvent,
+        };
+        let report = self
+            .advance_to_ceiling_report_with_stop_condition(icount_ceiling, stop_condition)
+            .map_err(BackendError::from)?;
+        let emitted_network_output = !report.emitted_frames.is_empty();
+        let outcome = self
+            .finish_advance_report(icount_ceiling, report)
+            .map_err(BackendError::from)?;
+        // A reached horizon attests settlement through the ceiling; the node's
+        // clock is its last retirement or exact event at or below it
+        // (RFC-0010 SCHED-12).
+        let mut observation = match outcome {
+            AdvanceOutcome::ReachedHorizon => {
+                StepObservation::settled_below_ceiling(ceiling, self.last_observed_time)
+            }
+            AdvanceOutcome::Paused { .. } => {
+                StepObservation::from_advance_outcome(ceiling, outcome)
+            }
+        };
+        let output_stop = if let Some(sequence) = self
+            .last_step_completed_boundary
+            .and_then(crate::QemuCompletedQuantumBoundary::console_output_sequence)
+        {
+            Some(BackendPhysicalStop::ConsoleOutput { sequence })
+        } else if emitted_network_output {
+            Some(BackendPhysicalStop::NetworkOutput)
+        } else {
+            None
+        };
+        if let Some(stop) = output_stop {
+            observation.physical_stop = stop;
+            if observation.reached < ceiling {
+                // An output batch is evidence at its own stop only. It never
+                // carries settlement through the rest of the ceiling.
+                observation.settled_through = observation.reached;
+                observation.outcome = AdvanceOutcome::Paused {
+                    at: Icount {
+                        retired: observation.reached.ticks,
+                    },
+                };
+            }
+        }
+        if stop == crucible::RunCeilingStop::ExactEvent
+            && observation.reached < ceiling
+            && observation.settled_through == ceiling
+        {
+            // The ceiling is a modeled event for this node (SCHED-39); a
+            // settlement below it would let the event pass unobserved.
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node settled exact-event ceiling {} without arriving from {}",
+                    ceiling.ticks, observation.reached.ticks,
+                ),
+            });
+        }
+        Ok(observation)
     }
 }
 

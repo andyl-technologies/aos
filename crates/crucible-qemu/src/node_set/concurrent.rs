@@ -283,7 +283,11 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
                                 // The sealed record binds actor planning only.
                                 // The installed bounded-control channels and genuine
                                 // host-I/O runtime own this bounded execution.
-                                let result = one.step_node_to(run.node(), run.ceiling());
+                                let result = one.step_node_to_with_stop(
+                                    run.node(),
+                                    run.ceiling(),
+                                    run.ceiling_stop(),
+                                );
                                 active.fetch_sub(1, Ordering::SeqCst);
                                 let step = result?;
                                 let rng_evidence = one.drain_rng_evidence()?;

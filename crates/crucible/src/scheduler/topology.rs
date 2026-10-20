@@ -380,6 +380,25 @@ impl SchedulerLookaheadGraph {
         Self::from_edges(edges)
     }
 
+    /// Returns the graph produced by applying one boundary topology effect.
+    #[must_use]
+    pub(super) fn with_effect(&self, effect: &SchedulerTopologyChangeEffect) -> Self {
+        match effect {
+            SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(edges) => {
+                Self::from_edges(edges.iter().cloned())
+            }
+            SchedulerTopologyChangeEffect::RemoveEffectiveEdges(endpoints) => {
+                self.remove_effective_edges(endpoints.iter().cloned())
+            }
+            SchedulerTopologyChangeEffect::UpdateEffectiveEdges(edges) => {
+                self.update_effective_edges(edges.iter().cloned())
+            }
+            SchedulerTopologyChangeEffect::RestoreEffectiveEdges(edges) => {
+                self.restore_effective_edges(edges.iter().cloned())
+            }
+        }
+    }
+
     /// Computes `lookahead(node)` as the minimum inbound live-link latency.
     #[must_use]
     pub fn lookahead(&self, node: &SchedulerNodeId) -> NetworkLookahead {

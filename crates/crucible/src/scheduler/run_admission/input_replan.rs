@@ -90,6 +90,7 @@ impl SingleScheduler {
         }
 
         let target_time = self.node_time_for_counter(node, NodeCounter { ticks: target })?;
+        let dispatch_stop = self.run_ceiling_stop(node, target)?;
         let subdivision = self.planned_run_subdivision(&run.plan.node, run.plan.before, target)?;
         let publication =
             self.publish_run_ceiling(run.plan.node.clone(), reached, target, target_time)?;
@@ -118,6 +119,7 @@ impl SingleScheduler {
             dispatch_horizon: ExecutionHorizon {
                 icount: Icount { retired: target },
             },
+            dispatch_stop,
         };
         Ok(refreshed)
     }

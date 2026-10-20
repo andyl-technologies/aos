@@ -254,7 +254,7 @@ pub use scheduler::{
     NetworkDroppedFrameEvidence, NetworkInFlightDropEvidence, NetworkLookahead,
     NodeTimelineProjection, NoopBackendNetworkOutputInterceptor, PreparedDeviceGroupSelection,
     PreparedHostFixedInput, PreparedRunAdmission, PreparedRunInputInventory, QuantumLoop,
-    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
+    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RunCeilingStop,
     SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA, ScheduledEvent, ScheduledEventKey,
     ScheduledEventPayload, ScheduledEventResolveClass, SchedulerActor, SchedulerActorError,
     SchedulerActorHandle, SchedulerActorReply, SchedulerActorStateSnapshot,

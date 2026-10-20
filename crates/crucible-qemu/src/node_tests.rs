@@ -86,6 +86,7 @@ enum ChannelCall {
         outcome: QemuAsyncWaitOutcome,
     },
     ShmemStart(u64),
+    ShmemStartExact(u64),
     ShmemStartNextIdle(u64),
     ShmemFinish(u64),
     ShmemPreemption(SchedulerPreemptionCommand),
@@ -647,13 +648,12 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         horizon: ExecutionHorizon,
         stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
+        let at = horizon.icount.retired;
         self.log.lock().unwrap().push(match stop_condition {
-            crate::QemuQuantumStopCondition::Ceiling
-            | crate::QemuQuantumStopCondition::ExactEvent => {
-                ChannelCall::ShmemStart(horizon.icount.retired)
-            }
+            crate::QemuQuantumStopCondition::Ceiling => ChannelCall::ShmemStart(at),
+            crate::QemuQuantumStopCondition::ExactEvent => ChannelCall::ShmemStartExact(at),
             crate::QemuQuantumStopCondition::NextAuthenticatedIdle => {
-                ChannelCall::ShmemStartNextIdle(horizon.icount.retired)
+                ChannelCall::ShmemStartNextIdle(at)
             }
         });
         if self.fail_advance {

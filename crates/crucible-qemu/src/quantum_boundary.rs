@@ -41,9 +41,11 @@ pub(crate) enum QuantumBoundary {
 /// caller derives `settled` from a settlement record naming the advance that
 /// published `ceiling`. An idle node parked with a deadline strictly
 /// beyond the ceiling is [`QuantumBoundary::Paused`] (it will not advance past
-/// the ceiling this quantum). An idle publication whose deadline equals its
-/// current coordinate is also paused: that zero-length deadline is the shared
-/// protocol's explicit quiesced-boundary encoding. Any other state is
+/// the ceiling this quantum), unless the ceiling is an exact event the node
+/// must still reach; that quantum stays pending. An idle publication whose
+/// deadline equals its current coordinate is also paused: that zero-length
+/// deadline is the shared protocol's explicit quiesced-boundary encoding.
+/// Any other state is
 /// [`QuantumBoundary::Pending`]. With
 /// [`QemuQuantumStopCondition::NextAuthenticatedIdle`], any idle publication
 /// below the ceiling is paused; the callers separately enforce publication
@@ -60,9 +62,13 @@ pub(crate) fn classify_quantum_boundary(
     }
     if let Some(deadline) = idle.next_deadline {
         let deadline = deadline.retired;
+        // An exact-event ceiling must still be reached by a time-only
+        // advance, so a wake beyond it does not park the node there.
+        let parks_below_ceiling =
+            deadline > ceiling && stop_condition != QemuQuantumStopCondition::ExactEvent;
         if stop_condition == QemuQuantumStopCondition::NextAuthenticatedIdle
             || deadline == current
-            || deadline > ceiling
+            || parks_below_ceiling
         {
             return QuantumBoundary::Paused {
                 at: current,
@@ -226,6 +232,30 @@ mod tests {
                 false
             ),
             QuantumBoundary::Pending
+        );
+    }
+
+    #[test]
+    fn an_exact_event_ceiling_does_not_park_below_itself() {
+        // The node must still arrive at an exact-event ceiling (SCHED-39), so
+        // a wake beyond it leaves the quantum pending until it does.
+        assert_eq!(
+            classify_quantum_boundary(
+                &idle(951, Some(1_200)),
+                1_000,
+                QemuQuantumStopCondition::ExactEvent,
+                false
+            ),
+            QuantumBoundary::Pending
+        );
+        assert_eq!(
+            classify_quantum_boundary(
+                &idle(1_000, Some(1_200)),
+                1_000,
+                QemuQuantumStopCondition::ExactEvent,
+                true
+            ),
+            QuantumBoundary::Reached { icount: 1_000 }
         );
     }
 

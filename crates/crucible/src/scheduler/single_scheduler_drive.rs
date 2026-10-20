@@ -337,20 +337,7 @@ impl SingleScheduler {
             if let Some(activation_time) = activation_time {
                 self.record_rendezvous(SchedulerRendezvousPurpose::TopologySwap, activation_time)?;
             }
-            let graph = match effect {
-                SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(effective_edges) => {
-                    SchedulerLookaheadGraph::from_edges(effective_edges)
-                }
-                SchedulerTopologyChangeEffect::RemoveEffectiveEdges(endpoints) => {
-                    self.effective_topology.remove_effective_edges(endpoints)
-                }
-                SchedulerTopologyChangeEffect::UpdateEffectiveEdges(updated_edges) => self
-                    .effective_topology
-                    .update_effective_edges(updated_edges),
-                SchedulerTopologyChangeEffect::RestoreEffectiveEdges(restored_edges) => self
-                    .effective_topology
-                    .restore_effective_edges(restored_edges),
-            };
+            let graph = self.effective_topology.with_effect(&effect);
             let mut updates = Vec::with_capacity(self.nodes.len());
             for node in &mut self.nodes {
                 let previous_lookahead = node.network_lookahead;

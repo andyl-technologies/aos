@@ -22,6 +22,12 @@
 //! the final node state must be identical. A negative control restores the
 //! legacy behavior that credited the sub-retirement remainder up to every
 //! ceiling; it must diverge, proving the comparison can see the defect.
+//!
+//! A three-node scenario adds a fault-timed link partition at a picosecond
+//! phase (SCHED-39). The two partitioned nodes must arrive exactly at the
+//! activation tick, which the scheduler declares an exact event for them only.
+//! The third node treats the activation as a bound, so its trajectory must
+//! match a run without the fault.
 
 // crucible-lint: allow panic-shortcut -- deterministic fixtures use panic assertions.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -33,9 +39,10 @@ use crucible::{
     BackendQuantumLoop, BackendSnapshot, ConcurrentBackendRun, ConcurrentBackendRunOutcome,
     ConcurrentBackendRunResult, ConcurrentQuantumLoop, ConcurrentSimulationBackend, Decision,
     FingerprintSample, Icount, LinkDef, LinkLossProbability, NodeId, NodeTemplate, Plan,
-    Properties, QuantumRequest, ReadyPoint, ScenarioDefForm, ScheduledEvent,
-    SchedulerLivenessScenario, Seed, SimDuration, SimInstant, SimulationBackend, SingleScheduler,
-    StepObservation, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    Properties, QuantumRequest, ReadyPoint, RunCeilingStop, ScenarioDefForm, ScheduledEvent,
+    SchedulerLivenessScenario, SchedulerLookaheadEdgeEndpoint, SchedulerNodeId,
+    SchedulerTopologyChange, SchedulingNodeKind, Seed, SimDuration, SimInstant, SimulationBackend,
+    SingleScheduler, StepObservation, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 
 const MICROSECOND: u64 = 1_000_000;
@@ -69,11 +76,24 @@ struct Program {
 /// A guest-visible event observed by one node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TraceKind {
-    Timer { fired: u64 },
+    Timer {
+        fired: u64,
+    },
     Halt,
     Wake,
-    Emit { sequence: u64 },
-    Receive { sequence: u64 },
+    Emit {
+        sequence: u64,
+    },
+    Receive {
+        sequence: u64,
+    },
+    /// The node ended an exact-event RUN at its ceiling.
+    ///
+    /// `from` is the clock before a time-only advance onto the ceiling, or
+    /// the ceiling itself when a retirement or real event landed there.
+    ExactArrival {
+        from: u64,
+    },
 }
 
 /// One guest-visible event and the exact coordinate at which it occurred.
@@ -216,21 +236,42 @@ impl CostedNode {
     }
 
     /// Executes one RUN toward `ceiling` and reports how it returned control.
-    fn run(&mut self, ceiling: u64) -> (StepObservation, Vec<BackendNetworkOutput>) {
+    ///
+    /// An exact-event ceiling is one more exact event in the gap: the node
+    /// reaches it by retirement or by a time-only advance (TIME-4).
+    fn run(
+        &mut self,
+        ceiling: u64,
+        stop: RunCeilingStop,
+    ) -> (StepObservation, Vec<BackendNetworkOutput>) {
         assert!(
             self.now <= ceiling,
             "{} started beyond its ceiling",
             self.id.name
         );
         let ceiling_time = VirtualTime { ticks: ceiling };
+        let exact = stop == RunCeilingStop::ExactEvent;
+        // The clock before a time-only advance onto an exact-event ceiling.
+        let mut arrival_from = None;
         loop {
             self.service_due_events();
-            let event = self.next_exact_event();
+            if exact && self.now == ceiling {
+                let from = arrival_from.unwrap_or(self.now);
+                self.record(TraceKind::ExactArrival { from });
+                return (self.settle(ceiling_time), Vec::new());
+            }
+            let mut event = self.next_exact_event();
             assert!(event > self.now, "exact event left behind");
+            if exact {
+                event = event.min(ceiling);
+            }
 
             if self.halted {
                 if event <= ceiling {
                     // TIME-4: a halted vCPU advances only to its real wake.
+                    if event == ceiling {
+                        arrival_from = Some(self.now);
+                    }
                     self.now = event;
                     continue;
                 }
@@ -250,6 +291,9 @@ impl CostedNode {
             }
             if event <= ceiling {
                 // TIME-4: the gap holds an exact event and no retirement.
+                if event == ceiling {
+                    arrival_from = Some(self.now);
+                }
                 self.now = event;
                 continue;
             }
@@ -338,6 +382,8 @@ type Tamper = fn(&mut StepObservation, &mut Vec<BackendNetworkOutput>);
 struct CostedBackend {
     nodes: BTreeMap<NodeId, CostedNode>,
     tamper: Option<Tamper>,
+    /// Negative control: run exact-event ceilings as bounds.
+    ignore_exact_events: bool,
     runs: u64,
     settled_below_ceiling: u64,
     idle_parks: u64,
@@ -438,7 +484,12 @@ impl ConcurrentSimulationBackend for CostedBackend {
                 .ok_or_else(|| BackendError::Rejected {
                     message: format!("costed fixture has no node `{}`", run.node().name),
                 })?;
-            let (mut step, mut network_outputs) = node.run(run.ceiling().ticks);
+            let stop = if self.ignore_exact_events {
+                RunCeilingStop::Bound
+            } else {
+                run.ceiling_stop()
+            };
+            let (mut step, mut network_outputs) = node.run(run.ceiling().ticks, stop);
             if step.reached < step.settled_through
                 && let Some(tamper) = self.tamper
             {
@@ -562,19 +613,79 @@ fn programs() -> (Program, Program) {
     (fixed, variable)
 }
 
-fn scheduler(latency: u64, time_limit: u64, schedule: &CeilingSchedule) -> SingleScheduler {
-    let link = LinkDef::with_transport(
-        node_id("vm-a"),
-        node_id("vm-b"),
-        SimDuration { ticks: latency },
-        SimDuration::default(),
-        LinkLossProbability::from_millionths(0).unwrap(),
-        None,
+/// One costed node: its name, the peer its frames address, and its program.
+struct NodeSpec {
+    name: &'static str,
+    peer: &'static str,
+    program: Program,
+}
+
+/// A fault-timed partition of every directed edge between two nodes.
+#[derive(Clone, Copy, Debug)]
+struct LinkFault {
+    between: (&'static str, &'static str),
+    at: u64,
+}
+
+/// A complete costed scenario, independent of its ceiling schedule.
+struct Scenario {
+    nodes: Vec<NodeSpec>,
+    links: Vec<(&'static str, &'static str)>,
+    latency: u64,
+    time_limit: u64,
+    fault: Option<LinkFault>,
+}
+
+/// Two nodes that exchange frames over one link.
+fn two_node_scenario(latency: u64, time_limit: u64) -> Scenario {
+    let (fixed, variable) = programs();
+    Scenario {
+        nodes: vec![
+            NodeSpec {
+                name: "vm-a",
+                peer: "vm-b",
+                program: fixed,
+            },
+            NodeSpec {
+                name: "vm-b",
+                peer: "vm-a",
+                program: variable,
+            },
+        ],
+        links: vec![("vm-a", "vm-b")],
+        latency,
+        time_limit,
+        fault: None,
+    }
+}
+
+fn scheduler(scenario: &Scenario, schedule: &CeilingSchedule) -> SingleScheduler {
+    let links = scenario
+        .links
+        .iter()
+        .map(|(left, right)| {
+            LinkDef::with_transport(
+                node_id(left),
+                node_id(right),
+                SimDuration {
+                    ticks: scenario.latency,
+                },
+                SimDuration::default(),
+                LinkLossProbability::from_millionths(0).unwrap(),
+                None,
+            )
+            .unwrap()
+        })
+        .collect();
+    let world = World::from_nodes_and_links(
+        scenario
+            .nodes
+            .iter()
+            .map(|spec| world_node(spec.name))
+            .collect(),
+        links,
     )
     .unwrap();
-    let world =
-        World::from_nodes_and_links(vec![world_node("vm-a"), world_node("vm-b")], vec![link])
-            .unwrap();
     let form = ScenarioDefForm::from_components(
         &world,
         &Plan::empty(),
@@ -582,21 +693,40 @@ fn scheduler(latency: u64, time_limit: u64, schedule: &CeilingSchedule) -> Singl
         Seed::from_u64(12),
     )
     .unwrap();
-    let mut scenario = SchedulerLivenessScenario::from_runnable_world(
+    let mut liveness = SchedulerLivenessScenario::from_runnable_world(
         "sched-12-frequency-independence",
         1 << 40,
-        SimInstant { ticks: time_limit },
+        SimInstant {
+            ticks: scenario.time_limit,
+        },
         0,
         &world,
     )
     .with_scenario_def(form.scenario_def());
     if let Some(interval) = schedule.rendezvous {
-        scenario = scenario
+        liveness = liveness
             .with_rendezvous_interval(SimDuration { ticks: interval })
             .unwrap();
     }
-    let mut scheduler = SingleScheduler::new(scenario).unwrap();
+    let mut scheduler = SingleScheduler::new(liveness).unwrap();
     scheduler.attach_world_network_links(&world).unwrap();
+
+    if let Some(fault) = scenario.fault {
+        let vm = |name| SchedulerNodeId {
+            node: node_id(name),
+            kind: SchedulingNodeKind::Vm,
+        };
+        let (left, right) = fault.between;
+        let partition = SchedulerTopologyChange::partition(
+            1,
+            vec![
+                SchedulerLookaheadEdgeEndpoint::new(vm(left), vm(right)),
+                SchedulerLookaheadEdgeEndpoint::new(vm(right), vm(left)),
+            ],
+        )
+        .with_activation_time(SimInstant { ticks: fault.at });
+        scheduler.schedule_topology_change(partition).unwrap();
+    }
     scheduler
 }
 
@@ -626,14 +756,26 @@ fn refresh_caps(
     }
 }
 
+/// Fixture behavior that a drive may deliberately break.
+#[derive(Clone, Copy, Default)]
+struct Faults {
+    tamper: Option<Tamper>,
+    ignore_exact_events: bool,
+}
+
 fn drive(
     model: StopModel,
     latency: u64,
     time_limit: u64,
     schedule: &CeilingSchedule,
 ) -> (Trajectory, DriveStats) {
-    drive_with(model, latency, time_limit, schedule, None)
-        .unwrap_or_else(|error| panic!("{model:?} {schedule:?} quantum failed: {error}"))
+    drive_scenario(
+        model,
+        &two_node_scenario(latency, time_limit),
+        schedule,
+        Faults::default(),
+    )
+    .unwrap_or_else(|error| panic!("{model:?} {schedule:?} quantum failed: {error}"))
 }
 
 fn drive_with(
@@ -643,26 +785,42 @@ fn drive_with(
     schedule: &CeilingSchedule,
     tamper: Option<Tamper>,
 ) -> Result<(Trajectory, DriveStats), crucible::SchedulerError> {
-    let (fixed, variable) = programs();
+    drive_scenario(
+        model,
+        &two_node_scenario(latency, time_limit),
+        schedule,
+        Faults {
+            tamper,
+            ignore_exact_events: false,
+        },
+    )
+}
+
+fn drive_scenario(
+    model: StopModel,
+    scenario: &Scenario,
+    schedule: &CeilingSchedule,
+    faults: Faults,
+) -> Result<(Trajectory, DriveStats), crucible::SchedulerError> {
     let backend = CostedBackend {
-        nodes: [
-            (
-                node_id("vm-a"),
-                CostedNode::new("vm-a", "vm-b", fixed, model),
-            ),
-            (
-                node_id("vm-b"),
-                CostedNode::new("vm-b", "vm-a", variable, model),
-            ),
-        ]
-        .into_iter()
-        .collect(),
-        tamper,
+        nodes: scenario
+            .nodes
+            .iter()
+            .map(|spec| {
+                (
+                    node_id(spec.name),
+                    CostedNode::new(spec.name, spec.peer, spec.program.clone(), model),
+                )
+            })
+            .collect(),
+        tamper: faults.tamper,
+        ignore_exact_events: faults.ignore_exact_events,
         runs: 0,
         settled_below_ceiling: 0,
         idle_parks: 0,
     };
-    let mut adapter = BackendQuantumLoop::new(scheduler(latency, time_limit, schedule), backend);
+    let time_limit = scenario.time_limit;
+    let mut adapter = BackendQuantumLoop::new(scheduler(scenario, schedule), backend);
     let mut next_attempt = schedule
         .attempt_caps
         .map(|(interval, offset)| interval + offset);
@@ -683,7 +841,7 @@ fn drive_with(
             configuration: adapter.loop_impl().configuration().clone(),
             control: Vec::new(),
         };
-        let round = adapter.drive_concurrent_quantum(request, 2)?;
+        let round = adapter.drive_concurrent_quantum(request, scenario.nodes.len())?;
         let progressed = round
             .outcomes
             .iter()
@@ -700,6 +858,15 @@ fn drive_with(
         adapter.loop_impl().frontier().ticks >= time_limit,
         "{model:?} {schedule:?} did not reach its time limit"
     );
+    if let Some(fault) = scenario.fault {
+        let applied = adapter
+            .loop_impl()
+            .topology_change_applications()
+            .iter()
+            .map(|application| application.activation_time)
+            .collect::<Vec<_>>();
+        assert_eq!(applied, vec![Some(SimInstant { ticks: fault.at })]);
+    }
 
     resolved.sort_by(|left, right| left.key.cmp(&right.key));
     let backend = adapter.backend();
@@ -871,6 +1038,145 @@ fn settlement_below_a_ceiling_cannot_carry_an_output_batch() {
             });
         },
         "without a completed horizon or idle park",
+    );
+}
+
+// T1: a fault-timed topology swap is exact only for the nodes it affects
+
+const FAULT_LATENCY: u64 = 60 * MICROSECOND;
+const FAULT_TIME_LIMIT: u64 = 800 * MICROSECOND;
+/// Off every node's 10 ps retirement lattice, so no retirement can land on it.
+const FAULT_AT: u64 = 333 * MICROSECOND + 37;
+
+/// A and B are partitioned at `FAULT_AT`; C only sends frames to A.
+///
+/// C receives nothing from A or B, so its guest trajectory cannot depend on
+/// theirs. Its RUN windows still depend on both through lookahead, and the
+/// activation caps every node's ceilings, so C exercises the bound path.
+fn partition_scenario(fault: Option<LinkFault>) -> Scenario {
+    let (fixed, variable) = programs();
+    let silent = |program: Program| Program {
+        emit_every: u64::MAX,
+        ..program
+    };
+    Scenario {
+        nodes: vec![
+            NodeSpec {
+                name: "vm-a",
+                peer: "vm-c",
+                program: silent(fixed.clone()),
+            },
+            NodeSpec {
+                name: "vm-b",
+                peer: "vm-c",
+                program: silent(variable.clone()),
+            },
+            NodeSpec {
+                name: "vm-c",
+                peer: "vm-a",
+                program: Program {
+                    timer_phase: 2 * MICROSECOND + 29,
+                    emit_every: 400_007,
+                    ..variable
+                },
+            },
+        ],
+        links: vec![("vm-a", "vm-b"), ("vm-a", "vm-c"), ("vm-b", "vm-c")],
+        latency: FAULT_LATENCY,
+        time_limit: FAULT_TIME_LIMIT,
+        fault,
+    }
+}
+
+const A_B_PARTITION: LinkFault = LinkFault {
+    between: ("vm-a", "vm-b"),
+    at: FAULT_AT,
+};
+
+fn exact_arrivals(trajectory: &Trajectory, node: &str) -> Vec<TraceEvent> {
+    trajectory.traces[node]
+        .iter()
+        .filter(|event| matches!(event.kind, TraceKind::ExactArrival { .. }))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_link_fault_is_an_exact_event_only_for_the_nodes_whose_link_it_changes() {
+    let schedule = CeilingSchedule::rendezvous(250 * MICROSECOND);
+    let (clean, _) = drive_scenario(
+        StopModel::Bound,
+        &partition_scenario(None),
+        &schedule,
+        Faults::default(),
+    )
+    .unwrap();
+    let (faulted, _) = drive_scenario(
+        StopModel::Bound,
+        &partition_scenario(Some(A_B_PARTITION)),
+        &schedule,
+        Faults::default(),
+    )
+    .unwrap();
+
+    // A and B take the swap exactly at the activation tick, each from a
+    // clock strictly below it: the arrival is a time-only advance.
+    for node in ["vm-a", "vm-b"] {
+        let arrivals = exact_arrivals(&faulted, node);
+        assert_eq!(arrivals.len(), 1, "{node}: {arrivals:?}");
+        assert_eq!(arrivals[0].tick, FAULT_AT, "{node}");
+        assert!(
+            matches!(arrivals[0].kind, TraceKind::ExactArrival { from } if from < FAULT_AT),
+            "{node}: {arrivals:?}"
+        );
+        assert!(exact_arrivals(&clean, node).is_empty());
+    }
+
+    // C settles through the activation as a bound, so its guest is unchanged.
+    assert!(exact_arrivals(&faulted, "vm-c").is_empty());
+    assert!(
+        clean.traces["vm-c"]
+            .iter()
+            .any(|event| matches!(event.kind, TraceKind::Emit { .. }))
+    );
+    assert_eq!(clean.traces["vm-c"], faulted.traces["vm-c"]);
+    assert_eq!(clean.states["vm-c"], faulted.states["vm-c"]);
+}
+
+#[test]
+fn an_exact_topology_swap_is_independent_of_the_ceiling_schedule() {
+    let scenario = partition_scenario(Some(A_B_PARTITION));
+    let runs = t1_schedules().map(|(label, schedule)| {
+        let (trajectory, stats) =
+            drive_scenario(StopModel::Bound, &scenario, &schedule, Faults::default())
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+        (label, trajectory, stats)
+    });
+
+    let (_, baseline, _) = &runs[0];
+    for (label, trajectory, stats) in &runs[1..] {
+        assert!(stats.settled_below_ceiling > 0, "{label}: {stats:?}");
+        assert_same_trajectory(baseline, trajectory, label);
+    }
+}
+
+#[test]
+fn settling_below_an_exact_topology_swap_is_refused() {
+    let error = drive_scenario(
+        StopModel::Bound,
+        &partition_scenario(Some(A_B_PARTITION)),
+        &CeilingSchedule::rendezvous(250 * MICROSECOND),
+        Faults {
+            tamper: None,
+            ignore_exact_events: true,
+        },
+    )
+    .map(|_| ())
+    .expect_err("a node that treats the swap as a bound must be refused");
+
+    assert!(
+        error.to_string().contains("settled exact-event ceiling"),
+        "{error}"
     );
 }
 

@@ -56,6 +56,12 @@ impl ConcurrentBackendRun {
             ticks: self.admission.dispatch_horizon().icount.retired,
         }
     }
+
+    /// Returns whether the ceiling is a bound or an exact event for this node.
+    #[must_use]
+    pub fn ceiling_stop(&self) -> RunCeilingStop {
+        self.admission.dispatch_stop()
+    }
 }
 
 /// Physical progress awaiting exact scheduler-owned input resolution.

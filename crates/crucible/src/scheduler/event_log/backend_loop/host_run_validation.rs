@@ -72,6 +72,16 @@ pub(super) fn validate_host_run_outcome(
             ),
         });
     }
+    // An exact-event ceiling is a modeled event for this node (SCHED-39), so
+    // the node must arrive there; settling below it would hide the event.
+    if settled_below_ceiling && planned.admission.dispatch_stop() == RunCeilingStop::ExactEvent {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "host worker for `{}` settled exact-event ceiling {} without arriving from {}",
+                node.name, ceiling.ticks, reached.ticks,
+            ),
+        });
+    }
     let settled_horizon = settled_below_ceiling
         && completed.step.physical_stop == BackendPhysicalStop::Horizon
         && completed.step.outcome == AdvanceOutcome::ReachedHorizon;

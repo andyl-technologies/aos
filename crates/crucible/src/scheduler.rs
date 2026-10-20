@@ -122,7 +122,7 @@ pub(crate) use event_codec::{
 };
 pub use event_log::*;
 pub use liveness::*;
-pub use run_admission::{PreparedRunAdmission, PreparedRunInputInventory};
+pub use run_admission::{PreparedRunAdmission, PreparedRunInputInventory, RunCeilingStop};
 pub use runtime_state::*;
 pub use scenario::*;
 pub use topology::*;

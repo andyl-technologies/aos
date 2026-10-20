@@ -1915,10 +1915,7 @@ impl SimulationBackend for QemuNodeSet {
         node: &NodeId,
         ceiling: VirtualTime,
     ) -> Result<StepObservation, BackendError> {
-        let started = self.run_window.begin();
-        let result = self.step_node_to_untimed(node, ceiling);
-        self.run_window.finish_serial(started);
-        result
+        self.step_node_to_with_stop(node, ceiling, crucible::RunCeilingStop::Bound)
     }
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
@@ -2043,11 +2040,34 @@ impl SimulationBackend for QemuNodeSet {
 }
 
 impl QemuNodeSet {
+    /// Advances one node to `ceiling` under the scheduler's stop condition.
+    ///
+    /// [`crucible::RunCeilingStop::ExactEvent`] makes the ceiling a modeled
+    /// event the node must reach exactly (RFC-0010 SCHED-39). A bound ceiling
+    /// may settle with the node's clock at its last retirement below it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when `node` is absent, the node cannot advance,
+    /// or an exact-event ceiling settles without the node arriving there.
+    pub fn step_node_to_with_stop(
+        &mut self,
+        node: &NodeId,
+        ceiling: VirtualTime,
+        stop: crucible::RunCeilingStop,
+    ) -> Result<StepObservation, BackendError> {
+        let started = self.run_window.begin();
+        let result = self.step_node_to_untimed(node, ceiling, stop);
+        self.run_window.finish_serial(started);
+        result
+    }
+
     /// Advances one node to `ceiling`, reissuing bounded quanta as needed.
     fn step_node_to_untimed(
         &mut self,
         node: &NodeId,
         ceiling: VirtualTime,
+        stop: crucible::RunCeilingStop,
     ) -> Result<StepObservation, BackendError> {
         if let Some(parked) = self.parked_campaign_marker(node)? {
             return Ok(StepObservation {
@@ -2074,7 +2094,7 @@ impl QemuNodeSet {
         for reissue in 0..=MAX_STEP_REISSUES {
             let (mut observation, final_state, inbound_frames_consumed, effective_ceiling) = {
                 let backend = self.node_mut(node)?;
-                let observation = backend.step_to(ceiling)?;
+                let observation = backend.step_to_with_stop(ceiling, stop)?;
                 (
                     observation,
                     backend.last_step_final_state(),
@@ -2156,11 +2176,13 @@ impl QemuNodeSet {
             if let crucible::AdvanceOutcome::Paused { at } = observation.outcome
                 && let Some(deadline) = final_state.and_then(|state| state.next_deadline)
                 && deadline.retired > ceiling.ticks
+                && stop == crucible::RunCeilingStop::Bound
             {
                 // The idle node parks at its physical point; its next wake is
                 // beyond the ceiling, so it is settled through the ceiling
                 // without advancing its clock there (SCHED-28 as bounded by
-                // SCHED-12).
+                // SCHED-12). An exact-event ceiling is reissued instead: the
+                // halted node must still reach it by a time-only advance.
                 observation.reached = VirtualTime { ticks: at.retired };
                 observation.settled_through = ceiling;
                 observation.physical_stop = BackendPhysicalStop::Idle;

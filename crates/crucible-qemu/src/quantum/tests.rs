@@ -371,6 +371,34 @@ fn qemu_quantum_ignores_a_settlement_left_by_an_earlier_advance() {
 
 #[path = "tests/retained_inbound.rs"]
 mod retained_inbound;
+
+#[test]
+fn qemu_quantum_publishes_a_scheduler_exact_event_ceiling() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+
+    let pending = hot_path
+        .start_quantum(horizon(6), crate::QemuQuantumStopCondition::ExactEvent)
+        .unwrap_or_else(|error| panic!("an exact-event ceiling should publish: {error}"));
+
+    // With no earlier delivery, the scheduler's exact event is the ceiling.
+    assert_eq!(pending.ceiling, icount(6));
+    assert_eq!(
+        slot.load_scheduler_advance(),
+        Ok((6, crate::QemuQuantumStopCondition::ExactEvent))
+    );
+}
+
 #[test]
 fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
     let slot = NodeSlot::default();

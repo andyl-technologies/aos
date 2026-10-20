@@ -9,8 +9,12 @@ use std::num::NonZeroU64;
 use super::*;
 use crate::ExecutionHorizon;
 
+#[path = "run_admission/exact_event.rs"]
+mod exact_event;
 #[path = "run_admission/input_replan.rs"]
 mod input_replan;
+
+pub use exact_event::RunCeilingStop;
 
 /// Complete scheduler-owned input inventory frozen for one dispatch revision.
 #[derive(Clone, Debug)]
@@ -99,6 +103,8 @@ pub struct PreparedRunAdmission {
     owner: Arc<PreparedRunOwner>,
     input_inventory: PreparedRunInputInventory,
     dispatch_horizon: ExecutionHorizon,
+    // Derived from the scheduler state that sealed this dispatch horizon.
+    dispatch_stop: RunCeilingStop,
 }
 
 impl PreparedRunAdmission {
@@ -225,6 +231,17 @@ impl PreparedRunAdmission {
     pub const fn dispatch_horizon(&self) -> ExecutionHorizon {
         self.dispatch_horizon
     }
+
+    /// Returns how the backend must end this RUN at its dispatch horizon.
+    ///
+    /// [`RunCeilingStop::ExactEvent`] means the dispatch horizon is a modeled
+    /// event for this node, such as a fault-timed topology swap that changes
+    /// one of its links (RFC-0010 SCHED-39). The node must arrive there
+    /// exactly. Otherwise the horizon is an upper bound (SCHED-12).
+    #[must_use]
+    pub const fn dispatch_stop(&self) -> RunCeilingStop {
+        self.dispatch_stop
+    }
 }
 
 impl PartialEq for PreparedRunAdmission {
@@ -234,6 +251,7 @@ impl PartialEq for PreparedRunAdmission {
             && self.input_inventory.generation == other.input_inventory.generation
             && self.input_inventory.next_input == other.input_inventory.next_input
             && self.dispatch_horizon == other.dispatch_horizon
+            && self.dispatch_stop == other.dispatch_stop
     }
 }
 
@@ -376,6 +394,7 @@ impl SingleScheduler {
                     retired: plan.target_counter,
                 },
             },
+            dispatch_stop: self.run_ceiling_stop(node, plan.target_counter)?,
         })
     }
 
@@ -417,6 +436,7 @@ impl SingleScheduler {
             ));
         }
         let time = self.node_time_for_counter(node, NodeCounter { ticks: target })?;
+        let dispatch_stop = self.run_ceiling_stop(node, target)?;
         let subdivision = self.planned_run_subdivision(&run.plan.node, run.plan.before, target)?;
         let publication =
             self.publish_run_ceiling(run.plan.node.clone(), run.plan.before, target, time)?;
@@ -435,6 +455,7 @@ impl SingleScheduler {
             dispatch_horizon: ExecutionHorizon {
                 icount: Icount { retired: target },
             },
+            dispatch_stop,
         };
 
         run.plan.target_counter = target;

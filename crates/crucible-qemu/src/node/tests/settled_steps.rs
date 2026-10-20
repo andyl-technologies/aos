@@ -64,3 +64,52 @@ fn an_idle_park_without_a_wake_keeps_its_physical_point() -> Result<(), Box<dyn 
     nodes.shutdown()?;
     Ok(())
 }
+
+#[test]
+fn an_exact_event_ceiling_is_published_as_an_exact_event() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+
+    let step = node.step_to_with_stop(
+        VirtualTime { ticks: 19 },
+        crucible::RunCeilingStop::ExactEvent,
+    )?;
+
+    // The scheduler's exact event reaches the node slot as an exact event.
+    let log = recorded(&log);
+    assert!(log.contains(&ChannelCall::ShmemStartExact(19)), "{log:?}");
+    assert!(!log.contains(&ChannelCall::ShmemStart(19)), "{log:?}");
+    assert_eq!(step.reached, VirtualTime { ticks: 19 });
+    assert_eq!(step.settled_through, VirtualTime { ticks: 19 });
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+fn an_exact_event_ceiling_refuses_a_settlement_below_it() -> Result<(), Box<dyn Error>> {
+    let mut nodes = scripted_node_set(ScriptedNetworkOutput {
+        emit_tick: 0,
+        stopped_tick: 951,
+        outcome: AdvanceOutcome::ReachedHorizon,
+        next_deadline: None,
+        frames: 0,
+    })?;
+
+    let result = nodes.step_node_to_with_stop(
+        &node_id("vm-a"),
+        VirtualTime { ticks: CEILING },
+        crucible::RunCeilingStop::ExactEvent,
+    );
+
+    // The same report completes a bound ceiling; an exact event must be reached.
+    assert!(
+        matches!(
+            &result,
+            Err(BackendError::Rejected { message })
+                if message.contains("settled exact-event ceiling 1000 without arriving from 951")
+        ),
+        "{result:?}"
+    );
+    nodes.shutdown()?;
+    Ok(())
+}
