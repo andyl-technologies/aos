@@ -10,61 +10,67 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
-## Shared native startup accounting checkpoint
+## Original launch custody and shared startup geometry
 
-Commit `d96b7ff900` extends the shared decoding and layout work in
-`ae7d1d670e` and its separate cursor formatting in `dc16e3f531`. Native ownership,
-currentness and admission remain upper-owned; portable numeric facts confer no
-authority, and the selected Fresh15 child route remains pending.
+Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
+Preparation moves the three original launch records into an immutable owner;
+jobs retain a lease to their selected original member. Metadata collection reads
+that member's actual capacities and checks its owner association. Cancellation
+fences further collection and acceptance before releasing the lease. The separate
+Linux attempt owner retains responsibility for process drainage and cleanup.
 
-Shared portable DATA now covers projected-feed decoding, acknowledgement and
-report-query accounting, initial/private bootstrap shapes, schema generation,
-metadata population and Admit normalization. The actual host observers retain
-original field walks, capacity observations, seals and guards. Shared bodies and
-source expansions preserve fallible-query positions, error order and independent
-owner sums. Saved original algorithms remain independent test oracles.
+Frame charges, Hello, launch decoding, packet-prefix startup and observation
+lifetimes, report aggregation and private bootstrap calculations now share their
+defining portable bodies. Native owners, currentness and admission remain upper.
+Saved complete old bodies remain independent test oracles; the shared calculations
+preserve their query positions, checked arithmetic and refusal order. New headers
+are explicitly priced. Composite tests include the genuine adapter families while
+retaining their independent original counters and adapter-only assertions.
 
-The ordered field cursor keeps one fallible `next_value` implementation. Invocation
-purposes retain their complete inline restoration payload through an optional
-record. Wire/debug spelling, copy behavior and ordered decoding remain covered.
-Generic decoder accounting keeps distinct raw-input and final-owner bounds;
-genuine upper suppliers provide private native, issuer, Prepare, report and
-fresh-publication layouts. New adapter and result headers are charged at their
-defining construction sites.
+The final thirteen-crate all-feature/all-target check, all six registered
+architecture gates and formatting for the 77 changed Rust files pass. The
+content-bound Connection responsibility review is refreshed after reading the
+complete module; the continuation review is removed because its implementation
+is now below the existing review threshold. Thresholds and exceptions are unchanged.
 
-The thirteen-crate all-feature/all-target check passes for the captured source
-before the later test-only expected-composition correction. All six registered
-architecture gates pass. Corrected full default Transport passes 1,721 tests with
-15 existing ignores; Engine passes 2,025 with 33 existing ignores using the actual
-rebuilt provider. Both have zero failures and no filtering. Default DATA and
-worker controls pass 59 library, one unit and three stdio tests.
+Full default libraries pass 2,031 Engine, 1,823 Daemon, 1,746 Transport and 61 DATA
+tests, with zero failures and no filtering. Ignored populations are 33 Engine,
+164 Daemon and 15 Transport; Daemon includes the new asset-dependent native test.
+Full raw-JSON Engine, Transport and DATA runs separately pass 2,031, 1,746 and 61
+tests with zero failures, no filtering and the same ignored populations. Default
+and raw-JSON worker runs each pass 61 DATA, one unit and three stdio controls.
+Both unchanged pre-extraction stdio executables pass all three controls against
+each new worker variant.
 
-The full Daemon suite passes 1,823 tests with 163 existing ignores and no
-filtering. Its JSON dependency enables `raw_value`; default Engine and Transport
-runs select default/std JSON.
+Daemon's default dependency graph enables raw JSON; default Engine and Transport
+use default/std JSON.
 
-Full raw-JSON Engine, Transport and DATA suites separately pass 2,025, 1,721
-and 59 tests, with zero failures, no filtering and the same existing ignores.
-Raw-JSON worker controls pass 59 DATA, one unit and three stdio tests. Both
-unchanged pre-extraction stdio executables pass all three controls against each
-new worker variant.
+The new fixed ARM Root/Clock control is also explicitly executed: one native test
+passes in 232.98 seconds. After the original process owners and namespace are
+removed, two independent fresh restorations reject foreign receipt/ACK custody,
+acknowledge their own captured output and produce matching new native output.
+The final marker follows child reclamation and namespace cleanup. This is a
+direct test-ELF result; the new Nix recipe remains unregistered and unrun. It does
+not qualify userspace boot, general Source2, device parity or common Ready.
 
 The ordinary worker package passes strict all-target Clippy, nine emitter tests,
-one unit test and three stdio controls. Independent inspection verifies captured
-source, vendor and installation-record joins. The measured launcher/worker
-runtime graph remains four store paths, 477 entries and 290 ELF records. This is
-artifact verification, not installed admission or native execution.
+one unit test and three stdio controls. Independent inspection verifies the
+2,053,008-byte installed worker, captured source/vendor joins and its four-path
+launcher/worker runtime graph with 477 entries and 290 ELF records. The worker's
+own compiler graph remains Worker, DATA and Node Format. These artifact checks
+do not establish installed Source admission.
 
-The application test-target gate passes compilation only: 180 fresh executable
-records across 58 full package IDs, including 71 integration targets. Final target
-compilation takes 10 minutes 14 seconds after separate prerequisites. Its audited
-capture differs from this checkpoint only by the later test-only
-expected-composition correction; production inputs match. It executes no targets
-and emits no Crucible unit-test executable; Crucible CLI, Daemon, worker and QEMU
-host/plugin remain compiler-excluded.
+The mandatory application gate passes compilation only: 180 freshly compiled
+test executables across 58 full package IDs, including 71 integration targets.
+Final compilation takes 9 minutes 35 seconds after separate prerequisites.
+Worker and application captures precede two later Transport test-expectation
+corrections and a test-comment reorder; production inputs match this checkpoint.
+The application gate executes no targets and emits no Crucible unit-test ELF;
+Crucible CLI, Daemon, worker and QEMU host/plugin remain compiler-excluded.
 
-Request2, actual selected Source construction, Ready, complete RFC-0025
-qualification and VM performance measurements remain outstanding.
+Request2, selected Fresh15 Source construction, installed common Ready, full
+RFC-0025 qualification, backend/device parity and matched Linux VM performance
+remain outstanding. Later producer proposals are separate from this checkpoint.
 
 ## Portable DATA and contained-worker checkpoint
 
