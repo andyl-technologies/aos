@@ -163,6 +163,62 @@ impl NativeRecoveryInspection {
 }
 
 impl NativeRecoveryInspector {
+    /// Derives bounded missing-index work without asking publisher inventory.
+    ///
+    /// A sealed manifest's descriptor may itself require its cached index.
+    /// These independently verified shared packs supply repair data only; they
+    /// establish neither private namespace completeness nor pending absence.
+    /// The physical owner must check both before adoption or serving.
+    ///
+    /// # Errors
+    /// Refuses unknown names, invalid packs or dependencies, mismatching indexes,
+    /// stale native custody and aggregate retained-index allocation overflow.
+    pub(in crate::host_cache) fn inspect_index_repairs(
+        &self,
+    ) -> io::Result<Vec<DerivedIndexRepair>> {
+        self.check_current()?;
+        let mut collected = Candidates::new(self.max_candidates);
+        collected.shared_packs(self)?;
+        let packs = collected
+            .keys()
+            .map(pack_id)
+            .collect::<io::Result<Vec<_>>>()?;
+        let mut repairs = Vec::new();
+        let mut retained = 0_usize;
+        for id in &packs {
+            let VerifiedEncodedBody::Pack(plan) = verification::pack(self, *id, None, &packs)?
+            else {
+                return Err(invalid(
+                    "shared pack verification returned another body kind",
+                ));
+            };
+            match plan.detached_index_status() {
+                DetachedIndexStatus::Matches => {}
+                DetachedIndexStatus::Mismatch => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "recovery will not overwrite a mismatching detached index",
+                    ));
+                }
+                DetachedIndexStatus::Missing => {
+                    retained = retained
+                        .checked_add(plan.index_bytes().len())
+                        .filter(|bytes| *bytes <= self.reads.max_allocation_bytes)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::OutOfMemory,
+                                "startup repair indexes exceed aggregate retained read budget",
+                            )
+                        })?;
+                    repairs.try_reserve(1).map_err(io::Error::other)?;
+                    repairs.push(*plan);
+                }
+            }
+        }
+        self.check_current()?;
+        Ok(repairs)
+    }
+
     /// Inspects bounded actual names and bytes without local cache/state mutations.
     ///
     /// Inventory and unsealed InspectBody preserve registered publisher custody.

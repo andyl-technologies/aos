@@ -306,9 +306,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         (bootstrap.id, owner.generation, write)
     };
     super::snapshot::persist(executor, bootstrap_write).await?;
-    let initial_inventory = inspector.inspect()?;
-    let (initial_inventory, repaired_generation) =
-        recovery_indexes::run(executor, initial_inventory, &inspector, &id, &context).await?;
+    let repaired_generation = recovery_indexes::run(executor, &inspector, &id, &context).await?;
     if let Some(repaired) = repaired_generation {
         let owner = custody
             .lock()
@@ -322,6 +320,9 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         // the pre-write observation cannot supply final source-closure proof.
         shared = SharedNamespaceObservation::inspect(&owner.preparation)?;
     }
+    // Publisher inventory may need the repaired metadata index to describe a
+    // sealed manifest. Only this fresh complete scan can authorize adoption.
+    let initial_inventory = inspector.inspect()?;
     recovery_candidates::preflight(&initial_inventory)?;
     let mut has_manifest = false;
     for candidate in initial_inventory.candidates() {

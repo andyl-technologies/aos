@@ -131,11 +131,6 @@ pub(super) async fn run(
             let identity = match recovery_candidates::classify(&candidate)? {
                 RecoveryCase::Manifest(identity) => identity,
                 RecoveryCase::Pack | RecoveryCase::Inline => continue,
-                RecoveryCase::RepairIndex => {
-                    return Err(unresolved(
-                        "manifest recovery retains an unrepaired detached index",
-                    ));
-                }
             };
             // Reserve actual success/failure registry slots before source/publisher
             // effects. No fallible step precedes retaining an accepted result.
@@ -364,11 +359,6 @@ pub(super) fn check_inventory(
                 }
             }
             RecoveryCase::Inline => {}
-            RecoveryCase::RepairIndex => {
-                return Err(unresolved(
-                    "final inventory contains an unrepaired detached index",
-                ));
-            }
         }
     }
     if sealed != verified.len() {

@@ -22,8 +22,6 @@ pub(super) enum RecoveryCase {
     Manifest(Identity),
     /// Retains a verified container provisionally until exact source closure matching.
     Pack,
-    /// Identifies a fully verified pack whose detached index needs a funded write.
-    RepairIndex,
 }
 
 /// Classifies every bounded candidate before any adoption effect.
@@ -31,22 +29,6 @@ pub(super) enum RecoveryCase {
 /// # Errors
 /// Refuses global inventory errors and every unsupported or unresolved case.
 pub(super) fn preflight(inventory: &NativeRecoveryInspection) -> io::Result<()> {
-    preflight_repairable(inventory)?;
-    for candidate in inventory.candidates() {
-        if matches!(classify(candidate)?, RecoveryCase::RepairIndex) {
-            return Err(unresolved(
-                "detached index repair is not yet durably reconciled",
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Refuses unsupported candidates before any bounded startup index repair.
-///
-/// # Errors
-/// Refuses global failures, pending content and corrupt or unhandled candidates.
-pub(super) fn preflight_repairable(inventory: &NativeRecoveryInspection) -> io::Result<()> {
     if inventory.inventory_failure().is_some() || inventory.namespace_failure().is_some() {
         return Err(unresolved(
             "recovery inventory has unresolved global failures",
@@ -61,9 +43,8 @@ pub(super) fn preflight_repairable(inventory: &NativeRecoveryInspection) -> io::
 /// Classifies a genuine candidate while preserving all unresolved observations.
 ///
 /// # Errors
-/// Refuses pending bodies, loose chunks, mismatching indexes, unsupported key
+/// Refuses pending bodies, loose chunks, broken/missing indexes, unsupported key
 /// fields and any issue beyond the sealed witness supplied by actual adoption.
-/// A missing index is repair work, never a completed candidate for adoption.
 pub(super) fn classify(candidate: &NativeRecoveryCandidate) -> io::Result<RecoveryCase> {
     if candidate.pending_observation().is_some() {
         return Err(unresolved("pending recovery body is not yet supported"));
@@ -98,15 +79,10 @@ pub(super) fn classify(candidate: &NativeRecoveryCandidate) -> io::Result<Recove
         && key.descriptor.is_empty()
         && candidate.issues().is_empty()
         && let Some(VerifiedEncodedBody::Pack(plan)) = candidate.verified()
+        && plan.detached_index_status() == DetachedIndexStatus::Matches
         && key.pack_id.as_slice() == plan.pack_id().as_bytes()
     {
-        return match plan.detached_index_status() {
-            DetachedIndexStatus::Matches => Ok(RecoveryCase::Pack),
-            DetachedIndexStatus::Missing => Ok(RecoveryCase::RepairIndex),
-            DetachedIndexStatus::Mismatch => Err(unresolved(
-                "recovery will not overwrite a mismatching detached index",
-            )),
-        };
+        return Ok(RecoveryCase::Pack);
     }
     Err(unresolved(
         "unsupported loose, missing-index or unresolved recovery candidate",
